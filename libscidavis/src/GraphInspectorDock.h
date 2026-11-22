@@ -48,6 +48,7 @@ class QFrame;
 class QLabel;
 class QLineEdit;
 class QMenu;
+class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSpinBox;
@@ -442,6 +443,12 @@ private:
     QComboBox *d_combo_leg_frame = nullptr;
     QLabel *d_lbl_leg_header = nullptr;
     QLineEdit *d_edit_leg_header = nullptr;
+    // C16: text annotations can have several lines, so they get a multi-line editor.
+    QPlainTextEdit *d_edit_annot_text = nullptr;
+    QTimer *d_annot_commit_timer = nullptr;
+    QPointer<Graph> d_annot_edit_layer;
+    int d_annot_edit_id = -1;
+    void flushPendingAnnotationEdit();
     QWidget *d_leg_sym_bar = nullptr;
     QLabel *d_lbl_leg_cols = nullptr;
     QSpinBox *d_spin_leg_cols = nullptr;

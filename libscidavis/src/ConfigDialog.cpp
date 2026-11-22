@@ -526,14 +526,8 @@ void ConfigDialog::initAppPage()
     insertLanguagesList();
     topBoxLayout->addWidget(boxLanguage, 0, 1);
 
-    lblStyle = new QLabel();
-    topBoxLayout->addWidget(lblStyle, 1, 0);
-    boxStyle = new QComboBox();
-    topBoxLayout->addWidget(boxStyle, 1, 1);
-    QStringList styles = QStyleFactory::keys();
-    styles.sort();
-    boxStyle->addItems(styles);
-    boxStyle->setCurrentIndex(boxStyle->findText(app->appStyle, Qt::MatchWildcard));
+    // H6: the "Style" (Qt widget style) choice was removed. ToriGraph always uses its own
+    // theme (ModernUiTheme), so the selection was saved but had no visible effect.
 
     lblFonts = new QLabel();
     topBoxLayout->addWidget(lblFonts, 2, 0);
@@ -953,7 +947,6 @@ void ConfigDialog::languageChange()
     appTabWidget->setTabText(appTabWidget->indexOf(numericFormatPage), tr("Numeric Format"));
 
     lblLanguage->setText(tr("Language"));
-    lblStyle->setText(tr("Style"));
     lblFonts->setText(tr("Main Font"));
     fontsBtn->setText(tr("Choose &font"));
     lblWorkspace->setText(tr("Workspace"));
@@ -1180,7 +1173,6 @@ void ConfigDialog::apply()
     // general page: application tab
     app->changeAppFont(appFont);
     setFont(appFont);
-    app->changeAppStyle(boxStyle->currentText());
     if (boxSearchUpdates) {
 #ifdef SEARCH_FOR_UPDATES
         app->autoSearchUpdates = boxSearchUpdates->isChecked();

@@ -282,6 +282,7 @@ set( SRCS
   "src/GraphStatsAndSurfaceFit.cpp"
   "src/RecalcEngine.cpp"
   "src/I18nJapanese.cpp"
+  "src/i18n/ja_dictionary.qrc"
   "src/GraphMiniToolbar.cpp"
   "src/GraphInspectorDock.cpp"
   "src/CanvasInlineTextEditor.cpp"

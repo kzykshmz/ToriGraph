@@ -72,7 +72,10 @@ void registerCurvesDialogTranslations()
     reg("Spline", "スプライン曲線");
     reg("Vertical steps", "垂直ステップ");
     reg("Horizontal steps", "水平ステップ");
-    reg("Area", "面グラフ");
+    // "Area" is also a result column (面積) elsewhere, so the plot-style meaning is only
+    // registered for this dialog's tr() context (H1).
+    ToriGraphFullJapaneseTranslator::registerContextTranslation(
+            QStringLiteral("CurvesDialog"), QStringLiteral("Area"), QString::fromUtf8("面グラフ"));
     reg("Vertical Bars", "縦棒グラフ");
     reg("Horizontal Bars", "横棒グラフ");
     reg("Long Name: %1", "ロングネーム: %1");

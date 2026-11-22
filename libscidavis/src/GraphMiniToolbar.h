@@ -35,6 +35,10 @@ public:
     static GraphMiniToolbar *instance();
     static void setMiniToolbarEnabled(bool enabled);
     static bool isMiniToolbarEnabled();
+    // Applies or removes <sub>/<sup> markup on the label part of every legend line
+    // (after the \c{n} / \l(n) symbol tokens). Public for the regression tests.
+    static QString toggleMarkupPerLine(const QString &text, const QString &openTag,
+                                       const QString &closeTag);
 
     TargetType currentTarget() const { return d_target; }
     Graph *currentGraph() const;

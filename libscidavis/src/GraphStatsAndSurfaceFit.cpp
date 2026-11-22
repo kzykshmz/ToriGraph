@@ -5065,8 +5065,8 @@ void registerPhase5StatsTranslationsOnce()
     reg("Average Linkage (UPGMA)", "群平均法 (UPGMA)");
     reg("Dissimilarity Height", "非類似度距離 (Height)");
     reg("Ward", "Ward");
-    reg("Complete", "完全連結");
-    reg("Average", "群平均");
+    // "Complete" / "Average" are generic words; their linkage meaning is registered only for
+    // the GraphStatsAndSurfaceFit context in i18n/ja_dictionary.tsv (H1).
     reg("Observation", "観測個体");
     reg("Dendrogram", "デンドログラム");
     reg("Passing-Bablok & Deming Regression", "Passing-Bablok / Deming回帰 (測定法比較)");

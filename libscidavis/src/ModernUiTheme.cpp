@@ -28,7 +28,12 @@
 #include "ModernUiTheme.h"
 #include "IconLoader.h"
 
+#include <QAbstractButton>
+#include <QAbstractSlider>
 #include <QAbstractSpinBox>
+#include <QFocusEvent>
+#include <QFocusFrame>
+#include <QPaintEvent>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -174,6 +179,83 @@ private:
     QSet<const QWidget *> d_painting;
 };
 
+// H5: visible keyboard focus. Most chrome widgets are styled by style sheets, which do not
+// draw a focus rectangle, so a 2 px accent ring (a QFocusFrame, which follows the widget's
+// geometry) is shown around the widget that received focus from the keyboard (Tab,
+// Shift+Tab, a shortcut). Mouse focus does not show it, so clicking looks as before.
+static bool isFocusRingCandidate(const QWidget *w)
+{
+    return w
+            && (qobject_cast<const QAbstractButton *>(w) || qobject_cast<const QComboBox *>(w)
+                || qobject_cast<const QTabBar *>(w) || qobject_cast<const QAbstractSlider *>(w));
+}
+
+class KeyboardFocusRing : public QFocusFrame
+{
+public:
+    explicit KeyboardFocusRing(QWidget *parent = nullptr) : QFocusFrame(parent)
+    {
+        setObjectName(QStringLiteral("TgKeyboardFocusRing"));
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(ModernUiTheme::focusRingColor(), 2.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0), 5.0, 5.0);
+    }
+};
+
+class KeyboardFocusTracker : public QObject
+{
+public:
+    static KeyboardFocusTracker *instance()
+    {
+        static QPointer<KeyboardFocusTracker> s_inst;
+        if (!s_inst)
+            s_inst = new KeyboardFocusTracker(qApp);
+        return s_inst;
+    }
+
+    const QWidget *ringTarget() const
+    {
+        return (d_ring && d_ring->isVisible()) ? d_ring->widget() : nullptr;
+    }
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override
+    {
+        if (ev->type() == QEvent::FocusIn && obj->isWidgetType()) {
+            QWidget *w = static_cast<QWidget *>(obj);
+            const Qt::FocusReason reason = static_cast<QFocusEvent *>(ev)->reason();
+            const bool keyboard = reason == Qt::TabFocusReason
+                    || reason == Qt::BacktabFocusReason || reason == Qt::ShortcutFocusReason;
+            if (keyboard && isFocusRingCandidate(w) && !w->isWindow()) {
+                if (!d_ring)
+                    d_ring = new KeyboardFocusRing();
+                d_ring->setWidget(w);
+                d_ring->show();
+                d_ring->raise();
+            } else if (d_ring && d_ring->widget() != w) {
+                d_ring->setWidget(nullptr);
+                d_ring->hide();
+            }
+        } else if (ev->type() == QEvent::MouseButtonPress && d_ring && d_ring->isVisible()) {
+            d_ring->setWidget(nullptr);
+            d_ring->hide();
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+
+private:
+    explicit KeyboardFocusTracker(QObject *parent) : QObject(parent) { }
+    QPointer<KeyboardFocusRing> d_ring;
+};
+
 class ModernFluentProxyStyle : public QProxyStyle
 {
 public:
@@ -235,9 +317,23 @@ public:
     void drawPrimitive(PrimitiveElement element, const QStyleOption *option, QPainter *painter,
                        const QWidget *widget = nullptr) const override
     {
-        // Suppress legacy Windows 95 dotted focus rectangles everywhere
-        if (element == QStyle::PE_FrameFocusRect)
+        // H5: no dotted Windows-95 rectangles, but keyboard focus must stay visible. Buttons,
+        // combos, tab bars and sliders get the KeyboardFocusRing; everything else (item views,
+        // check boxes in tables, ...) gets a 2 px accent frame when focus came from the
+        // keyboard. Mouse focus draws nothing, as before.
+        if (element == QStyle::PE_FrameFocusRect) {
+            if (!option || !painter || isFocusRingCandidate(widget)
+                || !(option->state & QStyle::State_KeyboardFocusChange))
+                return;
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setPen(QPen(ModernUiTheme::focusRingColor(), 2.0));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(QRectF(option->rect).adjusted(1.0, 1.0, -1.0, -1.0), 3.0,
+                                     3.0);
+            painter->restore();
             return;
+        }
         if (element == QStyle::PE_FrameWindow && qobject_cast<const QMdiSubWindow *>(widget)
             && option && painter) {
             const auto *sub = qobject_cast<const QMdiSubWindow *>(widget);
@@ -445,6 +541,15 @@ public:
             || qobject_cast<QComboBox *>(widget) || qobject_cast<QLineEdit *>(widget)
             || qobject_cast<QAbstractSpinBox *>(widget) || qobject_cast<QTabBar *>(widget)) {
             widget->setAttribute(Qt::WA_Hover, true);
+        }
+        // H5: icon-only buttons have no text for screen readers; use the tooltip.
+        if (auto *ab = qobject_cast<QAbstractButton *>(widget)) {
+            if (ab->text().trimmed().isEmpty() && ab->accessibleName().isEmpty()
+                && !ab->toolTip().isEmpty()) {
+                QString name = ab->toolTip();
+                name.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+                ab->setAccessibleName(name.simplified());
+            }
         }
         if ((qobject_cast<QComboBox *>(widget) || qobject_cast<QSpinBox *>(widget)
              || qobject_cast<QDoubleSpinBox *>(widget))
@@ -1401,19 +1506,28 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
     pal.setColor(QPalette::Dark, QColor(0x94, 0xA3, 0xB8));
     pal.setColor(QPalette::Shadow, QColor(0x64, 0x74, 0x8B));
 
-    pal.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x94, 0xA3, 0xB8));
-    pal.setColor(QPalette::Disabled, QPalette::Text, QColor(0x94, 0xA3, 0xB8));
-    pal.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x94, 0xA3, 0xB8));
+    // H4: disabled text and placeholders need about 4.5:1 contrast to stay readable;
+    // #94A3B8 was only 2.6:1 on white. #5B6B80 is >= 4.6:1 on every chrome background
+    // (#FFFFFF, #F8FAFC, #F1F5F9, #E8EDF4) and still clearly lighter than enabled text.
+    pal.setColor(QPalette::Disabled, QPalette::WindowText, ModernUiTheme::disabledTextColor());
+    pal.setColor(QPalette::Disabled, QPalette::Text, ModernUiTheme::disabledTextColor());
+    pal.setColor(QPalette::Disabled, QPalette::ButtonText, ModernUiTheme::disabledTextColor());
     pal.setColor(QPalette::Disabled, QPalette::Base, QColor(0xF1, 0xF5, 0xF9));
     pal.setColor(QPalette::Disabled, QPalette::Button, QColor(0xF8, 0xFA, 0xFC));
     pal.setColor(QPalette::Disabled, QPalette::Highlight, QColor(0xCB, 0xD5, 0xE1));
     pal.setColor(QPalette::Disabled, QPalette::HighlightedText, QColor(0x64, 0x74, 0x8B));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 12, 0)
-    pal.setColor(QPalette::PlaceholderText, QColor(0x94, 0xA3, 0xB8));
+    pal.setColor(QPalette::PlaceholderText, ModernUiTheme::placeholderTextColor());
 #endif
 
     app->setPalette(pal);
     app->setStyleSheet(modernStyleSheet());
+    app->installEventFilter(KeyboardFocusTracker::instance());
+}
+
+bool ModernUiTheme::keyboardFocusRingTargets(const QWidget *w)
+{
+    return w && KeyboardFocusTracker::instance()->ringTarget() == w;
 }
 
 QString ModernUiTheme::modernStyleSheet()
@@ -1445,8 +1559,8 @@ QString ModernUiTheme::modernStyleSheet()
             "QMenuBar {"
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 11pt;"
             "  border-bottom: 1px solid #E2E8F0;"
             "  padding: 2px 6px;"
             "}"
@@ -1464,8 +1578,8 @@ QString ModernUiTheme::modernStyleSheet()
             "QMenu {"
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 11pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 8px;"
             "  padding: 4px;"
@@ -1481,7 +1595,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  color: #1D4ED8;"
             "}"
             "QMenu::item:disabled {"
-            "  color: #94A3B8;"
+            "  color: #5B6B80;"
             "  background-color: transparent;"
             "}"
             "QMenu::separator {"
@@ -1545,7 +1659,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  border: 1px solid #2563EB;"
             "}"
             "QToolButton:disabled {"
-            "  color: #94A3B8;"
+            "  color: #5B6B80;"
             "  background-color: transparent;"
             "  border-color: transparent;"
             "}"
@@ -1586,7 +1700,7 @@ QString ModernUiTheme::modernStyleSheet()
             "}"
             "QPushButton:disabled {"
             "  background-color: #F8FAFC;"
-            "  color: #94A3B8;"
+            "  color: #5B6B80;"
             "  border: 1px solid #E2E8F0;"
             "}"
             "ColorButton QPushButton {"
@@ -1595,7 +1709,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 10.5pt;"
+            "  font-size: 10pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 5px;"
             "  padding: 3px 7px;"
@@ -1618,7 +1732,7 @@ QString ModernUiTheme::modernStyleSheet()
             "}"
             "QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {"
             "  background-color: #F1F5F9;"
-            "  color: #94A3B8;"
+            "  color: #5B6B80;"
             "  border: 1px solid #E2E8F0;"
             "}"
             "QComboBox::drop-down {"
@@ -1709,14 +1823,14 @@ QString ModernUiTheme::modernStyleSheet()
             "QDockWidget {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 11.5pt;"
+            "  font-size: 11pt;"
             "  border: 1px solid #CBD5E1;"
             "  titlebar-close-icon: none;"
             "}"
             "QDockWidget::title {"
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
-            "  font-size: 11.5pt;"
+            "  font-size: 11pt;"
             "  font-weight: 600;"
             "  border-bottom: 1px solid #CBD5E1;"
             "  padding: 6px 10px;"
@@ -1726,7 +1840,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  alternate-background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 11.5pt;"
+            "  font-size: 11pt;"
             "  gridline-color: #E2E8F0;"
             "  border: 1px solid #CBD5E1;"
             "  selection-background-color: #DBEAFE;"
@@ -1744,7 +1858,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  alternate-background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 10.5pt;"
+            "  font-size: 10pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-radius: 8px;"
             "  padding: 4px;"
@@ -1774,7 +1888,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QHeaderView::section {"
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "  font-weight: 600;"
             "  border-top: none;"
@@ -1834,7 +1948,7 @@ QString ModernUiTheme::modernStyleSheet()
             "}"
             "QGroupBox {"
             "  background-color: #FFFFFF;"
-            "  font-size: 10.5pt;"
+            "  font-size: 10pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-radius: 8px;"
             "  margin-top: 12px;"
@@ -1845,7 +1959,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  subcontrol-position: top left;"
             "  left: 10px;"
             "  padding: 0px 6px;"
-            "  font-size: 9.5pt;"
+            "  font-size: 9pt;"
             "  font-weight: 600;"
             "  color: #475569;"
             "}"

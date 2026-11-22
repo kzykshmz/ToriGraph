@@ -28,6 +28,7 @@
 #ifndef MODERNUITHEME_H
 #define MODERNUITHEME_H
 
+#include <QColor>
 #include <QString>
 
 class QAction;
@@ -46,6 +47,19 @@ public:
 
     static QString semanticIconForAction(const QAction *action);
     static QString semanticIconForToolButton(const QToolButton *button);
+
+    // H4 / H5 accessibility colours (contrast >= 4.5:1 on the chrome backgrounds).
+    static QColor disabledTextColor() { return QColor(0x5B, 0x6B, 0x80); }
+    static QColor placeholderTextColor() { return QColor(0x64, 0x74, 0x8B); }
+    static QColor focusRingColor() { return QColor(0x25, 0x63, 0xEB); }
+    // Font-size steps (pt) used by the UI style sheets: captions, dense controls, standard
+    // text, headings.
+    static constexpr double kFontCaptionPt = 9.0;
+    static constexpr double kFontDensePt = 10.0;
+    static constexpr double kFontStandardPt = 11.0;
+    static constexpr double kFontHeadingPt = 12.0;
+    // True while a keyboard-focus ring is shown around `w` (tests / diagnostics).
+    static bool keyboardFocusRingTargets(const QWidget *w);
 
 private:
     ModernUiTheme() { }

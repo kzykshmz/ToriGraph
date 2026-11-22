@@ -301,7 +301,7 @@ public:
                 "  color: #1E293B;"
                 "  border: 1px solid #CBD5E1;"
                 "  border-radius: 6px;"
-                "  font-family: 'Segoe UI', sans-serif;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', sans-serif;"
                 "  font-size: 9pt;"
                 "  font-weight: 700;"
                 "  padding: 0px;"
@@ -446,7 +446,7 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 8px;"
             "  padding: 6px 10px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 12pt;"
             "}"
             "QLineEdit#CommandPaletteSearchEdit:focus {"
@@ -460,8 +460,8 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
             "}"
             "QLabel#CommandPaletteHintLabel {"
             "  color: #64748B;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  padding: 2px 4px;"
             "}"));
 
@@ -1192,13 +1192,13 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "}"
             "QLabel#FocusDrawerTitle {"
             "  color: #0F172A;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 11pt;"
             "  font-weight: 700;"
             "}"
             "QLabel#FocusDrawerEmpty {"
             "  color: #64748B;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "  padding: 12px;"
             "}"
@@ -1208,7 +1208,7 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
             "  padding: 3px 6px;"
-            "  font-size: 10.8pt;"
+            "  font-size: 11pt;"
             "}"
             "QToolButton.FocusDrawerBtn:hover {"
             "  background-color: #EFF6FF;"
@@ -1222,7 +1222,7 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
             "  gridline-color: #E2E8F0;"
             "  selection-background-color: #DBEAFE;"
             "  selection-color: #0F172A;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "}"));
 
@@ -1844,7 +1844,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  border: 1px solid transparent;"
             "  border-radius: 9px;"
             "  padding: 4px 8px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
@@ -1869,7 +1869,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
         btn->setIcon(IconLoader::duotoneIcon(iconId, 18, true));
         btn->setIconSize(QSize(18, 18));
         btn->setCursor(Qt::PointingHandCursor);
-        btn->setFocusPolicy(Qt::NoFocus);
+        btn->setFocusPolicy(Qt::TabFocus);
         if (onClick)
             connect(btn, &QToolButton::clicked, this, std::move(onClick));
         pillLayout->addWidget(btn);
@@ -1931,7 +1931,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  border: 1px solid rgba(148, 163, 184, 95);"
             "  border-radius: 12px;"
             "  padding: 5px 11px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
@@ -1953,7 +1953,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
     d_btn_worksheet->setIconSize(QSize(18, 18));
     d_btn_worksheet->setCheckable(true);
     d_btn_worksheet->setCursor(Qt::PointingHandCursor);
-    d_btn_worksheet->setFocusPolicy(Qt::NoFocus);
+    d_btn_worksheet->setFocusPolicy(Qt::TabFocus);
     d_btn_worksheet->setStyleSheet(edgePillStyle);
 
     d_btn_exit_focus = new QToolButton(viewportParent);
@@ -1962,7 +1962,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
     d_btn_exit_focus->setIcon(IconLoader::duotoneIcon(QStringLiteral("exit-focus-hud"), 18, true));
     d_btn_exit_focus->setIconSize(QSize(18, 18));
     d_btn_exit_focus->setCursor(Qt::PointingHandCursor);
-    d_btn_exit_focus->setFocusPolicy(Qt::NoFocus);
+    d_btn_exit_focus->setFocusPolicy(Qt::TabFocus);
     d_btn_exit_focus->setStyleSheet(edgePillStyle);
 
     d_table_drawer = new FocusTableDrawer(app, viewportParent);
@@ -2496,8 +2496,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
             "  padding: 3px 6px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  font-weight: 500;"
             "  min-height: 30px;"
             "}"
@@ -2517,7 +2517,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  font-weight: 600;"
             "}"
             "QToolButton.RibbonActionBtn:disabled {"
-            "  color: #94A3B8;"
+            "  color: #5B6B80;"
             "}"
             "QToolButton.RibbonPresetBtn {"
             "  background-color: #FFF7ED;"
@@ -2525,8 +2525,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #FDBA74;"
             "  border-radius: 7px;"
             "  padding: 3px 8px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  font-weight: 700;"
             "  min-height: 30px;"
             "}"
@@ -2545,8 +2545,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 8px;"
             "  padding: 4px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.2pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "}"
             "QMenu.RibbonDropdownMenu::item {"
             "  padding: 6px 22px 6px 10px;"
@@ -2569,7 +2569,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  padding: 2px 12px;"
             "  min-height: 24px;"
             "  text-align: left;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10pt;"
             "  font-weight: 500;"
             "}"
@@ -2589,7 +2589,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid transparent;"
             "  border-radius: 5px;"
             "  padding: 2px 7px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10pt;"
             "  font-weight: 600;"
             "}"
@@ -2608,7 +2608,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
             "  padding: 2px 8px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10pt;"
             "  font-weight: 600;"
             "}"
@@ -2628,8 +2628,8 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  border: 1px solid #93C5FD;"
             "  border-radius: 10px;"
             "  padding: 2px 10px;"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 10.5pt;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 10pt;"
             "  font-weight: 700;"
             "}"));
 
@@ -2651,7 +2651,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     d_tab_bar->setDrawBase(false);
     d_tab_bar->setUsesScrollButtons(true);
     d_tab_bar->setMinimumWidth(80);
-    d_tab_bar->setFocusPolicy(Qt::NoFocus);
+    d_tab_bar->setFocusPolicy(Qt::TabFocus);
     topLayout->addWidget(d_tab_bar, 1);
 
     d_btn_cmd_palette = new QToolButton(topStrip);
@@ -2662,7 +2662,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
     d_btn_cmd_palette->setMinimumWidth(180);
     d_btn_cmd_palette->setMaximumWidth(210);
     d_btn_cmd_palette->setCursor(Qt::PointingHandCursor);
-    d_btn_cmd_palette->setFocusPolicy(Qt::NoFocus);
+    d_btn_cmd_palette->setFocusPolicy(Qt::TabFocus);
     connect(d_btn_cmd_palette, &QToolButton::clicked, this, &ModernRibbonBar::openCommandPalette);
     topLayout->addWidget(d_btn_cmd_palette);
 
@@ -2683,7 +2683,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
         b->setIconSize(QSize(14, 14));
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
-        b->setFocusPolicy(Qt::NoFocus);
+        b->setFocusPolicy(Qt::TabFocus);
         return b;
     };
 
@@ -2709,7 +2709,7 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
         b->setIconSize(QSize(14, 14));
         b->setCheckable(checkable);
         b->setCursor(Qt::PointingHandCursor);
-        b->setFocusPolicy(Qt::NoFocus);
+        b->setFocusPolicy(Qt::TabFocus);
         return b;
     };
 
@@ -3084,7 +3084,7 @@ QToolButton *ModernRibbonBar::addRibbonButton(QHBoxLayout *groupLayout, const QS
     btn->setIconSize(QSize(16, 16));
     btn->setCheckable(checkable);
     btn->setCursor(Qt::PointingHandCursor);
-    btn->setFocusPolicy(Qt::NoFocus);
+    btn->setFocusPolicy(Qt::TabFocus);
 
     if (onClicked)
         connect(btn, &QToolButton::clicked, this, std::move(onClicked));
@@ -3109,7 +3109,7 @@ QToolButton *ModernRibbonBar::addRibbonMenuButton(QHBoxLayout *groupLayout, cons
     btn->setIconSize(QSize(16, 16));
     btn->setPopupMode(QToolButton::InstantPopup);
     btn->setCursor(Qt::PointingHandCursor);
-    btn->setFocusPolicy(Qt::NoFocus);
+    btn->setFocusPolicy(Qt::TabFocus);
 
     QMenu *menu = new QMenu(btn);
     menu->setProperty("class", QStringLiteral("RibbonDropdownMenu"));
@@ -4556,8 +4556,8 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
         d_context_pill->setText(label);
         d_context_pill->setStyleSheet(
                 QStringLiteral("QLabel#RibbonContextBadge { %1 border-radius: 10px; "
-                               "padding: 2px 10px; font-family: 'Segoe UI', 'Yu Gothic UI', "
-                               "'Meiryo UI', sans-serif; font-size: 10.5pt; font-weight: 700; }")
+                               "padding: 2px 10px; font-family: 'Yu Gothic UI', 'Segoe UI', "
+                               "'Meiryo UI', sans-serif; font-size: 10pt; font-weight: 700; }")
                         .arg(pillStyle));
         updateHeaderResponsiveness();
     }

@@ -149,7 +149,7 @@ private:
     QCheckBox *boxSave, *boxBackbones, *boxAllAxes, *boxShowLegend, *boxSmoothMesh;
     QCheckBox *boxAutoscaling, *boxShowProjection, *boxMatrices, *boxScaleFonts, *boxResize,
             *boxUseGroupSeparator, *boxUseForeignSeparator, *boxConvertToTextColumn;
-    QComboBox *boxMajTicks, *boxMinTicks, *boxStyle, *boxCurveStyle, *boxSeparator, *boxLanguage,
+    QComboBox *boxMajTicks, *boxMinTicks, *boxCurveStyle, *boxSeparator, *boxLanguage,
             *boxDecimalSeparator;
     QLabel *lblDefaultNumericFormat, *lblForeignSeparator, *lblConvertToTextColumn;
     QComboBox *boxDefaultNumericFormat;
@@ -164,7 +164,7 @@ private:
     ColorButton *btnWorkspace, *btnPanels, *btnPanelsText;
     QListWidget *itemsList;
     QLabel *labelFrameWidth, *lblLanguage, *lblWorkspace, *lblPanels, *lblPageHeader;
-    QLabel *lblPanelsText, *lblFonts, *lblStyle, *lblDecimalSeparator, *lblAppPrecision;
+    QLabel *lblPanelsText, *lblFonts, *lblDecimalSeparator, *lblAppPrecision;
     QGroupBox *groupBoxConfirm;
     QGroupBox *groupBoxTableFonts, *groupBoxTableCol;
     QLabel *lblSeparator, *lblTableBackground, *lblTextColor, *lblHeaderColor;
