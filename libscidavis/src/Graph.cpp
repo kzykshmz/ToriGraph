@@ -7473,6 +7473,19 @@ Graph::MarkerAxisState Graph::markerAxisState() const
         const QwtScaleDiv *d = d_plot->axisScaleDiv(a);
         st.valid[a] = d && d->isValid();
         st.map[a] = d_plot->canvasMap(a);
+        if (!st.valid[a]) {
+            // Qwt's setAxisScale() leaves the scale division invalid until the next replot. The
+            // scale widget still draws the previous scale: take range and transformation from
+            // its scale draw (the pixel interval of canvasMap() is right either way).
+            const QwtScaleWidget *sw = d_plot->axisWidget(a);
+            const QwtScaleDraw *sd = sw ? sw->scaleDraw() : nullptr;
+            if (sd && sd->map().transformation() && sd->scaleDiv().isValid()
+                && sd->map().s1() != sd->map().s2()) {
+                st.map[a].setTransformation(sd->map().transformation()->copy());
+                st.map[a].setScaleInterval(sd->map().s1(), sd->map().s2());
+                st.valid[a] = true;
+            }
+        }
     }
     return st;
 }
@@ -7528,13 +7541,10 @@ void Graph::updateMarkersBoundingRect(const MarkerAxisState &before)
         updateMarkersBoundingRect();
         return;
     }
-    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-        const QwtScaleDiv *d = d_plot->axisScaleDiv(a);
-        if (!d || !d->isValid()) {
-            d_plot->updateAxes(); // settle a setAxisScale() that was not replotted yet
-            break;
-        }
-    }
+    // Settle the new scales and the layout (tick labels of another width move the canvas edges)
+    // before taking the new canvas maps; Plot::updateLayout() also settles a setAxisScale() that
+    // was not replotted yet.
+    d_plot->updateLayout();
     const MarkerAxisState now = markerAxisState();
     bool same[QwtPlot::axisCnt];
     for (int a = 0; a < QwtPlot::axisCnt; ++a)
@@ -7641,6 +7651,9 @@ void Graph::resizeEvent(QResizeEvent *e)
 
     d_plot->resize(e->size());
     updateSelectionOverlayGeometry();
+    // The canvas has its new size: the markers' pixel caches follow (no data change).
+    d_plot->updateLayout();
+    refreshMarkerPixelCaches();
 }
 
 void Graph::scaleFonts(double factor)

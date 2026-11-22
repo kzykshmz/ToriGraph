@@ -3966,8 +3966,14 @@ void MultiLayer::setPageZoom(double factor)
     for (int i = 0; i < graphsList.count(); ++i) {
         if (Graph *gr = (Graph *)graphsList.at(i)) {
             gr->setProperty(kZoomAppliedGeomProp, gr->geometry());
-            if (gr->plotWidget())
+            if (Plot *pl = gr->plotWidget()) {
+                // A hidden window gets no resize events: the plot of an inset moved by the sync
+                // above may still have its old size.
+                if (pl->size() != gr->size())
+                    pl->resize(gr->size());
+                pl->updateLayout();
                 gr->refreshMarkerPixelCaches();
+            }
         }
     }
     lastSize = canvas ? canvas->size() : newCanvasSize;

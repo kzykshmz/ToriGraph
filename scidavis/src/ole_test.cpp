@@ -22710,14 +22710,14 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
                     && arrow->endPoint() == QPoint(xm.transform(0.14), ym.transform(11.0));
         };
 
-        // Qwt's setAxisScale() leaves the scale invalid until the next replot, so updatePlot()
-        // cannot know the previous scale: the markers keep their (up to date) pixel position.
+        // Qwt's setAxisScale() leaves the scale division invalid until the next replot; the
+        // previous scale then comes from the scale widget.
         resetAxes();
         placeMarkers(1.6, 1.0);
         CHECK_COND(staysOnCanvas("setAxisScale + updatePlot without replot", [&]() {
                        g->plotWidget()->setAxisScale(QwtPlot::xBottom, 0.0, 0.5);
                        g->updatePlot();
-                   }, true),
+                   }),
                    "75s: setAxisScale() followed by updatePlot() moved a marker or squashed the picture");
         CHECK_COND(arrowFollowsData(), "75s: the arrow must follow the data after updatePlot");
 
@@ -22726,7 +22726,7 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
         CHECK_COND(staysOnCanvas("at 200 % (picture placed at 100 %): setAxisScale + updatePlot", [&]() {
                        g->plotWidget()->setAxisScale(QwtPlot::xBottom, 0.0, 0.5);
                        g->updatePlot();
-                   }, true),
+                   }),
                    "75s: after a view zoom the picture / texts must keep their place (pixel caches)");
         ml->setPageZoom(1.0);
         QApplication::processEvents();
@@ -22752,6 +22752,46 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
         CHECK_COND(arrowFollowsData(), "75s: the arrow must follow the data on the log axis");
         CHECK_COND(staysOnCanvas("y log -> linear", [&]() { g->setScale(QwtPlot::yLeft, 0.0, 20.0); }),
                    "75s: log -> linear moved a marker on the canvas");
+
+        // A resized layer (pixel caches refreshed by Graph::resizeEvent), then setAxisScale()
+        // and updatePlot().
+        resetAxes();
+        placeMarkers(1.0, 1.0);
+        {
+            const QRect geo = g->geometry();
+            g->resize(geo.width() + 60, geo.height() + 40);
+            QApplication::processEvents();
+            CHECK_COND(staysOnCanvas("resized layer, then setAxisScale + updatePlot", [&]() {
+                           g->plotWidget()->setAxisScale(QwtPlot::xBottom, 0.0, 0.5);
+                           g->updatePlot();
+                       }),
+                       "75s: after a layer resize, setAxisScale + updatePlot moved a marker");
+            g->resize(geo.size());
+            QApplication::processEvents();
+        }
+        // Tick labels of another width (0..20 -> 0..20000) move the canvas edge: the markers
+        // must be placed with the new layout.
+        resetAxes();
+        placeMarkers(1.0, 1.0);
+        CHECK_COND(staysOnCanvas("y 0..20 -> 0..20000 (wider tick labels)",
+                                 [&]() { g->setScale(QwtPlot::yLeft, 0.0, 20000.0); }),
+                   "75s: a range change with wider tick labels shifted a marker");
+        // The same through the zoom history (Graph::applyAxisViewportState sets the scale
+        // divisions without a replot).
+        resetAxes();
+        g->setScale(QwtPlot::yLeft, 0.0, 20000.0);
+        QApplication::processEvents();
+        g->recordZoomHistorySnapshot();
+        g->setScale(QwtPlot::yLeft, 0.0, 20.0);
+        QApplication::processEvents();
+        placeMarkers(1.0, 1.0);
+        bool stepped = false;
+        CHECK_COND(staysOnCanvas("zoom history back to y 0..20000 (wider tick labels)",
+                                 [&]() { stepped = g->stepZoomHistory(-1); }),
+                   "75s: a zoom history step with wider tick labels shifted a marker");
+        CHECK_COND(stepped, "75s: zoom history step");
+        CHECK_COND(std::fabs(g->plotWidget()->axisScaleDiv(QwtPlot::yLeft)->upperBound() - 20000.0) < 1e-9,
+                   "75s: the zoom history step must restore y 0..20000");
 
         resetAxes();
         placeMarkers(1.0, 1.0);
