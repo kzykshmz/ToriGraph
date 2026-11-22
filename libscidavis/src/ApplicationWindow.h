@@ -298,9 +298,9 @@ public slots:
 
     //! \name Settings
     //@{
-    void readSettings();
+    void readSettings(bool restoreWindowLayout = true);
     void saveSettings();
-    void applyUserSettings();
+    void applyUserSettings(bool resetScriptingLang = true);
     void setSaveSettings(bool autoSaving, int min);
     void changeAppStyle(const QString &s);
     void changeAppFont(const QFont &f);
@@ -1715,6 +1715,14 @@ public:
                                               bool *outAppended = nullptr);
     //! Check destination writability without truncating an existing file
     static bool probeExportWritableNoTruncate(const QString &filePath);
+    //! Atomically/safely replace or create finalTargetPath from validated non-empty tmpPath
+    //! without ever deleting finalTargetPath before replacement succeeds.
+    static bool commitExportTempFile(const QString &tmpPath, const QString &finalTargetPath);
+    //! Safe export transaction: writes to short sibling '.tgexp_<8hex>.<ext>', verifies non-empty
+    //! output, and commits onto finalTargetPath via commitExportTempFile().
+    static bool safeExportWriteTransaction(
+            const QString &finalTargetPath, const QString &extLower,
+            const std::function<bool(const QString &writePath)> &writerFn);
     //! Fill a graph context menu (shared by the canvas and the layer button menus)
     void buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton);
 

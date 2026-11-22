@@ -516,6 +516,7 @@ public:
 private:
     QPointer<MultiLayer> ml;
     double prevZoom = 1.0;
+    QPoint prevWinPos;
     QSize prevWinSize;
     // Layer geometry before the unzoom: the 2x / 0.5x round trip of setPageZoom() rounds every
     // layer rectangle, which would shift a layer by a pixel per export.

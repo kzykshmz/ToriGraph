@@ -2804,10 +2804,11 @@ void ApplicationWindow::initFonts()
     plot3DTitleFont = QFont("Arial", 14, QFont::Normal);
 }
 
-void ApplicationWindow::applyUserSettings()
+void ApplicationWindow::applyUserSettings(bool resetScriptingLang)
 {
     updateAppFonts();
-    setScriptingLang(defaultScriptingLang);
+    if (resetScriptingLang)
+        setScriptingLang(defaultScriptingLang);
 
     d_workspace.setBackground(workspaceColor);
 
@@ -9613,7 +9614,7 @@ void ApplicationWindow::openTemplate()
     }
 }
 
-void ApplicationWindow::readSettings()
+void ApplicationWindow::readSettings(bool restoreWindowLayout)
 {
     auto &settings = getSettings();
     // Lab-wide defaults next to the exe fill only keys the user has not set (I10).
@@ -9695,38 +9696,40 @@ void ApplicationWindow::readSettings()
     settings.setValue("/DecimalDigits", d_decimal_digits);
     settings.setValue("/DefaultNumericFormat", QChar(d_default_numeric_format));
 
-    // restore geometry of main window
-    restoreGeometry(settings.value("/ProjectWindow/Geometry").toByteArray());
+    if (restoreWindowLayout) {
+        // restore geometry of main window
+        restoreGeometry(settings.value("/ProjectWindow/Geometry").toByteArray());
 
-    // restore dock windows and tool bars
-    restoreState(settings.value("/DockWindows").toByteArray());
-    for (QDockWidget *dw : findChildren<QDockWidget *>()) {
-        if (!dw || dw->isFloating())
-            continue;
-        if (dockWidgetArea(dw) == Qt::TopDockWidgetArea) {
-            if (dw == &explorerWindow)
-                addDockWidget(Qt::LeftDockWidgetArea, dw);
-            else if (dw == d_graph_inspector_dock)
-                addDockWidget(Qt::RightDockWidgetArea, dw);
-            else
-                addDockWidget(Qt::BottomDockWidgetArea, dw);
+        // restore dock windows and tool bars
+        restoreState(settings.value("/DockWindows").toByteArray());
+        for (QDockWidget *dw : findChildren<QDockWidget *>()) {
+            if (!dw || dw->isFloating())
+                continue;
+            if (dockWidgetArea(dw) == Qt::TopDockWidgetArea) {
+                if (dw == &explorerWindow)
+                    addDockWidget(Qt::LeftDockWidgetArea, dw);
+                else if (dw == d_graph_inspector_dock)
+                    addDockWidget(Qt::RightDockWidgetArea, dw);
+                else
+                    addDockWidget(Qt::BottomDockWidgetArea, dw);
+            }
         }
-    }
-    setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
-    setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
-    setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
-    setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
-    if (d_ribbon_toolbar) {
-        if (file_tools) {
-            insertToolBar(file_tools, d_ribbon_toolbar);
-            insertToolBarBreak(file_tools);
-        } else {
-            addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
-            addToolBarBreak(Qt::TopToolBarArea);
+        setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+        setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+        setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+        setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+        if (d_ribbon_toolbar) {
+            if (file_tools) {
+                insertToolBar(file_tools, d_ribbon_toolbar);
+                insertToolBarBreak(file_tools);
+            } else {
+                addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
+                addToolBarBreak(Qt::TopToolBarArea);
+            }
+            d_ribbon_toolbar->setVisible(true);
         }
-        d_ribbon_toolbar->setVisible(true);
+        explorerSplitter->restoreState(settings.value("/ExplorerSplitter").toByteArray());
     }
-    explorerSplitter->restoreState(settings.value("/ExplorerSplitter").toByteArray());
 
     auto parseSavedFont = [](const QString &family, const QString &ptStr, const QString &weightStr,
                              const QString &italicStr) -> QFont {
@@ -9879,26 +9882,28 @@ void ApplicationWindow::readSettings()
     const bool migrateNonBoldGraphFonts = toriStyleVersion < 6;
     if (migratePhase8DockAndWorksheet) {
         d_show_table_comments = true;
-        setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
-        setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
-        setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
-        setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
-        if (!explorerWindow.isFloating()
-            && dockWidgetArea(&explorerWindow) == Qt::BottomDockWidgetArea) {
-            addDockWidget(Qt::LeftDockWidgetArea, &explorerWindow);
-            explorerSplitter->setOrientation(Qt::Vertical);
-            explorerSplitter->setSizes(QList<int>() << 140 << 260);
-        }
-        if (!logWindow.isFloating() && dockWidgetArea(&logWindow) == Qt::TopDockWidgetArea)
-            addDockWidget(Qt::BottomDockWidgetArea, &logWindow);
+        if (restoreWindowLayout) {
+            setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+            setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+            setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+            setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+            if (!explorerWindow.isFloating()
+                && dockWidgetArea(&explorerWindow) == Qt::BottomDockWidgetArea) {
+                addDockWidget(Qt::LeftDockWidgetArea, &explorerWindow);
+                explorerSplitter->setOrientation(Qt::Vertical);
+                explorerSplitter->setSizes(QList<int>() << 140 << 260);
+            }
+            if (!logWindow.isFloating() && dockWidgetArea(&logWindow) == Qt::TopDockWidgetArea)
+                addDockWidget(Qt::BottomDockWidgetArea, &logWindow);
 #ifdef SCRIPTING_CONSOLE
-        if (!consoleWindow.isFloating()
-            && dockWidgetArea(&consoleWindow) == Qt::TopDockWidgetArea) {
-            addDockWidget(Qt::BottomDockWidgetArea, &consoleWindow);
-        }
+            if (!consoleWindow.isFloating()
+                && dockWidgetArea(&consoleWindow) == Qt::TopDockWidgetArea) {
+                addDockWidget(Qt::BottomDockWidgetArea, &consoleWindow);
+            }
 #endif
+        }
     }
-    if (migratePhase8CrispExplorer) {
+    if (migratePhase8CrispExplorer && restoreWindowLayout) {
         if (!explorerWindow.isFloating()
             && (dockWidgetArea(&explorerWindow) == Qt::LeftDockWidgetArea
                 || dockWidgetArea(&explorerWindow) == Qt::RightDockWidgetArea)) {
@@ -9906,7 +9911,8 @@ void ApplicationWindow::readSettings()
         }
     }
     ::future::Table::setDefaultCommentVisibility(d_show_table_comments);
-    updateExplorerAdaptiveLayout();
+    if (restoreWindowLayout)
+        updateExplorerAdaptiveLayout();
     auto sanitizePlotFontToArial = [migrateArialGraphFonts](QFont &f) {
         const QString fam = f.family().trimmed();
         const bool isWinUiFont = fam.isEmpty()
@@ -10576,57 +10582,36 @@ bool probeWritableNoTruncate(const QString &filePath)
     return true;
 }
 
+QString makeShortExportTempPath(const QFileInfo &dstInfo, const QString &extLower)
+{
+    QString cleanExt = extLower.trimmed().toLower();
+    while (cleanExt.startsWith(QLatin1Char('.')))
+        cleanExt.remove(0, 1);
+    if (cleanExt.isEmpty())
+        cleanExt = QFileInfo(dstInfo.filePath()).suffix().trimmed().toLower();
+    const QDir dir = dstInfo.dir();
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const QString hex8 =
+                QUuid::createUuid().toString(QUuid::WithoutBraces).left(8).toLower();
+        const QString fileName = cleanExt.isEmpty()
+                ? QStringLiteral(".tgexp_%1.tmp").arg(hex8)
+                : QStringLiteral(".tgexp_%1.%2").arg(hex8, cleanExt);
+        const QString candidate = dir.filePath(fileName);
+        if (!QFileInfo::exists(candidate))
+            return candidate;
+    }
+    const QString hex8 = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8).toLower();
+    return dir.filePath(cleanExt.isEmpty()
+                                ? QStringLiteral(".tgexp_%1.tmp").arg(hex8)
+                                : QStringLiteral(".tgexp_%1.%2").arg(hex8, cleanExt));
+}
+
 template <typename WriterFn>
 bool executeSafeExportWrite(const QString &finalTargetPath, const QString &extLower,
                             WriterFn &&writerFn)
 {
-    const QFileInfo dstInfo(finalTargetPath);
-    if (!dstInfo.exists()) {
-        const bool handled = writerFn(finalTargetPath);
-        const QFileInfo outInfo(finalTargetPath);
-        if (handled && outInfo.exists() && outInfo.size() > 0)
-            return true;
-        if (outInfo.exists() && outInfo.size() <= 0)
-            QFile::remove(finalTargetPath);
-        return false;
-    }
-
-    const QString tmpPath = dstInfo.dir().filePath(
-            QStringLiteral(".torigraph_exp_%1.%2")
-                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces), extLower));
-    const bool handled = writerFn(tmpPath);
-    const QFileInfo tmpInfo(tmpPath);
-    if (!handled || !tmpInfo.exists() || tmpInfo.size() <= 0) {
-        if (tmpInfo.exists())
-            QFile::remove(tmpPath);
-        return false;
-    }
-
-#ifdef Q_OS_WIN
-    const std::wstring wTmp = QDir::toNativeSeparators(tmpPath).toStdWString();
-    const std::wstring wDst = QDir::toNativeSeparators(finalTargetPath).toStdWString();
-    for (int attempt = 0; attempt < 10; ++attempt) {
-        if (MoveFileExW(wTmp.c_str(), wDst.c_str(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            return true;
-        }
-        const DWORD err = GetLastError();
-        if (err != ERROR_SHARING_VIOLATION && err != ERROR_LOCK_VIOLATION
-            && err != ERROR_ACCESS_DENIED) {
-            break;
-        }
-        Sleep(50);
-    }
-#endif
-    if (QFile::exists(finalTargetPath) && !QFile::remove(finalTargetPath)) {
-        QFile::remove(tmpPath);
-        return false;
-    }
-    if (!QFile::rename(tmpPath, finalTargetPath)) {
-        QFile::remove(tmpPath);
-        return false;
-    }
-    return true;
+    return ApplicationWindow::safeExportWriteTransaction(
+            finalTargetPath, extLower, std::forward<WriterFn>(writerFn));
 }
 
 } // namespace
@@ -10641,6 +10626,112 @@ QString ApplicationWindow::resolveImageExportFileName(const QString &rawFileName
 bool ApplicationWindow::probeExportWritableNoTruncate(const QString &filePath)
 {
     return probeWritableNoTruncate(filePath);
+}
+
+bool ApplicationWindow::commitExportTempFile(const QString &tmpPath,
+                                             const QString &finalTargetPath)
+{
+    const QFileInfo tmpInfo(tmpPath);
+    if (!tmpInfo.exists() || !tmpInfo.isFile() || tmpInfo.size() <= 0) {
+        if (tmpInfo.exists())
+            QFile::remove(tmpPath);
+        return false;
+    }
+    const QFileInfo dstInfo(finalTargetPath);
+    if (finalTargetPath.trimmed().isEmpty() || dstInfo.isDir()) {
+        QFile::remove(tmpPath);
+        return false;
+    }
+    if (dstInfo.exists() && !tmpInfo.canonicalFilePath().isEmpty()
+        && tmpInfo.canonicalFilePath() == dstInfo.canonicalFilePath()) {
+        return true;
+    }
+
+    if (!QFileInfo::exists(finalTargetPath)) {
+#ifdef Q_OS_WIN
+        const std::wstring wTmp = QDir::toNativeSeparators(tmpPath).toStdWString();
+        const std::wstring wDst = QDir::toNativeSeparators(finalTargetPath).toStdWString();
+        if (MoveFileExW(wTmp.c_str(), wDst.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+#endif
+        if (QFile::rename(tmpPath, finalTargetPath))
+            return true;
+        if (!QFileInfo::exists(finalTargetPath)) {
+            QFile::remove(tmpPath);
+            return false;
+        }
+    }
+
+    QString bakPath = finalTargetPath + QStringLiteral(".tg_bak");
+    if (QFileInfo::exists(bakPath)) {
+        const QString hex8 =
+                QUuid::createUuid().toString(QUuid::WithoutBraces).left(8).toLower();
+        bakPath = finalTargetPath + QStringLiteral(".tg_bak_") + hex8;
+    }
+
+#ifdef Q_OS_WIN
+    {
+        const std::wstring wTmp = QDir::toNativeSeparators(tmpPath).toStdWString();
+        const std::wstring wDst = QDir::toNativeSeparators(finalTargetPath).toStdWString();
+        const std::wstring wBak = QDir::toNativeSeparators(bakPath).toStdWString();
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (MoveFileExW(wTmp.c_str(), wDst.c_str(),
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                return true;
+            }
+            if (ReplaceFileW(wDst.c_str(), wTmp.c_str(), wBak.c_str(),
+                             REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr)) {
+                DeleteFileW(wBak.c_str());
+                return true;
+            }
+            const DWORD err = GetLastError();
+            if (!QFileInfo::exists(finalTargetPath) && QFileInfo::exists(bakPath))
+                QFile::rename(bakPath, finalTargetPath);
+            if (err != ERROR_SHARING_VIOLATION && err != ERROR_LOCK_VIOLATION
+                && err != ERROR_ACCESS_DENIED) {
+                break;
+            }
+            Sleep(20);
+        }
+    }
+#endif
+
+    // Safe two-step backup rename fallback: never remove finalTargetPath before replacement!
+    if (!QFile::rename(finalTargetPath, bakPath)) {
+        QFile::remove(tmpPath);
+        return false;
+    }
+    if (!QFile::rename(tmpPath, finalTargetPath)) {
+        const bool restored = QFile::rename(bakPath, finalTargetPath);
+        if (restored || QFileInfo::exists(finalTargetPath))
+            QFile::remove(tmpPath);
+        return false;
+    }
+    QFile::remove(bakPath);
+    return true;
+}
+
+bool ApplicationWindow::safeExportWriteTransaction(
+        const QString &finalTargetPath, const QString &extLower,
+        const std::function<bool(const QString &writePath)> &writerFn)
+{
+    if (!writerFn || finalTargetPath.trimmed().isEmpty())
+        return false;
+    const QFileInfo dstInfo(finalTargetPath);
+    if (dstInfo.isDir() || !dstInfo.dir().exists())
+        return false;
+
+    const QString tmpPath = makeShortExportTempPath(dstInfo, extLower);
+    const bool handled = writerFn(tmpPath);
+    const QFileInfo tmpInfo(tmpPath);
+    if (!handled || !tmpInfo.exists() || !tmpInfo.isFile() || tmpInfo.size() <= 0) {
+        if (tmpInfo.exists())
+            QFile::remove(tmpPath);
+        return false;
+    }
+    return commitExportTempFile(tmpPath, finalTargetPath);
 }
 
 void ApplicationWindow::exportGraph()
@@ -12784,18 +12875,30 @@ void ApplicationWindow::exportPDF()
         return;
     }
 
-    QString fname = QFileDialog::getSaveFileName(this, tr("Choose a filename to save under"),
-                                                 workingDir, "*.pdf");
-    if (!fname.isEmpty()) {
-        QFileInfo fi(fname);
-        QString baseName = fi.fileName();
-        if (!baseName.contains("."))
-            fname.append(".pdf");
+    QString rawFname = QFileDialog::getSaveFileName(this, tr("Choose a filename to save under"),
+                                                    workingDir, "*.pdf");
+    if (!rawFname.isEmpty()) {
+        bool suffixAppended = false;
+        QString fname = ensureExportSuffix(rawFname, QStringLiteral(".pdf"), &suffixAppended);
+        if (QFileInfo(fname).suffix().compare(QStringLiteral("pdf"), Qt::CaseInsensitive) != 0) {
+            fname += QStringLiteral(".pdf");
+            suffixAppended = true;
+        }
 
+        const QFileInfo fi(fname);
         workingDir = fi.absolutePath();
 
-        QFile f(fname);
-        if (!f.open(QIODevice::WriteOnly)) {
+        if (suffixAppended && QFile::exists(fname) && !isNonInteractiveContext(this)) {
+            const auto ans = QMessageBox::question(
+                    this, tr("Overwrite file?"),
+                    tr("A file called: <p><b>%1</b><p>already exists. Do you want to overwrite it?")
+                            .arg(fname),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (ans != QMessageBox::Yes)
+                return;
+        }
+
+        if (!probeWritableNoTruncate(fname)) {
             QMessageBox::critical(this, tr("Export Error"),
                                   tr("Could not write to file: <h4>%1</h4><p>Please verify that "
                                      "you have the right to write to this location or that the "
@@ -12805,10 +12908,20 @@ void ApplicationWindow::exportPDF()
         }
 
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-
-        ((MyWidget *)w)->exportPDF(fname);
-
+        const bool writeOk = executeSafeExportWrite(
+                fname, QStringLiteral("pdf"), [&](const QString &writePath) {
+                    ((MyWidget *)w)->exportPDF(writePath);
+                    return true;
+                });
         QApplication::restoreOverrideCursor();
+
+        if (!writeOk) {
+            QMessageBox::critical(this, tr("Export Error"),
+                                  tr("Could not write to file: <h4>%1</h4><p>Please verify that "
+                                     "you have the right to write to this location or that the "
+                                     "file is not being used by another application!")
+                                          .arg(fname));
+        }
     }
 }
 
@@ -15452,22 +15565,43 @@ void ApplicationWindow::deleteSelectedItems()
         return;
     }
 
-    QList<QTreeWidgetItem *> lst;
-    for (QTreeWidgetItemIterator it(&lv); *it; it++) {
-        if ((*it)->isSelected())
-            lst.append((*it));
+    QVector<QPointer<Folder>> targetFolders;
+    QVector<QPointer<MyWidget>> targetWindows;
+    for (QTreeWidgetItemIterator it(&lv); *it; ++it) {
+        QTreeWidgetItem *item = *it;
+        if (!item || !item->isSelected())
+            continue;
+        if (item->type() == FolderListItem::FolderType) {
+            Folder *f = static_cast<FolderListItem *>(item)->folder();
+            if (f && f != projectFolder() && !targetFolders.contains(f))
+                targetFolders.append(QPointer<Folder>(f));
+        } else if (item->type() == WindowListItem::WindowType) {
+            MyWidget *w = static_cast<WindowListItem *>(item)->window();
+            if (w && !targetWindows.contains(w))
+                targetWindows.append(QPointer<MyWidget>(w));
+        }
     }
 
-    folders.blockSignals(true);
-    for (auto item : lst) {
-        if (item->type() == FolderListItem::FolderType) {
-            Folder *f = ((FolderListItem *)item)->folder();
-            if (deleteFolder(f))
-                delete item;
-        } else
-            ((WindowListItem *)item)->window()->close();
+    QSignalBlocker folderSigBlocker(&folders);
+    for (const QPointer<Folder> &fp : targetFolders) {
+        Folder *const rawFolder = fp.data();
+        if (!rawFolder)
+            continue;
+        if (deleteFolder(rawFolder)) {
+            QList<QTreeWidgetItem *> staleFolderItems;
+            for (QTreeWidgetItemIterator it(&lv); *it; ++it) {
+                if ((*it)->type() == FolderListItem::FolderType
+                    && static_cast<FolderListItem *>(*it)->folder() == rawFolder) {
+                    staleFolderItems.append(*it);
+                }
+            }
+            qDeleteAll(staleFolderItems);
+        }
     }
-    folders.blockSignals(false);
+    for (const QPointer<MyWidget> &wp : targetWindows) {
+        if (wp && windowsList().contains(wp.data()))
+            wp->close();
+    }
 }
 
 QMenu *ApplicationWindow::showListViewSelectionMenuImpl()
