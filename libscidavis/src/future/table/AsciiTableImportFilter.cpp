@@ -1612,6 +1612,48 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // 3b. Drag & drop: find the numeric block below an instrument metadata preamble
     //     (BioLogic .mpt, Gamry .dta, many .asc/.csv exports) and the name/unit rows right
     //     above it. Everything above is kept as the table comment instead of being guessed at.
+    auto scanLogicalLineEnd = [&](int startIdx) -> int {
+        int e = startIdx;
+        bool inQuotes = false;
+        bool atFieldStart = true;
+        while (e < len) {
+            const QChar ch = buf[e];
+            if (inQuotes) {
+                if (ch == QLatin1Char('"')) {
+                    if (e + 1 < len && buf[e + 1] == QLatin1Char('"')) {
+                        e += 2;
+                        continue;
+                    }
+                    inQuotes = false;
+                }
+                ++e;
+            } else {
+                if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
+                    break;
+                if (ch == QLatin1Char('"') && atFieldStart) {
+                    inQuotes = true;
+                    atFieldStart = false;
+                    ++e;
+                } else if (ch == QLatin1Char(',') || ch == QLatin1Char('\t')
+                           || ch == QLatin1Char(';')) {
+                    atFieldStart = true;
+                    ++e;
+                } else if (ch == QLatin1Char(' ')) {
+                    ++e;
+                } else {
+                    atFieldStart = false;
+                    ++e;
+                }
+            }
+        }
+        if (inQuotes) {
+            e = startIdx;
+            while (e < len && buf[e] != QLatin1Char('\r') && buf[e] != QLatin1Char('\n'))
+                ++e;
+        }
+        return e;
+    };
+
     QString preambleSeparator;
     int forcedUnitsRow = -1;
     if (detectPreamble && ignoredLines == 0 && pos < len) {
@@ -1624,9 +1666,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         {
             int p = pos;
             while (p < len && lines.size() < 4000) {
-                int e = p;
-                while (e < len && buf[e] != QLatin1Char('\r') && buf[e] != QLatin1Char('\n'))
-                    ++e;
+                const int e = scanLogicalLineEnd(p);
                 if (!QString(buf + p, e - p).trimmed().isEmpty())
                     lines.append({ p, e });
                 p = e;
@@ -1643,14 +1683,51 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         auto splitLine = [&](int idx, QChar sep) -> QStringList {
             const QString ln = QString(buf + lines[idx].start, lines[idx].end - lines[idx].start);
             QStringList parts;
-            if (sep == QLatin1Char(' '))
+            if (sep == QLatin1Char(' ')) {
                 parts = ln.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-            else
-                parts = ln.split(sep, Qt::KeepEmptyParts);
-            for (QString &f : parts) {
-                f = f.trimmed();
-                if (f.size() >= 2 && f.startsWith(QLatin1Char('"')) && f.endsWith(QLatin1Char('"')))
-                    f = f.mid(1, f.size() - 2).trimmed();
+                for (QString &f : parts) {
+                    f = f.trimmed();
+                    if (f.size() >= 2 && f.startsWith(QLatin1Char('"'))
+                        && f.endsWith(QLatin1Char('"'))) {
+                        f = f.mid(1, f.size() - 2).trimmed();
+                    }
+                }
+            } else {
+                QString cur;
+                bool inQuotes = false;
+                bool atFieldStart = true;
+                for (int k = 0; k < ln.size(); ++k) {
+                    const QChar ch = ln.at(k);
+                    if (inQuotes) {
+                        if (ch == QLatin1Char('"')) {
+                            if (k + 1 < ln.size() && ln.at(k + 1) == QLatin1Char('"')) {
+                                cur.append(QLatin1Char('"'));
+                                ++k;
+                            } else {
+                                inQuotes = false;
+                            }
+                        } else if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+                            if (!cur.endsWith(QLatin1Char(' ')))
+                                cur.append(QLatin1Char(' '));
+                        } else {
+                            cur.append(ch);
+                        }
+                    } else {
+                        if (ch == sep) {
+                            parts.append(cur.trimmed());
+                            cur.clear();
+                            atFieldStart = true;
+                        } else if (ch == QLatin1Char('"') && atFieldStart) {
+                            inQuotes = true;
+                            atFieldStart = false;
+                        } else {
+                            if (ch != QLatin1Char(' ') && ch != QLatin1Char('\t'))
+                                atFieldStart = false;
+                            cur.append(ch);
+                        }
+                    }
+                }
+                parts.append(cur.trimmed());
             }
             // a trailing separator ("1,2,") must not change the field count
             while (parts.size() > 1 && parts.last().isEmpty())
@@ -1676,6 +1753,17 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 else
                     ++outText;
             }
+        };
+        auto isCommentLineForSep = [&](int idx, QChar sep) -> bool {
+            if (!isHashCommentLine(idx))
+                return false;
+            const QStringList p = splitLine(idx, sep);
+            if (sep == QLatin1Char(' ')) {
+                int num = 0, txt = 0;
+                rowStats(p, num, txt);
+                return p.size() <= 1 || num == 0;
+            }
+            return p.size() <= 1;
         };
         // 1 = numeric-dominant row, 0 = pure text row, -1 = mixed
         auto rowKind = [&](const QStringList &parts) -> int {
@@ -1704,25 +1792,31 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     continue;
                 // P1-D4(b): a mixed text+numeric header row (e.g. "Time (s), 300, 400, 500")
                 // sitting right above pure-numeric data rows is the header, not the first data row.
-                if (p0Txt > 0 && i + 1 < lines.size() && !isHashCommentLine(i + 1)) {
-                    const QStringList pNext = splitLine(i + 1, sep);
+                int nextDataIdx = i + 1;
+                while (nextDataIdx < lines.size() && isCommentLineForSep(nextDataIdx, sep))
+                    ++nextDataIdx;
+                if (p0Txt > 0 && nextDataIdx < lines.size() && !isHashCommentLine(nextDataIdx)) {
+                    const QStringList pNext = splitLine(nextDataIdx, sep);
                     int nextNum = 0, nextTxt = 0;
                     rowStats(pNext, nextNum, nextTxt);
                     if (pNext.size() == p0.size() && nextNum >= 2 && nextTxt == 0)
                         continue;
                 }
-                const int need = std::min(3, lines.size() - i);
+                int checkedFollow = 0;
                 bool ok = true;
-                for (int k = 1; k < need && ok; ++k) {
-                    if (isHashCommentLine(i + k)) {
+                for (int k = i + 1; k < lines.size() && checkedFollow < 2 && ok; ++k) {
+                    if (isCommentLineForSep(k, sep))
+                        continue;
+                    if (isHashCommentLine(k)) {
                         ok = false;
                         break;
                     }
                     // following rows may lack trailing values ("2\t" -> one field)
-                    const QStringList pk = splitLine(i + k, sep);
+                    const QStringList pk = splitLine(k, sep);
                     int num = 0, txt = 0;
                     rowStats(pk, num, txt);
                     ok = (pk.size() <= p0.size() && num >= 1 && num >= txt);
+                    ++checkedFollow;
                 }
                 if (!ok)
                     continue;
@@ -1755,19 +1849,27 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 rowStats(p, num, txt);
                 return txt >= 1 && (num == 0 || bestStartAllNumeric);
             };
-            if (isPureTextRowWithFields(bestStart - 1)) {
-                hdrStart = bestStart - 1;
-                if (isHeaderCandidateWithFields(bestStart - 2)) {
+            auto prevNonCommentIdx = [&](int fromIdx) -> int {
+                int cur = fromIdx;
+                while (cur >= 0 && isCommentLineForSep(cur, bestSep))
+                    --cur;
+                return cur;
+            };
+            const int cand1 = prevNonCommentIdx(bestStart - 1);
+            if (cand1 >= 0 && isPureTextRowWithFields(cand1)) {
+                hdrStart = cand1;
+                const int cand2 = prevNonCommentIdx(cand1 - 1);
+                if (cand2 >= 0 && isHeaderCandidateWithFields(cand2)) {
                     bool shortCells = true;
-                    for (const QString &u : splitLine(bestStart - 1, bestSep))
+                    for (const QString &u : splitLine(cand1, bestSep))
                         shortCells = shortCells && u.size() <= 24;
                     if (shortCells) {
-                        hdrStart = bestStart - 2;
+                        hdrStart = cand2;
                         forcedUnitsRow = 1;
                     }
                 }
-            } else if (isHeaderCandidateWithFields(bestStart - 1)) {
-                hdrStart = bestStart - 1;
+            } else if (cand1 >= 0 && isHeaderCandidateWithFields(cand1)) {
+                hdrStart = cand1;
             }
             int preambleEnd = hdrStart;
             if (hdrStart == bestStart) {
@@ -1823,15 +1925,21 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     // Gather up to 15 sample lines for separator auto-detection
     QStringList sampleLines;
+    QStringList hashDelimSampleFallback;
     {
         int sPos = pos;
         while (sPos < len && sampleLines.size() < 15) {
-            int sEnd = sPos;
-            while (sEnd < len && buf[sEnd] != QLatin1Char('\r') && buf[sEnd] != QLatin1Char('\n'))
-                ++sEnd;
+            const int sEnd = scanLogicalLineEnd(sPos);
             const QString ln = QString(buf + sPos, sEnd - sPos).trimmed();
-            if (!ln.isEmpty() && !ln.startsWith(QLatin1Char('#')))
-                sampleLines.append(ln);
+            if (!ln.isEmpty()) {
+                if (!ln.startsWith(QLatin1Char('#'))) {
+                    sampleLines.append(ln);
+                } else if (hashDelimSampleFallback.size() < 8
+                           && (ln.contains(QLatin1Char(',')) || ln.contains(QLatin1Char('\t'))
+                               || ln.contains(QLatin1Char(';')))) {
+                    hashDelimSampleFallback.append(ln);
+                }
+            }
             sPos = sEnd;
             if (sPos < len && buf[sPos] == QLatin1Char('\r')) {
                 ++sPos;
@@ -1841,6 +1949,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 ++sPos;
             }
         }
+        if (sampleLines.isEmpty() && !hashDelimSampleFallback.isEmpty())
+            sampleLines = hashDelimSampleFallback;
     }
 
     QString effSep = separatorHint;
@@ -1891,13 +2001,83 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     }
     const QString normSep = effSep.isEmpty() ? QStringLiteral(",") : effSep;
 
+    // Determine whether this table has >= 2 columns so single-cell '# note' lines inside a
+    // multi-column CSV/TSV are skipped as comments while multi-cell '#1, 520' specimen rows
+    // and 1-column '#1\n#2' tables are preserved as data.
+    QVector<ZeroCopyCellSpan> rowSpans;
+    rowSpans.reserve(16);
+    bool tableHasMultipleCols = !preambleSeparator.isEmpty();
+    if (!tableHasMultipleCols) {
+        int peekPos = pos;
+        int checkedRows = 0;
+        while (peekPos < len && checkedRows < 24) {
+            bool skipPeek = false;
+            if (!readNextRecordSpans(buf, len, peekPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipPeek)) {
+                break;
+            }
+            if (skipPeek)
+                continue;
+            if (rowSpans.size() >= 2) {
+                if (!whitespaceDelim) {
+                    tableHasMultipleCols = true;
+                    break;
+                }
+                const QChar *p0 = nullptr;
+                int n0 = 0;
+                rowSpans[0].trimmedView(p0, n0);
+                if (n0 <= 0 || p0[0] != QLatin1Char('#')) {
+                    tableHasMultipleCols = true;
+                    break;
+                }
+                const QLocale cLocPeek = QLocale::c();
+                for (int k = 1; k < rowSpans.size(); ++k) {
+                    const QChar *pk = nullptr;
+                    int nk = 0;
+                    rowSpans[k].trimmedView(pk, nk);
+                    double dummy = 0.0;
+                    if (nk > 0 && tryParseLabDoubleSpan(pk, nk, cLocPeek, false, dummy)) {
+                        tableHasMultipleCols = true;
+                        break;
+                    }
+                }
+                if (tableHasMultipleCols)
+                    break;
+            }
+            ++checkedRows;
+        }
+    }
+
+    auto isBodyHashCommentRow = [&](const QVector<ZeroCopyCellSpan> &spans) -> bool {
+        if (!tableHasMultipleCols || spans.isEmpty() || spans[0].quoted)
+            return false;
+        const QChar *p0 = nullptr;
+        int n0 = 0;
+        spans[0].trimmedView(p0, n0);
+        if (n0 <= 0 || p0[0] != QLatin1Char('#'))
+            return false;
+        if (!whitespaceDelim)
+            return spans.size() == 1;
+        if (spans.size() == 1 || n0 == 1)
+            return true;
+        const QLocale cLocBody = QLocale::c();
+        for (int k = 1; k < spans.size(); ++k) {
+            const QChar *pk = nullptr;
+            int nk = 0;
+            spans[k].trimmedView(pk, nk);
+            double dummy = 0.0;
+            if (nk > 0 && tryParseLabDoubleSpan(pk, nk, cLocBody, false, dummy))
+                return false;
+        }
+        return true;
+    };
+
     // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
     QVector<QVector<LabCsvCell>> previewRecords;
     previewRecords.reserve(16);
     QVector<int> previewLineStartOffsets;
     previewLineStartOffsets.reserve(17);
-    QVector<ZeroCopyCellSpan> rowSpans;
-    rowSpans.reserve(16);
+    QVector<int> previewSkippedCommentOffsets;
     int scanPos = pos;
     int maxCols = 0;
 
@@ -1910,6 +2090,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
         if (skipRow)
             continue;
+        if (isBodyHashCommentRow(rowSpans)) {
+            previewSkippedCommentOffsets.append(rowStartOffset);
+            continue;
+        }
         previewLineStartOffsets.append(rowStartOffset);
         QVector<LabCsvCell> rec;
         rec.reserve(rowSpans.size());
@@ -1970,17 +2154,24 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             bool allRow0Num = true;
             bool allRow1Num = true;
             bool anyFloatMarkerInRow0 = false;
-            for (const LabCsvCell &c0 : previewRecords[0]) {
+            bool anyFloatMarkerInRow1 = false;
+            bool row0IsOneBasedSeq = (previewRecords[0].size() >= 2);
+            for (int c = 0; c < previewRecords[0].size(); ++c) {
+                const LabCsvCell &c0 = previewRecords[0][c];
                 const QString t = c0.value.trimmed();
                 double dv = 0.0;
                 if (c0.quoted || t.isEmpty()
                     || !tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
                     allRow0Num = false;
+                    row0IsOneBasedSeq = false;
                     break;
                 }
                 if (t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
                     || t.contains(QLatin1Char('E')) || t.startsWith(QLatin1Char('-'))) {
                     anyFloatMarkerInRow0 = true;
+                    row0IsOneBasedSeq = false;
+                } else if (t != QString::number(c + 1)) {
+                    row0IsOneBasedSeq = false;
                 }
             }
             if (allRow0Num) {
@@ -1992,11 +2183,20 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         allRow1Num = false;
                         break;
                     }
+                    if (t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
+                        || t.contains(QLatin1Char('E'))) {
+                        anyFloatMarkerInRow1 = true;
+                    }
                 }
             }
-            if (allRow0Num && allRow1Num)
-                treatRow0AsData = true;
-            Q_UNUSED(anyFloatMarkerInRow0);
+            if (allRow0Num && allRow1Num) {
+                const bool likelyExplicitHeaderAfterSkip =
+                        (ignoredLines > 0 && !anyFloatMarkerInRow0 && anyFloatMarkerInRow1);
+                const bool likelySeqColHeader =
+                        (row0IsOneBasedSeq && !anyFloatMarkerInRow0 && anyFloatMarkerInRow1);
+                if (!likelyExplicitHeaderAfterSkip && !likelySeqColHeader)
+                    treatRow0AsData = true;
+            }
         }
         if (treatRow0AsData) {
             effectiveFirstRowNames = false;
@@ -2096,6 +2296,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // Determine exact character offset of first data row and count remaining rows without allocating QStrings
     const int dataStartPos = previewLineStartOffsets[std::min(
             fileHeaderLinesConsumed, previewLineStartOffsets.size() - 1)];
+    for (int off : previewSkippedCommentOffsets) {
+        if (off < dataStartPos)
+            ++skippedNonBlankLines;
+    }
     int dataRowCount = std::max(0, previewRecords.size() - fileHeaderLinesConsumed);
     {
         int countPos = scanPos;
@@ -2105,7 +2309,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow)
+            if (skipRow || isBodyHashCommentRow(rowSpans))
                 continue;
             maxCols = std::max(maxCols, rowSpans.size());
             ++dataRowCount;
@@ -2142,7 +2346,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow) {
+            if (skipRow || isBodyHashCommentRow(rowSpans)) {
                 if (!rowSpans.isEmpty()) {
                     const QChar *p0 = nullptr;
                     int n0 = 0;
@@ -2225,7 +2429,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow)
+            if (skipRow || isBodyHashCommentRow(rowSpans))
                 continue;
             const int recCols = rowSpans.size();
             for (int c = 0; c < maxCols; ++c) {

@@ -8861,10 +8861,11 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
     unsigned char outBuf[16384];
     bool ok = true;
     bool sawStreamEnd = false;
+    bool doneAllMembers = false;
     qint64 totalBytesRead = 0;
     const bool hasBackupSibling = !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~");
 
-    while (!inFile.atEnd()) {
+    while (!inFile.atEnd() && !doneAllMembers) {
         const qint64 nRead = inFile.read(reinterpret_cast<char *>(inBuf), sizeof(inBuf));
         if (nRead < 0) {
             if (!nonInteractive && !hasBackupSibling)
@@ -8906,11 +8907,31 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
                 break;
             }
             if (ret == Z_STREAM_END) {
-                if (zs.avail_in > 0) {
+                const uInt remAvail = zs.avail_in;
+                const QByteArray filePeek = (remAvail < 2) ? inFile.peek(2) : QByteArray();
+                unsigned char b0 = 0, b1 = 0;
+                bool hasTwo = false;
+                if (remAvail >= 2) {
+                    b0 = zs.next_in[0];
+                    b1 = zs.next_in[1];
+                    hasTwo = true;
+                } else if (remAvail == 1 && filePeek.size() >= 1) {
+                    b0 = zs.next_in[0];
+                    b1 = static_cast<unsigned char>(filePeek.at(0));
+                    hasTwo = true;
+                } else if (remAvail == 0 && filePeek.size() >= 2) {
+                    b0 = static_cast<unsigned char>(filePeek.at(0));
+                    b1 = static_cast<unsigned char>(filePeek.at(1));
+                    hasTwo = true;
+                }
+                if (hasTwo && b0 == 0x1f && b1 == 0x8b) {
                     inflateReset(&zs);
                     sawStreamEnd = false;
+                    if (zs.avail_in == 0)
+                        break;
                 } else {
                     sawStreamEnd = true;
+                    doneAllMembers = true;
                     break;
                 }
             }
@@ -10056,6 +10077,7 @@ void ApplicationWindow::readSettings()
         plot3DAxesFont.setBold(false);
     }
 
+    plot3DColors.clear();
     settings.beginGroup("/Colors");
     plot3DColors << settings.value("/MaxData", "blue").toString();
     plot3DColors << settings.value("/Labels", "#000000").toString();
@@ -10554,6 +10576,59 @@ bool probeWritableNoTruncate(const QString &filePath)
     return true;
 }
 
+template <typename WriterFn>
+bool executeSafeExportWrite(const QString &finalTargetPath, const QString &extLower,
+                            WriterFn &&writerFn)
+{
+    const QFileInfo dstInfo(finalTargetPath);
+    if (!dstInfo.exists()) {
+        const bool handled = writerFn(finalTargetPath);
+        const QFileInfo outInfo(finalTargetPath);
+        if (handled && outInfo.exists() && outInfo.size() > 0)
+            return true;
+        if (outInfo.exists() && outInfo.size() <= 0)
+            QFile::remove(finalTargetPath);
+        return false;
+    }
+
+    const QString tmpPath = dstInfo.dir().filePath(
+            QStringLiteral(".torigraph_exp_%1.%2")
+                    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces), extLower));
+    const bool handled = writerFn(tmpPath);
+    const QFileInfo tmpInfo(tmpPath);
+    if (!handled || !tmpInfo.exists() || tmpInfo.size() <= 0) {
+        if (tmpInfo.exists())
+            QFile::remove(tmpPath);
+        return false;
+    }
+
+#ifdef Q_OS_WIN
+    const std::wstring wTmp = QDir::toNativeSeparators(tmpPath).toStdWString();
+    const std::wstring wDst = QDir::toNativeSeparators(finalTargetPath).toStdWString();
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        if (MoveFileExW(wTmp.c_str(), wDst.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+        const DWORD err = GetLastError();
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_LOCK_VIOLATION
+            && err != ERROR_ACCESS_DENIED) {
+            break;
+        }
+        Sleep(50);
+    }
+#endif
+    if (QFile::exists(finalTargetPath) && !QFile::remove(finalTargetPath)) {
+        QFile::remove(tmpPath);
+        return false;
+    }
+    if (!QFile::rename(tmpPath, finalTargetPath)) {
+        QFile::remove(tmpPath);
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 QString ApplicationWindow::resolveImageExportFileName(const QString &rawFileName,
@@ -10609,8 +10684,29 @@ void ApplicationWindow::exportGraph()
 
     const QString selected_filter = ied->selectedNameFilter();
     bool suffixAppended = false;
-    const QString file_name =
+    QString file_name =
             ensureExportSuffix(ied->selectedFiles()[0], selected_filter, &suffixAppended);
+    QString ext = QFileInfo(file_name).suffix().toLower();
+    if (!isRecognizedExportSuffix(ext)) {
+        QMessageBox::critical(
+                this, tr("Export Error"),
+                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
+        return;
+    }
+
+#if QT_VERSION >= 0x050000
+    if (plot2D && (ext == QLatin1String("eps") || ext == QLatin1String("ps"))) {
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::warning(
+                    this, tr("Warning"),
+                    tr("Output in postscript format is not available for Qt5, using PDF"));
+        }
+        file_name += QStringLiteral(".pdf");
+        ext = QStringLiteral("pdf");
+        suffixAppended = true;
+    }
+#endif
+
     if (suffixAppended && QFile::exists(file_name) && !isNonInteractiveContext(this)) {
         const auto ans = QMessageBox::question(
                 this, tr("Overwrite file?"),
@@ -10621,14 +10717,6 @@ void ApplicationWindow::exportGraph()
             return;
     }
 
-    const QString ext = QFileInfo(file_name).suffix().toLower();
-    if (!isRecognizedExportSuffix(ext)) {
-        QMessageBox::critical(
-                this, tr("Export Error"),
-                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
-        return;
-    }
-
     if (!probeWritableNoTruncate(file_name)) {
         QMessageBox::critical(this, tr("Export Error"),
                               tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
@@ -10637,46 +10725,51 @@ void ApplicationWindow::exportGraph()
         return;
     }
 
-    bool formatHandled = false;
-    if (ext == QLatin1String("emf")) {
-        if (plot2D) {
-            plot2D->exportToFile(file_name);
-            formatHandled = true;
-        } else if (plot3D) {
-            plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-            formatHandled = true;
+    const bool writeOk = executeSafeExportWrite(file_name, ext, [&](const QString &writePath) {
+        if (ext == QLatin1String("emf")) {
+            if (plot2D) {
+                plot2D->exportToFile(writePath);
+                return true;
+            }
+            if (plot3D) {
+                plot3D->exportImage(writePath, ied->quality(), ied->transparency());
+                return true;
+            }
+        } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
+                   || ext == QLatin1String("ps")) {
+            if (plot3D) {
+                plot3D->exportVector(writePath, ext);
+                return true;
+            }
+            if (plot2D) {
+                plot2D->exportVector(writePath, ied->resolution(), ied->color(), ied->keepAspect(),
+                                     ied->pageSize(), ied->pageOrientation());
+                return true;
+            }
+        } else if (ext == QLatin1String("svg")) {
+            if (plot2D) {
+                plot2D->exportSVG(writePath);
+                return true;
+            }
+            if (plot3D) {
+                plot3D->exportVector(writePath, "svg");
+                return true;
+            }
+        } else if (isRecognizedImageWriterFormat(ext)) {
+            if (plot2D) {
+                plot2D->exportImage(writePath, ied->quality(), ied->transparency(),
+                                    ied->resolution());
+                return true;
+            }
+            if (plot3D) {
+                plot3D->exportImage(writePath, ied->quality(), ied->transparency());
+                return true;
+            }
         }
-    } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
-               || ext == QLatin1String("ps")) {
-        if (plot3D) {
-            plot3D->exportVector(file_name, ext);
-            formatHandled = true;
-        } else if (plot2D) {
-            plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
-                                 ied->pageSize(), ied->pageOrientation());
-            formatHandled = true;
-        }
-    } else if (ext == QLatin1String("svg")) {
-        if (plot2D) {
-            plot2D->exportSVG(file_name);
-            formatHandled = true;
-        } else if (plot3D) {
-            plot3D->exportVector(file_name, "svg");
-            formatHandled = true;
-        }
-    } else if (isRecognizedImageWriterFormat(ext)) {
-        if (plot2D) {
-            plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
-                                ied->resolution());
-            formatHandled = true;
-        } else if (plot3D) {
-            plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-            formatHandled = true;
-        }
-    }
+        return false;
+    });
 
-    const QFileInfo outInfo(file_name);
-    if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+    if (!writeOk) {
         QMessageBox::critical(this, tr("Export Error"),
                               tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
                                  "you have the right to write to this location!")
@@ -10712,8 +10805,29 @@ void ApplicationWindow::exportLayer()
 
     const QString selected_filter = ied->selectedNameFilter();
     bool suffixAppended = false;
-    const QString file_name =
+    QString file_name =
             ensureExportSuffix(ied->selectedFiles()[0], selected_filter, &suffixAppended);
+    QString ext = QFileInfo(file_name).suffix().toLower();
+    if (!isRecognizedExportSuffix(ext)) {
+        QMessageBox::critical(
+                this, tr("Export Error"),
+                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
+        return;
+    }
+
+#if QT_VERSION >= 0x050000
+    if (ext == QLatin1String("eps") || ext == QLatin1String("ps")) {
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::warning(
+                    this, tr("Warning"),
+                    tr("Output in postscript format is not available for Qt5, using PDF"));
+        }
+        file_name += QStringLiteral(".pdf");
+        ext = QStringLiteral("pdf");
+        suffixAppended = true;
+    }
+#endif
+
     if (suffixAppended && QFile::exists(file_name) && !isNonInteractiveContext(this)) {
         const auto ans = QMessageBox::question(
                 this, tr("Overwrite file?"),
@@ -10724,14 +10838,6 @@ void ApplicationWindow::exportLayer()
             return;
     }
 
-    const QString ext = QFileInfo(file_name).suffix().toLower();
-    if (!isRecognizedExportSuffix(ext)) {
-        QMessageBox::critical(
-                this, tr("Export Error"),
-                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
-        return;
-    }
-
     if (!probeWritableNoTruncate(file_name)) {
         QMessageBox::critical(this, tr("Export Error"),
                               tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
@@ -10740,25 +10846,29 @@ void ApplicationWindow::exportLayer()
         return;
     }
 
-    bool formatHandled = false;
-    if (ext == QLatin1String("emf")) {
-        g->exportToFile(file_name);
-        formatHandled = true;
-    } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
-               || ext == QLatin1String("ps")) {
-        g->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
-                        ied->pageSize(), ied->pageOrientation());
-        formatHandled = true;
-    } else if (ext == QLatin1String("svg")) {
-        g->exportSVG(file_name);
-        formatHandled = true;
-    } else if (isRecognizedImageWriterFormat(ext)) {
-        g->exportImage(file_name, ied->quality(), ied->transparency(), ied->resolution());
-        formatHandled = true;
-    }
+    const bool writeOk = executeSafeExportWrite(file_name, ext, [&](const QString &writePath) {
+        if (ext == QLatin1String("emf")) {
+            g->exportToFile(writePath);
+            return true;
+        }
+        if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
+            || ext == QLatin1String("ps")) {
+            g->exportVector(writePath, ied->resolution(), ied->color(), ied->keepAspect(),
+                            ied->pageSize(), ied->pageOrientation());
+            return true;
+        }
+        if (ext == QLatin1String("svg")) {
+            g->exportSVG(writePath);
+            return true;
+        }
+        if (isRecognizedImageWriterFormat(ext)) {
+            g->exportImage(writePath, ied->quality(), ied->transparency(), ied->resolution());
+            return true;
+        }
+        return false;
+    });
 
-    const QFileInfo outInfo(file_name);
-    if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+    if (!writeOk) {
         QMessageBox::critical(this, tr("Export Error"),
                               tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
                                  "you have the right to write to this location!")
@@ -10830,6 +10940,13 @@ void ApplicationWindow::exportAllGraphs()
             continue;
 
         QString file_name = output_dir + "/" + w->objectName() + file_suffix;
+        QString eff_ext = ext;
+#if QT_VERSION >= 0x050000
+        if (plot2D && (eff_ext == QLatin1String("eps") || eff_ext == QLatin1String("ps"))) {
+            file_name += QStringLiteral(".pdf");
+            eff_ext = QStringLiteral("pdf");
+        }
+#endif
         {
             if (QFile::exists(file_name) && confirm_overwrite && !isNonInteractiveContext(this)) {
                 QApplication::restoreOverrideCursor();
@@ -10861,45 +10978,52 @@ void ApplicationWindow::exportAllGraphs()
                 return;
             }
         }
-        bool formatHandled = false;
-        if (ext == QLatin1String("emf")) {
-            if (plot2D) {
-                plot2D->exportToFile(file_name);
-                formatHandled = true;
-            } else if (plot3D) {
-                plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-                formatHandled = true;
-            }
-        } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
-                   || ext == QLatin1String("ps")) {
-            if (plot3D) {
-                plot3D->exportVector(file_name, ext);
-                formatHandled = true;
-            } else if (plot2D) {
-                plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
-                                     ied->pageSize(), ied->pageOrientation());
-                formatHandled = true;
-            }
-        } else if (ext == QLatin1String("svg")) {
-            if (plot2D) {
-                plot2D->exportSVG(file_name);
-                formatHandled = true;
-            } else if (plot3D) {
-                plot3D->exportVector(file_name, "svg");
-                formatHandled = true;
-            }
-        } else if (isRecognizedImageWriterFormat(ext)) {
-            if (plot2D) {
-                plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
-                                    ied->resolution());
-                formatHandled = true;
-            } else if (plot3D) {
-                plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-                formatHandled = true;
-            }
-        }
-        const QFileInfo outInfo(file_name);
-        if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+        const bool writeOk =
+                executeSafeExportWrite(file_name, eff_ext, [&](const QString &writePath) {
+                    if (eff_ext == QLatin1String("emf")) {
+                        if (plot2D) {
+                            plot2D->exportToFile(writePath);
+                            return true;
+                        }
+                        if (plot3D) {
+                            plot3D->exportImage(writePath, ied->quality(), ied->transparency());
+                            return true;
+                        }
+                    } else if (eff_ext == QLatin1String("eps") || eff_ext == QLatin1String("pdf")
+                               || eff_ext == QLatin1String("ps")) {
+                        if (plot3D) {
+                            plot3D->exportVector(writePath, eff_ext);
+                            return true;
+                        }
+                        if (plot2D) {
+                            plot2D->exportVector(writePath, ied->resolution(), ied->color(),
+                                                 ied->keepAspect(), ied->pageSize(),
+                                                 ied->pageOrientation());
+                            return true;
+                        }
+                    } else if (eff_ext == QLatin1String("svg")) {
+                        if (plot2D) {
+                            plot2D->exportSVG(writePath);
+                            return true;
+                        }
+                        if (plot3D) {
+                            plot3D->exportVector(writePath, "svg");
+                            return true;
+                        }
+                    } else if (isRecognizedImageWriterFormat(eff_ext)) {
+                        if (plot2D) {
+                            plot2D->exportImage(writePath, ied->quality(), ied->transparency(),
+                                                ied->resolution());
+                            return true;
+                        }
+                        if (plot3D) {
+                            plot3D->exportImage(writePath, ied->quality(), ied->transparency());
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+        if (!writeOk) {
             QApplication::restoreOverrideCursor();
             if (!isNonInteractiveContext(this)) {
                 QMessageBox::critical(

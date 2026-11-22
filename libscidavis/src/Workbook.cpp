@@ -926,6 +926,8 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
         Book *b = bookFor(t);
         if (b && b->sheets.size() >= 2 && t->askOnCloseEvent() && d_app && !nonInteractive(d_app)) {
             QPointer<Table> safe(t);
+            QPointer<ApplicationWindow> safeApp(d_app);
+            QPointer<WorkbookManager> safeThis(this);
             const QString bookName = b->name;
             QMessageBox msgBox(d_app);
             msgBox.setIcon(QMessageBox::Question);
@@ -949,7 +951,7 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
 
             QAbstractButton *clicked = msgBox.clickedButton();
             event->ignore();
-            if (!safe || d_shutdown || !d_app)
+            if (!safeThis || !safeApp || !safe || d_shutdown || !d_app)
                 return true;
 
             if (clicked == btnHideBook) {
@@ -961,35 +963,38 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
                         if (s)
                             sheetsCopy << QPointer<Table>(s);
                     for (const QPointer<Table> &sp : sheetsCopy) {
+                        if (!safeThis || !safeApp || d_shutdown || !d_app)
+                            break;
                         if (sp && !d_app->hidden(sp))
                             d_app->hideWindow(sp);
-                        if (sp)
+                        if (sp && safeThis)
                             d_user_hidden[sp] = true;
                     }
-                    d_switching = prev;
+                    if (safeThis)
+                        d_switching = prev;
                 }
             } else if (clicked == btnDeleteSheet) {
-                QTimer::singleShot(0, this, [this, safe]() {
-                    if (safe && !d_shutdown)
-                        deleteSheet(safe, false);
+                QTimer::singleShot(0, this, [safeThis, safeApp, safe]() {
+                    if (safeThis && safeApp && safe && !safeThis->d_shutdown && safeThis->d_app)
+                        safeThis->deleteSheet(safe, false);
                 });
             } else if (clicked == btnDeleteBook) {
-                QTimer::singleShot(0, this, [this, bookName]() {
-                    if (d_shutdown || !d_app)
+                QTimer::singleShot(0, this, [safeThis, safeApp, bookName]() {
+                    if (!safeThis || !safeApp || safeThis->d_shutdown || !safeThis->d_app)
                         return;
-                    Book *bk = find(bookName);
+                    Book *bk = safeThis->find(bookName);
                     if (!bk || bk->sheets.isEmpty())
                         return;
                     QPointer<Table> curSheet(bk->current);
                     QList<QPointer<Table>> ordered;
                     for (Table *s : bk->sheets) {
                         if (s && s != curSheet) {
-                            d_user_hidden[s] = true;
+                            safeThis->d_user_hidden[s] = true;
                             ordered << QPointer<Table>(s);
                         }
                     }
                     if (curSheet) {
-                        d_user_hidden[curSheet] = true;
+                        safeThis->d_user_hidden[curSheet] = true;
                         ordered << curSheet;
                     }
                     QUndoStack *us = nullptr;
@@ -1002,7 +1007,7 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
                     if (us)
                         us->beginMacro(wbTr("Delete Workbook %1").arg(bookName));
                     for (const QPointer<Table> &sp : ordered) {
-                        if (!sp)
+                        if (!sp || !safeThis || !safeApp || safeThis->d_shutdown)
                             continue;
                         sp->askOnCloseEvent(false);
                         if (sp->d_future_table && sp->d_future_table->parentAspect() != nullptr)

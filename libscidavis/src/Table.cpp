@@ -1837,9 +1837,10 @@ bool Table::pasteText(const QString &rawText, bool transposed)
         return ok;
     };
 
-    // Detect single-column paste containing thousand-grouped numbers (e.g. "1,012") so it is
-    // not split into two CSV columns ("1" and "12"), while keeping multi-row headerless 2-column
-    // CSV (e.g. "1,250\n2,375") and comma-decimal locales intact.
+    // Detect single-column paste containing thousand-grouped numbers (e.g. "12,345\n23,456" or
+    // "Stress\n1,012\n1,030") when at most one column is selected, while splitting into CSV
+    // columns whenever >= 2 columns are selected, any non-3-digit/decimal-first comma pair
+    // appears (e.g. "10,20\n20,40" or "1.0,200\n2.0,400"), or the locale uses ',' as decimal.
     bool keepSingleColumn = false;
     bool stripSingleColGroupCommas = false;
     if (!hasTab && hasComma && QLocale().decimalPoint() != QLatin1Char(',')) {
@@ -1901,11 +1902,11 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             Q_UNUSED(dv);
         }
         const int selCols = selectedColumnCount(false);
-        const bool explicitMultiColSingleRow =
-                (selCols >= 2 && headerLineCount == 0 && nonEmptyDataCount == 1
-                 && anyUnquotedDataComma);
+        const bool explicitMultiColSelection =
+                (selCols >= 2 && nonEmptyDataCount >= 1 && anyUnquotedDataComma);
+        Q_UNUSED(headerLineCount);
         Q_UNUSED(plainNumCount);
-        if (allValidSingleCol && groupedNumCount > 0 && !explicitMultiColSingleRow) {
+        if (allValidSingleCol && groupedNumCount > 0 && !explicitMultiColSelection) {
             hasComma = false;
             hasSemicolon = false;
             keepSingleColumn = true;

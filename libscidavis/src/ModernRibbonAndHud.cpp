@@ -4888,7 +4888,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Export PDF"); },
                 [this]() { return tr("Export Vector PDF Document"); },
                 [this]() {
-                    if (activeMultiLayerOrUxHint(d_app))
+                    if (d_app)
                         d_app->exportPDF();
                 });
         addRibbonMenuAction(
@@ -4904,7 +4904,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Export Python"); },
                 [this]() { return tr("Generate Reproducible Python Script from Active Graph"); },
                 [this]() {
-                    if (activeMultiLayerOrUxHint(d_app))
+                    if (d_app)
                         d_app->exportActiveGraphToPython();
                 });
 
@@ -5031,7 +5031,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Export Python"); },
                 [this]() { return tr("Generate Reproducible Python Script from Active Graph"); },
                 [this]() {
-                    if (activeMultiLayerOrUxHint(d_app))
+                    if (d_app)
                         d_app->exportActiveGraphToPython();
                 });
 
@@ -6164,8 +6164,17 @@ void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
             ab.action->setVisible(visible);
     }
     for (const RibbonButtonBinding &bb : d_button_bindings) {
-        if (bb.button && bb.tooltipFn)
-            bb.button->setToolTip(bb.tooltipFn());
+        if (bb.button && bb.tooltipFn) {
+            QString tip = bb.tooltipFn();
+            if (!bb.shortcutActionName.isEmpty() && d_app) {
+                if (QAction *a = d_app->findChild<QAction *>(bb.shortcutActionName)) {
+                    const QString key = a->shortcut().toString(QKeySequence::NativeText);
+                    if (!key.isEmpty() && !tip.contains(key))
+                        tip += QStringLiteral(" (%1)").arg(key);
+                }
+            }
+            bb.button->setToolTip(tip);
+        }
     }
 }
 

@@ -634,6 +634,7 @@ void MultiPeakFit::setNumPeaks(int n)
     if (covar)
         gsl_matrix_free(covar);
     covar = gsl_matrix_calloc(d_p, d_p);
+    d_covar_scaled = false;
     d_results.resize(d_p);
     d_initial_guesses_set = false;
 
@@ -1744,31 +1745,41 @@ void MultiPeakFit::addPeakDoubletConstraint(int secondaryPeakIdx, int primaryPea
     }
 }
 
+double MultiPeakFit::covarSolverToStoredScale(int parIndex, double solverVal) const
+{
+    if (!d_covar_scaled || parIndex < 0 || parIndex >= 3 * d_peaks)
+        return 1.0;
+    const int rem = parIndex % 3;
+    if (rem == 0) {
+        double sA = (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz) ? M_PI_2 : 1.0;
+        if (!d_negative_peaks_allowed && solverVal < 0.0)
+            sA = -sA;
+        return sA;
+    }
+    if (rem == 2)
+        return (solverVal < 0.0) ? -1.0 : 1.0;
+    return 1.0;
+}
+
 void MultiPeakFit::storeCustomFitResults(const vector<double> &par)
 {
     d_results = par;
     if (!d_doublet_constraints.isEmpty())
         applyDoubletConstraints(d_results);
 
-    if (d_p > 0 && covar && covar->size1 >= d_p && covar->size2 >= d_p) {
+    bool parAllFinite = (d_p > 0 && d_results.size() >= d_p);
+    for (unsigned i = 0; parAllFinite && i < d_p; ++i) {
+        if (!std::isfinite(d_results[i]))
+            parAllFinite = false;
+    }
+
+    if (!d_covar_scaled && parAllFinite && covar && covar->size1 >= d_p && covar->size2 >= d_p) {
+        d_covar_scaled = true;
         std::vector<double> scale(d_p, 1.0);
         bool anyScaled = false;
-        for (int j = 0; j < d_peaks && unsigned(3 * j + 2) < d_p; ++j) {
-            double sA = (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz) ? M_PI_2 : 1.0;
-            const double rawA = (unsigned(3 * j) < d_results.size())
-                    ? d_results[size_t(3 * j)]
-                    : ((unsigned(3 * j) < par.size()) ? par[size_t(3 * j)] : 0.0);
-            if (!d_negative_peaks_allowed && rawA < 0.0)
-                sA = -sA;
-            scale[size_t(3 * j)] = sA;
-
-            const double rawW = (unsigned(3 * j + 2) < d_results.size())
-                    ? d_results[size_t(3 * j + 2)]
-                    : ((unsigned(3 * j + 2) < par.size()) ? par[size_t(3 * j + 2)] : 0.0);
-            if (rawW < 0.0)
-                scale[size_t(3 * j + 2)] = -1.0;
-
-            if (scale[size_t(3 * j)] != 1.0 || scale[size_t(3 * j + 2)] != 1.0)
+        for (unsigned i = 0; i < d_p; ++i) {
+            scale[i] = covarSolverToStoredScale(int(i), d_results[i]);
+            if (scale[i] != 1.0)
                 anyScaled = true;
         }
         if (anyScaled) {

@@ -157,6 +157,7 @@ protected:
                             std::vector<double> &Y) override;
     double toInternalParameter(int index, double userVal) const override;
     double fromInternalParameter(int index, double internalVal) const override;
+    double covarSolverToStoredScale(int parIndex, double solverVal) const override;
 
 private:
     struct DoubletConstraint

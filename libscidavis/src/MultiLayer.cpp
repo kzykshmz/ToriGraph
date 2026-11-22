@@ -426,43 +426,56 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
     }
 }
 
+void ScopedUnzoomForExport::restoreNow()
+{
+    if (!active)
+        return;
+    active = false;
+    if (!ml)
+        return;
+    {
+        QSignalBlocker sb(ml);
+        ml->setPageZoom(prevZoom);
+        if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
+            && ml->size() != prevWinSize) {
+            ml->resize(prevWinSize);
+        }
+        // Put every layer back on its exact rectangle (see prevLayerGeometry).
+        bool moved = false;
+        for (int i = 0; i < prevLayers.size(); ++i) {
+            Graph *gr = prevLayers.at(i);
+            if (!gr || !gr->plotWidget())
+                continue;
+            if (gr->geometry() == prevLayerGeometry.at(i)
+                && gr->plotWidget()->size() == prevPlotSize.at(i))
+                continue;
+            const bool ign = gr->ignoresResizeEvents();
+            gr->setIgnoreResizeEvents(true);
+            gr->setGeometry(prevLayerGeometry.at(i));
+            gr->plotWidget()->resize(prevPlotSize.at(i));
+            gr->plotWidget()->updateLayout();
+            gr->plotWidget()->replot();
+            gr->setIgnoreResizeEvents(ign);
+            moved = true;
+        }
+        ml->l_canvas_width = prevLayerCanvasW;
+        ml->l_canvas_height = prevLayerCanvasH;
+        if (moved)
+            ml->repositionCanvasStatusPill();
+    }
+    if (QWidget *w = ml->widget()) {
+        w->setUpdatesEnabled(prevWidgetUpdates);
+        if (prevWidgetUpdates)
+            w->update();
+    }
+    ml->setUpdatesEnabled(prevMlUpdates);
+    if (prevMlUpdates)
+        ml->update();
+}
+
 ScopedUnzoomForExport::~ScopedUnzoomForExport()
 {
-    if (active && ml) {
-        {
-            QSignalBlocker sb(ml);
-            ml->setPageZoom(prevZoom);
-            if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
-                && ml->size() != prevWinSize) {
-                ml->resize(prevWinSize);
-            }
-            // Put every layer back on its exact rectangle (see prevLayerGeometry).
-            bool moved = false;
-            for (int i = 0; i < prevLayers.size(); ++i) {
-                Graph *gr = prevLayers.at(i);
-                if (!gr || !gr->plotWidget())
-                    continue;
-                if (gr->geometry() == prevLayerGeometry.at(i)
-                    && gr->plotWidget()->size() == prevPlotSize.at(i))
-                    continue;
-                const bool ign = gr->ignoresResizeEvents();
-                gr->setIgnoreResizeEvents(true);
-                gr->setGeometry(prevLayerGeometry.at(i));
-                gr->plotWidget()->resize(prevPlotSize.at(i));
-                gr->plotWidget()->updateLayout();
-                gr->plotWidget()->replot();
-                gr->setIgnoreResizeEvents(ign);
-                moved = true;
-            }
-            ml->l_canvas_width = prevLayerCanvasW;
-            ml->l_canvas_height = prevLayerCanvasH;
-            if (moved)
-                ml->repositionCanvasStatusPill();
-        }
-        if (QWidget *w = ml->widget())
-            w->setUpdatesEnabled(prevWidgetUpdates);
-        ml->setUpdatesEnabled(prevMlUpdates);
-    }
+    restoreNow();
 }
 
 MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name, Qt::WindowFlags f)
@@ -2093,7 +2106,8 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
     printer.setFullPage(true);
 
     printer.setOutputFileName(fileName);
-    if (fileName.contains(".eps", Qt::CaseInsensitive)) {
+    if (fileName.endsWith(".eps", Qt::CaseInsensitive)
+        || fileName.endsWith(".ps", Qt::CaseInsensitive)) {
 #if QT_VERSION >= 0x050000
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Warning"),
@@ -7036,6 +7050,68 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
     QStringList lines = snapshot.split(QLatin1Char('\n'), keepEmpty);
     bool anyChanged = false;
     bool inSpectrogram = false;
+    int layerCurveIndex = 0;
+    QHash<int, QPair<QString, QString>> changedLayerCurves;
+
+    auto isIdentChar = [](QChar ch) -> bool {
+        return ch.isLetterOrNumber() || ch == QLatin1Char('_');
+    };
+    auto replaceExactIdentToken = [&](const QString &src, const QString &fromTok,
+                                      const QString &toTok) -> QString {
+        if (fromTok.isEmpty() || fromTok == toTok)
+            return src;
+        QString out;
+        out.reserve(src.size());
+        int pos = 0;
+        while (pos < src.size()) {
+            const int hit = src.indexOf(fromTok, pos);
+            if (hit < 0) {
+                out.append(src.mid(pos));
+                break;
+            }
+            const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
+            const int after = hit + fromTok.size();
+            const bool rightBoundary = (after >= src.size()) || !isIdentChar(src.at(after));
+            if (leftBoundary && rightBoundary) {
+                out.append(src.mid(pos, hit - pos));
+                out.append(toTok);
+                pos = after;
+            } else {
+                out.append(src.mid(pos, (hit - pos) + 1));
+                pos = hit + 1;
+            }
+        }
+        return out;
+    };
+    auto replaceTablePrefixTokens = [&](const QString &src, const QString &oldTbl,
+                                        const QString &newTbl) -> QString {
+        if (oldTbl.isEmpty() || oldTbl == newTbl)
+            return src;
+        const QString fromPfx = oldTbl + QLatin1Char('_');
+        const QString toPfx = newTbl + QLatin1Char('_');
+        QString out;
+        out.reserve(src.size());
+        int pos = 0;
+        while (pos < src.size()) {
+            const int hit = src.indexOf(fromPfx, pos);
+            if (hit < 0) {
+                out.append(src.mid(pos));
+                break;
+            }
+            const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
+            const int after = hit + fromPfx.size();
+            const bool hasColChar = (after < src.size()) && isIdentChar(src.at(after));
+            if (leftBoundary && hasColChar) {
+                out.append(src.mid(pos, hit - pos));
+                out.append(toPfx);
+                pos = after;
+            } else {
+                out.append(src.mid(pos, (hit - pos) + 1));
+                pos = hit + 1;
+            }
+        }
+        return out;
+    };
 
     for (int li = 0; li < lines.size(); ++li) {
         QString line = lines[li];
@@ -7044,8 +7120,15 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
             line.chop(1);
 
         const QString trimmed = line.trimmed();
+        if (trimmed == QLatin1String("<graph>") || trimmed == QLatin1String("</graph>")) {
+            inSpectrogram = false;
+            layerCurveIndex = 0;
+            changedLayerCurves.clear();
+            continue;
+        }
         if (trimmed == QLatin1String("<spectrogram>")) {
             inSpectrogram = true;
+            ++layerCurveIndex;
             continue;
         }
         if (trimmed == QLatin1String("</spectrogram>")) {
@@ -7066,8 +7149,11 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                     lineChanged = true;
                 }
             }
+        } else if (!inSpectrogram && line.startsWith(QLatin1String("FunctionCurve\t"))) {
+            ++layerCurveIndex;
         } else if (kind != SnapshotRenameKind::MatrixRename
                    && line.startsWith(QLatin1String("curve\t"))) {
+            ++layerCurveIndex;
             QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
             if (parts.size() >= 6) {
                 const int plotType = parts[3].toInt();
@@ -7078,9 +7164,11 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         lineChanged = true;
                     }
                 }
-                const QString nextY = remapFullColRef(parts[2], kind, oldName, newName);
-                if (nextY != parts[2]) {
+                const QString prevY = parts[2];
+                const QString nextY = remapFullColRef(prevY, kind, oldName, newName);
+                if (nextY != prevY) {
                     parts[2] = nextY;
+                    changedLayerCurves.insert(layerCurveIndex, qMakePair(prevY, nextY));
                     lineChanged = true;
                 }
                 if ((plotType == Graph::VectXYXY || plotType == Graph::VectXYAM)
@@ -7101,17 +7189,21 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
             }
         } else if (kind != SnapshotRenameKind::MatrixRename
                    && line.startsWith(QLatin1String("PieCurve\t"))) {
+            ++layerCurveIndex;
             QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
             if (parts.size() >= 3) {
-                const QString nextCol = remapFullColRef(parts[1], kind, oldName, newName);
-                if (nextCol != parts[1]) {
+                const QString prevCol = parts[1];
+                const QString nextCol = remapFullColRef(prevCol, kind, oldName, newName);
+                if (nextCol != prevCol) {
                     parts[1] = nextCol;
+                    changedLayerCurves.insert(layerCurveIndex, qMakePair(prevCol, nextCol));
                     line = parts.join(QLatin1Char('\t'));
                     lineChanged = true;
                 }
             }
         } else if (kind != SnapshotRenameKind::MatrixRename
                    && line.startsWith(QLatin1String("ErrorBars\t"))) {
+            ++layerCurveIndex;
             QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
             if (parts.size() >= 5) {
                 for (int ei : { 2, 3, 4 }) {
@@ -7123,6 +7215,87 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                 }
                 if (lineChanged)
                     line = parts.join(QLatin1Char('\t'));
+            }
+        } else if (kind != SnapshotRenameKind::MatrixRename
+                   && ((trimmed.startsWith(QLatin1String("<legend>\t"))
+                        && trimmed.endsWith(QLatin1String("</legend>")))
+                       || line.startsWith(QLatin1String("Legend\t")))) {
+            const QString closeLegendTag = QStringLiteral("</legend>");
+            const bool hasCloseTag = line.endsWith(closeLegendTag);
+            const QString rawBody =
+                    hasCloseTag ? line.left(line.size() - closeLegendTag.size()) : line;
+            QStringList parts = rawBody.split(QLatin1Char('\t'), keepEmpty);
+            for (int ti = 14; ti < parts.size(); ++ti) {
+                const QString legLine = parts[ti];
+                int prefixEnd = -1;
+                int oneBased = -1;
+                const int cPos = legLine.indexOf(QLatin1String("\\c{"));
+                if (cPos >= 0 && legLine.left(cPos).trimmed().isEmpty()) {
+                    const int closeBrace = legLine.indexOf(QLatin1Char('}'), cPos + 3);
+                    if (closeBrace > cPos + 3) {
+                        bool ok = false;
+                        const int parsed =
+                                legLine.mid(cPos + 3, closeBrace - (cPos + 3)).toInt(&ok);
+                        if (ok && parsed >= 1) {
+                            oneBased = parsed;
+                            prefixEnd = closeBrace + 1;
+                        }
+                    }
+                } else {
+                    const int lPos = legLine.indexOf(QLatin1String("\\l("));
+                    if (lPos >= 0 && legLine.left(lPos).trimmed().isEmpty()) {
+                        const int closeParen = legLine.indexOf(QLatin1Char(')'), lPos + 3);
+                        if (closeParen > lPos + 3) {
+                            bool ok = false;
+                            const int parsed =
+                                    legLine.mid(lPos + 3, closeParen - (lPos + 3)).toInt(&ok);
+                            if (ok && parsed >= 1) {
+                                oneBased = parsed;
+                                prefixEnd = closeParen + 1;
+                            }
+                        }
+                    }
+                }
+
+                if (oneBased >= 1 && prefixEnd > 0) {
+                    const QString cmdPrefix = legLine.left(prefixEnd);
+                    const QString rest = legLine.mid(prefixEnd);
+                    int leadSpaces = 0;
+                    while (leadSpaces < rest.size() && rest.at(leadSpaces) == QLatin1Char(' '))
+                        ++leadSpaces;
+                    const QString coreRest = rest.mid(leadSpaces);
+                    QString newRest = rest;
+                    const QString fullMapped =
+                            remapFullColRef(coreRest, kind, oldName, newName);
+                    if (fullMapped != coreRest) {
+                        newRest = rest.left(leadSpaces) + fullMapped;
+                    } else if (kind == SnapshotRenameKind::ColRename
+                               && changedLayerCurves.contains(oneBased) && !oldShortCol.isEmpty()
+                               && !newShortCol.isEmpty() && coreRest == oldShortCol) {
+                        newRest = rest.left(leadSpaces) + newShortCol;
+                    } else if (kind == SnapshotRenameKind::TableRename) {
+                        newRest = replaceTablePrefixTokens(rest, oldName, newName);
+                    } else if (kind == SnapshotRenameKind::ColRename) {
+                        newRest = replaceExactIdentToken(rest, oldName, newName);
+                    }
+                    if (newRest != rest) {
+                        parts[ti] = cmdPrefix + newRest;
+                        lineChanged = true;
+                    }
+                } else {
+                    const QString nextItem = (kind == SnapshotRenameKind::TableRename)
+                            ? replaceTablePrefixTokens(legLine, oldName, newName)
+                            : replaceExactIdentToken(legLine, oldName, newName);
+                    if (nextItem != legLine) {
+                        parts[ti] = nextItem;
+                        lineChanged = true;
+                    }
+                }
+            }
+            if (lineChanged) {
+                line = parts.join(QLatin1Char('\t'));
+                if (hasCloseTag)
+                    line += closeLegendTag;
             }
         } else if (kind != SnapshotRenameKind::MatrixRename
                    && line.startsWith(QLatin1String("AxisType\t"))) {

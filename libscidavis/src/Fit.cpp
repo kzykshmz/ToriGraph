@@ -1195,6 +1195,9 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
     vector<double> result(d_p);
     d_convergence = Converged;
     d_last_iterations = 0;
+    d_covar_scaled = false;
+    if (covar)
+        gsl_matrix_set_zero(covar);
 
     const std::vector<double> weightsVec = computeWeightsVector();
     d_y_errors.resize(d_x.size(), 1.0);
@@ -1701,6 +1704,9 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
     vector<double> result(d_p);
     d_convergence = Converged;
     d_last_iterations = 0;
+    d_covar_scaled = false;
+    if (covar)
+        gsl_matrix_set_zero(covar);
 
     const std::vector<double> weightsVec = computeWeightsVector();
     d_y_errors.resize(d_x.size(), 1.0);
@@ -2996,6 +3002,9 @@ void Fit::fit()
     d_fit_notes.clear();
     chi_2 = -1.0;
     d_y_fit.clear();
+    d_covar_scaled = false;
+    if (covar)
+        gsl_matrix_set_zero(covar);
     if (!d_all_guesses_set && unsigned(d_explicit_init_vals.size()) < d_p) {
         guessInitialValues();
         applyExplicitInitialGuesses();
@@ -3579,6 +3588,7 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     const QStringList savedNotes = d_fit_notes;
     const bool savedStraightLine = d_straight_line_fit;
     const double savedLineR = d_line_pearson_r;
+    const bool savedCovarScaled = d_covar_scaled;
 
     std::vector<double> savedParamInit(d_p, 0.0);
     if (d_param_init) {
@@ -3708,6 +3718,7 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
             for (unsigned c = 0; c < d_p; ++c)
                 gsl_matrix_set(covar, r, c, savedCovar[size_t(r) * size_t(d_p) + size_t(c)]);
     }
+    d_covar_scaled = savedCovarScaled;
 
     if (out.nSuccess < 2)
         return out;
@@ -3822,11 +3833,8 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         p_minus[j] = pj - h;
         if (evaluateModelCurve(p_plus, X_tmp, Y_plus)
             && evaluateModelCurve(p_minus, X_tmp, Y_minus)) {
-            double du = fromInternalParameter(int(j), pj + h)
-                    - fromInternalParameter(int(j), pj - h);
-            if (j < d_results.size() && pj * d_results[j] < 0.0)
-                du = -du;
-            const double denom = (std::abs(du) > 1e-30) ? du : (2.0 * h);
+            const double scale = covarSolverToStoredScale(int(j), pj);
+            const double denom = 2.0 * h * ((std::abs(scale) > 1e-30) ? scale : 1.0);
             for (int k = 0; k < nPts; ++k)
                 G[k][j] = (Y_plus[k] - Y_minus[k]) / denom;
         }

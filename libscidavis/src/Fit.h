@@ -280,6 +280,13 @@ protected:
         return internalVal;
     }
 
+    virtual double covarSolverToStoredScale(int parIndex, double solverVal) const
+    {
+        Q_UNUSED(parIndex);
+        Q_UNUSED(solverVal);
+        return 1.0;
+    }
+
     int effectiveFreeParameters() const;
     bool hasActiveConstraints() const;
     void ensureConstraintCapacity(int index);
@@ -326,6 +333,7 @@ protected:
 
     //! Covariance matrix
     gsl_matrix *covar = nullptr;
+    bool d_covar_scaled = false;
 
     //! Where standard errors of the input data are taken from.
     ErrorSource d_y_error_source;
