@@ -34,10 +34,10 @@
 
 <nav>
 <ol>
-  <li><a href="#paste">データを貼り付ける</a></li>
+  <li><a href="#paste">データを読み込む・貼り付ける</a></li>
   <li><a href="#plot">グラフを描く</a></li>
-  <li><a href="#style">体裁を整える</a></li>
-  <li><a href="#ppt">PowerPoint に貼る</a></li>
+  <li><a href="#style">体裁を整える (論文・研究室スライド)</a></li>
+  <li><a href="#ppt">PowerPoint に貼る・送る</a></li>
   <li><a href="#edit">ダブルクリックで直す</a></li>
   <li><a href="#keys">覚えておくと楽なキー</a></li>
   <li><a href="#origin">Origin を使っていた人へ(用語の対応)</a></li>
@@ -45,18 +45,22 @@
 </ol>
 </nav>
 
-<h2 id="paste">1. データを貼り付ける</h2>
+<h2 id="paste">1. データを読み込む・貼り付ける</h2>
 <div class="step">
-<h3>Excel から</h3>
-<ol>
-  <li>Excel で表の範囲を選んで <kbd>Ctrl</kbd>+<kbd>C</kbd> でコピーします。1 行目に列の名前、2 行目に単位(MPa、% など)があると、そのまま列名と単位として取り込まれ、軸タイトルにも使われます。</li>
-  <li>ToriGraph の表(ワークシート)の左上のセルをクリックし、<kbd>Ctrl</kbd>+<kbd>V</kbd> で貼り付けます。起動直後の空の表にも、そのまま貼り付けられます。</li>
-</ol>
+<h3>Excel ブック (.xlsx) や CSV ファイルをそのまま読み込む</h3>
+<ul>
+  <li><b>Excel ファイル (.xlsx / .xlsm)・CSV・TSV</b> を ToriGraph のウィンドウにドラッグ&amp;ドロップするだけで直接読み込めます(リボンの「ホーム」→「インポート」、または初期画面右側の「Excel (.xlsx) / CSV 読込...」からも開けます)。</li>
+  <li>複数シートを含む Excel ブックは<b>複数シートのワークブック</b>として取り込まれ、ワークシート下部のシートタブ(<code>[Sheet1] [Sheet2] [+]</code>)で切り替えられます。「ホーム」→「その他新規」→「新しいブック」から空の複数シートブックを作ることもできます。</li>
+  <li>CSV・テキストファイルの区切り文字と文字コード(UTF-8、Shift-JIS)は自動で判定します。</li>
+</ul>
 </div>
 <div class="step">
-<h3>CSV・テキストファイルから</h3>
-<p>ファイルを ToriGraph のウィンドウにドラッグ&amp;ドロップするか、リボンの「ホーム」→「インポート」から読み込みます。区切り文字と文字コード(UTF-8、Shift-JIS)は自動で判定します。</p>
-<p>Excel のファイル(.xlsx)は直接は読めません。Excel で範囲をコピーして貼り付けるか、CSV で保存してから読み込んでください。</p>
+<h3>Excel からコピー&amp;ペースト / 長い名前と単位の入れ方</h3>
+<ol>
+  <li>Excel で表の範囲を選んで <kbd>Ctrl</kbd>+<kbd>C</kbd> でコピーし、ToriGraph のワークシート左上のセルをクリックして <kbd>Ctrl</kbd>+<kbd>V</kbd> で貼り付けます。</li>
+  <li>1 行目に<b>長い名前</b>(例: <code>公称応力</code>)、2 行目に<b>単位</b>(例: <code>MPa</code>、<code>%</code>)があると自動で認識され、軸タイトル(<code>公称応力 (MPa)</code> や ISIJ 形式 <code>公称応力 / MPa</code>)および凡例にそのまま使われます。</li>
+  <li>貼り付けたあとからでも、ワークシート上部の「長い名前」「単位」行をダブルクリックするか、表右側の「列設定」パネルでいつでも入力・変更できます。</li>
+</ol>
 </div>
 
 <h2 id="plot">2. グラフを描く</h2>
@@ -69,22 +73,28 @@
 <p class="note">グラフを選んでいる状態で作図ボタンを押すと、そのグラフの元の表から新しいグラフを作ります。元の表が分からないときは、理由を画面に表示します。</p>
 </div>
 
-<h2 id="style">3. 体裁を整える</h2>
+<h2 id="style">3. 体裁を整える (論文・研究室スライド)</h2>
 <div class="step">
 <ul>
-  <li><b>論文用(ISIJ 85 mm)</b>: リボンの「書式・出力」タブ、またはグラフの右クリック →「体裁」→「スタイルプリセット」から ISIJ 85 mm を選ぶと、85 mm 角・Arial・内向き目盛り・600 dpi の体裁に一度で揃います。</li>
-  <li><b>細かい調整</b>: 右側のグラフインスペクタで、軸の範囲、文字の大きさ、線の太さ、シンボル、凡例を変えられます。インスペクタの下の「詳細設定…」を押すと、その項目のすべての設定があるダイアログが開きます。</li>
+  <li><b>論文用 (ISIJ 85 mm)</b>: リボンの「書式・出力」タブ左端、または右側のグラフインスペクタ最上段の「ISIJ 論文 (85mm)」を押すと、85 mm 角・Arial・内向き目盛り・600 dpi の 1 段組体裁に一度で揃います。</li>
+  <li><b>研究室スライド (18pt)</b>: 「書式・出力」タブまたはインスペクタの「研究室スライド (18pt)」を押すと、83.3 mm 角・Arial 12.9 pt に整います。次の「PowerPoint へ送る」(既定 140% 倍率)でスライドへ配置すると、スライド上でちょうど <b>18 pt</b>(16:9 スライドに 2〜3 枚並べても読みやすい大きさ)になります。</li>
+  <li><b>基準線と細かい調整</b>: インスペクタの「軸 (X/Y)」タブや軸ミニツールバーから <code>y = 0</code> / <code>x = 0</code> 基準線をワンクリックで入れられます。軸の範囲、文字の大きさ、小数線幅、カラーマップ散布図の配色や凡例もインスペクタで即座に変えられ、右下の「詳細設定…」から全項目ダイアログも開けます。</li>
   <li><b>他のグラフと揃える</b>: 「書式のコピー」→ 揃えたいグラフで「書式の貼り付け」。</li>
 </ul>
 </div>
 
-<h2 id="ppt">4. PowerPoint に貼る</h2>
+<h2 id="ppt">4. PowerPoint に貼る・送る</h2>
 <div class="step">
+<h3>方法 A: 開いているスライドにそのまま貼る (<kbd>Ctrl</kbd>+<kbd>C</kbd> → <kbd>Ctrl</kbd>+<kbd>V</kbd>)</h3>
 <ol>
-  <li>グラフのウィンドウをクリックして選び、<kbd>Ctrl</kbd>+<kbd>C</kbd> を押します(「編集」メニューの OLE オブジェクトとしてコピーと同じです)。</li>
-  <li>PowerPoint のスライドで <kbd>Ctrl</kbd>+<kbd>V</kbd> を押します。グラフは ToriGraph で決めた大きさ(mm)のまま貼られます。</li>
+  <li>グラフをクリックして選び、「ホーム」タブの「PowerPoint 用にコピー」または <kbd>Ctrl</kbd>+<kbd>C</kbd> を押します。</li>
+  <li>PowerPoint のスライド上で <kbd>Ctrl</kbd>+<kbd>V</kbd> を押すと、あとからダブルクリックで再編集できる OLE グラフとして貼られます。</li>
 </ol>
-<p>画像ファイル(PNG、PDF、SVG、EMF)として保存したいときは、「ファイル」→「グラフのエクスポート」を使います。</p>
+<h3>方法 B: 「PowerPoint へ送る」で .pptx ファイルへ直接書き出す</h3>
+<ul>
+  <li>リボンの「書式・出力」→「<b>PowerPoint へ送る</b>」(または「ファイル」メニュー)を押すと、PowerPoint を起動していなくても、選んだグラフ(複数一括も可)を新規 <code>.pptx</code> または既存 <code>.pptx</code> の末尾スライドへ編集可能な OLE オブジェクトとして直接追加できます(貼付倍率 140% なども指定できます)。</li>
+</ul>
+<p>画像ファイル(PNG、TIFF、PDF、SVG、EMF)として保存したいときは、「書式・出力」→「画像出力」を使います。</p>
 </div>
 
 <h2 id="edit">5. ダブルクリックで直す</h2>
@@ -104,14 +114,17 @@
 <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>元に戻す / やり直し(表とグラフで履歴は別々です)</td></tr>
 <tr><td><kbd>Esc</kbd></td><td>ズームやデータ読取などのモードを解除する。いまのモードは画面下のステータスバーに出ます</td></tr>
 <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>上書き保存 / 名前を付けて保存</td></tr>
+<tr><td><kbd>F11</kbd></td><td>集中表示モード(リボンを畳んでグラフを広く表示・左上の「ワークシート」から元データを並べて編集)</td></tr>
+<tr><td><kbd>Delete</kbd></td><td>選択中の曲線・基準線・テキスト注釈を削除(<kbd>Ctrl</kbd>+<kbd>Z</kbd> で戻せます)</td></tr>
+<tr><td><kbd>Shift</kbd>+ドラッグ</td><td>矢印・線の水平/垂直/45°スナップ描画、凡例・テキストの水平/垂直固定移動</td></tr>
 <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td>新しい関数グラフ</td></tr>
 </table>
 
 <h2 id="origin">7. Origin を使っていた人へ(用語の対応)</h2>
 <table>
 <tr><th>Origin</th><th>ToriGraph</th></tr>
-<tr><td>ワークブック / ワークシート</td><td>表(テーブル)。1 つの表が 1 枚のワークシートです</td></tr>
-<tr><td>Long Name / Units / Comments</td><td>列の長い名前 / 単位 / コメント(軸タイトルに自動で入ります)</td></tr>
+<tr><td>ワークブック / ワークシート</td><td>ワークブック(複数シートを下部タブで切替) / ワークシート(表)</td></tr>
+<tr><td>Long Name / Units / Comments</td><td>列の長い名前 / 単位 / コメント(軸タイトル・凡例に自動で入ります)</td></tr>
 <tr><td>列の属性 X / Y / yEr</td><td>列見出しの右クリック →「列のプロット属性を設定」→「X」「Y」「Y 誤差」など</td></tr>
 <tr><td>Set Column Values</td><td>列の値を設定(列見出しの右クリック)</td></tr>
 <tr><td>グラフウィンドウ / レイヤー</td><td>グラフ / レイヤー</td></tr>

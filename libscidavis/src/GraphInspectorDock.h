@@ -117,6 +117,10 @@ public:
     QWidget *quickStartPanel() const { return d_empty_quickstart_panel; }
     bool isShowingQuickStart() const;
 
+    static bool hasZeroReferenceLine(const Graph *g, int orientation);
+    static void toggleZeroReferenceLine(Graph *g, int orientation);
+    static void addReferenceLineInteractive(Graph *g, int defaultOrientation = 0);
+
 signals:
     void collapsedStateChanged(bool collapsed);
     void userPinToggled(bool pinned);
@@ -320,6 +324,15 @@ private:
     QLineEdit *d_edit_break_from = nullptr;
     QLabel *d_lbl_break_to = nullptr;
     QLineEdit *d_edit_break_to = nullptr;
+    QLabel *d_lbl_break_scale_before = nullptr;
+    QComboBox *d_combo_break_scale_before = nullptr;
+    QLabel *d_lbl_break_scale_after = nullptr;
+    QComboBox *d_combo_break_scale_after = nullptr;
+
+    QLabel *d_sec_ref_lines_lbl = nullptr;
+    QPushButton *d_btn_ref_zero_y = nullptr;
+    QPushButton *d_btn_ref_zero_x = nullptr;
+    QPushButton *d_btn_ref_add_custom = nullptr;
 
     QLabel *d_sec_axis_ticks_lbl = nullptr;
     QLabel *d_lbl_tick_dir = nullptr;
@@ -362,7 +375,7 @@ private:
     QLabel *d_lbl_line_color = nullptr;
     QPushButton *d_btn_line_color = nullptr;
     QLabel *d_lbl_line_width = nullptr;
-    QSpinBox *d_spin_line_width = nullptr;
+    QDoubleSpinBox *d_spin_line_width = nullptr;
     QLabel *d_lbl_line_pen = nullptr;
     QComboBox *d_combo_line_pen = nullptr;
     QLabel *d_lbl_curve_opacity = nullptr;
@@ -402,6 +415,24 @@ private:
     QLabel *d_lbl_err_color = nullptr;
     QPushButton *d_btn_err_color = nullptr;
     QPushButton *d_btn_err_match_curve = nullptr;
+    QCheckBox *d_chk_err_band = nullptr;
+    QLabel *d_lbl_err_band_opacity = nullptr;
+    QSpinBox *d_spin_err_band_opacity = nullptr;
+
+    // Color-Mapped Scatter (PointColorMap) Controls
+    QWidget *d_point_cmap_wrap = nullptr;
+    QLabel *d_sec_pcm_lbl = nullptr;
+    QLabel *d_lbl_pcm_cmap = nullptr;
+    QComboBox *d_combo_pcm_cmap = nullptr;
+    QCheckBox *d_chk_pcm_reverse = nullptr;
+    QCheckBox *d_chk_pcm_colorbar = nullptr;
+    QLabel *d_lbl_pcm_cb_title = nullptr;
+    QLineEdit *d_edit_pcm_cb_title = nullptr;
+    QCheckBox *d_chk_pcm_custom_z = nullptr;
+    QLabel *d_lbl_pcm_zmin = nullptr;
+    QLineEdit *d_edit_pcm_zmin = nullptr;
+    QLabel *d_lbl_pcm_zmax = nullptr;
+    QLineEdit *d_edit_pcm_zmax = nullptr;
 
     QLabel *d_sec_series_scheme_lbl = nullptr;
     QComboBox *d_combo_series_scheme = nullptr;

@@ -5527,7 +5527,7 @@ More column plot roles (±xErr, Z, Label, Disregard)	その他の列役割(±x�
 Col Props	列設定
 Bar Chart	棒グラフ
 Square Symbol	四角 (■)
-Trim Page	余白调整
+Trim Page	余白調整
 ISIJ 85mm Fig	ISIJ 85mm図
 Nature 89mm Fig	Nature 89mm図
 Size & DPI	寸法・DPI
@@ -5891,6 +5891,168 @@ Dynamic Recalculation (%1 active link(s))	動的再計算 (%1 件の有効なリ
 Apply User Presets or Edit / Add Custom Graph Style Presets	ユーザープリセットの適用・カスタムグラフスタイルプリセットの編集/追加
 ISIJ 1-Column (85x85 mm, 600 DPI)	ISIJ 1段組 (85×85 mm, 600 DPI)
 Nature Compact (89x89 mm, Open-L)	Nature コンパクト (89×89 mm, Open-L)
+Home	ホーム
+Clipboard	クリップボード
+Undo / Redo	元に戻す・やり直し
+Recalculation	再計算
+More Plots	その他の作図
+Add to Graph	グラフへ追加
+Graph Tools	グラフ操作ツール
+Masks	マスク
+Materials Analysis	材料解析
+Journal Presets	論文・スライド様式
+Format & Export	書式・出力
+Python Scripts	Pythonスクリプト
+Settings	環境設定
+Settings File	設定ファイル
+Presets...	プリセット...
+Manage Style Presets...	スタイルプリセットの管理...
+Reader	データ読取
+Weibull	ワイブル
+Arrhenius	アレニウス
+Curve Math & Tools	曲線演算・ツール
+Curve Math, Fill Between Curves, Graph Digitizer, Tauc Bandgap & EIS	曲線演算・曲線間塗りつぶし・デジタイザ・Taucバンドギャップ・EIS解析
+Multivariate	多変量解析
+PCA Biplot, Correlation Matrix, Clustering, Kaplan-Meier & ROC Curve	主成分分析 (PCA)・相関行列・クラスタリング・Kaplan-Meier生存曲線・ROC曲線
+New Workbook	新しいブック
+Create a New Multi-Sheet Workbook	複数シートを持つ新しいワークブックを作成
+Create Multi-Sheet Workbook, Matrix, Add Column, or Merge Graphs	新しいワークブック・行列の作成・列の追加・グラフ結合
+Import Excel Workbook (.xlsx)...	Excel ブック (.xlsx) をインポート...
+Import &Excel Workbook (.xlsx)...	Excel ブック (.xlsx) をインポート(&E)...
+Import every sheet of an Excel workbook (.xlsx) as worksheets	Excel ブック (.xlsx) の全シートをワークシートとして読み込む
+Lab Slide (18pt)	研究室スライド (18pt)
+Lab Slide (18pt) Preset	研究室スライド (18pt) プリセット
+Lab Slide (83.3 mm, 18 pt @ 140%)	研究室スライド (83.3 mm角, 140%貼付で18 pt)
+83.3 mm square, 12.9 pt Arial. Becomes 18 pt on the slide with 'Send to PowerPoint' (140% paste).	83.3 mm角・12.9 pt。『PowerPoint へ送る』 (140%貼付) でスライド上 18 pt になります。
+85 mm single-column journal preset with Arial fonts and inward ticks	85 mm角・1段組論文プリセット (Arialフォント・内向き目盛り)
+Add Error Bars from Column, SD, or Percentage	列・標準偏差・パーセンテージからエラーバーを追加
+Add text, legend, error bars, reference lines, or multi-panel layout	テキスト・凡例・エラーバー・基準線・複数パネル配置を追加
+y = 0 Reference Line	y = 0 基準線
+x = 0 Reference Line	x = 0 基準線
+Add y = 0 Reference Line	y = 0 基準線を追加
+Add x = 0 Reference Line	x = 0 基準線を追加
+Toggle y = 0 Reference Line	y = 0 基準線の表示切替
+Toggle x = 0 Reference Line	x = 0 基準線の表示切替
+Toggle horizontal dashed y = 0 reference line	水平な破線の y = 0 基準線を表示/非表示
+Toggle vertical dashed x = 0 reference line	垂直な破線の x = 0 基準線を表示/非表示
+Add Reference Line...	基準線を追加...
++ Add...	+ 追加...
+Add a custom constant or statistical reference line	任意の定数値または統計量 (平均・標準偏差など) の基準線を追加
+Reference Lines (%1)	基準線 (%1)
+Position Mode:	位置モード:
+Toggle Reference Line Visibility	基準線の表示切替
+Before Break:	省略前の軸:
+After Break:	省略後の軸:
+Inverse Arrhenius: 1000/T -> T (K)	逆アレニウス軸: 1000/T -> T (K)
+Temperature (K)	温度, <i>T</i> (K)
+Scale tick number font sizes proportionally and apply to all 4 axes together	軸タイトル変更時に目盛り数値のフォントサイズも比率を保って全4軸一括で連動変更します
+Draw as Translucent Band	半透明エラーバンドとして描画
+Band Opacity:	バンドの不透明度:
+Toggle Error Band	エラーバンド切替
+Change Error Band Opacity	エラーバンドの不透明度を変更
+Scatter Colormap (Z Column)	カラーマップ散布図 (Z列)
+Change Scatter Colormap	散布図カラーマップを変更
+Change Scatter Z Range	散布図のZ範囲を変更
+Histogram + Cumulative %	ヒストグラム + 累積相対度数 (%)
+Frequency histogram with the cumulative percentage on the right axis	右Y軸に累積相対度数 (%) を重ねた度数ヒストグラムを作成
+Color-Mapped Scatter (Z)	カラーマップ散布図 (Z)
+Scatter plot whose symbol color follows a third column (and size a fourth), with a color bar	第3列の値でシンボルの色 (第4列でサイズ) を変えるカラーバー付き散布図を作成
+2D Density (2D Histogram)	2D密度プロット (2Dヒストグラム)
+Count X-Y points on a grid and show the counts as a heat map with a color bar (fast for 100,000+ points)	X-Yデータ点の格子密度を集計しカラーバー付きヒートマップとして高速描画 (10万点以上対応)
+Pole Figure	極点図
+Pole Figure (XRD)	極点図 (XRD)
+XRD pole figure from alpha, beta, intensity columns or an alpha x beta matrix: equal-area (Schmidt) or equal-angle (Wulff) projection with contours	α・β・強度列またはα×β行列からXRD極点図を作成: 等積 (Schmidt) / 等角 (Wulff) 投影・等高線表示
+Probability Plots	確率紙プロット
+Lognormal Probability Plot	対数正規確率紙プロット
+Lognormal probability paper: rank plotting positions and a straight-line fit (mu, sigma)	対数正規確率紙: メジアンランクプロットと直線フィット (μ, σ)
+Gumbel (Extreme Value) Probability Plot	Gumbel (極値) 確率紙プロット
+Gumbel extreme value plot (e.g. maximum defect size): location, scale and return-period value	Gumbel極値確率紙プロット (最大介在物径など): 位置・尺度母数と再現期間推定値
+%1: the window is too narrow to show this group, so its commands are listed here	%1: ウィンドウ幅に合わせて折りたたまれたグループのコマンド一覧です
+Double-click a tab to minimize or restore the ribbon (Ctrl+F1)	タブをダブルクリックするとリボンを最小化/復元します (Ctrl+F1)
+Export, import or reset all settings	すべての設定をエクスポート・インポート・初期化
+Pointer: leave zoom, reader and gadget modes (Esc)	標準ポインタ: ズーム・データ読取・ガジェットモードを終了 (Esc)
+Zoom into a dragged rectangle (Ctrl++)	ドラッグした矩形範囲を拡大表示 (Ctrl++)
+Read data values by clicking points (Ctrl+D)	データ点をクリックして座標値を読み取り (Ctrl+D)
+Undo the last change in the active window (Ctrl+Z)	アクティブなウィンドウの直前の操作を元に戻す (Ctrl+Z)
+Redo the last undone change (Ctrl+Y)	元に戻した操作をやり直す (Ctrl+Y)
+Not available in the current state.	現在の状態では使用できません。
+Not available now: open or create a worksheet or graph first.	使用不可: 先にワークシートまたはグラフを開くか作成してください。
+Not available for a worksheet: click a graph window first.	ワークシート上では使用不可: 先にグラフウィンドウをクリックしてください。
+Not available for this window: click a worksheet (or select a curve) first.	このウィンドウでは使用不可: 先にワークシートをクリック (または曲線を選択) してください。
+Click or create a graph window first.	先にグラフを作成またはクリックしてください。
+Click a worksheet (with 2+ Y columns) or a graph window first.	先にワークシート (Y列2つ以上) またはグラフウィンドウをクリックしてください。
+Created a new graph from "%1", the worksheet of the active graph.	アクティブなグラフの元ワークシート "%1" から新しいグラフを作成しました。
+The plot buttons make a graph from worksheet columns. Click a worksheet (or paste data from Excel) first.	作図ボタンはワークシートの列からグラフを作成します。先にワークシートをクリック (またはExcelから貼り付け) してください。
+The plot buttons make a new graph from worksheet columns. This graph has no source worksheet (function or image data); click a worksheet first.	作図ボタンはワークシートの列から新しいグラフを作成します。このグラフには元ワークシートがないため、先にワークシートをクリックしてください。
+Graph export works on a graph window. Click the graph you want to export first.	グラフのエクスポートはグラフウィンドウに対して実行します。先に出力したいグラフをクリックしてください。
+Quick Start Guide	クイックスタートガイド
+Create publication-ready graphs in 3 easy steps	3ステップですぐに論文・発表品質のグラフを作成
+Paste from Excel into the worksheet (Ctrl+V) or drop an Excel (.xlsx) / CSV file	ワークシートに Excel から貼り付け (Ctrl+V)、または Excel (.xlsx) / CSV ファイルをドロップ
+Click 'Line', 'Line+Sym', or 'Scatter' on the top bar	上部リボンの『折れ線』『線+シンボル』『散布図』をクリック
+Drag graph frame to resize; click axes or legend to edit	グラフ枠をドラッグして寸法調整し、軸や凡例をクリックして編集
+Import Excel (.xlsx) / CSV...	Excel (.xlsx) / CSV 読込...
+Import Excel (.xlsx) / CSV	Excel (.xlsx) / CSV の読み込み
+Open an Excel workbook (.xlsx/.xlsm) or CSV/TSV data file into a worksheet	Excel ブック (.xlsx/.xlsm) または CSV/TSV データファイルをワークシートに読み込みます
+Excel & CSV / Data (*.xlsx *.xlsm *.csv *.tsv *.txt *.dat);;Excel Workbooks (*.xlsx *.xlsm);;CSV / Text Data (*.csv *.tsv *.txt *.dat);;All Files (*)	Excel・CSV・データ (*.xlsx *.xlsm *.csv *.tsv *.txt *.dat);;Excel ブック (*.xlsx *.xlsm);;CSV / テキストデータ (*.csv *.tsv *.txt *.dat);;すべてのファイル (*)
+Plot Line + Symbol	線+シンボルで作図
+Plot the active worksheet as a Line + Symbol graph	アクティブなワークシートから線+シンボルグラフを作成します
+Sample Gallery / Plot	サンプル集から試す
+X/Y	軸 (X/Y)
+Show Axis	軸を表示
+Tick Labels	目盛り数値
+Aspect Ratio & Resizing	縦横比・リサイズ設定
+1:1 Square	1:1 正方形
+4:3 Landscape	4:3 横長
+16:9 Wide	16:9 ワイド
+3:4 Portrait	3:4 縦長
+Free Resize (Unlock Aspect Ratio)	自由リサイズ (縦横比固定を解除)
+Apply Aspect Ratio Preset	縦横比プリセットを適用
+Toggle Aspect Ratio Lock	縦横比固定の切替
+Lock / Unlock Aspect Ratio (Free Resize)	縦横比の固定 / 自由リサイズを切替
+Aspect Ratio 1:1	縦横比 1:1
+Aspect Ratio 4:3	縦横比 4:3
+Aspect Ratio 16:9	縦横比 16:9
+Aspect Ratio 3:4	縦横比 3:4
+Free Resize	自由リサイズ
+Number of minor ticks between major ticks. On a log axis only 0, 2, 4 or 8 are meaningful (8 = 2, 3, ..., 9).	主目盛り間の副目盛り数です。対数軸では 0, 2, 4, 8 のみ有効です (8 = 2, 3, ..., 9)。
+Use the column to the right of the Y column as ± error bars (click again to remove)	Y列の右隣の列を ± エラーバーとして使用します (再クリックで解除)
+Add the standard deviation of all Y values as the same ± error bar on every point (click again to remove)	全Y値の標準偏差を各点の ± エラーバーとして付与します (再クリックで解除)
+Add ± 5% of each Y value as error bars (click again to remove)	各Y値の ±5% をエラーバーとして付与します (再クリックで解除)
+Move the legend to the %1 corner inside the plot frame	プロット枠内の %1 隅へ凡例を移動します
+Move the legend to the top centre inside the plot frame	プロット枠内の上部中央へ凡例を移動します
+Move the legend outside the plot frame, to the right of the layer	プロット枠外のレイヤー右側へ凡例を配置します
+Move the legend to the corner or edge position that overlaps the data least	データ点と最も重ならない位置へ凡例を自動配置します
+Rebuild the legend text from the current curves (custom text is replaced)	現在の曲線構成から凡例テキストを再生成します (手編集テキストは上書きされます)
+Edit the text. Each line of a multi-line label is one line here.	テキストを編集します。複数行ラベルは1行ずつ改行して入力できます。
+Open the dialog with every setting for this section	このセクションの詳細設定ダイアログを開きます
+Click to choose a color (now %1)	クリックして色を選択 (現在: %1)
+Color %1	色 %1
+Alt+F10: move the keyboard focus into this toolbar (Tab: next button, Esc: back to the graph)	Alt+F10: キーボードフォーカスをこのツールバーへ移動 (Tab: 次のボタン, Esc: グラフへ戻る)
+Move Label / Scale	ラベル・目盛りの移動
+%1: fill down	%1: 下方向へコピー
+%1: replace	%1: 置換
+Imported %1	%1 を読み込みました
+Exported %1	%1 をエクスポートしました
+Click a column header in the worksheet to select it, then press the plot button again.	ワークシートの列ヘッダをクリックして選択してから、もう一度作図ボタンを押してください。
+Click the header of the Y column(s) to plot (Ctrl+click for several). A column becomes Y via right-click > "Set Column(s) As" > "Y".	作図するY列のヘッダをクリックしてください (Ctrl+クリックで複数選択)。右クリック > 『列の役割を設定』 > 『Y』でY列に変更できます。
+Right-click the header of the column to use as X and choose "Set Column(s) As" > "X", then plot again.	X軸にする列のヘッダを右クリックし、『列の役割を設定』 > 『X』を選んでから再度作図してください。
+Paste X and Y data from Excel (Ctrl+V) or add a column (Home > More New > Add Column).	ExcelからX・Yデータを貼り付ける (Ctrl+V) か、列を追加 (ホーム > その他新規 > 列追加) してください。
+Click on the graph where the text should go, then type it (Esc to cancel).	グラフ上のテキストを置きたい位置をクリックして文字を入力してください (Escでキャンセル)。
+Old Excel (.xls) and OpenDocument (.ods) files cannot be read directly.\nSave them as an Excel Workbook (.xlsx) or as CSV and drop that file, or copy the cells in Excel (Ctrl+C) and paste them into a worksheet here (Ctrl+V).	旧形式の Excel (.xls) や OpenDocument (.ods) は直接読み込めません。\nExcel ブック (.xlsx) または CSV 形式で保存してドロップするか、Excel上でセルをコピー (Ctrl+C) してワークシートへ貼り付けてください (Ctrl+V)。
+Please activate a 2D Graph window first before adding a linked layer.	連動レイヤーを追加する前に、2Dグラフウィンドウをアクティブにしてください。
+Please activate a 2D Graph window first before adding a zoom inset layer.	拡大インセットレイヤーを追加する前に、2Dグラフウィンドウをアクティブにしてください。
+Undo history of this graph window (each graph has its own).	このグラフウィンドウの操作履歴 (グラフごとに独立して保持されます)。
+Undo history of the worksheets (shared by all tables and matrices).	ワークシート・行列の操作履歴 (全ワークシート・行列で共有されます)。
+Recovery copy saved at %1 (the project file itself was not changed).	自動復元用コピーを %1 に保存しました (元のプロジェクトファイル自体は変更されていません)。
+The project was NOT saved.	プロジェクトは保存されませんでした。
+Project not saved	プロジェクト未保存
+Restore unsaved work?	未保存の作業データを復元しますか?
+Discard Copy	復元コピーを破棄
+Decide Later	後で決める
+Find in Worksheet	ワークシート内を検索
+Find and Replace in Worksheet	ワークシート内の検索と置換
+Graph Style Preset Manager	グラフスタイルプリセット管理
+Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets	ページ寸法・縦横比・DPI・フォント・表示倍率 — クリックでクイック設定
 
 # ---- 文脈つきの訳 (H1: 同じ英語でも画面によって意味が違うもの) ----
 Area	面グラフ	CurvesDialog
