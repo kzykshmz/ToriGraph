@@ -21231,10 +21231,23 @@ QVector<Pptx73Shape> slideShapes73(const QByteArray &xml)
 static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
 {
     std::cout << "[INFO] Running Suite 73: Send to PowerPoint (.pptx writer)...\n";
-    const QVariant prevNonInteractive = qApp->property("torigraph_noninteractive");
-    qApp->setProperty("torigraph_noninteractive", true);
     const QString tmpDir = QDir::temp().filePath(
             QStringLiteral("torigraph_suite73_%1").arg(QCoreApplication::applicationPid()));
+    // restores the non-interactive flag and removes the decks also when a check fails;
+    // TORIGRAPH_SUITE73_KEEP=1 keeps the decks for a manual look (python-pptx, LibreOffice, ...)
+    struct S73Restore {
+        QVariant prevNonInteractive;
+        QString dir;
+        ~S73Restore()
+        {
+            if (qEnvironmentVariableIsSet("TORIGRAPH_SUITE73_KEEP"))
+                std::cout << "[INFO] Suite 73 decks kept in " << dir.toStdString() << "\n";
+            else
+                QDir(dir).removeRecursively();
+            qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+        }
+    } s73Restore{ qApp->property("torigraph_noninteractive"), tmpDir };
+    qApp->setProperty("torigraph_noninteractive", true);
     QDir(tmpDir).removeRecursively();
     QDir().mkpath(tmpDir);
 
@@ -21593,6 +21606,134 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
                    "73e: a broken file must be reported and kept");
     }
 
+    // ---- 73g. deck with sections (p14) and single-quoted attributes ------------------------
+    auto repack73 = [](const QHash<QString, QByteArray> &src, const QString &path) {
+        torizip::ZipWriter zw;
+        zw.addFile("[Content_Types].xml", src.value("[Content_Types].xml"));
+        for (auto it = src.constBegin(); it != src.constEnd(); ++it)
+            if (it.key() != "[Content_Types].xml")
+                zw.addFile(it.key(), it.value());
+        QFile f(path);
+        return f.open(QIODevice::WriteOnly) && f.write(zw.finish()) > 0;
+    };
+    {
+        QHash<QString, QByteArray> sec = parts; // the two-slide deck of 73c
+        QString px = QString::fromUtf8(sec.value("ppt/presentation.xml"));
+        const QString rNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        CHECK_COND(px.contains("xmlns:r=\"" + rNs + "\"") && px.contains("<p:sldId id=\"257\""),
+                   "73g: unexpected template");
+        px.replace("xmlns:r=\"" + rNs + "\"", "xmlns:r='" + rNs + "'");
+        px.replace("<p:sldId id=\"257\"", "<p:sldId id='300'");
+        px.replace("</p:presentation>",
+                   "<p:extLst><p:ext uri=\"{521415D9-36F7-43E2-AB2F-B90AF26B5E84}\">"
+                   "<p14:sectionLst xmlns:p14='http://schemas.microsoft.com/office/powerpoint/2010/main'>"
+                   "<p14:section name=\"A\" id=\"{11111111-1111-1111-1111-111111111111}\">"
+                   "<p14:sldIdLst><p14:sldId id=\"256\"/></p14:sldIdLst></p14:section>"
+                   "<p14:section name=\"B\" id=\"{22222222-2222-2222-2222-222222222222}\">"
+                   "<p14:sldIdLst><p14:sldId id='300'/></p14:sldIdLst></p14:section>"
+                   "</p14:sectionLst></p:ext></p:extLst></p:presentation>");
+        CHECK_COND(xmlError73(px.toUtf8()).isEmpty(), "73g: crafted presentation.xml");
+        sec.insert("ppt/presentation.xml", px.toUtf8());
+        const QString secDeck = QDir(tmpDir).filePath("sections.pptx");
+        CHECK_COND(repack73(sec, secDeck), "73g: write the deck with sections");
+        ToriGraphPptx::DeckOptions oa = opt;
+        oa.appendToExisting = true;
+        const ToriGraphPptx::DeckResult rs =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlB, oa, secDeck);
+        CHECK_COND(rs.ok && rs.slideCount == 3 && rs.placements.size() == 1
+                           && rs.placements[0].slide == 3,
+                   "73g: sections must not be counted as slides: slides=" << rs.slideCount << " "
+                                                                         << rs.error.toStdString());
+        torizip::ZipArchive zs;
+        QByteArray presOut;
+        CHECK_COND(zs.open(secDeck, &err)
+                           && zs.extract(zs.findExactEntry("ppt/presentation.xml"), presOut, &err),
+                   "73g: reopen");
+        const QString po = QString::fromUtf8(presOut);
+        CHECK_COND(xmlError73(presOut).isEmpty(), "73g: presentation.xml not well-formed");
+        CHECK_COND(po.contains("<p:sldId id=\"301\" r:id=\""),
+                   "73g: new id must follow the single-quoted id 300: " << po.toStdString());
+        CHECK_COND(po.contains("<p14:sldIdLst><p14:sldId id='300'/><p14:sldId id=\"301\"/></p14:sldIdLst>"),
+                   "73g: new slide not added to the last section: " << po.toStdString());
+        CHECK_COND(po.contains("<p14:sldIdLst><p14:sldId id=\"256\"/></p14:sldIdLst>"),
+                   "73g: first section must be unchanged");
+        CHECK_COND(po.count("<p:sldId ") == 3, "73g: main slide list");
+
+        // broken relationships: nothing is written, the reason is reported
+        QHash<QString, QByteArray> bad = parts;
+        bad.insert("ppt/_rels/presentation.xml.rels", QByteArray("<Relationships xmlns=\"x\"><Rel"));
+        const QString badDeck = QDir(tmpDir).filePath("broken_rels.pptx");
+        CHECK_COND(repack73(bad, badDeck), "73g: write the broken deck");
+        QFile bf(badDeck);
+        CHECK_COND(bf.open(QIODevice::ReadOnly), "73g: broken deck");
+        const QByteArray before = bf.readAll();
+        bf.close();
+        const ToriGraphPptx::DeckResult rbad =
+                ToriGraphPptx::exportGraphs(w73, QList<MyWidget *>() << mlB, oa, badDeck);
+        CHECK_COND(bf.open(QIODevice::ReadOnly) && !rbad.ok && !rbad.error.isEmpty()
+                           && bf.readAll() == before,
+                   "73g: broken relationships must stop the append");
+    }
+
+    // ---- 73h. XML escaping, "%n" in names, and the picture-only fallback ----------------------
+    {
+        const QString odd = QString::fromUtf8("A&B <\"x\"> %2 %1 グラフ");
+        ToriGraphPptx::SlideItem withOle;
+        withOle.graphName = odd;
+        withOle.oleBytes = parts.value("ppt/embeddings/oleObject1.bin");
+        withOle.previewBytes = emf1;
+        withOle.widthHm = frameWHm;
+        withOle.heightHm = frameWHm;
+        ToriGraphPptx::SlideItem picOnly = withOle;
+        picOnly.oleBytes.clear();
+        ToriGraphPptx::DeckOptions o2 = opt;
+        o2.perSlide = 2;
+        const QString oddDeck = QDir(tmpDir).filePath("odd_names.pptx");
+        const ToriGraphPptx::DeckResult ro = ToriGraphPptx::writeDeck(
+                oddDeck, QVector<ToriGraphPptx::SlideItem>() << withOle << picOnly, o2);
+        CHECK_COND(ro.ok && ro.slideCount == 1, "73h: write: " << ro.error.toStdString());
+        torizip::ZipArchive zo;
+        QByteArray sx, rx;
+        CHECK_COND(zo.open(oddDeck, &err)
+                           && zo.extract(zo.findExactEntry("ppt/slides/slide1.xml"), sx, &err)
+                           && zo.extract(zo.findExactEntry("ppt/slides/_rels/slide1.xml.rels"), rx, &err),
+                   "73h: reopen");
+        CHECK_COND(xmlError73(sx).isEmpty(), "73h: slide with odd names is not well-formed");
+        const QVector<Pptx73Shape> frames = slideShapes73(sx);
+        CHECK_COND(frames.size() == 1 && frames[0].descr == "torigraph:" + odd
+                           && frames[0].name == "ToriGraphOLE:" + odd
+                           && frames[0].progId == "ToriGraph.Graph.1",
+                   "73h: OLE frame name not kept verbatim");
+        // the second graph is a plain picture with the same naming
+        QStringList picNames;
+        int depth = 0, picDepth = -1;
+        QXmlStreamReader xr(sx);
+        while (!xr.atEnd()) {
+            xr.readNext();
+            if (xr.isStartElement()) {
+                ++depth;
+                if (xr.name() == QLatin1String("graphicFrame"))
+                    picDepth = -2; // inside a frame: its preview <p:pic> does not count
+                else if (xr.name() == QLatin1String("pic") && picDepth == -1)
+                    picDepth = depth;
+                else if (xr.name() == QLatin1String("cNvPr") && picDepth > 0)
+                    picNames << xr.attributes().value(QLatin1String("name")).toString();
+            } else if (xr.isEndElement()) {
+                if (xr.name() == QLatin1String("graphicFrame"))
+                    picDepth = -1;
+                else if (xr.name() == QLatin1String("pic") && depth == picDepth)
+                    picDepth = -1;
+                --depth;
+            }
+        }
+        CHECK_COND(picNames == QStringList() << "ToriGraphOLE:" + odd,
+                   "73h: picture-only shape: " << picNames.join('|').toStdString());
+        const QString rels = QString::fromUtf8(rx);
+        CHECK_COND(rels.count("relationships/oleObject\"") == 1
+                           && rels.count("relationships/image\"") == 2,
+                   "73h: relationships of the OLE + picture-only slide");
+    }
+
     // ---- 73f. dialog: defaults read from the preset, options read back -----------------
     {
         QScopedPointer<QDialog> dlg(ToriGraphPptx::createSendDialog(w73, nullptr));
@@ -21615,6 +21756,9 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
         auto *path = dlg->findChild<QLineEdit *>("pptxPath");
         auto *rbFit = dlg->findChild<QRadioButton *>("pptxScaleFit");
         auto *rbFixed = dlg->findChild<QRadioButton *>("pptxScaleFixed");
+        auto *chkPreset = dlg->findChild<QCheckBox *>("pptxApplyPreset");
+        CHECK_COND(chkPreset && !chkPreset->isChecked(),
+                   "73f: applying the preset must be off by default");
         CHECK_COND(rbSel && list && list->count() == 2 && path && rbFit && rbFixed,
                    "73f: widgets");
         rbFixed->setChecked(true);
@@ -21661,12 +21805,6 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
         std::cout << "[INFO] 73: appended to a copy of " << foreignDeck.toStdString() << ": ok="
                   << rx.ok << " slides=" << rx.slideCount << " " << rx.error.toStdString() << "\n";
     }
-    // TORIGRAPH_SUITE73_KEEP=1 keeps the decks for a manual look (python-pptx, LibreOffice, ...)
-    if (qEnvironmentVariableIsSet("TORIGRAPH_SUITE73_KEEP"))
-        std::cout << "[INFO] Suite 73 decks kept in " << tmpDir.toStdString() << "\n";
-    else
-        QDir(tmpDir).removeRecursively();
-    qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
     std::cout << "[INFO] Suite 73 Send to PowerPoint passed!\n";
     return 0;
 }

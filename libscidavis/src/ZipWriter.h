@@ -26,13 +26,14 @@ public:
         Deflate //!< method 8; falls back to Store when deflate does not make the entry smaller
     };
 
-    //! Time stamp written into every entry (local time, 2-second resolution). Defaults to the
-    //! time the writer was created.
+    //! Time stamp written into every entry (local time, 2-second resolution). Without a call,
+    //! the current time is taken when the first entry is added.
     void setTimestamp(const QDateTime &when);
 
     //! Appends one entry. `name` uses forward slashes and no leading '/'. Fails (with a
-    //! message in *outErr) for an empty or duplicate name, after finish(), or when the archive
-    //! would need ZIP64 (more than 65535 entries or 4 GiB).
+    //! message in *outErr) for an empty or duplicate name (case-insensitive), after finish(),
+    //! for more than 65535 entries, or when the archive would exceed about 2 GB (it is built in
+    //! one QByteArray; ZIP64 is not written).
     bool addFile(const QString &name, const QByteArray &data,
                  Compression compression = Compression::Deflate, QString *outErr = nullptr);
 

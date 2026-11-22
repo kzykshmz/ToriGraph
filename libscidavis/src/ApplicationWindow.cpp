@@ -14918,6 +14918,8 @@ void ApplicationWindow::showWindowContextMenu()
         cm.addAction(actionCopyWindow);
         cm.addSeparator();
         cm.addAction(tr("&Copy Graph"), g, SLOT(copyImage()));
+        if (QAction *aPptx = findChild<QAction *>(QStringLiteral("actionSendToPowerPoint")))
+            cm.addAction(aPptx); // E8
         cm.addAction(tr("&Export"), this, SLOT(exportGraph()));
         cm.addAction(actionPrint);
         cm.addSeparator();

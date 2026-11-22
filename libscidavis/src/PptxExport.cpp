@@ -16,6 +16,7 @@
 #include "EmfPaintDevice.h"
 #include "Graph.h"
 #include "Graph3D.h"
+#include "GraphInspectorDock.h"
 #include "I18nJapanese.h"
 #include "MultiLayer.h"
 #include "MyWidget.h"
@@ -165,7 +166,7 @@ struct Rel
     QString id, type, target, mode;
 };
 
-QVector<Rel> parseRels(const QByteArray &xml)
+QVector<Rel> parseRels(const QByteArray &xml, bool *ok = nullptr)
 {
     QVector<Rel> out;
     QXmlStreamReader r(xml);
@@ -181,6 +182,8 @@ QVector<Rel> parseRels(const QByteArray &xml)
             out.append(rel);
         }
     }
+    if (ok)
+        *ok = !r.hasError();
     return out;
 }
 
@@ -456,41 +459,34 @@ struct ShapeOnSlide
 
 QString graphicFrameXml(const SlideItem &item, const ShapeOnSlide &s, int shapeId)
 {
+    // Every template is filled by a single multi-argument arg(), so a graph name that
+    // contains "%1" etc. is inserted verbatim.
     const QString name = xmlEsc(kShapePrefix + item.graphName);
     const QString alt = xmlEsc(kAltPrefix + item.graphName);
     const QString xfrm = QStringLiteral("<a:off x=\"%1\" y=\"%2\"/><a:ext cx=\"%3\" cy=\"%4\"/>")
-                                 .arg(s.x)
-                                 .arg(s.y)
-                                 .arg(s.w)
-                                 .arg(s.h);
+                                 .arg(QString::number(s.x), QString::number(s.y),
+                                      QString::number(s.w), QString::number(s.h));
+    const bool ole = !s.oleRid.isEmpty();
     const QString pic =
-            QStringLiteral("<p:pic><p:nvPicPr><p:cNvPr id=\"%1\" name=\"%2_Preview\" descr=\"%3\"/>"
+            QStringLiteral("<p:pic><p:nvPicPr><p:cNvPr id=\"%1\" name=\"%2\" descr=\"%3\"/>"
                            "<p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/>"
                            "</p:nvPicPr><p:blipFill><a:blip r:embed=\"%4\"/><a:stretch>"
                            "<a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm>%5</a:xfrm>"
                            "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>")
-                    .arg(shapeId + 1)
-                    .arg(name, alt, s.imageRid, xfrm);
-    if (s.oleRid.isEmpty()) {
-        // picture only (no OLE object could be made)
-        QString p = pic;
-        p.replace(QStringLiteral("_Preview\""), QStringLiteral("\""));
-        p.replace(QStringLiteral("id=\"%1\"").arg(shapeId + 1), QStringLiteral("id=\"%1\"").arg(shapeId));
-        return p;
-    }
+                    .arg(QString::number(ole ? shapeId + 1 : shapeId),
+                         ole ? name + QStringLiteral("_Preview") : name, alt, s.imageRid, xfrm);
+    if (!ole)
+        return pic; // picture only (no OLE object could be made)
     return QStringLiteral("<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"%1\" name=\"%2\" "
                           "descr=\"%3\"/><p:cNvGraphicFramePr><a:graphicFrameLocks "
                           "noChangeAspect=\"1\"/></p:cNvGraphicFramePr><p:nvPr/>"
                           "</p:nvGraphicFramePr><p:xfrm>%4</p:xfrm><a:graphic>"
                           "<a:graphicData uri=\"http://schemas.openxmlformats.org/presentationml/"
                           "2006/ole\"><p:oleObj name=\"ToriGraph Graph\" r:id=\"%5\" imgW=\"%6\" "
-                          "imgH=\"%7\" progId=\"%8\"><p:embed/>")
-                   .arg(shapeId)
-                   .arg(name, alt, xfrm, s.oleRid)
-                   .arg(s.w)
-                   .arg(s.h)
-                   .arg(kProgId)
-            + pic + QStringLiteral("</p:oleObj></a:graphicData></a:graphic></p:graphicFrame>");
+                          "imgH=\"%7\" progId=\"%8\"><p:embed/>%9</p:oleObj></a:graphicData>"
+                          "</a:graphic></p:graphicFrame>")
+            .arg(QString::number(shapeId), name, alt, xfrm, s.oleRid, QString::number(s.w),
+                 QString::number(s.h), kProgId, pic);
 }
 
 Placement placeInCell(const SlideItem &item, qint64 cl, qint64 ct, qint64 cw, qint64 ch,
@@ -530,7 +526,56 @@ Placement placeInCell(const SlideItem &item, qint64 cl, qint64 ct, qint64 cw, qi
     return p;
 }
 
-// Inserts the new <p:sldId> entries into presentation.xml.
+const QString kNsP14 = QStringLiteral("http://schemas.microsoft.com/office/powerpoint/2010/main");
+
+// The slide list of presentation.xml: slides of <p:sldIdLst> only (the p14 section lists
+// repeat the same ids and are not counted).
+struct PresentationInfo
+{
+    bool ok = false;
+    int slideCount = 0;
+    quint32 maxId = 255;
+    bool hasSections = false;
+};
+
+PresentationInfo scanPresentation(const QByteArray &presXml)
+{
+    PresentationInfo info;
+    QXmlStreamReader r(presXml);
+    QStringList path; // local names of the open elements
+    while (!r.atEnd()) {
+        r.readNext();
+        if (r.isStartElement()) {
+            const QString n = r.name().toString();
+            if (n == QLatin1String("sldId")) {
+                const quint32 id = r.attributes().value(QLatin1String("id")).toUInt();
+                info.maxId = std::max(info.maxId, id);
+                if (r.namespaceUri() == kNsP && !path.isEmpty()
+                    && path.last() == QLatin1String("sldIdLst"))
+                    ++info.slideCount;
+            } else if (n == QLatin1String("section") && r.namespaceUri() == kNsP14) {
+                info.hasSections = true;
+            }
+            path << n;
+        } else if (r.isEndElement() && !path.isEmpty()) {
+            path.removeLast();
+        }
+    }
+    info.ok = !r.hasError();
+    return info;
+}
+
+QString prefixForNamespace(const QString &xml, const QString &ns)
+{
+    // xmlns:pfx="ns" or xmlns:pfx='ns'
+    const QRegularExpression rx(QStringLiteral("xmlns:([A-Za-z_][\\w.-]*)\\s*=\\s*([\"'])%1\\2")
+                                        .arg(QRegularExpression::escape(ns)));
+    const QRegularExpressionMatch m = rx.match(xml);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+// Inserts the new <p:sldId> entries into presentation.xml, and into the last section of a
+// presentation that uses sections (PowerPoint 2010+), so that every slide is in a section.
 bool insertSlideIds(QByteArray &presXml, const QVector<QPair<quint32, QString>> &ids,
                     QString *err)
 {
@@ -543,22 +588,18 @@ bool insertSlideIds(QByteArray &presXml, const QVector<QPair<quint32, QString>> 
         return false;
     }
     const QString p = rm.captured(1);
-    QString rPrefix;
-    static const QRegularExpression rNsRx(QStringLiteral(
-            "xmlns:([A-Za-z_][\\w.-]*)=\"http://schemas\\.openxmlformats\\.org/officeDocument/2006/relationships\""));
-    const QRegularExpressionMatch nm = rNsRx.match(s);
-    if (nm.hasMatch()) {
-        rPrefix = nm.captured(1);
-    } else {
+    QString rPrefix = prefixForNamespace(s, kNsR);
+    if (rPrefix.isEmpty()) {
         rPrefix = QStringLiteral("tgr");
         s.insert(rm.capturedEnd(0), QStringLiteral(" xmlns:tgr=\"%1\"").arg(kNsR));
     }
-    QString entries;
-    for (const auto &id : ids)
+    QString entries, sectionEntries;
+    for (const auto &id : ids) {
         entries += QStringLiteral("<%1sldId id=\"%2\" %3:id=\"%4\"/>")
-                           .arg(p)
-                           .arg(id.first)
-                           .arg(rPrefix, id.second);
+                           .arg(p, QString::number(id.first), rPrefix, id.second);
+        sectionEntries += QStringLiteral("<%1:sldId id=\"%2\"/>")
+                                  .arg(QStringLiteral("%P14%"), QString::number(id.first));
+    }
 
     const QString closeTag = QStringLiteral("</%1sldIdLst>").arg(p);
     const int closeAt = s.indexOf(closeTag);
@@ -582,21 +623,44 @@ bool insertSlideIds(QByteArray &presXml, const QVector<QPair<quint32, QString>> 
             s.insert(at, list);
         }
     }
+
+    // sections: add the new slides to the last <p14:section>
+    const QString p14 = prefixForNamespace(s, kNsP14);
+    if (!p14.isEmpty()) {
+        sectionEntries.replace(QStringLiteral("%P14%"), p14);
+        const QString secOpen = QStringLiteral("<%1:section").arg(p14);
+        const QString secClose = QStringLiteral("</%1:section>").arg(p14);
+        const int lastClose = s.lastIndexOf(secClose);
+        if (lastClose >= 0) {
+            const int lastOpen = s.lastIndexOf(secOpen, lastClose);
+            const QString listClose = QStringLiteral("</%1:sldIdLst>").arg(p14);
+            const int lc = s.lastIndexOf(listClose, lastClose);
+            if (lastOpen >= 0 && lc > lastOpen) {
+                s.insert(lc, sectionEntries);
+            } else {
+                const QRegularExpression emptyRx(
+                        QStringLiteral("<%1:sldIdLst\\s*/>").arg(QRegularExpression::escape(p14)));
+                QRegularExpressionMatch em;
+                int at = -1;
+                auto it = emptyRx.globalMatch(s);
+                while (it.hasNext()) {
+                    const QRegularExpressionMatch m = it.next();
+                    if (m.capturedStart(0) > lastOpen && m.capturedStart(0) < lastClose) {
+                        em = m;
+                        at = m.capturedStart(0);
+                    }
+                }
+                const QString list =
+                        QStringLiteral("<%1:sldIdLst>%2</%1:sldIdLst>").arg(p14, sectionEntries);
+                if (at >= 0)
+                    s.replace(at, em.capturedLength(0), list);
+                else if (lastOpen >= 0)
+                    s.insert(lastClose, list);
+            }
+        }
+    }
     presXml = s.toUtf8();
     return true;
-}
-
-quint32 maxSlideId(const QByteArray &presXml)
-{
-    static const QRegularExpression idRx(
-            QStringLiteral("<(?:[A-Za-z_][\\w.-]*:)?sldId\\s[^>]*?\\bid=\"(\\d+)\""));
-    quint32 mx = 255;
-    auto it = idRx.globalMatch(QString::fromUtf8(presXml));
-    while (it.hasNext()) {
-        const quint32 v = it.next().captured(1).toUInt();
-        mx = std::max(mx, v);
-    }
-    return mx;
 }
 
 void slideSize(const QByteArray &presXml, qint64 *w, qint64 *h)
@@ -626,7 +690,11 @@ QString chooseLayout(const Package &pkg, const QString &presPart, const QVector<
         if (!relTypeIs(r, "slideMaster"))
             continue;
         const QString master = resolveTarget(presDir, r.target);
-        for (const Rel &mr : parseRels(pkg.get(relsPathFor(master)))) {
+        bool ok = true;
+        const QVector<Rel> masterRels = parseRels(pkg.get(relsPathFor(master)), &ok);
+        if (!ok)
+            return QString(); // reported as "no slide layout"
+        for (const Rel &mr : masterRels) {
             if (relTypeIs(mr, "slideLayout")) {
                 const QString lp = resolveTarget(partDir(master), mr.target);
                 if (pkg.has(lp))
@@ -669,7 +737,8 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
 {
     // main part
     QString presPart = QStringLiteral("ppt/presentation.xml");
-    for (const Rel &r : parseRels(pkg.get(QStringLiteral("_rels/.rels")))) {
+    bool relsOk = true;
+    for (const Rel &r : parseRels(pkg.get(QStringLiteral("_rels/.rels")), &relsOk)) {
         if (relTypeIs(r, "officeDocument")) {
             presPart = resolveTarget(QString(), r.target);
             break;
@@ -677,12 +746,17 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
     }
     QByteArray presXml = pkg.get(presPart);
     QByteArray ctXml = pkg.get(QStringLiteral("[Content_Types].xml"));
-    if (presXml.isEmpty() || ctXml.isEmpty()) {
+    if (!relsOk || presXml.isEmpty() || ctXml.isEmpty()) {
         res.error = T("The file is not a PowerPoint presentation (.pptx).");
         return false;
     }
     const QString presRelsPart = relsPathFor(presPart);
-    QVector<Rel> presRels = parseRels(pkg.get(presRelsPart));
+    QVector<Rel> presRels = parseRels(pkg.get(presRelsPart), &relsOk);
+    const PresentationInfo info = scanPresentation(presXml);
+    if (!relsOk || !info.ok) {
+        res.error = T("The presentation part of the existing file could not be read.");
+        return false;
+    }
     const QString layoutPart = chooseLayout(pkg, presPart, presRels);
     if (layoutPart.isEmpty()) {
         res.error = T("The existing presentation has no slide layout to add slides to.");
@@ -705,7 +779,7 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
                 return true;
         return false;
     };
-    quint32 nextSlideId = maxSlideId(presXml) + 1;
+    quint32 nextSlideId = info.maxId + 1;
     if (nextSlideId + quint32(items.size()) >= 2147483648U) {
         res.error = T("The presentation part of the existing file could not be read.");
         return false;
@@ -765,9 +839,9 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
             if (pl.left < -tol || pl.top < -tol || pl.left + pl.width > slideW + tol
                 || pl.top + pl.height > slideH + tol)
                 res.warnings << T("%1 (%2 x %3 cm) extends beyond the slide.")
-                                        .arg(it.graphName)
-                                        .arg(pl.width / double(kEmuPerCm), 0, 'f', 1)
-                                        .arg(pl.height / double(kEmuPerCm), 0, 'f', 1);
+                                        .arg(it.graphName,
+                                             QString::number(pl.width / double(kEmuPerCm), 'f', 1),
+                                             QString::number(pl.height / double(kEmuPerCm), 'f', 1));
             res.placements.append(pl);
         }
         pkg.set(slidePart,
@@ -804,6 +878,9 @@ bool appendSlides(Package &pkg, const QVector<SlideItem> &items, const DeckOptio
     pkg.set(QStringLiteral("[Content_Types].xml"), ct.toUtf8());
     pkg.set(presPart, presXml);
     pkg.set(presRelsPart, relsXml(presRels));
+    res.slideCount = info.slideCount + res.newSlides;
+    for (int i = 0; i < res.placements.size(); ++i)
+        res.placements[i].slide = info.slideCount + 1 + i / perSlide;
     return true;
 }
 
@@ -819,8 +896,9 @@ void registerTranslations()
         return;
     s_done = true;
     auto reg = [](const char *en, const char *ja) {
-        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
-                                                                  QString::fromUtf8(ja));
+        // context-bound, so that generic words ("Open", "File", ...) do not change other screens
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("ToriGraphPptx"), QString::fromUtf8(en), QString::fromUtf8(ja));
     };
     reg("Send to Po&werPoint...", "PowerPoint へ送る(&W)...");
     reg("Send to PowerPoint", "PowerPoint へ送る");
@@ -852,6 +930,8 @@ void registerTranslations()
         "編集できるオブジェクトを作れなかったため、画像として貼りました。");
     reg("Sending graphs to PowerPoint needs Windows.",
         "PowerPoint へ送る機能は Windows でだけ使えます。");
+    reg("The 3D graph could not be captured. Restore its window (not minimized) and try again.",
+        "3D グラフを取り込めませんでした。ウィンドウを最小化から戻して、もう一度試してください。");
     // dialog
     reg("Graphs to send", "送るグラフ");
     reg("Active graph (%1)", "作業中のグラフ (%1)");
@@ -906,11 +986,15 @@ void registerTranslations()
     reg("Open", "開く");
     reg("Close", "閉じる");
     reg("Could not send the graphs to PowerPoint.", "PowerPoint へ送れませんでした。");
-    reg("The ZIP archive is already finished.", "ZIP の書き出しは既に終わっています。");
-    reg("A ZIP entry needs a name.", "ZIP の項目に名前がありません。");
-    reg("Duplicate ZIP entry: %1", "ZIP の項目が重複しています: %1");
-    reg("Too many ZIP entries.", "ZIP の項目が多すぎます。");
-    reg("The ZIP archive would be too large.", "ZIP が大きくなりすぎます。");
+    auto regAny = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    regAny("The ZIP archive is already finished.", "ZIP の書き出しは既に終わっています。");
+    regAny("A ZIP entry needs a name.", "ZIP の項目に名前がありません。");
+    regAny("Duplicate ZIP entry: %1", "ZIP の項目が重複しています: %1");
+    regAny("Too many ZIP entries.", "ZIP の項目が多すぎます。");
+    regAny("The ZIP archive would be too large.", "ZIP が大きくなりすぎます。");
 }
 
 QString sendToPowerPointMenuText()
@@ -999,22 +1083,8 @@ DeckResult writeDeck(const QString &path, const QVector<SlideItem> &items, const
                                       kSlideHeight);
     }
 
-    const int slidesBefore = [&]() {
-        QString presPart = QStringLiteral("ppt/presentation.xml");
-        for (const Rel &r : parseRels(pkg.get(QStringLiteral("_rels/.rels"))))
-            if (relTypeIs(r, "officeDocument"))
-                presPart = resolveTarget(QString(), r.target);
-        static const QRegularExpression rx(
-                QStringLiteral("<(?:[A-Za-z_][\\w.-]*:)?sldId\\s"));
-        return int(QString::fromUtf8(pkg.get(presPart)).count(rx));
-    }();
-
     if (!appendSlides(pkg, items, opt, res))
         return res;
-    res.slideCount = slidesBefore + res.newSlides;
-    const int perSlide = normalizedPerSlide(opt.perSlide);
-    for (int i = 0; i < res.placements.size(); ++i)
-        res.placements[i].slide = slidesBefore + 1 + i / perSlide;
 
     torizip::ZipWriter zw;
     QString zerr;
@@ -1169,7 +1239,15 @@ bool buildSlideItem(ApplicationWindow *app, MyWidget *window, SlideItem *out, QS
         }
         rg = SciDAVisEmf::renderMultiLayer(ml, nullptr, false);
     } else if (window->inherits("Graph3D")) {
-        rg = SciDAVisEmf::renderFromImage(captureGraph3D(static_cast<Graph3D *>(window)));
+        const QImage img = captureGraph3D(static_cast<Graph3D *>(window));
+        if (img.isNull()) {
+            // renderFromImage() would return a blank 500 x 375 page
+            if (outErr)
+                *outErr = T("The 3D graph could not be captured. Restore its window (not "
+                            "minimized) and try again.");
+            return false;
+        }
+        rg = SciDAVisEmf::renderFromImage(img);
     }
     if (rg.emfBytes.isEmpty()) {
         if (outErr)
@@ -1242,7 +1320,6 @@ const char kKeyPerSlide[] = "/PptxExport/PerSlide";
 const char kKeyWide[] = "/PptxExport/Widescreen";
 const char kKeyFit[] = "/PptxExport/FitToSlide";
 const char kKeyShrink[] = "/PptxExport/ShrinkToFit";
-const char kKeyPreset[] = "/PptxExport/ApplyLabPreset";
 
 QString defaultDeckPath(ApplicationWindow *app)
 {
@@ -1380,7 +1457,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         auto *chkPreset = new QCheckBox(
                 T("Apply the lab slide preset to the graphs first (can be undone)"), gbScale);
         chkPreset->setObjectName(QStringLiteral("pptxApplyPreset"));
-        chkPreset->setChecked(st.value(QLatin1String(kKeyPreset), false).toBool());
+        chkPreset->setChecked(false); // changes the graphs: never on by default
         vs->addWidget(chkPreset);
     }
     top->addWidget(gbScale);
@@ -1549,7 +1626,6 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     st.setValue(QLatin1String(kKeyWide), opt.widescreen);
     st.setValue(QLatin1String(kKeyFit), opt.scalePercent <= 0.0);
     st.setValue(QLatin1String(kKeyShrink), opt.shrinkToFit);
-    st.setValue(QLatin1String(kKeyPreset), applyPreset);
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     if (applyPreset) {
@@ -1559,6 +1635,9 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
                 if (w->inherits("MultiLayer"))
                     static_cast<MultiLayer *>(w)->applyStylePresetSpec(spec);
             }
+            app->modifiedProject();
+            if (GraphInspectorDock *insp = app->graphInspectorDock())
+                insp->refreshAll();
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         }
     }
