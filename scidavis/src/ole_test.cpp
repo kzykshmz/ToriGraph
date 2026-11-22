@@ -25423,7 +25423,9 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
             omf.write("x,y\n1,510\n#2,520\n3,530\n");
             omf.close();
             CHECK_COND(w77->open(openMidHashPath) == w77, "77c: w77->open(OpenMidHash77.csv) failed");
-            Table *tOpenMid = w77->table(QStringLiteral("OpenMidHash77"));
+            Table *tOpenMid = w77->table(QStringLiteral("OpenMidHash771"));
+            if (!tOpenMid)
+                tOpenMid = w77->table(QStringLiteral("OpenMidHash77"));
             CHECK_COND(tOpenMid && tOpenMid->numCols() == 2 && tOpenMid->numRows() == 3
                                && tOpenMid->column(0)->textAt(0) == QStringLiteral("1")
                                && tOpenMid->column(0)->textAt(1) == QStringLiteral("#2")
@@ -25433,6 +25435,40 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                                && std::fabs(tOpenMid->cell(1, 1) - 520.0) < 1e-9
                                && std::fabs(tOpenMid->cell(2, 1) - 530.0) < 1e-9,
                        "77c: w77->open('x,y\\n1,510\\n#2,520\\n3,530') ate rows in detectPreamble!");
+        }
+        // (4b) '#x,y\n1,2\n#comment,abc\n3,4' promotes 'x','y' headers and skips mid-file '#comment,abc'
+        {
+            AsciiTableImportFilter::ImportReport repNoSpcHdr;
+            std::unique_ptr<future::Table> ftNoSpcHdr(
+                    AsciiTableImportFilter::importDroppedTextData(
+                            QByteArray("#x,y\n1,2\n#comment,abc\n3,4\n"),
+                            QStringLiteral("HashNoSpcHdr77"), QStringLiteral("nospc_hdr.csv"),
+                            &repNoSpcHdr));
+            CHECK_COND(ftNoSpcHdr && ftNoSpcHdr->columnCount() == 2
+                               && ftNoSpcHdr->rowCount() == 2
+                               && ftNoSpcHdr->column(0)->name() == QStringLiteral("x")
+                               && ftNoSpcHdr->column(1)->name() == QStringLiteral("y")
+                               && ftNoSpcHdr->column(0)->columnMode()
+                                       == SciDAVis::ColumnMode::Numeric
+                               && ftNoSpcHdr->column(1)->columnMode()
+                                       == SciDAVis::ColumnMode::Numeric
+                               && std::fabs(ftNoSpcHdr->column(0)->valueAt(0) - 1.0) < 1e-9
+                               && std::fabs(ftNoSpcHdr->column(1)->valueAt(1) - 4.0) < 1e-9
+                               && repNoSpcHdr.skippedLines == 2,
+                       "77c: '#x,y\\n1,2\\n#comment,abc\\n3,4' failed header promotion or mid-file comment skip!");
+        }
+        // (4c) 1-column whitespace '#1\n#2\n#3' keeps all 3 specimen rows
+        {
+            std::unique_ptr<future::Table> ftOneColHash(
+                    AsciiTableImportFilter::importDroppedTextData(
+                            QByteArray("#1\n#2\n#3\n"), QStringLiteral("OneColHash77"),
+                            QStringLiteral("one_col_hash.dat"), nullptr));
+            CHECK_COND(ftOneColHash && ftOneColHash->columnCount() == 1
+                               && ftOneColHash->rowCount() == 3
+                               && ftOneColHash->column(0)->textAt(0) == QStringLiteral("#1")
+                               && ftOneColHash->column(0)->textAt(1) == QStringLiteral("#2")
+                               && ftOneColHash->column(0)->textAt(2) == QStringLiteral("#3"),
+                       "77c: 1-column '#1\\n#2\\n#3' dropped '#<digit>' rows!");
         }
         // (5) Headerless '#1,520\n#2,530' keeps both rows as data (neither skipped nor consumed as header)
         {

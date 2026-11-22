@@ -283,8 +283,12 @@ bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tabl
     if (n0 == 1 || p0[1].isSpace())
         return true;
     // 4) '#<non-space>' and not a missing token:
+    //    Only '#<digit>...' specimen identifiers (#1, #2, #01, #1-A) can be data rows;
+    //    '#x,y', '#comment,abc', '#S 2 ascan', '#N 2' are comments.
+    if (!p0[1].isDigit())
+        return true;
     if (whitespaceDelim) {
-        if (rawFieldCount >= 2 && p0[1].isDigit()) {
+        if (rawFieldCount >= 2) {
             for (int k = 1; k < rawFieldCount; ++k) {
                 const QChar *pk = nullptr;
                 int nk = 0;
@@ -298,7 +302,7 @@ bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tabl
             }
             return false;
         }
-        return true;
+        return tableHasMultipleCols;
     }
     if (rawFieldCount >= 2)
         return false;
@@ -1647,8 +1651,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
 
     // 3. Skip leading blank lines & '#'-prefixed comment preamble lines
-    //    (preserving a final '# col1, col2' header line if data starts immediately with numbers!)
+    //    (preserving a final '# col1, col2' or '#x,y' header line if data starts immediately with numbers!)
     QString lastHashCommentBody;
+    bool lastHashHadSpaceAfterHash = false;
     while (pos < len) {
         int lineStart = pos;
         while (lineStart < len
@@ -1718,8 +1723,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     }
 
                     if (!foundExplicitSep.isNull()) {
-                        // Multi-field explicit delimiter line with '#<non-space>' (e.g. '#1,520', '#2,')
-                        isCommentAtTop = false;
+                        // Multi-field explicit delimiter line: '#<digit>...' ('#1,520', '#2,') is data,
+                        // whereas '#x,y' or '#comment,abc' is a comment!
+                        isCommentAtTop = !buf[lineStart + 1].isDigit();
                     } else if (hasWsOutsideQuotes) {
                         int tmpP = lineStart;
                         QVector<ZeroCopyCellSpan> wsSpans;
@@ -1820,12 +1826,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 }
             }
             if (isCommentAtTop) {
-                if (lineStart + 1 < trimEnd && buf[lineStart + 1].isSpace()) {
-                    lastHashCommentBody =
-                            QString(buf + lineStart + 1, trimEnd - (lineStart + 1)).trimmed();
-                } else {
-                    lastHashCommentBody.clear();
-                }
+                lastHashHadSpaceAfterHash =
+                        (lineStart + 1 < trimEnd && buf[lineStart + 1].isSpace());
+                lastHashCommentBody =
+                        QString(buf + lineStart + 1, trimEnd - (lineStart + 1)).trimmed();
                 ++skippedNonBlankLines;
                 pos = nextPos;
                 continue;
@@ -2179,12 +2183,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         ++lineStart;
                     }
                     if (lineStart < lineEnd && buf[lineStart] == QLatin1Char('#')) {
-                        if (lineStart + 1 < lineEnd && buf[lineStart + 1].isSpace()) {
-                            lastHashCommentBody =
-                                    QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
-                        } else {
-                            lastHashCommentBody.clear();
-                        }
+                        lastHashHadSpaceAfterHash =
+                                (lineStart + 1 < lineEnd && buf[lineStart + 1].isSpace());
+                        lastHashCommentBody =
+                                QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
                         pre << QString(buf + lineStart, lineEnd - lineStart).trimmed();
                         ++skippedNonBlankLines;
                     }
@@ -2298,6 +2300,25 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     rowSpans.reserve(16);
     bool tableHasMultipleCols = !preambleSeparator.isEmpty();
     if (!tableHasMultipleCols) {
+        auto peekEffectiveCols = [](const QVector<ZeroCopyCellSpan> &spans) -> int {
+            if (!spans.isEmpty() && !spans[0].quoted) {
+                const QChar *p0 = nullptr;
+                int n0 = 0;
+                spans[0].trimmedView(p0, n0);
+                if (n0 > 0 && p0[0] == QLatin1Char('#'))
+                    return spans.size(); // preserve '#2,' / '#DIV/0!,' two-column intent
+            }
+            int n = spans.size();
+            while (n > 1 && !spans[n - 1].quoted) {
+                const QChar *p = nullptr;
+                int l = 0;
+                spans[n - 1].trimmedView(p, l);
+                if (l > 0)
+                    break;
+                --n;
+            }
+            return n;
+        };
         int peekPos = pos;
         int checkedRows = 0;
         while (peekPos < len && checkedRows < 24) {
@@ -2310,7 +2331,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 continue;
             if (isSpanHashComment(rowSpans, true /*multiCols*/))
                 continue;
-            if (rowSpans.size() >= 2) {
+            if (peekEffectiveCols(rowSpans) >= 2) {
                 tableHasMultipleCols = true;
                 break;
             }
@@ -2376,11 +2397,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                       simplifySpaces, hashRows, hashCols);
             if (hashRows.size() == 1 && hashRows[0].size() == previewRecords[0].size()) {
                 bool anyNonNumericHdr = false;
+                bool anyPureNumHdr = false;
                 for (const LabCsvCell &hc : hashRows[0]) {
-                    if (!hc.value.trimmed().isEmpty() && !isPureNumberString(hc.value))
-                        anyNonNumericHdr = true;
+                    if (!hc.value.trimmed().isEmpty()) {
+                        if (isPureNumberString(hc.value))
+                            anyPureNumHdr = true;
+                        else
+                            anyNonNumericHdr = true;
+                    }
                 }
-                if (anyNonNumericHdr) {
+                const bool isSpecDirective =
+                        (whitespaceDelim && !lastHashHadSpaceAfterHash && anyPureNumHdr);
+                if (anyNonNumericHdr && !isSpecDirective) {
                     headerRow = hashRows[0];
                     prependedHashHeader = true;
                 }
