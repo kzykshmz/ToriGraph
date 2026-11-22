@@ -1522,8 +1522,11 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
     pal.setColor(QPalette::PlaceholderText, ModernUiTheme::placeholderTextColor());
 #endif
 
-    app->setPalette(pal);
-    app->setStyleSheet(modernStyleSheet());
+    const QString css = modernStyleSheet();
+    if (app->styleSheet() != css) {
+        app->setPalette(pal);
+        app->setStyleSheet(css);
+    }
     app->installEventFilter(KeyboardFocusTracker::instance());
 }
 

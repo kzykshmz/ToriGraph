@@ -25866,8 +25866,20 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
         CHECK_COND(mlZ->size() == customWinSz && mlZ->pos() == customWinPos,
                    "77e: placeLegendAnchor under zoom reset manually resized/moved MultiLayer geometry!");
+        CHECK_COND(!mlZ->testAttribute(Qt::WA_UpdatesDisabled)
+                           && (!mlZ->widget() || !mlZ->widget()->testAttribute(Qt::WA_UpdatesDisabled)),
+                   "77e: ScopedUnzoomForExport left WA_UpdatesDisabled stuck on MultiLayer or its child widget!");
+        const QString exp160Png = tmp77.filePath(QStringLiteral("zoom160_exp.png"));
+        const QString exp100Png = tmp77.filePath(QStringLiteral("zoom100_exp.png"));
+        mlZ->exportImage(exp160Png, 100, false, 300);
+        CHECK_COND(!mlZ->testAttribute(Qt::WA_UpdatesDisabled)
+                           && (!mlZ->widget() || !mlZ->widget()->testAttribute(Qt::WA_UpdatesDisabled)),
+                   "77e: exportImage under 160% zoom left WA_UpdatesDisabled stuck on MultiLayer!");
         const int marginFrom160 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
         mlZ->setPageZoom(1.0);
+        mlZ->exportImage(exp100Png, 100, false, 300);
+        CHECK_COND(QImage(exp160Png) == QImage(exp100Png),
+                   "77e: 160%-zoomed exportImage differed at pixel level from 100%-zoomed exportImage!");
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
         const int marginFrom100 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
         CHECK_COND(std::abs(marginFrom160 - marginFrom100) <= 2,
@@ -25939,13 +25951,19 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                    "77f: P1-S2 Graph Redo after sheet+column rename deleted the curve!");
 
         // P1-S4: 200-sheet workbook (> 4500 chars on <workbook> line, strictly > 4096) survives save & loadProject
-        WorkbookManager *wm = WorkbookManager::instance(w77);
-        QString wbErr;
-        const QString bigBook = wm->createBook(QStringLiteral("BigBook77"), 200, &wbErr);
-        CHECK_COND(!bigBook.isEmpty() && wm->sheets(bigBook).size() == 200,
-                   "77f: createBook(200) failed: " << wbErr.toStdString());
         const QString bigPrj = tmp77.filePath(QStringLiteral("big200.sciprj"));
-        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), bigPrj), "77f: save big200.sciprj");
+        QString wbErr;
+        QString bigBook;
+        {
+            AppWinGuard wBigSrc(new ApplicationWindow());
+            wBigSrc->applyUserSettings();
+            WorkbookManager *wm = WorkbookManager::instance(wBigSrc);
+            bigBook = wm->createBook(QStringLiteral("BigBook77"), 200, &wbErr);
+            CHECK_COND(!bigBook.isEmpty() && wm->sheets(bigBook).size() == 200,
+                       "77f: createBook(200) failed: " << wbErr.toStdString());
+            CHECK_COND(wBigSrc->writeProjectFile(wBigSrc->projectFolder(), bigPrj),
+                       "77f: save big200.sciprj");
+        }
         {
             QFile chkWb(bigPrj);
             CHECK_COND(chkWb.open(QIODevice::ReadOnly), "77f: read big200.sciprj");

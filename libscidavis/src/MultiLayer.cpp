@@ -415,12 +415,15 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
         }
         prevLayerCanvasW = ml->l_canvas_width;
         prevLayerCanvasH = ml->l_canvas_height;
-        prevMlUpdates = ml->updatesEnabled();
-        ml->setUpdatesEnabled(false);
+        prevMlUpdates = !ml->testAttribute(Qt::WA_UpdatesDisabled);
         if (QWidget *w = ml->widget()) {
-            prevWidgetUpdates = w->updatesEnabled();
+            // Query child's own WA_UpdatesDisabled BEFORE disabling updates on parent ml
+            // (ml->setUpdatesEnabled(false) sets WA_ForceUpdatesDisabled on children, which
+            // would make w->updatesEnabled() return false and permanently freeze w on restore!).
+            prevWidgetUpdates = !w->testAttribute(Qt::WA_UpdatesDisabled);
             w->setUpdatesEnabled(false);
         }
+        ml->setUpdatesEnabled(false);
         QSignalBlocker sb(ml);
         ml->setPageZoom(1.0);
         active = true;
@@ -3992,8 +3995,10 @@ void MultiLayer::setPageZoom(double factor)
         gr->plotWidget()->resize(scaledRect.size());
         // The text grows with the page like under a magnifier; the stored pt stay as they are.
         gr->plotWidget()->setDisplayFontScale(d_page_zoom);
+        gr->plotWidget()->updateAxes();
         gr->plotWidget()->updateLayout();
         gr->plotWidget()->replot();
+        gr->plotWidget()->updateLayout();
         gr->setIgnoreResizeEvents(savedIgnore[i]);
     }
     {
