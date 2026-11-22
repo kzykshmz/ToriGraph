@@ -72,6 +72,11 @@ public:
     void setCustomCommandHook(CustomCommandHook hook);
 
     static QStringList supportedMethods();
+    //! Resolves a palette name given to graph.apply_palette (exact name, alias, prefix, word
+    //! prefix, then substring) among  palettes; empty if none matches.  normalizedKey gets
+    //! the normalised request (used for the extra built-in fallbacks).
+    static QString matchPaletteName(const QString &raw, const QStringList &palettes,
+                                    QString *normalizedKey = nullptr);
     static QString generatePythonScriptForWindow(ApplicationWindow *app, MyWidget *window,
                                                  bool standalone = true,
                                                  const QString &embedData = QStringLiteral("inline"));

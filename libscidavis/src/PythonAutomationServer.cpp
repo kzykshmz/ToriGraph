@@ -19566,41 +19566,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (rawPal.isEmpty())
                 rawPal = QStringLiteral("okabe_ito");
             const QStringList allPals = Graph::allPaletteNames();
-            auto normKey = [](QString s) -> QString {
-                s = s.trimmed().toLower();
-                s.remove(QLatin1Char('-'));
-                s.remove(QLatin1Char('_'));
-                s.remove(QLatin1Char(' '));
-                return s;
-            };
-            QString wantNorm = normKey(rawPal);
-            if (wantNorm == QStringLiteral("okabeito") || wantNorm == QStringLiteral("okabe"))
-                wantNorm = QStringLiteral("okabeito");
-            else if (wantNorm == QStringLiteral("npg") || wantNorm == QStringLiteral("naturenpg"))
-                wantNorm = QStringLiteral("nature");
-            else if (wantNorm == QStringLiteral("aaas") || wantNorm == QStringLiteral("scienceaaas"))
-                wantNorm = QStringLiteral("science");
-            else if (wantNorm == QStringLiteral("isij") || wantNorm == QStringLiteral("isijsteel")
-                     || wantNorm == QStringLiteral("default") || wantNorm == QStringLiteral("origin"))
-                wantNorm = QStringLiteral("isij");
-            else if (wantNorm == QStringLiteral("tolbright") || wantNorm == QStringLiteral("paultolbright"))
-                wantNorm = QStringLiteral("tolbright");
-            else if (wantNorm == QStringLiteral("tolmuted") || wantNorm == QStringLiteral("paultolmuted"))
-                wantNorm = QStringLiteral("tolmuted");
-            else if (wantNorm == QStringLiteral("grayscale") || wantNorm == QStringLiteral("grey")
-                     || wantNorm == QStringLiteral("gray") || wantNorm == QStringLiteral("monochrome"))
-                wantNorm = QStringLiteral("monochrome");
-
-            QString matchedPal;
-            for (const QString &cand : allPals) {
-                const QString candNorm = normKey(cand);
-                if (cand.compare(rawPal, Qt::CaseInsensitive) == 0 || candNorm == wantNorm
-                    || (!wantNorm.isEmpty() && candNorm.startsWith(wantNorm))
-                    || (!wantNorm.isEmpty() && wantNorm.size() >= 4 && candNorm.contains(wantNorm))) {
-                    matchedPal = cand;
-                    break;
-                }
-            }
+            QString wantNorm;
+            const QString matchedPal =
+                    PythonAutomationServer::matchPaletteName(rawPal, allPals, &wantNorm);
             QList<QColor> builtinFallbackCols;
             if (matchedPal.isEmpty()) {
                 if (wantNorm == QStringLiteral("tolbright")
@@ -28483,4 +28451,73 @@ QString PythonConsoleDialog::exampleScriptCode(int index) const
     default:
         return QString();
     }
+}
+
+QString PythonAutomationServer::matchPaletteName(const QString &raw, const QStringList &palettes,
+                                                 QString *normalizedKey)
+{
+    auto normKey = [](QString s) -> QString {
+        s = s.trimmed().toLower();
+        s.remove(QLatin1Char('-'));
+        s.remove(QLatin1Char('_'));
+        s.remove(QLatin1Char(' '));
+        return s;
+    };
+    QString wantNorm = normKey(raw);
+    if (wantNorm == QStringLiteral("okabeito") || wantNorm == QStringLiteral("okabe"))
+        wantNorm = QStringLiteral("okabeito");
+    else if (wantNorm == QStringLiteral("npg") || wantNorm == QStringLiteral("naturenpg"))
+        wantNorm = QStringLiteral("nature");
+    else if (wantNorm == QStringLiteral("aaas") || wantNorm == QStringLiteral("scienceaaas"))
+        wantNorm = QStringLiteral("science");
+    else if (wantNorm == QStringLiteral("isij") || wantNorm == QStringLiteral("isijsteel")
+             || wantNorm == QStringLiteral("default") || wantNorm == QStringLiteral("origin"))
+        wantNorm = QStringLiteral("isij");
+    else if (wantNorm == QStringLiteral("tolbright") || wantNorm == QStringLiteral("paultolbright"))
+        wantNorm = QStringLiteral("tolbright");
+    else if (wantNorm == QStringLiteral("tolmuted") || wantNorm == QStringLiteral("paultolmuted"))
+        wantNorm = QStringLiteral("tolmuted");
+    else if (wantNorm == QStringLiteral("grayscale") || wantNorm == QStringLiteral("grey")
+             || wantNorm == QStringLiteral("gray") || wantNorm == QStringLiteral("monochrome"))
+        wantNorm = QStringLiteral("monochrome");
+    if (normalizedKey)
+        *normalizedKey = wantNorm;
+    if (wantNorm.isEmpty())
+        return QString();
+
+    // Strongest match first, so a short key such as "orig" is not caught by a palette that
+    // merely contains it ("ToriGraph Standard"): exact name, alias, prefix, word prefix,
+    // and only then a substring.
+    for (const QString &cand : palettes) {
+        if (cand.compare(raw.trimmed(), Qt::CaseInsensitive) == 0 || normKey(cand) == wantNorm)
+            return cand;
+    }
+    const QString canon = Graph::canonicalPaletteName(raw);
+    for (const QString &cand : palettes) {
+        if (cand == canon)
+            return cand;
+    }
+    for (const QString &cand : palettes) {
+        if (normKey(cand).startsWith(wantNorm))
+            return cand;
+    }
+    static const QRegularExpression kWordSplit(QStringLiteral("[^A-Za-z0-9]+"));
+    for (const QString &cand : palettes) {
+        // word prefix: "tab" -> "Matplotlib (tab10)", "colorblind" -> "Okabe-Ito (Colorblind ...)"
+        const QStringList words = cand.split(kWordSplit, Qt::SkipEmptyParts);
+        for (int w = 0; w < words.size(); ++w) {
+            QString tail;
+            for (int k = w; k < words.size(); ++k)
+                tail += words.at(k).toLower();
+            if (tail.startsWith(wantNorm))
+                return cand;
+        }
+    }
+    if (wantNorm.size() >= 4) {
+        for (const QString &cand : palettes) {
+            if (normKey(cand).contains(wantNorm))
+                return cand;
+        }
+    }
+    return QString();
 }

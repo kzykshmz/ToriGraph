@@ -3575,6 +3575,9 @@ QWidget *GraphInspectorDock::buildCurveInspector()
 
     d_combo_series_scheme = new QComboBox(d_curve_regular_wrap);
     refreshPaletteSchemeCombo();
+    // Only a choice made by the user pins the combo; otherwise it follows the default palette.
+    connect(d_combo_series_scheme, QOverload<int>::of(&QComboBox::activated), this,
+            [this](int) { d_series_scheme_user_chosen = true; });
     regLay->addWidget(d_combo_series_scheme);
 
     d_chk_cycle_sym_shapes = new QCheckBox(d_curve_regular_wrap);
@@ -6396,12 +6399,25 @@ void GraphInspectorDock::refreshPaletteSchemeCombo()
     for (const QString &nm : names)
         d_combo_series_scheme->addItem(tr(nm.toUtf8().constData()), nm);
 
-    int targetIdx = prevName.isEmpty() ? d_combo_series_scheme->findData(Graph::okabeItoPaletteName())
-                                       : d_combo_series_scheme->findData(prevName);
+    // Until the user picks a scheme here, show the palette new curves use (so "apply" keeps
+    // their colours, and a changed default is followed); a user's pick is kept.
+    int targetIdx = (d_series_scheme_user_chosen && !prevName.isEmpty())
+            ? d_combo_series_scheme->findData(prevName)
+            : d_combo_series_scheme->findData(Graph::defaultCurvePaletteName());
     if (targetIdx < 0)
         targetIdx = 0;
     if (d_combo_series_scheme->count() > 0)
         d_combo_series_scheme->setCurrentIndex(targetIdx);
+}
+
+void GraphInspectorDock::syncSeriesSchemeToDefaultPalette()
+{
+    refreshPaletteSchemeCombo();
+}
+
+QString GraphInspectorDock::seriesSchemePaletteName() const
+{
+    return d_combo_series_scheme ? d_combo_series_scheme->currentData().toString() : QString();
 }
 
 void GraphInspectorDock::applyGroupAutoStyleFromUi()
