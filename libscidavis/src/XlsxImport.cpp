@@ -911,6 +911,13 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         std::sort(targetCols.begin(), targetCols.end());
     }
 
+    auto isMissingOrErrorCell = [&](const Cell &c) {
+        if (isBlank(c) || c.type == Cell::Error)
+            return true;
+        if (c.type == Cell::Text)
+            return AsciiTableImportFilter::isMissingDataToken(cellDisplayText(c, date1904));
+        return false;
+    };
     auto rowHasNumeric = [&](int r) {
         for (int c : targetCols)
             if (isNumericCell(cellAt(sheet, r, c)))
@@ -923,6 +930,14 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 return true;
         return false;
     };
+    auto rowHasNonMissingText = [&](int r) {
+        for (int c : targetCols) {
+            const Cell &cell = cellAt(sheet, r, c);
+            if (!isMissingOrErrorCell(cell) && isTextualCell(cell))
+                return true;
+        }
+        return false;
+    };
     auto countRowNonBlank = [&](int r) {
         int cnt = 0;
         for (int c : targetCols)
@@ -930,12 +945,12 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 ++cnt;
         return cnt;
     };
-    // Every non-blank cell of rows [from, lastRow] in column c is a number, and there is one.
+    // Every non-missing cell of rows [from, lastRow] in column c is a number, and there is one.
     auto columnNumericFrom = [&](int c, int from) {
         bool any = false;
         for (int r = from; r <= lastRow; ++r) {
             const Cell &cell = cellAt(sheet, r, c);
-            if (isBlank(cell) || cell.type == Cell::Error)
+            if (isMissingOrErrorCell(cell))
                 continue;
             if (!isNumericCell(cell))
                 return false;
@@ -948,7 +963,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         int nums = 0, texts = 0;
         for (int r = from; r <= lastRow; ++r) {
             const Cell &cell = cellAt(sheet, r, c);
-            if (isBlank(cell) || cell.type == Cell::Error)
+            if (isMissingOrErrorCell(cell))
                 continue;
             if (isNumericCell(cell))
                 ++nums;
@@ -956,6 +971,26 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 ++texts;
         }
         return nums > 0 && nums >= texts;
+    };
+
+    auto allColsNumericFrom = [&](int from) {
+        if (from > lastRow || targetCols.isEmpty())
+            return false;
+        int numCols = 0;
+        for (int c : targetCols) {
+            bool anyNum = false;
+            for (int r = from; r <= lastRow; ++r) {
+                const Cell &cell = cellAt(sheet, r, c);
+                if (isMissingOrErrorCell(cell))
+                    continue;
+                if (!isNumericCell(cell))
+                    return false;
+                anyNum = true;
+            }
+            if (anyNum)
+                ++numCols;
+        }
+        return numCols >= 1 && numCols == targetCols.size();
     };
 
     int firstNumericRow = -1;
@@ -966,7 +1001,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         }
     }
 
-    // Detect data start row even when row 1+ contains title / comment preamble lines.
+    // Detect data start row even when row 1+ contains title / comment preamble or mixed headers.
     int detectedDataStart = -1;
     if (firstNumericRow >= 0) {
         for (int r = firstNumericRow; r <= lastRow; ++r) {
@@ -980,6 +1015,21 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 }
             }
             if (hasCleanNumericCol) {
+                // P1-D4(c): if row r still has non-missing text (e.g. "Time (s) | 300 | 400" or
+                // "Exp | 2026") while a row shortly below starts an all-numeric data block,
+                // keep advancing so the mixed header / preamble row is not swallowed as data.
+                if (rowHasNonMissingText(r)) {
+                    bool pureNumericBelow = false;
+                    const int lookLimit = std::min(lastRow, r + 8);
+                    for (int rNext = r + 1; rNext <= lookLimit; ++rNext) {
+                        if (allColsNumericFrom(rNext)) {
+                            pureNumericBelow = true;
+                            break;
+                        }
+                    }
+                    if (pureNumericBelow)
+                        continue;
+                }
                 detectedDataStart = r;
                 break;
             }
@@ -987,15 +1037,6 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         if (detectedDataStart < 0) {
             detectedDataStart = firstNumericRow;
         } else if (detectedDataStart > firstNumericRow) {
-            auto isMissingMarkerText = [](const QString &raw) {
-                const QString s = raw.trimmed();
-                return s.isEmpty() || s == QLatin1String("-") || s == QLatin1String("--")
-                        || s.compare(QLatin1String("N/A"), Qt::CaseInsensitive) == 0
-                        || s.compare(QLatin1String("NA"), Qt::CaseInsensitive) == 0
-                        || s.compare(QLatin1String("#N/A"), Qt::CaseInsensitive) == 0
-                        || s.compare(QLatin1String("NaN"), Qt::CaseInsensitive) == 0
-                        || s.compare(QLatin1String("null"), Qt::CaseInsensitive) == 0;
-            };
             QSet<int> numericDataCols;
             for (int c : targetCols) {
                 if (columnMostlyNumericFrom(c, detectedDataStart))
@@ -1008,17 +1049,26 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                     if (!numericDataCols.contains(c))
                         continue;
                     const Cell &cell = cellAt(sheet, r, c);
-                    if (isBlank(cell) || cell.type == Cell::Error)
+                    if (isMissingOrErrorCell(cell))
                         continue;
-                    if (isNumericCell(cell)) {
+                    if (isNumericCell(cell))
                         ++numInNumCols;
-                    } else if (!isMissingMarkerText(cellDisplayText(cell, date1904))) {
+                    else
                         ++textInNumCols;
-                    }
                 }
                 if (numInNumCols > 0 && textInNumCols == 0) {
-                    detectedDataStart = r;
-                    break;
+                    // P1-D3(a): only rewind to r when no text header row sits in [r, detectedDataStart-1]
+                    bool textHeaderBetween = false;
+                    for (int rr = r; rr < detectedDataStart; ++rr) {
+                        if (rowHasNonMissingText(rr)) {
+                            textHeaderBetween = true;
+                            break;
+                        }
+                    }
+                    if (!textHeaderBetween) {
+                        detectedDataStart = r;
+                        break;
+                    }
                 }
             }
         }
@@ -1032,6 +1082,32 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
 
     if (detectedDataStart > firstRow) {
         dataStart = detectedDataStart;
+        const bool allDataColsNumeric = allColsNumericFrom(dataStart);
+        auto isMixedHeaderRow = [&](int r) {
+            return allDataColsNumeric && targetCols.size() >= 2 && rowHasNonMissingText(r)
+                    && countRowNonBlank(r) == targetCols.size();
+        };
+        auto hasFallbackUnitSyntax = [](const QString &raw) {
+            const QString s = raw.trimmed();
+            if (s.isEmpty() || s.size() > 16)
+                return false;
+            if ((s.startsWith(QLatin1Char('(')) && s.endsWith(QLatin1Char(')')))
+                || (s.startsWith(QLatin1Char('[')) && s.endsWith(QLatin1Char(']')))) {
+                return true;
+            }
+            for (const QChar ch : s) {
+                const ushort u = ch.unicode();
+                if (u == '/' || u == '^' || u == '%' || u == '*' || u == '-'
+                    || u == 0x2030 /*‰*/ || u == 0x00B0 /*°*/ || u == 0x2103 /*℃*/
+                    || u == 0x2109 /*℉*/ || u == 0x03A9 /*Ω*/ || u == 0x03BC /*μ*/
+                    || u == 0x00B5 /*µ*/ || u == 0x00C5 /*Å*/ || u == 0x00B7 /*·*/
+                    || u == 0x22C5 /*⋅*/ || u == 0x00B2 /*²*/ || u == 0x00B3 /*³*/
+                    || u == 0x207B /*⁻*/ || u == 0x2014 /*—*/ || u == 0x2013 /*–*/) {
+                    return true;
+                }
+            }
+            return false;
+        };
         QVector<int> candRows;
         for (int r = firstRow; r < dataStart; ++r) {
             if (countRowNonBlank(r) > 0)
@@ -1039,7 +1115,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         }
         if (candRows.size() == 1) {
             const int rHdr = candRows.first();
-            if (rowHasTextual(rHdr) && !rowHasNumeric(rHdr)) {
+            if ((rowHasTextual(rHdr) && !rowHasNumeric(rHdr)) || isMixedHeaderRow(rHdr)) {
                 hasHeader = true;
                 headerRowIdx = rHdr;
             }
@@ -1048,11 +1124,14 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             const int rPrev = candRows.at(candRows.size() - 2);
             const bool lastTextOnly = rowHasTextual(rLast) && !rowHasNumeric(rLast);
             const bool prevTextOnly = rowHasTextual(rPrev) && !rowHasNumeric(rPrev);
+            const bool lastHeaderCand = lastTextOnly || isMixedHeaderRow(rLast);
+            const bool prevHeaderCand = prevTextOnly || isMixedHeaderRow(rPrev);
             bool lastIsUnits = false;
-            if (lastTextOnly && prevTextOnly) {
+            if (lastTextOnly && prevHeaderCand) {
                 auto scanUnitRowCols = [&](bool allowMissingMarkers) {
                     int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
                     bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
+                    bool allFallbackUnitLike = true;
                     for (int c : targetCols) {
                         const bool okCol = allowMissingMarkers
                                 ? columnMostlyNumericFrom(c, dataStart)
@@ -1070,19 +1149,25 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                         if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
                             hasInlineHeaderUnit = true;
                         QString cleaned;
-                        if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned))
+                        if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned)) {
                             ++recognized;
-                        else
+                        } else {
                             allRecognized = false;
+                            if (!hasFallbackUnitSyntax(rawTxt))
+                                allFallbackUnitLike = false;
+                        }
                         if (cleaned.size() > 32)
                             shortCells = false;
                     }
                     const int nonBlankPrev = countRowNonBlank(rPrev);
                     const int nonBlankLast = countRowNonBlank(rLast);
+                    // P1-D3(b): dictionary-miss fallback applies only for pure 2-row headers
+                    // whose cells carry unit-like symbols/brackets (never plain title + column names).
+                    const bool fallbackUnitsOk = (candRows.size() == 2) && nonEmptyUnits >= 1
+                            && shortCells && allFallbackUnitLike && nonBlankPrev >= nonBlankLast
+                            && !(nonBlankPrev == 1 && targetCols.size() >= 2);
                     const bool isUnits = !hasInlineHeaderUnit && numericCols >= 1
-                            && ((allRecognized && recognized >= 1)
-                                || (nonEmptyUnits >= 1 && shortCells && nonBlankPrev >= nonBlankLast
-                                    && !(nonBlankPrev == 1 && targetCols.size() >= 2)));
+                            && ((allRecognized && recognized >= 1) || fallbackUnitsOk);
                     return std::make_pair(numericCols, isUnits);
                 };
                 std::pair<int, bool> unitScan = scanUnitRowCols(false);
@@ -1095,10 +1180,10 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 headerRowIdx = rPrev;
                 hasUnits = true;
                 unitsRowIdx = rLast;
-            } else if (lastTextOnly) {
+            } else if (lastHeaderCand) {
                 hasHeader = true;
                 headerRowIdx = rLast;
-            } else if (prevTextOnly) {
+            } else if (prevHeaderCand) {
                 hasHeader = true;
                 headerRowIdx = rPrev;
             }
@@ -1120,12 +1205,16 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
     QSet<QString> usedNames;
     QVector<bool> colIsNumeric;
     for (int c : targetCols) {
-        int nums = 0, dates = 0, texts = 0;
+        int nums = 0, dates = 0, texts = 0, missingTexts = 0;
         bool datePart = false, timePart = false;
         for (int r = dataStart; r <= lastRow; ++r) {
             const Cell &cell = cellAt(sheet, r, c);
             if (isBlank(cell) || cell.type == Cell::Error)
                 continue;
+            if (isMissingOrErrorCell(cell)) {
+                ++missingTexts;
+                continue;
+            }
             if (isNumericCell(cell)) {
                 ++nums;
                 if (cell.type == Cell::Number && cell.isDate) {
@@ -1137,7 +1226,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 ++texts;
             }
         }
-        const SciDAVis::ColumnMode mode = (texts > 0)
+        const SciDAVis::ColumnMode mode = (texts > 0 || (nums == 0 && missingTexts > 0))
                 ? SciDAVis::ColumnMode::Text
                 : ((nums > 0 && dates == nums) ? SciDAVis::ColumnMode::DateTime
                                                : SciDAVis::ColumnMode::Numeric);
@@ -1182,7 +1271,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             for (int i = 0; i < nRows; ++i) {
                 double v = 0.0;
                 const Cell &cell = cellAt(sheet, dataStart + i, c);
-                const bool ok = !isBlank(cell) && numericValue(cell, v);
+                const bool ok = !isMissingOrErrorCell(cell) && numericValue(cell, v);
                 if (ok) {
                     (*values)[i] = v;
                     if (runStart >= 0) {

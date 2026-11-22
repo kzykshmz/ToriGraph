@@ -692,7 +692,7 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
             if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                 bar->cancelScheduledAndHide();
-            if (me->button() == Qt::LeftButton) {
+            if (me->button() == Qt::LeftButton || me->button() == Qt::RightButton) {
                 g->deselect();
                 g->setCurrentSelection({ Graph::GraphSelection::Layer, -1, -1 });
             }

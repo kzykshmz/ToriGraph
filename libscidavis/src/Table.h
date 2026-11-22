@@ -165,6 +165,9 @@ public slots:
         return d_future_table ? d_future_table->column(name) : nullptr;
     }
 
+    using MyWidget::askOnCloseEvent;
+    bool askOnCloseEvent() const { return askOnClose; }
+
     //! Return the value of the cell as a double
     /**
      * If one of the indices or the cell content is invalid, return 0.0. For the next non-bugfix

@@ -754,6 +754,7 @@ void registerApplicationWindowJapaneseStrings()
 
         // Phase 3: OriginPro Top-Level Gadgets Menu & Interactive Gadgets
         add("&Gadgets", "ガジェット(&G)");
+        add("Ga&dgets", "ガジェット(&D)");
         add("Gadgets", "ガジェット");
         add("&Vertical Cursor (All Layers)", "垂直カーソル (全レイヤー連動)(&V)");
         add("Vertical Cursor (All Layers)", "垂直カーソル (全レイヤー連動)");
@@ -2708,28 +2709,6 @@ ApplicationWindow::ApplicationWindow()
                 return QJsonObject();
             });
 
-    {
-        bool isComEmbedArg = false;
-        bool hasRpcPipeArg = false;
-        bool hasRpcPortArg = false;
-        const QStringList appArgs = QCoreApplication::arguments();
-        for (const QString &arg : appArgs) {
-            if (arg.compare(QStringLiteral("-Embedding"), Qt::CaseInsensitive) == 0
-                || arg.compare(QStringLiteral("/Embedding"), Qt::CaseInsensitive) == 0) {
-                isComEmbedArg = true;
-            } else if (arg == QStringLiteral("--rpc-pipe")
-                       || arg.startsWith(QStringLiteral("--rpc-pipe="))) {
-                hasRpcPipeArg = true;
-            } else if (arg == QStringLiteral("--rpc-port")
-                       || arg.startsWith(QStringLiteral("--rpc-port="))) {
-                hasRpcPortArg = true;
-            }
-        }
-        const bool pipeOnlyCli = hasRpcPipeArg && !hasRpcPortArg;
-        if (!isComEmbedArg && !d_ole_embedded && !pipeOnlyCli)
-            d_python_server->startTcp(0);
-    }
-
     d_modern_ribbon->setSplitLeftRatio(d_saved_split_left_ratio);
     if (!d_saved_workspace_layout_mode.isEmpty()
         && d_modern_ribbon->setWorkspaceLayoutModeByName(d_saved_workspace_layout_mode)) {
@@ -2962,7 +2941,7 @@ void ApplicationWindow::initToolBars()
 
     actionAddText = new QAction(tr("Add &Text"), this);
     actionAddText->setObjectName(QStringLiteral("actionAddText")); // ribbon / command search binding
-    actionAddText->setShortcut(tr("ALT+T"));
+    actionAddText->setShortcut(tr("Ctrl+Shift+T"));
     actionAddText->setIcon(IconLoader::load("text-label"));
     actionAddText->setCheckable(true);
     connect(actionAddText, SIGNAL(triggered()), this, SLOT(addText()));
@@ -3024,7 +3003,7 @@ void ApplicationWindow::initToolBars()
     graph_tools->addAction(btnCursor);
 
     btnSelect = new QAction(tr("&Select Data Range"), this);
-    btnSelect->setShortcut(tr("ALT+S"));
+    btnSelect->setShortcut(tr("Ctrl+Alt+S"));
     btnSelect->setActionGroup(dataTools);
     btnSelect->setCheckable(true);
     btnSelect->setIcon(IconLoader::load("gadget-delta"));
@@ -3037,7 +3016,7 @@ void ApplicationWindow::initToolBars()
     btnMovePoints->setIcon(IconLoader::load("move-points"));
 
     btnRemovePoints = new QAction(tr("Remove &Bad Data Points..."), this);
-    btnRemovePoints->setShortcut(tr("Alt+B"));
+    btnRemovePoints->setShortcut(tr("Ctrl+Shift+B"));
     btnRemovePoints->setActionGroup(dataTools);
     btnRemovePoints->setCheckable(true);
     btnRemovePoints->setIcon(IconLoader::load("remove-points"));
@@ -3380,7 +3359,7 @@ void ApplicationWindow::insertTranslatedStrings()
     decay->setTitle(tr("Fit E&xponential Decay"));
     multiPeakMenu->setTitle(tr("Fit &Multi-Peak"));
     if (gadgetsMenu)
-        gadgetsMenu->setTitle(tr("&Gadgets"));
+        gadgetsMenu->setTitle(tr("Ga&dgets"));
     if (dataMaskMenu)
         dataMaskMenu->setTitle(tr("Data &Masking"));
     if (materialsAnalysisMenu)
@@ -3792,7 +3771,7 @@ void ApplicationWindow::initMainMenu()
 
     gadgetsMenu = new QMenu(this);
     gadgetsMenu->setFont(appFont);
-    gadgetsMenu->setTitle(tr("&Gadgets"));
+    gadgetsMenu->setTitle(tr("Ga&dgets"));
     gadgetsMenu->addAction(actionGadgetVerticalCursor);
     gadgetsMenu->addAction(actionGadgetDeltaCursor);
     gadgetsMenu->addSeparator();
@@ -8439,7 +8418,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             break;
         }
         case ImportASCIIDialog::Overwrite: {
-            if (table->rowCount() < temp->rowCount())
+            if (table->rowCount() != temp->rowCount())
                 table->d_future_table->setRowCount(temp->rowCount());
             for (int col = 0; col < table->columnCount() && col < temp->columnCount(); col++) {
                 Column *src_col = temp->column(col);
@@ -8479,6 +8458,48 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
     offerPlotAfterImport(table);
 }
 
+static QString normalizedProjectFilePath(const QString &path)
+{
+    if (path.isEmpty() || path == QLatin1String("untitled"))
+        return QString();
+    const QFileInfo fi(path);
+    const QString canon = fi.canonicalFilePath();
+    const QString cleaned = QDir::cleanPath(canon.isEmpty() ? fi.absoluteFilePath() : canon);
+#ifdef Q_OS_WIN
+    return cleaned.toLower();
+#else
+    return cleaned;
+#endif
+}
+
+static ApplicationWindow *findOpenProjectWindow(const QString &fn)
+{
+    const QString target = normalizedProjectFilePath(fn);
+    if (target.isEmpty())
+        return nullptr;
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw);
+        if (!aw || !aw->isVisible() || isBeingDestroyed(aw))
+            continue;
+        if (aw->projectname.isEmpty() || aw->projectname == QLatin1String("untitled"))
+            continue;
+        if (normalizedProjectFilePath(aw->projectname) == target)
+            return aw;
+    }
+    return nullptr;
+}
+
+static void activateExistingProjectWindow(ApplicationWindow *aw)
+{
+    if (!aw)
+        return;
+    if (aw->isMinimized())
+        aw->showNormal();
+    aw->show();
+    aw->raise();
+    aw->activateWindow();
+}
+
 void ApplicationWindow::open()
 {
     if (isNonInteractiveContext(this))
@@ -8492,15 +8513,23 @@ void ApplicationWindow::open()
     workingDir = open_dialog->directory().path();
     settings.setValue("/General/Dialogs/LastUsedOriginLocale", open_dialog->codec());
 
+    auto isSupportedDataPath = [](const QString &p) {
+        return p.endsWith(".xlsx", Qt::CaseInsensitive)
+                || p.endsWith(".xlsm", Qt::CaseInsensitive)
+                || p.endsWith(".csv", Qt::CaseInsensitive)
+                || p.endsWith(".tsv", Qt::CaseInsensitive)
+                || p.endsWith(".tab", Qt::CaseInsensitive)
+                || p.endsWith(".txt", Qt::CaseInsensitive)
+                || p.endsWith(".dat", Qt::CaseInsensitive);
+    };
+
     switch (open_dialog->openMode()) {
     case OpenProjectDialog::NewProject: {
         QString fn = open_dialog->selectedFiles()[0];
         QFileInfo fi(fn);
 
         if (projectname != "untitled") {
-            QFileInfo fi(projectname);
-            QString pn = fi.absolutePath();
-            if (fn == pn) {
+            if (normalizedProjectFilePath(fn) == normalizedProjectFilePath(projectname)) {
                 QMessageBox::warning(this, tr("File opening error"),
                                      tr("The file: <b>%1</b> is the current file!").arg(fn));
                 return;
@@ -8519,19 +8548,20 @@ void ApplicationWindow::open()
                 || fn.endsWith(".ogw", Qt::CaseInsensitive)
                 || fn.endsWith(".ogg", Qt::CaseInsensitive)
                 || fn.endsWith(".org", Qt::CaseInsensitive);
-        const bool isDataFile = fn.endsWith(".xlsx", Qt::CaseInsensitive)
-                || fn.endsWith(".xlsm", Qt::CaseInsensitive)
-                || fn.endsWith(".csv", Qt::CaseInsensitive)
-                || fn.endsWith(".tsv", Qt::CaseInsensitive)
-                || fn.endsWith(".tab", Qt::CaseInsensitive)
-                || fn.endsWith(".txt", Qt::CaseInsensitive)
-                || fn.endsWith(".dat", Qt::CaseInsensitive);
+        const bool isDataFile = isSupportedDataPath(fn);
 
         if (isProjectFile || isDataFile) {
             if (!fi.exists()) {
                 QMessageBox::critical(this, tr("File opening error"),
                                       tr("The file: <b>%1</b> doesn't exist!").arg(fn));
                 return;
+            }
+
+            if (isProjectFile) {
+                if (ApplicationWindow *existing = findOpenProjectWindow(fn)) {
+                    activateExistingProjectWindow(existing);
+                    return;
+                }
             }
 
             if (isDataFile)
@@ -8541,28 +8571,47 @@ void ApplicationWindow::open()
             ApplicationWindow *a = open(fn);
             if (a && a != this) {
                 a->workingDir = workingDir;
-                if (fn.endsWith(".sciprj", Qt::CaseInsensitive)
-                    || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
-                    || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
-                    || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
-                    || fn.endsWith(".qti", Qt::CaseInsensitive)
-                    || fn.endsWith(".qti~", Qt::CaseInsensitive)
-                    || fn.endsWith(".opj", Qt::CaseInsensitive)
-                    || fn.endsWith(".opju", Qt::CaseInsensitive)
-                    || fn.endsWith(".ogg", Qt::CaseInsensitive)
-                    || fn.endsWith(".org", Qt::CaseInsensitive))
+                if (!d_ole_embedded
+                    && (fn.endsWith(".sciprj", Qt::CaseInsensitive)
+                        || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
+                        || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
+                        || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
+                        || fn.endsWith(".qti", Qt::CaseInsensitive)
+                        || fn.endsWith(".qti~", Qt::CaseInsensitive)
+                        || fn.endsWith(".opj", Qt::CaseInsensitive)
+                        || fn.endsWith(".opju", Qt::CaseInsensitive)
+                        || fn.endsWith(".ogg", Qt::CaseInsensitive)
+                        || fn.endsWith(".org", Qt::CaseInsensitive)))
                     this->close();
             }
+        } else if (fn.endsWith(".xls", Qt::CaseInsensitive)
+                   || fn.endsWith(".ods", Qt::CaseInsensitive)) {
+            QMessageBox::information(
+                    this, tr("File opening error"),
+                    tr("Old Excel (.xls) and OpenDocument (.ods) files cannot be read directly.\n"
+                       "Save them as an Excel Workbook (.xlsx) or as CSV and drop that file, or "
+                       "copy the cells in Excel (Ctrl+C) and paste them into a worksheet here "
+                       "(Ctrl+V)."));
+            return;
         } else {
-            QMessageBox::critical(this, tr("File opening error"),
-                                  tr("The file <b>%1</b> is not a valid project file.").arg(fn));
+            QMessageBox::critical(
+                    this, tr("File opening error"),
+                    tr("The file <b>%1</b> cannot be opened as a project or worksheet.<br>"
+                       "Supported formats: ToriGraph projects (.sciprj, .sciprj.gz), Excel "
+                       "workbooks (.xlsx, .xlsm), and text data (.csv, .tsv, .txt, .dat).")
+                            .arg(fn));
             return;
         }
         break;
     }
-    case OpenProjectDialog::NewFolder:
-        appendProject(open_dialog->selectedFiles()[0]);
+    case OpenProjectDialog::NewFolder: {
+        const QString selFn = open_dialog->selectedFiles()[0];
+        if (isSupportedDataPath(selFn))
+            open(selFn);
+        else
+            appendProject(selFn);
         break;
+    }
     }
 }
 
@@ -8594,9 +8643,20 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
              || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
              || fn.endsWith(".sciprj.gz~", Qt::CaseInsensitive)
              || fn.endsWith(".qti~", Qt::CaseInsensitive)
-             || fn.endsWith(".qti.gz~", Qt::CaseInsensitive))
+             || fn.endsWith(".qti.gz~", Qt::CaseInsensitive)) {
+        if (!isNonInteractiveContext(this)) {
+            if (projectname != QLatin1String("untitled")
+                && normalizedProjectFilePath(fn) == normalizedProjectFilePath(projectname)) {
+                activateExistingProjectWindow(this);
+                return this;
+            }
+            if (ApplicationWindow *existing = findOpenProjectWindow(fn)) {
+                activateExistingProjectWindow(existing);
+                return existing;
+            }
+        }
         return openProject(fn);
-    else if (fn.endsWith(".xlsx", Qt::CaseInsensitive)
+    } else if (fn.endsWith(".xlsx", Qt::CaseInsensitive)
              || fn.endsWith(".xlsm", Qt::CaseInsensitive)) {
         QString summary;
         if (!XlsxImport::importDroppedFile(this, fn, &summary))
@@ -8727,9 +8787,7 @@ void ApplicationWindow::openRecentProject()
     }
 
     if (projectname != "untitled") {
-        QFileInfo fi(projectname);
-        QString pn = fi.absolutePath();
-        if (fn == pn) {
+        if (normalizedProjectFilePath(fn) == normalizedProjectFilePath(projectname)) {
             if (!d_headless_mode && !d_ole_embedded && !m_batch) {
                 QMessageBox::warning(this, tr("File opening error"),
                                      tr("The file: <p><b> %1 </b><p> is the current file!")
@@ -8740,9 +8798,13 @@ void ApplicationWindow::openRecentProject()
     }
 
     if (!fn.isEmpty()) {
+        if (ApplicationWindow *existing = findOpenProjectWindow(fn)) {
+            activateExistingProjectWindow(existing);
+            return;
+        }
         saveSettings(); // the recent projects must be saved
         ApplicationWindow *a = open(fn);
-        if (a
+        if (a && a != this && !d_ole_embedded
             && (fn.endsWith(".sciprj", Qt::CaseInsensitive)
                 || fn.endsWith(".sciprj~", Qt::CaseInsensitive)
                 || fn.endsWith(".sciprj.gz", Qt::CaseInsensitive)
@@ -8793,28 +8855,33 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
     unsigned char inBuf[16384];
     unsigned char outBuf[16384];
     bool ok = true;
+    bool sawStreamEnd = false;
+    qint64 totalBytesRead = 0;
+    const bool hasBackupSibling = !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~");
 
     while (!inFile.atEnd()) {
         const qint64 nRead = inFile.read(reinterpret_cast<char *>(inBuf), sizeof(inBuf));
         if (nRead < 0) {
-            if (!nonInteractive)
+            if (!nonInteractive && !hasBackupSibling)
                 QMessageBox::critical(this, tr("File opening error"), inFile.errorString());
             ok = false;
             break;
         }
         if (nRead == 0)
             break;
+        totalBytesRead += nRead;
 
         zs.avail_in = static_cast<uInt>(nRead);
         zs.next_in = inBuf;
 
         while (zs.avail_in > 0) {
+            sawStreamEnd = false;
             zs.avail_out = sizeof(outBuf);
             zs.next_out = outBuf;
             const int ret = inflate(&zs, Z_NO_FLUSH);
             if (ret == Z_NEED_DICT || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR
                 || ret == Z_STREAM_ERROR) {
-                if (!nonInteractive) {
+                if (!nonInteractive && !hasBackupSibling) {
                     const QString zMsg = zs.msg ? QString::fromUtf8(zs.msg)
                                                 : tr("The file <b>%1</b> is not a valid project file.")
                                                           .arg(fn);
@@ -8836,7 +8903,9 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
             if (ret == Z_STREAM_END) {
                 if (zs.avail_in > 0) {
                     inflateReset(&zs);
+                    sawStreamEnd = false;
                 } else {
+                    sawStreamEnd = true;
                     break;
                 }
             }
@@ -8847,6 +8916,14 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
 
     inflateEnd(&zs);
     inFile.close();
+
+    if (ok && (totalBytesRead <= 0 || !sawStreamEnd)) {
+        if (!nonInteractive && !hasBackupSibling) {
+            QMessageBox::critical(this, tr("File opening error"),
+                                  tr("The file <b>%1</b> is not a valid project file.").arg(fn));
+        }
+        ok = false;
+    }
 
     if (!ok || !file->flush()) {
         file->close();
@@ -8864,10 +8941,49 @@ bool ApplicationWindow::loadProject(const QString &fn)
     renamedTables.clear();
     unique_ptr<QFile> file;
 
+    auto offerBackupIfPresent = [&](const QString &corruptFn, bool *outAccepted) -> bool {
+        if (outAccepted)
+            *outAccepted = false;
+        if (nonInteractive || corruptFn.endsWith(QLatin1String("~"))
+            || !QFile::exists(corruptFn + "~")) {
+            return false;
+        }
+        int choice = QMessageBox::question(
+                this, tr("File opening error"),
+                tr("The file <b>%1</b> is corrupted, but there exists a backup copy.<br>Do you "
+                   "want to open the backup instead?")
+                        .arg(corruptFn),
+                QMessageBox::Yes | QMessageBox::Default, QMessageBox::No | QMessageBox::Escape);
+        if (choice == QMessageBox::Yes) {
+            if (outAccepted)
+                *outAccepted = true;
+            QMessageBox::information(
+                    this, tr("Opening backup copy"),
+                    tr("The original (corrupt) file is being left untouched, in case you want "
+                       "to "
+                       "try rescuing data manually. If you want to continue working with the "
+                       "automatically restored backup copy, you have to explicitly overwrite "
+                       "the "
+                       "original file."));
+            return loadProject(corruptFn + "~");
+        }
+        return false;
+    };
+
     if (fn.endsWith(".gz", Qt::CaseInsensitive) || fn.endsWith(".gz~", Qt::CaseInsensitive)) {
         file.reset(openCompressedFile(fn));
-        if (!file)
+        if (!file) {
+            bool backupAccepted = false;
+            if (offerBackupIfPresent(fn, &backupAccepted))
+                return true;
+            if (!backupAccepted && !nonInteractive
+                && !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~")) {
+                QMessageBox::critical(
+                        this, tr("File opening error"),
+                        tr("The file <b>%1</b> is not a valid project file.").arg(fn));
+            }
             return false;
+        }
     } else {
         file.reset(new QFile(fn));
         if (!file->open(QIODevice::ReadOnly)) {
@@ -8889,26 +9005,10 @@ bool ApplicationWindow::loadProject(const QString &fn)
     list = s.split(QRegExp("\\s"), QString::SkipEmptyParts);
 #endif
     if (list.count() < 2 || (list[0] != "SciDAVis" && list[0] != "ToriGraph" && list[0] != "QtiPlot")) {
-        if (!nonInteractive && QFile::exists(fn + "~")) {
-            int choice = QMessageBox::question(
-                    this, tr("File opening error"),
-                    tr("The file <b>%1</b> is corrupted, but there exists a backup copy.<br>Do you "
-                       "want to open the backup instead?")
-                            .arg(fn),
-                    QMessageBox::Yes | QMessageBox::Default, QMessageBox::No | QMessageBox::Escape);
-            if (choice == QMessageBox::Yes) {
-                QMessageBox::information(
-                        this, tr("Opening backup copy"),
-                        tr("The original (corrupt) file is being left untouched, in case you want "
-                           "to "
-                           "try rescuing data manually. If you want to continue working with the "
-                           "automatically restored backup copy, you have to explicitly overwrite "
-                           "the "
-                           "original file."));
-                return loadProject(fn + "~");
-            }
-        }
-        if (!nonInteractive) {
+        bool backupAccepted = false;
+        if (offerBackupIfPresent(fn, &backupAccepted))
+            return true;
+        if (!backupAccepted && !nonInteractive) {
             QMessageBox::critical(this, tr("File opening error"),
                                   tr("The file <b>%1</b> is not a valid project file.").arg(fn));
         }
@@ -8996,7 +9096,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
     // process tables and matrix information
     while (!t.atEnd() && !progress.wasCanceled()) {
-        s = t.readLine(4096); // workaround for safely reading very big lines
+        s = t.readLine(1048576); // workaround for safely reading very big lines
         list.clear();
         if (s.left(8) == "<folder>") {
             list = s.split("\t");
@@ -9075,7 +9175,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
     MultiLayer *plot = 0;
     while (!t.atEnd() && !progress.wasCanceled()) {
-        s = t.readLine(4096); // workaround for safely reading very big lines
+        s = t.readLine(1048576); // workaround for safely reading very big lines
         if (s.left(8) == "<folder>") {
             list = s.split("\t");
             current_folder = current_folder->findSubfolder(list[1]);
@@ -10368,6 +10468,89 @@ void ApplicationWindow::saveSettings()
     settings.sync();
 }
 
+namespace {
+
+bool isRecognizedImageWriterFormat(const QString &extLower)
+{
+    if (extLower.isEmpty())
+        return false;
+    const QList<QByteArray> list = QImageWriter::supportedImageFormats();
+    for (const QByteArray &fmt : list) {
+        if (extLower == QString::fromLatin1(fmt).toLower())
+            return true;
+    }
+    return false;
+}
+
+bool isRecognizedExportSuffix(const QString &extLower)
+{
+    if (extLower.isEmpty())
+        return false;
+    if (extLower == QLatin1String("emf") || extLower == QLatin1String("svg")
+        || extLower == QLatin1String("pdf") || extLower == QLatin1String("eps")
+        || extLower == QLatin1String("ps") || extLower == QLatin1String("tif")
+        || extLower == QLatin1String("tiff") || extLower == QLatin1String("png")
+        || extLower == QLatin1String("jpg") || extLower == QLatin1String("jpeg")
+        || extLower == QLatin1String("bmp")) {
+        return true;
+    }
+    return isRecognizedImageWriterFormat(extLower);
+}
+
+QString exportSuffixFromFilter(const QString &selectedFilter)
+{
+    QString norm = ImageExportDialog::normalizedFilter(selectedFilter).trimmed();
+    norm.remove(QLatin1Char('*'));
+    if (norm.isEmpty())
+        norm = QStringLiteral(".png");
+    if (!norm.startsWith(QLatin1Char('.')))
+        norm.prepend(QLatin1Char('.'));
+    return norm.toLower();
+}
+
+QString ensureExportSuffix(const QString &rawFileName, const QString &selectedFilter,
+                           bool *outAppended = nullptr)
+{
+    if (outAppended)
+        *outAppended = false;
+    QString out = rawFileName;
+    const QString curExt = QFileInfo(out).suffix().toLower();
+    if (!isRecognizedExportSuffix(curExt)) {
+        const QString sfx = exportSuffixFromFilter(selectedFilter);
+        if (!sfx.isEmpty()) {
+            out.append(sfx);
+            if (outAppended)
+                *outAppended = true;
+        }
+    }
+    return out;
+}
+
+bool probeWritableNoTruncate(const QString &filePath)
+{
+    const QFileInfo fi(filePath);
+    if (fi.filePath().trimmed().isEmpty() || fi.isDir())
+        return false;
+    const QDir dir = fi.dir();
+    if (!dir.exists())
+        return false;
+    if (fi.exists()) {
+        QFile existing(filePath);
+        if (!existing.open(QIODevice::ReadWrite))
+            return false;
+        existing.close();
+        return true;
+    }
+    QTemporaryFile probe(dir.filePath(QStringLiteral(".torigraph_export_probe_XXXXXX")));
+    probe.setAutoRemove(true);
+    if (!probe.open())
+        return false;
+    probe.close();
+    return true;
+}
+
+} // namespace
+
 void ApplicationWindow::exportGraph()
 {
     if (isNonInteractiveContext(this))
@@ -10407,59 +10590,80 @@ void ApplicationWindow::exportGraph()
     if (ied->selectedFiles().isEmpty())
         return;
 
-    QString selected_filter = ied->selectedNameFilter();
-    QString filter_suffix = selected_filter;
-    filter_suffix.remove('*');
-    QString file_name = ied->selectedFiles()[0];
-    QFileInfo file_info(file_name);
-    if (!file_info.fileName().contains("."))
-        file_name.append(filter_suffix);
-
-    {
-        QFile file(file_name);
-        if (!file.open(QIODevice::WriteOnly)) {
-            QMessageBox::critical(this, tr("Export Error"),
-                                  tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
-                                     "you have the right to write to this location!")
-                                          .arg(file_name));
+    const QString selected_filter = ied->selectedNameFilter();
+    bool suffixAppended = false;
+    const QString file_name =
+            ensureExportSuffix(ied->selectedFiles()[0], selected_filter, &suffixAppended);
+    if (suffixAppended && QFile::exists(file_name) && !isNonInteractiveContext(this)) {
+        const auto ans = QMessageBox::question(
+                this, tr("Overwrite file?"),
+                tr("A file called: <p><b>%1</b><p>already exists. Do you want to overwrite it?")
+                        .arg(file_name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ans != QMessageBox::Yes)
             return;
-        }
-        file.close();
     }
 
-    QString ext = QFileInfo(file_name).suffix().toLower();
-    if (ext.isEmpty())
-        ext = QString(filter_suffix).remove('.').trimmed().toLower();
+    const QString ext = QFileInfo(file_name).suffix().toLower();
+    if (!isRecognizedExportSuffix(ext)) {
+        QMessageBox::critical(
+                this, tr("Export Error"),
+                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
+        return;
+    }
 
+    if (!probeWritableNoTruncate(file_name)) {
+        QMessageBox::critical(this, tr("Export Error"),
+                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                 "you have the right to write to this location!")
+                                      .arg(file_name));
+        return;
+    }
+
+    bool formatHandled = false;
     if (ext == QLatin1String("emf")) {
-        if (plot2D)
+        if (plot2D) {
             plot2D->exportToFile(file_name);
-        else if (plot3D)
+            formatHandled = true;
+        } else if (plot3D) {
             plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+            formatHandled = true;
+        }
     } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
                || ext == QLatin1String("ps")) {
-        if (plot3D)
+        if (plot3D) {
             plot3D->exportVector(file_name, ext);
-        else if (plot2D)
+            formatHandled = true;
+        } else if (plot2D) {
             plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
                                  ied->pageSize(), ied->pageOrientation());
-    } else if (ext == QLatin1String("svg")) {
-        if (plot2D)
-            plot2D->exportSVG(file_name);
-        else if (plot3D)
-            plot3D->exportVector(file_name, "svg");
-    } else {
-        QList<QByteArray> list = QImageWriter::supportedImageFormats();
-        for (int i = 0; i < (int)list.count(); i++) {
-            if (ext == QString::fromLatin1(list[i]).toLower()) {
-                if (plot2D)
-                    plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
-                                        ied->resolution());
-                else if (plot3D)
-                    plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-                break;
-            }
+            formatHandled = true;
         }
+    } else if (ext == QLatin1String("svg")) {
+        if (plot2D) {
+            plot2D->exportSVG(file_name);
+            formatHandled = true;
+        } else if (plot3D) {
+            plot3D->exportVector(file_name, "svg");
+            formatHandled = true;
+        }
+    } else if (isRecognizedImageWriterFormat(ext)) {
+        if (plot2D) {
+            plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
+                                ied->resolution());
+            formatHandled = true;
+        } else if (plot3D) {
+            plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+            formatHandled = true;
+        }
+    }
+
+    const QFileInfo outInfo(file_name);
+    if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+        QMessageBox::critical(this, tr("Export Error"),
+                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                 "you have the right to write to this location!")
+                                      .arg(file_name));
     }
 }
 
@@ -10489,46 +10693,59 @@ void ApplicationWindow::exportLayer()
     if (ied->selectedFiles().isEmpty())
         return;
 
-    QString selected_filter = ied->selectedNameFilter();
-    QString filter_suffix = selected_filter;
-    filter_suffix.remove('*');
-    QString file_name = ied->selectedFiles()[0];
-    QFileInfo file_info(file_name);
-    if (!file_info.fileName().contains("."))
-        file_name.append(filter_suffix);
-
-    {
-        QFile file(file_name);
-        if (!file.open(QIODevice::WriteOnly)) {
-            QMessageBox::critical(this, tr("Export Error"),
-                                  tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
-                                     "you have the right to write to this location!")
-                                          .arg(file_name));
+    const QString selected_filter = ied->selectedNameFilter();
+    bool suffixAppended = false;
+    const QString file_name =
+            ensureExportSuffix(ied->selectedFiles()[0], selected_filter, &suffixAppended);
+    if (suffixAppended && QFile::exists(file_name) && !isNonInteractiveContext(this)) {
+        const auto ans = QMessageBox::question(
+                this, tr("Overwrite file?"),
+                tr("A file called: <p><b>%1</b><p>already exists. Do you want to overwrite it?")
+                        .arg(file_name),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ans != QMessageBox::Yes)
             return;
-        }
-        file.close();
     }
 
-    QString ext = QFileInfo(file_name).suffix().toLower();
-    if (ext.isEmpty())
-        ext = QString(filter_suffix).remove('.').trimmed().toLower();
+    const QString ext = QFileInfo(file_name).suffix().toLower();
+    if (!isRecognizedExportSuffix(ext)) {
+        QMessageBox::critical(
+                this, tr("Export Error"),
+                tr("Unsupported image or vector format: <b>%1</b>").arg(file_name));
+        return;
+    }
 
+    if (!probeWritableNoTruncate(file_name)) {
+        QMessageBox::critical(this, tr("Export Error"),
+                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                 "you have the right to write to this location!")
+                                      .arg(file_name));
+        return;
+    }
+
+    bool formatHandled = false;
     if (ext == QLatin1String("emf")) {
         g->exportToFile(file_name);
+        formatHandled = true;
     } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
                || ext == QLatin1String("ps")) {
         g->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
                         ied->pageSize(), ied->pageOrientation());
+        formatHandled = true;
     } else if (ext == QLatin1String("svg")) {
         g->exportSVG(file_name);
-    } else {
-        QList<QByteArray> list = QImageWriter::supportedImageFormats();
-        for (int i = 0; i < (int)list.count(); i++) {
-            if (ext == QString::fromLatin1(list[i]).toLower()) {
-                g->exportImage(file_name, ied->quality(), ied->transparency(), ied->resolution());
-                break;
-            }
-        }
+        formatHandled = true;
+    } else if (isRecognizedImageWriterFormat(ext)) {
+        g->exportImage(file_name, ied->quality(), ied->transparency(), ied->resolution());
+        formatHandled = true;
+    }
+
+    const QFileInfo outInfo(file_name);
+    if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+        QMessageBox::critical(this, tr("Export Error"),
+                              tr("Could not write to file: <br><h4> %1 </h4><p>Please verify that "
+                                 "you have the right to write to this location!")
+                                      .arg(file_name));
     }
 }
 
@@ -10557,12 +10774,16 @@ void ApplicationWindow::exportAllGraphs()
 
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
-    QString output_dir = ied->selectedFiles()[0];
-    QString file_suffix = ied->selectedNameFilter().toLower();
-    file_suffix.remove("*");
-    if (!file_suffix.isEmpty() && !file_suffix.startsWith('.'))
-        file_suffix.prepend('.');
+    const QString output_dir = ied->selectedFiles()[0];
+    const QString file_suffix = exportSuffixFromFilter(ied->selectedNameFilter());
     const QString ext = QString(file_suffix).remove('.').trimmed().toLower();
+    if (!isRecognizedExportSuffix(ext)) {
+        QApplication::restoreOverrideCursor();
+        QMessageBox::critical(
+                this, tr("Export Error"),
+                tr("Unsupported image or vector format: <b>%1</b>").arg(file_suffix));
+        return;
+    }
 
     QList<MyWidget *> windows = windowsList();
     bool confirm_overwrite = true;
@@ -10593,8 +10814,7 @@ void ApplicationWindow::exportAllGraphs()
 
         QString file_name = output_dir + "/" + w->objectName() + file_suffix;
         {
-            QFile f(file_name);
-            if (f.exists() && confirm_overwrite && !isNonInteractiveContext(this)) {
+            if (QFile::exists(file_name) && confirm_overwrite && !isNonInteractiveContext(this)) {
                 QApplication::restoreOverrideCursor();
                 switch (QMessageBox::question(this, tr("Overwrite file?"),
                                               tr("A file called: <p><b>%1</b><p>already exists. "
@@ -10612,7 +10832,7 @@ void ApplicationWindow::exportAllGraphs()
                     return;
                 }
             }
-            if (!f.open(QIODevice::WriteOnly)) {
+            if (!probeWritableNoTruncate(file_name)) {
                 QApplication::restoreOverrideCursor();
                 if (!isNonInteractiveContext(this)) {
                     QMessageBox::critical(
@@ -10623,37 +10843,55 @@ void ApplicationWindow::exportAllGraphs()
                 }
                 return;
             }
-            f.close();
         }
+        bool formatHandled = false;
         if (ext == QLatin1String("emf")) {
-            if (plot2D)
+            if (plot2D) {
                 plot2D->exportToFile(file_name);
-            else if (plot3D)
+                formatHandled = true;
+            } else if (plot3D) {
                 plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+                formatHandled = true;
+            }
         } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
                    || ext == QLatin1String("ps")) {
-            if (plot3D)
+            if (plot3D) {
                 plot3D->exportVector(file_name, ext);
-            else if (plot2D)
+                formatHandled = true;
+            } else if (plot2D) {
                 plot2D->exportVector(file_name, ied->resolution(), ied->color(), ied->keepAspect(),
                                      ied->pageSize(), ied->pageOrientation());
-        } else if (ext == QLatin1String("svg")) {
-            if (plot2D)
-                plot2D->exportSVG(file_name);
-            else if (plot3D)
-                plot3D->exportVector(file_name, "svg");
-        } else {
-            QList<QByteArray> list = QImageWriter::supportedImageFormats();
-            for (int i = 0; i < (int)list.count(); i++) {
-                if (ext == QString::fromLatin1(list[i]).toLower()) {
-                    if (plot2D)
-                        plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
-                                            ied->resolution());
-                    else if (plot3D)
-                        plot3D->exportImage(file_name, ied->quality(), ied->transparency());
-                    break;
-                }
+                formatHandled = true;
             }
+        } else if (ext == QLatin1String("svg")) {
+            if (plot2D) {
+                plot2D->exportSVG(file_name);
+                formatHandled = true;
+            } else if (plot3D) {
+                plot3D->exportVector(file_name, "svg");
+                formatHandled = true;
+            }
+        } else if (isRecognizedImageWriterFormat(ext)) {
+            if (plot2D) {
+                plot2D->exportImage(file_name, ied->quality(), ied->transparency(),
+                                    ied->resolution());
+                formatHandled = true;
+            } else if (plot3D) {
+                plot3D->exportImage(file_name, ied->quality(), ied->transparency());
+                formatHandled = true;
+            }
+        }
+        const QFileInfo outInfo(file_name);
+        if (!formatHandled || !outInfo.exists() || outInfo.size() <= 0) {
+            QApplication::restoreOverrideCursor();
+            if (!isNonInteractiveContext(this)) {
+                QMessageBox::critical(
+                        this, tr("Export Error"),
+                        tr("Could not write to file: <br><h4>%1</h4><p>"
+                           "Please verify that you have the right to write to this location!")
+                                .arg(file_name));
+            }
+            return;
         }
     }
 
@@ -13394,7 +13632,9 @@ void ApplicationWindow::cutSelection()
 void ApplicationWindow::copyMarker()
 {
     QWidget *m = (QWidget *)d_workspace.activeSubWindow();
-    MultiLayer *plot = (MultiLayer *)m;
+    MultiLayer *plot = qobject_cast<MultiLayer *>(m);
+    if (!plot)
+        return;
     Graph *g = (Graph *)plot->activeGraph();
     if (g && g->markerSelected()) {
         g->copyMarker();
@@ -13427,6 +13667,15 @@ void ApplicationWindow::copyMarker()
         }
     }
     copiedLayer = false;
+#ifdef Q_OS_WIN
+    const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(this, plot, nullptr);
+    if (statusBar() && (res.ok || res.staticFallbackOnClipboard)) {
+        statusBar()->showMessage(
+                tr("Copied annotation (paste in ToriGraph duplicates the annotation; paste in "
+                   "PowerPoint inserts the whole graph)."),
+                10000);
+    }
+#endif
 }
 
 void ApplicationWindow::pasteSelection()
@@ -13668,12 +13917,6 @@ void ApplicationWindow::undo()
             ml->undoStack()->undo();
             if (!nonInteractive)
                 QApplication::restoreOverrideCursor();
-        } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
-            if (!nonInteractive)
-                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-            d_project->undoStack()->undo();
-            if (!nonInteractive)
-                QApplication::restoreOverrideCursor();
         }
     } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
         if (!nonInteractive)
@@ -13719,12 +13962,6 @@ void ApplicationWindow::redo()
             if (!nonInteractive)
                 QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
             ml->undoStack()->redo();
-            if (!nonInteractive)
-                QApplication::restoreOverrideCursor();
-        } else if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
-            if (!nonInteractive)
-                QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-            d_project->undoStack()->redo();
             if (!nonInteractive)
                 QApplication::restoreOverrideCursor();
         }
@@ -14242,7 +14479,8 @@ void ApplicationWindow::newProject()
 
     ed->savedProject();
 
-    this->close();
+    if (!d_ole_embedded)
+        this->close();
 }
 
 void ApplicationWindow::savedProject()
@@ -18182,13 +18420,13 @@ void ApplicationWindow::createActions()
 #endif
 
     actionAddLayer = new QAction(IconLoader::load("layer-add"), tr("Add La&yer"), this);
-    actionAddLayer->setShortcut(tr("ALT+L"));
+    actionAddLayer->setShortcut(tr("Ctrl+Shift+L"));
     connect(actionAddLayer, SIGNAL(triggered()), this, SLOT(addLayer()));
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionShowLayerDialog =
             new QAction(IconLoader::load("layer-arrange"), tr("Arran&ge Layers") + "...", this);
-    actionShowLayerDialog->setShortcut(tr("ALT+A"));
+    actionShowLayerDialog->setShortcut(tr("Ctrl+Shift+A"));
     connect(actionShowLayerDialog, SIGNAL(triggered()), this, SLOT(showLayerDialog()));
 
     actionAutomaticLayout =
@@ -18197,12 +18435,12 @@ void ApplicationWindow::createActions()
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionExportGraph = new QAction(tr("&Current") + "...", this);
-    actionExportGraph->setShortcut(tr("Alt+G"));
+    actionExportGraph->setShortcut(tr("Ctrl+Shift+E"));
     connect(actionExportGraph, SIGNAL(triggered()), this, SLOT(exportGraph()));
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionExportAllGraphs = new QAction(tr("&All") + "...", this);
-    actionExportAllGraphs->setShortcut(tr("Alt+X"));
+    actionExportAllGraphs->setShortcut(tr("Ctrl+Shift+X"));
     connect(actionExportAllGraphs, SIGNAL(triggered()), this, SLOT(exportAllGraphs()));
 
     // FIXME: "..." should be added before translating, but this would break translations
@@ -18244,7 +18482,7 @@ void ApplicationWindow::createActions()
 
     actionShowCurvesDialog =
             new QAction(IconLoader::load("plot-line-symbol"), tr("Add/Remove &Curve..."), this);
-    actionShowCurvesDialog->setShortcut(tr("ALT+C"));
+    actionShowCurvesDialog->setShortcut(tr("Ctrl+Shift+D"));
     connect(actionShowCurvesDialog, SIGNAL(triggered()), this, SLOT(showCurvesDialog()));
 
     actionAddErrorBars =
@@ -18271,7 +18509,7 @@ void ApplicationWindow::createActions()
     connect(actionTimeStamp, SIGNAL(triggered()), this, SLOT(addTimeStamp()));
 
     actionAddImage = new QAction(IconLoader::load("export-image"), tr("Add &Image"), this);
-    actionAddImage->setShortcut(tr("ALT+I"));
+    actionAddImage->setShortcut(tr("Ctrl+Shift+G"));
     connect(actionAddImage, SIGNAL(triggered()), this, SLOT(addImage()));
 
     d_plot_mapper = new QSignalMapper;
@@ -18487,7 +18725,7 @@ void ApplicationWindow::createActions()
     connect(actionCloseWindow, SIGNAL(triggered()), this, SLOT(closeActiveWindow()));
 
     actionDeleteLayer = new QAction(IconLoader::load("clear"), tr("&Remove Layer"), this);
-    actionDeleteLayer->setShortcut(tr("Alt+R"));
+    actionDeleteLayer->setShortcut(tr("Ctrl+Alt+R"));
     connect(actionDeleteLayer, SIGNAL(triggered()), this, SLOT(deleteLayer()));
 
     actionResizeActiveWindow =
@@ -19738,24 +19976,24 @@ void ApplicationWindow::translateActionsStrings()
 
     actionAddLayer->setText(tr("Add La&yer"));
     actionAddLayer->setToolTip(tr("Add Layer"));
-    actionAddLayer->setShortcut(tr("ALT+L"));
+    actionAddLayer->setShortcut(tr("Ctrl+Shift+L"));
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionShowLayerDialog->setText(tr("Arran&ge Layers") + "...");
     actionShowLayerDialog->setToolTip(tr("Arrange Layers"));
-    actionShowLayerDialog->setShortcut(tr("ALT+A"));
+    actionShowLayerDialog->setShortcut(tr("Ctrl+Shift+A"));
 
     actionAutomaticLayout->setText(tr("Automatic Layout"));
     actionAutomaticLayout->setToolTip(tr("Automatic Layout"));
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionExportGraph->setText(tr("&Current") + "...");
-    actionExportGraph->setShortcut(tr("Alt+G"));
+    actionExportGraph->setShortcut(tr("Ctrl+Shift+E"));
     actionExportGraph->setToolTip(tr("Export current graph"));
 
     // FIXME: "..." should be added before translating, but this would break translations
     actionExportAllGraphs->setText(tr("&All") + "...");
-    actionExportAllGraphs->setShortcut(tr("Alt+X"));
+    actionExportAllGraphs->setShortcut(tr("Ctrl+Shift+X"));
     actionExportAllGraphs->setToolTip(tr("Export all graphs"));
 
     // FIXME: "..." should be added before translating, but this would break translations
@@ -19786,7 +20024,7 @@ void ApplicationWindow::translateActionsStrings()
     actionShowConfigureDialog->setText(tr("&Preferences..."));
 
     actionShowCurvesDialog->setText(tr("Add/Remove &Curve..."));
-    actionShowCurvesDialog->setShortcut(tr("ALT+C"));
+    actionShowCurvesDialog->setShortcut(tr("Ctrl+Shift+D"));
     actionShowCurvesDialog->setToolTip(tr("Add curve to graph"));
 
     actionAddErrorBars->setText(tr("Add &Error Bars..."));
@@ -19813,7 +20051,7 @@ void ApplicationWindow::translateActionsStrings()
 
     actionAddImage->setText(tr("Add &Image"));
     actionAddImage->setToolTip(tr("Add Image"));
-    actionAddImage->setShortcut(tr("ALT+I"));
+    actionAddImage->setShortcut(tr("Ctrl+Shift+G"));
 
     actionPlotL->setText(tr("&Line"));
     actionPlotL->setToolTip(tr("Plot as line"));
@@ -19926,7 +20164,7 @@ void ApplicationWindow::translateActionsStrings()
     actionCloseWindow->setShortcut(tr("Ctrl+W"));
 
     actionDeleteLayer->setText(tr("&Remove Layer"));
-    actionDeleteLayer->setShortcut(tr("Alt+R"));
+    actionDeleteLayer->setShortcut(tr("Ctrl+Alt+R"));
 
     actionResizeActiveWindow->setText(tr("Window &Geometry..."));
     actionHideActiveWindow->setText(tr("&Hide Window"));
@@ -20092,7 +20330,7 @@ void ApplicationWindow::translateActionsStrings()
     btnCursor->setToolTip(tr("Data reader"));
 
     btnSelect->setText(tr("&Select Data Range"));
-    btnSelect->setShortcut(tr("ALT+S"));
+    btnSelect->setShortcut(tr("Ctrl+Alt+S"));
     btnSelect->setToolTip(tr("Select data range"));
 
     btnPicker->setText(tr("S&creen Reader"));
@@ -20103,7 +20341,7 @@ void ApplicationWindow::translateActionsStrings()
     btnMovePoints->setToolTip(tr("Move data points"));
 
     btnRemovePoints->setText(tr("Remove &Bad Data Points..."));
-    btnRemovePoints->setShortcut(tr("Alt+B"));
+    btnRemovePoints->setShortcut(tr("Ctrl+Shift+B"));
     btnRemovePoints->setToolTip(tr("Remove data points"));
 
     if (btnMaskPoints) {
@@ -20439,7 +20677,7 @@ void ApplicationWindow::translateActionsStrings()
 
     actionAddText->setText(tr("Add &Text"));
     actionAddText->setToolTip(tr("Add Text"));
-    actionAddText->setShortcut(tr("ALT+T"));
+    actionAddText->setShortcut(tr("Ctrl+Shift+T"));
 
     actionNextWindow->setText(tr("&Next", "next window"));
     actionPrevWindow->setText(tr("&Previous", "previous window"));
@@ -23031,8 +23269,13 @@ void ApplicationWindow::appendProject(const QString &fn)
 
     if (fn.endsWith(".gz", Qt::CaseInsensitive) || fn.endsWith(".gz~", Qt::CaseInsensitive)) {
         file = openCompressedFile(fn);
-        if (!file)
+        if (!file) {
+            if (!nonInteractive && !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~")) {
+                QMessageBox::critical(this, tr("File opening error"),
+                                      tr("The file <b>%1</b> is not a valid project file.").arg(fn));
+            }
             return;
+        }
     } else {
         file = new QFile(fn);
         if (!file->open(QIODevice::ReadOnly)) {
@@ -23222,7 +23465,7 @@ void ApplicationWindow::appendProject(const QString &fn)
 
         // process tables and matrix information
         while (!t.atEnd()) {
-            s = t.readLine(4096); // workaround for safely reading very big lines
+            s = t.readLine(1048576); // workaround for safely reading very big lines
             lst.clear();
             if (s.left(8) == "<folder>") {
                 lst = s.split("\t");
@@ -23282,7 +23525,7 @@ void ApplicationWindow::appendProject(const QString &fn)
 
         MultiLayer *plot = 0;
         while (!t.atEnd()) {
-            s = t.readLine(4096); // workaround for safely reading very big lines
+            s = t.readLine(1048576); // workaround for safely reading very big lines
             if (s.left(8) == "<folder>") {
                 lst = s.split("\t");
                 current_folder = current_folder->findSubfolder(lst[1]);
@@ -23396,6 +23639,7 @@ void ApplicationWindow::appendProject(const QString &fn)
     }
     blockSignals(false);
     renamedTables = QStringList();
+    modifiedProject();
     if (!nonInteractive)
         QApplication::restoreOverrideCursor();
     this->setProperty("torigraph_last_append_ok", true);
@@ -24621,8 +24865,8 @@ void ApplicationWindow::openPythonConsole()
         return;
     if (!d_python_server)
         d_python_server = new PythonAutomationServer(this, this);
-    if (!d_python_server->isTcpListening())
-        d_python_server->startTcp(0);
+    if (!d_python_server->isLocalPipeListening() && !d_python_server->isTcpListening())
+        d_python_server->startLocalPipe();
     PythonConsoleDialog::showDialog(this, d_python_server);
 }
 
@@ -24647,8 +24891,8 @@ void ApplicationWindow::runPythonScriptFile(const QString &scriptPath)
         return;
     if (!d_python_server)
         d_python_server = new PythonAutomationServer(this, this);
-    if (!d_python_server->isTcpListening())
-        d_python_server->startTcp(0);
+    if (!d_python_server->isLocalPipeListening() && !d_python_server->isTcpListening())
+        d_python_server->startLocalPipe();
     PythonConsoleDialog *dlg = PythonConsoleDialog::showDialog(this, d_python_server);
     if (dlg)
         dlg->loadAndRunScriptFile(QFileInfo(scriptPath).absoluteFilePath());
@@ -27345,6 +27589,8 @@ static void applyLayerFormatNonDestructive(
     const bool doScales = (scopeFlags & ApplicationWindow::FormatAxisScales) != 0;
     const bool doBreaksRef = (scopeFlags & ApplicationWindow::FormatBreaksAndRefLines) != 0;
 
+    const bool isPoleFig = dstG->isPoleFigurePlot();
+
     if (doFonts) {
         dstG->setTitleFont(spec.titleFont);
         dstG->setTitleAlignment(spec.titleAlign);
@@ -27352,7 +27598,7 @@ static void applyLayerFormatNonDestructive(
     if (doColors)
         dstG->setTitleColor(spec.titleColor);
 
-    if (doFrame) {
+    if (doFrame && !isPoleFig) {
         if (spec.enabledAxes.size() == 4)
             dstG->enableAxes(spec.enabledAxes);
         dstG->drawAxesBackbones(spec.globalBackbones);
@@ -27368,7 +27614,7 @@ static void applyLayerFormatNonDestructive(
         dstG->setTicksLength(spec.minorTickLength, spec.majorTickLength);
     }
 
-    if (doColors) {
+    if (doColors && !isPoleFig) {
         if (spec.axesColors.size() == 4)
             dstG->setAxesColors(spec.axesColors);
         if (spec.axesNumColors.size() == 4)
@@ -27379,52 +27625,56 @@ static void applyLayerFormatNonDestructive(
         dstG->setTopAxisTitleColor(spec.axisTitleColors[QwtPlot::xTop]);
     }
 
-    if (doFonts) {
+    if (doFonts && !isPoleFig) {
         dstG->setYAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yLeft]);
         dstG->setRightAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::yRight]);
         dstG->setXAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xBottom]);
         dstG->setTopAxisTitleAlignment(spec.axisTitleAlignments[QwtPlot::xTop]);
     }
 
-    for (int a = 0; a < 4; ++a) {
-        if (doFonts) {
-            dstG->setAxisTitleFont(a, spec.axisTitleFonts[a]);
-            dstG->setAxisFont(a, spec.axisTickFonts[a]);
-            if (a == QwtPlot::xBottom || a == QwtPlot::xTop)
-                dstG->setAxisLabelRotation(a, spec.labelRotations[a]);
-        }
-        if (doFrame)
-            dstG->setAxisBackboneVisible(a, spec.axisBackboneVisible[a]);
-        if (doScales) {
-            dstG->setTickLabelTransform(a, spec.tickDivideFactors[a], spec.tickPrefixes[a],
-                                        spec.tickSuffixes[a]);
-            if (spec.isNumericAxis[a]
-                && dstG->axesType().value(a, Graph::AxisType::Numeric)
-                        == Graph::AxisType::Numeric) {
-                dstG->setLabelsNumericFormat(a, spec.labelNumFormat[a], spec.labelNumPrecision[a],
-                                             spec.axisFormulas.value(a));
+    if (!isPoleFig) {
+        for (int a = 0; a < 4; ++a) {
+            if (doFonts) {
+                dstG->setAxisTitleFont(a, spec.axisTitleFonts[a]);
+                dstG->setAxisFont(a, spec.axisTickFonts[a]);
+                if (a == QwtPlot::xBottom || a == QwtPlot::xTop)
+                    dstG->setAxisLabelRotation(a, spec.labelRotations[a]);
             }
-            if (spec.hasAxisScale[a] && !dstG->hasColorScaleOnAxis(a)) {
-                dstG->setScale(a, spec.scaleStart[a], spec.scaleEnd[a], spec.scaleStep[a],
-                               spec.scaleMaxMajor[a], spec.scaleMaxMinor[a], spec.scaleType[a],
-                               spec.scaleInverted[a]);
+            if (doFrame)
+                dstG->setAxisBackboneVisible(a, spec.axisBackboneVisible[a]);
+            if (doScales) {
+                dstG->setTickLabelTransform(a, spec.tickDivideFactors[a], spec.tickPrefixes[a],
+                                            spec.tickSuffixes[a]);
+                if (spec.isNumericAxis[a]
+                    && dstG->axesType().value(a, Graph::AxisType::Numeric)
+                            == Graph::AxisType::Numeric) {
+                    dstG->setLabelsNumericFormat(a, spec.labelNumFormat[a],
+                                                 spec.labelNumPrecision[a],
+                                                 spec.axisFormulas.value(a));
+                }
+                if (spec.hasAxisScale[a] && !dstG->hasColorScaleOnAxis(a)) {
+                    dstG->setScale(a, spec.scaleStart[a], spec.scaleEnd[a], spec.scaleStep[a],
+                                   spec.scaleMaxMajor[a], spec.scaleMaxMinor[a], spec.scaleType[a],
+                                   spec.scaleInverted[a]);
+                }
             }
-        }
-        if (doBreaksRef) {
-            if (spec.axisBreaks[a].enabled)
-                dstG->setAxisBreak(a, spec.axisBreaks[a]);
-            else
-                dstG->clearAxisBreak(a);
+            if (doBreaksRef) {
+                if (spec.axisBreaks[a].enabled)
+                    dstG->setAxisBreak(a, spec.axisBreaks[a]);
+                else
+                    dstG->clearAxisBreak(a);
+            }
         }
     }
 
     if (doFrame) {
-        dstG->drawCanvasFrame(spec.framed, spec.canvasFrameWidth, spec.canvasFrameColor);
+        if (!isPoleFig)
+            dstG->drawCanvasFrame(spec.framed, spec.canvasFrameWidth, spec.canvasFrameColor);
         dstG->setCanvasBackground(spec.canvasBackground);
         dstG->setBackgroundColor(spec.backgroundColor);
         dstG->setAntialiasing(spec.antialiasing, false);
 
-        if (spec.hasGrid && dstG->grid()) {
+        if (!isPoleFig && spec.hasGrid && dstG->grid()) {
             Grid *gr = dstG->grid();
             gr->enableX(spec.gridXEnabled);
             gr->enableY(spec.gridYEnabled);
@@ -29447,9 +29697,9 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
             redoText = tr("&Redo %1").arg(us->redoText().trimmed());
     }
 
-    // C11: name the window whose history Ctrl+Z walks (graphs keep their own history,
-    // worksheets share the project history).
-    if (aw && (canU || canR)) {
+    // C11: name the graph window whose history Ctrl+Z walks (graphs keep their own history,
+    // worksheets share the project history whose command text already begins with "<Table>:").
+    if (qobject_cast<MultiLayer *>(aw) && (canU || canR)) {
         const QString target = QStringLiteral("  [%1]").arg(aw->name());
         if (canU)
             undoText += target;

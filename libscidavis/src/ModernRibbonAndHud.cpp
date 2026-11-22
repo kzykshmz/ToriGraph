@@ -4072,7 +4072,15 @@ void ModernRibbonBar::buildAllTabs()
                 gPeaks, QStringLiteral("peak-analyzer"), [this]() { return tr("Peak Analyzer"); },
                 [this]() { return tr("Interactive Baseline & Multi-Peak Deconvolution"); },
                 [this]() {
-                    if (d_app)
+                    if (!d_app)
+                        return;
+                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+                        if (!tbl->drawableColumnSelection().isEmpty()) {
+                            d_app->showPeakAnalyzerDialog(0);
+                            return;
+                        }
+                    }
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->showPeakAnalyzerDialog(0);
                 });
         QMenu *morePeaksMenu = nullptr;
@@ -4086,7 +4094,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Auto Voigt Peaks"); },
                 [this]() { return tr("Automatic Pseudo-Voigt Peak Detection & Fit"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->fitAutoPeakPseudoVoigt();
                 });
         addRibbonMenuAction(
@@ -4094,7 +4102,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Batch Peaks"); },
                 [this]() { return tr("Batch Multi-Spectrum Peak Analysis"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->showBatchPeakAnalysisDialog();
                 });
         addRibbonMenuAction(
@@ -4110,21 +4118,29 @@ void ModernRibbonBar::buildAllTabs()
                 gFit, QStringLiteral("fit-linear"), [this]() { return tr("Linear Fit"); },
                 [this]() { return tr("Linear Regression Fit"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->fitLinear();
                 });
         addRibbonButton(
                 gFit, QStringLiteral("fit-poly"), [this]() { return tr("Polynomial"); },
                 [this]() { return tr("Polynomial Regression Fit"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->showFitPolynomDialog();
                 });
         addRibbonButton(
                 gFit, QStringLiteral("fit-nonlinear"), [this]() { return tr("Nonlinear Fit"); },
                 [this]() { return tr("Nonlinear Curve Fit Wizard"); },
                 [this]() {
-                    if (d_app)
+                    if (!d_app)
+                        return;
+                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+                        if (!tbl->drawableColumnSelection().isEmpty()) {
+                            d_app->showFitDialog();
+                            return;
+                        }
+                    }
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->showFitDialog();
                 });
         QMenu *advFitMenu = nullptr;
@@ -4132,7 +4148,11 @@ void ModernRibbonBar::buildAllTabs()
                 gFit, QStringLiteral("fit-global"),
                 [this, kCaret]() { return tr("Advanced Fit") + kCaret; },
                 [this]() {
-                    return tr("York, Global, Piecewise, Robust, Logistic, 3D Surface & Model Compare");
+                    const bool showAdv =
+                            d_app ? d_app->showsAdvancedDomainFeatures() : d_advanced_domain_visible;
+                    return showAdv
+                            ? tr("York, Global, Piecewise, Robust, Logistic, 3D Surface & Model Compare")
+                            : tr("York, Global, Piecewise, Robust, 3D Surface & Model Compare");
                 },
                 &advFitMenu);
         addRibbonMenuAction(
@@ -4255,7 +4275,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Vertical Cursor"); },
                 [this]() { return tr("Vertical Crosshair Curve Readout Gadget"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->attachVerticalCursorGadget();
                 });
         addRibbonMenuAction(
@@ -4263,7 +4283,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Quick Peaks"); },
                 [this]() { return tr("Interactive ROI Quick Peak Finder Gadget"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->attachQuickPeaksGadget();
                 });
         addRibbonMenuAction(
@@ -4271,7 +4291,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Delta Cursor"); },
                 [this]() { return tr("Dual-Cursor Delta X / Delta Y / Slope Gadget"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->attachDeltaCursorGadget();
                 });
         addRibbonMenuAction(
@@ -4279,7 +4299,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("2D Profile"); },
                 [this]() { return tr("Interactive Heatmap Horizontal/Vertical Profile Gadget"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->attachImageProfileGadget();
                 });
         addRibbonMenuAction(
@@ -4287,7 +4307,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Differentiate"); },
                 [this]() { return tr("Interactive Derivative Gadget"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->attachDifferentiateGadget();
                 });
         moreGadgetsMenu->addSeparator();
@@ -4296,7 +4316,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Clear Gadget"); },
                 [this]() { return tr("Remove Active Gadget from Graph"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->clearActiveGadget();
                 });
 
@@ -4311,14 +4331,14 @@ void ModernRibbonBar::buildAllTabs()
                 masksMenu, QStringLiteral("mask-points"), [this]() { return tr("Mask Points"); },
                 [this]() { return tr("Mask Individual Outlier Data Points"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->maskDataPointsTool();
                 });
         addRibbonMenuAction(
                 masksMenu, QStringLiteral("range-selector"), [this]() { return tr("Mask ROI"); },
                 [this]() { return tr("Mask Rectangular Data Region"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->maskRegionGadget();
                 });
         masksMenu->addSeparator();
@@ -4326,7 +4346,7 @@ void ModernRibbonBar::buildAllTabs()
                 masksMenu, QStringLiteral("clear-masks"), [this]() { return tr("Clear Masks"); },
                 [this]() { return tr("Clear All Data Masks on Active Graph"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->clearAllMasksOnGraph();
                 });
 
@@ -4389,7 +4409,11 @@ void ModernRibbonBar::buildAllTabs()
                 gSignal, QStringLiteral("signal-stft"),
                 [this, kCaret]() { return tr("Spectral") + kCaret; },
                 [this]() {
-                    return tr("STFT Spectrogram, Wavelet, Welch PSD & FSD Deconvolution");
+                    const bool showAdv =
+                            d_app ? d_app->showsAdvancedDomainFeatures() : d_advanced_domain_visible;
+                    return showAdv
+                            ? tr("STFT Spectrogram, Wavelet, Welch PSD & FSD Deconvolution")
+                            : tr("Welch PSD & FSD Deconvolution");
                 },
                 &spectralMenu);
         addRibbonMenuAction(
@@ -4547,7 +4571,11 @@ void ModernRibbonBar::buildAllTabs()
                 gDomain, QStringLiteral("curvemath"),
                 [this, kCaret]() { return tr("Curve Math & Tools") + kCaret; },
                 [this]() {
-                    return tr("Curve Math, Fill Between Curves, Graph Digitizer, Tauc Bandgap & EIS");
+                    const bool showAdv =
+                            d_app ? d_app->showsAdvancedDomainFeatures() : d_advanced_domain_visible;
+                    return showAdv
+                            ? tr("Curve Math, Fill Between Curves, Graph Digitizer, Tauc Bandgap & EIS")
+                            : tr("Curve Math, Fill Between Curves & Graph Digitizer");
                 },
                 &matToolsMenu);
         addRibbonMenuAction(
@@ -4602,7 +4630,11 @@ void ModernRibbonBar::buildAllTabs()
                 gStats, QStringLiteral("stats-normality"),
                 [this, kCaret]() { return tr("Hypothesis Tests") + kCaret; },
                 [this]() {
-                    return tr("Normality, Outlier, Two-Way ANOVA, Nonparametric & Method Agreement");
+                    const bool showAdv =
+                            d_app ? d_app->showsAdvancedDomainFeatures() : d_advanced_domain_visible;
+                    return showAdv
+                            ? tr("Normality, Outlier, Two-Way ANOVA, Nonparametric & Method Agreement")
+                            : tr("Normality, Outlier, Two-Way ANOVA, Nonparametric & Paired Comparison");
                 },
                 &hypMenu);
         addRibbonMenuAction(
@@ -4665,7 +4697,11 @@ void ModernRibbonBar::buildAllTabs()
                 gStats, QStringLiteral("stats-pca"),
                 [this, kCaret]() { return tr("Multivariate") + kCaret; },
                 [this]() {
-                    return tr("PCA Biplot, Correlation Matrix, Clustering, Kaplan-Meier & ROC Curve");
+                    const bool showAdv =
+                            d_app ? d_app->showsAdvancedDomainFeatures() : d_advanced_domain_visible;
+                    return showAdv
+                            ? tr("PCA Biplot, Correlation Matrix, Clustering, Kaplan-Meier & ROC Curve")
+                            : tr("PCA Biplot, Correlation Matrix & Clustering");
                 },
                 &relMultiMenu);
         addRibbonMenuAction(
@@ -4844,7 +4880,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Copy High-DPI Image"); },
                 [this]() { return tr("Copy High-Resolution Bitmap of Graph Page to Clipboard"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->copyPageAsHighDpiImage();
                 });
         addRibbonMenuAction(
@@ -4852,7 +4888,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Export PDF"); },
                 [this]() { return tr("Export Vector PDF Document"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->exportPDF();
                 });
         addRibbonMenuAction(
@@ -4995,7 +5031,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Export Python"); },
                 [this]() { return tr("Generate Reproducible Python Script from Active Graph"); },
                 [this]() {
-                    if (d_app)
+                    if (activeMultiLayerOrUxHint(d_app))
                         d_app->exportActiveGraphToPython();
                 });
 
@@ -6126,6 +6162,10 @@ void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
     for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
         if (ab.action && kAdvancedIcons.contains(ab.iconId))
             ab.action->setVisible(visible);
+    }
+    for (const RibbonButtonBinding &bb : d_button_bindings) {
+        if (bb.button && bb.tooltipFn)
+            bb.button->setToolTip(bb.tooltipFn());
     }
 }
 

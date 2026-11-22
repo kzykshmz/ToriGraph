@@ -39,6 +39,8 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <climits> // for RAND_MAX
+#include <cmath>
+#include <limits>
 #include <QMenu>
 #include <QItemSelection>
 #include <QModelIndex>
@@ -492,9 +494,9 @@ void Table::copySelection()
                     output_str += col_ptr->formula(first_row + r);
                 } else if (col_ptr->dataType() == SciDAVis::TypeDouble) {
                     if ((col_ptr->isInvalid(first_row + r))
-                        || (col_ptr->rowCount() <= first_row + r))
-                        output_str += "-";
-                    else {
+                        || (col_ptr->rowCount() <= first_row + r)) {
+                        // Copy invalid / missing cells as empty string (""), not "-"
+                    } else {
                         Double2StringFilter *out_fltr =
                             static_cast<Double2StringFilter *>(col_ptr->outputFilter());
                     // create a copy of current locale
@@ -508,7 +510,10 @@ void Table::copySelection()
                                                         16); // copy with max. precision
                     }
                 } else {
-                    output_str += text(first_row + r, first_col + c);
+                    if (!col_ptr->isInvalid(first_row + r)
+                        && col_ptr->rowCount() > first_row + r) {
+                        output_str += text(first_row + r, first_col + c);
+                    }
                 }
             }
             if (c < cols - 1)
@@ -2232,27 +2237,63 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
     public:
         static bool doubleLess(const QPair<double, int> &a, const QPair<double, int> &b)
         {
+            const bool na = std::isnan(a.first);
+            const bool nb = std::isnan(b.first);
+            if (na != nb)
+                return !na; // NaN / invalid always goes to the end
+            if (na)
+                return false;
             return a.first < b.first;
         }
         static bool doubleGreater(const QPair<double, int> &a, const QPair<double, int> &b)
         {
+            const bool na = std::isnan(a.first);
+            const bool nb = std::isnan(b.first);
+            if (na != nb)
+                return !na; // NaN / invalid always goes to the end
+            if (na)
+                return false;
             return a.first > b.first;
         }
         static bool QStringLess(const QPair<QString, int> &a, const QPair<QString, int> &b)
         {
-            return a < b;
+            const bool ea = a.first.isEmpty();
+            const bool eb = b.first.isEmpty();
+            if (ea != eb)
+                return !ea; // empty / invalid always goes to the end
+            if (ea)
+                return false;
+            return a.first < b.first;
         }
         static bool QStringGreater(const QPair<QString, int> &a, const QPair<QString, int> &b)
         {
-            return a > b;
+            const bool ea = a.first.isEmpty();
+            const bool eb = b.first.isEmpty();
+            if (ea != eb)
+                return !ea; // empty / invalid always goes to the end
+            if (ea)
+                return false;
+            return a.first > b.first;
         }
         static bool QDateTimeLess(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
         {
-            return a < b;
+            const bool ia = !a.first.isValid();
+            const bool ib = !b.first.isValid();
+            if (ia != ib)
+                return !ia; // invalid / empty always goes to the end
+            if (ia)
+                return false;
+            return a.first < b.first;
         }
         static bool QDateTimeGreater(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
         {
-            return a > b;
+            const bool ia = !a.first.isValid();
+            const bool ib = !b.first.isValid();
+            if (ia != ib)
+                return !ia; // invalid / empty always goes to the end
+            if (ia)
+                return false;
+            return a.first > b.first;
         }
     };
 
@@ -2268,8 +2309,12 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
                 int rows = col->rowCount();
                 QList<QPair<double, int>> map;
 
-                for (int j = 0; j < rows; j++)
-                    map.append(QPair<double, int>(col->valueAt(j), j));
+                for (int j = 0; j < rows; j++) {
+                    const double v = col->isInvalid(j)
+                            ? std::numeric_limits<double>::quiet_NaN()
+                            : col->valueAt(j);
+                    map.append(QPair<double, int>(v, j));
+                }
 
                 if (ascending)
                     std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleLess);
@@ -2293,8 +2338,10 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
                 int rows = col->rowCount();
                 QList<QPair<QString, int>> map;
 
-                for (int j = 0; j < rows; j++)
-                    map.append(QPair<QString, int>(col->textAt(j), j));
+                for (int j = 0; j < rows; j++) {
+                    const QString s = col->isInvalid(j) ? QString() : col->textAt(j);
+                    map.append(QPair<QString, int>(s, j));
+                }
 
                 if (ascending)
                     std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringLess);
@@ -2318,8 +2365,10 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
                 int rows = col->rowCount();
                 QList<QPair<QDateTime, int>> map;
 
-                for (int j = 0; j < rows; j++)
-                    map.append(QPair<QDateTime, int>(col->dateTimeAt(j), j));
+                for (int j = 0; j < rows; j++) {
+                    const QDateTime dt = col->isInvalid(j) ? QDateTime() : col->dateTimeAt(j);
+                    map.append(QPair<QDateTime, int>(dt, j));
+                }
 
                 if (ascending)
                     std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeLess);
@@ -2348,8 +2397,12 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
             QList<QPair<double, int>> map;
             int rows = leading->rowCount();
 
-            for (int i = 0; i < rows; i++)
-                map.append(QPair<double, int>(leading->valueAt(i), i));
+            for (int i = 0; i < rows; i++) {
+                const double v = leading->isInvalid(i)
+                        ? std::numeric_limits<double>::quiet_NaN()
+                        : leading->valueAt(i);
+                map.append(QPair<double, int>(v, i));
+            }
 
             if (ascending)
                 std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleLess);
@@ -2375,8 +2428,10 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
             QList<QPair<QString, int>> map;
             int rows = leading->rowCount();
 
-            for (int i = 0; i < rows; i++)
-                map.append(QPair<QString, int>(leading->textAt(i), i));
+            for (int i = 0; i < rows; i++) {
+                const QString s = leading->isInvalid(i) ? QString() : leading->textAt(i);
+                map.append(QPair<QString, int>(s, i));
+            }
 
             if (ascending)
                 std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringLess);
@@ -2402,8 +2457,10 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
             QList<QPair<QDateTime, int>> map;
             int rows = leading->rowCount();
 
-            for (int i = 0; i < rows; i++)
-                map.append(QPair<QDateTime, int>(leading->dateTimeAt(i), i));
+            for (int i = 0; i < rows; i++) {
+                const QDateTime dt = leading->isInvalid(i) ? QDateTime() : leading->dateTimeAt(i);
+                map.append(QPair<QDateTime, int>(dt, i));
+            }
 
             if (ascending)
                 std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeLess);

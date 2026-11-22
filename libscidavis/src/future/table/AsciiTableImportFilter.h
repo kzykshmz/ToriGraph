@@ -108,6 +108,10 @@ public:
     //! surrounding "()" / "[]") looks like a physical unit ("MPa", "%", "mm/min", "J/(mol K)").
     //! `outCleaned` receives the cell without the brackets.
     static bool looksLikeUnitCell(const QString &cell, QString *outCleaned = nullptr);
+    //! Shared missing / Excel-error sentinel test ("", "-", "--", "---", "—", "nan", "na",
+    //! "n/a", "n.d.", "nd", "null", "#n/a", "#div/0!", "#value!", "#ref!", "#name?", "#num!",
+    //! "#null!", "#getting_data", "#spill!", "#calc!", case-insensitive).
+    static bool isMissingDataToken(const QString &raw);
     static future::Table *importLabTextData(const QByteArray &rawBytes, const QString &tableName,
                                             const QString &filePathHint = QString(),
                                             const QString &separatorHint = QString(),

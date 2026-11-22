@@ -10,6 +10,7 @@
 #include "ApplicationWindow.h"
 #include "Folder.h"
 #include "I18nJapanese.h"
+#include "IconLoader.h"
 #include "MyWidget.h"
 #include "Table.h"
 #include "table/future_Table.h"
@@ -25,12 +26,14 @@
 #include <QMdiArea>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidgetItem>
+#include <QUndoStack>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -913,14 +916,108 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
                 d_last_geometry[t] = t->geometry();
         }
         break;
-    case QEvent::Close:
+    case QEvent::Close: {
         // remember where the book was before the window goes away
         if (!t->isHidden()) {
             d_last_maximized[t] = t->isMaximized();
             if (!t->isMaximized())
                 d_last_geometry[t] = t->geometry();
         }
+        Book *b = bookFor(t);
+        if (b && b->sheets.size() >= 2 && t->askOnCloseEvent() && d_app && !nonInteractive(d_app)) {
+            QPointer<Table> safe(t);
+            const QString bookName = b->name;
+            QMessageBox msgBox(d_app);
+            msgBox.setIcon(QMessageBox::Question);
+            msgBox.setWindowTitle(wbTr("Close Workbook"));
+            msgBox.setText(wbTr("Workbook \"%1\" has %2 sheets (active sheet: \"%3\").\n"
+                                "What would you like to do?")
+                                   .arg(b->name)
+                                   .arg(b->sheets.size())
+                                   .arg(t->name()));
+            QPushButton *btnHideBook =
+                    msgBox.addButton(wbTr("Hide Workbook"), QMessageBox::AcceptRole);
+            QPushButton *btnDeleteSheet =
+                    msgBox.addButton(wbTr("Delete This Sheet Only"), QMessageBox::DestructiveRole);
+            QPushButton *btnDeleteBook =
+                    msgBox.addButton(wbTr("Delete Entire Workbook"), QMessageBox::DestructiveRole);
+            QPushButton *btnCancel =
+                    msgBox.addButton(wbTr("Cancel"), QMessageBox::RejectRole);
+            msgBox.setDefaultButton(btnHideBook);
+            msgBox.setEscapeButton(btnCancel);
+            msgBox.exec();
+
+            QAbstractButton *clicked = msgBox.clickedButton();
+            event->ignore();
+            if (!safe || d_shutdown || !d_app)
+                return true;
+
+            if (clicked == btnHideBook) {
+                if (Book *bk = find(bookName)) {
+                    const bool prev = d_switching;
+                    d_switching = true;
+                    QList<QPointer<Table>> sheetsCopy;
+                    for (Table *s : bk->sheets)
+                        if (s)
+                            sheetsCopy << QPointer<Table>(s);
+                    for (const QPointer<Table> &sp : sheetsCopy) {
+                        if (sp && !d_app->hidden(sp))
+                            d_app->hideWindow(sp);
+                        if (sp)
+                            d_user_hidden[sp] = true;
+                    }
+                    d_switching = prev;
+                }
+            } else if (clicked == btnDeleteSheet) {
+                QTimer::singleShot(0, this, [this, safe]() {
+                    if (safe && !d_shutdown)
+                        deleteSheet(safe, false);
+                });
+            } else if (clicked == btnDeleteBook) {
+                QTimer::singleShot(0, this, [this, bookName]() {
+                    if (d_shutdown || !d_app)
+                        return;
+                    Book *bk = find(bookName);
+                    if (!bk || bk->sheets.isEmpty())
+                        return;
+                    QPointer<Table> curSheet(bk->current);
+                    QList<QPointer<Table>> ordered;
+                    for (Table *s : bk->sheets) {
+                        if (s && s != curSheet) {
+                            d_user_hidden[s] = true;
+                            ordered << QPointer<Table>(s);
+                        }
+                    }
+                    if (curSheet) {
+                        d_user_hidden[curSheet] = true;
+                        ordered << curSheet;
+                    }
+                    QUndoStack *us = nullptr;
+                    for (const QPointer<Table> &sp : ordered) {
+                        if (sp && sp->d_future_table && sp->d_future_table->undoStack()) {
+                            us = sp->d_future_table->undoStack();
+                            break;
+                        }
+                    }
+                    if (us)
+                        us->beginMacro(wbTr("Delete Workbook %1").arg(bookName));
+                    for (const QPointer<Table> &sp : ordered) {
+                        if (!sp)
+                            continue;
+                        sp->askOnCloseEvent(false);
+                        if (sp->d_future_table && sp->d_future_table->parentAspect() != nullptr)
+                            sp->d_future_table->remove();
+                        else
+                            sp->close();
+                    }
+                    if (us)
+                        us->endMacro();
+                });
+            }
+            return true;
+        }
         break;
+    }
     default:
         break;
     }
@@ -1375,7 +1472,8 @@ void WorkbookManager::populateWindowMenu(QMenu *menu, MyWidget *w)
 QAction *WorkbookManager::newWorkbookAction()
 {
     if (!d_new_action) {
-        d_new_action = new QAction(QIcon(QPixmap(":/table.xpm")), QString(), d_app);
+        d_new_action = new QAction(IconLoader::duotoneIcon(QStringLiteral("new-table"), 18),
+                                   QString(), d_app);
         d_new_action->setObjectName(QStringLiteral("actionNewWorkbook"));
         connect(d_new_action, &QAction::triggered, this, [this]() {
             QString err;
@@ -1773,4 +1871,12 @@ void WorkbookManager::registerTranslations()
         "ブック名を入力してください (文字・数字・_・-)。");
     reg("A workbook named %1 already exists.", "ブック %1 はすでにあります。");
     reg("Sheet index out of range.", "シートの番号が範囲外です。");
+    reg("Close Workbook", "ブックを閉じる");
+    reg("Workbook \"%1\" has %2 sheets (active sheet: \"%3\").\nWhat would you like to do?",
+        "ブック \"%1\" には %2 枚のシートがあります (表示中のシート: \"%3\")。\nどの操作を行いますか?");
+    reg("Hide Workbook", "ブックを非表示にする");
+    reg("Delete This Sheet Only", "このシートだけ削除");
+    reg("Delete Entire Workbook", "ブック全体を削除");
+    reg("Cancel", "キャンセル");
+    reg("Delete Workbook %1", "ブック %1 を削除");
 }
