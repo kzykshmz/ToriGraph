@@ -14381,15 +14381,51 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
             CHECK_COND(savedNow.isValid()
                                && std::llabs(savedNow.secsTo(QDateTime::currentDateTime())) < 120,
                        "53j: saved_at not refreshed when the copy was restored");
+            // Find the restored window first and close it afterwards. The list of top-level
+            // widgets also holds the restored window's own top-level children (its menus), so
+            // destroying the window inside this loop left the loop with freed pointers; whether
+            // that crashed depended on the (hash) order of the list.
+            QList<QPointer<ApplicationWindow>> restoredWins;
             for (QWidget *tl : QApplication::topLevelWidgets()) {
-                auto *restored = qobject_cast<ApplicationWindow *>(tl);
-                if (restored && !before.contains(tl) && restored != mw && restored != w53
-                    && restored->projectname == smallPrj) {
-                    restored->savedProject(); // removes the copy it took over
-                    restored->setOleEmbeddedMode(true);
-                    delete restored;
-                }
+                auto *cand = qobject_cast<ApplicationWindow *>(tl);
+                if (cand && !before.contains(tl) && cand != mw && cand != w53
+                    && cand->projectname == smallPrj)
+                    restoredWins << cand;
             }
+            CHECK_COND(restoredWins.size() == 1, "53j: restored window not found");
+            // Close it the way a user does: File > Close / [x], answer "Don't Save" to the
+            // question about the modified project. The window deletes itself (WA_DeleteOnClose)
+            // and gives up the recovery copy it took over.
+            QTimer dontSave;
+            dontSave.setInterval(50);
+            QObject::connect(&dontSave, &QTimer::timeout, [&dontSave]() {
+                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    for (QAbstractButton *b : box->buttons()) {
+                        if (b != box->defaultButton() && b != box->escapeButton()) {
+                            dontSave.stop();
+                            b->click();
+                            return;
+                        }
+                    }
+                }
+            });
+            for (const QPointer<ApplicationWindow> &rw : restoredWins) {
+                if (!rw)
+                    continue;
+                CHECK_COND(rw->testAttribute(Qt::WA_DeleteOnClose),
+                           "53j: restored window does not delete itself on close");
+                dontSave.start();
+                const bool closed = rw->close();
+                dontSave.stop();
+                CHECK_COND(closed, "53j: restored window refused to close");
+            }
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QApplication::processEvents();
+            for (const QPointer<ApplicationWindow> &rw : restoredWins)
+                CHECK_COND(rw.isNull(), "53j: closed restored window was not deleted");
+            CHECK_COND(!QFileInfo::exists(QDir(recDir).filePath(id + ".json"))
+                               && !QFileInfo::exists(QDir(recDir).filePath(id + ".sciprj")),
+                       "53j: closing the restored window kept the recovery copy");
         }
         w53->savedProject();
         w53->setOleEmbeddedMode(true);
