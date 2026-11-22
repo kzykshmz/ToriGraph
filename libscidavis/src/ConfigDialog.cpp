@@ -34,6 +34,7 @@
 #include "Graph.h"
 #include "Matrix.h"
 #include "ColorButton.h"
+#include "PlotStyleLimits.h"
 #include "future/core/Project.h"
 
 #include <QUndoStack>
@@ -67,9 +68,14 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 {
     // get current values from app window
     ApplicationWindow *app = (ApplicationWindow *)parentWidget();
-    auto ensureGraphFont = [](const QFont &f, int defaultPt, int weight = QFont::Normal) -> QFont {
-        if (f.family().trimmed().isEmpty())
-            return QFont(QStringLiteral("Arial"), defaultPt, weight);
+    auto ensureGraphFont = [](const QFont &f, double defaultPt,
+                              int weight = QFont::Normal) -> QFont {
+        if (f.family().trimmed().isEmpty()) {
+            QFont out(QStringLiteral("Arial"));
+            out.setWeight(weight);
+            out.setPointSizeF(PlotStyleLimits::effectiveFontPointSizeF(f, defaultPt));
+            return out;
+        }
         return f;
     };
     plot3DColors = app->plot3DColors;
@@ -108,7 +114,7 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     QVBoxLayout *rightLayout = new QVBoxLayout();
     lblPageHeader = new QLabel();
     QFont fnt = this->font();
-    fnt.setPointSize(fnt.pointSize() + 3);
+    fnt.setPointSizeF(PlotStyleLimits::effectiveFontPointSizeF(fnt, 10.0) + 3.0);
     fnt.setBold(true);
     lblPageHeader->setFont(fnt);
 
@@ -122,13 +128,13 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     QHBoxLayout *topLayout = new QHBoxLayout();
     topLayout->setSpacing(5);
     topLayout->setMargin(5);
-    topLayout->addWidget(itemsList);
-    topLayout->addLayout(rightLayout);
+    topLayout->addWidget(itemsList, 0);
+    topLayout->addLayout(rightLayout, 1);
 
     QHBoxLayout *bottomButtons = new QHBoxLayout();
     bottomButtons->addStretch();
     buttonApply = new QPushButton();
-    buttonApply->setAutoDefault(true);
+    buttonApply->setAutoDefault(false);
     bottomButtons->addWidget(buttonApply);
 
     buttonOk = new QPushButton();
@@ -137,7 +143,7 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     bottomButtons->addWidget(buttonOk);
 
     buttonCancel = new QPushButton();
-    buttonCancel->setAutoDefault(true);
+    buttonCancel->setAutoDefault(false);
     bottomButtons->addWidget(buttonCancel);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -541,6 +547,9 @@ void ConfigDialog::initAppPage()
     boxScriptingLanguage->addItems(llist);
     boxScriptingLanguage->setCurrentIndex(llist.indexOf(app->defaultScriptingLang));
     topBoxLayout->addWidget(boxScriptingLanguage, 3, 1);
+    const bool showLegacyScripting = app && app->showsLegacyUi();
+    lblScriptingLanguage->setVisible(showLegacyScripting);
+    boxScriptingLanguage->setVisible(showLegacyScripting);
 
     boxSave = new QCheckBox();
     boxSave->setChecked(app->autoSave);
@@ -872,9 +881,12 @@ void ConfigDialog::languageChange()
         if (newWidth > width)
             width = newWidth;
     }
-    itemsList->setMaximumWidth(itemsList->iconSize().width() + width + 50);
-    // resize the list to the maximum width
-    itemsList->resize(itemsList->maximumWidth(), itemsList->height());
+    const int navWidth = qMax(148, itemsList->iconSize().width() + width + 56);
+    itemsList->setMinimumWidth(navWidth);
+    itemsList->setMaximumWidth(navWidth + 20);
+    itemsList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // resize the list to the calculated width
+    itemsList->resize(navWidth, itemsList->height());
 
     // plots 2D page
     plotsTabWidget->setTabText(plotsTabWidget->indexOf(plotOptions), tr("Options"));
@@ -963,6 +975,11 @@ void ConfigDialog::languageChange()
         btnCheckUpdatesNow->setText(tr("Check for Updates Now..."));
     boxMinutes->setSuffix(tr(" minutes"));
     lblScriptingLanguage->setText(tr("Default scripting language"));
+    if (app) {
+        const bool showLegacyScripting = app->showsLegacyUi();
+        lblScriptingLanguage->setVisible(showLegacyScripting);
+        boxScriptingLanguage->setVisible(showLegacyScripting);
+    }
 
     lblDefaultNumericFormat->setText(tr("Default numeric format"));
     lblForeignSeparator->setText(
@@ -1269,9 +1286,12 @@ void ConfigDialog::apply()
         if (newWidth > width)
             width = newWidth;
     }
-    itemsList->setMaximumWidth(itemsList->iconSize().width() + width + 50);
-    // resize the list to the maximum width
-    itemsList->resize(itemsList->maximumWidth(), itemsList->height());
+    const int navWidth = qMax(148, itemsList->iconSize().width() + width + 56);
+    itemsList->setMinimumWidth(navWidth);
+    itemsList->setMaximumWidth(navWidth + 20);
+    itemsList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // resize the list to the calculated width
+    itemsList->resize(navWidth, itemsList->height());
 
     auto &settings = ApplicationWindow::getSettings();
     settings.beginGroup("[Table]");
@@ -1352,7 +1372,7 @@ void ConfigDialog::pickTextFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, textFont, this);
     if (ok) {
-        textFont = font;
+        textFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(textFont, font);
     } else {
         return;
     }
@@ -1363,7 +1383,7 @@ void ConfigDialog::pickHeaderFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, headerFont, this);
     if (ok) {
-        headerFont = font;
+        headerFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(headerFont, font);
     } else {
         return;
     }
@@ -1374,7 +1394,9 @@ void ConfigDialog::pickLegendFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, legendFont, this);
     if (ok) {
-        legendFont = font;
+        if (font.family().trimmed().isEmpty())
+            font.setFamily(QStringLiteral("Arial"));
+        legendFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(legendFont, font);
     } else {
         return;
     }
@@ -1385,7 +1407,9 @@ void ConfigDialog::pickAxesFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, axesFont, this);
     if (ok) {
-        axesFont = font;
+        if (font.family().trimmed().isEmpty())
+            font.setFamily(QStringLiteral("Arial"));
+        axesFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(axesFont, font);
     } else {
         return;
     }
@@ -1396,7 +1420,9 @@ void ConfigDialog::pickNumbersFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, numbersFont, this);
     if (ok) {
-        numbersFont = font;
+        if (font.family().trimmed().isEmpty())
+            font.setFamily(QStringLiteral("Arial"));
+        numbersFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(numbersFont, font);
     } else {
         return;
     }
@@ -1406,9 +1432,11 @@ void ConfigDialog::pickTitleFont()
 {
     bool ok;
     QFont font = QFontDialog::getFont(&ok, titleFont, this);
-    if (ok)
-        titleFont = font;
-    else
+    if (ok) {
+        if (font.family().trimmed().isEmpty())
+            font.setFamily(QStringLiteral("Arial"));
+        titleFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(titleFont, font);
+    } else
         return;
 }
 
@@ -1417,7 +1445,7 @@ void ConfigDialog::pickApplicationFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, appFont, this);
     if (ok)
-        appFont = font;
+        appFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(appFont, font);
     else
         return;
     fontsBtn->setFont(appFont);
@@ -1527,7 +1555,8 @@ void ConfigDialog::pick3DTitleFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, plot3DTitleFont, this);
     if (ok)
-        plot3DTitleFont = font;
+        plot3DTitleFont =
+                PlotStyleLimits::preserveFractionalPtAfterFontDialog(plot3DTitleFont, font);
     else
         return;
 }
@@ -1537,7 +1566,8 @@ void ConfigDialog::pick3DNumbersFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, plot3DNumbersFont, this);
     if (ok)
-        plot3DNumbersFont = font;
+        plot3DNumbersFont =
+                PlotStyleLimits::preserveFractionalPtAfterFontDialog(plot3DNumbersFont, font);
     else
         return;
 }
@@ -1547,7 +1577,7 @@ void ConfigDialog::pick3DAxesFont()
     bool ok;
     QFont font = QFontDialog::getFont(&ok, plot3DAxesFont, this);
     if (ok)
-        plot3DAxesFont = font;
+        plot3DAxesFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(plot3DAxesFont, font);
     else
         return;
 }

@@ -209,7 +209,7 @@ private:
     QWidget *linePage;
     QComboBox *boxConnect;
     PenWidget *penWidget;
-    QSpinBox *boxPenWidth;
+    QDoubleSpinBox *boxPenWidth;
     QSpinBox *boxLineOpacity, *boxAreaOpacity, *boxSymbolOpacity;
     ColorButton *boxAreaColor;
     QWidget *symbolPage;
@@ -237,7 +237,8 @@ private:
     QSpinBox *gapBox, *offsetBox, *boxWidth;
     QWidget *vectPage, *boxPage, *percentilePage, *axesPage;
     QComboBox *xEndBox, *yEndBox, *boxType, *boxWhiskersType, *boxWhiskersRange, *boxRange;
-    QSpinBox *headAngleBox, *headLengthBox, *vectWidthBox, *boxPercSize, *boxEdgeWidth;
+    QSpinBox *headAngleBox, *headLengthBox, *vectWidthBox, *boxPercSize;
+    QDoubleSpinBox *boxEdgeWidth;
     QCheckBox *filledHeadBox;
     QSpinBox *boxCoef, *boxWhiskersCoef;
     QCheckBox *boxFillSymbols, *boxFillSymbol;

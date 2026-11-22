@@ -52,7 +52,7 @@ public:
     //! Actually does the job. Should be reimplemented in derived classes.
     virtual bool run();
 
-    virtual void setDataCurve(const int curve, double start, double end);
+    virtual void setDataCurve(int curve, double start, double end);
     bool setDataFromCurve(const QString &curveTitle, Graph *const g = 0);
     bool setDataFromCurve(const QString &curveTitle, const double from, const double to,
                           Graph *const g = 0);

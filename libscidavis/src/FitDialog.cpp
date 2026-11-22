@@ -62,8 +62,10 @@
 #include <QDoubleSpinBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QApplication>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSet>
 #include <QCompleter>
 #include <QStringListModel>
@@ -127,6 +129,9 @@ FitDialog::FitDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
     setWindowTitle(tr("Fit Wizard"));
     setSizeGripEnabled(true);
+    setProperty("toriHasInternalScroll", true);
+    setMinimumSize(620, 340);
+    resize(780, 520);
 
     d_user_function_names = QStringList();
     d_user_functions = QStringList();
@@ -143,6 +148,8 @@ FitDialog::FitDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
     initAdvancedPage();
 
     QVBoxLayout *vl = new QVBoxLayout();
+    vl->setContentsMargins(8, 8, 8, 8);
+    vl->setSpacing(4);
     vl->addWidget(tw);
     setLayout(vl);
 
@@ -178,11 +185,12 @@ void FitDialog::initFitPage()
     QPalette palette = boxFunction->palette();
     palette.setColor(QPalette::Active, QPalette::Base, Qt::lightGray);
     boxFunction->setPalette(palette);
-    boxFunction->setMaximumHeight(50);
+    boxFunction->setMaximumHeight(42);
     gl1->addWidget(boxFunction, 2, 1);
     gl1->addWidget(new QLabel(tr("Initial guesses")), 3, 0);
 
     boxParams = new QTableWidget();
+    boxParams->setMinimumHeight(88);
     boxParams->setColumnCount(5);
 #if QT_VERSION >= 0x050000
     boxParams->horizontalHeader()->setSectionsClickable(false);
@@ -206,6 +214,7 @@ void FitDialog::initFitPage()
     boxParams->setHorizontalHeaderLabels(header);
     boxParams->verticalHeader()->hide();
     gl1->addWidget(boxParams, 3, 1);
+    gl1->setRowStretch(3, 1);
 
     gl1->addWidget(new QLabel(tr("Algorithm")), 4, 0);
     boxAlgorithm = new QComboBox();
@@ -278,6 +287,7 @@ void FitDialog::initFitPage()
     hbox2->addWidget(colNamesBox);
 
     QHBoxLayout *hbox3 = new QHBoxLayout();
+    hbox3->setSpacing(6);
     buttonEdit = new QPushButton(tr("<< &Edit function"));
     hbox3->addWidget(buttonEdit);
     btnDeleteFitCurves = new QPushButton(tr("&Delete Fit Curves"));
@@ -308,11 +318,26 @@ void FitDialog::initFitPage()
     QGroupBox *gbBands = new QGroupBox(tr("Bands & Diagnostics"));
     gbBands->setLayout(hboxBands);
 
+    QWidget *fitBody = new QWidget();
+    QVBoxLayout *fitBodyLayout = new QVBoxLayout(fitBody);
+    fitBodyLayout->setContentsMargins(0, 0, 4, 0);
+    fitBodyLayout->setSpacing(6);
+    fitBodyLayout->addWidget(gb1, 1);
+    fitBodyLayout->addLayout(hbox1);
+    fitBodyLayout->addWidget(gb4);
+    fitBodyLayout->addWidget(gbBands);
+
+    QScrollArea *fitScroll = new QScrollArea();
+    fitScroll->setFrameShape(QFrame::NoFrame);
+    fitScroll->setWidgetResizable(true);
+    fitScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    fitScroll->setMinimumHeight(160);
+    fitScroll->setWidget(fitBody);
+
     QVBoxLayout *vbox1 = new QVBoxLayout();
-    vbox1->addWidget(gb1);
-    vbox1->addLayout(hbox1);
-    vbox1->addWidget(gb4);
-    vbox1->addWidget(gbBands);
+    vbox1->setContentsMargins(2, 2, 2, 2);
+    vbox1->setSpacing(6);
+    vbox1->addWidget(fitScroll, 1);
     vbox1->addLayout(hbox3);
 
     fitPage = new QWidget();
@@ -415,13 +440,17 @@ void FitDialog::initEditPage()
     categoryBox->addItem(tr("Materials / Metallurgy / Physics"));
     categoryBox->addItem(tr("Waveform / Periodic"));
     categoryBox->addItem(tr("Power / Logarithmic / Rational / Polynomial"));
+    categoryBox->setMinimumHeight(105);
 
     gl1->addWidget(categoryBox, 1, 0);
     funcBox = new QListWidget();
+    funcBox->setMinimumHeight(105);
     gl1->addWidget(funcBox, 1, 1);
     explainBox = new QTextEdit();
     explainBox->setReadOnly(true);
+    explainBox->setMinimumHeight(105);
     gl1->addWidget(explainBox, 1, 2);
+    gl1->setRowStretch(1, 1);
 
     boxUseBuiltIn = new QCheckBox();
     boxUseBuiltIn->setText(tr("Fit with &built-in function"));
@@ -467,6 +496,7 @@ void FitDialog::initEditPage()
 
     editBox = new QTextEdit();
     editBox->setAcceptRichText(false);
+    editBox->setMinimumHeight(64);
     editBox->setFocus();
 
     QVBoxLayout *vbox1 = new QVBoxLayout();
@@ -476,22 +506,43 @@ void FitDialog::initEditPage()
     vbox1->addWidget(btnAddName);
     buttonClear = new QPushButton(tr("Rese&t"));
     vbox1->addWidget(buttonClear);
-    buttonCancel2 = new QPushButton(tr("&Close"));
-    vbox1->addWidget(buttonCancel2);
-    btnContinue = new QPushButton(tr("&Fit >>"));
-    vbox1->addWidget(btnContinue);
     vbox1->addStretch();
 
     QHBoxLayout *hbox2 = new QHBoxLayout();
-    hbox2->addWidget(editBox);
+    hbox2->addWidget(editBox, 1);
     hbox2->addLayout(vbox1);
 
+    QWidget *editBody = new QWidget();
+    QVBoxLayout *editBodyLayout = new QVBoxLayout(editBody);
+    editBodyLayout->setContentsMargins(0, 0, 4, 0);
+    editBodyLayout->setSpacing(6);
+    editBodyLayout->addLayout(searchRow);
+    editBodyLayout->addLayout(gl1, 1);
+    editBodyLayout->addLayout(hbox1);
+    editBodyLayout->addWidget(gb);
+    editBodyLayout->addLayout(hbox2);
+
+    QScrollArea *editScroll = new QScrollArea();
+    editScroll->setFrameShape(QFrame::NoFrame);
+    editScroll->setWidgetResizable(true);
+    editScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    editScroll->setMinimumHeight(160);
+    editScroll->setWidget(editBody);
+
+    QHBoxLayout *editBottomBar = new QHBoxLayout();
+    editBottomBar->setSpacing(8);
+    editBottomBar->addStretch();
+    btnContinue = new QPushButton(tr("&Fit >>"));
+    btnContinue->setDefault(true);
+    editBottomBar->addWidget(btnContinue);
+    buttonCancel2 = new QPushButton(tr("&Close"));
+    editBottomBar->addWidget(buttonCancel2);
+
     QVBoxLayout *vbox2 = new QVBoxLayout();
-    vbox2->addLayout(searchRow);
-    vbox2->addLayout(gl1);
-    vbox2->addLayout(hbox1);
-    vbox2->addWidget(gb);
-    vbox2->addLayout(hbox2);
+    vbox2->setContentsMargins(2, 2, 2, 2);
+    vbox2->setSpacing(6);
+    vbox2->addWidget(editScroll, 1);
+    vbox2->addLayout(editBottomBar);
 
     editPage = new QWidget();
     editPage->setLayout(vbox2);
@@ -598,13 +649,28 @@ void FitDialog::initAdvancedPage()
     hbox1->addWidget(buttonCancel3);
     hbox1->addStretch();
 
+    QWidget *advBody = new QWidget();
+    QVBoxLayout *advBodyLayout = new QVBoxLayout(advBody);
+    advBodyLayout->setContentsMargins(0, 0, 4, 0);
+    advBodyLayout->setSpacing(6);
+    advBodyLayout->addWidget(gb1);
+    advBodyLayout->addWidget(gb2);
+    advBodyLayout->addWidget(scaleErrorsBox);
+    advBodyLayout->addWidget(logBox);
+    advBodyLayout->addWidget(plotLabelBox);
+    advBodyLayout->addStretch();
+
+    QScrollArea *advScroll = new QScrollArea();
+    advScroll->setFrameShape(QFrame::NoFrame);
+    advScroll->setWidgetResizable(true);
+    advScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    advScroll->setMinimumHeight(160);
+    advScroll->setWidget(advBody);
+
     QVBoxLayout *vbox1 = new QVBoxLayout();
-    vbox1->addWidget(gb1);
-    vbox1->addWidget(gb2);
-    vbox1->addWidget(scaleErrorsBox);
-    vbox1->addWidget(logBox);
-    vbox1->addWidget(plotLabelBox);
-    vbox1->addStretch();
+    vbox1->setContentsMargins(2, 2, 2, 2);
+    vbox1->setSpacing(6);
+    vbox1->addWidget(advScroll, 1);
     vbox1->addLayout(hbox1);
 
     advancedPage = new QWidget();
@@ -1042,9 +1108,9 @@ void FitDialog::showFitPage()
     boxParams->showColumn(3);
     boxParams->showColumn(4);
 
-    if (parameters > 7)
-        parameters = 7;
-    boxParams->setMinimumHeight(4 + (parameters + 1) * boxParams->horizontalHeader()->height());
+    const int minVisRows = qBound(2, parameters, 4);
+    const int hdrH = qMax(22, boxParams->horizontalHeader()->height());
+    boxParams->setMinimumHeight(4 + (minVisRows + 1) * hdrH);
 
     for (int i = param_table_rows; i < paramList.count(); i++) {
         QTableWidgetItem *it = new QTableWidgetItem(paramList[i]);

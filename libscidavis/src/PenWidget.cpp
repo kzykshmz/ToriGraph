@@ -37,11 +37,14 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QPainter>
 #include <QPixmapCache>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QValidator>
 #include <QVBoxLayout>
+#include <cmath>
 
 #include <QDebug>
 
@@ -62,15 +65,19 @@ void PenWidget::createWidgets()
     colorButton->setColor(m_pen.color());
     // linewidth
     widthComboBox = new QComboBox(this);
+    widthComboBox->addItem(QStringLiteral("0.5"));
     widthComboBox->addItem(tr("1"));
+    widthComboBox->addItem(QStringLiteral("1.5"));
     widthComboBox->addItem(tr("2"));
     widthComboBox->addItem(tr("3"));
     widthComboBox->addItem(tr("4"));
     widthComboBox->addItem(tr("5"));
-    widthComboBox->setCurrentIndex(widthComboBox->findText(QString::number(m_pen.width())));
-
     widthComboBox->setEditable(true);
-    widthComboBox->setEditText(QString::number(m_pen.width()));
+    const QString initWidthText = QString::number(m_pen.widthF(), 'g', 4);
+    const int initWidthIdx = widthComboBox->findText(initWidthText);
+    if (initWidthIdx >= 0)
+        widthComboBox->setCurrentIndex(initWidthIdx);
+    widthComboBox->setEditText(initWidthText);
     widthComboBox->setMinimumWidth(80);
     // line style
     lineStyleComboBox = new QComboBox(this);
@@ -172,9 +179,14 @@ void PenWidget::setPen(const QPen &pen)
         lineStyleComboBox->setCurrentIndex(
                 lineStyleComboBox->findData(static_cast<int>(m_pen.style())));
         dashLineEdit->setText(d_custom_dash);
-        if (widthComboBox->findText(QString::number(m_pen.width())) >= 0)
-            widthComboBox->setCurrentIndex(widthComboBox->findText(QString::number(m_pen.width())));
-        widthComboBox->setEditText(QString::number(m_pen.width()));
+        {
+            QSignalBlocker blockW(widthComboBox);
+            const QString wStr = QString::number(m_pen.widthF(), 'g', 4);
+            const int wIdx = widthComboBox->findText(wStr);
+            if (wIdx >= 0)
+                widthComboBox->setCurrentIndex(wIdx);
+            widthComboBox->setEditText(wStr);
+        }
         capStyleComboBox->setCurrentIndex(
                 capStyleComboBox->findData(static_cast<int>(m_pen.capStyle())));
         joinStyleComboBox->setCurrentIndex(
@@ -191,7 +203,18 @@ void PenWidget::updateColor(QColor color)
 
 void PenWidget::updateWidth(QString value)
 {
-    m_pen.setWidth(value.toInt());
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    bool ok = false;
+    double w = QLocale().toDouble(trimmed, &ok);
+    if (!ok)
+        w = QLocale::c().toDouble(trimmed, &ok);
+    if (!ok)
+        w = trimmed.toDouble(&ok);
+    if (!ok || !std::isfinite(w) || w < 0.0)
+        return;
+    m_pen.setWidthF(w);
     emit penChanged(m_pen);
 }
 

@@ -40,6 +40,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDialog>
+#include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -57,6 +58,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTableView>
 #include <QTimer>
 #include <QToolBar>
@@ -153,6 +155,10 @@ void registerUxTranslations()
         reg("Anal&yze", "解析(&Y)");
         reg("St&yle", "体裁(&Y)");
         reg("Layer P&roperties...", "レイヤーのプロパティ(&R)...");
+        reg("E&xport Graph...", "画像を書き出し(&X)...");
+        reg("Export Graph...", "画像を書き出し...");
+        reg("&Print...", "印刷(&P)...");
+        reg("Print...", "印刷...");
         // C6 menus
         reg("Worksheet &Analysis", "表の解析(&A)");
         // C11 undo
@@ -241,8 +247,8 @@ QString quickGuideFilePath()
 
 namespace {
 
-constexpr int kFrameAllowanceW = 16; // left + right window border
-constexpr int kFrameAllowanceH = 40; // title bar + bottom border
+constexpr int kFrameAllowanceW = 24; // left + right window border & margin
+constexpr int kFrameAllowanceH = 48; // title bar + bottom border & taskbar clearance
 
 bool isScreenFitCandidate(const QWidget *w)
 {
@@ -304,14 +310,15 @@ void collectLayoutWidgets(QLayout *lay, QList<QPointer<QWidget>> &out)
     }
 }
 
-// Move the content of a dialog's top-level box/grid layout into a QScrollArea. A trailing
+// Move the content of a dialog's top-level box/grid/form layout into a QScrollArea. A trailing
 // button row (QDialogButtonBox or a row of push buttons) stays outside so OK/Cancel remain visible.
 bool wrapLayoutInScrollArea(QWidget *window)
 {
     QLayout *old = window->layout();
     QBoxLayout *oldBox = qobject_cast<QBoxLayout *>(old);
     QGridLayout *oldGrid = qobject_cast<QGridLayout *>(old);
-    if (!oldBox && !oldGrid)
+    QFormLayout *oldForm = qobject_cast<QFormLayout *>(old);
+    if (!oldBox && !oldGrid && !oldForm)
         return false;
 
     // Remember which widgets were meant to be visible: reparenting hides them.
@@ -326,20 +333,39 @@ bool wrapLayoutInScrollArea(QWidget *window)
     const QMargins margins = old->contentsMargins();
     const int spacing = old->spacing();
     const QBoxLayout::Direction dir = oldBox ? oldBox->direction() : QBoxLayout::TopToBottom;
+    const int hSpacing = oldGrid ? oldGrid->horizontalSpacing()
+                                 : (oldForm ? oldForm->horizontalSpacing() : spacing);
+    const int vSpacing = oldGrid ? oldGrid->verticalSpacing()
+                                 : (oldForm ? oldForm->verticalSpacing() : spacing);
+    const QFormLayout::FieldGrowthPolicy formFieldGrowth =
+            oldForm ? oldForm->fieldGrowthPolicy() : QFormLayout::ExpandingFieldsGrow;
+    const QFormLayout::RowWrapPolicy formRowWrap =
+            oldForm ? oldForm->rowWrapPolicy() : QFormLayout::DontWrapRows;
+    const Qt::Alignment formLabelAlign = oldForm ? oldForm->labelAlignment() : Qt::Alignment();
+    const Qt::Alignment formAlign = oldForm ? oldForm->formAlignment() : Qt::Alignment();
 
     struct Moved
     {
         QLayoutItem *item = nullptr;
         int stretch = 0;
         int row = 0, col = 0, rowSpan = 1, colSpan = 1;
+        QFormLayout::ItemRole formRole = QFormLayout::SpanningRole;
     };
     QList<Moved> moved;
+    int maxRow = -1;
     for (int i = 0; i < old->count(); ++i) {
         Moved m;
-        if (oldBox)
+        if (oldBox) {
             m.stretch = oldBox->stretch(i);
-        else
+        } else if (oldGrid) {
             oldGrid->getItemPosition(i, &m.row, &m.col, &m.rowSpan, &m.colSpan);
+            if (m.row > maxRow)
+                maxRow = m.row;
+        } else if (oldForm) {
+            oldForm->getItemPosition(i, &m.row, &m.formRole);
+            if (m.row > maxRow)
+                maxRow = m.row;
+        }
         moved.append(m);
     }
     for (int i = 0; i < moved.size(); ++i)
@@ -352,6 +378,21 @@ bool wrapLayoutInScrollArea(QWidget *window)
         buttonRow = moved.last().item;
         buttonStretch = moved.last().stretch;
         moved.removeLast();
+    } else if ((oldForm || oldGrid) && maxRow >= 0) {
+        int countOnLastRow = 0;
+        int lastRowIdx = -1;
+        for (int i = 0; i < moved.size(); ++i) {
+            if (moved[i].row == maxRow) {
+                ++countOnLastRow;
+                lastRowIdx = i;
+            }
+        }
+        if (countOnLastRow == 1 && lastRowIdx >= 0 && isButtonRow(moved[lastRowIdx].item)
+            && (!oldForm || moved[lastRowIdx].formRole == QFormLayout::SpanningRole
+                || moved[lastRowIdx].formRole == QFormLayout::FieldRole)) {
+            buttonRow = moved[lastRowIdx].item;
+            moved.removeAt(lastRowIdx);
+        }
     }
 
     // Detach sub-layouts from the old layout before deleting it (QObject children die with it).
@@ -371,13 +412,15 @@ bool wrapLayoutInScrollArea(QWidget *window)
     scroll->setObjectName(QStringLiteral("ToriScreenFitScrollArea"));
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContentsOnFirstShow);
     QWidget *inner = new QWidget(scroll);
     inner->setObjectName(QStringLiteral("ToriScreenFitInner"));
     scroll->setWidget(inner);
     outer->addWidget(scroll, 1);
 
-    auto addTo = [](QLayout *target, const Moved &m, QBoxLayout *asBox, QGridLayout *asGrid) {
+    auto addTo = [](QLayout *target, const Moved &m, QBoxLayout *asBox, QGridLayout *asGrid,
+                    QFormLayout *asForm) {
         QLayoutItem *it = m.item;
         if (!it)
             return;
@@ -386,18 +429,24 @@ bool wrapLayoutInScrollArea(QWidget *window)
             delete it;
             if (asBox)
                 asBox->addWidget(w, m.stretch, al);
-            else
+            else if (asGrid)
                 asGrid->addWidget(w, m.row, m.col, m.rowSpan, m.colSpan, al);
+            else if (asForm)
+                asForm->setWidget(m.row, m.formRole, w);
         } else if (QLayout *sub = it->layout()) {
             if (asBox)
                 asBox->addLayout(sub, m.stretch);
-            else
+            else if (asGrid)
                 asGrid->addLayout(sub, m.row, m.col, m.rowSpan, m.colSpan);
+            else if (asForm)
+                asForm->setLayout(m.row, m.formRole, sub);
         } else {
             if (asBox)
                 asBox->addItem(it);
-            else
+            else if (asGrid)
                 asGrid->addItem(it, m.row, m.col, m.rowSpan, m.colSpan);
+            else if (asForm)
+                asForm->setItem(m.row, m.formRole, it);
         }
         Q_UNUSED(target);
     };
@@ -407,21 +456,34 @@ bool wrapLayoutInScrollArea(QWidget *window)
         nb->setContentsMargins(0, 0, 0, 0);
         nb->setSpacing(spacing);
         for (const Moved &m : moved)
-            addTo(nb, m, nb, nullptr);
-    } else {
+            addTo(nb, m, nb, nullptr, nullptr);
+    } else if (oldGrid) {
         QGridLayout *ng = new QGridLayout(inner);
         ng->setContentsMargins(0, 0, 0, 0);
-        ng->setHorizontalSpacing(oldGrid->horizontalSpacing());
-        ng->setVerticalSpacing(oldGrid->verticalSpacing());
+        ng->setHorizontalSpacing(hSpacing);
+        ng->setVerticalSpacing(vSpacing);
         for (const Moved &m : moved)
-            addTo(ng, m, nullptr, ng);
+            addTo(ng, m, nullptr, ng, nullptr);
+    } else if (oldForm) {
+        QFormLayout *nf = new QFormLayout(inner);
+        nf->setContentsMargins(0, 0, 0, 0);
+        nf->setHorizontalSpacing(hSpacing);
+        nf->setVerticalSpacing(vSpacing);
+        nf->setFieldGrowthPolicy(formFieldGrowth);
+        nf->setRowWrapPolicy(formRowWrap);
+        if (formLabelAlign != Qt::Alignment())
+            nf->setLabelAlignment(formLabelAlign);
+        if (formAlign != Qt::Alignment())
+            nf->setFormAlignment(formAlign);
+        for (const Moved &m : moved)
+            addTo(nf, m, nullptr, nullptr, nf);
     }
 
     if (buttonRow) {
         Moved b;
         b.item = buttonRow;
         b.stretch = buttonStretch;
-        addTo(outer, b, outer, nullptr);
+        addTo(outer, b, outer, nullptr, nullptr);
     }
 
     for (const QPointer<QWidget> &w : shownBefore) {
@@ -471,11 +533,29 @@ bool fitWindowToAvailableScreen(QWidget *window, const QRect &available)
     const QSize maxClient(qMax(200, avail.width() - kFrameAllowanceW),
                           qMax(150, avail.height() - kFrameAllowanceH));
 
+    if (window->minimumWidth() > maxClient.width() || window->minimumHeight() > maxClient.height()) {
+        window->setMinimumSize(qMin(window->minimumWidth(), maxClient.width()),
+                               qMin(window->minimumHeight(), maxClient.height()));
+    }
+
     bool wrapped = false;
+    int preWrapWidth = window->width();
+    int preWrapHeight = window->height();
     if (QLayout *lay = window->layout()) {
-        const QSize need = lay->totalMinimumSize();
-        if ((need.width() > maxClient.width() || need.height() > maxClient.height())
-            && !window->property("toriScreenFitWrapped").toBool()
+        const QSize minSz = lay->totalMinimumSize();
+        const QSize hintSz = lay->totalSizeHint();
+        if (!window->testAttribute(Qt::WA_Resized)) {
+            preWrapWidth = qMax(window->minimumWidth(), qMax(minSz.width(), hintSz.width()));
+            preWrapHeight = qMax(window->minimumHeight(), qMax(minSz.height(), hintSz.height()));
+        } else {
+            preWrapWidth = qMax(preWrapWidth, minSz.width());
+            preWrapHeight = qMax(preWrapHeight, minSz.height());
+        }
+        const bool needsWrap = (minSz.width() > maxClient.width()
+                                || minSz.height() > maxClient.height()
+                                || hintSz.height() > maxClient.height());
+        if (needsWrap && !window->property("toriScreenFitWrapped").toBool()
+            && !window->property("toriHasInternalScroll").toBool()
             && qobject_cast<QDialog *>(window)) {
             wrapped = wrapLayoutInScrollArea(window);
         }
@@ -484,8 +564,20 @@ bool fitWindowToAvailableScreen(QWidget *window, const QRect &available)
     const QSize minNow = window->minimumSize();
     if (minNow.width() > maxClient.width() || minNow.height() > maxClient.height())
         window->setMinimumSize(minNow.boundedTo(maxClient));
-    if (window->width() > maxClient.width() || window->height() > maxClient.height())
+
+    if (wrapped) {
+        const int sbExtent =
+                (window->style()
+                         ? window->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, window)
+                         : 18)
+                + 8;
+        const int targetW =
+                qMin(maxClient.width(), qMax(window->minimumWidth(), preWrapWidth + sbExtent));
+        const int targetH = qMin(maxClient.height(), qMax(window->minimumHeight(), preWrapHeight));
+        window->resize(targetW, targetH);
+    } else if (window->width() > maxClient.width() || window->height() > maxClient.height()) {
         window->resize(window->size().boundedTo(maxClient));
+    }
 
     // Keep the title bar on screen (only meaningful once the window has a position).
     if (window->isVisible() && !available.isValid()) {
@@ -632,6 +724,51 @@ private:
     QPointer<QLabel> d_label;
     bool d_done = false;
     bool d_pending = false;
+};
+
+class PlotThisDataBarController : public QObject
+{
+public:
+    PlotThisDataBarController(QWidget *viewport, QFrame *bar)
+        : QObject(bar), d_viewport(viewport), d_bar(bar)
+    {
+        if (d_viewport)
+            d_viewport->installEventFilter(this);
+        reposition();
+    }
+
+    void reposition()
+    {
+        if (!d_viewport || !d_bar)
+            return;
+        const QRect vr = d_viewport->rect();
+        if (vr.width() <= 0 || vr.height() <= 0)
+            return;
+        const int margin = 10;
+        const int availW = qMax(80, vr.width() - 2 * margin);
+        const QSize hint = d_bar->sizeHint();
+        const int w = qMin(hint.width(), availW);
+        const int h = qMin(qMax(28, hint.height()), qMax(28, vr.height() - 2 * margin));
+        const int x = qMax(4, vr.right() - w - margin + 1);
+        const int y = qMax(4, vr.bottom() - h - margin + 1);
+        d_bar->setGeometry(x, y, w, h);
+        d_bar->raise();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == d_viewport
+            && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+                || event->type() == QEvent::LayoutRequest)) {
+            reposition();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QPointer<QWidget> d_viewport;
+    QPointer<QFrame> d_bar;
 };
 
 } // namespace
@@ -1056,10 +1193,9 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
     row->addWidget(plotBtn);
     row->addWidget(close);
     bar->adjustSize();
-    const QRect vr = view->viewport()->rect();
-    bar->move(qMax(4, vr.right() - bar->width() - 12), qMax(4, vr.bottom() - bar->height() - 12));
+    auto *posCtrl = new PlotThisDataBarController(view->viewport(), bar);
     bar->show();
-    bar->raise();
+    posCtrl->reposition();
 
     QPointer<Table> safeTable(table);
     QPointer<QFrame> safeBar(bar);
@@ -1071,8 +1207,6 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
         plotColumnsFromTable(safeTable, Graph::LineSymbols);
     });
     connect(close, &QToolButton::clicked, bar, &QObject::deleteLater);
-    // The bar is a suggestion: it goes away by itself.
-    QTimer::singleShot(30000, bar, &QObject::deleteLater);
 }
 
 void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool fromLayerButton)
@@ -1212,19 +1346,27 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
     copy->setIcon(IconLoader::load("copy"));
     copy->addAction(actionCopyGraphOle);
     copy->addAction(actionCopyPageImage);
-    copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
-    copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
+    if (plot->layers() > 1) {
+        copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
+        copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
+    }
     if (actionExportPythonScript)
         copy->addAction(actionExportPythonScript);
 
-    QMenu *exports = cm.addMenu(tr("E&xport"));
-    exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
-    exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
+    if (plot->layers() <= 1) {
+        cm.addAction(IconLoader::duotoneIcon(QStringLiteral("export-image")),
+                     tr("E&xport Graph..."), this, SLOT(exportGraph()));
+        cm.addAction(IconLoader::load("print"), tr("&Print..."), plot, SLOT(print()));
+    } else {
+        QMenu *exports = cm.addMenu(tr("E&xport"));
+        exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
+        exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
 
-    QMenu *prints = cm.addMenu(tr("&Print"));
-    prints->setIcon(IconLoader::load("print"));
-    prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
-    prints->addAction(tr("&Window"), plot, SLOT(print()));
+        QMenu *prints = cm.addMenu(tr("&Print"));
+        prints->setIcon(IconLoader::load("print"));
+        prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
+        prints->addAction(tr("&Window"), plot, SLOT(print()));
+    }
 
     cm.addSeparator();
     cm.addAction(IconLoader::load("fit-page"), tr("&Geometry..."), plot,

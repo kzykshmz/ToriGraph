@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "ApplicationWindow.h"
 #include "PlotDialog.h"
+#include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "ColorButton.h"
 #include "PenWidget.h"
@@ -73,6 +74,20 @@
 #include <QSplitter>
 #include <QFrame>
 #include <QTableWidget>
+#include <QLocale>
+#include <cmath>
+
+namespace {
+void registerPlotDialogTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Co&lor Palette..."), QString::fromUtf8("カラーパレット(&L)..."));
+}
+} // namespace
 
 PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     : QDialog(parent, fl),
@@ -83,10 +98,11 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
       d_ml(0)
 {
     Q_UNUSED(showExtended);
+    registerPlotDialogTranslations();
     setWindowTitle(tr("Plot details"));
     setSizeGripEnabled(true);
-    setMinimumSize(780, 540);
-    resize(860, 580);
+    setMinimumSize(680, 420);
+    resize(780, 520);
 
     d_leftTreePanel = new QWidget(this);
     d_leftTreePanel->setMinimumWidth(210);
@@ -97,6 +113,10 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     listBox = new QTreeWidget();
     listBox->setColumnCount(1);
     listBox->header()->hide();
+    listBox->header()->setStretchLastSection(false);
+    listBox->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    listBox->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    listBox->setTextElideMode(Qt::ElideNone);
     listBox->setIndentation(15);
     listBox->setMinimumWidth(205);
     leftLayout->addWidget(listBox, 1);
@@ -132,7 +152,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     d_mainSplitter->addWidget(privateTabWidget);
     d_mainSplitter->setStretchFactor(0, 0);
     d_mainSplitter->setStretchFactor(1, 1);
-    d_mainSplitter->setSizes({ 235, 615 });
+    d_mainSplitter->setSizes({ 255, 525 });
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(10, 10, 10, 10);
@@ -180,7 +200,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
 
     btnWorksheet = new QPushButton(tr("&Worksheet"));
     btnEditCurve = new QPushButton(tr("&Plot Associations..."));
-    btnColorPalette = new QPushButton(tr("Color &Palette..."));
+    btnColorPalette = new QPushButton(tr("Co&lor Palette..."));
     hb2->addWidget(btnWorksheet);
     hb2->addWidget(btnEditCurve);
     hb2->addWidget(btnColorPalette);
@@ -828,8 +848,13 @@ void PlotDialog::initSymbolsPage()
     boxSymbolColor = new ColorButton();
     gl->addWidget(boxSymbolColor, 4, 1);
     gl->addWidget(new QLabel(tr("Edge Width")), 5, 0);
-    boxPenWidth = new QSpinBox();
-    boxPenWidth->setRange(1, int(PlotStyleLimits::kSymbolEdgeWidthMax));
+    boxPenWidth = new QDoubleSpinBox();
+    boxPenWidth->setRange(PlotStyleLimits::kSymbolEdgeWidthMin,
+                          PlotStyleLimits::kSymbolEdgeWidthMax);
+    boxPenWidth->setDecimals(1);
+    boxPenWidth->setSingleStep(0.5);
+    boxPenWidth->setSuffix(QStringLiteral(" px"));
+    boxPenWidth->setValue(1.0);
     gl->addWidget(boxPenWidth, 5, 1);
     gl->addWidget(new QLabel(tr("Opacity (%):")), 6, 0);
     boxSymbolOpacity = new QSpinBox();
@@ -1012,8 +1037,13 @@ void PlotDialog::initPercentilePage()
     gl2->addWidget(boxEdgeColor, 2, 1);
 
     gl2->addWidget(new QLabel(tr("Edge Width")), 3, 0);
-    boxEdgeWidth = new QSpinBox();
-    boxEdgeWidth->setRange(0, 100);
+    boxEdgeWidth = new QDoubleSpinBox();
+    boxEdgeWidth->setRange(PlotStyleLimits::kSymbolEdgeWidthMin,
+                           PlotStyleLimits::kSymbolEdgeWidthMax);
+    boxEdgeWidth->setDecimals(1);
+    boxEdgeWidth->setSingleStep(0.5);
+    boxEdgeWidth->setSuffix(QStringLiteral(" px"));
+    boxEdgeWidth->setValue(1.0);
     gl2->addWidget(boxEdgeWidth, 3, 1);
     gl2->setRowStretch(4, 1);
 
@@ -1055,15 +1085,17 @@ void PlotDialog::initSpectrogramPage()
     connect(boxReversePalette, SIGNAL(toggled(bool)), this, SLOT(onReversePaletteToggled(bool)));
     vl->addWidget(boxReversePalette);
 
-    grayScaleBox = new QRadioButton(tr("&Gray Scale"));
+    // Keep legacy radio buttons hidden off-layout so Palette Preset combo is the single source of
+    // UI truth without visual clutter, while preserving pointer safety for internal sync slots.
+    grayScaleBox = new QRadioButton(tr("&Gray Scale"), spectrogramPage);
     connect(grayScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    vl->addWidget(grayScaleBox);
-    defaultScaleBox = new QRadioButton(tr("&Default Color Map"));
+    grayScaleBox->hide();
+    defaultScaleBox = new QRadioButton(tr("&Default Color Map"), spectrogramPage);
     connect(defaultScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    vl->addWidget(defaultScaleBox);
-    customScaleBox = new QRadioButton(tr("&Custom Color Map"));
+    defaultScaleBox->hide();
+    customScaleBox = new QRadioButton(tr("&Custom Color Map"), spectrogramPage);
     connect(customScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    vl->addWidget(customScaleBox);
+    customScaleBox->hide();
     vl->addStretch();
 
     QHBoxLayout *hl = new QHBoxLayout(imageGroupBox);
@@ -1201,8 +1233,8 @@ void PlotDialog::onHollowSymbolToggled(bool checked)
                 penCol = QColor(Qt::black);
             boxSymbolColor->setColor(penCol);
         }
-        if (boxPenWidth->value() < 1)
-            boxPenWidth->setValue(1);
+        if (boxPenWidth->value() < PlotStyleLimits::kSymbolEdgeWidthMin)
+            boxPenWidth->setValue(1.0);
         boxFillSymbol->setChecked(true);
         boxFillColor->setEnabled(true);
         boxFillColor->setColor(QColor(255, 255, 255));
@@ -1244,7 +1276,9 @@ void PlotDialog::initErrorsPage()
 
     gl->addWidget(new QLabel(tr("Line Width")), 1, 0);
     widthBox = new QComboBox();
+    widthBox->addItem(QStringLiteral("0.5"));
     widthBox->addItem(tr("1"));
+    widthBox->addItem(QStringLiteral("1.5"));
     widthBox->addItem(tr("2"));
     widthBox->addItem(tr("3"));
     widthBox->addItem(tr("4"));
@@ -1419,6 +1453,7 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
             : (tr("Page") + " (" + ml->name() + ")");
     QTreeWidgetItem *item = new QTreeWidgetItem(listBox, QStringList(pageLabel));
     item->setIcon(0, IconLoader::duotoneIcon("folder-open"));
+    item->setToolTip(0, pageLabel);
     listBox->addTopLevelItem(item);
     item->setExpanded(true);
     listBox->setCurrentItem(item);
@@ -1949,13 +1984,20 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         boxColorMapPreset->setCurrentIndex(static_cast<int>(sp->colorMapPreset()));
         boxReversePalette->setChecked(sp->reversePalette());
 
-        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
-            rb->setAutoExclusive(false);
-        grayScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetGrayScale);
-        defaultScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetLegacyDefault);
-        customScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetCustom);
-        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
-            rb->setAutoExclusive(true);
+        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
+            if (rb)
+                rb->setAutoExclusive(false);
+        }
+        if (grayScaleBox)
+            grayScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetGrayScale);
+        if (defaultScaleBox)
+            defaultScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetLegacyDefault);
+        if (customScaleBox)
+            customScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetCustom);
+        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
+            if (rb)
+                rb->setAutoExclusive(true);
+        }
 
         const QwtDoubleInterval rawR = sp->rawDataRange();
         const QwtDoubleInterval effR = sp->effectiveValueRange();
@@ -2032,7 +2074,10 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
     boxSymbolSize->setValue(qBound(1, s.size().width(), 100));
     boxSymbolStyle->setStyle(s.style());
     boxSymbolColor->setColor(s.pen().color());
-    boxPenWidth->setValue(qMax(1, s.pen().width()));
+    const double symPenW =
+            s.pen().widthF() > 0.0 ? s.pen().widthF() : double(qMax(1, s.pen().width()));
+    boxPenWidth->setValue(qBound(PlotStyleLimits::kSymbolEdgeWidthMin, symPenW,
+                                 PlotStyleLimits::kSymbolEdgeWidthMax));
     boxFillSymbol->setChecked(s.brush() != Qt::NoBrush);
     boxFillColor->setEnabled(s.brush() != Qt::NoBrush);
     boxFillColor->setColor(s.brush().color());
@@ -2081,7 +2126,13 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         QwtErrorPlotCurve *err = (QwtErrorPlotCurve *)i;
         if (err) {
             xBox->setChecked(err->xErrors());
-            widthBox->setEditText(QString::number(err->width()));
+            const double errW =
+                    err->pen().widthF() > 0.0 ? err->pen().widthF() : double(qMax(1, err->width()));
+            const QString errWStr = QString::number(errW, 'g', 4);
+            const int wIdx = widthBox->findText(errWStr);
+            if (wIdx >= 0)
+                widthBox->setCurrentIndex(wIdx);
+            widthBox->setEditText(errWStr);
             capBox->setEditText(QString::number(err->capLength()));
             throughBox->setChecked(err->throughSymbol());
             plusBox->setChecked(err->plusSide());
@@ -2104,7 +2155,10 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
             boxPercFillColor->setEnabled(s.brush() != Qt::NoBrush);
             boxPercFillColor->setColor(s.brush().color());
             boxEdgeColor->setColor(s.pen().color());
-            boxEdgeWidth->setValue(s.pen().width());
+            const double boxPenW =
+                    s.pen().widthF() > 0.0 ? s.pen().widthF() : double(qMax(1, s.pen().width()));
+            boxEdgeWidth->setValue(qBound(PlotStyleLimits::kSymbolEdgeWidthMin, boxPenW,
+                                          PlotStyleLimits::kSymbolEdgeWidthMax));
 
             boxRange->setCurrentIndex(b->boxRangeType() - 1);
             boxType->setCurrentIndex(b->boxStyle());
@@ -2646,7 +2700,10 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                             : QColor(Qt::black);
                 }
                 symEdgeCol.setAlpha(symAlpha);
-                QPen pen(symEdgeCol, qMax(1, boxPenWidth->value()), Qt::SolidLine);
+                QPen pen(symEdgeCol);
+                pen.setStyle(Qt::SolidLine);
+                pen.setWidthF(qBound(PlotStyleLimits::kSymbolEdgeWidthMin, boxPenWidth->value(),
+                                     PlotStyleLimits::kSymbolEdgeWidthMax));
 
                 QBrush br;
                 if (wantHollow) {
@@ -2748,7 +2805,9 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                         cols[2] = xEndCol;
                         cols[3] = yEndCol;
                         QScopedValueRollback<bool> guard(d_loadingUi, true);
-                        curveItem->setText(0, table + ": " + cols.join(","));
+                        const QString newCurveLabel = table + ": " + cols.join(",");
+                        curveItem->setText(0, newCurveLabel);
+                        curveItem->setToolTip(0, newCurveLabel);
                     }
                 }
                 needReplot = true;
@@ -2759,10 +2818,39 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
         }
 
         if (tabsToCommit.contains(errorsPage) && curveItem->plotItemType() == Graph::ErrorBars) {
-            graph->updateErrorBars(static_cast<QwtErrorPlotCurve *>(plotItem), xBox->isChecked(),
-                                   widthBox->currentText().toInt(), capBox->currentText().toInt(),
+            auto *errCurve = static_cast<QwtErrorPlotCurve *>(plotItem);
+            const QString wTxt = widthBox->currentText().trimmed();
+            bool okW = false;
+            double errWidthF = QLocale().toDouble(wTxt, &okW);
+            if (!okW)
+                errWidthF = QLocale::c().toDouble(wTxt, &okW);
+            if (!okW)
+                errWidthF = wTxt.toDouble(&okW);
+            if (!okW || !std::isfinite(errWidthF) || errWidthF <= 0.0)
+                errWidthF = errCurve->pen().widthF() > 0.0 ? errCurve->pen().widthF() : 1.0;
+            errWidthF = qBound(0.1, errWidthF, 50.0);
+
+            const QString capTxt = capBox->currentText().trimmed();
+            bool okCap = false;
+            int capLen = capTxt.toInt(&okCap);
+            if (!okCap) {
+                double capD = QLocale().toDouble(capTxt, &okCap);
+                if (!okCap)
+                    capD = capTxt.toDouble(&okCap);
+                capLen = okCap ? qMax(0, qRound(capD)) : errCurve->capLength();
+            }
+
+            const double prevWidthF = errCurve->pen().widthF();
+            graph->updateErrorBars(errCurve, xBox->isChecked(), qMax(1, qRound(errWidthF)), capLen,
                                    colorBox->color(), plusBox->isChecked(), minusBox->isChecked(),
                                    throughBox->isChecked());
+            QPen errPen = errCurve->pen();
+            errPen.setColor(colorBox->color());
+            errPen.setWidthF(errWidthF);
+            errPen.setCosmetic(false);
+            errCurve->setPen(errPen);
+            if (std::fabs(prevWidthF - errWidthF) > 1e-6)
+                graph->notifyChanges();
             needReplot = true;
             anyHandled = true;
         }
@@ -2791,9 +2879,12 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                 QBrush br = boxFillSymbols->isChecked()
                         ? QBrush(boxPercFillColor->color(), Qt::SolidPattern)
                         : QBrush();
-                QwtSymbol s(QwtSymbol::NoSymbol, br,
-                            QPen(boxEdgeColor->color(), boxEdgeWidth->value(), Qt::SolidLine),
-                            QSize(size, size));
+                QPen edgePen(boxEdgeColor->color());
+                edgePen.setStyle(Qt::SolidLine);
+                edgePen.setWidthF(qBound(PlotStyleLimits::kSymbolEdgeWidthMin,
+                                         boxEdgeWidth->value(),
+                                         PlotStyleLimits::kSymbolEdgeWidthMax));
+                QwtSymbol s(QwtSymbol::NoSymbol, br, edgePen, QSize(size, size));
                 b->setSymbol(s);
                 needReplot = true;
                 anyHandled = true;
@@ -3045,24 +3136,31 @@ void PlotDialog::customVectorsPage(bool angleMag)
 
 void PlotDialog::showColorMapEditor(bool)
 {
-    if (grayScaleBox->isChecked())
+    if (grayScaleBox && grayScaleBox->isChecked())
         boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetGrayScale));
-    else if (defaultScaleBox->isChecked())
+    else if (defaultScaleBox && defaultScaleBox->isChecked())
         boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetLegacyDefault));
-    else if (customScaleBox->isChecked())
+    else if (customScaleBox && customScaleBox->isChecked())
         boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetCustom));
 }
 
 void PlotDialog::onColorMapPresetChanged(int index)
 {
     const auto preset = static_cast<Spectrogram::ColorMapPreset>(index);
-    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
-        rb->setAutoExclusive(false);
-    grayScaleBox->setChecked(preset == Spectrogram::PresetGrayScale);
-    defaultScaleBox->setChecked(preset == Spectrogram::PresetLegacyDefault);
-    customScaleBox->setChecked(preset == Spectrogram::PresetCustom);
-    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox })
-        rb->setAutoExclusive(true);
+    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
+        if (rb)
+            rb->setAutoExclusive(false);
+    }
+    if (grayScaleBox)
+        grayScaleBox->setChecked(preset == Spectrogram::PresetGrayScale);
+    if (defaultScaleBox)
+        defaultScaleBox->setChecked(preset == Spectrogram::PresetLegacyDefault);
+    if (customScaleBox)
+        customScaleBox->setChecked(preset == Spectrogram::PresetCustom);
+    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
+        if (rb)
+            rb->setAutoExclusive(true);
+    }
 
     if (preset == Spectrogram::PresetCustom) {
         colorMapEditor->show();
@@ -3188,7 +3286,7 @@ void PlotDialog::setTitlesFont()
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
-        titleFont = font;
+        titleFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(titleFont, font);
         markTabDirty(fontsPage);
     }
 }
@@ -3200,7 +3298,7 @@ void PlotDialog::setAxesLabelsFont()
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
-        axesFont = font;
+        axesFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(axesFont, font);
         markTabDirty(fontsPage);
     }
 }
@@ -3212,7 +3310,7 @@ void PlotDialog::setAxesNumbersFont()
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
-        numbersFont = font;
+        numbersFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(numbersFont, font);
         markTabDirty(fontsPage);
     }
 }
@@ -3224,7 +3322,7 @@ void PlotDialog::setLegendsFont()
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
-        legendFont = font;
+        legendFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(legendFont, font);
         markTabDirty(fontsPage);
     }
 }
@@ -3309,6 +3407,7 @@ LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
     : QTreeWidgetItem(parent, QStringList(s), LayerTreeItem), d_graph(g), d_graphGuard(g)
 {
     setIcon(0, IconLoader::duotoneIcon("layer-add"));
+    setToolTip(0, s);
     if (g)
         insertCurvesList();
 }
@@ -3377,6 +3476,7 @@ CurveTreeItem::CurveTreeItem(const QwtPlotItem *curve, LayerItem *parent, const 
     : QTreeWidgetItem(parent, QStringList(s), PlotCurveTreeItem), d_curve(curve)
 {
     setIcon(0, IconLoader::duotoneIcon("new-graph"));
+    setToolTip(0, s);
     setFlags(flags() | Qt::ItemIsUserCheckable);
     Graph *g = graph();
     int idx = plotItemIndex();

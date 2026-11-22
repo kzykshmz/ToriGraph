@@ -29,6 +29,8 @@
 
 #include "TextDialog.h"
 #include "ApplicationWindow.h"
+#include "I18nJapanese.h"
+#include "PlotStyleLimits.h"
 
 #include <QFontDialog>
 #include <QColorDialog>
@@ -37,20 +39,36 @@
 #include <QTextEdit>
 #include <QTextCursor>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QLabel>
 #include <QGridLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
+
+namespace {
+void registerTextDialogTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Font Size"), QString::fromUtf8("フォントサイズ"));
+}
+} // namespace
 
 TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
+    registerTextDialogTranslations();
     setWindowTitle(tr("Text options"));
     setSizeGripEnabled(true);
 
     textType = type;
-    selectedFont = QFont(QStringLiteral("Arial"), 12);
+    selectedFont = QFont(QStringLiteral("Arial"));
+    selectedFont.setPointSizeF(12.0);
 
     // top groupbox
     groupBox1 = new QGroupBox(QString());
@@ -75,12 +93,22 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     topLayout->addWidget(new QLabel(tr("Font")), 1, 0);
 
     buttonFont = new QPushButton(tr("&Font"));
+    buttonFont->setAutoDefault(false);
+    boxFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));
+    boxFontSize->setToolTip(tr("Font Size"));
 
-    // add font button
-    topLayout->addWidget(buttonFont, 1, 1);
+    QHBoxLayout *fontRowLayout = new QHBoxLayout();
+    fontRowLayout->setContentsMargins(0, 0, 0, 0);
+    fontRowLayout->setSpacing(4);
+    fontRowLayout->addWidget(buttonFont);
+    fontRowLayout->addWidget(boxFontSize);
+
+    // add font button + fractional pt spinbox
+    topLayout->addLayout(fontRowLayout, 1, 1);
 
     buttonApply = new QPushButton(tr("&Apply"));
-    buttonApply->setDefault(true);
+    buttonApply->setAutoDefault(false);
 
     // add apply button
     topLayout->addWidget(buttonApply, 1, 3);
@@ -105,6 +133,7 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     }
 
     buttonCancel = new QPushButton(tr("&Cancel"));
+    buttonCancel->setAutoDefault(false);
     // add cancel button
     topLayout->addWidget(buttonCancel, 2, 3);
 
@@ -180,6 +209,14 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(apply()));
     connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(buttonFont, SIGNAL(clicked()), this, SLOT(customFont()));
+    connect(boxFontSize, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double pt) {
+                if (pt <= 0.0)
+                    return;
+                selectedFont.setPointSizeF(pt);
+                if (textEditBox)
+                    textEditBox->setFont(selectedFont);
+            });
 }
 
 void TextDialog::apply()
@@ -267,7 +304,11 @@ void TextDialog::customFont()
     if (okF) {
         if (fnt.family().trimmed().isEmpty())
             fnt.setFamily(QStringLiteral("Arial"));
-        selectedFont = fnt;
+        selectedFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(selectedFont, fnt);
+        if (boxFontSize) {
+            QSignalBlocker sb(boxFontSize);
+            boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));
+        }
         if (textEditBox)
             textEditBox->setFont(selectedFont);
     }
@@ -322,8 +363,15 @@ void TextDialog::setFont(const QFont &fnt)
     selectedFont = fnt;
     if (selectedFont.family().trimmed().isEmpty())
         selectedFont.setFamily(QStringLiteral("Arial"));
-    if (selectedFont.pointSize() <= 0 && selectedFont.pixelSize() <= 0)
-        selectedFont.setPointSize(12);
+    const double pt = PlotStyleLimits::effectiveFontPointSizeF(selectedFont, -1.0);
+    if (pt <= 0.0 && selectedFont.pixelSize() <= 0)
+        selectedFont.setPointSizeF(12.0);
+    else if (pt > 0.0)
+        selectedFont.setPointSizeF(pt);
+    if (boxFontSize) {
+        QSignalBlocker sb(boxFontSize);
+        boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));
+    }
     if (textEditBox)
         textEditBox->setFont(selectedFont);
 }
