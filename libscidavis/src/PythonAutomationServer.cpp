@@ -20789,35 +20789,86 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                             .arg(expectedTargetPath));
         }
 
+        const QDir dstDir = fi.dir();
+        QString baseLeaf = fi.fileName();
+        if (!fmtParam.isEmpty() && !isVectorPsRequest && effExt != QStringLiteral("pdf")
+            && effExt != QStringLiteral("svg") && effExt != QStringLiteral("emf")
+            && !baseLeaf.endsWith(QLatin1Char('.') + effExt, Qt::CaseInsensitive)) {
+            baseLeaf += QLatin1Char('.') + effExt;
+        }
+        QString tmpPath;
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            const QString hex8 = QStringLiteral("%1").arg(
+                    QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));
+            QString candLeaf = QStringLiteral(".tgrpc_%1_%2").arg(hex8, baseLeaf);
+            if (dstDir.absolutePath().size() + 1 + candLeaf.size() > 240) {
+                const QString keepSfx = hasPsFileSuffix ? ext : (!effExt.isEmpty() ? effExt : ext);
+                candLeaf = keepSfx.isEmpty() ? QStringLiteral(".tgrpc_%1.tmp").arg(hex8)
+                                             : QStringLiteral(".tgrpc_%1.%2").arg(hex8, keepSfx);
+            }
+            const QString cand = dstDir.filePath(candLeaf);
+            if (!QFileInfo::exists(cand) && !QFileInfo::exists(cand + QStringLiteral(".pdf"))) {
+                tmpPath = cand;
+                break;
+            }
+        }
+        if (tmpPath.isEmpty()) {
+            const QString hex8 = QStringLiteral("%1").arg(
+                    QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));
+            tmpPath = dstDir.filePath(QStringLiteral(".tgrpc_%1_%2").arg(hex8, baseLeaf));
+        }
+        const QString tmpPdfPath = tmpPath + QStringLiteral(".pdf");
+        auto cleanupRpcExportTemps = [&]() {
+            if (QFileInfo::exists(tmpPath))
+                QFile::remove(tmpPath);
+            if (QFileInfo::exists(tmpPdfPath))
+                QFile::remove(tmpPdfPath);
+        };
+
         if (effExt == QStringLiteral("svg")) {
-            ml->exportSVG(absPath);
+            ml->exportSVG(tmpPath);
         } else if (effExt == QStringLiteral("pdf") || isVectorPsRequest) {
-            ml->exportVector(absPath, dpi, true);
+            ml->exportVector(tmpPath, dpi, true);
         } else if (effExt == QStringLiteral("emf")) {
-            ml->exportToFile(absPath);
+            ml->exportToFile(tmpPath);
         } else {
-            ml->exportImage(absPath, quality, transparent, dpi);
+            ml->exportImage(tmpPath, quality, transparent, dpi);
         }
 
+        QString producedTmpPath;
         QString finalOutPath = absPath;
         QString fallbackWarning;
 #if QT_VERSION >= 0x050000
-        if (expectsQt5PdfFallback
-            || (isVectorPsRequest
-                && (!QFileInfo::exists(absPath) || QFileInfo(absPath).size() <= 0))) {
-            const QString pdfFallbackPath = absPath + QStringLiteral(".pdf");
-            if (QFileInfo::exists(pdfFallbackPath) && QFileInfo(pdfFallbackPath).size() > 0) {
-                finalOutPath = pdfFallbackPath;
-                fallbackWarning = QStringLiteral(
-                        "PostScript/EPS output is not available in Qt5; exported as PDF to '%1'.")
-                                          .arg(pdfFallbackPath);
-            }
-        } else if (isVectorPsRequest && QFileInfo::exists(absPath)
-                   && QFileInfo(absPath).size() > 0) {
+        if ((expectsQt5PdfFallback
+             || (isVectorPsRequest
+                 && (!QFileInfo::exists(tmpPath) || QFileInfo(tmpPath).size() <= 0)))
+            && QFileInfo::exists(tmpPdfPath) && QFileInfo(tmpPdfPath).size() > 0) {
+            producedTmpPath = tmpPdfPath;
+            finalOutPath = absPath + QStringLiteral(".pdf");
             fallbackWarning = QStringLiteral(
-                    "PostScript/EPS output is not available in Qt5; exported in PDF format.");
+                    "PostScript/EPS output is not available in Qt5; exported as PDF to '%1'.")
+                                      .arg(finalOutPath);
+        } else if (QFileInfo::exists(tmpPath) && QFileInfo(tmpPath).size() > 0) {
+            producedTmpPath = tmpPath;
+            if (isVectorPsRequest) {
+                fallbackWarning = QStringLiteral(
+                        "PostScript/EPS output is not available in Qt5; exported in PDF format.");
+            }
         }
+#else
+        if (QFileInfo::exists(tmpPath) && QFileInfo(tmpPath).size() > 0)
+            producedTmpPath = tmpPath;
 #endif
+
+        if (producedTmpPath.isEmpty()) {
+            cleanupRpcExportTemps();
+            throwRpcRuntime(QStringLiteral("Failed to export graph to '%1'.").arg(absPath));
+        }
+        if (!ApplicationWindow::commitExportTempFile(producedTmpPath, finalOutPath)) {
+            cleanupRpcExportTemps();
+            throwRpcRuntime(QStringLiteral("Failed to export graph to '%1'.").arg(finalOutPath));
+        }
+        cleanupRpcExportTemps();
 
         if (!QFileInfo::exists(finalOutPath) || QFileInfo(finalOutPath).size() <= 0)
             throwRpcRuntime(QStringLiteral("Failed to export graph to '%1'.").arg(absPath));

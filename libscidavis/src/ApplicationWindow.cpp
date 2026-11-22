@@ -255,13 +255,15 @@ static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
 {
     if (!app)
         return;
+    const QSet<MyWidget *> hiddenSet(app->hiddenWindows.begin(), app->hiddenWindows.end());
+    const QSet<MyWidget *> outSet(app->outWindows.begin(), app->outWindows.end());
     const QList<QMdiSubWindow *> creationOrder =
             app->d_workspace.subWindowList(QMdiArea::CreationOrder);
     for (QMdiSubWindow *sw : creationOrder) {
         MyWidget *mw = qobject_cast<MyWidget *>(sw);
         if (!mw)
             continue;
-        if (app->hiddenWindows.contains(mw) || mw->status() == MyWidget::Hidden) {
+        if (hiddenSet.contains(mw) || mw->status() == MyWidget::Hidden) {
             if (!mw->isHidden())
                 mw->hide();
         }
@@ -270,15 +272,15 @@ static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
         return;
 
     if (MyWidget *curAw = qobject_cast<MyWidget *>(app->d_workspace.activeSubWindow())) {
-        if (app->hiddenWindows.contains(curAw) || app->outWindows.contains(curAw)
+        if (hiddenSet.contains(curAw) || outSet.contains(curAw)
             || curAw->status() == MyWidget::Hidden) {
             MyWidget *fallback = nullptr;
             const QList<QMdiSubWindow *> hist =
                     app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
             for (int i = hist.size() - 1; i >= 0; --i) {
                 MyWidget *cand = qobject_cast<MyWidget *>(hist.at(i));
-                if (cand && cand != curAw && !app->hiddenWindows.contains(cand)
-                    && !app->outWindows.contains(cand) && cand->status() != MyWidget::Hidden) {
+                if (cand && cand != curAw && !hiddenSet.contains(cand) && !outSet.contains(cand)
+                    && cand->status() != MyWidget::Hidden) {
                     fallback = cand;
                     break;
                 }
@@ -293,7 +295,7 @@ static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
                     ? qobject_cast<MyWidget *>(creationOrder.at(i))
                     : nullptr;
             const bool hideTab = mw
-                    && (app->hiddenWindows.contains(mw) || app->outWindows.contains(mw)
+                    && (hiddenSet.contains(mw) || outSet.contains(mw)
                         || mw->status() == MyWidget::Hidden);
             tb->setTabVisible(i, !hideTab);
         }
@@ -302,12 +304,12 @@ static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
 
 static void scheduleSyncWorkspaceHiddenTabs(ApplicationWindow *app)
 {
-    if (!app)
+    if (!app || app->isBatchWindowUpdatesActive())
         return;
     syncWorkspaceHiddenTabs(app);
     QPointer<ApplicationWindow> self(app);
     QTimer::singleShot(0, app, [self]() {
-        if (self)
+        if (self && !self->isBatchWindowUpdatesActive())
             syncWorkspaceHiddenTabs(self.data());
     });
 }
@@ -5489,11 +5491,12 @@ void ApplicationWindow::filterExplorerWindows()
     } else {
         // Remove items from subfolders that do not belong to current_folder
         const QList<MyWidget *> curWins = current_folder->windowsList();
+        const QSet<MyWidget *> curWinSet(curWins.begin(), curWins.end());
         for (int i = lv.topLevelItemCount() - 1; i >= 0; --i) {
             QTreeWidgetItem *it = lv.topLevelItem(i);
             if (it && it->type() == WindowListItem::WindowType) {
                 MyWidget *w = static_cast<WindowListItem *>(it)->window();
-                if (w && !curWins.contains(w))
+                if (w && !curWinSet.contains(w))
                     delete lv.takeTopLevelItem(i);
             }
         }
@@ -5592,30 +5595,56 @@ void ApplicationWindow::toggleTabbedWorkspaceView()
 
 void ApplicationWindow::renameListViewItem(const QString &oldName, const QString &newName)
 {
-    QTreeWidgetItem *it = lv.findItems(oldName, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
+    QTreeWidgetItem *it = nullptr;
+    const int topCnt = lv.topLevelItemCount();
+    if (topCnt > 0 && lv.topLevelItem(topCnt - 1)->text(0) == oldName)
+        it = lv.topLevelItem(topCnt - 1);
+    else
+        it = lv.findItems(oldName, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
     if (it)
         it->setText(0, newName);
-    filterExplorerWindows();
+    if (d_batch_window_updates_depth > 0)
+        d_batch_pending_explorer_filter = true;
+    else
+        filterExplorerWindows();
 }
 
 void ApplicationWindow::setListViewLabel(const QString &caption, const QString &label)
 {
-    QTreeWidgetItem *it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
+    QTreeWidgetItem *it = nullptr;
+    const int topCnt = lv.topLevelItemCount();
+    if (topCnt > 0 && lv.topLevelItem(topCnt - 1)->text(0) == caption)
+        it = lv.topLevelItem(topCnt - 1);
+    else
+        it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
     if (it)
         it->setText(4, label);
-    filterExplorerWindows();
+    if (d_batch_window_updates_depth > 0)
+        d_batch_pending_explorer_filter = true;
+    else
+        filterExplorerWindows();
 }
 
 void ApplicationWindow::setListViewDate(const QString &caption, const QString &date)
 {
-    QTreeWidgetItem *it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
+    QTreeWidgetItem *it = nullptr;
+    const int topCnt = lv.topLevelItemCount();
+    if (topCnt > 0 && lv.topLevelItem(topCnt - 1)->text(0) == caption)
+        it = lv.topLevelItem(topCnt - 1);
+    else
+        it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
     if (it)
         it->setText(3, date);
 }
 
 void ApplicationWindow::setListView(const QString &caption, const QString &view)
 {
-    QTreeWidgetItem *it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
+    QTreeWidgetItem *it = nullptr;
+    const int topCnt = lv.topLevelItemCount();
+    if (topCnt > 0 && lv.topLevelItem(topCnt - 1)->text(0) == caption)
+        it = lv.topLevelItem(topCnt - 1);
+    else
+        it = lv.findItems(caption, Qt::MatchExactly | Qt::MatchCaseSensitive).value(0);
     if (it)
         it->setText(2, view);
 }
@@ -7221,6 +7250,125 @@ Table *ApplicationWindow::newHiddenTable(const QString &name, const QString &lab
     auto w = newTable(name, label, columns);
     hideWindow(w);
     return w;
+}
+
+Table *ApplicationWindow::newHiddenTable(int r, int c, const QString &name, const QString &legend)
+{
+    struct ScopedCreatingHidden {
+        bool prev;
+        ScopedCreatingHidden() : prev(s_creating_hidden_table) { s_creating_hidden_table = true; }
+        ~ScopedCreatingHidden() { s_creating_hidden_table = prev; }
+    } guard;
+    Table *w = newTable(r, c, name, legend);
+    hideWindow(w);
+    return w;
+}
+
+void ApplicationWindow::beginBatchWindowUpdates()
+{
+    if (d_batch_window_updates_depth++ == 0) {
+        d_batch_pending_explorer_filter = false;
+        d_batch_pending_lv_resize = false;
+        d_batch_pending_auto_axis_refresh = false;
+        d_batch_hidden_set = QSet<MyWidget *>(hiddenWindows.begin(), hiddenWindows.end());
+        d_batch_widget_name.clear();
+        d_batch_name_counts.clear();
+        d_batch_unique_seq.clear();
+        for (MyWidget *w : windowsList())
+            syncBatchWindowName(w);
+        for (MyWidget *hw : hiddenWindows)
+            syncBatchWindowName(hw);
+    }
+}
+
+void ApplicationWindow::endBatchWindowUpdates()
+{
+    if (d_batch_window_updates_depth <= 0)
+        return;
+    if (--d_batch_window_updates_depth > 0)
+        return;
+    d_batch_hidden_set.clear();
+    d_batch_widget_name.clear();
+    d_batch_name_counts.clear();
+    d_batch_unique_seq.clear();
+    if (d_batch_pending_explorer_filter) {
+        d_batch_pending_explorer_filter = false;
+        filterExplorerWindows();
+    }
+    if (d_batch_pending_lv_resize) {
+        d_batch_pending_lv_resize = false;
+        if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
+            lv.resizeColumnToContents(1);
+            lv.resizeColumnToContents(2);
+        }
+    }
+    if (d_batch_pending_auto_axis_refresh) {
+        d_batch_pending_auto_axis_refresh = false;
+        refreshAllGraphsAutoAxisTitles();
+    }
+    scheduleSyncWorkspaceHiddenTabs(this);
+}
+
+void ApplicationWindow::syncBatchWindowName(MyWidget *w)
+{
+    if (d_batch_window_updates_depth <= 0 || !w)
+        return;
+    const QString cur = w->name();
+    const auto it = d_batch_widget_name.find(w);
+    if (it != d_batch_widget_name.end()) {
+        if (it.value() == cur)
+            return;
+        const int cnt = d_batch_name_counts.value(it.value(), 0) - 1;
+        if (cnt <= 0)
+            d_batch_name_counts.remove(it.value());
+        else
+            d_batch_name_counts.insert(it.value(), cnt);
+    }
+    if (!cur.isEmpty()) {
+        d_batch_widget_name.insert(w, cur);
+        d_batch_name_counts[cur] += 1;
+    } else if (it != d_batch_widget_name.end()) {
+        d_batch_widget_name.erase(it);
+    }
+}
+
+void ApplicationWindow::removeBatchWindow(MyWidget *w)
+{
+    if (d_batch_window_updates_depth <= 0 || !w)
+        return;
+    d_batch_hidden_set.remove(w);
+    const auto it = d_batch_widget_name.find(w);
+    if (it != d_batch_widget_name.end()) {
+        const int cnt = d_batch_name_counts.value(it.value(), 0) - 1;
+        if (cnt <= 0)
+            d_batch_name_counts.remove(it.value());
+        else
+            d_batch_name_counts.insert(it.value(), cnt);
+        d_batch_widget_name.erase(it);
+    }
+}
+
+bool ApplicationWindow::isBatchNameUsedByOther(const QString &candName, MyWidget *exclude) const
+{
+    if (candName.isEmpty())
+        return false;
+    int cnt = d_batch_name_counts.value(candName, 0);
+    if (cnt <= 0)
+        return false;
+    if (exclude && d_batch_widget_name.value(exclude) == candName)
+        --cnt;
+    return cnt > 0;
+}
+
+QString ApplicationWindow::nextBatchUniqueName(const QString &base, MyWidget *exclude)
+{
+    int &idx = d_batch_unique_seq[base];
+    if (idx < 1)
+        idx = 1;
+    QString cand = base + QString::number(idx);
+    while (isBatchNameUsedByOther(cand, exclude))
+        cand = base + QString::number(++idx);
+    return cand;
 }
 
 void ApplicationWindow::initTable(Table *w)
@@ -9102,16 +9250,30 @@ bool ApplicationWindow::loadProject(const QString &fn)
     QString titleBase = tr("Window") + ": ";
     QString title = titleBase + "1/" + QString::number(widgets) + "  ";
 
-    QProgressDialog progress; /*(this);*/
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setRange(0, widgets);
-    progress.setMinimumWidth(width() / 2);
-    progress.setWindowTitle(tr("Opening file") + ": " + baseName);
-    progress.setLabelText(title);
-    if (nonInteractive)
-        progress.setMinimumDuration(2147483647);
-    else
-        progress.activateWindow();
+    std::unique_ptr<QProgressDialog> progress;
+    if (!nonInteractive) {
+        progress.reset(new QProgressDialog());
+        progress->setWindowModality(Qt::WindowModal);
+        progress->setRange(0, widgets);
+        progress->setMinimumWidth(width() / 2);
+        progress->setWindowTitle(tr("Opening file") + ": " + baseName);
+        progress->setLabelText(title);
+        progress->activateWindow();
+    }
+    auto wasProgressCanceled = [&progress]() -> bool {
+        return progress && progress->wasCanceled();
+    };
+    auto updateProgressStep = [&](int step) {
+        if (!progress)
+            return;
+        if (step == 1 || step >= widgets || (step % 8 == 0)) {
+            progress->setLabelText(titleBase + QString::number(step) + "/"
+                                   + QString::number(widgets));
+            progress->setValue(step);
+        }
+    };
+
+    BatchWindowUpdates batchGuard(this);
 
     Folder *cf = projectFolder();
     folders.blockSignals(true);
@@ -9122,7 +9284,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
     item->folder()->setName(fi.baseName());
 
     // process tables and matrix information
-    while (!t.atEnd() && !progress.wasCanceled()) {
+    while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
         list.clear();
         if (s.left(8) == "<folder>") {
@@ -9140,11 +9302,9 @@ bool ApplicationWindow::loadProject(const QString &fn)
 
             current_folder = &f;
         } else if (s == "<table>") {
-            title = titleBase + QString::number(++aux) + "/" + QString::number(widgets);
-            progress.setLabelText(title);
-
+            ++aux;
             openTable(this, t);
-            progress.setValue(aux);
+            updateProgressStep(aux);
         } else if (s.startsWith(QLatin1String("<workbook>\t"))) {
             WorkbookManager::instance(this)->restoreFromLine(s, current_folder, renamedTables);
         } else if (s.left(17) == "<TableStatistics>") {
@@ -9156,8 +9316,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
             lst.pop_back();
             openTableStatistics(lst);
         } else if (s == "<matrix>") {
-            title = titleBase + QString::number(++aux) + "/" + QString::number(widgets);
-            progress.setLabelText(title);
+            ++aux;
             QStringList lst;
             while (s != "</matrix>") {
                 s = t.readLine();
@@ -9165,10 +9324,9 @@ bool ApplicationWindow::loadProject(const QString &fn)
             }
             lst.pop_back();
             openMatrix(this, lst);
-            progress.setValue(aux);
+            updateProgressStep(aux);
         } else if (s == "<note>") {
-            title = titleBase + QString::number(++aux) + "/" + QString::number(widgets);
-            progress.setLabelText(title);
+            ++aux;
             for (int i = 0; i < 3; i++) {
                 s = t.readLine();
                 list << s;
@@ -9181,7 +9339,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
             }
             cont.pop_back();
             m->restore(cont);
-            progress.setValue(aux);
+            updateProgressStep(aux);
         } else if (s == "</folder>") {
             Folder *parent = (Folder *)current_folder->parent();
             if (!parent)
@@ -9191,7 +9349,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
         }
     }
 
-    if (progress.wasCanceled()) {
+    if (wasProgressCanceled()) {
         saved = true;
         close();
         return false;
@@ -9201,14 +9359,13 @@ bool ApplicationWindow::loadProject(const QString &fn)
     t.seek(0);
 
     MultiLayer *plot = 0;
-    while (!t.atEnd() && !progress.wasCanceled()) {
+    while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
         if (s.left(8) == "<folder>") {
             list = s.split("\t");
             current_folder = current_folder->findSubfolder(list[1]);
         } else if (s == "<multiLayer>") { // process multilayers information
-            title = titleBase + QString::number(++aux) + "/" + QString::number(widgets);
-            progress.setLabelText(title);
+            ++aux;
 
             s = t.readLine();
             QStringList graph = s.split("\t");
@@ -9286,28 +9443,26 @@ bool ApplicationWindow::loadProject(const QString &fn)
             if (!hidden(plot)) {
                 bool otherSavedActive = false;
                 if (Folder *pf = plot->folder()) {
-                    for (MyWidget *cand : pf->windowsList()) {
-                        if (cand && cand != plot && !hidden(cand)
-                            && cand->property("torigraph_saved_active").toBool()) {
-                            otherSavedActive = true;
-                            break;
-                        }
+                    MyWidget *sa = qobject_cast<MyWidget *>(
+                            pf->property("torigraph_saved_active_obj").value<QObject *>());
+                    if (sa && sa != plot && !hidden(sa)
+                        && sa->property("torigraph_saved_active").toBool()) {
+                        otherSavedActive = true;
                     }
                 }
                 if (!otherSavedActive)
                     activateSubWindow(plot);
             }
-            progress.setValue(aux);
+            updateProgressStep(aux);
         } else if (s == "<SurfacePlot>") { // process 3D plots information
             list.clear();
-            title = titleBase + QString::number(++aux) + "/" + QString::number(widgets);
-            progress.setLabelText(title);
+            ++aux;
             while (s != "</SurfacePlot>") {
                 s = t.readLine();
                 list << s;
             }
             openSurfacePlot(this, list);
-            progress.setValue(aux);
+            updateProgressStep(aux);
         } else if (s == "</folder>") {
             Folder *parent = (Folder *)current_folder->parent();
             if (!parent)
@@ -9324,7 +9479,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
         }
     }
 
-    if (progress.wasCanceled()) {
+    if (wasProgressCanceled()) {
         saved = true;
         close();
         return false;
@@ -9338,8 +9493,11 @@ bool ApplicationWindow::loadProject(const QString &fn)
     changeFolder(cf, true);
 
     for (MyWidget *mw : windowsList()) {
-        if (mw)
+        if (mw) {
             mw->setProperty("torigraph_saved_active", QVariant());
+            if (Folder *mf = mw->folder())
+                mf->setProperty("torigraph_saved_active_obj", QVariant());
+        }
     }
 
     blockSignals(false);
@@ -11189,20 +11347,21 @@ void ApplicationWindow::restoreWindowGeometry(ApplicationWindow *app, MyWidget *
 
     if (Folder *f = w->folder()) {
         if (lst.contains("active") && !isHidden) {
-            for (MyWidget *cand : f->windowsList()) {
-                if (cand && cand != w)
-                    cand->setProperty("torigraph_saved_active", QVariant());
+            if (MyWidget *prev = qobject_cast<MyWidget *>(
+                        f->property("torigraph_saved_active_obj").value<QObject *>())) {
+                if (prev != w)
+                    prev->setProperty("torigraph_saved_active", QVariant());
             }
             w->setProperty("torigraph_saved_active", true);
+            f->setProperty("torigraph_saved_active_obj", QVariant::fromValue<QObject *>(w));
             f->setActiveWindow(w);
         } else {
-            MyWidget *savedActive = nullptr;
-            for (MyWidget *cand : f->windowsList()) {
-                if (cand && !app->hidden(cand)
-                    && cand->property("torigraph_saved_active").toBool()) {
-                    savedActive = cand;
-                    break;
-                }
+            MyWidget *savedActive = qobject_cast<MyWidget *>(
+                    f->property("torigraph_saved_active_obj").value<QObject *>());
+            if (savedActive
+                && (app->hidden(savedActive)
+                    || !savedActive->property("torigraph_saved_active").toBool())) {
+                savedActive = nullptr;
             }
             if (savedActive) {
                 f->setActiveWindow(savedActive);
@@ -11538,6 +11697,7 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
         changeMatrixName(name, newName);
 
     w->setName(newName);
+    syncBatchWindowName(w);
     w->setCaptionPolicy(w->captionPolicy());
     renameListViewItem(name, newName);
     if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == w)
@@ -14231,6 +14391,8 @@ void ApplicationWindow::redo()
 
 bool ApplicationWindow::hidden(MyWidget *window)
 {
+    if (d_batch_window_updates_depth > 0)
+        return d_batch_hidden_set.contains(window) || outWindows.contains(window);
     if (hiddenWindows.contains(window) || outWindows.contains(window))
         return true;
 
@@ -14262,15 +14424,23 @@ void ApplicationWindow::hideWindow(MyWidget *w)
 {
     if (!w)
         return;
-    if (!hiddenWindows.contains(w))
+    if (d_batch_window_updates_depth > 0) {
+        if (!d_batch_hidden_set.contains(w)) {
+            d_batch_hidden_set.insert(w);
+            hiddenWindows.append(w);
+        }
+    } else if (!hiddenWindows.contains(w)) {
         hiddenWindows.append(w);
+    }
     w->setHidden();
 
     MyWidget *fallback = nullptr;
     Folder *f = w->folder();
-    if (f) {
+    const bool needFallback =
+            f && (f->activeWindow() == w || d_workspace.activeSubWindow() == w);
+    if (needFallback) {
         for (MyWidget *cand : f->windowsList()) {
-            if (cand && cand != w && !hiddenWindows.contains(cand) && !outWindows.contains(cand)) {
+            if (cand && cand != w && !hidden(cand) && !outWindows.contains(cand)) {
                 fallback = cand;
                 break;
             }
@@ -14401,9 +14571,10 @@ void ApplicationWindow::updateWindowLists(MyWidget *w)
     if (!w)
         return;
 
-    if (hiddenWindows.contains(w))
+    if (hiddenWindows.contains(w)) {
         hiddenWindows.takeAt(hiddenWindows.indexOf(w));
-    else if (outWindows.contains(w)) {
+        d_batch_hidden_set.remove(w);
+    } else if (outWindows.contains(w)) {
         outWindows.takeAt(outWindows.indexOf(w));
         d_workspace.addSubWindow(w);
         w->setAttribute(Qt::WA_DeleteOnClose);
@@ -14453,6 +14624,7 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
         hiddenWindows.takeAt(hiddenWindows.indexOf(w));
     else if (outWindows.contains(w))
         outWindows.takeAt(outWindows.indexOf(w));
+    removeBatchWindow(w);
 
     if (lastModified == w)
         lastModified = nullptr;
@@ -14713,6 +14885,7 @@ void ApplicationWindow::windowsMenuActivated(bool checked)
         w->setFocus();
         if (hidden(w)) {
             hiddenWindows.takeAt(hiddenWindows.indexOf(w));
+            d_batch_hidden_set.remove(w);
             setListView(w->name(), tr("Normal"));
         }
     }
@@ -16872,28 +17045,9 @@ static void sanitizeLoadedWindowName(ApplicationWindow *app, MyWidget *w, const 
     if (!app || !w)
         return;
     const QString curName = w->name();
-    bool crossWindowCollision = false;
-    for (MyWidget *cand : app->windowsList()) {
-        if (cand && cand != w && cand->name() == curName) {
-            crossWindowCollision = true;
-            break;
-        }
-    }
-    for (MyWidget *hw : app->hiddenWindows) {
-        if (hw && hw != w && hw->name() == curName) {
-            crossWindowCollision = true;
-            break;
-        }
-    }
-    if (!stringContainsWhitespace(curName) && !crossWindowCollision)
-        return;
-
-    QString base = !xmlName.isEmpty() ? xmlName.trimmed() : curName.trimmed();
-    base.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
-    if (base.isEmpty())
-        base = fallbackPrefix;
-
     auto isUsed = [&](const QString &candName) -> bool {
+        if (app->isBatchWindowUpdatesActive())
+            return app->isBatchNameUsedByOther(candName, w);
         for (MyWidget *cand : app->windowsList()) {
             if (cand && cand != w && cand->name() == candName)
                 return true;
@@ -16905,13 +17059,29 @@ static void sanitizeLoadedWindowName(ApplicationWindow *app, MyWidget *w, const 
         return false;
     };
 
-    QString target = isUsed(base) ? app->generateUniqueName(base) : base;
+    const bool crossWindowCollision = isUsed(curName);
+    if (!stringContainsWhitespace(curName) && !crossWindowCollision) {
+        app->syncBatchWindowName(w);
+        return;
+    }
+
+    QString base = !xmlName.isEmpty() ? xmlName.trimmed() : curName.trimmed();
+    base.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    if (base.isEmpty())
+        base = fallbackPrefix;
+
+    QString target = base;
+    if (isUsed(base)) {
+        target = app->isBatchWindowUpdatesActive() ? app->nextBatchUniqueName(base, w)
+                                                   : app->generateUniqueName(base);
+    }
     target.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
     w->setName(target);
     int sfx = 2;
     while (stringContainsWhitespace(w->name()) || isUsed(w->name())) {
         w->setName(base + QStringLiteral("_") + QString::number(sfx++));
     }
+    app->syncBatchWindowName(w);
 }
 
 static QString remapRenamedTableRef(const QStringList &renamedTables, const QString &ref)
@@ -17076,7 +17246,10 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         if (xmlName.isEmpty())
             xmlName = reader.attributes().value(reader.namespaceUri().toString(), QStringLiteral("name")).toString();
 
-        const QString tempCap = app->generateUniqueName(QStringLiteral("__loading_matrix__"));
+        static quint64 s_loading_matrix_seq = 0;
+        QString tempCap = QStringLiteral("__loading_matrix_%1__").arg(++s_loading_matrix_seq);
+        while (app->alreadyUsedName(tempCap))
+            tempCap = QStringLiteral("__loading_matrix_%1__").arg(++s_loading_matrix_seq);
         Matrix *w = app->newMatrix(tempCap, 1, 1);
         if (w->d_future_matrix->load(&reader) == false) {
             QString msg_text = reader.errorString();
@@ -17107,12 +17280,11 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         if (!app->hidden(w)) {
             bool otherSavedActive = false;
             if (Folder *wf = w->folder()) {
-                for (MyWidget *cand : wf->windowsList()) {
-                    if (cand && cand != w && !app->hidden(cand)
-                        && cand->property("torigraph_saved_active").toBool()) {
-                        otherSavedActive = true;
-                        break;
-                    }
+                MyWidget *sa = qobject_cast<MyWidget *>(
+                        wf->property("torigraph_saved_active_obj").value<QObject *>());
+                if (sa && sa != w && !app->hidden(sa)
+                    && sa->property("torigraph_saved_active").toBool()) {
+                    otherSavedActive = true;
                 }
             }
             if (!otherSavedActive)
@@ -17226,12 +17398,14 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         QString s = stream.readLine();
         int length = s.toInt();
 
-        // On Windows, loading large tables to a QString has been observed to crash
-        // (apparently due to excessive memory usage).
-        // => use temporary file if possible
+        // Keep small/medium table XML in memory (avoiding 200 disk QTemporaryFiles on workbooks);
+        // spill very large tables (> 256 KB) to QTemporaryFile to bound peak QString memory.
         QTemporaryFile tmp_file;
         QString tmp_string;
-        if (tmp_file.open()) {
+        if (length <= 262144) {
+            tmp_string = (length > 0) ? stream.read(length) : QString();
+            stream.readLine(); // skip to next newline
+        } else if (tmp_file.open()) {
             QTextStream tmp(&tmp_file);
             tmp.setCodec(QTextCodec::codecForName("UTF-8"));
             int read = 0;
@@ -17243,9 +17417,15 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
             tmp.flush();
             tmp_file.seek(0);
             stream.readLine(); // skip to next newline
-        } else
-            while (tmp_string.length() < length)
-                tmp_string += '\n' + stream.readLine();
+        } else {
+            tmp_string = (length > 0) ? stream.read(length) : QString();
+            stream.readLine(); // skip to next newline
+        }
+
+        const QString geomLine = stream.readLine();
+        stream.readLine(); // </table>
+        const bool geomHidden =
+                geomLine.trimmed().split(QLatin1Char('\t')).contains(QLatin1String("hidden"));
 
         XmlStreamReader reader(tmp_string);
         if (tmp_file.isOpen())
@@ -17257,8 +17437,25 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         if (xmlName.isEmpty())
             xmlName = reader.attributes().value(reader.namespaceUri().toString(), QStringLiteral("name")).toString();
 
-        const QString tempCap = app->generateUniqueName(QStringLiteral("__loading_table__"));
-        Table *w = app->newTable(tempCap, 1, 1);
+        static quint64 s_loading_seq = 0;
+        QString tempCap = QStringLiteral("__loading_table_%1__").arg(++s_loading_seq);
+        while (app->alreadyUsedName(tempCap))
+            tempCap = QStringLiteral("__loading_table_%1__").arg(++s_loading_seq);
+
+        struct ScopedCreatingHidden {
+            bool prev;
+            explicit ScopedCreatingHidden(bool enable) : prev(s_creating_hidden_table)
+            {
+                if (enable)
+                    s_creating_hidden_table = true;
+            }
+            ~ScopedCreatingHidden() { s_creating_hidden_table = prev; }
+        };
+        Table *w = nullptr;
+        {
+            ScopedCreatingHidden hiddenGuard(geomHidden);
+            w = app->newTable(tempCap, 1, 1);
+        }
         if (w->d_future_table->load(&reader) == false) {
             QString msg_text = reader.errorString();
             if (!isNonInteractiveContext(this))
@@ -17284,20 +17481,16 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
 
         w->setBirthDate(QLocale().toString(w->d_future_table->creationTime()));
 
-        s = stream.readLine();
-        restoreWindowGeometry(app, w, s);
-
-        s = stream.readLine(); // </table>
+        restoreWindowGeometry(app, w, geomLine);
 
         if (!app->hidden(w)) {
             bool otherSavedActive = false;
             if (Folder *wf = w->folder()) {
-                for (MyWidget *cand : wf->windowsList()) {
-                    if (cand && cand != w && !app->hidden(cand)
-                        && cand->property("torigraph_saved_active").toBool()) {
-                        otherSavedActive = true;
-                        break;
-                    }
+                MyWidget *sa = qobject_cast<MyWidget *>(
+                        wf->property("torigraph_saved_active_obj").value<QObject *>());
+                if (sa && sa != w && !app->hidden(sa)
+                    && sa->property("torigraph_saved_active").toBool()) {
+                    otherSavedActive = true;
                 }
             }
             if (!otherSavedActive)
@@ -23430,6 +23623,8 @@ QStringList ApplicationWindow::matrixNames()
 
 bool ApplicationWindow::alreadyUsedName(const QString &label)
 {
+    if (d_batch_window_updates_depth > 0)
+        return isBatchNameUsedByOther(label, nullptr);
     QList<MyWidget *> windows = windowsList();
     bool used = false;
     foreach (MyWidget *widget, windows) {
@@ -23590,6 +23785,8 @@ void ApplicationWindow::appendProject(const QString &fn)
 
     if (!nonInteractive)
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+
+    BatchWindowUpdates batchGuard(this);
 
     Folder *cf = current_folder;
     FolderListItem *item = (FolderListItem *)current_folder->folderListItem();
@@ -23896,6 +24093,8 @@ void ApplicationWindow::appendProject(const QString &fn)
         if (!mw)
             continue;
         mw->setProperty("torigraph_saved_active", QVariant());
+        if (Folder *mf = mw->folder())
+            mf->setProperty("torigraph_saved_active_obj", QVariant());
         if ((mw->inherits("Table") || mw->inherits("Matrix")) && stringContainsWhitespace(mw->name())) {
             const QString oldName = mw->name();
             sanitizeLoadedWindowName(this, mw, oldName,
@@ -24189,8 +24388,11 @@ void ApplicationWindow::setShowWindowsPolicy(bool checked)
         foreach (MyWidget *widget, lst) {
             if (!widget)
                 continue;
-            if (!hiddenWindows.contains(widget))
+            if (!hiddenWindows.contains(widget)) {
                 hiddenWindows.append(widget);
+                if (d_batch_window_updates_depth > 0)
+                    d_batch_hidden_set.insert(widget);
+            }
             widget->hide();
             setListView(widget->name(), tr("Hidden"));
         }
@@ -24625,10 +24827,13 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
             addFolderListViewItem(static_cast<Folder *>(f));
     }
 
+    const QSet<MyWidget *> hiddenSet(hiddenWindows.begin(), hiddenWindows.end());
+    const QSet<MyWidget *> outSet(outWindows.begin(), outWindows.end());
+
     QList<MyWidget *> lst = newFolder->windowsList();
     foreach (MyWidget *w, lst) {
         w->blockSignals(true);
-        if (!hiddenWindows.contains(w) && !outWindows.contains(w)
+        if (!hiddenSet.contains(w) && !outSet.contains(w)
             && show_windows_policy != HideAll) {
             // show only windows in the current folder which are not hidden by the user
             if (isSplitView) {
@@ -24661,7 +24866,7 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
             while (item && item->depth() >= initial_depth) { // show/hide windows in subfolders
                 lst = ((Folder *)item->folder())->windowsList();
                 foreach (MyWidget *w, lst) {
-                    if (!hiddenWindows.contains(w) && !outWindows.contains(w)) {
+                    if (!hiddenSet.contains(w) && !outSet.contains(w)) {
                         if (show_windows_policy == SubFolders) {
                             if (isSplitView) {
                                 if (w->isMaximized() || w->isMinimized()) {
@@ -24693,12 +24898,12 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
     foreach (MyWidget *w, newFolder->windowsList())
         w->blockSignals(false);
 
-    if ((!active_window || hiddenWindows.contains(active_window)
-         || outWindows.contains(active_window))
+    if ((!active_window || hiddenSet.contains(active_window)
+         || outSet.contains(active_window))
         && show_windows_policy != HideAll) {
         active_window = nullptr;
         for (MyWidget *cand : newFolder->windowsList()) {
-            if (cand && !hiddenWindows.contains(cand) && !outWindows.contains(cand)) {
+            if (cand && !hiddenSet.contains(cand) && !outSet.contains(cand)) {
                 active_window = cand;
                 active_window_state = cand->status();
                 break;
@@ -24706,8 +24911,8 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
         }
     }
 
-    if (active_window && !hiddenWindows.contains(active_window)
-        && !outWindows.contains(active_window) && show_windows_policy != HideAll) {
+    if (active_window && !hiddenSet.contains(active_window)
+        && !outSet.contains(active_window) && show_windows_policy != HideAll) {
         d_workspace.setActiveSubWindow(active_window);
         if (isSplitView) {
             if (active_window->isMaximized() || active_window->isMinimized()) {
@@ -24792,11 +24997,16 @@ void ApplicationWindow::addListViewItem(MyWidget *w)
     it->setText(2, w->aspect());
     it->setText(3, w->birthDate());
     it->setText(4, w->windowLabel());
+    syncBatchWindowName(w);
     if (WorkbookManager *wb = WorkbookManager::existing(this))
         wb->decorateListItem(it, w); // D8: "Sheet of <book>"
     if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
-        lv.resizeColumnToContents(1);
-        lv.resizeColumnToContents(2);
+        if (d_batch_window_updates_depth > 0) {
+            d_batch_pending_lv_resize = true;
+        } else {
+            lv.resizeColumnToContents(1);
+            lv.resizeColumnToContents(2);
+        }
     }
 }
 
@@ -26377,8 +26587,12 @@ void ApplicationWindow::handleAspectDescriptionChanged(const AbstractAspect *asp
 {
     if (!aspect)
         return;
-    if (qobject_cast<const Column *>(aspect) || qobject_cast<const ::future::Table *>(aspect))
-        refreshAllGraphsAutoAxisTitles();
+    if (qobject_cast<const Column *>(aspect) || qobject_cast<const ::future::Table *>(aspect)) {
+        if (d_batch_window_updates_depth > 0)
+            d_batch_pending_auto_axis_refresh = true;
+        else
+            refreshAllGraphsAutoAxisTitles();
+    }
 }
 
 void ApplicationWindow::refreshAllGraphsAutoAxisTitles()

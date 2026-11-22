@@ -241,6 +241,70 @@ bool tryParseLabDoubleSpan(const QChar *ptr, int len, const QLocale &primaryLoc,
     return tryParseLabDouble(QString(ptr, len), primaryLoc, useCustomLocale, outVal);
 }
 
+bool isMissingDataTokenSpan(const QChar *ptr, int len)
+{
+    if (!ptr || len <= 0)
+        return true;
+    if (len <= 3) {
+        if (len == 1
+            && (ptr[0] == QLatin1Char('-') || ptr[0] == QChar(0x2014) || ptr[0] == QChar(0x2013)))
+            return true;
+        if (len == 2 && ptr[0] == QLatin1Char('-') && ptr[1] == QLatin1Char('-'))
+            return true;
+        if (len == 3 && ptr[0] == QLatin1Char('-') && ptr[1] == QLatin1Char('-')
+            && ptr[2] == QLatin1Char('-'))
+            return true;
+    }
+    if (len <= 16)
+        return isMissingDataTokenImpl(QString(ptr, len));
+    return false;
+}
+
+// Unified '#'-leading row classifier shared across Step 3, detectPreamble, peek, and body streaming.
+// `cellGetter(k, pk, nk, kQuoted)` supplies trimmed view & quote flag for cell k in 0..rawFieldCount-1.
+template <typename CellGetter>
+bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tableHasMultipleCols,
+                              const QLocale &primaryLoc, bool useCustomLocale,
+                              CellGetter &&cellGetter)
+{
+    if (rawFieldCount <= 0)
+        return false;
+    const QChar *p0 = nullptr;
+    int n0 = 0;
+    bool col0Quoted = false;
+    cellGetter(0, p0, n0, col0Quoted);
+    // 1) Quoted cell 0, empty, or does not start with '#' -> data (false)
+    if (col0Quoted || !p0 || n0 <= 0 || p0[0] != QLatin1Char('#'))
+        return false;
+    // 2) Missing data token (#N/A, #DIV/0!, #VALUE!, #REF!, #NAME?, #NUM!, #NULL!, #SPILL!, #CALC!, #GETTING_DATA) -> ALWAYS data (false)
+    if (isMissingDataTokenSpan(p0, n0))
+        return false;
+    // 3) '#' alone or '# ' + whitespace (# comment, # col1, col2, # pause,, # note,,, # T=300 K, P=1 atm, # 1\t2) -> ALWAYS comment (true)
+    if (n0 == 1 || p0[1].isSpace())
+        return true;
+    // 4) '#<non-space>' and not a missing token:
+    if (whitespaceDelim) {
+        if (rawFieldCount >= 2 && p0[1].isDigit()) {
+            for (int k = 1; k < rawFieldCount; ++k) {
+                const QChar *pk = nullptr;
+                int nk = 0;
+                bool kQuoted = false;
+                cellGetter(k, pk, nk, kQuoted);
+                if (nk <= 0 || isMissingNumericSpan(pk, nk, kQuoted))
+                    continue;
+                double dummy = 0.0;
+                if (!tryParseLabDoubleSpan(pk, nk, primaryLoc, useCustomLocale, dummy))
+                    return true;
+            }
+            return false;
+        }
+        return true;
+    }
+    if (rawFieldCount >= 2)
+        return false;
+    return tableHasMultipleCols;
+}
+
 bool isPureNumberString(const QString &s)
 {
     const QString t = s.trimmed();
@@ -1576,15 +1640,23 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
     }
 
+    const bool useCustomLoc =
+            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
+    const bool hasDistinctNumericLocale = (numericLocale != QLocale::c());
+    QLocale primaryLoc = numericLocale;
+    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+
     // 3. Skip leading blank lines & '#'-prefixed comment preamble lines
     //    (preserving a final '# col1, col2' header line if data starts immediately with numbers!)
     QString lastHashCommentBody;
     while (pos < len) {
         int lineStart = pos;
-        while (lineStart < len && (buf[lineStart] == QLatin1Char(' ') || buf[lineStart] == QLatin1Char('\t')))
+        while (lineStart < len
+               && (buf[lineStart] == QLatin1Char(' ') || buf[lineStart] == QLatin1Char('\t')))
             ++lineStart;
         int lineEnd = lineStart;
-        while (lineEnd < len && buf[lineEnd] != QLatin1Char('\r') && buf[lineEnd] != QLatin1Char('\n'))
+        while (lineEnd < len && buf[lineEnd] != QLatin1Char('\r')
+               && buf[lineEnd] != QLatin1Char('\n'))
             ++lineEnd;
 
         int nextPos = lineEnd;
@@ -1596,15 +1668,168 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             ++nextPos;
         }
 
-        if (lineStart == lineEnd) {
+        int trimEnd = lineEnd;
+        while (trimEnd > lineStart
+               && (buf[trimEnd - 1] == QLatin1Char(' ') || buf[trimEnd - 1] == QLatin1Char('\t')))
+            --trimEnd;
+
+        if (lineStart == trimEnd) {
             pos = nextPos;
             continue;
         }
         if (buf[lineStart] == QLatin1Char('#')) {
-            lastHashCommentBody = QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
-            ++skippedNonBlankLines;
-            pos = nextPos;
-            continue;
+            bool isCommentAtTop = true;
+            if (lineStart + 1 < trimEnd && !buf[lineStart + 1].isSpace()) {
+                int tokEnd = lineStart;
+                while (tokEnd < trimEnd && buf[tokEnd] != QLatin1Char(',')
+                       && buf[tokEnd] != QLatin1Char('\t') && buf[tokEnd] != QLatin1Char(';')
+                       && !buf[tokEnd].isSpace()) {
+                    ++tokEnd;
+                }
+                if (isMissingDataTokenSpan(buf + lineStart, tokEnd - lineStart)) {
+                    isCommentAtTop = false;
+                } else {
+                    bool inQ = false;
+                    bool atFS = true;
+                    QChar foundExplicitSep;
+                    bool hasWsOutsideQuotes = false;
+                    for (int k = lineStart; k < trimEnd; ++k) {
+                        const QChar ch = buf[k];
+                        if (inQ) {
+                            if (ch == QLatin1Char('"')) {
+                                if (k + 1 < trimEnd && buf[k + 1] == QLatin1Char('"'))
+                                    ++k;
+                                else
+                                    inQ = false;
+                            }
+                        } else if (ch == QLatin1Char('"') && atFS) {
+                            inQ = true;
+                            atFS = false;
+                        } else if (ch == QLatin1Char(',') || ch == QLatin1Char('\t')
+                                   || ch == QLatin1Char(';')) {
+                            if (foundExplicitSep.isNull())
+                                foundExplicitSep = ch;
+                            atFS = true;
+                        } else if (ch.isSpace()) {
+                            hasWsOutsideQuotes = true;
+                        } else {
+                            atFS = false;
+                        }
+                    }
+
+                    if (!foundExplicitSep.isNull()) {
+                        // Multi-field explicit delimiter line with '#<non-space>' (e.g. '#1,520', '#2,')
+                        isCommentAtTop = false;
+                    } else if (hasWsOutsideQuotes) {
+                        int tmpP = lineStart;
+                        QVector<ZeroCopyCellSpan> wsSpans;
+                        bool tmpSkip = false;
+                        readNextRecordSpans(buf, trimEnd, tmpP, QStringLiteral(" "), true, true,
+                                            true, wsSpans, tmpSkip);
+                        isCommentAtTop = isHashCommentRecordCells(
+                                wsSpans.size(), true /*whitespaceDelim*/, true, primaryLoc,
+                                hasDistinctNumericLocale,
+                                [&](int idx, const QChar *&pk, int &nk, bool &kQuoted) {
+                                    wsSpans[idx].trimmedView(pk, nk);
+                                    kQuoted = wsSpans[idx].quoted;
+                                });
+                    } else {
+                        bool subsequentHasMultiCol = false;
+                        if (buf[lineStart + 1].isDigit()) {
+                            int pPeek = nextPos;
+                            int checkedSubsequent = 0;
+                            while (pPeek < len && checkedSubsequent < 10) {
+                                int ls = pPeek;
+                                while (ls < len
+                                       && (buf[ls] == QLatin1Char(' ')
+                                           || buf[ls] == QLatin1Char('\t')))
+                                    ++ls;
+                                int le = ls;
+                                while (le < len && buf[le] != QLatin1Char('\r')
+                                       && buf[le] != QLatin1Char('\n'))
+                                    ++le;
+                                int np = le;
+                                if (np < len && buf[np] == QLatin1Char('\r')) {
+                                    ++np;
+                                    if (np < len && buf[np] == QLatin1Char('\n'))
+                                        ++np;
+                                } else if (np < len && buf[np] == QLatin1Char('\n')) {
+                                    ++np;
+                                }
+                                pPeek = np;
+                                while (le > ls
+                                       && (buf[le - 1] == QLatin1Char(' ')
+                                           || buf[le - 1] == QLatin1Char('\t')))
+                                    --le;
+                                if (ls == le)
+                                    continue;
+                                if (buf[ls] == QLatin1Char('#')
+                                    && (ls + 1 == le || buf[ls + 1].isSpace())) {
+                                    continue;
+                                }
+                                bool sq = false;
+                                bool sfs = true;
+                                bool lineHasSep = false;
+                                bool lineHasWs = false;
+                                for (int k = ls; k < le; ++k) {
+                                    const QChar ch = buf[k];
+                                    if (sq) {
+                                        if (ch == QLatin1Char('"')) {
+                                            if (k + 1 < le && buf[k + 1] == QLatin1Char('"'))
+                                                ++k;
+                                            else
+                                                sq = false;
+                                        }
+                                    } else if (ch == QLatin1Char('"') && sfs) {
+                                        sq = true;
+                                        sfs = false;
+                                    } else if (ch == QLatin1Char(',') || ch == QLatin1Char('\t')
+                                               || ch == QLatin1Char(';')) {
+                                        lineHasSep = true;
+                                        break;
+                                    } else if (ch.isSpace()) {
+                                        lineHasWs = true;
+                                    } else {
+                                        sfs = false;
+                                    }
+                                }
+                                if (lineHasSep) {
+                                    subsequentHasMultiCol = true;
+                                    break;
+                                }
+                                if (lineHasWs) {
+                                    if (!(buf[ls] == QLatin1Char('#') && ls + 1 < le
+                                          && !buf[ls + 1].isDigit())) {
+                                        subsequentHasMultiCol = true;
+                                        break;
+                                    }
+                                }
+                                ++checkedSubsequent;
+                            }
+                        }
+                        const bool multiColForSingle =
+                                (!buf[lineStart + 1].isDigit() || subsequentHasMultiCol);
+                        isCommentAtTop = isHashCommentRecordCells(
+                                1, false, multiColForSingle, primaryLoc, hasDistinctNumericLocale,
+                                [&](int, const QChar *&pk, int &nk, bool &kQuoted) {
+                                    pk = buf + lineStart;
+                                    nk = trimEnd - lineStart;
+                                    kQuoted = false;
+                                });
+                    }
+                }
+            }
+            if (isCommentAtTop) {
+                if (lineStart + 1 < trimEnd && buf[lineStart + 1].isSpace()) {
+                    lastHashCommentBody =
+                            QString(buf + lineStart + 1, trimEnd - (lineStart + 1)).trimmed();
+                } else {
+                    lastHashCommentBody.clear();
+                }
+                ++skippedNonBlankLines;
+                pos = nextPos;
+                continue;
+            }
         }
         break;
     }
@@ -1654,12 +1879,6 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         return e;
     };
 
-    const bool useCustomLoc =
-            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
-    const bool hasDistinctNumericLocale = (numericLocale != QLocale::c());
-    QLocale primaryLoc = numericLocale;
-    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
-
     QString preambleSeparator;
     int forcedUnitsRow = -1;
     if (detectPreamble && ignoredLines == 0 && pos < len) {
@@ -1685,22 +1904,57 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 }
             }
         }
-        auto splitLine = [&](int idx, QChar sep) -> QStringList {
-            const QString ln = QString(buf + lines[idx].start, lines[idx].end - lines[idx].start);
+        struct SplitLineResult
+        {
             QStringList parts;
+            QVector<QString> rawParts;
+            QVector<bool> rawQuoted;
+            int rawFieldCount = 0;
+            bool col0Quoted = false;
+        };
+        auto splitLineEx = [&](int idx, QChar sep) -> SplitLineResult {
+            SplitLineResult res;
+            const QString ln = QString(buf + lines[idx].start, lines[idx].end - lines[idx].start);
             if (sep == QLatin1Char(' ')) {
-                parts = ln.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-                for (QString &f : parts) {
-                    f = f.trimmed();
-                    if (f.size() >= 2 && f.startsWith(QLatin1Char('"'))
-                        && f.endsWith(QLatin1Char('"'))) {
-                        f = f.mid(1, f.size() - 2).trimmed();
+                int p = 0;
+                const int n = ln.size();
+                while (p < n) {
+                    while (p < n && ln.at(p).isSpace())
+                        ++p;
+                    if (p >= n)
+                        break;
+                    if (ln.at(p) == QLatin1Char('"')) {
+                        ++p;
+                        QString val;
+                        while (p < n) {
+                            if (ln.at(p) == QLatin1Char('"')) {
+                                if (p + 1 < n && ln.at(p + 1) == QLatin1Char('"')) {
+                                    val.append(QLatin1Char('"'));
+                                    p += 2;
+                                } else {
+                                    ++p;
+                                    break;
+                                }
+                            } else {
+                                val.append(ln.at(p));
+                                ++p;
+                            }
+                        }
+                        res.rawParts.append(val.trimmed());
+                        res.rawQuoted.append(true);
+                    } else {
+                        const int ts = p;
+                        while (p < n && !ln.at(p).isSpace())
+                            ++p;
+                        res.rawParts.append(ln.mid(ts, p - ts).trimmed());
+                        res.rawQuoted.append(false);
                     }
                 }
             } else {
                 QString cur;
                 bool inQuotes = false;
                 bool atFieldStart = true;
+                bool curQuoted = false;
                 for (int k = 0; k < ln.size(); ++k) {
                     const QChar ch = ln.at(k);
                     if (inQuotes) {
@@ -1719,11 +1973,14 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         }
                     } else {
                         if (ch == sep) {
-                            parts.append(cur.trimmed());
+                            res.rawParts.append(cur.trimmed());
+                            res.rawQuoted.append(curQuoted);
                             cur.clear();
+                            curQuoted = false;
                             atFieldStart = true;
                         } else if (ch == QLatin1Char('"') && atFieldStart) {
                             inQuotes = true;
+                            curQuoted = true;
                             atFieldStart = false;
                         } else {
                             if (ch != QLatin1Char(' ') && ch != QLatin1Char('\t'))
@@ -1732,19 +1989,23 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         }
                     }
                 }
-                parts.append(cur.trimmed());
+                res.rawParts.append(cur.trimmed());
+                res.rawQuoted.append(curQuoted);
             }
-            // a trailing separator ("1,2,") must not change the field count
-            while (parts.size() > 1 && parts.last().isEmpty())
-                parts.removeLast();
-            return parts;
+            res.rawFieldCount = res.rawParts.size();
+            res.col0Quoted = !res.rawQuoted.isEmpty() && res.rawQuoted[0];
+            res.parts.reserve(res.rawParts.size());
+            for (const QString &rp : res.rawParts)
+                res.parts.append(rp);
+            // a trailing separator ("1,2,") must not change the effective field count
+            while (res.parts.size() > 1 && res.parts.last().isEmpty()
+                   && !res.rawQuoted[res.parts.size() - 1]) {
+                res.parts.removeLast();
+            }
+            return res;
         };
-        auto isHashCommentLine = [&](int idx) -> bool {
-            if (idx < 0 || idx >= lines.size())
-                return false;
-            return QString(buf + lines[idx].start, lines[idx].end - lines[idx].start)
-                    .trimmed()
-                    .startsWith(QLatin1Char('#'));
+        auto splitLine = [&](int idx, QChar sep) -> QStringList {
+            return splitLineEx(idx, sep).parts;
         };
         auto rowStats = [&](const QStringList &parts, int &outNumeric, int &outText) {
             outNumeric = 0;
@@ -1760,21 +2021,31 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
         };
         auto isCommentLineForSep = [&](int idx, QChar sep) -> bool {
-            if (!isHashCommentLine(idx))
+            if (idx < 0 || idx >= lines.size())
                 return false;
-            const QStringList p = splitLine(idx, sep);
-            if (p.size() <= 1)
-                return true;
-            if (sep == QLatin1Char(' ') && p[0] == QLatin1String("#"))
-                return true;
-            for (int k = 1; k < p.size(); ++k) {
-                if (p[k].isEmpty() || isMissingNumericToken(p[k], false))
-                    continue;
-                double dv = 0.0;
-                if (tryParseLabDouble(p[k], primaryLoc, hasDistinctNumericLocale, dv))
-                    return false;
+            const QChar *ls = buf + lines[idx].start;
+            int ll = lines[idx].end - lines[idx].start;
+            while (ll > 0 && ls[0].isSpace()) {
+                ++ls;
+                --ll;
             }
-            return true;
+            if (ll <= 0 || ls[0] != QLatin1Char('#'))
+                return false;
+            const SplitLineResult sr = splitLineEx(idx, sep);
+            return isHashCommentRecordCells(
+                    sr.rawFieldCount, sep == QLatin1Char(' '), true /*tableHasMultipleCols*/,
+                    primaryLoc, hasDistinctNumericLocale,
+                    [&](int k, const QChar *&pk, int &nk, bool &kQuoted) {
+                        if (k >= 0 && k < sr.rawParts.size()) {
+                            pk = sr.rawParts[k].constData();
+                            nk = sr.rawParts[k].size();
+                            kQuoted = sr.rawQuoted[k];
+                        } else {
+                            pk = nullptr;
+                            nk = 0;
+                            kQuoted = false;
+                        }
+                    });
         };
         // 1 = numeric-dominant row, 0 = pure text row, -1 = mixed
         auto rowKind = [&](const QStringList &parts) -> int {
@@ -1794,9 +2065,11 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             for (int i = 0; i < lines.size(); ++i) {
                 if (bestStart >= 0 && i > bestStart)
                     break; // an earlier block was already found with another separator
-                if (isHashCommentLine(i))
+                if (isCommentLineForSep(i, sep))
                     continue;
-                const QStringList p0 = splitLine(i, sep);
+                const SplitLineResult sr0 = splitLineEx(i, sep);
+                const QStringList &p0 = sr0.parts;
+                const int p0RawCount = sr0.rawFieldCount;
                 int p0Num = 0, p0Txt = 0;
                 rowStats(p0, p0Num, p0Txt);
                 if (p0.size() < 2 || p0Num < 2 || p0Num < p0Txt)
@@ -1806,7 +2079,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 int nextDataIdx = i + 1;
                 while (nextDataIdx < lines.size() && isCommentLineForSep(nextDataIdx, sep))
                     ++nextDataIdx;
-                if (p0Txt > 0 && nextDataIdx < lines.size() && !isHashCommentLine(nextDataIdx)) {
+                if (p0Txt > 0 && nextDataIdx < lines.size()
+                    && !isCommentLineForSep(nextDataIdx, sep)) {
                     const QStringList pNext = splitLine(nextDataIdx, sep);
                     int nextNum = 0, nextTxt = 0;
                     rowStats(pNext, nextNum, nextTxt);
@@ -1818,14 +2092,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 for (int k = i + 1; k < lines.size() && checkedFollow < 2 && ok; ++k) {
                     if (isCommentLineForSep(k, sep))
                         continue;
-                    if (isHashCommentLine(k)) {
-                        ok = false;
-                        break;
-                    }
-                    // following rows may lack trailing values ("2\t" -> one field)
-                    const QStringList pk = splitLine(k, sep);
+                    // following rows may lack trailing values ("2\t" -> one field) or be all-missing ("#N/A,#N/A", "#DIV/0!,") or specimen+missing ("#2,")
+                    const SplitLineResult srk = splitLineEx(k, sep);
+                    const QStringList &pk = srk.parts;
                     int num = 0, txt = 0;
                     rowStats(pk, num, txt);
+                    if (srk.rawFieldCount >= 2 && srk.rawFieldCount <= p0RawCount
+                        && ((num == 0 && txt == 0)
+                            || (pk.size() < srk.rawFieldCount && num == 0 && txt == 1))) {
+                        continue;
+                    }
                     ok = (pk.size() <= p0.size() && num >= 1 && num >= txt);
                     ++checkedFollow;
                 }
@@ -1845,13 +2121,13 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             const bool bestStartAllNumeric = (bsNum >= 2 && bsTxt == 0);
             int hdrStart = bestStart;
             auto isPureTextRowWithFields = [&](int idx) -> bool {
-                if (idx < 0 || isHashCommentLine(idx))
+                if (idx < 0 || isCommentLineForSep(idx, bestSep))
                     return false;
                 const QStringList p = splitLine(idx, bestSep);
                 return p.size() == bestFields && rowKind(p) == 0;
             };
             auto isHeaderCandidateWithFields = [&](int idx) -> bool {
-                if (idx < 0 || isHashCommentLine(idx))
+                if (idx < 0 || isCommentLineForSep(idx, bestSep))
                     return false;
                 const QStringList p = splitLine(idx, bestSep);
                 if (p.size() != bestFields)
@@ -1884,7 +2160,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
             int preambleEnd = hdrStart;
             if (hdrStart == bestStart) {
-                while (preambleEnd > 0 && isHashCommentLine(preambleEnd - 1))
+                while (preambleEnd > 0 && isCommentLineForSep(preambleEnd - 1, bestSep))
                     --preambleEnd;
             }
             if (hdrStart > 0) {
@@ -1892,43 +2168,28 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 for (int i = 0; i < preambleEnd; ++i)
                     pre << QString(buf + lines[i].start, lines[i].end - lines[i].start).trimmed();
                 skippedNonBlankLines += preambleEnd;
-                pos = lines[preambleEnd].start;
                 preambleSeparator = QString(bestSep);
-                // Skip any '#'-prefixed lines immediately above numeric data (preserving '# col1, col2' header)
-                while (pos < len) {
-                    int lineStart = pos;
-                    while (lineStart < len
+                // Skip any '#'-comment lines immediately above numeric data (preserving '# col1, col2' header)
+                for (int ci = preambleEnd; ci < hdrStart; ++ci) {
+                    int lineStart = lines[ci].start;
+                    const int lineEnd = lines[ci].end;
+                    while (lineStart < lineEnd
                            && (buf[lineStart] == QLatin1Char(' ')
                                || buf[lineStart] == QLatin1Char('\t'))) {
                         ++lineStart;
                     }
-                    int lineEnd = lineStart;
-                    while (lineEnd < len && buf[lineEnd] != QLatin1Char('\r')
-                           && buf[lineEnd] != QLatin1Char('\n')) {
-                        ++lineEnd;
-                    }
-                    int nextPos = lineEnd;
-                    if (nextPos < len && buf[nextPos] == QLatin1Char('\r')) {
-                        ++nextPos;
-                        if (nextPos < len && buf[nextPos] == QLatin1Char('\n'))
-                            ++nextPos;
-                    } else if (nextPos < len && buf[nextPos] == QLatin1Char('\n')) {
-                        ++nextPos;
-                    }
-                    if (lineStart == lineEnd) {
-                        pos = nextPos;
-                        continue;
-                    }
-                    if (buf[lineStart] == QLatin1Char('#')) {
-                        lastHashCommentBody =
-                                QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
+                    if (lineStart < lineEnd && buf[lineStart] == QLatin1Char('#')) {
+                        if (lineStart + 1 < lineEnd && buf[lineStart + 1].isSpace()) {
+                            lastHashCommentBody =
+                                    QString(buf + lineStart + 1, lineEnd - (lineStart + 1)).trimmed();
+                        } else {
+                            lastHashCommentBody.clear();
+                        }
                         pre << QString(buf + lineStart, lineEnd - lineStart).trimmed();
                         ++skippedNonBlankLines;
-                        pos = nextPos;
-                        continue;
                     }
-                    break;
                 }
+                pos = lines[hdrStart].start;
                 g_lastImportReport.preamble = pre.mid(0, 200).join(QLatin1Char('\n'));
             }
         }
@@ -1947,7 +2208,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     sampleLines.append(ln);
                 } else if (hashDelimSampleFallback.size() < 8
                            && (ln.contains(QLatin1Char(',')) || ln.contains(QLatin1Char('\t'))
-                               || ln.contains(QLatin1Char(';')))) {
+                               || ln.contains(QLatin1Char(';'))
+                               || (ln.size() >= 2 && ln.at(1).isDigit()
+                                   && ln.contains(QLatin1Char(' '))))) {
                     hashDelimSampleFallback.append(ln);
                 }
             }
@@ -2014,33 +2277,21 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     // Determine whether this table has >= 2 columns so '# ...' comment lines inside a
     // multi-column CSV/TSV/whitespace file (including '# pause,', '# note,,', '# T=300 K, P=1 atm')
-    // are skipped as comments while '#1, 520' specimen rows and 1-column '#1\n#2' tables are kept.
-    auto effectiveSpanCount = [](const QVector<ZeroCopyCellSpan> &spans) -> int {
-        int n = spans.size();
-        while (n > 0) {
-            if (spans[n - 1].quoted)
-                break;
-            const QChar *p = nullptr;
-            int l = 0;
-            spans[n - 1].trimmedView(p, l);
-            if (l > 0)
-                break;
-            --n;
-        }
-        return n;
-    };
-
-    auto hasFiniteNumericSpanAfterFirst = [&](const QVector<ZeroCopyCellSpan> &spans,
-                                              int effCount) -> bool {
-        for (int k = 1; k < effCount; ++k) {
-            const QChar *pk = nullptr;
-            int nk = 0;
-            spans[k].trimmedView(pk, nk);
-            double dummy = 0.0;
-            if (nk > 0 && tryParseLabDoubleSpan(pk, nk, primaryLoc, hasDistinctNumericLocale, dummy))
-                return true;
-        }
-        return false;
+    // are skipped as comments while '#1, 520' / '#2,' specimen rows, '#N/A,#N/A' missing rows,
+    // and 1-column '#1\n#2' tables are kept.
+    auto isSpanHashComment = [&](const QVector<ZeroCopyCellSpan> &spans, bool multiCols) -> bool {
+        return isHashCommentRecordCells(
+                spans.size(), whitespaceDelim, multiCols, primaryLoc, hasDistinctNumericLocale,
+                [&](int k, const QChar *&pk, int &nk, bool &kQuoted) {
+                    if (k >= 0 && k < spans.size()) {
+                        spans[k].trimmedView(pk, nk);
+                        kQuoted = spans[k].quoted;
+                    } else {
+                        pk = nullptr;
+                        nk = 0;
+                        kQuoted = false;
+                    }
+                });
     };
 
     QVector<ZeroCopyCellSpan> rowSpans;
@@ -2057,42 +2308,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
             if (skipPeek)
                 continue;
-            const int effCols = effectiveSpanCount(rowSpans);
-            if (effCols >= 2) {
-                const QChar *p0 = nullptr;
-                int n0 = 0;
-                if (!rowSpans[0].quoted)
-                    rowSpans[0].trimmedView(p0, n0);
-                const bool startsWithUnquotedHash =
-                        (!rowSpans[0].quoted && n0 > 0 && p0[0] == QLatin1Char('#'));
-                if (!startsWithUnquotedHash) {
-                    tableHasMultipleCols = true;
-                    break;
-                }
-                if (!(whitespaceDelim && n0 == 1)
-                    && hasFiniteNumericSpanAfterFirst(rowSpans, effCols)) {
-                    tableHasMultipleCols = true;
-                    break;
-                }
+            if (isSpanHashComment(rowSpans, true /*multiCols*/))
+                continue;
+            if (rowSpans.size() >= 2) {
+                tableHasMultipleCols = true;
+                break;
             }
             ++checkedRows;
         }
     }
 
     auto isBodyHashCommentRow = [&](const QVector<ZeroCopyCellSpan> &spans) -> bool {
-        if (spans.isEmpty() || spans[0].quoted)
-            return false;
-        const QChar *p0 = nullptr;
-        int n0 = 0;
-        spans[0].trimmedView(p0, n0);
-        if (n0 <= 0 || p0[0] != QLatin1Char('#'))
-            return false;
-        const int effCols = effectiveSpanCount(spans);
-        if (effCols <= 1)
-            return tableHasMultipleCols;
-        if (whitespaceDelim && n0 == 1)
-            return true;
-        return !hasFiniteNumericSpanAfterFirst(spans, effCols);
+        return isSpanHashComment(spans, tableHasMultipleCols);
     };
 
     // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
@@ -2213,6 +2440,20 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                                  && anyFloatMarkerInRow1);
                 if (!likelySeqColHeader)
                     treatRow0AsData = true;
+            }
+        }
+        if (!treatRow0AsData && previewRecords[0].size() >= 2 && !previewRecords[0][0].quoted
+            && previewRecords[0][0].value.trimmed().startsWith(QLatin1Char('#'))) {
+            for (int c = 1; c < previewRecords[0].size(); ++c) {
+                const LabCsvCell &cell = previewRecords[0][c];
+                const QString tc = cell.value.trimmed();
+                double dv = 0.0;
+                if (isMissingNumericToken(tc, cell.quoted)
+                    || (!cell.quoted && !tc.isEmpty()
+                        && tryParseLabDouble(tc, primaryLoc, useCustomLoc, dv))) {
+                    treatRow0AsData = true;
+                    break;
+                }
             }
         }
         if (treatRow0AsData) {
