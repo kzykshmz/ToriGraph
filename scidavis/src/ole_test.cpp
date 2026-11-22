@@ -154,6 +154,7 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
 static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
 static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
+static int runSuite55TensileAndWorkHardeningCorrectness(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -214,6 +215,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc53;
+    }
+    if (args.contains("--suite55-only")) {
+        const int rc55 = runSuite55TensileAndWorkHardeningCorrectness(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc55;
     }
 
     // =========================================================================
@@ -5368,6 +5376,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite55TensileAndWorkHardeningCorrectness(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -14103,5 +14114,405 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 53 Save Safety, Undo-after-Save & Auto-save Recovery Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 55: Tensile & work-hardening analysis correctness (review items F2, F3,
+// F4, F8 and F10). Synthetic curves with known E and sigma_0.2:
+//   - Ramberg-Osgood eps = sigma/E + 0.002 (sigma/sigma0)^n, E = 70 GPa,
+//     sigma0 = 400 MPa (so sigma_0.2 = 400 MPa exactly), n = 10, UTS = 500 MPa
+//     -> e_u = 100 (500/70000 + 0.002 * 1.25^10) = 2.57693 %, plastic 1.86265 %
+//     -> after UTS: (e_u + 0.5 %, 480), (e_u + 1.0 %, 450), then a drop to 10 MPa,
+//        so e_f = 3.57693 %, plastic e_f = 3.57693 - 100 * 450 / 70000 = 2.93407 %
+//   - the same curve in mm/mm without labels (unit decided by E plausibility)
+//   - an H-charged-like curve in % whose elongation is below 1.2 % (old heuristic failed)
+//   - 5000 points in the elastic range (old 250-point window limit fell back to 3 points)
+//   - a 0.15 % toe in front of the curve (x0 must enter elongations and true strain)
+//   - Hollomon sigma_t = 700 eps_p^0.12 (fraction) for the Considere point, with
+//     serrations, equal-strain duplicates and post-necking rows
+// =============================================================================
+static int runSuite55TensileAndWorkHardeningCorrectness(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 55: Tensile & Work-Hardening Analysis Correctness (F2/F3/F4/F8/F10)...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 55");
+    qApp->setProperty("torigraph_noninteractive", true);
+    const double qnan = std::numeric_limits<double>::quiet_NaN();
+
+    auto makeGraph = [&](const QString &name, const QVector<double> &xs, const QVector<double> &ys,
+                         const QString &xUnit, const QString &xLong, Table **outTbl = nullptr) -> Graph * {
+        Table *t = mw->newTable(xs.size(), 2, name, name);
+        if (!t)
+            return nullptr;
+        t->column(0)->setLongName(xLong);
+        t->column(0)->setUnits(xUnit);
+        t->column(1)->setLongName(QStringLiteral("Stress"));
+        t->column(1)->setUnits(QStringLiteral("MPa"));
+        for (int i = 0; i < xs.size(); ++i) {
+            t->setCell(i, 0, xs[i]);
+            t->setCell(i, 1, ys[i]);
+        }
+        if (outTbl)
+            *outTbl = t;
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (name + QStringLiteral("_2")), Graph::Line);
+        return (ml && ml->activeGraph()) ? ml->activeGraph() : nullptr;
+    };
+
+    // Ramberg-Osgood reference curve (strain in %)
+    const double E = 70000.0, sig0 = 400.0;
+    auto roStrainPct = [&](double s) { return 100.0 * (s / E + 0.002 * std::pow(s / sig0, 10.0)); };
+    const double euPct = roStrainPct(500.0);                 // 2.57693 %
+    const double euPlPct = euPct - 100.0 * 500.0 / E;        // 1.86265 %
+    const double efPct = euPct + 1.0;                        // 3.57693 %
+    const double efPlPct = efPct - 100.0 * 450.0 / E;        // 2.93407 %
+    QVector<double> xA, yA;
+    for (int i = 0; i <= 250; ++i) {
+        const double s = 2.0 * i;
+        xA << roStrainPct(s);
+        yA << s;
+    }
+    xA << euPct + 0.5 << euPct + 1.0 << euPct + 1.2;
+    yA << 480.0 << 450.0 << 10.0;
+    std::cout << "[INFO] Suite 55 reference: e_u=" << euPct << "% (plastic " << euPlPct
+              << "%), e_f=" << efPct << "% (plastic " << efPlPct << "%)\n";
+
+    // ---- 55a: % data labelled "%": E, sigma_0.2, elongations, band, unit source
+    {
+        Graph *gA = makeGraph(QStringLiteral("Ten55A"), xA, yA, QStringLiteral("%"), QStringLiteral("Strain"));
+        CHECK_COND(gA != nullptr, "55a: graph not created");
+        const int bandsBefore = gA->shadedBandCount();
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gA, QString(), 0.002, -1, qnan, qnan, true, true, false);
+        std::cout << "[INFO] 55a: valid=" << r.valid << " E=" << r.youngsModulus << " Rp0.2=" << r.offsetYieldY
+                  << " eu=" << r.uniformElongationPct << " euPl=" << r.uniformPlasticElongationPct
+                  << " ef=" << r.fractureElongationPct << " efPl=" << r.fracturePlasticElongationPct
+                  << " src=" << r.strainUnitSource.toStdString() << " elastic=[" << r.elasticXMin << ","
+                  << r.elasticXMax << "]\n";
+        CHECK_COND(r.valid && r.strainInPercent && r.strainUnitSource == QLatin1String("column")
+                           && !r.strainUnitAmbiguous,
+                   "55a: % column unit not used");
+        CHECK_COND(std::fabs(r.youngsModulus - E) < 0.005 * E, "55a: E deviates from 70 GPa");
+        CHECK_COND(std::fabs(r.offsetYieldY - 400.0) < 2.0, "55a: sigma_0.2 deviates from 400 MPa");
+        CHECK_COND(std::fabs(r.uniformElongationPct - euPct) < 0.01
+                           && std::fabs(r.uniformPlasticElongationPct - euPlPct) < 0.02,
+                   "55a: uniform elongation / plastic part wrong");
+        CHECK_COND(std::fabs(r.fractureElongationPct - efPct) < 0.01
+                           && std::fabs(r.fracturePlasticElongationPct - efPlPct) < 0.02,
+                   "55a: fracture elongation / plastic part wrong");
+        // F3: the elastic window lies inside 10-60 % of UTS (50-300 MPa) and is shown as a band
+        CHECK_COND(r.elasticXMin >= roStrainPct(50.0) - 1e-9 && r.elasticXMax <= roStrainPct(300.0) + 1e-9
+                           && (r.elasticXMax - r.elasticXMin) >= roStrainPct(75.0) - roStrainPct(0.0) - 1e-9,
+                   "55a: elastic window outside 10-60 % of UTS or narrower than 15 % of UTS");
+        CHECK_COND(gA->shadedBandCount() == bandsBefore + 1, "55a: elastic range band not drawn");
+        CHECK_COND(r.warnings.isEmpty(), "55a: unexpected warnings on a clean curve");
+    }
+
+    // ---- 55b: same curve in mm/mm without any unit label -> decided by E plausibility
+    {
+        QVector<double> xB;
+        for (double v : xA)
+            xB << v / 100.0;
+        Graph *gB = makeGraph(QStringLiteral("Ten55B"), xB, yA, QString(), QStringLiteral("Strain"));
+        CHECK_COND(gB != nullptr, "55b: graph not created");
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gB, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        std::cout << "[INFO] 55b: valid=" << r.valid << " pct=" << r.strainInPercent << " E=" << r.youngsModulus
+                  << " Rp0.2=" << r.offsetYieldY << " src=" << r.strainUnitSource.toStdString() << "\n";
+        CHECK_COND(r.valid && !r.strainInPercent && r.strainUnitSource == QLatin1String("E range")
+                           && !r.strainUnitAmbiguous,
+                   "55b: mm/mm data not recognised from E plausibility");
+        CHECK_COND(std::fabs(r.youngsModulus - E) < 0.005 * E && std::fabs(r.offsetYieldY - 400.0) < 2.0,
+                   "55b: E or sigma_0.2 wrong for mm/mm data");
+        CHECK_COND(std::fabs(r.uniformElongationPct - euPct) < 0.01
+                           && std::fabs(r.fractureElongationPct - efPct) < 0.01,
+                   "55b: elongations (in %) wrong for mm/mm data");
+    }
+
+    // ---- 55c: % data, elongation < 1.2 %, no unit label (old rule maxX > 1.2 said mm/mm)
+    {
+        QVector<double> xC, yC;
+        for (int i = 0; i <= 210; ++i) {
+            const double s = 2.0 * i; // up to 420 MPa (UTS)
+            xC << roStrainPct(s);
+            yC << s;
+        }
+        xC << roStrainPct(420.0) + 0.01;
+        yC << 5.0;
+        CHECK_COND(xC.back() < 1.2, "55c: test curve must stay below 1.2 %");
+        Graph *gC = makeGraph(QStringLiteral("Ten55C"), xC, yC, QString(), QStringLiteral("Strain"));
+        CHECK_COND(gC != nullptr, "55c: graph not created");
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gC, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        std::cout << "[INFO] 55c: valid=" << r.valid << " pct=" << r.strainInPercent << " E=" << r.youngsModulus
+                  << " Rp0.2=" << r.offsetYieldY << " eu=" << r.uniformElongationPct << "\n";
+        CHECK_COND(r.valid && r.strainInPercent && r.strainUnitSource == QLatin1String("E range"),
+                   "55c: small-elongation % data misread as mm/mm");
+        CHECK_COND(std::fabs(r.youngsModulus - E) < 0.005 * E && std::fabs(r.offsetYieldY - 400.0) < 2.0,
+                   "55c: E or sigma_0.2 wrong for small-elongation % data");
+        CHECK_COND(std::fabs(r.uniformElongationPct - roStrainPct(420.0)) < 0.01,
+                   "55c: uniform elongation wrong");
+
+        // F4: work hardening follows the tensile settings that are passed in
+        const CurveMathTools::WorkHardeningResult whPct = CurveMathTools::analyzeWorkHardening(
+                mw, gC, QString(), 11, false, false, 1, 0.002);
+        CHECK_COND(whPct.valid && whPct.strainInPercent && std::fabs(whPct.youngsModulus - E) < 0.005 * E,
+                   "55c: work hardening did not take strain unit % from the settings");
+        const CurveMathTools::WorkHardeningResult whFrac = CurveMathTools::analyzeWorkHardening(
+                mw, gC, QString(), 11, false, false, 0, 0.002);
+        std::cout << "[INFO] 55c: WH(mm/mm) valid=" << whFrac.valid << " pct=" << whFrac.strainInPercent
+                  << " E=" << whFrac.youngsModulus << " err='" << whFrac.error.toStdString() << "'\n";
+        CHECK_COND(!whFrac.valid || (!whFrac.strainInPercent && std::fabs(whFrac.youngsModulus - E / 100.0) < 0.01 * E / 100.0),
+                   "55c: work hardening ignored the mm/mm setting");
+    }
+
+    // ---- 55d: ambiguous units are flagged (label contradicts E; neither reading plausible)
+    {
+        QVector<double> xB;
+        for (double v : xA)
+            xB << v / 100.0;
+        Graph *gD = makeGraph(QStringLiteral("Ten55D"), xB, yA, QStringLiteral("%"), QStringLiteral("Strain"));
+        CHECK_COND(gD != nullptr, "55d: graph not created");
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gD, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        CHECK_COND(r.strainInPercent && r.strainUnitAmbiguous && !r.warnings.isEmpty()
+                           && std::fabs(r.youngsModulusIfFractionGPa - 70.0) < 0.5,
+                   "55d: '%' label on mm/mm data (E = 7000 GPa) not flagged");
+
+        QVector<double> xP, yP; // polymer-like, E = 2 GPa if %, 0.02 GPa if mm/mm
+        for (int i = 0; i <= 40; ++i) {
+            xP << 0.05 * i;
+            yP << 20.0 * 0.05 * i;
+        }
+        for (int i = 1; i <= 60; ++i) {
+            xP << 2.0 + 0.1 * i;
+            yP << 40.0 + (10.0 / 6.0) * (0.1 * i);
+        }
+        xP << 8.5;
+        yP << 2.0;
+        Graph *gP = makeGraph(QStringLiteral("Ten55P"), xP, yP, QString(), QStringLiteral("Strain"));
+        CHECK_COND(gP != nullptr, "55d: polymer graph not created");
+        const CurveMathTools::TensileResult rp = CurveMathTools::analyzeTensile(
+                mw, gP, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        std::cout << "[INFO] 55d: polymer pct=" << rp.strainInPercent << " ambiguous=" << rp.strainUnitAmbiguous
+                  << " src=" << rp.strainUnitSource.toStdString() << "\n";
+        CHECK_COND(rp.strainUnitAmbiguous && rp.strainUnitSource == QLatin1String("max strain")
+                           && !rp.warnings.isEmpty(),
+                   "55d: unit with E outside 5-1000 GPa either way not flagged as ambiguous");
+        const CurveMathTools::TensileResult rpUser = CurveMathTools::analyzeTensile(
+                mw, gP, QString(), 0.002, 1, qnan, qnan, false, false, false);
+        CHECK_COND(!rpUser.strainUnitAmbiguous && rpUser.strainUnitSource == QLatin1String("user"),
+                   "55d: explicit unit must not be flagged");
+    }
+
+    // ---- 55e: 5000 points in the elastic range (E = 200 GPa, +/-0.5 MPa noise)
+    {
+        QVector<double> xE, yE;
+        for (int i = 0; i < 5000; ++i) {
+            const double s = 400.0 * i / 4999.0;
+            xE << s / 2000.0; // % (E = 2000 MPa/%)
+            yE << ((i == 0) ? 0.0 : s + 0.5 * std::sin(1.3 * i));
+        }
+        const double H = 100.0 / 9.8; // MPa/% linear hardening from (0.2 %, 400) to (10 %, 500)
+        for (int k = 1; k <= 200; ++k) {
+            const double e = 0.2 + 9.8 * k / 200.0;
+            xE << e;
+            yE << 400.0 + H * (e - 0.2);
+        }
+        // Offset line 2000 (e - 0.2) meets 400 + H (e - 0.2) at e - 0.2 = 400 / (2000 - H)
+        const double rpExpected = 2000.0 * 400.0 / (2000.0 - H); // 402.05 MPa
+        Graph *gE = makeGraph(QStringLiteral("Ten55E"), xE, yE, QStringLiteral("%"), QStringLiteral("Strain"));
+        CHECK_COND(gE != nullptr, "55e: graph not created");
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gE, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        std::cout << "[INFO] 55e: valid=" << r.valid << " E=" << r.youngsModulus << " R2=" << r.elasticR2
+                  << " Rp0.2=" << r.offsetYieldY << " (expected " << rpExpected << ") elastic=["
+                  << r.elasticXMin << "," << r.elasticXMax << "] relaxed=" << r.elasticAutoRelaxed << "\n";
+        CHECK_COND(r.valid && !r.elasticAutoRelaxed && std::fabs(r.youngsModulus - 200000.0) < 0.005 * 200000.0,
+                   "55e: E from 5000-point elastic range deviates from 200 GPa");
+        CHECK_COND(std::fabs(r.offsetYieldY - rpExpected) < 1.0, "55e: sigma_0.2 deviates from 402.05 MPa");
+        CHECK_COND(r.elasticXMax - r.elasticXMin >= 0.15 * 500.0 / 2000.0 - 1e-6,
+                   "55e: elastic window narrower than 15 % of UTS");
+
+        // F4: linear hardening -> theta never meets sigma_t: Considere falls back to UTS with a
+        // reason, and sigma_s is NaN with a reason (no 1.08 x sigma substitute)
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                mw, gE, QString(), 11, false, false, -1, 0.002);
+        std::cout << "[INFO] 55e: WH valid=" << wh.valid << " fromUts=" << wh.considereFromUts
+                  << " sigma_s=" << wh.voceSigmaS << " note='" << wh.voceNote.toStdString() << "'\n";
+        CHECK_COND(wh.valid && wh.considereFromUts && !wh.considereNote.isEmpty(),
+                   "55e: missing Considere crossing not reported");
+        CHECK_COND(!std::isfinite(wh.voceSigmaS) && !wh.voceNote.isEmpty(),
+                   "55e: sigma_s must be NaN with a reason when Stage III does not fit");
+    }
+
+    // ---- 55f: 0.15 % toe in front of the curve
+    {
+        const double x0 = 0.15;
+        QVector<double> xF, yF;
+        for (int i = 0; i < 30; ++i) { // sigma = E' x^2 / (4 x0) for x < 2 x0, E' = 700 MPa/%
+            const double x = 0.01 * i;
+            xF << x;
+            yF << 700.0 * x * x / (4.0 * x0);
+        }
+        for (int i = 0; i <= 250; ++i) {
+            const double s = 105.0 + 395.0 * i / 250.0;
+            xF << x0 + roStrainPct(s);
+            yF << s;
+        }
+        xF << x0 + euPct + 0.5 << x0 + euPct + 1.0 << x0 + euPct + 1.2;
+        yF << 480.0 << 450.0 << 10.0;
+        Graph *gF = makeGraph(QStringLiteral("Ten55F"), xF, yF, QStringLiteral("%"), QStringLiteral("Strain"));
+        CHECK_COND(gF != nullptr, "55f: graph not created");
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gF, QString(), 0.002, -1, qnan, qnan, false, false, true);
+        std::cout << "[INFO] 55f: valid=" << r.valid << " x0=" << r.toeStrainX0 << " E=" << r.youngsModulus
+                  << " Rp0.2=" << r.offsetYieldY << " eu=" << r.uniformElongationPct << "\n";
+        CHECK_COND(r.valid && std::fabs(r.toeStrainX0 - x0) < 0.005, "55f: toe origin x0 not found");
+        CHECK_COND(std::fabs(r.offsetYieldY - 400.0) < 2.0 && std::fabs(r.youngsModulus - E) < 0.005 * E,
+                   "55f: E or sigma_0.2 wrong with toe");
+        CHECK_COND(std::fabs(r.uniformElongationPct - euPct) < 0.01
+                           && std::fabs(r.fractureElongationPct - efPct) < 0.01,
+                   "55f: elongations not measured from the toe-corrected origin");
+        CHECK_COND(r.trueStressTable != nullptr && r.trueStressTable->numRows() > 10,
+                   "55f: true stress table missing");
+        const int lastRow = r.trueStressTable->numRows() - 1;
+        const double epsTLast = r.trueStressTable->column(0)->valueAt(lastRow);
+        const double epsTFirst = r.trueStressTable->column(0)->valueAt(0);
+        std::cout << "[INFO] 55f: true strain first=" << epsTFirst << " last=" << epsTLast
+                  << " expected last=" << std::log1p(euPct / 100.0) << "\n";
+        CHECK_COND(epsTFirst >= 0.0 && std::fabs(epsTLast - std::log1p(euPct / 100.0)) < 2e-4,
+                   "55f: true strain does not include the toe correction");
+
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                mw, gF, QString(), 11, false, false, -1, 0.002);
+        CHECK_COND(wh.valid && std::fabs(wh.toeStrainX0 - x0) < 0.005,
+                   "55f: work hardening did not use the toe-corrected origin");
+    }
+
+    // ---- 55g: F8 exclusions are counted and reported
+    {
+        Table *tG = nullptr;
+        Graph *gG = makeGraph(QStringLiteral("Ten55G"), xA, yA, QStringLiteral("%"), QStringLiteral("Strain"), &tG);
+        CHECK_COND(gG != nullptr && tG != nullptr, "55g: graph not created");
+        tG->column(1)->setMasked(200, true);
+        tG->clearCell(210, 1);
+        gG->updatePlot();
+        const CurveMathTools::TensileResult r = CurveMathTools::analyzeTensile(
+                mw, gG, QString(), 0.002, -1, qnan, qnan, false, false, false);
+        std::cout << "[INFO] 55g: masked=" << r.excludedMaskedPoints << " nonfinite=" << r.excludedNonFinitePoints
+                  << " warnings=" << r.warnings.size() << "\n";
+        CHECK_COND(r.valid && r.excludedMaskedPoints == 1 && r.excludedNonFinitePoints == 1 && !r.warnings.isEmpty(),
+                   "55g: excluded points not counted/reported");
+        CHECK_COND(std::fabs(r.offsetYieldY - 400.0) < 2.0, "55g: sigma_0.2 changed by exclusions");
+    }
+
+    // ---- 55h: Considere point on a Hollomon curve (mm/mm), clean and serrated
+    {
+        const double K = 700.0, n = 0.12;
+        struct HPt { double e; double s; double epsT; };
+        std::vector<HPt> hp;
+        auto pushSig = [&](double st, double ep) {
+            const double epsT = st / E + ep;
+            const double e = std::expm1(epsT);
+            hp.push_back({ e, st / (1.0 + e), epsT });
+        };
+        for (int j = 0; j < 60; ++j) {
+            const double st = 232.0 * j / 60.0;
+            pushSig(st, std::pow(st / K, 1.0 / n));
+        }
+        for (int j = 0; j < 4000; ++j) {
+            const double ep = 1e-4 + (0.20 - 1e-4) * j / 3999.0;
+            pushSig(K * std::pow(ep, n), ep);
+        }
+        size_t iMax = 0;
+        for (size_t i = 0; i < hp.size(); ++i)
+            if (hp[i].s > hp[iMax].s)
+                iMax = i;
+        const double epsTuExpected = hp[iMax].epsT;
+
+        QVector<double> xH, yH;
+        for (const auto &p : hp) {
+            xH << p.e;
+            yH << p.s;
+        }
+        Graph *gH = makeGraph(QStringLiteral("Ten55H"), xH, yH, QStringLiteral("-"), QStringLiteral("Strain"));
+        CHECK_COND(gH != nullptr, "55h: graph not created");
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                mw, gH, QString(), 11, false, false, -1, 0.002);
+        std::cout << "[INFO] 55h: valid=" << wh.valid << " eps_u=" << wh.considereTrueStrain << " (max load at "
+                  << epsTuExpected << ") fromUts=" << wh.considereFromUts << " masked=" << wh.postNeckRowsMasked
+                  << " n=" << wh.hollomonN << "\n";
+        CHECK_COND(wh.valid && !wh.strainInPercent && !wh.considereFromUts
+                           && std::fabs(wh.considereTrueStrain - epsTuExpected) < 0.004,
+                   "55h: Considere point does not match the maximum load on a Hollomon curve");
+        CHECK_COND(std::fabs(wh.hollomonN - n) < 0.01, "55h: Hollomon n deviates from 0.12");
+
+        // theta accuracy (scaled normal equations) at eps_t ~ 0.06 against the analytic value
+        Table *tbl = wh.resultTable;
+        CHECK_COND(tbl != nullptr && tbl->numRows() > 100, "55h: work-hardening table missing");
+        int rowBest = 0;
+        for (int rr = 0; rr < tbl->numRows(); ++rr) {
+            if (std::fabs(tbl->column(0)->valueAt(rr) - 0.06) < std::fabs(tbl->column(0)->valueAt(rowBest) - 0.06))
+                rowBest = rr;
+        }
+        const double sT = tbl->column(1)->valueAt(rowBest);
+        const double epP = std::pow(sT / K, 1.0 / n);
+        const double dSdEp = n * sT / epP;
+        const double thetaExact = dSdEp / (1.0 + dSdEp / E);
+        const double thetaTbl = tbl->column(2)->valueAt(rowBest);
+        std::cout << "[INFO] 55h: theta(" << tbl->column(0)->valueAt(rowBest) << ")=" << thetaTbl
+                  << " exact=" << thetaExact << "\n";
+        CHECK_COND(std::fabs(thetaTbl - thetaExact) < 0.01 * thetaExact, "55h: theta deviates > 1 % from analytic");
+
+        // post-necking rows are masked, earlier rows are not
+        CHECK_COND(wh.postNeckRowsMasked > 0 && tbl->column(1)->isMasked(tbl->numRows() - 1)
+                           && !tbl->column(1)->isMasked(rowBest),
+                   "55h: post-necking rows not masked");
+
+        // Serrations (one-point load drops of 15 MPa) between eps_p 0.03 and 0.07 and equal-strain
+        // duplicate readings must not move the Considere point
+        QVector<double> xS, yS;
+        int cntSer = 0;
+        for (size_t i = 0; i < hp.size(); ++i) {
+            const double ep = hp[i].epsT - hp[i].s * (1.0 + hp[i].e) / E;
+            double s = hp[i].s;
+            if (ep > 0.03 && ep < 0.07 && (i % 40) == 0) {
+                s -= 15.0;
+                ++cntSer;
+            }
+            xS << hp[i].e;
+            yS << s;
+            if (i > 100 && (i % 100) == 0) { // duplicate reading at the same strain
+                xS << hp[i].e;
+                yS << s + 1.0;
+            }
+        }
+        Graph *gS = makeGraph(QStringLiteral("Ten55S"), xS, yS, QStringLiteral("-"), QStringLiteral("Strain"));
+        CHECK_COND(gS != nullptr, "55h: serrated graph not created");
+        const CurveMathTools::WorkHardeningResult whS = CurveMathTools::analyzeWorkHardening(
+                mw, gS, QString(), 11, false, false, -1, 0.002);
+        std::cout << "[INFO] 55h: serrated (" << cntSer << " drops) eps_u=" << whS.considereTrueStrain
+                  << " fromUts=" << whS.considereFromUts << " merged=" << whS.mergedDuplicatePoints
+                  << " note='" << whS.considereNote.toStdString() << "'\n";
+        CHECK_COND(whS.valid && !whS.considereFromUts && std::fabs(whS.considereTrueStrain - epsTuExpected) < 0.005,
+                   "55h: serrations moved the Considere point (early crossing accepted)");
+        CHECK_COND(whS.mergedDuplicatePoints > 0, "55h: equal-strain readings were not merged");
+    }
+
+    // ---- 55i: the work-hardening plot is still produced with a NaN sigma_s
+    {
+        Table *tSample = nullptr;
+        MultiLayer *mlS = CurveMathTools::loadSampleDataset(mw, "tensile_alznmg", true, &tSample, nullptr);
+        CHECK_COND(mlS != nullptr && mlS->activeGraph() != nullptr, "55i: sample not loaded");
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                mw, mlS->activeGraph(), QString(), 11, true, true, -1, 0.002);
+        std::cout << "[INFO] 55i: AA7075 eps_u=" << wh.considereTrueStrain << " sigma_u=" << wh.considereTrueStress
+                  << " sigma_s=" << wh.voceSigmaS << " fromUts=" << wh.considereFromUts << "\n";
+        CHECK_COND(wh.valid && wh.plot != nullptr && wh.considereTrueStrain > 0.05 && wh.considereTrueStrain < 0.20,
+                   "55i: AA7075 sample work-hardening analysis failed");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 55 Tensile & Work-Hardening Analysis Correctness passed!\n";
     return 0;
 }

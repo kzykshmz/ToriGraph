@@ -24459,6 +24459,24 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         outResult[QStringLiteral("construction_curve")] = tr.constructionCurveTitle;
         if (tr.trueStressTable)
             outResult[QStringLiteral("true_stress_table")] = tr.trueStressTable->name();
+        // F2/F3/F8/F10: unit decision, toe origin, elongations, exclusions and notes
+        outResult[QStringLiteral("strain_unit_source")] = tr.strainUnitSource;
+        outResult[QStringLiteral("strain_unit_ambiguous")] = tr.strainUnitAmbiguous;
+        outResult[QStringLiteral("youngs_modulus_gpa_if_percent")] =
+                safeJsonDouble(tr.youngsModulusIfPercentGPa);
+        outResult[QStringLiteral("youngs_modulus_gpa_if_fraction")] =
+                safeJsonDouble(tr.youngsModulusIfFractionGPa);
+        outResult[QStringLiteral("toe_strain_x0")] = safeJsonDouble(tr.toeStrainX0);
+        outResult[QStringLiteral("uniform_elongation_pct")] = safeJsonDouble(tr.uniformElongationPct);
+        outResult[QStringLiteral("uniform_plastic_elongation_pct")] =
+                safeJsonDouble(tr.uniformPlasticElongationPct);
+        outResult[QStringLiteral("fracture_elongation_pct")] = safeJsonDouble(tr.fractureElongationPct);
+        outResult[QStringLiteral("fracture_plastic_elongation_pct")] =
+                safeJsonDouble(tr.fracturePlasticElongationPct);
+        outResult[QStringLiteral("elastic_auto_relaxed")] = tr.elasticAutoRelaxed;
+        outResult[QStringLiteral("excluded_masked_points")] = tr.excludedMaskedPoints;
+        outResult[QStringLiteral("excluded_nonfinite_points")] = tr.excludedNonFinitePoints;
+        outResult[QStringLiteral("warnings")] = QJsonArray::fromStringList(tr.warnings);
         return true;
     }
 
@@ -24876,8 +24894,39 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                     QStringLiteral("Unknown curvemath.kocks_mecking plot_mode '%1' (expected 'considere' or 'kocks_mecking').")
                             .arg(rawMode));
         }
-        const CurveMathTools::WorkHardeningResult wh =
-                invokeAnalyzeWorkHardening(d_app, g, curveTitle, smoothWin, createPlot, kmPlot);
+        // Tensile settings shared with curvemath.offset_yield (F4)
+        int whStrainMode = -1;
+        if (params.contains(QStringLiteral("strain_in_percent"))
+            && !params.value(QStringLiteral("strain_in_percent")).isNull()) {
+            whStrainMode = params.value(QStringLiteral("strain_in_percent")).toBool(true) ? 1 : 0;
+        }
+        double whOffset = 0.002;
+        if (params.contains(QStringLiteral("offset_percent"))
+            && !params.value(QStringLiteral("offset_percent")).isNull()) {
+            whOffset = params.value(QStringLiteral("offset_percent")).toDouble(0.2) / 100.0;
+        } else if (params.contains(QStringLiteral("offset"))
+                   && !params.value(QStringLiteral("offset")).isNull()) {
+            whOffset = params.value(QStringLiteral("offset")).toDouble(0.002);
+        }
+        if (!std::isfinite(whOffset) || whOffset <= 0.0 || whOffset >= 0.5) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter 'offset' must be a finite strain fraction in (0, 0.5), e.g. 0.002 for 0.2% proof stress."));
+        }
+        const double whNaN = std::numeric_limits<double>::quiet_NaN();
+        double whElMin = whNaN, whElMax = whNaN;
+        if (params.contains(QStringLiteral("elastic_min"))
+            && !params.value(QStringLiteral("elastic_min")).isNull())
+            whElMin = params.value(QStringLiteral("elastic_min")).toDouble(whNaN);
+        if (params.contains(QStringLiteral("elastic_max"))
+            && !params.value(QStringLiteral("elastic_max")).isNull())
+            whElMax = params.value(QStringLiteral("elastic_max")).toDouble(whNaN);
+        if (std::isfinite(whElMin) && std::isfinite(whElMax) && whElMin >= whElMax) {
+            throwInvalidParams(
+                    QStringLiteral("curvemath.kocks_mecking requires elastic_min < elastic_max."));
+        }
+        const CurveMathTools::WorkHardeningResult wh = CurveMathTools::analyzeWorkHardening(
+                d_app, g, curveTitle, smoothWin, createPlot, kmPlot, whStrainMode, whOffset,
+                whElMin, whElMax);
         if (!wh.valid) {
             throwInvalidParams(wh.error.isEmpty()
                                        ? QStringLiteral("Kocks-Mecking work-hardening analysis failed.")
@@ -24899,7 +24948,16 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 safeJsonDouble(wh.considereEngStrainPct);
         outResult[QStringLiteral("hollomon_k")] = safeJsonDouble(wh.hollomonK);
         outResult[QStringLiteral("hollomon_n")] = safeJsonDouble(wh.hollomonN);
-        outResult[QStringLiteral("voce_sigma_s")] = safeJsonDouble(wh.voceSigmaS);
+        outResult[QStringLiteral("voce_sigma_s")] = safeJsonDouble(wh.voceSigmaS); // null on failure
+        outResult[QStringLiteral("voce_sigma_s_note")] = wh.voceNote;
+        outResult[QStringLiteral("considere_from_uts")] = wh.considereFromUts;
+        outResult[QStringLiteral("considere_note")] = wh.considereNote;
+        outResult[QStringLiteral("post_neck_rows_masked")] = wh.postNeckRowsMasked;
+        outResult[QStringLiteral("merged_duplicate_points")] = wh.mergedDuplicatePoints;
+        outResult[QStringLiteral("strain_in_percent")] = wh.strainInPercent;
+        outResult[QStringLiteral("youngs_modulus")] = safeJsonDouble(wh.youngsModulus);
+        outResult[QStringLiteral("toe_strain_x0")] = safeJsonDouble(wh.toeStrainX0);
+        outResult[QStringLiteral("warnings")] = QJsonArray::fromStringList(wh.warnings);
         if (wh.resultTable)
             outResult[QStringLiteral("table")] = wh.resultTable->name();
         if (wh.plot)
