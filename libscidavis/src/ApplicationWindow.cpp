@@ -16888,6 +16888,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
                 fnt.setUnderline(fList[5].toInt());
                 fnt.setStrikeOut(fList[6].toInt());
+                if (fList.size() >= 8 && fList[7].toDouble() > 0.0)
+                    fnt.setPointSizeF(fList[7].toDouble()); // exact pt (e.g. 12.9)
                 ag->setTitleFont(fnt);
             }
         } else if (s.startsWith(QLatin1String("AxesTitles\t"))) {
@@ -16920,6 +16922,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
                 fnt.setUnderline(fList[5].toInt());
                 fnt.setStrikeOut(fList[6].toInt());
+                if (fList.size() >= 8 && fList[7].toDouble() > 0.0)
+                    fnt.setPointSizeF(fList[7].toDouble()); // exact pt (e.g. 12.9)
 
                 int axis = (fList[0].right(1)).toInt();
                 ag->setAxisTitleFont(axis, fnt);
@@ -16930,6 +16934,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 QFont fnt = QFont(fList[1], fList[2].toInt(), fList[3].toInt(), fList[4].toInt());
                 fnt.setUnderline(fList[5].toInt());
                 fnt.setStrikeOut(fList[6].toInt());
+                if (fList.size() >= 8 && fList[7].toDouble() > 0.0)
+                    fnt.setPointSizeF(fList[7].toDouble()); // exact pt (e.g. 12.9)
 
                 int axis = (fList[0].right(1)).toInt();
                 ag->setAxisFont(axis, fnt);

@@ -114,6 +114,8 @@ private:
     int symbolsMaxLineLength() const;
     bool isScatterOnly() const;
     QString parse(const QString &str) const;
+    //! The stored font enlarged by the page zoom of the parent plot (screen drawing only).
+    QFont displayFont() const;
 
 protected:
     //! Parent plot

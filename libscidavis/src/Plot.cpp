@@ -2347,3 +2347,147 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
     }
     return QwtPlot::eventFilter(object, e);
 }
+
+// ---- Display-only font zoom (page zoom with Ctrl+wheel) ----------------------------------------
+
+QFont Plot::zoomFont(ZoomFontSlot &slot, const QFont &stored)
+{
+    slot.active = false;
+    const double scale = d_display_font_scale;
+    if (std::fabs(scale - 1.0) < 1e-9)
+        return stored;
+    const double pt = stored.pointSizeF();
+    const int px = stored.pixelSize();
+    if (pt <= 0.0 && px <= 0)
+        return stored;
+
+    QFont shown = stored;
+    slot.pixel = (pt <= 0.0);
+    if (slot.pixel) {
+        slot.storedSize = px;
+        shown.setPixelSize(qMax(1, qRound(px * scale)));
+        slot.shownSize = shown.pixelSize();
+    } else {
+        slot.storedSize = pt;
+        shown.setPointSizeF(qMax(0.5, pt * scale));
+        slot.shownSize = shown.pointSizeF();
+    }
+    slot.active = true;
+    return shown;
+}
+
+QFont Plot::unzoomFont(const ZoomFontSlot &slot, const QFont &shown) const
+{
+    if (!slot.active)
+        return shown;
+    const double cur = slot.pixel ? double(shown.pixelSize()) : shown.pointSizeF();
+    if (cur <= 0.0 || std::fabs(cur - slot.shownSize) > 1e-3)
+        return shown; // written behind our back (in stored units): take it as it is
+    QFont stored = shown;
+    if (slot.pixel)
+        stored.setPixelSize(qRound(slot.storedSize));
+    else
+        stored.setPointSizeF(slot.storedSize);
+    return stored;
+}
+
+QFont Plot::displayFont(const QFont &stored) const
+{
+    const double scale = d_display_font_scale;
+    if (std::fabs(scale - 1.0) < 1e-9)
+        return stored;
+    QFont shown = stored;
+    if (stored.pointSizeF() > 0.0)
+        shown.setPointSizeF(qMax(0.5, stored.pointSizeF() * scale));
+    else if (stored.pixelSize() > 0)
+        shown.setPixelSize(qMax(1, qRound(stored.pixelSize() * scale)));
+    return shown;
+}
+
+void Plot::setAxisFont(int axisId, const QFont &f)
+{
+    if (axisId < 0 || axisId >= axisCnt) {
+        QwtPlot::setAxisFont(axisId, f);
+        return;
+    }
+    QwtPlot::setAxisFont(axisId, zoomFont(d_zoom_axis_font[axisId], f));
+}
+
+QFont Plot::axisFont(int axisId) const
+{
+    const QFont shown = QwtPlot::axisFont(axisId);
+    if (axisId < 0 || axisId >= axisCnt)
+        return shown;
+    return unzoomFont(d_zoom_axis_font[axisId], shown);
+}
+
+void Plot::setAxisTitle(int axisId, const QwtText &t)
+{
+    if (axisId < 0 || axisId >= axisCnt
+        || !t.testPaintAttribute(QwtText::PaintUsingTextFont)) {
+        if (axisId >= 0 && axisId < axisCnt)
+            d_zoom_axis_title_font[axisId].active = false;
+        QwtPlot::setAxisTitle(axisId, t);
+        return;
+    }
+    QwtText shown = t;
+    shown.setFont(zoomFont(d_zoom_axis_title_font[axisId], t.font()));
+    QwtPlot::setAxisTitle(axisId, shown);
+}
+
+QwtText Plot::axisTitle(int axisId) const
+{
+    QwtText t = QwtPlot::axisTitle(axisId);
+    if (axisId < 0 || axisId >= axisCnt || !t.testPaintAttribute(QwtText::PaintUsingTextFont))
+        return t;
+    const ZoomFontSlot &slot = d_zoom_axis_title_font[axisId];
+    if (slot.active)
+        t.setFont(unzoomFont(slot, t.font()));
+    return t;
+}
+
+void Plot::setTitle(const QwtText &t)
+{
+    if (!t.testPaintAttribute(QwtText::PaintUsingTextFont)) {
+        d_zoom_title_font.active = false;
+        QwtPlot::setTitle(t);
+        return;
+    }
+    QwtText shown = t;
+    shown.setFont(zoomFont(d_zoom_title_font, t.font()));
+    QwtPlot::setTitle(shown);
+}
+
+QwtText Plot::title() const
+{
+    QwtText t = QwtPlot::title();
+    if (d_zoom_title_font.active && t.testPaintAttribute(QwtText::PaintUsingTextFont))
+        t.setFont(unzoomFont(d_zoom_title_font, t.font()));
+    return t;
+}
+
+void Plot::setDisplayFontScale(double scale)
+{
+    if (!std::isfinite(scale) || scale <= 0.0)
+        scale = 1.0;
+    scale = qBound(0.05, scale, 20.0);
+    if (std::fabs(scale - d_display_font_scale) < 1e-9)
+        return;
+
+    // Read every stored font at the old zoom, then write it back at the new one. The stored pt
+    // is carried over as is, so zooming 2.0 -> 0.5 -> 1.0 ends on exactly the original fonts.
+    QFont axisFonts[axisCnt];
+    QwtText axisTitles[axisCnt];
+    for (int a = 0; a < axisCnt; ++a) {
+        axisFonts[a] = axisFont(a);
+        axisTitles[a] = axisTitle(a);
+    }
+    const QwtText plotTitle = title();
+
+    d_display_font_scale = scale;
+    for (int a = 0; a < axisCnt; ++a) {
+        setAxisFont(a, axisFonts[a]);
+        setAxisTitle(a, axisTitles[a]);
+    }
+    setTitle(plotTitle);
+}

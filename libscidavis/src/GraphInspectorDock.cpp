@@ -108,6 +108,25 @@
 
 namespace {
 
+// Font size box: whole sizes read "14 pt", fractional ones "12.9 pt" (the lab slide preset).
+class InspectorPtSpinBox : public QDoubleSpinBox
+{
+public:
+    explicit InspectorPtSpinBox(QWidget *parent) : QDoubleSpinBox(parent)
+    {
+        setDecimals(1);
+        setSingleStep(1.0);
+    }
+
+protected:
+    QString textFromValue(double v) const override
+    {
+        const double r = std::round(v * 10.0) / 10.0;
+        const bool whole = std::fabs(r - std::round(r)) < 1e-9;
+        return locale().toString(r, 'f', whole ? 0 : 1);
+    }
+};
+
 enum TreeItemRoles {
     RoleSelKind = Qt::UserRole + 1,
     RolePrimaryId = Qt::UserRole + 2,
@@ -2647,26 +2666,26 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     fntGrid->setVerticalSpacing(4);
 
     d_lbl_title_pt = new QLabel(page);
-    d_spin_axis_title_pt = new QSpinBox(page);
+    d_spin_axis_title_pt = new InspectorPtSpinBox(page);
     d_spin_axis_title_pt->setRange(6, 72);
     d_spin_axis_title_pt->setSuffix(QStringLiteral(" pt"));
-    connect(d_spin_axis_title_pt, QOverload<int>::of(&QSpinBox::valueChanged), this,
-            [this](int pt) {
+    connect(d_spin_axis_title_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double pt) {
                 Graph *g = activeLayer();
                 const QVector<Graph *> targets = targetLayersForScope();
                 if (d_syncing_props || !d_target_ml || !g || targets.isEmpty())
                     return;
                 const bool lockAll4 = d_chk_lock_all_axes_font && d_chk_lock_all_axes_font->isChecked();
-                const int oldTitlePt =
-                        qMax(6, g->axisTitleFont(d_active_axis).pointSize() > 0
-                                     ? g->axisTitleFont(d_active_axis).pointSize()
-                                     : 14);
-                const int oldTickPt =
-                        qMax(6, g->axisFont(d_active_axis).pointSize() > 0
-                                     ? g->axisFont(d_active_axis).pointSize()
-                                     : 12);
-                const int scaledTickPt =
-                        qBound(6, qRound(double(oldTickPt) * double(pt) / double(oldTitlePt)), 72);
+                const double oldTitlePt =
+                        qMax(6.0, g->axisTitleFont(d_active_axis).pointSizeF() > 0.0
+                                     ? g->axisTitleFont(d_active_axis).pointSizeF()
+                                     : 14.0);
+                const double oldTickPt =
+                        qMax(6.0, g->axisFont(d_active_axis).pointSizeF() > 0.0
+                                     ? g->axisFont(d_active_axis).pointSizeF()
+                                     : 12.0);
+                const double scaledTickPt =
+                        qBound(6.0, std::round(oldTickPt * pt / oldTitlePt * 10.0) / 10.0, 72.0);
 
                 const QString before = d_target_ml->captureUndoSnapshot();
                 auto applyLayerFonts = [&](Graph *lg) {
@@ -2677,13 +2696,13 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                             QFont tf = lg->axisTitleFont(a);
                             if (tf.family().trimmed().isEmpty())
                                 tf.setFamily(QStringLiteral("Arial"));
-                            tf.setPointSize(pt);
+                            tf.setPointSizeF(pt);
                             lg->setAxisTitleFont(a, tf);
 
                             QFont nf = lg->axisFont(a);
                             if (nf.family().trimmed().isEmpty())
                                 nf.setFamily(QStringLiteral("Arial"));
-                            nf.setPointSize(scaledTickPt);
+                            nf.setPointSizeF(scaledTickPt);
                             lg->setAxisFont(a, nf);
                         }
                         for (Graph *cand : d_target_ml->layersList()) {
@@ -2692,13 +2711,13 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                                     QFont ctf = cand->axisTitleFont(a);
                                     if (ctf.family().trimmed().isEmpty())
                                         ctf.setFamily(QStringLiteral("Arial"));
-                                    ctf.setPointSize(pt);
+                                    ctf.setPointSizeF(pt);
                                     cand->setAxisTitleFont(a, ctf);
 
                                     QFont cnf = cand->axisFont(a);
                                     if (cnf.family().trimmed().isEmpty())
                                         cnf.setFamily(QStringLiteral("Arial"));
-                                    cnf.setPointSize(scaledTickPt);
+                                    cnf.setPointSizeF(scaledTickPt);
                                     cand->setAxisFont(a, cnf);
                                 }
                                 cand->replot();
@@ -2708,7 +2727,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                         QFont tf = lg->axisTitleFont(d_active_axis);
                         if (tf.family().trimmed().isEmpty())
                             tf.setFamily(QStringLiteral("Arial"));
-                        tf.setPointSize(pt);
+                        tf.setPointSizeF(pt);
                         lg->setAxisTitleFont(d_active_axis, tf);
                     }
                     lg->replot();
@@ -2725,11 +2744,11 @@ QWidget *GraphInspectorDock::buildAxisInspector()
             });
 
     d_lbl_tick_pt = new QLabel(page);
-    d_spin_axis_tick_pt = new QSpinBox(page);
+    d_spin_axis_tick_pt = new InspectorPtSpinBox(page);
     d_spin_axis_tick_pt->setRange(6, 72);
     d_spin_axis_tick_pt->setSuffix(QStringLiteral(" pt"));
-    connect(d_spin_axis_tick_pt, QOverload<int>::of(&QSpinBox::valueChanged), this,
-            [this](int pt) {
+    connect(d_spin_axis_tick_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double pt) {
                 const QVector<Graph *> targets = targetLayersForScope();
                 if (d_syncing_props || !d_target_ml || targets.isEmpty())
                     return;
@@ -2743,7 +2762,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                             QFont f = lg->axisFont(a);
                             if (f.family().trimmed().isEmpty())
                                 f.setFamily(QStringLiteral("Arial"));
-                            f.setPointSize(pt);
+                            f.setPointSizeF(pt);
                             lg->setAxisFont(a, f);
                         }
                         for (Graph *cand : d_target_ml->layersList()) {
@@ -2752,7 +2771,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                                     QFont cf = cand->axisFont(a);
                                     if (cf.family().trimmed().isEmpty())
                                         cf.setFamily(QStringLiteral("Arial"));
-                                    cf.setPointSize(pt);
+                                    cf.setPointSizeF(pt);
                                     cand->setAxisFont(a, cf);
                                 }
                                 cand->replot();
@@ -2762,7 +2781,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                         QFont f = lg->axisFont(d_active_axis);
                         if (f.family().trimmed().isEmpty())
                             f.setFamily(QStringLiteral("Arial"));
-                        f.setPointSize(pt);
+                        f.setPointSizeF(pt);
                         lg->setAxisFont(d_active_axis, f);
                     }
                     lg->replot();
@@ -4057,11 +4076,12 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     });
 
     d_lbl_leg_font_pt = new QLabel(page);
-    d_spin_leg_font_pt = new QSpinBox(page);
+    d_spin_leg_font_pt = new InspectorPtSpinBox(page);
     d_spin_leg_font_pt->setRange(6, 72);
     d_spin_leg_font_pt->setValue(12);
     d_spin_leg_font_pt->setSuffix(QStringLiteral(" pt"));
-    connect(d_spin_leg_font_pt, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int pt) {
+    connect(d_spin_leg_font_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double pt) {
         Graph *g = activeLayer();
         if (d_syncing_props || !d_target_ml || !g)
             return;
@@ -4078,7 +4098,7 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         QFont f = target->font();
         if (f.family().trimmed().isEmpty())
             f.setFamily(QStringLiteral("Arial"));
-        f.setPointSize(pt);
+        f.setPointSizeF(pt);
         target->setFont(f);
         g->replot();
         emit g->modifiedGraph();
@@ -5502,9 +5522,9 @@ void GraphInspectorDock::syncAxisControls()
 
         d_edit_axis_title->setText(g->axisTitle(ax));
         const QFont tf = g->axisTitleFont(ax);
-        d_spin_axis_title_pt->setValue(tf.pointSize() > 0 ? tf.pointSize() : 14);
+        d_spin_axis_title_pt->setValue(tf.pointSizeF() > 0.0 ? tf.pointSizeF() : 14.0);
         const QFont nf = g->axisFont(ax);
-        d_spin_axis_tick_pt->setValue(nf.pointSize() > 0 ? nf.pointSize() : 12);
+        d_spin_axis_tick_pt->setValue(nf.pointSizeF() > 0.0 ? nf.pointSizeF() : 12.0);
     }
 
     d_syncing_props = false;
@@ -5873,7 +5893,7 @@ void GraphInspectorDock::syncLegendControls()
         }
 
         const QFont lf = leg->font();
-        d_spin_leg_font_pt->setValue(lf.pointSize() > 0 ? lf.pointSize() : 12);
+        d_spin_leg_font_pt->setValue(lf.pointSizeF() > 0.0 ? lf.pointSizeF() : 12.0);
     } else {
         QSignalBlocker b(d_edit_leg_header);
         d_edit_leg_header->clear();

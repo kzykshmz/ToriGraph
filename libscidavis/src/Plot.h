@@ -122,6 +122,27 @@ public:
     static bool isLog10ScaleEngine(const QwtScaleEngine *se);
     static double printDeviceScale();
 
+    // Display-only font zoom used by the page zoom (Ctrl+wheel). Fonts handed to the setters
+    // below are the stored fonts (the pt values that are saved, exported and shown in dialogs);
+    // the Qwt widgets draw them multiplied by the zoom. The getters give the stored fonts back
+    // unchanged, so the zoom never leaks into project files, exports or the inspector, and
+    // zooming back to 100 % restores the exact original pt (no rounding drift).
+    void setDisplayFontScale(double scale);
+    double displayFontScale() const { return d_display_font_scale; }
+    //! Stored font -> the font to draw on screen at the current display zoom.
+    QFont displayFont(const QFont &stored) const;
+
+    // These hide the QwtPlot members of the same name (which are not virtual); every ToriGraph
+    // caller goes through Plot *, Qwt itself keeps seeing the zoomed widget fonts.
+    void setAxisFont(int axisId, const QFont &f);
+    QFont axisFont(int axisId) const;
+    void setAxisTitle(int axisId, const QString &t) { QwtPlot::setAxisTitle(axisId, t); }
+    void setAxisTitle(int axisId, const QwtText &t);
+    QwtText axisTitle(int axisId) const;
+    void setTitle(const QString &t) { QwtPlot::setTitle(t); }
+    void setTitle(const QwtText &t);
+    QwtText title() const;
+
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],
                    const QwtPlotPrintFilter &pfilter) const override;
@@ -146,5 +167,21 @@ protected:
     QTimer *d_wheel_undo_timer;
     QString d_pending_wheel_undo_snap;
     QPoint d_pan_last_pos;
+
+private:
+    struct ZoomFontSlot
+    {
+        bool active = false; // the widget currently shows a zoomed copy of the stored font
+        bool pixel = false; // the stored font is sized in pixels, not points
+        double storedSize = 0.0;
+        double shownSize = 0.0;
+    };
+    QFont zoomFont(ZoomFontSlot &slot, const QFont &stored);
+    QFont unzoomFont(const ZoomFontSlot &slot, const QFont &shown) const;
+
+    double d_display_font_scale = 1.0;
+    ZoomFontSlot d_zoom_axis_font[axisCnt];
+    ZoomFontSlot d_zoom_axis_title_font[axisCnt];
+    ZoomFontSlot d_zoom_title_font;
 };
 #endif

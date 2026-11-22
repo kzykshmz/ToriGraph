@@ -393,6 +393,14 @@ void Legend::setFont(const QFont &font)
     d_text->setFont(resolved);
 }
 
+QFont Legend::displayFont() const
+{
+    // d_text keeps the stored pt (saved and shown in dialogs); the page zoom only enlarges the
+    // text when it is measured and drawn. Compact-style decisions keep using the stored size.
+    const QFont stored = d_text ? d_text->font() : QFont(QStringLiteral("Arial"), 12);
+    return d_plot ? d_plot->displayFont(stored) : stored;
+}
+
 void Legend::setNumColumns(int cols)
 {
     const int clamped = qMax(1, cols);
@@ -438,7 +446,7 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
             itemW = sampleOffset;
 
         QwtText aux(parse(str));
-        aux.setFont(d_text->font());
+        aux.setFont(displayFont());
         const QSize size = aux.textSize();
         const int screenW = map.isIdentity() ? size.width() : map.layoutToScreenX(size.width());
         const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
@@ -513,7 +521,7 @@ int Legend::itemIndexAt(const QPoint &canvasPos) const
         if (str.contains("\\c{") || str.contains("\\p{") || str.contains("\\l("))
             itemW = sampleOffset;
         QwtText aux(parse(str));
-        aux.setFont(d_text->font());
+        aux.setFont(displayFont());
         const QSize size = aux.textSize();
         const int padW = qMax(6, qRound(0.03 * size.width()) + 4);
         itemW += size.width() + padW;
@@ -813,7 +821,7 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
             x += sampleOffset;
 
         QwtText aux(parse(str));
-        aux.setFont(d_text->font());
+        aux.setFont(displayFont());
         aux.setColor(d_text->color());
         aux.setRenderFlags(Qt::AlignLeft | Qt::AlignVCenter);
 

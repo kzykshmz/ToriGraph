@@ -135,7 +135,7 @@ void QwtPieCurve::drawPie(QPainter *painter, const QwtScaleMap &xMap, const QwtS
         QRect lr = leg->rect();
         if (lr.width() <= 4 || lr.height() <= 4) {
             QwtText qt(leg->text());
-            qt.setFont(leg->font());
+            qt.setFont(g->plotWidget()->displayFont(leg->font()));
             const QSize tsz = qt.textSize();
             lr = QRect(4, 4, qMax(24, tsz.width() + 28), qMax(16, tsz.height() + 8));
         }
