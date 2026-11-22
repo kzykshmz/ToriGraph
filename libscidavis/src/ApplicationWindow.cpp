@@ -13888,14 +13888,29 @@ void ApplicationWindow::timerEvent(QTimerEvent *e)
 // ---------------------------------------------------------------------------------------------
 
 static bool s_crash_recovery_enabled = false;
+static QString s_recovery_dir_override;
+static std::function<ApplicationWindow::RecoveryAnswer(const QString &)> s_recovery_prompt_override;
 
 void ApplicationWindow::setCrashRecoveryEnabled(bool on)
 {
     s_crash_recovery_enabled = on;
 }
 
+void ApplicationWindow::setRecoveryDirPathOverride(const QString &path)
+{
+    s_recovery_dir_override = path;
+}
+
+void ApplicationWindow::setCrashRecoveryPromptOverride(
+        std::function<RecoveryAnswer(const QString &)> answer)
+{
+    s_recovery_prompt_override = std::move(answer);
+}
+
 QString ApplicationWindow::recoveryDirPath()
 {
+    if (!s_recovery_dir_override.isEmpty())
+        return s_recovery_dir_override;
     QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (base.isEmpty())
         base = QDir::tempPath() + QStringLiteral("/ToriGraph");
@@ -14055,16 +14070,32 @@ void ApplicationWindow::checkCrashRecovery()
                         : tr("Restoring opens the copy as a new, unsaved project."));
         QPushButton *restoreBtn = box.addButton(tr("Restore"), QMessageBox::AcceptRole);
         QPushButton *discardBtn = box.addButton(tr("Discard Copy"), QMessageBox::DestructiveRole);
-        box.addButton(tr("Decide Later"), QMessageBox::RejectRole);
+        QPushButton *laterBtn = box.addButton(tr("Decide Later"), QMessageBox::RejectRole);
         box.setDefaultButton(restoreBtn);
-        box.exec();
+        QAbstractButton *answer = nullptr;
+        if (s_recovery_prompt_override) {
+            switch (s_recovery_prompt_override(metaPath)) {
+            case RecoveryRestore:
+                answer = restoreBtn;
+                break;
+            case RecoveryDiscard:
+                answer = discardBtn;
+                break;
+            case RecoveryDecideLater:
+                answer = laterBtn;
+                break;
+            }
+        } else {
+            box.exec();
+            answer = box.clickedButton();
+        }
 
-        if (box.clickedButton() == discardBtn) {
+        if (answer == discardBtn) {
             QFile::remove(metaPath);
             QFile::remove(dataPath);
             continue;
         }
-        if (box.clickedButton() != restoreBtn)
+        if (answer != restoreBtn)
             continue; // keep the copy and ask again at the next start
 
         ApplicationWindow *restored = openProject(dataPath);
