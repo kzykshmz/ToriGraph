@@ -2800,8 +2800,10 @@ void Table::showColMenu(int col)
 
 bool Table::eventFilter(QObject *watched, QEvent *event)
 {
-    // Worksheet-only keys that collide with application shortcuts (Ctrl+F = new function plot,
-    // Ctrl+H = help): while the worksheet has the focus they go to the worksheet. The menu
+    // Worksheet keys: Ctrl+F = find, Ctrl+H = replace, Ctrl+D = fill down. Ctrl+H and Ctrl+D
+    // are also application shortcuts (Ctrl+H = help, Ctrl+D = data reader in graphs), and a
+    // Ctrl+F menu shortcut may be assigned again later (New Function Plot is Ctrl+Shift+F now).
+    // While the worksheet has the focus these keys go to the worksheet; the application
     // shortcuts themselves are unchanged.
     if (event->type() == QEvent::ShortcutOverride
         && (watched == this || watched == d_view_widget

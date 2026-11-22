@@ -27,6 +27,8 @@
 
 #include "ModernUiTheme.h"
 #include "IconLoader.h"
+#include "Folder.h"
+#include "MyWidget.h"
 
 #include <QAbstractButton>
 #include <QAbstractSlider>
@@ -1296,7 +1298,8 @@ static QString matchByTextAndToolTip(const QString &rawText, const QString &rawT
         return QStringLiteral("new-folder");
     if (has("new table") || textIs("worksheet") || has("convert to table") || has("intensity table")
         || has("insert empty rows") || has("add rows") || has("新しいテーブル")
-        || has("新規テーブル") || has("行を追加") || has("空の行を挿入"))
+        || has("新規テーブル") || has("新規ワークシート") || has("新しいワークシート")
+        || has("ワークシートへ変換") || has("行を追加") || has("空の行を挿入"))
         return QStringLiteral("new-table");
     if (has("new matrix") || has("convert to matrix") || has("新しい行列") || has("新規マトリクス"))
         return QStringLiteral("new-matrix");
@@ -2302,8 +2305,22 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
                 QTreeWidgetItem *item = *it;
                 const QString typeStr = item->text(1).toLower();
                 QString itemId = QStringLiteral("new-graph");
-                if (typeStr.contains(QStringLiteral("table"))
-                    || typeStr.contains(QString::fromUtf8("テーブル")))
+                // Decide by the window's class, not by the translated "Type" text: the Japanese
+                // name of a table changed ("テーブル" -> "ワークシート") and tables got the
+                // graph icon. The text is only a fallback for rows without a window.
+                MyWidget *rowWindow = (item->type() == WindowListItem::WindowType)
+                        ? static_cast<WindowListItem *>(item)->window()
+                        : nullptr;
+                if (rowWindow) {
+                    if (rowWindow->inherits("Table"))
+                        itemId = QStringLiteral("new-table");
+                    else if (rowWindow->inherits("Matrix"))
+                        itemId = QStringLiteral("new-matrix");
+                    else if (rowWindow->inherits("Note"))
+                        itemId = QStringLiteral("new-note");
+                } else if (typeStr.contains(QStringLiteral("table"))
+                    || typeStr.contains(QString::fromUtf8("テーブル"))
+                    || typeStr.contains(QString::fromUtf8("ワークシート")))
                     itemId = QStringLiteral("new-table");
                 else if (typeStr.contains(QStringLiteral("matrix"))
                          || typeStr.contains(QString::fromUtf8("行列")))

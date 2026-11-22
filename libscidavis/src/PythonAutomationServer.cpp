@@ -11306,44 +11306,20 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     QStringLiteral("Output project 'path' is an existing directory: %1").arg(finalPath));
 
         sanitizeAllProjectFunctionCurves(d_app);
-        const QByteArray rawBytes = d_app->saveProjectToByteArray();
-        if (rawBytes.isEmpty())
-            throwRpcRuntime(QStringLiteral("Failed to serialize project in memory."));
 
-        const QByteArray outBytes = finalPath.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive)
-                ? gzipCompressBytes(rawBytes)
-                : rawBytes;
-
-        bool wroteOk = false;
-        QString writeErr;
-        {
-            QSaveFile sf(finalPath);
-            if (sf.open(QIODevice::WriteOnly)) {
-                if (sf.write(outBytes) == outBytes.size() && sf.commit())
-                    wroteOk = true;
-                else
-                    writeErr = sf.errorString();
-            } else {
-                writeErr = sf.errorString();
-            }
-        }
-        if (!wroteOk) {
-            QFile directOut(finalPath);
-            if (directOut.open(QIODevice::WriteOnly | QIODevice::Truncate)
-                && directOut.write(outBytes) == outBytes.size() && directOut.flush()) {
-                directOut.close();
-                wroteOk = true;
-            } else {
-                writeErr = directOut.errorString();
-            }
-        }
-        if (!wroteOk || !QFileInfo::exists(finalPath) || QFileInfo(finalPath).size() <= 0) {
+        // Same safe path as File > Save: write "<name>.new", commit it, then swap it in and
+        // keep the previous version as "<name>~" (".gz" goes through a scratch file). The
+        // existing project file is never opened for writing, so a failed save leaves it intact.
+        if (!d_app->writeProjectFile(d_app->projectFolder(), finalPath)
+            || !QFileInfo::exists(finalPath) || QFileInfo(finalPath).size() <= 0) {
             throwRpcRuntime(
-                    QStringLiteral("Failed to write project file '%1': %2")
-                            .arg(finalPath, writeErr));
+                    QStringLiteral("Failed to write project file '%1'. If a previous version "
+                                   "existed it has not been changed.")
+                            .arg(finalPath));
         }
         d_app->projectname = finalPath;
-        d_app->savedProject();
+        // Keep the GUI undo history (only its clean state moves), as File > Save does.
+        d_app->markProjectSaved();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("path")] = finalPath;
         outResult[QStringLiteral("compressed")] =

@@ -481,6 +481,18 @@ static void registerInspectorExtraTranslations()
         reg("Rebuild the legend text from the current curves (custom text is replaced)",
             "今の曲線から凡例の文字を作り直します (書き換えた文字は置き換わります)");
         reg("Click to choose a color (now %1)", "クリックして色を選びます (現在 %1)");
+        // C2: "Details..." / its tooltip are also registered by ToriUx::registerUxTranslations(),
+        // which skips words that already have a translation ("Details" -> "詳細..."). Pin the
+        // inspector's wording for this context so it does not depend on registration order.
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("Details..."),
+                QString::fromUtf8("詳細設定…"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"),
+                QStringLiteral("Open the dialog with every setting for this section"),
+                QString::fromUtf8("この節のすべての設定があるダイアログを開く"));
+        reg("Open the dialog with every setting for this section",
+            "この節のすべての設定があるダイアログを開く");
         reg("Color %1", "色 %1");
         reg("Edit the text. Each line of a multi-line label is one line here.",
             "文字を編集します。複数行のテキストは、ここでも 1 行ずつ改行して書きます。");
@@ -7364,5 +7376,27 @@ void GraphInspectorDock::retranslateUi()
                 QCoreApplication::translate("QObject", tipFmt.toUtf8().constData());
         const QString tipArg = tb->property("_tg_tip_arg").toString();
         tb->setToolTip(tipArg.isEmpty() ? translated : translated.arg(tipArg));
+    }
+
+    // C2 "Details..." button (built once in the constructor, so it is retranslated here).
+    if (QPushButton *detailsBtn = findChild<QPushButton *>(QStringLiteral("InspectorDetailsButton"))) {
+        detailsBtn->setText(tr("Details..."));
+        detailsBtn->setToolTip(tr("Open the dialog with every setting for this section"));
+    }
+    // H7 colour swatches: the automatic tooltip contains the colour ("... (now #000000)"), so a
+    // text lookup cannot translate it after a language switch. Rebuild it from the colour.
+    for (QPushButton *sw : findChildren<QPushButton *>(QStringLiteral("InspectorColorSwatchBtn"))) {
+        if (!sw)
+            continue;
+        const QString autoTip = sw->property("autoSwatchTip").toString();
+        if (autoTip.isEmpty() || sw->toolTip() != autoTip)
+            continue; // a specific tooltip set elsewhere
+        const QString hex = sw->text().trimmed();
+        const QString tip =
+                QCoreApplication::translate("GraphInspectorDock", "Click to choose a color (now %1)")
+                        .arg(hex);
+        sw->setToolTip(tip);
+        sw->setProperty("autoSwatchTip", tip);
+        sw->setAccessibleName(QCoreApplication::translate("GraphInspectorDock", "Color %1").arg(hex));
     }
 }

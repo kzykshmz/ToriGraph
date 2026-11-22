@@ -41,6 +41,10 @@ void registerJapaneseStrings()
         "代わりにグラフの画像(EMF ベクターと %1 dpi の PNG)をクリップボードに載せました。"
         "貼り付けはできますが、PowerPoint から再編集はできません。");
     reg("Nothing was placed on the clipboard.", "クリップボードには何も載せていません。");
+    reg("A picture of the graph (bitmap only) was placed on the clipboard instead. It can be "
+        "pasted, but not edited again from PowerPoint.",
+        "代わりにグラフの画像 (ビットマップのみ) をクリップボードに載せました。貼り付けはできますが、"
+        "PowerPoint から再編集はできません。");
     reg("The clipboard is in use by another program. Wait a moment and try again.",
         "クリップボードを他のプログラムが使用中です。少し待ってからもう一度お試しください。");
     reg("OLE could not be initialized in this ToriGraph session. Restart ToriGraph and try again.",
@@ -2165,6 +2169,60 @@ QStringList dataDependenciesForWindow(ApplicationWindow *app, MyWidget *w)
         while (it.hasNext())
             addTableOf(it.next().captured(1).trimmed());
     }
+
+    // Column formulas may read other tables (col("Table2/B"), tablecol("Table2", "B"),
+    // cell("Table2/B", i) ...). Those tables are needed to recalculate the embedded copy, so
+    // follow the references (transitively) from every table collected so far.
+    auto exactTable = [&](const QString &name) -> Table * {
+        if (name.isEmpty())
+            return nullptr;
+        Table *t = app->table(name);
+        return (t && t->name() == name) ? t : nullptr;
+    };
+    static const QRegularExpression quotedRx(QStringLiteral("\"((?:[^\"\\\\]|\\\\.)*)\""));
+    QStringList queue;
+    for (const QString &n : names)
+        if (exactTable(n))
+            queue << n;
+    if (w->inherits("Table"))
+        queue << w->name();
+    QStringList visited;
+    while (!queue.isEmpty()) {
+        const QString tn = queue.takeFirst();
+        if (visited.contains(tn))
+            continue;
+        visited << tn;
+        Table *t = exactTable(tn);
+        if (!t)
+            continue;
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!col)
+                continue;
+            for (const Interval<int> &iv : col->formulaIntervals()) {
+                const QString formula = col->formula(iv.start());
+                auto qit = quotedRx.globalMatch(formula);
+                while (qit.hasNext()) {
+                    // "\/" is an escaped slash inside a table or column name
+                    QString arg = qit.next().captured(1);
+                    arg.replace(QStringLiteral("\\/"), QString(QChar(0x1F)));
+                    QStringList candidates;
+                    candidates << arg; // tablecol("Table2", ...), column__("Table2", ...)
+                    const QStringList parts = arg.split(QLatin1Char('/'));
+                    if (parts.size() >= 2)
+                        candidates << parts.at(parts.size() - 2); // "[folder/]Table2/B"
+                    for (QString cand : candidates) {
+                        cand.replace(QChar(0x1F), QLatin1Char('/'));
+                        if (Table *ref = exactTable(cand)) {
+                            add(ref->name());
+                            if (!visited.contains(ref->name()))
+                                queue << ref->name();
+                        }
+                    }
+                }
+            }
+        }
+    }
     return names;
 }
 
@@ -2408,12 +2466,17 @@ void reportCopyResult(ApplicationWindow *app, const OleCopyResult &r, bool showD
                 : QObject::tr("Could not copy %1 as an editable object for PowerPoint.")
                                   .arg(r.windowName)
                         + QLatin1Char(' ') + r.errorReason;
-        const QString tail = r.staticFallbackOnClipboard
-                ? QObject::tr("A picture of the graph (EMF vector and %1 dpi PNG) was placed on "
-                              "the clipboard instead. It can be pasted, but not edited again "
-                              "from PowerPoint.")
-                          .arg(r.pngDpi)
-                : QObject::tr("Nothing was placed on the clipboard.");
+        // pngDpi <= 0: the caller fell back to a plain bitmap copy (3D graphs).
+        const QString tail = !r.staticFallbackOnClipboard
+                ? QObject::tr("Nothing was placed on the clipboard.")
+                : (r.pngDpi <= 0
+                           ? QObject::tr("A picture of the graph (bitmap only) was placed on the "
+                                         "clipboard instead. It can be pasted, but not edited "
+                                         "again from PowerPoint.")
+                           : QObject::tr("A picture of the graph (EMF vector and %1 dpi PNG) was "
+                                         "placed on the clipboard instead. It can be pasted, but "
+                                         "not edited again from PowerPoint.")
+                                     .arg(r.pngDpi));
         statusMsg = head + QLatin1Char(' ') + tail;
         dialogMsg = head + QStringLiteral("\n\n") + tail;
         if (r.registrationProblem && !r.windowName.isEmpty()) {

@@ -8908,6 +8908,11 @@ void MultiLayer::requestNewGraphStylePreset(Graph *g)
         return;
     if (newGraphStylePresetId().isEmpty())
         return;
+    // The preset is a convenience for graphs made by hand. Graphs made by scripts, the Python
+    // SDK (RPC), headless/batch runs or OLE automation keep the plain defaults, so their output
+    // does not depend on a GUI setting; SDK users pick a preset with apply_style_preset().
+    if (ApplicationWindow::isNonInteractiveContext(ml))
+        return;
     ml->setProperty("_toriNewGraphPresetPending", true);
     // Applied after the creating function has finished (legend, layout and window geometry are
     // in place by then), exactly as if the user had chosen the preset.

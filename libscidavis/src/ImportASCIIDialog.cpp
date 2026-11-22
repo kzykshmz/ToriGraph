@@ -90,6 +90,31 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
     d_import_mode->setEnabled(import_mode_enabled);
     setExtensionWidget(d_advanced_options);
 
+    // The preview and the result of the automatic detection are what a first-time user needs
+    // most, so they stay visible below the file list even while the advanced options (which
+    // are folded away by default) are hidden.
+    {
+        QWidget *previewBox = new QWidget(this);
+        previewBox->setObjectName(QStringLiteral("ImportPreviewBox"));
+        QVBoxLayout *previewLayout = new QVBoxLayout(previewBox);
+        previewLayout->setContentsMargins(0, 4, 0, 0);
+        previewLayout->addWidget(new QLabel(tr("Preview (first lines):"), previewBox));
+        QPlainTextEdit *preview = new QPlainTextEdit(previewBox);
+        preview->setObjectName(QStringLiteral("ImportPreview"));
+        preview->setReadOnly(true);
+        preview->setLineWrapMode(QPlainTextEdit::NoWrap);
+        preview->setMaximumHeight(110);
+        previewLayout->addWidget(preview);
+        QLabel *summary = new QLabel(tr("Select a file to see a preview."), previewBox);
+        summary->setObjectName(QStringLiteral("ImportDetectionSummary"));
+        summary->setWordWrap(true);
+        previewLayout->addWidget(summary);
+        if (QGridLayout *grid = qobject_cast<QGridLayout *>(layout()))
+            grid->addWidget(previewBox, grid->rowCount(), 0, 1, grid->columnCount());
+        else if (layout())
+            layout()->addWidget(previewBox);
+    }
+
     // get remembered option values
     ApplicationWindow *app = (ApplicationWindow *)parent;
     d_strip_spaces->setChecked(app->strip_spaces);
@@ -257,18 +282,6 @@ void ImportASCIIDialog::initAdvancedOptions()
     connect(d_convert_to_numeric, SIGNAL(toggled(bool)), boxDecimalSeparator,
             SLOT(setEnabled(bool)));
     advanced_layout->addWidget(d_convert_to_numeric, 3, 2, 1, 2);
-
-    main_layout->addWidget(new QLabel(tr("Preview (first lines):")));
-    QPlainTextEdit *preview = new QPlainTextEdit();
-    preview->setObjectName(QStringLiteral("ImportPreview"));
-    preview->setReadOnly(true);
-    preview->setLineWrapMode(QPlainTextEdit::NoWrap);
-    preview->setMaximumHeight(110);
-    main_layout->addWidget(preview);
-    QLabel *summary = new QLabel(tr("Select a file to see a preview."));
-    summary->setObjectName(QStringLiteral("ImportDetectionSummary"));
-    summary->setWordWrap(true);
-    main_layout->addWidget(summary);
 
     QHBoxLayout *meta_options_layout = new QHBoxLayout();
     d_remember_options = new QCheckBox(tr("Re&member the above options"));
