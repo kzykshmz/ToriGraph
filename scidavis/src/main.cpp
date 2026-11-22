@@ -209,7 +209,10 @@ int main(int argc, char **argv)
             args.removeAt(i);
         }
     }
-    SciDAVisOle::ensureRegistryRegistered();
+    // Keep a working registration (e.g. of the installed copy) as it is; only register this
+    // executable when there is none or it points to a missing program. Development builds can
+    // opt out with TORIGRAPH_NO_OLE_REGISTER=1. Explicit repair: Help > Repair PowerPoint Link.
+    SciDAVisOle::ensureRegistrationAtStartup();
     SciDAVisOle::initializeOleServer(oleEmbedded);
 #endif
 

@@ -690,6 +690,10 @@ public slots:
                         int baselineMode = 0, double asymAlpha = 1.0, double tailTau = 1.0,
                         bool plotBaseline = false, bool integratePeaks = false);
     void copyGraphAsOleObject();
+    //! Re-register the PowerPoint/Word OLE server for this executable (Help menu)
+    void repairOleRegistration();
+    //! Choose whether "Copy for PowerPoint" embeds the whole project or only the graph
+    void setOleEmbedWholeProject(bool wholeProject);
     //@}
 
     //! \name Calculus
@@ -1130,6 +1134,8 @@ public slots:
     void removeRecoveryFile();
     void rawSaveFolder(Folder *folder, QIODevice *device);
     QByteArray saveProjectToByteArray();
+    //! Stand-alone project text holding only the given windows (in this order), without the log
+    QByteArray saveWindowsToByteArray(const QList<MyWidget *> &windows);
     void setOleEmbeddedMode(bool embedded);
     bool isOleEmbeddedMode() const { return d_ole_embedded; }
     bool isNonInteractive() const { return d_headless_mode || m_batch; }
@@ -1453,6 +1459,7 @@ private:
             *actionAutoPeakGauss = nullptr, *actionAutoPeakLorentz = nullptr,
             *actionAutoPeakPseudoVoigt = nullptr;
     QAction *actionCopyGraphOle = nullptr;
+    QAction *actionOleEmbedWholeProject = nullptr, *actionRepairOleRegistration = nullptr;
     QMenu *languageMenu = nullptr, *colorPaletteMenu = nullptr, *aspectRatioMenu = nullptr;
     QAction *actionLangEnglish = nullptr, *actionLangJapanese = nullptr;
     QAction *actionPlotDoubleY = nullptr, *actionPlotYOffsetStack = nullptr,

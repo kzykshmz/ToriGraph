@@ -19,6 +19,7 @@ import math
 import os
 import struct
 import tempfile
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -33,6 +34,7 @@ TORIGRAPH_SHAPE_PREFIX = "ToriGraphOLE:"
 EMU_PER_INCH = 914400
 EMU_PER_CM = 360000
 EMU_PER_MM = 36000
+EMU_PER_HM = 360  # 1/100 mm (HIMETRIC)
 
 P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -937,19 +939,33 @@ def _fetch_graph_ole_payload(
     tmp_dir: Path,
     seq_idx: int,
     cached_project_bytes: Optional[bytes],
+    embed_scope: str = "graph",
+    warn_list: Optional[List[str]] = None,
 ) -> Tuple[bytes, bytes, int, int, int, int, str, str, Optional[bytes]]:
-    """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, canonical_window, updated_cache)`` via RPC."""
+    """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, canonical_window, updated_cache)`` via RPC.
+
+    With ``embed_scope="graph"`` every graph gets its own project stream (the graph and the
+    tables it plots), so the project cache is only used for ``embed_scope="project"``.
+    Problems that change what is embedded or how large it is are appended to ``warn_list``
+    and issued as :class:`UserWarning` instead of being hidden.
+    """
     from .client import RpcError
+
+    def _warn(msg: str) -> None:
+        if warn_list is not None:
+            warn_list.append(msg)
+        warnings.warn(msg, UserWarning, stacklevel=3)
 
     emf_tmp = tmp_dir / f"preview_{seq_idx}_{graph_name}.emf"
     proj_bytes: Optional[bytes] = None
     emf_bytes: Optional[bytes] = None
-    w_mm = 85.0
-    h_mm = 85.0
+    w_mm: Optional[float] = None
+    h_mm: Optional[float] = None
     prog_id = TORIGRAPH_OLE_PROG_ID
     canonical_window = graph_name
+    per_graph_project = embed_scope != "project"
 
-    skip_proj = cached_project_bytes is not None
+    skip_proj = (cached_project_bytes is not None) and not per_graph_project
     try:
         ole_res = session.call(
             "graph.export_ole",
@@ -958,8 +974,20 @@ def _fetch_graph_ole_payload(
             dpi=int(dpi),
             include_base64=False,
             skip_project_stream=bool(skip_proj),
+            embed_scope=str(embed_scope),
         )
         if isinstance(ole_res, Mapping):
+            got_scope = ole_res.get("embed_scope")
+            if per_graph_project and got_scope not in (None, "graph"):
+                _warn(
+                    f"graph.export_ole embedded scope {got_scope!r} for '{graph_name}' instead of "
+                    "'graph'; the slide object contains the whole project."
+                )
+            elif per_graph_project and got_scope is None and not skip_proj:
+                _warn(
+                    f"This ToriGraph does not support embed_scope; the object for '{graph_name}' "
+                    "contains the whole project (all windows and the results log)."
+                )
             prog_id = str(ole_res.get("prog_id") or TORIGRAPH_OLE_PROG_ID)
             if ole_res.get("graph"):
                 canonical_window = str(ole_res["graph"])
@@ -980,18 +1008,27 @@ def _fetch_graph_ole_payload(
                 emf_bytes = Path(str(ole_res["emf_path"])).read_bytes()
             elif isinstance(ole_res.get("emf_base64"), str) and ole_res["emf_base64"]:
                 emf_bytes = base64.b64decode(ole_res["emf_base64"])
-    except RpcError:
-        pass
+    except RpcError as exc:
+        _warn(
+            f"graph.export_ole failed for '{graph_name}' ({exc}). Falling back to a snapshot of "
+            "the whole project and to the size recorded in the EMF preview; check the size on "
+            "the slide."
+        )
 
     if proj_bytes is None:
-        if cached_project_bytes is not None:
+        if cached_project_bytes is not None and not per_graph_project:
             proj_bytes = cached_project_bytes
         else:
+            if per_graph_project:
+                _warn(
+                    f"No per-graph project was returned for '{graph_name}'; the slide object "
+                    "contains the whole project instead."
+                )
             sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
             session.save_project(sciprj_tmp, compress=False)
             proj_bytes = sciprj_tmp.read_bytes()
             cached_project_bytes = proj_bytes
-    else:
+    elif not per_graph_project:
         cached_project_bytes = proj_bytes
 
     if emf_bytes is None:
@@ -1002,8 +1039,15 @@ def _fetch_graph_ole_payload(
         raise RuntimeError(f"Graph '{graph_name}' did not produce a valid Windows EMF preview.")
 
     w_hm, h_hm, w_px, h_px = parse_emf_dimensions(
-        emf_bytes, fallback_width_mm=w_mm, fallback_height_mm=h_mm
+        emf_bytes,
+        fallback_width_mm=w_mm if w_mm else 85.0,
+        fallback_height_mm=h_mm if h_mm else 85.0,
     )
+    if not _emf_has_frame(emf_bytes) and not (w_mm and h_mm):
+        _warn(
+            f"The size of '{graph_name}' is unknown (no EMF frame and no width_mm/height_mm); "
+            "a provisional 85 mm x 85 mm was used."
+        )
     return (
         proj_bytes,
         emf_bytes,
@@ -1015,6 +1059,102 @@ def _fetch_graph_ole_payload(
         canonical_window,
         cached_project_bytes,
     )
+
+
+def _emf_has_frame(emf_bytes: bytes) -> bool:
+    """True when the EMF header records a positive physical frame (``rclFrame``)."""
+    if len(emf_bytes) < 44 or emf_bytes[40:44] != b" EMF":
+        return False
+    rec_type, _, _, _, _, _, f_l, f_t, f_r, f_b = struct.unpack("<IIiiiiiiii", emf_bytes[:40])
+    return rec_type == 1 and (f_r - f_l) > 0 and (f_b - f_t) > 0
+
+
+def _parse_scale(scale: Optional[Union[float, int, str]]) -> Optional[float]:
+    """Accept ``1.4``, ``140`` (percent, when > 10) or ``"140%"``; ``None`` keeps the old fitting."""
+    if scale is None:
+        return None
+    if isinstance(scale, str):
+        txt = scale.strip()
+        if txt.endswith("%"):
+            val = float(txt[:-1]) / 100.0
+        else:
+            val = float(txt)
+    else:
+        val = float(scale)
+    if val > 10.0:  # e.g. 140 meaning 140 %
+        val /= 100.0
+    if not math.isfinite(val) or val <= 0.0:
+        raise ValueError(f"scale must be a positive factor (e.g. 1.4 or '140%'), got {scale!r}.")
+    return val
+
+
+def _graph_nominal_font_pts(session: "Session", graph_name: str) -> Dict[str, Optional[float]]:
+    """Largest axis-title and tick-label font sizes (pt) of the graph at 100 % size."""
+    out: Dict[str, Optional[float]] = {"axis_title_pt": None, "tick_label_pt": None}
+    try:
+        info = session.call("graph.get_info", graph=graph_name)
+    except Exception:  # Graph3D windows and older servers have no 2D axis info
+        return out
+    if not isinstance(info, Mapping):
+        return out
+    titles: List[float] = []
+    ticks: List[float] = []
+    for layer in info.get("layers") or []:
+        axes = (layer or {}).get("axes") or {}
+        for ax in axes.values():
+            if not isinstance(ax, Mapping) or not ax.get("enabled", True):
+                continue
+            t_pt = ax.get("title_font_pt") or ax.get("title_font_size")
+            n_pt = ax.get("numbers_font_pt") or ax.get("numbers_font_size")
+            if isinstance(t_pt, (int, float)) and t_pt > 0:
+                titles.append(float(t_pt))
+            if isinstance(n_pt, (int, float)) and n_pt > 0:
+                ticks.append(float(n_pt))
+    out["axis_title_pt"] = max(titles) if titles else None
+    out["tick_label_pt"] = max(ticks) if ticks else None
+    return out
+
+
+def _scaled_rect_emu(
+    w_hm: int,
+    h_hm: int,
+    scale: float,
+    anchor_rect: Tuple[int, int, int, int],
+    *,
+    center: bool,
+) -> Tuple[int, int, int, int]:
+    """Natural size x ``scale``, centred in ``anchor_rect`` (or at its top-left corner)."""
+    w_e = max(1, int(round(w_hm * EMU_PER_HM * scale)))
+    h_e = max(1, int(round(h_hm * EMU_PER_HM * scale)))
+    a_l, a_t, a_w, a_h = anchor_rect
+    if center:
+        l_e = a_l + max(0, (a_w - w_e) // 2)
+        t_e = a_t + max(0, (a_h - h_e) // 2)
+    else:
+        l_e, t_e = a_l, a_t
+    return l_e, t_e, w_e, h_e
+
+
+def _explicit_box_emu(
+    cur_box: Sequence[float], w_hm: int, h_hm: int, scale: Optional[float]
+) -> Tuple[int, int, int, int]:
+    """``(left, top)`` = natural size x scale; 3/4 values = the box (scale not allowed)."""
+    vals = [float(v) for v in cur_box]
+    if len(vals) == 2:
+        s = 1.0 if scale is None else scale
+        return _scaled_rect_emu(
+            w_hm,
+            h_hm,
+            s,
+            (int(round(vals[0] * EMU_PER_CM)), int(round(vals[1] * EMU_PER_CM)), 0, 0),
+            center=False,
+        )
+    if scale is not None:
+        raise ValueError(
+            "box with a width cannot be combined with scale=; pass box=(left_cm, top_cm) "
+            "to place the graph at its natural size x scale."
+        )
+    return _parse_box_cm(vals, w_hm, h_hm)
 
 
 def export_graphs_to_pptx(
@@ -1032,6 +1172,8 @@ def export_graphs_to_pptx(
     titles: Optional[Union[str, Sequence[str]]] = None,
     preset: Optional[str] = None,
     widescreen: bool = True,
+    scale: Optional[Union[float, int, str]] = None,
+    embed_scope: str = "graph",
 ) -> Dict[str, Any]:
     """Export one or more ToriGraph figures into a PowerPoint ``.pptx`` as editable native OLE objects.
 
@@ -1070,8 +1212,30 @@ def export_graphs_to_pptx(
         Optional style preset (e.g. ``"slide_28pt"``) applied to each graph before export.
     widescreen:
         Use 16:9 widescreen (``13.333 x 7.5 in``) when creating a brand-new deck.
+    scale:
+        Size on the slide relative to the graph's own (page) size, e.g. ``1.4``, ``140`` or
+        ``"140%"``. Without it, graphs are shrunk/enlarged to fit their grid cell (or the
+        replaced shape), as before. With it, each graph is placed at exactly natural size x
+        ``scale`` (centred in its cell, or at the top-left of a replaced shape). It may be
+        combined with ``box=(left_cm, top_cm)``, but not with a box that gives a width.
+    embed_scope:
+        ``"graph"`` (default) embeds each graph with only the tables/matrices it plots;
+        ``"project"`` embeds the whole project (all windows and the results log) in every object.
+
+    Returns
+    -------
+    dict
+        Besides the counts, every entry of ``placements`` carries ``effective_scale`` (size on
+        the slide / natural size), the natural and placed size in cm, and the nominal and
+        effective (= nominal x effective_scale) axis-title and tick-label sizes in pt.
+        ``warnings`` lists problems that changed what was embedded or how it was sized.
     """
     pptx, _, _, _ = _import_pptx()
+    scale_f = _parse_scale(scale)
+    embed_scope = str(embed_scope or "graph").strip().lower()
+    if embed_scope not in ("graph", "project"):
+        raise ValueError(f"embed_scope must be 'graph' or 'project', got {embed_scope!r}.")
+    warn_list: List[str] = []
 
     if int(per_slide) not in _VALID_PER_SLIDE:
         raise ValueError(
@@ -1226,6 +1390,8 @@ def export_graphs_to_pptx(
                 tmp_dir=tmp_dir,
                 seq_idx=idx,
                 cached_project_bytes=cached_proj,
+                embed_scope=embed_scope,
+                warn_list=warn_list,
             )
             ole_bin_path = tmp_dir / f"ole_{idx}_{canonical_win}.bin"
             build_ole_compound_file(
@@ -1247,6 +1413,7 @@ def export_graphs_to_pptx(
                     "w_hm": w_hm,
                     "h_hm": h_hm,
                     "prog_id": prog_id,
+                    "font_pts": _graph_nominal_font_pts(session, canonical_win),
                 }
             )
 
@@ -1280,7 +1447,16 @@ def export_graphs_to_pptx(
 
                 cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                 if cur_box is not None:
-                    l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                    l_e, t_e, w_e, h_e = _explicit_box_emu(
+                        cur_box, item["w_hm"], item["h_hm"], scale_f
+                    )
+                elif scale_f is not None:
+                    anchor = _extract_shape_xfrm_emu(matched_el) or _compute_grid_cell_emu(
+                        slide_w, slide_h, 1, 1, 0
+                    )
+                    l_e, t_e, w_e, h_e = _scaled_rect_emu(
+                        item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                    )
                 else:
                     orig_xfrm = _extract_shape_xfrm_emu(matched_el)
                     if orig_xfrm is not None:
@@ -1346,7 +1522,16 @@ def export_graphs_to_pptx(
                         s_num, s_obj, existing_el = found_pair
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         if cur_box is not None:
-                            l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                            l_e, t_e, w_e, h_e = _explicit_box_emu(
+                                cur_box, item["w_hm"], item["h_hm"], scale_f
+                            )
+                        elif scale_f is not None:
+                            anchor = _extract_shape_xfrm_emu(existing_el) or _compute_grid_cell_emu(
+                                slide_w, slide_h, 1, 1, 0
+                            )
+                            l_e, t_e, w_e, h_e = _scaled_rect_emu(
+                                item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                            )
                         else:
                             orig_xfrm = _extract_shape_xfrm_emu(existing_el)
                             if orig_xfrm is not None:
@@ -1416,7 +1601,9 @@ def export_graphs_to_pptx(
                         item = built_items[idx]
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         if cur_box is not None:
-                            l_e, t_e, w_e, h_e = _parse_box_cm(cur_box, item["w_hm"], item["h_hm"])
+                            l_e, t_e, w_e, h_e = _explicit_box_emu(
+                                cur_box, item["w_hm"], item["h_hm"], scale_f
+                            )
                         else:
                             c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
                                 slide_w,
@@ -1426,9 +1613,15 @@ def export_graphs_to_pptx(
                                 local_k % (eff_rows * eff_cols),
                                 has_title=bool(title_list),
                             )
-                            l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
-                                c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
-                            )
+                            if scale_f is not None:
+                                l_e, t_e, w_e, h_e = _scaled_rect_emu(
+                                    item["w_hm"], item["h_hm"], scale_f, (c_l, c_t, c_w, c_h),
+                                    center=True,
+                                )
+                            else:
+                                l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                    c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                                )
                         pl = embed_ole_shape_on_slide(
                             prs,
                             s_obj,
@@ -1460,8 +1653,8 @@ def export_graphs_to_pptx(
                             item = built_items[idx]
                             cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                             if cur_box is not None:
-                                l_e, t_e, w_e, h_e = _parse_box_cm(
-                                    cur_box, item["w_hm"], item["h_hm"]
+                                l_e, t_e, w_e, h_e = _explicit_box_emu(
+                                    cur_box, item["w_hm"], item["h_hm"], scale_f
                                 )
                             else:
                                 c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
@@ -1472,9 +1665,15 @@ def export_graphs_to_pptx(
                                     cell_k,
                                     has_title=bool(s_title),
                                 )
-                                l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
-                                    c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
-                                )
+                                if scale_f is not None:
+                                    l_e, t_e, w_e, h_e = _scaled_rect_emu(
+                                        item["w_hm"], item["h_hm"], scale_f,
+                                        (c_l, c_t, c_w, c_h), center=True,
+                                    )
+                                else:
+                                    l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
+                                        c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
+                                    )
                             pl = embed_ole_shape_on_slide(
                                 prs,
                                 s_obj,
@@ -1492,6 +1691,44 @@ def export_graphs_to_pptx(
                             touched_slides.add(s_num)
                             embedded_count += 1
 
+    # Effective size and font size of every placed graph (what the audience will see).
+    items_by_graph = {it["graph_name"]: it for it in built_items}
+    for pl in placements:
+        item = items_by_graph.get(pl.get("graph_name") or pl.get("graph"))
+        if item is None:
+            continue
+        nat_w_emu = item["w_hm"] * EMU_PER_HM
+        nat_h_emu = item["h_hm"] * EMU_PER_HM
+        try:
+            w_emu = float(pl["width_cm"]) * EMU_PER_CM
+            h_emu = float(pl["height_cm"]) * EMU_PER_CM
+            l_emu = float(pl["left_cm"]) * EMU_PER_CM
+            t_emu = float(pl["top_cm"]) * EMU_PER_CM
+        except (KeyError, TypeError, ValueError):
+            continue
+        eff = float(w_emu) / float(max(1, nat_w_emu))
+        pl["effective_scale"] = round(eff, 4)
+        pl["natural_width_cm"] = round(nat_w_emu / EMU_PER_CM, 3)
+        pl["natural_height_cm"] = round(nat_h_emu / EMU_PER_CM, 3)
+        pts = item.get("font_pts") or {}
+        for key in ("axis_title_pt", "tick_label_pt"):
+            nominal = pts.get(key)
+            pl["nominal_" + key] = nominal
+            pl["effective_" + key] = round(nominal * eff, 2) if nominal else None
+        tol = EMU_PER_MM  # rounding of the cm values
+        if (
+            l_emu < -tol
+            or t_emu < -tol
+            or l_emu + w_emu > slide_w + tol
+            or t_emu + h_emu > slide_h + tol
+        ):
+            msg = (
+                f"'{item['graph_name']}' ({pl['width_cm']:.1f} x {pl['height_cm']:.1f} cm) "
+                f"extends beyond slide {pl.get('slide')}."
+            )
+            warn_list.append(msg)
+            warnings.warn(msg, UserWarning, stacklevel=2)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(os.fspath(out_path))
 
@@ -1507,4 +1744,8 @@ def export_graphs_to_pptx(
         "clsid": TORIGRAPH_OLE_CLSID_STR,
         "prog_id": TORIGRAPH_OLE_PROG_ID,
         "placements": placements,
+        "scale": scale_f,
+        "embed_scope": embed_scope,
+        "effective_scales": [pl.get("effective_scale") for pl in placements],
+        "warnings": warn_list,
     }

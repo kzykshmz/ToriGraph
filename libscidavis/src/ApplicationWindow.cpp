@@ -213,9 +213,7 @@
 #include <qwt_scale_engine.h>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_errno.h>
-#ifdef Q_OS_WIN
 #include "OleServer.h"
-#endif
 #include <QElapsedTimer>
 
 #include <zlib.h>
@@ -3495,6 +3493,8 @@ void ApplicationWindow::initMainMenu()
     edit->addAction(actionPasteGraphFormat);
     edit->addMenu(pasteFormatSpecialMenu);
     edit->addAction(actionCopyGraphOle);
+    if (actionOleEmbedWholeProject)
+        edit->addAction(actionOleEmbedWholeProject);
     edit->addAction(actionCopyWindow);
     if (actionMergeGraphs)
         edit->addAction(actionMergeGraphs);
@@ -3997,6 +3997,8 @@ void ApplicationWindow::initMainMenu()
     help->addSeparator();
     help->addAction(actionHelpForums);
     help->addAction(actionHelpBugReports);
+    if (actionRepairOleRegistration)
+        help->addAction(actionRepairOleRegistration);
     help->addSeparator();
     help->addMenu(languageMenu);
     help->addSeparator();
@@ -10318,6 +10320,34 @@ QByteArray ApplicationWindow::saveProjectToByteArray()
     return bytes;
 }
 
+QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &windows)
+{
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    if (!buf.open(QIODevice::WriteOnly))
+        return {};
+    QTextStream t(&buf);
+    t.setCodec(QTextCodec::codecForName("UTF-8"));
+    t << SciDAVis::schemaVersion() + " project file\n";
+    t << "<scripting-lang>\t" + QString(scriptEnv->objectName()) + "\n";
+    t << "<windows>\t" + QString::number(windows.count()) + "\n";
+    t.flush();
+    for (MyWidget *w : windows) {
+        if (!w)
+            continue;
+        if (Table *tb = qobject_cast<Table *>(w)) {
+            tb->saveToDevice(&buf, windowGeometryInfo(w));
+        } else {
+            t << w->saveToString(windowGeometryInfo(w));
+            t.flush();
+        }
+    }
+    t << "<log>\n</log>";
+    t.flush();
+    buf.close();
+    return bytes;
+}
+
 bool ApplicationWindow::saveProject()
 {
     if (d_ole_embedded) {
@@ -12784,7 +12814,10 @@ void ApplicationWindow::copySelection()
             g3d->sp->makeCurrent();
             fb = g3d->sp->grabFramebuffer();
         }
-        if (!fb.isNull() && SciDAVisOle::copyImageAsOle(this, fb, g3d->name()))
+        const SciDAVisOle::OleCopyResult res =
+                SciDAVisOle::copyImageForPowerPoint(this, fb, g3d->name());
+        SciDAVisOle::reportCopyResult(this, res, false);
+        if (res.ok || res.staticFallbackOnClipboard)
             return;
 #endif
         g3d->copyImage();
@@ -17460,7 +17493,10 @@ void ApplicationWindow::copyActiveLayer()
     lastCopiedLayer->setGeometry(0, 0, g->width(), g->height());
     lastCopiedLayer->copy(this, g);
 #ifdef Q_OS_WIN
-    if (SciDAVisOle::copyGraphAsOle(this, ml, nullptr))
+    // Ctrl+C on a graph: report in the status bar only (no dialog for a routine copy).
+    const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(this, ml, nullptr);
+    SciDAVisOle::reportCopyResult(this, res, false);
+    if (res.ok || res.staticFallbackOnClipboard)
         return;
 #endif
     g->copyImage();
@@ -18383,8 +18419,28 @@ void ApplicationWindow::createActions()
     actionLangEnglish->setChecked(!appLanguage.startsWith("ja"));
     connect(actionLangEnglish, SIGNAL(triggered()), this, SLOT(switchToEnglish()));
 
-    actionCopyGraphOle = new QAction(IconLoader::load("edit-copy"), tr("Copy Graph as &OLE Object"), this);
+    actionCopyGraphOle = new QAction(IconLoader::load("edit-copy"),
+                                     ToriGraphOleUi::copyForPowerPointMenuText(), this);
+    actionCopyGraphOle->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
+    actionCopyGraphOle->setStatusTip(ToriGraphOleUi::copyForPowerPointToolTip());
     connect(actionCopyGraphOle, SIGNAL(triggered()), this, SLOT(copyGraphAsOleObject()));
+    actionOleEmbedWholeProject = new QAction(ToriGraphOleUi::embedWholeProjectMenuText(), this);
+    actionOleEmbedWholeProject->setObjectName(QStringLiteral("actionOleEmbedWholeProject"));
+    actionOleEmbedWholeProject->setCheckable(true);
+#ifdef Q_OS_WIN
+    actionOleEmbedWholeProject->setChecked(SciDAVisOle::embedScopeSetting()
+                                           == SciDAVisOle::EmbedScope::WholeProject);
+#endif
+    connect(actionOleEmbedWholeProject, &QAction::toggled, this,
+            &ApplicationWindow::setOleEmbedWholeProject);
+    actionRepairOleRegistration = new QAction(ToriGraphOleUi::repairRegistrationMenuText(), this);
+    actionRepairOleRegistration->setObjectName(QStringLiteral("actionRepairOleRegistration"));
+    connect(actionRepairOleRegistration, &QAction::triggered, this,
+            &ApplicationWindow::repairOleRegistration);
+#ifndef Q_OS_WIN
+    actionOleEmbedWholeProject->setVisible(false);
+    actionRepairOleRegistration->setVisible(false);
+#endif
 
 #ifdef SEARCH_FOR_UPDATES
     actionCheckUpdates =
@@ -19695,8 +19751,15 @@ void ApplicationWindow::translateActionsStrings()
         actionLangEnglish->setText(tr("&English"));
         actionLangEnglish->setChecked(!appLanguage.startsWith("ja"));
     }
-    if (actionCopyGraphOle)
-        actionCopyGraphOle->setText(tr("Copy Graph as &OLE Object"));
+    if (actionCopyGraphOle) {
+        actionCopyGraphOle->setText(ToriGraphOleUi::copyForPowerPointMenuText());
+        actionCopyGraphOle->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
+        actionCopyGraphOle->setStatusTip(ToriGraphOleUi::copyForPowerPointToolTip());
+    }
+    if (actionOleEmbedWholeProject)
+        actionOleEmbedWholeProject->setText(ToriGraphOleUi::embedWholeProjectMenuText());
+    if (actionRepairOleRegistration)
+        actionRepairOleRegistration->setText(ToriGraphOleUi::repairRegistrationMenuText());
     actionHomePage->setText(tr("&ToriGraph Homepage"));
 #ifdef SEARCH_FOR_UPDATES
     actionCheckUpdates->setText(tr("Check for &Updates..."));
@@ -20625,8 +20688,17 @@ void ApplicationWindow::fitAutoPeakPseudoVoigt()
 void ApplicationWindow::copyGraphAsOleObject()
 {
     QWidget *actW = d_workspace.activeSubWindow();
-    if (!actW)
+    if (!actW || (!actW->inherits("Graph3D") && !actW->inherits("MultiLayer"))) {
+        // A table, matrix or note is active (or nothing): say so instead of doing nothing.
+        const QString msg = ToriGraphOleUi::selectGraphFirstMessage();
+        if (statusBar())
+            statusBar()->showMessage(msg, 8000);
+        if (qApp)
+            qApp->setProperty("torigraph_last_ole_copy_message", msg);
+        if (!isNonInteractiveContext(this))
+            QMessageBox::information(this, ToriGraphOleUi::copyForPowerPointLabel(), msg);
         return;
+    }
 
     if (actW->inherits("Graph3D")) {
         Graph3D *g3d = static_cast<Graph3D *>(actW);
@@ -20636,22 +20708,41 @@ void ApplicationWindow::copyGraphAsOleObject()
             g3d->sp->makeCurrent();
             fb = g3d->sp->grabFramebuffer();
         }
-        if (!fb.isNull() && SciDAVisOle::copyImageAsOle(this, fb, g3d->name()))
+        const SciDAVisOle::OleCopyResult res =
+                SciDAVisOle::copyImageForPowerPoint(this, fb, g3d->name());
+        SciDAVisOle::reportCopyResult(this, res, true);
+        if (res.ok || res.staticFallbackOnClipboard)
             return;
 #endif
         g3d->copyImage();
         return;
     }
 
-    if (!actW->inherits("MultiLayer"))
-        return;
-
     MultiLayer *ml = static_cast<MultiLayer *>(actW);
 #ifdef Q_OS_WIN
-    if (SciDAVisOle::copyGraphAsOle(this, ml, nullptr))
-        return;
-#endif
+    // On failure the reason has been shown; a static picture was offered where possible.
+    const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(this, ml, nullptr);
+    SciDAVisOle::reportCopyResult(this, res, true);
+#else
     ml->copyAllLayers();
+#endif
+}
+
+void ApplicationWindow::repairOleRegistration()
+{
+#ifdef Q_OS_WIN
+    SciDAVisOle::repairRegistrationInteractive(this);
+#endif
+}
+
+void ApplicationWindow::setOleEmbedWholeProject(bool wholeProject)
+{
+#ifdef Q_OS_WIN
+    SciDAVisOle::setEmbedScopeSetting(wholeProject ? SciDAVisOle::EmbedScope::WholeProject
+                                                   : SciDAVisOle::EmbedScope::GraphOnly);
+#else
+    Q_UNUSED(wholeProject);
+#endif
 }
 
 void ApplicationWindow::runAutoPeakFit(int profile, int numPeaks, bool autoCount,
@@ -28597,10 +28688,9 @@ void ApplicationWindow::copyPageAsHighDpiImage()
     MultiLayer *ml = static_cast<MultiLayer *>(w);
     const QImage img = ml->copyPageAsImage(300);
     if (!img.isNull()) {
-        if (QClipboard *cb = QApplication::clipboard()) {
-            if (cb->image().isNull())
-                cb->setImage(img);
-        }
+        // Always replace the clipboard: the message below says the page was copied.
+        if (QClipboard *cb = QApplication::clipboard())
+            cb->setImage(img);
         const QString msg = tr("Copied %1 as 300 DPI PNG (%2 x %3 px) to clipboard.")
                                     .arg(ml->name())
                                     .arg(img.width())

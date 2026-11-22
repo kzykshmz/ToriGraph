@@ -161,6 +161,7 @@ static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw);
 static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw);
 static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw);
 static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
+static int runSuite60PowerPointOleLink(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -181,7 +182,11 @@ int main(int argc, char **argv)
     QStringList args = app.arguments();
 
     QString errMsg;
-    CHECK_COND(SciDAVisOle::ensureRegistryRegistered(&errMsg), "ensureRegistryRegistered failed");
+    // Never redirect a working registration (installed ToriGraph) to this test build; the
+    // class factory registered below serves the in-process tests. TORIGRAPH_NO_OLE_REGISTER=1
+    // skips registration entirely.
+    CHECK_COND(SciDAVisOle::ensureRegistrationAtStartup(&errMsg),
+               "ensureRegistrationAtStartup failed");
     CHECK_COND(SciDAVisOle::initializeOleServer(false), "initializeOleServer failed");
 
     ApplicationWindow *mw = new ApplicationWindow();
@@ -263,6 +268,14 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc61;
+    }
+    if (args.contains("--suite60-only")) {
+        const int rc60 = runSuite60PowerPointOleLink(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        SciDAVisOle::shutdownOleServer();
+        return rc60;
     }
 
     // =========================================================================
@@ -5435,6 +5448,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite61DistributionVersionAndUpdaterSafety(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite60PowerPointOleLink(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -16245,5 +16261,401 @@ static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw)
     }
 
     std::cout << "[INFO] Suite 61 Distribution Version & Updater Safety Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// =========================================================================
+// Suite 60: PowerPoint / Word OLE link (B5, E9, A8, A9, I2)
+//   60a "Copy for PowerPoint" names, tooltip and Japanese strings
+//   60b embedding only the graph and the tables it plots (2D and 3D), or the whole project
+//   60c copy result: size, embedded windows, 300-600 dpi PNG on the OLE data object
+//   60d PNG resolution rule checked against hand-computed values
+//   60e OLE failure: EMF + PNG + DIB still placed on the clipboard, reason reported
+//   60f no graph active: the user is told to select a graph
+//   60g re-editing an unreadable embedding is refused and leaves the object unchanged
+//   60h start-up registration never redirects a valid registration
+//   60i "copy page as 300 dpi image" replaces an image already on the clipboard
+// =========================================================================
+static QByteArray suite60EmfOfSize(LONG wHm, LONG hHm)
+{
+    RECT frame{ 0, 0, wHm, hHm };
+    HDC dc = CreateEnhMetaFileW(nullptr, nullptr, &frame, nullptr);
+    if (!dc)
+        return {};
+    Rectangle(dc, 10, 10, 300, 200);
+    HENHMETAFILE h = CloseEnhMetaFile(dc);
+    const UINT n = GetEnhMetaFileBits(h, 0, nullptr);
+    QByteArray out(static_cast<int>(n), '\0');
+    GetEnhMetaFileBits(h, n, reinterpret_cast<BYTE *>(out.data()));
+    DeleteEnhMetaFile(h);
+    return out;
+}
+
+static QByteArray suite60ReadGlobal(HGLOBAL hg)
+{
+    QByteArray out;
+    if (!hg)
+        return out;
+    const SIZE_T sz = GlobalSize(hg);
+    if (const void *p = GlobalLock(hg)) {
+        out = QByteArray(static_cast<const char *>(p), static_cast<int>(sz));
+        GlobalUnlock(hg);
+    }
+    return out;
+}
+
+static QString suite60RegistryExe()
+{
+    wchar_t buf[2048] = {};
+    DWORD cb = sizeof(buf);
+    if (RegGetValueW(HKEY_CLASSES_ROOT,
+                     L"CLSID\\{8E6B9541-3C74-4D28-A915-7D84E5A12001}\\LocalServer32", nullptr,
+                     RRF_RT_REG_SZ, nullptr, buf, &cb)
+        != ERROR_SUCCESS)
+        return QString();
+    return QString::fromWCharArray(buf);
+}
+
+static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 60: PowerPoint / Word OLE link...\n";
+    const QVariant prevNonInteractive = qApp->property("torigraph_noninteractive");
+    qApp->setProperty("torigraph_noninteractive", true);
+    const SciDAVisOle::EmbedScope prevScope = SciDAVisOle::embedScopeSetting();
+
+    // ---- 60a. names and translations ----------------------------------------------------
+    {
+        const QString prevLang = mw->appLanguage;
+        mw->switchToLanguage("ja");
+        QApplication::processEvents();
+        CHECK_COND(ToriGraphOleUi::copyForPowerPointLabel() == QString::fromUtf8("PowerPoint 用にコピー"),
+                   "60a: Japanese button label is not \"PowerPoint 用にコピー\"");
+        CHECK_COND(ToriGraphOleUi::copyForPowerPointToolTip().contains(
+                           QString::fromUtf8("スライド上でダブルクリックすると再編集できます")),
+                   "60a: tooltip does not explain double-click re-editing");
+        QAction *aCopy = mw->findChild<QAction *>(QStringLiteral("actionCopyGraphOle"));
+        QAction *aScope = mw->findChild<QAction *>(QStringLiteral("actionOleEmbedWholeProject"));
+        QAction *aRepair = mw->findChild<QAction *>(QStringLiteral("actionRepairOleRegistration"));
+        CHECK_COND(aCopy && aCopy->text().contains(QStringLiteral("PowerPoint")),
+                   "60a: menu action is not named for PowerPoint");
+        CHECK_COND(aCopy->toolTip().contains(QString::fromUtf8("ダブルクリック")),
+                   "60a: menu action tooltip missing");
+        CHECK_COND(aScope && aScope->isCheckable(),
+                   "60a: embed-scope option missing");
+        CHECK_COND(aRepair
+                           && aRepair->text().contains(
+                                   QString::fromUtf8("修復")),
+                   "60a: repair action missing or untranslated");
+        mw->switchToLanguage(prevLang.isEmpty() ? QStringLiteral("en") : prevLang);
+        QApplication::processEvents();
+    }
+
+    ApplicationWindow *w60 = new ApplicationWindow();
+    w60->applyUserSettings();
+    w60->setHeadlessMode(true);
+    w60->confirmCloseTable = false;
+    w60->confirmClosePlot2D = false;
+    w60->confirmClosePlot3D = false;
+    w60->confirmCloseFolder = false;
+    struct W60Guard {
+        ApplicationWindow *w;
+        ~W60Guard()
+        {
+            if (w) {
+                w->savedProject();
+                w->setOleEmbeddedMode(true);
+                delete w;
+            }
+        }
+    } w60Guard{ w60 };
+
+    Table *tA = w60->newTable(5, 2, "Tensile60", "plotted");
+    Table *tB = w60->newTable(3, 2, "Unrelated60", "not plotted");
+    CHECK_COND(tA && tB, "60b: tables not created");
+    for (int r = 0; r < 5; ++r) {
+        tA->setCell(r, 0, double(r));
+        tA->setCell(r, 1, 100.0 + 10.0 * r);
+    }
+    MultiLayer *ml = w60->multilayerPlot(tA, QStringList() << (tA->name() + "_2"), Graph::LineSymbols);
+    CHECK_COND(ml && ml->activeGraph(), "60b: graph not created");
+    w60->logInfo += QStringLiteral("SUITE60_LOG_MARKER\n");
+
+    Table *t3 = w60->newTable(4, 3, "Ct_Strain60", "3D data");
+    t3->setColName(0, "Xp");
+    t3->setColName(1, "Yp");
+    t3->setColName(2, "Zv");
+    t3->setColPlotDesignation(0, SciDAVis::X);
+    t3->setColPlotDesignation(1, SciDAVis::Y);
+    t3->setColPlotDesignation(2, SciDAVis::Z);
+    for (int r = 0; r < 4; ++r) {
+        t3->setCell(r, 0, double(r));
+        t3->setCell(r, 1, double(r) * 2.0);
+        t3->setCell(r, 2, double(r * r));
+    }
+    Graph3D *g3 = w60->dataPlotXYZ(t3, t3->colName(2), Graph3D::Scatter);
+    CHECK_COND(g3 != nullptr, "60b: 3D plot not created");
+
+    // ---- 60b. embedding scope -----------------------------------------------------------
+    {
+        const QStringList deps = SciDAVisOle::dataDependenciesForWindow(w60, ml);
+        CHECK_COND(deps == QStringList() << QStringLiteral("Tensile60"),
+                   "60b: 2D dependencies wrong: " + deps.join(',').toStdString());
+        const QStringList deps3 = SciDAVisOle::dataDependenciesForWindow(w60, g3);
+        CHECK_COND(deps3 == QStringList() << QStringLiteral("Ct_Strain60"),
+                   "60b: 3D dependencies wrong: " + deps3.join(',').toStdString());
+
+        QStringList names;
+        const QByteArray graphOnly = SciDAVisOle::buildEmbeddedProjectBytes(
+                w60, ml, SciDAVisOle::EmbedScope::GraphOnly, &names);
+        CHECK_COND(names == QStringList() << QStringLiteral("Tensile60") << ml->name(),
+                   "60b: embedded windows wrong: " + names.join(',').toStdString());
+        const QString txt = QString::fromUtf8(graphOnly);
+        CHECK_COND(txt.contains(QStringLiteral("Tensile60")) && !txt.contains(QStringLiteral("Unrelated60"))
+                           && !txt.contains(QStringLiteral("Ct_Strain60"))
+                           && !txt.contains(QStringLiteral("SUITE60_LOG_MARKER")),
+                   "60b: graph-only project contains other windows or the results log");
+        CHECK_COND(txt.contains(QStringLiteral("<windows>\t2")), "60b: window count header wrong");
+
+        const QByteArray whole = SciDAVisOle::buildEmbeddedProjectBytes(
+                w60, ml, SciDAVisOle::EmbedScope::WholeProject, &names);
+        const QString wtxt = QString::fromUtf8(whole);
+        CHECK_COND(wtxt.contains(QStringLiteral("Unrelated60")) && wtxt.contains(QStringLiteral("SUITE60_LOG_MARKER")),
+                   "60b: whole-project scope is missing windows or the log");
+        CHECK_COND(graphOnly.size() < whole.size(), "60b: graph-only project is not smaller");
+
+        // The graph-only project loads on its own with the curve intact.
+        const QString prj = QDir::temp().filePath(QStringLiteral("suite60_graph_only.sciprj"));
+        QFile f(prj);
+        CHECK_COND(f.open(QIODevice::WriteOnly) && f.write(graphOnly) == graphOnly.size(),
+                   "60b: could not write temp project");
+        f.close();
+        ApplicationWindow *rd = new ApplicationWindow();
+        rd->setHeadlessMode(true);
+        rd->applyUserSettings();
+        const bool loaded = rd->loadProject(prj);
+        QFile::remove(prj);
+        MultiLayer *rml = nullptr;
+        int nTables = 0;
+        for (MyWidget *w : rd->windowsList()) {
+            if (w->inherits("MultiLayer"))
+                rml = static_cast<MultiLayer *>(w);
+            if (w->inherits("Table"))
+                ++nTables;
+        }
+        const int curves = (rml && rml->activeGraph()) ? rml->activeGraph()->curves() : -1;
+        rd->savedProject();
+        rd->setOleEmbeddedMode(true);
+        delete rd;
+        CHECK_COND(loaded && rml && nTables == 1 && curves == 1,
+                   "60b: graph-only project did not reload with 1 table and 1 curve");
+
+        QStringList names3;
+        const QString t3txt = QString::fromUtf8(SciDAVisOle::buildEmbeddedProjectBytes(
+                w60, g3, SciDAVisOle::EmbedScope::GraphOnly, &names3));
+        CHECK_COND(names3 == QStringList() << QStringLiteral("Ct_Strain60") << g3->name()
+                           && !t3txt.contains(QStringLiteral("Tensile60")),
+                   "60b: 3D graph-only embedding wrong");
+    }
+
+    // ---- 60c. copy result and PNG on the OLE data object -------------------------------
+    {
+        SciDAVisOle::setEmbedScopeSetting(SciDAVisOle::EmbedScope::GraphOnly);
+        const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
+        CHECK_COND(res.ok, "60c: copy failed: " + res.errorReason.toStdString());
+        CHECK_COND(res.widthMm > 10.0 && res.heightMm > 10.0, "60c: size not reported");
+        CHECK_COND(res.embeddedWindows == QStringList() << QStringLiteral("Tensile60") << ml->name(),
+                   "60c: copy did not embed graph + table only");
+        SciDAVisOle::reportCopyResult(w60, res, true);
+        const QString msg = qApp->property("torigraph_last_ole_copy_message").toString();
+        CHECK_COND(msg.contains(ml->name()) && msg.contains(QStringLiteral("mm"))
+                           && msg.contains(QString::number(res.widthMm, 'f', 1)),
+                   "60c: status message lacks name or size: " + msg.toStdString());
+
+        ComPtr<IDataObject> clip;
+        HRESULT hr = E_FAIL;
+        for (int k = 0; k < 40; ++k) {
+            QCoreApplication::processEvents();
+            hr = OleGetClipboard(&clip);
+            if (SUCCEEDED(hr) && clip)
+                break;
+            Sleep(25);
+        }
+        CHECK_COND(SUCCEEDED(hr) && clip, "60c: OleGetClipboard failed");
+        FORMATETC fPng{ SciDAVisOle::pngClipboardFormat(), nullptr, DVASPECT_CONTENT, -1,
+                        TYMED_HGLOBAL };
+        CHECK_COND(clip->QueryGetData(&fPng) == S_OK, "60c: PNG format not offered");
+        STGMEDIUM med{};
+        hr = clip->GetData(&fPng, &med);
+        CHECK_COND(SUCCEEDED(hr) && med.tymed == TYMED_HGLOBAL, "60c: GetData(PNG) failed");
+        const QByteArray png = suite60ReadGlobal(med.hGlobal);
+        ReleaseStgMedium(&med);
+        QImage img;
+        CHECK_COND(img.loadFromData(png, "PNG"), "60c: PNG does not decode");
+        const double dpi = img.dotsPerMeterX() * 0.0254;
+        CHECK_COND(dpi > 299.0 && dpi < 601.0, "60c: PNG resolution outside 300-600 dpi");
+        CHECK_COND(std::abs(dpi - res.pngDpi) < 1.0, "60c: reported PNG dpi differs from the file");
+        const double expectW = res.widthMm / 25.4 * res.pngDpi;
+        CHECK_COND(std::fabs(img.width() - expectW) <= 2.0,
+                   "60c: PNG width does not match physical size x dpi");
+        FORMATETC fEmf{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+        CHECK_COND(clip->QueryGetData(&fEmf) == S_OK, "60c: EMF format missing");
+        clip.Reset();
+    }
+
+    // ---- 60d. PNG resolution rule ---------------------------------------------------------
+    {
+        // 85 mm square: 600 dpi -> 2008 px (85 / 25.4 * 600 = 2007.9)
+        int dpi = 0;
+        QImage a;
+        CHECK_COND(a.loadFromData(SciDAVisOle::renderEmfToPng(suite60EmfOfSize(8500, 8500),
+                                                              SIZEL{ 8500, 8500 }, &dpi),
+                                  "PNG"),
+                   "60d: 85 mm PNG not rendered");
+        CHECK_COND(dpi == 600 && a.width() == 2008 && a.height() == 2008,
+                   "60d: 85 mm square should be 600 dpi / 2008 px");
+        // 300 mm square: 600 dpi would be 50 Mpx; the budget of 24 Mpx allows
+        // 24e6 / (300/25.4)^2 = 172,000 -> dpi <= 414.8, i.e. 400 dpi in 25-dpi steps -> 4724 px.
+        QImage b;
+        CHECK_COND(b.loadFromData(SciDAVisOle::renderEmfToPng(suite60EmfOfSize(30000, 30000),
+                                                              SIZEL{ 30000, 30000 }, &dpi),
+                                  "PNG"),
+                   "60d: 300 mm PNG not rendered");
+        CHECK_COND(dpi == 400 && b.width() == 4724, "60d: 300 mm square should be 400 dpi / 4724 px");
+    }
+
+    // ---- 60e. OLE failure -> static EMF + PNG + DIB fallback ---------------------------
+    {
+        qApp->setProperty("torigraph_test_force_ole_copy_failure", true);
+        const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
+        qApp->setProperty("torigraph_test_force_ole_copy_failure", QVariant());
+        CHECK_COND(!res.ok && res.staticFallbackOnClipboard,
+                   "60e: static fallback not placed (ok=" + std::to_string(res.ok) + ", reason="
+                           + res.errorReason.toStdString() + ")");
+        CHECK_COND(!res.errorReason.isEmpty(), "60e: no failure reason");
+        CHECK_COND(res.pngDpi >= 300 && res.pngDpi <= 600, "60e: fallback PNG dpi out of range");
+        CHECK_COND(IsClipboardFormatAvailable(CF_ENHMETAFILE)
+                           && IsClipboardFormatAvailable(SciDAVisOle::pngClipboardFormat())
+                           && IsClipboardFormatAvailable(CF_DIB),
+                   "60e: EMF / PNG / DIB missing from the clipboard");
+        SciDAVisOle::reportCopyResult(w60, res, true);
+        const QString msg = qApp->property("torigraph_last_ole_copy_message").toString();
+        CHECK_COND(msg.contains(QStringLiteral("forced failure")) && msg.contains(QStringLiteral("dpi")),
+                   "60e: failure message lacks reason or fallback note: " + msg.toStdString());
+    }
+
+    // ---- 60f. table active -> "select a graph" ---------------------------------------
+    {
+        w60->activateSubWindow(tB);
+        QApplication::processEvents();
+        qApp->setProperty("torigraph_last_ole_copy_message", QVariant());
+        if (w60->d_workspace.activeSubWindow() == tB) {
+            w60->copyGraphAsOleObject();
+            CHECK_COND(qApp->property("torigraph_last_ole_copy_message").toString()
+                               == ToriGraphOleUi::selectGraphFirstMessage(),
+                       "60f: no 'select a graph' message with a table active");
+        } else {
+            std::cout << "[INFO] Suite 60f: headless window has no active subwindow; checked directly\n";
+            const SciDAVisOle::OleCopyResult r = SciDAVisOle::copyGraphForPowerPoint(w60, nullptr);
+            CHECK_COND(!r.ok && r.errorReason == ToriGraphOleUi::selectGraphFirstMessage(),
+                       "60f: null graph not reported");
+        }
+    }
+
+    // ---- 60g. unreadable embedding is not replaced by a sample graph --------------------
+    {
+        OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, nullptr, false);
+        auto checkRefused = [&](const QByteArray &projBytes, const QString &target,
+                                const char *tag) -> int {
+            SciDAVisOle::OleGraphPayload pay;
+            pay.projectBytes = projBytes;
+            pay.targetWindow = target;
+            pay.emfBytes = rg.emfBytes;
+            pay.extentHm = rg.extentHm;
+            pay.pixelSize = rg.pixelSize;
+            ComPtr<IOleObject> obj;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj))) && obj,
+                       std::string("60g: createGraphObject failed ") + tag);
+            int appsBefore = 0;
+            for (QWidget *t : QApplication::topLevelWidgets())
+                appsBefore += qobject_cast<ApplicationWindow *>(t) && t->isVisible() ? 1 : 0;
+            qApp->setProperty("torigraph_last_ole_open_error", QVariant());
+            const HRESULT hrVerb = obj->DoVerb(OLEIVERB_PRIMARY, nullptr, nullptr, 0, nullptr, nullptr);
+            QApplication::processEvents();
+            int appsAfter = 0;
+            for (QWidget *t : QApplication::topLevelWidgets())
+                appsAfter += qobject_cast<ApplicationWindow *>(t) && t->isVisible() ? 1 : 0;
+            CHECK_COND(FAILED(hrVerb), std::string("60g: DoVerb succeeded on a bad embedding ") + tag);
+            CHECK_COND(appsAfter == appsBefore, std::string("60g: an editor window was opened ") + tag);
+            CHECK_COND(!qApp->property("torigraph_last_ole_open_error").toString().isEmpty(),
+                       std::string("60g: no error reported ") + tag);
+
+            ComPtr<IPersistStorage> ps;
+            CHECK_COND(SUCCEEDED(obj.As(&ps)), "60g: IPersistStorage missing");
+            ComPtr<ILockBytes> lb;
+            ComPtr<IStorage> stg;
+            CHECK_COND(SUCCEEDED(CreateILockBytesOnHGlobal(nullptr, TRUE, &lb))
+                               && SUCCEEDED(StgCreateDocfileOnILockBytes(
+                                       lb.Get(), STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE,
+                                       0, &stg)),
+                       "60g: storage not created");
+            CHECK_COND(SUCCEEDED(ps->Save(stg.Get(), FALSE)) && SUCCEEDED(ps->SaveCompleted(nullptr)),
+                       "60g: Save failed");
+            SciDAVisOle::OleGraphPayload back;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::loadPayloadFromStorage(stg.Get(), &back)),
+                       "60g: reload failed");
+            CHECK_COND(back.projectBytes == projBytes && back.emfBytes == rg.emfBytes
+                               && back.targetWindow == target,
+                       std::string("60g: embedding changed after the refused edit ") + tag);
+            return 0;
+        };
+        if (checkRefused(QByteArrayLiteral("this is not a ToriGraph project\n\x01\x02"),
+                         ml->name(), "(corrupt)") != 0)
+            return 1;
+        const QByteArray realProj = SciDAVisOle::buildEmbeddedProjectBytes(
+                w60, ml, SciDAVisOle::EmbedScope::GraphOnly);
+        if (checkRefused(realProj, QStringLiteral("NoSuchGraph60"), "(missing target)") != 0)
+            return 1;
+    }
+
+    // ---- 60h. start-up registration ---------------------------------------------------
+    {
+        const QString before = suite60RegistryExe();
+        const SciDAVisOle::RegistrationInfo info = SciDAVisOle::queryRegistration();
+        CHECK_COND(info.state == SciDAVisOle::RegistrationInfo::Valid,
+                   "60h: registration not valid after start-up policy ran");
+        QString err;
+        CHECK_COND(SciDAVisOle::ensureRegistrationAtStartup(&err), "60h: start-up policy failed");
+        CHECK_COND(suite60RegistryExe() == before, "60h: a valid registration was rewritten");
+        qputenv("TORIGRAPH_NO_OLE_REGISTER", "1");
+        CHECK_COND(SciDAVisOle::ensureRegistrationAtStartup(&err) && suite60RegistryExe() == before,
+                   "60h: TORIGRAPH_NO_OLE_REGISTER did not suppress registration");
+        qunsetenv("TORIGRAPH_NO_OLE_REGISTER");
+        std::cout << "[INFO] Suite 60h: registered server = "
+                  << QDir::toNativeSeparators(info.executable).toStdString()
+                  << (info.pointsToSelf ? " (this build)" : " (left untouched)") << "\n";
+    }
+
+    // ---- 60i. copy page as 300 dpi image always replaces the clipboard -----------------
+    {
+        QImage tinyImg(10, 10, QImage::Format_RGB32);
+        tinyImg.fill(Qt::red);
+        QApplication::clipboard()->setImage(tinyImg);
+        QApplication::processEvents();
+        w60->activateSubWindow(ml);
+        QApplication::processEvents();
+        if (w60->d_workspace.activeSubWindow() == ml) {
+            w60->copyPageAsHighDpiImage();
+            QApplication::processEvents();
+            const QImage got = QApplication::clipboard()->image();
+            CHECK_COND(got.width() > 100, "60i: page image did not replace the clipboard image");
+        } else {
+            std::cout << "[INFO] Suite 60i: graph could not be activated in headless window, skipped\n";
+        }
+    }
+
+    SciDAVisOle::setEmbedScopeSetting(prevScope);
+    qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+    std::cout << "[INFO] Suite 60 PowerPoint / Word OLE link passed!\n";
     return 0;
 }

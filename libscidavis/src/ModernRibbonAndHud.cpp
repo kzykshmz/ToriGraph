@@ -87,6 +87,7 @@
 #include "RecalcEngine.h"
 #include "Table.h"
 #include "Graph3D.h"
+#include "OleServer.h"
 #include "future/core/column/Column.h"
 #include "future/table/TableModel.h"
 
@@ -2119,8 +2120,8 @@ void FocusCanvasHudOverlay::retranslateUi()
         d_btn_slide->setToolTip(tr("Apply Presentation Slide 28pt Style Preset (Arial)"));
     }
     if (d_btn_ole) {
-        d_btn_ole->setText(tr("Copy OLE"));
-        d_btn_ole->setToolTip(tr("Copy Editable OLE Graph Object for PowerPoint"));
+        d_btn_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
+        d_btn_ole->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
     }
     if (d_btn_palette) {
         d_btn_palette->setText(tr("Search (Ctrl+K)"));
@@ -4177,8 +4178,9 @@ void ModernRibbonBar::buildAllTabs()
 
         createRibbonGroup(row, &gExport, true);
         addRibbonButton(
-                gExport, QStringLiteral("copy-ole"), [this]() { return tr("Copy OLE"); },
-                [this]() { return tr("Copy Editable OLE Graph Object for PowerPoint / Word"); },
+                gExport, QStringLiteral("copy-ole"),
+                []() { return ToriGraphOleUi::copyForPowerPointLabel(); },
+                []() { return ToriGraphOleUi::copyForPowerPointToolTip(); },
                 [this]() {
                     if (d_app)
                         d_app->copyGraphAsOleObject();
