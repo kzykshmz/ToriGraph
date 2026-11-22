@@ -7528,17 +7528,21 @@ void MultiLayer::remapUndoSnapshotsForColRename(const QString &oldColName,
         || oldColName == newColName)
         return;
     QString ownerHint;
-    if (ApplicationWindow *app = applicationWindow()) {
-        for (MyWidget *w : app->windowsList()) {
-            if (!w || !w->inherits("Table"))
-                continue;
-            const QString tn = w->name();
-            const QString pfx = tn + QLatin1Char('_');
-            if (oldColName.startsWith(pfx) && newColName.startsWith(pfx)
-                && tn.size() > ownerHint.size()) {
-                ownerHint = tn;
+    if (ApplicationWindow *app = findMultiLayerApp(this)) {
+        auto checkOwnerList = [&](const QList<MyWidget *> &wins) {
+            for (MyWidget *w : wins) {
+                if (!w || !w->inherits("Table"))
+                    continue;
+                const QString tn = w->name();
+                const QString pfx = tn + QLatin1Char('_');
+                if (oldColName.startsWith(pfx) && newColName.startsWith(pfx)
+                    && tn.size() > ownerHint.size()) {
+                    ownerHint = tn;
+                }
             }
-        }
+        };
+        checkOwnerList(app->windowsList());
+        checkOwnerList(app->hiddenWindows);
     }
     const int cnt = d_undo_stack->count();
     for (int i = 0; i < cnt; ++i) {
