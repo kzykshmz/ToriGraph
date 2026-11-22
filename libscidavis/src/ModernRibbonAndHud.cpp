@@ -93,6 +93,7 @@
 #include "Table.h"
 #include "Graph3D.h"
 #include "OleServer.h"
+#include "PptxExport.h"
 #include "I18nJapanese.h"
 #include "future/core/column/Column.h"
 #include "future/table/TableModel.h"
@@ -4552,6 +4553,14 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         d_app->exportPDF();
+                });
+        addRibbonMenuAction(
+                moreExportMenu, QStringLiteral("copy-ole"),
+                []() { return ToriGraphPptx::sendToPowerPointLabel(); },
+                []() { return ToriGraphPptx::sendToPowerPointToolTip(); },
+                [this]() {
+                    if (d_app)
+                        ToriGraphPptx::sendGraphsToPowerPoint(d_app); // E8
                 });
         addRibbonMenuAction(
                 moreExportMenu, QStringLiteral("code-export"),

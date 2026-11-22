@@ -74,6 +74,7 @@
 #include "InterpolationDialog.h"
 #include "ImportASCIIDialog.h"
 #include "XlsxImport.h"
+#include "PptxExport.h"
 #include "Workbook.h"
 #include "ImageExportDialog.h"
 #include "SmoothCurveDialog.h"
@@ -3462,6 +3463,19 @@ void ApplicationWindow::initMainMenu()
     if (actionExportPythonScript) {
         exportPlot->addSeparator();
         exportPlot->addAction(actionExportPythonScript);
+    }
+    {
+        // E8: write graphs into a .pptx as editable objects (no member action: the text is
+        // refreshed in translateActionsStrings)
+        ToriGraphPptx::registerTranslations();
+        auto *actionSendToPowerPoint = new QAction(IconLoader::load("copy-ole"),
+                                                   ToriGraphPptx::sendToPowerPointMenuText(), this);
+        actionSendToPowerPoint->setObjectName(QStringLiteral("actionSendToPowerPoint"));
+        actionSendToPowerPoint->setToolTip(ToriGraphPptx::sendToPowerPointToolTip());
+        actionSendToPowerPoint->setStatusTip(ToriGraphPptx::sendToPowerPointToolTip());
+        connect(actionSendToPowerPoint, &QAction::triggered, this,
+                [this]() { ToriGraphPptx::sendGraphsToPowerPoint(this); });
+        file->addAction(actionSendToPowerPoint);
     }
 
     file->addAction(actionPrint);
@@ -14882,6 +14896,8 @@ void ApplicationWindow::showWindowContextMenu()
         cm.addSeparator();
         cm.addAction(actionUnzoom);
         cm.addAction(actionCopyGraphOle);
+        if (QAction *aPptx = findChild<QAction *>(QStringLiteral("actionSendToPowerPoint")))
+            cm.addAction(aPptx); // E8
         cm.addAction(IconLoader::load("copy"), tr("&Copy Page"), g, SLOT(copyAllLayers()));
         cm.addAction(tr("E&xport Page"), this, SLOT(exportGraph()));
         cm.addAction(actionPrint);
@@ -14909,6 +14925,8 @@ void ApplicationWindow::showWindowContextMenu()
         cm.addAction(actionCopyWindow);
         cm.addSeparator();
         cm.addAction(tr("&Copy Graph"), g, SLOT(copyImage()));
+        if (QAction *aPptx = findChild<QAction *>(QStringLiteral("actionSendToPowerPoint")))
+            cm.addAction(aPptx); // E8
         cm.addAction(tr("&Export"), this, SLOT(exportGraph()));
         cm.addAction(actionPrint);
         cm.addSeparator();
@@ -19212,6 +19230,11 @@ void ApplicationWindow::translateActionsStrings()
     actionLoad->setText(tr("&Import ASCII..."));
     actionLoad->setToolTip(tr("Import data file(s)"));
     actionLoad->setShortcut(tr("Ctrl+Alt+I"));
+    if (auto *aPptx = findChild<QAction *>(QStringLiteral("actionSendToPowerPoint"))) {
+        aPptx->setText(ToriGraphPptx::sendToPowerPointMenuText()); // E8
+        aPptx->setToolTip(ToriGraphPptx::sendToPowerPointToolTip());
+        aPptx->setStatusTip(ToriGraphPptx::sendToPowerPointToolTip());
+    }
     if (auto *actionImportExcel = findChild<QAction *>(QStringLiteral("actionImportExcel"))) {
         XlsxImport::registerTranslations();
         actionImportExcel->setText(tr("Import &Excel Workbook (.xlsx)..."));

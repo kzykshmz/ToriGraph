@@ -8663,6 +8663,8 @@ QJsonObject stylePresetToJson(const MultiLayer::GraphStylePresetSpec &s)
             (s.pageBackground.isValid() ? s.pageBackground : QColor(Qt::white)).name();
     o[QStringLiteral("format_isij_unit_slash")] = s.formatIsijUnitSlash;
     o[QStringLiteral("large_slide_layout")] = s.largeSlideLayout;
+    if (s.slidePastePercent > 0.0)
+        o[QStringLiteral("slide_paste_percent")] = s.slidePastePercent;
     return o;
 }
 
@@ -8728,6 +8730,8 @@ MultiLayer::GraphStylePresetSpec stylePresetFromJson(const QJsonObject &o,
         s.formatIsijUnitSlash = o.value(QStringLiteral("format_isij_unit_slash")).toBool(s.formatIsijUnitSlash);
     if (o.contains(QStringLiteral("large_slide_layout")))
         s.largeSlideLayout = o.value(QStringLiteral("large_slide_layout")).toBool(s.largeSlideLayout);
+    if (o.contains(QStringLiteral("slide_paste_percent")))
+        s.slidePastePercent = qBound(10.0, o.value(QStringLiteral("slide_paste_percent")).toDouble(s.slidePastePercent), 400.0);
     return s;
 }
 
@@ -9065,6 +9069,7 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
     lab.pageBackground = Qt::white;
     lab.formatIsijUnitSlash = false;
     lab.largeSlideLayout = false;
+    lab.slidePastePercent = 140.0; // E8: "Send to PowerPoint" pastes it at this size
     defs.append(lab);
 
     // E3: journal double-column width (175 mm).
@@ -9111,6 +9116,8 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::listStylePresets()
                 ov.builtIn = true;
                 if (ov.name.trimmed().isEmpty())
                     ov.name = result[i].name;
+                if (ov.slidePastePercent <= 0.0)
+                    ov.slidePastePercent = result[i].slidePastePercent;
                 result[i] = ov;
                 merged = true;
                 break;
