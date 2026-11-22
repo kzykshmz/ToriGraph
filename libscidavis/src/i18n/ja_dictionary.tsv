@@ -6097,6 +6097,10 @@ The downloaded update package (v%1) is not digitally signed with an Authenticode
 The downloaded update package has an invalid or untrusted digital signature and was deleted for your safety.\n\n%1	ダウンロードした更新パッケージの電子署名が不正または信頼できないため、安全のため削除しました。\n\n%1
 The update package does not carry an Authenticode digital signature.	更新パッケージに Authenticode 電子署名が付けられていません。
 Update package file does not exist: %1	更新パッケージファイルが見つかりません: %1
+Authenticode signer '%1' does not match expected signer '%2'.	Authenticode の署名者 '%1' が想定される署名者 '%2' と一致しません。
+The downloaded update package (v%1) is not digitally signed with an Authenticode certificate, so automatic installation is disabled for your safety.\n\nComputed SHA-256 (unverified):\n%2\n\nRelease Notes:\n%3\n\nClick "Open Release Page" to review and install the update manually from GitHub.	ダウンロードした更新パッケージ (v%1) に Authenticode 電子署名がないため、安全のため自動インストールを停止しました。\n\n算出した SHA-256 (未検証):\n%2\n\nリリースノート:\n%3\n\n「リリースページを開く」をクリックし、GitHub の公式ページを確認して手動で更新してください。
+This release does not publish a SHA-256 checksum, so ToriGraph cannot verify the download. Open the release page to download and install it manually.	このリリースには SHA-256 チェックサムが公開されていないため、ダウンロードを検証できません。リリースページを開いて手動でダウンロード・インストールしてください。
+This release does not publish a SHA-256 checksum, so automatic installation is blocked.	このリリースには SHA-256 チェックサムが公開されていないため、自動インストールをブロックしました。
 PowerPoint Paste Scale (%):	PowerPoint 貼付倍率 (%):
 The PowerPoint link currently points to another ToriGraph installation (%1) instead of this program (%2). Double-clicking the graph in PowerPoint will open that copy.	PowerPoint 連携の登録先が、現在起動中のプログラム (%2) ではなく別の場所の ToriGraph (%1) を指しています。PowerPoint 上でグラフをダブルクリックすると、そちらのプログラムが開きます。
 The embedded project data exceeds the 128 MB PowerPoint limit (%1 MB).	埋め込むプロジェクトデータが PowerPoint の上限 128 MB を超えています (%1 MB)。
