@@ -148,6 +148,103 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchAfterInstall}"; Flags
 [Code]
 const
   EnvSubKey = 'Environment';
+  OleClsid = '{8E6B9541-3C74-4D28-A915-7D84E5A12001}';
+  OleProgId = 'ToriGraph.Graph.1';
+  LegacyProgId = 'SciDAVis.Graph.1';
+  ProjectProgId = 'ToriGraph.Project';
+
+function ExtractExeFromCommand(Cmd: string): string;
+var
+  C, Rest: string;
+  EndQuote, ExePos, SpacePos: Integer;
+begin
+  C := Trim(Cmd);
+  if C = '' then
+  begin
+    Result := '';
+    exit;
+  end;
+  if C[1] = '"' then
+  begin
+    Rest := Copy(C, 2, MaxInt);
+    EndQuote := Pos('"', Rest);
+    if EndQuote > 0 then
+      Result := Trim(Copy(Rest, 1, EndQuote - 1))
+    else
+      Result := Trim(Rest);
+    exit;
+  end;
+  ExePos := Pos('.EXE', UpperCase(C));
+  if ExePos > 0 then
+  begin
+    Result := Trim(Copy(C, 1, ExePos + 3));
+    exit;
+  end;
+  SpacePos := Pos(' ', C);
+  if SpacePos > 0 then
+    Result := Trim(Copy(C, 1, SpacePos - 1))
+  else
+    Result := C;
+end;
+
+procedure CleanupStaleHkcuProgId(ProgIdName: string);
+var
+  ProgKey, CmdVal, ExePath: string;
+begin
+  ProgKey := 'Software\Classes\' + ProgIdName;
+  if not RegKeyExists(HKEY_CURRENT_USER, ProgKey) then
+    exit;
+  ExePath := '';
+  if RegQueryStringValue(HKEY_CURRENT_USER, ProgKey + '\shell\open\command', '', CmdVal) then
+    ExePath := ExtractExeFromCommand(CmdVal);
+  if (ExePath <> '') and (not FileExists(ExePath)) then
+    RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, ProgKey);
+end;
+
+procedure CleanupStaleHkcuOleRegistration();
+var
+  ClsidKey, LocalServerKey, ValStr, ExePath, AssocVal: string;
+  ClsidRemoved: Boolean;
+begin
+  ClsidRemoved := False;
+  ClsidKey := 'Software\Classes\CLSID\' + OleClsid;
+  LocalServerKey := ClsidKey + '\LocalServer32';
+  if RegKeyExists(HKEY_CURRENT_USER, ClsidKey) then
+  begin
+    ExePath := '';
+    if RegQueryStringValue(HKEY_CURRENT_USER, LocalServerKey, 'ServerExecutable', ValStr) then
+      ExePath := ExtractExeFromCommand(ValStr);
+    if (ExePath = '') and RegQueryStringValue(HKEY_CURRENT_USER, LocalServerKey, '', ValStr) then
+      ExePath := ExtractExeFromCommand(ValStr);
+    if (ExePath = '') or (not FileExists(ExePath)) then
+    begin
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, ClsidKey);
+      ClsidRemoved := True;
+    end;
+  end;
+
+  CleanupStaleHkcuProgId(OleProgId);
+  CleanupStaleHkcuProgId(LegacyProgId);
+  CleanupStaleHkcuProgId(ProjectProgId);
+
+  if ClsidRemoved then
+  begin
+    if RegKeyExists(HKEY_CURRENT_USER, 'Software\Classes\' + OleProgId) and
+       (not RegKeyExists(HKEY_CURRENT_USER, 'Software\Classes\' + OleProgId + '\shell\open\command')) then
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\Classes\' + OleProgId);
+    if RegKeyExists(HKEY_CURRENT_USER, 'Software\Classes\' + LegacyProgId) and
+       (not RegKeyExists(HKEY_CURRENT_USER, 'Software\Classes\' + LegacyProgId + '\shell\open\command')) then
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, 'Software\Classes\' + LegacyProgId);
+  end;
+
+  if (not RegKeyExists(HKEY_CURRENT_USER, 'Software\Classes\' + ProjectProgId)) and
+     (not RegKeyExists(HKEY_LOCAL_MACHINE, 'Software\Classes\' + ProjectProgId)) and
+     RegQueryStringValue(HKEY_CURRENT_USER, 'Software\Classes\.sciprj', '', AssocVal) then
+  begin
+    if AssocVal = ProjectProgId then
+      RegDeleteValue(HKEY_CURRENT_USER, 'Software\Classes\.sciprj', '');
+  end;
+end;
 
 function NeedsAddPath(Param: string): Boolean;
 var
@@ -198,9 +295,12 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
+  if CurStep = ssPostInstall then
   begin
-    AddDirToUserPath(ExpandConstant('{app}'));
+    if IsAdminInstallMode then
+      CleanupStaleHkcuOleRegistration();
+    if WizardIsTaskSelected('addtopath') then
+      AddDirToUserPath(ExpandConstant('{app}'));
   end;
 end;
 
@@ -209,5 +309,6 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     RemoveDirFromUserPath(ExpandConstant('{app}'));
+    CleanupStaleHkcuOleRegistration();
   end;
 end;

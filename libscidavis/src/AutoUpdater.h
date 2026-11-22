@@ -186,17 +186,21 @@ public:
                                                        QString *signerSubjectOut = nullptr,
                                                        QString *errOut = nullptr);
     static bool requireCodeSignature();
+    static QString expectedSignerSubject();
     //! The generated script waits up to waitTimeoutSec for PID waitForPid (and any process
     //! running the target exe) to exit and aborts without touching the installation if one
     //! is still alive.
-    static QString writeWindowsStagingUpdaterScript(const QString &downloadedFilePath,
-                                                    const QString &targetInstallDir,
-                                                    const QString &exeName,
-                                                    qint64 waitForPid,
-                                                    bool relaunch = true,
-                                                    QString *errOut = nullptr,
-                                                    int waitTimeoutSec = 60,
-                                                    const QString &expectedSha256 = QString());
+    static QString writeWindowsStagingUpdaterScript(
+            const QString &downloadedFilePath,
+            const QString &targetInstallDir,
+            const QString &exeName,
+            qint64 waitForPid,
+            bool relaunch = true,
+            QString *errOut = nullptr,
+            int waitTimeoutSec = 60,
+            const QString &expectedSha256 = QString(),
+            bool requireSignature = requireCodeSignature(),
+            const QString &expectedSigner = expectedSignerSubject());
 
     // Network / failure handling helpers (public for the regression tests)
     //! Use the system (WinINET/PAC) proxy for remote hosts, no proxy for loopback.

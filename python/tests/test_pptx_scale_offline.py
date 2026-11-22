@@ -60,7 +60,8 @@ class FakeSession:
     def list_windows(self):
         return [{"name": "Graph1", "type": "MultiLayer"}, {"name": "Graph2", "type": "MultiLayer"}]
 
-    def save_project(self, path, compress=False):
+    def save_project(self, path, compress=False, snapshot=False):
+        self.calls.append(("save_project", {"path": str(path), "compress": compress, "snapshot": snapshot}))
         Path(path).write_text("whole project", encoding="utf-8")
 
     def call(self, method, _params=None, **kw):
@@ -127,6 +128,23 @@ def test_export_graphs_to_pptx_scale_effective_pt_and_warnings(emf_bytes):
     check(any("graph.export_ole failed" in m for m in res["warnings"]), "export_ole failure warned")
     check(any("whole project" in m for m in res["warnings"]), "whole-project fallback warned")
     check(len(w) >= 2, f"UserWarnings issued ({len(w)})")
+    sp_calls = [c[1] for c in s.calls if c[0] == "save_project"]
+    check(len(sp_calls) == 1 and sp_calls[0]["snapshot"] is True and sp_calls[0]["compress"] is False,
+          f"save_project must be called with snapshot=True ({sp_calls})")
+
+    # 4b. legacy FakeSession without snapshot= parameter falls back cleanly via TypeError
+    class LegacyFakeSession(FakeSession):
+        def save_project(self, path, compress=False):
+            self.calls.append(("legacy_save_project", {"path": str(path), "compress": compress}))
+            Path(path).write_text("legacy whole project", encoding="utf-8")
+
+    s_leg = LegacyFakeSession(emf_bytes, fail_export_ole=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        export_graphs_to_pptx(s_leg, tmp / "d_legacy.pptx", ["Graph1"])
+    leg_calls = [c[1] for c in s_leg.calls if c[0] == "legacy_save_project"]
+    check(len(leg_calls) == 1 and leg_calls[0]["compress"] is False,
+          f"legacy save_project fallback failed ({leg_calls})")
 
     # 5. box with width + scale is rejected; box=(left, top) + scale works
     try:
