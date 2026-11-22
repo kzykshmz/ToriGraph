@@ -39,6 +39,7 @@
 #include "ColorButton.h"
 #include "TextFormatButtons.h"
 #include "PlotCurve.h"
+#include "PlotStyleLimits.h"
 #include "ScaleDraw.h"
 #include "Table.h"
 #include "core/column/Column.h"
@@ -447,11 +448,13 @@ void AxesDialog::initGridPage()
 
     boxWidthMajor = new QSpinBox();
     boxWidthMajor->setRange(1, 20);
+    boxWidthMajor->setSuffix(QStringLiteral(" px"));
     boxWidthMajor->setValue(1);
     rightLayout->addWidget(boxWidthMajor, 3, 1);
 
     boxWidthMinor = new QSpinBox();
     boxWidthMinor->setRange(1, 20);
+    boxWidthMinor->setSuffix(QStringLiteral(" px"));
     boxWidthMinor->setValue(1);
     boxWidthMinor->setDisabled(true);
     rightLayout->addWidget(boxWidthMinor, 3, 2);
@@ -624,103 +627,31 @@ void AxesDialog::initAxesPage()
     boxTitle = new QTextEdit();
     boxTitle->setAcceptRichText(false);
     QFontMetrics metrics(this->font());
-    boxTitle->setMaximumHeight(3 * metrics.height());
+    boxTitle->setMaximumHeight(2 * metrics.height() + 12);
     boxTitle->setMinimumWidth(220);
     labelBoxLayout->addWidget(boxTitle);
 
     QHBoxLayout *hl = new QHBoxLayout();
     hl->setMargin(0);
-    hl->setSpacing(2);
+    hl->setSpacing(4);
     buttonLabelFont = new QPushButton(tr("&Font"));
     hl->addWidget(buttonLabelFont);
 
-    boxTitleFontSize = new QSpinBox();
-    boxTitleFontSize->setRange(6, 144);
-    boxTitleFontSize->setSuffix(QStringLiteral(" pt"));
-    boxTitleFontSize->setValue(12);
+    boxTitleFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxTitleFontSize->setValue(12.0);
     boxTitleFontSize->setToolTip(tr("Axis Title Font Size"));
     hl->addWidget(boxTitleFontSize);
 
-    formatButtons = new TextFormatButtons(boxTitle);
-    formatButtons->toggleCurveButton(false);
-    hl->addWidget(formatButtons);
+    boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
+    boxAutoAxisTitle->setChecked(true);
+    hl->addWidget(boxAutoAxisTitle);
     hl->addStretch();
 
     labelBoxLayout->addLayout(hl);
 
-    {
-        QWidget *matSymBar = new QWidget(labelBox);
-        QHBoxLayout *msLay = new QHBoxLayout(matSymBar);
-        msLay->setContentsMargins(0, 1, 0, 1);
-        msLay->setSpacing(2);
-
-        struct MatSymSpec {
-            const char *label;
-            const char *insertText;
-            int mode; // 0 = literal, 1 = <sub>, 2 = <sup>
-        };
-        static const MatSymSpec kMatSyms[] = {
-            { "\xCF\x83", "\xCF\x83", 0 },         // σ
-            { "\xCE\xB5", "\xCE\xB5", 0 },         // ε
-            { "2\xCE\xB8", "2\xCE\xB8", 0 },       // 2θ
-            { "\xCE\xBCm", "\xCE\xBCm", 0 },       // μm
-            { "\xC2\xB0""C", "\xC2\xB0""C", 0 },   // °C
-            { "\xC3\x85", "\xC3\x85", 0 },         // Å
-            { "\xC2\xB1", "\xC2\xB1", 0 },         // ±
-            { "\xC2\xB0", "\xC2\xB0", 0 },         // °
-            { "cm\xE2\x81\xBB\xC2\xB9", "cm<sup>-1</sup>", 0 }, // cm⁻¹
-            { "x\xE2\x82\x82", "", 1 },            // x₂
-            { "x\xC2\xB2", "", 2 },                // x²
-        };
-        for (const auto &sp : kMatSyms) {
-            QToolButton *tb = new QToolButton(matSymBar);
-            tb->setText(QString::fromUtf8(sp.label));
-            tb->setAutoRaise(true);
-            tb->setFocusPolicy(Qt::NoFocus);
-            tb->setFixedHeight(21);
-            tb->setStyleSheet(QStringLiteral(
-                    "QToolButton { border: 1px solid #CBD5E1; border-radius: 3px;"
-                    " background: #F8FAFC; color: #1E293B; padding: 0px 4px; font-size: 8.5pt; }"
-                    "QToolButton:hover { background: #DBEAFE; border-color: #60A5FA; }"));
-            if (sp.mode == 1)
-                tb->setToolTip(tr("Insert Subscript (<sub>...</sub>)"));
-            else if (sp.mode == 2)
-                tb->setToolTip(tr("Insert Superscript (<sup>...</sup>)"));
-            else
-                tb->setToolTip(tr("Insert Materials Science Symbol"));
-            const QString ins = QString::fromUtf8(sp.insertText);
-            const int mode = sp.mode;
-            connect(tb, &QToolButton::clicked, this, [this, ins, mode]() {
-                if (!boxTitle)
-                    return;
-                QTextCursor tc = boxTitle->textCursor();
-                if (mode == 1 || mode == 2) {
-                    const QString openTag = (mode == 1) ? QStringLiteral("<sub>")
-                                                        : QStringLiteral("<sup>");
-                    const QString closeTag = (mode == 1) ? QStringLiteral("</sub>")
-                                                         : QStringLiteral("</sup>");
-                    if (tc.hasSelection()) {
-                        tc.insertText(openTag + tc.selectedText() + closeTag);
-                    } else {
-                        tc.insertText(openTag + closeTag);
-                        tc.movePosition(QTextCursor::Left, QTextCursor::MoveAnchor,
-                                        closeTag.length());
-                        boxTitle->setTextCursor(tc);
-                    }
-                } else {
-                    tc.insertText(ins);
-                }
-                boxTitle->setFocus();
-            });
-            msLay->addWidget(tb);
-        }
-        msLay->addStretch(1);
-        labelBoxLayout->addWidget(matSymBar);
-    }
-
-    boxAutoAxisTitle = new QCheckBox(tr("Auto Title from Column"));
-    boxAutoAxisTitle->setChecked(true);
-    labelBoxLayout->addWidget(boxAutoAxisTitle);
+    formatButtons = new TextFormatButtons(boxTitle);
+    formatButtons->toggleCurveButton(false);
+    labelBoxLayout->addWidget(formatButtons);
 
     QHBoxLayout *ufLayout = new QHBoxLayout();
     ufLayout->setMargin(0);
@@ -736,7 +667,8 @@ void AxesDialog::initAxesPage()
     connect(boxAutoAxisTitle, SIGNAL(toggled(bool)), this, SLOT(onAutoAxisTitleToggled(bool)));
     connect(boxAxisUnitFormat, SIGNAL(currentIndexChanged(int)), this,
             SLOT(onAxisUnitFormatChanged(int)));
-    connect(boxTitleFontSize, SIGNAL(valueChanged(int)), this, SLOT(onTitleFontSizeChanged(int)));
+    connect(boxTitleFontSize, SIGNAL(valueChanged(double)), this,
+            SLOT(onTitleFontSizeChanged(double)));
 
     QHBoxLayout *bottomLayout = new QHBoxLayout();
 
@@ -756,10 +688,8 @@ void AxesDialog::initAxesPage()
     btnAxesFont = new QPushButton();
     btnAxesFont->setText(tr("Axis &Font"));
     axesFontRowLayout->addWidget(btnAxesFont);
-    boxAxesFontSize = new QSpinBox();
-    boxAxesFontSize->setRange(6, 144);
-    boxAxesFontSize->setSuffix(QStringLiteral(" pt"));
-    boxAxesFontSize->setValue(12);
+    boxAxesFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxAxesFontSize->setValue(12.0);
     boxAxesFontSize->setToolTip(tr("Tick Labels Font Size"));
     axesFontRowLayout->addWidget(boxAxesFontSize);
     leftBoxLayout->addLayout(axesFontRowLayout, 1, 1);
@@ -789,6 +719,7 @@ void AxesDialog::initAxesPage()
     leftBoxLayout->addWidget(new QLabel(tr("Stand-off")), 5, 0);
     boxBaseline = new QSpinBox();
     boxBaseline->setRange(-500, 1000);
+    boxBaseline->setSuffix(QStringLiteral(" px"));
     leftBoxLayout->addWidget(boxBaseline);
 
     boxShowLabels = new QGroupBox(tr("Show Labels"));
@@ -828,6 +759,7 @@ void AxesDialog::initAxesPage()
     boxAngle = new QSpinBox();
     boxAngle->setRange(-90, 90);
     boxAngle->setSingleStep(5);
+    boxAngle->setSuffix(QString::fromUtf8("\xC2\xB0"));
     rightBoxLayout->addWidget(boxAngle, 4, 1);
 
     rightBoxLayout->addWidget(new QLabel(tr("Color")), 5, 0);
@@ -888,7 +820,8 @@ void AxesDialog::initAxesPage()
     connect(boxFormat, SIGNAL(activated(int)), this, SLOT(setLabelsNumericFormat(int)));
 
     connect(btnAxesFont, SIGNAL(clicked()), this, SLOT(customAxisFont()));
-    connect(boxAxesFontSize, SIGNAL(valueChanged(int)), this, SLOT(onAxesFontSizeChanged(int)));
+    connect(boxAxesFontSize, SIGNAL(valueChanged(double)), this,
+            SLOT(onAxesFontSizeChanged(double)));
     connect(boxBaseline, SIGNAL(valueChanged(int)), this, SLOT(changeBaselineDist(int)));
     connect(boxAxisType, SIGNAL(activated(int)), this, SLOT(showAxisFormatOptions(int)));
     connect(boxPrecision, SIGNAL(valueChanged(int)), this, SLOT(setLabelsNumericFormat(int)));
@@ -925,6 +858,7 @@ void AxesDialog::initFramePage()
     boxFramedLayout->addWidget(new QLabel(tr("Width")), 1, 0);
     boxFrameWidth = new QSpinBox();
     boxFrameWidth->setMinimum(1);
+    boxFrameWidth->setSuffix(QStringLiteral(" px"));
     boxFramedLayout->addWidget(boxFrameWidth, 1, 1);
 
     boxFramedLayout->setRowStretch(2, 1);
@@ -938,16 +872,19 @@ void AxesDialog::initFramePage()
     boxAxesLayout->addWidget(new QLabel(tr("Line Width")), 1, 0);
     boxAxesLinewidth = new QSpinBox();
     boxAxesLinewidth->setRange(1, 100);
+    boxAxesLinewidth->setSuffix(QStringLiteral(" px"));
     boxAxesLayout->addWidget(boxAxesLinewidth, 1, 1);
 
     boxAxesLayout->addWidget(new QLabel(tr("Major ticks length")), 2, 0);
     boxMajorTicksLength = new QSpinBox();
     boxMajorTicksLength->setRange(0, 1000);
+    boxMajorTicksLength->setSuffix(QStringLiteral(" px"));
     boxAxesLayout->addWidget(boxMajorTicksLength, 2, 1);
 
     boxAxesLayout->addWidget(new QLabel(tr("Minor ticks length")), 3, 0);
     boxMinorTicksLength = new QSpinBox();
     boxMinorTicksLength->setRange(0, 1000);
+    boxMinorTicksLength->setSuffix(QStringLiteral(" px"));
     boxAxesLayout->addWidget(boxMinorTicksLength, 3, 1);
 
     boxAxesLayout->setRowStretch(4, 1);
@@ -1054,6 +991,7 @@ void AxesDialog::initReferenceLinesPage()
     refWidthBox->setRange(0.5, 20.0);
     refWidthBox->setSingleStep(0.5);
     refWidthBox->setDecimals(1);
+    refWidthBox->setSuffix(QStringLiteral(" px"));
     refWidthBox->setValue(1.5);
     gl->addWidget(refWidthBox, 5, 1);
 
@@ -1585,48 +1523,38 @@ void AxesDialog::customAxisFont()
 
     bool okF = false;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : -1;
-    QFont fnt;
+    QFont *targetFont = nullptr;
     switch (row) {
     case 0:
-        fnt = QFontDialog::getFont(&okF, xBottomFont, this);
-        if (okF) {
-            if (fnt.family().trimmed().isEmpty())
-                fnt.setFamily(QStringLiteral("Arial"));
-            xBottomFont = fnt;
-        }
+        targetFont = &xBottomFont;
         break;
     case 1:
-        fnt = QFontDialog::getFont(&okF, yLeftFont, this);
-        if (okF) {
-            if (fnt.family().trimmed().isEmpty())
-                fnt.setFamily(QStringLiteral("Arial"));
-            yLeftFont = fnt;
-        }
+        targetFont = &yLeftFont;
         break;
     case 2:
-        fnt = QFontDialog::getFont(&okF, xTopFont, this);
-        if (okF) {
-            if (fnt.family().trimmed().isEmpty())
-                fnt.setFamily(QStringLiteral("Arial"));
-            xTopFont = fnt;
-        }
+        targetFont = &xTopFont;
         break;
     case 3:
-        fnt = QFontDialog::getFont(&okF, yRightFont, this);
-        if (okF) {
-            if (fnt.family().trimmed().isEmpty())
-                fnt.setFamily(QStringLiteral("Arial"));
-            yRightFont = fnt;
-        }
+        targetFont = &yRightFont;
         break;
     default:
         break;
     }
+    if (!targetFont)
+        return;
 
+    const QFont beforeFont =
+            (row >= 0 && row < 4 && d_stagedAxes[row].axisFontDirty) ? d_stagedAxes[row].axisFont
+                                                                     : *targetFont;
+    QFont fnt = QFontDialog::getFont(&okF, beforeFont, this);
     if (okF && row >= 0 && row < 4) {
-        if (boxAxesFontSize && fnt.pointSize() > 0) {
+        if (fnt.family().trimmed().isEmpty())
+            fnt.setFamily(QStringLiteral("Arial"));
+        fnt = PlotStyleLimits::preserveFractionalPtAfterFontDialog(beforeFont, fnt);
+        *targetFont = fnt;
+        if (boxAxesFontSize) {
             QSignalBlocker sb(boxAxesFontSize);
-            boxAxesFontSize->setValue(fnt.pointSize());
+            boxAxesFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(fnt, 12.0));
         }
         d_stagedAxes[row].axisFont = fnt;
         d_stagedAxes[row].axisFontDirty = true;
@@ -2215,7 +2143,7 @@ void AxesDialog::refreshGraphState()
         onAxesTitlesRowChanged(curAxisRow);
     } else if (boxAxesFontSize) {
         QSignalBlocker sb(boxAxesFontSize);
-        boxAxesFontSize->setValue(xBottomFont.pointSize() > 0 ? xBottomFont.pointSize() : 12);
+        boxAxesFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(xBottomFont, 12.0));
     }
     if (axesList && axesList->currentRow() >= 0)
         updateScale();
@@ -2417,7 +2345,7 @@ void AxesDialog::updateTitleBox(int axis)
         QFont tf = (axis >= 0 && axis < 4 && d_stagedAxes[axis].titleFontDirty)
                 ? d_stagedAxes[axis].titleFont
                 : d_graph->axisTitleFont(axisId);
-        boxTitleFontSize->setValue(tf.pointSize() > 0 ? tf.pointSize() : 12);
+        boxTitleFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(tf, 12.0));
     }
 }
 
@@ -2728,9 +2656,10 @@ void AxesDialog::customAxisLabelFont()
     if (okF) {
         if (fnt.family().trimmed().isEmpty())
             fnt.setFamily(QStringLiteral("Arial"));
-        if (boxTitleFontSize && fnt.pointSize() > 0) {
+        fnt = PlotStyleLimits::preserveFractionalPtAfterFontDialog(oldFont, fnt);
+        if (boxTitleFontSize) {
             QSignalBlocker sb(boxTitleFontSize);
-            boxTitleFontSize->setValue(fnt.pointSize());
+            boxTitleFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(fnt, 12.0));
         }
         if (row >= 0 && row < 4) {
             d_stagedAxes[row].titleFont = fnt;
@@ -3468,9 +3397,9 @@ void AxesDialog::autoRangeCurrentAxis()
         ml->pushUndoSnapshot(tr("Auto Range"), beforeSnap);
 }
 
-void AxesDialog::onTitleFontSizeChanged(int pt)
+void AxesDialog::onTitleFontSizeChanged(double pt)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0)
+    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0.0)
         return;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
     if (row < 0 || row >= 4)
@@ -3480,15 +3409,15 @@ void AxesDialog::onTitleFontSizeChanged(int pt)
                                                 : d_graph->axisTitleFont(axis);
     if (tf.family().trimmed().isEmpty())
         tf.setFamily(QStringLiteral("Arial"));
-    tf.setPointSize(pt);
+    tf.setPointSizeF(pt);
     d_stagedAxes[row].titleFont = tf;
     d_stagedAxes[row].titleFontDirty = true;
     markAxisDirty();
 }
 
-void AxesDialog::onAxesFontSizeChanged(int pt)
+void AxesDialog::onAxesFontSizeChanged(double pt)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0)
+    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0.0)
         return;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
     if (row < 0 || row >= 4)
@@ -3512,7 +3441,7 @@ void AxesDialog::onAxesFontSizeChanged(int pt)
         return;
     if (targetFont->family().trimmed().isEmpty())
         targetFont->setFamily(QStringLiteral("Arial"));
-    targetFont->setPointSize(pt);
+    targetFont->setPointSizeF(pt);
     d_stagedAxes[row].axisFont = *targetFont;
     d_stagedAxes[row].axisFontDirty = true;
     markAxisDirty();
@@ -3551,7 +3480,7 @@ void AxesDialog::onAxesTitlesRowChanged(int row)
         rowAxisFont = d_stagedAxes[row].axisFont;
     if (boxAxesFontSize) {
         QSignalBlocker b(boxAxesFontSize);
-        boxAxesFontSize->setValue(rowAxisFont.pointSize() > 0 ? rowAxisFont.pointSize() : 12);
+        boxAxesFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(rowAxisFont, 12.0));
     }
 
     if (d_stagedAxes[row].dirty) {
@@ -3584,7 +3513,8 @@ void AxesDialog::onAxesTitlesRowChanged(int row)
         boxAutoAxisTitle->setChecked(st.autoTitle);
         if (st.titleFontDirty && boxTitleFontSize) {
             QSignalBlocker bTfs(boxTitleFontSize);
-            boxTitleFontSize->setValue(st.titleFont.pointSize() > 0 ? st.titleFont.pointSize() : 12);
+            boxTitleFontSize->setValue(
+                    PlotStyleLimits::effectiveFontPointSizeF(st.titleFont, 12.0));
         }
 
         const int typeIdx = boxAxisType->findData(static_cast<int>(st.axisType));
@@ -4154,10 +4084,12 @@ void AxesDialog::applyTickAndAxisStyleToAllAxes()
         srcTickFont = src.axisFont;
     if (srcTickFont.family().trimmed().isEmpty())
         srcTickFont.setFamily(QStringLiteral("Arial"));
+    srcTickFont.setPointSizeF(PlotStyleLimits::effectiveFontPointSizeF(srcTickFont, 12.0));
 
     QFont srcTitleFont = src.titleFontDirty ? src.titleFont : d_graph->axisTitleFont(srcAxis);
     if (srcTitleFont.family().trimmed().isEmpty())
         srcTitleFont.setFamily(QStringLiteral("Arial"));
+    srcTitleFont.setPointSizeF(PlotStyleLimits::effectiveFontPointSizeF(srcTitleFont, 12.0));
 
     xBottomFont = srcTickFont;
     yLeftFont = srcTickFont;

@@ -101,7 +101,7 @@ void Filter::setInterval(double from, double to)
     setDataFromCurve(d_curve->title().text(), from, to);
 }
 
-void Filter::setDataCurve(const int curve, double start, double end)
+void Filter::setDataCurve(int curve, double start, double end)
 {
     if (start > end)
         qSwap(start, end);
@@ -189,10 +189,10 @@ void Filter::setDataCurve(const int curve, double start, double end)
         return;
     }
 
-    for (auto ii=0u; d_indices.size() > ii; ++ii )
+    for (size_t ii = 0; d_indices.size() > ii; ++ii)
     {
-        d_x[ii]=d_curve->x(d_indices[ii]);
-        d_y[ii]=d_curve->y(d_indices[ii]);
+        d_x[ii] = d_curve->x(static_cast<int>(d_indices[ii]));
+        d_y[ii] = d_curve->y(static_cast<int>(d_indices[ii]));
     }
 
     if (!isDataAcceptable()) {

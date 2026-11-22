@@ -163,8 +163,8 @@ protected:
     QDoubleSpinBox *boxBreakPositionPct;
     QComboBox *boxBreakTypeBefore, *boxBreakTypeAfter;
     QPushButton *btnAutoRange;
-    QSpinBox *boxTitleFontSize;
-    QSpinBox *boxAxesFontSize;
+    QDoubleSpinBox *boxTitleFontSize;
+    QDoubleSpinBox *boxAxesFontSize;
 
 public slots:
     void setAxisType(int axis);
@@ -231,8 +231,8 @@ public slots:
     void onAutoAxisTitleToggled(bool checked);
     void onAxisUnitFormatChanged(int index);
     void autoRangeCurrentAxis();
-    void onTitleFontSizeChanged(int pt);
-    void onAxesFontSizeChanged(int pt);
+    void onTitleFontSizeChanged(double pt);
+    void onAxesFontSizeChanged(double pt);
     void onAxesTitlesRowChanged(int row);
     void applyTickAndAxisStyleToAllAxes();
 

@@ -35,6 +35,7 @@ class QGroupBox;
 class QTextEdit;
 class QTextCursor;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QSpinBox;
 
@@ -149,6 +150,7 @@ protected:
     QComboBox *alignmentBox;
     TextFormatButtons *formatButtons;
     QSpinBox *boxBackgroundTransparency;
+    QDoubleSpinBox *boxFontSize = nullptr;
 };
 
 #endif // TEXTDLG_H

@@ -70,6 +70,7 @@ private:
     QComboBox *unitBox;
     QPushButton *btnOk;
     QPushButton *btnApply;
+    QPushButton *btnCancel;
     QPushButton *buttonDefault;
     QCheckBox *endBox;
     QCheckBox *startBox, *filledBox;
@@ -77,6 +78,7 @@ private:
     QWidget *options, *geometry, *head;
     QLineEdit *xStartBox, *yStartBox, *xEndBox, *yEndBox;
     QSpinBox *boxHeadAngle, *boxHeadLength;
+    bool d_geometryDirty = false;
 };
 
 #endif // LINEDIALOG_H

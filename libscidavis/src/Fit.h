@@ -101,7 +101,7 @@ public:
                                    int mode /*0=Residual,1=Wild*/ = 0);
     bool evaluatePreviewCurve(std::vector<double> &X, std::vector<double> &Y, int nPoints = 200);
 
-    void setDataCurve(int curve, double start, double end);
+    void setDataCurve(int curve, double start, double end) override;
 
     QString formula() { return d_formula; };
     int numParameters() const { return d_p; }

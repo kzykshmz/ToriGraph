@@ -44,8 +44,11 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QComboBox>
+#include <QSignalBlocker>
 #include <QTabWidget>
+#include <cmath>
 
 LineDialog::LineDialog(ArrowMarker *line, QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
@@ -113,15 +116,20 @@ LineDialog::LineDialog(ArrowMarker *line, QWidget *parent, Qt::WindowFlags fl) :
     initGeometryTab();
 
     buttonDefault = new QPushButton(tr("Set &Default"));
+    buttonDefault->setAutoDefault(false);
     btnApply = new QPushButton(tr("&Apply"));
+    btnApply->setAutoDefault(false);
     btnOk = new QPushButton(tr("&Ok"));
     btnOk->setDefault(true);
+    btnCancel = new QPushButton(tr("&Cancel"));
+    btnCancel->setAutoDefault(false);
 
     QBoxLayout *bl1 = new QBoxLayout(QBoxLayout::LeftToRight);
-    bl1->addStretch();
     bl1->addWidget(buttonDefault);
+    bl1->addStretch();
     bl1->addWidget(btnApply);
     bl1->addWidget(btnOk);
+    bl1->addWidget(btnCancel);
 
     QVBoxLayout *vl = new QVBoxLayout();
     vl->addWidget(tw);
@@ -130,8 +138,11 @@ LineDialog::LineDialog(ArrowMarker *line, QWidget *parent, Qt::WindowFlags fl) :
 
     enableHeadTab();
 
+    connect(startBox, &QCheckBox::toggled, this, [this](bool) { enableHeadTab(); });
+    connect(endBox, &QCheckBox::toggled, this, [this](bool) { enableHeadTab(); });
     connect(btnOk, SIGNAL(clicked()), this, SLOT(accept()));
     connect(btnApply, SIGNAL(clicked()), this, SLOT(apply()));
+    connect(btnCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(tw, SIGNAL(currentChanged(int)), this, SLOT(enableButtonDefault(int)));
     connect(buttonDefault, SIGNAL(clicked()), this, SLOT(setDefaultValues()));
 }
@@ -182,18 +193,28 @@ void LineDialog::initGeometryTab()
 
     connect(unitBox, SIGNAL(activated(int)), this, SLOT(displayCoordinates(int)));
     displayCoordinates(0);
+
+    auto markGeomDirty = [this](const QString &) { d_geometryDirty = true; };
+    connect(xStartBox, &QLineEdit::textChanged, this, markGeomDirty);
+    connect(yStartBox, &QLineEdit::textChanged, this, markGeomDirty);
+    connect(xEndBox, &QLineEdit::textChanged, this, markGeomDirty);
+    connect(yEndBox, &QLineEdit::textChanged, this, markGeomDirty);
 }
 
 void LineDialog::displayCoordinates(int unit)
 {
+    QSignalBlocker bx1(xStartBox);
+    QSignalBlocker by1(yStartBox);
+    QSignalBlocker bx2(xEndBox);
+    QSignalBlocker by2(yEndBox);
     if (unit == ScaleCoordinates) {
         QwtDoublePoint sp = lm->startPointCoord();
-        xStartBox->setText(QString::number(sp.x()));
-        yStartBox->setText(QString::number(sp.y()));
+        xStartBox->setText(QString::number(sp.x(), 'g', 15));
+        yStartBox->setText(QString::number(sp.y(), 'g', 15));
 
         QwtDoublePoint ep = lm->endPointCoord();
-        xEndBox->setText(QString::number(ep.x()));
-        yEndBox->setText(QString::number(ep.y()));
+        xEndBox->setText(QString::number(ep.x(), 'g', 15));
+        yEndBox->setText(QString::number(ep.y(), 'g', 15));
     } else {
         QPoint startPoint = lm->startPoint();
         QPoint endPoint = lm->endPoint();
@@ -204,28 +225,51 @@ void LineDialog::displayCoordinates(int unit)
         xEndBox->setText(QString::number(endPoint.x()));
         yEndBox->setText(QString::number(endPoint.y()));
     }
+    d_geometryDirty = false;
 }
 
 void LineDialog::setCoordinates(int unit)
 {
+    auto parseDouble = [](const QString &txt, double fallback) -> double {
+        const QString s = txt.trimmed();
+        bool ok = false;
+        double v = QLocale().toDouble(s, &ok);
+        if (!ok)
+            v = QLocale::c().toDouble(QString(s).replace(QLatin1Char(','), QLatin1Char('.')), &ok);
+        return (ok && std::isfinite(v)) ? v : fallback;
+    };
+
     if (unit == ScaleCoordinates) {
-        lm->setStartPoint(xStartBox->text().replace(",", ".").toDouble(),
-                          yStartBox->text().replace(",", ".").toDouble());
-        lm->setEndPoint(xEndBox->text().replace(",", ".").toDouble(),
-                        yEndBox->text().replace(",", ".").toDouble());
+        const QwtDoublePoint curStart = lm->startPointCoord();
+        const QwtDoublePoint curEnd = lm->endPointCoord();
+        lm->setStartPoint(parseDouble(xStartBox->text(), curStart.x()),
+                          parseDouble(yStartBox->text(), curStart.y()));
+        lm->setEndPoint(parseDouble(xEndBox->text(), curEnd.x()),
+                        parseDouble(yEndBox->text(), curEnd.y()));
     } else {
-        lm->setStartPoint(QPoint(xStartBox->text().toInt(), yStartBox->text().toInt()));
-        lm->setEndPoint(QPoint(xEndBox->text().toInt(), yEndBox->text().toInt()));
+        const QPoint curStart = lm->startPoint();
+        const QPoint curEnd = lm->endPoint();
+        lm->setStartPoint(QPoint(qRound(parseDouble(xStartBox->text(), curStart.x())),
+                                 qRound(parseDouble(yStartBox->text(), curStart.y()))));
+        lm->setEndPoint(QPoint(qRound(parseDouble(xEndBox->text(), curEnd.x())),
+                               qRound(parseDouble(yEndBox->text(), curEnd.y()))));
     }
 }
 
 void LineDialog::apply()
 {
-    if (tw->currentWidget() == (QWidget *)options) {
+    if (!lm)
+        return;
+
+    if (options) {
         lm->drawEndArrow(endBox->isChecked());
         lm->drawStartArrow(startBox->isChecked());
-        lm->setLinePen(penWidget->pen());
-    } else if (tw->currentWidget() == (QWidget *)head) {
+        QPen pen = penWidget->pen();
+        pen.setCosmetic(false);
+        lm->setLinePen(pen);
+    }
+
+    if (head && boxHeadLength && boxHeadAngle && filledBox) {
         if (lm->headLength() != boxHeadLength->value())
             lm->setHeadLength(boxHeadLength->value());
 
@@ -234,13 +278,20 @@ void LineDialog::apply()
 
         if (lm->filledArrowHead() != filledBox->isChecked())
             lm->fillArrowHead(filledBox->isChecked());
-    } else if (tw->currentWidget() == (QWidget *)geometry)
-        setCoordinates(unitBox->currentIndex());
+    }
 
-    QwtPlot *plot = lm->plot();
-    Graph *g = (Graph *)plot->parent();
-    plot->replot();
-    g->notifyChanges();
+    if (geometry && unitBox
+        && (d_geometryDirty || unitBox->currentIndex() == ScaleCoordinates
+            || tw->currentWidget() == geometry)) {
+        setCoordinates(unitBox->currentIndex());
+        d_geometryDirty = false;
+    }
+
+    if (QwtPlot *plot = lm->plot()) {
+        plot->replot();
+        if (Graph *g = qobject_cast<Graph *>(plot->parent()))
+            g->notifyChanges();
+    }
 
     enableHeadTab();
 }
@@ -248,7 +299,7 @@ void LineDialog::apply()
 void LineDialog::accept()
 {
     apply();
-    close();
+    QDialog::accept();
 }
 
 void LineDialog::enableHeadTab()

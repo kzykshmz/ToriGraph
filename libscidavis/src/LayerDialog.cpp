@@ -319,7 +319,9 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     vbox1->addWidget(GroupCanvasSize);
 
     buttonApply = new QPushButton(tr("&Apply"));
+    buttonApply->setAutoDefault(false);
     buttonOk = new QPushButton(tr("&OK"));
+    buttonOk->setDefault(true);
     buttonCancel = new QPushButton(tr("&Cancel"));
 
     QHBoxLayout *hbox1 = new QHBoxLayout();

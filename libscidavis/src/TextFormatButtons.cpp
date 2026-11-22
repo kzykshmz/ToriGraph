@@ -30,6 +30,8 @@
 #include "TextFormatButtons.h"
 #include "SymbolDialog.h"
 #include "IconLoader.h"
+#include "I18nJapanese.h"
+#include "PlotStyleLimits.h"
 #include <QTextEdit>
 #include <QPushButton>
 #include <QHBoxLayout>
@@ -39,6 +41,30 @@
 #include <QString>
 
 namespace {
+
+void registerTextFormatButtonsTranslations()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Bold (<b>...</b>)", "太字 (<b>...</b>)");
+    reg("Italic (<i>...</i>)", "斜体 (<i>...</i>)");
+    reg("Underline (<u>...</u>)", "下線 (<u>...</u>)");
+    reg("Subscript (<sub>...</sub>)", "下付き文字 (<sub>...</sub>)");
+    reg("Superscript (<sup>...</sup>)", "上付き文字 (<sup>...</sup>)");
+    reg("Lowercase Greek Letters", "ギリシャ文字 (小文字)");
+    reg("Uppercase Greek Letters", "ギリシャ文字 (大文字)");
+    reg("Mathematical Symbols", "数学記号");
+    reg("Arrow Symbols", "矢印記号");
+    reg("Insert Curve Symbol", "曲線の凡例マーカーを挿入");
+    reg("Insert Unit", "単位を挿入");
+    reg("Units", "単位");
+}
 QString sanitizeSymbolToArialUtf8(const QString &raw)
 {
     QString out = raw;
@@ -98,6 +124,7 @@ QString sanitizeSymbolToArialUtf8(const QString &raw)
 
 TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWidget(parent)
 {
+    registerTextFormatButtonsTranslations();
     connectedTextEdit = textEdit;
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -117,60 +144,96 @@ TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWi
     auto configCompactBtn = [&](QPushButton *btn, const QFont &f) {
         btn->setFont(f);
         btn->setFixedSize(28, 26);
+        btn->setProperty("compactBtn", true);
+        btn->setStyleSheet(QStringLiteral("padding: 1px 2px;"));
         btn->setAutoDefault(false);
     };
 
     buttonCurve = new QPushButton(IconLoader::duotoneIcon("plot-line-symbol"), QString(), this);
     configCompactBtn(buttonCurve, arialBase);
+    buttonCurve->setToolTip(tr("Insert Curve Symbol"));
     row1->addWidget(buttonCurve);
 
     QFont boldFont(QStringLiteral("Arial"), 10);
     boldFont.setBold(true);
-    buttonBold = new QPushButton(tr("B", "Button bold"), this);
-    configCompactBtn(buttonBold, boldFont);
+    buttonBold = new QPushButton(QStringLiteral("B"), this);
+    buttonBold->setFont(boldFont);
+    buttonBold->setMinimumWidth(30);
+    buttonBold->setMaximumWidth(34);
+    buttonBold->setFixedHeight(26);
+    buttonBold->setProperty("compactBtn", true);
+    buttonBold->setStyleSheet(
+            QStringLiteral("font-family: 'Arial'; font-weight: bold; padding: 1px 4px;"));
+    buttonBold->setAutoDefault(false);
+    buttonBold->setToolTip(tr("Bold (<b>...</b>)"));
     row1->addWidget(buttonBold);
 
     QFont italicFont(QStringLiteral("Arial"), 10);
     italicFont.setItalic(true);
-    buttonItalics = new QPushButton(tr("It", "Button italics"), this);
-    configCompactBtn(buttonItalics, italicFont);
+    buttonItalics = new QPushButton(QStringLiteral("I"), this);
+    buttonItalics->setFont(italicFont);
+    buttonItalics->setMinimumWidth(30);
+    buttonItalics->setMaximumWidth(34);
+    buttonItalics->setFixedHeight(26);
+    buttonItalics->setProperty("compactBtn", true);
+    buttonItalics->setStyleSheet(
+            QStringLiteral("font-family: 'Arial'; font-style: italic; padding: 1px 4px;"));
+    buttonItalics->setAutoDefault(false);
+    buttonItalics->setToolTip(tr("Italic (<i>...</i>)"));
     row1->addWidget(buttonItalics);
 
     QFont underlineFont(QStringLiteral("Arial"), 10);
     underlineFont.setUnderline(true);
-    buttonUnderline = new QPushButton(tr("U", "Button underline"), this);
-    configCompactBtn(buttonUnderline, underlineFont);
+    buttonUnderline = new QPushButton(QStringLiteral("U"), this);
+    buttonUnderline->setFont(underlineFont);
+    buttonUnderline->setMinimumWidth(30);
+    buttonUnderline->setMaximumWidth(34);
+    buttonUnderline->setFixedHeight(26);
+    buttonUnderline->setProperty("compactBtn", true);
+    buttonUnderline->setStyleSheet(
+            QStringLiteral("font-family: 'Arial'; text-decoration: underline; padding: 1px 4px;"));
+    buttonUnderline->setAutoDefault(false);
+    buttonUnderline->setToolTip(tr("Underline (<u>...</u>)"));
     row1->addWidget(buttonUnderline);
 
     buttonSubscript = new QPushButton(IconLoader::duotoneIcon("text-subscript"), QString(), this);
     configCompactBtn(buttonSubscript, arialBase);
+    buttonSubscript->setToolTip(tr("Subscript (<sub>...</sub>)"));
     row1->addWidget(buttonSubscript);
 
     buttonSuperscript =
             new QPushButton(IconLoader::duotoneIcon("text-superscript"), QString(), this);
     configCompactBtn(buttonSuperscript, arialBase);
+    buttonSuperscript->setToolTip(tr("Superscript (<sup>...</sup>)"));
     row1->addWidget(buttonSuperscript);
 
     buttonLowerGreek = new QPushButton(QString(QChar(0x03B1)), this);
     configCompactBtn(buttonLowerGreek, arialBase);
+    buttonLowerGreek->setToolTip(tr("Lowercase Greek Letters"));
     row1->addWidget(buttonLowerGreek);
 
     buttonUpperGreek = new QPushButton(QString(QChar(0x0393)), this);
     configCompactBtn(buttonUpperGreek, arialBase);
+    buttonUpperGreek->setToolTip(tr("Uppercase Greek Letters"));
     row1->addWidget(buttonUpperGreek);
 
     buttonMathSymbols = new QPushButton(QString(QChar(0x222B)), this);
     configCompactBtn(buttonMathSymbols, arialBase);
+    buttonMathSymbols->setToolTip(tr("Mathematical Symbols"));
     row1->addWidget(buttonMathSymbols);
 
     buttonArrowSymbols = new QPushButton(QString(QChar(0x2192)), this);
     configCompactBtn(buttonArrowSymbols, arialBase);
+    buttonArrowSymbols->setToolTip(tr("Arrow Symbols"));
     row1->addWidget(buttonArrowSymbols);
 
     buttonUnits = new QPushButton(tr("Units"), this);
     buttonUnits->setFont(arialBase);
     buttonUnits->setFixedHeight(26);
+    buttonUnits->setProperty("compactBtn", true);
+    buttonUnits->setStyleSheet(QStringLiteral("padding: 1px 6px;"));
     buttonUnits->setAutoDefault(false);
+    buttonUnits->setToolTip(tr("Insert Unit"));
     unitsMenu = new QMenu(buttonUnits);
     unitsMenu->setFont(arialBase);
 
@@ -191,9 +254,12 @@ TextFormatButtons::TextFormatButtons(QTextEdit *textEdit, QWidget *parent) : QWi
           QStringLiteral("s<sup>-1</sup>") },
         { QStringLiteral("mm") + QChar(0x207B) + QChar(0x00B3),
           QStringLiteral("mm<sup>-3</sup>") },
+        { QStringLiteral("cm") + QChar(0x207B) + QChar(0x00B9),
+          QStringLiteral("cm<sup>-1</sup>") },
         { QString(QChar(0x03BC)) + QLatin1String("m"),
           QString(QChar(0x03BC)) + QLatin1String("m") },
         { QStringLiteral("nm"), QStringLiteral("nm") },
+        { QStringLiteral("2") + QChar(0x03B8), QStringLiteral("2") + QChar(0x03B8) },
     };
     for (const UnitEntry &ue : unitEntries) {
         const QString textToInsert = ue.insertText;
@@ -252,8 +318,8 @@ void TextFormatButtons::showLowerGreek()
     greekLetters->setAttribute(Qt::WA_DeleteOnClose);
     QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
     f.setFamily(QStringLiteral("Arial"));
-    if (f.pointSize() < 14)
-        f.setPointSize(14);
+    if (PlotStyleLimits::effectiveFontPointSizeF(f, 14.0) < 14.0)
+        f.setPointSizeF(14.0);
     greekLetters->setFont(f);
     connect(greekLetters, SIGNAL(addLetter(const QString &)), this,
             SLOT(addSymbol(const QString &)));
@@ -267,8 +333,8 @@ void TextFormatButtons::showUpperGreek()
     greekLetters->setAttribute(Qt::WA_DeleteOnClose);
     QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
     f.setFamily(QStringLiteral("Arial"));
-    if (f.pointSize() < 14)
-        f.setPointSize(14);
+    if (PlotStyleLimits::effectiveFontPointSizeF(f, 14.0) < 14.0)
+        f.setPointSizeF(14.0);
     greekLetters->setFont(f);
     connect(greekLetters, SIGNAL(addLetter(const QString &)), this,
             SLOT(addSymbol(const QString &)));
@@ -282,8 +348,8 @@ void TextFormatButtons::showMathSymbols()
     mathSymbols->setAttribute(Qt::WA_DeleteOnClose);
     QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
     f.setFamily(QStringLiteral("Arial"));
-    if (f.pointSize() < 14)
-        f.setPointSize(14);
+    if (PlotStyleLimits::effectiveFontPointSizeF(f, 14.0) < 14.0)
+        f.setPointSizeF(14.0);
     mathSymbols->setFont(f);
     connect(mathSymbols, SIGNAL(addLetter(const QString &)), this,
             SLOT(addSymbol(const QString &)));
@@ -297,8 +363,8 @@ void TextFormatButtons::showArrowSymbols()
     arrowSymbols->setAttribute(Qt::WA_DeleteOnClose);
     QFont f = connectedTextEdit ? connectedTextEdit->font() : QFont(QStringLiteral("Arial"), 14);
     f.setFamily(QStringLiteral("Arial"));
-    if (f.pointSize() < 14)
-        f.setPointSize(14);
+    if (PlotStyleLimits::effectiveFontPointSizeF(f, 14.0) < 14.0)
+        f.setPointSizeF(14.0);
     arrowSymbols->setFont(f);
     connect(arrowSymbols, SIGNAL(addLetter(const QString &)), this,
             SLOT(addSymbol(const QString &)));
