@@ -171,6 +171,7 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
+static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -311,6 +312,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc65;
+    }
+    if (args.contains("--suite68-only")) {
+        const int rc68 = runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc68;
     }
     if (args.contains("--suite58-only")) {
         const int rc58 = runSuite58FigureDefaultsPresetsAndExport(mw);
@@ -5472,6 +5480,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -19106,5 +19117,393 @@ static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 68: ribbon folding on narrow screens, minimized ribbon, Home "Copy for PowerPoint",
+//           recent fit models, keyboard access to the mini toolbar
+//           (C14, C4, F11 and H5 of the 2026-11-21 review)
+// =============================================================================
+static bool suite68TabOverflows(ModernRibbonBar *rib, int tabIndex)
+{
+    QStackedWidget *stack = rib->findChild<QStackedWidget *>(QStringLiteral("ModernRibbonTabStack"));
+    QScrollArea *sa = stack ? qobject_cast<QScrollArea *>(stack->widget(tabIndex)) : nullptr;
+    if (!sa || !sa->horizontalScrollBar())
+        return false;
+    return sa->horizontalScrollBar()->maximum() > sa->horizontalScrollBar()->minimum();
+}
+
+static void suite68Settle()
+{
+    for (int pass = 0; pass < 4; ++pass) {
+        QCoreApplication::sendPostedEvents();
+        QApplication::processEvents();
+    }
+}
+
+static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 68: Ribbon Group Folding, Minimized Ribbon, Home Copy Button, Recent Fit Models & Mini Toolbar Keyboard Access...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 68");
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    ApplicationWindow *w68 = new ApplicationWindow();
+    w68->applyUserSettings();
+    w68->resize(1380, 860);
+    w68->show();
+    w68->switchToLanguage("ja");
+    suite68Settle();
+    ModernRibbonBar *rib = w68->modernRibbonBar();
+    CHECK_COND(rib && rib->isVisible(), "68: ribbon missing");
+    QStackedWidget *stack = rib->findChild<QStackedWidget *>(QStringLiteral("ModernRibbonTabStack"));
+    CHECK_COND(stack != nullptr, "68: ribbon tab stack missing");
+    CHECK_COND(rib->tabCount() == 7, "68: tab count changed");
+
+    auto resizeTo = [&](int w) {
+        w68->setMinimumWidth(0);
+        w68->resize(w, 760);
+        suite68Settle();
+        rib->updateGroupCollapse();
+        suite68Settle();
+    };
+    auto report = [&](int w) {
+        std::cout << "[INFO] Suite 68: window " << w << " px -> ribbon " << rib->width() << " px\n";
+        for (int ti = 0; ti < rib->tabCount(); ++ti) {
+            rib->setCurrentTabIndex(ti);
+            suite68Settle();
+            std::cout << "[INFO]   tab " << ti << " '" << rib->tabTitle(ti).toUtf8().constData()
+                      << "' folded: '"
+                      << rib->collapsedGroupTitles(ti).join(QStringLiteral(", ")).toUtf8().constData()
+                      << "' overflow=" << (suite68TabOverflows(rib, ti) ? 1 : 0) << "\n";
+        }
+    };
+
+    // ---- 68a (C14): wide window - nothing folded
+    resizeTo(1920);
+    report(1920);
+    for (int ti = 0; ti < rib->tabCount(); ++ti) {
+        CHECK_COND(!rib->groupTitles(ti).isEmpty(), "68a: tab without foldable groups: " << ti);
+        CHECK_COND(rib->collapsedGroupTitles(ti).isEmpty(), "68a: group folded at 1920 px, tab " << ti);
+        CHECK_COND(!suite68TabOverflows(rib, ti), "68a: tab overflows at 1920 px: " << ti);
+    }
+
+    // ---- 68b (C14): 1280 px - no tab scrolls sideways; Home keeps its frequent groups
+    resizeTo(1280);
+    report(1280);
+    for (int ti = 0; ti < rib->tabCount(); ++ti) {
+        rib->setCurrentTabIndex(ti);
+        suite68Settle();
+        CHECK_COND(!suite68TabOverflows(rib, ti), "68b: tab overflows at 1280 px: " << ti);
+    }
+    {
+        const QStringList folded = rib->collapsedGroupTitles(0);
+        const QStringList all = rib->groupTitles(0);
+        CHECK_COND(all.size() >= 6, "68b: Home should have 6 groups (file, undo, clipboard, create, recalc, panels)");
+        // File and Clipboard (Copy for PowerPoint) are used most and stay open at 1280 px;
+        // Recalculation folds first. Undo/Redo (two icons) and Panels (already one
+        // drop-down) never fold: a "<group> ▾" button would not be narrower.
+        CHECK_COND(!folded.contains(all.at(0)) && !folded.contains(all.at(2)),
+                   "68b: File / Clipboard folded at 1280 px");
+        CHECK_COND(folded.contains(all.at(4)), "68b: Recalculation not folded at 1280 px");
+        CHECK_COND(!folded.contains(all.at(1)) && !folded.contains(all.at(5)),
+                   "68b: a group folded although its drop-down saves no space");
+    }
+
+    // ---- 68c (C14): 1366x768 at 150 % = 911 px logical - folding instead of scrolling
+    resizeTo(911);
+    report(911);
+    CHECK_COND(rib->width() <= 960, "68c: window could not be made 911 px wide (ribbon " << rib->width() << ")");
+    int foldedTabs = 0;
+    for (int ti = 0; ti < rib->tabCount(); ++ti) {
+        rib->setCurrentTabIndex(ti);
+        suite68Settle();
+        if (!rib->collapsedGroupTitles(ti).isEmpty())
+            ++foldedTabs;
+        CHECK_COND(!suite68TabOverflows(rib, ti), "68c: tab overflows at 911 px: " << ti);
+    }
+    CHECK_COND(foldedTabs >= 3, "68c: hardly any group folded at 911 px");
+    {
+        // the less used groups fold first: Recalculation before File on Home
+        const QStringList all = rib->groupTitles(0);
+        const QStringList folded = rib->collapsedGroupTitles(0);
+        CHECK_COND(!folded.isEmpty(), "68c: nothing folded on Home at 911 px");
+        CHECK_COND(folded.contains(all.at(4)), "68c: Recalculation not folded first on Home");
+        CHECK_COND(!folded.contains(all.at(0))
+                           || (folded.contains(all.at(2)) && folded.contains(all.at(3))
+                               && folded.contains(all.at(4))),
+                   "68c: File folded while less used groups are still open");
+
+        // the folded button is "<group> ▾" and lists the group's own commands
+        rib->setCurrentTabIndex(0);
+        suite68Settle();
+        QToolButton *fb = rib->collapsedGroupButton(0, all.at(4));
+        CHECK_COND(fb && fb->isVisible() && fb->menu(), "68c: folded Recalculation button not shown");
+        CHECK_COND(fb->text().startsWith(all.at(4)) && fb->text().contains(QString::fromUtf8("\xE2\x96\xBE")),
+                   "68c: folded button text is not '<group> ▾'");
+        CHECK_COND(fb->focusPolicy() != Qt::NoFocus, "68c: folded button not reachable with Tab");
+        emit fb->menu()->aboutToShow();
+        const QList<QAction *> acts = fb->menu()->actions();
+        CHECK_COND(acts.size() == 2, "68c: folded Recalculation menu should list Auto and Recalc, got " << acts.size());
+        CHECK_COND(acts.at(0)->isCheckable() && !acts.at(0)->text().isEmpty(),
+                   "68c: the Auto toggle lost its check state in the folded menu");
+        // a drop-down inside a folded group becomes a sub-menu (Create: New Table, New Graph,
+        // More New ▾)
+        CHECK_COND(folded.contains(all.at(3)), "68c: Create not folded at 911 px");
+        {
+            QToolButton *cb = rib->collapsedGroupButton(0, all.at(3));
+            emit cb->menu()->aboutToShow();
+            const QList<QAction *> ca = cb->menu()->actions();
+            CHECK_COND(ca.size() == 3 && !ca.at(0)->menu() && ca.at(2)->menu(),
+                       "68c: folded Create group should list 2 commands and 1 sub-menu");
+            CHECK_COND(ca.at(2)->menu()->actions().size() >= 3,
+                       "68c: folded 'More New' sub-menu lost its entries");
+            CHECK_COND(!ca.at(2)->text().contains(QString::fromUtf8("\xE2\x96\xBE")),
+                       "68c: sub-menu title still carries the drop-down mark");
+            // opening it twice must not duplicate entries
+            emit cb->menu()->aboutToShow();
+            CHECK_COND(cb->menu()->actions().size() == 3, "68c: folded menu entries duplicated");
+        }
+        // the folded commands still work: Recalc through the menu calls the button
+        int clicks = 0;
+        QList<QToolButton *> recalcButtons;
+        QAction *recalcAct = acts.at(1);
+        for (QToolButton *b : rib->findChildren<QToolButton *>()) {
+            if (b->text() == recalcAct->text() && b != fb)
+                recalcButtons << b;
+        }
+        CHECK_COND(recalcButtons.size() == 1, "68c: Recalc button not found for the folded action");
+        QObject::connect(recalcButtons.first(), &QToolButton::clicked, [&clicks]() { ++clicks; });
+        recalcAct->trigger();
+        CHECK_COND(clicks == 1, "68c: folded menu entry did not run the command");
+    }
+
+    // ---- 68d (C14): widening again unfolds every group
+    resizeTo(1920);
+    for (int ti = 0; ti < rib->tabCount(); ++ti)
+        CHECK_COND(rib->collapsedGroupTitles(ti).isEmpty(), "68d: group stays folded after widening, tab " << ti);
+    rib->setCurrentTabIndex(0);
+    suite68Settle();
+    for (const QString &title : rib->groupTitles(0)) {
+        QToolButton *fb = rib->collapsedGroupButton(0, title);
+        CHECK_COND(fb && fb->isHidden(), "68d: folded button still visible after widening");
+    }
+
+    // ---- 68e (C4): "Copy for PowerPoint" on Home, bound to the application's action, visible at 1280 px
+    resizeTo(1280);
+    rib->setCurrentTabIndex(0);
+    suite68Settle();
+    {
+        QToolButton *copyBtn = rib->actionBoundButton(QStringLiteral("actionCopyGraphOle"));
+        QAction *copyAct = w68->findChild<QAction *>(QStringLiteral("actionCopyGraphOle"));
+        CHECK_COND(copyBtn && copyAct, "68e: Home copy button or action missing");
+        CHECK_COND(copyBtn->objectName() == QLatin1String("RibbonHomeCopyForPowerPointBtn"),
+                   "68e: copy button is not the Home one");
+        CHECK_COND(copyBtn->isVisible(), "68e: Home copy button hidden (folded) at 1280 px");
+        CHECK_COND(copyBtn->text() == ToriGraphOleUi::copyForPowerPointLabel(),
+                   "68e: Home copy button label differs from the menu wording");
+        QScrollArea *homeSa = qobject_cast<QScrollArea *>(stack->widget(0));
+        CHECK_COND(homeSa && homeSa->viewport()->isAncestorOf(copyBtn), "68e: copy button is not on Home");
+        const int right = copyBtn->mapTo(homeSa->viewport(), QPoint(copyBtn->width(), 0)).x();
+        CHECK_COND(right <= homeSa->viewport()->width(), "68e: copy button clipped at 1280 px");
+        copyAct->setEnabled(false);
+        CHECK_COND(!copyBtn->isEnabled(), "68e: copy button does not follow its action");
+        copyAct->setEnabled(true);
+        CHECK_COND(copyBtn->isEnabled(), "68e: copy button not re-enabled");
+    }
+
+    // ---- 68f (C14): minimized ribbon (double-click a tab), single click brings it back
+    {
+        QTabBar *tb = rib->tabBar();
+        const int fullH = rib->height();
+        rib->setRibbonMinimized(true);
+        suite68Settle();
+        CHECK_COND(rib->isRibbonMinimized() && stack->isHidden() && tb->isVisible(),
+                   "68f: minimized ribbon should show only the tab row");
+        CHECK_COND(rib->height() < fullH - 20, "68f: minimized ribbon did not get shorter ("
+                           << rib->height() << " vs " << fullH << ")");
+        CHECK_COND(ApplicationWindow::getSettings().value("/UX/RibbonMinimized").toBool(),
+                   "68f: minimized state not stored");
+        rib->setRibbonMinimized(false);
+        suite68Settle();
+        CHECK_COND(!rib->isRibbonMinimized() && stack->isVisible(), "68f: ribbon not restored");
+        CHECK_COND(qAbs(rib->height() - fullH) <= 2, "68f: restored ribbon height differs");
+
+        const QPoint tabPos = tb->tabRect(1).center();
+        auto sendMouse = [&](QEvent::Type type) {
+            QMouseEvent ev(type, tabPos, tb->mapToGlobal(tabPos), Qt::LeftButton,
+                           type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+                           Qt::NoModifier);
+            QApplication::sendEvent(tb, &ev);
+        };
+        sendMouse(QEvent::MouseButtonDblClick);
+        suite68Settle();
+        CHECK_COND(rib->isRibbonMinimized(), "68f: double-click on a tab did not minimize");
+        // Office habit: double-click again to restore (first click restores, the second
+        // half of the double-click must not minimize again)
+        sendMouse(QEvent::MouseButtonPress);
+        sendMouse(QEvent::MouseButtonRelease);
+        sendMouse(QEvent::MouseButtonDblClick);
+        sendMouse(QEvent::MouseButtonRelease);
+        suite68Settle();
+        CHECK_COND(!rib->isRibbonMinimized() && stack->isVisible(),
+                   "68f: double-click on the minimized ribbon did not restore it");
+        CHECK_COND(rib->currentTabIndex() == 1, "68f: clicked tab not selected");
+        CHECK_COND(!ApplicationWindow::getSettings().value("/UX/RibbonMinimized").toBool(),
+                   "68f: restored state not stored");
+        CHECK_COND(tb->toolTip().contains(QStringLiteral("Ctrl+F1")), "68f: tab row has no minimize hint");
+    }
+
+    // ---- 68g (C14): Japanese for the folded group names
+    resizeTo(911);
+    for (int ti = 0; ti < rib->tabCount(); ++ti) {
+        for (const QString &title : rib->groupTitles(ti)) {
+            bool ja = false;
+            for (const QChar &ch : title)
+                ja = ja || ch.unicode() >= 0x3000;
+            CHECK_COND(ja, "68g: group name not translated: " << title.toUtf8().constData());
+            QToolButton *fb = rib->collapsedGroupButton(ti, title);
+            CHECK_COND(fb && !fb->toolTip().isEmpty(), "68g: folded button without tooltip");
+        }
+    }
+    resizeTo(1380);
+
+    // ---- 68h (F11): recently used fit models (max 8, newest first, stored in QSettings)
+    {
+        const QStringList saved = FitDialog::recentModels();
+        FitDialog::clearRecentModels();
+        const QStringList names = NonLinearFit::builtInModelNames();
+        CHECK_COND(names.size() >= 10, "68h: fewer than 10 built-in models");
+        for (int i = 0; i < 10; ++i)
+            FitDialog::recordRecentModel(names.at(i));
+        QStringList rec = FitDialog::recentModels();
+        CHECK_COND(rec.size() == FitDialog::kMaxRecentModels && rec.size() == 8,
+                   "68h: recent list not capped at 8 (" << rec.size() << ")");
+        CHECK_COND(rec.first() == names.at(9) && rec.last() == names.at(2),
+                   "68h: recent list not newest first");
+        FitDialog::recordRecentModel(names.at(5));
+        rec = FitDialog::recentModels();
+        CHECK_COND(rec.size() == 8 && rec.first() == names.at(5) && rec.count(names.at(5)) == 1,
+                   "68h: re-used model not moved to the top");
+        CHECK_COND(ApplicationWindow::getSettings().value("/Fit/RecentModels").toStringList() == rec,
+                   "68h: recent models not stored in the settings");
+
+        FitDialog *fd = new FitDialog(w68);
+        QComboBox *box = fd->recentModelsBox();
+        QLineEdit *search = fd->findChild<QLineEdit *>(QStringLiteral("fitModelSearchBox"));
+        CHECK_COND(box && box->isEnabled() && box->count() == 9, "68h: recent box should list 8 models");
+        CHECK_COND(box->itemText(1) == names.at(5), "68h: newest model is not first in the box");
+        CHECK_COND(search && box->parentWidget() == search->parentWidget(),
+                   "68h: recent box is not next to the search box");
+        // picking a recent model selects it in its category
+        const QString pick = names.at(9);
+        const int idx = box->findText(pick);
+        CHECK_COND(idx > 0, "68h: model missing from the box");
+        box->setCurrentIndex(idx);
+        emit box->activated(idx);
+        bool selected = false;
+        for (QListWidget *lw : fd->findChildren<QListWidget *>())
+            selected = selected || (lw->currentItem() && lw->currentItem()->text() == pick);
+        CHECK_COND(selected, "68h: picking a recent model did not select it");
+        CHECK_COND(box->currentIndex() == 0, "68h: recent box not reset after picking");
+        CHECK_COND(!fd->selectRecentModel(QStringLiteral("NoSuchModel68")),
+                   "68h: unknown recent model accepted");
+        delete fd;
+
+        FitDialog::clearRecentModels();
+        FitDialog *fd2 = new FitDialog(w68);
+        CHECK_COND(fd2->recentModelsBox()->count() == 1 && !fd2->recentModelsBox()->isEnabled(),
+                   "68h: empty recent list should show one disabled placeholder");
+        delete fd2;
+        ApplicationWindow::getSettings().setValue("/Fit/RecentModels", saved);
+    }
+
+    // ---- 68i (H5): Alt+F10 moves the keyboard into the mini toolbar, Esc goes back
+    {
+        CHECK_COND(GraphMiniToolbar::keyboardFocusShortcut() == QKeySequence(Qt::ALT | Qt::Key_F10),
+                   "68i: unexpected mini toolbar shortcut");
+        // the key must not be taken by an application action
+        for (QAction *a : w68->findChildren<QAction *>()) {
+            for (const QKeySequence &ks : a->shortcuts())
+                CHECK_COND(ks != GraphMiniToolbar::keyboardFocusShortcut(),
+                           "68i: Alt+F10 already used by " << a->objectName().toUtf8().constData());
+        }
+        Table *t = w68->newTable(5, 2, "S68Mini", "Suite 68 mini toolbar");
+        for (int r = 0; r < 5; ++r) {
+            t->setCell(r, 0, r + 1.0);
+            t->setCell(r, 1, (r + 1.0) * 2.0);
+        }
+        MultiLayer *ml = w68->multilayerPlot(t, QStringList() << (t->name() + "_2"), Graph::LineSymbols);
+        CHECK_COND(ml && ml->activeGraph(), "68i: graph not created");
+        Graph *g = ml->activeGraph();
+        suite68Settle();
+        const bool prevEnabled = GraphMiniToolbar::isMiniToolbarEnabled();
+        const QVariant prevNi = qApp->property("torigraph_noninteractive");
+        qApp->setProperty("torigraph_noninteractive", QVariant());
+        GraphMiniToolbar::setMiniToolbarEnabled(true);
+        GraphMiniToolbar *bar = GraphMiniToolbar::instance();
+        CHECK_COND(bar != nullptr, "68i: no mini toolbar");
+        CHECK_COND(bar->windowFlags() & Qt::WindowDoesNotAcceptFocus,
+                   "68i: mini toolbar must not take focus by itself");
+        bar->popupForCanvas(g, g->mapToGlobal(g->rect().center()));
+        QElapsedTimer waitT;
+        waitT.start();
+        while (!bar->isVisible() && waitT.elapsed() < 2000) {
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+        if (!bar->isVisible()) {
+            std::cout << "[INFO] Suite 68i: mini toolbar did not pop up in this session; keyboard check skipped\n";
+        } else {
+            QWidget *canvas = g->plotWidget() ? static_cast<QWidget *>(g->plotWidget()) : g;
+            canvas->setFocus();
+            // pressing Alt alone (start of the chord) keeps the bar open
+            QKeyEvent alt(QEvent::KeyPress, Qt::Key_Alt, Qt::AltModifier);
+            QApplication::sendEvent(canvas, &alt);
+            CHECK_COND(bar->isVisible(), "68i: pressing Alt dismissed the mini toolbar");
+            QKeyEvent f10(QEvent::KeyPress, Qt::Key_F10, Qt::AltModifier);
+            QApplication::sendEvent(canvas, &f10);
+            suite68Settle();
+            CHECK_COND(bar->isVisible() && bar->isKeyboardFocusMode(),
+                       "68i: Alt+F10 did not move the keyboard into the mini toolbar");
+            CHECK_COND(!(bar->windowFlags() & Qt::WindowDoesNotAcceptFocus),
+                       "68i: mini toolbar still refuses the focus in keyboard mode");
+            QToolButton *fbtn = qobject_cast<QToolButton *>(bar->focusWidget());
+            CHECK_COND(fbtn && bar->isAncestorOf(fbtn), "68i: no mini toolbar button got the focus");
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(fbtn, &esc);
+            suite68Settle();
+            CHECK_COND(!bar->isVisible() && !bar->isKeyboardFocusMode(),
+                       "68i: Esc did not leave the mini toolbar");
+            CHECK_COND(bar->windowFlags() & Qt::WindowDoesNotAcceptFocus,
+                       "68i: mini toolbar takes focus again after Esc");
+            {
+                QWidget *back = canvas->window()->focusWidget();
+                CHECK_COND(back == canvas || back == g || (back && g->isAncestorOf(back)),
+                           "68i: focus did not go back to the graph canvas (now "
+                                   << (back ? back->metaObject()->className() : "none") << " '"
+                                   << (back ? back->objectName().toUtf8().constData() : "") << "')");
+            }
+            // an ordinary popup afterwards still does not steal the focus
+            bar->popupForCanvas(g, g->mapToGlobal(g->rect().center()));
+            waitT.restart();
+            while (!bar->isVisible() && waitT.elapsed() < 2000)
+                QApplication::processEvents(QEventLoop::AllEvents, 20);
+            CHECK_COND(!bar->isVisible() || (bar->windowFlags() & Qt::WindowDoesNotAcceptFocus),
+                       "68i: popup after keyboard mode accepts focus");
+            QKeyEvent other(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier);
+            QApplication::sendEvent(canvas, &other);
+            CHECK_COND(!bar->isVisible(), "68i: typing on the canvas no longer dismisses the bar");
+        }
+        bar->cancelScheduledAndHide();
+        GraphMiniToolbar::setMiniToolbarEnabled(prevEnabled);
+        qApp->setProperty("torigraph_noninteractive", prevNi);
+    }
+
+    w68->savedProject();
+    w68->setOleEmbeddedMode(true);
+    delete w68;
+    QApplication::processEvents();
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 68 ribbon folding, minimized ribbon, recent fit models and mini toolbar keys passed!\n";
     return 0;
 }

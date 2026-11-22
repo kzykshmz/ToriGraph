@@ -312,6 +312,8 @@ void registerMiniToolbarTranslations()
         ToriGraphFullJapaneseTranslator::registerContextTranslation(
                 QStringLiteral("GraphMiniToolbar"), QString::fromUtf8(en), QString::fromUtf8(ja));
     };
+    reg("Alt+F10: move the keyboard focus into this toolbar (Tab: next button, Esc: back to the graph)",
+        "Alt+F10: キーボードでこのツールバーに移動 (Tab: 次のボタン、Esc: グラフに戻る)");
     reg("Select Symbol Shape", "シンボル形状を選択");
     reg("Change Symbol Shape", "シンボル形状を変更");
     regCtx("Circle", "丸 (●)");
@@ -383,6 +385,7 @@ GraphMiniToolbar::GraphMiniToolbar(QWidget *parent)
     setAttribute(Qt::WA_ShowWithoutActivating, true);
     setFocusPolicy(Qt::NoFocus);
     setObjectName(QStringLiteral("GraphMiniToolbar"));
+    setToolTip(tr("Alt+F10: move the keyboard focus into this toolbar (Tab: next button, Esc: back to the graph)"));
 
     d_layout = new QHBoxLayout(this);
     d_layout->setContentsMargins(5, 4, 5, 4);
@@ -479,6 +482,10 @@ void GraphMiniToolbar::applyThemeStyle()
 
 void GraphMiniToolbar::cancelScheduledAndHide()
 {
+    // H5: while the activation moves from the main window to the bar (Alt+F10), the MDI area
+    // reports "no active sub-window" and the application window asks the bar to hide.
+    if (d_keyboard_mode && d_activating && d_graph && d_graph->isVisible())
+        return;
     d_popup_pending = false;
     if (d_popup_timer && d_popup_timer->isActive())
         d_popup_timer->stop();
@@ -625,6 +632,9 @@ void GraphMiniToolbar::reclampToAvailableBounds()
 void GraphMiniToolbar::showNearGlobalPos(const QPoint &globalPos)
 {
     d_last_anchor_global = globalPos;
+    // H5: a normal popup never takes the focus from the canvas
+    if (!d_keyboard_mode && !(windowFlags() & Qt::WindowDoesNotAcceptFocus))
+        setAcceptsFocus(false);
     applyThemeStyle();
     adjustSize();
     QPoint pt(globalPos.x() + 10, globalPos.y() - height() - 10);
@@ -761,6 +771,13 @@ void GraphMiniToolbar::onPopupTimerTimeout()
 
 void GraphMiniToolbar::rebuildCurrentButtons()
 {
+    if (d_keyboard_mode) {
+        // H5: the focused button is about to be replaced; keep the keyboard inside the bar
+        QTimer::singleShot(0, this, [this]() {
+            if (d_keyboard_mode && isVisible() && !isAncestorOf(QApplication::focusWidget()))
+                enterKeyboardFocus();
+        });
+    }
     clearButtons();
     if (!d_graph)
         return;
@@ -1049,9 +1066,76 @@ void GraphMiniToolbar::rebuildCurrentButtons()
     }
 }
 
+QKeySequence GraphMiniToolbar::keyboardFocusShortcut()
+{
+    // F6 (previous window) and Ctrl+Shift+M (mask points) are taken; F10 is the Windows key
+    // family for "move the keyboard into a bar" (F10 menu bar, Shift+F10 context menu).
+    return QKeySequence(Qt::ALT | Qt::Key_F10);
+}
+
+void GraphMiniToolbar::setAcceptsFocus(bool accept)
+{
+    const bool wasVisible = isVisible();
+    const QPoint p = pos();
+    d_changing_flags = true;
+    // Changing window flags re-creates (and hides) the native window.
+    setWindowFlag(Qt::WindowDoesNotAcceptFocus, !accept);
+    setAttribute(Qt::WA_ShowWithoutActivating, !accept);
+    if (wasVisible) {
+        move(p);
+        show();
+        raise();
+    }
+    d_changing_flags = false;
+}
+
+bool GraphMiniToolbar::enterKeyboardFocus()
+{
+    if (!isVisible())
+        return false;
+    if (!d_keyboard_mode) {
+        QWidget *fw = QApplication::focusWidget();
+        if (!fw && d_graph && d_graph->window())
+            fw = d_graph->window()->focusWidget();
+        if (fw && fw != this && !isAncestorOf(fw))
+            d_return_focus = fw;
+        else if (d_graph)
+            d_return_focus = d_graph.data();
+        d_keyboard_mode = true;
+        d_activating = true;
+        QTimer::singleShot(400, this, [this]() { d_activating = false; });
+        setAcceptsFocus(true);
+    }
+    activateWindow();
+    for (int i = 0; d_layout && i < d_layout->count(); ++i) {
+        QToolButton *b = qobject_cast<QToolButton *>(d_layout->itemAt(i)->widget());
+        if (b && !b->isHidden() && b->isEnabled()) {
+            b->setFocus(Qt::TabFocusReason);
+            break;
+        }
+    }
+    return true;
+}
+
+void GraphMiniToolbar::leaveKeyboardFocus(bool returnFocus)
+{
+    const QPointer<QWidget> back = d_return_focus;
+    d_return_focus.clear();
+    d_keyboard_mode = false;
+    d_activating = false;
+    cancelScheduledAndHide();
+    setAcceptsFocus(false);
+    if (returnFocus && back) {
+        if (QWidget *win = back->window())
+            win->activateWindow();
+        back->setFocus(Qt::OtherFocusReason);
+    }
+}
+
 void GraphMiniToolbar::retranslateUi()
 {
     applyThemeStyle();
+    setToolTip(tr("Alt+F10: move the keyboard focus into this toolbar (Tab: next button, Esc: back to the graph)"));
     if (isVisible()) {
         rebuildCurrentButtons();
         adjustSize();
@@ -1108,11 +1192,33 @@ bool GraphMiniToolbar::eventFilter(QObject *watched, QEvent *event)
         if (!insideSelf)
             cancelScheduledAndHide();
         break;
-    case QEvent::KeyPress:
-        if (!insideSelf)
-            cancelScheduledAndHide();
+    case QEvent::KeyPress: {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        const int key = ke->key();
+        if (insideSelf) {
+            // H5: Esc leaves the bar and returns to the canvas
+            if (key == Qt::Key_Escape && d_keyboard_mode) {
+                leaveKeyboardFocus(true);
+                return true;
+            }
+            break;
+        }
+        // a bare modifier is the start of Alt+F10 and must not dismiss the bar
+        if (key == Qt::Key_Alt || key == Qt::Key_Control || key == Qt::Key_Shift
+            || key == Qt::Key_Meta || key == Qt::Key_AltGr)
+            break;
+        const Qt::KeyboardModifiers mods = ke->modifiers()
+                & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if (isVisible() && QKeySequence(int(mods) | key) == keyboardFocusShortcut()
+            && enterKeyboardFocus()) {
+            return true;
+        }
+        cancelScheduledAndHide();
         break;
+    }
     case QEvent::WindowDeactivate:
+        if (d_keyboard_mode || d_changing_flags)
+            break; // the bar itself took the activation
         if (w && (w == d_graph || qobject_cast<QMdiSubWindow *>(w)
                   || (d_graph && w == d_graph->multiLayerParent()))) {
             cancelScheduledAndHide();
@@ -1124,6 +1230,16 @@ bool GraphMiniToolbar::eventFilter(QObject *watched, QEvent *event)
             cancelScheduledAndHide();
         break;
     case QEvent::ApplicationDeactivate:
+        if (d_keyboard_mode || d_changing_flags) {
+            // Moving the activation from the main window to the bar can report a short
+            // deactivation; only leave when the application really stays in the background.
+            QTimer::singleShot(400, this, [this]() {
+                if (d_keyboard_mode
+                    && QGuiApplication::applicationState() != Qt::ApplicationActive)
+                    leaveKeyboardFocus(false);
+            });
+            break;
+        }
         cancelScheduledAndHide();
         break;
     default:
@@ -1134,6 +1250,20 @@ bool GraphMiniToolbar::eventFilter(QObject *watched, QEvent *event)
 
 void GraphMiniToolbar::hideEvent(QHideEvent *event)
 {
+    if (d_changing_flags) {
+        // window re-created by setAcceptsFocus(); it is shown again right away
+        QFrame::hideEvent(event);
+        return;
+    }
+    if (d_keyboard_mode) {
+        // dismissed by a click elsewhere while it had the keyboard: back to "never take focus"
+        d_keyboard_mode = false;
+        d_return_focus.clear();
+        QTimer::singleShot(0, this, [this]() {
+            if (!isVisible() && !d_keyboard_mode)
+                setAcceptsFocus(false);
+        });
+    }
     if (!d_popup_pending && d_filter_installed && qApp && !d_in_modal_dialog) {
         qApp->removeEventFilter(this);
         d_filter_installed = false;
