@@ -20707,7 +20707,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
             if (ext == QStringLiteral("pdf")) {
                 targetG3D->exportPDF(absPath);
-            } else if (ext == QStringLiteral("svg") || ext == QStringLiteral("eps")) {
+            } else if (ext == QStringLiteral("svg") || ext == QStringLiteral("eps")
+                       || ext == QStringLiteral("ps")) {
                 targetG3D->exportVector(absPath, ext);
             } else if (ext == QStringLiteral("emf")) {
 #ifdef Q_OS_WIN
@@ -20768,10 +20769,29 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QString fmtParam = optionalJsonString(params, QStringLiteral("format")).trimmed().toLower();
         const QString effExt = !fmtParam.isEmpty() ? fmtParam : ext;
 
+        const bool isVectorPsRequest =
+                (effExt == QStringLiteral("eps") || effExt == QStringLiteral("ps"));
+        const bool hasPsFileSuffix =
+                absPath.endsWith(QStringLiteral(".eps"), Qt::CaseInsensitive)
+                || absPath.endsWith(QStringLiteral(".ps"), Qt::CaseInsensitive);
+#if QT_VERSION >= 0x050000
+        const bool expectsQt5PdfFallback =
+                (isVectorPsRequest || effExt == QStringLiteral("pdf")) && hasPsFileSuffix;
+#else
+        const bool expectsQt5PdfFallback = false;
+#endif
+
+        const QString expectedTargetPath =
+                expectsQt5PdfFallback ? (absPath + QStringLiteral(".pdf")) : absPath;
+        if (!ApplicationWindow::probeExportWritableNoTruncate(expectedTargetPath)) {
+            throwRpcRuntime(
+                    QStringLiteral("Failed to export graph to '%1': destination is not writable.")
+                            .arg(expectedTargetPath));
+        }
+
         if (effExt == QStringLiteral("svg")) {
             ml->exportSVG(absPath);
-        } else if (effExt == QStringLiteral("pdf") || effExt == QStringLiteral("eps")
-                   || effExt == QStringLiteral("ps")) {
+        } else if (effExt == QStringLiteral("pdf") || isVectorPsRequest) {
             ml->exportVector(absPath, dpi, true);
         } else if (effExt == QStringLiteral("emf")) {
             ml->exportToFile(absPath);
@@ -20779,16 +20799,43 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             ml->exportImage(absPath, quality, transparent, dpi);
         }
 
-        if (!QFileInfo::exists(absPath) || QFileInfo(absPath).size() <= 0)
+        QString finalOutPath = absPath;
+        QString fallbackWarning;
+#if QT_VERSION >= 0x050000
+        if (expectsQt5PdfFallback
+            || (isVectorPsRequest
+                && (!QFileInfo::exists(absPath) || QFileInfo(absPath).size() <= 0))) {
+            const QString pdfFallbackPath = absPath + QStringLiteral(".pdf");
+            if (QFileInfo::exists(pdfFallbackPath) && QFileInfo(pdfFallbackPath).size() > 0) {
+                finalOutPath = pdfFallbackPath;
+                fallbackWarning = QStringLiteral(
+                        "PostScript/EPS output is not available in Qt5; exported as PDF to '%1'.")
+                                          .arg(pdfFallbackPath);
+            }
+        } else if (isVectorPsRequest && QFileInfo::exists(absPath)
+                   && QFileInfo(absPath).size() > 0) {
+            fallbackWarning = QStringLiteral(
+                    "PostScript/EPS output is not available in Qt5; exported in PDF format.");
+        }
+#endif
+
+        if (!QFileInfo::exists(finalOutPath) || QFileInfo(finalOutPath).size() <= 0)
             throwRpcRuntime(QStringLiteral("Failed to export graph to '%1'.").arg(absPath));
 
         outResult[QStringLiteral("ok")] = true;
-        outResult[QStringLiteral("path")] = absPath;
-        outResult[QStringLiteral("bytes")] = QFileInfo(absPath).size();
+        outResult[QStringLiteral("path")] = finalOutPath;
+        if (finalOutPath != absPath) {
+            outResult[QStringLiteral("requested_path")] = absPath;
+            outResult[QStringLiteral("actual_path")] = finalOutPath;
+            outResult[QStringLiteral("format")] = QStringLiteral("pdf");
+        }
+        if (!fallbackWarning.isEmpty())
+            outResult[QStringLiteral("warning")] = fallbackWarning;
+        outResult[QStringLiteral("bytes")] = QFileInfo(finalOutPath).size();
         if (effExt == QStringLiteral("png") || effExt == QStringLiteral("jpg")
             || effExt == QStringLiteral("jpeg") || effExt == QStringLiteral("bmp")
             || effExt == QStringLiteral("tif") || effExt == QStringLiteral("tiff")) {
-            QImage img(absPath);
+            QImage img(finalOutPath);
             if (!img.isNull()) {
                 outResult[QStringLiteral("width_px")] = img.width();
                 outResult[QStringLiteral("height_px")] = img.height();
