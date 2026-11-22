@@ -127,22 +127,22 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 
     hl->addWidget(new QLabel(tr("New curves style")));
     boxStyle = new QComboBox();
-    boxStyle->addItem(IconLoader::duotoneIcon(":/lPlot.xpm"), tr("Line"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/pPlot.xpm"), tr("Scatter"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/lpPlot.xpm"), tr("Line + Symbol"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/dropLines.xpm"), tr("Vertical drop lines"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/spline.xpm"), tr("Spline"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/vert_steps.xpm"), tr("Vertical steps"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/hor_steps.xpm"), tr("Horizontal steps"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/area.xpm"), tr("Area"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/vertBars.xpm"), tr("Vertical Bars"));
-    boxStyle->addItem(IconLoader::duotoneIcon(":/hBars.xpm"), tr("Horizontal Bars"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-line"), tr("Line"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-scatter"), tr("Scatter"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-line-symbol"), tr("Line + Symbol"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-droplines"), tr("Vertical drop lines"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-spline"), tr("Spline"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-steps"), tr("Vertical steps"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-steps"), tr("Horizontal steps"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-area"), tr("Area"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-bars"), tr("Vertical Bars"));
+    boxStyle->addItem(IconLoader::duotoneIcon("plot-hbar"), tr("Horizontal Bars"));
     hl->addWidget(boxStyle);
 
     boxMatrixStyle = new QComboBox();
-    boxMatrixStyle->addItem(IconLoader::duotoneIcon(":/color_map.xpm"), tr("Contour - Color Fill"));
-    boxMatrixStyle->addItem(IconLoader::duotoneIcon(":/contour_map.xpm"), tr("Contour Lines"));
-    boxMatrixStyle->addItem(IconLoader::duotoneIcon(":/gray_map.xpm"), tr("Gray Scale Map"));
+    boxMatrixStyle->addItem(IconLoader::duotoneIcon("plot-heatmap"), tr("Contour - Color Fill"));
+    boxMatrixStyle->addItem(IconLoader::duotoneIcon("plot-contour"), tr("Contour Lines"));
+    boxMatrixStyle->addItem(IconLoader::duotoneIcon("plot-heatmap"), tr("Gray Scale Map"));
     boxMatrixStyle->hide();
     hl->addWidget(boxMatrixStyle);
     hl->addStretch();

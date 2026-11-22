@@ -1459,7 +1459,6 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
     app->setAttribute(Qt::AA_UseHighDpiPixmaps, true);
 
     IconLoader::init();
-    IconLoader::lumen_ = 248;
 
     QStyle *fusionBase = QStyleFactory::create(QStringLiteral("Fusion"));
     app->setStyle(new ModernFluentProxyStyle(fusionBase));
@@ -2075,6 +2074,11 @@ static void upgradeSingleActionIcon(QAction *action, const QSet<QString> &regist
 {
     if (!action || action->isSeparator())
         return;
+    // Qt's own helper actions (the clear button of a QLineEdit, ...) keep their icons; the
+    // fallback below used to turn the line-edit clear button into the generic graph icon.
+    const QString objName = action->objectName();
+    if (objName.startsWith(QStringLiteral("_q_")) || objName.startsWith(QStringLiteral("qt_")))
+        return;
     const QString existingIconName = action->icon().name();
     if (existingIconName.endsWith(QStringLiteral(":dark")))
         return;
@@ -2084,11 +2088,12 @@ static void upgradeSingleActionIcon(QAction *action, const QSet<QString> &regist
         action->setProperty("_tg_duotone_id", semId);
         if (existingIconName != semId)
             action->setIcon(IconLoader::duotoneIcon(semId, 20, false));
-    } else if (!action->icon().isNull() && !registeredSet.contains(existingIconName)) {
-        // Guaranteed fallback: replace any remaining legacy .xpm / qrc raster icon with a 2-color Duotone SVG
-        const QString fallbackId =
-                existingIconName.isEmpty() ? QStringLiteral("new-graph") : existingIconName;
-        const QString resolved = IconLoader::resolveIconId(fallbackId);
+    } else if (!action->icon().isNull() && !existingIconName.isEmpty()
+               && !registeredSet.contains(existingIconName)) {
+        // A named icon that is not a duotone id (a legacy or freedesktop name): map it through
+        // the alias table. Nameless icons (colour swatches, Qt's own MDI system-menu icons)
+        // are kept; the old fallback turned them into the generic graph icon.
+        const QString resolved = IconLoader::resolveIconId(existingIconName);
         action->setProperty("_tg_duotone_id", resolved);
         action->setIcon(IconLoader::duotoneIcon(resolved, 20, false));
     }
@@ -2252,10 +2257,9 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
                 btn->setIcon(IconLoader::duotoneIcon(semId, 20, false));
             if (!btn->text().isEmpty() && btn->toolButtonStyle() == Qt::ToolButtonIconOnly)
                 btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        } else if (!btn->icon().isNull() && !registeredSet.contains(existingIconName)) {
-            const QString fallbackId =
-                    existingIconName.isEmpty() ? QStringLiteral("new-graph") : existingIconName;
-            const QString resolved = IconLoader::resolveIconId(fallbackId);
+        } else if (!btn->icon().isNull() && !existingIconName.isEmpty()
+                   && !registeredSet.contains(existingIconName)) {
+            const QString resolved = IconLoader::resolveIconId(existingIconName);
             btn->setProperty("_tg_duotone_id", resolved);
             btn->setIcon(IconLoader::duotoneIcon(resolved, 20, false));
         }

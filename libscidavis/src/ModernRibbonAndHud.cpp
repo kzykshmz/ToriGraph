@@ -82,6 +82,7 @@
 #include "Graph.h"
 #include "GraphInspectorDock.h"
 #include "IconLoader.h"
+#include "ModernUiTheme.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
 #include "MyWidget.h"
@@ -822,8 +823,12 @@ void CommandPalettePopup::refreshCommands()
             e.searchKey = (cleanTitle + QLatin1Char(' ') + tip + QLatin1Char(' ')
                            + act->objectName() + QLatin1Char(' ') + e.shortcutText)
                                   .toLower();
-            e.iconId = IconLoader::resolveIconId(
-                    act->objectName().isEmpty() ? cleanTitle : act->objectName());
+            // Use the action's own duotone id (the one shown in menus and the ribbon); the old
+            // keyword guess from the object name gave many entries an unrelated icon. Without
+            // an id the palette falls back to the action's icon.
+            e.iconId = act->property("_tg_duotone_id").toString();
+            if (e.iconId.isEmpty())
+                e.iconId = ModernUiTheme::semanticIconForAction(act);
             e.action = act;
             e.priorityBoost = 0;
             if (!act->isEnabled()) {

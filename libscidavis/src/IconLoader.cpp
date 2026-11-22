@@ -41,11 +41,6 @@
 #include <QtDebug>
 #include <QtSvg/QSvgRenderer>
 
-int IconLoader::lumen_ = 240;
-int &IconLoader::lumi_ = IconLoader::lumen_;
-QList<int> IconLoader::sizes_;
-QList<QString> IconLoader::icon_path_;
-
 namespace {
 
 enum class AccentDomain {
@@ -1217,7 +1212,18 @@ static const DuotoneSvgSpec kIconSpecs[] = {
     { "matrix-transpose", AccentDomain::IndigoWorkspace,
       "<rect x='4.5' y='4.5' width='15' height='15' rx='2'/>",
       "<rect x='4.5' y='4.5' width='15' height='15' rx='2'/><path d='M5.5 5.5l13 13' stroke-dasharray='2 2'/>",
-      "<path d='M14 7.5h3v3M10 16.5H7v-3M16.8 7.7L13 11.5M7.2 16.3L11 12.5'/>" }
+      "<path d='M14 7.5h3v3M10 16.5H7v-3M16.8 7.7L13 11.5M7.2 16.3L11 12.5'/>" },
+
+    // Show / hide toggle (graph object manager) and the inspector dock toggle.
+    { "visibility", AccentDomain::IndigoWorkspace,
+      "<path d='M2.8 12c2.3-4.2 5.4-6.3 9.2-6.3s6.9 2.1 9.2 6.3c-2.3 4.2-5.4 6.3-9.2 6.3S5.1 16.2 2.8 12z'/>",
+      "<path d='M2.8 12c2.3-4.2 5.4-6.3 9.2-6.3s6.9 2.1 9.2 6.3c-2.3 4.2-5.4 6.3-9.2 6.3S5.1 16.2 2.8 12z'/>",
+      "<circle cx='12' cy='12' r='2.8'/>" },
+
+    { "inspector-panel", AccentDomain::IndigoWorkspace,
+      "<rect x='14' y='4.5' width='6' height='15' rx='1'/>",
+      "<rect x='3.5' y='4.5' width='17' height='15' rx='2'/><path d='M14 4.5v15'/>",
+      "<path d='M16 8.5h2.5M16 12h2.5M16 15.5h2.5'/>" }
 };
 
 struct AliasPair {
@@ -1262,7 +1268,8 @@ static const AliasPair kAliasTable[] = {
     { "open-folder", "folder-open" },
     { "closed-folder", "folder-closed" },
 
-    // Legacy scidavis/icons.qrc .xpm & .png basenames
+    // Legacy SciDAVis .xpm / .png basenames. The raster files themselves were removed from
+    // icons.qrc (H8); the names stay mapped so old call sites and saved states still resolve.
     { "new", "file-new" },
     { "fileopen", "file-open" },
     { "filesave", "file-save" },
@@ -1605,7 +1612,22 @@ static const AliasPair kAliasTable[] = {
     { "curve-plus", "curve-add" },
     { "remove-curve", "curve-remove" },
     { "delete-curve", "curve-remove" },
-    { "curve-minus", "curve-remove" }
+    { "curve-minus", "curve-remove" },
+
+    // Ids used by the graph inspector, axis context menu and View menu
+    { "eye", "visibility" },
+    { "show-hide", "visibility" },
+    { "inspector", "inspector-panel" },
+    { "graph-inspector", "inspector-panel" },
+    { "plus", "curve-add" },
+    { "aspect-ratio", "aspect-square" },
+    { "frame-box", "frame-box-inward" },
+    { "export", "export-image" },
+    { "layers", "layer-arrange" },
+    { "draw-line", "mean-line" },
+    { "reference-line", "mean-line" },
+    { "grid-major", "axis-grid" },
+    { "merge-graphs", "layer-arrange" }
 };
 
 struct IconRegistryState {
@@ -1616,6 +1638,7 @@ struct IconRegistryState {
     QStringList orderedIds;
     QHash<QString, QPixmap> pixmapCache;
     QHash<QString, QIcon> iconCache;
+    QStringList unresolved;
 };
 
 static IconRegistryState &registry()
@@ -1682,6 +1705,11 @@ static QString resolveCanonicalUnlocked(IconRegistryState &st, const QString &ra
     const auto aliasIt = st.aliasMap.constFind(norm);
     if (aliasIt != st.aliasMap.cend() && st.specIndexById.contains(aliasIt.value()))
         return aliasIt.value();
+
+    // Neither an id nor an alias: remember the name (Suite 70 requires this list to stay
+    // empty) and guess from keywords so the caller still gets an icon.
+    if (!st.unresolved.contains(rawId))
+        st.unresolved.append(rawId);
 
     // Keyword-aware semantic fallback so even arbitrary caller IDs render crisp 2-color SVGs
     if (norm.contains(QStringLiteral("delete")) || norm.contains(QStringLiteral("trash"))
@@ -1931,11 +1959,21 @@ private:
 
 void IconLoader::init()
 {
-    sizes_.clear();
-    sizes_ << 16 << 20 << 22 << 24 << 32 << 48;
-    icon_path_.clear();
-    icon_path_ << QStringLiteral(":icons/dark") << QStringLiteral(":icons/light");
     (void)registry();
+}
+
+QStringList IconLoader::unresolvedIconNames()
+{
+    IconRegistryState &st = registry();
+    QMutexLocker locker(&st.mutex);
+    return st.unresolved;
+}
+
+void IconLoader::clearUnresolvedIconNames()
+{
+    IconRegistryState &st = registry();
+    QMutexLocker locker(&st.mutex);
+    st.unresolved.clear();
 }
 
 QStringList IconLoader::registeredIconIds()
@@ -1982,12 +2020,9 @@ QIcon IconLoader::duotoneIcon(const QString &semanticId, int baseSize, bool dark
     return icon;
 }
 
-QIcon IconLoader::load(const QString &name, const IconMode &iconMode)
+QIcon IconLoader::load(const QString &name)
 {
-    Q_UNUSED(iconMode);
     if (name.trimmed().isEmpty())
         return QIcon();
-
-    const bool darkSurface = (lumen_ > 0 && lumen_ < 100);
-    return duotoneIcon(name, 24, darkSurface);
+    return duotoneIcon(name, 24, false);
 }

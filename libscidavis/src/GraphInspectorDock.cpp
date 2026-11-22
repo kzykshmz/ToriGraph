@@ -604,13 +604,6 @@ static QString formatColumnLabelWithMeta(Table *t, int c, const QString &roleTag
     return QStringLiteral("%1%2 %3").arg(colShort, meta, roleTag);
 }
 
-static bool isPaletteDark()
-{
-    const QColor win = QApplication::palette().color(QPalette::Window);
-    const double lum = 0.2126 * win.redF() + 0.7152 * win.greenF() + 0.0722 * win.blueF();
-    return lum < 0.45;
-}
-
 static QString friendlyCurveDisplayName(Graph *g, int curveIdx)
 {
     if (!g || curveIdx < 0 || curveIdx >= g->curves())
@@ -6735,22 +6728,23 @@ void GraphInspectorDock::applyTheme()
     if (s_applying)
         return;
     s_applying = true;
-    const bool dark = isPaletteDark();
-    const QString bg = dark ? QStringLiteral("#1E222B") : QStringLiteral("#F8FAFC");
-    const QString hdrBg = dark ? QStringLiteral("#171A22") : QStringLiteral("#F1F5F9");
-    const QString cardBg = dark ? QStringLiteral("#252A36") : QStringLiteral("#FFFFFF");
-    const QString border = dark ? QStringLiteral("#333B4D") : QStringLiteral("#E2E8F0");
-    const QString fg = dark ? QStringLiteral("#E6ECF5") : QStringLiteral("#0F172A");
-    const QString subFg = dark ? QStringLiteral("#94A3B8") : QStringLiteral("#475569");
-    const QString accent = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#2563EB");
-    const QString accentSoft = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#EFF6FF");
-    const QString railFg = dark ? QStringLiteral("#CBD5E1") : QStringLiteral("#334155");
-    const QString trackBg = dark ? QStringLiteral("#1A1F2B") : QStringLiteral("#F1F5F9");
-    const QString segActiveBg = dark ? QStringLiteral("#2D3548") : QStringLiteral("#FFFFFF");
-    const QString segActiveBorder = dark ? QStringLiteral("#475569") : QStringLiteral("#CBD5E1");
-    const QString chipBg = dark ? QStringLiteral("#252A36") : QStringLiteral("#F8FAFC");
-    const QString chipHoverBg = dark ? QStringLiteral("#1E3A5F") : QStringLiteral("#EFF6FF");
-    const QString chipHoverBorder = dark ? QStringLiteral("#38BDF8") : QStringLiteral("#93C5FD");
+    // ToriGraph always uses its light theme (ModernUiTheme pins a light palette), so the
+    // inspector has a single light colour set.
+    const QString bg = QStringLiteral("#F8FAFC");
+    const QString hdrBg = QStringLiteral("#F1F5F9");
+    const QString cardBg = QStringLiteral("#FFFFFF");
+    const QString border = QStringLiteral("#E2E8F0");
+    const QString fg = QStringLiteral("#0F172A");
+    const QString subFg = QStringLiteral("#475569");
+    const QString accent = QStringLiteral("#2563EB");
+    const QString accentSoft = QStringLiteral("#EFF6FF");
+    const QString railFg = QStringLiteral("#334155");
+    const QString trackBg = QStringLiteral("#F1F5F9");
+    const QString segActiveBg = QStringLiteral("#FFFFFF");
+    const QString segActiveBorder = QStringLiteral("#CBD5E1");
+    const QString chipBg = QStringLiteral("#F8FAFC");
+    const QString chipHoverBg = QStringLiteral("#EFF6FF");
+    const QString chipHoverBorder = QStringLiteral("#93C5FD");
 
     QString qss = QStringLiteral(
                           "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"

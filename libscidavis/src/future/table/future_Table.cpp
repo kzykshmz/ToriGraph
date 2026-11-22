@@ -1289,40 +1289,40 @@ QMenu *Table::createContextMenu() const
 void Table::createActions()
 {
     // selection related actions
-    action_cut_selection = new QAction(IconLoader::duotoneIcon(":/cut.xpm"), tr("Cu&t"), this);
+    action_cut_selection = new QAction(IconLoader::duotoneIcon("cut"), tr("Cu&t"), this);
     actionManager()->addAction(action_cut_selection, "cut_selection");
 
-    action_copy_selection = new QAction(IconLoader::duotoneIcon(":/copy.xpm"), tr("&Copy"), this);
+    action_copy_selection = new QAction(IconLoader::duotoneIcon("copy"), tr("&Copy"), this);
     actionManager()->addAction(action_copy_selection, "copy_selection");
 
     action_paste_into_selection =
-            new QAction(IconLoader::duotoneIcon(":/paste.xpm"), tr("Past&e"), this);
+            new QAction(IconLoader::duotoneIcon("paste"), tr("Past&e"), this);
     actionManager()->addAction(action_paste_into_selection, "paste_into_selection");
 
     action_paste_into_selection_transposed =
-            new QAction(IconLoader::duotoneIcon(":/paste.xpm"), tr("Paste transposed"), this);
+            new QAction(IconLoader::duotoneIcon("paste"), tr("Paste transposed"), this);
     actionManager()->addAction(action_paste_into_selection_transposed, "paste_into_selection_transposed");
 #ifndef LEGACY_CODE_0_2_x
     action_mask_selection =
-            new QAction(IconLoader::duotoneIcon(":/mask.xpm"), tr("&Mask", "mask selection"), this);
+            new QAction(IconLoader::duotoneIcon("mask-points"), tr("&Mask", "mask selection"), this);
     actionManager()->addAction(action_mask_selection, "mask_selection");
 
-    action_unmask_selection = new QAction(IconLoader::duotoneIcon(":/unmask.xpm"),
+    action_unmask_selection = new QAction(IconLoader::duotoneIcon("unmask-points"),
                                           tr("&Unmask", "unmask selection"), this);
     actionManager()->addAction(action_unmask_selection, "unmask_selection");
 #endif
 
     action_set_formula =
-            new QAction(IconLoader::duotoneIcon(":/16x16/fx.png"), tr("Assign &Formula"), this);
+            new QAction(IconLoader::duotoneIcon("formula"), tr("Assign &Formula"), this);
     action_set_formula->setShortcut(tr("Alt+Q"));
     actionManager()->addAction(action_set_formula, "set_formula");
 
-    action_clear_selection = new QAction(IconLoader::duotoneIcon(":/16x16/clear.png"),
+    action_clear_selection = new QAction(IconLoader::duotoneIcon("clear"),
                                          tr("Clea&r", "clear selection"), this);
     actionManager()->addAction(action_clear_selection, "clear_selection");
 
     action_recalculate =
-            new QAction(IconLoader::duotoneIcon(":/16x16/recalculate.png"), tr("Recalculate"), this);
+            new QAction(IconLoader::duotoneIcon("recalc-now"), tr("Recalculate"), this);
     action_recalculate->setShortcut(tr("Ctrl+Return"));
     actionManager()->addAction(action_recalculate, "recalculate");
 
@@ -1335,49 +1335,49 @@ void Table::createActions()
     actionManager()->addAction(action_fill_random, "fill_random");
 
     // table related actions
-    action_toggle_comments = new QAction(IconLoader::duotoneIcon(":/16x16/table_header.png"),
+    action_toggle_comments = new QAction(IconLoader::duotoneIcon("new-table"),
                                          tr("Show/Hide comments"), this);
     actionManager()->addAction(action_toggle_comments, "toggle_comments");
 
-    action_toggle_tabbar = new QAction(IconLoader::duotoneIcon(":/16x16/table_options.png"),
+    action_toggle_tabbar = new QAction(IconLoader::duotoneIcon("settings"),
                                        tr("Show/Hide Controls"), this);
     action_toggle_tabbar->setShortcut(tr("F12"));
     actionManager()->addAction(action_toggle_tabbar, "toggle_tabbar");
 
-    action_formula_mode = new QAction(IconLoader::duotoneIcon(":/16x16/fx.png"),
+    action_formula_mode = new QAction(IconLoader::duotoneIcon("formula"),
                                       tr("Formula Edit Mode"), this);
     action_formula_mode->setCheckable(true);
     actionManager()->addAction(action_formula_mode, "formula_mode");
 
     action_select_all =
-            new QAction(IconLoader::duotoneIcon(":/16x16/select_all.png"), tr("Select All"), this);
+            new QAction(IconLoader::duotoneIcon("table-drawer"), tr("Select All"), this);
     actionManager()->addAction(action_select_all, "select_all");
 
     action_add_column =
-            new QAction(IconLoader::duotoneIcon(":/16x16/add_column.png"), tr("&Add Column"), this);
+            new QAction(IconLoader::duotoneIcon("add-column"), tr("&Add Column"), this);
     action_add_column->setToolTip(tr("append a new column to the table"));
     actionManager()->addAction(action_add_column, "add_column");
 
-    action_clear_table = new QAction(IconLoader::duotoneIcon(":/16x16/clear_table.png"),
+    action_clear_table = new QAction(IconLoader::duotoneIcon("clear"),
                                      tr("Clear Table"), this);
     actionManager()->addAction(action_clear_table, "clear_table");
 
     action_export_to_TeX =
-            new QAction(IconLoader::duotoneIcon(":/16x16/TeX.png"), tr("Export to TeX..."), this);
+            new QAction(IconLoader::duotoneIcon("export-pdf"), tr("Export to TeX..."), this);
     actionManager()->addAction(action_export_to_TeX, "export_to_TeX");
 
 #ifndef LEGACY_CODE_0_2_x
     action_clear_masks =
-            new QAction(IconLoader::duotoneIcon(":/unmask.xpm"), tr("Clear Masks"), this);
+            new QAction(IconLoader::duotoneIcon("unmask-points"), tr("Clear Masks"), this);
     actionManager()->addAction(action_clear_masks, "clear_masks");
 #endif
 
     action_sort_table =
-            new QAction(IconLoader::duotoneIcon(":/16x16/sort.png"), tr("&Sort Table"), this);
+            new QAction(IconLoader::duotoneIcon("sort-table"), tr("&Sort Table"), this);
     actionManager()->addAction(action_sort_table, "sort_table");
 
     action_go_to_cell =
-            new QAction(IconLoader::duotoneIcon(":/16x16/go_to_cell.png"), tr("&Go to Cell"), this);
+            new QAction(IconLoader::duotoneIcon("find"), tr("&Go to Cell"), this);
     action_go_to_cell->setShortcut(tr("Ctrl+Alt+G"));
     actionManager()->addAction(action_go_to_cell, "go_to_cell");
 
@@ -1387,19 +1387,19 @@ void Table::createActions()
     actionManager()->addAction(action_dimensions_dialog, "dimensions_dialog");
 
     // column related actions
-    action_insert_columns = new QAction(IconLoader::duotoneIcon(":/16x16/insert_column.png"),
+    action_insert_columns = new QAction(IconLoader::duotoneIcon("add-column"),
                                         tr("&Insert Empty Columns"), this);
     actionManager()->addAction(action_insert_columns, "insert_columns");
 
-    action_remove_columns = new QAction(IconLoader::duotoneIcon(":/16x16/remove_column.png"),
+    action_remove_columns = new QAction(IconLoader::duotoneIcon("delete"),
                                         tr("Remo&ve Columns"), this);
     actionManager()->addAction(action_remove_columns, "remove_columns");
 
-    action_clear_columns = new QAction(IconLoader::duotoneIcon(":/16x16/clear_column.png"),
+    action_clear_columns = new QAction(IconLoader::duotoneIcon("clear"),
                                        tr("Clea&r Columns"), this);
     actionManager()->addAction(action_clear_columns, "clear_columns");
 
-    action_add_columns = new QAction(IconLoader::duotoneIcon(":/16x16/add_columns.png"),
+    action_add_columns = new QAction(IconLoader::duotoneIcon("add-column"),
                                      tr("&Add Columns"), this);
     actionManager()->addAction(action_add_columns, "add_columns");
 
@@ -1412,11 +1412,11 @@ void Table::createActions()
     action_set_as_z = new QAction(IconLoader::duotoneIcon("set_as_z"), tr("Z", "plot designation"), this);
     actionManager()->addAction(action_set_as_z, "set_as_z");
 
-    action_set_as_xerr = new QAction(IconLoader::duotoneIcon(":/16x16/x_error.png"),
+    action_set_as_xerr = new QAction(IconLoader::duotoneIcon("error-bars"),
                                      tr("X Error", "plot designation"), this);
     actionManager()->addAction(action_set_as_xerr, "set_as_xerr");
 
-    action_set_as_yerr = new QAction(IconLoader::duotoneIcon(":/16x16/y_error.png"),
+    action_set_as_yerr = new QAction(IconLoader::duotoneIcon("error-bars"),
                                      tr("Y Error", "plot designation"), this);
     actionManager()->addAction(action_set_as_yerr, "set_as_yerr");
 
@@ -1424,55 +1424,55 @@ void Table::createActions()
             new QAction(IconLoader::duotoneIcon("set_as_none"), tr("None", "plot designation"), this);
     actionManager()->addAction(action_set_as_none, "set_as_none");
 
-    action_normalize_columns = new QAction(IconLoader::duotoneIcon(":/16x16/normalize.png"),
+    action_normalize_columns = new QAction(IconLoader::duotoneIcon("curve-normalize"),
                                            tr("&Normalize Columns"), this);
     actionManager()->addAction(action_normalize_columns, "normalize_columns");
 
-    action_normalize_selection = new QAction(IconLoader::duotoneIcon(":/16x16/normalize.png"),
+    action_normalize_selection = new QAction(IconLoader::duotoneIcon("curve-normalize"),
                                              tr("&Normalize Selection"), this);
     actionManager()->addAction(action_normalize_selection, "normalize_selection");
 
     action_sort_columns =
-            new QAction(IconLoader::duotoneIcon(":/16x16/sort.png"), tr("&Sort Columns"), this);
+            new QAction(IconLoader::duotoneIcon("sort-table"), tr("&Sort Columns"), this);
     actionManager()->addAction(action_sort_columns, "sort_columns");
 
     action_statistics_columns =
-            new QAction(IconLoader::duotoneIcon(":/col_stat.xpm"), tr("Column Statisti&cs"), this);
+            new QAction(IconLoader::duotoneIcon("col-stats"), tr("Column Statisti&cs"), this);
     action_statistics_columns->setToolTip(tr("statistics on columns"));
     actionManager()->addAction(action_statistics_columns, "statistics_columns");
 
-    action_type_format = new QAction(IconLoader::duotoneIcon(":/16x16/column_format_type.png"),
+    action_type_format = new QAction(IconLoader::duotoneIcon("settings"),
                                      tr("Change &Type && Format"), this);
     action_type_format->setShortcut(tr("Ctrl+Alt+O"));
     actionManager()->addAction(action_type_format, "type_format");
 
-    action_edit_description = new QAction(IconLoader::duotoneIcon(":/16x16/column_description.png"),
+    action_edit_description = new QAction(IconLoader::duotoneIcon("text-label"),
                                           tr("Edit Column &Description"), this);
     actionManager()->addAction(action_edit_description, "edit_description");
     action_edit_column_labels_formula = new QAction(
-            IconLoader::duotoneIcon(":/16x16/column_description.png"),
+            IconLoader::duotoneIcon("text-label"),
             tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."), this);
     actionManager()->addAction(action_edit_column_labels_formula, "edit_column_labels_formula");
 
     // row related actions
-    action_insert_rows = new QAction(IconLoader::duotoneIcon(":/16x16/insert_row.png"),
+    action_insert_rows = new QAction(IconLoader::duotoneIcon("new-table"),
                                      tr("&Insert Empty Rows"), this);
     actionManager()->addAction(action_insert_rows, "insert_rows");
 
-    action_remove_rows = new QAction(IconLoader::duotoneIcon(":/16x16/remove_row.png"),
+    action_remove_rows = new QAction(IconLoader::duotoneIcon("delete"),
                                      tr("Remo&ve Rows"), this);
     actionManager()->addAction(action_remove_rows, "remove_rows");
 
-    action_clear_rows = new QAction(IconLoader::duotoneIcon(":/16x16/clear_row.png"),
+    action_clear_rows = new QAction(IconLoader::duotoneIcon("clear"),
                                     tr("Clea&r Rows"), this);
     actionManager()->addAction(action_clear_rows, "clear_rows");
 
     action_add_rows =
-            new QAction(IconLoader::duotoneIcon(":/16x16/add_rows.png"), tr("&Add Rows"), this);
+            new QAction(IconLoader::duotoneIcon("new-table"), tr("&Add Rows"), this);
     actionManager()->addAction(action_add_rows, "add_rows");
 
     action_statistics_rows =
-            new QAction(IconLoader::duotoneIcon(":/stat_rows.xpm"), tr("Row Statisti&cs"), this);
+            new QAction(IconLoader::duotoneIcon("row-stats"), tr("Row Statisti&cs"), this);
     action_statistics_rows->setToolTip(tr("statistics on rows"));
     actionManager()->addAction(action_statistics_rows, "statistics_rows");
 
@@ -2433,7 +2433,7 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
 
 QIcon Table::icon() const
 {
-    return IconLoader::duotoneIcon(":/worksheet.xpm");
+    return IconLoader::duotoneIcon("new-table");
 }
 
 QString Table::text(int row, int col)

@@ -850,15 +850,14 @@ void ConfigDialog::languageChange()
     itemsList->addItem(tr("3D Plots"));
     itemsList->addItem(tr("Fitting"));
     itemsList->setCurrentRow(0);
-    auto pageIcon = [](const QString &semanticId, const char *fallbackXpm) -> QIcon {
-        const QIcon ico = IconLoader::duotoneIcon(semanticId, 32);
-        return ico.isNull() ? QIcon(QPixmap(QString::fromLatin1(fallbackXpm))) : ico;
+    auto pageIcon = [](const QString &semanticId) -> QIcon {
+        return IconLoader::duotoneIcon(semanticId, 32);
     };
-    itemsList->item(0)->setIcon(pageIcon(QStringLiteral("settings"), ":/general.xpm"));
-    itemsList->item(1)->setIcon(pageIcon(QStringLiteral("new-table"), ":/configTable.xpm"));
-    itemsList->item(2)->setIcon(pageIcon(QStringLiteral("plot-line-symbol"), ":/config_curves.xpm"));
-    itemsList->item(3)->setIcon(pageIcon(QStringLiteral("plot-3d-surface"), ":/3dplots.xpm"));
-    itemsList->item(4)->setIcon(pageIcon(QStringLiteral("fit-nonlinear"), ":/fit.xpm"));
+    itemsList->item(0)->setIcon(pageIcon(QStringLiteral("settings")));
+    itemsList->item(1)->setIcon(pageIcon(QStringLiteral("new-table")));
+    itemsList->item(2)->setIcon(pageIcon(QStringLiteral("plot-line-symbol")));
+    itemsList->item(3)->setIcon(pageIcon(QStringLiteral("plot-3d-surface")));
+    itemsList->item(4)->setIcon(pageIcon(QStringLiteral("fit-nonlinear")));
     itemsList->setIconSize(QSize(32, 32));
     // calculate a sensible width for the items list
     // (default QListWidget size is 256 which looks too big)
@@ -1028,21 +1027,21 @@ void ConfigDialog::languageChange()
     lblSymbSize->setText(tr("Symbol size"));
 
     boxCurveStyle->clear();
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/lPlot.xpm"), tr(" Line"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-scatter"), ":/pPlot.xpm"), tr(" Scatter"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line-symbol"), ":/lpPlot.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line")), tr(" Line"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-scatter")), tr(" Scatter"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line-symbol")),
                            tr(" Line + Symbol"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars"), ":/dropLines.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars")),
                            tr(" Vertical drop lines"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-spline"), ":/spline.xpm"), tr(" Spline"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/vert_steps.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-spline")), tr(" Spline"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line")),
                            tr(" Vertical steps"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line"), ":/hor_steps.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-line")),
                            tr(" Horizontal steps"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-area"), ":/area.xpm"), tr(" Area"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars"), ":/vertBars.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-area")), tr(" Area"));
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-bars")),
                            tr(" Vertical Bars"));
-    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-hbar"), ":/hBars.xpm"),
+    boxCurveStyle->addItem(pageIcon(QStringLiteral("plot-hbar")),
                            tr(" Horizontal Bars"));
 
     int style = app->defaultCurveStyle;

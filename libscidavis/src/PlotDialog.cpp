@@ -3308,7 +3308,7 @@ void PlotDialog::closeEvent(QCloseEvent *e)
 LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
     : QTreeWidgetItem(parent, QStringList(s), LayerTreeItem), d_graph(g), d_graphGuard(g)
 {
-    setIcon(0, IconLoader::duotoneIcon(":/layer_disabled.xpm"));
+    setIcon(0, IconLoader::duotoneIcon("layer-add"));
     if (g)
         insertCurvesList();
 }
@@ -3316,9 +3316,9 @@ LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
 void LayerItem::setActive(bool on)
 {
     if (on)
-        setIcon(0, IconLoader::duotoneIcon(":/layer_enabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon("layer-add"));
     else
-        setIcon(0, IconLoader::duotoneIcon(":/layer_disabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon("layer-add"));
 }
 
 void LayerItem::rebuildCurvesList()
@@ -3376,7 +3376,7 @@ void LayerItem::insertCurvesList()
 CurveTreeItem::CurveTreeItem(const QwtPlotItem *curve, LayerItem *parent, const QString &s)
     : QTreeWidgetItem(parent, QStringList(s), PlotCurveTreeItem), d_curve(curve)
 {
-    setIcon(0, IconLoader::duotoneIcon(":/graph_disabled.xpm"));
+    setIcon(0, IconLoader::duotoneIcon("new-graph"));
     setFlags(flags() | Qt::ItemIsUserCheckable);
     Graph *g = graph();
     int idx = plotItemIndex();
@@ -3406,9 +3406,9 @@ void CurveTreeItem::setActive(bool on)
     if (!isCurveAlive())
         return;
     if (on)
-        setIcon(0, IconLoader::duotoneIcon(":/graph.xpm"));
+        setIcon(0, IconLoader::duotoneIcon("new-graph"));
     else
-        setIcon(0, IconLoader::duotoneIcon(":/graph_disabled.xpm"));
+        setIcon(0, IconLoader::duotoneIcon("new-graph"));
 }
 
 int CurveTreeItem::plotItemIndex() const

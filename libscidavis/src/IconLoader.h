@@ -28,7 +28,6 @@
 #ifndef ICONLOADER_H
 #define ICONLOADER_H
 
-#include <QColor>
 #include <QIcon>
 #include <QList>
 #include <QPixmap>
@@ -38,10 +37,16 @@
 class IconLoader
 {
 public:
-    enum IconMode { LightDark = 0, General = 1, Indiscriminate = 2 };
-
+    // All icons are 2-colour duotone SVGs drawn from the semantic id registry below
+    // (kIconSpecs in IconLoader.cpp). Legacy SciDAVis resource names (":/fileopen.xpm",
+    // "edit-copy", ...) are still accepted and mapped through the alias table, but new code
+    // should pass the semantic id ("file-open").
+    //
+    // ToriGraph always runs with its light theme (ModernUiTheme), so there is no light/dark
+    // icon switching. `darkSurface` is only for icons drawn on a dark chip inside the light
+    // UI (focus HUD pill, the pressed state of the mini toolbar).
     static void init();
-    static QIcon load(const QString &name, const IconMode &iconMode = LightDark);
+    static QIcon load(const QString &name);
 
     static QIcon duotoneIcon(const QString &semanticId, int baseSize = 24,
                              bool darkSurface = false);
@@ -50,21 +55,13 @@ public:
     static QStringList registeredIconIds();
     static QString resolveIconId(const QString &nameOrAlias);
 
-    static int inline isLight(const QColor &col)
-    {
-        return static_cast<int>(0.2126 * col.red() + 0.7152 * col.blue() + 0.0722 * col.green());
-    }
-
-    static int lumen_;
-    static int &lumi_;
+    // Names that were neither a registered id nor an alias and therefore fell back to a
+    // keyword guess or the generic graph icon (diagnostics / regression tests).
+    static QStringList unresolvedIconNames();
+    static void clearUnresolvedIconNames();
 
 private:
     IconLoader() { }
-
-    enum IconType { Dark = 0, Light = 1 };
-
-    static QList<int> sizes_;
-    static QList<QString> icon_path_;
 };
 
 #endif // ICONLOADER_H
