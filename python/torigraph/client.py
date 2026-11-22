@@ -3242,6 +3242,13 @@ class Session:
     ) -> Dict[str, Any]:
         return self.call("app.import_opj", path=os.fspath(path), codec=(codec or ""))
 
+    def import_xlsx(
+        self, path: Union[str, os.PathLike[str]], sheet: Optional[str] = None
+    ) -> List[TableProxy]:
+        """Import an Excel workbook (.xlsx/.xlsm); one worksheet per sheet (or only `sheet`)."""
+        res = self.call("app.import_xlsx", path=os.fspath(path), sheet=(sheet or ""))
+        return [TableProxy(self, str(n)) for n in res.get("tables", [])]
+
     def list_windows(self, window_type: Optional[str] = None) -> List[Dict[str, Any]]:
         res = self.call("app.list_windows", type=window_type)
         return list(res.get("windows", []))

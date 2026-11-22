@@ -35,6 +35,7 @@
 #include "GraphStatsAndSurfaceFit.h"
 #include "Grid.h"
 #include "ImportOPJU.h"
+#include "XlsxImport.h"
 #include "Integration.h"
 #include "Interpolation.h"
 #include "Legend.h"
@@ -6402,6 +6403,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.import_opj", "app", "Session.import_opj(path, *, codec=None)",
       "Import an Origin .opj or Origin 2018+ .opju (ZIP or CPYUA) project file into the workspace.",
       "path:str*; codec:str=''", "app.import_opj('project.opju')" },
+    { "app.import_xlsx", "app", "Session.import_xlsx(path, *, sheet=None)",
+      "Import an Excel workbook (.xlsx/.xlsm) without Excel: every sheet (or only `sheet`) becomes a worksheet named <book>_<sheet>; a text first row becomes Long Name, a unit second row becomes Units, date-formatted cells become date/time columns.",
+      "path:str*; sheet:str=''", "tables = app.import_xlsx('tensile.xlsx')" },
     { "app.list_sample_datasets", "app", "Session.list_sample_datasets(category=None)",
       "List built-in curated Materials Science & physics sample datasets (Arrhenius, DP980 tensile, FCC Cu XRD, TiO2 Tauc, LiFePO4 EIS, DSC Kissinger, Si bands).",
       "category:str=''", "app.list_sample_datasets()" },
@@ -11657,6 +11661,31 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         return true;
     }
 
+    if (method == QStringLiteral("app.import_xlsx")) {
+        const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
+        const QFileInfo xfi(path);
+        if (path.isEmpty() || !xfi.exists() || !xfi.isFile())
+            throwInvalidParams(QStringLiteral("Excel file does not exist: %1").arg(path));
+        const QString sheet = optionalJsonString(params, QStringLiteral("sheet")).trimmed();
+        QString xlsxErr;
+        XlsxImport::ImportResult res;
+        if (!XlsxImport::importIntoProject(d_app, xfi.absoluteFilePath(), sheet, &xlsxErr, &res))
+            throwRpcRuntime(xlsxErr.isEmpty()
+                                    ? QStringLiteral("Failed to import Excel file '%1'.").arg(path)
+                                    : xlsxErr);
+        QJsonArray tablesArr;
+        for (const QString &t : res.tables)
+            tablesArr.append(t);
+        QJsonArray emptyArr;
+        for (const QString &e : res.emptySheets)
+            emptyArr.append(e);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("path")] = xfi.absoluteFilePath();
+        outResult[QStringLiteral("tables")] = tablesArr;
+        outResult[QStringLiteral("empty_sheets")] = emptyArr;
+        outResult[QStringLiteral("summary")] = res.summary;
+        return true;
+    }
     if (method == QStringLiteral("app.import_opj")) {
         const QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
         const QFileInfo opjFi(path);

@@ -165,6 +165,7 @@ static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
 static int runSuite60PowerPointOleLink(ApplicationWindow *mw);
 static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
+static int runSuite64XlsxImport(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -234,6 +235,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc53;
+    }
+    if (args.contains("--suite64-only")) {
+        const int rc64 = runSuite64XlsxImport(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc64;
     }
     if (args.contains("--suite55-only")) {
         const int rc55 = runSuite55TensileAndWorkHardeningCorrectness(mw);
@@ -5452,6 +5460,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite64XlsxImport(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite58FigureDefaultsPresetsAndExport(mw) != 0)
@@ -17845,5 +17856,428 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
     QStandardPaths::setTestModeEnabled(false);
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 58 Figure Defaults, Style Presets & Export Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 64 (D1): Excel .xlsx import without external libraries
+// =============================================================================
+#include "XlsxImport.h"
+#include "ZipReader.h"
+#include "future/core/datatypes/DateTime2StringFilter.h"
+
+namespace {
+struct Suite64ZipEntry
+{
+    QByteArray name;
+    QByteArray data;
+    bool deflate = false;
+};
+
+// Multi-entry ZIP; "deflate" entries use qCompress()'s zlib stream without its 4-byte length
+// prefix, 2-byte zlib header and 4-byte Adler-32 trailer (= raw deflate, ZIP method 8).
+QByteArray suite64BuildZip(const QList<Suite64ZipEntry> &entries)
+{
+    QByteArray zip;
+    QByteArray cd;
+    for (const Suite64ZipEntry &e : entries) {
+        const quint32 crc = suite52Crc32(e.data);
+        QByteArray payload = e.data;
+        quint16 method = 0;
+        if (e.deflate) {
+            const QByteArray z = qCompress(e.data, 9);
+            payload = z.mid(6, z.size() - 10);
+            method = 8;
+        }
+        const quint32 offset = static_cast<quint32>(zip.size());
+        suite52AppendU32LE(zip, 0x04034B50u);
+        suite52AppendU16LE(zip, 20);
+        suite52AppendU16LE(zip, 0);
+        suite52AppendU16LE(zip, method);
+        suite52AppendU16LE(zip, 0);
+        suite52AppendU16LE(zip, 0);
+        suite52AppendU32LE(zip, crc);
+        suite52AppendU32LE(zip, static_cast<quint32>(payload.size()));
+        suite52AppendU32LE(zip, static_cast<quint32>(e.data.size()));
+        suite52AppendU16LE(zip, static_cast<quint16>(e.name.size()));
+        suite52AppendU16LE(zip, 0);
+        zip.append(e.name);
+        zip.append(payload);
+
+        suite52AppendU32LE(cd, 0x02014B50u);
+        suite52AppendU16LE(cd, 20);
+        suite52AppendU16LE(cd, 20);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU16LE(cd, method);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU32LE(cd, crc);
+        suite52AppendU32LE(cd, static_cast<quint32>(payload.size()));
+        suite52AppendU32LE(cd, static_cast<quint32>(e.data.size()));
+        suite52AppendU16LE(cd, static_cast<quint16>(e.name.size()));
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU16LE(cd, 0);
+        suite52AppendU32LE(cd, 0);
+        suite52AppendU32LE(cd, offset);
+        cd.append(e.name);
+    }
+    const quint32 cdOffset = static_cast<quint32>(zip.size());
+    zip.append(cd);
+    suite52AppendU32LE(zip, 0x06054B50u);
+    suite52AppendU16LE(zip, 0);
+    suite52AppendU16LE(zip, 0);
+    suite52AppendU16LE(zip, static_cast<quint16>(entries.size()));
+    suite52AppendU16LE(zip, static_cast<quint16>(entries.size()));
+    suite52AppendU32LE(zip, static_cast<quint32>(cd.size()));
+    suite52AppendU32LE(zip, cdOffset);
+    suite52AppendU16LE(zip, 0);
+    return zip;
+}
+
+QByteArray suite64Workbook()
+{
+    const QByteArray contentTypes =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>";
+    const QByteArray rootRels =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+            "</Relationships>";
+    // Tab order Tensile, Dates, Empty; part file names deliberately not in tab order.
+    const QByteArray workbook =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+            "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+            "<workbookPr/><sheets>"
+            "<sheet name=\"Tensile\" sheetId=\"1\" r:id=\"rId3\"/>"
+            "<sheet name=\"Dates\" sheetId=\"2\" r:id=\"rId1\"/>"
+            "<sheet name=\"Empty\" sheetId=\"3\" r:id=\"rId2\"/>"
+            "</sheets></workbook>";
+    const QByteArray wbRels =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+            "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"/xl/worksheets/sheet2.xml\"/>"
+            "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet3.xml\"/>"
+            "<Relationship Id=\"rId4\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/>"
+            "<Relationship Id=\"rId5\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+            "</Relationships>";
+    // 0 "Strain" as rich text runs, 1 Stress, 2 Sample, 3 %, 4 MPa, 5 S1, 6 (Japanese) + furigana
+    const QByteArray sst =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"7\" uniqueCount=\"7\">"
+            "<si><r><rPr><b/></rPr><t>Str</t></r><r><t>ain</t></r></si>"
+            "<si><t>Stress</t></si><si><t>Sample</t></si><si><t>%</t></si><si><t>MPa</t></si>"
+            "<si><t xml:space=\"preserve\">S1</t></si>"
+            "<si><t>\xE8\xA9\xA6\xE9\xA8\x93\xE7\x89\x87</t><rPh sb=\"0\" eb=\"3\"><t>\xE3\x82\xB7\xE3\x82\xB1\xE3\x83\xB3\xE3\x83\x98\xE3\x83\xB3</t></rPh></si>"
+            "</sst>";
+    // xf 0 General, 1 builtin 14 (date), 2 custom 164 date+time, 3 custom 165 "0.00" (number),
+    // 4 custom 166 [h]:mm elapsed (number)
+    const QByteArray styles =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+            "<numFmts count=\"3\"><numFmt numFmtId=\"164\" formatCode=\"yyyy/m/d\\ h:mm\"/>"
+            "<numFmt numFmtId=\"165\" formatCode=\"0.00\"/>"
+            "<numFmt numFmtId=\"166\" formatCode=\"[h]:mm\"/></numFmts>"
+            "<cellStyleXfs count=\"1\"><xf numFmtId=\"14\"/></cellStyleXfs>"
+            "<cellXfs count=\"5\"><xf numFmtId=\"0\"/><xf numFmtId=\"14\" applyNumberFormat=\"1\"/>"
+            "<xf numFmtId=\"164\"/><xf numFmtId=\"165\"/><xf numFmtId=\"166\"/></cellXfs>"
+            "</styleSheet>";
+    // Tensile: header row, unit row, 3 data rows; B4 missing, D mixes text/number/bool,
+    // E has a Japanese header with furigana.
+    const QByteArray tensile =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+            "<row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c>"
+            "<c r=\"C1\" t=\"s\"><v>2</v></c><c r=\"D1\" t=\"inlineStr\"><is><t>Note</t></is></c>"
+            "<c r=\"E1\" t=\"s\"><v>6</v></c></row>"
+            "<row r=\"2\"><c r=\"A2\" t=\"s\"><v>3</v></c><c r=\"B2\" t=\"s\"><v>4</v></c></row>"
+            "<row r=\"3\"><c r=\"A3\"><v>0</v></c><c r=\"B3\"><v>0</v></c>"
+            "<c r=\"C3\" t=\"s\"><v>5</v></c><c r=\"D3\" t=\"str\"><f>\"ok\"</f><v>ok</v></c>"
+            "<c r=\"E3\" s=\"3\"><v>10</v></c></row>"
+            "<row r=\"4\"><c r=\"A4\"><v>1.5</v></c><c r=\"C4\" t=\"inlineStr\"><is><t>S2</t></is></c>"
+            "<c r=\"D4\"><v>7</v></c><c r=\"E4\" s=\"4\"><v>20</v></c></row>"
+            "<row r=\"5\"><c r=\"A5\"><v>3</v></c><c r=\"B5\"><v>250.25</v></c>"
+            "<c r=\"C5\" t=\"s\"><v>5</v></c><c r=\"D5\" t=\"b\"><v>1</v></c><c r=\"E5\"><v>3.0E1</v></c></row>"
+            "</sheetData></worksheet>";
+    // Dates: starts at B2 (leading empty row/column), some cells without r attributes
+    const QByteArray dates =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+            "<row r=\"2\"><c r=\"B2\" t=\"inlineStr\"><is><t>Date</t></is></c>"
+            "<c t=\"inlineStr\"><is><t>Temp (K)</t></is></c></row>"
+            "<row r=\"3\"><c r=\"B3\" s=\"1\"><v>45000</v></c><c><v>300</v></c></row>"
+            "<row r=\"4\"><c r=\"B4\" s=\"2\"><v>45001.5</v></c><c><v>310.5</v></c></row>"
+            "<row r=\"5\"><c r=\"C5\"><v>320</v></c></row>"
+            "</sheetData></worksheet>";
+    const QByteArray empty =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData/></worksheet>";
+
+    QList<Suite64ZipEntry> entries;
+    entries << Suite64ZipEntry { "[Content_Types].xml", contentTypes, false }
+            << Suite64ZipEntry { "_rels/.rels", rootRels, false }
+            << Suite64ZipEntry { "xl/workbook.xml", workbook, true }
+            << Suite64ZipEntry { "xl/_rels/workbook.xml.rels", wbRels, false }
+            << Suite64ZipEntry { "xl/sharedStrings.xml", sst, true }
+            << Suite64ZipEntry { "xl/styles.xml", styles, false }
+            << Suite64ZipEntry { "xl/worksheets/sheet1.xml", dates, true }
+            << Suite64ZipEntry { "xl/worksheets/sheet2.xml", empty, false }
+            << Suite64ZipEntry { "xl/worksheets/sheet3.xml", tensile, true };
+    return suite64BuildZip(entries);
+}
+
+Table *suite64FindTable(ApplicationWindow *mw, const QString &name)
+{
+    for (MyWidget *w : mw->windowsList()) {
+        if (w && w->name() == name)
+            return qobject_cast<Table *>(w);
+    }
+    return nullptr;
+}
+
+void suite64CloseTables(ApplicationWindow *mw, const QStringList &names)
+{
+    for (const QString &n : names) {
+        if (Table *t = suite64FindTable(mw, n)) {
+            t->askOnCloseEvent(false);
+            t->close();
+        }
+    }
+    QApplication::processEvents();
+}
+} // namespace
+
+static int runSuite64XlsxImport(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 64: Excel .xlsx import (ZIP reader, sheets, shared strings, "
+                 "units, dates, protected/damaged files)...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 64");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmp;
+    CHECK_COND(tmp.isValid(), "64: temp dir");
+
+    // ---- 64a: shared ZIP reader (stored + deflated entries, exact lookup, truncation)
+    const QByteArray xlsx = suite64Workbook();
+    {
+        torizip::ZipArchive zip;
+        QString err;
+        CHECK_COND(zip.openData(xlsx, &err), QString("64a: zip open: %1").arg(err).toStdString());
+        CHECK_COND(zip.entries().size() == 9, "64a: entry count");
+        const int wbIdx = zip.findExactEntry(QStringLiteral("XL/Workbook.xml"));
+        CHECK_COND(wbIdx >= 0, "64a: case-insensitive exact lookup");
+        QByteArray wb;
+        CHECK_COND(zip.extract(wbIdx, wb, &err) && wb.contains("<sheet name=\"Dates\""),
+                   QString("64a: deflated entry: %1").arg(err).toStdString());
+        CHECK_COND(zip.findExactEntry(QStringLiteral("sheet1.xml")) < 0,
+                   "64a: exact lookup must not fall back to a suffix match");
+        QByteArray bad = xlsx;
+        bad.chop(10);
+        torizip::ZipArchive badZip;
+        QString badErr;
+        CHECK_COND(!badZip.openData(bad, &badErr) && !badErr.isEmpty(), "64a: truncated zip");
+    }
+
+    // ---- 64b: serial date conversion (1900 system incl. the 1900-02-29 bug, 1904 system)
+    {
+        using XlsxImport::serialToDateTime;
+        CHECK_COND(serialToDateTime(1, false).date() == QDate(1900, 1, 1), "64b: serial 1");
+        CHECK_COND(serialToDateTime(59, false).date() == QDate(1900, 2, 28), "64b: serial 59");
+        CHECK_COND(serialToDateTime(61, false).date() == QDate(1900, 3, 1), "64b: serial 61");
+        CHECK_COND(serialToDateTime(45000, false).date() == QDate(2023, 3, 15), "64b: 45000");
+        CHECK_COND(serialToDateTime(45001.5, false) == QDateTime(QDate(2023, 3, 16), QTime(12, 0)),
+                   "64b: 45001.5");
+        CHECK_COND(serialToDateTime(0, true).date() == QDate(1904, 1, 1), "64b: 1904 system");
+        CHECK_COND(serialToDateTime(0.25, false).time() == QTime(6, 0), "64b: time of day");
+    }
+
+    // ---- 64c: workbook model
+    {
+        XlsxImport::Workbook wb;
+        QString err;
+        CHECK_COND(XlsxImport::readWorkbookData(xlsx, wb, &err),
+                   QString("64c: read: %1").arg(err).toStdString());
+        CHECK_COND(wb.sheets.size() == 3 && wb.sheets[0].name == "Tensile"
+                           && wb.sheets[1].name == "Dates" && wb.sheets[2].name == "Empty",
+                   "64c: sheet names / tab order");
+        const XlsxImport::Sheet &ts = wb.sheets[0];
+        CHECK_COND(ts.rows.size() == 5 && ts.columnCount == 5, "64c: Tensile extent");
+        CHECK_COND(ts.rows[0][0].text == "Strain", "64c: rich-text shared string");
+        CHECK_COND(ts.rows[0][4].text == QString::fromUtf8("\xE8\xA9\xA6\xE9\xA8\x93\xE7\x89\x87"),
+                   "64c: furigana (rPh) must not be part of the text");
+        CHECK_COND(ts.rows[3].size() < 2 || ts.rows[3][1].type == XlsxImport::Cell::Empty,
+                   "64c: missing cell B4 stays empty");
+        const XlsxImport::Sheet &ds = wb.sheets[1];
+        CHECK_COND(ds.rows.size() == 5 && ds.rows[2][1].isDate && !ds.rows[2][2].isDate,
+                   "64c: date style detection");
+        CHECK_COND(ds.rows[4][2].type == XlsxImport::Cell::Number && ds.rows[4][2].number == 320.0,
+                   "64c: explicit C5 reference");
+        CHECK_COND(wb.sheets[2].rows.isEmpty(), "64c: empty sheet");
+
+        XlsxImport::Workbook only;
+        CHECK_COND(XlsxImport::readWorkbookData(xlsx, only, &err, QStringLiteral("dates"))
+                           && only.sheets.size() == 1 && only.sheets[0].name == "Dates",
+                   "64c: single sheet (case-insensitive)");
+        QString missErr;
+        CHECK_COND(!XlsxImport::readWorkbookData(xlsx, only, &missErr, QStringLiteral("Nope"))
+                           && missErr.contains("Nope") && missErr.contains("Tensile"),
+                   "64c: unknown sheet name lists the sheets");
+    }
+
+    // ---- 64d: import into the project (names, Long Name, Units, types, dates)
+    const QString path = tmp.filePath(QString::fromUtf8("\xE5\xBC\x95\xE5\xBC\xB5 data.xlsx"));
+    CHECK_COND(suite59WriteFile(path, xlsx), "64d: write xlsx");
+    QStringList created;
+    {
+        QString err;
+        XlsxImport::ImportResult res;
+        CHECK_COND(XlsxImport::importIntoProject(mw, path, QString(), &err, &res),
+                   QString("64d: import: %1").arg(err).toStdString());
+        created = res.tables;
+        const QString tensileName = QString::fromUtf8("\xE5\xBC\x95\xE5\xBC\xB5_data_Tensile");
+        const QString datesName = QString::fromUtf8("\xE5\xBC\x95\xE5\xBC\xB5_data_Dates");
+        CHECK_COND(res.tables == (QStringList() << tensileName << datesName),
+                   QString("64d: table names: %1").arg(res.tables.join(",")).toStdString());
+        CHECK_COND(res.emptySheets == QStringList(QStringLiteral("Empty")),
+                   "64d: empty sheet skipped");
+        CHECK_COND(!res.summary.isEmpty(), "64d: summary");
+
+        Table *t = suite64FindTable(mw, tensileName);
+        CHECK_COND(t && t->numCols() == 5 && t->numRows() == 3, "64d: Tensile shape");
+        Column *a = t->column(0);
+        Column *b = t->column(1);
+        Column *c = t->column(2);
+        Column *d = t->column(3);
+        Column *e = t->column(4);
+        CHECK_COND(a->name() == "Strain" && a->longName() == "Strain" && a->units() == "%",
+                   "64d: Strain name / Long Name / Units");
+        CHECK_COND(b->longName() == "Stress" && b->units() == "MPa", "64d: Stress units row");
+        CHECK_COND(a->columnMode() == SciDAVis::ColumnMode::Numeric && a->valueAt(1) == 1.5
+                           && a->valueAt(2) == 3.0,
+                   "64d: numeric values");
+        CHECK_COND(b->isInvalid(1) && !b->isInvalid(0) && b->valueAt(2) == 250.25,
+                   "64d: empty cell B4 -> invalid row");
+        CHECK_COND(c->columnMode() == SciDAVis::ColumnMode::Text && c->textAt(0) == "S1"
+                           && c->textAt(1) == "S2",
+                   "64d: text column");
+        CHECK_COND(d->columnMode() == SciDAVis::ColumnMode::Text && d->textAt(0) == "ok"
+                           && d->textAt(1) == "7" && d->textAt(2) == "TRUE",
+                   "64d: mixed text/number/bool column");
+        CHECK_COND(e->columnMode() == SciDAVis::ColumnMode::Numeric && e->valueAt(0) == 10.0
+                           && e->valueAt(1) == 20.0 && e->valueAt(2) == 30.0,
+                   "64d: 0.00 and [h]:mm formats stay numbers");
+        CHECK_COND(e->longName() == QString::fromUtf8("\xE8\xA9\xA6\xE9\xA8\x93\xE7\x89\x87")
+                           && e->units().isEmpty(),
+                   "64d: Japanese header");
+        CHECK_COND(a->plotDesignation() == SciDAVis::X && b->plotDesignation() == SciDAVis::Y,
+                   "64d: designations");
+
+        Table *dt = suite64FindTable(mw, datesName);
+        CHECK_COND(dt && dt->numCols() == 2 && dt->numRows() == 3, "64d: Dates shape (B2 origin)");
+        Column *dc = dt->column(0);
+        CHECK_COND(dc->columnMode() == SciDAVis::ColumnMode::DateTime, "64d: date column mode");
+        CHECK_COND(dc->dateTimeAt(0) == QDateTime(QDate(2023, 3, 15), QTime(0, 0))
+                           && dc->dateTimeAt(1) == QDateTime(QDate(2023, 3, 16), QTime(12, 0))
+                           && dc->isInvalid(2),
+                   "64d: date values");
+        auto *fmt = qobject_cast<DateTime2StringFilter *>(dc->outputFilter());
+        CHECK_COND(fmt && fmt->format() == "yyyy-MM-dd hh:mm:ss", "64d: date+time display format");
+        Column *tc = dt->column(1);
+        CHECK_COND(tc->longName() == "Temp" && tc->units() == "K" && tc->valueAt(1) == 310.5
+                           && tc->valueAt(2) == 320.0,
+                   "64d: 'Temp (K)' header split");
+    }
+    suite64CloseTables(mw, created);
+
+    // ---- 64e: drop .xlsx (reads it), .xls keeps the save-as hint, damaged / encrypted stop
+    {
+        const int before = mw->windowsList().size();
+        mw->setProperty("torigraph_last_drop_import_summary", QVariant());
+        suite59Drop(mw, QStringList() << path);
+        CHECK_COND(mw->windowsList().size() == before + 2, "64e: drop created two tables");
+        CHECK_COND(mw->property("torigraph_last_drop_import_summary")
+                           .toString()
+                           .contains(QFileInfo(path).fileName()),
+                   "64e: drop summary");
+        QStringList dropped;
+        for (MyWidget *w : mw->windowsList())
+            if (w->name().endsWith("_Tensile") || w->name().endsWith("_Dates"))
+                dropped << w->name();
+        suite64CloseTables(mw, dropped);
+
+        const QByteArray oleBytes = QByteArray::fromHex("D0CF11E0A1B11AE1") + QByteArray(600, '\0');
+        const QString xlsPath = tmp.filePath("old64.xls");
+        CHECK_COND(suite59WriteFile(xlsPath, oleBytes), "64e: write xls");
+        mw->setProperty("torigraph_last_drop_unsupported_message", QVariant());
+        const int before2 = mw->windowsList().size();
+        suite59Drop(mw, QStringList() << xlsPath);
+        const QString xlsMsg = mw->property("torigraph_last_drop_unsupported_message").toString();
+        CHECK_COND(mw->windowsList().size() == before2 && xlsMsg.contains("xlsx")
+                           && xlsMsg.contains("old64.xls"),
+                   "64e: .xls drop hint");
+
+        // Password-protected (encrypted) workbook: OLE container holding "EncryptedPackage"
+        QByteArray enc = QByteArray::fromHex("D0CF11E0A1B11AE1") + QByteArray(512, '\0');
+        for (char ch : QByteArray("EncryptedPackage")) {
+            enc.append(ch);
+            enc.append('\0');
+        }
+        enc.append(QByteArray(64, '\0'));
+        const QString encPath = tmp.filePath("locked64.xlsx");
+        CHECK_COND(suite59WriteFile(encPath, enc), "64e: write encrypted");
+        QString encErr;
+        CHECK_COND(!XlsxImport::importIntoProject(mw, encPath, QString(), &encErr)
+                           && !encErr.isEmpty(),
+                   "64e: encrypted workbook must be refused");
+        QString xlsErr;
+        XlsxImport::Workbook dummy;
+        CHECK_COND(!XlsxImport::readWorkbookData(oleBytes, dummy, &xlsErr), "64e: xls bytes refused");
+        CHECK_COND(encErr != xlsErr, "64e: encrypted and .xls get different reasons");
+        mw->setProperty("torigraph_last_xlsx_import_error", QVariant());
+        const int before3 = mw->windowsList().size();
+        suite59Drop(mw, QStringList() << encPath);
+        CHECK_COND(mw->windowsList().size() == before3
+                           && mw->property("torigraph_last_xlsx_import_error").toString() == encErr,
+                   "64e: encrypted drop shows the reason");
+
+        // Damaged: the archive is cut off
+        QByteArray damaged = xlsx;
+        damaged.chop(30);
+        const QString badPath = tmp.filePath("bad64.xlsx");
+        CHECK_COND(suite59WriteFile(badPath, damaged), "64e: write damaged");
+        QString badErr;
+        CHECK_COND(!XlsxImport::importIntoProject(mw, badPath, QString(), &badErr)
+                           && badErr.contains("CSV"),
+                   "64e: damaged workbook refused with a hint");
+        CHECK_COND(mw->windowsList().size() == before3, "64e: nothing created for bad files");
+    }
+
+    // ---- 64f: Python RPC app.import_xlsx
+    if (PythonAutomationServer *srv = mw->pythonAutomationServer()) {
+        QJsonObject req;
+        req["jsonrpc"] = "2.0";
+        req["id"] = 64;
+        req["method"] = "app.import_xlsx";
+        QJsonObject params;
+        params["path"] = path;
+        params["sheet"] = "Dates";
+        req["params"] = params;
+        const QJsonObject resp = srv->handleRpcRequest(req);
+        const QJsonArray tables = resp.value("result").toObject().value("tables").toArray();
+        CHECK_COND(tables.size() == 1 && tables.at(0).toString().endsWith("_Dates"),
+                   "64f: app.import_xlsx(sheet='Dates')");
+        CHECK_COND(PythonAutomationServer::supportedMethods().contains("app.import_xlsx"),
+                   "64f: method listed");
+        suite64CloseTables(mw, QStringList() << tables.at(0).toString());
+        std::cout << "[INFO] Suite 64f: app.import_xlsx RPC verified\n";
+    } else {
+        std::cout << "[INFO] Suite 64f: no Python automation server; RPC check skipped\n";
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 64 Excel .xlsx import passed!\n";
     return 0;
 }
