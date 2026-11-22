@@ -16108,8 +16108,11 @@ static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw)
 // Suite 61: Distribution - single-source version, updater safety & proxy (I4, I5)
 // ============================================================================
 #include "globals.h"
+#include <QElapsedTimer>
 #include <QNetworkAccessManager>
 #include <QNetworkProxy>
+#include <QNetworkReply>
+#include <QPointer>
 
 static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw)
 {
@@ -16289,6 +16292,123 @@ static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw)
         for (const char *k : keys)
             CHECK_COND(!ToriGraphFullJapaneseTranslator::lookupJapanese(QString::fromUtf8(k)).isEmpty(),
                        std::string("61h: missing Japanese translation: ") + k);
+    }
+
+    // 61i: installer / msiexec arguments are quoted (PowerShell 5.1 Start-Process does not
+    //      quote -ArgumentList elements, so "C:\Program Files\..." used to split), and the
+    //      quoting expression really evaluates to /DIR="<dir without trailing \>".
+    {
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "61i: temp dir");
+        const QString pkg = tmp.filePath("ToriGraph-9.9.0-win64-setup.exe");
+        QString err;
+        const QString script = AutoUpdater::writeWindowsStagingUpdaterScript(
+                pkg, tmp.filePath("Program Files/ToriGraph"), "ToriGraph.exe", 0, true, &err, 2);
+        CHECK_COND(!script.isEmpty(), "61i: script not written");
+        QFile sf(script);
+        CHECK_COND(sf.open(QIODevice::ReadOnly), "61i: read script");
+        const QString body = QString::fromUtf8(sf.readAll());
+        sf.close();
+        CHECK_COND(!body.contains(QStringLiteral("(\"/DIR=$TargetInstallDir\")")),
+                   "61i: unquoted /DIR=$TargetInstallDir is still passed to Start-Process");
+        CHECK_COND(body.contains(QStringLiteral("('\"' + $DownloadedFile + '\"')")),
+                   "61i: msiexec /i path is not quoted");
+        CHECK_COND(body.contains(QStringLiteral("'/NORESTART', $dirArg)")),
+                   "61i: installer does not receive the quoted $dirArg");
+        CHECK_COND(body.contains(QStringLiteral("explorer.exe")),
+                   "61i: elevated relaunch must go through Explorer (normal rights)");
+        QString dirLine;
+        for (const QString &line : body.split(QStringLiteral("\r\n")))
+            if (line.trimmed().startsWith(QStringLiteral("$dirArg =")))
+                dirLine = line.trimmed();
+        CHECK_COND(!dirLine.isEmpty(), "61i: $dirArg line not found");
+        QProcess ps;
+        ps.start(AutoUpdater::resolvePowerShellExecutable(),
+                 QStringList() << "-NoProfile" << "-NonInteractive" << "-Command"
+                               << (QStringLiteral("$TargetInstallDir = 'C:\\Program Files\\Tori Graph\\'; ")
+                                   + dirLine + QStringLiteral("; Write-Output $dirArg")));
+        CHECK_COND(ps.waitForFinished(60000), "61i: powershell did not finish");
+        const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput()).trimmed();
+        if (out != QStringLiteral("/DIR=\"C:\\Program Files\\Tori Graph\""))
+            std::cerr << "[DIAG] 61i dirArg=" << out.toStdString() << "\n";
+        CHECK_COND(out == QStringLiteral("/DIR=\"C:\\Program Files\\Tori Graph\""),
+                   "61i: $dirArg does not evaluate to a quoted /DIR without trailing backslash");
+        QFile::remove(script);
+        QFile::remove(QFileInfo(script).dir().filePath("apply_torigraph_update.cmd"));
+    }
+
+    // 61j: launch prerequisites are checked BEFORE the main window is closed.
+    {
+        const QString psExe = AutoUpdater::resolvePowerShellExecutable();
+        CHECK_COND(!psExe.isEmpty() && QFileInfo(psExe).isFile()
+                           && psExe.endsWith(QStringLiteral("powershell.exe"), Qt::CaseInsensitive),
+                   "61j: powershell.exe not resolved to an existing file");
+        QTemporaryDir tmp;
+        CHECK_COND(AutoUpdater::isDirectoryWritable(tmp.path()), "61j: temp dir reported read-only");
+        CHECK_COND(!AutoUpdater::isDirectoryWritable(tmp.filePath("does/not/exist")),
+                   "61j: missing dir reported writable");
+        CHECK_COND(QDir(tmp.path()).entryList(QDir::Files | QDir::Hidden).isEmpty(),
+                   "61j: write probe left a file behind");
+
+        // A missing script must keep ToriGraph open (no close(), no quit) and explain why.
+        bool sawBox = false;
+        QTimer closer;
+        closer.setInterval(50);
+        QObject::connect(&closer, &QTimer::timeout, [&]() {
+            if (QMessageBox *b = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                sawBox = true;
+                b->reject();
+            }
+        });
+        closer.start();
+        const bool wasVisible = mw->isVisible();
+        QPointer<ApplicationWindow> guard(mw);
+        const bool launched = AutoUpdater::closeAppAndLaunchUpdater(
+                mw, tmp.filePath("missing_apply_torigraph_update.ps1"));
+        closer.stop();
+        QApplication::processEvents();
+        CHECK_COND(!launched, "61j: launching a missing script reported success");
+        CHECK_COND(sawBox, "61j: no explanation shown for a missing update script");
+        CHECK_COND(guard && mw->isVisible() == wasVisible,
+                   "61j: main window was closed although nothing could be launched");
+    }
+
+    // 61k: proxy decision is cached per host (WPAD lookups can block the GUI thread), and a
+    //      proxy asking for credentials gets an actionable hint.
+    {
+        const QUrl u("https://objects.githubusercontent.com/github-production-release-asset/x");
+        const QList<QNetworkProxy> first = AutoUpdater::proxiesForUrl(u);
+        QElapsedTimer et;
+        et.start();
+        for (int i = 0; i < 20; ++i) {
+            const QList<QNetworkProxy> again = AutoUpdater::proxiesForUrl(u);
+            CHECK_COND(again.size() == first.size() && again.first().type() == first.first().type()
+                               && again.first().hostName() == first.first().hostName(),
+                       "61k: cached proxy decision differs");
+        }
+        CHECK_COND(et.elapsed() < 200, "61k: repeated proxy lookups are not cached");
+
+        const QString hint = AutoUpdater::describeNetworkError(
+                QNetworkReply::ProxyAuthenticationRequiredError, QStringLiteral("auth"));
+        // UI may be Japanese or English: the hint follows the error on its own line.
+        CHECK_COND(hint.startsWith(QStringLiteral("auth\n")) && hint.size() > 40,
+                   "61k: proxy-auth error lacks the release-page hint");
+        CHECK_COND(AutoUpdater::describeNetworkError(QNetworkReply::HostNotFoundError,
+                                                     QStringLiteral("dns"))
+                           == QStringLiteral("dns"),
+                   "61k: unrelated errors must stay unchanged");
+    }
+
+    // 61l: Japanese for the new updater messages.
+    {
+        const char *keys[] = { "Administrator Rights Needed",
+                               "The proxy server asks for a user name and password, which the "
+                               "updater cannot enter. Open the release page in your web browser "
+                               "and download the package from there, or ask your network "
+                               "administrator." };
+        for (const char *k : keys)
+            CHECK_COND(!ToriGraphFullJapaneseTranslator::lookupJapanese(QString::fromUtf8(k)).isEmpty(),
+                       std::string("61l: missing Japanese translation: ") + k);
     }
 
     std::cout << "[INFO] Suite 61 Distribution Version & Updater Safety Gate passed!\n";

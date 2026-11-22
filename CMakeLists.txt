@@ -30,9 +30,18 @@ math( EXPR TORIGRAPH_VERSION_NO
 if( NOT TORIGRAPH_RELEASE_DATE MATCHES "^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" )
   message( FATAL_ERROR "TORIGRAPH_RELEASE_DATE must be YYYY-MM-DD, got '${TORIGRAPH_RELEASE_DATE}'" )
 endif()
-file( STRINGS "${CMAKE_SOURCE_DIR}/python/torigraph/__init__.py" _tg_py_version_line
-  REGEX "^__version__[ ]*=" )
-if( NOT _tg_py_version_line MATCHES "\"${TORIGRAPH_VERSION}\"" )
+# Same rule as scripts/check_version.py: first `__version__ = "x"` or 'x' line, exact match.
+file( STRINGS "${CMAKE_SOURCE_DIR}/python/torigraph/__init__.py" _tg_py_version_lines
+  REGEX "^__version__[ \t]*=" )
+set( _tg_py_version_line "" )
+set( _tg_py_version "" )
+if( _tg_py_version_lines )
+  list( GET _tg_py_version_lines 0 _tg_py_version_line )
+  if( _tg_py_version_line MATCHES "^__version__[ \t]*=[ \t]*[\"']([^\"']+)[\"']" )
+    set( _tg_py_version "${CMAKE_MATCH_1}" )
+  endif()
+endif()
+if( NOT "${_tg_py_version}" STREQUAL "${TORIGRAPH_VERSION}" )
   message( FATAL_ERROR
     "Version mismatch: CMake project VERSION is ${TORIGRAPH_VERSION} but "
     "python/torigraph/__init__.py has '${_tg_py_version_line}'. "
@@ -192,6 +201,15 @@ if( WIN32 )
   install( FILES ${DOC_FILES} DESTINATION . )
 else()
   install( FILES ${DOC_FILES} DESTINATION ${CMAKE_INSTALL_DOCDIR} )
+endif()
+
+# F1 quick guide. The destinations must match quickGuideFilePath() in
+# libscidavis/src/UxNavigation.cpp: <exe dir>/manual on Windows, and
+# <exe dir>/../share/doc/torigraph/manual next to bin/ elsewhere.
+if( WIN32 )
+  install( DIRECTORY manual/ DESTINATION manual )
+else()
+  install( DIRECTORY manual/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/torigraph/manual )
 endif()
 
 if( MSVC )

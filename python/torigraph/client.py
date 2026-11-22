@@ -3027,7 +3027,8 @@ class Session:
                 raw_resp = self._transport.recv_line(remaining)
             except TransportError as exc:
                 self._invalidate(f"no answer to '{method}': {exc}")
-                if "Timed out" in str(exc):
+                # TCP says "Timed out ...", the named pipe "... timed out after ..."
+                if "timed out" in str(exc).lower():
                     raise TransportError(
                         f"Timed out after {timeout:.1f}s waiting for the answer to '{method}'. "
                         "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long "

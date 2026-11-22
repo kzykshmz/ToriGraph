@@ -23,6 +23,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -38,6 +39,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTemporaryFile>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -53,6 +55,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 namespace {
@@ -405,6 +408,41 @@ void registerAutoUpdaterExtraTranslations()
             "してください。");
         reg("Could not launch Windows PowerShell to apply the staged update.",
             "更新を適用する Windows PowerShell を起動できませんでした。");
+        reg("Could not find Windows PowerShell (powershell.exe), so the downloaded update "
+            "cannot be applied automatically. ToriGraph stays open; download and install the "
+            "package from the release page instead.",
+            "Windows PowerShell (powershell.exe) が見つからないため、ダウンロードした更新を"
+            "自動では適用できません。ToriGraph は開いたままです。リリースページからパッケージを"
+            "ダウンロードしてインストールしてください。");
+        reg("The staged update script was not found:\n%1\nToriGraph stays open; run \"Check "
+            "for Updates\" again.",
+            "更新を適用するスクリプトが見つかりません:\n%1\nToriGraph は開いたままです。"
+            "「更新を確認」をもう一度実行してください。");
+        reg("Administrator Rights Needed", "管理者権限が必要です");
+        reg("ToriGraph is installed in a folder you cannot write to:\n%1\n\nWindows will ask for "
+            "administrator permission (User Account Control) after ToriGraph has closed. If you "
+            "cannot give that permission, choose No and ask the person who installed ToriGraph "
+            "to update it.\n\nContinue?",
+            "ToriGraph は書き込み権限のないフォルダーにインストールされています:\n%1\n\n"
+            "ToriGraph を閉じたあと、Windows が管理者の許可 (ユーザー アカウント制御) を"
+            "求めます。許可できない場合は「いいえ」を選び、ToriGraph をインストールした人に"
+            "更新を依頼してください。\n\n続けますか？");
+        reg("The update was not installed because administrator permission was not given (or "
+            "Windows PowerShell could not be started).\n\nToriGraph was not changed. Restart "
+            "ToriGraph now?",
+            "管理者の許可が得られなかった (または Windows PowerShell を起動できなかった) ため、"
+            "更新はインストールしていません。\n\nToriGraph は変更されていません。"
+            "ToriGraph を再起動しますか？");
+        reg("Could not launch Windows PowerShell to apply the staged update.\n\nToriGraph was "
+            "not changed. Restart ToriGraph now?",
+            "更新を適用する Windows PowerShell を起動できませんでした。\n\n"
+            "ToriGraph は変更されていません。ToriGraph を再起動しますか？");
+        reg("The proxy server asks for a user name and password, which the updater cannot "
+            "enter. Open the release page in your web browser and download the package from "
+            "there, or ask your network administrator.",
+            "プロキシ サーバーがユーザー名とパスワードを求めていますが、更新機能からは入力"
+            "できません。Web ブラウザーでリリースページを開いてパッケージをダウンロードするか、"
+            "ネットワーク管理者に相談してください。");
     });
 }
 
@@ -1054,7 +1092,7 @@ void UpdateAvailableDialog::onDownloadFinished()
 
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QNetworkReply::NetworkError netErr = reply->error();
-    const QString netErrStr = reply->errorString();
+    const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
     reply->deleteLater();
 
     if (d_downloadCanceled) {
@@ -1765,12 +1803,16 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            throw \"Updated executable not found in target directory: $TargetExe\"\r\n"
             "        }\r\n"
             "    } elseif ($ext -eq '.msi') {\r\n"
-            "        $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $DownloadedFile, '/passive', '/norestart') -Wait -PassThru\r\n"
+            "        # Windows PowerShell 5.1 joins -ArgumentList with spaces without quoting, so\r\n"
+            "        # paths that contain spaces are quoted here.\r\n"
+            "        $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', ('\"' + $DownloadedFile + '\"'), '/passive', '/norestart') -Wait -PassThru\r\n"
             "        if ($p.ExitCode -ne 0) { throw \"MSI exited with code $($p.ExitCode)\" }\r\n"
             "    } elseif ($ext -eq '.exe') {\r\n"
             "        $leaf = [System.IO.Path]::GetFileName($DownloadedFile).ToLowerInvariant()\r\n"
             "        if ($leaf -match 'setup|install') {\r\n"
-            "            $p = Start-Process -FilePath $DownloadedFile -ArgumentList @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', (\"/DIR=$TargetInstallDir\")) -Wait -PassThru\r\n"
+            "            # Quote /DIR (5.1 does not); drop a trailing backslash so it cannot escape the quote.\r\n"
+            "            $dirArg = '/DIR=\"' + $TargetInstallDir.TrimEnd('\\') + '\"'\r\n"
+            "            $p = Start-Process -FilePath $DownloadedFile -ArgumentList @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', $dirArg) -Wait -PassThru\r\n"
             "            if ($p.ExitCode -ne 0) { throw \"Installer exited with code $($p.ExitCode)\" }\r\n"
             "        } else {\r\n"
             "            Copy-Item -LiteralPath $DownloadedFile -Destination $TargetExe -Force\r\n"
@@ -1799,7 +1841,15 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "}\r\n\r\n"
             "# (5) Relaunch ToriGraph.exe if requested\r\n"
             "if ($Relaunch -and (Test-Path -LiteralPath $TargetExe)) {\r\n"
-            "    Start-Process -FilePath $TargetExe -WorkingDirectory $TargetInstallDir\r\n"
+            "    $elevated = $false\r\n"
+            "    try { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }\r\n"
+            "    if ($elevated) {\r\n"
+            "        # Started elevated (install folder needed admin rights): let Explorer start\r\n"
+            "        # ToriGraph so it runs with the user's normal rights again.\r\n"
+            "        Start-Process -FilePath 'explorer.exe' -ArgumentList ('\"' + $TargetExe + '\"')\r\n"
+            "    } else {\r\n"
+            "        Start-Process -FilePath $TargetExe -WorkingDirectory $TargetInstallDir\r\n"
+            "    }\r\n"
             "}\r\n");
 
     QFile psFile(ps1Path);
@@ -1835,10 +1885,83 @@ QList<QNetworkProxy> AutoUpdater::proxiesForUrl(const QUrl &url)
         proxies << QNetworkProxy(QNetworkProxy::NoProxy);
         return proxies;
     }
+    // systemProxyForQuery() can block for seconds on WPAD/PAC networks, and the factory is
+    // asked again for every request and redirect (API -> asset -> CDN) on the GUI thread.
+    // Remember the answer per scheme/host/port for a few minutes so the stall happens at
+    // most once per host.
+    struct CachedProxy
+    {
+        QList<QNetworkProxy> proxies;
+        qint64 stampMs = 0;
+    };
+    static std::mutex s_cacheMutex;
+    static QHash<QString, CachedProxy> s_cache;
+    constexpr qint64 kProxyCacheTtlMs = 5 * 60 * 1000;
+    const QString key = QStringLiteral("%1://%2:%3")
+                                .arg(url.scheme().toLower(), url.host().toLower())
+                                .arg(url.port(-1));
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        const auto it = s_cache.constFind(key);
+        if (it != s_cache.constEnd() && now - it->stampMs >= 0
+            && now - it->stampMs < kProxyCacheTtlMs)
+            return it->proxies;
+    }
     proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(url));
     if (proxies.isEmpty())
         proxies << QNetworkProxy(QNetworkProxy::NoProxy);
+    {
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        s_cache.insert(key, CachedProxy { proxies, now });
+    }
     return proxies;
+}
+
+QString AutoUpdater::resolvePowerShellExecutable()
+{
+#ifdef Q_OS_WIN
+    QString exe = QStandardPaths::findExecutable(QStringLiteral("powershell.exe"));
+    if (!exe.isEmpty())
+        return QDir::toNativeSeparators(exe);
+    const QString sysRoot = QString::fromLocal8Bit(qgetenv("SystemRoot"));
+    const QStringList candidates = {
+        sysRoot.isEmpty() ? QString()
+                          : QDir(sysRoot).filePath(
+                                    QStringLiteral("System32/WindowsPowerShell/v1.0/powershell.exe")),
+        QStringLiteral("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    };
+    for (const QString &c : candidates)
+        if (!c.isEmpty() && QFileInfo(c).isFile())
+            return QDir::toNativeSeparators(c);
+    return QString();
+#else
+    return QString();
+#endif
+}
+
+bool AutoUpdater::isDirectoryWritable(const QString &dirPath)
+{
+    if (dirPath.trimmed().isEmpty() || !QFileInfo(dirPath).isDir())
+        return false;
+    // QFileInfo::isWritable() ignores Windows ACLs (Program Files reports writable), so
+    // actually try to create a file there.
+    QTemporaryFile probe(QDir(dirPath).filePath(QStringLiteral(".torigraph_write_probe_XXXXXX")));
+    probe.setAutoRemove(true);
+    return probe.open();
+}
+
+QString AutoUpdater::describeNetworkError(int netErr, const QString &errorString)
+{
+    registerAutoUpdaterExtraTranslations();
+    QString text = errorString;
+    if (netErr == QNetworkReply::ProxyAuthenticationRequiredError) {
+        text += QStringLiteral("\n")
+                + tr("The proxy server asks for a user name and password, which the updater "
+                     "cannot enter. Open the release page in your web browser and download "
+                     "the package from there, or ask your network administrator.");
+    }
+    return text;
 }
 
 void AutoUpdater::applyNetworkProxyPolicy(QNetworkAccessManager &nam, const QUrl &url)
@@ -1887,6 +2010,41 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
                                            const QUrl &releasePage)
 {
     registerAutoUpdaterExtraTranslations();
+
+    // 0) Check everything that can fail while ToriGraph is still open. Once close() has
+    //    succeeded the main window (WA_DeleteOnClose) is gone and main.cpp's
+    //    lastWindowClosed() -> quit() has already ended the event loop, so no Qt dialog can
+    //    be shown and the window cannot be brought back.
+    const QString psExe = resolvePowerShellExecutable();
+    if (psExe.isEmpty() || scriptPath.trimmed().isEmpty() || !QFileInfo::exists(scriptPath)) {
+        showFailureWithReleasePage(
+                app, tr("Installer Launch Failed"),
+                psExe.isEmpty()
+                        ? tr("Could not find Windows PowerShell (powershell.exe), so the "
+                             "downloaded update cannot be applied automatically. ToriGraph "
+                             "stays open; download and install the package from the release "
+                             "page instead.")
+                        : tr("The staged update script was not found:\n%1\nToriGraph stays "
+                             "open; run \"Check for Updates\" again.")
+                                  .arg(QDir::toNativeSeparators(scriptPath)),
+                releasePage);
+        return false;
+    }
+    const QString installDir = QCoreApplication::applicationDirPath();
+    const bool elevate = !isDirectoryWritable(installDir);
+    if (elevate && !isHeadlessOrEmbeddedProcess(app)) {
+        const QMessageBox::StandardButton ans = QMessageBox::question(
+                app, tr("Administrator Rights Needed"),
+                tr("ToriGraph is installed in a folder you cannot write to:\n%1\n\nWindows "
+                   "will ask for administrator permission (User Account Control) after "
+                   "ToriGraph has closed. If you cannot give that permission, choose No and "
+                   "ask the person who installed ToriGraph to update it.\n\nContinue?")
+                        .arg(QDir::toNativeSeparators(installDir)),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (ans != QMessageBox::Yes)
+            return false;
+    }
+
     QApplication *guiApp = qobject_cast<QApplication *>(QCoreApplication::instance());
     const bool quitOnLast = guiApp ? guiApp->quitOnLastWindowClosed() : false;
     if (guiApp)
@@ -1906,21 +2064,57 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     }
 
     // 2) Only now start the script; it waits for this process to exit and aborts if it
-    //    does not.
-    const bool started = QProcess::startDetached(
-            QStringLiteral("powershell.exe"),
-            QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy")
-                          << QStringLiteral("Bypass") << QStringLiteral("-File")
-                          << QDir::toNativeSeparators(scriptPath));
+    //    does not. When the install folder is not writable the script runs elevated.
+    const QString nativeScript = QDir::toNativeSeparators(scriptPath);
+    bool started = false;
+#ifdef Q_OS_WIN
+    if (elevate) {
+        const QString params = QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File \"%1\"")
+                                       .arg(nativeScript);
+        const std::wstring file = QDir::toNativeSeparators(psExe).toStdWString();
+        const std::wstring args = params.toStdWString();
+        SHELLEXECUTEINFOW sei;
+        ZeroMemory(&sei, sizeof(sei));
+        sei.cbSize = sizeof(sei);
+        sei.fMask = SEE_MASK_NOASYNC;
+        sei.lpVerb = L"runas";
+        sei.lpFile = file.c_str();
+        sei.lpParameters = args.c_str();
+        sei.nShow = SW_HIDE;
+        started = ShellExecuteExW(&sei) != FALSE;
+    } else
+#endif
+    {
+        started = QProcess::startDetached(
+                psExe,
+                QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy")
+                              << QStringLiteral("Bypass") << QStringLiteral("-File")
+                              << nativeScript);
+    }
     if (!started) {
+        // Too late for a Qt dialog (see step 0). A native message box still works, so the
+        // failure is never silent; ToriGraph is restarted unchanged on request.
+        const QString title = tr("Installer Launch Failed");
+        const QString text = elevate
+                ? tr("The update was not installed because administrator permission was not "
+                     "given (or Windows PowerShell could not be started).\n\nToriGraph was "
+                     "not changed. Restart ToriGraph now?")
+                : tr("Could not launch Windows PowerShell to apply the staged update.\n\n"
+                     "ToriGraph was not changed. Restart ToriGraph now?");
+        qWarning("%s: %s", qPrintable(title), qPrintable(text));
+        bool restart = false;
+#ifdef Q_OS_WIN
+        if (!isHeadlessOrEmbeddedProcess(nullptr))
+            restart = MessageBoxW(nullptr, reinterpret_cast<LPCWSTR>(text.utf16()),
+                                  reinterpret_cast<LPCWSTR>(title.utf16()),
+                                  MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+                    == IDYES;
+#endif
+        if (restart)
+            QProcess::startDetached(QCoreApplication::applicationFilePath(), QStringList());
         if (guiApp)
             guiApp->setQuitOnLastWindowClosed(quitOnLast);
-        if (app)
-            app->show();
-        showFailureWithReleasePage(
-                app, tr("Installer Launch Failed"),
-                tr("Could not launch Windows PowerShell to apply the staged update."),
-                releasePage);
+        QCoreApplication::quit();
         return false;
     }
     QCoreApplication::quit();
@@ -2000,7 +2194,7 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
         const bool timedOut = d_activeTimedOut;
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError netErr = reply->error();
-        const QString netErrStr = reply->errorString();
+        const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
@@ -2142,7 +2336,7 @@ QJsonObject AutoUpdater::checkFeedBlocking(const QUrl &overrideUrl, int timeoutM
 
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QNetworkReply::NetworkError netErr = reply->error();
-    const QString netErrStr = reply->errorString();
+    const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
     const QByteArray payload = reply->readAll();
     delete reply;
 
@@ -2275,7 +2469,7 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
 
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError netErr = reply->error();
-        const QString netErrStr = reply->errorString();
+        const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
         delete reply;
 
         if (writeFailed) {

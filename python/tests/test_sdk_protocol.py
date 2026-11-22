@@ -93,6 +93,18 @@ def test_timeout_invalidates_session_instead_of_shifting_answers() -> None:
         s.call("ping")
 
 
+def test_named_pipe_timeout_gets_rpc_timeout_hint() -> None:
+    # The named-pipe transport words it "Named pipe read timed out after ..." (lower case).
+    class PipeLikeTransport(FakeTransport):
+        def recv_line(self, timeout: Optional[float] = None) -> bytes:
+            raise tg.TransportError(f"Named pipe read timed out after {timeout:.2f}s (fake).")
+
+    s = Session(PipeLikeTransport([]))
+    with pytest.raises(tg.TransportError, match="rpc_timeout"):
+        s.call("analysis.slow", rpc_timeout=0.5)
+    assert not s.usable
+
+
 def test_rpc_timeout_per_call_and_per_session() -> None:
     t = FakeTransport([_ok({}), _ok({})])
     s = Session(t, rpc_timeout=7.0)
