@@ -1058,8 +1058,11 @@ void Plot::updateLayout()
 
     const int outsideRightMargin = property("_outsideRightMargin").toInt();
     if (outsideRightMargin > 0) {
-        if (contentsMargins().right() != outsideRightMargin)
-            setContentsMargins(0, 0, outsideRightMargin, 0);
+        const int effRightMargin = (std::abs(d_display_font_scale - 1.0) > 1e-4)
+                ? qMax(1, qRound(double(outsideRightMargin) * qMax(0.25, d_display_font_scale)))
+                : outsideRightMargin;
+        if (contentsMargins().right() != effRightMargin)
+            setContentsMargins(0, 0, effRightMargin, 0);
     } else if (contentsMargins().right() != 0) {
         setContentsMargins(0, 0, 0, 0);
     }

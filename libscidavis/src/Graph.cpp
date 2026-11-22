@@ -105,7 +105,10 @@
 #include <QDoubleSpinBox>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QPointer>
+#include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -9797,14 +9800,12 @@ const QList<QColor> &Graph::originClassicColors()
 const QList<QColor> &Graph::toriGraphStandardColors()
 {
     // Default for new curves. Black first (the order people know from single-colour journal
-    // figures), then the Okabe-Ito hues so that colour-vision deficient readers can tell the
-    // series apart: vermilion, blue, bluish green, orange, sky blue, reddish purple, gray.
+    // figures), then colour-vision-safe hues darkened where needed for crisp contrast on white
+    // pages and slide projectors: vermilion, blue, bluish green, dark amber (#b07800),
+    // deep sky blue (#2b8cc4), reddish purple, gray (#666666).
     // Okabe-Ito yellow (#f0e442) is left out because it is hard to see on a white page.
-    // Sky blue comes before reddish purple so that no two colours two steps apart are close
-    // for deuteranopes (bluish green vs reddish purple); the gray is dark enough (#666666,
-    // 5.7:1 on white) to stay readable and still differ from black.
     static const QList<QColor> kColors = hexListToColors(
-            { "#000000", "#d55e00", "#0072b2", "#009e73", "#e69f00", "#56b4e9", "#cc79a7",
+            { "#000000", "#d55e00", "#0072b2", "#009e73", "#b07800", "#2b8cc4", "#cc79a7",
               "#666666" });
     return kColors;
 }
@@ -15575,6 +15576,64 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
     if (!leg)
         return QString();
 
+    static QSet<MultiLayer *> s_unzoomingForLegend;
+    struct ScopedUnzoomForLegendPlacement
+    {
+        MultiLayer *rawMl = nullptr;
+        QPointer<MultiLayer> ml;
+        QPointer<QWidget> mlWidget;
+        double prevZoom = 1.0;
+        bool prevMlUpdates = true;
+        bool prevWidgetUpdates = true;
+        bool active = false;
+
+        explicit ScopedUnzoomForLegendPlacement(MultiLayer *parentMl)
+        {
+            if (parentMl && !s_unzoomingForLegend.contains(parentMl)
+                && std::abs(parentMl->pageZoom() - 1.0) > 1e-4) {
+                rawMl = parentMl;
+                ml = parentMl;
+                prevZoom = parentMl->pageZoom();
+                prevMlUpdates = parentMl->updatesEnabled();
+                parentMl->setUpdatesEnabled(false);
+                if (QWidget *w = parentMl->widget()) {
+                    mlWidget = w;
+                    prevWidgetUpdates = w->updatesEnabled();
+                    w->setUpdatesEnabled(false);
+                }
+                s_unzoomingForLegend.insert(rawMl);
+                QSignalBlocker sb(parentMl);
+                parentMl->setPageZoom(1.0);
+                active = true;
+            }
+        }
+
+        void restoreNow()
+        {
+            if (!active)
+                return;
+            active = false;
+            if (ml) {
+                QSignalBlocker sb(ml);
+                ml->setPageZoom(prevZoom);
+            }
+            if (rawMl)
+                s_unzoomingForLegend.remove(rawMl);
+            if (mlWidget) {
+                mlWidget->setUpdatesEnabled(prevWidgetUpdates);
+                if (prevWidgetUpdates)
+                    mlWidget->update();
+            }
+            if (ml) {
+                ml->setUpdatesEnabled(prevMlUpdates);
+                if (prevMlUpdates)
+                    ml->update();
+            }
+        }
+
+        ~ScopedUnzoomForLegendPlacement() { restoreNow(); }
+    } unzoomGuard(multiLayerParent());
+
     if (!isLegendVisible()) {
         d_legend_visible = true;
         leg->setVisible(true);
@@ -15611,6 +15670,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         const int cw = d_plot->canvas()->width();
         leg->setOrigin(QPoint(cw + rightAxisSpan + gapPx, m));
         d_plot->replot();
+        unzoomGuard.restoreNow();
         updateSelectionOverlayGeometry();
         emit modifiedGraph();
         return QStringLiteral("OutsideRight");
@@ -16834,6 +16894,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
 
     leg->setOrigin(useGridOrigin ? bestGridOrigin : originForInsideAnchor(chosenAnchor));
     d_plot->replot();
+    unzoomGuard.restoreNow();
     updateSelectionOverlayGeometry();
     emit modifiedGraph();
     return anchorName(chosenAnchor);

@@ -237,6 +237,9 @@ public:
     void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
     bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
                                 int preferredActiveLayer = -1, bool restoreGeometry = false);
+    void remapUndoSnapshotsForTableRename(const QString &oldName, const QString &newName);
+    void remapUndoSnapshotsForColRename(const QString &oldColName, const QString &newColName);
+    void remapUndoSnapshotsForMatrixRename(const QString &oldName, const QString &newName);
 
     void setPanelLabels(bool enabled, PanelLabelPlacement placement = PanelOutsideTopLeft,
                         const QString &pattern = QString("(%a)"), int fontPt = 0);

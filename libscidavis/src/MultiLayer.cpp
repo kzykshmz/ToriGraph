@@ -6755,6 +6755,15 @@ public:
             d_ml->restoreSnapshotInPlace(app, d_after, d_after_layer, false);
     }
 
+    template <typename RemapFn>
+    void remapSnapshots(RemapFn &&fn)
+    {
+        if (!d_before.isEmpty())
+            d_before = fn(d_before);
+        if (!d_after.isEmpty())
+            d_after = fn(d_after);
+    }
+
 private:
     QPointer<MultiLayer> d_ml;
     QPointer<ApplicationWindow> d_app;
@@ -6819,6 +6828,539 @@ void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSna
             this, app, label, beforeSnapshot, afterSnapshot, qMax(0, activeIdx), mergeId));
     if (app)
         app->updateUndoRedoActionsForActiveWindow();
+}
+
+namespace {
+
+enum class SnapshotRenameKind { TableRename, ColRename, MatrixRename };
+
+struct XmlAttrSpan
+{
+    QString name;
+    QString value;
+    int valStart = 0;
+    int valLen = 0;
+};
+
+QString unescapeSnapshotXmlAttr(const QString &raw)
+{
+    if (!raw.contains(QLatin1Char('&')))
+        return raw;
+    QString out;
+    out.reserve(raw.size());
+    for (int i = 0; i < raw.size(); ++i) {
+        if (raw.at(i) == QLatin1Char('&')) {
+            const int semi = raw.indexOf(QLatin1Char(';'), i + 1);
+            if (semi > i + 1 && semi - i <= 12) {
+                const QString ent = raw.mid(i + 1, semi - i - 1);
+                if (ent == QLatin1String("amp")) {
+                    out += QLatin1Char('&');
+                    i = semi;
+                    continue;
+                }
+                if (ent == QLatin1String("quot")) {
+                    out += QLatin1Char('"');
+                    i = semi;
+                    continue;
+                }
+                if (ent == QLatin1String("lt")) {
+                    out += QLatin1Char('<');
+                    i = semi;
+                    continue;
+                }
+                if (ent == QLatin1String("gt")) {
+                    out += QLatin1Char('>');
+                    i = semi;
+                    continue;
+                }
+                if (ent == QLatin1String("apos")) {
+                    out += QLatin1Char('\'');
+                    i = semi;
+                    continue;
+                }
+                if (ent.startsWith(QLatin1Char('#'))) {
+                    bool ok = false;
+                    uint code = 0;
+                    if (ent.size() > 2
+                        && (ent.at(1) == QLatin1Char('x') || ent.at(1) == QLatin1Char('X'))) {
+                        code = ent.mid(2).toUInt(&ok, 16);
+                    } else {
+                        code = ent.mid(1).toUInt(&ok, 10);
+                    }
+                    if (ok && code > 0 && code <= 0xFFFFu) {
+                        out += QChar(ushort(code));
+                        i = semi;
+                        continue;
+                    }
+                }
+            }
+        }
+        out += raw.at(i);
+    }
+    return out;
+}
+
+QString escapeSnapshotXmlAttr(const QString &val)
+{
+    QString out;
+    out.reserve(val.size());
+    for (QChar ch : val) {
+        const ushort u = ch.unicode();
+        if (ch == QLatin1Char('&'))
+            out += QLatin1String("&amp;");
+        else if (ch == QLatin1Char('"'))
+            out += QLatin1String("&quot;");
+        else if (ch == QLatin1Char('<'))
+            out += QLatin1String("&lt;");
+        else if (ch == QLatin1Char('>'))
+            out += QLatin1String("&gt;");
+        else if (ch == QLatin1Char('\n'))
+            out += QLatin1String("&#10;");
+        else if (ch == QLatin1Char('\r'))
+            out += QLatin1String("&#13;");
+        else if (ch == QLatin1Char('\t'))
+            out += QLatin1String("&#9;");
+        else if (u < 32)
+            out += QStringLiteral("&#%1;").arg(int(u));
+        else
+            out += ch;
+    }
+    static const char *const kLegacyTokens[] = {
+        "ggeometry",         "EnabledAxes",      "AxesBaseline",     "EnabledTicks",
+        "MajorTicks",        "MinorTicks",       "TicksLength",      "EnabledTickLabels",
+        "AxesColors",        "AxesNumberColors", "PieCurve",         "FunctionCurve",
+        "ErrorBars",         "PlotTitle",        "TitleFont",        "AxesTitles",
+        "AxesTitleColors",   "AxesTitleAlignment","ScaleFont",       "AxisFont",
+        "AxesFormulas",      "LabelsFormat",     "LabelsRotation",   "DrawAxesBackbone",
+        "AxesLineWidth",     "CanvasFrame",      "CanvasBackground", "Legend",
+        "textMarker",        "lineMarker",       "ImageMarker",      "AxisType",
+        "AxesTickLabelsCol"
+    };
+    for (const char *tok : kLegacyTokens) {
+        const QString qtok = QString::fromLatin1(tok);
+        if (out.contains(qtok)) {
+            const QString repl =
+                    QStringLiteral("&#%1;").arg(int(qtok.at(0).unicode())) + qtok.mid(1);
+            out.replace(qtok, repl);
+        }
+    }
+    return out;
+}
+
+QVector<XmlAttrSpan> parseSnapshotXmlAttrs(const QString &line)
+{
+    QVector<XmlAttrSpan> spans;
+    const int lt = line.indexOf(QLatin1Char('<'));
+    if (lt < 0)
+        return spans;
+    int i = lt + 1;
+    while (i < line.size() && !line.at(i).isSpace() && line.at(i) != QLatin1Char('>')
+           && line.at(i) != QLatin1Char('/')) {
+        ++i;
+    }
+    while (i < line.size()) {
+        while (i < line.size() && line.at(i).isSpace())
+            ++i;
+        if (i >= line.size() || line.at(i) == QLatin1Char('>') || line.at(i) == QLatin1Char('/'))
+            break;
+        const int nameStart = i;
+        while (i < line.size() && !line.at(i).isSpace() && line.at(i) != QLatin1Char('=')
+               && line.at(i) != QLatin1Char('>') && line.at(i) != QLatin1Char('/')) {
+            ++i;
+        }
+        const QString attrName = line.mid(nameStart, i - nameStart);
+        while (i < line.size() && line.at(i).isSpace())
+            ++i;
+        if (i >= line.size() || line.at(i) != QLatin1Char('='))
+            continue;
+        ++i;
+        while (i < line.size() && line.at(i).isSpace())
+            ++i;
+        if (i >= line.size() || line.at(i) != QLatin1Char('"'))
+            continue;
+        const int valStart = i + 1;
+        const int valEnd = line.indexOf(QLatin1Char('"'), valStart);
+        if (valEnd < 0)
+            break;
+        XmlAttrSpan sp;
+        sp.name = attrName;
+        sp.valStart = valStart;
+        sp.valLen = valEnd - valStart;
+        sp.value = unescapeSnapshotXmlAttr(line.mid(valStart, sp.valLen));
+        spans.append(sp);
+        i = valEnd + 1;
+    }
+    return spans;
+}
+
+QString remapFullColRef(const QString &ref, SnapshotRenameKind kind, const QString &oldName,
+                        const QString &newName)
+{
+    if (kind == SnapshotRenameKind::TableRename) {
+        const QString pfx = oldName + QLatin1Char('_');
+        if (ref.startsWith(pfx))
+            return newName + QLatin1Char('_') + ref.mid(pfx.size());
+    } else if (kind == SnapshotRenameKind::ColRename) {
+        if (ref == oldName)
+            return newName;
+    }
+    return ref;
+}
+
+QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, const QString &oldName,
+                          const QString &newName)
+{
+    if (snapshot.isEmpty() || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return snapshot;
+
+    QString colOwnerTable;
+    QString oldShortCol;
+    QString newShortCol;
+    if (kind == SnapshotRenameKind::ColRename) {
+        const int uOld = oldName.indexOf(QLatin1Char('_'));
+        if (uOld > 0) {
+            colOwnerTable = oldName.left(uOld);
+            oldShortCol = oldName.mid(uOld + 1);
+            const QString pfx = colOwnerTable + QLatin1Char('_');
+            if (newName.startsWith(pfx))
+                newShortCol = newName.mid(pfx.size());
+        }
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    const auto keepEmpty = Qt::KeepEmptyParts;
+#else
+    const auto keepEmpty = QString::KeepEmptyParts;
+#endif
+
+    QStringList lines = snapshot.split(QLatin1Char('\n'), keepEmpty);
+    bool anyChanged = false;
+    bool inSpectrogram = false;
+
+    for (int li = 0; li < lines.size(); ++li) {
+        QString line = lines[li];
+        const bool hadCr = line.endsWith(QLatin1Char('\r'));
+        if (hadCr)
+            line.chop(1);
+
+        const QString trimmed = line.trimmed();
+        if (trimmed == QLatin1String("<spectrogram>")) {
+            inSpectrogram = true;
+            continue;
+        }
+        if (trimmed == QLatin1String("</spectrogram>")) {
+            inSpectrogram = false;
+            continue;
+        }
+
+        bool lineChanged = false;
+
+        if (inSpectrogram && kind == SnapshotRenameKind::MatrixRename) {
+            if (trimmed.startsWith(QLatin1String("<matrix>"))
+                && trimmed.endsWith(QLatin1String("</matrix>"))) {
+                const QString matName = trimmed.mid(8, trimmed.size() - 17);
+                if (matName == oldName) {
+                    const int ltPos = line.indexOf(QLatin1Char('<'));
+                    line = line.left(qMax(0, ltPos)) + QStringLiteral("<matrix>") + newName
+                            + QStringLiteral("</matrix>");
+                    lineChanged = true;
+                }
+            }
+        } else if (kind != SnapshotRenameKind::MatrixRename
+                   && line.startsWith(QLatin1String("curve\t"))) {
+            QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
+            if (parts.size() >= 6) {
+                const int plotType = parts[3].toInt();
+                if (plotType != Graph::Box) {
+                    const QString nextX = remapFullColRef(parts[1], kind, oldName, newName);
+                    if (nextX != parts[1]) {
+                        parts[1] = nextX;
+                        lineChanged = true;
+                    }
+                }
+                const QString nextY = remapFullColRef(parts[2], kind, oldName, newName);
+                if (nextY != parts[2]) {
+                    parts[2] = nextY;
+                    lineChanged = true;
+                }
+                if ((plotType == Graph::VectXYXY || plotType == Graph::VectXYAM)
+                    && parts.size() >= 29) {
+                    for (int vi : { 23, 24 }) {
+                        if (vi < parts.size()) {
+                            const QString nextV =
+                                    remapFullColRef(parts[vi], kind, oldName, newName);
+                            if (nextV != parts[vi]) {
+                                parts[vi] = nextV;
+                                lineChanged = true;
+                            }
+                        }
+                    }
+                }
+                if (lineChanged)
+                    line = parts.join(QLatin1Char('\t'));
+            }
+        } else if (kind != SnapshotRenameKind::MatrixRename
+                   && line.startsWith(QLatin1String("PieCurve\t"))) {
+            QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
+            if (parts.size() >= 3) {
+                const QString nextCol = remapFullColRef(parts[1], kind, oldName, newName);
+                if (nextCol != parts[1]) {
+                    parts[1] = nextCol;
+                    line = parts.join(QLatin1Char('\t'));
+                    lineChanged = true;
+                }
+            }
+        } else if (kind != SnapshotRenameKind::MatrixRename
+                   && line.startsWith(QLatin1String("ErrorBars\t"))) {
+            QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
+            if (parts.size() >= 5) {
+                for (int ei : { 2, 3, 4 }) {
+                    const QString nextRef = remapFullColRef(parts[ei], kind, oldName, newName);
+                    if (nextRef != parts[ei]) {
+                        parts[ei] = nextRef;
+                        lineChanged = true;
+                    }
+                }
+                if (lineChanged)
+                    line = parts.join(QLatin1Char('\t'));
+            }
+        } else if (kind != SnapshotRenameKind::MatrixRename
+                   && line.startsWith(QLatin1String("AxisType\t"))) {
+            QStringList parts = line.split(QLatin1Char('\t'), keepEmpty);
+            for (int ai = 1; ai < parts.size(); ++ai) {
+                const int semi = parts[ai].indexOf(QLatin1Char(';'));
+                if (semi <= 0)
+                    continue;
+                const int fmtCode = parts[ai].left(semi).toInt();
+                const QString payload = parts[ai].mid(semi + 1);
+                if (fmtCode == static_cast<int>(Graph::AxisType::Txt)) {
+                    const QString nextRef = remapFullColRef(payload, kind, oldName, newName);
+                    if (nextRef != payload) {
+                        parts[ai] = QString::number(fmtCode) + QLatin1Char(';') + nextRef;
+                        lineChanged = true;
+                    }
+                } else if (fmtCode == static_cast<int>(Graph::AxisType::ColHeader)
+                           && kind == SnapshotRenameKind::TableRename) {
+                    if (payload == oldName) {
+                        parts[ai] = QString::number(fmtCode) + QLatin1Char(';') + newName;
+                        lineChanged = true;
+                    }
+                }
+            }
+            if (lineChanged)
+                line = parts.join(QLatin1Char('\t'));
+        } else if (trimmed.startsWith(QLatin1String("<ToriErrorBand"))
+                   || trimmed.startsWith(QLatin1String("<ToriPointColorMap"))
+                   || trimmed.startsWith(QLatin1String("<ToriDensity2D"))
+                   || trimmed.startsWith(QLatin1String("<ToriPoleFigure"))
+                   || trimmed.startsWith(QLatin1String("<ToriBackbones"))) {
+            QVector<XmlAttrSpan> spans = parseSnapshotXmlAttrs(line);
+            if (!spans.isEmpty()) {
+                auto attrValue = [&](const QLatin1String &key) -> QString {
+                    for (const XmlAttrSpan &sp : spans) {
+                        if (sp.name == key)
+                            return sp.value;
+                    }
+                    return QString();
+                };
+
+                QVector<QString> newVals(spans.size());
+                for (int si = 0; si < spans.size(); ++si)
+                    newVals[si] = spans[si].value;
+
+                if (trimmed.startsWith(QLatin1String("<ToriErrorBand"))) {
+                    if (kind != SnapshotRenameKind::MatrixRename) {
+                        for (int si = 0; si < spans.size(); ++si) {
+                            const QString &an = spans[si].name;
+                            if (an == QLatin1String("x") || an == QLatin1String("y")
+                                || an == QLatin1String("err")) {
+                                newVals[si] = remapFullColRef(spans[si].value, kind, oldName,
+                                                              newName);
+                            }
+                        }
+                    }
+                } else if (trimmed.startsWith(QLatin1String("<ToriPointColorMap"))) {
+                    if (kind != SnapshotRenameKind::MatrixRename) {
+                        const QString ownerPfx = colOwnerTable + QLatin1Char('_');
+                        const bool sameOwner = !colOwnerTable.isEmpty()
+                                && (attrValue(QLatin1String("y")).startsWith(ownerPfx)
+                                    || attrValue(QLatin1String("x")).startsWith(ownerPfx));
+                        for (int si = 0; si < spans.size(); ++si) {
+                            const QString &an = spans[si].name;
+                            if (an == QLatin1String("x") || an == QLatin1String("y")) {
+                                newVals[si] = remapFullColRef(spans[si].value, kind, oldName,
+                                                              newName);
+                            } else if (an == QLatin1String("z") || an == QLatin1String("size")) {
+                                QString nv = remapFullColRef(spans[si].value, kind, oldName,
+                                                             newName);
+                                if (nv == spans[si].value && kind == SnapshotRenameKind::ColRename
+                                    && sameOwner && !oldShortCol.isEmpty() && !newShortCol.isEmpty()
+                                    && spans[si].value == oldShortCol) {
+                                    nv = newShortCol;
+                                }
+                                newVals[si] = nv;
+                            }
+                        }
+                    }
+                } else if (trimmed.startsWith(QLatin1String("<ToriDensity2D"))) {
+                    const QString tagTbl = attrValue(QLatin1String("table"));
+                    for (int si = 0; si < spans.size(); ++si) {
+                        const QString &an = spans[si].name;
+                        if (kind == SnapshotRenameKind::MatrixRename
+                            && an == QLatin1String("matrix")) {
+                            if (spans[si].value == oldName)
+                                newVals[si] = newName;
+                        } else if (kind == SnapshotRenameKind::TableRename) {
+                            if (an == QLatin1String("table") && spans[si].value == oldName) {
+                                newVals[si] = newName;
+                            } else if (an == QLatin1String("x") || an == QLatin1String("y")) {
+                                newVals[si] = remapFullColRef(spans[si].value, kind, oldName,
+                                                              newName);
+                            }
+                        } else if (kind == SnapshotRenameKind::ColRename
+                                   && !colOwnerTable.isEmpty() && tagTbl == colOwnerTable
+                                   && (an == QLatin1String("x") || an == QLatin1String("y"))) {
+                            if (spans[si].value == oldName)
+                                newVals[si] = newName;
+                            else if (!oldShortCol.isEmpty() && !newShortCol.isEmpty()
+                                     && spans[si].value == oldShortCol)
+                                newVals[si] = newShortCol;
+                        }
+                    }
+                } else if (trimmed.startsWith(QLatin1String("<ToriPoleFigure"))) {
+                    const QString tagTbl = attrValue(QLatin1String("table"));
+                    for (int si = 0; si < spans.size(); ++si) {
+                        const QString &an = spans[si].name;
+                        if (kind == SnapshotRenameKind::MatrixRename
+                            && (an == QLatin1String("matrix")
+                                || an == QLatin1String("sourceMatrix"))) {
+                            if (spans[si].value == oldName)
+                                newVals[si] = newName;
+                        } else if (kind == SnapshotRenameKind::TableRename) {
+                            if (an == QLatin1String("table") && spans[si].value == oldName) {
+                                newVals[si] = newName;
+                            } else if (an == QLatin1String("a") || an == QLatin1String("b")
+                                       || an == QLatin1String("i")) {
+                                newVals[si] = remapFullColRef(spans[si].value, kind, oldName,
+                                                              newName);
+                            }
+                        } else if (kind == SnapshotRenameKind::ColRename
+                                   && !colOwnerTable.isEmpty() && tagTbl == colOwnerTable
+                                   && (an == QLatin1String("a") || an == QLatin1String("b")
+                                       || an == QLatin1String("i"))) {
+                            if (spans[si].value == oldName)
+                                newVals[si] = newName;
+                            else if (!oldShortCol.isEmpty() && !newShortCol.isEmpty()
+                                     && spans[si].value == oldShortCol)
+                                newVals[si] = newShortCol;
+                        }
+                    }
+                } else if (trimmed.startsWith(QLatin1String("<ToriBackbones"))
+                           && kind != SnapshotRenameKind::MatrixRename) {
+                    for (int si = 0; si < spans.size(); ++si) {
+                        if (spans[si].name != QLatin1String("curveWidths"))
+                            continue;
+                        QStringList entries = spans[si].value.split(QLatin1Char(';'), keepEmpty);
+                        bool cwChanged = false;
+                        for (int ei = 0; ei < entries.size(); ++ei) {
+                            const QString &ent = entries[ei];
+                            const int colon = ent.indexOf(QLatin1Char(':'));
+                            if (colon <= 0)
+                                continue;
+                            const int c1 = ent.indexOf(QLatin1Char(','), colon + 1);
+                            if (c1 <= colon)
+                                continue;
+                            const int c2 = ent.indexOf(QLatin1Char(','), c1 + 1);
+                            if (c2 <= c1)
+                                continue;
+                            const QString b64 = ent.mid(c2 + 1);
+                            if (b64.isEmpty())
+                                continue;
+                            const QString decTitle = QString::fromUtf8(
+                                    QByteArray::fromBase64(b64.toLatin1()));
+                            const QString nextTitle =
+                                    remapFullColRef(decTitle, kind, oldName, newName);
+                            if (nextTitle != decTitle) {
+                                const QString newB64 = QString::fromLatin1(
+                                        nextTitle.toUtf8().toBase64());
+                                entries[ei] = ent.left(c2 + 1) + newB64;
+                                cwChanged = true;
+                            }
+                        }
+                        if (cwChanged)
+                            newVals[si] = entries.join(QLatin1Char(';'));
+                    }
+                }
+
+                for (int si = spans.size() - 1; si >= 0; --si) {
+                    if (newVals[si] != spans[si].value) {
+                        line.replace(spans[si].valStart, spans[si].valLen,
+                                     escapeSnapshotXmlAttr(newVals[si]));
+                        lineChanged = true;
+                    }
+                }
+            }
+        }
+
+        if (lineChanged) {
+            lines[li] = hadCr ? (line + QLatin1Char('\r')) : line;
+            anyChanged = true;
+        }
+    }
+
+    return anyChanged ? lines.join(QLatin1Char('\n')) : snapshot;
+}
+
+void remapUndoCommandTree(QUndoCommand *cmd, SnapshotRenameKind kind, const QString &oldName,
+                          const QString &newName)
+{
+    if (!cmd)
+        return;
+    if (auto *snapCmd = dynamic_cast<MultiLayerSnapshotUndoCommand *>(cmd)) {
+        snapCmd->remapSnapshots([&](const QString &s) {
+            return remapSnapshotText(s, kind, oldName, newName);
+        });
+    }
+    const int nChildren = cmd->childCount();
+    for (int i = 0; i < nChildren; ++i)
+        remapUndoCommandTree(const_cast<QUndoCommand *>(cmd->child(i)), kind, oldName, newName);
+}
+
+} // namespace
+
+void MultiLayer::remapUndoSnapshotsForTableRename(const QString &oldName, const QString &newName)
+{
+    if (!d_undo_stack || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return;
+    const int cnt = d_undo_stack->count();
+    for (int i = 0; i < cnt; ++i) {
+        remapUndoCommandTree(const_cast<QUndoCommand *>(d_undo_stack->command(i)),
+                             SnapshotRenameKind::TableRename, oldName, newName);
+    }
+}
+
+void MultiLayer::remapUndoSnapshotsForColRename(const QString &oldColName,
+                                                const QString &newColName)
+{
+    if (!d_undo_stack || oldColName.isEmpty() || newColName.isEmpty()
+        || oldColName == newColName)
+        return;
+    const int cnt = d_undo_stack->count();
+    for (int i = 0; i < cnt; ++i) {
+        remapUndoCommandTree(const_cast<QUndoCommand *>(d_undo_stack->command(i)),
+                             SnapshotRenameKind::ColRename, oldColName, newColName);
+    }
+}
+
+void MultiLayer::remapUndoSnapshotsForMatrixRename(const QString &oldName, const QString &newName)
+{
+    if (!d_undo_stack || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return;
+    const int cnt = d_undo_stack->count();
+    for (int i = 0; i < cnt; ++i) {
+        remapUndoCommandTree(const_cast<QUndoCommand *>(d_undo_stack->command(i)),
+                             SnapshotRenameKind::MatrixRename, oldName, newName);
+    }
 }
 
 bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
@@ -7246,6 +7788,7 @@ QRect MultiLayer::panelLabelsBoundingRect() const
         fnt.setItalic(false);
         fnt.setBold(false);
         fnt.setHintingPreference(QFont::PreferNoHinting);
+        fnt = plot->displayFont(fnt);
         const QFontMetrics fm(fnt);
         const QString text = formatPanelLabel(d_panel_label_pattern, panelIdx);
         const int textW = qMax(12, fm.horizontalAdvance(text));
@@ -7270,7 +7813,8 @@ QRect MultiLayer::panelLabelsBoundingRect() const
             int baseCy = innerCanvas.top() - qMax(8, pi.descent + 4);
             if (plot->axisEnabled(QwtPlot::yLeft)) {
                 const int yTitleSpan = plot->axisTitle(QwtPlot::yLeft)
-                                               .textSize(gr->axisTitleFont(QwtPlot::yLeft))
+                                               .textSize(plot->displayFont(
+                                                       gr->axisTitleFont(QwtPlot::yLeft)))
                                                .width();
                 if (yTitleSpan > 0 && pi.cx + textW >= gr->pos().x() - 6) {
                     const int yTitleTop = innerCanvas.center().y() - (yTitleSpan + 1) / 2;
@@ -7566,7 +8110,8 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
             int baseCy = innerCanvas.top() - qMax(8, fm.descent() + 4);
             if (plot->axisEnabled(QwtPlot::yLeft)) {
                 const int yTitleSpan = plot->axisTitle(QwtPlot::yLeft)
-                                               .textSize(gr->axisTitleFont(QwtPlot::yLeft))
+                                               .textSize(plot->displayFont(
+                                                       gr->axisTitleFont(QwtPlot::yLeft)))
                                                .width();
                 if (yTitleSpan > 0 && item.cx + textW >= gr->pos().x() - 6) {
                     const int yTitleTop = innerCanvas.center().y() - (yTitleSpan + 1) / 2;
@@ -8001,6 +8546,12 @@ void MultiLayer::applySquareCanvasFrame70Percent()
         lblFont.setPointSizeF(maxLabelPt);
         lblFont.setWeight(QFont::Normal);
         lblFont.setItalic(false);
+        lblFont.setHintingPreference(QFont::PreferNoHinting);
+        if (Plot *firstPlot = (!primaryGraphs.isEmpty() && primaryGraphs.first())
+                    ? primaryGraphs.first()->plotWidget()
+                    : nullptr) {
+            lblFont = firstPlot->displayFont(lblFont);
+        }
         const QFontMetrics lfm(lblFont);
         panelTopExtra = qMax(22, lfm.height() + 12);
     }
@@ -8023,9 +8574,11 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                                                  double(pageSz.height()) / nRows)));
 
     auto capMultiPanelTicks = [&](int side) {
+        const double z = qMax(0.25, d_page_zoom);
+        const int baseSide = qMax(60, qRound(double(side) / z));
         const bool isMultiPanel = (nRows >= 2 || nCols >= 2);
-        const int capX = isMultiPanel ? qBound(3, side / 38, 6) : qBound(4, side / 42, 6);
-        const int capY = isMultiPanel ? qBound(3, side / 28, 6) : 10;
+        const int capX = isMultiPanel ? qBound(3, baseSide / 38, 6) : qBound(4, baseSide / 42, 6);
+        const int capY = isMultiPanel ? qBound(3, baseSide / 28, 6) : 10;
         for (Graph *gr : primaryGraphs) {
             Plot *pl = gr ? gr->plotWidget() : nullptr;
             if (!pl || gr->isTernaryPlot() || gr->isPolarPlot() || gr->isPoleFigurePlot()
@@ -8050,18 +8603,18 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                     }
                     if (xIsDiscreteOrCustom) {
                         if (xCatSd && gr->labelsRotation(QwtPlot::xBottom) == 0
-                            && sumW > qRound(0.84 * double(side))) {
+                            && sumW > qRound(0.84 * double(baseSide))) {
                             gr->setAxisLabelRotation(QwtPlot::xBottom, -35);
                             pl->updateLayout();
                         }
                     } else {
                         const double crowdThresh =
                                 (gr->axisStep(QwtPlot::xBottom) > 0.0) ? 0.90 : 0.82;
-                        if (sumW > qRound(crowdThresh * double(side))) {
+                        if (sumW > qRound(crowdThresh * double(baseSide))) {
                             xLabelsCrowded = true;
                             const int avgCell = qMax(22, (sumW / mTicks.size()) + 4);
-                            safeXCaps =
-                                    qBound(2, qRound(0.80 * double(side) / double(avgCell)), 5);
+                            safeXCaps = qBound(
+                                    2, qRound(0.80 * double(baseSide) / double(avgCell)), 5);
                         }
                     }
                 }
@@ -8852,6 +9405,7 @@ void registerStylePresetTranslationsOnce()
     reg("Journal 2-Column (175x85 mm, 600 DPI)", "論文 2 段幅 (175×85 mm, 600 DPI)");
     reg("ISIJ 1-Column (85x85 mm, 600 DPI)", "ISIJ 1段幅 (85×85 mm, 600 DPI)");
     reg("Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)");
+    reg("Large Slide (28 pt, 185 mm)", "大判スライド (28 pt, 185 mm)");
     reg("PowerPoint Paste Scale (%):", "PowerPoint 貼付倍率 (%):");
     reg("OK", "OK");
     reg("Cancel", "キャンセル");
@@ -9086,6 +9640,7 @@ QString canonicalBuiltInAlias(const QString &raw)
         || k == QLatin1String("isij_journal") || k == QLatin1String("isij85"))
         return QStringLiteral("isij_85mm");
     if (k == QLatin1String("slide") || k == QLatin1String("slide_28pt")
+        || k == QLatin1String("large_slide")
         || k == QLatin1String("presentation") || k == QLatin1String("presentation_slide"))
         return QStringLiteral("slide_28pt");
     if (k == QLatin1String("lab_slide") || k == QLatin1String("lab_slide_83mm")
@@ -9250,7 +9805,7 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::defaultBuiltInStylePresets
 
     GraphStylePresetSpec slide;
     slide.id = QStringLiteral("slide_28pt");
-    slide.name = QStringLiteral("Presentation Slide (28 pt Arial)");
+    slide.name = QStringLiteral("Large Slide (28 pt, 185 mm)");
     slide.builtIn = true;
     slide.pageWidthMm = 185.0;
     slide.pageHeightMm = 185.0;

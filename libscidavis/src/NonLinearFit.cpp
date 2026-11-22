@@ -104,7 +104,7 @@ static const OriginModelSpec kOriginModels[] = {
       QT_TRANSLATE_NOOP("NonLinearFit", "Pseudo-Voigt Peak with separate Gaussian (wG) and Lorentzian (wL) widths") },
     { "VoigtApprox", "Peak Functions", "A, xc, w, mu, y0",
       "y0+A*(mu*2/PI*w/(4*(x-xc)^2+w^2)+(1-mu)*sqrt(4*ln(2))/(sqrt(PI)*w)*exp(-4*ln(2)*((x-xc)/w)^2))",
-      QT_TRANSLATE_NOOP("NonLinearFit", "Thompson-Cox-Hastings Voigt Approximation Peak") },
+      QT_TRANSLATE_NOOP("NonLinearFit", "Pseudo-Voigt Peak (shared FWHM w and Lorentz fraction mu)") },
     { "PearsonVII", "Peak Functions", "A, xc, w, m, y0",
       "y0+A*(1+(2^(1/m)-1)*(2*(x-xc)/w)^2)^(-m)",
       QT_TRANSLATE_NOOP("NonLinearFit", "Pearson VII XRD Diffraction Peak") },

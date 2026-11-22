@@ -3822,8 +3822,13 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         p_minus[j] = pj - h;
         if (evaluateModelCurve(p_plus, X_tmp, Y_plus)
             && evaluateModelCurve(p_minus, X_tmp, Y_minus)) {
+            double du = fromInternalParameter(int(j), pj + h)
+                    - fromInternalParameter(int(j), pj - h);
+            if (j < d_results.size() && pj * d_results[j] < 0.0)
+                du = -du;
+            const double denom = (std::abs(du) > 1e-30) ? du : (2.0 * h);
             for (int k = 0; k < nPts; ++k)
-                G[k][j] = (Y_plus[k] - Y_minus[k]) / (2.0 * h);
+                G[k][j] = (Y_plus[k] - Y_minus[k]) / denom;
         }
     }
     d_points = savedPoints;
