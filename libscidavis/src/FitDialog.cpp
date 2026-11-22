@@ -87,6 +87,10 @@ void registerFitDialogJapaneseStrings()
         reg("Search models:", "モデルを検索:");
         reg("Type part of a name or description (e.g. gauss, voigt, arrhenius)",
             "名前や説明の一部を入力(例: gauss, voigt, arrhenius)");
+        reg("Recently used:", "最近使ったモデル:");
+        reg("Models you fitted recently (up to 8)", "最近フィットに使ったモデル (最大 8 件)");
+        reg("Choose a recent model", "最近使ったモデルから選ぶ");
+        reg("(none yet)", "(まだありません)");
         reg("The fit did not converge.", "フィットが収束していません。");
         reg("The curve and parameters shown are the last iterate. Check the initial values, "
             "increase the number of iterations, or fix some parameters, and fit again.",
@@ -381,6 +385,24 @@ void FitDialog::initEditPage()
         }
     });
     searchRow->addWidget(modelSearchBox, 1);
+
+    // F11: the models fitted most recently, next to the search box (stored in QSettings)
+    searchRow->addSpacing(8);
+    searchRow->addWidget(new QLabel(tr("Recently used:")));
+    recentModelBox = new QComboBox();
+    recentModelBox->setObjectName(QStringLiteral("fitRecentModelsBox"));
+    recentModelBox->setToolTip(tr("Models you fitted recently (up to 8)"));
+    recentModelBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    recentModelBox->setMinimumContentsLength(14);
+    connect(recentModelBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
+        if (idx <= 0 || !recentModelBox)
+            return;
+        const QString name = recentModelBox->itemData(idx).toString();
+        recentModelBox->setCurrentIndex(0);
+        selectRecentModel(name);
+    });
+    searchRow->addWidget(recentModelBox);
+    refreshRecentModelsBox();
 
     categoryBox = new QListWidget();
     categoryBox->addItem(tr("User defined"));
@@ -1327,6 +1349,76 @@ bool FitDialog::jumpToModel(const QString &entry)
     return true;
 }
 
+QStringList FitDialog::recentModels()
+{
+    QStringList list = ApplicationWindow::getSettings()
+                               .value(QStringLiteral("/Fit/RecentModels"))
+                               .toStringList();
+    list.removeAll(QString());
+    while (list.size() > kMaxRecentModels)
+        list.removeLast();
+    return list;
+}
+
+void FitDialog::recordRecentModel(const QString &modelName)
+{
+    const QString name = modelName.trimmed();
+    if (name.isEmpty())
+        return;
+    QStringList list = recentModels();
+    list.removeAll(name);
+    list.prepend(name);
+    while (list.size() > kMaxRecentModels)
+        list.removeLast();
+    ApplicationWindow::getSettings().setValue(QStringLiteral("/Fit/RecentModels"), list);
+}
+
+void FitDialog::clearRecentModels()
+{
+    ApplicationWindow::getSettings().remove(QStringLiteral("/Fit/RecentModels"));
+}
+
+void FitDialog::refreshRecentModelsBox()
+{
+    if (!recentModelBox)
+        return;
+    registerFitDialogJapaneseStrings();
+    const QStringList list = recentModels();
+    QSignalBlocker blocker(recentModelBox);
+    recentModelBox->clear();
+    if (list.isEmpty()) {
+        recentModelBox->addItem(tr("(none yet)"));
+        recentModelBox->setEnabled(false);
+        return;
+    }
+    recentModelBox->addItem(tr("Choose a recent model"));
+    for (const QString &name : list)
+        recentModelBox->addItem(name, name);
+    recentModelBox->setCurrentIndex(0);
+    recentModelBox->setEnabled(true);
+}
+
+bool FitDialog::selectRecentModel(const QString &modelName)
+{
+    const QString name = modelName.trimmed();
+    if (name.isEmpty())
+        return false;
+    if (jumpToModel(name))
+        return true;
+    // legacy built-in functions (Boltzmann, ExpDecay1, ...) live in the "Built-in" category
+    if (!d_built_in_function_names.contains(name))
+        return false;
+    if (categoryBox->currentRow() != 1)
+        categoryBox->setCurrentRow(1);
+    const QList<QListWidgetItem *> hits = funcBox->findItems(name, Qt::MatchExactly);
+    if (hits.isEmpty())
+        return false;
+    funcBox->setCurrentItem(hits.first());
+    boxUseBuiltIn->setChecked(true);
+    funcBox->setFocus();
+    return true;
+}
+
 void FitDialog::choosePluginsFolder()
 {
     ApplicationWindow *app = (ApplicationWindow *)this->parent();
@@ -1741,6 +1833,13 @@ void FitDialog::accept()
     }
 
     d_fitter->fit();
+    // F11: remember the built-in model for the "Recently used" list
+    if (boxUseBuiltIn->isChecked()
+        && (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4)
+        && funcBox->currentItem()) {
+        recordRecentModel(funcBox->currentItem()->text());
+        refreshRecentModelsBox();
+    }
     if (summaryOnGraphBox && summaryOnGraphBox->isChecked())
         d_fitter->insertFitSummaryBoxOnGraph();
     if (!d_fitter->converged() && !app->isHeadlessMode()

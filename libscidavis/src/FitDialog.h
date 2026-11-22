@@ -162,9 +162,20 @@ public:
     //! Selects a built-in model by name (search box); returns false when not found
     bool jumpToModel(const QString &entry);
 
+    //! F11: most recently used built-in models (newest first, at most kMaxRecentModels)
+    static constexpr int kMaxRecentModels = 8;
+    static QStringList recentModels();
+    static void recordRecentModel(const QString &modelName);
+    static void clearRecentModels();
+    QComboBox *recentModelsBox() const { return recentModelBox; }
+    //! Selects a model from the recent list (any built-in category); false when unknown
+    bool selectRecentModel(const QString &modelName);
+
 private:
     void clearPreviewCurve();
+    void refreshRecentModelsBox();
     QLineEdit *modelSearchBox = nullptr;
+    QComboBox *recentModelBox = nullptr;
 
     Fit *d_fitter;
     Graph *d_graph;

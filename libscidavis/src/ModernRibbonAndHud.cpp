@@ -92,8 +92,13 @@
 #include "Table.h"
 #include "Graph3D.h"
 #include "OleServer.h"
+#include "I18nJapanese.h"
 #include "future/core/column/Column.h"
 #include "future/table/TableModel.h"
+
+#include <QDateTime>
+#include <QShortcut>
+#include <mutex>
 
 namespace {
 
@@ -426,6 +431,45 @@ private:
     QToolButton *d_btn_right = nullptr;
     bool d_updating_chevrons = false;
 };
+
+// C14: Japanese for the ribbon group names (shown on folded groups) and the minimize hint
+void registerRibbonCollapseTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("File", "ファイル");
+        reg("Undo / Redo", "元に戻す/やり直し");
+        reg("Clipboard", "クリップボード");
+        reg("Create", "新規作成");
+        reg("Recalculation", "再計算");
+        reg("Panels", "パネル");
+        reg("2D Plots", "2D グラフ");
+        reg("More Plots", "その他のグラフ");
+        reg("Add to Graph", "グラフに追加");
+        reg("Layers", "レイヤー");
+        reg("Peaks", "ピーク");
+        reg("Curve Fitting", "曲線フィット");
+        reg("Graph Tools", "グラフツール");
+        reg("Gadgets", "ガジェット");
+        reg("Masks", "マスク");
+        reg("Signal Processing", "信号処理");
+        reg("Materials Analysis", "材料解析");
+        reg("Statistics", "統計");
+        reg("Journal Presets", "論文プリセット");
+        reg("Export", "エクスポート");
+        reg("Style", "スタイル");
+        reg("Python Scripts", "Python スクリプト");
+        reg("Settings", "設定");
+        reg("%1: the window is too narrow to show this group, so its commands are listed here",
+            "%1: ウィンドウの幅が足りないため、このグループのコマンドをここにまとめています");
+        reg("Double-click a tab to minimize or restore the ribbon (Ctrl+F1)",
+            "タブをダブルクリックするとリボンを最小化/元に戻します (Ctrl+F1)");
+    });
+}
 
 } // namespace
 
@@ -2835,6 +2879,19 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
 
     this->installEventFilter(this);
 
+    // C14: double-click a tab (or Ctrl+F1) to show only the tab row, as in Office
+    d_tab_bar->installEventFilter(this);
+    QShortcut *minimizeShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F1), this);
+    minimizeShortcut->setContext(Qt::WindowShortcut);
+    connect(minimizeShortcut, &QShortcut::activated, this,
+            [this]() { setRibbonMinimized(!d_minimized); });
+    if (d_app && !d_app->isHeadlessMode()
+        && ApplicationWindow::getSettings()
+                   .value(QStringLiteral("/UX/RibbonMinimized"), false)
+                   .toBool()) {
+        setRibbonMinimized(true);
+    }
+
     retranslateUi();
     updateActiveContext(d_app ? qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow())
                               : nullptr);
@@ -3094,7 +3151,9 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
 }
 
 QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **outBtnLayout,
-                                            bool addDividerAfter)
+                                            bool addDividerAfter,
+                                            std::function<QString()> titleFn,
+                                            int collapsePriority)
 {
     QWidget *grpWidget = new QWidget();
     QHBoxLayout *btnRow = new QHBoxLayout(grpWidget);
@@ -3102,6 +3161,36 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **
     btnRow->setSpacing(2);
 
     pageRow->addWidget(grpWidget, 0, Qt::AlignVCenter);
+
+    // C14: stand-in button "<group> ▾" that lists the group's commands when the ribbon is too
+    // narrow to show them all. Hidden while the group itself fits.
+    if (titleFn) {
+        QToolButton *folded = new QToolButton();
+        folded->setObjectName(QStringLiteral("RibbonCollapsedGroupBtn"));
+        folded->setProperty("class", QStringLiteral("RibbonActionBtn"));
+        folded->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        folded->setIconSize(QSize(16, 16));
+        folded->setPopupMode(QToolButton::InstantPopup);
+        folded->setCursor(Qt::PointingHandCursor);
+        folded->setFocusPolicy(Qt::TabFocus);
+        QMenu *menu = new QMenu(folded);
+        menu->setProperty("class", QStringLiteral("RibbonDropdownMenu"));
+        menu->setToolTipsVisible(true);
+        folded->setMenu(menu);
+        const int groupIndex = d_groups.size();
+        connect(menu, &QMenu::aboutToShow, this,
+                [this, groupIndex]() { populateCollapsedGroupMenu(groupIndex); });
+        pageRow->addWidget(folded, 0, Qt::AlignVCenter);
+        folded->setVisible(false);
+
+        RibbonGroupInfo info;
+        info.page = pageRow->parentWidget();
+        info.group = grpWidget;
+        info.collapsedButton = folded;
+        info.titleFn = std::move(titleFn);
+        info.priority = collapsePriority;
+        d_groups.append(info);
+    }
 
     if (addDividerAfter) {
         QFrame *div = new QFrame();
@@ -3210,7 +3299,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gRecalc = nullptr;
         QHBoxLayout *gPanels = nullptr;
 
-        createRibbonGroup(row, &gFile, true);
+        createRibbonGroup(row, &gFile, true, [this]() { return tr("File"); }, 90);
         setShortcutHintAction(addRibbonButton(
                 gFile, QStringLiteral("file-new"), [this]() { return tr("New Project"); },
                 [this]() { return tr("Create a New Project"); },
@@ -3272,7 +3361,7 @@ void ModernRibbonBar::buildAllTabs()
 
         // C4: Undo / Redo on Home (icon only: Home must fit 1280 px without scrolling)
         QHBoxLayout *gEdit = nullptr;
-        createRibbonGroup(row, &gEdit, true);
+        createRibbonGroup(row, &gEdit, true, [this]() { return tr("Undo / Redo"); }, 70);
         for (QToolButton *tb :
              { addActionButton(
                        gEdit, QStringLiteral("undo"), [this]() { return tr("Undo"); },
@@ -3285,7 +3374,18 @@ void ModernRibbonBar::buildAllTabs()
             tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
         }
 
-        createRibbonGroup(row, &gCreate, true);
+        // C4/B5: "Copy for PowerPoint" on Home as well (bound to the application's action).
+        // It fits 1280 px now that rarely used groups fold into drop-downs (C14).
+        QHBoxLayout *gClipboard = nullptr;
+        createRibbonGroup(row, &gClipboard, true, [this]() { return tr("Clipboard"); }, 85);
+        addActionButton(
+                gClipboard, QStringLiteral("copy-ole"),
+                []() { return ToriGraphOleUi::copyForPowerPointLabel(); },
+                []() { return ToriGraphOleUi::copyForPowerPointToolTip(); },
+                QStringLiteral("actionCopyGraphOle"))
+                ->setObjectName(QStringLiteral("RibbonHomeCopyForPowerPointBtn"));
+
+        createRibbonGroup(row, &gCreate, true, [this]() { return tr("Create"); }, 80);
         setShortcutHintAction(addRibbonButton(
                 gCreate, QStringLiteral("new-table"), [this]() { return tr("New Table"); },
                 [this]() { return tr("Create New Worksheet Table"); },
@@ -3328,7 +3428,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->mergeOpenGraphsDialog();
                 });
 
-        createRibbonGroup(row, &gRecalc, true);
+        createRibbonGroup(row, &gRecalc, true, [this]() { return tr("Recalculation"); }, 20);
         d_btn_auto_recalc = addRibbonButton(
                 gRecalc, QStringLiteral("recalc-auto"), [this]() { return tr("Auto"); },
                 [this]() { return tr("Toggle Automatic Analysis Recalculation"); },
@@ -3350,7 +3450,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->recalculatePendingLinksNow();
                 });
 
-        createRibbonGroup(row, &gPanels, false);
+        createRibbonGroup(row, &gPanels, false, [this]() { return tr("Panels"); }, 30);
         QMenu *panelsMenu = nullptr;
         addRibbonMenuButton(
                 gPanels, QStringLiteral("table-drawer"),
@@ -3404,7 +3504,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gMore = nullptr;
         QHBoxLayout *gLayer = nullptr;
 
-        createRibbonGroup(row, &g2d, true);
+        createRibbonGroup(row, &g2d, true, [this]() { return tr("2D Plots"); }, 90);
         addRibbonButton(
                 g2d, QStringLiteral("plot-line"), [this]() { return tr("Line"); },
                 [this]() { return tr("Plot Line Graph"); },
@@ -3429,7 +3529,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->plotDoubleY();
                 });
 
-        createRibbonGroup(row, &gMore, true);
+        createRibbonGroup(row, &gMore, true, [this]() { return tr("More Plots"); }, 60);
         QMenu *specialtyMenu = nullptr;
         addRibbonMenuButton(
                 gMore, QStringLiteral("plot-box"),
@@ -3579,7 +3679,7 @@ void ModernRibbonBar::buildAllTabs()
         // C4: graph additions as one drop-down (the Plot tab must still fit 1366 px). The menu
         // holds the application's own QActions, so enabled/checked states are always in sync.
         QHBoxLayout *gAdd = nullptr;
-        createRibbonGroup(row, &gAdd, true);
+        createRibbonGroup(row, &gAdd, true, [this]() { return tr("Add to Graph"); }, 50);
         QMenu *addMenu = nullptr;
         addRibbonMenuButton(
                 gAdd, QStringLiteral("text-label"), [this, kCaret]() { return tr("Add") + kCaret; },
@@ -3601,7 +3701,7 @@ void ModernRibbonBar::buildAllTabs()
             }
         }
 
-        createRibbonGroup(row, &gLayer, false);
+        createRibbonGroup(row, &gLayer, false, [this]() { return tr("Layers"); }, 40);
         addRibbonButton(
                 gLayer, QStringLiteral("layer-linked"), [this]() { return tr("Linked Layer"); },
                 [this]() { return tr("Add Linked Top-X / Right-Y Layer"); },
@@ -3630,7 +3730,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gPeaks = nullptr;
         QHBoxLayout *gFit = nullptr;
 
-        createRibbonGroup(row, &gPeaks, true);
+        createRibbonGroup(row, &gPeaks, true, [this]() { return tr("Peaks"); }, 70);
         addRibbonButton(
                 gPeaks, QStringLiteral("peak-analyzer"), [this]() { return tr("Peak Analyzer"); },
                 [this]() { return tr("Interactive Baseline & Multi-Peak Deconvolution"); },
@@ -3668,7 +3768,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->show2DPeakAnalysisDialog();
                 });
 
-        createRibbonGroup(row, &gFit, false);
+        createRibbonGroup(row, &gFit, false, [this]() { return tr("Curve Fitting"); }, 90);
         addRibbonButton(
                 gFit, QStringLiteral("fit-linear"), [this]() { return tr("Linear Fit"); },
                 [this]() { return tr("Linear Regression Fit"); },
@@ -3769,7 +3869,7 @@ void ModernRibbonBar::buildAllTabs()
 
         // C3/C4: graph tool modes; the buttons stay checked while their mode is active
         QHBoxLayout *gTools = nullptr;
-        createRibbonGroup(row, &gTools, true);
+        createRibbonGroup(row, &gTools, true, [this]() { return tr("Graph Tools"); }, 80);
         addActionButton(
                 gTools, QStringLiteral("pointer"), [this]() { return tr("Pointer"); },
                 [this]() { return tr("Pointer: leave zoom, reader and gadget modes (Esc)"); },
@@ -3783,7 +3883,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Read data values by clicking points (Ctrl+D)"); },
                 QStringLiteral("btnCursor"), true);
 
-        createRibbonGroup(row, &gGadgets, true);
+        createRibbonGroup(row, &gGadgets, true, [this]() { return tr("Gadgets"); }, 60);
         addRibbonButton(
                 gGadgets, QStringLiteral("gadget-roi"), [this]() { return tr("ROI Stats"); },
                 [this]() { return tr("Interactive Region-of-Interest Statistics Gadget"); },
@@ -3863,7 +3963,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->clearActiveGadget();
                 });
 
-        createRibbonGroup(row, &gMasks, true);
+        createRibbonGroup(row, &gMasks, true, [this]() { return tr("Masks"); }, 30);
         QMenu *masksMenu = nullptr;
         addRibbonMenuButton(
                 gMasks, QStringLiteral("mask-points"),
@@ -3893,7 +3993,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->clearAllMasksOnGraph();
                 });
 
-        createRibbonGroup(row, &gSignal, false);
+        createRibbonGroup(row, &gSignal, false, [this]() { return tr("Signal Processing"); }, 50);
         addRibbonButton(
                 gSignal, QStringLiteral("signal-savgol"),
                 [this]() { return tr("Savitzky-Golay Smooth"); },
@@ -4000,7 +4100,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gDomain = nullptr;
         QHBoxLayout *gStats = nullptr;
 
-        createRibbonGroup(row, &gDomain, true);
+        createRibbonGroup(row, &gDomain, true, [this]() { return tr("Materials Analysis"); }, 90);
         addRibbonButton(
                 gDomain, QStringLiteral("curvemath"),
                 [this]() { return tr("Tensile / 0.2% Yield"); },
@@ -4168,7 +4268,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->showGraphDigitizerDialog();
                 });
 
-        createRibbonGroup(row, &gStats, false);
+        createRibbonGroup(row, &gStats, false, [this]() { return tr("Statistics"); }, 40);
         addRibbonButton(
                 gStats, QStringLiteral("stats-anova"), [this]() { return tr("Group ANOVA"); },
                 [this]() { return tr("One-Way ANOVA & Tukey / Dunnett Post-Hoc Comparison"); },
@@ -4328,7 +4428,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gExport = nullptr;
         QHBoxLayout *gStyle = nullptr;
 
-        createRibbonGroup(row, &gPresets, true);
+        createRibbonGroup(row, &gPresets, true, [this]() { return tr("Journal Presets"); }, 70);
         addRibbonButton(
                 gPresets, QStringLiteral("preset-isij"),
                 [this]() { return tr("ISIJ 85mm Fig"); },
@@ -4414,7 +4514,7 @@ void ModernRibbonBar::buildAllTabs()
                 true);
         d_btn_lock_aspect->setObjectName(QStringLiteral("RibbonLockAspectRatioBtn"));
 
-        createRibbonGroup(row, &gExport, true);
+        createRibbonGroup(row, &gExport, true, [this]() { return tr("Export"); }, 90);
         addRibbonButton(
                 gExport, QStringLiteral("copy-ole"),
                 []() { return ToriGraphOleUi::copyForPowerPointLabel(); },
@@ -4461,7 +4561,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->exportActiveGraphToPython();
                 });
 
-        createRibbonGroup(row, &gStyle, false);
+        createRibbonGroup(row, &gStyle, false, [this]() { return tr("Style"); }, 50);
         QMenu *framePageMenu = nullptr;
         addRibbonMenuButton(
                 gStyle, QStringLiteral("frame-box-inward"),
@@ -4571,7 +4671,7 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gPython = nullptr;
         QHBoxLayout *gSettings = nullptr;
 
-        createRibbonGroup(row, &gPython, true);
+        createRibbonGroup(row, &gPython, true, [this]() { return tr("Python Scripts"); }, 50);
         addRibbonButton(
                 gPython, QStringLiteral("python-console"),
                 [this]() { return tr("Python Console"); },
@@ -4591,7 +4691,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->exportActiveGraphToPython();
                 });
 
-        createRibbonGroup(row, &gSettings, false);
+        createRibbonGroup(row, &gSettings, false, [this]() { return tr("Settings"); }, 60);
         addRibbonButton(
                 gSettings, QStringLiteral("settings"), [this]() { return tr("Preferences"); },
                 [this]() { return tr("Open Application Preferences Dialog"); },
@@ -4733,7 +4833,23 @@ void ModernRibbonBar::retranslateUi()
     if (d_focus_hud_overlay)
         d_focus_hud_overlay->retranslateUi();
 
+    // C14: folded-group buttons and the minimize hint on the tab row
+    registerRibbonCollapseTranslations();
+    const QString caret = QString::fromUtf8(" \xE2\x96\xBE");
+    for (const RibbonGroupInfo &g : d_groups) {
+        if (!g.collapsedButton || !g.titleFn)
+            continue;
+        const QString title = g.titleFn();
+        g.collapsedButton->setText(escapeTabMnemonicText(title) + caret);
+        g.collapsedButton->setToolTip(
+                tr("%1: the window is too narrow to show this group, so its commands are listed here")
+                        .arg(title));
+    }
+    if (d_tab_bar)
+        d_tab_bar->setToolTip(tr("Double-click a tab to minimize or restore the ribbon (Ctrl+F1)"));
+
     updateHeaderResponsiveness();
+    updateGroupCollapse();
     updateTabStackHeight();
 }
 
@@ -5410,6 +5526,236 @@ void ModernRibbonBar::syncActionBoundButtons()
     }
 }
 
+int ModernRibbonBar::tabIndexOfPage(const QWidget *pageContainer) const
+{
+    if (!d_tab_stack || !pageContainer)
+        return -1;
+    for (int i = 0; i < d_tab_stack->count(); ++i) {
+        if (QScrollArea *sa = qobject_cast<QScrollArea *>(d_tab_stack->widget(i))) {
+            if (sa->widget() == pageContainer)
+                return i;
+        }
+    }
+    return -1;
+}
+
+QStringList ModernRibbonBar::groupTitles(int tabIndex) const
+{
+    QStringList out;
+    for (const RibbonGroupInfo &g : d_groups) {
+        if (g.titleFn && tabIndexOfPage(g.page) == tabIndex)
+            out << g.titleFn();
+    }
+    return out;
+}
+
+QStringList ModernRibbonBar::collapsedGroupTitles(int tabIndex) const
+{
+    QStringList out;
+    for (const RibbonGroupInfo &g : d_groups) {
+        if (g.titleFn && g.collapsed && tabIndexOfPage(g.page) == tabIndex)
+            out << g.titleFn();
+    }
+    return out;
+}
+
+QToolButton *ModernRibbonBar::collapsedGroupButton(int tabIndex, const QString &groupTitle) const
+{
+    for (const RibbonGroupInfo &g : d_groups) {
+        if (g.titleFn && tabIndexOfPage(g.page) == tabIndex && g.titleFn() == groupTitle)
+            return g.collapsedButton.data();
+    }
+    return nullptr;
+}
+
+void ModernRibbonBar::populateCollapsedGroupMenu(int groupIndex)
+{
+    if (groupIndex < 0 || groupIndex >= d_groups.size())
+        return;
+    const RibbonGroupInfo &g = d_groups.at(groupIndex);
+    QToolButton *folded = g.collapsedButton.data();
+    QMenu *menu = folded ? folded->menu() : nullptr;
+    if (!menu || !g.group || !g.group->layout())
+        return;
+    // The sub-menus belong to the group's own buttons; clear() only detaches them.
+    menu->clear();
+    const QString caret = QString::fromUtf8(" \xE2\x96\xBE");
+    QLayout *lay = g.group->layout();
+    for (int i = 0; i < lay->count(); ++i) {
+        QToolButton *b = qobject_cast<QToolButton *>(lay->itemAt(i)->widget());
+        if (!b || b->isHidden())
+            continue;
+        QString text = b->text();
+        text.remove(caret);
+        text = text.trimmed();
+        if (QMenu *sub = b->menu()) {
+            sub->setTitle(text);
+            sub->setIcon(b->icon());
+            QAction *ma = menu->addMenu(sub);
+            ma->setToolTip(b->toolTip());
+            ma->setEnabled(b->isEnabled());
+        } else {
+            QAction *a = menu->addAction(b->icon(), text);
+            a->setToolTip(b->toolTip());
+            a->setEnabled(b->isEnabled());
+            if (b->isCheckable()) {
+                a->setCheckable(true);
+                a->setChecked(b->isChecked());
+            }
+            QPointer<QToolButton> pb(b);
+            connect(a, &QAction::triggered, this, [pb]() {
+                if (pb && pb->isEnabled())
+                    pb->click();
+            });
+        }
+    }
+}
+
+void ModernRibbonBar::updateGroupCollapse()
+{
+    if (d_shutting_down || d_updating_collapse || !d_tab_stack || d_groups.isEmpty())
+        return;
+    // The tab pages span the whole ribbon (root layout without margins). The ribbon's own
+    // width is already final when its Resize event arrives, the stacked widget's is not.
+    const int avail = contentsRect().width();
+    if (avail < 80)
+        return;
+    d_updating_collapse = true;
+
+    auto widthOf = [](QWidget *w) -> int {
+        int v = qMax(w->minimumSizeHint().width(), w->minimumWidth());
+        if (!(w->sizePolicy().horizontalPolicy() & QSizePolicy::ShrinkFlag))
+            v = qMax(v, w->sizeHint().width());
+        return v;
+    };
+
+    QVector<QWidget *> pages;
+    for (const RibbonGroupInfo &g : d_groups) {
+        if (g.page && !pages.contains(g.page.data()))
+            pages.append(g.page.data());
+    }
+
+    bool changed = false;
+    for (QWidget *page : pages) {
+        QBoxLayout *row = qobject_cast<QBoxLayout *>(page->layout());
+        if (!row)
+            continue;
+        page->ensurePolished();
+
+        QVector<int> gis;
+        QHash<QWidget *, int> groupPos;
+        QHash<QWidget *, int> foldPos;
+        for (int i = 0; i < d_groups.size(); ++i) {
+            const RibbonGroupInfo &g = d_groups.at(i);
+            if (g.page != page || !g.group || !g.collapsedButton)
+                continue;
+            groupPos.insert(g.group.data(), gis.size());
+            foldPos.insert(g.collapsedButton.data(), gis.size());
+            // the folded button shows the group's first icon
+            if (g.collapsedButton->icon().isNull()) {
+                if (QLayout *gl = g.group->layout()) {
+                    for (int k = 0; k < gl->count(); ++k) {
+                        if (QToolButton *b = qobject_cast<QToolButton *>(gl->itemAt(k)->widget())) {
+                            g.collapsedButton->setIcon(b->icon());
+                            break;
+                        }
+                    }
+                }
+            }
+            gis.append(i);
+        }
+        if (gis.isEmpty())
+            continue;
+
+        // Minimum width of the row for a given fold state (what QScrollArea compares with
+        // its viewport to decide on the horizontal scroll bar).
+        auto need = [&](const QVector<bool> &coll) -> int {
+            const QMargins mg = row->contentsMargins();
+            int total = mg.left() + mg.right();
+            int n = 0;
+            for (int i = 0; i < row->count(); ++i) {
+                QLayoutItem *it = row->itemAt(i);
+                QWidget *w = it ? it->widget() : nullptr;
+                if (!w) {
+                    if (it && !it->isEmpty()) {
+                        total += it->minimumSize().width();
+                        ++n;
+                    }
+                    continue;
+                }
+                if (groupPos.contains(w)) {
+                    if (coll.at(groupPos.value(w)))
+                        continue;
+                } else if (foldPos.contains(w)) {
+                    if (!coll.at(foldPos.value(w)))
+                        continue;
+                } else if (w->isHidden()) {
+                    continue;
+                }
+                total += widthOf(w);
+                ++n;
+            }
+            return total + qMax(0, n - 1) * qMax(0, row->spacing());
+        };
+
+        QVector<int> order(gis.size());
+        for (int k = 0; k < order.size(); ++k)
+            order[k] = k;
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+            return d_groups.at(gis.at(a)).priority < d_groups.at(gis.at(b)).priority;
+        });
+
+        const int slack = 2;
+        QVector<bool> coll(gis.size(), false);
+        for (int oi = 0; oi < order.size() && need(coll) + slack > avail; ++oi) {
+            const RibbonGroupInfo &g = d_groups.at(gis.at(order.at(oi)));
+            // folding only helps when the drop-down is clearly narrower than the group (a
+            // group that is a single drop-down already, like Panels, stays as it is)
+            if (widthOf(g.collapsedButton.data()) + 12 > widthOf(g.group.data()))
+                continue;
+            coll[order.at(oi)] = true;
+        }
+
+        for (int k = 0; k < gis.size(); ++k) {
+            RibbonGroupInfo &g = d_groups[gis.at(k)];
+            const bool fold = coll.at(k);
+            g.collapsed = fold;
+            if (g.group->isHidden() != fold) {
+                g.group->setVisible(!fold);
+                changed = true;
+            }
+            if (g.collapsedButton->isHidden() == fold) {
+                g.collapsedButton->setVisible(fold);
+                changed = true;
+            }
+        }
+        if (changed && row)
+            row->activate();
+    }
+    d_updating_collapse = false;
+    if (changed)
+        updateTabStackHeight();
+}
+
+void ModernRibbonBar::setRibbonMinimized(bool minimized)
+{
+    if (d_shutting_down || d_minimized == minimized)
+        return;
+    d_minimized = minimized;
+    if (d_tab_stack) {
+        d_tab_stack->setVisible(!minimized);
+        if (!minimized) {
+            updateGroupCollapse();
+            updateTabStackHeight();
+        }
+    }
+    if (layout())
+        layout()->activate();
+    updateGeometry();
+    if (d_app && !d_app->isHeadlessMode())
+        ApplicationWindow::getSettings().setValue(QStringLiteral("/UX/RibbonMinimized"), minimized);
+}
+
 void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
 {
     d_advanced_domain_visible = visible;
@@ -5613,7 +5959,31 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
     if (watched == this && event
         && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
         updateHeaderResponsiveness();
+        updateGroupCollapse();
         updateTabStackHeight();
+    }
+    if (watched == d_tab_bar && event) {
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                // The first click of this double-click already restored the ribbon.
+                const bool justRestored = d_restored_by_click_ms >= 0
+                        && now - d_restored_by_click_ms
+                                <= qint64(QApplication::doubleClickInterval()) + 100;
+                d_restored_by_click_ms = -1;
+                if (!justRestored)
+                    setRibbonMinimized(!d_minimized);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonPress && d_minimized) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton && d_tab_bar->tabAt(me->pos()) >= 0) {
+                // a single click on a tab of the minimized ribbon brings the commands back
+                setRibbonMinimized(false);
+                d_restored_by_click_ms = QDateTime::currentMSecsSinceEpoch();
+            }
+        }
     }
     if (d_app && watched == d_app->d_workspace.viewport() && event) {
         if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph

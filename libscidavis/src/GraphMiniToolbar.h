@@ -7,6 +7,7 @@
 #define GRAPHMINITOOLBAR_H
 
 #include <QFrame>
+#include <QKeySequence>
 #include <QMap>
 #include <QPoint>
 #include <QPointer>
@@ -55,6 +56,15 @@ public:
 
     void cancelScheduledAndHide();
     void retranslateUi();
+
+    //! H5: key that moves the keyboard focus from the canvas into the visible mini toolbar.
+    //! The bar does not take focus on its own (it must not steal typing from the canvas).
+    static QKeySequence keyboardFocusShortcut();
+    //! H5: makes the visible bar focusable and focuses its first button (Tab moves on)
+    bool enterKeyboardFocus();
+    //! H5: Esc - hides the bar and gives the focus back to the canvas
+    void leaveKeyboardFocus(bool returnFocus = true);
+    bool isKeyboardFocusMode() const { return d_keyboard_mode; }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -157,6 +167,11 @@ private:
     bool d_filter_installed;
     bool d_in_modal_dialog;
     QMap<long, SavedSymbolState> d_saved_symbol_states;
+    QPointer<QWidget> d_return_focus;
+    bool d_keyboard_mode = false;
+    bool d_changing_flags = false;
+    bool d_activating = false; //!< activation moving from the main window to the bar
+    void setAcceptsFocus(bool accept);
 };
 
 #endif // GRAPHMINITOOLBAR_H

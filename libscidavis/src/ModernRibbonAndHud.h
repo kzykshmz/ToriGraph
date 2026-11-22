@@ -35,6 +35,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <functional>
 
@@ -298,6 +299,18 @@ public:
     //! C4: copy enabled/checked state of bound QActions onto their ribbon buttons
     void syncActionBoundButtons();
 
+    //! C14: groups of the given tab that are folded into one drop-down button to fit the width
+    QStringList collapsedGroupTitles(int tabIndex) const;
+    //! C14: titles of all collapsible groups of the given tab, in display order
+    QStringList groupTitles(int tabIndex) const;
+    //! C14: the drop-down button that stands in for a folded group (null if the title is unknown)
+    QToolButton *collapsedGroupButton(int tabIndex, const QString &groupTitle) const;
+    //! C14: re-evaluates which groups have to be folded for the current ribbon width
+    void updateGroupCollapse();
+    //! C14: minimized ribbon = tab row only (double-click a tab, Ctrl+F1)
+    void setRibbonMinimized(bool minimized);
+    bool isRibbonMinimized() const { return d_minimized; }
+
     int tabCount() const;
     int currentTabIndex() const;
     void setCurrentTabIndex(int index);
@@ -346,9 +359,24 @@ private:
         std::function<QString()> tooltipFn;
     };
 
+    //! C14: a group that may be folded into one drop-down button when the ribbon is narrow
+    struct RibbonGroupInfo
+    {
+        QPointer<QWidget> page; //!< row container of the tab page
+        QPointer<QWidget> group;
+        QPointer<QToolButton> collapsedButton;
+        std::function<QString()> titleFn;
+        int priority = 0; //!< lower = folded first (less frequently used)
+        bool collapsed = false;
+    };
+
     QWidget *createRibbonScrollPage(QHBoxLayout **outRowLayout);
     QWidget *createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **outBtnLayout,
-                               bool addDividerAfter = true);
+                               bool addDividerAfter = true,
+                               std::function<QString()> titleFn = std::function<QString()>(),
+                               int collapsePriority = 50);
+    void populateCollapsedGroupMenu(int groupIndex);
+    int tabIndexOfPage(const QWidget *pageContainer) const;
     QToolButton *addRibbonButton(QHBoxLayout *groupLayout, const QString &iconId,
                                  std::function<QString()> textFn,
                                  std::function<QString()> tooltipFn,
@@ -402,6 +430,10 @@ private:
     QVector<RibbonMenuActionBinding> d_menu_action_bindings;
     QHash<QString, QPointer<QToolButton>> d_action_buttons;
     bool d_advanced_domain_visible = true;
+    QVector<RibbonGroupInfo> d_groups;
+    bool d_minimized = false;
+    bool d_updating_collapse = false;
+    qint64 d_restored_by_click_ms = -1;
 
     WorkspaceLayoutMode d_layout_mode = LayoutTabbed;
     double d_split_left_ratio = 0.40;
