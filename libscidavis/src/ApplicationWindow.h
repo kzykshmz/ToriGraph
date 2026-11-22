@@ -1714,6 +1714,8 @@ private:
     bool d_show_advanced_domain_features = false;
     void installLegacyUiSwitch();
     void applyLegacyUiVisibility();
+    //! Re-translate the View menu switches of G1 / C15 (called by translateActionsStrings())
+    void retranslateUxSwitches();
     bool d_show_legacy_ui = false;
     QToolButton *d_tool_mode_indicator = nullptr;
     QTimer *d_tool_mode_poll = nullptr;

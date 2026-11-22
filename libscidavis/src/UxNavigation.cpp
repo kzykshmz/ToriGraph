@@ -992,16 +992,29 @@ void ApplicationWindow::installLegacyUiSwitch()
         }
     }
 
-    QAction *legacyToggle = new QAction(tr("Show Legacy UI"), this);
+    QAction *legacyToggle = new QAction(this);
     legacyToggle->setObjectName(QStringLiteral("actionShowLegacyUi"));
     legacyToggle->setCheckable(true);
     legacyToggle->setChecked(d_show_legacy_ui);
-    legacyToggle->setToolTip(tr("Show the old toolbar menus, Plot Wizard, Add Time Stamp and "
-                                "Scripting Language in menus, the ribbon and command search"));
     connect(legacyToggle, &QAction::toggled, this, [this](bool on) { setShowLegacyUi(on); });
     if (view)
         view->addAction(legacyToggle); // next to the G1 switch at the end of the View menu
+    retranslateUxSwitches();
     applyLegacyUiVisibility();
+}
+
+void ApplicationWindow::retranslateUxSwitches()
+{
+    if (QAction *adv = findChild<QAction *>(QStringLiteral("actionShowAdvancedDomainFeatures"))) {
+        adv->setText(tr("Show Other-Field / Advanced Features"));
+        adv->setToolTip(tr("Show medical statistics, EIS, Tauc, wavelet/STFT/Hilbert, pie/Pareto "
+                           "and 3D ribbon in menus, the ribbon and command search"));
+    }
+    if (QAction *legacy = findChild<QAction *>(QStringLiteral("actionShowLegacyUi"))) {
+        legacy->setText(tr("Show Legacy UI"));
+        legacy->setToolTip(tr("Show the old toolbar menus, Plot Wizard, Add Time Stamp and "
+                              "Scripting Language in menus, the ribbon and command search"));
+    }
 }
 
 void ApplicationWindow::attachEmptyTableHint(Table *table)

@@ -21198,15 +21198,53 @@ static bool suite74ShownInMenuBar(ApplicationWindow *mw, QAction *target)
     return false;
 }
 
-// Is the action shown in any menu of the main window (menu bar, ribbon drop-downs, context
-// menus kept as children)?
-static bool suite74ShownInAnyMenu(ApplicationWindow *mw, QAction *target)
+// Walk a menu and its sub-menus: is the action, or a visible copy with the same text (the
+// ribbon's folded-group menus copy buttons into new actions), listed as visible?
+static bool suite74MenuListsVisible(QMenu *m, QAction *target, const QString &title,
+                                    QSet<QMenu *> &seen)
 {
-    for (QMenu *m : mw->findChildren<QMenu *>()) {
-        if (m && m->actions().contains(target) && target->isVisible())
+    if (!m || seen.contains(m))
+        return false;
+    seen.insert(m);
+    for (QAction *a : m->actions()) {
+        if (!a || a->isSeparator() || !a->isVisible())
+            continue;
+        if (a == target || cleanMnemonicForSuite62(a->text()) == title)
+            return true;
+        if (suite74MenuListsVisible(a->menu(), target, title, seen))
             return true;
     }
     return false;
+}
+
+// Is the action shown in any menu of the main window (menu bar, ribbon drop-downs, context
+// menus kept as children), walking QMenu::actions() recursively?
+static bool suite74ShownInAnyMenu(ApplicationWindow *mw, QAction *target)
+{
+    const QString title = cleanMnemonicForSuite62(target->text());
+    QSet<QMenu *> seen;
+    for (QMenu *m : mw->findChildren<QMenu *>()) {
+        if (suite74MenuListsVisible(m, target, title, seen))
+            return true;
+    }
+    return false;
+}
+
+// Fill the ribbon's folded-group menus (they are built on aboutToShow) and look for an entry.
+static bool suite74ListedInFoldedRibbonMenus(ModernRibbonBar *ribbon, const QString &text)
+{
+    bool listed = false;
+    for (QToolButton *b : ribbon->findChildren<QToolButton *>("RibbonCollapsedGroupBtn")) {
+        QMenu *m = b->menu();
+        if (!m)
+            continue;
+        emit m->aboutToShow();
+        for (QAction *a : m->actions()) {
+            if (a && a->isVisible() && a->text().trimmed() == text.trimmed())
+                listed = true;
+        }
+    }
+    return listed;
 }
 
 static bool suite74ListedInCommandSearch(CommandPalettePopup *cp, const QString &title)
@@ -21306,13 +21344,9 @@ static int runSuite74LegacyUiHidden(ApplicationWindow *mw)
             }
             delete popup;
         }
-        // the ribbon's folded-group menus are rebuilt from visible buttons only
-        const QString classicText = classicBtn->text();
-        for (QMenu *m : ribbon->findChildren<QMenu *>()) {
-            for (QAction *ma : m->actions())
-                CHECK_COND(!(ma->isVisible() && ma->text() == classicText),
-                           "74a: Classic Toolbars listed in a ribbon menu");
-        }
+        // the ribbon's folded-group menus are rebuilt (on aboutToShow) from visible buttons only
+        CHECK_COND(!suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74a: Classic Toolbars listed in a folded ribbon group menu");
     }
 
     // ---- 74b: shortcuts of hidden actions are off (and stay off after retranslation)
@@ -21376,6 +21410,11 @@ static int runSuite74LegacyUiHidden(ApplicationWindow *mw)
                            && suite74ShownInMenuBar(mw, toolbarsMenu->menuAction()),
                    "74d: View > Toolbars not shown again");
         CHECK_COND(!classicBtn->isHidden(), "74d: ribbon Classic Toolbars button not shown again");
+        CHECK_COND(suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74d: Classic Toolbars missing from its folded ribbon group menu");
+        for (QAction *a : acts)
+            CHECK_COND(suite74ShownInAnyMenu(mw, a),
+                       "74d: menu walk does not find " << a->objectName().toStdString());
         for (QToolBar *tb : legacyBars)
             CHECK_COND(tb->toggleViewAction()->isVisible(), "74d: toolbar switch still hidden");
         // the classic toolbars themselves stay off until asked for
@@ -21398,6 +21437,67 @@ static int runSuite74LegacyUiHidden(ApplicationWindow *mw)
         if (!mw->isHeadlessMode())
             CHECK_COND(!ApplicationWindow::getSettings().value("/UX/ShowLegacyUi", true).toBool(),
                        "74e: setting not stored");
+        for (QAction *a : acts)
+            CHECK_COND(!suite74ShownInAnyMenu(mw, a),
+                       "74e: still in a menu: " << a->objectName().toStdString());
+        CHECK_COND(!suite74ListedInFoldedRibbonMenus(ribbon, classicBtn->text()),
+                   "74e: Classic Toolbars still in a folded ribbon group menu");
+    }
+
+    // ---- 74g: switching it off during the focus HUD (F11) must not bring the classic
+    //      toolbars back when the HUD closes (their switches are hidden by then)
+    {
+        mw->setShowLegacyUi(true);
+        ribbon->setClassicToolbarsVisible(true);
+        CHECK_COND(!mw->file_tools->isHidden(), "74g: classic toolbars not shown before the HUD");
+        ribbon->setFocusHudMode(true);
+        CHECK_COND(ribbon->isFocusHudMode() && mw->file_tools->isHidden(), "74g: HUD did not start");
+        mw->setShowLegacyUi(false);
+        ribbon->setFocusHudMode(false);
+        CHECK_COND(!ribbon->isFocusHudMode(), "74g: HUD did not end");
+        for (QToolBar *tb : legacyBars)
+            CHECK_COND(tb->isHidden(),
+                       "74g: classic toolbar back after the HUD: " << tb->objectName().toStdString());
+        CHECK_COND(!mw->statusBar()->isHidden(), "74g: HUD exit must still restore the status bar");
+    }
+
+    // ---- 74h: a real language switch keeps the shortcuts off and translates the switches
+    {
+        const QString startLang = mw->appLanguage;
+        const bool startJa = startLang.startsWith("ja");
+        auto checkLang = [&](bool ja) -> int {
+            CHECK_COND(timeStamp->shortcut().isEmpty() && plotWizard->shortcut().isEmpty(),
+                       "74h: language switch brought the shortcuts back (ja=" << ja << ")");
+            CHECK_COND(!timeStamp->isVisible() && !plotWizard->isVisible(),
+                       "74h: language switch showed hidden actions");
+            QAction *legacy = mw->findChild<QAction *>("actionShowLegacyUi");
+            QAction *adv = mw->findChild<QAction *>("actionShowAdvancedDomainFeatures");
+            CHECK_COND(legacy && adv, "74h: switches missing");
+            const QString wantLegacy =
+                    ja ? ToriGraphFullJapaneseTranslator::lookupJapanese("Show Legacy UI")
+                       : QStringLiteral("Show Legacy UI");
+            const QString wantAdv = ja ? ToriGraphFullJapaneseTranslator::lookupJapanese(
+                                                 "Show Other-Field / Advanced Features")
+                                       : QStringLiteral("Show Other-Field / Advanced Features");
+            CHECK_COND(legacy->text() == wantLegacy,
+                       "74h: Show Legacy UI not retranslated: " << legacy->text().toStdString());
+            CHECK_COND(adv->text() == wantAdv,
+                       "74h: G1 switch not retranslated: " << adv->text().toStdString());
+            const QString tipEn = QStringLiteral(
+                    "Show the old toolbar menus, Plot Wizard, Add Time Stamp and Scripting "
+                    "Language in menus, the ribbon and command search");
+            const QString wantTip = ja ? ToriGraphFullJapaneseTranslator::lookupJapanese(tipEn) : tipEn;
+            CHECK_COND(!wantTip.isEmpty() && legacy->toolTip() == wantTip,
+                       "74h: Show Legacy UI tooltip not retranslated: "
+                               << legacy->toolTip().toStdString());
+            return 0;
+        };
+        mw->switchToLanguage(startJa ? QStringLiteral("en") : QStringLiteral("ja"));
+        if (checkLang(!startJa) != 0)
+            return 1;
+        mw->switchToLanguage(startJa ? QStringLiteral("ja") : QStringLiteral("en"));
+        if (checkLang(startJa) != 0)
+            return 1;
     }
 
     // ---- 74f: Japanese text of the switch

@@ -5437,6 +5437,20 @@ void ModernRibbonBar::setClassicToolbarsVisible(bool visible)
         d_btn_classic_toolbars->setChecked(visible);
     }
 
+    if (d_app && d_focus_hud_mode && !visible) {
+        // C15: the focus HUD hid every toolbar and restores the saved states when it closes;
+        // make that restore keep the classic toolbars closed (their switches may be hidden).
+        const QToolBar *const legacyBars[] = { d_app->file_tools,  d_app->edit_tools,
+                                               d_app->table_tools, d_app->plot_tools,
+                                               d_app->graph_tools, d_app->matrix_plot_tools,
+                                               d_app->graph_3D_tools };
+        for (auto &saved : d_saved_focus_visibility) {
+            for (const QToolBar *tb : legacyBars) {
+                if (tb && saved.first.data() == tb)
+                    saved.second = false;
+            }
+        }
+    }
     if (d_app && !d_focus_hud_mode) {
         QToolBar *legacyBars[] = { d_app->file_tools,        d_app->edit_tools,
                                    d_app->table_tools,       d_app->plot_tools,
