@@ -178,8 +178,32 @@ public:
     //! Returns the adjusted R^2: 1 - (1 - R^2)*(n - 1)/(n - p)
     double adjustedRSquare() const;
 
-    //! Returns Pearson's correlation coefficient r
+    //! Returns Pearson's correlation coefficient r between x and y (signed). Only defined for
+    //! straight-line regressions; NaN for every other model.
     double pearsonR() const;
+
+    //! Convergence state of the last iterative fit
+    enum ConvergenceState { Converged = 0, MaxIterationsReached = 1, NoProgress = 2 };
+    ConvergenceState convergenceState() const { return d_convergence; }
+    bool converged() const { return d_convergence == Converged; }
+    //! Human readable non-convergence message (empty when converged)
+    QString convergenceMessage() const;
+    int lastIterationCount() const { return d_last_iterations; }
+    //! Notes about the data used for the last fit (e.g. excluded non-positive points)
+    QStringList fitNotes() const { return d_fit_notes; }
+
+    //! Residual degrees of freedom n - p_eff (may be <= 0)
+    int degreesOfFreedom() const;
+    //! Standard error of parameter i; NaN when it cannot be estimated (e.g. dof <= 0)
+    double parameterStdError(int i) const;
+    //! Two-sided Student-t confidence interval of parameter i; false when undefined
+    bool parameterConfidenceInterval(int i, double level, double *lo, double *hi) const;
+    //! Upper quantile of Student's t distribution: t such that P(T <= t) = p
+    static double studentTQuantile(double p, int dof);
+    //! Scale-invariant stationarity test of an LM solver state (used to judge GSL_ENOPROG)
+    static bool lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol = 1e-4);
+    //! Registers the Japanese strings of the fit core (convergence / statistics messages)
+    static void registerJapaneseStrings();
 
     //! Specifies wheather the errors must be scaled with sqrt(chi_2/dof)
     void scaleErrors(bool yes = true)
@@ -346,6 +370,16 @@ protected:
     //! Optional custom R^2 override (e.g. apparent log-space fit or implicit ODR)
     bool d_has_custom_r2 = false;
     double d_custom_r2 = 0.0;
+
+    //! Convergence bookkeeping of the last fit (set by fitGslMultifit / fitGslMultimin)
+    ConvergenceState d_convergence = Converged;
+    int d_last_iterations = 0;
+    QStringList d_fit_notes;
+
+    //! Straight-line regressions store the signed Pearson r of the (possibly log) x-y data here
+    bool d_straight_line_fit = false;
+    double d_line_pearson_r = 0.0;
+    void setStraightLinePearson(const std::vector<double> &x, const std::vector<double> &y);
 
     //! Suppresses plotting curves onto d_graph during model comparison
     bool d_suppress_curve_output = false;

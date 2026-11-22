@@ -53,6 +53,7 @@
 #include <QLocale>
 #include <QMessageBox>
 #include <QPointer>
+#include <QRegExp>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -174,13 +175,15 @@ QString MultiPeakFit::profileDisplayName(PeakProfile profile)
 
 QString MultiPeakFit::buildFormula() const
 {
-    if (d_per_peak_profiles.isEmpty())
-        return generateFormula(d_peaks, d_profile);
-    if (d_peaks == 1)
-        return generateFormula(1, peakProfileAt(0));
+    if (d_peaks == 1 || d_per_peak_profiles.isEmpty()) {
+        const PeakProfile prof = (d_peaks == 1) ? peakProfileAt(0) : d_profile;
+        const double alpha =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
+        return generateFormula(d_peaks, prof, d_voigt_mu, d_pearson_m, alpha, d_tail_tau);
+    }
     QString formula = "y0+";
     for (int i = 0; i < d_peaks; ++i) {
-        formula += peakFormula(i + 1, peakProfileAt(i));
+        formula += instancePeakFormula(i + 1, peakProfileAt(i));
         if (i < d_peaks - 1)
             formula += "+";
     }
@@ -192,9 +195,10 @@ double MultiPeakFit::peakFWHMFromW(PeakProfile prof, double w) const
     double wSafe = std::max(1e-15, std::abs(w));
     switch (prof) {
     case Gauss:
-    case GaussAmp:
     case EMG:
         return wSafe * std::sqrt(2.0 * M_LN2);
+    case GaussAmp:
+        return wSafe * 2.0 * std::sqrt(2.0 * M_LN2);
     default:
         return wSafe;
     }
@@ -205,9 +209,10 @@ double MultiPeakFit::wFromPeakFWHM(PeakProfile prof, double fwhm) const
     double fSafe = std::max(1e-15, std::abs(fwhm));
     switch (prof) {
     case Gauss:
-    case GaussAmp:
     case EMG:
         return fSafe / std::sqrt(2.0 * M_LN2);
+    case GaussAmp:
+        return fSafe / (2.0 * std::sqrt(2.0 * M_LN2));
     default:
         return fSafe;
     }
@@ -225,7 +230,7 @@ double MultiPeakFit::peakTrueArea(PeakProfile prof, double rawA, double w) const
     case EMG:
         return aAbs;
     case GaussAmp:
-        return aAbs * wSafe * std::sqrt(M_PI / 2.0);
+        return aAbs * wSafe * std::sqrt(2.0 * M_PI);
     case PearsonVII: {
         double m = std::max(0.55, d_pearson_m);
         double cm = std::pow(2.0, 1.0 / m) - 1.0;
@@ -507,11 +512,13 @@ void MultiPeakFit::setPeakProfile(PeakProfile profile)
 void MultiPeakFit::setLorentzFraction(double mu)
 {
     d_voigt_mu = std::max(0.0, std::min(1.0, mu));
+    d_formula = buildFormula();
 }
 
 void MultiPeakFit::setPearsonShape(double m)
 {
     d_pearson_m = std::max(0.55, m);
+    d_formula = buildFormula();
 }
 
 void MultiPeakFit::setAsymmetryFactor(double alpha)
@@ -520,11 +527,13 @@ void MultiPeakFit::setAsymmetryFactor(double alpha)
         d_asym_alpha = effectiveDoniachAlpha(alpha);
     else
         d_asym_alpha = std::isfinite(alpha) ? std::max(0.05, alpha) : 1.5;
+    d_formula = buildFormula();
 }
 
 void MultiPeakFit::setTailFactor(double tau)
 {
     d_tail_tau = std::max(1e-4, tau);
+    d_formula = buildFormula();
 }
 
 void MultiPeakFit::setBaselineMode(BaselineMode mode)
@@ -629,7 +638,7 @@ void MultiPeakFit::setNumPeaks(int n)
     d_initial_guesses_set = false;
 
     d_param_names = generateParameterList(d_peaks);
-    d_param_explain = generateExplanationList(d_peaks);
+    d_param_explain = generateExplanationList(d_peaks, d_profile, d_per_peak_profiles);
     d_formula = buildFormula();
     updateProfileFunctions();
 }
@@ -655,14 +664,41 @@ QStringList MultiPeakFit::generateParameterList(int peaks)
 
 QStringList MultiPeakFit::generateExplanationList(int peaks)
 {
+    return generateExplanationList(peaks, Gauss);
+}
+
+bool MultiPeakFit::profileUsesAreaParameter(PeakProfile profile)
+{
+    // Area-normalised profiles: the A parameter is the integrated peak area.
+    switch (profile) {
+    case Gauss:
+    case Lorentz:
+    case PseudoVoigt:
+    case Voigt:
+    case EMG:
+        return true;
+    default:
+        return false;
+    }
+}
+
+QStringList MultiPeakFit::generateExplanationList(int peaks, PeakProfile profile,
+                                                  const QVector<PeakProfile> &perPeak)
+{
+    auto aExplain = [&](int i, const QString &index) -> QString {
+        const PeakProfile prof = (i < perPeak.size()) ? perPeak[i] : profile;
+        if (profileUsesAreaParameter(prof))
+            return index.isEmpty() ? tr("(area)") : tr("(area %1)").arg(index);
+        return index.isEmpty() ? tr("(height)") : tr("(height %1)").arg(index);
+    };
     if (peaks == 1)
-        return QStringList() << tr("(amplitude)") << tr("(center)") << tr("(width)")
+        return QStringList() << aExplain(0, QString()) << tr("(center)") << tr("(width)")
                              << tr("(offset)");
 
     QStringList lst;
     for (int i = 0; i < peaks; i++) {
         QString index = QString::number(i + 1);
-        lst << tr("(amplitude %1)").arg(index);
+        lst << aExplain(i, index);
         lst << tr("(center %1)").arg(index);
         lst << tr("(width %1)").arg(index);
     }
@@ -670,38 +706,94 @@ QStringList MultiPeakFit::generateExplanationList(int peaks)
     return lst;
 }
 
+namespace {
+
+QString fmtShape(double v)
+{
+    return QString::number(v, 'g', 10);
+}
+
+// Single peak term with parameter names A<sfx>, xc<sfx>, w<sfx>. The numeric shape constants are
+// the values actually used by the solver, so the formula string reproduces the fitted curve.
+QString peakTerm(const QString &sfx, int profile, double mu, double pearsonM, double alpha,
+                 double tau)
+{
+    const QString A = "A" + sfx, xc = "xc" + sfx, w = "w" + sfx;
+    const QString d = "(x-" + xc + ")";
+    switch (profile) {
+    case MultiPeakFit::Gauss:
+        return "sqrt(2/PI)*" + A + "/" + w + "*exp(-2*" + d + "^2/" + w + "^2)";
+    case MultiPeakFit::Lorentz:
+        return "2*" + A + "/PI*" + w + "/(4*" + d + "^2+" + w + "^2)";
+    case MultiPeakFit::GaussAmp:
+        // OriginPro GaussAmp: w is the standard deviation sigma (FWHM = 2*sqrt(2 ln2)*w)
+        return A + "*exp(-" + d + "^2/(2*" + w + "^2))";
+    case MultiPeakFit::PseudoVoigt:
+    case MultiPeakFit::Voigt: {
+        double eta = std::max(0.0, std::min(1.0, mu));
+        if (profile == MultiPeakFit::Voigt)
+            eta = std::max(0.0, std::min(1.0, 1.36603 * eta - 0.47719 * eta * eta
+                                                      + 0.11116 * eta * eta * eta));
+        return A + "*(" + fmtShape(eta) + "*2/PI*" + w + "/(4*" + d + "^2+" + w + "^2)+"
+                + fmtShape(1.0 - eta) + "*sqrt(4*ln(2)/PI)/" + w + "*exp(-4*ln(2)*" + d + "^2/"
+                + w + "^2))";
+    }
+    case MultiPeakFit::PearsonVII: {
+        const double m = std::max(0.55, pearsonM);
+        return A + "*(1+(2^(1/" + fmtShape(m) + ")-1)*(2*" + d + "/" + w + ")^2)^(-"
+                + fmtShape(m) + ")";
+    }
+    case MultiPeakFit::BiGaussian: {
+        const double a = (alpha > 0.05) ? alpha : 1.5;
+        const QString left = fmtShape(1.0 / (1.0 + a)), right = fmtShape(a / (1.0 + a));
+        return "((x<" + xc + ")?(" + A + "*exp(-ln(2)*(" + d + "/(" + left + "*" + w
+                + "))^2)):(" + A + "*exp(-ln(2)*(" + d + "/(" + right + "*" + w + "))^2)))";
+    }
+    case MultiPeakFit::EMG: {
+        const QString t = fmtShape((tau > 1e-6) ? tau : 1.2);
+        return "(" + A + "/(2*" + t + "))*exp((0.5*" + w + "/" + t + ")^2/2-" + d + "/" + t
+                + ")*erfc((0.5*" + w + "/" + t + "-" + d + "/(0.5*" + w + "))/sqrt(2))";
+    }
+    case MultiPeakFit::LogNormal: {
+        const double a = (std::abs(alpha) > 1e-4) ? std::abs(alpha) : 1.5;
+        const QString twoA = fmtShape(2.0 * a);
+        const QString b = fmtShape(std::log(a + std::sqrt(a * a + 1.0)));
+        return "((1+" + twoA + "*" + d + "/" + w + ">0)?(" + A + "*exp(-ln(2)*(ln(1+" + twoA
+                + "*" + d + "/" + w + ")/" + b + ")^2)):0)";
+    }
+    case MultiPeakFit::Asym2Sig: {
+        const double a = (alpha > 0.05) ? alpha : 1.5;
+        const QString s1 = fmtShape(0.25 / (1.0 + a)), s2 = fmtShape(0.25 * a / (1.0 + a));
+        return A + "*(1/(1+exp(-(" + d + "+" + w + "/2)/(" + s1 + "*" + w + "))))*(1-1/(1+exp(-("
+                + d + "-" + w + "/2)/(" + s2 + "*" + w + "))))";
+    }
+    case MultiPeakFit::DoniachSunjic: {
+        const double a = (!std::isfinite(alpha) || alpha >= 0.85 || alpha < 0.0) ? 0.15 : alpha;
+        const QString al = fmtShape(a);
+        return A + "*cos(PI*" + al + "/2+(1-" + al + ")*atan(2*" + d + "/" + w + "))/(1+4*(" + d
+                + "/" + w + ")^2)^((1-" + al + ")/2)";
+    }
+    }
+    return QString();
+}
+
+} // namespace
+
 QString MultiPeakFit::generateFormula(int peaks, PeakProfile profile)
 {
-    if (peaks == 1) {
-        switch (profile) {
-        case Gauss:
-            return "y0+A*sqrt(2/PI)/w*exp(-2*((x-xc)/w)^2)";
-        case Lorentz:
-            return "y0+2*A/PI*w/(4*(x-xc)^2+w^2)";
-        case GaussAmp:
-            return "y0+A*exp(-2*((x-xc)/w)^2)";
-        case PseudoVoigt:
-            return "y0+A*(0.5*2/PI*w/(4*(x-xc)^2+w^2)+0.5*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
-        case PearsonVII:
-            return "y0+A*(1+(sqrt(2)-1)*(2*(x-xc)/w)^2)^(-2)";
-        case Voigt:
-            return "y0+A*(0.5924*2/PI*w/(4*(x-xc)^2+w^2)+0.4076*sqrt(4*ln(2)/PI)/w*exp(-4*ln(2)*((x-xc)/w)^2))";
-        case BiGaussian:
-            return "y0+((x<xc)?(A*exp(-ln(2)*((x-xc)/(0.4*w))^2)):(A*exp(-ln(2)*((x-xc)/(0.6*w))^2)))";
-        case EMG:
-            return "y0+(A/(2*1.2))*exp((0.5*w/1.2)^2/2-(x-xc)/1.2)*erfc((0.5*w/1.2-(x-xc)/(0.5*w))/sqrt(2))";
-        case LogNormal:
-            return "y0+((1+3*(x-xc)/w>0)?(A*exp(-ln(2)*(ln(1+3*(x-xc)/w)/ln(1.5+sqrt(3.25)))^2)):0)";
-        case Asym2Sig:
-            return "y0+A*(1/(1+exp(-(x-xc+w/2)/(0.1*w))))*(1-1/(1+exp(-(x-xc-w/2)/(0.15*w))))";
-        case DoniachSunjic:
-            return "y0+A*cos(PI*0.15/2+(1-0.15)*atan(2*(x-xc)/w))/(1+4*((x-xc)/w)^2)^((1-0.15)/2)";
-        }
-    }
+    return generateFormula(peaks, profile, 0.5, 2.0, (profile == DoniachSunjic) ? 0.15 : 1.5,
+                           1.2);
+}
+
+QString MultiPeakFit::generateFormula(int peaks, PeakProfile profile, double mu, double pearsonM,
+                                      double asymAlpha, double tailTau)
+{
+    if (peaks == 1)
+        return "y0+" + peakTerm(QString(), profile, mu, pearsonM, asymAlpha, tailTau);
 
     QString formula = "y0+";
     for (int i = 0; i < peaks; i++) {
-        formula += peakFormula(i + 1, profile);
+        formula += peakFormula(i + 1, profile, mu, pearsonM, asymAlpha, tailTau);
         if (i < peaks - 1)
             formula += "+";
     }
@@ -710,57 +802,21 @@ QString MultiPeakFit::generateFormula(int peaks, PeakProfile profile)
 
 QString MultiPeakFit::peakFormula(int peakIndex, PeakProfile profile)
 {
-    QString formula;
-    QString index = QString::number(peakIndex);
-    switch (profile) {
-    case Gauss:
-        formula += "sqrt(2/PI)*A" + index + "/w" + index;
-        formula += "*exp(-2*(x-xc" + index + ")^2/w" + index + "^2)";
-        break;
-    case Lorentz:
-        formula += "2*A" + index + "/PI*w" + index + "/(4*(x-xc" + index + ")^2+w" + index + "^2)";
-        break;
-    case GaussAmp:
-        formula += "A" + index + "*exp(-2*(x-xc" + index + ")^2/w" + index + "^2)";
-        break;
-    case PseudoVoigt:
-        formula += "A" + index + "*(0.5*2/PI*w" + index + "/(4*(x-xc" + index + ")^2+w" + index
-                + "^2)+0.5*sqrt(4*ln(2)/PI)/w" + index + "*exp(-4*ln(2)*(x-xc" + index + ")^2/w"
-                + index + "^2))";
-        break;
-    case PearsonVII:
-        formula += "A" + index + "*(1+(sqrt(2)-1)*(2*(x-xc" + index + ")/w" + index + ")^2)^(-2)";
-        break;
-    case Voigt:
-        formula += "A" + index + "*(0.5924*2/PI*w" + index + "/(4*(x-xc" + index + ")^2+w" + index
-                + "^2)+0.4076*sqrt(4*ln(2)/PI)/w" + index + "*exp(-4*ln(2)*(x-xc" + index + ")^2/w"
-                + index + "^2))";
-        break;
-    case BiGaussian:
-        formula += "((x<xc" + index + ")?(A" + index + "*exp(-ln(2)*((x-xc" + index + ")/(0.4*w"
-                + index + "))^2)):(A" + index + "*exp(-ln(2)*((x-xc" + index + ")/(0.6*w" + index
-                + "))^2)))";
-        break;
-    case EMG:
-        formula += "(A" + index + "/(2*1.2))*exp((0.5*w" + index + "/1.2)^2/2-(x-xc" + index
-                + ")/1.2)*erfc((0.5*w" + index + "/1.2-(x-xc" + index + ")/(0.5*w" + index
-                + "))/sqrt(2))";
-        break;
-    case LogNormal:
-        formula += "((1+3*(x-xc" + index + ")/w" + index + ">0)?(A" + index
-                + "*exp(-ln(2)*(ln(1+3*(x-xc" + index + ")/w" + index
-                + ")/ln(1.5+sqrt(3.25)))^2)):0)";
-        break;
-    case Asym2Sig:
-        formula += "A" + index + "*(1/(1+exp(-(x-xc" + index + "+w" + index + "/2)/(0.1*w" + index
-                + "))))*(1-1/(1+exp(-(x-xc" + index + "-w" + index + "/2)/(0.15*w" + index + "))))";
-        break;
-    case DoniachSunjic:
-        formula += "A" + index + "*cos(PI*0.15/2+(1-0.15)*atan(2*(x-xc" + index + ")/w" + index
-                + "))/(1+4*((x-xc" + index + ")/w" + index + ")^2)^((1-0.15)/2)";
-        break;
-    }
-    return formula;
+    return peakFormula(peakIndex, profile, 0.5, 2.0, (profile == DoniachSunjic) ? 0.15 : 1.5,
+                       1.2);
+}
+
+QString MultiPeakFit::peakFormula(int peakIndex, PeakProfile profile, double mu, double pearsonM,
+                                  double asymAlpha, double tailTau)
+{
+    return peakTerm(QString::number(peakIndex), profile, mu, pearsonM, asymAlpha, tailTau);
+}
+
+QString MultiPeakFit::instancePeakFormula(int peakIndex, PeakProfile profile) const
+{
+    const double alpha = (profile == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha)
+                                                    : d_asym_alpha;
+    return peakFormula(peakIndex, profile, d_voigt_mu, d_pearson_m, alpha, d_tail_tau);
 }
 
 int MultiPeakFit::estimatePeakCount(double minProminenceRatio) const
@@ -1088,7 +1144,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
             AOut = usesCustomMultiPeakCallbacks() ? (M_PI_2 * H * wOut) : (H * wOut);
             break;
         case GaussAmp:
-            wOut = fwhm / std::sqrt(2.0 * M_LN2);
+            wOut = fwhm / (2.0 * std::sqrt(2.0 * M_LN2));
             AOut = H;
             break;
         case PseudoVoigt: {
@@ -1631,6 +1687,7 @@ void MultiPeakFit::setPerPeakProfiles(const QVector<PeakProfile> &profiles)
         setNumPeaks(profiles.size());
     d_per_peak_profiles = profiles;
     d_explanation = tr("Mixed-Profile(%1) multi-peak").arg(d_peaks);
+    d_param_explain = generateExplanationList(d_peaks, d_profile, d_per_peak_profiles);
     d_formula = buildFormula();
     updateProfileFunctions();
 
@@ -1727,7 +1784,7 @@ double MultiPeakFit::evalPeakAt(const std::vector<double> &par, int peakIndex, d
         return signA * a_raw * w / (4.0 * diff * diff + w * w);
     }
     case GaussAmp:
-        return (d_negative_peaks_allowed ? A : absA) * std::exp(-2.0 * diff * diff / (w * w));
+        return (d_negative_peaks_allowed ? A : absA) * std::exp(-0.5 * diff * diff / (w * w));
     case PseudoVoigt: {
         const double kG = 4.0 * M_LN2;
         const double cG = std::sqrt(kG / M_PI);
@@ -1931,7 +1988,7 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
         formula += QString("%1=%2\n\ny0+%3")
                            .arg(d_param_names[d_p - 1])
                            .arg(effY0, 1, 'g', d_prec)
-                           .arg(peakFormula(peak + 1, peakProfileAt(peak)));
+                           .arg(instancePeakFormula(peak + 1, peakProfileAt(peak)));
         c->setFormula(formula);
     }
     d_graph->insertPlotItem(c, Graph::Line);
@@ -2135,8 +2192,8 @@ void MultiPeakFit::evalSinglePeakMetrics(PeakProfile prof, double signedRawA, do
         break;
     case GaussAmp:
         height = rawA;
-        fwhm = wSafe * std::sqrt(2.0 * M_LN2);
-        area = rawA * wSafe * std::sqrt(M_PI / 2.0);
+        fwhm = wSafe * 2.0 * std::sqrt(2.0 * M_LN2);
+        area = rawA * wSafe * std::sqrt(2.0 * M_PI);
         break;
     case PseudoVoigt: {
         area = rawA;
@@ -2410,6 +2467,66 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
     return rows;
 }
 
+namespace {
+
+// "2θ / deg", "Intensity (cps)", "Load [N]" -> "deg", "cps", "N"
+QString unitFromAxisTitle(const QString &rawTitle)
+{
+    QString t = rawTitle;
+    t.remove(QRegExp(QStringLiteral("<[^>]*>")));
+    t.replace(QStringLiteral("&sigma;"), QString(QChar(0x03C3)));
+    t.replace(QStringLiteral("&theta;"), QString(QChar(0x03B8)));
+    t.replace(QStringLiteral("&mu;"), QString(QChar(0x03BC)));
+    t = t.trimmed();
+    if (t.isEmpty())
+        return QString();
+    const int slash = t.lastIndexOf(QStringLiteral(" / "));
+    if (slash >= 0)
+        return t.mid(slash + 3).trimmed();
+    QRegExp br(QStringLiteral("[\\(\\[]([^\\(\\)\\[\\]]+)[\\)\\]]\\s*$"));
+    if (br.indexIn(t) >= 0)
+        return br.cap(1).trimmed();
+    return QString();
+}
+
+QString bracketUnit(const QString &u)
+{
+    return u.isEmpty() ? QString() : (QStringLiteral(" [") + u + QStringLiteral("]"));
+}
+
+} // namespace
+
+void MultiPeakFit::resolveDataUnits(QString &xUnit, QString &yUnit) const
+{
+    xUnit.clear();
+    yUnit.clear();
+    if (const DataCurve *dc = dynamic_cast<const DataCurve *>(d_curve)) {
+        if (Table *tbl = dc->table()) {
+            if (Column *cx = tbl->column(dc->xColumnName()))
+                xUnit = cx->units().trimmed();
+            if (Column *cy = tbl->column(dc->yColumnName()))
+                yUnit = cy->units().trimmed();
+        }
+    }
+    if (d_graph && d_curve) {
+        if (xUnit.isEmpty())
+            xUnit = unitFromAxisTitle(d_graph->axisTitle(d_curve->xAxis()));
+        if (yUnit.isEmpty())
+            yUnit = unitFromAxisTitle(d_graph->axisTitle(d_curve->yAxis()));
+    }
+}
+
+QString MultiPeakFit::areaUnit(const QString &xUnit, const QString &yUnit)
+{
+    if (xUnit.isEmpty() && yUnit.isEmpty())
+        return QString();
+    if (xUnit.isEmpty())
+        return yUnit;
+    if (yUnit.isEmpty())
+        return xUnit;
+    return yUnit + QString(QChar(0x00B7)) + xUnit;
+}
+
 QString MultiPeakFit::logFitInfo(const vector<double> &par, int iterations, int status,
                                  const QString &plotName)
 {
@@ -2426,8 +2543,13 @@ QString MultiPeakFit::logFitInfo(const vector<double> &par, int iterations, int 
         return s;
     };
 
-    info += tr("Peak #") + "\t" + tr("Center (xc)") + "\t" + tr("FWHM") + "\t" + tr("Height") + "\t"
-            + tr("Area") + "\t" + tr("Area (%)") + "\t" + tr("Baseline (y0)") + "\n";
+    QString xU, yU;
+    resolveDataUnits(xU, yU);
+    const QString aU = areaUnit(xU, yU);
+    info += tr("Peak #") + "\t" + tr("Center (xc)") + bracketUnit(xU) + "\t" + tr("FWHM")
+            + bracketUnit(xU) + "\t" + tr("Height") + bracketUnit(yU) + "\t" + tr("Area")
+            + bracketUnit(aU) + "\t" + tr("Area (%)") + "\t" + tr("Baseline (y0)")
+            + bracketUnit(yU) + "\n";
     info += "--------------------------------------------------------------------------------------"
             "-\n";
     for (const auto &r : rows) {
@@ -2483,6 +2605,17 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
         t->column(10)->setValueAt(i, rows[i].heightSE);
         t->column(11)->setValueAt(i, rows[i].areaSE);
     }
+
+    QString xU, yU;
+    resolveDataUnits(xU, yU);
+    const QString aU = areaUnit(xU, yU);
+    for (int col : { 1, 2, 8, 9 })
+        t->column(col)->setUnits(xU);
+    for (int col : { 3, 6, 10 })
+        t->column(col)->setUnits(yU);
+    for (int col : { 4, 11 })
+        t->column(col)->setUnits(aU);
+    t->column(5)->setUnits(QStringLiteral("%"));
 
     t->showNormal();
     return t;

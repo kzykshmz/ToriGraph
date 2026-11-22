@@ -158,8 +158,13 @@ signals:
     void clearFunctionsList();
     void saveFunctionsList(const QStringList &);
 
+public:
+    //! Selects a built-in model by name (search box); returns false when not found
+    bool jumpToModel(const QString &entry);
+
 private:
     void clearPreviewCurve();
+    QLineEdit *modelSearchBox = nullptr;
 
     Fit *d_fitter;
     Graph *d_graph;

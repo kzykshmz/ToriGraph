@@ -119,6 +119,12 @@ public:
     static QString generateFormula(int order, PeakProfile profile);
     static QStringList generateParameterList(int order);
     static QStringList generateExplanationList(int order);
+    static QString generateFormula(int peaks, PeakProfile profile, double mu, double pearsonM,
+                                   double asymAlpha, double tailTau);
+    static QStringList generateExplanationList(int peaks, PeakProfile profile,
+                                               const QVector<PeakProfile> &perPeak = {});
+    //! true when the A parameter of the profile is the integrated area (Gauss, Lorentz, ...)
+    static bool profileUsesAreaParameter(PeakProfile profile);
 
     bool autoDetectPeaks(int maxPeaks = 0, double minProminenceRatio = 0.08);
     int estimatePeakCount(double minProminenceRatio = 0.08) const;
@@ -190,6 +196,11 @@ private:
     QString logFitInfo(const std::vector<double> &, int, int, const QString &) override;
     void generateFitCurve(const std::vector<double> &) override;
     static QString peakFormula(int peakIndex, PeakProfile profile);
+    static QString peakFormula(int peakIndex, PeakProfile profile, double mu, double pearsonM,
+                               double asymAlpha, double tailTau);
+    QString instancePeakFormula(int peakIndex, PeakProfile profile) const;
+    void resolveDataUnits(QString &xUnit, QString &yUnit) const;
+    static QString areaUnit(const QString &xUnit, const QString &yUnit);
     //! Inserts a peak function curve into the plot
     void insertPeakFunctionCurve(std::vector<double> &x, std::vector<double> &y, int peak);
     std::vector<double> evaluateSubtractedBaselineOnGrid(const std::vector<double> &X) const;

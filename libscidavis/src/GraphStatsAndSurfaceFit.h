@@ -36,6 +36,9 @@ public:
     struct SurfaceFitResult
     {
         bool converged = false;
+        //! Empty when converged; otherwise why not (max iterations, no progress, failure)
+        QString convergenceNote;
+        int iterations = 0;
         double rSquare = 0.0;
         double adjRSquare = 0.0;
         double reducedChi2 = 0.0;

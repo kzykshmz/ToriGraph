@@ -21540,12 +21540,13 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const double chi2Val = nlf.chiSquare();
         const bool validChi2 = customFormulaSyntaxOk && std::isfinite(chi2Val) && chi2Val >= 0.0;
-        const bool converged = validChi2 && !nlf.error() && !resVec.empty()
+        const bool converged = validChi2 && !nlf.error() && !resVec.empty() && nlf.converged()
                 && std::all_of(resVec.begin(), resVec.end(),
                                [](double v) { return std::isfinite(v); });
 
         outResult[QStringLiteral("ok")] = converged;
         outResult[QStringLiteral("converged")] = converged;
+        outResult[QStringLiteral("convergence_message")] = nlf.convergenceMessage();
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("curve")] = curveTitle;
         outResult[QStringLiteral("model")] = modelName.isEmpty() ? customFormula : modelName;
@@ -22415,6 +22416,7 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
         outResult[QStringLiteral("ok")] = sr.converged;
         outResult[QStringLiteral("converged")] = sr.converged;
+        outResult[QStringLiteral("convergence_message")] = sr.convergenceNote;
         outResult[QStringLiteral("r2")] = safeJsonDouble(sr.rSquare);
         outResult[QStringLiteral("adj_r2")] = safeJsonDouble(sr.adjRSquare);
         outResult[QStringLiteral("chi2_dof")] = safeJsonDouble(sr.reducedChi2);
@@ -22689,6 +22691,8 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         }
 
         outResult[QStringLiteral("ok")] = !peaksArr.isEmpty();
+        outResult[QStringLiteral("converged")] = mpf.converged();
+        outResult[QStringLiteral("convergence_message")] = mpf.convergenceMessage();
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("curve")] = curveTitle;
         outResult[QStringLiteral("peak_count")] = peaksArr.size();

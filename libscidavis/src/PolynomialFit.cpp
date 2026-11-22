@@ -38,6 +38,7 @@
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 
+#include <QApplication>
 #include <QMessageBox>
 #include <QLocale>
 
@@ -46,10 +47,28 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 using namespace std;
 
 namespace {
+
+// Reports why an apparent (log-space) linear fit cannot run, instead of returning silently.
+static void reportApparentFitShortage(Fit *fit, ApplicationWindow *app, bool silent, int needed,
+                                      int remaining)
+{
+    const QString msg =
+            QObject::tr("Apparent linear fit needs at least %1 points with positive values on the "
+                        "logarithmic axis, but only %2 remain after excluding non-positive values.")
+                    .arg(needed)
+                    .arg(remaining);
+    if (app && app->writeFitResultsToLog && !silent)
+        app->updateLog(QStringLiteral("[") + fit->objectName() + QStringLiteral("] ") + msg
+                       + QStringLiteral("\n"));
+    if (!silent && app && !app->isHeadlessMode()
+        && !(qApp && qApp->property("torigraph_noninteractive").toBool()))
+        QMessageBox::warning(app, QObject::tr("Fit Error"), msg);
+}
 
 static bool isGraphAxisLog10(Graph *g, int axis)
 {
@@ -274,10 +293,16 @@ void PolynomialFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_straight_line_fit = false;
+    d_convergence = Converged;
+    d_fit_notes.clear();
     int xAx = d_curve ? d_curve->xAxis() : QwtPlot::xBottom;
     int yAx = d_curve ? d_curve->yAxis() : QwtPlot::yLeft;
     d_app_log_x = d_apparent_fit && isGraphAxisLog10(d_graph, xAx);
     d_app_log_y = d_apparent_fit && isGraphAxisLog10(d_graph, yAx);
+    if (d_apparent_fit && !d_app_log_x && !d_app_log_y)
+        d_fit_notes << tr("Apparent linear fit: no axis is logarithmic, so an ordinary linear fit "
+                          "was performed.");
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
         const std::vector<double> baseW = computeWeightsVector();
@@ -302,8 +327,21 @@ void PolynomialFit::fit()
                 wt.push_back(std::max(1e-30, w_trans));
             }
         }
-        if (xt.size() < size_t(d_p))
+        if (xt.size() < d_x.size())
+            d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
+                              "log-space fit.")
+                                   .arg(int(d_x.size() - xt.size()))
+                                   .arg(int(d_x.size()));
+        if (xt.size() < size_t(d_p)) {
+            chi_2 = -1.0;
+            d_y_fit.clear();
+            d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, int(d_p),
+                                      int(xt.size()));
             return;
+        }
+        if (d_p == 2)
+            setStraightLinePearson(xt, yt);
 
         gsl_matrix *X = gsl_matrix_alloc(xt.size(), d_p);
         gsl_vector *c = gsl_vector_alloc(d_p);
@@ -384,7 +422,11 @@ void PolynomialFit::fit()
         applyExplicitInitialGuesses();
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
+        if (d_p == 2)
+            setStraightLinePearson(d_x, d_y);
     } else {
+        if (d_p == 2)
+            setStraightLinePearson(d_x, d_y);
         const size_t n = d_x.size();
         const std::vector<double> weightsVec = computeWeightsVector();
         d_y_errors.resize(n, 1.0);
@@ -545,10 +587,16 @@ void LinearFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_straight_line_fit = false;
+    d_convergence = Converged;
+    d_fit_notes.clear();
     int xAx = d_curve ? d_curve->xAxis() : QwtPlot::xBottom;
     int yAx = d_curve ? d_curve->yAxis() : QwtPlot::yLeft;
     d_app_log_x = d_apparent_fit && isGraphAxisLog10(d_graph, xAx);
     d_app_log_y = d_apparent_fit && isGraphAxisLog10(d_graph, yAx);
+    if (d_apparent_fit && !d_app_log_x && !d_app_log_y)
+        d_fit_notes << tr("Apparent linear fit: no axis is logarithmic, so an ordinary linear fit "
+                          "was performed.");
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
         const std::vector<double> baseW = computeWeightsVector();
@@ -573,8 +621,20 @@ void LinearFit::fit()
                 wt.push_back(std::max(1e-30, w_trans));
             }
         }
-        if (xt.size() < 2)
+        if (xt.size() < d_x.size())
+            d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
+                              "log-space fit.")
+                                   .arg(int(d_x.size() - xt.size()))
+                                   .arg(int(d_x.size()));
+        if (xt.size() < 2) {
+            chi_2 = -1.0;
+            d_y_fit.clear();
+            d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, 2,
+                                      int(xt.size()));
             return;
+        }
+        setStraightLinePearson(xt, yt);
 
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
         gsl_fit_wlinear(xt.data(), 1, wt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00,
@@ -623,7 +683,9 @@ void LinearFit::fit()
         applyExplicitInitialGuesses();
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
+        setStraightLinePearson(d_x, d_y);
     } else {
+        setStraightLinePearson(d_x, d_y);
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
         const size_t n = d_x.size();
         const std::vector<double> weights = computeWeightsVector();
@@ -901,6 +963,9 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     d_app_log_x = false;
     d_app_log_y = false;
+    d_convergence = Converged;
+    d_fit_notes.clear();
+    setStraightLinePearson(d_x, d_y);
     d_results.resize(2);
     d_results[0] = a;
     d_results[1] = b;
