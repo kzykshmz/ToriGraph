@@ -30,7 +30,12 @@
  ***************************************************************************/
 #include "SmoothFilter.h"
 
+#include "ApplicationWindow.h"
+#include "I18nJapanese.h"
+
 #include <QApplication>
+#include <QDateTime>
+#include <QLocale>
 #include <QMessageBox>
 
 #include <algorithm>
@@ -55,6 +60,38 @@ SmoothFilter::SmoothFilter(ApplicationWindow *parent, Graph *g, const QString &c
 {
     setDataFromCurve(curveTitle, start, end);
     init(m);
+}
+
+namespace {
+
+void registerSmoothNoticeTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("X is not equally spaced (largest step deviation %1 %); Savitzky-Golay used a local polynomial in the real X values.",
+        "X が等間隔ではありません (刻みのずれ最大 %1 %)。Savitzky-Golay 平滑化は実際の X 値で局所多項式を当てはめました。");
+    reg("X is not monotonic; %1 used the point order, not the X values.",
+        "X が単調ではありません。%1 は X 値ではなく点の並び順で処理しました。");
+    reg("X is not equally spaced (largest step deviation %1 %); %2 uses the point index, not the X values, so the window width varies along X.",
+        "X が等間隔ではありません (刻みのずれ最大 %1 %)。%2 は X 値ではなく点番号で処理するため、X 方向の窓幅が場所によって変わります。");
+    reg("FFT smoothing assumes equal X spacing; the spacing of the first two points was used.",
+        "FFT 平滑化は X の等間隔を前提とし、先頭 2 点の間隔を使いました。");
+}
+
+} // namespace
+
+QString SmoothFilter::logInfo()
+{
+    if (d_notice.isEmpty())
+        return QString();
+    return QStringLiteral("[%1] %2: %3\n")
+            .arg(QLocale().toString(QDateTime::currentDateTime()), d_explanation, d_notice);
 }
 
 void SmoothFilter::init(int m)
@@ -96,20 +133,61 @@ void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<doubl
         y[i] = d_y[i]; // filtering frequencies
     }
 
+    // Inspect the X spacing: the index-based methods (SG convolution, moving average, Whittaker,
+    // median, FFT) treat the points as equally spaced. Tell the user when that is not true.
+    registerSmoothNoticeTranslationsOnce();
+    d_notice.clear();
+    bool monotonic = (nCopy >= 2);
+    bool uniform = true;
+    double maxDevPct = 0.0;
+    if (nCopy >= 3) {
+        const double meanStep = (d_x[size_t(nCopy - 1)] - d_x[0]) / double(nCopy - 1);
+        for (int i = 1; i < nCopy; ++i) {
+            const double dx = d_x[size_t(i)] - d_x[size_t(i - 1)];
+            if (!(dx * meanStep > 0.0))
+                monotonic = false;
+            if (std::fabs(meanStep) > 0.0)
+                maxDevPct = std::max(maxDevPct, 100.0 * std::fabs(dx - meanStep) / std::fabs(meanStep));
+        }
+        uniform = monotonic && maxDevPct <= 0.1;
+    }
+    const QString devStr = QString::number(maxDevPct, 'g', 3);
+    auto indexNotice = [&](const QString &methodName) {
+        if (uniform)
+            return;
+        d_notice = monotonic
+                ? tr("X is not equally spaced (largest step deviation %1 %); %2 uses the point index, not the X values, so the window width varies along X.")
+                          .arg(devStr, methodName)
+                : tr("X is not monotonic; %1 used the point order, not the X values.").arg(methodName);
+    };
+
     switch ((int)d_method) {
     case SavitzkyGolay:
         d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
                 + tr("Savitzky-Golay smoothing");
-        smoothSavGol(x, y);
+        if (!uniform && monotonic) {
+            // Real-coordinate local polynomial: identical to SG for equal spacing.
+            d_notice = tr("X is not equally spaced (largest step deviation %1 %); Savitzky-Golay used a local polynomial in the real X values.")
+                               .arg(devStr);
+            smoothModifiedSavGol(x, y);
+        } else {
+            if (!monotonic && nCopy >= 3)
+                d_notice = tr("X is not monotonic; %1 used the point order, not the X values.")
+                                   .arg(tr("Savitzky-Golay smoothing"));
+            smoothSavGol(x, y);
+        }
         break;
     case FFT:
         d_explanation =
                 QString::number(d_right_points) + " " + tr("points") + " " + tr("FFT smoothing");
+        if (!uniform)
+            d_notice = tr("FFT smoothing assumes equal X spacing; the spacing of the first two points was used.");
         smoothFFT(x, y);
         break;
     case Average:
         d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
                 + tr("average smoothing");
+        indexNotice(tr("average smoothing"));
         smoothAverage(x, y);
         break;
     case LOWESS:
@@ -119,11 +197,13 @@ void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<doubl
     case Whittaker:
         d_explanation = tr("Whittaker smoothing")
                 + QString(" (lambda=%1)").arg(d_whittaker_lambda, 0, 'g', 4);
+        indexNotice(tr("Whittaker smoothing"));
         smoothWhittaker(x, y);
         break;
     case Median:
         d_explanation = QString::number(d_right_points) + " " + tr("points") + " "
                 + tr("median smoothing");
+        indexNotice(tr("median smoothing"));
         smoothMedian(x, y);
         break;
     }
@@ -248,16 +328,9 @@ int SmoothFilter::savitzkyGolayCoefficients(int points, int polynom_order, gsl_m
  * operation can be implemented as a convolution. This is considerably more efficient than a more
  * generic method (see smoothModifiedSavGol()) able to handle non-uniform input data.
  *
- * There are at least three possible approaches to handling edges of the data vector (cutting them
- * off, zero padding and using the left-/rightmost smoothing polynomial for computing smoothed
- * values near the edges). Zero-padding is a particularly bad choice for signals with a distinctly
- * non-zero baseline and cutting off edges makes further computations on the original and smoothed
- * signals more difficult; therefore, deviating from the user-specified number of left/right
- * adjacent points (by smoothing over a fixed window at the edges) would be the least annoying
- * alternative; if it were not for the fact that previous versions of SciDAVis had a different
- * behaviour and such a subtle change to the behaviour would be even more annoying, especially
- * between bugfix releases. TODO: reconsider issue for next minor release (also: would it help
- * to add an "edge behaviour" option to the UI?)
+ * Edges: the left-/rightmost full window is fitted once and its polynomial is evaluated at the
+ * edge points (one-sided polynomial, as in Origin). Earlier versions zero-padded the edges, which
+ * pulled both ends towards 0 for signals with a non-zero baseline.
  */
 void SmoothFilter::smoothSavGol(std::vector<double>&, std::vector<double>&  y_inout)
 {
@@ -302,21 +375,13 @@ void SmoothFilter::smoothSavGol(std::vector<double>&, std::vector<double>&  y_in
     // it)
     std::vector<double> result(y_inout.size());
 
-    // near left edge: use interpolation of (points) left-most input values
-    // i.e. we deviate from the specified left/right points to use
-    /*
-    for (int i=0; i<d_left_points; i++) {
-            double convolution = 0.0;
-            for (int k=0; k<points; k++)
-                    convolution += gsl_matrix_get(h, i, k) * y_inout[k];
-            result[i] =  convolution;
-    }
-    */
-    // legacy behaviour: handle left edge by zero padding
+    // Edges: evaluate the least-squares polynomial of the first / last full window at the edge
+    // point (one-sided polynomial). The former zero padding pulled both ends towards 0, which is
+    // wrong for signals with a non-zero baseline (stress, intensity, ...).
     for (int i = 0; i < d_left_points; i++) {
         double convolution = 0.0;
-        for (int k = d_left_points - i; k < points; k++)
-            convolution += gsl_matrix_get(h, d_left_points, k) * y_inout[i - d_left_points + k];
+        for (int k = 0; k < points; k++)
+            convolution += gsl_matrix_get(h, i, k) * y_inout[k];
         result[i] = convolution;
     }
     // central part: convolve with fixed row of h (as given by number of left points to use)
@@ -326,11 +391,12 @@ void SmoothFilter::smoothSavGol(std::vector<double>&, std::vector<double>&  y_in
             convolution += gsl_matrix_get(h, d_left_points, k) * y_inout[i - d_left_points + k];
         result[i] = convolution;
     }
-    // legacy behaviour: handle right edge by zero padding
-    for (unsigned i = y_inout.size() - d_right_points; i < y_inout.size(); i++) {
+    // right edge: last full window, row (i - offset) of H
+    const size_t rightOffset = y_inout.size() - size_t(points);
+    for (size_t i = y_inout.size() - size_t(d_right_points); i < y_inout.size(); i++) {
         double convolution = 0.0;
-        for (unsigned k = 0; i - d_left_points + k < y_inout.size(); k++)
-            convolution += gsl_matrix_get(h, d_left_points, k) * y_inout[i - d_left_points + k];
+        for (int k = 0; k < points; k++)
+            convolution += gsl_matrix_get(h, int(i - rightOffset), k) * y_inout[rightOffset + k];
         result[i] = convolution;
     }
 
@@ -398,13 +464,21 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
         else if (unsigned(target_index + d_right_points) >= y_inout.size())
             offset += y_inout.size() - 1 - (target_index + d_right_points);
 
-        // fill Vandermonde matrix
+        // fill Vandermonde matrix in centred, scaled coordinates t = (x - x_target) / s so that
+        // the fit stays well conditioned for large X offsets (e.g. time stamps, 2 theta)
+        const double xt = x_in[target_index];
+        double sc = 0.0;
+        for (int i = 0; i < points; ++i)
+            sc = std::max(sc, std::fabs(x_in[offset + i] - xt));
+        if (!(sc > 0.0))
+            sc = 1.0;
         for (int i = 0; i < points; ++i) {
             gsl_matrix_set(vandermonde, i, 0, 1.0);
             for (int j = 1; j <= d_polynom_order; ++j)
                 gsl_matrix_set(vandermonde, i, j,
-                               gsl_matrix_get(vandermonde, i, j - 1) * x_in[offset + i]);
+                               gsl_matrix_get(vandermonde, i, j - 1) * ((x_in[offset + i] - xt) / sc));
         }
+        result[target_index] = y_inout[target_index];
 
         // Y values within current smoothing window
         gsl_vector_view y_slice = gsl_vector_view_array(y_inout.data() + offset, points);
@@ -429,8 +503,7 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
                                               + gsl_strerror(error));
         }
         else
-            result[target_index] =
-                    gsl_poly_eval(poly->data, d_polynom_order + 1, x_in[target_index]);
+            result[target_index] = gsl_vector_get(poly, 0); // polynomial value at t = 0
     }
 
     // deallocate memory

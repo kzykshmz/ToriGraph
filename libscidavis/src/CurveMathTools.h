@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QVector>
 #include <limits>
+#include <vector>
 
 class ApplicationWindow;
 class Graph;
@@ -52,6 +53,11 @@ public:
     static QwtPlotCurve *normalizeCurve(ApplicationWindow *app, Graph *g,
                                         const QString &curveTitle, NormMode mode,
                                         double refX = 0.0);
+    //! Shared normalisation kernel (menu dialog and recalculation engine). xs must be sorted
+    //! ascending for UnitArea. refValue is used only by DivideByRefX.
+    static std::vector<double> normalizeValues(const std::vector<double> &xs,
+                                               const std::vector<double> &ys, NormMode mode,
+                                               double refValue = 0.0);
     static QVector<QPointF> findCurveIntersections(Graph *g, const QString &curveA,
                                                    const QString &curveB,
                                                    bool markOnGraph = true,
@@ -64,6 +70,9 @@ public:
 
     struct ArrheniusResult {
         bool valid = false;
+        QString error;          // reason when valid == false
+        int excludedCount = 0;  // rows dropped (non-numeric, T <= 0 K, rate <= 0)
+        QStringList notes;      // exclusion summary (also written to the log)
         double activationEnergyKJmol = 0.0;
         double activationEnergyKJmolSE = 0.0;
         double activationEnergyEV = 0.0;
@@ -174,9 +183,25 @@ public:
         double rSquare = 0.0;
         QVector<double> heatingRatesKmin;
         QVector<double> peakTempsK;
+        int excludedCount = 0; // pairs dropped (non-finite, rate <= 0, Tp <= 0 K)
+        QStringList notes;     // exclusion summary (also written to the log)
         Table *resultTable = nullptr;
         MultiLayer *plot = nullptr;
     };
+    //! Peak centre picked from a peak-fit result table (PeakSummary / PeakIntegration /
+    //! BatchPeakSummary) for the Kissinger analysis.
+    struct PeakFitCenter {
+        QString source; // table name, or curve name for batch tables
+        double center = 0.0;
+    };
+    //! True when the table looks like a peak-fit result table (has "Peak" and "Center" columns).
+    static bool isPeakFitResultTable(Table *t);
+    //! Returns, for every source (one per table, or one per curve of a batch table), the centre
+    //! of the peakNumber-th peak counted from the lowest centre (1-based). Sources lacking that
+    //! peak are listed in *missingSources.
+    static QVector<PeakFitCenter> collectPeakFitCenters(const QList<Table *> &tables,
+                                                        int peakNumber,
+                                                        QStringList *missingSources = nullptr);
     static KissingerResult analyzeKissinger(ApplicationWindow *app,
                                             const QVector<double> &heatingRates,
                                             const QVector<double> &peakTemps,
@@ -217,10 +242,17 @@ public:
         QString error;
         double wavelengthAngstrom = 1.540598;
         double meanScherrerSizeNm = 0.0;
-        double whSizeNm = 0.0;
-        double whMicrostrain = 0.0;
+        double whSizeNm = 0.0;     // NaN when W-H has no physical solution (intercept <= 0)
+        double whMicrostrain = 0.0; // NaN when the W-H slope is negative (no physical solution)
         double whRSquare = 0.0;
+        double whSlopeRaw = 0.0;     // unclipped W-H regression slope (= 4 eps form: beta cos = a + eps * 4 sin)
+        double whInterceptRaw = 0.0; // unclipped W-H regression intercept (= K lambda / D)
+        bool whPhysical = false;     // true only when slope >= 0 and intercept > 0
         double latticeParamAngstrom = 0.0;
+        QString anodeName;            // matched X-ray tube anode ("Cu", "Co", ...) or empty
+        double kAlpha2Angstrom = 0.0; // Ka2 wavelength used for stripping (0 = none)
+        bool kAlpha2Stripped = false;
+        QStringList notes;            // warnings / processing notes (also written to the log)
         QVector<XRDPeakEntry> peaks;
         Table *peakTable = nullptr;
         MultiLayer *whPlot = nullptr;
@@ -236,6 +268,19 @@ public:
                                         bool createWilliamsonHallPlot = true,
                                         double cOverA = 1.633);
     static void showXRDAnalyzerDialog(ApplicationWindow *app);
+
+    //! Characteristic Ka1 / Ka2 wavelengths (Angstrom) of common X-ray tube anodes.
+    struct XRayAnodeLines {
+        QString anode;
+        double kAlpha1 = 0.0;
+        double kAlpha2 = 0.0;
+        double kAlphaAvg = 0.0; // intensity-weighted (2 Ka1 + Ka2) / 3
+    };
+    static QVector<XRayAnodeLines> xrayAnodeTable();
+    //! Matches a wavelength to an anode (Ka1 or weighted Ka average, relative tolerance 2e-4).
+    //! Returns false when no anode matches. *matchedAverage tells which line matched.
+    static bool matchXRayAnode(double wavelengthAngstrom, XRayAnodeLines *out,
+                               bool *matchedAverage = nullptr);
 
     struct VaspPlotResult {
         bool valid = false;

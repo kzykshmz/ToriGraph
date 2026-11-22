@@ -1770,8 +1770,11 @@ void RoiGadgetTool::recalculate()
         const double py = curve->y(i);
         if (!std::isfinite(px) || !std::isfinite(py))
             continue;
-        if (px < roi.left() - roiEpsX || px > roi.right() + roiEpsX
-            || py < roi.top() - roiEpsY || py > roi.bottom() + roiEpsY)
+        if (px < roi.left() - roiEpsX || px > roi.right() + roiEpsX)
+            continue;
+        // Integrate uses the ROI's X range only (as Origin's Integrate gadget and the Delta
+        // Cursor do); dropping points by Y would cut peaks that stick out of the box.
+        if (d_mode != Integrate && (py < roi.top() - roiEpsY || py > roi.bottom() + roiEpsY))
             continue;
 
         const bool masked = (dc != nullptr) && dc->isPointMasked(i);
@@ -2407,10 +2410,77 @@ void RoiGadgetTool::recalculate()
     }
 
     case Integrate: {
-        const double xFront = xv.front();
-        const double xBack = xv.back();
-        const double yFront = yv.front();
-        const double yBack = yv.back();
+        // Endpoints: linearly interpolate the curve at roi.left() / roi.right() (clamped to the
+        // data range) exactly like the Delta Cursor, instead of starting and ending at the first
+        // and last sample inside the box. Only for curves monotonic in X.
+        std::vector<double> ixv = xv;
+        std::vector<double> iyv = yv;
+        if (!hasXReversals) {
+            std::vector<std::pair<double, double>> full;
+            full.reserve(size_t(nTotal));
+            for (int i = 0; i < nTotal; ++i) {
+                const double px = curve->x(i);
+                const double py = curve->y(i);
+                if (!std::isfinite(px) || !std::isfinite(py))
+                    continue;
+                if (dc && dc->isPointMasked(i))
+                    continue;
+                full.emplace_back(px, py);
+            }
+            const bool fullRev =
+                    sequenceHasXReversals(full, [](const std::pair<double, double> &p) { return p.first; });
+            if (!fullRev && full.size() >= 2) {
+                std::stable_sort(full.begin(), full.end(),
+                                 [](const auto &p, const auto &q) { return p.first < q.first; });
+                const double lo = std::max(roi.left(), full.front().first);
+                const double hi = std::min(roi.right(), full.back().first);
+                auto interpFull = [&](double xq) -> double {
+                    auto it = std::lower_bound(full.begin(), full.end(), xq,
+                                               [](const auto &pt, double v) { return pt.first < v; });
+                    if (it == full.begin())
+                        return full.front().second;
+                    if (it == full.end())
+                        return full.back().second;
+                    const auto &p1 = *it;
+                    const auto &p0 = *(it - 1);
+                    const double dx = p1.first - p0.first;
+                    return (std::fabs(dx) > 1e-300)
+                            ? (p0.second + (xq - p0.first) / dx * (p1.second - p0.second))
+                            : p1.second;
+                };
+                if (hi > lo) {
+                    ixv.clear();
+                    iyv.clear();
+                    const double tolX = 1e-12 * std::max(1.0, hi - lo);
+                    ixv.push_back(lo);
+                    iyv.push_back(interpFull(lo));
+                    for (const auto &p : full) {
+                        if (p.first > lo + tolX && p.first < hi - tolX) {
+                            ixv.push_back(p.first);
+                            iyv.push_back(p.second);
+                        }
+                    }
+                    ixv.push_back(hi);
+                    iyv.push_back(interpFull(hi));
+                }
+            }
+        }
+        const size_t nI = ixv.size();
+        double iMinY = iyv.front(), iMaxY = iyv.front(), iXAtMax = ixv.front();
+        int iMaxIdx = 0;
+        for (size_t i = 1; i < nI; ++i) {
+            iMinY = std::min(iMinY, iyv[i]);
+            if (iyv[i] > iMaxY) {
+                iMaxY = iyv[i];
+                iXAtMax = ixv[i];
+                iMaxIdx = static_cast<int>(i);
+            }
+        }
+
+        const double xFront = ixv.front();
+        const double xBack = ixv.back();
+        const double yFront = iyv.front();
+        const double yBack = iyv.back();
         const double xSpan = xBack - xFront;
 
         auto evalBaseline = [&](double xVal) -> double {
@@ -2420,22 +2490,22 @@ void RoiGadgetTool::recalculate()
                 return yFront + ((yBack - yFront) / xSpan) * (xVal - xFront);
             }
             if (d_integrate_baseline == BaseRoiMin)
-                return minY;
+                return iMinY;
             return 0.0;
         };
 
         double area = 0.0;
         double absArea = 0.0;
         double absMomX = 0.0;
-        for (size_t i = 0; i + 1 < n; ++i) {
-            const double dx = xv[i + 1] - xv[i];
+        for (size_t i = 0; i + 1 < nI; ++i) {
+            const double dx = ixv[i + 1] - ixv[i];
             if (!hasXReversals && dx <= 0.0)
                 continue;
             const double adx = std::fabs(dx);
             if (adx <= 0.0)
                 continue;
-            const double h0 = yv[i] - evalBaseline(xv[i]);
-            const double h1 = yv[i + 1] - evalBaseline(xv[i + 1]);
+            const double h0 = iyv[i] - evalBaseline(ixv[i]);
+            const double h1 = iyv[i + 1] - evalBaseline(ixv[i + 1]);
             area += 0.5 * (h0 + h1) * dx;
 
             if (h0 * h1 >= 0.0) {
@@ -2445,25 +2515,25 @@ void RoiGadgetTool::recalculate()
                 absArea += segAbs;
                 const double denom = a0 + a1;
                 const double xSegCent = (denom > 1e-30)
-                        ? (xv[i] + dx * (a0 + 2.0 * a1) / (3.0 * denom))
-                        : (0.5 * (xv[i] + xv[i + 1]));
+                        ? (ixv[i] + dx * (a0 + 2.0 * a1) / (3.0 * denom))
+                        : (0.5 * (ixv[i] + ixv[i + 1]));
                 absMomX += xSegCent * segAbs;
             } else {
                 const double a0 = std::fabs(h0);
                 const double a1 = std::fabs(h1);
                 const double tZero = a0 / std::max(1e-30, a0 + a1);
-                const double xZero = xv[i] + tZero * dx;
-                const double segAbsL = 0.5 * a0 * std::fabs(xZero - xv[i]);
-                const double segAbsR = 0.5 * a1 * std::fabs(xv[i + 1] - xZero);
+                const double xZero = ixv[i] + tZero * dx;
+                const double segAbsL = 0.5 * a0 * std::fabs(xZero - ixv[i]);
+                const double segAbsR = 0.5 * a1 * std::fabs(ixv[i + 1] - xZero);
                 absArea += segAbsL + segAbsR;
-                absMomX += ((2.0 * xv[i] + xZero) / 3.0) * segAbsL
-                        + ((xZero + 2.0 * xv[i + 1]) / 3.0) * segAbsR;
+                absMomX += ((2.0 * ixv[i] + xZero) / 3.0) * segAbsL
+                        + ((xZero + 2.0 * ixv[i + 1]) / 3.0) * segAbsR;
             }
         }
 
         const double centroidX =
                 (absArea > 1e-30) ? (absMomX / absArea) : (0.5 * (xFront + xBack));
-        const double fwhm = (n >= 3) ? estimateFwhm(xv, yv, evalBaseline(xAtMax), maxIdx) : 0.0;
+        const double fwhm = (nI >= 3) ? estimateFwhm(ixv, iyv, evalBaseline(iXAtMax), iMaxIdx) : 0.0;
         d_primary_metric = area;
         d_secondary_metric = fwhm;
 
@@ -2477,15 +2547,15 @@ void RoiGadgetTool::recalculate()
         const bool logY = isAxisLog10(plotPtr, curve->yAxis());
         auto safePolyY = [&](double yVal) -> double {
             if (logY && yVal <= 0.0)
-                return std::max(1e-100, minY > 0.0 ? minY * 0.5 : std::max(1e-12, roi.top()));
+                return std::max(1e-100, iMinY > 0.0 ? iMinY * 0.5 : std::max(1e-12, roi.top()));
             return yVal;
         };
 
-        if (n >= 2) {
-            d_integrate_poly_pts.reserve(static_cast<int>(n) + 2);
+        if (nI >= 2) {
+            d_integrate_poly_pts.reserve(static_cast<int>(nI) + 2);
             d_integrate_poly_pts.append(QPointF(xFront, safePolyY(evalBaseline(xFront))));
-            for (size_t i = 0; i < n; ++i)
-                d_integrate_poly_pts.append(QPointF(xv[i], safePolyY(yv[i])));
+            for (size_t i = 0; i < nI; ++i)
+                d_integrate_poly_pts.append(QPointF(ixv[i], safePolyY(iyv[i])));
             d_integrate_poly_pts.append(QPointF(xBack, safePolyY(evalBaseline(xBack))));
         }
 
@@ -2493,8 +2563,8 @@ void RoiGadgetTool::recalculate()
                          << qMakePair(QString("Absolute_Area"), absArea)
                          << qMakePair(QString("Centroid_X"), centroidX)
                          << qMakePair(QString("FWHM"), fwhm)
-                         << qMakePair(QString("Peak_Height"), maxY - evalBaseline(xAtMax))
-                         << qMakePair(QString("Peak_X"), xAtMax);
+                         << qMakePair(QString("Peak_Height"), iMaxY - evalBaseline(iXAtMax))
+                         << qMakePair(QString("Peak_X"), iXAtMax);
 
         d_summary_text =
                 QString("%1 [%2]\n%3 = %4, %5 = %6\n%7 = %8, FWHM = %9")

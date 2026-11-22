@@ -18,6 +18,7 @@
 #include "CurveMathTools.h"
 #include "AdvancedSignalProc.h"
 #include "SmoothFilter.h"
+#include "Differentiation.h"
 #include "GraphStatsAndSurfaceFit.h"
 #include "RecalcEngine.h"
 #include "Matrix.h"
@@ -154,6 +155,7 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
 static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
 static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
+static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -214,6 +216,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc53;
+    }
+    if (args.contains("--suite57-only")) {
+        const int rc57 = runSuite57NumericalRobustnessXrdWeibullKissinger(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc57;
     }
 
     // =========================================================================
@@ -5368,6 +5377,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite57NumericalRobustnessXrdWeibullKissinger(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -14103,5 +14115,481 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 53 Save Safety, Undo-after-Save & Auto-save Recovery Gate passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 57: Numerical robustness of smoothing / derivative / ROI integral /
+// normalisation, XRD per-anode Ka2 stripping & Williamson-Hall physicality,
+// Weibull (method, ln L, JIS R 1625 bias correction), Arrhenius / Kissinger
+// exclusion reporting and Kissinger input from peak-fit centres.
+// All checks use synthetic data with known solutions.
+// =============================================================================
+namespace {
+
+Table *suite57Table(ApplicationWindow *mw, const QString &name, const QStringList &header,
+                    const std::vector<std::vector<double>> &cols)
+{
+    const int nRows = cols.empty() ? 0 : int(cols.front().size());
+    Table *t = mw->newTable(name, nRows, int(header.size()));
+    if (!t)
+        return nullptr;
+    t->setHeader(header);
+    for (int c = 0; c < int(cols.size()); ++c) {
+        t->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        for (int r = 0; r < nRows; ++r)
+            t->column(c)->setValueAt(r, cols[size_t(c)][size_t(r)]);
+    }
+    return t;
+}
+
+Graph *suite57Plot(ApplicationWindow *mw, Table *t, const QString &yCol, int type = Graph::Line)
+{
+    MultiLayer *ml = mw->multilayerPlot(t, QStringList() << (t->name() + "_" + yCol), type);
+    return ml ? ml->activeGraph() : nullptr;
+}
+
+// Synthetic fcc diffractogram, Gaussian profiles, FWHM(2theta) from beta cos(theta) = f(4 sin(theta))
+template <typename BetaCosFn>
+std::vector<double> suite57XrdPattern(const std::vector<double> &tt, double a0,
+                                      const std::vector<std::pair<double, double>> &lines,
+                                      BetaCosFn betaCos)
+{
+    struct Refl {
+        int h, k, l;
+        double I;
+    };
+    const Refl refl[] = { { 1, 1, 1, 1000.0 }, { 2, 0, 0, 480.0 }, { 2, 2, 0, 300.0 },
+                          { 3, 1, 1, 320.0 },  { 2, 2, 2, 110.0 }, { 4, 0, 0, 80.0 },
+                          { 3, 3, 1, 120.0 },  { 4, 2, 0, 110.0 } };
+    std::vector<double> y(tt.size(), 0.0);
+    for (size_t i = 0; i < tt.size(); ++i)
+        y[i] = 40.0 + 0.05 * (tt[i] - tt.front());
+    for (const Refl &rf : refl) {
+        const double d = a0 / std::sqrt(double(rf.h * rf.h + rf.k * rf.k + rf.l * rf.l));
+        for (const auto &ln : lines) {
+            const double s = ln.first / (2.0 * d);
+            if (s >= 0.999)
+                continue;
+            const double th = std::asin(s);
+            const double tt0 = 2.0 * th * 180.0 / M_PI;
+            const double fwDeg = betaCos(4.0 * std::sin(th)) / std::cos(th) * 180.0 / M_PI;
+            for (size_t i = 0; i < tt.size(); ++i) {
+                const double u = (tt[i] - tt0) / fwDeg;
+                if (std::fabs(u) < 8.0)
+                    y[i] += rf.I * ln.second * std::exp(-4.0 * M_LN2 * u * u);
+            }
+        }
+    }
+    return y;
+}
+
+} // namespace
+
+static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 57: Smoothing/Derivative/ROI/Normalize robustness, XRD Ka2 & W-H, "
+                 "Weibull/Arrhenius/Kissinger reporting...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 57");
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    // ---------------------------------------------------------------- 57a: anode table
+    {
+        CurveMathTools::XRayAnodeLines al;
+        bool avg = true;
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.540598, &al, &avg) && al.anode == "Cu" && !avg
+                           && std::fabs(al.kAlpha2 - 1.544426) < 1e-9,
+                   "57a: Cu Ka1 not matched");
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.541838, &al, &avg) && al.anode == "Cu" && avg,
+                   "57a: Cu Ka average not matched");
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.788965, &al, &avg) && al.anode == "Co"
+                           && std::fabs(al.kAlpha2 - 1.792850) < 1e-9,
+                   "57a: Co Ka1 not matched");
+        CHECK_COND(CurveMathTools::matchXRayAnode(1.936040, &al, &avg) && al.anode == "Fe",
+                   "57a: Fe Ka1 (dialog value) not matched");
+        CHECK_COND(CurveMathTools::matchXRayAnode(2.2897, &al, &avg) && al.anode == "Cr",
+                   "57a: Cr Ka1 not matched");
+        CHECK_COND(CurveMathTools::matchXRayAnode(0.709319, &al, &avg) && al.anode == "Mo",
+                   "57a: Mo Ka1 not matched");
+        CHECK_COND(!CurveMathTools::matchXRayAnode(1.6, &al, &avg), "57a: 1.6 A wrongly matched");
+    }
+
+    // ---------------------------------------------------------------- 57b: Co tube, Ka2 stripping
+    {
+        const double lam1 = 1.788965, lam2 = 1.792850, a0 = 4.0495, Dnm = 40.0, eps = 1.5e-3;
+        const double K = 0.9;
+        std::vector<double> tt;
+        for (double v = 35.0; v <= 130.0 + 1e-9; v += 0.01)
+            tt.push_back(v);
+        auto betaCos = [&](double x4s) { return K * lam1 / (10.0 * Dnm) + eps * x4s; };
+        const std::vector<double> y = suite57XrdPattern(tt, a0, { { lam1, 1.0 }, { lam2, 0.5 } }, betaCos);
+        Table *t = suite57Table(mw, "S57CoXrd", QStringList() << "TwoTheta" << "I", { tt, y });
+        CHECK_COND(t != nullptr, "57b: table");
+        Graph *g = suite57Plot(mw, t, "I");
+        CHECK_COND(g != nullptr, "57b: plot");
+
+        const CurveMathTools::XRDAnalysisResult xs = CurveMathTools::analyzeXRD(
+                mw, g, QString(), lam1, 0.0, K, QStringLiteral("fcc"), true, false, false);
+        const CurveMathTools::XRDAnalysisResult xn = CurveMathTools::analyzeXRD(
+                mw, g, QString(), lam1, 0.0, K, QStringLiteral("fcc"), false, false, false);
+        std::cout << "[INFO] 57b Co strip: peaks=" << xs.peaks.size() << " a=" << xs.latticeParamAngstrom
+                  << " D_WH=" << xs.whSizeNm << " eps=" << xs.whMicrostrain << " (no strip: D_WH="
+                  << xn.whSizeNm << " eps=" << xn.whMicrostrain << ")\n";
+        CHECK_COND(xs.valid && xs.anodeName == "Co" && xs.kAlpha2Stripped
+                           && std::fabs(xs.kAlpha2Angstrom - lam2) < 1e-9,
+                   "57b: Co Ka2 stripping not applied with the Co wavelength");
+        CHECK_COND(xs.peaks.size() >= 5 && std::fabs(xs.latticeParamAngstrom - a0) < 0.003,
+                   "57b: lattice parameter after Co Ka2 stripping is off");
+        CHECK_COND(xs.whPhysical && std::fabs(xs.whSizeNm - Dnm) / Dnm < 0.12
+                           && std::fabs(xs.whMicrostrain - eps) / eps < 0.15,
+                   "57b: W-H size / strain not recovered after Co Ka2 stripping");
+        // stripping must bring eps closer to the truth than leaving the doublet in
+        CHECK_COND(std::isfinite(xn.whMicrostrain) == false
+                           || std::fabs(xs.whMicrostrain - eps) < std::fabs(xn.whMicrostrain - eps),
+                   "57b: Ka2 stripping did not improve the W-H strain");
+
+        const CurveMathTools::XRDAnalysisResult xu = CurveMathTools::analyzeXRD(
+                mw, g, QString(), 1.6, 0.0, K, QStringLiteral("none"), true, false, false);
+        CHECK_COND(xu.valid && !xu.kAlpha2Stripped && !xu.notes.isEmpty(),
+                   "57b: unknown wavelength must skip Ka2 stripping with a note");
+    }
+
+    // ---------------------------------------------------------------- 57c: W-H without physical solution
+    {
+        const double lam = 1.540598, a0 = 4.0495, K = 0.9;
+        std::vector<double> tt;
+        for (double v = 30.0; v <= 120.0 + 1e-9; v += 0.01)
+            tt.push_back(v);
+        // negative slope: beta cos = 0.0045 - 0.0006 * 4 sin(theta)
+        const std::vector<double> yA = suite57XrdPattern(tt, a0, { { lam, 1.0 } },
+                                                         [](double x) { return 0.0045 - 0.0006 * x; });
+        Table *tA = suite57Table(mw, "S57WhNegSlope", QStringList() << "TwoTheta" << "I", { tt, yA });
+        Graph *gA = suite57Plot(mw, tA, "I");
+        CHECK_COND(gA != nullptr, "57c: plot A");
+        const CurveMathTools::XRDAnalysisResult rA = CurveMathTools::analyzeXRD(
+                mw, gA, QString(), lam, 0.0, K, QStringLiteral("fcc"), false, false, true);
+        std::cout << "[INFO] 57c negative slope: slope=" << rA.whSlopeRaw << " eps=" << rA.whMicrostrain
+                  << " D=" << rA.whSizeNm << " physical=" << rA.whPhysical << "\n";
+        CHECK_COND(rA.valid && !rA.whPhysical && std::isnan(rA.whMicrostrain) && rA.whSlopeRaw < -3e-4
+                           && std::fabs(rA.whSizeNm - K * lam / (10.0 * 0.0045)) / 30.8 < 0.10
+                           && !rA.notes.isEmpty(),
+                   "57c: negative W-H slope must give eps = N/A with a note");
+
+        // non-positive intercept: beta cos = -0.0008 + 0.0016 * 4 sin(theta)
+        const std::vector<double> yB = suite57XrdPattern(tt, a0, { { lam, 1.0 } },
+                                                         [](double x) { return -0.0008 + 0.0016 * x; });
+        Table *tB = suite57Table(mw, "S57WhNegIcpt", QStringList() << "TwoTheta" << "I", { tt, yB });
+        Graph *gB = suite57Plot(mw, tB, "I");
+        CHECK_COND(gB != nullptr, "57c: plot B");
+        const CurveMathTools::XRDAnalysisResult rB = CurveMathTools::analyzeXRD(
+                mw, gB, QString(), lam, 0.0, K, QStringLiteral("fcc"), false, false, true);
+        std::cout << "[INFO] 57c negative intercept: icpt=" << rB.whInterceptRaw << " D=" << rB.whSizeNm
+                  << " Scherrer=" << rB.meanScherrerSizeNm << " eps=" << rB.whMicrostrain << "\n";
+        CHECK_COND(rB.valid && !rB.whPhysical && std::isnan(rB.whSizeNm) && rB.whInterceptRaw <= 0.0
+                           && std::isfinite(rB.meanScherrerSizeNm)
+                           && std::fabs(rB.whMicrostrain - 0.0016) / 0.0016 < 0.15,
+                   "57c: non-positive W-H intercept must give D = N/A (not the Scherrer mean)");
+    }
+
+    // ---------------------------------------------------------------- 57d: SG edges & X spacing
+    {
+        std::vector<double> x, y, xn, yn;
+        for (int i = 0; i <= 20; ++i) {
+            x.push_back(i);
+            y.push_back(100.0 + 2.0 * i + 0.5 * i * i);
+            const double xv = i + 0.35 * std::sin(1.3 * i);
+            xn.push_back(xv);
+            yn.push_back(100.0 + 2.0 * xv + 0.5 * xv * xv);
+        }
+        Table *t = suite57Table(mw, "S57SgUni", QStringList() << "X" << "Y", { x, y });
+        Graph *g = suite57Plot(mw, t, "Y");
+        CHECK_COND(g != nullptr, "57d: plot");
+        SmoothFilter sf(mw, g, t->name() + "_Y", SmoothFilter::SavitzkyGolay);
+        sf.setSmoothPoints(2, 2);
+        sf.setPolynomOrder(2);
+        CHECK_COND(sf.run(), "57d: SG run failed");
+        QwtPlotCurve *c = g->curve(g->curves() - 1);
+        CHECK_COND(c && c->dataSize() == 21, "57d: SG output size");
+        double maxErr = 0.0;
+        for (int i = 0; i < 21; ++i)
+            maxErr = std::max(maxErr, std::fabs(c->y(i) - y[size_t(i)]));
+        std::cout << "[INFO] 57d SG quadratic max error (incl. edges) = " << maxErr
+                  << " (edge y0 = " << c->y(0) << ", expected 100)\n";
+        CHECK_COND(maxErr < 1e-8, "57d: SG must reproduce a quadratic exactly, including both edges");
+        CHECK_COND(sf.xHandlingNotice().isEmpty(), "57d: unexpected notice for uniform X");
+
+        Table *tn = suite57Table(mw, "S57SgNonUni", QStringList() << "X" << "Y", { xn, yn });
+        Graph *gn = suite57Plot(mw, tn, "Y");
+        SmoothFilter sfn(mw, gn, tn->name() + "_Y", SmoothFilter::SavitzkyGolay);
+        sfn.setSmoothPoints(2, 2);
+        sfn.setPolynomOrder(2);
+        CHECK_COND(sfn.run(), "57d: non-uniform SG run failed");
+        QwtPlotCurve *cn = gn->curve(gn->curves() - 1);
+        double maxErrN = 0.0;
+        for (int i = 0; i < 21; ++i)
+            maxErrN = std::max(maxErrN, std::fabs(cn->y(i) - yn[size_t(i)]));
+        std::cout << "[INFO] 57d non-uniform SG max error = " << maxErrN << "\n";
+        CHECK_COND(maxErrN < 1e-7 && !sfn.xHandlingNotice().isEmpty(),
+                   "57d: non-uniform SG must use real X (exact for a quadratic) and say so");
+
+        SmoothFilter sfa(mw, gn, tn->name() + "_Y", SmoothFilter::Average);
+        sfa.setSmoothPoints(5);
+        CHECK_COND(sfa.run() && !sfa.xHandlingNotice().isEmpty(),
+                   "57d: moving average on non-uniform X must emit a notice");
+        const int logLen = mw->logInfo.size();
+        SmoothFilter sfm(mw, gn, tn->name() + "_Y", SmoothFilter::Median);
+        sfm.setSmoothPoints(5);
+        CHECK_COND(sfm.run() && mw->logInfo.size() > logLen,
+                   "57d: median smoothing notice was not written to the log");
+    }
+
+    // ---------------------------------------------------------------- 57e: derivative
+    {
+        std::vector<double> x, y;
+        for (int i = 0; i <= 10; ++i) {
+            x.push_back(i);
+            y.push_back(double(i) * i);
+        }
+        Table *t = suite57Table(mw, "S57Deriv", QStringList() << "X" << "Y", { x, y });
+        Graph *g = suite57Plot(mw, t, "Y");
+        CHECK_COND(g != nullptr, "57e: plot");
+        const int nWin = mw->windowsList().size();
+        Differentiation d(mw, g, t->name() + "_Y");
+        CHECK_COND(d.run(), "57e: differentiation failed");
+        MultiLayer *mlD = nullptr;
+        const QList<MyWidget *> wins = mw->windowsList();
+        for (int i = nWin; i < wins.size(); ++i)
+            if (wins[i] && wins[i]->inherits("MultiLayer"))
+                mlD = static_cast<MultiLayer *>(wins[i]);
+        CHECK_COND(mlD && mlD->activeGraph() && mlD->activeGraph()->curves() >= 1, "57e: derivative graph");
+        QwtPlotCurve *dc = mlD->activeGraph()->curve(0);
+        std::cout << "[INFO] 57e derivative n=" << dc->dataSize() << " y(0)=" << dc->y(0)
+                  << " y(5)=" << dc->y(5) << " y(10)=" << dc->y(10) << "\n";
+        CHECK_COND(dc->dataSize() == 11 && std::fabs(dc->y(0) - 1.0) < 1e-12
+                           && std::fabs(dc->y(5) - 10.0) < 1e-12 && std::fabs(dc->y(10) - 19.0) < 1e-12,
+                   "57e: derivative must keep n points with one-sided end differences");
+
+        Table *t2 = suite57Table(mw, "S57DerivDup", QStringList() << "X" << "Y",
+                                 { { 0, 1, 1, 2, 3, 4 }, { 0, 1, 2, 4, 9, 16 } });
+        Graph *g2 = suite57Plot(mw, t2, "Y");
+        const int nWin2 = mw->windowsList().size();
+        Differentiation d2(mw, g2, t2->name() + "_Y");
+        const bool ok2 = d2.run();
+        CHECK_COND(!ok2 && d2.error() && mw->windowsList().size() == nWin2,
+                   "57e: duplicate adjacent X must be rejected before differentiating");
+    }
+
+    // ---------------------------------------------------------------- 57f: signal-processing notice
+    {
+        std::vector<double> x, y;
+        const double tx[] = { 0.0, 0.3, 0.1, 0.7, 0.5, 0.9, 1.4, 1.1, 1.6, 2.0, 1.8, 2.5,
+                              2.2, 2.9, 3.1, 3.6, 3.3, 4.0, 3.8, 4.4 };
+        for (double tv : tx) {
+            x.push_back(tv);
+            y.push_back(std::sin(2.0 * M_PI * 1.0 * tv));
+        }
+        Table *t = suite57Table(mw, "S57SigNotice", QStringList() << "T" << "S", { x, y });
+        Graph *g = suite57Plot(mw, t, "S");
+        CHECK_COND(g != nullptr, "57f: plot");
+        const int logLen = mw->logInfo.size();
+        QwtPlotCurve *env = AdvancedSignalProc::hilbertEnvelope(mw, g, t->name() + "_S");
+        const QString added = mw->logInfo.mid(logLen);
+        std::cout << "[INFO] 57f log: " << added.trimmed().toStdString() << "\n";
+        CHECK_COND(env != nullptr && added.contains("Hilbert") && added.count('\n') >= 1,
+                   "57f: Hilbert must log the re-ordering / resampling of the input in one line");
+    }
+
+    // ---------------------------------------------------------------- 57g: ROI integral end points
+    {
+        std::vector<double> x, y;
+        for (int i = 0; i <= 10; ++i) {
+            x.push_back(i);
+            y.push_back(10.0 + i);
+        }
+        Table *t = suite57Table(mw, "S57Roi", QStringList() << "X" << "Y", { x, y });
+        Graph *g = suite57Plot(mw, t, "Y", Graph::LineSymbols);
+        CHECK_COND(g != nullptr, "57g: plot");
+        RoiGadgetTool *roi = RoiGadgetTool::attachGadget(mw, g, RoiGadgetTool::Integrate);
+        CHECK_COND(roi != nullptr, "57g: attach gadget");
+        roi->setIntegrateBaseline(RoiGadgetTool::BaseYZero);
+        roi->setTargetCurve(t->name() + "_Y");
+        // box X = [2.5, 7.5], Y = [0, 14] (cuts the curve in Y); exact integral = 75
+        roi->setRoiRect(QRectF(2.5, 0.0, 5.0, 14.0));
+        std::cout << "[INFO] 57g ROI integral [2.5, 7.5] = " << roi->primaryMetric() << " (exact 75)\n";
+        CHECK_COND(std::fabs(roi->primaryMetric() - 75.0) < 1e-9,
+                   "57g: ROI integral must interpolate the ends and ignore the box Y range");
+    }
+
+    // ---------------------------------------------------------------- 57h: normalisation (unit area)
+    {
+        Table *t = suite57Table(mw, "S57Norm", QStringList() << "X" << "Y",
+                                { { 3, 0, 4, 1, 2 }, { 4, 1, 5, 2, 3 } });
+        Graph *g = suite57Plot(mw, t, "Y");
+        CHECK_COND(g != nullptr, "57h: plot");
+        const int before = g->curves();
+        QVariantMap params;
+        params.insert(QStringLiteral("mode"), 3);
+        RecalcManager::repeatForAllCurves(mw, g, RecalcManager::OpNormalize, params);
+        CHECK_COND(g->curves() == before + 1, "57h: recalc normalize did not add a curve");
+        QwtPlotCurve *cr = g->curve(g->curves() - 1);
+        QwtPlotCurve *cm = CurveMathTools::normalizeCurve(mw, g, t->name() + "_Y", CurveMathTools::UnitArea);
+        CHECK_COND(cr && cm && cr->dataSize() == 5 && cm->dataSize() == 5, "57h: normalized curves");
+        double area = 0.0, maxDiff = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            maxDiff = std::max(maxDiff, std::fabs(cr->x(i) - cm->x(i)) + std::fabs(cr->y(i) - cm->y(i)));
+            if (i > 0)
+                area += 0.5 * (cr->y(i) + cr->y(i - 1)) * (cr->x(i) - cr->x(i - 1));
+        }
+        std::cout << "[INFO] 57h recalc unit-area: area=" << area << " diff vs dialog=" << maxDiff << "\n";
+        CHECK_COND(std::fabs(area - 1.0) < 1e-12 && maxDiff < 1e-12 && std::fabs(cr->y(0) - 1.0 / 12.0) < 1e-12,
+                   "57h: recalc unit-area normalisation must sort X and match the dialog");
+    }
+
+    // ---------------------------------------------------------------- 57i: Weibull
+    {
+        CHECK_COND(std::fabs(GraphStatsAndSurfaceFit::jisR1625UnbiasingFactor(30) - 0.9538) < 5e-5,
+                   "57i: JIS R 1625 B_30 must be 0.9538 (worked example of the standard)");
+        CHECK_COND(GraphStatsAndSurfaceFit::jisR1625UnbiasingFactor(121) == 1.0, "57i: B_n for n > 120");
+
+        const double mTrue = 10.0, s0True = 500.0;
+        const int n = 30;
+        std::vector<double> s;
+        for (int i = 1; i <= n; ++i) {
+            const double F = (i - 0.5) / n;
+            s.push_back(s0True * std::pow(-std::log(1.0 - F), 1.0 / mTrue));
+        }
+        std::vector<double> sx = s;
+        sx.push_back(-5.0);
+        sx.push_back(0.0);
+        Table *t = suite57Table(mw, "S57Weib", QStringList() << "S", { sx });
+        const auto wb = GraphStatsAndSurfaceFit::plotWeibullProbability(
+                mw, t, "S", QString(), 0, false, true, false, true);
+        double lnL = 0.0;
+        for (double v : s) {
+            const double z = v / wb.mleScaleSigma0;
+            lnL += std::log(wb.mleModulusM / wb.mleScaleSigma0) + (wb.mleModulusM - 1.0) * std::log(z)
+                    - std::pow(z, wb.mleModulusM);
+        }
+        std::cout << "[INFO] 57i Weibull MLE m=" << wb.mleModulusM << " -> unbiased " << wb.modulusM
+                  << " (B=" << wb.unbiasingFactor << "), s0=" << wb.scaleSigma0 << ", lnL=" << wb.logLikelihood
+                  << " (check " << lnL << "), excluded=" << wb.excludedCount << "\n";
+        CHECK_COND(wb.valid && wb.usedMle && wb.excludedCount == 2 && wb.unbiased
+                           && std::fabs(wb.unbiasingFactor - 0.9538) < 5e-5
+                           && std::fabs(wb.modulusM - wb.mleModulusM * wb.unbiasingFactor) < 1e-9
+                           && std::fabs(wb.mleModulusM - mTrue) / mTrue < 0.06
+                           && std::fabs(wb.scaleSigma0 - s0True) / s0True < 0.01
+                           && std::fabs(wb.logLikelihood - lnL) < 1e-6 && !wb.methodDescription.isEmpty(),
+                   "57i: 2-parameter MLE with JIS R 1625 correction / ln L / exclusion count");
+
+        std::vector<double> s3;
+        for (double v : s)
+            s3.push_back(v + 200.0);
+        Table *t3 = suite57Table(mw, "S57Weib3", QStringList() << "S", { s3 });
+        const auto wb3 = GraphStatsAndSurfaceFit::plotWeibullProbability(
+                mw, t3, "S", QString(), 0, true, true, false, true);
+        std::cout << "[INFO] 57i 3-param MLE: gamma=" << wb3.thresholdGamma << " m=" << wb3.modulusM
+                  << " method=" << wb3.methodDescription.toStdString() << "\n";
+        CHECK_COND(wb3.valid && wb3.threeParameter && wb3.usedMle && !wb3.unbiased
+                           && !wb3.methodDescription.isEmpty() && !wb3.notes.isEmpty()
+                           && wb3.methodDescription != wb.methodDescription,
+                   "57i: 3-parameter MLE must be labelled as conditional MLE and skip the JIS correction");
+
+        Table *tf = suite57Table(mw, "S57WeibFail", QStringList() << "S", { { 100, 100, 100, 100 } });
+        const auto wf = GraphStatsAndSurfaceFit::plotWeibullProbability(mw, tf, "S");
+        CHECK_COND(!wf.valid && !wf.error.isEmpty(), "57i: failed Weibull must give a reason");
+    }
+
+    // ---------------------------------------------------------------- 57j: Arrhenius
+    {
+        const double R = 8.314462618, Ea = 50.0e3, A = 1.0e6;
+        std::vector<double> T, k;
+        for (double tv = 300.0; tv <= 500.0 + 1e-9; tv += 50.0) {
+            T.push_back(tv);
+            k.push_back(A * std::exp(-Ea / (R * tv)));
+        }
+        T.push_back(0.0);
+        k.push_back(1.0);
+        T.push_back(400.0);
+        k.push_back(0.0);
+        Table *t = suite57Table(mw, "S57Arr", QStringList() << "T" << "k", { T, k });
+        const auto ar = CurveMathTools::createArrheniusPlot(mw, t, "T", "k", false, true, false);
+        std::cout << "[INFO] 57j Arrhenius Ea=" << ar.activationEnergyKJmol << " kJ/mol, excluded="
+                  << ar.excludedCount << "\n";
+        CHECK_COND(ar.valid && ar.excludedCount == 2 && !ar.notes.isEmpty()
+                           && std::fabs(ar.activationEnergyKJmol - 50.0) < 1e-6,
+                   "57j: Arrhenius exclusion count / Ea");
+        Table *tf = suite57Table(mw, "S57ArrFail", QStringList() << "T" << "k", { { 300, 400 }, { 1.0, -1.0 } });
+        const auto af = CurveMathTools::createArrheniusPlot(mw, tf, "T", "k", false, true, false);
+        CHECK_COND(!af.valid && !af.error.isEmpty() && af.excludedCount == 1,
+                   "57j: failed Arrhenius must give a reason");
+    }
+
+    // ---------------------------------------------------------------- 57k: Kissinger from peak-fit centres
+    {
+        const double R = 8.314462618, Ed = 100.0e3, A = 1.0e10;
+        const double rates[] = { 5.0, 10.0, 20.0, 40.0 };
+        std::vector<double> tp;
+        for (double bmin : rates) {
+            const double bs = bmin / 60.0;
+            auto f = [&](double Tk) { return std::log(bs / (Tk * Tk)) - std::log(A * R / Ed) + Ed / (R * Tk); };
+            double lo = 250.0, hi = 1500.0; // f(lo) > 0 > f(hi)
+            for (int it = 0; it < 200; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                (f(mid) > 0.0 ? lo : hi) = mid;
+            }
+            tp.push_back(0.5 * (lo + hi));
+        }
+        QList<Table *> fitTables;
+        for (int i = 0; i < 4; ++i) {
+            // two peaks, higher one listed first: peak 1 counted from the lowest centre = tp
+            Table *pt = suite57Table(mw, QString("S57PeakSummary_%1Kmin").arg(rates[i]),
+                                     QStringList() << "Peak" << "Center" << "FWHM",
+                                     { { 1, 2 }, { tp[size_t(i)] + 60.0, tp[size_t(i)] }, { 20, 15 } });
+            CHECK_COND(pt && CurveMathTools::isPeakFitResultTable(pt), "57k: peak table detection");
+            fitTables << pt;
+        }
+        QStringList missing;
+        const auto centers = CurveMathTools::collectPeakFitCenters(fitTables, 1, &missing);
+        CHECK_COND(centers.size() == 4 && missing.isEmpty(), "57k: centre collection");
+        QVector<double> vr, vt;
+        for (int i = 0; i < 4; ++i) {
+            vr << rates[i];
+            vt << centers[i].center;
+        }
+        const auto kr = CurveMathTools::analyzeKissinger(nullptr, vr, vt, false, false, false);
+        std::cout << "[INFO] 57k Kissinger from peak-fit centres: Ed=" << kr.activationEnergyKJmol
+                  << " kJ/mol (true 100)\n";
+        CHECK_COND(kr.valid && std::fabs(kr.activationEnergyKJmol - 100.0) < 1e-6,
+                   "57k: Kissinger Ed from peak-fit centres");
+        const auto missing3 = CurveMathTools::collectPeakFitCenters(fitTables, 3, &missing);
+        CHECK_COND(missing3.isEmpty() && missing.size() == 4, "57k: missing peak N must be reported");
+
+        // batch table (Curve, Peak, Center): 2 curves
+        Table *bt = mw->newTable("S57BatchPeaks", 4, 3);
+        bt->setHeader(QStringList() << "Curve" << "Peak" << "Center");
+        bt->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+        const char *cn[] = { "TDS_100", "TDS_100", "TDS_200", "TDS_200" };
+        const double pk[] = { 1, 2, 1, 2 }, ce[] = { 410.0, 380.0, 425.0, 395.0 };
+        for (int r = 0; r < 4; ++r) {
+            bt->column(0)->setTextAt(r, cn[r]);
+            bt->column(1)->setValueAt(r, pk[r]);
+            bt->column(2)->setValueAt(r, ce[r]);
+        }
+        const auto bc = CurveMathTools::collectPeakFitCenters(QList<Table *>() << bt, 2);
+        CHECK_COND(bc.size() == 2 && bc[0].source == "TDS_100" && bc[0].center == 410.0
+                           && bc[1].center == 425.0,
+                   "57k: batch table must give one centre per curve");
+
+        const auto ke = CurveMathTools::analyzeKissinger(
+                nullptr, QVector<double>() << 5 << 10 << 20 << 0 << std::numeric_limits<double>::quiet_NaN(),
+                QVector<double>() << tp[0] << tp[1] << tp[2] << 500 << 500, false, false, false);
+        CHECK_COND(ke.valid && ke.excludedCount == 2 && !ke.notes.isEmpty(),
+                   "57k: Kissinger must count and report excluded pairs");
+        CHECK_COND(!CurveMathTools::isPeakFitResultTable(mw->newTable("S57Plain", 3, 2)),
+                   "57k: plain table wrongly detected as a peak-fit table");
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 57 numerical robustness / XRD / Weibull / Kissinger gate passed!\n";
     return 0;
 }

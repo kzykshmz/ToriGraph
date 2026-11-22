@@ -12,6 +12,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <limits>
+
 class ApplicationWindow;
 class Table;
 class Matrix;
@@ -88,6 +90,14 @@ public:
         double mleScaleSigma0 = 0.0;
         double mleScaleSigma0SE = 0.0;
         bool usedMle = false;
+        QString error;              // reason when valid == false
+        int excludedCount = 0;      // rows dropped (non-numeric or value <= 0)
+        QString methodDescription;  // estimation method actually used (shown in log / callout)
+        double logLikelihood = std::numeric_limits<double>::quiet_NaN(); // MLE only
+        bool unbiased = false;      // JIS R 1625 bias correction applied to m
+        double unbiasingFactor = 1.0; // B_n = 1 / (1 + 2.04 n^-1.1) (n <= 120), else 1
+        double modulusMUncorrected = 0.0; // m before the bias correction
+        QStringList notes;          // exclusions / method notes (also written to the log)
         Table *reportTable = nullptr;
         MultiLayer *weibullPlot = nullptr;
     };
@@ -180,7 +190,11 @@ public:
             int censorCoding = 0 /*0: 1=Failure/0=Censored (KM standard); 1: 0=Failure/1=Censored*/,
             bool fitThreeParam = false,
             bool useMle = false,
-            bool createPlot = true);
+            bool createPlot = true,
+            bool jisUnbiasMle = false /*JIS R 1625 B_n correction of m (MLE, complete, 2-param)*/);
+    //! JIS R 1625:2010 bias-correction factor of the ML Weibull modulus for n specimens:
+    //! B_n = 1 / (1 + 2.04 n^-1.1) for n <= 120, 1 otherwise.
+    static double jisR1625UnbiasingFactor(int n);
     static PassingBablokDemingResult runPassingBablokDeming(
             ApplicationWindow *app, Table *srcTable, const QString &colXName,
             const QString &colYName, double errorVarianceRatioLambda = 1.0,

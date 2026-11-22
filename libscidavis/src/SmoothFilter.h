@@ -66,6 +66,12 @@ public:
     void setWhittakerLambda(double lambda);
     double whittakerLambda() const { return d_whittaker_lambda; }
 
+    //! Notice about how X was treated (non-uniform / non-monotonic spacing); empty if none.
+    QString xHandlingNotice() const { return d_notice; }
+
+protected:
+    QString logInfo() override;
+
 private:
     void init(int m);
     void calculateOutputData(std::vector<double>& x, std::vector<double>&  y) override;
@@ -95,6 +101,9 @@ private:
 
     //! Roughness penalty parameter for Whittaker penalized least squares smoothing.
     double d_whittaker_lambda;
+
+    //! Notice written to the results log after smoothing (X spacing handling).
+    QString d_notice;
 };
 
 #endif

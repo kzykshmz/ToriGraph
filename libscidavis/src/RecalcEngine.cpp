@@ -8,6 +8,7 @@
 
 #include "AdvancedSignalProc.h"
 #include "ApplicationWindow.h"
+#include "CurveMathTools.h"
 #include "Differentiation.h"
 #include "FunctionCurve.h"
 #include "Graph.h"
@@ -124,17 +125,19 @@ QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
     if (n < 2)
         return nullptr;
 
-    double yMin = ys[0];
-    double yMax = ys[0];
-    double maxAbs = std::abs(ys[0]);
-    double sumY = 0.0;
-
-    for (int i = 0; i < n; ++i) {
-        double vy = ys[static_cast<size_t>(i)];
-        yMin = std::min(yMin, vy);
-        yMax = std::max(yMax, vy);
-        maxAbs = std::max(maxAbs, std::abs(vy));
-        sumY += vy;
+    // Sort by X (stable) so that the area of the unit-area mode is the true trapezoidal area,
+    // and share the normalisation kernel with the Normalize dialog so both give the same values.
+    {
+        std::vector<size_t> ord(xs.size());
+        std::iota(ord.begin(), ord.end(), size_t(0));
+        std::stable_sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return xs[a] < xs[b]; });
+        std::vector<double> xsS(xs.size()), ysS(ys.size());
+        for (size_t i = 0; i < ord.size(); ++i) {
+            xsS[i] = xs[ord[i]];
+            ysS[i] = ys[ord[i]];
+        }
+        xs.swap(xsS);
+        ys.swap(ysS);
     }
 
     // Modes: 0 = Range [0, 1], 1 = Max = 1, 2 = Z-Score, 3 = Unit Area, 4 = Range [-1, 1]
@@ -147,41 +150,25 @@ QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
     else if (modeStr == QStringLiteral("unitarea") || modeStr == QStringLiteral("area"))
         mode = 3;
 
-    std::vector<double> yn(static_cast<size_t>(n), 0.0);
-    if (mode == 1) {
-        double denom = (std::abs(yMax) > 1e-30) ? yMax : ((maxAbs > 1e-30) ? maxAbs : 1.0);
-        for (int i = 0; i < n; ++i)
-            yn[static_cast<size_t>(i)] = ys[static_cast<size_t>(i)] / denom;
-    } else if (mode == 2) {
-        double mean = sumY / static_cast<double>(n);
-        double ss = 0.0;
-        for (double v : ys) {
-            double d = v - mean;
-            ss += d * d;
-        }
-        double sd = (n > 1) ? std::sqrt(ss / static_cast<double>(n - 1)) : 1.0;
-        if (sd < 1e-30)
-            sd = 1.0;
-        for (int i = 0; i < n; ++i)
-            yn[static_cast<size_t>(i)] = (ys[static_cast<size_t>(i)] - mean) / sd;
-    } else if (mode == 3) {
-        double area = 0.0;
-        for (int i = 1; i < n; ++i) {
-            area += 0.5 * (xs[static_cast<size_t>(i)] - xs[static_cast<size_t>(i - 1)])
-                    * (ys[static_cast<size_t>(i)] + ys[static_cast<size_t>(i - 1)]);
-        }
-        double denom = (std::abs(area) > 1e-30) ? std::abs(area) : 1.0;
-        for (int i = 0; i < n; ++i)
-            yn[static_cast<size_t>(i)] = ys[static_cast<size_t>(i)] / denom;
-    } else if (mode == 4) {
-        double span = (yMax > yMin) ? (yMax - yMin) : 1.0;
-        for (int i = 0; i < n; ++i)
-            yn[static_cast<size_t>(i)] = 2.0 * (ys[static_cast<size_t>(i)] - yMin) / span - 1.0;
-    } else {
-        double span = (yMax > yMin) ? (yMax - yMin) : 1.0;
-        for (int i = 0; i < n; ++i)
-            yn[static_cast<size_t>(i)] = (ys[static_cast<size_t>(i)] - yMin) / span;
+    CurveMathTools::NormMode cmMode = CurveMathTools::Range0To1;
+    switch (mode) {
+    case 1:
+        cmMode = CurveMathTools::DivideByMax;
+        break;
+    case 2:
+        cmMode = CurveMathTools::ZScore;
+        break;
+    case 3:
+        cmMode = CurveMathTools::UnitArea;
+        break;
+    case 4:
+        cmMode = CurveMathTools::RangeMinus1To1;
+        break;
+    default:
+        cmMode = CurveMathTools::Range0To1;
+        break;
     }
+    std::vector<double> yn = CurveMathTools::normalizeValues(xs, ys, cmMode);
 
     QString tblName = app->generateUniqueName(QStringLiteral("Norm"));
     Column *colX = new Column(QStringLiteral("1"), SciDAVis::ColumnMode::Numeric);

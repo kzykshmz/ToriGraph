@@ -33,7 +33,10 @@
 #include "core/column/Column.h"
 #include "core/datatypes/Double2StringFilter.h"
 
+#include "I18nJapanese.h"
+
 #include <QLocale>
+#include <QMessageBox>
 
 Differentiation::Differentiation(ApplicationWindow *parent, Graph *g) : Filter(parent, g)
 {
@@ -55,6 +58,24 @@ Differentiation::Differentiation(ApplicationWindow *parent, Graph *g, const QStr
     setDataFromCurve(curveTitle, start, end);
 }
 
+namespace {
+
+void registerDifferentiationTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QString::fromUtf8("Cannot differentiate: %1 pair(s) of adjacent points have the same X "
+                              "(first at x = %2), which would divide by zero. Remove or average "
+                              "the duplicate X values first."),
+            QString::fromUtf8("微分できません: 隣り合う点で X が同じ組が %1 組あり (最初は x = %2)、"
+                              "0 で割ることになります。重複した X を削除するか平均してから実行してください。"));
+}
+
+} // namespace
+
 void Differentiation::init()
 {
     setObjectName(tr("Derivative"));
@@ -66,6 +87,33 @@ void Differentiation::output()
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
     if (!app || d_x.size() < 3 || d_y.size() != d_x.size())
         return;
+
+    // Adjacent duplicate X would give inf/NaN slopes: refuse up front with a clear message.
+    {
+        int nDup = 0;
+        double firstDupX = 0.0;
+        for (size_t i = 1; i < d_x.size(); ++i) {
+            if (d_x[i] == d_x[i - 1]) {
+                if (nDup == 0)
+                    firstDupX = d_x[i];
+                ++nDup;
+            }
+        }
+        if (nDup > 0) {
+            registerDifferentiationTranslationsOnce();
+            const QString msg =
+                    tr("Cannot differentiate: %1 pair(s) of adjacent points have the same X "
+                       "(first at x = %2), which would divide by zero. Remove or average "
+                       "the duplicate X values first.")
+                            .arg(nDup)
+                            .arg(firstDupX, 0, 'g', 8);
+            app->updateLog(msg + QLatin1Char('\n'));
+            if (!isSilentOrNonInteractive())
+                QMessageBox::critical(app, tr("ToriGraph") + " - " + tr("Error"), msg);
+            d_init_err = true;
+            return;
+        }
+    }
 
     const bool curveAlive = (d_curve && (!d_graph || d_graph->curveIndex(d_curve) >= 0));
     const QString curveTitle = curveAlive ? d_curve->title().text() : objectName();
@@ -110,12 +158,21 @@ void Differentiation::output()
             new Column(tr("2", "differention table y column name"), SciDAVis::ColumnMode::Numeric);
     xCol->setPlotDesignation(SciDAVis::X);
     yCol->setPlotDesignation(SciDAVis::Y);
-    for (unsigned i = 1; i < d_x.size() - 1; i++) {
-        xCol->setValueAt(int(i) - 1, d_x[i]);
-        yCol->setValueAt(int(i) - 1,
-                         0.5
-                                 * ((d_y[i + 1] - d_y[i]) / (d_x[i + 1] - d_x[i])
-                                    + (d_y[i] - d_y[i - 1]) / (d_x[i] - d_x[i - 1])));
+    // Interior points: mean of the left and right slopes (Origin's definition). End points:
+    // one-sided (forward / backward) difference, so the output keeps all n points.
+    const size_t nPts = d_x.size();
+    for (size_t i = 0; i < nPts; i++) {
+        double dydx;
+        if (i == 0)
+            dydx = (d_y[1] - d_y[0]) / (d_x[1] - d_x[0]);
+        else if (i == nPts - 1)
+            dydx = (d_y[i] - d_y[i - 1]) / (d_x[i] - d_x[i - 1]);
+        else
+            dydx = 0.5
+                    * ((d_y[i + 1] - d_y[i]) / (d_x[i + 1] - d_x[i])
+                       + (d_y[i] - d_y[i - 1]) / (d_x[i] - d_x[i - 1]));
+        xCol->setValueAt(int(i), d_x[i]);
+        yCol->setValueAt(int(i), dydx);
     }
 
     if (!xLongName.isEmpty())
