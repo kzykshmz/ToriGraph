@@ -369,6 +369,11 @@ add_library( libscidavis STATIC
   ${HEADERS}
   ${FORMS}
   )
+
+if( MSVC )
+  # PythonAutomationServer.cpp needs more COFF sections than the default object format allows
+  set_source_files_properties( "src/PythonAutomationServer.cpp" PROPERTIES COMPILE_OPTIONS "/bigobj" )
+endif()
   
 if( MSVC )
 	foreach(_source IN ITEMS ${SRCS})

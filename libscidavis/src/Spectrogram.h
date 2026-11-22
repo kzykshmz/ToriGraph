@@ -105,6 +105,22 @@ public:
 
     void updateData(Matrix *m);
 
+    // ---- E11b display options (2D density / pole figure) -------------------------------
+    //! Non-finite cells are drawn transparent and skipped by the contour lines (instead of
+    //! being filled from their neighbours).
+    void setMaskInvalidCells(bool on);
+    bool maskInvalidCells() const { return d_mask_invalid; }
+    //! Logarithmic colour scale: colours follow log10(z); cells with z <= 0 are transparent and
+    //! the colour bar axis gets a log10 scale engine (ticks 1, 10, 100 ...).
+    void setLogColorScale(bool on);
+    bool logColorScale() const { return d_log_color; }
+    //! Draw each matrix cell as a flat block (no bilinear smoothing); the image then covers the
+    //! full cell extent (half a cell beyond the first / last cell centres), like histogram bins.
+    void setCellBlocks(bool on);
+    bool cellBlocks() const { return d_cell_blocks; }
+    //! Range to put on the colour bar axis (data units: 10^range in log mode).
+    QwtDoubleInterval colorAxisRange() const;
+
     //! Used when saving a project file
     QString saveToString();
 
@@ -113,6 +129,13 @@ public:
 protected:
     void drawContourLines(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                           const QwtRasterData::ContourLines &lines) const override;
+    QImage renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                       const QwtDoubleRect &area) const override;
+    QwtRasterData::ContourLines renderContourLines(const QwtDoubleRect &rect,
+                                                   const QSize &raster) const override;
+    int dataFlags() const;
+    void rebuildData();
+    void syncColorAxisEngine();
 
     //! Guarded pointer to the source data matrix
     QPointer<Matrix> d_matrix;
@@ -128,6 +151,10 @@ protected:
     double d_custom_z_min = 0.0;
     double d_custom_z_max = 1.0;
     QString d_colorbar_title;
+    bool d_mask_invalid = false;
+    bool d_log_color = false;
+    bool d_cell_blocks = false;
+    bool d_log_engine_applied = false;
 
     QwtLinearColorMap color_map;
     QwtLinearColorMap d_base_custom_map;
@@ -136,8 +163,11 @@ protected:
 class MatrixData : public QwtRasterData
 {
 public:
+    //! E11b data flags (see Spectrogram::setMaskInvalidCells / setLogColorScale / setCellBlocks)
+    enum DataFlag { FlagMaskInvalid = 1, FlagLog10 = 2, FlagCellBlocks = 4 };
+
     MatrixData(Matrix *m, bool useCustomRange = false, double customMin = 0.0,
-               double customMax = 1.0)
+               double customMax = 1.0, int flags = 0)
         : QwtRasterData(m ? m->boundingRect() : QwtDoubleRect()),
           d_matrix(m),
           n_rows(m ? m->numRows() : 0),
@@ -152,7 +182,8 @@ public:
           y_end(1.0),
           d_use_custom_range(useCustomRange),
           d_custom_min(customMin),
-          d_custom_max(customMax)
+          d_custom_max(customMax),
+          d_flags(flags)
     {
         if (!d_matrix || n_rows <= 0 || n_cols <= 0)
             return;
@@ -162,10 +193,28 @@ public:
         min_z = std::numeric_limits<double>::max();
         max_z = -std::numeric_limits<double>::max();
         bool anyFinite = false;
+        const bool masked = (d_flags & (FlagMaskInvalid | FlagLog10)) != 0;
+        const bool logScale = (d_flags & FlagLog10) != 0;
         for (int i = 0; i < n_rows; i++) {
             const int rowOff = i * n_cols;
             for (int j = 0; j < n_cols; j++) {
                 double val = d_matrix->cell(i, j);
+                if (masked) {
+                    // E11b: keep missing cells as NaN (drawn transparent, no contour)
+                    if (logScale)
+                        val = (std::isfinite(val) && val > 0.0)
+                                ? std::log10(val)
+                                : std::numeric_limits<double>::quiet_NaN();
+                    if (!std::isfinite(val))
+                        val = std::numeric_limits<double>::quiet_NaN();
+                    d_data[rowOff + j] = val;
+                    if (std::isfinite(val)) {
+                        anyFinite = true;
+                        min_z = std::min(min_z, val);
+                        max_z = std::max(max_z, val);
+                    }
+                    continue;
+                }
                 if (std::isfinite(val)) {
                     anyFinite = true;
                 } else {
@@ -202,6 +251,17 @@ public:
         y_start = d_matrix->yStart();
         y_end = d_matrix->yEnd();
         dy = (n_rows > 1) ? ((y_end - y_start) / double(n_rows - 1)) : (y_end - y_start);
+
+        if (d_flags & FlagCellBlocks) {
+            // E11b: blocks cover the whole cell, half a cell beyond the outer cell centres
+            const double hx = 0.5 * std::fabs(dx);
+            const double hy = 0.5 * std::fabs(dy);
+            const QwtDoubleRect br = QwtDoubleRect(x_start, y_start, x_end - x_start,
+                                                   y_end - y_start)
+                                             .normalized();
+            setBoundingRect(QwtDoubleRect(br.left() - hx, br.top() - hy, br.width() + 2.0 * hx,
+                                          br.height() + 2.0 * hy));
+        }
     }
 
     MatrixData(const MatrixData &) = default;
@@ -216,10 +276,21 @@ public:
     virtual QwtDoubleInterval range() const override
     {
         if (d_use_custom_range && std::isfinite(d_custom_min) && std::isfinite(d_custom_max)
-            && d_custom_min < d_custom_max)
+            && d_custom_min < d_custom_max) {
+            if (d_flags & FlagLog10) {
+                // custom range is given in data units; non-positive ends fall back to the data
+                const double lo = d_custom_min > 0.0 ? std::log10(d_custom_min) : min_z;
+                const double hi = d_custom_max > 0.0 ? std::log10(d_custom_max) : max_z;
+                if (lo < hi)
+                    return QwtDoubleInterval(lo, hi);
+                return QwtDoubleInterval(min_z, max_z);
+            }
             return QwtDoubleInterval(d_custom_min, d_custom_max);
+        }
         return QwtDoubleInterval(min_z, max_z);
     }
+
+    int flags() const { return d_flags; }
 
     QwtDoubleInterval rawRange() const { return QwtDoubleInterval(min_z, max_z); }
 
@@ -253,6 +324,7 @@ private:
     bool d_use_custom_range = false;
     double d_custom_min = 0.0;
     double d_custom_max = 1.0;
+    int d_flags = 0;
 };
 
 #endif
