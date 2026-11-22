@@ -84,12 +84,20 @@ struct ImportResult
     QStringList tables; //!< names of the created tables
     QStringList emptySheets; //!< sheets without any cell value (not imported)
     QString summary; //!< one-line translated summary for the status bar
+    QString workbook; //!< workbook holding the sheets (empty: separate worksheets)
 };
 
 //! Imports the workbook into `app`: one new table per non-empty worksheet (or only `sheet`).
 //! A fresh project's untouched initial table is replaced by the first sheet.
+//! With `asWorkbook` and two or more imported sheets, the tables become the sheet tabs of one
+//! workbook named after the file (D8); otherwise they stay separate worksheets.
 bool importIntoProject(ApplicationWindow *app, const QString &path, const QString &sheet,
-                       QString *outError, ImportResult *outResult = nullptr);
+                       QString *outError, ImportResult *outResult = nullptr,
+                       bool asWorkbook = true);
+
+//! Saved choice of the import dialog: put the sheets of a file into one workbook (default true).
+bool importAsWorkbookSetting();
+void setImportAsWorkbookSetting(bool on);
 
 //! File menu / ribbon entry: file dialog (several files allowed), import, report.
 void importWithDialog(ApplicationWindow *app);

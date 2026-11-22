@@ -171,6 +171,7 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
+static int runSuite66Workbooks(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -304,6 +305,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite66-only")) {
+        const int rc66 = runSuite66Workbooks(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc66;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5472,6 +5480,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite66Workbooks(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -19106,5 +19117,463 @@ static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 66: D8 workbooks (one book, several sheets as tabs)
+//   66a new workbook: sheet tables "<book>_SheetN", only the current sheet is shown,
+//       every sheet carries a tab bar, the explorer marks the sheets
+//   66b switching sheets (API and a tab click): the new sheet takes the old one's place
+//   66c add / rename / move (API and tab drag) / take out / put back / delete
+//   66d graph columns and column formulas keep working while sheets switch, after renaming
+//       the book and after save / reopen
+//   66e save / reopen: sheet order, names, the visible sheet and the tab labels come back
+//   66f old project format (no <workbook> line): separate tables, nothing lost; a project
+//       saved with workbooks parses in the old way (forward compatible)
+//   66g Excel import: one workbook with a tab per sheet (default) or separate worksheets
+//   66h Python RPC workbook.* and app.import_xlsx(workbook=...)
+//   66i menus and Japanese strings
+// =============================================================================
+#include "Workbook.h"
+
+namespace {
+QTabBar *suite66Tabs(Table *t)
+{
+    return t ? t->findChild<QTabBar *>(QStringLiteral("torigraph_workbook_tabs")) : nullptr;
+}
+
+QStringList suite66Names(const QList<Table *> &list)
+{
+    QStringList out;
+    for (Table *t : list)
+        out << (t ? t->name() : QStringLiteral("<null>"));
+    return out;
+}
+
+Table *suite66Find(ApplicationWindow *app, const QString &name)
+{
+    for (MyWidget *w : app->windowsList())
+        if (Table *t = qobject_cast<Table *>(w))
+            if (t->name() == name)
+                return t;
+    return nullptr;
+}
+
+bool suite66Shown(ApplicationWindow *app, Table *t)
+{
+    return t && !t->isHidden() && !app->hidden(t);
+}
+
+QString suite66ExplorerType(ApplicationWindow *app, Table *t)
+{
+    for (int i = 0; i < app->lv.topLevelItemCount(); ++i) {
+        QTreeWidgetItem *it = app->lv.topLevelItem(i);
+        if (it && it->type() == WindowListItem::WindowType
+            && static_cast<WindowListItem *>(it)->window() == t)
+            return it->text(1);
+    }
+    return QString();
+}
+} // namespace
+
+static int runSuite66Workbooks(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 66: D8 workbooks (several sheets as tabs of one book)...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 66");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmp;
+    CHECK_COND(tmp.isValid(), "66: temp dir");
+    WorkbookManager *wm = WorkbookManager::instance(mw);
+    CHECK_COND(wm && WorkbookManager::existing(mw) == wm, "66: manager");
+    const bool tabbedView = mw->isTabbedWorkspaceView();
+
+    // ---------------- 66a: new workbook ----------------
+    QString err;
+    const QString book = wm->createBook(QStringLiteral("Spec66"), 3, &err);
+    QApplication::processEvents();
+    CHECK_COND(book == "Spec66", QString("66a: book name '%1' (%2)").arg(book, err).toStdString());
+    QList<Table *> sh = wm->sheets(book);
+    CHECK_COND(suite66Names(sh)
+                       == (QStringList() << "Spec66_Sheet1" << "Spec66_Sheet2" << "Spec66_Sheet3"),
+               QString("66a: sheet names %1").arg(suite66Names(sh).join(",")).toStdString());
+    Table *s1 = sh.value(0), *s2 = sh.value(1), *s3 = sh.value(2);
+    CHECK_COND(wm->currentSheet(book) == s1, "66a: first sheet is current");
+    CHECK_COND(suite66Shown(mw, s1) && !suite66Shown(mw, s2) && !suite66Shown(mw, s3),
+               "66a: only the current sheet is shown");
+    CHECK_COND(wm->bookOf(s2) == book && wm->bookOf(nullptr).isEmpty(), "66a: bookOf");
+    for (int i = 0; i < 3; ++i) {
+        QTabBar *tb = suite66Tabs(sh.at(i));
+        CHECK_COND(tb && tb->count() == 3 && tb->currentIndex() == i, "66a: sheet tab bar");
+        CHECK_COND(tb->tabText(i) == QStringLiteral("Sheet%1").arg(i + 1),
+                   "66a: tab label leaves the book prefix out");
+    }
+    CHECK_COND(suite66ExplorerType(mw, s2).contains("Spec66"), "66a: explorer marks the sheet");
+    CHECK_COND(WorkbookManager::sheetLabel("Spec66", "Spec66-Raw") == "Raw"
+                       && WorkbookManager::sheetLabel("Spec66", "Other") == "Other"
+                       && WorkbookManager::sheetLabel("Spec66", "Spec66") == "Spec66",
+               "66a: sheetLabel");
+
+    // ---------------- 66b: switching ----------------
+    if (!tabbedView && !s1->isMaximized())
+        s1->setGeometry(QRect(20, 15, 520, 380));
+    const QRect g1 = s1->geometry();
+    CHECK_COND(wm->setCurrentSheet(s2, true, &err), "66b: setCurrentSheet");
+    QApplication::processEvents();
+    CHECK_COND(wm->currentSheet(book) == s2 && suite66Shown(mw, s2) && !suite66Shown(mw, s1),
+               "66b: sheet 2 replaced sheet 1");
+    if (!tabbedView && !s2->isMaximized())
+        CHECK_COND(s2->geometry() == g1, "66b: the new sheet takes the old sheet's place");
+    CHECK_COND(suite66Tabs(s2)->currentIndex() == 1, "66b: tab follows");
+    // a click on the third tab of the visible sheet
+    suite66Tabs(s2)->setCurrentIndex(2);
+    for (int i = 0; i < 5; ++i)
+        QApplication::processEvents();
+    CHECK_COND(wm->currentSheet(book) == s3 && suite66Shown(mw, s3) && !suite66Shown(mw, s2),
+               "66b: tab click switched to sheet 3");
+    // showing a sheet from outside (explorer / Window menu) makes it the visible sheet
+    mw->activateSubWindow(s1);
+    for (int i = 0; i < 5; ++i)
+        QApplication::processEvents();
+    CHECK_COND(wm->currentSheet(book) == s1 && suite66Shown(mw, s1) && !suite66Shown(mw, s3),
+               "66b: activating a hidden sheet switches the book to it");
+
+    // ---------------- 66c: sheet operations ----------------
+    Table *ex = wm->addSheet(book, QStringLiteral("Extra"), -1, true, &err);
+    QApplication::processEvents();
+    CHECK_COND(ex && ex->name() == "Spec66_Extra" && wm->currentSheet(book) == ex
+                       && suite66Shown(mw, ex) && !suite66Shown(mw, s1),
+               "66c: added sheet is shown");
+    CHECK_COND(wm->sheets(book).size() == 4 && suite66Tabs(s2)->count() == 4,
+               "66c: every tab bar has the new sheet");
+    CHECK_COND(wm->renameSheet(s3, QStringLiteral("Raw"), &err), "66c: rename sheet");
+    CHECK_COND(s3->name() == "Spec66-Raw" && suite66Tabs(s3)->tabText(2) == "Raw",
+               QString("66c: renamed table '%1'").arg(s3->name()).toStdString());
+    CHECK_COND(wm->moveSheet(book, 3, 0, &err), "66c: moveSheet");
+    CHECK_COND(wm->sheets(book) == (QList<Table *>() << ex << s1 << s2 << s3), "66c: order");
+    // dragging a tab of the visible sheet: Extra from the front to the end
+    suite66Tabs(ex)->moveTab(0, 3);
+    QApplication::processEvents();
+    CHECK_COND(wm->sheets(book) == (QList<Table *>() << s1 << s2 << s3 << ex),
+               QString("66c: tab drag order %1").arg(suite66Names(wm->sheets(book)).join(","))
+                       .toStdString());
+    CHECK_COND(suite66Tabs(s1)->tabText(3) == "Extra", "66c: other bars follow the drag");
+    // take sheet 2 out, then put it back at position 1
+    CHECK_COND(wm->detachSheet(s2, true, &err), "66c: detach");
+    QApplication::processEvents();
+    CHECK_COND(wm->bookOf(s2).isEmpty() && suite66Shown(mw, s2) && !suite66Tabs(s2),
+               "66c: the detached sheet is a stand-alone shown table without tabs");
+    CHECK_COND(suite66Shown(mw, ex), "66c: the book still shows its sheet");
+    CHECK_COND(wm->attachTable(book, s2, 1, &err), "66c: attach");
+    QApplication::processEvents();
+    CHECK_COND(wm->sheets(book) == (QList<Table *>() << s1 << s2 << s3 << ex)
+                       && wm->currentSheet(book) == s2 && suite66Shown(mw, s2)
+                       && !suite66Shown(mw, ex),
+               "66c: put back at position 1 and shown in the book's place");
+    // delete the visible sheet: the next one takes its place
+    CHECK_COND(wm->setCurrentSheet(ex, true, &err) && suite66Shown(mw, ex), "66c: show Extra");
+    CHECK_COND(wm->deleteSheet(ex, false, &err), "66c: delete call");
+    for (int i = 0; i < 5; ++i)
+        QApplication::processEvents();
+    sh = wm->sheets(book);
+    CHECK_COND(sh == (QList<Table *>() << s1 << s2 << s3),
+               QString("66c: after delete %1").arg(suite66Names(sh).join(",")).toStdString());
+    Table *afterDel = wm->currentSheet(book);
+    CHECK_COND(afterDel && suite66Shown(mw, afterDel), "66c: a sheet is shown after deleting");
+    CHECK_COND(!suite66Find(mw, "Spec66_Extra"), "66c: deleted table is gone");
+
+    // ---------------- 66d: graph columns and formulas ----------------
+    for (int r = 0; r < 5; ++r) {
+        s1->setCell(r, 0, r + 1.0);
+        s1->setCell(r, 1, 2.0 * (r + 1.0));
+    }
+    MultiLayer *ml = mw->multilayerPlot(s1, QStringList() << "Spec66_Sheet1_2", Graph::LineSymbols);
+    CHECK_COND(ml && ml->activeGraph() && ml->activeGraph()->curves() == 1, "66d: graph");
+    const QString graphName = ml->name();
+    Table *f66 = mw->newTable("F66", 5, 2);
+    CHECK_COND(f66, "66d: formula table");
+    for (int r = 0; r < 5; ++r)
+        f66->setCell(r, 0, r);
+    f66->column(1)->setFormula(Interval<int>(0, 4), "tablecol(\"Spec66_Sheet1\", \"2\")*10");
+    CHECK_COND(f66->recalculate(1, false), "66d: recalculate");
+    CHECK_COND(f66->cell(0, 1) == 20.0 && f66->cell(4, 1) == 100.0, "66d: formula values");
+    // switching sheets leaves the plotted / referenced table alone
+    wm->setCurrentSheet(s3, true);
+    QApplication::processEvents();
+    CHECK_COND(ml->activeGraph()->curves() == 1 && ml->activeGraph()->curve(0)->dataSize() == 5,
+               "66d: curve after switching sheets");
+    s1->setCell(0, 1, 7.0);
+    CHECK_COND(f66->recalculate(1, false) && f66->cell(0, 1) == 70.0,
+               "66d: formula reads a hidden sheet");
+    // renaming the book keeps every table name
+    CHECK_COND(wm->renameBook(book, QStringLiteral("Specimens"), &err), "66d: rename book");
+    const QString bk = QStringLiteral("Specimens");
+    CHECK_COND(wm->hasBook(bk) && !wm->hasBook(book) && s1->name() == "Spec66_Sheet1",
+               "66d: book renamed, sheets not");
+    CHECK_COND(suite66Tabs(s1)->tabText(0) == "Sheet1", "66d: labels after renaming the book");
+    CHECK_COND(suite66ExplorerType(mw, s3).contains("Specimens"),
+               "66d: explorer follows the book name");
+    CHECK_COND(f66->recalculate(1, false) && f66->cell(0, 1) == 70.0, "66d: formula after rename");
+    CHECK_COND(wm->addSheet(bk, QString(), -1, false, &err)
+                       && wm->sheets(bk).last()->name() == "Spec66_Sheet3"
+                       && !suite66Shown(mw, wm->sheets(bk).last()) && wm->currentSheet(bk) == s3,
+               "66d: new sheets keep the prefix; add without showing");
+
+    // ---------------- 66e: save / reopen ----------------
+    const QString prj = tmp.filePath("wb66.sciprj");
+    CHECK_COND(mw->saveFolder(mw->projectFolder(), prj), "66e: save");
+    QByteArray txt;
+    {
+        QFile f(prj);
+        CHECK_COND(f.open(QIODevice::ReadOnly), "66e: read back");
+        txt = f.readAll();
+    }
+    const QByteArray expectLine = "<workbook>\tname=Specimens\tprefix=Spec66\tcurrent=Spec66-Raw"
+                                  "\tsheet=Spec66_Sheet1\tsheet=Spec66_Sheet2\tsheet=Spec66-Raw"
+                                  "\tsheet=Spec66_Sheet3\n";
+    CHECK_COND(txt.contains(expectLine), "66e: workbook line not written as expected");
+    CHECK_COND(txt.count("<table>") >= 5, "66e: every sheet is still a <table>");
+    {
+        ApplicationWindow *re = mw->openProject(prj);
+        CHECK_COND(re != nullptr, "66e: reopen");
+        QApplication::processEvents();
+        WorkbookManager *rw = WorkbookManager::existing(re);
+        CHECK_COND(rw && rw->hasBook(bk), "66e: workbook restored");
+        const QList<Table *> rs = rw->sheets(bk);
+        CHECK_COND(suite66Names(rs)
+                           == (QStringList() << "Spec66_Sheet1" << "Spec66_Sheet2" << "Spec66-Raw"
+                                             << "Spec66_Sheet3"),
+                   QString("66e: order %1").arg(suite66Names(rs).join(",")).toStdString());
+        CHECK_COND(rw->currentSheet(bk) && rw->currentSheet(bk)->name() == "Spec66-Raw",
+                   "66e: current sheet");
+        int shown = 0;
+        for (Table *t : rs)
+            if (suite66Shown(re, t))
+                ++shown;
+        CHECK_COND(shown == 1 && suite66Shown(re, rw->currentSheet(bk)), "66e: one sheet shown");
+        QTabBar *rt = suite66Tabs(rw->currentSheet(bk));
+        CHECK_COND(rt && rt->count() == 4 && rt->currentIndex() == 2 && rt->tabText(2) == "Raw",
+                   "66e: tab bar restored");
+        MultiLayer *rml = qobject_cast<MultiLayer *>(re->window(graphName));
+        CHECK_COND(rml && rml->activeGraph() && rml->activeGraph()->curves() == 1
+                           && rml->activeGraph()->curve(0)->dataSize() == 5,
+                   "66e: graph column reference after reopening");
+        Table *rf = suite66Find(re, "F66");
+        CHECK_COND(rf && rf->recalculate(1, false) && rf->cell(0, 1) == 70.0
+                           && rf->cell(4, 1) == 100.0,
+                   "66e: formula after reopening");
+        re->savedProject();
+        re->setOleEmbeddedMode(true);
+        delete re;
+        QApplication::processEvents();
+    }
+
+    // ---------------- 66f: old format ----------------
+    {
+        QByteArray old = txt;
+        int pos;
+        while ((pos = old.indexOf("<workbook>")) >= 0)
+            old.remove(pos, old.indexOf('\n', pos) - pos + 1);
+        CHECK_COND(!old.contains("<workbook>"), "66f: strip");
+        const QString oldPrj = tmp.filePath("old66.sciprj");
+        CHECK_COND(suite59WriteFile(oldPrj, old), "66f: write old project");
+        ApplicationWindow *re = mw->openProject(oldPrj);
+        CHECK_COND(re != nullptr, "66f: open old project");
+        QApplication::processEvents();
+        WorkbookManager *rw = WorkbookManager::existing(re);
+        CHECK_COND(!rw || rw->bookNames().isEmpty(), "66f: no workbook without the line");
+        for (const char *n : { "Spec66_Sheet1", "Spec66_Sheet2", "Spec66-Raw", "Spec66_Sheet3", "F66" }) {
+            Table *t = suite66Find(re, QString::fromLatin1(n));
+            CHECK_COND(t && !suite66Tabs(t), "66f: separate table without tabs");
+        }
+        CHECK_COND(suite66Shown(re, suite66Find(re, "Spec66-Raw"))
+                           && re->hidden(suite66Find(re, "Spec66_Sheet1")),
+                   "66f: the saved visible sheet is shown, the others are hidden tables");
+        MultiLayer *rml = qobject_cast<MultiLayer *>(re->window(graphName));
+        CHECK_COND(rml && rml->activeGraph() && rml->activeGraph()->curve(0)->dataSize() == 5,
+                   "66f: graph in the old format");
+        re->savedProject();
+        re->setOleEmbeddedMode(true);
+        delete re;
+        QApplication::processEvents();
+    }
+    // an unknown key in the line is ignored (later versions may add some)
+    {
+        QByteArray fut = txt;
+        fut.replace("\tprefix=Spec66", "\tprefix=Spec66\tcolor=red");
+        const QString futPrj = tmp.filePath("future66.sciprj");
+        CHECK_COND(suite59WriteFile(futPrj, fut), "66f: write future project");
+        ApplicationWindow *re = mw->openProject(futPrj);
+        CHECK_COND(re && WorkbookManager::existing(re)
+                           && WorkbookManager::existing(re)->sheets(bk).size() == 4,
+                   "66f: unknown keys are ignored");
+        re->savedProject();
+        re->setOleEmbeddedMode(true);
+        delete re;
+        QApplication::processEvents();
+    }
+
+    // ungroup: every sheet becomes a visible stand-alone table
+    CHECK_COND(wm->dissolveBook(bk, &err) && !wm->hasBook(bk), "66f: ungroup");
+    QApplication::processEvents();
+    CHECK_COND(suite66Shown(mw, s1) && suite66Shown(mw, s2) && !suite66Tabs(s1), "66f: ungrouped");
+    // make a workbook from one table, move another table into it
+    const QString one = wm->createBookFromTables(QString(), QList<Table *>() << s1, s1, &err);
+    CHECK_COND(one == "Spec66_Sheet1" && wm->sheets(one).size() == 1 && suite66Tabs(s1)
+                       && suite66Tabs(s1)->count() == 1,
+               "66f: workbook from a single worksheet");
+    CHECK_COND(wm->attachTable(one, s2, -1, &err) && wm->currentSheet(one) == s2
+                       && !suite66Shown(mw, s1),
+               "66f: move a worksheet into the workbook");
+    QApplication::processEvents();
+
+    // close what this suite made
+    {
+        QStringList names;
+        names << "F66" << "Spec66_Sheet1" << "Spec66_Sheet2" << "Spec66-Raw" << "Spec66_Sheet3";
+        if (MultiLayer *g = qobject_cast<MultiLayer *>(mw->window(graphName))) {
+            g->askOnCloseEvent(false);
+            g->close();
+        }
+        for (const QString &n : names)
+            if (Table *t = suite66Find(mw, n)) {
+                t->askOnCloseEvent(false);
+                t->close();
+            }
+        for (int i = 0; i < 5; ++i)
+            QApplication::processEvents();
+        CHECK_COND(!wm->hasBook(one), "66f: closing all sheets removes the workbook");
+    }
+
+    // ---------------- 66g: Excel import ----------------
+    const QString xpath = tmp.filePath("Book66.xlsx");
+    CHECK_COND(suite59WriteFile(xpath, suite64Workbook()), "66g: write xlsx");
+    {
+        XlsxImport::ImportResult res;
+        CHECK_COND(XlsxImport::importIntoProject(mw, xpath, QString(), &err, &res, true),
+                   QString("66g: import %1").arg(err).toStdString());
+        QApplication::processEvents();
+        CHECK_COND(res.workbook == "Book66" && wm->sheets(res.workbook).size() == 2,
+                   QString("66g: workbook '%1'").arg(res.workbook).toStdString());
+        const QList<Table *> xs = wm->sheets(res.workbook);
+        CHECK_COND(suite66Names(xs) == (QStringList() << "Book66_Tensile" << "Book66_Dates"),
+                   "66g: sheets in tab order");
+        CHECK_COND(suite66Shown(mw, xs.at(0)) && !suite66Shown(mw, xs.at(1)),
+                   "66g: first sheet shown");
+        CHECK_COND(suite66Tabs(xs.at(0))->tabText(1) == "Dates", "66g: tab label is the sheet name");
+        suite64CloseTables(mw, res.tables);
+        QApplication::processEvents();
+        CHECK_COND(!wm->hasBook(res.workbook), "66g: closed");
+
+        XlsxImport::ImportResult sep;
+        CHECK_COND(XlsxImport::importIntoProject(mw, xpath, QString(), &err, &sep, false),
+                   "66g: import as separate worksheets");
+        CHECK_COND(sep.workbook.isEmpty() && sep.tables.size() == 2
+                           && wm->bookOf(suite66Find(mw, sep.tables.at(0))).isEmpty()
+                           && suite66Shown(mw, suite66Find(mw, sep.tables.at(1))),
+                   "66g: separate worksheets");
+        suite64CloseTables(mw, sep.tables);
+        XlsxImport::ImportResult one1;
+        CHECK_COND(XlsxImport::importIntoProject(mw, xpath, QStringLiteral("Dates"), &err, &one1, true)
+                           && one1.workbook.isEmpty(),
+                   "66g: a single sheet needs no workbook");
+        suite64CloseTables(mw, one1.tables);
+    }
+
+    // ---------------- 66h: Python RPC ----------------
+    if (PythonAutomationServer *srv = mw->pythonAutomationServer()) {
+        int rid = 6600;
+        auto rpc = [&](const char *method, const QJsonObject &params) {
+            QJsonObject req;
+            req["jsonrpc"] = "2.0";
+            req["id"] = ++rid;
+            req["method"] = QString::fromLatin1(method);
+            req["params"] = params;
+            return srv->handleRpcRequest(req);
+        };
+        QJsonObject cp;
+        cp["name"] = "Rpc66";
+        cp["sheets"] = 2;
+        const QJsonObject cr = rpc("workbook.create", cp).value("result").toObject();
+        CHECK_COND(cr.value("ok").toBool() && cr.value("name").toString() == "Rpc66"
+                           && cr.value("sheets").toArray().size() == 2
+                           && cr.value("current").toString() == "Rpc66_Sheet1",
+                   "66h: workbook.create");
+        QJsonObject ap;
+        ap["book"] = "Rpc66";
+        ap["name"] = "S3";
+        const QJsonObject ar = rpc("workbook.add_sheet", ap).value("result").toObject();
+        CHECK_COND(ar.value("table").toString() == "Rpc66_S3"
+                           && ar.value("current").toString() == "Rpc66_S3",
+                   "66h: workbook.add_sheet");
+        QJsonObject sp;
+        sp["table"] = "Rpc66_Sheet2";
+        CHECK_COND(rpc("workbook.set_current", sp).value("result").toObject().value("current")
+                                   .toString()
+                           == "Rpc66_Sheet2",
+                   "66h: workbook.set_current");
+        QJsonObject mp;
+        mp["table"] = "Rpc66_S3";
+        mp["index"] = 0;
+        const QJsonArray order =
+                rpc("workbook.move_sheet", mp).value("result").toObject().value("sheets").toArray();
+        CHECK_COND(order.size() == 3 && order.at(0).toObject().value("label").toString() == "S3",
+                   "66h: workbook.move_sheet");
+        const QJsonArray books =
+                rpc("workbook.list", QJsonObject()).value("result").toObject().value("workbooks").toArray();
+        CHECK_COND(books.size() == 1 && books.at(0).toObject().value("name").toString() == "Rpc66",
+                   "66h: workbook.list");
+        QJsonObject bad;
+        bad["book"] = "Nope66";
+        CHECK_COND(rpc("workbook.add_sheet", bad).contains("error"), "66h: unknown book -> error");
+        QJsonObject xp;
+        xp["path"] = xpath;
+        xp["workbook"] = false;
+        const QJsonObject xr = rpc("app.import_xlsx", xp).value("result").toObject();
+        CHECK_COND(xr.value("tables").toArray().size() == 2 && xr.value("workbook").toString().isEmpty(),
+                   "66h: app.import_xlsx(workbook=false)");
+        QStringList toClose;
+        for (const QJsonValue &v : xr.value("tables").toArray())
+            toClose << v.toString();
+        xp["workbook"] = true;
+        const QJsonObject xr2 = rpc("app.import_xlsx", xp).value("result").toObject();
+        CHECK_COND(!xr2.value("workbook").toString().isEmpty(), "66h: app.import_xlsx(workbook=true)");
+        for (const QJsonValue &v : xr2.value("tables").toArray())
+            toClose << v.toString();
+        toClose << "Rpc66_Sheet1" << "Rpc66_Sheet2" << "Rpc66_S3";
+        CHECK_COND(PythonAutomationServer::supportedMethods().contains("workbook.create"),
+                   "66h: method listed");
+        suite64CloseTables(mw, toClose);
+        for (int i = 0; i < 5; ++i)
+            QApplication::processEvents();
+        CHECK_COND(wm->bookNames().isEmpty(), "66h: all workbooks closed");
+    } else {
+        std::cout << "[INFO] Suite 66h: no Python automation server; RPC check skipped\n";
+    }
+
+    // ---------------- 66i: menus and translations ----------------
+    {
+        QAction *a = mw->findChild<QAction *>(QStringLiteral("actionNewWorkbook"));
+        CHECK_COND(a && !a->associatedWidgets().isEmpty() && !a->text().isEmpty(),
+                   "66i: New Workbook action in a menu");
+        const QString ja = ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("New &Workbook"));
+        CHECK_COND(ja.contains(QString::fromUtf8("\xE3\x83\x96\xE3\x83\x83\xE3\x82\xAF")),
+                   "66i: Japanese for New Workbook");
+        const QString jx = ToriGraphFullJapaneseTranslator::lookupJapanese(
+                QStringLiteral("Put the sheets of a file into one workbook (sheet tabs)"));
+        CHECK_COND(!jx.isEmpty(), "66i: Japanese for the import choice");
+        // the window menu of a worksheet offers the workbook submenu
+        Table *t = mw->newTable("Menu66", 3, 2);
+        QMenu m;
+        wm->populateWindowMenu(&m, t);
+        QMenu *sub = m.findChild<QMenu *>(QStringLiteral("torigraph_workbook_window_menu"));
+        CHECK_COND(sub && sub->actions().size() >= 2, "66i: workbook submenu");
+        t->askOnCloseEvent(false);
+        t->close();
+        QApplication::processEvents();
+    }
+
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 66 workbooks passed!\n";
     return 0;
 }
