@@ -1669,8 +1669,42 @@ bool Table::pasteText(const QString &rawText, bool transposed)
         return false;
     };
 
-    auto tryParseDouble = [](const QString &s, double &outVal) -> bool {
+    static const QRegularExpression kGroupedNumberRx(
+            QStringLiteral("^[+-]?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$"));
+    auto isGroupedNumberToken = [](const QString &tok) -> bool {
+        return kGroupedNumberRx.match(tok).hasMatch();
+    };
+    auto unquoteCellTrim = [](const QString &raw) -> QString {
+        QString cell = raw.trimmed();
+        if (cell.size() >= 2 && cell.startsWith(QLatin1Char('"'))
+            && cell.endsWith(QLatin1Char('"'))) {
+            cell = cell.mid(1, cell.size() - 2)
+                           .replace(QLatin1String("\"\""), QLatin1String("\""))
+                           .trimmed();
+        }
+        return cell;
+    };
+    auto hasUnquotedComma = [](const QString &raw) -> bool {
+        bool inQuotes = false;
+        for (int i = 0; i < raw.size(); ++i) {
+            const QChar ch = raw.at(i);
+            if (ch == QLatin1Char('"'))
+                inQuotes = !inQuotes;
+            else if (ch == QLatin1Char(',') && !inQuotes)
+                return true;
+        }
+        return false;
+    };
+
+    auto tryParseDouble = [&isGroupedNumberToken](const QString &s, double &outVal) -> bool {
         bool ok = false;
+        if (QLocale().decimalPoint() != QLatin1Char(',') && isGroupedNumberToken(s)) {
+            QString noGroup = s;
+            noGroup.remove(QLatin1Char(','));
+            outVal = QLocale::c().toDouble(noGroup, &ok);
+            if (ok)
+                return true;
+        }
         outVal = QLocale::c().toDouble(s, &ok);
         if (ok)
             return true;
@@ -1682,6 +1716,62 @@ bool Table::pasteText(const QString &rawText, bool transposed)
         outVal = QLocale::c().toDouble(alt, &ok);
         return ok;
     };
+
+    // Detect single-column paste containing thousand-grouped numbers (e.g. "1,012") so it is
+    // not split into two CSV columns ("1" and "12").
+    bool keepSingleColumn = false;
+    bool stripSingleColGroupCommas = false;
+    if (!hasTab && hasComma) {
+        int checkIdx = 0;
+        while (checkIdx < lines.size()
+               && (lines.at(checkIdx).trimmed().isEmpty()
+                   || lines.at(checkIdx).trimmed().startsWith(QLatin1Char('#')))) {
+            ++checkIdx;
+        }
+        // Allow up to 2 non-numeric header/unit lines only if they contain no unquoted comma
+        for (int hStep = 0; hStep < 2 && checkIdx < lines.size(); ++hStep) {
+            const QString rawHdr = lines.at(checkIdx).trimmed();
+            if (rawHdr.isEmpty() || hasUnquotedComma(rawHdr))
+                break;
+            const QString uq = unquoteCellTrim(rawHdr);
+            double dv = 0.0;
+            if (isGroupedNumberToken(uq) || tryParseDouble(uq, dv) || isMissingToken(uq))
+                break;
+            ++checkIdx;
+        }
+        bool allValidSingleCol = (checkIdx < lines.size());
+        bool anyGroupedNum = false;
+        for (int li = checkIdx; li < lines.size(); ++li) {
+            const QString rawLine = lines.at(li).trimmed();
+            if (rawLine.isEmpty())
+                continue;
+            const QString uq = unquoteCellTrim(rawLine);
+            if (isGroupedNumberToken(uq)) {
+                anyGroupedNum = true;
+                continue;
+            }
+            if (uq.contains(QLatin1Char(','))) {
+                allValidSingleCol = false;
+                break;
+            }
+            if (isMissingToken(uq))
+                continue;
+            double dv = 0.0;
+            bool okPlain = false;
+            dv = QLocale::c().toDouble(uq, &okPlain);
+            if (!okPlain) {
+                allValidSingleCol = false;
+                break;
+            }
+            Q_UNUSED(dv);
+        }
+        if (allValidSingleCol && anyGroupedNum) {
+            hasComma = false;
+            hasSemicolon = false;
+            keepSingleColumn = true;
+            stripSingleColGroupCommas = true;
+        }
+    }
 
     // Strip leading '#' preamble lines above header/data (keep last '#' line if followed immediately by numeric row)
     if (!formulaModeActive() && lines.size() >= 2 && lines.first().trimmed().startsWith(QLatin1Char('#'))) {
@@ -1709,8 +1799,7 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             return false;
     }
 
-    bool keepSingleColumn = false;
-    if (!hasTab && !hasComma && !hasSemicolon && lines.size() >= 2) {
+    if (!keepSingleColumn && !hasTab && !hasComma && !hasSemicolon && lines.size() >= 2) {
         const QString h0 = lines.at(0).trimmed();
         double dummy0 = 0.0;
         if (!h0.isEmpty() && !tryParseDouble(h0, dummy0)) {
@@ -1777,11 +1866,9 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             }
         }
         for (int i = 0; i < rowCells.size(); ++i) {
-            QString cell = rowCells[i].trimmed();
-            if (cell.size() >= 2 && cell.startsWith(QLatin1Char('"'))
-                && cell.endsWith(QLatin1Char('"'))) {
-                cell = cell.mid(1, cell.size() - 2).replace(QLatin1String("\"\""), QLatin1String("\"")).trimmed();
-            }
+            QString cell = unquoteCellTrim(rowCells[i]);
+            if (stripSingleColGroupCommas && isGroupedNumberToken(cell))
+                cell.remove(QLatin1Char(','));
             rowCells[i] = cell;
         }
         maxCols = qMax(maxCols, rowCells.size());
@@ -3224,7 +3311,7 @@ void Table::showColumnPropertiesDialog(int col)
 
     QPlainTextEdit *editFormula = new QPlainTextEdit(grpFormula);
     editFormula->setFixedHeight(64);
-    editFormula->setPlaceholderText(QStringLiteral("col(\"A\") * 2.0 + 1.0"));
+    editFormula->setPlaceholderText(QStringLiteral("col(\"1\") * 2.0 + 1.0"));
     fLay->addWidget(editFormula);
 
     QCheckBox *chkAutoRecalc =

@@ -78,11 +78,27 @@
 #include <algorithm>
 #include "ApplicationWindow.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "MultiLayer.h"
 #include "Table.h"
 
 namespace {
+
+static void registerTableViewTranslations()
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Add to Graph", "グラフへ追加");
+    reg("+ Add Column", "+列追加");
+    reg("Append a new Y column to this worksheet", "このワークシートの末尾に新しいY列を追加します");
+}
 
 static QChar toUnicodeSubChar(QChar ch, bool *converted = nullptr)
 {
@@ -284,12 +300,16 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     const int barW = quickBar->width();
     const int availW = qMax(0, barW - 14); // 6px left + 6px right layout margin + 2px safety
 
+    QToolButton *btnAddCol =
+            quickBar->findChild<QToolButton *>(QStringLiteral("WorksheetQuickAddColumnBtn"));
     const int roleFullW = calcBtnWidth(btnX, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnY, Qt::ToolButtonTextOnly)
             + calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly)
             + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly) + 14;
-    const int settingsTextW = calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly) + 8;
-    const int settingsIconW = calcBtnWidth(btnColProps, Qt::ToolButtonIconOnly) + 8;
+    const int settingsTextW = calcBtnWidth(btnAddCol, Qt::ToolButtonTextBesideIcon)
+            + calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly) + 10;
+    const int settingsIconW = calcBtnWidth(btnAddCol, Qt::ToolButtonIconOnly)
+            + calcBtnWidth(btnColProps, Qt::ToolButtonIconOnly) + 10;
 
     const int plotBesideW = calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
             + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
@@ -382,6 +402,11 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
 
     if (btnColProps && btnColProps->toolButtonStyle() != colPropsStyle)
         btnColProps->setToolButtonStyle(colPropsStyle);
+    const Qt::ToolButtonStyle addColStyle = (colPropsStyle == Qt::ToolButtonIconOnly)
+            ? Qt::ToolButtonIconOnly
+            : Qt::ToolButtonTextBesideIcon;
+    if (btnAddCol && btnAddCol->toolButtonStyle() != addColStyle)
+        btnAddCol->setToolButtonStyle(addColStyle);
 
     QToolButton *plotBtns[] = { btnLine, btnLp, btnScatter, btnAdd };
     for (QToolButton *pb : plotBtns) {
@@ -395,8 +420,8 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
     }
 
-    QToolButton *visibleRow1[] = { btnX,    btnY,   btnYErr,    moreBtn,     btnLine,
-                                   btnLp,   btnScatter, btnAdd, btnColProps };
+    QToolButton *visibleRow1[] = { btnX,       btnY,    btnYErr,    moreBtn,    btnLine,
+                                   btnLp,      btnScatter, btnAdd,  btnAddCol,  btnColProps };
     for (QToolButton *b : visibleRow1) {
         if (!b || b->isHidden())
             continue;
@@ -452,6 +477,7 @@ void TableView::setTable(future::Table *table)
 
 void TableView::init()
 {
+    registerTableViewTranslations();
     QWidget *d_main_widget = new QWidget();
     QVBoxLayout *rootVBox = new QVBoxLayout(d_main_widget);
     rootVBox->setSpacing(0);
@@ -925,9 +951,19 @@ void TableView::retranslateStrings()
     if (d_btn_quick_add_graph) {
         d_btn_quick_add_graph->setIcon(
                 IconLoader::duotoneIcon(QStringLiteral("new-graph"), 16, false));
-        d_btn_quick_add_graph->setText(tr("+ Add"));
+        d_btn_quick_add_graph->setText(tr("Add to Graph"));
         d_btn_quick_add_graph->setToolTip(
                 tr("Add selected Y column(s) (or all Y columns) to most recent graph"));
+    }
+    if (d_quick_bar) {
+        if (QToolButton *btnAddCol = d_quick_bar->findChild<QToolButton *>(
+                    QStringLiteral("WorksheetQuickAddColumnBtn"))) {
+            btnAddCol->setIcon(
+                    IconLoader::duotoneIcon(QStringLiteral("add-column"), 14, false));
+            btnAddCol->setIconSize(QSize(14, 14));
+            btnAddCol->setText(tr("+ Add Column"));
+            btnAddCol->setToolTip(tr("Append a new Y column to this worksheet"));
+        }
     }
     if (d_btn_quick_col_props) {
         d_btn_quick_col_props->setIcon(
@@ -2301,6 +2337,23 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
 
     QHBoxLayout *settingsLay = nullptr;
     QFrame *settingsGroup = makePillGroup(QStringLiteral("WorksheetSettingsGroup"), settingsLay);
+    QToolButton *btnAddCol = new QToolButton(settingsGroup);
+    btnAddCol->setObjectName(QStringLiteral("WorksheetQuickAddColumnBtn"));
+    btnAddCol->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btnAddCol->setIconSize(QSize(14, 14));
+    btnAddCol->setAutoRaise(false);
+    btnAddCol->setCursor(Qt::PointingHandCursor);
+    btnAddCol->setProperty("wsPlotBtn", true);
+    connect(btnAddCol, &QToolButton::clicked, this, [this]() {
+        if (d_table) {
+            d_table->addColumn();
+            if (d_horizontal_header)
+                d_horizontal_header->refresh();
+            syncQuickBarState();
+        }
+    });
+    settingsLay->addWidget(btnAddCol);
+
     d_btn_quick_col_props = new QToolButton(settingsGroup);
     d_btn_quick_col_props->setCheckable(true);
     d_btn_quick_col_props->setAutoRaise(false);

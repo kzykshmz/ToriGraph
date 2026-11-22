@@ -1135,6 +1135,54 @@ def _scaled_rect_emu(
     return l_e, t_e, w_e, h_e
 
 
+def _clamp_scaled_rect_to_slide_emu(
+    l_e: int,
+    t_e: int,
+    w_e: int,
+    h_e: int,
+    slide_w: int,
+    slide_h: int,
+    *,
+    anchor_rect: Optional[Tuple[int, int, int, int]] = None,
+    center: bool = False,
+) -> Tuple[int, int, int, int, Optional[Tuple[float, float]]]:
+    """Clamp an oversize or out-of-bounds scaled placement proportionally into ``(0, 0, slide_w, slide_h)``."""
+    tol = EMU_PER_MM
+    if (
+        l_e >= -tol
+        and t_e >= -tol
+        and l_e + w_e <= slide_w + tol
+        and t_e + h_e <= slide_h + tol
+    ):
+        return l_e, t_e, w_e, h_e, None
+
+    orig_cm = (round(w_e / EMU_PER_CM, 2), round(h_e / EMU_PER_CM, 2))
+    pad = int(round(0.35 * EMU_PER_CM))
+    if center:
+        max_w = max(EMU_PER_CM, slide_w - 2 * pad)
+        max_h = max(EMU_PER_CM, slide_h - 2 * pad)
+    else:
+        clamped_l = max(0, min(l_e, max(0, slide_w - EMU_PER_CM)))
+        clamped_t = max(0, min(t_e, max(0, slide_h - EMU_PER_CM)))
+        max_w = max(EMU_PER_CM, slide_w - clamped_l - pad)
+        max_h = max(EMU_PER_CM, slide_h - clamped_t - pad)
+        l_e, t_e = clamped_l, clamped_t
+
+    if w_e > max_w or h_e > max_h:
+        factor = min(float(max_w) / float(max(1, w_e)), float(max_h) / float(max(1, h_e)))
+        w_e = max(1, int(round(w_e * factor)))
+        h_e = max(1, int(round(h_e * factor)))
+
+    if center and anchor_rect is not None:
+        a_l, a_t, a_w, a_h = anchor_rect
+        l_e = a_l + (a_w - w_e) // 2
+        t_e = a_t + (a_h - h_e) // 2
+
+    l_e = max(0, min(l_e, max(0, slide_w - w_e)))
+    t_e = max(0, min(t_e, max(0, slide_h - h_e)))
+    return l_e, t_e, w_e, h_e, orig_cm
+
+
 def _explicit_box_emu(
     cur_box: Sequence[float], w_hm: int, h_hm: int, scale: Optional[float]
 ) -> Tuple[int, int, int, int]:
@@ -1232,6 +1280,16 @@ def export_graphs_to_pptx(
     """
     pptx, _, _, _ = _import_pptx()
     scale_f = _parse_scale(scale)
+    if scale_f is None and preset and str(preset).strip().lower() == "lab_slide_83mm":
+        box_has_explicit_width = False
+        if box is not None:
+            box_probe = list(box)
+            if box_probe and isinstance(box_probe[0], (list, tuple)):
+                box_has_explicit_width = any(len(b) >= 3 for b in box_probe)  # type: ignore[arg-type]
+            else:
+                box_has_explicit_width = len(box_probe) >= 3
+        if not box_has_explicit_width:
+            scale_f = 1.4
     embed_scope = str(embed_scope or "graph").strip().lower()
     if embed_scope not in ("graph", "project"):
         raise ValueError(f"embed_scope must be 'graph' or 'project', got {embed_scope!r}.")
@@ -1446,16 +1504,24 @@ def export_graphs_to_pptx(
                     raise KeyError(f"Target shape {target_sname!r} not found on {where}.")
 
                 cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                clamped_orig_cm: Optional[Tuple[float, float]] = None
                 if cur_box is not None:
                     l_e, t_e, w_e, h_e = _explicit_box_emu(
                         cur_box, item["w_hm"], item["h_hm"], scale_f
                     )
+                    if len(cur_box) == 2 and scale_f is not None:
+                        l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                            l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
+                        )
                 elif scale_f is not None:
                     anchor = _extract_shape_xfrm_emu(matched_el) or _compute_grid_cell_emu(
                         slide_w, slide_h, 1, 1, 0
                     )
                     l_e, t_e, w_e, h_e = _scaled_rect_emu(
                         item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                    )
+                    l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                        l_e, t_e, w_e, h_e, slide_w, slide_h, anchor_rect=anchor, center=False
                     )
                 else:
                     orig_xfrm = _extract_shape_xfrm_emu(matched_el)
@@ -1491,6 +1557,8 @@ def export_graphs_to_pptx(
                     replace_element=matched_el,
                 )
                 pl["slide"] = matched_snum
+                if clamped_orig_cm is not None:
+                    pl["_clamped_from_cm"] = clamped_orig_cm
                 placements.append(pl)
                 touched_slides.add(matched_snum)
                 replaced_count += 1
@@ -1521,16 +1589,24 @@ def export_graphs_to_pptx(
                     if found_pair is not None:
                         s_num, s_obj, existing_el = found_pair
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                        clamped_orig_cm = None
                         if cur_box is not None:
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
                                 cur_box, item["w_hm"], item["h_hm"], scale_f
                             )
+                            if len(cur_box) == 2 and scale_f is not None:
+                                l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                    l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
+                                )
                         elif scale_f is not None:
                             anchor = _extract_shape_xfrm_emu(existing_el) or _compute_grid_cell_emu(
                                 slide_w, slide_h, 1, 1, 0
                             )
                             l_e, t_e, w_e, h_e = _scaled_rect_emu(
                                 item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                            )
+                            l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                l_e, t_e, w_e, h_e, slide_w, slide_h, anchor_rect=anchor, center=False
                             )
                         else:
                             orig_xfrm = _extract_shape_xfrm_emu(existing_el)
@@ -1574,6 +1650,8 @@ def export_graphs_to_pptx(
                             replace_element=existing_el,
                         )
                         pl["slide"] = s_num
+                        if clamped_orig_cm is not None:
+                            pl["_clamped_from_cm"] = clamped_orig_cm
                         placements.append(pl)
                         touched_slides.add(s_num)
                         replaced_count += 1
@@ -1600,10 +1678,15 @@ def export_graphs_to_pptx(
                     for local_k, idx in enumerate(pending_indices):
                         item = built_items[idx]
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                        clamped_orig_cm = None
                         if cur_box is not None:
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
                                 cur_box, item["w_hm"], item["h_hm"], scale_f
                             )
+                            if len(cur_box) == 2 and scale_f is not None:
+                                l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                    l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
+                                )
                         else:
                             c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
                                 slide_w,
@@ -1616,6 +1699,16 @@ def export_graphs_to_pptx(
                             if scale_f is not None:
                                 l_e, t_e, w_e, h_e = _scaled_rect_emu(
                                     item["w_hm"], item["h_hm"], scale_f, (c_l, c_t, c_w, c_h),
+                                    center=True,
+                                )
+                                l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                    l_e,
+                                    t_e,
+                                    w_e,
+                                    h_e,
+                                    slide_w,
+                                    slide_h,
+                                    anchor_rect=(c_l, c_t, c_w, c_h),
                                     center=True,
                                 )
                             else:
@@ -1635,6 +1728,8 @@ def export_graphs_to_pptx(
                             prog_id=item["prog_id"],
                         )
                         pl["slide"] = s_num
+                        if clamped_orig_cm is not None:
+                            pl["_clamped_from_cm"] = clamped_orig_cm
                         placements.append(pl)
                         touched_slides.add(s_num)
                         embedded_count += 1
@@ -1652,10 +1747,15 @@ def export_graphs_to_pptx(
                         for cell_k, idx in enumerate(chunk):
                             item = built_items[idx]
                             cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
+                            clamped_orig_cm = None
                             if cur_box is not None:
                                 l_e, t_e, w_e, h_e = _explicit_box_emu(
                                     cur_box, item["w_hm"], item["h_hm"], scale_f
                                 )
+                                if len(cur_box) == 2 and scale_f is not None:
+                                    l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                        l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
+                                    )
                             else:
                                 c_l, c_t, c_w, c_h = _compute_grid_cell_emu(
                                     slide_w,
@@ -1669,6 +1769,16 @@ def export_graphs_to_pptx(
                                     l_e, t_e, w_e, h_e = _scaled_rect_emu(
                                         item["w_hm"], item["h_hm"], scale_f,
                                         (c_l, c_t, c_w, c_h), center=True,
+                                    )
+                                    l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
+                                        l_e,
+                                        t_e,
+                                        w_e,
+                                        h_e,
+                                        slide_w,
+                                        slide_h,
+                                        anchor_rect=(c_l, c_t, c_w, c_h),
+                                        center=True,
                                     )
                                 else:
                                     l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
@@ -1687,6 +1797,8 @@ def export_graphs_to_pptx(
                                 prog_id=item["prog_id"],
                             )
                             pl["slide"] = s_num
+                            if clamped_orig_cm is not None:
+                                pl["_clamped_from_cm"] = clamped_orig_cm
                             placements.append(pl)
                             touched_slides.add(s_num)
                             embedded_count += 1
@@ -1715,8 +1827,18 @@ def export_graphs_to_pptx(
             nominal = pts.get(key)
             pl["nominal_" + key] = nominal
             pl["effective_" + key] = round(nominal * eff, 2) if nominal else None
+        clamped_from = pl.pop("_clamped_from_cm", None)
         tol = EMU_PER_MM  # rounding of the cm values
-        if (
+        if clamped_from is not None:
+            pl["clamped"] = True
+            msg = (
+                f"'{item['graph_name']}' ({clamped_from[0]:.1f} x {clamped_from[1]:.1f} cm) "
+                f"extends beyond slide {pl.get('slide')} and was clamped to "
+                f"{pl['width_cm']:.1f} x {pl['height_cm']:.1f} cm."
+            )
+            warn_list.append(msg)
+            warnings.warn(msg, UserWarning, stacklevel=2)
+        elif (
             l_emu < -tol
             or t_emu < -tol
             or l_emu + w_emu > slide_w + tol

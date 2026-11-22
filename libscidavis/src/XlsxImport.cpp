@@ -32,6 +32,7 @@
 #include <QStatusBar>
 #include <QXmlStreamReader>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -42,6 +43,8 @@ namespace {
 
 constexpr int kMaxRows = 1048576;
 constexpr int kMaxCols = 16384;
+constexpr qint64 kMaxTotalCells = 20000000LL;
+constexpr double kMaxAbsDateSerial = 36520590.0;
 
 QString trX(const char *s)
 {
@@ -297,7 +300,13 @@ bool parseCellRef(const QStringRef &ref, int &col, int &row)
 
 double dateTimeToSerial(const QDateTime &dt, bool date1904)
 {
-    const QDate base = date1904 ? QDate(1904, 1, 1) : QDate(1899, 12, 30);
+    QDate base;
+    if (date1904)
+        base = QDate(1904, 1, 1);
+    else if (dt.date() >= QDate(1900, 1, 1) && dt.date() < QDate(1900, 3, 1))
+        base = QDate(1899, 12, 31);
+    else
+        base = QDate(1899, 12, 30);
     const qint64 days = base.daysTo(dt.date());
     return double(days) + double(dt.time().msecsSinceStartOfDay()) / 86400000.0;
 }
@@ -309,6 +318,7 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
     QXmlStreamReader r(xml);
     int curRow = -1;
     int curCol = -1;
+    qint64 allocatedCells = 0;
     while (!r.atEnd()) {
         const QXmlStreamReader::TokenType tt = r.readNext();
         if (tt != QXmlStreamReader::StartElement)
@@ -402,7 +412,7 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
         } else if (hasValue && !valueText.trimmed().isEmpty()) {
             bool ok = false;
             const double v = QLocale::c().toDouble(valueText.trimmed(), &ok);
-            if (ok) {
+            if (ok && std::isfinite(v)) {
                 cell.type = Cell::Number;
                 cell.number = v;
                 if (styleOk && styleIdx >= 0 && styleIdx < styles.size()
@@ -411,6 +421,9 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                     cell.hasDatePart = styles.at(styleIdx).datePart;
                     cell.hasTimePart = styles.at(styleIdx).timePart;
                 }
+            } else if (ok) {
+                cell.type = Cell::Error;
+                cell.text = valueText;
             } else {
                 cell.type = Cell::Text;
                 cell.text = valueText;
@@ -422,8 +435,19 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
         if (row >= sheet.rows.size())
             sheet.rows.resize(row + 1);
         QVector<Cell> &rowCells = sheet.rows[row];
-        if (col >= rowCells.size())
+        if (col >= rowCells.size()) {
+            const qint64 delta = qint64(col + 1) - qint64(rowCells.size());
+            if (allocatedCells + delta > kMaxTotalCells * 2) {
+                if (outErr) {
+                    *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
+                                  "(20,000,000 cells).")
+                                      .arg(sheet.name);
+                }
+                return false;
+            }
+            allocatedCells += delta;
             rowCells.resize(col + 1);
+        }
         rowCells[col] = cell;
         sheet.columnCount = std::max(sheet.columnCount, col + 1);
     }
@@ -493,6 +517,8 @@ bool isBlank(const Cell &c)
 bool numericValue(const Cell &c, double &out)
 {
     if (c.type == Cell::Number || c.type == Cell::Bool) {
+        if (!std::isfinite(c.number))
+            return false;
         out = c.number;
         return true;
     }
@@ -521,13 +547,15 @@ QString cellDisplayText(const Cell &c, bool date1904)
     case Cell::Number:
         if (c.isDate) {
             const QDateTime dt = serialToDateTime(c.number, date1904);
-            if (c.hasDatePart && !c.hasTimePart)
-                return dt.date().toString(Qt::ISODate);
-            if (!c.hasDatePart)
-                return dt.time().toString(QStringLiteral("HH:mm:ss"));
-            return dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            if (dt.isValid()) {
+                if (c.hasDatePart && !c.hasTimePart)
+                    return dt.date().toString(Qt::ISODate);
+                if (!c.hasDatePart)
+                    return dt.time().toString(QStringLiteral("HH:mm:ss"));
+                return dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            }
         }
-        return QString::number(c.number, 'g', 15);
+        return std::isfinite(c.number) ? QString::number(c.number, 'g', 15) : QString();
     case Cell::Bool:
         return c.number != 0.0 ? QStringLiteral("TRUE") : QStringLiteral("FALSE");
     case Cell::Text:
@@ -608,23 +636,30 @@ QString uniqueWindowName(ApplicationWindow *app, const QString &base)
 // ---------------------------------------------------------------------------
 QDateTime serialToDateTime(double serial, bool date1904)
 {
-    if (!std::isfinite(serial))
+    if (!std::isfinite(serial) || std::fabs(serial) > kMaxAbsDateSerial)
         return QDateTime();
     QDate base;
     if (date1904)
         base = QDate(1904, 1, 1);
-    else if (serial < 60.0)
+    else if (serial >= 1.0 && serial < 60.0)
         base = QDate(1899, 12, 31); // before Excel's fictitious 1900-02-29 (serial 60)
     else
         base = QDate(1899, 12, 30);
-    qint64 totalMs = static_cast<qint64>(std::llround(serial * 86400000.0));
+    const double scaledMs = serial * 86400000.0;
+    if (!std::isfinite(scaledMs)
+        || std::fabs(scaledMs) > double(std::numeric_limits<qint64>::max() / 4))
+        return QDateTime();
+    qint64 totalMs = static_cast<qint64>(std::llround(scaledMs));
     qint64 days = totalMs / 86400000LL;
     qint64 ms = totalMs % 86400000LL;
     if (ms < 0) {
         ms += 86400000LL;
         --days;
     }
-    return QDateTime(base.addDays(days), QTime::fromMSecsSinceStartOfDay(static_cast<int>(ms)));
+    const QDate outDate = base.addDays(days);
+    if (!outDate.isValid())
+        return QDateTime();
+    return QDateTime(outDate, QTime::fromMSecsSinceStartOfDay(static_cast<int>(ms)));
 }
 
 bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
@@ -772,6 +807,12 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
         QString part;
         if (relIt != wbRels.constEnd()) {
             if (!typeEndsWith(relIt->type, "/worksheet")) {
+                if (!onlySheet.isEmpty()
+                    && ref.name.compare(onlySheet, Qt::CaseInsensitive) == 0) {
+                    return fail(trX("Sheet \"%1\" is a chart or macro sheet and contains no "
+                                    "worksheet table data.")
+                                        .arg(ref.name));
+                }
                 ++out.skippedNonWorksheets; // chart sheet, dialog sheet, macro sheet
                 continue;
             }
@@ -790,8 +831,11 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
         Sheet sheet;
         sheet.name = ref.name;
         sheet.state = ref.state;
-        if (!parseWorksheet(xml, sharedStrings, styles, out.date1904, sheet, &err))
+        if (!parseWorksheet(xml, sharedStrings, styles, out.date1904, sheet, &err)) {
+            if (err.contains(QStringLiteral("20,000,000")))
+                return fail(err);
             return fail(damagedMessage(err));
+        }
         out.sheets << sheet;
     }
     if (!foundRequested) {
@@ -831,8 +875,9 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
     SheetLayout layout;
     QList<Column *> cols;
 
-    // Used range
+    // Used range & non-empty columns (avoids 131 GB OOM when a stray cell sits at e.g. XFD1048576)
     int firstRow = -1, lastRow = -1, firstCol = std::numeric_limits<int>::max(), lastCol = -1;
+    QSet<int> nonEmptyColSet;
     for (int r = 0; r < sheet.rows.size(); ++r) {
         const QVector<Cell> &cells = sheet.rows.at(r);
         for (int c = 0; c < cells.size(); ++c) {
@@ -843,25 +888,47 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             lastRow = r;
             firstCol = std::min(firstCol, c);
             lastCol = std::max(lastCol, c);
+            nonEmptyColSet.insert(c);
         }
     }
-    if (firstRow < 0) {
+    if (firstRow < 0 || nonEmptyColSet.isEmpty()) {
         if (outLayout)
             *outLayout = layout;
         return cols;
     }
 
-    auto rowHasNumeric = [&](int r) {
+    const int spanCols = lastCol - firstCol + 1;
+    const qint64 rawSpanCells = qint64(lastRow - firstRow + 1) * qint64(spanCols);
+    QVector<int> targetCols;
+    if (spanCols <= 64 && rawSpanCells <= kMaxTotalCells) {
+        targetCols.reserve(spanCols);
         for (int c = firstCol; c <= lastCol; ++c)
+            targetCols.append(c);
+    } else {
+        targetCols.reserve(nonEmptyColSet.size());
+        for (int c : nonEmptyColSet)
+            targetCols.append(c);
+        std::sort(targetCols.begin(), targetCols.end());
+    }
+
+    auto rowHasNumeric = [&](int r) {
+        for (int c : targetCols)
             if (isNumericCell(cellAt(sheet, r, c)))
                 return true;
         return false;
     };
     auto rowHasTextual = [&](int r) {
-        for (int c = firstCol; c <= lastCol; ++c)
+        for (int c : targetCols)
             if (isTextualCell(cellAt(sheet, r, c)))
                 return true;
         return false;
+    };
+    auto countRowNonBlank = [&](int r) {
+        int cnt = 0;
+        for (int c : targetCols)
+            if (!isBlank(cellAt(sheet, r, c)))
+                ++cnt;
+        return cnt;
     };
     // Every non-blank cell of rows [from, lastRow] in column c is a number, and there is one.
     auto columnNumericFrom = [&](int c, int from) {
@@ -877,49 +944,118 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         return any;
     };
 
-    // Header row: first used row holds text only and some row below holds a number.
-    const int h = firstRow;
-    bool hasHeader = false;
-    if (lastRow > h && rowHasTextual(h) && !rowHasNumeric(h)) {
-        for (int r = h + 1; r <= lastRow && !hasHeader; ++r)
-            hasHeader = rowHasNumeric(r);
-    }
-
-    // Units row (same rule as the CSV importer's 2-row [Name, Units] detection)
-    bool hasUnits = false;
-    if (hasHeader && lastRow >= h + 2 && !rowHasNumeric(h + 1) && rowHasTextual(h + 1)) {
-        const int u = h + 1;
-        int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
-        bool allRecognized = true, shortCells = true;
-        for (int c = firstCol; c <= lastCol; ++c) {
-            if (!columnNumericFrom(c, u + 1))
-                continue;
-            ++numericCols;
-            const Cell &uc = cellAt(sheet, u, c);
-            if (isBlank(uc))
-                continue;
-            ++nonEmptyUnits;
-            QString cleaned;
-            if (AsciiTableImportFilter::looksLikeUnitCell(uc.text, &cleaned))
-                ++recognized;
-            else
-                allRecognized = false;
-            if (cleaned.size() > 32)
-                shortCells = false;
+    // Detect data start row even when row 1+ contains title / comment preamble lines.
+    int detectedDataStart = -1;
+    for (int r = firstRow; r <= lastRow; ++r) {
+        if (!rowHasNumeric(r))
+            continue;
+        bool hasCleanNumericCol = false;
+        for (int c : targetCols) {
+            if (columnNumericFrom(c, r)) {
+                hasCleanNumericCol = true;
+                break;
+            }
         }
-        hasUnits = numericCols >= 1
-                && ((allRecognized && recognized >= 1) || (nonEmptyUnits >= 1 && shortCells));
+        if (hasCleanNumericCol) {
+            detectedDataStart = r;
+            break;
+        }
+    }
+    if (detectedDataStart < 0) {
+        for (int r = firstRow; r <= lastRow; ++r) {
+            if (rowHasNumeric(r)) {
+                detectedDataStart = r;
+                break;
+            }
+        }
     }
 
-    const int dataStart = h + (hasHeader ? 1 : 0) + (hasUnits ? 1 : 0);
+    bool hasHeader = false;
+    bool hasUnits = false;
+    int headerRowIdx = firstRow;
+    int unitsRowIdx = -1;
+    int dataStart = firstRow;
+
+    if (detectedDataStart > firstRow) {
+        dataStart = detectedDataStart;
+        QVector<int> candRows;
+        for (int r = firstRow; r < dataStart; ++r) {
+            if (countRowNonBlank(r) > 0)
+                candRows.append(r);
+        }
+        if (candRows.size() == 1) {
+            const int rHdr = candRows.first();
+            if (rowHasTextual(rHdr) && !rowHasNumeric(rHdr)) {
+                hasHeader = true;
+                headerRowIdx = rHdr;
+            }
+        } else if (candRows.size() >= 2) {
+            const int rLast = candRows.at(candRows.size() - 1);
+            const int rPrev = candRows.at(candRows.size() - 2);
+            const bool lastTextOnly = rowHasTextual(rLast) && !rowHasNumeric(rLast);
+            const bool prevTextOnly = rowHasTextual(rPrev) && !rowHasNumeric(rPrev);
+            bool lastIsUnits = false;
+            if (lastTextOnly && prevTextOnly) {
+                int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
+                bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
+                for (int c : targetCols) {
+                    if (!columnNumericFrom(c, dataStart))
+                        continue;
+                    ++numericCols;
+                    const Cell &uc = cellAt(sheet, rLast, c);
+                    if (isBlank(uc))
+                        continue;
+                    ++nonEmptyUnits;
+                    const QString rawTxt = cellDisplayText(uc, date1904).trimmed();
+                    QString sn, ln, un;
+                    AsciiTableImportFilter::splitHeaderNameAndUnits(rawTxt, sn, ln, un);
+                    if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
+                        hasInlineHeaderUnit = true;
+                    QString cleaned;
+                    if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned))
+                        ++recognized;
+                    else
+                        allRecognized = false;
+                    if (cleaned.size() > 32)
+                        shortCells = false;
+                }
+                const int nonBlankPrev = countRowNonBlank(rPrev);
+                const int nonBlankLast = countRowNonBlank(rLast);
+                lastIsUnits = !hasInlineHeaderUnit && numericCols >= 1
+                        && ((allRecognized && recognized >= 1)
+                            || (nonEmptyUnits >= 1 && shortCells && nonBlankPrev >= nonBlankLast
+                                && !(nonBlankPrev == 1 && targetCols.size() >= 2)));
+            }
+            if (lastIsUnits) {
+                hasHeader = true;
+                headerRowIdx = rPrev;
+                hasUnits = true;
+                unitsRowIdx = rLast;
+            } else if (lastTextOnly) {
+                hasHeader = true;
+                headerRowIdx = rLast;
+            } else if (prevTextOnly) {
+                hasHeader = true;
+                headerRowIdx = rPrev;
+            }
+        }
+    }
+
     const int nRows = std::max(0, lastRow - dataStart + 1);
     layout.headerRow = hasHeader;
     layout.unitsRow = hasUnits;
     layout.dataRows = nRows;
 
+    if (qint64(nRows) * qint64(targetCols.size()) > kMaxTotalCells) {
+        layout.dataRows = -1;
+        if (outLayout)
+            *outLayout = layout;
+        return cols;
+    }
+
     QSet<QString> usedNames;
     QVector<bool> colIsNumeric;
-    for (int c = firstCol; c <= lastCol; ++c) {
+    for (int c : targetCols) {
         int nums = 0, dates = 0, texts = 0;
         bool datePart = false, timePart = false;
         for (int r = dataStart; r <= lastRow; ++r) {
@@ -945,7 +1081,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         // Names and units
         QString shortName, longName, units;
         if (hasHeader) {
-            const Cell &hc = cellAt(sheet, h, c);
+            const Cell &hc = cellAt(sheet, headerRowIdx, c);
             const QString raw = isBlank(hc) ? QString() : cellDisplayText(hc, date1904).trimmed();
             if (!raw.isEmpty()) {
                 AsciiTableImportFilter::splitHeaderNameAndUnits(raw, shortName, longName, units);
@@ -953,8 +1089,8 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                     longName = units.isEmpty() ? raw : shortName;
             }
         }
-        if (hasUnits) {
-            const Cell &uc = cellAt(sheet, h + 1, c);
+        if (hasUnits && unitsRowIdx >= 0) {
+            const Cell &uc = cellAt(sheet, unitsRowIdx, c);
             if (!isBlank(uc)) {
                 QString cleaned;
                 AsciiTableImportFilter::looksLikeUnitCell(cellDisplayText(uc, date1904), &cleaned);
@@ -1007,7 +1143,10 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             for (int i = 0; i < nRows; ++i) {
                 const Cell &cell = cellAt(sheet, dataStart + i, c);
                 if (cell.type == Cell::Number && cell.isDate) {
-                    values->append(serialToDateTime(cell.number, date1904));
+                    const QDateTime dt = serialToDateTime(cell.number, date1904);
+                    values->append(dt);
+                    if (!dt.isValid())
+                        invalid.setValue(Interval<int>(i, i), true);
                 } else {
                     values->append(QDateTime());
                     invalid.setValue(Interval<int>(i, i), true);
@@ -1099,11 +1238,15 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
     const QFileInfo fi(path);
     Table *blankInitial = findBlankInitialTable(app);
     QStringList parts;
+    QString oversizedSheetName;
     for (const Sheet &sh : wb.sheets) {
         SheetLayout layout;
         QList<Column *> cols = sheetToColumns(sh, wb.date1904, &layout);
         if (cols.isEmpty()) {
-            result.emptySheets << sh.name;
+            if (layout.dataRows < 0 && oversizedSheetName.isEmpty())
+                oversizedSheetName = sh.name;
+            else
+                result.emptySheets << sh.name;
             continue;
         }
         if (blankInitial) {
@@ -1116,8 +1259,10 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
                 uniqueWindowName(app, tableBaseName(fi.completeBaseName(), sh.name));
         Table *t = app->newTable(name, QStringLiteral("%1 [%2]").arg(fi.fileName(), sh.name),
                                  cols);
-        if (!t)
+        if (!t) {
+            qDeleteAll(cols);
             continue;
+        }
         result.tables << t->name();
         QString part = trX("%1 (%2 rows x %3 columns").arg(sh.name).arg(layout.dataRows).arg(
                 cols.size());
@@ -1131,8 +1276,10 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
         parts << part;
     }
 
-    if (asWorkbook && result.tables.size() >= 2) {
-        // D8: one workbook, one sheet tab per worksheet (first sheet shown)
+    if (asWorkbook
+        && (result.tables.size() >= 2 || (result.tables.size() == 1 && sheet.isEmpty()))) {
+        // D8: one workbook, one sheet tab per worksheet (first sheet shown; 1-sheet books also
+        // get the [+] sheet tab bar when importing a whole file)
         QList<Table *> sheets;
         for (const QString &n : result.tables)
             for (MyWidget *w : app->windowsList())
@@ -1147,9 +1294,20 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
     }
 
     if (result.tables.isEmpty()) {
-        if (outError)
-            *outError = trX("The workbook contains no data (all sheets are empty): %1")
-                                .arg(fi.fileName());
+        if (outError) {
+            if (!oversizedSheetName.isEmpty()) {
+                *outError = trX("Worksheet \"%1\" exceeds the maximum import size "
+                                "(20,000,000 cells).")
+                                    .arg(oversizedSheetName);
+            } else if (wb.sheets.isEmpty() && wb.skippedNonWorksheets > 0) {
+                *outError = trX("This workbook contains only chart or macro sheets and no "
+                                "worksheet table data: %1")
+                                    .arg(fi.fileName());
+            } else {
+                *outError = trX("The workbook contains no data (all sheets are empty): %1")
+                                    .arg(fi.fileName());
+            }
+        }
         if (outResult)
             *outResult = result;
         return false;
@@ -1176,6 +1334,30 @@ bool importDroppedFile(ApplicationWindow *app, const QString &path, QString *out
         if (outSummary)
             *outSummary = res.summary;
         app->setProperty("torigraph_last_xlsx_import_error", QString());
+        if (!res.tables.isEmpty()) {
+            Table *firstTbl = nullptr;
+            for (MyWidget *w : app->windowsList()) {
+                if (w && w->name() == res.tables.first()) {
+                    firstTbl = qobject_cast<Table *>(w);
+                    break;
+                }
+            }
+            if (firstTbl && !ApplicationWindow::isNonInteractiveContext(app)) {
+                if (!firstTbl->isMaximized() && !firstTbl->isMinimized()
+                    && app->d_workspace.viewMode() == QMdiArea::SubWindowView) {
+                    const QSize vp = app->d_workspace.viewport()
+                            ? app->d_workspace.viewport()->size()
+                            : QSize();
+                    const int maxW = (vp.width() >= 360) ? qMax(360, vp.width() - 12) : 960;
+                    const int maxH = (vp.height() >= 260) ? qMax(260, vp.height() - 12) : 720;
+                    const int wantW = qMin(maxW, qMax(firstTbl->width(), 640));
+                    const int wantH = qMin(maxH, qMax(firstTbl->height(), 400));
+                    if (wantW > firstTbl->width() || wantH > firstTbl->height())
+                        firstTbl->resize(wantW, wantH);
+                }
+                app->offerPlotAfterImport(firstTbl);
+            }
+        }
         return true;
     }
     const QString msg = err + QStringLiteral("\n\n") + QFileInfo(path).fileName();
@@ -1256,6 +1438,12 @@ void registerTranslations()
         "「Excel ブック (.xlsx)」または CSV として保存し直し、そのファイルを読み込んでください。");
     reg("Sheet \"%1\" was not found in the workbook.\nSheets: %2",
         "シート「%1」がブックにありません。\nシート: %2");
+    reg("Sheet \"%1\" is a chart or macro sheet and contains no worksheet table data.",
+        "シート「%1」はグラフシートまたはマクロシートのため、表データがありません。");
+    reg("This workbook contains only chart or macro sheets and no worksheet table data: %1",
+        "このブックにはグラフシートまたはマクロシートしかなく、表データがありません: %1");
+    reg("Worksheet \"%1\" exceeds the maximum import size (20,000,000 cells).",
+        "ワークシート「%1」のセル数が上限(20,000,000セル)を超えているため読み込めません。");
     reg("File not found: %1", "ファイルが見つかりません: %1");
     reg("The file is too large to import (over 512 MB): %1",
         "ファイルが大きすぎて読み込めません (512 MB 超): %1");

@@ -45,14 +45,17 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QUndoStack>
 #include <QTemporaryFile>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -1077,6 +1080,8 @@ void registerTranslations()
     reg("Active graph (%1)", "作業中のグラフ (%1)");
     reg("All graphs (%1)", "すべてのグラフ (%1 個)");
     reg("Selected graphs:", "選んだグラフ:");
+    reg("Select All", "すべて選択");
+    reg("Deselect All", "すべて解除");
     reg("Slide layout", "スライドの配置");
     reg("Graphs per slide:", "1 枚に並べる数:");
     reg("1 per slide", "1 個");
@@ -1499,6 +1504,11 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     MyWidget *active = app ? app->activeWindow() : nullptr;
     if (active && !graphs.contains(active))
         active = nullptr;
+    QList<QPointer<MyWidget>> safeGraphs;
+    safeGraphs.reserve(graphs.size());
+    for (MyWidget *w : graphs)
+        safeGraphs.append(QPointer<MyWidget>(w));
+    QPointer<MyWidget> safeActive(active);
 
     auto *top = new QVBoxLayout(dlg);
 
@@ -1511,23 +1521,49 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     rbActive->setEnabled(active != nullptr);
     auto *rbAll = new QRadioButton(T("All graphs (%1)").arg(graphs.size()), gbGraphs);
     rbAll->setObjectName(QStringLiteral("pptxTargetAll"));
+    auto *selHeaderRow = new QHBoxLayout();
     auto *rbSel = new QRadioButton(T("Selected graphs:"), gbGraphs);
     rbSel->setObjectName(QStringLiteral("pptxTargetSelected"));
+    auto *btnSelectAll = new QPushButton(T("Select All"), gbGraphs);
+    btnSelectAll->setObjectName(QStringLiteral("pptxSelectAll"));
+    btnSelectAll->setEnabled(false);
+    auto *btnDeselectAll = new QPushButton(T("Deselect All"), gbGraphs);
+    btnDeselectAll->setObjectName(QStringLiteral("pptxDeselectAll"));
+    btnDeselectAll->setEnabled(false);
+    selHeaderRow->addWidget(rbSel);
+    selHeaderRow->addStretch(1);
+    selHeaderRow->addWidget(btnSelectAll);
+    selHeaderRow->addWidget(btnDeselectAll);
     auto *list = new QListWidget(gbGraphs);
     list->setObjectName(QStringLiteral("pptxGraphList"));
     for (MyWidget *w : graphs) {
         auto *item = new QListWidgetItem(w->name(), list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(w == active ? Qt::Checked : Qt::Unchecked);
-        item->setData(Qt::UserRole, w->name());
+        item->setData(Qt::UserRole, QVariant::fromValue(static_cast<QObject *>(w)));
+        item->setData(Qt::UserRole + 1, w->name());
     }
     list->setMaximumHeight(120);
     list->setEnabled(false);
     QObject::connect(rbSel, &QRadioButton::toggled, list, &QWidget::setEnabled);
+    QObject::connect(rbSel, &QRadioButton::toggled, btnSelectAll, &QWidget::setEnabled);
+    QObject::connect(rbSel, &QRadioButton::toggled, btnDeselectAll, &QWidget::setEnabled);
+    QObject::connect(btnSelectAll, &QPushButton::clicked, list, [list]() {
+        const QSignalBlocker sb(list);
+        for (int i = 0; i < list->count(); ++i)
+            list->item(i)->setCheckState(Qt::Checked);
+        emit list->itemSelectionChanged();
+    });
+    QObject::connect(btnDeselectAll, &QPushButton::clicked, list, [list]() {
+        const QSignalBlocker sb(list);
+        for (int i = 0; i < list->count(); ++i)
+            list->item(i)->setCheckState(Qt::Unchecked);
+        emit list->itemSelectionChanged();
+    });
     (active ? rbActive : rbAll)->setChecked(true);
     vg->addWidget(rbActive);
     vg->addWidget(rbAll);
-    vg->addWidget(rbSel);
+    vg->addLayout(selHeaderRow);
     vg->addWidget(list);
     top->addWidget(gbGraphs);
 
@@ -1551,10 +1587,62 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     fl->addRow(T("Slide size:"), cbSize);
     top->addWidget(gbLayout);
 
-    // --- size on the slide (the factor is read from the lab slide preset) ---
+    // --- size on the slide (auto-linked to the target graph's preset or lab preset checkbox) ---
     MultiLayer::GraphStylePresetSpec lab;
     const bool haveLab = MultiLayer::findStylePreset(labSlidePresetId(), &lab);
     const double labPct = presetPastePercent(labSlidePresetId());
+    auto computeTargetPastePct = [safeGraphs, safeActive, rbActive, rbSel, list,
+                                  labPct](bool applyLabFirst) -> double {
+        if (applyLabFirst)
+            return labPct;
+        QList<MyWidget *> targets;
+        if (rbActive && rbActive->isChecked()) {
+            if (safeActive)
+                targets << safeActive.data();
+        } else if (rbSel && rbSel->isChecked() && list) {
+            for (int i = 0; i < list->count(); ++i) {
+                if (list->item(i)->checkState() != Qt::Checked)
+                    continue;
+                if (auto *mw = qobject_cast<MyWidget *>(
+                            list->item(i)->data(Qt::UserRole).value<QObject *>())) {
+                    targets << mw;
+                }
+            }
+        } else {
+            for (const QPointer<MyWidget> &gp : safeGraphs) {
+                if (gp)
+                    targets << gp.data();
+            }
+        }
+        if (targets.isEmpty()) {
+            if (safeActive)
+                targets << safeActive.data();
+            else {
+                for (const QPointer<MyWidget> &gp : safeGraphs) {
+                    if (gp)
+                        targets << gp.data();
+                }
+            }
+        }
+        bool anyMl = false;
+        bool allSamePreset = true;
+        QString commonPreset;
+        for (MyWidget *w : targets) {
+            if (!w || !w->inherits("MultiLayer"))
+                continue;
+            const QString pid = w->property("toriAppliedStylePreset").toString().trimmed();
+            if (!anyMl) {
+                anyMl = true;
+                commonPreset = pid;
+            } else if (pid != commonPreset) {
+                allSamePreset = false;
+            }
+        }
+        if (anyMl && allSamePreset && !commonPreset.isEmpty())
+            return presetPastePercent(commonPreset);
+        return 100.0;
+    };
+
     auto *gbScale = new QGroupBox(T("Size on the slide"), dlg);
     auto *vs = new QVBoxLayout(gbScale);
     auto *hs = new QHBoxLayout();
@@ -1566,7 +1654,10 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     spin->setDecimals(0);
     spin->setSingleStep(10.0);
     spin->setSuffix(QStringLiteral(" %"));
-    spin->setValue(labPct);
+    spin->setValue(computeTargetPastePct(false));
+    QObject::connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), dlg, [spin]() {
+        spin->setProperty("_tg_user_edited_scale", true);
+    });
     hs->addWidget(rbScale);
     hs->addWidget(spin);
     hs->addStretch(1);
@@ -1583,6 +1674,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     chkShrink->setEnabled(rbScale->isChecked());
     QObject::connect(rbScale, &QRadioButton::toggled, chkShrink, &QWidget::setEnabled);
     vs->addWidget(chkShrink);
+    QCheckBox *chkPreset = nullptr;
     if (haveLab) {
         auto *hint = new QLabel(
                 T("Lab slide preset \"%1\": a %2 mm page pasted at %3 % shows %4 pt tick labels "
@@ -1595,12 +1687,35 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         hint->setObjectName(QStringLiteral("pptxScaleHint"));
         hint->setWordWrap(true);
         vs->addWidget(hint);
-        auto *chkPreset = new QCheckBox(
+        chkPreset = new QCheckBox(
                 T("Apply the lab slide preset to the graphs first (can be undone)"), gbScale);
         chkPreset->setObjectName(QStringLiteral("pptxApplyPreset"));
         chkPreset->setChecked(false); // changes the graphs: never on by default
         vs->addWidget(chkPreset);
     }
+    auto syncScaleFromTarget = [spin, chkPreset, computeTargetPastePct](bool forceOverride) {
+        if (!forceOverride && spin->property("_tg_user_edited_scale").toBool())
+            return;
+        const bool applyLab = chkPreset && chkPreset->isChecked();
+        const QSignalBlocker sb(spin);
+        spin->setValue(computeTargetPastePct(applyLab));
+        if (forceOverride)
+            spin->setProperty("_tg_user_edited_scale", false);
+    };
+    if (chkPreset) {
+        QObject::connect(chkPreset, &QCheckBox::toggled, dlg,
+                         [syncScaleFromTarget](bool) { syncScaleFromTarget(true); });
+    }
+    QObject::connect(rbActive, &QRadioButton::toggled, dlg,
+                     [syncScaleFromTarget](bool on) { if (on) syncScaleFromTarget(false); });
+    QObject::connect(rbAll, &QRadioButton::toggled, dlg,
+                     [syncScaleFromTarget](bool on) { if (on) syncScaleFromTarget(false); });
+    QObject::connect(rbSel, &QRadioButton::toggled, dlg,
+                     [syncScaleFromTarget](bool on) { if (on) syncScaleFromTarget(false); });
+    QObject::connect(list, &QListWidget::itemChanged, dlg,
+                     [syncScaleFromTarget](QListWidgetItem *) { syncScaleFromTarget(false); });
+    QObject::connect(list, &QListWidget::itemSelectionChanged, dlg,
+                     [syncScaleFromTarget]() { syncScaleFromTarget(false); });
     top->addWidget(gbScale);
 
     // --- file ---
@@ -1667,11 +1782,23 @@ bool readSendDialog(QDialog *dialog, ApplicationWindow *app, QList<MyWidget *> *
             chosen << a;
     } else if (rbSel && rbSel->isChecked() && list) {
         QStringList names;
-        for (int i = 0; i < list->count(); ++i)
-            if (list->item(i)->checkState() == Qt::Checked)
-                names << list->item(i)->data(Qt::UserRole).toString();
+        for (int i = 0; i < list->count(); ++i) {
+            if (list->item(i)->checkState() != Qt::Checked)
+                continue;
+            if (auto *mw = qobject_cast<MyWidget *>(
+                        list->item(i)->data(Qt::UserRole).value<QObject *>())) {
+                if (graphs.contains(mw) && !chosen.contains(mw))
+                    chosen << mw;
+                continue;
+            }
+            const QString fallbackName = list->item(i)->data(Qt::UserRole + 1).isValid()
+                    ? list->item(i)->data(Qt::UserRole + 1).toString()
+                    : list->item(i)->data(Qt::UserRole).toString();
+            if (!fallbackName.isEmpty())
+                names << fallbackName;
+        }
         for (MyWidget *w : graphs)
-            if (names.contains(w->name()))
+            if (names.contains(w->name()) && !chosen.contains(w))
                 chosen << w;
     } else {
         chosen = graphs;
@@ -1732,15 +1859,19 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     QScopedPointer<QDialog> dlg(createSendDialog(app, app));
     if (dlg->exec() != QDialog::Accepted)
         return;
-    QList<MyWidget *> windows;
+    QList<MyWidget *> rawWindows;
     DeckOptions opt;
     QString path, err;
     bool applyPreset = false;
-    if (!readSendDialog(dlg.data(), app, &windows, &opt, &path, &applyPreset, &err)) {
+    if (!readSendDialog(dlg.data(), app, &rawWindows, &opt, &path, &applyPreset, &err)) {
         QMessageBox::warning(app, title, err);
         return;
     }
     dlg.reset();
+    QList<QPointer<MyWidget>> safeWindows;
+    safeWindows.reserve(rawWindows.size());
+    for (MyWidget *w : rawWindows)
+        safeWindows.append(QPointer<MyWidget>(w));
 
     if (QFileInfo::exists(path)) {
         QMessageBox box(QMessageBox::Question, title,
@@ -1761,6 +1892,16 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
             return;
     }
 
+    QList<MyWidget *> windows;
+    for (const QPointer<MyWidget> &wp : safeWindows) {
+        if (wp)
+            windows << wp.data();
+    }
+    if (windows.isEmpty()) {
+        QMessageBox::warning(app, title, T("No graph to send."));
+        return;
+    }
+
     QSettings &st = ApplicationWindow::getSettings();
     st.setValue(QLatin1String(kKeyPath), path);
     st.setValue(QLatin1String(kKeyPerSlide), opt.perSlide);
@@ -1768,13 +1909,30 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     st.setValue(QLatin1String(kKeyFit), opt.scalePercent <= 0.0);
     st.setValue(QLatin1String(kKeyShrink), opt.shrinkToFit);
 
+    struct PresetRollbackState {
+        QPointer<MultiLayer> ml;
+        QString snapshot;
+        QVariant prevPresetProp;
+        int prevUndoCount = 0;
+    };
+    QVector<PresetRollbackState> rollbackStates;
+    const bool wasProjectSaved = app->saved;
+
     QApplication::setOverrideCursor(Qt::WaitCursor);
     if (applyPreset) {
         MultiLayer::GraphStylePresetSpec spec;
         if (MultiLayer::findStylePreset(labSlidePresetId(), &spec)) {
-            for (MyWidget *w : windows) {
-                if (w->inherits("MultiLayer"))
-                    static_cast<MultiLayer *>(w)->applyStylePresetSpec(spec);
+            for (const QPointer<MyWidget> &wp : safeWindows) {
+                if (!wp || !wp->inherits("MultiLayer"))
+                    continue;
+                MultiLayer *ml = static_cast<MultiLayer *>(wp.data());
+                PresetRollbackState rb;
+                rb.ml = ml;
+                rb.snapshot = ml->captureUndoSnapshot();
+                rb.prevPresetProp = ml->property("toriAppliedStylePreset");
+                rb.prevUndoCount = ml->undoStack() ? ml->undoStack()->count() : 0;
+                rollbackStates.append(rb);
+                ml->applyStylePresetSpec(spec);
             }
             app->modifiedProject();
             if (GraphInspectorDock *insp = app->graphInspectorDock())
@@ -1782,7 +1940,33 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
         }
     }
+    windows.clear();
+    for (const QPointer<MyWidget> &wp : safeWindows) {
+        if (wp)
+            windows << wp.data();
+    }
     const DeckResult res = exportGraphs(app, windows, opt, path);
+    if (!res.ok && !rollbackStates.isEmpty()) {
+        for (const PresetRollbackState &rb : rollbackStates) {
+            if (!rb.ml)
+                continue;
+            if (QUndoStack *us = rb.ml->undoStack()) {
+                if (rb.prevUndoCount == 0) {
+                    us->clear();
+                } else {
+                    while (us->count() > rb.prevUndoCount && us->canUndo())
+                        us->undo();
+                }
+            }
+            if (!rb.snapshot.isEmpty())
+                rb.ml->restoreSnapshotInPlace(app, rb.snapshot);
+            rb.ml->setProperty("toriAppliedStylePreset", rb.prevPresetProp);
+        }
+        if (wasProjectSaved)
+            app->markProjectSaved();
+        if (GraphInspectorDock *insp = app->graphInspectorDock())
+            insp->refreshAll();
+    }
     QApplication::restoreOverrideCursor();
 
     if (!res.ok) {

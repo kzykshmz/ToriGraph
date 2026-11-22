@@ -128,6 +128,7 @@ QString selectGraphFirstMessage()
 #include "Table.h"
 #include "Matrix.h"
 #include "MyWidget.h"
+#include "Plot.h"
 #include "PlotCurve.h"
 #include "Spectrogram.h"
 
@@ -144,6 +145,7 @@ QString selectGraphFirstMessage()
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTemporaryFile>
@@ -661,6 +663,7 @@ class SciDAVisGraphObject final : public IOleObject,
     bool m_stopped = false;
     bool m_visible = false;
     size_t m_editorGeneration = 0;
+    size_t m_activeEditorRefGen = 0;
     SIZEL m_extent{ 15000, 11250 };
     SIZEL m_initialRenderExtentHm{ 0, 0 };
     QPointer<ApplicationWindow> m_editor;
@@ -732,6 +735,14 @@ class SciDAVisGraphObject final : public IOleObject,
         notifyViewAndData();
     }
 
+    void releaseEditorRefOnce(size_t gen)
+    {
+        if (gen != 0 && m_activeEditorRefGen == gen) {
+            m_activeEditorRefGen = 0;
+            Release();
+        }
+    }
+
     bool syncFromEditor()
     {
         if (!m_editor)
@@ -744,9 +755,13 @@ class SciDAVisGraphObject final : public IOleObject,
                 ? m_targetG3d.data()
                 : (!ml ? findTargetGraph3D(m_editor, m_payload.targetWindow, false) : nullptr);
         if (!ml && !g3d) {
+            if (!m_payload.targetWindow.isEmpty())
+                return false;
             ml = findTargetMultiLayer(m_editor, m_payload.targetWindow, true);
             if (!ml)
                 g3d = findTargetGraph3D(m_editor, m_payload.targetWindow, true);
+            if (!ml && !g3d)
+                return false;
         }
 
         if (ml) {
@@ -939,6 +954,8 @@ public:
         }
 
         if (m_editor) {
+            const size_t closingGen = m_activeEditorRefGen;
+            ++m_editorGeneration;
             QPointer<ApplicationWindow> ed = m_editor;
             m_editor = nullptr;
             m_targetMl = nullptr;
@@ -947,6 +964,7 @@ public:
             ed->setHeadlessMode(true);
             ed->setOleEmbeddedMode(true);
             ed->close();
+            releaseEditorRefOnce(closingGen);
         }
 
         finishClose();
@@ -1006,7 +1024,9 @@ public:
         const bool prevStopped = m_stopped;
         m_stopped = false;
         const size_t generation = ++m_editorGeneration;
+        m_activeEditorRefGen = generation;
         AddRef();
+        QPointer<ApplicationWindow> mwGuard;
 
         try {
             ApplicationWindow *mw = openAppWindowFromBytes(m_payload.projectBytes);
@@ -1017,11 +1037,12 @@ public:
                     reportEmbeddedOpenFailure(
                             QObject::tr("the embedded project could not be read"));
                     m_stopped = prevStopped;
-                    Release();
+                    releaseEditorRefOnce(generation);
                     return E_FAIL;
                 }
                 mw = createSampleAppWindow();
             }
+            mwGuard = mw;
 
             MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow, false);
             Graph3D *g3d = !ml ? findTargetGraph3D(mw, m_payload.targetWindow, false) : nullptr;
@@ -1035,7 +1056,7 @@ public:
                         QObject::tr("the graph \"%1\" was not found in the embedded project")
                                 .arg(m_payload.targetWindow));
                 m_stopped = prevStopped;
-                Release();
+                releaseEditorRefOnce(generation);
                 return E_FAIL;
             }
             if (!ml && !g3d) {
@@ -1111,7 +1132,7 @@ public:
                         m_targetG3d = nullptr;
                         finishClose();
                     }
-                    Release();
+                    releaseEditorRefOnce(generation);
                 });
 
             m_editor = mw;
@@ -1134,7 +1155,18 @@ public:
                 m_site->OnShowWindow(TRUE);
             return S_OK;
         } catch (...) {
-            Release();
+            if (mwGuard) {
+                if (m_editor == mwGuard)
+                    m_editor = nullptr;
+                m_targetMl = nullptr;
+                m_targetG3d = nullptr;
+                mwGuard->setOleEmbeddedCallbacks({}, {});
+                mwGuard->setHeadlessMode(true);
+                mwGuard->setOleEmbeddedMode(true);
+                mwGuard->close();
+            }
+            m_stopped = prevStopped;
+            releaseEditorRefOnce(generation);
             return E_FAIL;
         }
     }
@@ -1353,11 +1385,12 @@ public:
         std::wstring target = path ? path : m_filename;
         if (target.empty())
             return STG_E_INVALIDNAME;
-        QFile f(QString::fromWCharArray(target.c_str()));
-        if (!f.open(QIODevice::WriteOnly))
+        QSaveFile f(QString::fromWCharArray(target.c_str()));
+        if (!f.open(QIODevice::WriteOnly)
+            || f.write(m_payload.projectBytes) != m_payload.projectBytes.size()
+            || !f.commit()) {
             return STG_E_WRITEFAULT;
-        f.write(m_payload.projectBytes);
-        f.close();
+        }
         if (remember || !path) {
             m_filename = target;
             if (!m_site)
@@ -1412,6 +1445,10 @@ public:
                 if (!hMem)
                     return E_OUTOFMEMORY;
                 void *ptr = GlobalLock(hMem);
+                if (!ptr) {
+                    GlobalFree(hMem);
+                    return E_OUTOFMEMORY;
+                }
                 std::memcpy(ptr, m_payload.dibBytes.constData(), static_cast<size_t>(m_payload.dibBytes.size()));
                 GlobalUnlock(hMem);
                 m->tymed = TYMED_HGLOBAL;
@@ -1426,6 +1463,10 @@ public:
                 if (!hMem)
                     return E_OUTOFMEMORY;
                 void *ptr = GlobalLock(hMem);
+                if (!ptr) {
+                    GlobalFree(hMem);
+                    return E_OUTOFMEMORY;
+                }
                 std::memcpy(ptr, png.constData(), static_cast<size_t>(png.size()));
                 GlobalUnlock(hMem);
                 m->tymed = TYMED_HGLOBAL;
@@ -1443,6 +1484,10 @@ public:
                 if (!hMem)
                     return E_OUTOFMEMORY;
                 auto *d = static_cast<OBJECTDESCRIPTOR *>(GlobalLock(hMem));
+                if (!d) {
+                    GlobalFree(hMem);
+                    return E_OUTOFMEMORY;
+                }
                 d->cbSize = totalSize;
                 d->clsid = graph_clsid;
                 d->dwDrawAspect = DVASPECT_CONTENT;
@@ -2169,6 +2214,45 @@ QStringList dataDependenciesForWindow(ApplicationWindow *app, MyWidget *w)
             }
             for (const QString &c : g->curvesList())
                 addTableOf(c);
+            if (Plot *pl = g->plotWidget()) {
+                const QStringList extraTags = pl->property("_toriExtraPlotTags").toStringList();
+                static const QRegularExpression extraAttrRx(
+                        QStringLiteral("(table|matrix|sourceMatrix)=\"([^\"]*)\""));
+                auto unescXmlAttr = [](QString v) {
+                    v.replace(QLatin1String("&#10;"), QLatin1String("\n"));
+                    v.replace(QLatin1String("&quot;"), QLatin1String("\""));
+                    v.replace(QLatin1String("&lt;"), QLatin1String("<"));
+                    v.replace(QLatin1String("&gt;"), QLatin1String(">"));
+                    v.replace(QLatin1String("&amp;"), QLatin1String("&"));
+                    return v.trimmed();
+                };
+                for (const QString &rawTag : extraTags) {
+                    const QString trimmedTag = rawTag.trimmed();
+                    if (!trimmedTag.startsWith(QLatin1String("<ToriDensity2D"))
+                        && !trimmedTag.startsWith(QLatin1String("<ToriPoleFigure"))) {
+                        continue;
+                    }
+                    auto mit = extraAttrRx.globalMatch(trimmedTag);
+                    while (mit.hasNext()) {
+                        const QRegularExpressionMatch m = mit.next();
+                        const QString key = m.captured(1);
+                        const QString val = unescXmlAttr(m.captured(2));
+                        if (val.isEmpty())
+                            continue;
+                        if (key == QLatin1String("table")) {
+                            if (Table *t = app->table(val))
+                                add(t->name());
+                            else
+                                add(val);
+                        } else {
+                            if (Matrix *mat = app->matrix(val))
+                                add(mat->name());
+                            else
+                                add(val);
+                        }
+                    }
+                }
+            }
         }
     } else if (w->inherits("Graph3D")) {
         Graph3D *g3 = static_cast<Graph3D *>(w);
