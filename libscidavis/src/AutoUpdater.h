@@ -139,6 +139,7 @@ private:
     qint64 d_lastTotalBytes = 0;
     bool d_downloadCanceled = false;
     bool d_downloadStalled = false;
+    bool d_downloadBlockedRedirect = false;
 };
 
 class AutoUpdater : public QObject
@@ -148,6 +149,12 @@ class AutoUpdater : public QObject
 public:
     using ReleaseInfo = ::ReleaseInfo;
     using UpdateDialog = ::UpdateAvailableDialog;
+
+    enum class CodeSignatureStatus {
+        Valid,
+        Unsigned,
+        InvalidSignature
+    };
 
     explicit AutoUpdater(ApplicationWindow *app, QObject *parent = nullptr);
     ~AutoUpdater() override;
@@ -164,6 +171,7 @@ public:
 
     static QString defaultLatestFeedUrlString();
     static QString defaultReleasesFeedUrlString();
+    static bool isAllowedUpdateUrl(const QUrl &url);
 
     // Deterministic Static Core APIs (for C++ & Python testing)
     static QString currentAppVersion();
@@ -174,6 +182,10 @@ public:
                                        bool allowPreRelease = false);
     static QString computeFileSha256(const QString &filePath);
     static bool verifyFileSha256(const QString &filePath, const QString &expectedHex);
+    static CodeSignatureStatus verifyFileCodeSignature(const QString &filePath,
+                                                       QString *signerSubjectOut = nullptr,
+                                                       QString *errOut = nullptr);
+    static bool requireCodeSignature();
     //! The generated script waits up to waitTimeoutSec for PID waitForPid (and any process
     //! running the target exe) to exit and aborts without touching the installation if one
     //! is still alive.
@@ -183,7 +195,8 @@ public:
                                                     qint64 waitForPid,
                                                     bool relaunch = true,
                                                     QString *errOut = nullptr,
-                                                    int waitTimeoutSec = 60);
+                                                    int waitTimeoutSec = 60,
+                                                    const QString &expectedSha256 = QString());
 
     // Network / failure handling helpers (public for the regression tests)
     //! Use the system (WinINET/PAC) proxy for remote hosts, no proxy for loopback.

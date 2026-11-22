@@ -76,6 +76,12 @@
 #include "EmfPaintDevice.h"
 #include "OleServer.h"
 #include <ole2.h>
+#include <accctrl.h>
+#include <aclapi.h>
+#include <sddl.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "advapi32.lib")
+#endif
 #endif
 
 #ifdef ORIGIN_IMPORT
@@ -126,6 +132,7 @@
 #include <QLocalSocket>
 #include <QLocale>
 #include <QMdiSubWindow>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QMetaMethod>
 #include <QMetaObject>
@@ -136,6 +143,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QSaveFile>
@@ -2197,6 +2205,100 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
 // PythonAutomationServer — Transports & JSON-RPC 2.0 Framing
 // ============================================================================
 
+namespace {
+
+QString generateRandom256BitHexToken()
+{
+    QByteArray rawBytes;
+    rawBytes.reserve(32);
+    for (int i = 0; i < 8; ++i) {
+        const quint32 v = QRandomGenerator::system()->generate();
+        rawBytes.append(static_cast<char>((v >> 24) & 0xFF));
+        rawBytes.append(static_cast<char>((v >> 16) & 0xFF));
+        rawBytes.append(static_cast<char>((v >> 8) & 0xFF));
+        rawBytes.append(static_cast<char>(v & 0xFF));
+    }
+    return QString::fromLatin1(rawBytes.toHex()).toLower();
+}
+
+bool constantTimeTokenEquals(const QString &provided, const QString &expected)
+{
+    const QByteArray a = provided.toUtf8();
+    const QByteArray b = expected.toUtf8();
+    if (b.isEmpty())
+        return false;
+    const int lenA = a.size();
+    const int lenB = b.size();
+    volatile unsigned int diff = static_cast<unsigned int>(lenA ^ lenB);
+    const int n = std::max(lenA, lenB);
+    for (int i = 0; i < n; ++i) {
+        const unsigned char ca = (i < lenA) ? static_cast<unsigned char>(a.at(i)) : 0u;
+        const unsigned char cb = (i < lenB) ? static_cast<unsigned char>(b.at(i)) : 0u;
+        diff |= static_cast<unsigned int>(ca ^ cb);
+    }
+    return diff == 0u;
+}
+
+QString rpcTokenDirectoryPath()
+{
+    QString base = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath();
+    return QDir(base).filePath(QStringLiteral("ToriGraph/rpc"));
+}
+
+void lockDownWindowsOwnerOnlyAcl(const QString &targetPath)
+{
+    QFile::setPermissions(targetPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+#ifdef Q_OS_WIN
+    QString userSidClause;
+    HANDLE hTok = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hTok) && hTok) {
+        DWORD needed = 0;
+        GetTokenInformation(hTok, TokenUser, nullptr, 0, &needed);
+        if (needed > 0) {
+            std::vector<BYTE> tokBuf(needed, 0);
+            if (GetTokenInformation(hTok, TokenUser, tokBuf.data(), needed, &needed)) {
+                auto *tu = reinterpret_cast<TOKEN_USER *>(tokBuf.data());
+                LPWSTR sidStr = nullptr;
+                if (tu->User.Sid && ConvertSidToStringSidW(tu->User.Sid, &sidStr) && sidStr) {
+                    userSidClause = QStringLiteral("(A;;FA;;;%1)")
+                                            .arg(QString::fromWCharArray(sidStr));
+                    LocalFree(sidStr);
+                }
+            }
+        }
+        CloseHandle(hTok);
+    }
+
+    const QString sddl = QStringLiteral("D:P(A;;FA;;;SY)(A;;FA;;;OW)") + userSidClause;
+    const std::wstring wSddl = sddl.toStdWString();
+    PSECURITY_DESCRIPTOR pSD = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wSddl.c_str(), SDDL_REVISION_1, &pSD, nullptr)) {
+        // Fallback to strict D:P(A;;FA;;;SY)(A;;FA;;;OW)
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    L"D:P(A;;FA;;;SY)(A;;FA;;;OW)", SDDL_REVISION_1, &pSD, nullptr)) {
+            return;
+        }
+    }
+    PACL pDacl = nullptr;
+    BOOL daclPresent = FALSE;
+    BOOL daclDefaulted = FALSE;
+    if (GetSecurityDescriptorDacl(pSD, &daclPresent, &pDacl, &daclDefaulted) && daclPresent) {
+        std::wstring wPath = QDir::toNativeSeparators(targetPath).toStdWString();
+        SetNamedSecurityInfoW(wPath.data(), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                              nullptr, nullptr, pDacl, nullptr);
+    }
+    LocalFree(pSD);
+#endif
+}
+
+} // namespace
+
 PythonAutomationServer::PythonAutomationServer(ApplicationWindow *app, QObject *parent)
     : QObject(parent), d_app(app)
 {
@@ -2208,6 +2310,47 @@ PythonAutomationServer::~PythonAutomationServer()
     stop();
 }
 
+void PythonAutomationServer::setTcpAuthToken(const QString &token)
+{
+    d_tcp_auth_token = token.trimmed();
+    if (isTcpListening() && d_tcp_port > 0 && !d_tcp_auth_token.isEmpty())
+        writeTcpTokenFile(d_tcp_port);
+}
+
+QString PythonAutomationServer::tcpAuthToken() const
+{
+    return d_tcp_auth_token;
+}
+
+void PythonAutomationServer::writeTcpTokenFile(quint16 port)
+{
+    if (port == 0 || d_tcp_auth_token.isEmpty())
+        return;
+    const QString rpcDir = rpcTokenDirectoryPath();
+    QDir().mkpath(rpcDir);
+    const QString filePath =
+            QDir(rpcDir).filePath(QStringLiteral("tcp_%1.token").arg(port));
+    if (!d_tcp_token_file_path.isEmpty() && d_tcp_token_file_path != filePath)
+        removeTcpTokenFile();
+
+    QFile tf(filePath);
+    if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        tf.write(d_tcp_auth_token.toUtf8());
+        tf.flush();
+        tf.close();
+        lockDownWindowsOwnerOnlyAcl(filePath);
+        d_tcp_token_file_path = filePath;
+    }
+}
+
+void PythonAutomationServer::removeTcpTokenFile()
+{
+    if (!d_tcp_token_file_path.isEmpty()) {
+        QFile::remove(d_tcp_token_file_path);
+        d_tcp_token_file_path.clear();
+    }
+}
+
 bool PythonAutomationServer::startTcp(quint16 port, const QHostAddress &bindAddress)
 {
     if (d_tcp_server) {
@@ -2215,6 +2358,9 @@ bool PythonAutomationServer::startTcp(quint16 port, const QHostAddress &bindAddr
             && (port == 0 || d_tcp_server->serverPort() == port)
             && d_bind_address == bindAddress) {
             d_tcp_port = d_tcp_server->serverPort();
+            if (d_tcp_auth_token.isEmpty())
+                d_tcp_auth_token = generateRandom256BitHexToken();
+            writeTcpTokenFile(d_tcp_port);
             d_prefer_local_pipe = false;
             return true;
         }
@@ -2226,11 +2372,16 @@ bool PythonAutomationServer::startTcp(quint16 port, const QHostAddress &bindAddr
             }
         }
         d_tcp_buffers.clear();
+        d_authed_tcp_sockets.clear();
+        removeTcpTokenFile();
         d_tcp_server->close();
         delete d_tcp_server;
         d_tcp_server = nullptr;
         d_tcp_port = 0;
     }
+
+    if (d_tcp_auth_token.isEmpty())
+        d_tcp_auth_token = generateRandom256BitHexToken();
 
     d_tcp_server = new QTcpServer(this);
     connect(d_tcp_server, &QTcpServer::newConnection, this,
@@ -2245,6 +2396,7 @@ bool PythonAutomationServer::startTcp(quint16 port, const QHostAddress &bindAddr
 
     d_bind_address = bindAddress;
     d_tcp_port = d_tcp_server->serverPort();
+    writeTcpTokenFile(d_tcp_port);
     d_prefer_local_pipe = false;
     return true;
 }
@@ -2324,11 +2476,13 @@ void PythonAutomationServer::stop()
             }
         }
         d_tcp_buffers.clear();
+        d_authed_tcp_sockets.clear();
         d_tcp_server->close();
         delete d_tcp_server;
         d_tcp_server = nullptr;
         d_tcp_port = 0;
     }
+    removeTcpTokenFile();
 
     if (d_local_server) {
         for (auto it = d_local_buffers.begin(); it != d_local_buffers.end(); ++it) {
@@ -2442,6 +2596,72 @@ void PythonAutomationServer::onTcpReadyRead()
         if (line.trimmed().isEmpty())
             continue;
 
+        if (!d_authed_tcp_sockets.contains(sock)) {
+            QJsonParseError authParseErr;
+            const QJsonDocument authDoc = QJsonDocument::fromJson(line, &authParseErr);
+            QJsonValue idVal = QJsonValue::Null;
+            bool authOk = false;
+            bool hasId = false;
+            QString authMethod;
+
+            if (authParseErr.error == QJsonParseError::NoError && authDoc.isObject()) {
+                const QJsonObject reqObj = authDoc.object();
+                hasId = reqObj.contains(QStringLiteral("id"));
+                if (hasId) {
+                    const QJsonValue rawId = reqObj.value(QStringLiteral("id"));
+                    if (rawId.isNull() || rawId.isString()
+                        || (rawId.isDouble() && !rawId.isBool()
+                            && std::isfinite(rawId.toDouble()))) {
+                        idVal = rawId.isString() ? QJsonValue(sanitizeUtf16Surrogates(rawId.toString()))
+                                                 : rawId;
+                    }
+                }
+                authMethod = reqObj.value(QStringLiteral("method")).toString().trimmed();
+                if (authMethod == QStringLiteral("rpc.auth")
+                    || authMethod == QStringLiteral("auth")) {
+                    const QJsonObject paramsObj = reqObj.value(QStringLiteral("params")).toObject();
+                    const QString providedToken =
+                            paramsObj.value(QStringLiteral("token")).toString().trimmed();
+                    if (constantTimeTokenEquals(providedToken, d_tcp_auth_token))
+                        authOk = true;
+                }
+            }
+
+            if (!authOk) {
+                buf.clear();
+                emit rpcRequestHandled(
+                        authMethod.isEmpty() ? QStringLiteral("rpc.auth") : authMethod, false);
+                QJsonObject errObj;
+                errObj[QStringLiteral("code")] = -32001;
+                errObj[QStringLiteral("message")] =
+                        QStringLiteral("Unauthorized: rpc.auth required");
+                QJsonObject errResp;
+                errResp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+                errResp[QStringLiteral("id")] = idVal;
+                errResp[QStringLiteral("error")] = errObj;
+                sock->write(QJsonDocument(errResp).toJson(QJsonDocument::Compact) + "\n");
+                sock->flush();
+                sock->disconnectFromHost();
+                return;
+            }
+
+            d_authed_tcp_sockets.insert(sock);
+            emit rpcRequestHandled(authMethod, true);
+            if (hasId && d_tcp_buffers.contains(sock)
+                && sock->state() == QAbstractSocket::ConnectedState) {
+                QJsonObject resObj;
+                resObj[QStringLiteral("ok")] = true;
+                resObj[QStringLiteral("authenticated")] = true;
+                QJsonObject okResp;
+                okResp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+                okResp[QStringLiteral("id")] = idVal;
+                okResp[QStringLiteral("result")] = resObj;
+                sock->write(QJsonDocument(okResp).toJson(QJsonDocument::Compact) + "\n");
+                sock->flush();
+            }
+            continue;
+        }
+
         QByteArray resp = handleRpcLine(line);
         if (!resp.isEmpty() && d_tcp_buffers.contains(sock)
             && sock->state() == QAbstractSocket::ConnectedState) {
@@ -2459,6 +2679,7 @@ void PythonAutomationServer::onTcpDisconnected()
     if (!sock)
         return;
     d_tcp_buffers.remove(sock);
+    d_authed_tcp_sockets.remove(sock);
     sock->deleteLater();
 }
 
@@ -2764,12 +2985,16 @@ QProcess *PythonAutomationServer::startPythonScriptProcess(const QString &script
                                                            const QStringList &extraArgs,
                                                            QObject *parent)
 {
-    if (!isTcpListening() && !isLocalPipeListening())
-        startTcp(0, QHostAddress::LocalHost);
+    if (!isTcpListening() && !isLocalPipeListening()) {
+        if (!startLocalPipe())
+            startTcp(0, QHostAddress::LocalHost);
+    }
 
     auto *proc = new QProcess(parent ? parent : this);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("TORIGRAPH_RPC_ENDPOINT"), endpointString());
+    if (!d_tcp_auth_token.isEmpty())
+        env.insert(QStringLiteral("TORIGRAPH_RPC_TOKEN"), d_tcp_auth_token);
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
 
@@ -2834,18 +3059,10 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
 
     QByteArray rawPayload;
     QUrl qurl(feedUrl);
-    if (!qurl.isValid() || qurl.scheme().isEmpty()) {
-        QFile f(feedUrl);
-        if (!f.open(QIODevice::ReadOnly))
-            throwRpcRuntime(QStringLiteral("Failed to open local update feed: %1").arg(feedUrl));
-        rawPayload = f.readAll();
-    } else if (qurl.isLocalFile()) {
-        QFile f(qurl.toLocalFile());
-        if (!f.open(QIODevice::ReadOnly))
-            throwRpcRuntime(
-                    QStringLiteral("Failed to open local update feed: %1").arg(qurl.toLocalFile()));
-        rawPayload = f.readAll();
-    } else {
+    if (!AutoUpdater::isAllowedUpdateUrl(qurl)) {
+        throwRpcRuntime(QStringLiteral("Blocked untrusted update feed URL: %1").arg(feedUrl));
+    }
+    {
         QNetworkAccessManager nam;
         QNetworkRequest req(qurl);
         req.setHeader(QNetworkRequest::UserAgentHeader,
@@ -2859,8 +3076,16 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
         QEventLoop loop;
         QTimer timer;
         timer.setSingleShot(true);
+        bool blockedRedirect = false;
         const int timeoutMs =
                 parseBoundedInt(params, QStringLiteral("timeout_ms"), 10000, 500, 60000);
+        QObject::connect(reply, &QNetworkReply::redirected, &loop, [&](const QUrl &newUrl) {
+            if (!AutoUpdater::isAllowedUpdateUrl(newUrl)) {
+                blockedRedirect = true;
+                reply->abort();
+                loop.quit();
+            }
+        });
         QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         timer.start(timeoutMs);
@@ -2870,6 +3095,11 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
             reply->abort();
             reply->deleteLater();
             throwRpcRuntime(QStringLiteral("Update check timed out fetching %1").arg(feedUrl));
+        }
+        if (blockedRedirect || !AutoUpdater::isAllowedUpdateUrl(reply->url())) {
+            const QString badUrl = reply->url().toString();
+            reply->deleteLater();
+            throwRpcRuntime(QStringLiteral("Blocked untrusted update feed redirect: %1").arg(badUrl));
         }
         rawPayload = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
@@ -6429,19 +6659,20 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.describe_api", "app", "Session.describe_api(method=None, *, domain=None)",
       "Self-discovery catalog returning structured schemas, parameter types/enums, and Python SDK examples for one method, a domain, or all methods.",
       "method:str=''; domain:str=''", "app.describe_api(domain='graph')" },
-    { "app.new_project", "app", "Session.new_project()",
-      "Reset the workspace in-place to a clean empty project.", "", "app.new_project()" },
+    { "app.new_project", "app", "Session.new_project(*, force=None)",
+      "Reset the workspace in-place to a clean empty project.", "force:bool|null=null",
+      "app.new_project()" },
     { "app.batch", "app",
       "Session.batch(*, atomic=True, stop_on_error=True, defer_replot=True)",
       "Execute an atomic pipeline of RPC commands with '$prev.<key>' and '$steps[k].<key>' token interpolation, coalesced undo/replot, and automatic workspace rollback on error.",
       "commands:list[dict]*; stop_on_error:bool=true; atomic:bool=true; defer_replot:bool=true",
       "with app.batch(atomic=True) as b:\n    t = app.create_table(rows=10, cols=2)" },
-    { "app.open_project", "app", "Session.open_project(path, *, append=False)",
+    { "app.open_project", "app", "Session.open_project(path, *, append=False, force=None)",
       "Open a .sciprj/.sciprj.gz project (or append it as a subfolder when append=True).",
-      "path:str*; append:bool=false", "app.open_project('study.sciprj')" },
-    { "app.save_project", "app", "Session.save_project(path, *, compress=False)",
+      "path:str*; append:bool=false; force:bool|null=null", "app.open_project('study.sciprj')" },
+    { "app.save_project", "app", "Session.save_project(path, *, compress=False, snapshot=False)",
       "Save the current project to .sciprj or gzip-compressed .sciprj.gz.",
-      "path:str*; compress:bool=false", "app.save_project('study.sciprj')" },
+      "path:str*; compress:bool=false; snapshot:bool=false", "app.save_project('study.sciprj')" },
     { "app.import_csv", "app",
       "Session.import_csv(path, *, separator=None, encoding='auto', header=True, units_row=None, skip_lines=0, numeric=True, name=None)",
       "Import CSV/TSV/ASCII, headerless .xy/.xye, or Rigaku .ras data with UTF-8/UTF-16/Shift-JIS auto-decoding, RFC 4180 quotes, 2-row [Name, Units] auto-promotion, and 'Name (Unit)' header parsing.",
@@ -10976,6 +11207,78 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &method,
                                       const QJsonObject &params, QJsonObject &outResult);
 
+void confirmUnsavedProjectBeforeReset(PythonAutomationServer *server, ApplicationWindow *d_app,
+                                      const QJsonObject &params)
+{
+    if (!d_app || d_app->saved)
+        return;
+
+    const bool hasExplicitForce = params.contains(QStringLiteral("force"))
+            && !params.value(QStringLiteral("force")).isUndefined()
+            && !params.value(QStringLiteral("force")).isNull();
+    if (hasExplicitForce) {
+        const bool forceVal = optionalJsonBool(params, QStringLiteral("force"), false);
+        if (forceVal)
+            return;
+        throw RpcDispatchException(
+                -32002,
+                QStringLiteral("Current project '%1' has unsaved changes. Save first or pass "
+                               "force=True.")
+                        .arg(d_app->projectname));
+    }
+
+    const bool nonInteractive = (server ? server->callerWasNonInteractive()
+                                        : ApplicationWindow::isNonInteractiveContext(d_app))
+            || d_app->isOleEmbeddedMode();
+    if (nonInteractive)
+        return;
+
+    // Interactive GUI session with unsaved changes and no explicit force=True: ask the user.
+    struct ScopedInteractiveRestore
+    {
+        QCoreApplication *qa;
+        QVariant prev;
+        explicit ScopedInteractiveRestore(QCoreApplication *app)
+            : qa(app), prev(app ? app->property("torigraph_noninteractive") : QVariant())
+        {
+            if (qa)
+                qa->setProperty("torigraph_noninteractive", false);
+        }
+        ~ScopedInteractiveRestore()
+        {
+            if (qa)
+                qa->setProperty("torigraph_noninteractive", prev);
+        }
+    } restoreInteractive(QCoreApplication::instance());
+
+    const QString prompt =
+            ApplicationWindow::tr("Save changes to project: <p><b> %1 </b> ?")
+                    .arg(d_app->projectname);
+    QMessageBox box(QMessageBox::Information, ApplicationWindow::tr("ToriGraph"), prompt,
+                    QMessageBox::NoButton, d_app);
+    QPushButton *saveBtn =
+            box.addButton(ApplicationWindow::tr("&Save"), QMessageBox::AcceptRole);
+    QPushButton *discardBtn =
+            box.addButton(ApplicationWindow::tr("Do&n't Save"), QMessageBox::DestructiveRole);
+    QPushButton *cancelBtn =
+            box.addButton(ApplicationWindow::tr("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(saveBtn);
+    box.setEscapeButton(cancelBtn);
+    box.exec();
+    QAbstractButton *clicked = box.clickedButton();
+    if (clicked == saveBtn) {
+        if (!d_app->saveProject()) {
+            throw RpcDispatchException(
+                    -32002,
+                    QStringLiteral("Project reset cancelled because unsaved changes were not saved."));
+        }
+    } else if (clicked != discardBtn) {
+        throw RpcDispatchException(
+                -32002,
+                QStringLiteral("Operation cancelled by user to protect unsaved project changes."));
+    }
+}
+
 bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindow *d_app,
                                 bool &focusHudFallback, QString &workspaceModeFallback,
                                 QString &lastUndoDomain, QString &lastUndoGraph,
@@ -10985,6 +11288,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     // ------------------------------------------------------------------------
     // 1. App / Project / GUI / Action Escape Hatch
     // ------------------------------------------------------------------------
+    if (method == QStringLiteral("rpc.auth") || method == QStringLiteral("auth")) {
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("authenticated")] = true;
+        return true;
+    }
+
     if (method == QStringLiteral("ping")) {
         outResult[QStringLiteral("pong")] = true;
         outResult[QStringLiteral("ok")] = true;
@@ -11072,6 +11381,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.new_project")) {
+        confirmUnsavedProjectBeforeReset(server, d_app, params);
         resetProjectInPlaceHeadless(d_app);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("window_count")] = d_app->windowsList().size();
@@ -11434,8 +11744,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 throwRpcRuntime(
                         QStringLiteral("Invalid or corrupt Origin '.opju' file: %1").arg(path));
             }
-            if (!append)
+            if (!append) {
+                confirmUnsavedProjectBeforeReset(server, d_app, params);
                 resetProjectInPlaceHeadless(d_app);
+            }
             const int winBefore = d_app->windowsList().size();
             QString opjuErr;
             ImportOPJU::ImportStats stats;
@@ -11522,6 +11834,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return true;
         }
 
+        confirmUnsavedProjectBeforeReset(server, d_app, params);
         resetProjectInPlaceHeadless(d_app);
         const bool ok = d_app->loadProject(absPath);
         if (!ok)
@@ -11535,8 +11848,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     }
 
     if (method == QStringLiteral("app.save_project")) {
+        const bool snapshot = optionalJsonBool(params, QStringLiteral("snapshot"), false);
         QString path = optionalJsonString(params, QStringLiteral("path")).trimmed();
-        if (path.isEmpty())
+        if (path.isEmpty() && !snapshot)
             path = d_app->projectname;
         if (path.isEmpty() || path == QStringLiteral("untitled"))
             throwInvalidParams(QStringLiteral("A valid output 'path' (.sciprj) is required."));
@@ -11575,11 +11889,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                    "existed it has not been changed.")
                             .arg(finalPath));
         }
-        d_app->projectname = finalPath;
-        // Keep the GUI undo history (only its clean state moves), as File > Save does.
-        d_app->markProjectSaved();
+        if (!snapshot) {
+            d_app->projectname = finalPath;
+            // Keep the GUI undo history (only its clean state moves), as File > Save does.
+            d_app->markProjectSaved();
+        }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("path")] = finalPath;
+        outResult[QStringLiteral("snapshot")] = snapshot;
         outResult[QStringLiteral("compressed")] =
                 finalPath.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive);
         outResult[QStringLiteral("bytes")] = QFileInfo(finalPath).size();
@@ -20745,6 +21062,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         QByteArray projBytes;
+        bool scopeDowngraded = false;
+        QString oleScopeWarning;
+        static constexpr qint64 kMaxOleStreamBytes = 128000000LL;
         if (needOleCompound) {
             for (MyWidget *w : d_app->windowsList()) {
                 if (w && w->inherits("MultiLayer")) {
@@ -20759,9 +21079,26 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                               : static_cast<MyWidget *>(ml);
             projBytes = SciDAVisOle::buildEmbeddedProjectBytes(d_app, embedTarget, embedScope,
                                                                &embeddedWindows);
+            if (projBytes.size() > kMaxOleStreamBytes
+                && embedScope == SciDAVisOle::EmbedScope::WholeProject) {
+                embedScope = SciDAVisOle::EmbedScope::GraphOnly;
+                projBytes = SciDAVisOle::buildEmbeddedProjectBytes(d_app, embedTarget, embedScope,
+                                                                   &embeddedWindows);
+                scopeDowngraded = true;
+                oleScopeWarning = QStringLiteral(
+                        "Whole-project OLE stream exceeded 128 MB; automatically downgraded "
+                        "embed_scope to 'graph' (%1 bytes).")
+                                          .arg(projBytes.size());
+            }
             if (projBytes.isEmpty()) {
                 throwRpcRuntime(
                         QStringLiteral("Failed to serialize .sciprj payload for OLE export."));
+            }
+            if (projBytes.size() > kMaxOleStreamBytes) {
+                throwRpcRuntime(
+                        QStringLiteral("Embedded OLE project stream (%1 bytes) exceeds the 128 MB "
+                                       "limit; export a static EMF/PNG image instead.")
+                                .arg(projBytes.size()));
             }
         }
 
@@ -20799,6 +21136,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (rg.emfBytes.isEmpty())
             throwRpcRuntime(QStringLiteral("Failed to render vector EMF preview for OLE export."));
+        if (needOleCompound && rg.emfBytes.size() > kMaxOleStreamBytes) {
+            throwRpcRuntime(
+                    QStringLiteral("Rendered EMF preview (%1 bytes) exceeds the 128 MB OLE stream "
+                                   "limit; export a raster PNG image instead.")
+                            .arg(rg.emfBytes.size()));
+        }
 
         payload.emfBytes = rg.emfBytes;
         payload.dibBytes = rg.dibBytes;
@@ -20884,6 +21227,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("embed_scope")] =
                 embedScope == SciDAVisOle::EmbedScope::WholeProject ? QStringLiteral("project")
                                                                     : QStringLiteral("graph");
+        if (scopeDowngraded) {
+            outResult[QStringLiteral("scope_downgraded")] = true;
+            outResult[QStringLiteral("warning")] = oleScopeWarning;
+        }
         if (needOleCompound)
             outResult[QStringLiteral("embedded_windows")] =
                     QJsonArray::fromStringList(embeddedWindows);
@@ -27777,6 +28124,15 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                                                    const QJsonObject &params)
 {
+    struct ScopedCallerInteractiveTracker
+    {
+        bool &slot;
+        bool prev;
+        ScopedCallerInteractiveTracker(bool &s, bool cur) : slot(s), prev(s) { slot = cur; }
+        ~ScopedCallerInteractiveTracker() { slot = prev; }
+    } callerInteractiveGuard(d_caller_noninteractive,
+                             ApplicationWindow::isNonInteractiveContext(d_app));
+
     struct ScopedNonInteractiveGuard
     {
         QCoreApplication *appInstance;
@@ -27974,8 +28330,10 @@ void PythonConsoleDialog::reject()
 PythonConsoleDialog *PythonConsoleDialog::showDialog(ApplicationWindow *app,
                                                      PythonAutomationServer *server)
 {
-    if (server && !server->isTcpListening() && !server->isLocalPipeListening())
-        server->startTcp(0, QHostAddress::LocalHost);
+    if (server && !server->isTcpListening() && !server->isLocalPipeListening()) {
+        if (!server->startLocalPipe())
+            server->startTcp(0, QHostAddress::LocalHost);
+    }
 
     if (!s_instance) {
         s_instance = new PythonConsoleDialog(app, server, reinterpret_cast<QWidget *>(app));
@@ -28252,7 +28610,7 @@ void PythonConsoleDialog::runCurrentScript()
         return;
     }
     if (!d_server->isTcpListening() && !d_server->isLocalPipeListening()) {
-        if (!d_server->startTcp(0, QHostAddress::LocalHost)) {
+        if (!d_server->startLocalPipe() && !d_server->startTcp(0, QHostAddress::LocalHost)) {
             appendOutput(tr("[Error] Failed to start loopback RPC listener.\n"), true);
             return;
         }

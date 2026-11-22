@@ -93,6 +93,9 @@ bool ensureRegistrationAtStartup(QString *errMsg = nullptr);
 // Initialize OLE and register local server class factory
 bool initializeOleServer(bool embeddedMode);
 
+// Initialize OLE for clipboard operations only (headless automation: no registry writes or COM server registration)
+bool initializeOleClipboardOnly();
+
 // Flush OLE clipboard if owned and revoke class factory before exit
 void shutdownOleServer();
 

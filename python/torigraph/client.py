@@ -649,10 +649,78 @@ def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
     return _alias
 
 
+def _is_loopback_host(host: str) -> bool:
+    h = str(host).strip().lower().strip("[]")
+    return h in ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1") or h.startswith("127.")
+
+
+def _read_local_tcp_token_file(port: int) -> Optional[str]:
+    candidates: List[Path] = []
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token")
+    if os.name == "nt":
+        candidates.append(
+            Path.home() / "AppData" / "Local" / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token"
+        )
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg:
+            candidates.append(Path(xdg) / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token")
+        candidates.append(
+            Path.home() / ".local" / "share" / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token"
+        )
+        candidates.append(
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "ToriGraph"
+            / "rpc"
+            / f"tcp_{int(port)}.token"
+        )
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                tok = cand.read_text(encoding="utf-8").strip()
+                if tok:
+                    return tok
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_tcp_auth_token(
+    host: str,
+    port: int,
+    explicit_token: Optional[str] = None,
+    query_token: Optional[str] = None,
+) -> str:
+    if explicit_token is not None and str(explicit_token).strip():
+        return str(explicit_token).strip()
+    if query_token is not None and str(query_token).strip():
+        return str(query_token).strip()
+    env_tok = os.environ.get("TORIGRAPH_RPC_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
+    if _is_loopback_host(host):
+        file_tok = _read_local_tcp_token_file(port)
+        if file_tok:
+            return file_tok
+    return ""
+
+
 class _TcpTransport:
     """Newline-delimited UTF-8 JSON-RPC 2.0 transport over loopback TCP."""
 
-    def __init__(self, host: str, port: int, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        timeout: float = 30.0,
+        token: Optional[str] = None,
+        *,
+        _query_token: Optional[str] = None,
+    ) -> None:
         self.host = host
         self.port = int(port)
         self.timeout = float(timeout)
@@ -663,6 +731,35 @@ class _TcpTransport:
             self._reader = self._sock.makefile("rb")
         except OSError as exc:
             raise TransportError(f"Failed to connect to tcp://{self.host}:{self.port}: {exc}") from exc
+
+        auth_token = _resolve_tcp_auth_token(
+            self.host, self.port, explicit_token=token, query_token=_query_token
+        )
+        auth_req = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "rpc.auth",
+                "params": {"token": auth_token},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        try:
+            raw_auth_resp = self.request_line(auth_req, timeout=self.timeout)
+            auth_resp = json.loads(raw_auth_resp.decode("utf-8"))
+        except Exception:
+            self.close()
+            raise
+        if isinstance(auth_resp, Mapping) and auth_resp.get("error") is not None:
+            self.close()
+            err = auth_resp["error"]
+            if isinstance(err, Mapping):
+                raise RpcError(
+                    int(err.get("code", -32001)),
+                    str(err.get("message", "Unauthorized: rpc.auth required")),
+                    err.get("data"),
+                )
+            raise RpcError(-32001, str(err))
 
     @property
     def endpoint(self) -> str:
@@ -968,27 +1065,52 @@ class _LocalPipeTransport:
 
 
 def _parse_and_connect_transport(
-    endpoint: str, timeout: float = 30.0
+    endpoint: str, timeout: float = 30.0, token: Optional[str] = None
 ) -> Union[_TcpTransport, _LocalPipeTransport]:
     ep = str(endpoint).strip()
     if not ep:
         raise TransportError("Empty ToriGraph RPC endpoint.")
+    query_token: Optional[str] = None
+    if "?" in ep:
+        from urllib.parse import parse_qs
+
+        ep_base, query_str = ep.split("?", 1)
+        ep = ep_base.rstrip("/")
+        qmap = parse_qs(query_str, keep_blank_values=False)
+        tok_vals = qmap.get("token")
+        if tok_vals and tok_vals[0].strip():
+            query_token = tok_vals[0].strip()
+
     if ep.startswith("tcp://"):
         host_port = ep[len("tcp://") :]
         host, sep, port_s = host_port.rpartition(":")
         if not sep or not port_s.isdigit():
-            raise TransportError(f"Invalid TCP endpoint '{ep}'.")
-        return _TcpTransport(host or "127.0.0.1", int(port_s), timeout=timeout)
+            raise TransportError(f"Invalid TCP endpoint '{endpoint}'.")
+        return _TcpTransport(
+            host or "127.0.0.1",
+            int(port_s),
+            timeout=timeout,
+            token=token,
+            _query_token=query_token,
+        )
     if ep.startswith("pipe://"):
         return _LocalPipeTransport(ep[len("pipe://") :], timeout=timeout)
     if ep.startswith("\\\\.\\pipe\\"):
         return _LocalPipeTransport(ep, timeout=timeout)
     if ep.isdigit():
-        return _TcpTransport("127.0.0.1", int(ep), timeout=timeout)
+        return _TcpTransport(
+            "127.0.0.1", int(ep), timeout=timeout, token=token, _query_token=query_token
+        )
     if ":" in ep:
         host, _, port_s = ep.rpartition(":")
         if port_s.isdigit():
-            return _TcpTransport(host or "127.0.0.1", int(port_s), timeout=timeout)
+            return _TcpTransport(
+                host or "127.0.0.1",
+                int(port_s),
+                timeout=timeout,
+                token=token,
+                _query_token=query_token,
+            )
     return _LocalPipeTransport(ep, timeout=timeout)
 
 
@@ -3310,23 +3432,32 @@ class Session:
             **kwargs,
         )
 
-    def new_project(self) -> Dict[str, Any]:
-        return self.call("app.new_project")
+    def new_project(self, *, force: Optional[bool] = None) -> Dict[str, Any]:
+        return self.call("app.new_project", force=force)
 
     def open_project(
-        self, path: Union[str, os.PathLike[str]], append: bool = False
+        self,
+        path: Union[str, os.PathLike[str]],
+        append: bool = False,
+        *,
+        force: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        return self.call("app.open_project", path=os.fspath(path), append=append)
+        return self.call(
+            "app.open_project", path=os.fspath(path), append=append, force=force
+        )
 
     def save_project(
         self,
         path: Optional[Union[str, os.PathLike[str]]] = None,
         compress: bool = False,
+        *,
+        snapshot: bool = False,
     ) -> Dict[str, Any]:
         return self.call(
             "app.save_project",
             path=os.fspath(path) if path is not None else None,
             compress=compress,
+            snapshot=(True if snapshot else None),
         )
 
     def import_csv(
@@ -6121,6 +6252,7 @@ def connect(
     endpoint: Optional[str] = None,
     timeout: float = 30.0,
     *,
+    token: Optional[str] = None,
     rpc_timeout: Optional[float] = None,
     check_version: bool = True,
 ) -> Session:
@@ -6136,7 +6268,7 @@ def connect(
         raise TransportError(
             "No ToriGraph RPC endpoint specified and TORIGRAPH_RPC_ENDPOINT is not set."
         )
-    transport = _parse_and_connect_transport(resolved, timeout=timeout)
+    transport = _parse_and_connect_transport(resolved, timeout=timeout, token=token)
     session = Session(transport, rpc_timeout=rpc_timeout)
     session.call("ping", rpc_timeout=max(1.0, float(timeout)))
     if check_version:
@@ -6147,6 +6279,7 @@ def connect(
 def connect_or_launch(
     endpoint: Optional[str] = None,
     *,
+    token: Optional[str] = None,
     exe_path: Optional[Union[str, os.PathLike[str]]] = None,
     headless: bool = True,
     language: Optional[str] = None,
@@ -6163,7 +6296,11 @@ def connect_or_launch(
     resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
     if resolved:
         return connect(
-            resolved, timeout=timeout, rpc_timeout=rpc_timeout, check_version=check_version
+            resolved,
+            timeout=timeout,
+            token=token,
+            rpc_timeout=rpc_timeout,
+            check_version=check_version,
         )
     return launch(
         exe_path=exe_path,
@@ -6296,7 +6433,15 @@ def launch(
         )
 
     try:
-        transport = _parse_and_connect_transport(discovered_endpoint, timeout=timeout)
+        spawned_token: Optional[str] = None
+        ep_clean = discovered_endpoint.split("?", 1)[0].strip()
+        if ep_clean.startswith("tcp://") and ":" in ep_clean[6:]:
+            port_part = ep_clean.rsplit(":", 1)[-1]
+            if port_part.isdigit():
+                spawned_token = _read_local_tcp_token_file(int(port_part))
+        transport = _parse_and_connect_transport(
+            discovered_endpoint, timeout=timeout, token=spawned_token
+        )
         session = Session(
             transport, process=proc, cleanup_files=[port_file, err_file], rpc_timeout=rpc_timeout
         )

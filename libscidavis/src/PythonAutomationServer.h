@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -54,6 +55,9 @@ public:
     bool startTcp(quint16 port = 0, const QHostAddress &bindAddress = QHostAddress::LocalHost);
     quint16 tcpPort() const;
     bool isTcpListening() const;
+    void setTcpAuthToken(const QString &token);
+    QString tcpAuthToken() const;
+    bool callerWasNonInteractive() const { return d_caller_noninteractive; }
 
     // Local Named Pipe / Domain Socket JSON-RPC 2.0 transport (newline-delimited UTF-8 JSON)
     bool startLocalPipe(const QString &pipeName = QString());
@@ -103,12 +107,18 @@ private slots:
 
 private:
     QJsonObject dispatchMethod(const QString &method, const QJsonObject &params);
+    void writeTcpTokenFile(quint16 port);
+    void removeTcpTokenFile();
 
     ApplicationWindow *d_app = nullptr;
     QTcpServer *d_tcp_server = nullptr;
     QHostAddress d_bind_address = QHostAddress::LocalHost;
     quint16 d_tcp_port = 0;
+    QString d_tcp_auth_token;
+    QString d_tcp_token_file_path;
     QHash<QTcpSocket *, QByteArray> d_tcp_buffers;
+    QSet<QTcpSocket *> d_authed_tcp_sockets;
+    bool d_caller_noninteractive = true;
 
     QLocalServer *d_local_server = nullptr;
     QString d_local_pipe_name;

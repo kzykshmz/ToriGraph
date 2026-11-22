@@ -1666,10 +1666,16 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
         widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
         heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
     } else {
+        const MultiLayer *ownerMl =
+                ml ? ml : (singleLayer ? singleLayer->multiLayerParent() : nullptr);
+        const double unitPxDpi = (ownerMl && ownerMl->pageUnit() == MultiLayer::UnitPx
+                                  && ownerMl->pageViewMode() && ownerMl->pageDpi() > 0)
+                ? double(ownerMl->pageDpi())
+                : 96.0;
         const double unzoomedW = double(pxSize.width()) / zoom;
         const double unzoomedH = double(pxSize.height()) / zoom;
-        widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / dpiX)));
-        heightHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedH * 2540.0 / dpiY)));
+        widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / unitPxDpi)));
+        heightHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedH * 2540.0 / unitPxDpi)));
     }
     out.extentHm = SIZEL{ widthHm, heightHm };
 
