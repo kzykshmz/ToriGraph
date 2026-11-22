@@ -382,6 +382,15 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
     if (ml && qAbs(ml->pageZoom() - 1.0) > 1e-4) {
         prevZoom = ml->pageZoom();
         prevWinSize = ml->size();
+        for (Graph *gr : ml->layersList()) {
+            if (!gr || !gr->plotWidget())
+                continue;
+            prevLayers << QPointer<Graph>(gr);
+            prevLayerGeometry << gr->geometry();
+            prevPlotSize << gr->plotWidget()->size();
+        }
+        prevLayerCanvasW = ml->l_canvas_width;
+        prevLayerCanvasH = ml->l_canvas_height;
         prevMlUpdates = ml->updatesEnabled();
         ml->setUpdatesEnabled(false);
         if (QWidget *w = ml->widget()) {
@@ -404,6 +413,28 @@ ScopedUnzoomForExport::~ScopedUnzoomForExport()
                 && ml->size() != prevWinSize) {
                 ml->resize(prevWinSize);
             }
+            // Put every layer back on its exact rectangle (see prevLayerGeometry).
+            bool moved = false;
+            for (int i = 0; i < prevLayers.size(); ++i) {
+                Graph *gr = prevLayers.at(i);
+                if (!gr || !gr->plotWidget())
+                    continue;
+                if (gr->geometry() == prevLayerGeometry.at(i)
+                    && gr->plotWidget()->size() == prevPlotSize.at(i))
+                    continue;
+                const bool ign = gr->ignoresResizeEvents();
+                gr->setIgnoreResizeEvents(true);
+                gr->setGeometry(prevLayerGeometry.at(i));
+                gr->plotWidget()->resize(prevPlotSize.at(i));
+                gr->plotWidget()->updateLayout();
+                gr->plotWidget()->replot();
+                gr->setIgnoreResizeEvents(ign);
+                moved = true;
+            }
+            ml->l_canvas_width = prevLayerCanvasW;
+            ml->l_canvas_height = prevLayerCanvasH;
+            if (moved)
+                ml->repositionCanvasStatusPill();
         }
         if (QWidget *w = ml->widget())
             w->setUpdatesEnabled(prevWidgetUpdates);
@@ -3832,6 +3863,13 @@ void MultiLayer::setPageBackgroundColor(const QColor &color)
     emit modifiedPlot();
 }
 
+namespace {
+// Per-layer state of MultiLayer::setPageZoom(): the layer rectangle at 100 % (QRectF) and the
+// rectangle the last zoom gave it (QRect).
+const char *const kZoomBaseGeomProp = "_toriZoomBaseGeom";
+const char *const kZoomAppliedGeomProp = "_toriZoomAppliedGeom";
+} // namespace
+
 void MultiLayer::setPageZoom(double factor)
 {
     const double clamped = qBound(0.25, factor, 4.0);
@@ -3846,7 +3884,7 @@ void MultiLayer::setPageZoom(double factor)
                                qMax(80, qRound(cur.height() / d_page_zoom)));
     }
 
-    const double ratio = clamped / d_page_zoom;
+    const double prevZoom = d_page_zoom;
     d_page_zoom = clamped;
 
     const QSize newCanvasSize(qMax(80, qRound(d_base_page_px.width() * d_page_zoom)),
@@ -3872,14 +3910,30 @@ void MultiLayer::setPageZoom(double factor)
     resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame, newCanvasSize.width(),
                                        newCanvasSize.height(), freePx);
 
+    // Every zoom is computed from the layer rectangles at 100 % (kept as doubles), never from the
+    // previous zoomed rectangle: chaining qRound(x * ratio) shifted layers by a pixel per zoom
+    // step (and per export, which unzooms to 100 % and back), and the 60 px minimum of a small
+    // inset at 50 % stuck (100x80 -> 60x60 -> 120x120). A layer whose rectangle is no longer the
+    // one the last zoom gave it (moved, resized, added, loaded, undone) takes its 100 % rectangle
+    // from where it is now.
+    auto baseRect = [prevZoom](const QRect &r) {
+        return QRectF(r.x() / prevZoom, r.y() / prevZoom, r.width() / prevZoom, r.height() / prevZoom);
+    };
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
         if (!gr)
             continue;
         const QRect gRect = gr->geometry();
-        const QRect scaledRect(qRound(gRect.x() * ratio), qRound(gRect.y() * ratio),
-                               qMax(60, qRound(gRect.width() * ratio)),
-                               qMax(60, qRound(gRect.height() * ratio)));
+        const QVariant appliedV = gr->property(kZoomAppliedGeomProp);
+        const QVariant baseV = gr->property(kZoomBaseGeomProp);
+        const QRectF base = (appliedV.isValid() && baseV.isValid() && appliedV.toRect() == gRect)
+                ? baseV.toRectF()
+                : baseRect(gRect);
+        gr->setProperty(kZoomBaseGeomProp, base);
+        // The 60 px minimum is for the view only; the 100 % rectangle keeps its own size.
+        const QRect scaledRect(qRound(base.x() * d_page_zoom), qRound(base.y() * d_page_zoom),
+                               qMax(60, qRound(base.width() * d_page_zoom)),
+                               qMax(60, qRound(base.height() * d_page_zoom)));
         gr->setGeometry(scaledRect);
         gr->plotWidget()->resize(scaledRect.size());
         // The text grows with the page like under a magnifier; the stored pt stay as they are.
@@ -3888,11 +3942,23 @@ void MultiLayer::setPageZoom(double factor)
         gr->plotWidget()->replot();
         gr->setIgnoreResizeEvents(savedIgnore[i]);
     }
-    l_canvas_width = qMax(50, qRound(l_canvas_width * ratio));
-    l_canvas_height = qMax(50, qRound(l_canvas_height * ratio));
+    {
+        const QSize cur(l_canvas_width, l_canvas_height);
+        if (!(d_zoom_applied_lcanvas == cur && d_zoom_base_lcanvas.isValid()))
+            d_zoom_base_lcanvas = QSizeF(cur.width() / prevZoom, cur.height() / prevZoom);
+        l_canvas_width = qMax(50, qRound(d_zoom_base_lcanvas.width() * d_page_zoom));
+        l_canvas_height = qMax(50, qRound(d_zoom_base_lcanvas.height() * d_page_zoom));
+        d_zoom_applied_lcanvas = QSize(l_canvas_width, l_canvas_height);
+    }
     d_syncing_inset_geometries = prevSync;
 
     syncChildOverlayAndInsetGeometries();
+    // What this zoom left each layer at (after the overlay / inset sync), to recognise later
+    // whether the layer was moved since.
+    for (int i = 0; i < graphsList.count(); ++i) {
+        if (Graph *gr = (Graph *)graphsList.at(i))
+            gr->setProperty(kZoomAppliedGeomProp, gr->geometry());
+    }
     lastSize = canvas ? canvas->size() : newCanvasSize;
     repositionCanvasStatusPill();
     updateCanvasStatusPill();

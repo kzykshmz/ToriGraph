@@ -76,6 +76,9 @@ public:
 
     //! Keep the markers on screen each time the scales are modified by adding/removing curves
     void updateOrigin();
+    /*! Recompute the cached pixel origin used by updateOrigin() from the axis coordinates, with
+     * the given scale maps (default: the current canvas maps). */
+    void refreshPixelOrigin(const QwtScaleMap *xMap = nullptr, const QwtScaleMap *yMap = nullptr);
 
     QColor textColor() { return d_text->color(); };
     void setTextColor(const QColor &c);

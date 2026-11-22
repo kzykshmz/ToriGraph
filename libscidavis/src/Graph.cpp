@@ -3270,6 +3270,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
     majorTicks = qBound(1, majorTicks, 100);
     minorTicks = qBound(0, minorTicks, 50);
 
+    const QVector<double> axesBefore = markerAxisState();
     setToriAxisUserLocked(d_plot, axis, true);
     d_plot->setAxisScale(axis, inverted ? qMax(start, end) : qMin(start, end),
                          inverted ? qMin(start, end) : qMax(start, end), step);
@@ -3385,7 +3386,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
         }
     }
     // keep markers on canvas area
-    updateMarkersBoundingRect();
+    updateMarkersBoundingRect(axesBefore);
     d_plot->replot();
     syncChildLinkedLayers();
 }
@@ -3609,6 +3610,8 @@ void Graph::print()
         // Print as at 100 % (only once the dialog is accepted, so the view does not shrink
         // while the dialog is open).
         ScopedUnzoomForExport unzoomGuard(multiLayerParent());
+        // The aspect of the layer as at 100 % (the zoomed rectangle is rounded differently).
+        aspect = double(d_plot->width()) / double(qMax(1, d_plot->height()));
         QRect plotRect = d_plot->rect();
         QRect paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
         if (d_scale_on_print) {
@@ -6084,6 +6087,7 @@ void Graph::updateVectorsLayout(int curve, const QColor &color, int width, int a
 
 void Graph::updatePlot()
 {
+    const QVector<double> axesBefore = markerAxisState();
     if (d_is_ternary) {
         d_plot->setAxisScale(QwtPlot::xBottom, -0.24, 1.24, 0.2);
         d_plot->setAxisScale(QwtPlot::yLeft, -0.25, 1.23, 0.2);
@@ -6195,7 +6199,7 @@ void Graph::updatePlot()
     }
 
     d_plot->replot();
-    updateMarkersBoundingRect();
+    updateMarkersBoundingRect(axesBefore);
     if (!d_is_ternary && !d_is_polar) {
         updateSecondaryAxis(QwtPlot::xTop);
         updateSecondaryAxis(QwtPlot::yRight);
@@ -6220,6 +6224,7 @@ void Graph::updatePlot()
 
 void Graph::updateScale()
 {
+    const QVector<double> axesBefore = markerAxisState();
     const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(QwtPlot::xBottom);
     QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
 
@@ -6245,7 +6250,7 @@ void Graph::updateScale()
 #endif
 
     d_plot->replot();
-    updateMarkersBoundingRect();
+    updateMarkersBoundingRect(axesBefore);
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);
 
@@ -7453,6 +7458,76 @@ void Graph::showIntensityTable()
         return;
 
     emit createIntensityTable(mrk->fileName());
+}
+
+QVector<double> Graph::markerAxisState() const
+{
+    QVector<double> st;
+    st.reserve(3 * QwtPlot::axisCnt);
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QwtScaleDiv *d = d_plot->axisScaleDiv(a);
+        const QwtScaleMap m = d_plot->canvasMap(a);
+        st << (d ? d->lowerBound() : 0.0) << (d ? d->upperBound() : 0.0)
+           << (m.transformation() ? double(m.transformation()->type()) : -1.0);
+    }
+    return st;
+}
+
+void Graph::updateMarkersBoundingRect(const QVector<double> &before)
+{
+    const QVector<double> now = markerAxisState();
+    if (d_is_ternary || before.size() != now.size()) {
+        updateMarkersBoundingRect();
+        return;
+    }
+    if (before == now) {
+        // No axis changed: the markers keep their axis coordinates. Only the pixel caches are
+        // brought up to date (arrows and text markers), so that a later rescale pins them where
+        // they are drawn now and not where they were when placed at another canvas size.
+        for (int i = 0; i < (int)d_lines.size(); i++) {
+            if (ArrowMarker *mrkL = (ArrowMarker *)d_plot->marker(d_lines[i]))
+                mrkL->updateBoundingRect();
+        }
+        for (int i = 0; i < (int)d_texts.size(); i++) {
+            if (Legend *mrkT = (Legend *)d_plot->marker(d_texts[i]))
+                mrkT->refreshPixelOrigin();
+        }
+        d_plot->replot();
+        return;
+    }
+    // An axis changed: text markers and pictures stay where they are drawn on the canvas. Their
+    // pixel position is taken from the previous axis ranges on the current canvas, not from the
+    // pixel cache of their placement (stale after a view zoom or a window resize).
+    auto previousMap = [&](int axis, QwtScaleMap &m) -> bool {
+        if (axis < 0 || axis >= QwtPlot::axisCnt || before[3 * axis + 2] != now[3 * axis + 2])
+            return false; // linear <-> log switched: keep the cached pixel position
+        m = d_plot->canvasMap(axis);
+        m.setScaleInterval(before[3 * axis], before[3 * axis + 1]);
+        return true;
+    };
+    for (int i = 0; i < (int)d_texts.size(); i++) {
+        Legend *mrkT = (Legend *)d_plot->marker(d_texts[i]);
+        if (!mrkT)
+            continue;
+        QwtScaleMap xm, ym;
+        if (previousMap(mrkT->xAxis(), xm) && previousMap(mrkT->yAxis(), ym))
+            mrkT->refreshPixelOrigin(&xm, &ym);
+    }
+    for (int i = 0; i < (int)d_images.size(); i++) {
+        ImageMarker *mrk = (ImageMarker *)d_plot->marker(d_images[i]);
+        if (!mrk)
+            continue;
+        QwtScaleMap xm, ym;
+        if (previousMap(mrk->xAxis(), xm) && previousMap(mrk->yAxis(), ym)) {
+            // As ImageMarker::rect(), with the previous ranges.
+            const int x0 = xm.transform(mrk->xValue());
+            const int y0 = ym.transform(mrk->yValue());
+            const int x1 = xm.transform(mrk->right());
+            const int y1 = ym.transform(mrk->bottom());
+            mrk->setRect(x0, y0, qAbs(x1 - x0), qAbs(y1 - y0));
+        }
+    }
+    updateMarkersBoundingRect();
 }
 
 void Graph::updateMarkersBoundingRect()

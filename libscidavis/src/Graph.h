@@ -507,6 +507,14 @@ public slots:
     void pasteMarker();
     //! Keep the markers on screen each time the scales are modified by adding/removing curves
     void updateMarkersBoundingRect();
+    /*! Same, but leave the markers' data positions alone when no axis (range or linear/log
+     * type) changed since \a before (from markerAxisState()). Refreshes such as updatePlot()
+     * before a copy or export then cannot move them: text markers and pictures are pinned by
+     * a pixel position cached when they were placed, which is out of date once the canvas size
+     * changed (view zoom, window size). */
+    void updateMarkersBoundingRect(const QVector<double> &before);
+    //! Lower / upper bound and transformation type of every axis, for updateMarkersBoundingRect().
+    QVector<double> markerAxisState() const;
 
     long selectedMarkerKey();
     /*!\brief Set the selected marker.

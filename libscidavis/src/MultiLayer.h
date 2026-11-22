@@ -383,6 +383,7 @@ signals:
     void selectionChanged(MultiLayer *page, Graph *layer, const Graph::GraphSelection &sel);
 
 private:
+    friend class ScopedUnzoomForExport;
     void resizeLayers(const QResizeEvent *re);
     void resizeLayers(const QSize &size, const QSize &oldSize, bool scaleFonts);
     QSize lastSize; // workaround for resize layers after hide/minimize
@@ -392,6 +393,9 @@ private:
     int graphs, cols, rows, graph_width, graph_height, colsSpace, rowsSpace;
     int left_margin, right_margin, top_margin, bottom_margin;
     int l_canvas_width, l_canvas_height, hor_align, vert_align;
+    //! setPageZoom(): layer canvas size at 100 % and the size the last zoom set.
+    QSizeF d_zoom_base_lcanvas;
+    QSize d_zoom_applied_lcanvas;
     bool addTextOn;
     bool d_scale_on_print, d_print_cropmarks;
     bool d_keep_aspect_ratio;
@@ -504,6 +508,13 @@ private:
     QPointer<MultiLayer> ml;
     double prevZoom = 1.0;
     QSize prevWinSize;
+    // Layer geometry before the unzoom: the 2x / 0.5x round trip of setPageZoom() rounds every
+    // layer rectangle, which would shift a layer by a pixel per export.
+    QList<QPointer<Graph>> prevLayers;
+    QVector<QRect> prevLayerGeometry;
+    QVector<QSize> prevPlotSize;
+    int prevLayerCanvasW = 0;
+    int prevLayerCanvasH = 0;
     bool prevMlUpdates = true;
     bool prevWidgetUpdates = true;
     bool active = false;
