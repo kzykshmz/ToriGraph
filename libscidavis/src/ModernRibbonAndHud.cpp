@@ -1187,6 +1187,35 @@ static QString formatDrawerColumnHeader(Table *tbl, int c, QString *outFormula =
     return h;
 }
 
+static void adjustDrawerColumnWidths(QTableView *view, Table *tbl)
+{
+    if (!view || !tbl)
+        return;
+    QHeaderView *hh = view->horizontalHeader();
+    if (!hh)
+        return;
+    hh->ensurePolished();
+    QFont secFont = hh->font();
+    if (secFont.pointSizeF() < 11.0 && secFont.pointSize() < 11)
+        secFont.setPointSize(11);
+    if (secFont.weight() < QFont::DemiBold)
+        secFont.setWeight(QFont::DemiBold);
+    const QFontMetrics fmBase(hh->font());
+    const QFontMetrics fmSec(secFont);
+    const int cols = tbl->numCols();
+    for (int c = 0; c < cols; ++c) {
+        const QString h = formatDrawerColumnHeader(tbl, c);
+        int headerTextWidth = 0;
+        const QStringList lines = h.split(QLatin1Char('\n'));
+        for (const QString &line : lines) {
+            headerTextWidth = qMax(
+                    headerTextWidth,
+                    qMax(fmBase.horizontalAdvance(line), fmSec.horizontalAdvance(line)));
+        }
+        hh->resizeSection(c, qBound(108, headerTextWidth + 28, 190));
+    }
+}
+
 class FocusDrawerProxyModel : public QIdentityProxyModel
 {
 public:
@@ -1301,7 +1330,7 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
     : QFrame(parent), d_app(app)
 {
     setObjectName(QStringLiteral("FocusTableDrawerCard"));
-    setFixedWidth(360);
+    setFixedWidth(396);
     setStyleSheet(QStringLiteral(
             "QFrame#FocusTableDrawerCard {"
             "  background-color: rgba(255, 255, 255, 247);"
@@ -1396,11 +1425,17 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
     d_table_view->setObjectName(QStringLiteral("FocusDrawerGrid"));
     d_table_view->setModel(d_proxy_model);
     d_table_view->setAlternatingRowColors(true);
-    d_table_view->horizontalHeader()->setDefaultSectionSize(92);
+    d_table_view->horizontalHeader()->setDefaultSectionSize(108);
     d_table_view->horizontalHeader()->setMinimumSectionSize(54);
     d_table_view->verticalHeader()->setDefaultSectionSize(24);
     d_table_view->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     mainLayout->addWidget(d_table_view, 1);
+
+    connect(d_proxy_model, &QAbstractItemModel::columnsInserted, this,
+            [this](const QModelIndex &, int, int) {
+                if (!d_shutting_down && !isHidden() && d_current_table)
+                    adjustDrawerColumnWidths(d_table_view, d_current_table.data());
+            });
 
     connect(d_btn_new_table, &QToolButton::clicked, this, [this]() {
         if (d_shutting_down || !d_app)
@@ -1542,6 +1577,123 @@ MultiLayer *activeMultiLayerOrUxHint(ApplicationWindow *app)
         return ml;
     app->showUxHint(ModernRibbonBar::tr("Click or create a graph window first."));
     return nullptr;
+}
+
+void hideBackgroundMdiWindowsForFocus(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    static bool s_busy = false;
+    if (s_busy)
+        return;
+    s_busy = true;
+
+    auto isEligibleVisible = [app](MyWidget *mw) -> bool {
+        if (!mw || mw->isHidden() || mw->status() == MyWidget::Hidden)
+            return false;
+        if (app->hiddenWindows.contains(mw) || app->outWindows.contains(mw))
+            return false;
+        if (Folder *cur = app->currentFolder()) {
+            if (!cur->windowsList().contains(mw))
+                return false;
+        }
+        return true;
+    };
+
+    MyWidget *focusTarget = nullptr;
+    if (MyWidget *aw = qobject_cast<MyWidget *>(app->d_workspace.activeSubWindow())) {
+        if (isEligibleVisible(aw)
+            && (qobject_cast<MultiLayer *>(aw) || qobject_cast<Graph3D *>(aw))) {
+            focusTarget = aw;
+        }
+    }
+    if (!focusTarget) {
+        const QList<QMdiSubWindow *> ordered =
+                app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            MyWidget *mw = qobject_cast<MyWidget *>(ordered.at(i));
+            if (isEligibleVisible(mw)
+                && (qobject_cast<MultiLayer *>(mw) || qobject_cast<Graph3D *>(mw))) {
+                focusTarget = mw;
+                break;
+            }
+        }
+    }
+    if (!focusTarget) {
+        if (MyWidget *aw = qobject_cast<MyWidget *>(app->d_workspace.activeSubWindow())) {
+            if (isEligibleVisible(aw))
+                focusTarget = aw;
+        }
+    }
+    if (!focusTarget) {
+        const QList<QMdiSubWindow *> ordered =
+                app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            MyWidget *mw = qobject_cast<MyWidget *>(ordered.at(i));
+            if (isEligibleVisible(mw)) {
+                focusTarget = mw;
+                break;
+            }
+        }
+    }
+
+    if (focusTarget) {
+        focusTarget->setProperty("_tg_hidden_for_focus_mdi", QVariant());
+        if (app->d_workspace.activeSubWindow() != focusTarget)
+            app->d_workspace.setActiveSubWindow(focusTarget);
+
+        const QList<QMdiSubWindow *> subs = app->d_workspace.subWindowList();
+        for (QMdiSubWindow *sw : subs) {
+            MyWidget *mw = qobject_cast<MyWidget *>(sw);
+            if (!mw || mw == focusTarget)
+                continue;
+            if (!isEligibleVisible(mw))
+                continue;
+            mw->setProperty("_tg_hidden_for_focus_mdi", true);
+            mw->hide();
+        }
+    }
+
+    s_busy = false;
+}
+
+void restoreBackgroundMdiWindowsAfterFocus(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    static bool s_busy = false;
+    if (s_busy)
+        return;
+    s_busy = true;
+
+    QMdiSubWindow *keepActive = app->d_workspace.activeSubWindow();
+    const QList<QMdiSubWindow *> subs = app->d_workspace.subWindowList(QMdiArea::CreationOrder);
+    for (QMdiSubWindow *sw : subs) {
+        MyWidget *mw = qobject_cast<MyWidget *>(sw);
+        if (!mw || !mw->property("_tg_hidden_for_focus_mdi").toBool())
+            continue;
+        mw->setProperty("_tg_hidden_for_focus_mdi", QVariant());
+        if (mw->status() == MyWidget::Hidden || app->hiddenWindows.contains(mw)
+            || app->outWindows.contains(mw)) {
+            continue;
+        }
+        if (Folder *cur = app->currentFolder()) {
+            if (!cur->windowsList().contains(mw))
+                continue;
+        }
+        if (mw->status() == MyWidget::Minimized)
+            mw->showMinimized();
+        else if (mw->status() == MyWidget::Maximized)
+            mw->showMaximized();
+        else
+            mw->show();
+    }
+    if (keepActive && !keepActive->isHidden()) {
+        app->d_workspace.setActiveSubWindow(keepActive);
+        keepActive->raise();
+    }
+
+    s_busy = false;
 }
 } // namespace
 
@@ -1797,6 +1949,7 @@ void FocusTableDrawer::syncGridFromTable()
         d_proxy_model->setSourceModel(srcModel);
     if (auto *fp = static_cast<FocusDrawerProxyModel *>(d_proxy_model))
         fp->notifyAllHeadersChanged();
+    adjustDrawerColumnWidths(d_table_view, tbl);
     if (d_table_view->viewport())
         d_table_view->viewport()->update();
 
@@ -2580,7 +2733,9 @@ void FocusCanvasHudOverlay::repositionOverlayWidgets()
         }
         const int drawerTop = topY + ph + 10;
         const int drawerH = qMax(200, vpSz.height() - drawerTop - 14);
-        d_table_drawer->setGeometry(12, drawerTop, 360, drawerH);
+        const int drawerW = qMin(396, qMax(260, vpSz.width() - 24));
+        d_table_drawer->setFixedWidth(drawerW);
+        d_table_drawer->setGeometry(12, drawerTop, drawerW, drawerH);
         d_table_drawer->raise();
     }
 }
@@ -2970,6 +3125,12 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
                     }
                     if (d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry)
                         applySplitWorkspaceGeometry();
+                    if (d_focus_hud_mode && d_layout_mode == LayoutFreeMdi && mw && !mw->isHidden()
+                        && (qobject_cast<MultiLayer *>(mw) || qobject_cast<Graph3D *>(mw))) {
+                        hideBackgroundMdiWindowsForFocus(d_app);
+                        if (!mw->isMaximized() && mw->y() < 48)
+                            mw->move(mw->x(), 48);
+                    }
                 });
     }
 
@@ -4646,7 +4807,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->copyGraphAsOleObject();
                 });
         addRibbonButton(
-                gExport, QStringLiteral("copy-ole"),
+                gExport, QStringLiteral("preset-slide"),
                 []() { return ToriGraphPptx::sendToPowerPointLabel(); },
                 []() { return ToriGraphPptx::sendToPowerPointToolTip(); },
                 [this]() {
@@ -4683,7 +4844,7 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->exportPDF();
                 });
         addRibbonMenuAction(
-                moreExportMenu, QStringLiteral("copy-ole"),
+                moreExportMenu, QStringLiteral("preset-slide"),
                 []() { return ToriGraphPptx::sendToPowerPointLabel(); },
                 []() { return ToriGraphPptx::sendToPowerPointToolTip(); },
                 [this]() {
@@ -5132,6 +5293,7 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
 
         switch (mode) {
         case LayoutTabbed: {
+            restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(true);
             d_app->d_workspace.setTabsClosable(true);
             d_app->d_workspace.setTabsMovable(true);
@@ -5162,12 +5324,14 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
         }
 
         case LayoutSplitTableGraph:
+            restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(false);
             unmaximizeCurrentFolderWindows();
             applySplitWorkspaceGeometry();
             break;
 
         case LayoutFreeMdi:
+            restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(false);
             unmaximizeCurrentFolderWindows();
             if (QScrollBar *hsb = d_app->d_workspace.horizontalScrollBar())
@@ -5192,6 +5356,8 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
                     }
                 }
             }
+            if (d_focus_hud_mode)
+                hideBackgroundMdiWindowsForFocus(d_app);
             if (QScrollBar *hsb = d_app->d_workspace.horizontalScrollBar())
                 hsb->setValue(0);
             if (QScrollBar *vsb = d_app->d_workspace.verticalScrollBar())
@@ -5558,6 +5724,7 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
     if (d_layout_mode == LayoutSplitTableGraph) {
         applySplitWorkspaceGeometry();
     } else if (enabled && d_layout_mode == LayoutFreeMdi && d_app) {
+        hideBackgroundMdiWindowsForFocus(d_app);
         if (Folder *curFolder = d_app->currentFolder()) {
             for (MyWidget *mw : curFolder->windowsList()) {
                 if (!mw || mw->status() == MyWidget::Hidden || mw->isHidden())
@@ -5570,6 +5737,8 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         }
         if (d_focus_hud_overlay)
             d_focus_hud_overlay->repositionOverlayWidgets();
+    } else if (!enabled && d_app) {
+        restoreBackgroundMdiWindowsAfterFocus(d_app);
     }
 
     emit focusHudModeChanged(d_focus_hud_mode);

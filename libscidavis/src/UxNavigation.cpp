@@ -56,6 +56,7 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyle>
@@ -512,6 +513,28 @@ protected:
     }
 };
 
+void refreshWidgetAndDescendantLayouts(QWidget *root)
+{
+    if (!root)
+        return;
+    root->ensurePolished();
+    const QList<QWidget *> descendants = root->findChildren<QWidget *>();
+    for (QWidget *w : descendants) {
+        if (w)
+            w->updateGeometry();
+    }
+    const QList<QLayout *> layouts = root->findChildren<QLayout *>();
+    for (int i = layouts.size() - 1; i >= 0; --i) {
+        if (layouts.at(i))
+            layouts.at(i)->invalidate();
+    }
+    if (QLayout *rl = root->layout()) {
+        rl->invalidate();
+        rl->activate();
+    }
+    root->updateGeometry();
+}
+
 } // namespace
 
 bool fitWindowToAvailableScreen(QWidget *window, const QRect &available)
@@ -565,16 +588,55 @@ bool fitWindowToAvailableScreen(QWidget *window, const QRect &available)
     if (minNow.width() > maxClient.width() || minNow.height() > maxClient.height())
         window->setMinimumSize(minNow.boundedTo(maxClient));
 
-    if (wrapped) {
-        const int sbExtent =
-                (window->style()
-                         ? window->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, window)
-                         : 18)
-                + 8;
-        const int targetW =
-                qMin(maxClient.width(), qMax(window->minimumWidth(), preWrapWidth + sbExtent));
-        const int targetH = qMin(maxClient.height(), qMax(window->minimumHeight(), preWrapHeight));
-        window->resize(targetW, targetH);
+    QScrollArea *fitScroll = window->findChild<QScrollArea *>(
+            QStringLiteral("ToriScreenFitScrollArea"), Qt::FindDirectChildrenOnly);
+    if (wrapped || fitScroll) {
+        int vSbW = window->style()
+                ? window->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, window)
+                : 18;
+        int outerMarginsW = 0;
+        const QMargins winMargins = window->contentsMargins();
+        outerMarginsW += winMargins.left() + winMargins.right();
+        int outerLayoutW = 0;
+        if (QLayout *ol = window->layout()) {
+            const QMargins om = ol->contentsMargins();
+            outerMarginsW += om.left() + om.right();
+            outerLayoutW = qMax(ol->totalMinimumSize().width(), ol->totalSizeHint().width());
+        }
+        int innerNeedW = 0;
+        if (fitScroll) {
+            if (QScrollBar *vsb = fitScroll->verticalScrollBar())
+                vSbW = qMax(vSbW, vsb->sizeHint().width());
+            const QMargins sm = fitScroll->contentsMargins();
+            outerMarginsW += sm.left() + sm.right() + 2 * fitScroll->frameWidth();
+            if (QWidget *inner = fitScroll->widget()) {
+                refreshWidgetAndDescendantLayouts(inner);
+                innerNeedW = qMax(inner->sizeHint().width(), inner->minimumSizeHint().width());
+                if (QLayout *il = inner->layout()) {
+                    innerNeedW = qMax(innerNeedW,
+                                      qMax(il->totalSizeHint().width(),
+                                           il->totalMinimumSize().width()));
+                }
+            }
+        }
+        const int scrollNeededW = innerNeedW > 0 ? (innerNeedW + vSbW + outerMarginsW + 16) : 0;
+        if (wrapped) {
+            const int desiredW = qMax(window->minimumWidth(),
+                                      qMax(outerLayoutW,
+                                           qMax(preWrapWidth + vSbW + 16, scrollNeededW)));
+            const int targetW = qMin(maxClient.width(), desiredW);
+            const int targetH =
+                    qMin(maxClient.height(), qMax(window->minimumHeight(), preWrapHeight));
+            window->resize(targetW, targetH);
+        } else {
+            const int desiredW = qMin(
+                    maxClient.width(),
+                    qMax(window->width(),
+                         qMax(window->minimumWidth(), qMax(outerLayoutW, scrollNeededW))));
+            const int desiredH = qMin(maxClient.height(), window->height());
+            if (desiredW != window->width() || desiredH != window->height())
+                window->resize(desiredW, desiredH);
+        }
     } else if (window->width() > maxClient.width() || window->height() > maxClient.height()) {
         window->resize(window->size().boundedTo(maxClient));
     }
