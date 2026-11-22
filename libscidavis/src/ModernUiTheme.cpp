@@ -1523,10 +1523,10 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
 #endif
 
     const QString css = modernStyleSheet();
-    if (app->styleSheet() != css) {
+    if (app->palette() != pal)
         app->setPalette(pal);
+    if (app->styleSheet() != css)
         app->setStyleSheet(css);
-    }
     app->installEventFilter(KeyboardFocusTracker::instance());
 }
 
