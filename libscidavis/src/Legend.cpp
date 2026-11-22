@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "Legend.h"
 #include "QwtPieCurve.h"
+#include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "VectorCurve.h"
 
@@ -690,6 +691,22 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     p->save();
                     if (curve->testRenderHint(QwtPlotItem::RenderAntialiased))
                         p->setRenderHint(QPainter::Antialiasing, true);
+
+                    // E11: a curve with an error band shows the band colour behind its line.
+                    if (DataCurve *dcBand =
+                                dynamic_cast<DataCurve *>(const_cast<QwtPlotCurve *>(curve))) {
+                        for (DataCurve *ec : dcBand->errorBarsList()) {
+                            auto *er = dynamic_cast<QwtErrorPlotCurve *>(ec);
+                            if (!er || !er->isBand() || !er->isVisible())
+                                continue;
+                            p->save();
+                            p->setPen(Qt::NoPen);
+                            p->setBrush(QBrush(er->bandFillColor()));
+                            QwtPainter::drawRect(p, QRect(w, cy - 5, l, 11));
+                            p->restore();
+                            break;
+                        }
+                    }
 
                     if (curve->style() != 0) {
                         qreal pw = pen.widthF();

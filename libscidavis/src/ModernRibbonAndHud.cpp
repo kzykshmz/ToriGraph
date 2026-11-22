@@ -78,6 +78,7 @@
 
 #include "ApplicationWindow.h"
 #include "CurveMathTools.h"
+#include "ExtraPlotTypes.h"
 #include "Graph.h"
 #include "GraphInspectorDock.h"
 #include "IconLoader.h"
@@ -3451,6 +3452,26 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("Histogram"); },
                 [this]() { return tr("Plot Frequency Histogram"); },
                 [this]() { triggerPlot2D(Graph::Histogram); });
+        // E11: histogram with a cumulative % curve, colour-mapped scatter
+        ExtraPlotTypes::registerTranslations();
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-histogram"),
+                [this]() { return tr("Histogram + Cumulative %"); },
+                [this]() { return tr("Frequency histogram with the cumulative percentage on the right axis"); },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showHistogramCumulativeDialog(d_app);
+                });
+        addRibbonMenuAction(
+                specialtyMenu, QStringLiteral("plot-scatter"),
+                [this]() { return tr("Color-Mapped Scatter (Z)"); },
+                [this]() {
+                    return tr("Scatter plot whose symbol color follows a third column (and size a fourth), with a color bar");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showColorScatterDialog(d_app);
+                });
         addRibbonMenuAction(
                 specialtyMenu, QStringLiteral("plot-waterfall"),
                 [this]() { return tr("Waterfall / Y-Stack"); },
@@ -3548,6 +3569,9 @@ void ModernRibbonBar::buildAllTabs()
                 }
                 if (QAction *a = d_app->findChild<QAction *>(QString::fromLatin1(name)))
                     addMenu->addAction(a);
+                if (qstrcmp(name, "actionAddErrorBars") == 0) // E11
+                    addMenu->addAction(
+                            ExtraPlotTypes::action(d_app, ExtraPlotTypes::ActErrorBand));
             }
         }
 
@@ -3997,6 +4021,38 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         d_app->showWeibullPlotDialog();
                 });
+        {
+            // E11: lognormal and Gumbel (extreme value) probability plots
+            ExtraPlotTypes::registerTranslations();
+            QMenu *probMenu = nullptr;
+            addRibbonMenuButton(
+                    gDomain, QStringLiteral("weibull"),
+                    [this, kCaret]() { return tr("Probability Plots") + kCaret; },
+                    [this]() {
+                        return tr("Gumbel extreme value plot (e.g. maximum defect size): location, scale and return-period value");
+                    },
+                    &probMenu);
+            addRibbonMenuAction(
+                    probMenu, QStringLiteral("weibull"),
+                    [this]() { return tr("Gumbel (Extreme Value) Probability Plot"); },
+                    [this]() {
+                        return tr("Gumbel extreme value plot (e.g. maximum defect size): location, scale and return-period value");
+                    },
+                    [this]() {
+                        if (d_app)
+                            ExtraPlotTypes::showProbabilityPlotDialog(d_app, ExtraPlotTypes::Gumbel);
+                    });
+            addRibbonMenuAction(
+                    probMenu, QStringLiteral("weibull"),
+                    [this]() { return tr("Lognormal Probability Plot"); },
+                    [this]() {
+                        return tr("Lognormal probability paper: rank plotting positions and a straight-line fit (mu, sigma)");
+                    },
+                    [this]() {
+                        if (d_app)
+                            ExtraPlotTypes::showProbabilityPlotDialog(d_app, ExtraPlotTypes::LogNormal);
+                    });
+        }
         addRibbonButton(
                 gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius"); },
                 [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
@@ -4162,6 +4218,26 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         d_app->showWeibullPlotDialog();
+                });
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-weibull"),
+                [this]() { return tr("Lognormal Probability Plot"); },
+                [this]() {
+                    return tr("Lognormal probability paper: rank plotting positions and a straight-line fit (mu, sigma)");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showProbabilityPlotDialog(d_app, ExtraPlotTypes::LogNormal);
+                });
+        addRibbonMenuAction(
+                relMultiMenu, QStringLiteral("stats-weibull"),
+                [this]() { return tr("Gumbel (Extreme Value) Probability Plot"); },
+                [this]() {
+                    return tr("Gumbel extreme value plot (e.g. maximum defect size): location, scale and return-period value");
+                },
+                [this]() {
+                    if (d_app)
+                        ExtraPlotTypes::showProbabilityPlotDialog(d_app, ExtraPlotTypes::Gumbel);
                 });
         addRibbonMenuAction(
                 relMultiMenu, QStringLiteral("stats-survival"),

@@ -23,6 +23,7 @@
 #include "AutoUpdater.h"
 #include "BoxCurve.h"
 #include "CurveMathTools.h"
+#include "ExtraPlotTypes.h"
 #include "Differentiation.h"
 #include "FFT.h"
 #include "FFTFilter.h"
@@ -7226,6 +7227,26 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution via rank regression or right-censored MLE (ceramics & fatigue).",
       "table:str=''; col:int|str=0; censor_col:int|str=null; censor_coding:int=0; three_param:bool=false; mle:bool=false; plot:bool=true",
       "app.weibull_fit(tbl, 'FractureMPa', three_param=True)" },
+    { "stats.probability_plot", "stats",
+      "Session.probability_plot(table=None, col=0, *, distribution='lognormal', position=None, return_period=0, plot=True)",
+      "Lognormal or Gumbel (largest extreme value) probability plot by rank plotting positions with a least-squares line (e.g. CT maximum defect size).",
+      "table:str=''; col:int|str=0; distribution:str='lognormal'[lognormal|gumbel]; position:str=''[median|mean|hazen|blom]; return_period:float=0; plot:bool=true",
+      "app.probability_plot(tbl, 'sqrt_area_max', distribution='gumbel', return_period=500)" },
+    { "plot.color_scatter", "plot",
+      "Session.plot_color_scatter(table=None, x=0, y=1, z=2, *, size=None, palette='viridis', reverse=False)",
+      "Scatter plot whose symbol colour follows a Z column (optionally size from a 4th column) with a colour bar on the right axis.",
+      "table:str=''; x:int|str=0; y:int|str=1; z:int|str=2; size:int|str=null; palette:str='viridis'; reverse:bool=false",
+      "g = app.plot_color_scatter(tbl, 'x', 'y', 'strain')" },
+    { "plot.histogram_cumulative", "plot",
+      "Session.plot_histogram_cumulative(table=None, col=0, *, bin_width=0, begin=0)",
+      "Frequency histogram with the cumulative percentage (0-100 %) on the right axis.",
+      "table:str=''; col:int|str=0; bin_width:float=0; begin:float=0",
+      "app.plot_histogram_cumulative(tbl, 'DefectSize', bin_width=5)" },
+    { "graph.add_error_band", "graph",
+      "GraphProxy.add_error_band(curve, err, *, err_minus=None, table=None, alpha=64, layer=None)",
+      "Shade Y - error ... Y + error of a data curve from error column(s) (asymmetric with err_minus); saved with the project.",
+      "graph:str=''; curve:int|str*; err:int|str*; err_minus:int|str=null; table:str=''; alpha:float=64; layer:int=null",
+      "g.add_error_band('Mean', 'SD')" },
     { "stats.kaplan_meier", "stats",
       "Session.kaplan_meier(table=None, time_col=0, event_col=1, *, group_col=None)",
       "Compute Kaplan-Meier survival curves and log-rank test.",
@@ -26575,6 +26596,189 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
             outResult[QStringLiteral("table")] = wb.reportTable->name();
         if (wbMl)
             outResult[QStringLiteral("graph")] = wbMl->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("stats.probability_plot")) {
+        Table *t = resolveTable(d_app, params);
+        const int cIdx = resolveColumnIndex(
+                t, params.contains(QStringLiteral("col")) ? params.value(QStringLiteral("col"))
+                                                          : QJsonValue(0),
+                true);
+        const QString distStr =
+                optionalJsonString(params, QStringLiteral("distribution"), QStringLiteral("lognormal"))
+                        .trimmed()
+                        .toLower();
+        ExtraPlotTypes::ProbabilityDistribution dist = ExtraPlotTypes::LogNormal;
+        if (distStr == QStringLiteral("gumbel") || distStr == QStringLiteral("extreme")
+            || distStr == QStringLiteral("gev") || distStr == QStringLiteral("evd"))
+            dist = ExtraPlotTypes::Gumbel;
+        else if (distStr != QStringLiteral("lognormal") && distStr != QStringLiteral("log-normal"))
+            throwInvalidParams(QStringLiteral("Unknown distribution '%1' (expected lognormal|gumbel).")
+                                       .arg(distStr));
+        const QString posStr = optionalJsonString(params, QStringLiteral("position")).trimmed().toLower();
+        ExtraPlotTypes::PlottingPosition pos =
+                dist == ExtraPlotTypes::Gumbel ? ExtraPlotTypes::MeanRank : ExtraPlotTypes::MedianRank;
+        if (posStr == QStringLiteral("median"))
+            pos = ExtraPlotTypes::MedianRank;
+        else if (posStr == QStringLiteral("mean"))
+            pos = ExtraPlotTypes::MeanRank;
+        else if (posStr == QStringLiteral("hazen"))
+            pos = ExtraPlotTypes::Hazen;
+        else if (posStr == QStringLiteral("blom"))
+            pos = ExtraPlotTypes::Blom;
+        else if (!posStr.isEmpty())
+            throwInvalidParams(QStringLiteral("Unknown position '%1' (expected median|mean|hazen|blom).")
+                                       .arg(posStr));
+        const double T = optionalJsonFiniteDouble(params, QStringLiteral("return_period"), 0.0);
+        const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
+        const auto pr = ExtraPlotTypes::plotProbability(d_app, t, t->colName(cIdx), dist, pos, T,
+                                                        wantPlot);
+        if (!pr.valid)
+            throwInvalidParams(pr.error);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("n")] = pr.n;
+        outResult[QStringLiteral("excluded")] = pr.excluded;
+        outResult[QStringLiteral("location")] = safeJsonDouble(pr.location);
+        outResult[QStringLiteral("scale")] = safeJsonDouble(pr.scale);
+        if (dist == ExtraPlotTypes::LogNormal) {
+            outResult[QStringLiteral("mu")] = safeJsonDouble(pr.location);
+            outResult[QStringLiteral("sigma")] = safeJsonDouble(pr.scale);
+            outResult[QStringLiteral("median")] = safeJsonDouble(std::exp(pr.location));
+        } else {
+            outResult[QStringLiteral("lambda")] = safeJsonDouble(pr.location);
+            outResult[QStringLiteral("delta")] = safeJsonDouble(pr.scale);
+            if (pr.returnPeriod > 1.0)
+                outResult[QStringLiteral("return_value")] = safeJsonDouble(pr.returnValue);
+        }
+        outResult[QStringLiteral("r2")] = safeJsonDouble(pr.rSquare);
+        if (pr.table)
+            outResult[QStringLiteral("table")] = pr.table->name();
+        if (pr.plot)
+            outResult[QStringLiteral("graph")] = pr.plot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("plot.color_scatter")) {
+        Table *t = resolveTable(d_app, params);
+        auto colOf = [&](const char *key, int def) {
+            const QString k = QString::fromLatin1(key);
+            return t->colName(resolveColumnIndex(
+                    t, params.contains(k) ? params.value(k) : QJsonValue(def), true));
+        };
+        const QString xc = colOf("x", 0), yc = colOf("y", 1), zc = colOf("z", 2);
+        QString sc;
+        if (params.contains(QStringLiteral("size")) && !params.value(QStringLiteral("size")).isNull())
+            sc = t->colName(resolveColumnIndex(t, params.value(QStringLiteral("size")), true));
+        const QString pal = optionalJsonString(params, QStringLiteral("palette"), QStringLiteral("viridis"));
+        const Spectrogram::ColorMapPreset preset = parseColorMapPreset(pal, nullptr, true);
+        MultiLayer *ml = ExtraPlotTypes::plotColorMappedScatter(
+                d_app, t, xc, yc, zc, sc, int(preset),
+                optionalJsonBool(params, QStringLiteral("reverse"), false));
+        if (!ml)
+            throwInvalidParams(QStringLiteral("plot.color_scatter needs numeric x, y and z columns."));
+        applyRequestedWindowName(d_app, ml, params);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("graph")] = ml->name();
+        if (Graph *g = ml->activeGraph()) {
+            if (DataCurve *dc = g->pointColorMapCurve()) {
+                double lo = 0.0, hi = 1.0;
+                dc->pointColorRange(&lo, &hi);
+                outResult[QStringLiteral("z_min")] = safeJsonDouble(lo);
+                outResult[QStringLiteral("z_max")] = safeJsonDouble(hi);
+            }
+        }
+        return true;
+    }
+
+    if (method == QStringLiteral("plot.histogram_cumulative")) {
+        Table *t = resolveTable(d_app, params);
+        const int cIdx = resolveColumnIndex(
+                t, params.contains(QStringLiteral("col")) ? params.value(QStringLiteral("col"))
+                                                          : QJsonValue(0),
+                true);
+        const auto hr = ExtraPlotTypes::plotHistogramCumulative(
+                d_app, t, t->colName(cIdx),
+                optionalJsonFiniteDouble(params, QStringLiteral("bin_width"), 0.0),
+                optionalJsonFiniteDouble(params, QStringLiteral("begin"), 0.0));
+        if (!hr.valid)
+            throwInvalidParams(hr.error.isEmpty() ? QStringLiteral("Histogram failed.") : hr.error);
+        if (hr.plot)
+            applyRequestedWindowName(d_app, hr.plot, params);
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("bins")] = hr.bins;
+        outResult[QStringLiteral("bin_width")] = safeJsonDouble(hr.binWidth);
+        outResult[QStringLiteral("total")] = hr.total;
+        QJsonArray edges, cum;
+        for (int i = 0; i < hr.cumulativePct.size(); ++i) {
+            edges.append(safeJsonDouble(hr.upperEdges[i]));
+            cum.append(safeJsonDouble(hr.cumulativePct[i]));
+        }
+        outResult[QStringLiteral("upper_edges")] = edges;
+        outResult[QStringLiteral("cumulative_pct")] = cum;
+        if (hr.table)
+            outResult[QStringLiteral("table")] = hr.table->name();
+        if (hr.plot)
+            outResult[QStringLiteral("graph")] = hr.plot->name();
+        return true;
+    }
+
+    if (method == QStringLiteral("graph.add_error_band")) {
+        MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *g = resolveGraphLayer(ml, params);
+        // curve: Y column name ("Table1_B" or "B") or 0-based index among the data curves
+        DataCurve *master = nullptr;
+        QList<DataCurve *> dataCurves;
+        for (int i = 0; i < g->curves(); ++i) {
+            if (g->curveType(i) == Graph::ErrorBars)
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(g->curve(i)))
+                if (dc->table())
+                    dataCurves << dc;
+        }
+        const QJsonValue cv = params.value(QStringLiteral("curve"));
+        if (cv.isDouble()) {
+            const int ci = cv.toInt(-1);
+            if (ci >= 0 && ci < dataCurves.size())
+                master = dataCurves[ci];
+        } else {
+            const QString cn = cv.toString().trimmed();
+            for (DataCurve *dc : dataCurves) {
+                if (dc->title().text() == cn
+                    || dc->title().text() == dc->table()->name() + QStringLiteral("_") + cn) {
+                    master = dc;
+                    break;
+                }
+            }
+        }
+        if (!master)
+            throwInvalidParams(QStringLiteral("graph.add_error_band: curve not found."));
+        Table *errT = master->table();
+        if (!optionalJsonString(params, QStringLiteral("table")).trimmed().isEmpty())
+            errT = resolveTable(d_app, params);
+        const QString errPlus = errT->colName(
+                resolveColumnIndex(errT, params.value(QStringLiteral("err")), true));
+        QString errMinus;
+        if (params.contains(QStringLiteral("err_minus"))
+            && !params.value(QStringLiteral("err_minus")).isNull())
+            errMinus = errT->colName(
+                    resolveColumnIndex(errT, params.value(QStringLiteral("err_minus")), true));
+        int a255 = 64;
+        if (params.contains(QStringLiteral("alpha"))) {
+            const double rawA = params.value(QStringLiteral("alpha")).toDouble(64.0);
+            a255 = (rawA <= 1.0 && rawA >= 0.0) ? int(std::round(rawA * 255.0))
+                                                : std::clamp(int(rawA), 0, 255);
+        }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Error Band"));
+        const int added = ExtraPlotTypes::addErrorBand(g, master->title().text(), errT, errPlus,
+                                                       errMinus, a255);
+        if (added == 0)
+            throwInvalidParams(QStringLiteral("graph.add_error_band: the band could not be added."));
+        replotGraphOrDefer(g);
+        undoGuard.commit();
+        outResult[QStringLiteral("ok")] = true;
+        outResult[QStringLiteral("band_curves")] = added;
+        outResult[QStringLiteral("error_band_count")] = g->errorBandCount();
         return true;
     }
 

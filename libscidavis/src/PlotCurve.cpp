@@ -30,6 +30,8 @@
 #include "Graph.h"
 #include "Plot.h"
 #include "ScaleDraw.h"
+#include "Spectrogram.h"
+#include <limits>
 #include "core/column/Column.h"
 #include "core/datatypes/DateTime2StringFilter.h"
 #include <QDateTime>
@@ -1743,4 +1745,173 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
 
     if (expandClip)
         painter->restore();
+}
+
+// ============================================================================
+// E11: colour-mapped (and optionally size-mapped) scatter symbols
+// ============================================================================
+
+namespace {
+
+Column *resolvePointMapColumn(Table *t, const QString &name)
+{
+    if (!t || name.isEmpty())
+        return nullptr;
+    if (Column *c = t->column(name))
+        return c;
+    const QString prefix = t->name() + QStringLiteral("_");
+    if (name.startsWith(prefix))
+        return t->column(name.mid(prefix.size()));
+    return nullptr;
+}
+
+double pointMapCellValue(Column *c, int row)
+{
+    if (!c || row < 0 || row >= c->rowCount() || c->isInvalid(row))
+        return std::numeric_limits<double>::quiet_NaN();
+    if (c->columnMode() != SciDAVis::ColumnMode::Numeric)
+        return std::numeric_limits<double>::quiet_NaN();
+    return c->valueAt(row);
+}
+
+} // namespace
+
+double DataCurve::pointColorValue(int i) const
+{
+    Column *zc = resolvePointMapColumn(d_table, d_point_cmap.zColumn);
+    return pointMapCellValue(zc, tableRow(i));
+}
+
+bool DataCurve::pointColorRange(double *zMin, double *zMax) const
+{
+    double lo = d_point_cmap.zMin;
+    double hi = d_point_cmap.zMax;
+    if (d_point_cmap.autoRange) {
+        Column *zc = resolvePointMapColumn(d_table, d_point_cmap.zColumn);
+        bool first = true;
+        for (int i = 0; i < dataSize(); ++i) {
+            const double v = pointMapCellValue(zc, tableRow(i));
+            if (!std::isfinite(v))
+                continue;
+            if (first) {
+                lo = hi = v;
+                first = false;
+            } else {
+                lo = qMin(lo, v);
+                hi = qMax(hi, v);
+            }
+        }
+        if (first) {
+            lo = 0.0;
+            hi = 1.0;
+        }
+    }
+    if (lo > hi)
+        std::swap(lo, hi);
+    if (!(hi > lo))
+        hi = lo + (lo == 0.0 ? 1.0 : std::fabs(lo) * 1e-6);
+    if (zMin)
+        *zMin = lo;
+    if (zMax)
+        *zMax = hi;
+    return true;
+}
+
+QColor DataCurve::pointColor(int i) const
+{
+    const double v = pointColorValue(i);
+    if (!std::isfinite(v))
+        return QColor();
+    double lo = 0.0, hi = 1.0;
+    pointColorRange(&lo, &hi);
+    const QwtLinearColorMap map = Spectrogram::presetColorMap(
+            static_cast<Spectrogram::ColorMapPreset>(d_point_cmap.preset), d_point_cmap.reverse);
+    return QColor(map.rgb(QwtDoubleInterval(lo, hi), qBound(lo, v, hi)));
+}
+
+void DataCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtScaleMap &xMap,
+                            const QwtScaleMap &yMap, int from, int to) const
+{
+    if (!hasPointColorMap()) {
+        PlotCurve::drawSymbols(painter, sym, xMap, yMap, from, to);
+        return;
+    }
+    if (!painter || dataSize() <= 0 || sym.style() == QwtSymbol::NoSymbol)
+        return;
+    const int n = dataSize();
+    from = qMax(0, from);
+    to = (to < 0) ? (n - 1) : qMin(to, n - 1);
+    if (from > to)
+        return;
+
+    double zLo = 0.0, zHi = 1.0;
+    pointColorRange(&zLo, &zHi);
+    const QwtDoubleInterval zInt(zLo, zHi);
+    const QwtLinearColorMap map = Spectrogram::presetColorMap(
+            static_cast<Spectrogram::ColorMapPreset>(d_point_cmap.preset), d_point_cmap.reverse);
+    Column *zc = resolvePointMapColumn(d_table, d_point_cmap.zColumn);
+    Column *sc = resolvePointMapColumn(d_table, d_point_cmap.sizeColumn);
+
+    double sLo = 0.0, sHi = 0.0;
+    bool haveSize = false;
+    if (sc) {
+        for (int i = 0; i < n; ++i) {
+            const double v = pointMapCellValue(sc, tableRow(i));
+            if (!std::isfinite(v))
+                continue;
+            if (!haveSize) {
+                sLo = sHi = v;
+                haveSize = true;
+            } else {
+                sLo = qMin(sLo, v);
+                sHi = qMax(sHi, v);
+            }
+        }
+    }
+
+    painter->save();
+    if (testRenderHint(QwtPlotItem::RenderAntialiased))
+        painter->setRenderHint(QPainter::Antialiasing, true);
+    QPen basePen = QwtPainter::scaledPen(sym.pen());
+    if (basePen.isCosmetic()) {
+        basePen.setCosmetic(false);
+        if (basePen.widthF() <= 0.0)
+            basePen.setWidthF(qMax(1.0, double(sym.pen().widthF())));
+    }
+    const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
+    const double baseW = qMax(1.0, double(layoutSz.width()));
+    const double baseH = qMax(1.0, double(layoutSz.height()));
+    const double pxToLayout =
+            double(sym.size().width()) > 0.0 ? baseW / double(sym.size().width()) : 1.0;
+
+    for (int i = from; i <= to; ++i) {
+        const double cx = xMap.xTransform(x(i));
+        const double cy = yMap.xTransform(y(i));
+        if (!std::isfinite(cx) || !std::isfinite(cy) || std::fabs(cx) > kMaxSafeCoord
+            || std::fabs(cy) > kMaxSafeCoord)
+            continue;
+        const int row = tableRow(i);
+        const double z = pointMapCellValue(zc, row);
+        QColor fill;
+        if (std::isfinite(z))
+            fill = QColor(map.rgb(zInt, qBound(zLo, z, zHi)));
+        else
+            fill = QColor(200, 200, 200); // missing colour value: light grey
+        double w = baseW, h = baseH;
+        if (haveSize) {
+            const double sv = pointMapCellValue(sc, row);
+            if (std::isfinite(sv)) {
+                const double t = (sHi > sLo) ? (sv - sLo) / (sHi - sLo) : 0.5;
+                const double px = d_point_cmap.sizeMinPx
+                        + t * (d_point_cmap.sizeMaxPx - d_point_cmap.sizeMinPx);
+                w = h = qMax(1.0, px * pxToLayout);
+            }
+        }
+        QPen pen = basePen;
+        pen.setColor(fill.darker(150));
+        painter->setPen(pen);
+        painter->setBrush(QBrush(fill));
+        drawSymbolShapeF(painter, sym.style(), cx, cy, w, h);
+    }
+    painter->restore();
 }

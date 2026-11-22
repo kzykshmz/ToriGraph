@@ -986,6 +986,12 @@ public:
     }
     int shadedBandCount() const { return d_shaded_bands.size(); }
     void clearShadedBands();
+    //! E11: show (or hide) the right-axis colour bar of the first colour-mapped scatter curve.
+    void syncPointColorBar();
+    //! E11: first visible curve whose symbols are coloured from a Z column (nullptr if none).
+    DataCurve *pointColorMapCurve() const;
+    //! E11: number of error-bar curves drawn as translucent bands.
+    int errorBandCount() const;
     QString autoPlaceLegend() { return placeLegendAnchor(LegendAutoAvoidData); }
     void setAxisTitleColor(int axis, const QColor &c)
     {
@@ -1146,6 +1152,7 @@ private:
         QwtPlotItem *item = nullptr;
     };
     QVector<ShadedBandSpec> d_shaded_bands;
+    bool d_point_colorbar_active = false;
     int d_pending_linked_parent_idx = -1;
     bool d_axis_title_auto[4] = { true, true, true, true };
     Column::UnitFormat d_axis_unit_format = Column::UnitFormat::Paren;
