@@ -977,6 +977,8 @@ def _fetch_graph_ole_payload(
             embed_scope=str(embed_scope),
         )
         if isinstance(ole_res, Mapping):
+            if ole_res.get("warning"):
+                _warn(str(ole_res["warning"]))
             got_scope = ole_res.get("embed_scope")
             if per_graph_project and got_scope not in (None, "graph"):
                 _warn(
@@ -1025,7 +1027,7 @@ def _fetch_graph_ole_payload(
                     "contains the whole project instead."
                 )
             sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
-            session.save_project(sciprj_tmp, compress=False)
+            session.save_project(sciprj_tmp, compress=False, snapshot=True)
             proj_bytes = sciprj_tmp.read_bytes()
             cached_project_bytes = proj_bytes
     elif not per_graph_project:

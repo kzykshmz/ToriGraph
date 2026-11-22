@@ -56,6 +56,14 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <softpub.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "advapi32.lib")
+#endif
 #endif
 
 namespace {
@@ -68,6 +76,7 @@ constexpr const char *kSettingsKeyFeedUrl = "AutoUpdate/FeedUrl";
 constexpr const char *kSettingsKeyIncludePre = "AutoUpdate/IncludePreReleases";
 constexpr const char *kSettingsKeySkippedVer = "AutoUpdate/SkippedVersion";
 constexpr const char *kSettingsKeyAllowUnverified = "AutoUpdate/AllowUnverifiedInstall";
+constexpr const char *kSettingsKeyRequireSig = "AutoUpdate/RequireCodeSignature";
 constexpr const char *kDefaultReleasesPage = "https://github.com/kzykshmz/ToriGraph/releases";
 constexpr int kLiveCheckTimeoutMs = 10000;
 constexpr int kDownloadStallTimeoutMs = 30000;
@@ -443,7 +452,68 @@ void registerAutoUpdaterExtraTranslations()
             "プロキシ サーバーがユーザー名とパスワードを求めていますが、更新機能からは入力"
             "できません。Web ブラウザーでリリースページを開いてパッケージをダウンロードするか、"
             "ネットワーク管理者に相談してください。");
+        reg("Manual Update Required (Unsigned Package)", "手動更新が必要です(未署名パッケージ)");
+        reg("The downloaded update package (v%1) is not digitally signed with an Authenticode "
+            "certificate, so automatic installation is disabled for your safety.\n\n"
+            "Verified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
+            "Click \"Open Release Page\" to review and install the update manually from GitHub.",
+            "ダウンロードした更新パッケージ(v%1)に Authenticode 電子署名がないため、"
+            "安全のため自動インストールは行いません。\n\n"
+            "検証済み SHA-256:\n%2\n\nリリースノート:\n%3\n\n"
+            "「リリースページを開く」を押して GitHub の公式リリースページから手動で更新してください。");
+        reg("The downloaded update package has an invalid or untrusted digital signature and was "
+            "deleted for your safety.\n\n%1",
+            "ダウンロードした更新パッケージの電子署名が不正または信頼できないため、"
+            "安全のため削除しました。\n\n%1");
+        reg("Digital signature verification failed.", "電子署名の検証に失敗しました。");
+        reg("Blocked untrusted download URL: %1",
+            "信頼できないダウンロード URL をブロックしました: %1");
+        reg("Blocked untrusted update feed URL.",
+            "信頼できない更新フィード URL をブロックしました。");
     });
+}
+
+QString updateStagingDirectory()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                + QStringLiteral("/ToriGraph");
+    if (base.isEmpty())
+        base = QDir::tempPath() + QStringLiteral("/ToriGraph");
+    return QDir(base).filePath(QStringLiteral("UpdateStaging"));
+}
+
+QString resolveSystem32Executable(const QString &exeLeaf)
+{
+#ifdef Q_OS_WIN
+    wchar_t sysDirBuf[MAX_PATH + 4] = {};
+    const UINT n = GetSystemDirectoryW(sysDirBuf, MAX_PATH + 1);
+    if (n > 0 && n <= MAX_PATH) {
+        const QString sysDir = QString::fromWCharArray(sysDirBuf, static_cast<int>(n));
+        const QString cand = QDir(sysDir).filePath(exeLeaf);
+        if (QFileInfo(cand).isFile())
+            return QDir::toNativeSeparators(cand);
+        return QDir::toNativeSeparators(cand);
+    }
+#endif
+    return exeLeaf;
+}
+
+QString resolveWindowsExecutable(const QString &exeLeaf)
+{
+#ifdef Q_OS_WIN
+    wchar_t winDirBuf[MAX_PATH + 4] = {};
+    const UINT n = GetWindowsDirectoryW(winDirBuf, MAX_PATH + 1);
+    if (n > 0 && n <= MAX_PATH) {
+        const QString winDir = QString::fromWCharArray(winDirBuf, static_cast<int>(n));
+        const QString cand = QDir(winDir).filePath(exeLeaf);
+        if (QFileInfo(cand).isFile())
+            return QDir::toNativeSeparators(cand);
+        return QDir::toNativeSeparators(cand);
+    }
+#endif
+    return exeLeaf;
 }
 
 QNetworkRequest buildGitHubRequest(const QUrl &url, bool isJsonFeed)
@@ -938,10 +1008,15 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
         return;
     }
 
-    QString stagingRoot = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    if (stagingRoot.isEmpty())
-        stagingRoot = QDir::tempPath();
-    const QString stagingDir = QDir(stagingRoot).filePath(QStringLiteral("ToriGraph_UpdateStaging"));
+    if (!AutoUpdater::isAllowedUpdateUrl(d_info.assetUrl)) {
+        AutoUpdater::showFailureWithReleasePage(
+                this, tr("Update Download Failed"),
+                tr("Blocked untrusted download URL: %1").arg(d_info.assetUrl.toString()),
+                d_info.htmlUrl);
+        return;
+    }
+
+    const QString stagingDir = updateStagingDirectory();
     QDir().mkpath(stagingDir);
 
     QString safeFileName = QFileInfo(d_info.assetName).fileName();
@@ -955,42 +1030,11 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
 
     d_downloadCanceled = false;
     d_downloadStalled = false;
+    d_downloadBlockedRedirect = false;
     d_lastReceivedBytes = 0;
     d_lastTotalBytes = d_info.assetSize;
 
-    // Local file:// fast path
-    if (d_info.assetUrl.isLocalFile()) {
-        d_btnDownloadInstall->setEnabled(false);
-        d_btnSkipVersion->setEnabled(false);
-        d_btnLater->setEnabled(false);
-
-        QString errMsg;
-        if (!AutoUpdater::downloadAndVerifyBlocking(
-                    d_info.assetUrl, d_finalPackagePath, d_info.expectedSha256, &errMsg, 20000)) {
-            if (!d_info.expectedSha256.isEmpty()) {
-                d_shaState = ShaBadgeState::Failed;
-                updateShaBadgeStyle();
-            }
-            restoreButtonsAfterFailure();
-            AutoUpdater::showFailureWithReleasePage(this, tr("Update Download Failed"), errMsg,
-                                                    d_info.htmlUrl);
-            return;
-        }
-        // downloadAndVerifyBlocking() checked the SHA-256 when one is published.
-        const bool verified = !d_info.expectedSha256.trimmed().isEmpty();
-        if (verified) {
-            d_shaState = ShaBadgeState::Verified;
-            updateShaBadgeStyle();
-        }
-        d_progressFrame->setVisible(true);
-        d_progressBar->setRange(0, 100);
-        d_progressBar->setValue(100);
-        d_btnCancelDownload->setEnabled(false);
-        offerInstallAfterDownload(verified);
-        return;
-    }
-
-    // Async HTTP / HTTPS download
+    // Async HTTP(loopback) / HTTPS(GitHub) download
     cleanupActiveDownload(true);
     d_partFile = new QFile(d_partFilePath);
     if (!d_partFile->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -1018,6 +1062,13 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
     d_activeReply = d_nam.get(req);
     d_stallTimer->start(kDownloadStallTimeoutMs);
 
+    connect(d_activeReply, &QNetworkReply::redirected, this, [this](const QUrl &newUrl) {
+        if (!AutoUpdater::isAllowedUpdateUrl(newUrl)) {
+            d_downloadBlockedRedirect = true;
+            if (d_activeReply)
+                d_activeReply->abort();
+        }
+    });
     connect(d_activeReply, &QNetworkReply::readyRead,
             this, &UpdateAvailableDialog::onDownloadReadyRead);
     connect(d_activeReply, &QNetworkReply::downloadProgress,
@@ -1090,6 +1141,7 @@ void UpdateAvailableDialog::onDownloadFinished()
     delete d_partFile;
     d_partFile = nullptr;
 
+    const QUrl finalReplyUrl = reply->url();
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QNetworkReply::NetworkError netErr = reply->error();
     const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
@@ -1101,6 +1153,18 @@ void UpdateAvailableDialog::onDownloadFinished()
         d_btnSkipVersion->setEnabled(true);
         d_btnLater->setEnabled(true);
         d_btnCancelDownload->setEnabled(false);
+        return;
+    }
+
+    if (d_downloadBlockedRedirect || !AutoUpdater::isAllowedUpdateUrl(finalReplyUrl)) {
+        QFile::remove(d_partFilePath);
+        d_progressBar->setRange(0, 100);
+        d_progressBar->setValue(0);
+        restoreButtonsAfterFailure();
+        const QString reason = tr("Blocked untrusted download URL: %1").arg(finalReplyUrl.toString());
+        d_lblProgressDetail->setText(reason);
+        AutoUpdater::showFailureWithReleasePage(this, tr("Update Download Failed"), reason,
+                                                d_info.htmlUrl);
         return;
     }
 
@@ -1150,6 +1214,26 @@ void UpdateAvailableDialog::onDownloadFinished()
         updateShaBadgeStyle();
     }
 
+    // Verify Authenticode signature (immediately reject tampered / untrusted signatures)
+    {
+        QString sigErr;
+        const AutoUpdater::CodeSignatureStatus sigStatus =
+                AutoUpdater::verifyFileCodeSignature(d_partFilePath, nullptr, &sigErr);
+        if (sigStatus == AutoUpdater::CodeSignatureStatus::InvalidSignature) {
+            QFile::remove(d_partFilePath);
+            d_shaState = ShaBadgeState::Failed;
+            updateShaBadgeStyle();
+            restoreButtonsAfterFailure();
+            d_lblProgressDetail->setText(tr("Digital signature verification failed."));
+            QMessageBox::critical(
+                    this, tr("Security Verification Failed"),
+                    tr("The downloaded update package has an invalid or untrusted digital "
+                       "signature and was deleted for your safety.\n\n%1")
+                            .arg(sigErr));
+            return;
+        }
+    }
+
     QString replaceErr;
     if (!atomicReplaceFile(d_partFilePath, d_finalPackagePath, &replaceErr)) {
         QFile::remove(d_partFilePath);
@@ -1186,15 +1270,65 @@ void UpdateAvailableDialog::restoreButtonsAfterFailure()
 
 void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
 {
+    QString sigErr;
+    const AutoUpdater::CodeSignatureStatus sigStatus =
+            AutoUpdater::verifyFileCodeSignature(d_finalPackagePath, nullptr, &sigErr);
+    if (sigStatus == AutoUpdater::CodeSignatureStatus::InvalidSignature) {
+        QFile::remove(d_finalPackagePath);
+        restoreButtonsAfterFailure();
+        QMessageBox::critical(
+                this, tr("Security Verification Failed"),
+                tr("The downloaded update package has an invalid or untrusted digital "
+                   "signature and was deleted for your safety.\n\n%1")
+                        .arg(sigErr));
+        return;
+    }
+
+    const QString actualSha = AutoUpdater::computeFileSha256(d_finalPackagePath);
+    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
+            && !ApplicationWindow::isNonInteractiveContext(d_app);
+    if (sigStatus == AutoUpdater::CodeSignatureStatus::Unsigned
+        && AutoUpdater::requireCodeSignature() && interactiveGui) {
+        restoreButtonsAfterFailure();
+        QString notesPreview = d_info.bodyMarkdown.trimmed();
+        if (notesPreview.isEmpty())
+            notesPreview = tr("No release notes provided for this version.");
+        else if (notesPreview.size() > 600)
+            notesPreview = notesPreview.left(600) + QStringLiteral("...");
+
+        const QUrl httpsReleasePage =
+                (d_info.htmlUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0
+                 && AutoUpdater::isAllowedUpdateUrl(d_info.htmlUrl))
+                ? d_info.htmlUrl
+                : QUrl(QString::fromLatin1(kDefaultReleasesPage));
+        const QString msg =
+                tr("The downloaded update package (v%1) is not digitally signed with an "
+                   "Authenticode certificate, so automatic installation is disabled for your "
+                   "safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
+                   "Click \"Open Release Page\" to review and install the update manually from "
+                   "GitHub.")
+                        .arg(d_info.version,
+                             actualSha.isEmpty() ? d_info.expectedSha256 : actualSha,
+                             notesPreview);
+        if (AutoUpdater::showFailureWithReleasePage(
+                    this, tr("Manual Update Required (Unsigned Package)"), msg, httpsReleasePage)) {
+            accept();
+        }
+        return;
+    }
+
     QString stageErr;
     const QString appDir = QCoreApplication::applicationDirPath();
     QString exeName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
     if (exeName.isEmpty())
         exeName = QStringLiteral("ToriGraph.exe");
 
+    const QString stageSha = !d_info.expectedSha256.trimmed().isEmpty()
+            ? d_info.expectedSha256.trimmed()
+            : actualSha;
     d_stagedScriptPath = AutoUpdater::writeWindowsStagingUpdaterScript(
             d_finalPackagePath, appDir, exeName, QCoreApplication::applicationPid(), true,
-            &stageErr);
+            &stageErr, 60, stageSha);
     if (d_stagedScriptPath.isEmpty()) {
         restoreButtonsAfterFailure();
         AutoUpdater::showFailureWithReleasePage(this, tr("Update Staging Error"), stageErr,
@@ -1293,21 +1427,53 @@ QString AutoUpdater::defaultReleasesFeedUrlString()
     return QString::fromLatin1(kDefaultReleasesUrl);
 }
 
+bool AutoUpdater::isAllowedUpdateUrl(const QUrl &url)
+{
+    if (!url.isValid() || url.isEmpty() || url.isLocalFile())
+        return false;
+    if (!url.userInfo().isEmpty())
+        return false;
+    const QString scheme = url.scheme().trimmed().toLower();
+    const QString host = url.host().trimmed().toLower();
+    if (scheme.isEmpty() || host.isEmpty() || scheme == QStringLiteral("file"))
+        return false;
+    if (scheme == QStringLiteral("https")) {
+        return host == QStringLiteral("api.github.com")
+                || host == QStringLiteral("github.com")
+                || host == QStringLiteral("objects.githubusercontent.com")
+                || host == QStringLiteral("release-assets.githubusercontent.com")
+                || host == QStringLiteral("codeload.github.com");
+    }
+    if (scheme == QStringLiteral("http")) {
+        return host == QStringLiteral("127.0.0.1")
+                || host == QStringLiteral("::1")
+                || host == QStringLiteral("[::1]")
+                || host == QStringLiteral("localhost");
+    }
+    return false;
+}
+
 QUrl AutoUpdater::parseFlexibleUrl(const QString &raw)
 {
     const QString trimmed = raw.trimmed();
     if (trimmed.isEmpty())
         return QUrl();
+    if (trimmed.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive)
+        || trimmed.startsWith(QStringLiteral("\\\\"))
+        || (trimmed.size() >= 2 && trimmed.at(0).isLetter() && trimmed.at(1) == QLatin1Char(':'))
+        || QFileInfo::exists(trimmed)) {
+        return QUrl();
+    }
+    QUrl candidate;
     if (trimmed.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive)
-        || trimmed.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)
-        || trimmed.startsWith(QStringLiteral("file://"), Qt::CaseInsensitive)) {
-        return QUrl(trimmed);
+        || trimmed.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+        candidate = QUrl(trimmed, QUrl::StrictMode);
+    } else {
+        return QUrl();
     }
-    if (QFileInfo::exists(trimmed)
-        || (trimmed.size() >= 3 && trimmed.at(0).isLetter() && trimmed.at(1) == QLatin1Char(':'))) {
-        return QUrl::fromLocalFile(trimmed);
-    }
-    return QUrl::fromUserInput(trimmed);
+    if (!isAllowedUpdateUrl(candidate))
+        return QUrl();
+    return candidate;
 }
 
 void AutoUpdater::setFeedUrl(const QUrl &url)
@@ -1317,14 +1483,16 @@ void AutoUpdater::setFeedUrl(const QUrl &url)
 
 QUrl AutoUpdater::feedUrl() const
 {
-    if (d_feedUrlOverride.isValid() && !d_feedUrlOverride.isEmpty())
-        return d_feedUrlOverride;
+    if (!d_feedUrlOverride.isEmpty()) {
+        return isAllowedUpdateUrl(d_feedUrlOverride) ? d_feedUrlOverride : QUrl();
+    }
 
     const QString envFeed = qEnvironmentVariable("TORIGRAPH_UPDATE_FEED_URL").trimmed();
     if (!envFeed.isEmpty()) {
         const QUrl envUrl = parseFlexibleUrl(envFeed);
-        if (envUrl.isValid() && !envUrl.isEmpty())
+        if (isAllowedUpdateUrl(envUrl))
             return envUrl;
+        return QUrl();
     }
 
     const QString settingsFeed = ApplicationWindow::getSettings()
@@ -1333,8 +1501,14 @@ QUrl AutoUpdater::feedUrl() const
                                          .trimmed();
     if (!settingsFeed.isEmpty()) {
         const QUrl cfgUrl = parseFlexibleUrl(settingsFeed);
-        if (cfgUrl.isValid() && !cfgUrl.isEmpty())
-            return cfgUrl;
+        if (isAllowedUpdateUrl(cfgUrl)) {
+            const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
+                    && !ApplicationWindow::isNonInteractiveContext(d_app);
+            if (!(interactiveGui
+                  && cfgUrl.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0)) {
+                return cfgUrl;
+            }
+        }
     }
 
     return QUrl(includePreReleases() ? defaultReleasesFeedUrlString()
@@ -1577,7 +1751,16 @@ bool AutoUpdater::parseGitHubReleaseJson(const QByteArray &jsonBytes,
     if (info.bodyMarkdown.isEmpty())
         info.bodyMarkdown = selectedRel.value(QStringLiteral("release_notes")).toString();
 
-    info.htmlUrl = QUrl(selectedRel.value(QStringLiteral("html_url")).toString().trimmed());
+    const QString rawHtmlUrl = selectedRel.value(QStringLiteral("html_url")).toString().trimmed();
+    if (!rawHtmlUrl.isEmpty()) {
+        const QUrl candHtml = parseFlexibleUrl(rawHtmlUrl);
+        if (!isAllowedUpdateUrl(candHtml)) {
+            if (errOut)
+                *errOut = tr("Blocked untrusted release page URL in feed: %1").arg(rawHtmlUrl);
+            return false;
+        }
+        info.htmlUrl = candHtml;
+    }
     info.publishedAt = selectedRel.value(QStringLiteral("published_at")).toString().trimmed();
     if (info.publishedAt.isEmpty())
         info.publishedAt = selectedRel.value(QStringLiteral("created_at")).toString().trimmed();
@@ -1610,11 +1793,28 @@ bool AutoUpdater::parseGitHubReleaseJson(const QByteArray &jsonBytes,
             dlUrl = bestAssetObj.value(QStringLiteral("download_url")).toString().trimmed();
         if (dlUrl.isEmpty())
             dlUrl = bestAssetObj.value(QStringLiteral("url")).toString().trimmed();
-        info.assetUrl = parseFlexibleUrl(dlUrl);
+        if (!dlUrl.isEmpty()) {
+            const QUrl candAssetUrl = parseFlexibleUrl(dlUrl);
+            if (!isAllowedUpdateUrl(candAssetUrl)) {
+                if (errOut)
+                    *errOut = tr("Blocked untrusted download URL: %1").arg(dlUrl);
+                return false;
+            }
+            info.assetUrl = candAssetUrl;
+        }
         info.assetSize = bestAssetObj.value(QStringLiteral("size")).toVariant().toLongLong();
     } else if (selectedRel.contains(QStringLiteral("asset_url"))) {
-        info.assetUrl = parseFlexibleUrl(
-                selectedRel.value(QStringLiteral("asset_url")).toString().trimmed());
+        const QString rawAssetUrl =
+                selectedRel.value(QStringLiteral("asset_url")).toString().trimmed();
+        if (!rawAssetUrl.isEmpty()) {
+            const QUrl candAssetUrl = parseFlexibleUrl(rawAssetUrl);
+            if (!isAllowedUpdateUrl(candAssetUrl)) {
+                if (errOut)
+                    *errOut = tr("Blocked untrusted download URL: %1").arg(rawAssetUrl);
+                return false;
+            }
+            info.assetUrl = candAssetUrl;
+        }
         info.assetName = selectedRel.value(QStringLiteral("asset_name")).toString().trimmed();
         if (info.assetName.isEmpty())
             info.assetName = QFileInfo(info.assetUrl.path()).fileName();
@@ -1673,19 +1873,129 @@ bool AutoUpdater::verifyFileSha256(const QString &filePath, const QString &expec
     return diff == 0;
 }
 
+bool AutoUpdater::requireCodeSignature()
+{
+    return ApplicationWindow::getSettings()
+            .value(QString::fromLatin1(kSettingsKeyRequireSig), true)
+            .toBool();
+}
+
+AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
+        const QString &filePath, QString *signerSubjectOut, QString *errOut)
+{
+    if (signerSubjectOut)
+        signerSubjectOut->clear();
+    if (errOut)
+        errOut->clear();
+
+    const QFileInfo fi(filePath);
+    if (filePath.trimmed().isEmpty() || !fi.exists() || !fi.isFile()) {
+        if (errOut)
+            *errOut = tr("Update package file does not exist: %1").arg(filePath);
+        return CodeSignatureStatus::InvalidSignature;
+    }
+
+#ifdef Q_OS_WIN
+    const std::wstring nativePath = QDir::toNativeSeparators(fi.absoluteFilePath()).toStdWString();
+    WINTRUST_FILE_INFO fileInfo = {};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = nativePath.c_str();
+    fileInfo.hFile = nullptr;
+    fileInfo.pgKnownSubject = nullptr;
+
+    WINTRUST_DATA wtd = {};
+    wtd.cbStruct = sizeof(wtd);
+    wtd.pPolicyCallbackData = nullptr;
+    wtd.pSIPClientData = nullptr;
+    wtd.dwUIChoice = WTD_UI_NONE;
+    wtd.fdwRevocationChecks = WTD_REVOKE_NONE;
+    wtd.dwUnionChoice = WTD_CHOICE_FILE;
+    wtd.pFile = &fileInfo;
+    wtd.dwStateAction = WTD_STATEACTION_VERIFY;
+    wtd.hWVTStateData = nullptr;
+    wtd.pwszURLReference = nullptr;
+    wtd.dwProvFlags = WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL;
+    wtd.dwUIContext = 0;
+
+    GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const LONG status =
+            WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
+    const DWORD winLastErr = GetLastError();
+
+    if (status == ERROR_SUCCESS && signerSubjectOut && wtd.hWVTStateData) {
+        if (CRYPT_PROVIDER_DATA *provData = WTHelperProvDataFromStateData(wtd.hWVTStateData)) {
+            if (CRYPT_PROVIDER_SGNR *provSigner =
+                        WTHelperGetProvSignerFromChain(provData, 0, FALSE, 0)) {
+                if (provSigner->pasCertChain && provSigner->csCertChain > 0
+                    && provSigner->pasCertChain[0].pCert) {
+                    wchar_t subjBuf[512] = {};
+                    const DWORD cch = CertGetNameStringW(
+                            provSigner->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0,
+                            nullptr, subjBuf, 512);
+                    if (cch > 1)
+                        *signerSubjectOut = QString::fromWCharArray(subjBuf).trimmed();
+                }
+            }
+        }
+    }
+
+    wtd.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &policyGuid, &wtd);
+
+    if (status == ERROR_SUCCESS)
+        return CodeSignatureStatus::Valid;
+
+    const HRESULT hr = static_cast<HRESULT>(status);
+    if (hr == TRUST_E_NOSIGNATURE || hr == TRUST_E_SUBJECT_FORM_UNKNOWN
+        || hr == TRUST_E_PROVIDER_UNKNOWN) {
+        if (winLastErr == static_cast<DWORD>(TRUST_E_BAD_DIGEST)
+            || winLastErr == static_cast<DWORD>(TRUST_E_EXPLICIT_DISTRUST)
+            || winLastErr == static_cast<DWORD>(CRYPT_E_SECURITY_SETTINGS)) {
+            if (errOut) {
+                *errOut = tr("Authenticode signature verification failed (0x%1).")
+                                  .arg(static_cast<quint32>(winLastErr), 8, 16, QLatin1Char('0'));
+            }
+            return CodeSignatureStatus::InvalidSignature;
+        }
+        if (errOut)
+            *errOut = tr("The update package does not carry an Authenticode digital signature.");
+        return CodeSignatureStatus::Unsigned;
+    }
+
+    if (errOut) {
+        *errOut = tr("Authenticode signature is invalid or untrusted (0x%1).")
+                          .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
+    }
+    return CodeSignatureStatus::InvalidSignature;
+#else
+    if (errOut)
+        *errOut = tr("Authenticode signature verification is only available on Windows.");
+    return CodeSignatureStatus::Unsigned;
+#endif
+}
+
 QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedFilePath,
                                                       const QString &targetInstallDir,
                                                       const QString &exeName,
                                                       qint64 waitForPid,
                                                       bool relaunch,
                                                       QString *errOut,
-                                                      int waitTimeoutSec)
+                                                      int waitTimeoutSec,
+                                                      const QString &expectedSha256)
 {
     const QString pkgPath = QDir::toNativeSeparators(downloadedFilePath.trimmed());
     const QString installDir = QDir::toNativeSeparators(targetInstallDir.trimmed());
     const QString binaryName = exeName.trimmed().isEmpty()
             ? QStringLiteral("ToriGraph.exe")
             : QFileInfo(exeName.trimmed()).fileName();
+    const QString normalizedSha = expectedSha256.trimmed().isEmpty()
+            ? QString()
+            : normalizeSha256Token(expectedSha256);
+    if (!expectedSha256.trimmed().isEmpty() && normalizedSha.isEmpty()) {
+        if (errOut)
+            *errOut = tr("Invalid expected SHA-256 digest supplied for staging script.");
+        return QString();
+    }
 
     if (pkgPath.isEmpty() || installDir.isEmpty()) {
         if (errOut)
@@ -1693,10 +2003,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
         return QString();
     }
 
-    QString tempBase = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    if (tempBase.isEmpty())
-        tempBase = QDir::tempPath();
-    const QString stagingDir = QDir(tempBase).filePath(QStringLiteral("ToriGraph_UpdateStaging"));
+    const QString stagingDir = updateStagingDirectory();
     if (!QDir().mkpath(stagingDir)) {
         if (errOut)
             *errOut = tr("Could not create staging directory: %1").arg(stagingDir);
@@ -1706,6 +2013,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     const QString ps1Path = QDir(stagingDir).filePath(QStringLiteral("apply_torigraph_update.ps1"));
     const QString cmdPath = QDir(stagingDir).filePath(QStringLiteral("apply_torigraph_update.cmd"));
     const QString nativeStagingDir = QDir::toNativeSeparators(stagingDir);
+    const QString msiExecAbs = resolveSystem32Executable(QStringLiteral("msiexec.exe"));
+    const QString explorerExeAbs = resolveWindowsExecutable(QStringLiteral("explorer.exe"));
 
     QString psScript;
     psScript += QStringLiteral("# ToriGraph Staged Windows Auto-Updater\r\n");
@@ -1718,12 +2027,18 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     psScript += QStringLiteral("$Relaunch = $%1\r\n").arg(relaunch ? QStringLiteral("true")
                                                                    : QStringLiteral("false"));
     psScript += QStringLiteral("$StagingRoot = %1\r\n").arg(psSingleQuote(nativeStagingDir));
+    psScript += QStringLiteral("$ExpectedSha256 = %1\r\n").arg(psSingleQuote(normalizedSha));
+    psScript += QStringLiteral("$MsiExecPath = %1\r\n").arg(psSingleQuote(msiExecAbs));
+    psScript += QStringLiteral("$ExplorerExePath = %1\r\n").arg(psSingleQuote(explorerExeAbs));
     psScript += QStringLiteral("$WaitTimeoutSec = %1\r\n\r\n").arg(qMax(1, waitTimeoutSec));
 
     psScript += QStringLiteral(
             "$TargetExe = [System.IO.Path]::Combine($TargetInstallDir, $ExeName)\r\n"
             "$BackupExe = \"$TargetExe.rollback.bak\"\r\n"
-            "$ExtractDir = [System.IO.Path]::Combine($StagingRoot, ('extract_' + [Guid]::NewGuid().ToString('N')))\r\n\r\n"
+            "$LogFile = [System.IO.Path]::Combine($StagingRoot, 'apply_torigraph_update.log')\r\n"
+            "$ExtractDir = [System.IO.Path]::Combine($StagingRoot, ('extract_' + [Guid]::NewGuid().ToString('N')))\r\n"
+            "$BackupDir = [System.IO.Path]::Combine($StagingRoot, ('rollback_' + [Guid]::NewGuid().ToString('N')))\r\n"
+            "$SecureStageDir = ''\r\n\r\n"
             "# (1) Wait for ToriGraph (PID $WaitForPid and any process running $TargetExe) to exit.\r\n"
             "#     If it is still running after $WaitTimeoutSec s, abort WITHOUT touching the install.\r\n"
             "function Get-BlockingProcess {\r\n"
@@ -1750,21 +2065,44 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "if ($blocking.Count -gt 0) {\r\n"
             "    $ids = ($blocking | ForEach-Object { $_.Id }) -join ', '\r\n"
             "    $msg = \"ToriGraph is still running (PID $ids). The update was NOT applied and $TargetInstallDir was not changed. Close ToriGraph and update again, or install $DownloadedFile manually.\"\r\n"
-            "    try { Set-Content -LiteralPath ([System.IO.Path]::Combine($StagingRoot, 'apply_torigraph_update.log')) -Value $msg -Encoding UTF8 } catch { }\r\n"
+            "    try { Set-Content -LiteralPath $LogFile -Value $msg -Encoding UTF8 } catch { }\r\n"
             "    if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
             "        try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($msg, 'ToriGraph Update') } catch { }\r\n"
             "    }\r\n"
             "    [Console]::Error.WriteLine($msg)\r\n"
             "    exit 3\r\n"
             "}\r\n\r\n"
-            "# (2) Create rollback backup of ToriGraph.exe\r\n"
+            "# (1b) Copy package into protected staging directory & re-verify SHA-256 (eliminate TOCTOU)\r\n"
             "if (!(Test-Path -LiteralPath $TargetInstallDir)) {\r\n"
             "    [System.IO.Directory]::CreateDirectory($TargetInstallDir) | Out-Null\r\n"
             "}\r\n"
+            "$SecureStageDir = [System.IO.Path]::Combine($TargetInstallDir, ('.update_staging_' + [Guid]::NewGuid().ToString('N')))\r\n"
+            "[System.IO.Directory]::CreateDirectory($SecureStageDir) | Out-Null\r\n"
+            "$StagedPkg = [System.IO.Path]::Combine($SecureStageDir, [System.IO.Path]::GetFileName($DownloadedFile))\r\n"
+            "Copy-Item -LiteralPath $DownloadedFile -Destination $StagedPkg -Force\r\n"
+            "$DownloadedFile = $StagedPkg\r\n"
+            "if ($ExpectedSha256.Length -gt 0) {\r\n"
+            "    $actualHash = ''\r\n"
+            "    try { $actualHash = (Get-FileHash -LiteralPath $DownloadedFile -Algorithm SHA256).Hash } catch { $actualHash = '' }\r\n"
+            "    if ((-not $actualHash) -or ($actualHash.ToLowerInvariant() -ne $ExpectedSha256.ToLowerInvariant())) {\r\n"
+            "        $shaMsg = \"SHA-256 verification failed before install (expected $ExpectedSha256, got $actualHash). Update aborted.\"\r\n"
+            "        if (Test-Path -LiteralPath $SecureStageDir) { Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue }\r\n"
+            "        try { Set-Content -LiteralPath $LogFile -Value $shaMsg -Encoding UTF8 } catch { }\r\n"
+            "        if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
+            "            try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($shaMsg, 'ToriGraph Security Error') } catch { }\r\n"
+            "        }\r\n"
+            "        [Console]::Error.WriteLine($shaMsg)\r\n"
+            "        exit 4\r\n"
+            "    }\r\n"
+            "}\r\n\r\n"
+            "# (2) Create rollback backup of ToriGraph.exe & track overwritten/new files\r\n"
             "if (Test-Path -LiteralPath $TargetExe) {\r\n"
             "    Copy-Item -LiteralPath $TargetExe -Destination $BackupExe -Force\r\n"
-            "}\r\n\r\n"
-            "# (3) Extract .zip via Expand-Archive or run installer, (4) restore backup on error\r\n"
+            "}\r\n"
+            "$BackedUpRelPaths = New-Object System.Collections.Generic.List[string]\r\n"
+            "$CreatedFiles = New-Object System.Collections.Generic.List[string]\r\n"
+            "$CreatedDirs = New-Object System.Collections.Generic.List[string]\r\n\r\n"
+            "# (3) Extract .zip via Expand-Archive or run installer, (4) restore full backup on error\r\n"
             "try {\r\n"
             "    $ext = [System.IO.Path]::GetExtension($DownloadedFile).ToLowerInvariant()\r\n"
             "    if ($ext -eq '.zip') {\r\n"
@@ -1791,11 +2129,46 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "        if ($itemsToCopy.Count -eq 0) {\r\n"
             "            throw \"Extracted update archive contains no files: $DownloadedFile\"\r\n"
             "        }\r\n"
-            "        Get-ChildItem -LiteralPath $copyRoot -Force | ForEach-Object {\r\n"
-            "            Copy-Item -LiteralPath $_.FullName -Destination $TargetInstallDir -Recurse -Force\r\n"
-            "            $destEntry = [System.IO.Path]::Combine($TargetInstallDir, $_.Name)\r\n"
-            "            if (!(Test-Path -LiteralPath $destEntry)) {\r\n"
-            "                throw \"Failed to copy staged item to target directory: $destEntry\"\r\n"
+            "        $allNodes = @(Get-ChildItem -LiteralPath $copyRoot -Recurse -Force)\r\n"
+            "        foreach ($node in $allNodes) {\r\n"
+            "            $rel = $node.FullName.Substring($copyRoot.Length).TrimStart('\\', '/')\r\n"
+            "            if (-not $rel) { continue }\r\n"
+            "            $destPath = [System.IO.Path]::Combine($TargetInstallDir, $rel)\r\n"
+            "            if ($node.PSIsContainer) {\r\n"
+            "                if (!(Test-Path -LiteralPath $destPath)) {\r\n"
+            "                    $CreatedDirs.Add($destPath)\r\n"
+            "                }\r\n"
+            "            } else {\r\n"
+            "                if (Test-Path -LiteralPath $destPath -PathType Leaf) {\r\n"
+            "                    $bakPath = [System.IO.Path]::Combine($BackupDir, $rel)\r\n"
+            "                    $bakParent = [System.IO.Path]::GetDirectoryName($bakPath)\r\n"
+            "                    if ($bakParent -and !(Test-Path -LiteralPath $bakParent)) {\r\n"
+            "                        [System.IO.Directory]::CreateDirectory($bakParent) | Out-Null\r\n"
+            "                    }\r\n"
+            "                    Copy-Item -LiteralPath $destPath -Destination $bakPath -Force\r\n"
+            "                    $BackedUpRelPaths.Add($rel)\r\n"
+            "                } else {\r\n"
+            "                    $CreatedFiles.Add($destPath)\r\n"
+            "                }\r\n"
+            "            }\r\n"
+            "        }\r\n"
+            "        foreach ($node in $allNodes) {\r\n"
+            "            $rel = $node.FullName.Substring($copyRoot.Length).TrimStart('\\', '/')\r\n"
+            "            if (-not $rel) { continue }\r\n"
+            "            $destPath = [System.IO.Path]::Combine($TargetInstallDir, $rel)\r\n"
+            "            if ($node.PSIsContainer) {\r\n"
+            "                if (!(Test-Path -LiteralPath $destPath)) {\r\n"
+            "                    [System.IO.Directory]::CreateDirectory($destPath) | Out-Null\r\n"
+            "                }\r\n"
+            "            } else {\r\n"
+            "                $destParent = [System.IO.Path]::GetDirectoryName($destPath)\r\n"
+            "                if ($destParent -and !(Test-Path -LiteralPath $destParent)) {\r\n"
+            "                    [System.IO.Directory]::CreateDirectory($destParent) | Out-Null\r\n"
+            "                }\r\n"
+            "                Copy-Item -LiteralPath $node.FullName -Destination $destPath -Force\r\n"
+            "                if (!(Test-Path -LiteralPath $destPath -PathType Leaf)) {\r\n"
+            "                    throw \"Failed to copy staged item to target directory: $destPath\"\r\n"
+            "                }\r\n"
             "            }\r\n"
             "        }\r\n"
             "        $sourceHasExe = Test-Path -LiteralPath ([System.IO.Path]::Combine($copyRoot, $ExeName))\r\n"
@@ -1805,7 +2178,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    } elseif ($ext -eq '.msi') {\r\n"
             "        # Windows PowerShell 5.1 joins -ArgumentList with spaces without quoting, so\r\n"
             "        # paths that contain spaces are quoted here.\r\n"
-            "        $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', ('\"' + $DownloadedFile + '\"'), '/passive', '/norestart') -Wait -PassThru\r\n"
+            "        $p = Start-Process -FilePath $MsiExecPath -ArgumentList @('/i', ('\"' + $DownloadedFile + '\"'), '/passive', '/norestart') -Wait -PassThru\r\n"
             "        if ($p.ExitCode -ne 0) { throw \"MSI exited with code $($p.ExitCode)\" }\r\n"
             "    } elseif ($ext -eq '.exe') {\r\n"
             "        $leaf = [System.IO.Path]::GetFileName($DownloadedFile).ToLowerInvariant()\r\n"
@@ -1830,13 +2203,49 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "        Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
             "} catch {\r\n"
+            "    $errMsg = $_.Exception.Message\r\n"
+            "    foreach ($cf in $CreatedFiles) {\r\n"
+            "        if (Test-Path -LiteralPath $cf -PathType Leaf) {\r\n"
+            "            Remove-Item -LiteralPath $cf -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "    }\r\n"
+            "    foreach ($rel in $BackedUpRelPaths) {\r\n"
+            "        $bakPath = [System.IO.Path]::Combine($BackupDir, $rel)\r\n"
+            "        $destPath = [System.IO.Path]::Combine($TargetInstallDir, $rel)\r\n"
+            "        if (Test-Path -LiteralPath $bakPath -PathType Leaf) {\r\n"
+            "            $destParent = [System.IO.Path]::GetDirectoryName($destPath)\r\n"
+            "            if ($destParent -and !(Test-Path -LiteralPath $destParent)) {\r\n"
+            "                [System.IO.Directory]::CreateDirectory($destParent) | Out-Null\r\n"
+            "            }\r\n"
+            "            Copy-Item -LiteralPath $bakPath -Destination $destPath -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "    }\r\n"
+            "    for ($idx = $CreatedDirs.Count - 1; $idx -ge 0; $idx--) {\r\n"
+            "        $cd = $CreatedDirs[$idx]\r\n"
+            "        if (Test-Path -LiteralPath $cd -PathType Container) {\r\n"
+            "            Remove-Item -LiteralPath $cd -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "    }\r\n"
             "    if (Test-Path -LiteralPath $BackupExe) {\r\n"
             "        Copy-Item -LiteralPath $BackupExe -Destination $TargetExe -Force -ErrorAction SilentlyContinue\r\n"
+            "        Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
+            "    $rbReport = \"ToriGraph update failed and previous installation files were rolled back: $errMsg\"\r\n"
+            "    try { Set-Content -LiteralPath $LogFile -Value $rbReport -Encoding UTF8 } catch { }\r\n"
+            "    if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
+            "        try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($rbReport, 'ToriGraph Update Failed') } catch { }\r\n"
+            "    }\r\n"
+            "    [Console]::Error.WriteLine($rbReport)\r\n"
             "    throw\r\n"
             "} finally {\r\n"
             "    if (Test-Path -LiteralPath $ExtractDir) {\r\n"
             "        Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "    }\r\n"
+            "    if (Test-Path -LiteralPath $BackupDir) {\r\n"
+            "        Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "    }\r\n"
+            "    if ($SecureStageDir -and (Test-Path -LiteralPath $SecureStageDir)) {\r\n"
+            "        Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
             "}\r\n\r\n"
             "# (5) Relaunch ToriGraph.exe if requested\r\n"
@@ -1846,7 +2255,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    if ($elevated) {\r\n"
             "        # Started elevated (install folder needed admin rights): let Explorer start\r\n"
             "        # ToriGraph so it runs with the user's normal rights again.\r\n"
-            "        Start-Process -FilePath 'explorer.exe' -ArgumentList ('\"' + $TargetExe + '\"')\r\n"
+            "        Start-Process -FilePath $ExplorerExePath -ArgumentList ('\"' + $TargetExe + '\"')\r\n"
             "    } else {\r\n"
             "        Start-Process -FilePath $TargetExe -WorkingDirectory $TargetInstallDir\r\n"
             "    }\r\n"
@@ -1863,14 +2272,19 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     psFile.write(psScript.toUtf8());
     psFile.close();
 
-    // Companion .cmd wrapper for convenience
+    // Companion .cmd wrapper using absolute System32 PowerShell path
     QFile cmdFile(cmdPath);
     if (cmdFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QString psAbs = resolvePowerShellExecutable();
+        if (psAbs.isEmpty()) {
+            psAbs = QStringLiteral(
+                    "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        }
         const QString cmdText = QStringLiteral(
                 "@chcp 65001 >nul\r\n"
                 "@echo off\r\n"
-                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%1\"\r\n")
-                                        .arg(QDir::toNativeSeparators(ps1Path));
+                "\"%1\" -NoProfile -ExecutionPolicy Bypass -File \"%2\"\r\n")
+                                        .arg(psAbs, QDir::toNativeSeparators(ps1Path));
         cmdFile.write(cmdText.toUtf8());
         cmdFile.close();
     }
@@ -1921,19 +2335,15 @@ QList<QNetworkProxy> AutoUpdater::proxiesForUrl(const QUrl &url)
 QString AutoUpdater::resolvePowerShellExecutable()
 {
 #ifdef Q_OS_WIN
-    QString exe = QStandardPaths::findExecutable(QStringLiteral("powershell.exe"));
-    if (!exe.isEmpty())
-        return QDir::toNativeSeparators(exe);
-    const QString sysRoot = QString::fromLocal8Bit(qgetenv("SystemRoot"));
-    const QStringList candidates = {
-        sysRoot.isEmpty() ? QString()
-                          : QDir(sysRoot).filePath(
-                                    QStringLiteral("System32/WindowsPowerShell/v1.0/powershell.exe")),
-        QStringLiteral("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
-    };
-    for (const QString &c : candidates)
-        if (!c.isEmpty() && QFileInfo(c).isFile())
-            return QDir::toNativeSeparators(c);
+    wchar_t sysDirBuf[MAX_PATH + 4] = {};
+    const UINT n = GetSystemDirectoryW(sysDirBuf, MAX_PATH + 1);
+    if (n > 0 && n <= MAX_PATH) {
+        const QString sysDir = QString::fromWCharArray(sysDirBuf, static_cast<int>(n));
+        const QString candidate =
+                QDir(sysDir).filePath(QStringLiteral("WindowsPowerShell/v1.0/powershell.exe"));
+        if (QFileInfo(candidate).isFile())
+            return QDir::toNativeSeparators(candidate);
+    }
     return QString();
 #else
     return QString();
@@ -1973,9 +2383,7 @@ void AutoUpdater::applyNetworkProxyPolicy(QNetworkAccessManager &nam, const QUrl
 
 QUrl AutoUpdater::releasesPageUrl(const QUrl &preferred)
 {
-    if (preferred.isValid() && !preferred.isEmpty()
-        && (preferred.scheme() == QStringLiteral("https")
-            || preferred.scheme() == QStringLiteral("http")))
+    if (isAllowedUpdateUrl(preferred))
         return preferred;
     return QUrl(QString::fromLatin1(kDefaultReleasesPage));
 }
@@ -2145,34 +2553,16 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
         return;
 
     const QUrl targetUrl = feedUrl();
-    if (!targetUrl.isValid() || targetUrl.isEmpty()) {
+    if (!isAllowedUpdateUrl(targetUrl)) {
         if (!silentIfUpToDate) {
             handleCheckResult(false, ReleaseInfo(),
-                              tr("Invalid update feed URL configured."), silentIfUpToDate);
+                              tr("Blocked untrusted update feed URL."), silentIfUpToDate);
         }
         return;
     }
 
     ++d_networkCheckCount;
     const bool allowPre = includePreReleases();
-
-    if (targetUrl.isLocalFile()) {
-        QFile localFeed(targetUrl.toLocalFile());
-        if (!localFeed.open(QIODevice::ReadOnly)) {
-            handleCheckResult(false, ReleaseInfo(),
-                              tr("Could not open local release feed file: %1")
-                                      .arg(targetUrl.toLocalFile()),
-                              silentIfUpToDate);
-            return;
-        }
-        const QByteArray raw = localFeed.readAll();
-        localFeed.close();
-        ReleaseInfo info;
-        QString parseErr;
-        const bool ok = parseGitHubReleaseJson(raw, &info, &parseErr, allowPre);
-        handleCheckResult(ok, info, parseErr, silentIfUpToDate);
-        return;
-    }
 
     d_activeSilentMode = silentIfUpToDate;
     d_activeTimedOut = false;
@@ -2181,6 +2571,11 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
     const QNetworkRequest req = buildGitHubRequest(targetUrl, true);
     d_activeCheckReply = d_nam.get(req);
     d_checkTimeoutTimer->start(kLiveCheckTimeoutMs);
+
+    connect(d_activeCheckReply, &QNetworkReply::redirected, this, [this](const QUrl &newUrl) {
+        if (!AutoUpdater::isAllowedUpdateUrl(newUrl) && d_activeCheckReply)
+            d_activeCheckReply->abort();
+    });
 
     connect(d_activeCheckReply, &QNetworkReply::finished, this, [this, allowPre]() {
         if (d_checkTimeoutTimer)
@@ -2192,12 +2587,18 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
 
         const bool silent = d_activeSilentMode;
         const bool timedOut = d_activeTimedOut;
+        const QUrl finalUrl = reply->url();
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError netErr = reply->error();
         const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
+        if (!AutoUpdater::isAllowedUpdateUrl(finalUrl)) {
+            handleCheckResult(false, ReleaseInfo(),
+                              tr("Blocked untrusted update feed URL."), silent);
+            return;
+        }
         if (timedOut) {
             handleCheckResult(false, ReleaseInfo(),
                               tr("Timed out while checking GitHub Releases (10s limit)."),
@@ -2265,7 +2666,7 @@ void AutoUpdater::handleCheckResult(bool ok,
 QJsonObject AutoUpdater::checkFeedBlocking(const QUrl &overrideUrl, int timeoutMs)
 {
     const QString curVer = currentAppVersion();
-    const QUrl effectiveUrl = (overrideUrl.isValid() && !overrideUrl.isEmpty())
+    const QUrl effectiveUrl = !overrideUrl.isEmpty()
             ? overrideUrl
             : feedUrl();
 
@@ -2291,26 +2692,10 @@ QJsonObject AutoUpdater::checkFeedBlocking(const QUrl &overrideUrl, int timeoutM
         return obj;
     };
 
-    if (!effectiveUrl.isValid() || effectiveUrl.isEmpty())
-        return makeResult(false, ReleaseInfo(), tr("Invalid update feed URL."));
+    if (!isAllowedUpdateUrl(effectiveUrl))
+        return makeResult(false, ReleaseInfo(), tr("Blocked untrusted update feed URL."));
 
     const bool allowPre = includePreReleases();
-
-    if (effectiveUrl.isLocalFile()) {
-        QFile f(effectiveUrl.toLocalFile());
-        if (!f.open(QIODevice::ReadOnly)) {
-            return makeResult(false, ReleaseInfo(),
-                              tr("Could not read local feed file: %1")
-                                      .arg(effectiveUrl.toLocalFile()));
-        }
-        const QByteArray bytes = f.readAll();
-        f.close();
-        ReleaseInfo info;
-        QString parseErr;
-        if (!parseGitHubReleaseJson(bytes, &info, &parseErr, allowPre))
-            return makeResult(false, ReleaseInfo(), parseErr);
-        return makeResult(true, info, QString());
-    }
 
     QNetworkAccessManager localNam;
     configureNetworkManagerForUrl(localNam, effectiveUrl);
@@ -2320,8 +2705,17 @@ QJsonObject AutoUpdater::checkFeedBlocking(const QUrl &overrideUrl, int timeoutM
     QTimer timer;
     timer.setSingleShot(true);
     bool timedOut = false;
+    bool blockedRedirect = false;
 
     QNetworkReply *reply = localNam.get(req);
+    QObject::connect(reply, &QNetworkReply::redirected, &loop, [&](const QUrl &newUrl) {
+        if (!AutoUpdater::isAllowedUpdateUrl(newUrl)) {
+            blockedRedirect = true;
+            if (reply->isRunning())
+                reply->abort();
+            loop.quit();
+        }
+    });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
         timedOut = true;
@@ -2334,12 +2728,16 @@ QJsonObject AutoUpdater::checkFeedBlocking(const QUrl &overrideUrl, int timeoutM
     loop.exec(QEventLoop::ExcludeUserInputEvents);
     timer.stop();
 
+    const QUrl finalUrl = reply->url();
     const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QNetworkReply::NetworkError netErr = reply->error();
     const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
     const QByteArray payload = reply->readAll();
     delete reply;
 
+    if (blockedRedirect || !isAllowedUpdateUrl(finalUrl)) {
+        return makeResult(false, ReleaseInfo(), tr("Blocked untrusted update feed URL."));
+    }
     if (timedOut) {
         return makeResult(false, ReleaseInfo(),
                           tr("Timed out after %1 ms fetching update feed.").arg(timeoutMs));
@@ -2374,6 +2772,12 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
         return false;
     }
 
+    if (!isAllowedUpdateUrl(assetUrl)) {
+        if (errOut)
+            *errOut = tr("Blocked untrusted download URL: %1").arg(assetUrl.toString());
+        return false;
+    }
+
     const QFileInfo destInfo(destFilePath);
     if (!destInfo.dir().exists() && !destInfo.dir().mkpath(QStringLiteral("."))) {
         if (errOut)
@@ -2392,41 +2796,7 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
         return false;
     }
 
-    if (assetUrl.isLocalFile()) {
-        QFile src(assetUrl.toLocalFile());
-        if (!src.open(QIODevice::ReadOnly)) {
-            partFile.close();
-            QFile::remove(partPath);
-            if (errOut)
-                *errOut = tr("Could not open source asset file: %1").arg(assetUrl.toLocalFile());
-            return false;
-        }
-        QByteArray buf(static_cast<int>(kStreamChunkBytes), Qt::Uninitialized);
-        while (true) {
-            const qint64 n = src.read(buf.data(), buf.size());
-            if (n < 0) {
-                src.close();
-                partFile.close();
-                QFile::remove(partPath);
-                if (errOut)
-                    *errOut = tr("Read error while copying local asset file.");
-                return false;
-            }
-            if (n == 0)
-                break;
-            if (partFile.write(buf.constData(), n) != n) {
-                src.close();
-                partFile.close();
-                QFile::remove(partPath);
-                if (errOut)
-                    *errOut = tr("Write error while staging downloaded asset.");
-                return false;
-            }
-        }
-        src.close();
-        partFile.flush();
-        partFile.close();
-    } else {
+    {
         QNetworkAccessManager localNam;
         configureNetworkManagerForUrl(localNam, assetUrl);
         const QNetworkRequest req = buildGitHubRequest(assetUrl, false);
@@ -2436,8 +2806,17 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
         timer.setSingleShot(true);
         bool timedOut = false;
         bool writeFailed = false;
+        bool blockedRedirect = false;
 
         QNetworkReply *reply = localNam.get(req);
+        QObject::connect(reply, &QNetworkReply::redirected, &loop, [&](const QUrl &newUrl) {
+            if (!AutoUpdater::isAllowedUpdateUrl(newUrl)) {
+                blockedRedirect = true;
+                if (reply->isRunning())
+                    reply->abort();
+                loop.quit();
+            }
+        });
         QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
             const QByteArray chunk = reply->readAll();
             if (!chunk.isEmpty()) {
@@ -2460,18 +2839,25 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
         timer.stop();
 
         const QByteArray tail = reply->readAll();
-        if (!tail.isEmpty() && !writeFailed) {
+        if (!tail.isEmpty() && !writeFailed && !blockedRedirect) {
             if (partFile.write(tail) != tail.size())
                 writeFailed = true;
         }
         partFile.flush();
         partFile.close();
 
+        const QUrl finalUrl = reply->url();
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QNetworkReply::NetworkError netErr = reply->error();
         const QString netErrStr = AutoUpdater::describeNetworkError(netErr, reply->errorString());
         delete reply;
 
+        if (blockedRedirect || !isAllowedUpdateUrl(finalUrl)) {
+            QFile::remove(partPath);
+            if (errOut)
+                *errOut = tr("Blocked untrusted download URL: %1").arg(finalUrl.toString());
+            return false;
+        }
         if (writeFailed) {
             QFile::remove(partPath);
             if (errOut)
@@ -2503,6 +2889,17 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
             QFile::remove(partPath);
             if (errOut)
                 *errOut = tr("SHA-256 checksum verification failed for downloaded update package.");
+            return false;
+        }
+    }
+
+    {
+        QString sigErr;
+        const CodeSignatureStatus sigStatus = verifyFileCodeSignature(partPath, nullptr, &sigErr);
+        if (sigStatus == CodeSignatureStatus::InvalidSignature) {
+            QFile::remove(partPath);
+            if (errOut)
+                *errOut = sigErr;
             return false;
         }
     }

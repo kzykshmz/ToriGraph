@@ -29,6 +29,7 @@
 #include "ApplicationWindow.h"
 #include "ModernUiTheme.h"
 #include "PythonAutomationServer.h"
+#include "globals.h"
 #ifdef Q_OS_WIN
 #include "OleServer.h"
 #endif
@@ -188,35 +189,12 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName("ToriGraph");
 
     Application app(argc, argv);
-    ModernUiTheme::applyModernTheme(&app);
-
-#ifdef __APPLE__
-    // set python home to bundle specific directory
-    setenv("PYTHONHOME",(QCoreApplication::applicationDirPath()+"/../Resources").toStdString().c_str(),true);
-#endif
-
-    ApplicationWindow::getSettings();
-
     QStringList args = app.arguments();
     args.removeFirst(); // remove application name
 
     bool oleEmbedded = false;
-#ifdef Q_OS_WIN
-    for (int i = args.count() - 1; i >= 0; --i) {
-        if (args[i].compare("-Embedding", Qt::CaseInsensitive) == 0
-            || args[i].compare("/Embedding", Qt::CaseInsensitive) == 0) {
-            oleEmbedded = true;
-            args.removeAt(i);
-        }
-    }
-    // Keep a working registration (e.g. of the installed copy) as it is; only register this
-    // executable when there is none or it points to a missing program. Development builds can
-    // opt out with TORIGRAPH_NO_OLE_REGISTER=1. Explicit repair: Help > Repair PowerPoint Link.
-    SciDAVisOle::ensureRegistrationAtStartup();
-    SciDAVisOle::initializeOleServer(oleEmbedded);
-#endif
-
     bool headlessMode = false;
+    bool wantVersion = false;
     bool hasRpcPort = false;
     quint16 rpcPort = 0;
     QString rpcPortFile;
@@ -224,10 +202,39 @@ int main(int argc, char **argv)
     QString runPythonScript;
     QStringList runPythonExtraArgs;
     QStringList filteredArgs;
+    bool afterRunPython = false;
+
+    auto isToriGraphStandaloneFlag = [](const QString &a) -> bool {
+        return a == QStringLiteral("-a") || a == QStringLiteral("--about")
+                || a == QStringLiteral("-h") || a == QStringLiteral("--help")
+                || a == QStringLiteral("-m") || a == QStringLiteral("--manual")
+                || a == QStringLiteral("-x") || a == QStringLiteral("--execute")
+                || a.startsWith(QStringLiteral("-l="))
+                || a.startsWith(QStringLiteral("--lang="));
+    };
 
     for (int i = 0; i < args.count(); ++i) {
         const QString &arg = args[i];
-        if (arg == QStringLiteral("--headless")) {
+        if (arg == QStringLiteral("--")) {
+            for (int j = i + 1; j < args.count(); ++j) {
+                if (afterRunPython || !runPythonScript.isEmpty())
+                    runPythonExtraArgs.append(args[j]);
+                else
+                    filteredArgs.append(args[j]);
+            }
+            break;
+        }
+#ifdef Q_OS_WIN
+        if (arg.compare(QStringLiteral("-Embedding"), Qt::CaseInsensitive) == 0
+            || arg.compare(QStringLiteral("/Embedding"), Qt::CaseInsensitive) == 0) {
+            oleEmbedded = true;
+            continue;
+        }
+#endif
+        if (!afterRunPython
+            && (arg == QStringLiteral("-v") || arg == QStringLiteral("--version"))) {
+            wantVersion = true;
+        } else if (arg == QStringLiteral("--headless")) {
             headlessMode = true;
         } else if (arg == QStringLiteral("--rpc-port") && i + 1 < args.count()) {
             hasRpcPort = true;
@@ -245,15 +252,51 @@ int main(int argc, char **argv)
             rpcPipeName = arg.mid(11);
         } else if (arg == QStringLiteral("--run-python") && i + 1 < args.count()) {
             runPythonScript = args[++i];
+            afterRunPython = true;
         } else if (arg.startsWith(QStringLiteral("--run-python="))) {
             runPythonScript = arg.mid(13);
+            afterRunPython = true;
+        } else if (afterRunPython && !isToriGraphStandaloneFlag(arg)) {
+            runPythonExtraArgs.append(arg);
         } else {
             filteredArgs.append(arg);
         }
     }
 
+    if (wantVersion) {
+        const QString verText = SciDAVis::versionString() + SciDAVis::extraVersion()
+                + QStringLiteral("\n") + QObject::tr("Released") + QStringLiteral(": ")
+                + SciDAVis::releaseDateString() + QStringLiteral("\n")
+                + SciDAVis::copyrightString() + QStringLiteral("\n");
+        const QByteArray verUtf8 = verText.toUtf8();
+        std::fwrite(verUtf8.constData(), 1, static_cast<size_t>(verUtf8.size()), stdout);
+        std::fflush(stdout);
+        return 0;
+    }
+
+    ModernUiTheme::applyModernTheme(&app);
+
+#ifdef __APPLE__
+    // set python home to bundle specific directory
+    setenv("PYTHONHOME",(QCoreApplication::applicationDirPath()+"/../Resources").toStdString().c_str(),true);
+#endif
+
+    ApplicationWindow::getSettings();
+
     app.headless = headlessMode;
     app.setProperty("torigraph_noninteractive", headlessMode);
+
+#ifdef Q_OS_WIN
+    if (headlessMode && !oleEmbedded) {
+        SciDAVisOle::initializeOleClipboardOnly();
+    } else {
+        // Keep a working registration (e.g. of the installed copy) as it is; only register this
+        // executable when there is none or it points to a missing program. Development builds can
+        // opt out with TORIGRAPH_NO_OLE_REGISTER=1. Explicit repair: Help > Repair PowerPoint Link.
+        SciDAVisOle::ensureRegistrationAtStartup();
+        SciDAVisOle::initializeOleServer(oleEmbedded);
+    }
+#endif
 
     if ((filteredArgs.count() == 1) && (filteredArgs[0] == "-a" || filteredArgs[0] == "--about")
         && !headlessMode) {
@@ -291,10 +334,12 @@ int main(int argc, char **argv)
             if (headlessMode && activeMw->isVisible())
                 activeMw->hide();
 
+            const bool wantRpc = hasRpcPort || !rpcPipeName.isEmpty() || !rpcPortFile.isEmpty()
+                    || headlessMode || !runPythonScript.isEmpty();
+
             // Auto-save recovery copies are for people working in the GUI only: automation
             // sessions must neither write them nor be blocked by the "restore?" question.
-            if (!headlessMode && !hasRpcPort && rpcPortFile.isEmpty() && rpcPipeName.isEmpty()
-                && runPythonScript.isEmpty()) {
+            if (!wantRpc) {
                 ApplicationWindow::setCrashRecoveryEnabled(true);
                 QPointer<ApplicationWindow> recoverMw = activeMw;
                 QTimer::singleShot(1200, activeMw, [recoverMw]() {
@@ -305,20 +350,31 @@ int main(int argc, char **argv)
 
             PythonAutomationServer *rpcServer = activeMw->pythonAutomationServer();
             if (rpcServer) {
-                if (!rpcPipeName.isEmpty() && !hasRpcPort) {
+                if (!wantRpc) {
+                    // Normal interactive GUI launch: never expose an unsolicited RPC listener.
+                    rpcServer->stop();
+                } else if (hasRpcPort) {
+                    rpcServer->startTcp(rpcPort);
+                    if (!rpcPipeName.isEmpty())
+                        rpcServer->startLocalPipe(rpcPipeName);
+                } else if (!rpcPipeName.isEmpty()) {
                     if (rpcServer->isTcpListening())
                         rpcServer->stop();
                     rpcServer->startLocalPipe(rpcPipeName);
+                } else if (!rpcPortFile.isEmpty()) {
+                    rpcServer->startTcp(0);
                 } else {
-                    if (hasRpcPort || !rpcServer->isTcpListening())
-                        rpcServer->startTcp(hasRpcPort ? rpcPort : 0);
-                    if (!rpcPipeName.isEmpty())
-                        rpcServer->startLocalPipe(rpcPipeName);
+                    // --headless / --run-python without --rpc-port and without --rpc-port-file:
+                    // prefer per-user Named Pipe (QLocalServer::UserAccessOption).
+                    if (rpcServer->isTcpListening())
+                        rpcServer->stop();
+                    if (!rpcServer->startLocalPipe())
+                        rpcServer->startTcp(0);
                 }
-                if (!rpcPortFile.isEmpty())
-                    rpcServer->writeEndpointPortFile(rpcPortFile);
-                if (hasRpcPort || !rpcPortFile.isEmpty() || !rpcPipeName.isEmpty()
-                    || headlessMode || !runPythonScript.isEmpty()) {
+
+                if (wantRpc) {
+                    if (!rpcPortFile.isEmpty())
+                        rpcServer->writeEndpointPortFile(rpcPortFile);
                     const QByteArray epLine = QByteArray("TORIGRAPH_RPC_ENDPOINT=")
                             + rpcServer->endpointString().toUtf8() + '\n';
                     std::fwrite(epLine.constData(), 1, static_cast<size_t>(epLine.size()), stdout);

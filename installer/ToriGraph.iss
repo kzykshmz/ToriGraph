@@ -101,44 +101,45 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-; --- OLE Server Registration (HKCU, matches libscidavis/src/OleServer.cpp) ---
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\LocalServer32"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -Embedding"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\LocalServer32"; ValueType: string; ValueName: "ServerExecutable"; ValueData: "{app}\{#MyAppExeName}"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\ProgID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleProgId}"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\VersionIndependentProgID"; ValueType: string; ValueName: ""; ValueData: "ToriGraph.Graph"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\InprocHandler32"; ValueType: string; ValueName: ""; ValueData: "ole32.dll"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Verb\0"; ValueType: string; ValueName: ""; ValueData: "編集(&E),0,2"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Verb\1"; ValueType: string; ValueName: ""; ValueData: "開く(&O),0,2"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\0"; ValueType: string; ValueName: ""; ValueData: "Embed Source,1,8,1"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\1"; ValueType: string; ValueName: ""; ValueData: "Embedded Object,1,8,1"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\2"; ValueType: string; ValueName: ""; ValueData: "Object Descriptor,1,1,1"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\3"; ValueType: string; ValueName: ""; ValueData: "14,1,64,1"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\MiscStatus"; ValueType: string; ValueName: ""; ValueData: "0"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\MiscStatus\1"; ValueType: string; ValueName: ""; ValueData: "1"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\AuxUserType\2"; ValueType: string; ValueName: ""; ValueData: "ToriGraph"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\AuxUserType\3"; ValueType: string; ValueName: ""; ValueData: "ToriGraph"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
+; --- OLE Server Registration (HKA: HKCU per-user / HKLM all-users, matches libscidavis/src/OleServer.cpp) ---
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\LocalServer32"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" -Embedding"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\LocalServer32"; ValueType: string; ValueName: "ServerExecutable"; ValueData: "{app}\{#MyAppExeName}"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\ProgID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleProgId}"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\VersionIndependentProgID"; ValueType: string; ValueName: ""; ValueData: "ToriGraph.Graph"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\InprocHandler32"; ValueType: string; ValueName: ""; ValueData: "ole32.dll"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Verb\0"; ValueType: string; ValueName: ""; ValueData: "編集(&E),0,2"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Verb\1"; ValueType: string; ValueName: ""; ValueData: "開く(&O),0,2"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\0"; ValueType: string; ValueName: ""; ValueData: "Embed Source,1,8,1"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\1"; ValueType: string; ValueName: ""; ValueData: "Embedded Object,1,8,1"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\2"; ValueType: string; ValueName: ""; ValueData: "Object Descriptor,1,1,1"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\DataFormats\GetSet\3"; ValueType: string; ValueName: ""; ValueData: "14,1,64,1"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\MiscStatus"; ValueType: string; ValueName: ""; ValueData: "0"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\MiscStatus\1"; ValueType: string; ValueName: ""; ValueData: "1"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\AuxUserType\2"; ValueType: string; ValueName: ""; ValueData: "ToriGraph"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\AuxUserType\3"; ValueType: string; ValueName: ""; ValueData: "ToriGraph"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\CLSID\{#MyOleClsid}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
 
-Root: HKCU; Subkey: "Software\Classes\{#MyOleProgId}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyOleProgId}\CLSID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleClsid}"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyOleProgId}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyOleProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyOleProgId}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyOleProgId}\CLSID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleClsid}"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyOleProgId}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyOleProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: registerole
 
-Root: HKCU; Subkey: "Software\Classes\{#MyLegacyProgId}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyLegacyProgId}\CLSID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleClsid}"; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyLegacyProgId}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
-Root: HKCU; Subkey: "Software\Classes\{#MyLegacyProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyLegacyProgId}"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Graph"; Flags: uninsdeletekey; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyLegacyProgId}\CLSID"; ValueType: string; ValueName: ""; ValueData: "{#MyOleClsid}"; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyLegacyProgId}\Insertable"; ValueType: string; ValueName: ""; ValueData: ""; Tasks: registerole
+Root: HKA; Subkey: "Software\Classes\{#MyLegacyProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: registerole
 
 ; --- File Associations (.sciprj / .sciprj.gz) ---
-Root: HKCU; Subkey: "Software\Classes\.sciprj"; ValueType: string; ValueName: ""; ValueData: "ToriGraph.Project"; Flags: uninsdeletevalue; Tasks: assocsciprj
-Root: HKCU; Subkey: "Software\Classes\ToriGraph.Project"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Project File"; Flags: uninsdeletekey; Tasks: assocsciprj
-Root: HKCU; Subkey: "Software\Classes\ToriGraph.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: assocsciprj
-Root: HKCU; Subkey: "Software\Classes\ToriGraph.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocsciprj
+Root: HKA; Subkey: "Software\Classes\.sciprj"; ValueType: string; ValueName: ""; ValueData: "ToriGraph.Project"; Flags: uninsdeletevalue; Tasks: assocsciprj
+Root: HKA; Subkey: "Software\Classes\ToriGraph.Project"; ValueType: string; ValueName: ""; ValueData: "ToriGraph Project File"; Flags: uninsdeletekey; Tasks: assocsciprj
+Root: HKA; Subkey: "Software\Classes\ToriGraph.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"",0"; Tasks: assocsciprj
+Root: HKA; Subkey: "Software\Classes\ToriGraph.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocsciprj
 
 ; --- Environment variable TORIGRAPH_EXE ---
-Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue; Tasks: addtopath
+Root: HKA; Subkey: "Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue; Tasks: addtopath; Check: not IsAdminInstallMode
+Root: HKA; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue; Tasks: addtopath; Check: IsAdminInstallMode
 
 [Run]
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"" -Silent"; StatusMsg: "{cm:StatusInstallPython}"; Flags: runhidden waituntilterminated; Tasks: installpython

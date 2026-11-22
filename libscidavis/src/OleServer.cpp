@@ -58,6 +58,12 @@ void registerJapaneseStrings()
         "not open ToriGraph.",
         "ToriGraph の PowerPoint 連携が登録されていないか、存在しないプログラム(%1)を指しています。"
         "貼り付けはできますが、PowerPoint でダブルクリックしても ToriGraph は開きません。");
+    reg("The PowerPoint link currently points to another ToriGraph installation (%1) instead of "
+        "this program (%2). Double-clicking the graph in PowerPoint will open that copy.",
+        "PowerPoint 連携が別の場所の ToriGraph (%1)を指しています(現在のプログラム: %2)。"
+        "PowerPoint でダブルクリックするとそちらの ToriGraph が開きます。");
+    reg("The embedded project data exceeds the 128 MB PowerPoint limit (%1 MB).",
+        "埋め込みデータが PowerPoint 連携の上限 128 MB を超えています(%1 MB)。");
     reg("To fix this, click \"Repair PowerPoint Link\" (also in the Help menu).",
         "直すには「PowerPoint 連携を修復」を押してください(ヘルプメニューにもあります)。");
     reg("Repair PowerPoint Link", "PowerPoint 連携を修復");
@@ -169,10 +175,12 @@ namespace {
 bool g_oleInitialized = false;
 bool g_embeddedServerMode = false;
 bool g_normalSessionLockHeld = false;
+bool g_everHadServerActivity = false;
 DWORD g_factoryCookie = 0;
 ComPtr<IDataObject> g_clipboardDataObject;
 //! GetClipboardSequenceNumber() right after the last successful OleSetClipboard
 DWORD g_lastOleSetClipboardSeq = 0;
+constexpr qint64 kMaxOleStreamBytes = 128000000LL;
 
 CLIPFORMAT embedFormat()
 {
@@ -194,6 +202,7 @@ CLIPFORMAT descriptorFormat()
 
 void addRefServerProcess()
 {
+    g_everHadServerActivity = true;
     CoAddRefServerProcess();
 }
 
@@ -201,7 +210,21 @@ void releaseServerProcess()
 {
     if (CoReleaseServerProcess() == 0) {
         if (g_embeddedServerMode && qApp) {
-            QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+            bool hasNormalVisibleApp = false;
+            for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                auto *aw = qobject_cast<ApplicationWindow *>(tlw);
+                if (aw && aw->isVisible() && !aw->isOleEmbeddedMode() && !aw->isNonInteractive()) {
+                    hasNormalVisibleApp = true;
+                    break;
+                }
+            }
+            if (hasNormalVisibleApp) {
+                g_embeddedServerMode = false;
+                if (auto *guiApp = qobject_cast<QApplication *>(qApp))
+                    guiApp->setQuitOnLastWindowClosed(true);
+            } else {
+                QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+            }
         }
     }
 }
@@ -1735,6 +1758,10 @@ HRESULT savePayloadToStorage(IStorage *stg, const OleGraphPayload &payload)
 {
     if (!stg)
         return E_POINTER;
+    if (payload.projectBytes.size() > kMaxOleStreamBytes
+        || payload.emfBytes.size() > kMaxOleStreamBytes) {
+        return STG_E_INSUFFICIENTMEMORY;
+    }
 
     HRESULT hr = WriteClassStg(stg, graph_clsid);
     if (FAILED(hr))
@@ -1956,6 +1983,17 @@ bool ensureRegistryRegistered(QString *errMsg)
     return ok;
 }
 
+bool initializeOleClipboardOnly()
+{
+    if (!g_oleInitialized) {
+        HRESULT hr = OleInitialize(nullptr);
+        if (FAILED(hr))
+            return false;
+        g_oleInitialized = true;
+    }
+    return true;
+}
+
 bool initializeOleServer(bool embeddedMode)
 {
     if (!g_oleInitialized) {
@@ -1966,7 +2004,9 @@ bool initializeOleServer(bool embeddedMode)
     }
 
     g_embeddedServerMode = embeddedMode;
-    if (!embeddedMode && !g_normalSessionLockHeld) {
+    if (embeddedMode) {
+        g_everHadServerActivity = false;
+    } else if (!g_normalSessionLockHeld) {
         CoAddRefServerProcess();
         g_normalSessionLockHeld = true;
     }
@@ -1978,6 +2018,19 @@ bool initializeOleServer(bool embeddedMode)
         factory->Release();
         if (FAILED(hr))
             return false;
+    }
+
+    if (embeddedMode && qApp) {
+        // Exit zombie -Embedding server processes if no object creation or lock occurs within 30s
+        QTimer::singleShot(30000, qApp, []() {
+            if (!g_embeddedServerMode || g_everHadServerActivity)
+                return;
+            for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                if (tlw && tlw->isVisible())
+                    return;
+            }
+            QCoreApplication::quit();
+        });
     }
     return true;
 }
@@ -2371,8 +2424,21 @@ ApplicationWindow *resolveApplicationWindow(ApplicationWindow *app, QWidget *w)
     return nullptr;
 }
 
+bool isProductionToriGraphExe()
+{
+    const QString selfName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+    return selfName.compare(QStringLiteral("ToriGraph.exe"), Qt::CaseInsensitive) == 0;
+}
+
 QString registrationProblemText(const RegistrationInfo &reg)
 {
+    if (reg.state == RegistrationInfo::Valid && !reg.pointsToSelf) {
+        return QObject::tr("The PowerPoint link currently points to another ToriGraph installation "
+                           "(%1) instead of this program (%2). Double-clicking the graph in "
+                           "PowerPoint will open that copy.")
+                .arg(QDir::toNativeSeparators(reg.executable),
+                     QDir::toNativeSeparators(selfServerExecutable()));
+    }
     return QObject::tr("The PowerPoint link of ToriGraph is not registered, or points to a "
                        "program that no longer exists (%1). Pasting works, but double-clicking "
                        "the graph in PowerPoint will not open ToriGraph.")
@@ -2388,6 +2454,11 @@ void offerPayloadOnClipboard(OleGraphPayload &payload, OleCopyResult &r)
     if (qApp && qApp->property("torigraph_test_force_ole_copy_failure").toBool()) {
         // Regression tests exercise the static fallback without breaking the real clipboard.
         reason = QStringLiteral("forced failure (test)");
+    } else if (payload.projectBytes.size() > kMaxOleStreamBytes
+               || payload.emfBytes.size() > kMaxOleStreamBytes) {
+        const qint64 maxSz = std::max<qint64>(payload.projectBytes.size(), payload.emfBytes.size());
+        reason = QObject::tr("The embedded project data exceeds the 128 MB PowerPoint limit (%1 MB).")
+                         .arg(double(maxSz) / 1.0e6, 0, 'f', 1);
     } else if (!g_oleInitialized) {
         reason = QObject::tr("OLE could not be initialized in this ToriGraph session. Restart "
                              "ToriGraph and try again.");
@@ -2412,7 +2483,9 @@ void offerPayloadOnClipboard(OleGraphPayload &payload, OleCopyResult &r)
     }
 
     const RegistrationInfo reg = queryRegistration();
-    r.registrationProblem = reg.state != RegistrationInfo::Valid;
+    const bool mismatchOnProdExe = (reg.state == RegistrationInfo::Valid && !reg.pointsToSelf
+                                    && isProductionToriGraphExe());
+    r.registrationProblem = (reg.state != RegistrationInfo::Valid) || mismatchOnProdExe;
 
     if (r.ok) {
         r.pngDpi = choosePngDpi(naturalPayloadExtentHm(payload));
@@ -2492,6 +2565,12 @@ OleCopyResult copyGraphForPowerPoint(ApplicationWindow *app, MultiLayer *ml, Gra
     }
 
     payload.projectBytes = buildEmbeddedProjectBytes(app, ml, r.scope, &r.embeddedWindows);
+    if (payload.projectBytes.size() > kMaxOleStreamBytes
+        && r.scope == EmbedScope::WholeProject) {
+        payload.projectBytes =
+                buildEmbeddedProjectBytes(app, ml, EmbedScope::GraphOnly, &r.embeddedWindows);
+        r.scope = EmbedScope::GraphOnly;
+    }
     offerPayloadOnClipboard(payload, r);
     return r;
 }
@@ -2533,8 +2612,14 @@ OleCopyResult copyImageForPowerPoint(ApplicationWindow *app, const QImage &img,
             }
         }
         payload.projectBytes = buildEmbeddedProjectBytes(app, target, r.scope, &r.embeddedWindows);
-        if (!target)
+        if (!target) {
             r.scope = EmbedScope::WholeProject;
+        } else if (payload.projectBytes.size() > kMaxOleStreamBytes
+                   && r.scope == EmbedScope::WholeProject) {
+            payload.projectBytes = buildEmbeddedProjectBytes(app, target, EmbedScope::GraphOnly,
+                                                             &r.embeddedWindows);
+            r.scope = EmbedScope::GraphOnly;
+        }
     }
     offerPayloadOnClipboard(payload, r);
     return r;

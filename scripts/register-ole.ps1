@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("Inspect", "Install", "Uninstall")]
     [string]$Mode = "Inspect",
     [string]$ExePath = "",
@@ -17,6 +17,8 @@ function Resolve-DefaultExePath {
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $defaults = @(
+        (Join-Path $repoRoot "ToriGraph.exe"),
+        (Join-Path $PSScriptRoot "ToriGraph.exe"),
         (Join-Path $repoRoot "build\scidavis\ToriGraph.exe"),
         (Join-Path $repoRoot "build\scidavis\scidavis.exe"),
         (Join-Path $repoRoot "dist\ToriGraph.exe"),

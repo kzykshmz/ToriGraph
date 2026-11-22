@@ -63,6 +63,8 @@ void registerSettingsTransferTranslations()
             "次のファイルの設定を読み込みます。\n%1\n\nファイルにある設定は今の設定を上書きします。続けますか?");
         reg("%1 settings were read. Restart ToriGraph to use them.",
             "%1 件の設定を読み込みました。ToriGraph を再起動すると反映されます。");
+        reg("%1 settings were read and applied.",
+            "%1 件の設定を読み込み、反映しました。");
         reg("Erase all ToriGraph settings (recent files, preferences, window layout, "
             "style presets chosen as default...) and return to the defaults?\n\n"
             "Projects and data files are not touched. This cannot be undone; use "
@@ -166,6 +168,55 @@ QString SettingsTransfer::labDefaultsPath()
     return QDir(QCoreApplication::applicationDirPath()).filePath(labDefaultsFileName());
 }
 
+bool SettingsTransfer::isPersonalKey(const QString &key)
+{
+    QString k = key.trimmed();
+    while (k.startsWith(QLatin1Char('/')))
+        k.remove(0, 1);
+    if (k.isEmpty())
+        return false;
+
+    static const char *const kExactKeys[] = {
+        "General/RecentProjects",
+        "General/Paths/WorkingDir",
+        "General/Paths/ASCII",
+        "General/Paths/Images",
+        "General/Paths/TemplatesDir",
+        "General/Paths/HelpFile",
+        "General/Paths/FitPlugins",
+        "PptxExport/LastPath",
+        "General/DockWindows",
+        "General/ExplorerSplitter",
+    };
+    for (const char *exact : kExactKeys) {
+        if (k.compare(QLatin1String(exact), Qt::CaseInsensitive) == 0)
+            return true;
+    }
+
+    if (k.compare(QLatin1String("General/ProjectWindow"), Qt::CaseInsensitive) == 0
+        || k.startsWith(QLatin1String("General/ProjectWindow/"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (k.compare(QLatin1String("Geometry"), Qt::CaseInsensitive) == 0
+        || k.startsWith(QLatin1String("Geometry/"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (k.contains(QLatin1String("/LastTableWindow/"), Qt::CaseInsensitive)
+        || k.endsWith(QLatin1String("/LastTableWindow"), Qt::CaseInsensitive)
+        || k.startsWith(QLatin1String("LastTableWindow/"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (k.contains(QLatin1String("/LastGraphWindow/"), Qt::CaseInsensitive)
+        || k.endsWith(QLatin1String("/LastGraphWindow"), Qt::CaseInsensitive)
+        || k.startsWith(QLatin1String("LastGraphWindow/"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (k.startsWith(QLatin1String("AutoUpdate/LastCheck"), Qt::CaseInsensitive))
+        return true;
+
+    return false;
+}
+
 int SettingsTransfer::exportToIni(QSettings &src, const QString &path, QString *error)
 {
     if (path.trimmed().isEmpty()) {
@@ -184,7 +235,7 @@ int SettingsTransfer::exportToIni(QSettings &src, const QString &path, QString *
         QSettings out(tmpPath, QSettings::IniFormat);
         out.clear();
         for (const QString &key : src.allKeys()) {
-            if (isBookkeepingKey(key))
+            if (isBookkeepingKey(key) || isPersonalKey(key))
                 continue;
             out.setValue(key, src.value(key));
             ++n;
@@ -258,7 +309,7 @@ int SettingsTransfer::applyLabDefaults(QSettings &user, const QString &labIniPat
         return 0;
     int written = 0;
     for (const QString &key : lab.allKeys()) {
-        if (isBookkeepingKey(key))
+        if (isBookkeepingKey(key) || isPersonalKey(key))
             continue;
         const QVariant labValue = lab.value(key);
         const QString appliedKey = QLatin1String(kLabAppliedPrefix) + key;
@@ -372,10 +423,12 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
                              trST("The settings could not be read:\n%1").arg(err));
         return;
     }
-    // The running window still holds the old values; do not write them back on exit.
-    setSaveSuppressed(true);
+    setSaveSuppressed(false);
+    app->readSettings();
+    app->applyUserSettings();
+    app->saveSettings();
     QMessageBox::information(app, trST("Import Settings"),
-                             trST("%1 settings were read. Restart ToriGraph to use them.").arg(n));
+                             trST("%1 settings were read and applied.").arg(n));
 }
 
 void SettingsTransfer::resetInteractive(ApplicationWindow *app)

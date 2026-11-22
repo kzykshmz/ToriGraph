@@ -24,8 +24,12 @@ public:
     //! Lab defaults file in the folder of the running executable (may not exist).
     static QString labDefaultsPath();
 
-    //! Writes every key of \a src (except the lab-defaults bookkeeping) to the INI file
-    //! \a path, replacing its contents. Returns the number of keys written, or -1.
+    //! True for machine-/user-local keys (recent projects, local folder paths, window geometry,
+    //! last update check timestamps) that must not be shared via Export Settings or Lab Defaults.
+    static bool isPersonalKey(const QString &key);
+
+    //! Writes every portable key of \a src (excluding lab-defaults bookkeeping and personal keys)
+    //! to the INI file \a path, replacing its contents. Returns the number of keys written, or -1.
     static int exportToIni(QSettings &src, const QString &path, QString *error = nullptr);
     //! Copies every key of the INI file \a path into \a dst (keys present in the file
     //! overwrite \a dst; other keys of \a dst are kept). Returns the key count, or -1.
