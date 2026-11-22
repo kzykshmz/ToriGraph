@@ -54,8 +54,11 @@
 #include <QClipboard>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QPointer>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QUndoStack>
 #include "core/Project.h"
 #ifdef Q_OS_WIN
@@ -74,6 +77,7 @@
 #include <QTreeWidget>
 #include <QWheelEvent>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <wrl/client.h>
 #include "SettingsTransfer.h"
@@ -145,6 +149,123 @@ static bool relErrWithin(double actual, double expected, double tolRatio = 0.02)
     return std::fabs(actual - expected) / denom <= tolRatio;
 }
 
+// -------------------------------------------------------------------------------------------
+// Isolation from other processes. The system clipboard is shared with every program on the
+// desktop (other test runs, other ToriGraph windows, clipboard managers), so a check that reads
+// it back may see someone else's data. The helpers below either verify what was put there or
+// repeat the copy until the data on the clipboard is ours.
+// -------------------------------------------------------------------------------------------
+static QString normalizedClipboardText(QString s)
+{
+    s.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    return s;
+}
+
+//! Put \a text on the clipboard and read it back until it is really there
+static bool setClipboardTextVerified(const QString &text)
+{
+    const QString want = normalizedClipboardText(text);
+    for (int k = 0; k < 40; ++k) {
+        QApplication::clipboard()->setText(text);
+        QCoreApplication::processEvents();
+        if (normalizedClipboardText(QApplication::clipboard()->text()) == want)
+            return true;
+        Sleep(25 + 5 * k);
+    }
+    return false;
+}
+
+//! Is the clipboard still holding \a text (nobody replaced it meanwhile)?
+static bool clipboardStillHolds(const QString &text)
+{
+    return normalizedClipboardText(QApplication::clipboard()->text()) == normalizedClipboardText(text);
+}
+
+//! OleGetClipboard with a few retries (another process may have the clipboard open)
+static HRESULT oleGetClipboardRetry(ComPtr<IDataObject> &out)
+{
+    HRESULT hr = E_FAIL;
+    for (int k = 0; k < 40; ++k) {
+        QCoreApplication::processEvents();
+        out.Reset();
+        hr = OleGetClipboard(&out);
+        if (SUCCEEDED(hr) && out)
+            return hr;
+        Sleep(25);
+    }
+    return FAILED(hr) ? hr : E_FAIL;
+}
+
+//! Run \a attempt (copy + check) until it reports no error; returns the last error or nullptr
+static const char *retryClipboardStep(const std::function<const char *()> &attempt,
+                                      const char *what, int attempts = 8)
+{
+    const char *err = nullptr;
+    for (int i = 0; i < attempts; ++i) {
+        if (i > 0) {
+            std::cout << "[INFO] " << what << ": clipboard was changed by another process ("
+                      << err << "), copying again (attempt " << (i + 1) << ")\n";
+            QCoreApplication::processEvents();
+            Sleep(100 * i);
+        }
+        err = attempt();
+        if (!err)
+            return nullptr;
+    }
+    return err;
+}
+
+// -------------------------------------------------------------------------------------------
+// Modal watchdog: a modal dialog that nobody answers would stop the whole run (and with it every
+// later suite). Dialogs the suites open on purpose are answered within a second or two; anything
+// still open after kModalWatchdogMs is reported and dismissed so the run goes on and the suite's
+// own checks decide.
+// -------------------------------------------------------------------------------------------
+class ModalWatchdog : public QObject
+{
+public:
+    static constexpr int kModalWatchdogMs = 20000;
+    explicit ModalWatchdog(QObject *parent = nullptr) : QObject(parent)
+    {
+        m_timer.setInterval(500);
+        QObject::connect(&m_timer, &QTimer::timeout, this, [this]() { poll(); });
+        m_timer.start();
+    }
+
+private:
+    void poll()
+    {
+        QWidget *w = QApplication::activeModalWidget();
+        if (w != m_seen) {
+            m_seen = w;
+            m_since.start();
+            return;
+        }
+        if (!w || m_since.elapsed() < kModalWatchdogMs)
+            return;
+        std::cerr << "[WARN] modal watchdog: dismissing a dialog left open for "
+                  << m_since.elapsed() / 1000 << " s: \"" << w->windowTitle().toStdString() << "\"";
+        if (auto *box = qobject_cast<QMessageBox *>(w))
+            std::cerr << " - " << box->text().left(200).toStdString();
+        std::cerr << std::endl;
+        if (auto *box = qobject_cast<QMessageBox *>(w)) {
+            if (QAbstractButton *esc = box->escapeButton())
+                esc->click();
+            else
+                box->reject();
+        } else if (auto *dlg = qobject_cast<QDialog *>(w)) {
+            dlg->reject();
+        } else {
+            w->close();
+        }
+        m_since.start();
+    }
+
+    QTimer m_timer;
+    QPointer<QWidget> m_seen;
+    QElapsedTimer m_since;
+};
+
 static int runSuite36Round3SurgicalZero(ApplicationWindow *mw);
 static int runSuite37DuotoneIconsAndTheme(ApplicationWindow *mw);
 static int runSuite38RibbonSplitPaletteAndFocusHud(ApplicationWindow *mw);
@@ -184,6 +305,18 @@ int main(int argc, char **argv)
 {
     std::cout << std::unitbuf << "[INFO] Starting scidavis_ole_test...\n";
     std::cerr << std::unitbuf;
+    // Every run gets a scratch folder of its own and uses it as %TEMP% / %TMP%: the suites (and
+    // the product code they drive) write files with fixed names to QDir::tempPath(), which
+    // collided when two runs - or another ToriGraph - were active at the same time (one run
+    // deleting or overwriting the other's project file). The folder is removed when main() ends.
+    QTemporaryDir runTempDir(QDir::tempPath() + QStringLiteral("/torigraph_ole_test_XXXXXX"));
+    if (runTempDir.isValid()) {
+        const std::wstring wTemp = QDir::toNativeSeparators(runTempDir.path()).toStdWString();
+        _wputenv_s(L"TMP", wTemp.c_str());
+        _wputenv_s(L"TEMP", wTemp.c_str());
+        SetEnvironmentVariableW(L"TMP", wTemp.c_str());
+        SetEnvironmentVariableW(L"TEMP", wTemp.c_str());
+    }
     const QString testIniPath =
             QDir::tempPath()
             + QStringLiteral("/torigraph_ole_test_settings_%1.ini")
@@ -197,6 +330,14 @@ int main(int argc, char **argv)
         QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL, true);
     QApplication app(argc, argv);
     QStringList args = app.arguments();
+    std::cout << "[INFO] Scratch folder of this run: "
+              << QDir::toNativeSeparators(QDir::tempPath()).toStdString() << "\n";
+    // Recovery copies (Suite 53) live in a folder of this run, not in the per-user folder that
+    // every ToriGraph and every other test run share.
+    ApplicationWindow::setRecoveryDirPathOverride(
+            (runTempDir.isValid() ? runTempDir.path() : QDir::tempPath())
+            + QStringLiteral("/recovery_%1").arg(QCoreApplication::applicationPid()));
+    ModalWatchdog modalWatchdog;
 
     QString errMsg;
     // Never redirect a working registration (installed ToriGraph) to this test build; the
@@ -680,17 +821,19 @@ int main(int argc, char **argv)
     Table *pasteTbl = mw->newTable("PasteTest", 2, 2);
     CHECK_COND(pasteTbl != nullptr, "Failed to create PasteTest table");
     pasteTbl->setCellsSelected(0, 0, 0, 0, true);
-    QApplication::clipboard()->setText(
-            "1.5\t1.25e-3\t10.0\n"
-            "2.5\t--\t20.0\n"
-            "3.5\t3.5E+04\tNaN\n"
-            "4.5\t7.0\t40.0\n");
-    pasteTbl->pasteSelection();
+    // pasteSelection() only reads the clipboard and hands the text to pasteText(); passing the
+    // text directly keeps this check independent of other programs using the clipboard (the
+    // clipboard path itself is covered by Suite 59a).
+    CHECK_COND(pasteTbl->pasteText("1.5\t1.25e-3\t10.0\n"
+                                   "2.5\t--\t20.0\n"
+                                   "3.5\t3.5E+04\tNaN\n"
+                                   "4.5\t7.0\t40.0\n"),
+               "Table::pasteText failed");
 
     std::cout << "[INFO] After 4x3 paste into 2x2 table: rows=" << pasteTbl->numRows()
               << ", cols=" << pasteTbl->numCols() << "\n";
     CHECK_COND(pasteTbl->numRows() == 4 && pasteTbl->numCols() == 3,
-               "Table::pasteSelection did not auto-expand rows and columns to 4x3");
+               "Table::pasteText did not auto-expand rows and columns to 4x3");
     CHECK_COND(relErrWithin(pasteTbl->cell(0, 1), 1.25e-3, 1e-6),
                "Scientific notation 1.25e-3 was not parsed accurately");
     CHECK_COND(relErrWithin(pasteTbl->cell(2, 1), 3.5e4, 1e-6),
@@ -1330,33 +1473,56 @@ int main(int argc, char **argv)
     stg.Reset();
     QFile::remove(stgPath);
 
-    // Test Clipboard Copy via MultiLayer::copyAllLayers()
-    ml->copyAllLayers();
-
-    ComPtr<IDataObject> clipData;
-    for (int k = 0; k < 40; ++k) { QCoreApplication::processEvents(); hr = OleGetClipboard(&clipData); if (SUCCEEDED(hr) && clipData) break; Sleep(25); } if (FAILED(hr)) { std::cerr << "OleGetClipboard hr=0x" << std::hex << hr << std::dec << "\n"; } CHECK_COND(SUCCEEDED(hr) && clipData, "OleGetClipboard failed");
-
-    CLIPFORMAT cfEmbed = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"Embed Source"));
-    CLIPFORMAT cfDesc = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"Object Descriptor"));
-
-    FORMATETC fmtEmbed{ cfEmbed, nullptr, DVASPECT_CONTENT, -1, TYMED_ISTORAGE };
-    CHECK_COND(clipData->QueryGetData(&fmtEmbed) == S_OK, "Clipboard missing Embed Source");
-
-    FORMATETC fmtDesc{ cfDesc, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-    CHECK_COND(clipData->QueryGetData(&fmtDesc) == S_OK, "Clipboard missing Object Descriptor");
-    STGMEDIUM medDesc{};
-    for (int k = 0; k < 40; ++k) { QCoreApplication::processEvents(); hr = clipData->GetData(&fmtDesc, &medDesc); if (SUCCEEDED(hr)) break; Sleep(25); } if (FAILED(hr)) { std::cerr << "GetData(Object Descriptor) hr=0x" << std::hex << hr << std::dec << "\n"; } CHECK_COND(SUCCEEDED(hr), "GetData(Object Descriptor) failed");
-    auto *objDesc = static_cast<OBJECTDESCRIPTOR *>(GlobalLock(medDesc.hGlobal));
-    CHECK_COND(objDesc != nullptr && objDesc->clsid == SciDAVisOle::graph_clsid, "Clipboard Object Descriptor CLSID mismatch!");
-    GlobalUnlock(medDesc.hGlobal);
-    ReleaseStgMedium(&medDesc);
-
-    CHECK_COND(clipData->QueryGetData(&fmtEmf) == S_OK, "Clipboard missing CF_ENHMETAFILE");
-
-    FORMATETC fmtDib{ CF_DIB, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-    CHECK_COND(clipData->QueryGetData(&fmtDib) == S_OK, "Clipboard missing CF_DIB");
-
-    clipData.Reset();
+    // Test Clipboard Copy via MultiLayer::copyAllLayers(). Another program may replace the
+    // clipboard between the copy and the checks; then the copy is simply repeated.
+    {
+        const CLIPFORMAT cfEmbed = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"Embed Source"));
+        const CLIPFORMAT cfDesc = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"Object Descriptor"));
+        FORMATETC fmtEmbed{ cfEmbed, nullptr, DVASPECT_CONTENT, -1, TYMED_ISTORAGE };
+        FORMATETC fmtDesc{ cfDesc, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        FORMATETC fmtDib{ CF_DIB, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        const char *clipErr = retryClipboardStep(
+                [&]() -> const char * {
+                    ml->copyAllLayers();
+                    ComPtr<IDataObject> clipData;
+                    const HRESULT hrClip = oleGetClipboardRetry(clipData);
+                    if (FAILED(hrClip) || !clipData) {
+                        std::cerr << "OleGetClipboard hr=0x" << std::hex << hrClip << std::dec << "\n";
+                        return "OleGetClipboard failed";
+                    }
+                    if (clipData->QueryGetData(&fmtEmbed) != S_OK)
+                        return "Clipboard missing Embed Source";
+                    if (clipData->QueryGetData(&fmtDesc) != S_OK)
+                        return "Clipboard missing Object Descriptor";
+                    STGMEDIUM medDesc{};
+                    HRESULT hrDesc = E_FAIL;
+                    for (int k = 0; k < 40; ++k) {
+                        QCoreApplication::processEvents();
+                        hrDesc = clipData->GetData(&fmtDesc, &medDesc);
+                        if (SUCCEEDED(hrDesc))
+                            break;
+                        Sleep(25);
+                    }
+                    if (FAILED(hrDesc)) {
+                        std::cerr << "GetData(Object Descriptor) hr=0x" << std::hex << hrDesc
+                                  << std::dec << "\n";
+                        return "GetData(Object Descriptor) failed";
+                    }
+                    auto *objDesc = static_cast<OBJECTDESCRIPTOR *>(GlobalLock(medDesc.hGlobal));
+                    const bool clsidOk = objDesc != nullptr && objDesc->clsid == SciDAVisOle::graph_clsid;
+                    GlobalUnlock(medDesc.hGlobal);
+                    ReleaseStgMedium(&medDesc);
+                    if (!clsidOk)
+                        return "Clipboard Object Descriptor CLSID mismatch!";
+                    if (clipData->QueryGetData(&fmtEmf) != S_OK)
+                        return "Clipboard missing CF_ENHMETAFILE";
+                    if (clipData->QueryGetData(&fmtDib) != S_OK)
+                        return "Clipboard missing CF_DIB";
+                    return nullptr;
+                },
+                "Suite 1 copyAllLayers");
+        CHECK_COND(clipErr == nullptr, (clipErr ? clipErr : ""));
+    }
 
     // =========================================================================
     // 13. Interactive ROI Gadgets & Vertical Cursor (Domain 1)
@@ -2761,16 +2927,27 @@ int main(int argc, char **argv)
         }
         {
             bool auditedPaletteDlg = false;
-            QTimer::singleShot(0, [&]() {
+            // Poll until the dialog is up (a single zero-delay shot could fire before the dialog
+            // became the active modal widget and then leave it waiting for input forever).
+            QTimer paletteProbe;
+            int paletteTries = 0;
+            QObject::connect(&paletteProbe, &QTimer::timeout, [&]() {
+                if (++paletteTries > 500) {
+                    paletteProbe.stop();
+                    return;
+                }
                 if (QWidget *w = QApplication::activeModalWidget()) {
                     if (QDialog *d = qobject_cast<QDialog *>(w)) {
+                        paletteProbe.stop();
                         auditDialogWidget(d, "ColorPaletteDialog");
                         auditedPaletteDlg = true;
                         d->reject();
                     }
                 }
             });
+            paletteProbe.start(20);
             Graph::showColorPaletteEditor(mw, gJa);
+            paletteProbe.stop();
             CHECK_COND(auditedPaletteDlg, "ColorPaletteDialog was not opened/audited");
         }
 
@@ -10302,20 +10479,20 @@ static int runSuite48Phase8RibbonDockWorksheetAndGraphErgonomicsGate(Application
     CHECK_COND(t48->findChild<QWidget *>("WorksheetQuickBar") != nullptr,
                "TableView missing #WorksheetQuickBar top toolbar!");
 
-    // Smart paste with Long Name + Units rows
-    if (QClipboard *cb = QApplication::clipboard()) {
-        cb->setText("Nominal strain\tNominal stress\tNominal stress\n"
-                    "%\tMPa\tMPa\n"
-                    "0.0\t0.0\t0.0\n"
-                    "2.0\t480.0\t472.0\n"
-                    "4.0\t518.0\t505.0\n");
-    }
-    t48->pasteSelection();
+    // Smart paste with Long Name + Units rows. The text goes straight to pasteText() (what
+    // pasteSelection() does with the clipboard text), so another program using the clipboard
+    // cannot change what is pasted; Suite 59a covers the clipboard path.
+    CHECK_COND(t48->pasteText("Nominal strain\tNominal stress\tNominal stress\n"
+                              "%\tMPa\tMPa\n"
+                              "0.0\t0.0\t0.0\n"
+                              "2.0\t480.0\t472.0\n"
+                              "4.0\t518.0\t505.0\n"),
+               "Suite 48: Table::pasteText failed");
     QApplication::processEvents();
     CHECK_COND(t48->column(0)->longName().contains("Nominal strain")
                        && t48->column(0)->units() == "%"
                        && std::fabs(t48->cell(1, 1) - 480.0) < 1e-6,
-               "Table::pasteSelection failed to promote header/unit rows instead of inserting NaNs!");
+               "Table::pasteText failed to promote header/unit rows instead of inserting NaNs!");
 
     // 3. Catch-22 Metadata Resolution: Shared Long Name -> Y-Axis Title; Distinct Comments -> Legend
     t48->setColPlotDesignation(0, SciDAVis::X);
@@ -14421,25 +14598,22 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
                            "53j: could not age the orphan");
             }
             w53->projectname = QStringLiteral("suite53_start_window.sciprj"); // not closed
-            QSet<QWidget *> before;
-            for (QWidget *tl : QApplication::topLevelWidgets())
-                before.insert(tl);
-            QTimer clicker;
-            clicker.setInterval(50);
-            QObject::connect(&clicker, &QTimer::timeout, [&clicker]() {
-                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
-                    for (QAbstractButton *b : box->buttons()) {
-                        if (box->buttonRole(b) == QMessageBox::AcceptRole) {
-                            clicker.stop();
-                            b->click();
-                            return;
-                        }
-                    }
-                }
-            });
-            clicker.start();
+            // Answer "Restore" for our copy through the prompt hook instead of looking for the
+            // message box by time (the box is built exactly as for the user, only exec() is
+            // skipped). Any other copy would be left for later, which the checks below catch.
+            QStringList asked;
+            ApplicationWindow::setCrashRecoveryPromptOverride(
+                    [&asked, id](const QString &metaPath) {
+                        asked << QFileInfo(metaPath).completeBaseName();
+                        return QFileInfo(metaPath).completeBaseName() == id
+                                ? ApplicationWindow::RecoveryRestore
+                                : ApplicationWindow::RecoveryDecideLater;
+                    });
             w53->checkCrashRecovery();
-            clicker.stop();
+            ApplicationWindow::setCrashRecoveryPromptOverride(nullptr);
+            CHECK_COND(asked == QStringList() << id,
+                       "53j: restore question not asked exactly once for the copy (asked: "
+                               + asked.join(QStringLiteral(", ")).toStdString() + ")");
             CHECK_COND(!QFileInfo::exists(oldOrphan), "53j: stale .sciprj without .json not removed");
             CHECK_COND(QFileInfo::exists(newOrphan), "53j: recent .sciprj without .json removed");
             const QJsonObject newMeta =
@@ -14458,12 +14632,23 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
             // widgets also holds the restored window's own top-level children (its menus), so
             // destroying the window inside this loop left the loop with freed pointers; whether
             // that crashed depended on the (hash) order of the list.
+            // The window is recognised by the project it holds (smallPrj lies in this run's own
+            // temporary folder). It used to be also required to be missing from a list of the
+            // top-level widgets taken before the restore; but windows of earlier suites that were
+            // deleted (deleteLater) during the restore free their memory, and the restored window
+            // could be created at such an address - it then counted as "already there" and was
+            // not found, depending on timing.
             QList<QPointer<ApplicationWindow>> restoredWins;
             for (QWidget *tl : QApplication::topLevelWidgets()) {
                 auto *cand = qobject_cast<ApplicationWindow *>(tl);
-                if (cand && !before.contains(tl) && cand != mw && cand != w53
-                    && cand->projectname == smallPrj)
+                if (cand && cand != mw && cand != w53 && cand->projectname == smallPrj)
                     restoredWins << cand;
+            }
+            if (restoredWins.size() != 1) {
+                for (QWidget *tl : QApplication::topLevelWidgets())
+                    if (auto *cand = qobject_cast<ApplicationWindow *>(tl))
+                        std::cerr << "[INFO] 53j: window " << static_cast<void *>(cand) << " project '"
+                                  << cand->projectname.toStdString() << "'\n";
             }
             CHECK_COND(restoredWins.size() == 1, "53j: restored window not found");
             // Close it the way a user does: File > Close / [x], answer "Don't Save" to the
@@ -16037,15 +16222,30 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
 
     // ---- 59a (D2): menu paste == Ctrl+V: tab first, no split at spaces, header/unit rows
     {
-        Table *t = mw->newTable("Paste59a", 4, 2);
-        CHECK_COND(t != nullptr, "59a: table");
-        t->setCellsSelected(0, 0, 0, 0, true);
-        QApplication::clipboard()->setText("Nominal strain\tNominal stress\n"
-                                           "%\tMPa\n"
-                                           "0.0\t0.0\n"
-                                           "2.0\t480.0\n"
-                                           "4.0\t518.0\n");
-        t->d_future_table->pasteIntoSelection(); // the Edit menu / context menu path
+        // This check is about the clipboard path, so it does use the system clipboard. Another
+        // program may replace the clipboard text at any time: the text is read back before the
+        // paste, and if it was no longer ours afterwards the paste is repeated on a fresh table.
+        const QString text59a = QStringLiteral("Nominal strain\tNominal stress\n"
+                                               "%\tMPa\n"
+                                               "0.0\t0.0\n"
+                                               "2.0\t480.0\n"
+                                               "4.0\t518.0\n");
+        Table *t = nullptr;
+        bool clipOk = false;
+        for (int attempt = 0; attempt < 8 && !clipOk; ++attempt) {
+            if (attempt > 0)
+                std::cout << "[INFO] 59a: clipboard was changed by another process, pasting again\n";
+            t = mw->newTable(attempt == 0 ? QStringLiteral("Paste59a")
+                                          : QStringLiteral("Paste59a_r%1").arg(attempt),
+                             4, 2);
+            CHECK_COND(t != nullptr, "59a: table");
+            t->setCellsSelected(0, 0, 0, 0, true);
+            if (!setClipboardTextVerified(text59a))
+                continue;
+            t->d_future_table->pasteIntoSelection(); // the Edit menu / context menu path
+            clipOk = clipboardStillHolds(text59a);
+        }
+        CHECK_COND(clipOk, "59a: could not keep the test text on the clipboard");
         CHECK_COND(t->numCols() == 2, "59a: menu paste split 'Nominal stress' into two columns");
         CHECK_COND(t->column(1)->longName() == "Nominal stress" && t->column(1)->units() == "MPa",
                    "59a: header/unit rows not promoted on the menu paste path");
@@ -17334,24 +17534,39 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                            && msg.contains(QString::number(res.widthMm, 'f', 1)),
                    "60c: status message lacks name or size: " + msg.toStdString());
 
+        // Another program may replace the clipboard after the copy; then copy again.
         ComPtr<IDataObject> clip;
-        HRESULT hr = E_FAIL;
-        for (int k = 0; k < 40; ++k) {
-            QCoreApplication::processEvents();
-            hr = OleGetClipboard(&clip);
-            if (SUCCEEDED(hr) && clip)
-                break;
-            Sleep(25);
-        }
-        CHECK_COND(SUCCEEDED(hr) && clip, "60c: OleGetClipboard failed");
+        QByteArray png;
         FORMATETC fPng{ SciDAVisOle::pngClipboardFormat(), nullptr, DVASPECT_CONTENT, -1,
                         TYMED_HGLOBAL };
-        CHECK_COND(clip->QueryGetData(&fPng) == S_OK, "60c: PNG format not offered");
-        STGMEDIUM med{};
-        hr = clip->GetData(&fPng, &med);
-        CHECK_COND(SUCCEEDED(hr) && med.tymed == TYMED_HGLOBAL, "60c: GetData(PNG) failed");
-        const QByteArray png = suite60ReadGlobal(med.hGlobal);
-        ReleaseStgMedium(&med);
+        bool firstAttempt = true;
+        const char *clipErr = retryClipboardStep(
+                [&]() -> const char * {
+                    if (!firstAttempt
+                        && !SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr).ok)
+                        return "60c: repeated copy failed";
+                    firstAttempt = false;
+                    clip.Reset();
+                    if (FAILED(oleGetClipboardRetry(clip)) || !clip)
+                        return "60c: OleGetClipboard failed";
+                    if (clip->QueryGetData(&fPng) != S_OK)
+                        return "60c: PNG format not offered";
+                    STGMEDIUM med{};
+                    const HRESULT hrPng = clip->GetData(&fPng, &med);
+                    if (FAILED(hrPng) || med.tymed != TYMED_HGLOBAL) {
+                        if (SUCCEEDED(hrPng))
+                            ReleaseStgMedium(&med);
+                        return "60c: GetData(PNG) failed";
+                    }
+                    png = suite60ReadGlobal(med.hGlobal);
+                    ReleaseStgMedium(&med);
+                    FORMATETC fEmf{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+                    if (clip->QueryGetData(&fEmf) != S_OK)
+                        return "60c: EMF format missing";
+                    return nullptr;
+                },
+                "60c");
+        CHECK_COND(clipErr == nullptr, (clipErr ? clipErr : ""));
         QImage img;
         CHECK_COND(img.loadFromData(png, "PNG"), "60c: PNG does not decode");
         const double dpi = img.dotsPerMeterX() * 0.0254;
@@ -17360,8 +17575,6 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
         const double expectW = res.widthMm / 25.4 * res.pngDpi;
         CHECK_COND(std::fabs(img.width() - expectW) <= 2.0,
                    "60c: PNG width does not match physical size x dpi");
-        FORMATETC fEmf{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
-        CHECK_COND(clip->QueryGetData(&fEmf) == S_OK, "60c: EMF format missing");
         clip.Reset();
     }
 
@@ -17388,18 +17601,30 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
 
     // ---- 60e. OLE failure -> static EMF + PNG + DIB fallback ---------------------------
     {
-        qApp->setProperty("torigraph_test_force_ole_copy_failure", true);
-        const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
-        qApp->setProperty("torigraph_test_force_ole_copy_failure", QVariant());
+        SciDAVisOle::OleCopyResult res;
+        // The formats are checked right after the copy; if another program replaced the
+        // clipboard in between, the (forced-failure) copy is repeated.
+        const char *clipErr = retryClipboardStep(
+                [&]() -> const char * {
+                    qApp->setProperty("torigraph_test_force_ole_copy_failure", true);
+                    res = SciDAVisOle::copyGraphForPowerPoint(w60, ml, nullptr);
+                    qApp->setProperty("torigraph_test_force_ole_copy_failure", QVariant());
+                    if (!(!res.ok && res.staticFallbackOnClipboard))
+                        return nullptr; // reported by the checks below, not a clipboard race
+                    QCoreApplication::processEvents();
+                    if (!(IsClipboardFormatAvailable(CF_ENHMETAFILE)
+                          && IsClipboardFormatAvailable(SciDAVisOle::pngClipboardFormat())
+                          && IsClipboardFormatAvailable(CF_DIB)))
+                        return "60e: EMF / PNG / DIB missing from the clipboard";
+                    return nullptr;
+                },
+                "60e");
         CHECK_COND(!res.ok && res.staticFallbackOnClipboard,
                    "60e: static fallback not placed (ok=" + std::to_string(res.ok) + ", reason="
                            + res.errorReason.toStdString() + ")");
         CHECK_COND(!res.errorReason.isEmpty(), "60e: no failure reason");
         CHECK_COND(res.pngDpi >= 300 && res.pngDpi <= 600, "60e: fallback PNG dpi out of range");
-        CHECK_COND(IsClipboardFormatAvailable(CF_ENHMETAFILE)
-                           && IsClipboardFormatAvailable(SciDAVisOle::pngClipboardFormat())
-                           && IsClipboardFormatAvailable(CF_DIB),
-                   "60e: EMF / PNG / DIB missing from the clipboard");
+        CHECK_COND(clipErr == nullptr, (clipErr ? clipErr : ""));
         SciDAVisOle::reportCopyResult(w60, res, true);
         const QString msg = qApp->property("torigraph_last_ole_copy_message").toString();
         CHECK_COND(msg.contains(QStringLiteral("forced failure")) && msg.contains(QStringLiteral("dpi")),
@@ -17489,10 +17714,17 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
         QString err;
         CHECK_COND(SciDAVisOle::ensureRegistrationAtStartup(&err), "60h: start-up policy failed");
         CHECK_COND(suite60RegistryExe() == before, "60h: a valid registration was rewritten");
+        const bool hadNoRegister = qEnvironmentVariableIsSet("TORIGRAPH_NO_OLE_REGISTER");
+        const QByteArray prevNoRegister = qgetenv("TORIGRAPH_NO_OLE_REGISTER");
         qputenv("TORIGRAPH_NO_OLE_REGISTER", "1");
         CHECK_COND(SciDAVisOle::ensureRegistrationAtStartup(&err) && suite60RegistryExe() == before,
                    "60h: TORIGRAPH_NO_OLE_REGISTER did not suppress registration");
-        qunsetenv("TORIGRAPH_NO_OLE_REGISTER");
+        // Restore what the run was started with (a run started with TORIGRAPH_NO_OLE_REGISTER=1
+        // must not begin rewriting the registration in later suites).
+        if (hadNoRegister)
+            qputenv("TORIGRAPH_NO_OLE_REGISTER", prevNoRegister);
+        else
+            qunsetenv("TORIGRAPH_NO_OLE_REGISTER");
         std::cout << "[INFO] Suite 60h: registered server = "
                   << QDir::toNativeSeparators(info.executable).toStdString()
                   << (info.pointsToSelf ? " (this build)" : " (left untouched)") << "\n";
@@ -17502,15 +17734,24 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
     {
         QImage tinyImg(10, 10, QImage::Format_RGB32);
         tinyImg.fill(Qt::red);
-        QApplication::clipboard()->setImage(tinyImg);
-        QApplication::processEvents();
         w60->activateSubWindow(ml);
         QApplication::processEvents();
         if (w60->d_workspace.activeSubWindow() == ml) {
-            w60->copyPageAsHighDpiImage();
-            QApplication::processEvents();
-            const QImage got = QApplication::clipboard()->image();
-            CHECK_COND(got.width() > 100, "60i: page image did not replace the clipboard image");
+            // Put a small image first, then copy the page; repeat if another program put its
+            // own data on the clipboard in between (the check reads the clipboard back).
+            const char *clipErr = retryClipboardStep(
+                    [&]() -> const char * {
+                        QApplication::clipboard()->setImage(tinyImg);
+                        QApplication::processEvents();
+                        w60->copyPageAsHighDpiImage();
+                        QApplication::processEvents();
+                        const QImage got = QApplication::clipboard()->image();
+                        return got.width() > 100
+                                ? nullptr
+                                : "60i: page image did not replace the clipboard image";
+                    },
+                    "60i");
+            CHECK_COND(clipErr == nullptr, (clipErr ? clipErr : ""));
         } else {
             std::cout << "[INFO] Suite 60i: graph could not be activated in headless window, skipped\n";
         }

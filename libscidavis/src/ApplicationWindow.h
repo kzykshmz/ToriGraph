@@ -1205,6 +1205,14 @@ private slots:
 
     // TODO: a lot of this stuff should be private
 public:
+    //! Tests only: keep recovery copies in \a path instead of the per-user folder (empty = the
+    //! regular folder). Lets several test processes run side by side without sharing copies.
+    static void setRecoveryDirPathOverride(const QString &path);
+    //! Answer to the "Restore unsaved work?" question
+    enum RecoveryAnswer { RecoveryRestore, RecoveryDiscard, RecoveryDecideLater };
+    //! Tests only: answer the "Restore unsaved work?" question without showing it (receives the
+    //! path of the copy's metadata file). An empty function (the default) asks the user.
+    static void setCrashRecoveryPromptOverride(std::function<RecoveryAnswer(const QString &)> answer);
     //! Last selected filter in export image dialog
     QString d_image_export_filter;
     bool d_keep_plot_aspect;
