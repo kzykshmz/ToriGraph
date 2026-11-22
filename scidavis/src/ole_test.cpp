@@ -17729,18 +17729,28 @@ static int runSuite60PowerPointOleLink(ApplicationWindow *mw)
                     FORMATETC fEmf{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
                     if (clip->QueryGetData(&fEmf) != S_OK)
                         return "60c: EMF format missing";
+                    // The PNG is checked here too: another ToriGraph (a parallel test run) offers
+                    // the same formats, so only its size can tell that the data is not ours.
+                    QImage img;
+                    if (!img.loadFromData(png, "PNG"))
+                        return "60c: PNG does not decode";
+                    const double dpi = img.dotsPerMeterX() * 0.0254;
+                    const double expectW = res.widthMm / 25.4 * res.pngDpi;
+                    if (dpi <= 299.0 || dpi >= 601.0 || std::abs(dpi - res.pngDpi) >= 1.0
+                        || std::fabs(img.width() - expectW) > 2.0) {
+                        std::cerr << "[INFO] 60c: PNG " << img.width() << " px at " << dpi
+                                  << " dpi; expected " << expectW << " px at " << res.pngDpi
+                                  << " dpi (" << res.widthMm << " mm)\n";
+                        if (dpi <= 299.0 || dpi >= 601.0)
+                            return "60c: PNG resolution outside 300-600 dpi";
+                        if (std::abs(dpi - res.pngDpi) >= 1.0)
+                            return "60c: reported PNG dpi differs from the file";
+                        return "60c: PNG width does not match physical size x dpi";
+                    }
                     return nullptr;
                 },
                 "60c");
         CHECK_COND(clipErr == nullptr, (clipErr ? clipErr : ""));
-        QImage img;
-        CHECK_COND(img.loadFromData(png, "PNG"), "60c: PNG does not decode");
-        const double dpi = img.dotsPerMeterX() * 0.0254;
-        CHECK_COND(dpi > 299.0 && dpi < 601.0, "60c: PNG resolution outside 300-600 dpi");
-        CHECK_COND(std::abs(dpi - res.pngDpi) < 1.0, "60c: reported PNG dpi differs from the file");
-        const double expectW = res.widthMm / 25.4 * res.pngDpi;
-        CHECK_COND(std::fabs(img.width() - expectW) <= 2.0,
-                   "60c: PNG width does not match physical size x dpi");
         clip.Reset();
     }
 
