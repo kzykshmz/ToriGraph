@@ -213,6 +213,7 @@ public:
     struct PeakFitCenter {
         QString source; // table name, or curve name for batch tables
         double center = 0.0;
+        bool found = true; // false when the source has no peak N (center is then undefined)
     };
     //! True when the table looks like a peak-fit result table (has "Peak" and "Center" columns).
     static bool isPeakFitResultTable(Table *t);
@@ -222,6 +223,18 @@ public:
     static QVector<PeakFitCenter> collectPeakFitCenters(const QList<Table *> &tables,
                                                         int peakNumber,
                                                         QStringList *missingSources = nullptr);
+    //! Like collectPeakFitCenters, but keeps every source in order (one per table, or one per
+    //! curve of a batch table; a table without any peak row counts as one source). Sources
+    //! lacking peak N have found = false. This is the list the heating rates are paired with.
+    static QVector<PeakFitCenter> collectPeakFitSources(const QList<Table *> &tables,
+                                                        int peakNumber);
+    //! Pairs one heating rate per source (same order as collectPeakFitSources). Returns false,
+    //! with *error set, when the counts differ. Sources without peak N are skipped together with
+    //! their own rate and listed in *skipped, so the remaining rates never shift.
+    static bool pairKissingerFitRates(const QVector<double> &rates,
+                                      const QVector<PeakFitCenter> &sources,
+                                      QVector<double> *outRates, QVector<double> *outTemps,
+                                      QString *error = nullptr, QStringList *skipped = nullptr);
     static KissingerResult analyzeKissinger(ApplicationWindow *app,
                                             const QVector<double> &heatingRates,
                                             const QVector<double> &peakTemps,
@@ -288,6 +301,8 @@ public:
         QString anodeName;            // matched X-ray tube anode ("Cu", "Co", ...) or empty
         double kAlpha2Angstrom = 0.0; // Ka2 wavelength used for stripping (0 = none)
         bool kAlpha2Stripped = false;
+        bool anodeApproximate = false; // lambda matched an anode only within the loose 1e-3
+        QString kAlpha2Notice; // shown to the user: approximate anode match, or stripping skipped
         QStringList notes;            // warnings / processing notes (also written to the log)
         QVector<XRDPeakEntry> peaks;
         Table *peakTable = nullptr;
@@ -314,9 +329,14 @@ public:
     };
     static QVector<XRayAnodeLines> xrayAnodeTable();
     //! Matches a wavelength to an anode (Ka1 or weighted Ka average, relative tolerance 2e-4).
-    //! Returns false when no anode matches. *matchedAverage tells which line matched.
+    //! When nothing matches that closely, the nearest line within a relative 1e-3 is accepted
+    //! and *approximate is set (e.g. a rounded 1.54 A for Cu). Returns false when no anode
+    //! matches. *matchedAverage tells which line matched.
     static bool matchXRayAnode(double wavelengthAngstrom, XRayAnodeLines *out,
-                               bool *matchedAverage = nullptr);
+                               bool *matchedAverage = nullptr, bool *approximate = nullptr);
+    //! Why the Williamson-Hall line could not be fitted: fewer than 2 resolved peaks, or (for
+    //! 2 or more) 4 sin(theta) values that coincide so the slope is undefined.
+    static QString williamsonHallUnavailableNote(int resolvedPeakCount);
 
     struct VaspPlotResult {
         bool valid = false;

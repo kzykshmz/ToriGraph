@@ -35,6 +35,7 @@
 
 #include "I18nJapanese.h"
 
+#include <QApplication>
 #include <QLocale>
 #include <QMessageBox>
 
@@ -108,8 +109,19 @@ void Differentiation::output()
                             .arg(nDup)
                             .arg(firstDupX, 0, 'g', 8);
             app->updateLog(msg + QLatin1Char('\n'));
-            if (!isSilentOrNonInteractive())
+            if (!isSilentOrNonInteractive()) {
+                // Filter::run() has set the wait cursor: take it off while the message is up
+                // (otherwise the box shows a busy cursor), then put it back so run()'s own
+                // restoreOverrideCursor() stays balanced.
+                int restored = 0;
+                while (QApplication::overrideCursor()) {
+                    QApplication::restoreOverrideCursor();
+                    ++restored;
+                }
                 QMessageBox::critical(app, tr("ToriGraph") + " - " + tr("Error"), msg);
+                for (int k = 0; k < restored; ++k)
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+            }
             d_init_err = true;
             return;
         }

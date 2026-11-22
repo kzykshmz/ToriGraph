@@ -395,7 +395,13 @@ static bool runLmSolver(int modelType, const std::vector<double> &x, const std::
         bool hitLimit = true;
         for (int iter = 0; iter < 250; ++iter) {
             status = gsl_multifit_fdfsolver_iterate(solver);
-            if (status != GSL_SUCCESS && status != GSL_CONTINUE && status != GSL_ENOPROG) {
+            if (status == GSL_ENOPROG) {
+                // The step can no longer reduce chi^2: further iterations only repeat this, so
+                // stop and classify it as "no further improvement", not "maximum iterations".
+                hitLimit = false;
+                break;
+            }
+            if (status != GSL_SUCCESS && status != GSL_CONTINUE) {
                 hitLimit = false;
                 break;
             }
