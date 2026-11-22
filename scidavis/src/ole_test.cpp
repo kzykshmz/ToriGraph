@@ -171,6 +171,7 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw);
 static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
+static int runSuite70IconCleanupAndLightTheme(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -304,6 +305,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc62;
+    }
+    if (args.contains("--suite70-only")) {
+        const int rc70 = runSuite70IconCleanupAndLightTheme(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc70;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5472,6 +5480,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite70IconCleanupAndLightTheme(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite64XlsxImport(mw) != 0)
@@ -19106,5 +19117,352 @@ static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 65 E11 extra graph types passed!\n";
+    return 0;
+}
+
+#include <QToolButton>
+#include <functional>
+
+// ============================================================================
+// Suite 70: H8 icon clean-up and the light-only theme.
+//   70a  the legacy .xpm / 16x16 / 32x32 / icons/dark|light resources are gone, the three
+//        cursor bitmaps are still there and load
+//   70b  key actions (File/Edit/View/Plot/3D) carry a registered duotone icon
+//   70c  every icon in the menu bar, ribbon, mini toolbar and inspector that has an icon
+//        name uses a registered duotone id; the main menus contain no nameless raster icons
+//   70d  column type / formula decoration icons come from the duotone registry
+//   70e  no icon name fell back to a keyword guess (IconLoader::unresolvedIconNames)
+//   70f  a dark OS palette does not leak into the app: the theme re-pins the light palette
+// ============================================================================
+static int runSuite70IconCleanupAndLightTheme(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 70: icon clean-up (duotone ids only) and light theme...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 70");
+    mw->show();
+    QApplication::processEvents();
+    qApp->setProperty("torigraph_noninteractive", true);
+
+    const QStringList regList = IconLoader::registeredIconIds();
+    const QSet<QString> registered(regList.cbegin(), regList.cend());
+    CHECK_COND(registered.contains(QStringLiteral("visibility"))
+                       && registered.contains(QStringLiteral("inspector-panel")),
+               "70: new duotone ids (visibility, inspector-panel) are not registered");
+
+    // ---------------- 70a: resources ----------------
+    {
+        const char *gone[] = { ":/fileopen.xpm", ":/new_graph.xpm", ":/close.xpm",
+                               ":/16x16/fx.png", ":/32x32/fx.png", ":/24x24/table.png",
+                               ":/numerictype.png", ":/equals.png",
+                               ":/icons/light/16/edit-copy.svg",
+                               ":/icons/dark/24/edit-undo.svg" };
+        for (const char *r : gone)
+            CHECK_COND(!QFile::exists(QString::fromLatin1(r)),
+                       "70a: a removed legacy icon resource is still compiled in");
+        const char *cursors[] = { ":/vizor.xpm", ":/cursor.xpm", ":/lens.xpm" };
+        for (const char *r : cursors) {
+            CHECK_COND(QFile::exists(QString::fromLatin1(r)), "70a: cursor bitmap missing");
+            CHECK_COND(!QPixmap(QString::fromLatin1(r)).isNull(), "70a: cursor bitmap does not load");
+        }
+        CHECK_COND(QFile::exists(QStringLiteral(":/appicon")), "70a: application icon missing");
+        // Legacy names still resolve (old call sites / saved toolbar states) without falling back.
+        CHECK_COND(IconLoader::resolveIconId(QStringLiteral(":/fileopen.xpm")) == QStringLiteral("file-open"),
+                   "70a: legacy name :/fileopen.xpm no longer maps to file-open");
+        CHECK_COND(IconLoader::resolveIconId(QStringLiteral("edit-copy")) == QStringLiteral("copy"),
+                   "70a: freedesktop name edit-copy no longer maps to copy");
+    }
+
+    auto iconId = [](const QIcon &ic) -> QString {
+        QString n = ic.name();
+        if (n.endsWith(QStringLiteral(":dark")))
+            n.chop(5);
+        return n;
+    };
+    auto iconHasInk = [](const QIcon &ic) -> bool {
+        const QImage img = ic.pixmap(QSize(20, 20)).toImage().convertToFormat(QImage::Format_ARGB32);
+        if (img.isNull())
+            return false;
+        int ink = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x)
+                if (qAlpha(img.pixel(x, y)) > 64)
+                    ++ink;
+        return ink >= 12;
+    };
+
+    // ---------------- 70b: key actions ----------------
+    ModernUiTheme::upgradeAllWindowIcons(mw);
+    {
+        struct KeyAction {
+            const char *objectName;
+            bool mustExist;
+        };
+        const KeyAction keys[] = {
+            { "actionNewProject", true },   { "actionOpen", true },
+            { "actionSaveProject", true },  { "actionUndo", true },
+            { "actionRedo", true },         { "actionCutSelection", true },
+            { "actionCopySelection", true }, { "actionPasteSelection", true },
+            { "actionNewTable", true },     { "actionNewGraph", true },
+            { "actionNewMatrix", true },    { "actionNewNote", true },
+            { "actionShowLog", true },      { "actionShowExplorer", true },
+            { "actionUnzoom", true },       { "actionNewLegend", true },
+            { "actionAddImage", true },     { "actionToggleGraphInspector", true },
+            { "actionPlotHorSteps", false }, { "actionPerspective", false },
+            { "actionResetRotation", false }, { "actionFitFrame", false },
+            { "actionAnimate", false },
+        };
+        int checked = 0;
+        for (const KeyAction &k : keys) {
+            QAction *a = mw->findChild<QAction *>(QString::fromLatin1(k.objectName));
+            if (!a) {
+                if (k.mustExist)
+                    std::cerr << "[FAIL] 70b: action " << k.objectName << " not found\n";
+                CHECK_COND(!k.mustExist, "70b: key action missing");
+                continue;
+            }
+            const QString id = iconId(a->icon());
+            if (a->icon().isNull() || !registered.contains(id) || !iconHasInk(a->icon())) {
+                std::cerr << "[FAIL] 70b: " << k.objectName << " icon='" << id.toStdString()
+                          << "' null=" << a->icon().isNull() << "\n";
+            }
+            CHECK_COND(!a->icon().isNull(), "70b: key action has no icon");
+            CHECK_COND(registered.contains(id), "70b: key action icon is not a duotone id");
+            CHECK_COND(iconHasInk(a->icon()), "70b: key action icon renders empty");
+            ++checked;
+        }
+        CHECK_COND(checked >= 18, "70b: too few key actions checked");
+        // A few semantic choices that used to fall back to the generic graph icon.
+        auto idOf = [&](const char *nm) {
+            QAction *a = mw->findChild<QAction *>(QString::fromLatin1(nm));
+            return a ? iconId(a->icon()) : QString();
+        };
+        CHECK_COND(idOf("actionOpen") == QStringLiteral("file-open"), "70b: Open icon");
+        CHECK_COND(idOf("actionUndo") == QStringLiteral("undo"), "70b: Undo icon");
+        CHECK_COND(idOf("actionNewTable") == QStringLiteral("new-table"), "70b: New Table icon");
+    }
+
+    // ---------------- 70c: menus, ribbon, mini toolbar, inspector ----------------
+    QStringList offenders;
+    auto checkAction = [&](QAction *a, const QString &where, bool nameless_is_error) {
+        if (!a || a->isSeparator() || a->icon().isNull())
+            return;
+        const QString id = iconId(a->icon());
+        if (id.isEmpty()) {
+            if (nameless_is_error)
+                offenders << where + QStringLiteral(": nameless raster icon on '") + a->text()
+                                + QStringLiteral("'");
+            return;
+        }
+        if (!registered.contains(id))
+            offenders << where + QStringLiteral(": '") + id + QStringLiteral("' on '") + a->text()
+                            + QStringLiteral("'");
+    };
+    std::function<void(QMenu *, const QString &, int)> walkMenu = [&](QMenu *m, const QString &where,
+                                                                      int depth) {
+        if (!m || depth > 6)
+            return;
+        for (QAction *a : m->actions()) {
+            checkAction(a, where, true);
+            if (QMenu *sub = a->menu())
+                walkMenu(sub, where + QStringLiteral(" > ") + sub->title(), depth + 1);
+        }
+    };
+    int menuIcons = 0;
+    if (QMenuBar *mb = mw->menuBar()) {
+        for (QAction *top : mb->actions()) {
+            if (QMenu *m = top->menu()) {
+                walkMenu(m, m->title(), 0);
+                for (QAction *a : m->actions())
+                    if (!a->icon().isNull())
+                        ++menuIcons;
+            }
+        }
+    }
+    CHECK_COND(menuIcons >= 20, "70c: the main menus show almost no icons");
+
+    int ribbonIcons = 0;
+    if (ModernRibbonBar *ribbon = mw->modernRibbonBar()) {
+        for (QToolButton *b : ribbon->findChildren<QToolButton *>()) {
+            if (b->icon().isNull())
+                continue;
+            const QString id = iconId(b->icon());
+            if (id.isEmpty())
+                continue; // colour swatches and similar painted icons
+            if (!registered.contains(id))
+                offenders << QStringLiteral("ribbon: '") + id + QStringLiteral("' on '")
+                                + b->text() + QStringLiteral("'");
+            else
+                ++ribbonIcons;
+        }
+        for (QMenu *m : ribbon->findChildren<QMenu *>())
+            walkMenu(m, QStringLiteral("ribbon menu ") + m->title(), 0);
+    }
+    CHECK_COND(ribbonIcons >= 20, "70c: the ribbon shows too few duotone icons");
+
+    Table *t70 = mw->newTable("T70", 5, 2);
+    CHECK_COND(t70 != nullptr, "70c: table");
+    for (int r = 0; r < 5; ++r) {
+        t70->setCell(r, 0, r);
+        t70->setCell(r, 1, r * r);
+    }
+    MultiLayer *ml70 = mw->newGraph("G70");
+    CHECK_COND(ml70 && ml70->activeGraph(), "70c: graph");
+    Graph *g70 = ml70->activeGraph();
+    CHECK_COND(g70->insertCurve(t70, "T70_1", "T70_2", Graph::LineSymbols), "70c: curve");
+    QApplication::processEvents();
+
+    {
+        const bool wasEnabled = GraphMiniToolbar::isMiniToolbarEnabled();
+        GraphMiniToolbar::setMiniToolbarEnabled(true);
+        GraphMiniToolbar *mtb = GraphMiniToolbar::instance();
+        CHECK_COND(mtb != nullptr, "70c: mini toolbar instance");
+        // The pop-up is suppressed in non-interactive mode and normally waits for a timer;
+        // lift the flag and fire the timer slot directly so the buttons are built now.
+        qApp->setProperty("torigraph_noninteractive", QVariant());
+        auto countMini = [&](const QString &where) {
+            int n = 0;
+            for (QToolButton *b : mtb->findChildren<QToolButton *>()) {
+                if (b->icon().isNull())
+                    continue;
+                const QString id = iconId(b->icon());
+                if (id.isEmpty())
+                    continue; // colour swatch / painted symbol preview
+                if (!registered.contains(id))
+                    offenders << where + QStringLiteral(": '") + id + QStringLiteral("'");
+                else
+                    ++n;
+            }
+            return n;
+        };
+        ml70->showNormal();
+        QApplication::processEvents();
+        mtb->popupForCanvas(g70, QPoint(240, 240));
+        QMetaObject::invokeMethod(mtb, "onPopupTimerTimeout", Qt::DirectConnection);
+        QApplication::processEvents();
+        const int canvasIcons = countMini(QStringLiteral("mini toolbar (canvas)"));
+        mtb->popupForCurve(g70, 0, QPoint(240, 240));
+        QMetaObject::invokeMethod(mtb, "onPopupTimerTimeout", Qt::DirectConnection);
+        QApplication::processEvents();
+        const int curveIcons = countMini(QStringLiteral("mini toolbar (curve)"));
+        mtb->hide();
+        qApp->setProperty("torigraph_noninteractive", true);
+        GraphMiniToolbar::setMiniToolbarEnabled(wasEnabled);
+        std::cout << "[INFO] 70c mini toolbar duotone icons: canvas=" << canvasIcons
+                  << " curve=" << curveIcons << std::endl;
+        CHECK_COND(canvasIcons >= 3 && curveIcons >= 2,
+                   "70c: the mini toolbar shows too few duotone icons");
+    }
+
+    {
+        GraphInspectorDock *dock = mw->graphInspectorDock();
+        CHECK_COND(dock != nullptr, "70c: inspector dock");
+        int inspIcons = 0;
+        for (QAbstractButton *b : dock->findChildren<QAbstractButton *>()) {
+            if (b->icon().isNull())
+                continue;
+            const QString id = iconId(b->icon());
+            if (id.isEmpty())
+                continue; // colour swatch
+            if (!registered.contains(id))
+                offenders << QStringLiteral("inspector: '") + id + QStringLiteral("' on '")
+                                + b->objectName() + QStringLiteral("'");
+            else
+                ++inspIcons;
+        }
+        for (QTreeWidget *tw : dock->findChildren<QTreeWidget *>()) {
+            QTreeWidgetItemIterator it(tw);
+            while (*it) {
+                const QIcon ic = (*it)->icon(0);
+                const QString id = iconId(ic);
+                if (!ic.isNull() && !id.isEmpty() && !registered.contains(id))
+                    offenders << QStringLiteral("inspector tree: '") + id + QStringLiteral("'");
+                ++it;
+            }
+        }
+        CHECK_COND(inspIcons >= 3, "70c: the inspector shows too few duotone icons");
+    }
+
+    for (const QString &o : offenders)
+        std::cerr << "[FAIL] 70c: " << o.toUtf8().constData() << "\n";
+    CHECK_COND(offenders.isEmpty(), "70c: icons outside the duotone registry are still shown");
+
+    // ---------------- 70d: column / table decoration icons ----------------
+    {
+        Column *c0 = t70->column(0);
+        CHECK_COND(c0 != nullptr, "70d: column");
+        CHECK_COND(iconId(c0->icon()) == QStringLiteral("row-numbers"),
+                   "70d: numeric column icon is not the duotone row-numbers icon");
+        CHECK_COND(iconHasInk(c0->icon()), "70d: numeric column icon renders empty");
+        CHECK_COND(registered.contains(iconId(IconLoader::load(QStringLiteral("formula")))),
+                   "70d: formula icon");
+    }
+
+    // ---------------- 70e: no fallback guesses ----------------
+    {
+        const QStringList unresolved = IconLoader::unresolvedIconNames();
+        for (const QString &u : unresolved)
+            std::cerr << "[FAIL] 70e: icon name without a registered id or alias: '"
+                      << u.toUtf8().constData() << "'\n";
+        CHECK_COND(unresolved.isEmpty(), "70e: some icon names fell back to a keyword guess");
+    }
+
+    // ---------------- 70f: dark OS palette does not leak ----------------
+    {
+        const QPalette before = qApp->palette();
+        QPalette dark = before;
+        dark.setColor(QPalette::Window, QColor(0x20, 0x20, 0x20));
+        dark.setColor(QPalette::WindowText, QColor(0xF0, 0xF0, 0xF0));
+        dark.setColor(QPalette::Base, QColor(0x10, 0x10, 0x10));
+        dark.setColor(QPalette::Text, QColor(0xF0, 0xF0, 0xF0));
+        dark.setColor(QPalette::Button, QColor(0x30, 0x30, 0x30));
+        dark.setColor(QPalette::ButtonText, QColor(0xF0, 0xF0, 0xF0));
+        dark.setColor(QPalette::ToolTipBase, QColor(0x20, 0x20, 0x20));
+        dark.setColor(QPalette::ToolTipText, QColor(0x20, 0x20, 0x20));
+        qApp->setPalette(dark);
+        ModernUiTheme::applyModernTheme(qApp);
+        const QPalette pinned = qApp->palette();
+        auto lum = [](const QColor &c) {
+            auto ch = [](double v) {
+                v /= 255.0;
+                return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue());
+        };
+        auto contrast = [&](const QColor &a, const QColor &b) {
+            const double la = lum(a), lb = lum(b);
+            return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+        };
+        const bool lightWindow = pinned.color(QPalette::Window).lightness() >= 230
+                && pinned.color(QPalette::Base).lightness() >= 240;
+        const double cText = contrast(pinned.color(QPalette::Window), pinned.color(QPalette::WindowText));
+        const double cBase = contrast(pinned.color(QPalette::Base), pinned.color(QPalette::Text));
+        const double cButton = contrast(pinned.color(QPalette::Button), pinned.color(QPalette::ButtonText));
+        const double cTip = contrast(pinned.color(QPalette::ToolTipBase), pinned.color(QPalette::ToolTipText));
+        const bool tooltipQss = qApp->styleSheet().contains(QStringLiteral("QToolTip"));
+        const bool menuQss = qApp->styleSheet().contains(QStringLiteral("QMenu {"));
+        // A message box is a Qt widget dialog and must follow the pinned palette.
+        QMessageBox box(QMessageBox::Information, QStringLiteral("T"), QStringLiteral("text"));
+        const QPalette boxPal = box.palette();
+        const bool boxLight = boxPal.color(QPalette::Window).lightness() >= 230
+                && contrast(boxPal.color(QPalette::Window), boxPal.color(QPalette::WindowText)) >= 7.0;
+        qApp->setPalette(before);
+        CHECK_COND(lightWindow, "70f: a dark incoming palette leaked into the theme");
+        CHECK_COND(cText >= 7.0 && cBase >= 7.0 && cButton >= 7.0,
+                   "70f: window / base / button text contrast below 7:1");
+        CHECK_COND(cTip >= 7.0, "70f: tooltip text contrast below 7:1");
+        CHECK_COND(tooltipQss && menuQss, "70f: tooltips and menus are not styled by the theme");
+        CHECK_COND(boxLight, "70f: QMessageBox does not use the light palette");
+    }
+
+    if (ml70) {
+        ml70->askOnCloseEvent(false);
+        ml70->close();
+    }
+    if (t70) {
+        t70->askOnCloseEvent(false);
+        t70->close();
+    }
+    QApplication::processEvents();
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 70 icon clean-up and light theme passed!\n";
     return 0;
 }

@@ -986,7 +986,7 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
                                  showTextDialog();
                          });
             if (curveSel || markerSel) {
-                cm.addAction(IconLoader::load(":/close.xpm"), tr("Delete Selection"), this,
+                cm.addAction(IconLoader::load("close"), tr("Delete Selection"), this,
                              [this, safeG, safeMl, curveSel, primary]() {
                                  if (!safeG || !safeMl)
                                      return;
@@ -1060,23 +1060,23 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
 
     if (copiedLayer) {
         cm.addSeparator();
-        cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Layer"), this,
+        cm.addAction(IconLoader::load("paste"), tr("&Paste Layer"), this,
                      SLOT(pasteSelection()));
     } else if (copiedMarkerType >= 0) {
         cm.addSeparator();
         if (copiedMarkerType == Graph::Text)
-            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Text"), plot,
+            cm.addAction(IconLoader::load("paste"), tr("&Paste Text"), plot,
                          SIGNAL(pasteMarker()));
         else if (copiedMarkerType == Graph::Arrow)
-            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Line/Arrow"), plot,
+            cm.addAction(IconLoader::load("paste"), tr("&Paste Line/Arrow"), plot,
                          SIGNAL(pasteMarker()));
         else if (copiedMarkerType == Graph::Image)
-            cm.addAction(IconLoader::load("edit-paste"), tr("&Paste Image"), plot,
+            cm.addAction(IconLoader::load("paste"), tr("&Paste Image"), plot,
                          SIGNAL(pasteMarker()));
     }
     cm.addSeparator();
     QMenu *copy = cm.addMenu(tr("&Copy"));
-    copy->setIcon(IconLoader::load("edit-copy"));
+    copy->setIcon(IconLoader::load("copy"));
     copy->addAction(actionCopyGraphOle);
     copy->addAction(actionCopyPageImage);
     copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
@@ -1089,17 +1089,17 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
     exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
 
     QMenu *prints = cm.addMenu(tr("&Print"));
-    prints->setIcon(IconLoader::load(":/fileprint.xpm"));
+    prints->setIcon(IconLoader::load("print"));
     prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
     prints->addAction(tr("&Window"), plot, SLOT(print()));
 
     cm.addSeparator();
-    cm.addAction(IconLoader::load(":/resize.xpm"), tr("&Geometry..."), plot,
+    cm.addAction(IconLoader::load("fit-page"), tr("&Geometry..."), plot,
                  SIGNAL(showGeometryDialog()));
     cm.addAction(tr("Layer P&roperties..."), this, SLOT(showGeneralPlotDialog()));
     if (!fromLayerButton) {
         cm.addSeparator();
-        cm.addAction(IconLoader::load(":/close.xpm"), tr("&Delete Layer"), plot,
+        cm.addAction(IconLoader::load("close"), tr("&Delete Layer"), plot,
                      SLOT(confirmRemoveLayer()));
     }
 }

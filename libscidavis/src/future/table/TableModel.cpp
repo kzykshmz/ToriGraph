@@ -30,6 +30,7 @@
 #include "core/column/Column.h"
 #include "table/future_Table.h"
 #include "table/TableModel.h"
+#include "IconLoader.h"
 #include <QString>
 #include <QBrush>
 #include <QIcon>
@@ -133,7 +134,7 @@ QVariant TableModel::data(const QModelIndex &index, int role) const
         return QVariant(col_ptr->formula(row));
     case Qt::DecorationRole:
         if (d_formula_mode)
-            return QIcon(QPixmap(":/equals.png"));
+            return IconLoader::load("formula");
         break;
     }
 
