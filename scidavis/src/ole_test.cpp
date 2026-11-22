@@ -13346,7 +13346,11 @@ static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw)
         }
         CHECK_COND(openedOleEditor != nullptr,
                    "Suite 51e: DoVerb did not open ToriGraph [PowerPoint OLE] editor window!");
-        MyWidget *activeInEditor = qobject_cast<MyWidget *>(openedOleEditor->d_workspace.activeSubWindow());
+        // currentSubWindow(), not activeSubWindow(): QMdiArea reports an active subwindow only
+        // while its top-level window is the active (foreground) window, which Windows may refuse
+        // when another program has the focus (another test run, an editor). The current subwindow
+        // is the one DoVerb selected in either case.
+        MyWidget *activeInEditor = qobject_cast<MyWidget *>(openedOleEditor->d_workspace.currentSubWindow());
         CHECK_COND(activeInEditor != nullptr && activeInEditor->name() == QStringLiteral("Fig-2"),
                    "Suite 51e: DoVerb in multi-graph project failed to activate target 'Fig-2' after show()!");
 
