@@ -226,6 +226,11 @@ foreach ($doc in @("LICENSE", "README.md")) {
     $srcDoc = Join-Path $repoRoot $doc
     if (Test-Path $srcDoc) { Copy-Item -Force $srcDoc $stageDir }
 }
+# Built-in Japanese quick guide opened by F1 (ApplicationWindow::showHelp looks for manual\index.html)
+$manualSrc = Join-Path $repoRoot "manual"
+$manualDst = Join-Path $stageDir "manual"
+New-Item -ItemType Directory -Force -Path $manualDst | Out-Null
+Copy-Item -Recurse -Force (Join-Path $manualSrc "*") $manualDst
 
 # 9. Quick standalone smoke check (verify staged files & no immediate DLL load crash)
 Write-Host "==> Running staged payload verification..."
@@ -235,7 +240,8 @@ $requiredRel = @(
     "plugins\platforms\qwindows.dll",
     "scripts\register-ole.ps1",
     "scripts\install-python-sdk.ps1",
-    "python\torigraph\__init__.py"
+    "python\torigraph\__init__.py",
+    "manual\index.html"
 )
 foreach ($rel in $requiredRel) {
     $full = Join-Path $stageDir $rel
