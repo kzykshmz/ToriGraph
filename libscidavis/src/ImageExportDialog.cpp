@@ -30,6 +30,8 @@
  ***************************************************************************/
 #include "ImageExportDialog.h"
 #include "ApplicationWindow.h"
+#include "MultiLayer.h"
+#include "I18nJapanese.h"
 
 #include <QStackedWidget>
 #include <QImageWriter>
@@ -40,36 +42,175 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QCloseEvent>
+#include <QMdiSubWindow>
+#include <cmath>
+
+namespace {
+void registerImageExportDialogTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("PNG: slides, Word and web (raster, lossless).",
+        "PNG: スライド・Word・Web 用 (画像、劣化なし)。");
+    reg("TIFF: raster figures for journal submission (LZW, lossless).",
+        "TIFF: 論文投稿用の画像 (LZW 圧縮、劣化なし)。");
+    reg("PDF: vector, for papers and LaTeX; lines and text stay sharp at any size.",
+        "PDF: ベクター。論文・LaTeX 用。拡大しても線と文字がにじみません。");
+    reg("SVG: vector, for editing in Inkscape or Illustrator.",
+        "SVG: ベクター。Inkscape や Illustrator で編集する用。");
+    reg("EMF: vector for Word and PowerPoint on Windows.",
+        "EMF: Windows の Word・PowerPoint 用のベクター。");
+    reg("Size: %1 mm x %2 mm, %3 dpi -> %4 x %5 px",
+        "寸法: 幅 %1 mm × 高さ %2 mm、%3 dpi → %4 × %5 px");
+    reg("Size: %1 mm x %2 mm (vector, no pixel size)",
+        "寸法: 幅 %1 mm × 高さ %2 mm (ベクター形式なので画素数はありません)");
+    reg("Each graph is exported at its own page size.", "各グラフは自分のページ寸法で出力します。");
+    reg("No physical page size is set (pixel page at 96 dpi). Apply a preset to fix the size in mm.",
+        "物理寸法が未設定です (96 dpi のピクセルページ)。mm で寸法を決めるにはプリセットを適用してください。");
+    reg("Export DPI:", "出力解像度 (DPI):");
+}
+
+//! The graph the dialog is about (active MDI window), if it is a 2D graph.
+MultiLayer *activeGraphWindow(QObject *parentObj)
+{
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentObj);
+    if (!app)
+        return nullptr;
+    return qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow());
+}
+
+//! Page size of \a ml in millimetres; returns false for an empty graph.
+bool graphPageSizeMm(MultiLayer *ml, double *wMm, double *hMm, bool *physical)
+{
+    if (!ml)
+        return false;
+    const MultiLayer::PageUnit unit = ml->pageUnit();
+    double w = ml->pageWidthPhysical();
+    double h = ml->pageHeightPhysical();
+    *physical = (unit != MultiLayer::UnitPx);
+    switch (unit) {
+    case MultiLayer::UnitMm:
+        break;
+    case MultiLayer::UnitCm:
+        w *= 10.0;
+        h *= 10.0;
+        break;
+    case MultiLayer::UnitInch:
+        w *= 25.4;
+        h *= 25.4;
+        break;
+    case MultiLayer::UnitPx:
+    default: {
+        QWidget *cv = ml->canvasWidget();
+        const double z = qMax(0.25, ml->pageZoom());
+        if (cv && cv->width() > 10 && cv->height() > 10) {
+            w = double(cv->width()) / z;
+            h = double(cv->height()) / z;
+        }
+        w = w * 25.4 / 96.0;
+        h = h * 25.4 / 96.0;
+        break;
+    }
+    }
+    if (!(w > 0.5) || !(h > 0.5))
+        return false;
+    *wMm = w;
+    *hMm = h;
+    return true;
+}
+} // namespace
+
+QStringList ImageExportDialog::supportedFilters()
+{
+    // B9: only the formats a lab member actually needs; Qt's long list (ICO, XBM, ...) and
+    // EPS/PS (which Qt 5 cannot write; it silently produced a PDF) are gone.
+    QStringList filters;
+    filters << QStringLiteral("*.png") << QStringLiteral("*.tif") << QStringLiteral("*.pdf")
+            << QStringLiteral("*.svg");
+#ifdef Q_OS_WIN
+    filters << QStringLiteral("*.emf");
+#endif
+    return filters;
+}
+
+QString ImageExportDialog::normalizedFilter(const QString &filter)
+{
+    const QString f = filter.trimmed().toLower();
+    const QStringList all = supportedFilters();
+    for (const QString &cand : all) {
+        const QString ext = cand.mid(1); // ".png"
+        if (f == cand || f == ext || f.endsWith(ext) || f.contains(cand))
+            return cand;
+    }
+    if (f.contains(QLatin1String(".tiff")))
+        return QStringLiteral("*.tif");
+    return QStringLiteral("*.png");
+}
+
+QString ImageExportDialog::formatDescription(const QString &filter)
+{
+    registerImageExportDialogTranslationsOnce();
+    const QString f = normalizedFilter(filter);
+    if (f == QLatin1String("*.tif"))
+        return tr("TIFF: raster figures for journal submission (LZW, lossless).");
+    if (f == QLatin1String("*.pdf"))
+        return tr("PDF: vector, for papers and LaTeX; lines and text stay sharp at any size.");
+    if (f == QLatin1String("*.svg"))
+        return tr("SVG: vector, for editing in Inkscape or Illustrator.");
+    if (f == QLatin1String("*.emf"))
+        return tr("EMF: vector for Word and PowerPoint on Windows.");
+    return tr("PNG: slides, Word and web (raster, lossless).");
+}
+
+QString ImageExportDialog::sizeSummary(double wMm, double hMm, int dpi, bool raster)
+{
+    registerImageExportDialogTranslationsOnce();
+    const QString wS = QString::number(wMm, 'f', 1);
+    const QString hS = QString::number(hMm, 'f', 1);
+    if (!raster)
+        return tr("Size: %1 mm x %2 mm (vector, no pixel size)")
+                .arg(wS, hS);
+    const int pxW = qMax(1, int(std::lround(wMm / 25.4 * double(dpi))));
+    const int pxH = qMax(1, int(std::lround(hMm / 25.4 * double(dpi))));
+    return tr("Size: %1 mm x %2 mm, %3 dpi -> %4 x %5 px")
+            .arg(wS, hS)
+            .arg(dpi)
+            .arg(pxW)
+            .arg(pxH);
+}
 
 ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool extended,
                                      Qt::WindowFlags flags)
     : ExtensibleFileDialog(parent, extended, flags)
 {
+    registerImageExportDialogTranslationsOnce();
     setWindowTitle(tr("Choose a filename to save under"));
     setAcceptMode(QFileDialog::AcceptSave);
 
-    QList<QByteArray> list = QImageWriter::supportedImageFormats();
-    list << "EPS";
-    list << "PS";
-    list << "PDF";
-#if QT_VERSION >= 0x040300
-    list << "SVG";
-#endif
-#ifdef Q_OS_WIN
-    list << "EMF";
-#endif
-
-    QStringList filters;
-    for (int i = 0; i < list.count(); i++)
-        filters << "*." + list[i].toLower();
-
-    filters.sort();
-    setNameFilters(filters);
+    setNameFilters(supportedFilters());
     setFileMode(QFileDialog::AnyFile);
 
     initAdvancedOptions();
     d_vector_options->setEnabled(vector_options);
     setExtensionWidget(d_advanced_options);
+
+    // B9: always-visible line with the purpose of the format and the resulting size.
+    d_info_label = new QLabel(this);
+    d_info_label->setWordWrap(true);
+    d_info_label->setObjectName(QStringLiteral("imageExportInfoLabel"));
+    if (QGridLayout *mainLayout = qobject_cast<QGridLayout *>(layout()))
+        mainLayout->addWidget(d_info_label, mainLayout->rowCount(), 0, 1,
+                              mainLayout->columnCount());
+    else if (layout())
+        layout()->addWidget(d_info_label);
+    connect(d_resolution, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { updateInfoLabel(); });
 
 #if QT_VERSION >= 0x040300
     connect(this, SIGNAL(filterSelected(const QString &)), this,
@@ -86,7 +227,13 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool 
 void ImageExportDialog::initAdvancedOptions()
 {
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
-    const int initDpi = (app && app->d_export_resolution > 0) ? app->d_export_resolution : 300;
+    // B2: start from the graph's page DPI when it has a physical page (e.g. 600 dpi for the
+    // ISIJ preset); otherwise from the last used value (default 600).
+    int initDpi = (app && app->d_export_resolution > 0) ? app->d_export_resolution : 600;
+    if (MultiLayer *ml = activeGraphWindow(app)) {
+        if (ml->pageUnit() != MultiLayer::UnitPx && ml->pageDpi() > 0)
+            initDpi = ml->pageDpi();
+    }
     const bool initColor = app ? app->d_export_color : true;
     const int initVecSize = app ? app->d_export_vector_size : int(QPageSize::Custom);
     const int initOrient = app ? app->d_export_orientation : int(QPageLayout::Portrait);
@@ -196,6 +343,8 @@ void ImageExportDialog::initAdvancedOptions()
 
     connect(d_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
             d_raster_resolution, &QSpinBox::setValue);
+    connect(d_raster_resolution, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { updateInfoLabel(); });
     connect(d_raster_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
             d_resolution, &QSpinBox::setValue);
 }
@@ -222,8 +371,43 @@ void ImageExportDialog::setTransparency(bool on)
         d_transparency->setChecked(on);
 }
 
+void ImageExportDialog::updateInfoLabel()
+{
+    if (!d_info_label)
+        return;
+    const QString filter = normalizedFilter(selectedNameFilter());
+    const bool raster = (filter == QLatin1String("*.png") || filter == QLatin1String("*.tif"));
+    QString text = formatDescription(filter);
+    if (fileMode() == QFileDialog::Directory) {
+        text += QStringLiteral("\n") + tr("Each graph is exported at its own page size.");
+    } else {
+        double wMm = 0.0, hMm = 0.0;
+        bool physical = false;
+        if (graphPageSizeMm(activeGraphWindow(parent()), &wMm, &hMm, &physical)) {
+            text += QStringLiteral("\n") + sizeSummary(wMm, hMm, resolution(), raster);
+            if (!physical)
+                text += QStringLiteral("\n")
+                        + tr("No physical page size is set (pixel page at 96 dpi). Apply a "
+                             "preset to fix the size in mm.");
+        }
+    }
+    d_info_label->setText(text);
+}
+
+QString ImageExportDialog::infoText() const
+{
+    return d_info_label ? d_info_label->text() : QString();
+}
+
+void ImageExportDialog::showEvent(QShowEvent *e)
+{
+    updateInfoLabel();
+    ExtensibleFileDialog::showEvent(e);
+}
+
 void ImageExportDialog::updateAdvancedOptions(const QString &filter)
 {
+    updateInfoLabel();
     if (filter.contains("*.svg", Qt::CaseInsensitive)
         || filter.contains("*.emf", Qt::CaseInsensitive)) {
         d_extension_toggle->setChecked(false);
@@ -231,9 +415,7 @@ void ImageExportDialog::updateAdvancedOptions(const QString &filter)
         return;
     }
     d_extension_toggle->setEnabled(true);
-    if (filter.contains("*.eps", Qt::CaseInsensitive)
-        || filter.contains("*.ps", Qt::CaseInsensitive)
-        || filter.contains("*.pdf", Qt::CaseInsensitive))
+    if (filter.contains("*.pdf", Qt::CaseInsensitive))
         d_advanced_options->setCurrentIndex(0);
     else {
         d_advanced_options->setCurrentIndex(1);
@@ -336,6 +518,9 @@ void ImageExportDialog::setOrientation(QPrinter::Orientation orientation)
 
 void ImageExportDialog::selectFilter(const QString &filter)
 {
-    QFileDialog::selectNameFilter(filter);
-    updateAdvancedOptions(filter);
+    // Settings from older builds may hold ".png", "*.jpg" or "*.eps": map them onto the
+    // supported list (PNG when nothing matches).
+    const QString f = normalizedFilter(filter);
+    QFileDialog::selectNameFilter(f);
+    updateAdvancedOptions(f);
 }

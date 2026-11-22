@@ -116,13 +116,41 @@ public:
         bool boldTitle = false;
         bool boldTick = false;
         bool boldLegend = false;
+        //! Target curve line width (px) / symbol size (px). Since E2 these are set values, not
+        //! minimums: switching presets moves them up or down. Curves whose width/size the user
+        //! changed by hand (i.e. not equal to the app default or any preset value) are left alone.
+        //! The member names are kept for Python/JSON compatibility.
         int minCurveWidth = 2;
         int minSymbolSize = 7;
         int legendFrame = 0; // Legend::FrameStyle
         QColor pageBackground = Qt::white;
         bool formatIsijUnitSlash = true;
         bool largeSlideLayout = false;
+        //! Presets read from the shared (lab) folder are read-only in this installation.
+        bool readOnly = false;
+        QString sourcePath;
     };
+
+    //! How a preset's page size is scaled when the graph has several panels (E7).
+    enum MultiPanelSizing {
+        PanelSizingPerPanel = 0, //!< page = preset width x columns, preset height x rows
+        PanelSizingTwoColumn175 = 1 //!< page width fixed to 175 mm (journal double column)
+    };
+    static int stylePresetFormatVersion() { return 2; }
+    //! Preset applied automatically to newly created graphs ("" or "none" = off).
+    static QString newGraphStylePresetId();
+    static void setNewGraphStylePresetId(const QString &id);
+    //! Optional shared folder whose *.json presets are merged read-only.
+    static QString sharedStylePresetsFolder();
+    static void setSharedStylePresetsFolder(const QString &folder);
+    static MultiPanelSizing multiPanelSizing();
+    static void setMultiPanelSizing(MultiPanelSizing mode);
+    //! Schedules the new-graph preset for the window owning  g (called from polishGraph).
+    static void requestNewGraphStylePreset(Graph *g);
+    //! Applies the new-graph preset now if one is pending; returns true if applied.
+    bool applyPendingNewGraphStylePreset();
+    //! Warnings from the last preset application (e.g. axis titles wider than the axis).
+    QStringList lastStylePresetWarnings() const { return d_last_preset_warnings; }
 
     void applyStylePreset(StylePreset preset);
     void applyStylePresetSpec(const GraphStylePresetSpec &spec);
@@ -389,6 +417,8 @@ private:
     double d_page_height_val = 520.0;
     QSize d_base_page_px = QSize(520, 520);
     QColor d_page_bg_color = QColor(Qt::white);
+    QStringList d_last_preset_warnings;
+    QString pageSetupTagsString(bool includeWindowSize) const;
     struct InsetSpec
     {
         QPointer<Graph> sourceLayer;

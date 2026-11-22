@@ -387,6 +387,7 @@ static void registerInspectorExtraTranslations()
         reg("GrayScale", "グレースケール");
         reg("Blue-White-Red", "青-白-赤");
         reg("Cool-Warm", "クール-ウォーム");
+        reg("Matplotlib (tab10)", "Matplotlib 既定色 (tab10)");
         reg("+ Link Top-X Axis (Arrhenius)", "+ 上X軸リンク (アレニウス等)");
         reg("Show Tick Numbers", "目盛り数値を表示");
         reg("Show Axis", "この軸を表示");
@@ -651,6 +652,21 @@ static double physicalValueToMm(double val, MultiLayer::PageUnit unit)
         return val * 25.4;
     }
     return val;
+}
+
+static double pageUnitToMmFactor(MultiLayer::PageUnit unit)
+{
+    switch (unit) {
+    case MultiLayer::UnitCm:
+        return 10.0;
+    case MultiLayer::UnitInch:
+        return 25.4;
+    case MultiLayer::UnitPx:
+        return 25.4 / 96.0;
+    case MultiLayer::UnitMm:
+    default:
+        return 1.0;
+    }
 }
 
 static bool isLegendEntryLine(const QString &line)
@@ -1546,12 +1562,22 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
 
     d_lbl_page_dpi = new QLabel(page);
     d_spin_page_dpi = new QSpinBox(page);
-    d_spin_page_dpi->setRange(72, 1200);
+    // E7: same upper limit as the export dialog and the preset editor.
+    d_spin_page_dpi->setRange(72, 2400);
     d_spin_page_dpi->setSingleStep(50);
     d_spin_page_dpi->setValue(300);
 
+    // E7: page size unit (mm / cm / in). The page keeps the unit chosen here instead of
+    // being rewritten to mm on every edit.
+    d_combo_page_unit = new QComboBox(page);
+    d_combo_page_unit->addItem(QStringLiteral("mm"), int(MultiLayer::UnitMm));
+    d_combo_page_unit->addItem(QStringLiteral("cm"), int(MultiLayer::UnitCm));
+    d_combo_page_unit->addItem(QStringLiteral("in"), int(MultiLayer::UnitInch));
+    d_combo_page_unit->setObjectName(QStringLiteral("inspectorPageUnitCombo"));
+
     sizeGrid->addWidget(d_lbl_page_w, 0, 0);
     sizeGrid->addWidget(d_spin_page_w_mm, 0, 1);
+    sizeGrid->addWidget(d_combo_page_unit, 0, 2, 2, 1, Qt::AlignVCenter);
     sizeGrid->addWidget(d_lbl_page_h, 1, 0);
     sizeGrid->addWidget(d_spin_page_h_mm, 1, 1);
     sizeGrid->addWidget(d_lbl_page_dpi, 2, 0);
@@ -1560,11 +1586,27 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     auto applyPageSize = [this]() {
         if (d_syncing_props || !d_target_ml)
             return;
+        const double unitF =
+                pageUnitToMmFactor(static_cast<MultiLayer::PageUnit>(inspectorPageUnit()));
+        d_spin_page_w_mm->setProperty("_mmValue", d_spin_page_w_mm->value() * unitF);
+        d_spin_page_h_mm->setProperty("_mmValue", d_spin_page_h_mm->value() * unitF);
         const QString before = d_target_ml->captureUndoSnapshot();
         d_target_ml->setPageSizePhysical(d_spin_page_w_mm->value(), d_spin_page_h_mm->value(),
-                                         MultiLayer::UnitMm, d_spin_page_dpi->value());
+                                         static_cast<MultiLayer::PageUnit>(inspectorPageUnit()),
+                                         d_spin_page_dpi->value());
         d_target_ml->pushUndoSnapshot(tr("Resize Page"), before, kMergePageDims);
     };
+    connect(d_combo_page_unit, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, applyPageSize](int) {
+                if (d_syncing_props)
+                    return;
+                const int newUnit = inspectorPageUnit();
+                // Keep the physical size: convert the shown values to the new unit.
+                const double wMm = d_spin_page_w_mm->property("_mmValue").toDouble();
+                const double hMm = d_spin_page_h_mm->property("_mmValue").toDouble();
+                configurePageSizeSpins(newUnit, wMm, hMm);
+                applyPageSize();
+            });
     connect(d_spin_page_w_mm, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [applyPageSize](double) { applyPageSize(); });
     connect(d_spin_page_h_mm, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -4956,6 +4998,41 @@ void GraphInspectorDock::removeSelectedObject()
     }
 }
 
+int GraphInspectorDock::inspectorPageUnit() const
+{
+    if (!d_combo_page_unit)
+        return int(MultiLayer::UnitMm);
+    return d_combo_page_unit->currentData().toInt();
+}
+
+void GraphInspectorDock::configurePageSizeSpins(int unitInt, double wMm, double hMm)
+{
+    const MultiLayer::PageUnit unit = static_cast<MultiLayer::PageUnit>(unitInt);
+    if (!d_spin_page_w_mm || !d_spin_page_h_mm)
+        return;
+    const double f = pageUnitToMmFactor(unit);
+    const QString suffix = (unit == MultiLayer::UnitCm)
+            ? QStringLiteral(" cm")
+            : (unit == MultiLayer::UnitInch ? QStringLiteral(" in") : QStringLiteral(" mm"));
+    const int decimals = (unit == MultiLayer::UnitMm) ? 1 : (unit == MultiLayer::UnitCm ? 2 : 3);
+    const double step = (unit == MultiLayer::UnitMm) ? 5.0 : (unit == MultiLayer::UnitCm ? 0.5 : 0.1);
+    for (QDoubleSpinBox *sb : { d_spin_page_w_mm, d_spin_page_h_mm }) {
+        QSignalBlocker blk(sb);
+        sb->setDecimals(decimals);
+        sb->setSingleStep(step);
+        sb->setSuffix(suffix);
+        sb->setRange(20.0 / f, 1000.0 / f);
+    }
+    {
+        QSignalBlocker bw(d_spin_page_w_mm);
+        QSignalBlocker bh(d_spin_page_h_mm);
+        d_spin_page_w_mm->setValue(wMm / f);
+        d_spin_page_h_mm->setValue(hMm / f);
+    }
+    d_spin_page_w_mm->setProperty("_mmValue", wMm);
+    d_spin_page_h_mm->setProperty("_mmValue", hMm);
+}
+
 void GraphInspectorDock::syncPageLayerControls()
 {
     if (!d_target_ml)
@@ -4980,8 +5057,15 @@ void GraphInspectorDock::syncPageLayerControls()
         if (d_chk_keep_aspect)
             d_chk_keep_aspect->setChecked(d_target_ml->keepAspectRatio());
 
-        d_spin_page_w_mm->setValue(wMm);
-        d_spin_page_h_mm->setValue(hMm);
+        const MultiLayer::PageUnit shownUnit = (d_target_ml->pageUnit() == MultiLayer::UnitPx)
+                ? MultiLayer::UnitMm
+                : d_target_ml->pageUnit();
+        if (d_combo_page_unit) {
+            QSignalBlocker bu(d_combo_page_unit);
+            const int uIdx = d_combo_page_unit->findData(int(shownUnit));
+            d_combo_page_unit->setCurrentIndex(uIdx >= 0 ? uIdx : 0);
+        }
+        configurePageSizeSpins(int(shownUnit), wMm, hMm);
         d_spin_page_dpi->setValue(d_target_ml->pageDpi());
         d_chk_page_view->setChecked(d_target_ml->pageViewMode());
 
@@ -6009,7 +6093,7 @@ void GraphInspectorDock::refreshPaletteSchemeCombo()
     for (const QString &nm : names)
         d_combo_series_scheme->addItem(tr(nm.toUtf8().constData()), nm);
 
-    int targetIdx = prevName.isEmpty() ? d_combo_series_scheme->findData(QStringLiteral("Okabe-Ito"))
+    int targetIdx = prevName.isEmpty() ? d_combo_series_scheme->findData(Graph::okabeItoPaletteName())
                                        : d_combo_series_scheme->findData(prevName);
     if (targetIdx < 0)
         targetIdx = 0;
@@ -6032,10 +6116,12 @@ void GraphInspectorDock::applyGroupAutoStyleFromUi()
 
     const bool cycleShapes = d_chk_cycle_sym_shapes && d_chk_cycle_sym_shapes->isChecked();
     const bool pairedHollow = d_chk_paired_hollow && d_chk_paired_hollow->isChecked();
+    const QString canonPal = Graph::canonicalPaletteName(palName);
     const bool isSequential =
-            (palName.compare(QStringLiteral("Viridis"), Qt::CaseInsensitive) == 0
-             || palName.compare(QStringLiteral("Plasma"), Qt::CaseInsensitive) == 0
-             || palName.compare(QStringLiteral("Cool-Warm"), Qt::CaseInsensitive) == 0);
+            (canonPal.compare(QStringLiteral("Viridis"), Qt::CaseInsensitive) == 0
+             || canonPal.compare(QStringLiteral("Plasma"), Qt::CaseInsensitive) == 0
+             || canonPal.compare(QStringLiteral("Inferno"), Qt::CaseInsensitive) == 0
+             || canonPal.compare(QStringLiteral("CoolWarm"), Qt::CaseInsensitive) == 0);
 
     static const QVector<QwtSymbol::Style> kShapeCycle = {
         QwtSymbol::Ellipse,   QwtSymbol::Rect,    QwtSymbol::UTriangle, QwtSymbol::DTriangle,

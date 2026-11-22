@@ -265,6 +265,9 @@ private:
     QDoubleSpinBox *d_spin_page_h_mm = nullptr;
     QLabel *d_lbl_page_dpi = nullptr;
     QSpinBox *d_spin_page_dpi = nullptr;
+    QComboBox *d_combo_page_unit = nullptr;
+    int inspectorPageUnit() const; // MultiLayer::PageUnit
+    void configurePageSizeSpins(int unit, double wMm, double hMm);
     QCheckBox *d_chk_page_view = nullptr;
     QLabel *d_lbl_page_zoom = nullptr;
     QComboBox *d_combo_page_zoom = nullptr;

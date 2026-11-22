@@ -6352,18 +6352,16 @@ void ApplicationWindow::loadImage(const QString &fn)
 
 void ApplicationWindow::polishGraph(Graph *g, int style)
 {
-    if (style == Graph::VerticalBars || style == Graph::HorizontalBars
-        || style == Graph::Histogram) {
-        QList<int> ticksList;
-        int ticksStyle = ScaleDraw::Out;
-        ticksList << ticksStyle << ticksStyle << ticksStyle << ticksStyle;
-        g->setMajorTicksType(ticksList);
-        g->setMinorTicksType(ticksList);
-    }
+    // E1: bar charts and histograms keep the configured (inward) tick direction like every
+    // other plot type; they are no longer forced to outward ticks.
     if (style == Graph::HorizontalBars) {
         g->setAxisTitle(0, tr("Y Axis Title"));
         g->setAxisTitle(1, tr("X Axis Title"));
     }
+    // E1: apply the "preset for new graphs" (default ISIJ 85 mm) once the graph window has been
+    // fully built. Pie, ternary and polar plots are skipped inside the request.
+    if (g)
+        MultiLayer::requestNewGraphStylePreset(g);
 }
 
 MultiLayer *ApplicationWindow::multilayerPlot(const QString &caption)
@@ -6576,6 +6574,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
         finalizePieGraphLegendAndLayout(ag, w, colList, startRow, endRow);
     else if (!ag->isTernaryPlot() && !ag->isPolarPlot())
         finalizeLastGraphSettings(g);
+    g->applyPendingNewGraphStylePreset(); // E1: apply the new-graph preset now
     customMenu(g);
 
     emit modified();
@@ -6664,6 +6663,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
             finalizePieGraphLegendAndLayout(ag, w, pieCol, 0, -1);
         }
     }
+    g->applyPendingNewGraphStylePreset(); // E1: apply the new-graph preset now
     customMenu(g);
     emit modified();
     return g;
@@ -6727,6 +6727,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
     ag->updatePlot();
     g->arrangeLayers(true, false);
     finalizeLastGraphSettings(g);
+    g->applyPendingNewGraphStylePreset(); // E1: apply the new-graph preset now
     customMenu(g);
     emit modified();
     QApplication::restoreOverrideCursor();
@@ -9351,8 +9352,15 @@ void ApplicationWindow::readSettings()
     settings.endGroup(); // Ticks
 
     settings.beginGroup("/Legend");
-    legendFrameStyle = migrateToriGraphStyle ? int(Legend::Line)
-                                             : settings.value("/FrameStyle", Legend::Line).toInt();
+    // E1: the default legend has no frame (matches the ISIJ preset). Settings saved by older
+    // builds always stored the old boxed default; migrate it once.
+    legendFrameStyle = migrateToriGraphStyle ? int(Legend::None)
+                                             : settings.value("/FrameStyle", Legend::None).toInt();
+    if (!settings.value("/FrameStyleMigratedNone", false).toBool()) {
+        if (legendFrameStyle == int(Legend::Line))
+            legendFrameStyle = int(Legend::None);
+        settings.setValue("/FrameStyleMigratedNone", true);
+    }
     legendTextColor = QColor(COLORVALUE(
             settings.value("/TextColor", "#ff000000").toString())); // default color Qt::black
     legendBackground = QColor(COLORVALUE(
@@ -9489,7 +9497,14 @@ void ApplicationWindow::readSettings()
     d_image_export_filter = settings.value("/ImageFileTypeFilter", ".png").toString();
     d_export_transparency = settings.value("/ExportTransparency", false).toBool();
     d_export_quality = settings.value("/ImageQuality", 100).toInt();
-    d_export_resolution = settings.value("/Resolution", 72).toInt();
+    // B2: publication default is 600 dpi. Settings written by older builds stored the old
+    // 72 dpi default; migrate that value once (a deliberate 72 chosen later is kept).
+    d_export_resolution = settings.value("/Resolution", 600).toInt();
+    if (!settings.value("/ResolutionMigrated600", false).toBool()) {
+        if (d_export_resolution == 72)
+            d_export_resolution = 600;
+        settings.setValue("/ResolutionMigrated600", true);
+    }
     d_export_color = settings.value("/ExportColor", true).toBool();
     d_export_vector_size = settings.value("/ExportPageSize", QPrinter::Custom).toInt();
     d_keep_plot_aspect = settings.value("/KeepAspect", true).toBool();
@@ -11763,6 +11778,13 @@ void ApplicationWindow::exportPDF()
     if (w->inherits("MultiLayer") && ((MultiLayer *)w)->isEmpty()) {
         QMessageBox::warning(this, tr("Warning"),
                              tr("<h4>There are no plot layers available in this window.</h4>"));
+        return;
+    }
+
+    // B9: graphs go through the image export dialog (size/dpi summary, PDF preselected).
+    if (w->inherits("MultiLayer")) {
+        d_image_export_filter = QStringLiteral("*.pdf");
+        exportGraph();
         return;
     }
 

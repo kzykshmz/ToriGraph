@@ -40,6 +40,8 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QLocale>
+#include <QValidator>
 #include <QFontDialog>
 #include <QFont>
 #include <QMessageBox>
@@ -48,6 +50,77 @@
 #include <cmath>
 
 namespace {
+
+//! E7: integer pixel spin box that can show/enter its value in millimetres. The stored value
+//! (value()/setValue()) stays in screen pixels (1 px = 1/96 in at 100 % zoom), so all callers
+//! keep working; only the display changes.
+class PxMmSpinBox : public QSpinBox
+{
+public:
+    explicit PxMmSpinBox(QWidget *parent = nullptr) : QSpinBox(parent) { }
+    void setMmMode(bool on)
+    {
+        if (d_mm == on)
+            return;
+        d_mm = on;
+        setSuffix(on ? QStringLiteral(" mm") : d_px_suffix);
+        setSingleStep(on ? 4 : d_px_step); // 4 px ~ 1.06 mm
+        lineEdit()->setText(textFromValue(value()));
+    }
+    bool mmMode() const { return d_mm; }
+    void setPixelSuffixAndStep(const QString &suffix, int step)
+    {
+        d_px_suffix = suffix;
+        d_px_step = step;
+        if (!d_mm) {
+            setSuffix(suffix);
+            setSingleStep(step);
+        }
+    }
+    static double pxToMm(int px) { return double(px) * 25.4 / 96.0; }
+    static int mmToPx(double mm) { return int(std::lround(mm * 96.0 / 25.4)); }
+
+protected:
+    QString textFromValue(int v) const override
+    {
+        if (!d_mm)
+            return QSpinBox::textFromValue(v);
+        return QLocale().toString(pxToMm(v), 'f', 1);
+    }
+    int valueFromText(const QString &text) const override
+    {
+        if (!d_mm)
+            return QSpinBox::valueFromText(text);
+        QString t = text;
+        t.remove(suffix());
+        bool ok = false;
+        double mm = QLocale().toDouble(t.trimmed(), &ok);
+        if (!ok)
+            mm = t.trimmed().toDouble(&ok);
+        return ok ? mmToPx(mm) : value();
+    }
+    QValidator::State validate(QString &input, int &pos) const override
+    {
+        if (!d_mm)
+            return QSpinBox::validate(input, pos);
+        Q_UNUSED(pos);
+        QString t = input;
+        t.remove(suffix());
+        t = t.trimmed();
+        if (t.isEmpty())
+            return QValidator::Intermediate;
+        bool ok = false;
+        QLocale().toDouble(t, &ok);
+        if (!ok)
+            t.toDouble(&ok);
+        return ok ? QValidator::Acceptable : QValidator::Intermediate;
+    }
+
+private:
+    bool d_mm = false;
+    QString d_px_suffix;
+    int d_px_step = 5;
+};
 
 void registerLayerDialogTranslations()
 {
@@ -65,6 +138,7 @@ void registerLayerDialogTranslations()
         "Are you sure you want to delete these layers and their curves?",
         "削除対象の %2 レイヤのうち %1 レイヤに合計 %3 個のプロットが含まれています。\n"
         "これらのレイヤと曲線を削除してもよろしいですか？");
+    reg("Units", "単位");
 }
 
 } // namespace
@@ -144,56 +218,66 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
 
     QGridLayout *gl5 = new QGridLayout(GroupCanvasSize);
     gl5->addWidget(new QLabel(tr("Width")), 0, 0);
-    boxCanvasWidth = new QSpinBox();
+    boxCanvasWidth = new PxMmSpinBox();
     boxCanvasWidth->setRange(0, 10000);
-    boxCanvasWidth->setSingleStep(50);
-    boxCanvasWidth->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxCanvasWidth)->setPixelSuffixAndStep(tr(" pixels"), 50);
     gl5->addWidget(boxCanvasWidth, 0, 1);
     gl5->addWidget(new QLabel(tr("Height")), 1, 0);
-    boxCanvasHeight = new QSpinBox();
+    boxCanvasHeight = new PxMmSpinBox();
     boxCanvasHeight->setRange(0, 10000);
-    boxCanvasHeight->setSingleStep(50);
-    boxCanvasHeight->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxCanvasHeight)->setPixelSuffixAndStep(tr(" pixels"), 50);
     gl5->addWidget(boxCanvasHeight, 1, 1);
 
     QGroupBox *gb4 = new QGroupBox(tr("Spacing"));
     QGridLayout *gl4 = new QGridLayout(gb4);
     gl4->addWidget(new QLabel(tr("Columns gap")), 0, 0);
-    boxColsGap = new QSpinBox();
+    boxColsGap = new PxMmSpinBox();
     boxColsGap->setRange(0, 1000);
-    boxColsGap->setSingleStep(5);
-    boxColsGap->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxColsGap)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxColsGap, 0, 1);
     gl4->addWidget(new QLabel(tr("Rows gap")), 1, 0);
-    boxRowsGap = new QSpinBox();
+    boxRowsGap = new PxMmSpinBox();
     boxRowsGap->setRange(0, 1000);
-    boxRowsGap->setSingleStep(5);
-    boxRowsGap->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxRowsGap)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxRowsGap, 1, 1);
     gl4->addWidget(new QLabel(tr("Left margin")), 2, 0);
-    boxLeftSpace = new QSpinBox();
+    boxLeftSpace = new PxMmSpinBox();
     boxLeftSpace->setRange(0, 1000);
-    boxLeftSpace->setSingleStep(5);
-    boxLeftSpace->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxLeftSpace)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxLeftSpace, 2, 1);
     gl4->addWidget(new QLabel(tr("Right margin")), 3, 0);
-    boxRightSpace = new QSpinBox();
+    boxRightSpace = new PxMmSpinBox();
     boxRightSpace->setRange(0, 1000);
-    boxRightSpace->setSingleStep(5);
-    boxRightSpace->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxRightSpace)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxRightSpace, 3, 1);
     gl4->addWidget(new QLabel(tr("Top margin")), 4, 0);
-    boxTopSpace = new QSpinBox();
+    boxTopSpace = new PxMmSpinBox();
     boxTopSpace->setRange(0, 1000);
-    boxTopSpace->setSingleStep(5);
-    boxTopSpace->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxTopSpace)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxTopSpace, 4, 1);
     gl4->addWidget(new QLabel(tr("Bottom margin")), 5, 0);
-    boxBottomSpace = new QSpinBox();
+    boxBottomSpace = new PxMmSpinBox();
     boxBottomSpace->setRange(0, 1000);
-    boxBottomSpace->setSingleStep(5);
-    boxBottomSpace->setSuffix(tr(" pixels"));
+    static_cast<PxMmSpinBox *>(boxBottomSpace)->setPixelSuffixAndStep(tr(" pixels"), 5);
     gl4->addWidget(boxBottomSpace, 5, 1);
+
+    // E7: margins, gaps and canvas size can be shown/entered in mm.
+    QComboBox *spacingUnitBox = new QComboBox(gb4);
+    spacingUnitBox->setObjectName(QStringLiteral("layerSpacingUnitCombo"));
+    spacingUnitBox->addItem(tr("pixels"), 0);
+    spacingUnitBox->addItem(QStringLiteral("mm"), 1);
+    gl4->addWidget(new QLabel(tr("Units")), 7, 0);
+    gl4->addWidget(spacingUnitBox, 7, 1);
+    connect(spacingUnitBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this, spacingUnitBox](int) {
+                const bool mm = spacingUnitBox->currentData().toInt() == 1;
+                for (QSpinBox *sb : { boxColsGap, boxRowsGap, boxLeftSpace, boxRightSpace,
+                                      boxTopSpace, boxBottomSpace, boxCanvasWidth,
+                                      boxCanvasHeight }) {
+                    if (auto *pm = dynamic_cast<PxMmSpinBox *>(sb))
+                        pm->setMmMode(mm);
+                }
+            });
 
     QCheckBox *collapseGapsBox =
             new QCheckBox(tr("Collapse Inner Gaps (0-gap Stack/Grid)"), gb4);

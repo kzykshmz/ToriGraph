@@ -142,6 +142,7 @@ Column::Private::Private(Column *owner, SciDAVis::ColumnDataType type, SciDAVis:
         static_cast<Double2StringFilter *>(d_output_filter)
                 ->setNumericFormat(
                         settings.value("/DefaultNumericFormat", 'f').toChar().toLatin1());
+        settings.endGroup(); // was missing: each numeric column left "/General" open on the shared settings
 
         connect(static_cast<Double2StringFilter *>(d_output_filter), SIGNAL(formatChanged()),
                 d_owner, SLOT(notifyDisplayChange()));

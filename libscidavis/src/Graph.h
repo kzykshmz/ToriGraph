@@ -818,6 +818,23 @@ public slots:
     static QStringList customPaletteNames();
     static QStringList allPaletteNames();
     static QList<QColor> paletteColors(const QString &paletteName);
+    //! Canonical palette definitions (single source of truth; E5).
+    static const QList<QColor> &okabeItoColors();
+    static const QList<QColor> &tab10Colors();
+    static const QList<QColor> &originClassicColors();
+    //! Canonical palette names. The tab10 list used to be called "ISIJ / Origin Default";
+    //! that name is still accepted as an alias by paletteColors().
+    static QString tab10PaletteName() { return QStringLiteral("Matplotlib (tab10)"); }
+    static QString originClassicPaletteName() { return QStringLiteral("Origin Classic"); }
+    static QString okabeItoPaletteName() { return QStringLiteral("Okabe-Ito (Colorblind Safe)"); }
+    //! Maps legacy/alias palette names (e.g. "ISIJ / Origin Default", "Okabe-Ito",
+    //! "Cool-Warm") to the canonical registered name. Unknown names are returned trimmed.
+    static QString canonicalPaletteName(const QString &name);
+    //! Palette used for new curves (setting "/Curves/DefaultPalette"; default Origin Classic).
+    static QString defaultCurvePaletteName();
+    static void setDefaultCurvePaletteName(const QString &name);
+    //! Origin-style symbol increment (SymbolBox indices): square, circle, up/down triangle, ...
+    static int defaultCurveSymbolIndex(int seriesIndex);
     static void saveCustomPalette(const QString &name, const QList<QColor> &colors);
     static void removeCustomPalette(const QString &name);
     static QList<QColor> interpolatePalette(const QList<QColor> &anchors, int count);
