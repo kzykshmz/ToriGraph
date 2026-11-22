@@ -101,6 +101,8 @@ public:
     QPixmap pixmap() const { return d_pic; };
 
     void updateBoundingRect();
+    //! Set the pixel position and size (#d_pos, #d_size) to rect(); the axis coordinates stay.
+    void refreshPixelCache();
 
 private:
     //! Does the actual drawing; see QwtPlotItem::draw.

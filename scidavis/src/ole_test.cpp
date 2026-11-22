@@ -22652,6 +22652,111 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
                    "75: a rescale moved the legend, a text or a picture on the canvas");
     }
 
+    // ---- 75s: scale changes keep the legend, texts and pictures on their place on the canvas
+    // (also through the paths that do not replot between setAxisScale() and updatePlot(), the
+    // full autoscale, a linear <-> log switch, and after a view zoom); arrows follow the data ----
+    {
+        auto resetAxes = [&]() {
+            g->setScale(QwtPlot::xBottom, 0.0, 0.25);
+            g->setScale(QwtPlot::yLeft, 0.0, 20.0);
+            QApplication::processEvents();
+        };
+        // Runs act and checks that the text markers and the picture stay on the canvas where
+        // they were (as fractions of the canvas, within 1.5 px; with absolutePx at the same pixel,
+        // within 1 px), the picture keeps its size, and the arrow keeps its data coordinates.
+        auto staysOnCanvas = [&](const char *what, const std::function<void()> &act,
+                                 bool absolutePx = false) -> bool {
+            const QSize cv1 = g->plotWidget()->canvas()->size();
+            const QRect leg1 = g->legend()->rect(), note1 = note->rect(), img1 = img->rect();
+            act();
+            QApplication::processEvents();
+            const QSize cv2 = g->plotWidget()->canvas()->size();
+            const QRect leg2 = g->legend()->rect(), note2 = note->rect(), img2 = img->rect();
+            auto samePlace = [&](const QRect &a, const QRect &b, bool withSize) {
+                if (absolutePx) {
+                    return std::abs(a.x() - b.x()) <= 1 && std::abs(a.y() - b.y()) <= 1
+                            && (!withSize
+                                || (std::abs(a.width() - b.width()) <= 1
+                                    && std::abs(a.height() - b.height()) <= 1));
+                }
+                const double tx = 1.5 / cv2.width(), ty = 1.5 / cv2.height();
+                bool ok = std::fabs(double(a.x()) / cv1.width() - double(b.x()) / cv2.width()) <= tx
+                        && std::fabs(double(a.y()) / cv1.height() - double(b.y()) / cv2.height()) <= ty;
+                if (withSize) {
+                    ok = ok && std::fabs(double(a.width()) / cv1.width() - double(b.width()) / cv2.width()) <= tx
+                            && std::fabs(double(a.height()) / cv1.height() - double(b.height()) / cv2.height())
+                                    <= ty;
+                }
+                return ok;
+            };
+            const bool arrowKept = arrow->startPointCoord() == QwtDoublePoint(0.10, 8.0)
+                    && arrow->endPointCoord() == QwtDoublePoint(0.14, 11.0);
+            const bool ok = samePlace(leg1, leg2, false) && samePlace(note1, note2, false)
+                    && samePlace(img1, img2, true) && img2.width() > 0 && img2.height() > 0 && arrowKept;
+            std::cout << "[INFO] 75s " << what << ": canvas " << cv1.width() << "x" << cv1.height() << " -> "
+                      << cv2.width() << "x" << cv2.height() << ", legend " << leg1.x() << "," << leg1.y() << " -> "
+                      << leg2.x() << "," << leg2.y() << ", note " << note1.x() << "," << note1.y() << " -> "
+                      << note2.x() << "," << note2.y() << ", picture " << img1.x() << "," << img1.y() << " "
+                      << img1.width() << "x" << img1.height() << " -> " << img2.x() << "," << img2.y() << " "
+                      << img2.width() << "x" << img2.height() << ", arrow kept " << arrowKept
+                      << (ok ? "" : "  <-- FAIL") << "\n";
+            return ok;
+        };
+        // An arrow follows the data: its pixels are those of its data points on the new scale.
+        auto arrowFollowsData = [&]() {
+            const QwtScaleMap xm = g->plotWidget()->canvasMap(arrow->xAxis());
+            const QwtScaleMap ym = g->plotWidget()->canvasMap(arrow->yAxis());
+            return arrow->startPoint() == QPoint(xm.transform(0.10), ym.transform(8.0))
+                    && arrow->endPoint() == QPoint(xm.transform(0.14), ym.transform(11.0));
+        };
+
+        // Qwt's setAxisScale() leaves the scale invalid until the next replot, so updatePlot()
+        // cannot know the previous scale: the markers keep their (up to date) pixel position.
+        resetAxes();
+        placeMarkers(1.6, 1.0);
+        CHECK_COND(staysOnCanvas("setAxisScale + updatePlot without replot", [&]() {
+                       g->plotWidget()->setAxisScale(QwtPlot::xBottom, 0.0, 0.5);
+                       g->updatePlot();
+                   }, true),
+                   "75s: setAxisScale() followed by updatePlot() moved a marker or squashed the picture");
+        CHECK_COND(arrowFollowsData(), "75s: the arrow must follow the data after updatePlot");
+
+        resetAxes();
+        placeMarkers(1.0, 2.0);
+        CHECK_COND(staysOnCanvas("at 200 % (picture placed at 100 %): setAxisScale + updatePlot", [&]() {
+                       g->plotWidget()->setAxisScale(QwtPlot::xBottom, 0.0, 0.5);
+                       g->updatePlot();
+                   }, true),
+                   "75s: after a view zoom the picture / texts must keep their place (pixel caches)");
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+
+        resetAxes();
+        g->setScale(QwtPlot::xBottom, 0.0, 0.5);
+        g->setScale(QwtPlot::yLeft, 0.0, 40.0);
+        placeMarkers(1.6, 1.0);
+        CHECK_COND(staysOnCanvas("full autoscale", [&]() { g->setAutoScale(); }),
+                   "75s: autoscale of all axes moved a marker on the canvas");
+        CHECK_COND(arrowFollowsData(), "75s: the arrow must follow the data after the autoscale");
+
+        resetAxes();
+        g->setScale(QwtPlot::xBottom, 0.0, 0.5);
+        placeMarkers(1.6, 1.0);
+        CHECK_COND(staysOnCanvas("autoscale of the x axis only", [&]() { g->setAutoScaleAxis(QwtPlot::xBottom); }),
+                   "75s: autoscale of one axis moved a marker on the canvas");
+
+        resetAxes();
+        placeMarkers(1.6, 1.0);
+        CHECK_COND(staysOnCanvas("y linear -> log", [&]() { g->setScale(QwtPlot::yLeft, 1.0, 20.0, 0.0, 5, 8, 1); }),
+                   "75s: linear -> log moved a marker on the canvas");
+        CHECK_COND(arrowFollowsData(), "75s: the arrow must follow the data on the log axis");
+        CHECK_COND(staysOnCanvas("y log -> linear", [&]() { g->setScale(QwtPlot::yLeft, 0.0, 20.0); }),
+                   "75s: log -> linear moved a marker on the canvas");
+
+        resetAxes();
+        placeMarkers(1.0, 1.0);
+    }
+
     // ---- 75z: view zoom works from the 100 % layer rectangles (no rounding drift, no stuck
     // 60 px minimum) ----
     {
@@ -22746,6 +22851,18 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
         ml->setPageZoom(1.0);
         QApplication::processEvents();
         CHECK_COND(gSmall->geometry() == QRect(40, 44, 100, 80), "75z: a layer moved at 100 % must keep its place");
+        // Moved (not resized) at 50 %, where the view shows it at the 60 px minimum: it keeps its
+        // 100 % size.
+        ml->setPageZoom(0.5);
+        QApplication::processEvents();
+        CHECK_COND(gSmall->geometry() == QRect(20, 22, 60, 60), "75z: small layer at 50 % shows 60x60");
+        ml->setGraphGeometry(30, 35, gSmall->width(), gSmall->height());
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        std::cout << "[INFO] 75z small layer moved to 30,35 at 50 %: at 100 % " << gSmall->x() << ","
+                  << gSmall->y() << " " << gSmall->width() << "x" << gSmall->height() << "\n";
+        CHECK_COND(gSmall->geometry() == QRect(60, 70, 100, 80),
+                   "75z: a small layer moved at 50 % must keep its 100x80 size at 100 %");
         ml->setActiveGraph(g);
     }
 
