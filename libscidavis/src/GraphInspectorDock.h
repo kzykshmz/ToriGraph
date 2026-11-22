@@ -133,6 +133,8 @@ private:
 
     void onTreeItemClicked(QTreeWidgetItem *item, int column);
     void onTreeItemDoubleClicked(QTreeWidgetItem *item, int column);
+    //! C2: open the full dialog for the visible inspector section ("Details..." button)
+    void openDetailsDialogForPage();
     void onObjectTreeContextMenu(const QPoint &pos);
     void onTreeItemChanged(QTreeWidgetItem *item, int column);
     void onGraphSelectionChanged(MultiLayer *page, Graph *layer, const Graph::GraphSelection &sel);

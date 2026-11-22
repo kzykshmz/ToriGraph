@@ -41,6 +41,7 @@
 #include "ModernUiTheme.h"
 #include "MultiLayer.h"
 #include "Plot.h"
+#include "CanvasInlineTextEditor.h"
 #include "PlotCurve.h"
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
@@ -1215,6 +1216,22 @@ void GraphInspectorDock::buildUi()
     d_prop_scroll->setWidget(d_prop_stack);
 
     botLayout->addWidget(d_prop_scroll, 1);
+
+    // C2: every inspector section leads to its full dialog (Origin's "Plot Details" habit).
+    {
+        QFrame *detailsRow = new QFrame(bottomPane);
+        detailsRow->setObjectName(QStringLiteral("InspectorDetailsRow"));
+        QHBoxLayout *detailsLay = new QHBoxLayout(detailsRow);
+        detailsLay->setContentsMargins(8, 4, 8, 6);
+        detailsLay->addStretch(1);
+        QPushButton *detailsBtn = new QPushButton(tr("Details..."), detailsRow);
+        detailsBtn->setObjectName(QStringLiteral("InspectorDetailsButton"));
+        detailsBtn->setToolTip(tr("Open the dialog with every setting for this section"));
+        detailsBtn->setCursor(Qt::PointingHandCursor);
+        detailsLay->addWidget(detailsBtn);
+        botLayout->addWidget(detailsRow);
+        connect(detailsBtn, &QPushButton::clicked, this, [this]() { openDetailsDialogForPage(); });
+    }
     d_splitter->addWidget(bottomPane);
     d_splitter->setStretchFactor(0, 42);
     d_splitter->setStretchFactor(1, 58);
@@ -4381,6 +4398,13 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
             static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
     const int primaryId = item->data(0, RolePrimaryId).toInt();
     const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+    Graph *g = activeLayer();
+
+    // Same rules as a double-click on the canvas (CanvasPicker): text-like elements (axis
+    // title, legend, text) are edited in place; curves, axes and the layer open their dialog.
+    auto globalRectOf = [](QWidget *w, const QRect &local) {
+        return QRect(w->mapToGlobal(local.topLeft()), local.size());
+    };
 
     switch (kind) {
     case Graph::GraphSelection::Page:
@@ -4388,18 +4412,108 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
         d_app->showGeneralPlotDialog();
         break;
     case Graph::GraphSelection::Axis:
+        d_app->showAxisPageFromAxisDialog(qBound(0, primaryId, 3));
+        break;
     case Graph::GraphSelection::AxisTitle:
-        d_app->showScaleDialog();
+        if (g && g->plotWidget()) {
+            if (QwtScaleWidget *sw = g->plotWidget()->axisWidget(qBound(0, primaryId, 3))) {
+                CanvasInlineTextEditor::openForAxisTitle(g, qBound(0, primaryId, 3),
+                                                         globalRectOf(sw, sw->rect()));
+                break;
+            }
+        }
+        d_app->showAxisPageFromAxisDialog(qBound(0, primaryId, 3));
         break;
     case Graph::GraphSelection::Curve:
     case Graph::GraphSelection::ErrorBars:
     case Graph::GraphSelection::Spectrogram:
         if (!isGroupHeader)
-            d_app->showPlotDialog(primaryId);
+            d_app->showPlotDialog(g ? int(g->curveKey(primaryId)) : primaryId);
         else
             d_app->showCurvesDialog();
         break;
+    case Graph::GraphSelection::LegendBox:
+        if (!isGroupHeader && g && g->legend() && g->plotWidget()) {
+            long legendKey = -1;
+            for (int k : g->textMarkerKeys()) {
+                if (g->textMarker(k) == g->legend()) {
+                    legendKey = k;
+                    break;
+                }
+            }
+            if (legendKey >= 0) {
+                QWidget *canvas = g->plotWidget()->canvas();
+                CanvasInlineTextEditor::openForLegendOrText(
+                        g, legendKey, -1, globalRectOf(canvas, g->legend()->rect()));
+            }
+        }
+        break;
+    case Graph::GraphSelection::TextAnnotation:
+        if (g && g->plotWidget()) {
+            if (Legend *tm = g->textMarker(primaryId)) {
+                QWidget *canvas = g->plotWidget()->canvas();
+                CanvasInlineTextEditor::openForLegendOrText(g, primaryId, -1,
+                                                            globalRectOf(canvas, tm->rect()));
+            }
+        }
+        break;
+    case Graph::GraphSelection::ArrowAnnotation:
+        if (g) {
+            g->setSelectedMarker(primaryId);
+            d_app->showLineDialog();
+        }
+        break;
+    case Graph::GraphSelection::ImageAnnotation:
+        if (g) {
+            g->setSelectedMarker(primaryId);
+            d_app->showImageDialog();
+        }
+        break;
     default:
+        break;
+    }
+}
+
+void GraphInspectorDock::openDetailsDialogForPage()
+{
+    if (!d_app || !d_target_ml || ApplicationWindow::isNonInteractiveContext(d_app))
+        return;
+    Graph *g = activeLayer();
+    const int page = d_prop_stack ? d_prop_stack->currentIndex() : int(PageTabPageLayer);
+    switch (page) {
+    case PageTabAxis:
+        d_app->showAxisPageFromAxisDialog(qBound(0, d_active_axis, 3));
+        break;
+    case PageTabCurve: {
+        int idx = -1;
+        if (g) {
+            const Graph::GraphSelection sel = g->currentSelection();
+            if ((sel.kind == Graph::GraphSelection::Curve
+                 || sel.kind == Graph::GraphSelection::ErrorBars)
+                && sel.primaryId >= 0 && sel.primaryId < g->curves())
+                idx = sel.primaryId;
+            else if (g->curves() > 0)
+                idx = 0;
+        }
+        d_app->showPlotDialog((g && idx >= 0) ? int(g->curveKey(idx)) : -1);
+        break;
+    }
+    case PageTabLegend:
+        if (g && g->legend()) {
+            for (int k : g->textMarkerKeys()) {
+                if (g->textMarker(k) == g->legend()) {
+                    g->setSelectedMarker(k);
+                    break;
+                }
+            }
+            d_app->showTextDialog();
+        } else {
+            d_app->newLegend();
+        }
+        break;
+    case PageTabPageLayer:
+    default:
+        d_app->showGeneralPlotDialog();
         break;
     }
 }
@@ -6495,7 +6609,7 @@ void GraphInspectorDock::retranslateUi()
     if (d_qs_subtitle_lbl)
         d_qs_subtitle_lbl->setText(tr("Create publication-ready graphs in 3 easy steps"));
     if (d_qs_step1_lbl)
-        d_qs_step1_lbl->setText(tr("Enter data in Table or import CSV"));
+        d_qs_step1_lbl->setText(tr("Paste from Excel into the table (Ctrl+V) or drop a CSV file"));
     if (d_qs_step2_lbl)
         d_qs_step2_lbl->setText(tr("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar"));
     if (d_qs_step3_lbl)

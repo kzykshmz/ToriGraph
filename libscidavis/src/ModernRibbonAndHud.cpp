@@ -28,6 +28,7 @@
 
 #include "ModernRibbonAndHud.h"
 
+#include <QToolTip>
 #include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
@@ -95,7 +96,8 @@ namespace {
 enum PaletteItemRoles {
     RoleEntryIndex = Qt::UserRole + 1,
     RoleShortcutText = Qt::UserRole + 2,
-    RoleCategoryText = Qt::UserRole + 3
+    RoleCategoryText = Qt::UserRole + 3,
+    RoleDisabledEntry = Qt::UserRole + 4
 };
 
 static QString cleanMnemonicText(const QString &raw)
@@ -211,6 +213,10 @@ public:
         const QString shortcut = index.data(RoleShortcutText).toString();
         const QString category = index.data(RoleCategoryText).toString();
         const QString title = index.data(Qt::DisplayRole).toString();
+        // C12: commands that cannot run now are listed dimmed, with the reason as category
+        const bool dimmed = index.data(RoleDisabledEntry).toBool();
+        if (dimmed)
+            painter->setOpacity(0.55);
 
         int rightEdge = rowRect.right() - 10;
         if (!shortcut.isEmpty()) {
@@ -775,10 +781,24 @@ void CommandPalettePopup::refreshCommands()
 
         const QList<QAction *> actions = d_app->findChildren<QAction *>();
         const QString catCommand = tr("Command");
+        QString disabledReasonText = tr("Not available in the current state.");
+        {
+            QWidget *aw = d_app->d_workspace.activeSubWindow();
+            if (!aw)
+                disabledReasonText =
+                        tr("Not available now: open or create a worksheet or graph first.");
+            else if (qobject_cast<Table *>(aw))
+                disabledReasonText = tr("Not available for a worksheet: click a graph window first.");
+            else if (qobject_cast<MultiLayer *>(aw))
+                disabledReasonText = tr("Not available for this window: click a worksheet (or "
+                                        "select a curve) first.");
+        }
         for (QAction *act : actions) {
             if (!act || act->isSeparator() || act->menu() != nullptr)
                 continue;
-            if (!act->isVisible() || !act->isEnabled())
+            // Hidden actions (e.g. other-field features switched off) stay out of the list;
+            // disabled ones are listed dimmed with the reason (C12).
+            if (!act->isVisible())
                 continue;
 
             const QString cleanTitle = cleanMnemonicText(act->text());
@@ -803,6 +823,12 @@ void CommandPalettePopup::refreshCommands()
                     act->objectName().isEmpty() ? cleanTitle : act->objectName());
             e.action = act;
             e.priorityBoost = 0;
+            if (!act->isEnabled()) {
+                e.disabled = true;
+                e.disabledReason = disabledReasonText;
+                e.category = disabledReasonText;
+                e.priorityBoost = -40;
+            }
             d_entries.append(std::move(e));
         }
     }
@@ -930,6 +956,10 @@ void CommandPalettePopup::rebuildFilteredList(const QString &query)
         item->setData(RoleEntryIndex, entryIdx);
         item->setData(RoleShortcutText, ce.shortcutText);
         item->setData(RoleCategoryText, ce.category);
+        if (ce.disabled) {
+            item->setData(RoleDisabledEntry, true);
+            item->setToolTip(ce.disabledReason);
+        }
     }
 
     if (d_list_widget->count() > 0)
@@ -955,6 +985,15 @@ bool CommandPalettePopup::executeItemAt(int row)
 
     const QPointer<QAction> act = d_entries.at(entryIdx).action;
     const std::function<void()> cb = d_entries.at(entryIdx).callback;
+
+    if (d_entries.at(entryIdx).disabled && !(act && act->isEnabled())) {
+        if (d_list_widget) {
+            const QRect r = d_list_widget->visualItemRect(d_list_widget->item(row));
+            QToolTip::showText(d_list_widget->viewport()->mapToGlobal(r.bottomLeft()),
+                               d_entries.at(entryIdx).disabledReason, d_list_widget);
+        }
+        return false;
+    }
 
     hide();
 
@@ -2881,13 +2920,15 @@ void ModernRibbonBar::updateHeaderResponsiveness()
         bool showCtx;
     };
 
+    // C14: the language switch stays in every tier (icon-only when narrow). It used to vanish
+    // below 1560 px, i.e. on most laptops, leaving only the menu bar to change the language.
     const HeaderTier kTiers[] = {
         { true, false, false, false, false, true },   // Ultra-wide: full labels + language
-        { false, false, false, false, false, true },  // Wide: search pill + full mode labels + ctx
-        { false, true, true, false, false, true },    // Medium: search pill + short mode labels + ctx
-        { false, true, true, true, false, true },     // 1280px+: always-visible 180-210px search pill + icon segmented modes + ctx
-        { false, true, true, true, false, false },    // Compact: search pill + icon segmented modes
-        { false, true, true, true, true, false }      // Minimal icon-only fallback
+        { true, false, false, false, false, true },   // Wide: search pill + full mode labels + ctx
+        { true, true, true, false, false, true },     // Medium: search pill + short mode labels + ctx
+        { true, true, true, true, false, true },      // 1280px+: always-visible 180-210px search pill + icon segmented modes + ctx
+        { true, true, true, true, false, false },     // Compact: search pill + icon segmented modes
+        { true, true, true, true, true, false }       // Minimal icon-only fallback
     };
 
     auto applyButtonsForTier = [this](const HeaderTier &t) {
@@ -2966,9 +3007,6 @@ void ModernRibbonBar::updateHeaderResponsiveness()
 
     for (int idx = 0; idx < nTiers; ++idx) {
         const HeaderTier &cand = kTiers[idx];
-        if (cand.showLang && w < qMax(1560, tabsNeededW + 820))
-            continue;
-
         applyButtonsForTier(cand);
         const int rw = measureTierRightW(cand);
         if (tabsNeededW + rw + 24 <= w || idx == nTiers - 1) {
@@ -3165,27 +3203,27 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gPanels = nullptr;
 
         createRibbonGroup(row, &gFile, true);
-        addRibbonButton(
+        setShortcutHintAction(addRibbonButton(
                 gFile, QStringLiteral("file-new"), [this]() { return tr("New Project"); },
                 [this]() { return tr("Create a New Project"); },
                 [this]() {
                     if (d_app)
                         d_app->newProject();
-                });
-        addRibbonButton(
+                }), QStringLiteral("actionNewProject"));
+        setShortcutHintAction(addRibbonButton(
                 gFile, QStringLiteral("file-open"), [this]() { return tr("Open"); },
                 [this]() { return tr("Open Project File"); },
                 [this]() {
                     if (d_app)
                         d_app->open();
-                });
-        addRibbonButton(
+                }), QStringLiteral("actionOpen"));
+        setShortcutHintAction(addRibbonButton(
                 gFile, QStringLiteral("file-save"), [this]() { return tr("Save"); },
                 [this]() { return tr("Save Current Project"); },
                 [this]() {
                     if (d_app)
                         d_app->saveProject();
-                });
+                }), QStringLiteral("actionSaveProject"));
         QMenu *importMenu = nullptr;
         addRibbonMenuButton(
                 gFile, QStringLiteral("import-csv"),
@@ -3213,21 +3251,36 @@ void ModernRibbonBar::buildAllTabs()
                 },
                 false, true);
 
+        // C4: Undo / Redo on Home (icon only: Home must fit 1280 px without scrolling)
+        QHBoxLayout *gEdit = nullptr;
+        createRibbonGroup(row, &gEdit, true);
+        for (QToolButton *tb :
+             { addActionButton(
+                       gEdit, QStringLiteral("undo"), [this]() { return tr("Undo"); },
+                       [this]() { return tr("Undo the last change in the active window (Ctrl+Z)"); },
+                       QStringLiteral("actionUndo")),
+               addActionButton(
+                       gEdit, QStringLiteral("redo"), [this]() { return tr("Redo"); },
+                       [this]() { return tr("Redo the last undone change (Ctrl+Y)"); },
+                       QStringLiteral("actionRedo")) }) {
+            tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        }
+
         createRibbonGroup(row, &gCreate, true);
-        addRibbonButton(
+        setShortcutHintAction(addRibbonButton(
                 gCreate, QStringLiteral("new-table"), [this]() { return tr("New Table"); },
                 [this]() { return tr("Create New Worksheet Table"); },
                 [this]() {
                     if (d_app)
                         d_app->newTable();
-                });
-        addRibbonButton(
+                }), QStringLiteral("actionNewTable"));
+        setShortcutHintAction(addRibbonButton(
                 gCreate, QStringLiteral("new-graph"), [this]() { return tr("New Graph"); },
                 [this]() { return tr("Create New 2D Graph Window"); },
                 [this]() {
                     if (d_app)
                         d_app->newGraph();
-                });
+                }), QStringLiteral("actionNewGraph"));
         QMenu *moreNewMenu = nullptr;
         addRibbonMenuButton(
                 gCreate, QStringLiteral("new-matrix"),
@@ -3319,7 +3372,7 @@ void ModernRibbonBar::buildAllTabs()
                 true);
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Home & Data"); }, page);
+        addTabPage([this]() { return tr("Home"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -3463,6 +3516,28 @@ void ModernRibbonBar::buildAllTabs()
                         d_app->plot3DBars();
                 });
 
+        // C4: graph additions as one drop-down (the Plot tab must still fit 1366 px). The menu
+        // holds the application's own QActions, so enabled/checked states are always in sync.
+        QHBoxLayout *gAdd = nullptr;
+        createRibbonGroup(row, &gAdd, true);
+        QMenu *addMenu = nullptr;
+        addRibbonMenuButton(
+                gAdd, QStringLiteral("text-label"), [this, kCaret]() { return tr("Add") + kCaret; },
+                [this]() { return tr("Add text, legend, error bars or a 2-panel / 4-panel layout"); },
+                &addMenu);
+        addMenu->setObjectName(QStringLiteral("RibbonAddToGraphMenu"));
+        if (d_app) {
+            for (const char *name : { "actionAddText", "actionNewLegend", "actionAddErrorBars", "",
+                                      "actionPlot2VerticalLayers", "actionPlot4Layers" }) {
+                if (!*name) {
+                    addMenu->addSeparator();
+                    continue;
+                }
+                if (QAction *a = d_app->findChild<QAction *>(QString::fromLatin1(name)))
+                    addMenu->addAction(a);
+            }
+        }
+
         createRibbonGroup(row, &gLayer, false);
         addRibbonButton(
                 gLayer, QStringLiteral("layer-linked"), [this]() { return tr("Linked Layer"); },
@@ -3480,7 +3555,7 @@ void ModernRibbonBar::buildAllTabs()
                 });
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Plot 2D/3D"); }, page);
+        addTabPage([this]() { return tr("Plot"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -3616,7 +3691,7 @@ void ModernRibbonBar::buildAllTabs()
                 });
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Peaks & Fit"); }, page);
+        addTabPage([this]() { return tr("Fitting"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -3628,6 +3703,22 @@ void ModernRibbonBar::buildAllTabs()
         QHBoxLayout *gGadgets = nullptr;
         QHBoxLayout *gMasks = nullptr;
         QHBoxLayout *gSignal = nullptr;
+
+        // C3/C4: graph tool modes; the buttons stay checked while their mode is active
+        QHBoxLayout *gTools = nullptr;
+        createRibbonGroup(row, &gTools, true);
+        addActionButton(
+                gTools, QStringLiteral("pointer"), [this]() { return tr("Pointer"); },
+                [this]() { return tr("Pointer: leave zoom, reader and gadget modes (Esc)"); },
+                QStringLiteral("btnPointer"), true);
+        addActionButton(
+                gTools, QStringLiteral("zoom-in"), [this]() { return tr("Zoom"); },
+                [this]() { return tr("Zoom into a dragged rectangle (Ctrl++)"); },
+                QStringLiteral("btnZoomIn"), true);
+        addActionButton(
+                gTools, QStringLiteral("data-reader"), [this]() { return tr("Reader"); },
+                [this]() { return tr("Read data values by clicking points (Ctrl+D)"); },
+                QStringLiteral("btnCursor"), true);
 
         createRibbonGroup(row, &gGadgets, true);
         addRibbonButton(
@@ -3834,7 +3925,7 @@ void ModernRibbonBar::buildAllTabs()
                 });
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Gadgets & Signal"); }, page);
+        addTabPage([this]() { return tr("Analysis"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -3885,6 +3976,29 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (d_app)
                         CurveMathTools::showXRDAnalyzerDialog(d_app);
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("weibull"), [this]() { return tr("Weibull"); },
+                [this]() { return tr("2- and 3-Parameter Weibull Reliability Probability Plot"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showWeibullPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("arrhenius"), [this]() { return tr("Arrhenius"); },
+                [this]() { return tr("Arrhenius ln(k) vs 1000/T Activation Energy Analysis"); },
+                [this]() {
+                    if (d_app)
+                        d_app->showArrheniusPlotDialog();
+                });
+        addRibbonButton(
+                gDomain, QStringLiteral("vasp-bands"), [this]() { return tr("VASP Bands/DOS"); },
+                [this]() {
+                    return tr("VASP EIGENVAL / DOSCAR Electronic Band Structure & DOS Plotter");
+                },
+                [this]() {
+                    if (d_app)
+                        CurveMathTools::showVaspPlotterDialog(d_app);
                 });
         QMenu *matToolsMenu = nullptr;
         addRibbonMenuButton(
@@ -4076,7 +4190,7 @@ void ModernRibbonBar::buildAllTabs()
                 });
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Statistics & MatSci"); }, page);
+        addTabPage([this]() { return tr("Materials"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -4319,7 +4433,7 @@ void ModernRibbonBar::buildAllTabs()
                 });
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Style & Export"); }, page);
+        addTabPage([this]() { return tr("Format & Export"); }, page);
     }
 
     // ------------------------------------------------------------------------
@@ -4371,8 +4485,26 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { setClassicToolbarsVisible(!d_classic_toolbars_visible); }, true);
 
         row->addStretch(1);
-        addTabPage([this]() { return tr("Python & Tools"); }, page);
+        addTabPage([this]() { return tr("Tools"); }, page);
     }
+
+    // C14/G2: the materials analyses (tensile, work hardening, XRD, Kissinger, Weibull,
+    // Arrhenius, VASP) come right after Plot.
+    moveTabPage(4, 2);
+}
+
+void ModernRibbonBar::moveTabPage(int from, int to)
+{
+    if (!d_tab_bar || !d_tab_stack || from == to || from < 0 || to < 0
+        || from >= d_tab_bar->count() || to >= d_tab_bar->count())
+        return;
+    QWidget *page = d_tab_stack->widget(from);
+    d_tab_stack->removeWidget(page);
+    d_tab_stack->insertWidget(to, page);
+    d_tab_title_fns.move(from, to);
+    QSignalBlocker blocker(d_tab_bar);
+    d_tab_bar->moveTab(from, to);
+    d_tab_stack->setCurrentIndex(d_tab_bar->currentIndex());
 }
 
 void ModernRibbonBar::refreshButtonIcons()
@@ -4421,8 +4553,17 @@ void ModernRibbonBar::retranslateUi()
             continue;
         if (bb.textFn)
             bb.button->setText(escapeTabMnemonicText(bb.textFn()));
-        if (bb.tooltipFn)
-            bb.button->setToolTip(bb.tooltipFn());
+        if (bb.tooltipFn) {
+            QString tip = bb.tooltipFn();
+            if (!bb.shortcutActionName.isEmpty() && d_app) {
+                if (QAction *a = d_app->findChild<QAction *>(bb.shortcutActionName)) {
+                    const QString key = a->shortcut().toString(QKeySequence::NativeText);
+                    if (!key.isEmpty() && !tip.contains(key))
+                        tip += QStringLiteral(" (%1)").arg(key);
+                }
+            }
+            bb.button->setToolTip(tip);
+        }
     }
 
     for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
@@ -5086,61 +5227,165 @@ void ModernRibbonBar::setClassicToolbarsVisible(bool visible)
     emit classicToolbarsToggled(visible);
 }
 
+QToolButton *ModernRibbonBar::addActionButton(QHBoxLayout *groupLayout, const QString &iconId,
+                                              std::function<QString()> textFn,
+                                              std::function<QString()> tooltipFn,
+                                              const QString &actionObjectName, bool checkable)
+{
+    QToolButton *btn = addRibbonButton(
+            groupLayout, iconId, std::move(textFn), std::move(tooltipFn),
+            [this, actionObjectName]() {
+                QAction *a = d_app ? d_app->findChild<QAction *>(actionObjectName) : nullptr;
+                if (a && a->isEnabled())
+                    a->trigger();
+                syncActionBoundButtons();
+            },
+            checkable);
+    d_action_buttons.insert(actionObjectName, btn);
+    setShortcutHintAction(btn, actionObjectName);
+    if (QAction *a = d_app ? d_app->findChild<QAction *>(actionObjectName) : nullptr) {
+        // C4: the button follows its QAction (enabled for the active window, checked mode).
+        connect(a, &QAction::changed, this, [this]() { syncActionBoundButtons(); });
+        connect(a, &QAction::toggled, this, [this](bool) { syncActionBoundButtons(); });
+    }
+    return btn;
+}
+
+void ModernRibbonBar::setShortcutHintAction(QToolButton *button, const QString &actionObjectName)
+{
+    for (RibbonButtonBinding &bb : d_button_bindings) {
+        if (bb.button == button) {
+            bb.shortcutActionName = actionObjectName;
+            break;
+        }
+    }
+}
+
+QToolButton *ModernRibbonBar::actionBoundButton(const QString &actionObjectName) const
+{
+    return d_action_buttons.value(actionObjectName).data();
+}
+
+void ModernRibbonBar::syncActionBoundButtons()
+{
+    if (d_shutting_down || !d_app)
+        return;
+    for (auto it = d_action_buttons.constBegin(); it != d_action_buttons.constEnd(); ++it) {
+        QToolButton *btn = it.value().data();
+        QAction *a = d_app->findChild<QAction *>(it.key());
+        if (!btn || !a)
+            continue;
+        if (btn->isEnabled() != a->isEnabled())
+            btn->setEnabled(a->isEnabled());
+        if (btn->isCheckable() && btn->isChecked() != a->isChecked()) {
+            QSignalBlocker blocker(btn);
+            btn->setChecked(a->isChecked());
+        }
+    }
+}
+
+void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
+{
+    d_advanced_domain_visible = visible;
+    // Ribbon entries of the features listed in ApplicationWindow::advancedDomainActionNames().
+    static const QSet<QString> kAdvancedIcons = {
+        QStringLiteral("fit-logistic"),       QStringLiteral("signal-wavelet"),
+        QStringLiteral("tauc"),               QStringLiteral("eis-nyquist"),
+        QStringLiteral("stats-bland-altman"), QStringLiteral("stats-bablok"),
+        QStringLiteral("stats-survival"),     QStringLiteral("stats-roc"),
+        QStringLiteral("signal-stft"),
+    };
+    for (const RibbonMenuActionBinding &ab : d_menu_action_bindings) {
+        if (ab.action && kAdvancedIcons.contains(ab.iconId))
+            ab.action->setVisible(visible);
+    }
+}
+
 void ModernRibbonBar::triggerPlot2D(int curveType)
 {
     if (d_shutting_down || !d_app)
         return;
 
-    Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow());
-    if (!tbl && d_focus_hud_mode && d_focus_hud_overlay) {
-        if (d_focus_hud_overlay->isTableDrawerVisible() && d_focus_hud_overlay->tableDrawer()) {
-            tbl = d_focus_hud_overlay->tableDrawer()->currentTable();
-        } else if (MultiLayer *activeMl =
-                           qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
-            QSet<QObject *> ignored;
-            for (MyWidget *mw : d_app->hiddenWindows) {
-                if (mw)
-                    ignored.insert(mw);
-            }
-            if (Table *srcTbl = sourceTableFromMultiLayer(activeMl, ignored)) {
-                if (srcTbl->status() != MyWidget::Hidden
-                    && !srcTbl->name().startsWith(QLatin1String("RpcFitCurve"))
-                    && (!d_app->currentFolder()
-                        || d_app->currentFolder()->windowsList().contains(srcTbl))) {
-                    tbl = srcTbl;
-                }
+    MyWidget *active = qobject_cast<MyWidget *>(d_app->d_workspace.activeSubWindow());
+    Table *tbl = qobject_cast<Table *>(active);
+    bool fromGraph = false;
+    if (!tbl && d_focus_hud_mode && d_focus_hud_overlay
+        && d_focus_hud_overlay->isTableDrawerVisible() && d_focus_hud_overlay->tableDrawer()) {
+        tbl = d_focus_hud_overlay->tableDrawer()->currentTable();
+    }
+    MultiLayer *activeMl = qobject_cast<MultiLayer *>(active);
+    if (!tbl && activeMl) {
+        // B6: a graph is active. The plot buttons still mean "plot worksheet data", so use the
+        // worksheet behind this graph (formerly only in the F11 HUD mode; elsewhere the click
+        // silently re-styled the last curve).
+        QSet<QObject *> ignored;
+        for (MyWidget *mw : d_app->hiddenWindows) {
+            if (mw)
+                ignored.insert(mw);
+        }
+        if (Table *srcTbl = sourceTableFromMultiLayer(activeMl, ignored)) {
+            if (srcTbl->status() != MyWidget::Hidden
+                && !srcTbl->name().startsWith(QLatin1String("RpcFitCurve"))) {
+                tbl = srcTbl;
+                fromGraph = true;
             }
         }
     }
 
-    if (tbl) {
-        const bool singleColPlot = (curveType == Graph::Histogram || curveType == Graph::Pie
-                                    || curveType == Graph::Box);
-        if (singleColPlot && tbl->selectedColumns().isEmpty()) {
-            const QStringList yCols = tbl->YColumns();
-            const QStringList allCols = tbl->columnsList();
-            const QStringList pick = !yCols.isEmpty()
-                    ? QStringList { yCols.first() }
-                    : (!allCols.isEmpty() ? QStringList { allCols.last() } : QStringList());
-            if (!pick.isEmpty()) {
-                d_app->multilayerPlot(tbl, pick, curveType);
-                if (d_layout_mode == LayoutSplitTableGraph)
-                    applySplitWorkspaceGeometry();
-                return;
-            }
-        } else if (!singleColPlot && tbl->selectedYColumns().isEmpty() && !tbl->noXColumn()) {
-            const QStringList yCols = tbl->YColumns();
-            if (!yCols.isEmpty()) {
-                d_app->multilayerPlot(tbl, yCols, curveType);
-                if (d_layout_mode == LayoutSplitTableGraph)
-                    applySplitWorkspaceGeometry();
-                return;
-            }
+    if (!tbl) {
+        d_app->showUxHint(activeMl
+                                  ? tr("The plot buttons make a new graph from worksheet columns. "
+                                       "This graph has no source worksheet (function or image "
+                                       "data); click a worksheet first.")
+                                  : tr("The plot buttons make a graph from worksheet columns. "
+                                       "Click a worksheet (or paste data from Excel) first."));
+        return;
+    }
+
+    if (fromGraph) {
+        if (d_app->plotColumnsFromTable(tbl, curveType)) {
+            d_app->showUxHint(
+                    tr("Created a new graph from \"%1\", the worksheet of the active graph.")
+                            .arg(tbl->name()),
+                    5000);
+        }
+        if (d_layout_mode == LayoutSplitTableGraph)
+            applySplitWorkspaceGeometry();
+        return;
+    }
+
+    const bool singleColPlot = (curveType == Graph::Histogram || curveType == Graph::Pie
+                                || curveType == Graph::Box);
+    const bool tableIsActive = (tbl == active);
+    if (singleColPlot && tbl->selectedColumns().isEmpty()) {
+        const QStringList yCols = tbl->YColumns();
+        const QStringList allCols = tbl->columnsList();
+        const QStringList pick = !yCols.isEmpty()
+                ? QStringList { yCols.first() }
+                : (!allCols.isEmpty() ? QStringList { allCols.last() } : QStringList());
+        if (!pick.isEmpty() && d_app->plotBlockerForTable(tbl, curveType).isEmpty()) {
+            d_app->multilayerPlot(tbl, pick, curveType);
+            if (d_layout_mode == LayoutSplitTableGraph)
+                applySplitWorkspaceGeometry();
+            return;
+        }
+    } else if (!singleColPlot && tbl->selectedYColumns().isEmpty() && !tbl->noXColumn()
+               && d_app->plotBlockerForTable(tbl, curveType).isEmpty()) {
+        const QStringList yCols = tbl->YColumns();
+        if (!yCols.isEmpty()) {
+            d_app->multilayerPlot(tbl, yCols, curveType);
+            if (d_layout_mode == LayoutSplitTableGraph)
+                applySplitWorkspaceGeometry();
+            return;
         }
     }
 
-    QMetaObject::invokeMethod(d_app, "selectPlotType", Qt::DirectConnection,
-                              Q_ARG(int, curveType));
+    // Validation with messages that say where to fix things (B7), then the normal plot path.
+    if (tableIsActive)
+        QMetaObject::invokeMethod(d_app, "selectPlotType", Qt::DirectConnection,
+                                  Q_ARG(int, curveType));
+    else
+        d_app->plotColumnsFromTable(tbl, curveType);
     if (d_layout_mode == LayoutSplitTableGraph)
         applySplitWorkspaceGeometry();
 }
