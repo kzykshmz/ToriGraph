@@ -154,6 +154,7 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
 static int runSuite51Campaign6FinalEndToEndInvariants(ApplicationWindow *mw);
 static int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw);
 static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw);
+static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -214,6 +215,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc53;
+    }
+    if (args.contains("--suite61-only")) {
+        const int rc61 = runSuite61DistributionVersionAndUpdaterSafety(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc61;
     }
 
     // =========================================================================
@@ -5368,6 +5376,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite53SaveSafetyUndoAndRecovery(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite61DistributionVersionAndUpdaterSafety(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -14103,5 +14114,196 @@ static int runSuite53SaveSafetyUndoAndRecovery(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 53 Save Safety, Undo-after-Save & Auto-save Recovery Gate passed!\n";
+    return 0;
+}
+
+// ============================================================================
+// Suite 61: Distribution - single-source version, updater safety & proxy (I4, I5)
+// ============================================================================
+#include "globals.h"
+#include <QNetworkAccessManager>
+#include <QNetworkProxy>
+
+static int runSuite61DistributionVersionAndUpdaterSafety(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 61: Distribution Version & Updater Safety Gate...\n";
+
+    // 61a: version.cpp is generated from CMake project(VERSION); all views must agree.
+    {
+        const QString vs = SciDAVis::versionString();
+        QRegularExpression rx(QStringLiteral("^ToriGraph (\\d+)\\.(\\d+)\\.(\\d+)$"));
+        const QRegularExpressionMatch m = rx.match(vs);
+        CHECK_COND(m.hasMatch(), "61a: versionString is not 'ToriGraph x.y.z'");
+        const int major = m.captured(1).toInt();
+        const int minor = m.captured(2).toInt();
+        const int patch = m.captured(3).toInt();
+        CHECK_COND(SciDAVis::version() == ((major << 16) | (minor << 8) | patch),
+                   "61a: numeric version (project file schema) differs from the version string");
+        CHECK_COND(SciDAVis::schemaVersion()
+                           == QStringLiteral("SciDAVis %1.%2.%3").arg(major).arg(minor).arg(patch),
+                   "61a: schemaVersion differs from the version string");
+        CHECK_COND(AutoUpdater::currentAppVersion()
+                           == QStringLiteral("%1.%2.%3").arg(major).arg(minor).arg(patch),
+                   "61a: AutoUpdater::currentAppVersion differs from the version string");
+        CHECK_COND(QRegularExpression(QStringLiteral("^\\d{4}-\\d{2}-\\d{2}$"))
+                           .match(SciDAVis::releaseDateString())
+                           .hasMatch(),
+                   "61a: release date is not the ISO date from CMake");
+    }
+
+    // 61b: proxy policy - loopback direct, remote via the system proxy factory.
+    {
+        const QList<QNetworkProxy> loop = AutoUpdater::proxiesForUrl(QUrl("http://127.0.0.1:8080/x"));
+        CHECK_COND(loop.size() == 1 && loop.first().type() == QNetworkProxy::NoProxy,
+                   "61b: loopback URL must not use a proxy");
+        const QList<QNetworkProxy> loop2 = AutoUpdater::proxiesForUrl(QUrl("http://localhost/x"));
+        CHECK_COND(loop2.size() == 1 && loop2.first().type() == QNetworkProxy::NoProxy,
+                   "61b: localhost must not use a proxy");
+        const QList<QNetworkProxy> remote =
+                AutoUpdater::proxiesForUrl(QUrl("https://api.github.com/repos/x/y/releases/latest"));
+        CHECK_COND(!remote.isEmpty(), "61b: remote URL returned no proxy decision");
+        const QList<QNetworkProxy> sys = QNetworkProxyFactory::systemProxyForQuery(
+                QNetworkProxyQuery(QUrl("https://api.github.com/repos/x/y/releases/latest")));
+        if (!sys.isEmpty())
+            CHECK_COND(remote.first().type() == sys.first().type()
+                               && remote.first().hostName() == sys.first().hostName(),
+                       "61b: remote URL does not follow the system proxy configuration");
+        QNetworkAccessManager nam;
+        CHECK_COND(nam.proxyFactory() == nullptr, "61b: unexpected default proxy factory");
+        AutoUpdater::applyNetworkProxyPolicy(nam, QUrl("https://api.github.com/"));
+        CHECK_COND(nam.proxyFactory() != nullptr, "61b: updater NAM does not use a proxy factory");
+    }
+
+    // 61c: release page fallback.
+    {
+        CHECK_COND(AutoUpdater::releasesPageUrl().toString()
+                           == QStringLiteral("https://github.com/kzykshmz/ToriGraph/releases"),
+                   "61c: default release page URL");
+        const QUrl tagged("https://github.com/kzykshmz/ToriGraph/releases/tag/v9.9.0");
+        CHECK_COND(AutoUpdater::releasesPageUrl(tagged) == tagged,
+                   "61c: release-specific page not preferred");
+        CHECK_COND(AutoUpdater::releasesPageUrl(QUrl::fromLocalFile("C:/x.zip")).scheme()
+                           == QStringLiteral("https"),
+                   "61c: non-web URL must fall back to the releases page");
+    }
+
+    // 61d/e: without a published SHA-256 nothing is installed by default.
+    {
+        const QString key = QStringLiteral("AutoUpdate/AllowUnverifiedInstall");
+        QSettings &st = ApplicationWindow::getSettings();
+        const QVariant saved = st.value(key);
+        st.remove(key);
+        CHECK_COND(!AutoUpdater::allowUnverifiedInstall(),
+                   "61d: unverified installs must be off by default");
+
+        ReleaseInfo rel;
+        rel.tagName = "v9.9.0";
+        rel.version = "9.9.0";
+        rel.assetName = "ToriGraph-9.9.0-win64-portable.zip";
+        rel.assetUrl = QUrl("https://example.invalid/ToriGraph-9.9.0-win64-portable.zip");
+        rel.htmlUrl = QUrl("https://github.com/kzykshmz/ToriGraph/releases/tag/v9.9.0");
+        auto primaryButton = [](UpdateAvailableDialog &dlg) -> QPushButton * {
+            for (QPushButton *b : dlg.findChildren<QPushButton *>())
+                if (b && b->isDefault())
+                    return b;
+            return nullptr;
+        };
+        {
+            UpdateAvailableDialog dlg(rel, "3.0.0", mw);
+            QPushButton *b = primaryButton(dlg);
+            CHECK_COND(b, "61e: no default button in update dialog");
+            CHECK_COND(b->text() == UpdateAvailableDialog::tr("Open Release Page..."),
+                       "61e: without SHA-256 the primary action must open the release page");
+            CHECK_COND(!b->toolTip().isEmpty(), "61e: missing explanation for unverified package");
+            for (QLabel *l : dlg.findChildren<QLabel *>())
+                CHECK_COND(!l || !l->text().contains(QStringLiteral("Verified"))
+                                   || l->text().contains(QStringLiteral("Failed")),
+                           "61e: dialog claims 'verified' without a checksum");
+        }
+        st.setValue(key, true);
+        {
+            UpdateAvailableDialog dlg(rel, "3.0.0", mw);
+            QPushButton *b = primaryButton(dlg);
+            CHECK_COND(b && b->text() == UpdateAvailableDialog::tr("Download && Install Update"),
+                       "61e: AllowUnverifiedInstall=true should re-enable installing");
+        }
+        st.remove(key);
+        rel.expectedSha256 = QString(64, QLatin1Char('a'));
+        {
+            UpdateAvailableDialog dlg(rel, "3.0.0", mw);
+            QPushButton *b = primaryButton(dlg);
+            CHECK_COND(b && b->text() == UpdateAvailableDialog::tr("Download && Install Update"),
+                       "61e: with SHA-256 the dialog should offer installing");
+        }
+        if (saved.isValid())
+            st.setValue(key, saved);
+    }
+
+    // 61f/g: the staged script waits, and aborts while ToriGraph is still running.
+    {
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "61f: temp dir");
+        const QString installDir = tmp.filePath("install dir [x64]");
+        CHECK_COND(QDir().mkpath(installDir), "61f: mkpath");
+        const QString exePath = QDir(installDir).filePath("ToriGraph.exe");
+        {
+            QFile f(exePath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "61f: seed exe");
+            f.write("OLD_BINARY");
+        }
+        const QString pkg = tmp.filePath("ToriGraph-9.9.0-win64-portable.zip");
+        {
+            QFile f(pkg);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "61f: seed package");
+            f.write("not really a zip");
+        }
+        QString err;
+        const qint64 alivePid = QCoreApplication::applicationPid();
+        const QString script = AutoUpdater::writeWindowsStagingUpdaterScript(
+                pkg, installDir, "ToriGraph.exe", alivePid, /*relaunch=*/false, &err,
+                /*waitTimeoutSec=*/2);
+        CHECK_COND(!script.isEmpty(), "61f: script not written");
+        QFile sf(script);
+        CHECK_COND(sf.open(QIODevice::ReadOnly), "61f: read script");
+        const QString body = QString::fromUtf8(sf.readAll());
+        sf.close();
+        CHECK_COND(body.contains("$WaitTimeoutSec = 2") && body.contains("Get-BlockingProcess")
+                           && body.contains("exit 3"),
+                   "61f: script lacks the wait-and-abort guard");
+        CHECK_COND(body.indexOf("exit 3") < body.indexOf("Copy-Item -LiteralPath $TargetExe"),
+                   "61f: abort check must come before the installation is touched");
+
+        QProcess ps;
+        ps.start(QStringLiteral("powershell.exe"),
+                 QStringList() << "-NoProfile" << "-NonInteractive" << "-ExecutionPolicy"
+                               << "Bypass" << "-File" << QDir::toNativeSeparators(script));
+        const bool finished = ps.waitForFinished(60000);
+        const QString psErr = QString::fromLocal8Bit(ps.readAllStandardError());
+        if (!finished || ps.exitCode() != 3)
+            std::cerr << "[DIAG] 61g exit=" << ps.exitCode() << " stderr=" << psErr.toStdString() << "\n";
+        CHECK_COND(finished, "61g: staged script did not finish");
+        CHECK_COND(ps.exitCode() == 3, "61g: script must abort (exit 3) while ToriGraph is alive");
+        QFile f(exePath);
+        CHECK_COND(f.open(QIODevice::ReadOnly) && f.readAll() == "OLD_BINARY",
+                   "61g: installation was modified although ToriGraph was running");
+        f.close();
+        CHECK_COND(!QFile::exists(exePath + ".rollback.bak"),
+                   "61g: script touched the install dir before aborting");
+        QFile::remove(script);
+        QFile::remove(QFileInfo(script).dir().filePath("apply_torigraph_update.cmd"));
+        QFile::remove(QFileInfo(script).dir().filePath("apply_torigraph_update.log"));
+    }
+
+    // 61h: new updater strings have Japanese translations.
+    {
+        const char *keys[] = { "Open Release Page", "Update Not Installed",
+                               "Install Unverified Update?",
+                               "Download complete (not verified: no SHA-256 checksum published)." };
+        for (const char *k : keys)
+            CHECK_COND(!ToriGraphFullJapaneseTranslator::lookupJapanese(QString::fromUtf8(k)).isEmpty(),
+                       std::string("61h: missing Japanese translation: ") + k);
+    }
+
+    std::cout << "[INFO] Suite 61 Distribution Version & Updater Safety Gate passed!\n";
     return 0;
 }

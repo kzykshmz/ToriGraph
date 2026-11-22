@@ -3,8 +3,10 @@
 ; Built with Inno Setup 6 (Unicode)
 ; ============================================================================
 
+; The version is passed in by scripts/build-windows-installer.ps1, which reads it
+; from the top-level CMakeLists.txt project() VERSION (single source of truth).
 #ifndef MyAppVersion
-  #define MyAppVersion "3.0.0"
+  #error MyAppVersion is not defined. Build the installer via scripts\build-windows-installer.ps1.
 #endif
 
 #ifndef StageDir
@@ -35,7 +37,8 @@ AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-LicenseFile=..\LICENSE
+; Binary distributions are GPL-3.0-or-later (sources: GPL-2.0-or-later, see LICENSE / THIRD_PARTY_LICENSES.md)
+LicenseFile=..\LICENSE-GPL-3.0.txt
 OutputDir={#OutDir}
 OutputBaseFilename=ToriGraph-{#MyAppVersion}-win64-setup
 SetupIconFile=..\scidavis\icons\scidavis.ico

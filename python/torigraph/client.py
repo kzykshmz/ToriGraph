@@ -44,6 +44,16 @@ class RpcError(ToriGraphError):
 ToriGraphRpcError = RpcError
 
 
+class ToriGraphVersionWarning(UserWarning):
+    """Emitted when the connected ToriGraph application and this SDK have different versions."""
+
+
+#: Default time (seconds) to wait for the answer to one RPC call.  Separate from
+#: the start-up / connect timeout of :func:`launch` and :func:`connect`; override
+#: per session with ``rpc_timeout=`` or per call with ``Session.call(..., rpc_timeout=)``.
+DEFAULT_RPC_TIMEOUT = 120.0
+
+
 def _cleanup_spawned_session(
     proc: Optional[subprocess.Popen[bytes]],
     transport: Any,
@@ -632,9 +642,31 @@ class _TcpTransport:
     def endpoint(self) -> str:
         return f"tcp://{self.host}:{self.port}"
 
-    def request_line(self, payload: bytes) -> bytes:
+    def _effective_timeout(self, timeout: Optional[float]) -> float:
+        return max(0.05, float(self.timeout if timeout is None else timeout))
+
+    def send_line(self, payload: bytes, timeout: Optional[float] = None) -> None:
+        t = self._effective_timeout(timeout)
         try:
+            self._sock.settimeout(t)
             self._sock.sendall(payload + b"\n")
+        except socket.timeout as exc:
+            self.close()
+            raise TransportError(f"Timed out after {t:.1f}s sending to {self.endpoint}.") from exc
+        except OSError as exc:
+            self.close()
+            raise TransportError(f"Socket I/O error on {self.endpoint}: {exc}") from exc
+
+    def recv_line(self, timeout: Optional[float] = None) -> bytes:
+        """Read the next non-empty response line.
+
+        A timeout leaves the buffered socket reader unusable, so the transport is
+        closed; the owning Session then refuses further calls instead of reading a
+        late response as the answer to the next request.
+        """
+        t = self._effective_timeout(timeout)
+        try:
+            self._sock.settimeout(t)
             while True:
                 line = self._reader.readline()
                 if not line:
@@ -642,8 +674,18 @@ class _TcpTransport:
                 stripped = line.strip()
                 if stripped:
                     return stripped
+        except socket.timeout as exc:
+            self.close()
+            raise TransportError(
+                f"Timed out after {t:.1f}s waiting for a response from {self.endpoint}."
+            ) from exc
         except OSError as exc:
+            self.close()
             raise TransportError(f"Socket I/O error on {self.endpoint}: {exc}") from exc
+
+    def request_line(self, payload: bytes, timeout: Optional[float] = None) -> bytes:
+        self.send_line(payload, timeout)
+        return self.recv_line(timeout)
 
     def close(self) -> None:
         try:
@@ -771,29 +813,48 @@ class _LocalPipeTransport:
         except queue.Empty as exc:
             self._abort_win_handle_nonblocking()
             raise TransportError(
-                f"Named pipe {op_name} timed out after {self.timeout:.2f}s ({self._endpoint})."
+                f"Named pipe {op_name} timed out after {timeout_sec:.2f}s ({self._endpoint})."
             ) from exc
         if ok:
             return payload
         raise payload
 
-    def request_line(self, payload: bytes) -> bytes:
+    def _effective_timeout(self, timeout: Optional[float]) -> float:
+        return max(0.05, float(self.timeout if timeout is None else timeout))
+
+    def send_line(self, payload: bytes, timeout: Optional[float] = None) -> None:
+        t = self._effective_timeout(timeout)
         msg = payload + b"\n"
-        deadline = time.monotonic() + self.timeout
         try:
             if self._win_handle is not None:
                 fh = self._win_handle
-                rem = deadline - time.monotonic()
-                if rem <= 0:
-                    self._abort_win_handle_nonblocking()
-                    raise TransportError(
-                        f"Named pipe write timed out after {self.timeout:.2f}s ({self._endpoint})."
-                    )
-                self._run_win_op(
-                    lambda: (fh.write(msg), fh.flush()),
-                    "write",
-                    rem,
-                )
+                self._run_win_op(lambda: (fh.write(msg), fh.flush()), "write", t)
+                return
+            if self._unix_sock is not None:
+                self._unix_sock.settimeout(t)
+                self._unix_sock.sendall(msg)
+                return
+            raise TransportError("Transport is closed.")
+        except TransportError:
+            raise
+        except OSError as exc:
+            self.close()
+            raise TransportError(f"Pipe I/O error on {self._endpoint}: {exc}") from exc
+
+    def request_line(self, payload: bytes, timeout: Optional[float] = None) -> bytes:
+        self.send_line(payload, timeout)
+        return self.recv_line(timeout)
+
+    def recv_line(self, timeout: Optional[float] = None) -> bytes:
+        """Read the next non-empty response line within ``timeout`` seconds.
+
+        On timeout the pipe is closed (a late response must never be read as the
+        answer to a later request).
+        """
+        t = self._effective_timeout(timeout)
+        deadline = time.monotonic() + t
+        try:
+            if self._win_handle is not None:
                 peek_fn = ctypes.windll.kernel32.PeekNamedPipe
                 avail = ctypes.c_uint32(0)
                 sleep_step = 0.001
@@ -809,7 +870,7 @@ class _LocalPipeTransport:
                     if rem <= 0:
                         self._abort_win_handle_nonblocking()
                         raise TransportError(
-                            f"Named pipe read timed out after {self.timeout:.2f}s ({self._endpoint})."
+                            f"Timed out after {t:.1f}s waiting for a response from {self._endpoint}."
                         )
                     fh_cur = self._win_handle
                     osfh = self._win_osfhandle
@@ -838,8 +899,6 @@ class _LocalPipeTransport:
                         raise TransportError(f"Named pipe closed ({self._endpoint}).")
                     self._buf.extend(chunk)
             elif self._unix_sock is not None:
-                self._unix_sock.settimeout(self.timeout)
-                self._unix_sock.sendall(msg)
                 while True:
                     nl = self._buf.find(b"\n")
                     if nl >= 0:
@@ -852,7 +911,7 @@ class _LocalPipeTransport:
                     if rem <= 0:
                         self.close()
                         raise TransportError(
-                            f"Unix socket read timed out after {self.timeout:.2f}s ({self._endpoint})."
+                            f"Timed out after {t:.1f}s waiting for a response from {self._endpoint}."
                         )
                     self._unix_sock.settimeout(max(0.01, rem))
                     chunk = self._unix_sock.recv(65536)
@@ -863,6 +922,7 @@ class _LocalPipeTransport:
         except TransportError:
             raise
         except OSError as exc:
+            self.close()
             raise TransportError(f"Pipe I/O error on {self._endpoint}: {exc}") from exc
 
     def close(self) -> None:
@@ -2796,12 +2856,18 @@ class Session:
         transport: Union[_TcpTransport, _LocalPipeTransport],
         process: Optional[subprocess.Popen[bytes]] = None,
         cleanup_files: Optional[Sequence[str]] = None,
+        rpc_timeout: Optional[float] = None,
     ) -> None:
         self._transport = transport
         self._process = process
         self._cleanup_files = list(cleanup_files or [])
         self._next_id = 1
         self._closed = False
+        #: Seconds to wait for each RPC answer (``None`` -> DEFAULT_RPC_TIMEOUT).
+        self.rpc_timeout: float = float(DEFAULT_RPC_TIMEOUT if rpc_timeout is None else rpc_timeout)
+        #: Number of stale responses (answers to earlier, timed-out requests) discarded.
+        self.discarded_responses = 0
+        self._broken_reason: Optional[str] = None
         self._active_batch: Optional[BatchContext] = None
         self._finalizer: Optional[weakref.finalize] = (
             weakref.finalize(
@@ -2857,16 +2923,45 @@ class Session:
         self._cleanup_files.clear()
         _cleanup_spawned_session(proc, self._transport, files)
 
+    @property
+    def usable(self) -> bool:
+        """False once the session was closed or its connection was invalidated."""
+        return not self._closed and self._broken_reason is None
+
+    def _invalidate(self, reason: str) -> None:
+        """Mark the connection unusable (the request/response stream can no longer be trusted)."""
+        if self._broken_reason is None:
+            self._broken_reason = reason
+        try:
+            self._transport.close()
+        except Exception:
+            pass
+
     def call(
         self,
         _method: Optional[str] = None,
         _params: Optional[Mapping[str, Any]] = None,
         /,
+        *,
+        rpc_timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Invoke any ToriGraph JSON-RPC 2.0 method and return its result dictionary."""
+        """Invoke any ToriGraph JSON-RPC 2.0 method and return its result dictionary.
+
+        ``rpc_timeout`` (seconds) overrides :attr:`rpc_timeout` for this call only;
+        it is not sent to ToriGraph.  Responses are matched by JSON-RPC ``id``: an
+        answer to an earlier request (e.g. one that arrived after that request
+        timed out) is discarded.  If the answer does not arrive in time, or the
+        stream is out of sync, the session is invalidated and later calls raise
+        :class:`TransportError` -- reconnect (or relaunch) to continue.
+        """
         if self._closed:
             raise TransportError("Session is already closed.")
+        if self._broken_reason is not None:
+            raise TransportError(
+                f"Session is no longer usable ({self._broken_reason}). "
+                "Close it and connect or launch again."
+            )
 
         if _method is None:
             kw_method = kwargs.pop("method", None)
@@ -2892,12 +2987,7 @@ class Session:
             "params": merged,
         }
         raw_req = json.dumps(req_obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        raw_resp = self._transport.request_line(raw_req)
-
-        try:
-            resp = json.loads(raw_resp.decode("utf-8"))
-        except Exception as exc:
-            raise TransportError(f"Malformed JSON response from ToriGraph: {exc}") from exc
+        resp = self._exchange(raw_req, req_id, str(_method), rpc_timeout)
 
         if "error" in resp and resp["error"] is not None:
             err = resp["error"]
@@ -2911,6 +3001,67 @@ class Session:
 
         result = resp.get("result")
         return result if isinstance(result, dict) else {"value": result}
+
+    def _exchange(
+        self, raw_req: bytes, req_id: int, method: str, rpc_timeout: Optional[float]
+    ) -> Dict[str, Any]:
+        """Send one request and return the response object whose ``id`` equals ``req_id``."""
+        timeout = float(self.rpc_timeout if rpc_timeout is None else rpc_timeout)
+        if not timeout > 0:
+            raise ValueError("rpc_timeout must be a positive number of seconds.")
+        deadline = time.monotonic() + timeout
+        try:
+            self._transport.send_line(raw_req, timeout)
+        except TransportError as exc:
+            self._invalidate(f"sending '{method}' failed: {exc}")
+            raise
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._invalidate(f"no answer to '{method}' within {timeout:.1f}s")
+                raise TransportError(
+                    f"Timed out after {timeout:.1f}s waiting for the answer to '{method}'. "
+                    "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long operations."
+                )
+            try:
+                raw_resp = self._transport.recv_line(remaining)
+            except TransportError as exc:
+                self._invalidate(f"no answer to '{method}': {exc}")
+                if "Timed out" in str(exc):
+                    raise TransportError(
+                        f"Timed out after {timeout:.1f}s waiting for the answer to '{method}'. "
+                        "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long "
+                        "operations. This session can no longer be used."
+                    ) from exc
+                raise
+            try:
+                resp = json.loads(raw_resp.decode("utf-8"))
+            except Exception as exc:
+                self._invalidate("malformed response")
+                raise TransportError(f"Malformed JSON response from ToriGraph: {exc}") from exc
+            if not isinstance(resp, dict):
+                self._invalidate("unexpected response type")
+                raise TransportError(
+                    f"Unexpected JSON-RPC response (expected an object): {type(resp).__name__}"
+                )
+            resp_id = resp.get("id")
+            if isinstance(resp_id, bool):
+                resp_id = None
+            if isinstance(resp_id, (int, float)) and resp_id == req_id:
+                return resp
+            if resp_id is None and resp.get("error") is not None:
+                # Server could not read our request id (parse error / invalid request):
+                # by JSON-RPC 2.0 the error carries id null and answers this request.
+                return resp
+            if isinstance(resp_id, (int, float)) and resp_id < req_id:
+                # Late answer to an earlier request: never hand it to this caller.
+                self.discarded_responses += 1
+                continue
+            self._invalidate(f"response id {resp_id!r} does not match request id {req_id}")
+            raise TransportError(
+                f"ToriGraph answered with id {resp_id!r} while waiting for id {req_id} "
+                f"('{method}'); the session was invalidated."
+            )
 
     def batch(
         self,
@@ -5258,16 +5409,81 @@ def _discover_torigraph_executable(
     )
 
 
-def connect(endpoint: Optional[str] = None, timeout: float = 30.0) -> Session:
-    """Connect to a running ToriGraph JSON-RPC 2.0 server."""
+def _sdk_version() -> str:
+    try:
+        from . import __version__ as sdk_version  # local import: avoids a circular import
+
+        return str(sdk_version)
+    except Exception:
+        return ""
+
+
+def _version_tuple(text: str) -> Tuple[int, ...]:
+    parts: List[int] = []
+    for tok in str(text).strip().lstrip("vV").split("-")[0].split("."):
+        if not tok.isdigit():
+            break
+        parts.append(int(tok))
+    return tuple(parts)
+
+
+def check_app_version(session: "Session", *, warn: bool = True) -> Dict[str, Any]:
+    """Compare the connected ToriGraph version with this SDK's ``__version__``.
+
+    Returns ``{"app_version", "sdk_version", "match"}``.  When the versions differ
+    (or the application does not report one) a :class:`ToriGraphVersionWarning`
+    is emitted if ``warn`` is true.  An RPC error from ``app.info`` is not raised.
+    """
+    sdk_ver = _sdk_version()
+    app_ver = ""
+    try:
+        info = session.call("app.info", rpc_timeout=min(30.0, session.rpc_timeout))
+        app_ver = str(info.get("version", ""))
+    except RpcError:
+        app_ver = ""
+    match = bool(app_ver) and _version_tuple(app_ver) == _version_tuple(sdk_ver)
+    if warn and not match:
+        import warnings
+
+        if app_ver:
+            msg = (
+                f"ToriGraph application version {app_ver} differs from the torigraph Python SDK "
+                f"version {sdk_ver}. Some methods may be missing or behave differently; install "
+                "the SDK that ships with the application (scripts/install-python-sdk.ps1)."
+            )
+        else:
+            msg = (
+                f"Could not read the ToriGraph application version (SDK {sdk_ver}); "
+                "the application may be older than this SDK."
+            )
+        warnings.warn(msg, ToriGraphVersionWarning, stacklevel=3)
+    return {"app_version": app_ver, "sdk_version": sdk_ver, "match": match}
+
+
+def connect(
+    endpoint: Optional[str] = None,
+    timeout: float = 30.0,
+    *,
+    rpc_timeout: Optional[float] = None,
+    check_version: bool = True,
+) -> Session:
+    """Connect to a running ToriGraph JSON-RPC 2.0 server.
+
+    ``timeout`` bounds opening the connection; ``rpc_timeout`` is the default wait
+    for each RPC answer (``None`` -> :data:`DEFAULT_RPC_TIMEOUT`).  With
+    ``check_version`` a :class:`ToriGraphVersionWarning` is issued when the
+    application version differs from the SDK version.
+    """
     resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
     if not resolved:
         raise TransportError(
             "No ToriGraph RPC endpoint specified and TORIGRAPH_RPC_ENDPOINT is not set."
         )
     transport = _parse_and_connect_transport(resolved, timeout=timeout)
-    session = Session(transport)
-    session.ping()
+    session = Session(transport, rpc_timeout=rpc_timeout)
+    session.call("ping", rpc_timeout=max(1.0, float(timeout)))
+    if check_version:
+        check_app_version(session)
     return session
 
 
@@ -5279,17 +5495,23 @@ def connect_or_launch(
     language: str = "ja",
     timeout: float = 30.0,
     extra_args: Optional[Sequence[str]] = None,
+    rpc_timeout: Optional[float] = None,
+    check_version: bool = True,
 ) -> Session:
     """Connect to ``endpoint`` / ``TORIGRAPH_RPC_ENDPOINT`` if available, else launch headless ``ToriGraph``."""
     resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
     if resolved:
-        return connect(resolved, timeout=timeout)
+        return connect(
+            resolved, timeout=timeout, rpc_timeout=rpc_timeout, check_version=check_version
+        )
     return launch(
         exe_path=exe_path,
         headless=headless,
         language=language,
         timeout=timeout,
         extra_args=extra_args,
+        rpc_timeout=rpc_timeout,
+        check_version=check_version,
     )
 
 
@@ -5299,8 +5521,15 @@ def launch(
     language: str = "ja",
     timeout: float = 30.0,
     extra_args: Optional[Sequence[str]] = None,
+    rpc_timeout: Optional[float] = None,
+    check_version: bool = True,
 ) -> Session:
-    """Launch a ToriGraph child process with loopback RPC enabled and connect a Session."""
+    """Launch a ToriGraph child process with loopback RPC enabled and connect a Session.
+
+    ``timeout`` is the start-up wait (process start until the RPC endpoint answers);
+    ``rpc_timeout`` is the default wait for each later RPC answer (``None`` ->
+    :data:`DEFAULT_RPC_TIMEOUT`; override per call with ``call(..., rpc_timeout=)``).
+    """
     exe = _discover_torigraph_executable(exe_path)
 
     port_fd, port_file = tempfile.mkstemp(prefix="torigraph_rpc_port_", suffix=".txt")
@@ -5401,8 +5630,12 @@ def launch(
 
     try:
         transport = _parse_and_connect_transport(discovered_endpoint, timeout=timeout)
-        session = Session(transport, process=proc, cleanup_files=[port_file, err_file])
-        session.ping()
+        session = Session(
+            transport, process=proc, cleanup_files=[port_file, err_file], rpc_timeout=rpc_timeout
+        )
+        session.call("ping", rpc_timeout=max(1.0, float(timeout)))
+        if check_version:
+            check_app_version(session)
         if language:
             session.set_language(language)
         return session

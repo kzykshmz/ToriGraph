@@ -301,7 +301,6 @@ set( SRCS
   "src/TeXTableSettings.cpp"
   "src/TeXTableSettingsWidget.cpp"
   "src/TeXTableExportDialog.cpp"
-  "src/version.cpp"
   "src/PenWidget.cpp"
   "src/future/core/AbstractAspect.cpp"
   "src/future/core/AbstractPart.cpp"
@@ -352,8 +351,12 @@ if( ORIGIN_IMPORT )
   list( APPEND SRCS "src/importOPJ.cpp" )
 endif()
 
+# version.cpp is generated from the top-level project() VERSION (single source of truth).
+configure_file( "src/version.cpp.in" "${CMAKE_CURRENT_BINARY_DIR}/version.cpp" @ONLY )
+
 add_library( libscidavis STATIC
   ${SRCS}
+  "${CMAKE_CURRENT_BINARY_DIR}/version.cpp"
   ${HEADERS}
   ${FORMS}
   )
@@ -426,14 +429,6 @@ else()
   target_link_libraries( libscidavis qwtplot3d )
 endif()
 
-if( SCRIPTING_PYTHON )
-  target_include_directories( libscidavis PUBLIC ${Python3_INCLUDE_DIRS} )
-  target_link_libraries( libscidavis  ${Python3_LIBRARIES} )
-
-  # add sip generated files' directory to include path
-  target_include_directories( libscidavis PUBLIC ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
-endif()
-
 target_compile_definitions( libscidavis PUBLIC
   LEGACY_CODE_0_2_x
   SCRIPTING_CONSOLE
@@ -486,148 +481,7 @@ if( ORIGIN_IMPORT )
   endif()
 endif()
 
-if( SCRIPTING_PYTHON )
-  target_compile_definitions( libscidavis PUBLIC
-    PYTHON_CONFIG_PATH="${CMAKE_INSTALL_PREFIX}/etc"
-    PYTHON_UTIL_PATH="${CMAKE_INSTALL_PREFIX}/share/scidavis"
-    SCRIPTING_PYTHON
-    )
-  if( MINGW )
-    get_filename_component( PYTHON_DIR ${Python3_EXECUTABLE} DIRECTORY )
-    file( REAL_PATH "${PYTHON_DIR}/.." PYTHON_ROOT_DIR )
-    set( PYTHONHOME "${PYTHON_ROOT_DIR}" CACHE PATH "Python Home" )
-    message( STATUS "PYTHONHOME = ${PYTHONHOME}" )
-    set_property( SOURCE "src/PythonScripting.cpp"
-      APPEND
-      PROPERTY COMPILE_DEFINITIONS
-      PYTHONHOME=${PYTHONHOME}
-      )
-  endif()
-endif()
-
 target_include_directories( libscidavis PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/future"
   )
-
-if( SCRIPTING_PYTHON )
-
-  if( SIP_VERSION VERSION_GREATER_EQUAL 5 )
-    set( scidavis_SIP_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/python/scidavis )
-  else()
-    set( scidavis_SIP_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR} )
-  endif()
-
-  set(scidavis_PyQt_HDR ${scidavis_SIP_OUTPUT_DIR}/sipAPIscidavis.h)
-  if( SIP_VERSION VERSION_GREATER_EQUAL 5 )
-    set( scidavis_SIP_HDR ${CMAKE_CURRENT_BINARY_DIR}/python/sip.h )
-    target_include_directories( libscidavis BEFORE PUBLIC
-      "${CMAKE_CURRENT_BINARY_DIR}/python"
-      "${scidavis_SIP_OUTPUT_DIR}"
-    )
-  endif()
-
-  set_source_files_properties(
-    ${scidavis_PyQt_HDR}
-    PROPERTIES
-    GENERATED ON
-    )
-
-  set(scidavis_PyQt_SRC
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidaviscmodule.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisApplicationWindow.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisGraph.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisArrowMarker.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisImageMarker.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisLegend.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisMultiLayer.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisTable.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisMatrix.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisMyWidget.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisScriptEdit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisNote.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisPythonScript.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisPythonScripting.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisFolder.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisExponentialFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisTwoExpFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisThreeExpFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisSigmoidalFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisGaussAmpFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisLorentzFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisNonLinearFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisPluginFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisMultiPeakFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisPolynomialFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisLinearFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisGaussFit.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisFilter.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisDifferentiation.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisIntegration.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisInterpolation.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisSmoothFilter.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisFFTFilter.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisFFT.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisCorrelation.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisConvolution.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisDeconvolution.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisAbstractAspect.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisColumn.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQwtSymbol.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQwtPlotCurve.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQwtPlot.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisGrid.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQList0100QDateTime.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQList0101Folder.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQList0101MyWidget.cpp
-    ${scidavis_SIP_OUTPUT_DIR}/sipscidavisQList0101QwtPlotCurve.cpp
-    )
-
-  set_source_files_properties(
-    ${scidavis_PyQt_SRC}
-    PROPERTIES
-    GENERATED ON
-    )
-
-  if( SIP_VERSION VERSION_GREATER_EQUAL 5 )
-    get_target_property(_qmake_executable Qt5::qmake IMPORTED_LOCATION)
-    add_custom_command(
-      OUTPUT ${scidavis_PyQt_HDR} ${scidavis_PyQt_SRC} ${scidavis_SIP_HDR}
-      COMMAND ${SIP_EXECUTABLE} --no-make --qmake=${_qmake_executable}
-        --include-dir=${PyQt_INCLUDE_DIRS}
-        --build-dir=${CMAKE_CURRENT_BINARY_DIR}/python
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/scidavis.sip
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src
-      )
-  else()
-    add_custom_command(
-      OUTPUT ${scidavis_PyQt_HDR} ${scidavis_PyQt_SRC}
-      COMMAND ${SIP_EXECUTABLE} -c . -I${PyQt_INCLUDE_DIRS} ${PyQt_FLAGS}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/scidavis.sip
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/scidavis.sip
-      )
-  endif()
-
-  if( SIP_VERSION VERSION_GREATER_EQUAL 5 )
-    add_custom_target(generate_PyQt_source
-      DEPENDS ${scidavis_PyQt_HDR} ${scidavis_PyQt_SRC} ${scidavis_SIP_HDR}
-      )
-  else()
-    add_custom_target(generate_PyQt_source
-      DEPENDS ${scidavis_PyQt_HDR} ${scidavis_PyQt_SRC}
-      )
-  endif()
-
-  target_sources( libscidavis PRIVATE
-    "src/PythonScript.h"
-    "src/PythonScripting.h"
-    ${scidavis_PyQt_HDR}
-    "src/PythonScript.cpp"
-    "src/PythonScripting.cpp"
-    ${scidavis_PyQt_SRC}
-    )
-
-  add_dependencies(libscidavis generate_PyQt_source)
-
-endif()

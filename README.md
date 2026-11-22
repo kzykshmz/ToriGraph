@@ -117,7 +117,7 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg
 cmake --build build --config Release --parallel
 ```
 
-For Linux / macOS background build instructions inherited from SciDAVis, see [INSTALL.md](INSTALL.md).
+For other platforms and build options, see [INSTALL.md](INSTALL.md).
 
 ---
 
@@ -132,7 +132,7 @@ This program is free software; you can redistribute it and/or modify it under th
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-- Full license text: [LICENSE](LICENSE) / [gpl.txt](gpl.txt)
+- Full license texts: [LICENSE](LICENSE) (GNU GPL version 2, the license of the source code) / [LICENSE-GPL-3.0.txt](LICENSE-GPL-3.0.txt) (GNU GPL version 3, which governs the distributed binaries; see below)
 - **Compiled binary distributions**: Because compiled binaries link against GPL-3.0-or-later / LGPL-3.0 libraries (such as GSL, Qt 5, and liborigin), distributed binaries are governed by the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**.
 - Third-party library licenses and attributions: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
 

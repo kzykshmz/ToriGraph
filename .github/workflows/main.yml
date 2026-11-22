@@ -24,12 +24,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Check version consistency (CMake / SDK / installer)
+        run: python scripts/check_version.py
+
       - name: Install and verify torigraph Python SDK
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ./python
+          python -m pip install -e "./python[test]"
           python -m compileall -q python/torigraph
-          python -c "import torigraph as tg; print('torigraph SDK OK:', tg.__file__)"
+          python -c "import torigraph as tg; print('torigraph SDK OK:', tg.__version__, tg.__file__)"
+
+      - name: Run SDK unit tests (no ToriGraph process)
+        run: python -m pytest python/tests -m "not app"
 
   windows-build-test:
     name: Windows MSVC Build & Test
@@ -56,6 +62,8 @@ jobs:
           create-args: >-
             qt-main=5.15
             gsl
+            libblas=*=*netlib
+            libcblas=*=*netlib
             muparser
             zlib
             ninja
@@ -64,6 +72,7 @@ jobs:
             numpy
             pandas
             python-pptx
+            pytest
 
       - name: Link .deps junction to micromamba environment
         run: |
@@ -82,7 +91,6 @@ jobs:
             -DORIGIN_IMPORT=ON `
             -DBUILD_QWT=ON `
             -DBUILD_QWTPLOT3D=ON `
-            -DSCRIPTING_PYTHON=OFF `
             -DBUILD_TESTS=OFF
 
       - name: Build ToriGraph & OLE/Regression Test Suite
@@ -90,50 +98,7 @@ jobs:
           micromamba run -n torigraph-ci cmake --build build --target scidavis scidavis_ole_test --parallel
 
       - name: Set display resolution to 1920x1080 for GUI layout tests
-        run: |
-          Add-Type -TypeDefinition @"
-          using System;
-          using System.Runtime.InteropServices;
-          public class DisplayHelper {
-              [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-              public struct DEVMODE {
-                  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
-                  public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
-                  public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
-                  public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
-                  public short dmTTOption; public short dmCollate;
-                  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
-                  public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
-                  public int dmDisplayFlags; public int dmDisplayFrequency;
-                  public int dmICMMethod; public int dmICMIntent; public int dmMediaType; public int dmDitherType;
-                  public int dmReserved1; public int dmReserved2; public int dmPanningWidth; public int dmPanningHeight;
-              }
-              [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-              public static extern bool EnumDisplaySettings(string lpszDeviceName, int iModeNum, ref DEVMODE lpDevMode);
-              [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-              public static extern int ChangeDisplaySettings(ref DEVMODE lpDevMode, int dwFlags);
-              public static string SetBestResolution() {
-                  DEVMODE cur = new DEVMODE(); cur.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-                  EnumDisplaySettings(null, -1, ref cur);
-                  string before = cur.dmPelsWidth + "x" + cur.dmPelsHeight;
-                  DEVMODE best = cur;
-                  int bestScore = cur.dmPelsWidth * cur.dmPelsHeight;
-                  DEVMODE dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-                  for (int i = 0; EnumDisplaySettings(null, i, ref dm); i++) {
-                      if (dm.dmPelsWidth == 1920 && dm.dmPelsHeight == 1080) { best = dm; break; }
-                      int score = dm.dmPelsWidth * dm.dmPelsHeight;
-                      if (dm.dmPelsWidth >= 1600 && dm.dmPelsHeight >= 900 && score > bestScore) {
-                          best = dm; bestScore = score;
-                      }
-                  }
-                  int rc = ChangeDisplaySettings(ref best, 0);
-                  DEVMODE after = new DEVMODE(); after.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-                  EnumDisplaySettings(null, -1, ref after);
-                  return "before=" + before + " -> after=" + after.dmPelsWidth + "x" + after.dmPelsHeight + " (rc=" + rc + ")";
-              }
-          }
-          "@
-          Write-Host ([DisplayHelper]::SetBestResolution())
+        run: ./scripts/ci-set-display-resolution.ps1
 
       - name: Run C++ Automated Test Suite (scidavis_ole_test)
         run: |
@@ -145,30 +110,12 @@ jobs:
           Write-Host ("scidavis_ole_test exit code = {0} (0x{1:X8})" -f $ec, ($ec -band 0xFFFFFFFF))
           if ($ec -ne 0) { exit $ec }
 
-      - name: Run Python SDK Headless Smoke Test
+      - name: Run Python SDK tests (pytest, live headless ToriGraph; slow gates excluded)
         run: |
           $env:QT_OPENGL = "software"
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\plugins\platforms"
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path
           micromamba run -n torigraph-ci python -m pip install --no-build-isolation --no-deps -e ./python
-          @'
-          from pathlib import Path
-          import torigraph as tg
-
-          with tg.launch(headless=True, language="en") as app:
-              info = app.info()
-              print("App info:", info)
-              sample = app.load_sample_dataset("tensile_alznmg", auto_plot=True)
-              g = app.graph(sample["graph"])
-              res = g.analyze_tensile(offset=0.002, plot_construction=True)
-              print("Tensile analysis:", res)
-              out_png = Path("ci_smoke.png").resolve()
-              out_pptx = Path("ci_smoke.pptx").resolve()
-              g.export(out_png, dpi=300)
-              g.to_pptx(out_pptx, preset="slide_28pt")
-              assert out_png.is_file() and out_png.stat().st_size > 1000
-              assert out_pptx.is_file() and out_pptx.stat().st_size > 1000
-              print("Python SDK smoke test PASSED")
-          '@ | micromamba run -n torigraph-ci python -
+          micromamba run -n torigraph-ci python -m pytest python/tests -m "not slow" --durations=10
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

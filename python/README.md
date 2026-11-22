@@ -40,6 +40,22 @@ with tg.connect_or_launch() as app:
 # app = tg.connect("tcp://127.0.0.1:18900")
 ```
 
+### 待ち時間と版の照合
+
+- `launch(timeout=30)` の `timeout` は起動待ち(接続できるまで)の秒数です。各呼び出しの応答待ちは別で、既定は `tg.DEFAULT_RPC_TIMEOUT`(120 秒)です。
+- 重い処理だけ待ち時間を延ばすときは `app.call("analysis.xxx", ..., rpc_timeout=600)`、セッション全体なら `tg.launch(rpc_timeout=600)` または `app.rpc_timeout = 600` とします。
+- 応答は JSON-RPC の `id` で照合します。待ち時間を過ぎた場合、そのセッションは使えなくなり(遅れて届いた応答を次の呼び出しの結果と取り違えないため)、以後の呼び出しは `TransportError` になります。接続し直してください。
+- 接続時にアプリと SDK の版を照合し、違えば `tg.ToriGraphVersionWarning` を出します(`check_version=False` で省略)。アプリに同梱の SDK(`scripts/install-python-sdk.ps1`)を入れ直すと一致します。
+
+### テスト
+
+```bash
+pip install -e "./python[test]"
+pytest python/tests -m "not app"      # SDK だけのテスト(ToriGraph 不要)
+pytest python/tests -m "not slow"     # 実機テストも含む(TORIGRAPH_EXE を設定)
+pytest python/tests                   # 長い統合テスト(slow)も含めた全部
+```
+
 コマンドラインからのワンショット実行:
 
 ```bash
