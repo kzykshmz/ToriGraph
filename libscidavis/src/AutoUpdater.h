@@ -188,7 +188,16 @@ public:
     // Network / failure handling helpers (public for the regression tests)
     //! Use the system (WinINET/PAC) proxy for remote hosts, no proxy for loopback.
     static void applyNetworkProxyPolicy(QNetworkAccessManager &nam, const QUrl &url);
+    //! The system proxy decision is cached per scheme/host/port for 5 minutes (WPAD can
+    //! block the GUI thread for seconds).
     static QList<QNetworkProxy> proxiesForUrl(const QUrl &url);
+    //! Network error text plus a hint for cases the updater cannot solve itself
+    //! (e.g. a proxy that asks for a user name and password).
+    static QString describeNetworkError(int netErr, const QString &errorString);
+    //! Full path of Windows PowerShell 5.1 (powershell.exe), or empty if not found.
+    static QString resolvePowerShellExecutable();
+    //! True if a file can actually be created in dirPath (honours Windows ACLs).
+    static bool isDirectoryWritable(const QString &dirPath);
     //! Human-facing releases page (https://github.com/<owner>/<repo>/releases).
     static QUrl releasesPageUrl(const QUrl &preferred = QUrl());
     //! Warning box with an extra "Open Release Page" button; returns true if it was used.
@@ -198,8 +207,11 @@ public:
     //! Settings switch AutoUpdate/AllowUnverifiedInstall (default false).
     static bool allowUnverifiedInstall();
     //! Close the main window (this runs the usual save confirmation) and only if it really
-    //! closed start the staged PowerShell script and quit. Returns false if the user kept
-    //! ToriGraph open or the script could not be started (the window is shown again).
+    //! closed start the staged PowerShell script and quit. PowerShell and the script are
+    //! checked before closing (a failure there keeps ToriGraph open); if the install folder
+    //! is not writable the script is started elevated (UAC). Returns false if the user kept
+    //! ToriGraph open or the script could not be started (a native message box offers to
+    //! restart ToriGraph, because the closed window cannot be shown again).
     static bool closeAppAndLaunchUpdater(ApplicationWindow *app, const QString &scriptPath,
                                          const QUrl &releasePage = QUrl());
 
