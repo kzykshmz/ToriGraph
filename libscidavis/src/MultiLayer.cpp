@@ -2213,7 +2213,11 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
 void MultiLayer::copyAllLayers()
 {
 #ifdef Q_OS_WIN
-    if (SciDAVisOle::copyGraphAsOle(qobject_cast<ApplicationWindow *>(window()), this, nullptr))
+    // The editable object, or (if OLE is unavailable) an EMF + high-resolution PNG picture.
+    const SciDAVisOle::OleCopyResult res = SciDAVisOle::copyGraphForPowerPoint(
+            qobject_cast<ApplicationWindow *>(window()), this, nullptr);
+    SciDAVisOle::reportCopyResult(qobject_cast<ApplicationWindow *>(window()), res, false);
+    if (res.ok || res.staticFallbackOnClipboard)
         return;
 #endif
     ScopedUnzoomForExport unzoomGuard(this);

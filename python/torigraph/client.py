@@ -4121,8 +4121,15 @@ class Session:
         titles: Optional[Union[str, Sequence[str]]] = None,
         preset: Optional[str] = None,
         widescreen: bool = True,
+        scale: Optional[Union[float, int, str]] = None,
+        embed_scope: str = "graph",
     ) -> Dict[str, Any]:
         """Export graphs into a PowerPoint ``.pptx`` deck as editable native ``ToriGraph.Graph.1`` OLE objects.
+
+        ``scale`` (e.g. ``1.4`` or ``"140%"``) places each graph at its natural size x scale;
+        the result reports ``effective_scale`` and the effective axis-title / tick-label pt of
+        every placement. ``embed_scope="graph"`` (default) embeds only the graph and the tables
+        it plots; ``"project"`` embeds the whole project.
 
         Uses OpenXML (``python-pptx``) + Win32 ``ole32.dll`` ``StgCreateDocfile`` with zero COM
         process activation (``POWERPNT.EXE`` is never spawned or touched) and zero clipboard use.
@@ -4143,6 +4150,8 @@ class Session:
             titles=titles,
             preset=preset,
             widescreen=widescreen,
+            scale=scale,
+            embed_scope=embed_scope,
         )
 
     # ------------------------------------------------------------------

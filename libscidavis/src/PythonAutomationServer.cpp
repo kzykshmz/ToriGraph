@@ -6917,9 +6917,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Place editable ToriGraph OLE object + vector EMF on Windows clipboard for Word/PowerPoint.",
       "graph:str=''; active_layer_only:bool=false", "g.copy_ole()" },
     { "graph.export_ole", "graph",
-      "GraphProxy.export_ole(*, emf_path=None, ole_path=None, dpi=300, active_layer_only=False, include_base64=True, skip_project_stream=False)",
+      "GraphProxy.export_ole(*, emf_path=None, ole_path=None, dpi=300, active_layer_only=False, include_base64=True, skip_project_stream=False, embed_scope='graph')",
       "Export editable ToriGraph OLE Compound Document (.bin), crisp vector EMF preview, .sciprj XML, and physical dimensions (mm/hm) for zero-COM PowerPoint (.pptx) embedding.",
-      "graph:str=''; emf_path:str=''; ole_path:str=''; dpi:int=300; active_layer_only:bool=false; include_base64:bool=true; skip_project_stream:bool=false",
+      "graph:str=''; emf_path:str=''; ole_path:str=''; dpi:int=300; active_layer_only:bool=false; include_base64:bool=true; skip_project_stream:bool=false; embed_scope:str='graph'[graph|project]",
       "pkg = g.export_ole(dpi=300)" },
     { "graph.auto_layout", "graph",
       "GraphProxy.auto_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
@@ -20452,6 +20452,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 ? optionalJsonString(params, QStringLiteral("ole_path")).trimmed()
                 : optionalJsonString(params, QStringLiteral("path")).trimmed();
         const bool needOleCompound = !skipProjectStream || !olePathRaw.isEmpty();
+        // "graph" (default): embed the graph and the tables/matrices it plots only;
+        // "project": embed the whole project (and results log), as before.
+        const QString embedScopeStr =
+                optionalJsonString(params, QStringLiteral("embed_scope")).trimmed().toLower();
+        SciDAVisOle::EmbedScope embedScope = SciDAVisOle::EmbedScope::GraphOnly;
+        if (embedScopeStr == QStringLiteral("project") || embedScopeStr == QStringLiteral("whole")
+            || embedScopeStr == QStringLiteral("all"))
+            embedScope = SciDAVisOle::EmbedScope::WholeProject;
+        else if (!embedScopeStr.isEmpty() && embedScopeStr != QStringLiteral("graph"))
+            throwInvalidParams(QStringLiteral("Unknown embed_scope '%1' (expected 'graph'|'project').")
+                                       .arg(embedScopeStr));
+        QStringList embeddedWindows;
 
         const QString reqGraph = optionalJsonString(params, QStringLiteral("graph")).trimmed();
         Graph3D *targetG3D = nullptr;
@@ -20506,7 +20518,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 }
             }
             sanitizeAllProjectFunctionCurves(d_app);
-            projBytes = d_app->saveProjectToByteArray();
+            MyWidget *embedTarget = targetG3D ? static_cast<MyWidget *>(targetG3D)
+                                              : static_cast<MyWidget *>(ml);
+            projBytes = SciDAVisOle::buildEmbeddedProjectBytes(d_app, embedTarget, embedScope,
+                                                               &embeddedWindows);
             if (projBytes.isEmpty()) {
                 throwRpcRuntime(
                         QStringLiteral("Failed to serialize .sciprj payload for OLE export."));
@@ -20629,6 +20644,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 QStringLiteral("{8E6B9541-3C74-4D28-A915-7D84E5A12001}");
         outResult[QStringLiteral("prog_id")] = QStringLiteral("ToriGraph.Graph.1");
         outResult[QStringLiteral("dpi")] = dpi;
+        outResult[QStringLiteral("embed_scope")] =
+                embedScope == SciDAVisOle::EmbedScope::WholeProject ? QStringLiteral("project")
+                                                                    : QStringLiteral("graph");
+        if (needOleCompound)
+            outResult[QStringLiteral("embedded_windows")] =
+                    QJsonArray::fromStringList(embeddedWindows);
         outResult[QStringLiteral("width_mm")] = safeJsonDouble(widthMm);
         outResult[QStringLiteral("height_mm")] = safeJsonDouble(heightMm);
         outResult[QStringLiteral("width_hm")] = static_cast<int>(rg.extentHm.cx);

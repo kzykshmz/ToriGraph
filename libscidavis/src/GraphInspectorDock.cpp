@@ -47,6 +47,7 @@
 #include "Spectrogram.h"
 #include "SymbolBox.h"
 #include "Table.h"
+#include "OleServer.h"
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -6593,8 +6594,10 @@ void GraphInspectorDock::retranslateUi()
 
     if (d_sec_export_lbl)
         d_sec_export_lbl->setText(tr("Clipboard & Export"));
-    if (d_btn_copy_ole)
-        d_btn_copy_ole->setText(tr("Copy OLE"));
+    if (d_btn_copy_ole) {
+        d_btn_copy_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
+        d_btn_copy_ole->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
+    }
     if (d_btn_export_img_pdf)
         d_btn_export_img_pdf->setText(tr("Export Image / PDF"));
 

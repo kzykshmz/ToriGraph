@@ -1,5 +1,117 @@
 #include "OleServer.h"
 
+#include "I18nJapanese.h"
+
+#include <QObject>
+
+namespace ToriGraphOleUi {
+
+void registerJapaneseStrings()
+{
+    static bool s_registered = false;
+    if (s_registered)
+        return;
+    s_registered = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Copy for PowerPoint", "PowerPoint 用にコピー");
+    reg("Copy Graph for Power&Point", "グラフを PowerPoint 用にコピー(&P)");
+    reg("Copy the graph for PowerPoint / Word as an editable object. After pasting, double-click "
+        "it on the slide to edit it again in ToriGraph.",
+        "グラフを PowerPoint・Word 用に、編集できるオブジェクトとしてコピーします。"
+        "貼り付け後、スライド上でダブルクリックすると再編集できます。");
+    reg("Embed Whole Project in PowerPoint Copies",
+        "PowerPoint 用コピーにプロジェクト全体を埋め込む");
+    reg("Repair PowerPoint Link (OLE Registration)...",
+        "PowerPoint 連携を修復(OLE 登録)...");
+    reg("Select a graph window first. \"Copy for PowerPoint\" copies the active graph.",
+        "グラフを選んでください。「PowerPoint 用にコピー」は、選択中のグラフをコピーします。");
+    reg("Copied %1 for PowerPoint (%2 x %3 mm). Paste with Ctrl+V; double-click it on the slide "
+        "to edit it again.",
+        "%1 を PowerPoint 用にコピーしました(%2 × %3 mm)。Ctrl+V で貼り付け、"
+        "スライド上でダブルクリックすると再編集できます。");
+    reg("Embedded: %1.", "埋め込んだウィンドウ: %1。");
+    reg("Embedded: the whole project.", "埋め込み: プロジェクト全体。");
+    reg("Could not copy %1 as an editable object for PowerPoint.",
+        "%1 を PowerPoint 用の編集できるオブジェクトとしてコピーできませんでした。");
+    reg("A picture of the graph (EMF vector and %1 dpi PNG) was placed on the clipboard "
+        "instead. It can be pasted, but not edited again from PowerPoint.",
+        "代わりにグラフの画像(EMF ベクターと %1 dpi の PNG)をクリップボードに載せました。"
+        "貼り付けはできますが、PowerPoint から再編集はできません。");
+    reg("Nothing was placed on the clipboard.", "クリップボードには何も載せていません。");
+    reg("The clipboard is in use by another program. Wait a moment and try again.",
+        "クリップボードを他のプログラムが使用中です。少し待ってからもう一度お試しください。");
+    reg("OLE could not be initialized in this ToriGraph session. Restart ToriGraph and try again.",
+        "この ToriGraph では OLE を初期化できませんでした。ToriGraph を再起動してからもう一度お試しください。");
+    reg("The graph could not be drawn as a vector picture (EMF).",
+        "グラフをベクター画像(EMF)として描画できませんでした。");
+    reg("The graph could not be drawn as a picture.", "グラフを画像として描画できませんでした。");
+    reg("The embedded object could not be created.", "埋め込みオブジェクトを作成できませんでした。");
+    reg("The PowerPoint link of ToriGraph is not registered, or points to a program that no "
+        "longer exists (%1). Pasting works, but double-clicking the graph in PowerPoint will "
+        "not open ToriGraph.",
+        "ToriGraph の PowerPoint 連携が登録されていないか、存在しないプログラム(%1)を指しています。"
+        "貼り付けはできますが、PowerPoint でダブルクリックしても ToriGraph は開きません。");
+    reg("To fix this, click \"Repair PowerPoint Link\" (also in the Help menu).",
+        "直すには「PowerPoint 連携を修復」を押してください(ヘルプメニューにもあります)。");
+    reg("Repair PowerPoint Link", "PowerPoint 連携を修復");
+    reg("PowerPoint link repaired. Graphs pasted into PowerPoint will open in:\n%1",
+        "PowerPoint 連携を修復しました。PowerPoint に貼ったグラフは次のプログラムで開きます:\n%1");
+    reg("The PowerPoint link could not be registered: %1",
+        "PowerPoint 連携を登録できませんでした: %1");
+    reg("Repair PowerPoint Link (OLE Registration)", "PowerPoint 連携を修復(OLE 登録)");
+    reg("ToriGraph could not open the graph embedded in this slide (%1).\n\nEditing was cancelled "
+        "and the object on the slide was not changed.",
+        "このスライドに埋め込まれたグラフを ToriGraph で開けませんでした(%1)。\n\n"
+        "編集を中止しました。スライド上のオブジェクトは変更していません。");
+    reg("the embedded project could not be read", "埋め込まれたプロジェクトを読み込めません");
+    reg("the graph \"%1\" was not found in the embedded project",
+        "埋め込まれたプロジェクトにグラフ「%1」がありません");
+    reg("Edit Embedded Graph", "埋め込みグラフの編集");
+}
+
+QString copyForPowerPointLabel()
+{
+    registerJapaneseStrings();
+    return QObject::tr("Copy for PowerPoint");
+}
+
+QString copyForPowerPointMenuText()
+{
+    registerJapaneseStrings();
+    return QObject::tr("Copy Graph for Power&Point");
+}
+
+QString copyForPowerPointToolTip()
+{
+    registerJapaneseStrings();
+    return QObject::tr("Copy the graph for PowerPoint / Word as an editable object. After "
+                       "pasting, double-click it on the slide to edit it again in ToriGraph.");
+}
+
+QString embedWholeProjectMenuText()
+{
+    registerJapaneseStrings();
+    return QObject::tr("Embed Whole Project in PowerPoint Copies");
+}
+
+QString repairRegistrationMenuText()
+{
+    registerJapaneseStrings();
+    return QObject::tr("Repair PowerPoint Link (OLE Registration)...");
+}
+
+QString selectGraphFirstMessage()
+{
+    registerJapaneseStrings();
+    return QObject::tr(
+            "Select a graph window first. \"Copy for PowerPoint\" copies the active graph.");
+}
+
+} // namespace ToriGraphOleUi
+
 #ifdef Q_OS_WIN
 
 #include "EmfPaintDevice.h"
@@ -10,16 +122,26 @@
 #include "Graph3D.h"
 #include "Plot3DDialog.h"
 #include "Table.h"
+#include "Matrix.h"
+#include "MyWidget.h"
+#include "PlotCurve.h"
+#include "Spectrogram.h"
 
 
 #include <QApplication>
+#include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QPointer>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QSettings>
+#include <QStatusBar>
 #include <QTemporaryFile>
 #include <QTimer>
 
@@ -263,6 +385,108 @@ QByteArray synthesizeDibFromEmf(const QByteArray &emfBytes, QSize fallbackPx)
     return out;
 }
 
+// Tells the user that an embedded graph could not be opened for editing. The text is also kept
+// on qApp (property "torigraph_last_ole_open_error") so that tests can check it.
+void reportEmbeddedOpenFailure(const QString &reason)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    const QString msg = QObject::tr("ToriGraph could not open the graph embedded in this slide "
+                                    "(%1).\n\nEditing was cancelled and the object on the slide "
+                                    "was not changed.")
+                                .arg(reason);
+    if (qApp)
+        qApp->setProperty("torigraph_last_ole_open_error", msg);
+    if (ApplicationWindow::isNonInteractiveContext(nullptr))
+        return;
+    QMessageBox box(QMessageBox::Critical, QObject::tr("Edit Embedded Graph"), msg,
+                    QMessageBox::Ok);
+    box.setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    box.exec();
+}
+
+// Hidden message-only window that owns the clipboard for the static (non-OLE) fallback:
+// SetClipboardData fails when the clipboard was opened without an owner window.
+HWND clipboardOwnerWindow()
+{
+    static HWND s_hwnd = nullptr;
+    if (!s_hwnd || !IsWindow(s_hwnd)) {
+        s_hwnd = CreateWindowExW(0, L"STATIC", L"ToriGraphClipboard", 0, 0, 0, 0, 0,
+                                 HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    return s_hwnd;
+}
+
+HGLOBAL bytesToHGlobal(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return nullptr;
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(bytes.size()));
+    if (!hMem)
+        return nullptr;
+    void *ptr = GlobalLock(hMem);
+    if (!ptr) {
+        GlobalFree(hMem);
+        return nullptr;
+    }
+    std::memcpy(ptr, bytes.constData(), static_cast<size_t>(bytes.size()));
+    GlobalUnlock(hMem);
+    return hMem;
+}
+
+// Places a static picture of the graph (EMF vector, PNG and DIB) on the clipboard with the
+// plain Win32 API. Used when the editable OLE object cannot be offered.
+bool placeStaticGraphOnClipboard(const QByteArray &emfBytes, const QByteArray &pngBytes,
+                                 const QByteArray &dibBytes)
+{
+    if (emfBytes.isEmpty() && pngBytes.isEmpty() && dibBytes.isEmpty())
+        return false;
+    HWND owner = clipboardOwnerWindow();
+    bool opened = false;
+    // Another program (a clipboard manager such as the Windows clipboard history service, or
+    // Office) may hold the clipboard for a moment. It may be waiting for this thread to render a
+    // delayed format of the previous copy, so keep dispatching messages while waiting.
+    for (int attempt = 0; attempt < 80 && !opened; ++attempt) {
+        opened = OpenClipboard(owner) != FALSE;
+        if (!opened) {
+            const ULONGLONG until = GetTickCount64() + 25;
+            do {
+                MSG msg{};
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(5);
+            } while (GetTickCount64() < until);
+        }
+    }
+    if (!opened)
+        return false;
+    EmptyClipboard();
+    int placed = 0;
+    if (!emfBytes.isEmpty()) {
+        if (HENHMETAFILE hemf = SciDAVisEmf::createHemfFromBytes(emfBytes)) {
+            if (SetClipboardData(CF_ENHMETAFILE, hemf))
+                ++placed;
+            else
+                DeleteEnhMetaFile(hemf);
+        }
+    }
+    if (HGLOBAL hPng = bytesToHGlobal(pngBytes)) {
+        if (SetClipboardData(pngClipboardFormat(), hPng))
+            ++placed;
+        else
+            GlobalFree(hPng);
+    }
+    if (HGLOBAL hDib = bytesToHGlobal(dibBytes)) {
+        if (SetClipboardData(CF_DIB, hDib))
+            ++placed;
+        else
+            GlobalFree(hDib);
+    }
+    CloseClipboard();
+    return placed > 0;
+}
+
 ApplicationWindow *createSampleAppWindow()
 {
     ApplicationWindow *mw = new ApplicationWindow();
@@ -332,7 +556,10 @@ void ensureRenderedPayload(OleGraphPayload *payload)
         return;
 
     ApplicationWindow *mw = openAppWindowFromBytes(payload->projectBytes);
-    if (!mw)
+    // A sample graph is only acceptable for a brand-new object without project data. When the
+    // embedded project cannot be read, never render (and later save) a different graph in its
+    // place; the neutral placeholder below is used instead.
+    if (!mw && payload->projectBytes.isEmpty())
         mw = createSampleAppWindow();
 
     if (mw) {
@@ -441,6 +668,17 @@ class SciDAVisGraphObject final : public IOleObject,
     ComPtr<IDataAdviseHolder> m_dataAdvises;
     ComPtr<IAdviseSink> m_viewSink;
     DWORD m_viewFlags = 0;
+    QByteArray m_pngCache;    // PNG rendering of m_pngCacheEmf
+    QByteArray m_pngCacheEmf; // EMF the cached PNG was rendered from
+
+    const QByteArray &pngBytes()
+    {
+        if (m_pngCache.isEmpty() || m_pngCacheEmf != m_payload.emfBytes) {
+            m_pngCache = renderEmfToPng(m_payload.emfBytes, naturalPayloadExtentHm(m_payload));
+            m_pngCacheEmf = m_payload.emfBytes;
+        }
+        return m_pngCache;
+    }
 
     void finishClose()
     {
@@ -607,6 +845,8 @@ class SciDAVisGraphObject final : public IOleObject,
             return (f->tymed & TYMED_ISTORAGE) ? S_OK : DV_E_TYMED;
         if (f->cfFormat == descriptorFormat())
             return (f->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_TYMED;
+        if (f->cfFormat == pngClipboardFormat())
+            return (f->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_TYMED;
         return DV_E_FORMATETC;
     }
 
@@ -757,17 +997,41 @@ public:
             return S_OK;
         }
 
+        const bool prevStopped = m_stopped;
         m_stopped = false;
         const size_t generation = ++m_editorGeneration;
         AddRef();
 
         try {
             ApplicationWindow *mw = openAppWindowFromBytes(m_payload.projectBytes);
-            if (!mw)
+            if (!mw) {
+                if (!m_payload.projectBytes.isEmpty()) {
+                    // Never substitute a sample graph for an embedding we could not read: closing
+                    // that editor would overwrite the user's graph on the slide.
+                    reportEmbeddedOpenFailure(
+                            QObject::tr("the embedded project could not be read"));
+                    m_stopped = prevStopped;
+                    Release();
+                    return E_FAIL;
+                }
                 mw = createSampleAppWindow();
+            }
 
             MultiLayer *ml = findTargetMultiLayer(mw, m_payload.targetWindow, false);
             Graph3D *g3d = !ml ? findTargetGraph3D(mw, m_payload.targetWindow, false) : nullptr;
+            if (!ml && !g3d && !m_payload.targetWindow.isEmpty()) {
+                // The project loaded, but the graph this object shows is not in it. Editing
+                // another graph would replace the picture on the slide, so stop here.
+                mw->setOleEmbeddedMode(true);
+                mw->close();
+                delete mw;
+                reportEmbeddedOpenFailure(
+                        QObject::tr("the graph \"%1\" was not found in the embedded project")
+                                .arg(m_payload.targetWindow));
+                m_stopped = prevStopped;
+                Release();
+                return E_FAIL;
+            }
             if (!ml && !g3d) {
                 ml = findTargetMultiLayer(mw, m_payload.targetWindow, true);
                 if (!ml)
@@ -1148,6 +1412,20 @@ public:
                 m->hGlobal = hMem;
                 return S_OK;
             }
+            if (f->cfFormat == pngClipboardFormat()) {
+                const QByteArray &png = pngBytes();
+                if (png.isEmpty())
+                    return E_FAIL;
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(png.size()));
+                if (!hMem)
+                    return E_OUTOFMEMORY;
+                void *ptr = GlobalLock(hMem);
+                std::memcpy(ptr, png.constData(), static_cast<size_t>(png.size()));
+                GlobalUnlock(hMem);
+                m->tymed = TYMED_HGLOBAL;
+                m->hGlobal = hMem;
+                return S_OK;
+            }
             if (f->cfFormat == descriptorFormat()) {
                 const wchar_t userType[] = L"ToriGraph Graph";
                 const wchar_t srcName[] = L"ToriGraph";
@@ -1245,9 +1523,11 @@ public:
             { objectFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_ISTORAGE },
             { descriptorFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL },
             { CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF },
+            { pngClipboardFormat(), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL },
             { CF_DIB, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL }
         };
-        return SHCreateStdEnumFmtEtc(5, fmts, out);
+        return SHCreateStdEnumFmtEtc(static_cast<UINT>(sizeof(fmts) / sizeof(fmts[0])), fmts,
+                                     out);
     }
 
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *f, DWORD flags, IAdviseSink *sink, DWORD *c) override
@@ -1490,13 +1770,99 @@ HRESULT createGraphObject(const OleGraphPayload &payload, REFIID riid, void **pp
     }
 }
 
-bool ensureRegistryRegistered(QString *errMsg)
+namespace {
+
+const wchar_t kClsidKey[] = L"CLSID\\{8E6B9541-3C74-4D28-A915-7D84E5A12001}\\LocalServer32";
+
+QString selfServerExecutable()
 {
     QString candidateExe = QCoreApplication::applicationDirPath() + QStringLiteral("/ToriGraph.exe");
     if (!QFileInfo::exists(candidateExe))
         candidateExe = QCoreApplication::applicationDirPath() + QStringLiteral("/scidavis.exe");
     if (!QFileInfo::exists(candidateExe))
         candidateExe = QCoreApplication::applicationFilePath();
+    return candidateExe;
+}
+
+QString readRegString(HKEY root, const wchar_t *subkey, const wchar_t *name)
+{
+    DWORD cb = 0;
+    if (RegGetValueW(root, subkey, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, nullptr,
+                     &cb)
+                != ERROR_SUCCESS
+        || cb < sizeof(wchar_t)) {
+        return QString();
+    }
+    std::wstring buf(cb / sizeof(wchar_t) + 1, L'\0');
+    if (RegGetValueW(root, subkey, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr,
+                     buf.data(), &cb)
+        != ERROR_SUCCESS) {
+        return QString();
+    }
+    return QString::fromWCharArray(buf.c_str()).trimmed();
+}
+
+// Extracts the executable from a LocalServer32 command line such as
+// "C:\Program Files\ToriGraph\ToriGraph.exe" -Embedding
+QString executableFromCommand(const QString &cmd)
+{
+    const QString c = cmd.trimmed();
+    if (c.isEmpty())
+        return QString();
+    if (c.startsWith(QLatin1Char('"'))) {
+        const int end = c.indexOf(QLatin1Char('"'), 1);
+        return end > 1 ? c.mid(1, end - 1) : c.mid(1);
+    }
+    const int exePos = c.indexOf(QLatin1String(".exe"), 0, Qt::CaseInsensitive);
+    if (exePos > 0)
+        return c.left(exePos + 4);
+    const int space = c.indexOf(QLatin1Char(' '));
+    return space > 0 ? c.left(space) : c;
+}
+
+bool envFlagSet(const char *name)
+{
+    const QByteArray v = qgetenv(name).trimmed();
+    return !v.isEmpty() && v != "0" && v.toLower() != "false" && v.toLower() != "no";
+}
+
+} // namespace
+
+RegistrationInfo queryRegistration()
+{
+    RegistrationInfo info;
+    // HKEY_CLASSES_ROOT is the merged per-user / per-machine view that COM itself uses.
+    QString exe = readRegString(HKEY_CLASSES_ROOT, kClsidKey, L"ServerExecutable");
+    if (exe.isEmpty())
+        exe = executableFromCommand(readRegString(HKEY_CLASSES_ROOT, kClsidKey, nullptr));
+    if (exe.isEmpty()) {
+        info.state = RegistrationInfo::NotRegistered;
+        return info;
+    }
+    info.executable = QDir::fromNativeSeparators(exe);
+    const QFileInfo fi(info.executable);
+    info.state = (fi.exists() && fi.isFile()) ? RegistrationInfo::Valid
+                                              : RegistrationInfo::MissingExecutable;
+    const QFileInfo self(selfServerExecutable());
+    info.pointsToSelf = fi.exists()
+            && QDir::cleanPath(fi.canonicalFilePath())
+                    .compare(QDir::cleanPath(self.canonicalFilePath()), Qt::CaseInsensitive)
+                    == 0;
+    return info;
+}
+
+bool ensureRegistrationAtStartup(QString *errMsg)
+{
+    if (envFlagSet("TORIGRAPH_NO_OLE_REGISTER"))
+        return true;
+    if (queryRegistration().state == RegistrationInfo::Valid)
+        return true; // a working installation is never redirected to this executable
+    return ensureRegistryRegistered(errMsg);
+}
+
+bool ensureRegistryRegistered(QString *errMsg)
+{
+    const QString candidateExe = selfServerExecutable();
     std::wstring exePath = QDir::toNativeSeparators(candidateExe).toStdWString();
     std::wstring serverCmd = L"\"" + exePath + L"\" -Embedding";
     std::wstring openCmd = L"\"" + exePath + L"\" \"%1\"";
@@ -1631,26 +1997,301 @@ void shutdownOleServer()
     }
 }
 
-bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
+CLIPFORMAT pngClipboardFormat()
 {
-    if (!ml)
-        return false;
-    if (!app) {
-        QWidget *p = ml->parentWidget();
-        while (p && !qobject_cast<ApplicationWindow *>(p))
-            p = p->parentWidget();
-        app = qobject_cast<ApplicationWindow *>(p);
+    static CLIPFORMAT cf = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"PNG"));
+    return cf;
+}
+
+namespace {
+
+// Resolution of the PNG offered with a copied graph: 600 dpi of the physical size, lowered in
+// steps (but not below 300 dpi) so that the picture stays within about 24 million pixels.
+// Only pages too large for 300 dpi within that budget go below 300 dpi.
+int choosePngDpi(SIZEL extentHm)
+{
+    if (extentHm.cx <= 0 || extentHm.cy <= 0)
+        return 0;
+    const double wIn = double(extentHm.cx) / 2540.0;
+    const double hIn = double(extentHm.cy) / 2540.0;
+    constexpr double kMaxPixels = 24.0e6;
+    constexpr double kMaxSide = 16000.0;
+    auto fits = [&](int dpi) {
+        const double w = wIn * dpi;
+        const double h = hIn * dpi;
+        return w * h <= kMaxPixels && w <= kMaxSide && h <= kMaxSide;
+    };
+    int dpi = 600;
+    while (dpi > 300 && !fits(dpi))
+        dpi -= 25;
+    while (dpi > 72 && !fits(dpi))
+        dpi -= 12;
+    return dpi;
+}
+
+} // namespace
+
+QByteArray renderEmfToPng(const QByteArray &emfBytes, SIZEL extentHm, int *outDpi)
+{
+    if (outDpi)
+        *outDpi = 0;
+    HENHMETAFILE hemf = SciDAVisEmf::createHemfFromBytes(emfBytes);
+    if (!hemf)
+        return {};
+    if (extentHm.cx <= 0 || extentHm.cy <= 0) {
+        ENHMETAHEADER hdr{};
+        if (GetEnhMetaFileHeader(hemf, sizeof(hdr), &hdr) != 0) {
+            extentHm = SIZEL{ hdr.rclFrame.right - hdr.rclFrame.left,
+                              hdr.rclFrame.bottom - hdr.rclFrame.top };
+        }
     }
-    if (!app) {
-        for (QWidget *top : QApplication::topLevelWidgets()) {
-            if (auto *cand = qobject_cast<ApplicationWindow *>(top)) {
-                app = cand;
-                break;
+    const int dpi = choosePngDpi(extentHm);
+    if (dpi <= 0) {
+        DeleteEnhMetaFile(hemf);
+        return {};
+    }
+    const int w = std::max(16, static_cast<int>(std::lround(extentHm.cx / 2540.0 * dpi)));
+    const int h = std::max(16, static_cast<int>(std::lround(extentHm.cy / 2540.0 * dpi)));
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; // top-down rows, as QImage expects
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void *bits = nullptr;
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (screenDc)
+        ReleaseDC(nullptr, screenDc);
+
+    QByteArray png;
+    if (memDc && hBmp && bits) {
+        std::memset(bits, 0xFF, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+        HGDIOBJ oldObj = SelectObject(memDc, hBmp);
+        RECT rc{ 0, 0, w, h };
+        if (!SciDAVisEmf::drawHemfWithGdiplus(memDc, hemf, rc))
+            PlayEnhMetaFile(memDc, hemf, &rc);
+        GdiFlush();
+        SelectObject(memDc, oldObj);
+        QImage img(static_cast<uchar *>(bits), w, h, w * 4, QImage::Format_RGB32);
+        const int dpm = static_cast<int>(std::lround(dpi / 0.0254));
+        img.setDotsPerMeterX(dpm);
+        img.setDotsPerMeterY(dpm);
+        QBuffer buf(&png);
+        if (buf.open(QIODevice::WriteOnly))
+            img.save(&buf, "PNG");
+    }
+    if (hBmp)
+        DeleteObject(hBmp);
+    if (memDc)
+        DeleteDC(memDc);
+    DeleteEnhMetaFile(hemf);
+    if (outDpi && !png.isEmpty())
+        *outDpi = dpi;
+    return png;
+}
+
+EmbedScope embedScopeSetting()
+{
+    const QString v = ApplicationWindow::getSettings()
+                              .value(QStringLiteral("/OLE/EmbedScope"), QStringLiteral("graph"))
+                              .toString()
+                              .trimmed()
+                              .toLower();
+    return v == QLatin1String("project") ? EmbedScope::WholeProject : EmbedScope::GraphOnly;
+}
+
+void setEmbedScopeSetting(EmbedScope scope)
+{
+    ApplicationWindow::getSettings().setValue(
+            QStringLiteral("/OLE/EmbedScope"),
+            scope == EmbedScope::WholeProject ? QStringLiteral("project")
+                                              : QStringLiteral("graph"));
+}
+
+QStringList dataDependenciesForWindow(ApplicationWindow *app, MyWidget *w)
+{
+    QStringList names;
+    if (!app || !w)
+        return names;
+    auto add = [&](const QString &n) {
+        if (!n.isEmpty() && n != w->name() && !names.contains(n))
+            names << n;
+    };
+    // Curve titles and column names have the form "<table>_<column>"; table() resolves both.
+    auto addTableOf = [&](const QString &spec) {
+        if (spec.isEmpty())
+            return;
+        if (Table *t = app->table(spec))
+            add(t->name());
+    };
+
+    if (w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        for (Graph *g : ml->layersList()) {
+            if (!g)
+                continue;
+            const int n = g->curves();
+            for (int i = 0; i < n; ++i) {
+                QwtPlotItem *it = g->plotItem(i);
+                if (!it)
+                    continue;
+                if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                    if (Matrix *m = static_cast<Spectrogram *>(it)->matrix())
+                        add(m->name());
+                    continue;
+                }
+                if (auto *dc = dynamic_cast<DataCurve *>(it)) {
+                    if (dc->table())
+                        add(dc->table()->name());
+                    addTableOf(dc->xColumnName());
+                }
+            }
+            for (const QString &c : g->curvesList())
+                addTableOf(c);
+        }
+    } else if (w->inherits("Graph3D")) {
+        Graph3D *g3 = static_cast<Graph3D *>(w);
+        if (Matrix *m = g3->matrix())
+            add(m->name());
+        if (Table *t = g3->getTable())
+            add(t->name());
+        // Table association of a 3D plot: "Table1_x(X),Table1_y(Y)[,Table1_z(Z)]".
+        static const QRegularExpression assocRx(QStringLiteral("([^,]+)\\((X|Y|Z)\\)"));
+        auto it = assocRx.globalMatch(g3->formula());
+        while (it.hasNext())
+            addTableOf(it.next().captured(1).trimmed());
+    }
+    return names;
+}
+
+QByteArray buildEmbeddedProjectBytes(ApplicationWindow *app, MyWidget *target, EmbedScope scope,
+                                     QStringList *embeddedWindows)
+{
+    if (embeddedWindows)
+        embeddedWindows->clear();
+    if (!app)
+        return {};
+    if (scope == EmbedScope::WholeProject || !target)
+        return app->saveProjectToByteArray();
+
+    QList<MyWidget *> windows;
+    for (const QString &n : dataDependenciesForWindow(app, target)) {
+        MyWidget *dep = nullptr;
+        if (Table *t = app->table(n))
+            dep = (t->name() == n) ? t : nullptr;
+        if (!dep) {
+            if (Matrix *m = app->matrix(n))
+                dep = m;
+        }
+        if (dep && dep != target && !windows.contains(dep))
+            windows << dep;
+    }
+    windows << target; // data first, so that the graph finds its curves when loaded
+    if (embeddedWindows) {
+        for (MyWidget *w : windows)
+            *embeddedWindows << w->name();
+    }
+    return app->saveWindowsToByteArray(windows);
+}
+
+namespace {
+
+ApplicationWindow *resolveApplicationWindow(ApplicationWindow *app, QWidget *w)
+{
+    if (app)
+        return app;
+    QWidget *p = w ? w->parentWidget() : nullptr;
+    while (p && !qobject_cast<ApplicationWindow *>(p))
+        p = p->parentWidget();
+    if (auto *found = qobject_cast<ApplicationWindow *>(p))
+        return found;
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        if (auto *cand = qobject_cast<ApplicationWindow *>(top))
+            return cand;
+    }
+    return nullptr;
+}
+
+QString registrationProblemText(const RegistrationInfo &reg)
+{
+    return QObject::tr("The PowerPoint link of ToriGraph is not registered, or points to a "
+                       "program that no longer exists (%1). Pasting works, but double-clicking "
+                       "the graph in PowerPoint will not open ToriGraph.")
+            .arg(reg.executable.isEmpty() ? QStringLiteral("-")
+                                          : QDir::toNativeSeparators(reg.executable));
+}
+
+// Puts the editable object on the clipboard; if that is impossible, puts a static picture
+// (EMF + PNG + DIB) there instead and records why.
+void offerPayloadOnClipboard(OleGraphPayload &payload, OleCopyResult &r)
+{
+    QString reason;
+    if (qApp && qApp->property("torigraph_test_force_ole_copy_failure").toBool()) {
+        // Regression tests exercise the static fallback without breaking the real clipboard.
+        reason = QStringLiteral("forced failure (test)");
+    } else if (!g_oleInitialized) {
+        reason = QObject::tr("OLE could not be initialized in this ToriGraph session. Restart "
+                             "ToriGraph and try again.");
+    } else {
+        ComPtr<IDataObject> dataObj;
+        HRESULT hr = createGraphObject(payload, IID_PPV_ARGS(&dataObj));
+        if (FAILED(hr) || !dataObj) {
+            reason = QObject::tr("The embedded object could not be created.");
+        } else {
+            hr = setOleClipboardWithRetry(dataObj.Get());
+            if (FAILED(hr)) {
+                reason = QObject::tr("The clipboard is in use by another program. Wait a moment "
+                                     "and try again.");
+                if (hr != CLIPBRD_E_CANT_OPEN)
+                    reason += QStringLiteral(" (0x%1)").arg(static_cast<quint32>(hr), 8, 16,
+                                                            QLatin1Char('0'));
+            } else {
+                g_clipboardDataObject = dataObj;
+                r.ok = true;
             }
         }
     }
-    if (!app)
-        return false;
+
+    const RegistrationInfo reg = queryRegistration();
+    r.registrationProblem = reg.state != RegistrationInfo::Valid;
+
+    if (r.ok) {
+        r.pngDpi = choosePngDpi(naturalPayloadExtentHm(payload));
+        if (r.registrationProblem)
+            r.errorReason = registrationProblemText(reg);
+        return;
+    }
+
+    r.errorReason = reason;
+    int dpi = 0;
+    const QByteArray png = renderEmfToPng(payload.emfBytes, naturalPayloadExtentHm(payload), &dpi);
+    QByteArray dib;
+    if (!png.isEmpty())
+        dib = SciDAVisEmf::imageToDibBytes(QImage::fromData(png, "PNG"));
+    r.staticFallbackOnClipboard = placeStaticGraphOnClipboard(payload.emfBytes, png, dib);
+    if (r.staticFallbackOnClipboard) {
+        r.pngDpi = dpi;
+        g_clipboardDataObject.Reset();
+    }
+}
+
+} // namespace
+
+OleCopyResult copyGraphForPowerPoint(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    OleCopyResult r;
+    r.scope = embedScopeSetting();
+    if (!ml) {
+        r.errorReason = ToriGraphOleUi::selectGraphFirstMessage();
+        return r;
+    }
+    r.windowName = ml->name();
+    app = resolveApplicationWindow(app, ml);
 
     for (Graph *lg : ml->layersList()) {
         if (lg) {
@@ -1660,7 +2301,6 @@ bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
     }
 
     OleGraphPayload payload;
-    payload.projectBytes = app->saveProjectToByteArray();
     payload.targetWindow = ml->name();
     payload.targetLayer = 0;
     if (singleLayer) {
@@ -1677,55 +2317,166 @@ bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
     payload.dibBytes = rg.dibBytes;
     payload.extentHm = rg.extentHm;
     payload.pixelSize = rg.pixelSize;
+    r.widthMm = rg.extentHm.cx / 100.0;
+    r.heightMm = rg.extentHm.cy / 100.0;
+    if (payload.emfBytes.isEmpty()) {
+        r.errorReason = QObject::tr("The graph could not be drawn as a vector picture (EMF).");
+        return r;
+    }
 
-    ComPtr<IDataObject> dataObj;
-    HRESULT hr = createGraphObject(payload, IID_PPV_ARGS(&dataObj));
-    if (FAILED(hr) || !dataObj)
-        return false;
+    if (!app) {
+        r.errorReason = QObject::tr("The embedded object could not be created.");
+        int dpi = 0;
+        const QByteArray png = renderEmfToPng(payload.emfBytes, payload.extentHm, &dpi);
+        r.staticFallbackOnClipboard = placeStaticGraphOnClipboard(
+                payload.emfBytes, png,
+                png.isEmpty() ? QByteArray()
+                              : SciDAVisEmf::imageToDibBytes(QImage::fromData(png, "PNG")));
+        r.pngDpi = r.staticFallbackOnClipboard ? dpi : 0;
+        return r;
+    }
 
-    hr = setOleClipboardWithRetry(dataObj.Get());
-    if (FAILED(hr))
-        return false;
-
-    g_clipboardDataObject = dataObj;
-    return true;
+    payload.projectBytes = buildEmbeddedProjectBytes(app, ml, r.scope, &r.embeddedWindows);
+    offerPayloadOnClipboard(payload, r);
+    return r;
 }
 
-bool copyImageAsOle(ApplicationWindow *app, const QImage &img, const QString &windowName)
+OleCopyResult copyImageForPowerPoint(ApplicationWindow *app, const QImage &img,
+                                     const QString &windowName)
 {
-    if (img.isNull())
-        return false;
-    OleGraphPayload payload;
-    if (!app) {
-        for (QWidget *top : QApplication::topLevelWidgets()) {
-            if (auto *cand = qobject_cast<ApplicationWindow *>(top)) {
-                app = cand;
-                break;
-            }
-        }
+    ToriGraphOleUi::registerJapaneseStrings();
+    OleCopyResult r;
+    r.scope = embedScopeSetting();
+    r.windowName = windowName;
+    if (img.isNull()) {
+        r.errorReason = QObject::tr("The graph could not be drawn as a picture.");
+        return r;
     }
-    if (app)
-        payload.projectBytes = app->saveProjectToByteArray();
+    app = resolveApplicationWindow(app, nullptr);
+
+    OleGraphPayload payload;
     payload.targetWindow = windowName;
     payload.targetLayer = 0;
-
     OleRenderedGraph rg = SciDAVisEmf::renderFromImage(img);
     payload.emfBytes = rg.emfBytes;
     payload.dibBytes = rg.dibBytes;
     payload.extentHm = rg.extentHm;
     payload.pixelSize = rg.pixelSize;
+    r.widthMm = rg.extentHm.cx / 100.0;
+    r.heightMm = rg.extentHm.cy / 100.0;
+    if (payload.emfBytes.isEmpty()) {
+        r.errorReason = QObject::tr("The graph could not be drawn as a picture.");
+        return r;
+    }
 
-    ComPtr<IDataObject> dataObj;
-    HRESULT hr = createGraphObject(payload, IID_PPV_ARGS(&dataObj));
-    if (FAILED(hr) || !dataObj)
-        return false;
+    if (app) {
+        MyWidget *target = nullptr;
+        for (MyWidget *w : app->windowsList()) {
+            if (w && w->name() == windowName) {
+                target = w;
+                break;
+            }
+        }
+        payload.projectBytes = buildEmbeddedProjectBytes(app, target, r.scope, &r.embeddedWindows);
+        if (!target)
+            r.scope = EmbedScope::WholeProject;
+    }
+    offerPayloadOnClipboard(payload, r);
+    return r;
+}
 
-    hr = setOleClipboardWithRetry(dataObj.Get());
-    if (FAILED(hr))
-        return false;
+void reportCopyResult(ApplicationWindow *app, const OleCopyResult &r, bool showDialog)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    QString statusMsg;
+    QString dialogMsg;
+    if (r.ok) {
+        statusMsg = QObject::tr("Copied %1 for PowerPoint (%2 x %3 mm). Paste with Ctrl+V; "
+                                "double-click it on the slide to edit it again.")
+                            .arg(r.windowName)
+                            .arg(r.widthMm, 0, 'f', 1)
+                            .arg(r.heightMm, 0, 'f', 1);
+        statusMsg += QLatin1Char(' ');
+        statusMsg += (r.scope == EmbedScope::WholeProject)
+                ? QObject::tr("Embedded: the whole project.")
+                : QObject::tr("Embedded: %1.").arg(r.embeddedWindows.join(QStringLiteral(", ")));
+        if (r.registrationProblem)
+            dialogMsg = statusMsg + QStringLiteral("\n\n") + r.errorReason;
+    } else {
+        const QString head = r.windowName.isEmpty()
+                ? r.errorReason
+                : QObject::tr("Could not copy %1 as an editable object for PowerPoint.")
+                                  .arg(r.windowName)
+                        + QLatin1Char(' ') + r.errorReason;
+        const QString tail = r.staticFallbackOnClipboard
+                ? QObject::tr("A picture of the graph (EMF vector and %1 dpi PNG) was placed on "
+                              "the clipboard instead. It can be pasted, but not edited again "
+                              "from PowerPoint.")
+                          .arg(r.pngDpi)
+                : QObject::tr("Nothing was placed on the clipboard.");
+        statusMsg = head + QLatin1Char(' ') + tail;
+        dialogMsg = head + QStringLiteral("\n\n") + tail;
+        if (r.registrationProblem && !r.windowName.isEmpty()) {
+            const RegistrationInfo reg = queryRegistration();
+            dialogMsg += QStringLiteral("\n\n") + registrationProblemText(reg);
+        }
+    }
+    if (r.registrationProblem && !r.windowName.isEmpty())
+        dialogMsg += QStringLiteral("\n\n")
+                + QObject::tr("To fix this, click \"Repair PowerPoint Link\" (also in the Help "
+                              "menu).");
 
-    g_clipboardDataObject = dataObj;
-    return true;
+    if (qApp) {
+        qApp->setProperty("torigraph_last_ole_copy_message", statusMsg);
+        qApp->setProperty("torigraph_last_ole_copy_dialog", dialogMsg);
+    }
+    if (app && app->statusBar())
+        app->statusBar()->showMessage(statusMsg, r.ok ? 12000 : 20000);
+
+    if (!showDialog || dialogMsg.isEmpty() || ApplicationWindow::isNonInteractiveContext(app))
+        return;
+    QMessageBox box(r.ok ? QMessageBox::Information : QMessageBox::Warning,
+                    ToriGraphOleUi::copyForPowerPointLabel(), dialogMsg, QMessageBox::NoButton,
+                    app);
+    QPushButton *repair = nullptr;
+    if (r.registrationProblem)
+        repair = box.addButton(QObject::tr("Repair PowerPoint Link"), QMessageBox::ActionRole);
+    box.addButton(QMessageBox::Ok);
+    box.exec();
+    if (repair && box.clickedButton() == repair)
+        repairRegistrationInteractive(app);
+}
+
+bool repairRegistrationInteractive(ApplicationWindow *app)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    QString err;
+    const bool ok = ensureRegistryRegistered(&err);
+    const QString msg = ok
+            ? QObject::tr("PowerPoint link repaired. Graphs pasted into PowerPoint will open "
+                          "in:\n%1")
+                      .arg(QDir::toNativeSeparators(selfServerExecutable()))
+            : QObject::tr("The PowerPoint link could not be registered: %1").arg(err);
+    if (qApp)
+        qApp->setProperty("torigraph_last_ole_repair_message", msg);
+    if (app && app->statusBar())
+        app->statusBar()->showMessage(QString(msg).replace(QLatin1Char('\n'), QLatin1Char(' ')),
+                                      12000);
+    if (!ApplicationWindow::isNonInteractiveContext(app)) {
+        QMessageBox::information(app, QObject::tr("Repair PowerPoint Link (OLE Registration)"),
+                                 msg);
+    }
+    return ok;
+}
+
+bool copyGraphAsOle(ApplicationWindow *app, MultiLayer *ml, Graph *singleLayer)
+{
+    return copyGraphForPowerPoint(app, ml, singleLayer).ok;
+}
+
+bool copyImageAsOle(ApplicationWindow *app, const QImage &img, const QString &windowName)
+{
+    return copyImageForPowerPoint(app, img, windowName).ok;
 }
 
 } // namespace SciDAVisOle
