@@ -31,6 +31,9 @@ jobs:
           python -m compileall -q python/torigraph
           python -c "import torigraph as tg; print('torigraph SDK OK:', tg.__file__)"
 
+      - name: Check Japanese dictionary glossary
+        run: python scripts/check_ja_glossary.py
+
   windows-build-test:
     name: Windows MSVC Build & Test
     runs-on: windows-2022

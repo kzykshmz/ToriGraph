@@ -501,7 +501,7 @@ void UpdateAvailableDialog::initUi()
 
     d_lblHeadline = new QLabel(d_headerCard);
     d_lblHeadline->setStyleSheet(
-            QStringLiteral("font-size: 15px; font-weight: 700; color: #0F172A; border: none;"));
+            QStringLiteral("font-size: 11pt; font-weight: 700; color: #0F172A; border: none;"));
     headerTextCol->addWidget(d_lblHeadline);
 
     auto *pillRow = new QHBoxLayout();
@@ -515,7 +515,7 @@ void UpdateAvailableDialog::initUi()
                            "border-radius: 11px;"
                            "padding: 3px 10px;"
                            "font-weight: 600;"
-                           "font-size: 12px;"));
+                           "font-size: 9pt;"));
     pillRow->addWidget(d_lblVersionCompare);
 
     d_lblPreReleasePill = new QLabel(d_headerCard);
@@ -526,14 +526,14 @@ void UpdateAvailableDialog::initUi()
                            "border-radius: 11px;"
                            "padding: 3px 9px;"
                            "font-weight: 600;"
-                           "font-size: 11px;"));
+                           "font-size: 9pt;"));
     d_lblPreReleasePill->setVisible(d_info.isPreRelease);
     pillRow->addWidget(d_lblPreReleasePill);
     pillRow->addStretch(1);
 
     d_lblPublishedDate = new QLabel(d_headerCard);
     d_lblPublishedDate->setStyleSheet(
-            QStringLiteral("color: #64748B; font-size: 12px; border: none;"));
+            QStringLiteral("color: #64748B; font-size: 9pt; border: none;"));
     pillRow->addWidget(d_lblPublishedDate);
 
     headerTextCol->addLayout(pillRow);
@@ -543,7 +543,7 @@ void UpdateAvailableDialog::initUi()
     // 2. Release Notes Markdown / HTML Viewer
     d_lblNotesHeader = new QLabel(this);
     d_lblNotesHeader->setStyleSheet(
-            QStringLiteral("font-weight: 600; color: #334155; font-size: 12px;"));
+            QStringLiteral("font-weight: 600; color: #334155; font-size: 9pt;"));
     rootLayout->addWidget(d_lblNotesHeader);
 
     d_notesBrowser = new QTextBrowser(this);
@@ -573,7 +573,7 @@ void UpdateAvailableDialog::initUi()
 
     d_lblAssetSummary = new QLabel(d_packageCard);
     d_lblAssetSummary->setStyleSheet(
-            QStringLiteral("color: #334155; font-size: 12px; border: none;"));
+            QStringLiteral("color: #334155; font-size: 9pt; border: none;"));
     pkgRow->addWidget(d_lblAssetSummary, 1);
 
     d_lblShaBadge = new QLabel(d_packageCard);
@@ -600,7 +600,7 @@ void UpdateAvailableDialog::initUi()
     progCol->addLayout(progRow);
 
     d_lblProgressDetail = new QLabel(d_progressFrame);
-    d_lblProgressDetail->setStyleSheet(QStringLiteral("color: #475569; font-size: 11px;"));
+    d_lblProgressDetail->setStyleSheet(QStringLiteral("color: #475569; font-size: 9pt;"));
     progCol->addWidget(d_lblProgressDetail);
 
     d_progressFrame->setVisible(false);
@@ -630,7 +630,7 @@ void UpdateAvailableDialog::initUi()
                            "  font-weight: 600;"
                            "}"
                            "QPushButton:hover { background-color: #1D4ED8; }"
-                           "QPushButton:disabled { background-color: #94A3B8; border-color: #94A3B8; }"));
+                           "QPushButton:disabled { background-color: #5B6B80; border-color: #94A3B8; }"));
     btnRow->addWidget(d_btnDownloadInstall);
 
     rootLayout->addLayout(btnRow);
@@ -658,21 +658,21 @@ void UpdateAvailableDialog::updateShaBadgeStyle()
         d_lblShaBadge->setStyleSheet(
                 QStringLiteral("background-color: #DCFCE7; color: #166534;"
                                "border: 1px solid #86EFAC; border-radius: 10px;"
-                               "padding: 2px 9px; font-weight: 600; font-size: 11px;"));
+                               "padding: 2px 9px; font-weight: 600; font-size: 9pt;"));
         d_lblShaBadge->setText(tr("SHA-256 Verified"));
         break;
     case ShaBadgeState::Failed:
         d_lblShaBadge->setStyleSheet(
                 QStringLiteral("background-color: #FEE2E2; color: #991B1B;"
                                "border: 1px solid #FCA5A5; border-radius: 10px;"
-                               "padding: 2px 9px; font-weight: 600; font-size: 11px;"));
+                               "padding: 2px 9px; font-weight: 600; font-size: 9pt;"));
         d_lblShaBadge->setText(tr("SHA-256 Verification Failed"));
         break;
     case ShaBadgeState::ReadyChecksum:
         d_lblShaBadge->setStyleSheet(
                 QStringLiteral("background-color: #E0F2FE; color: #075985;"
                                "border: 1px solid #BAE6FD; border-radius: 10px;"
-                               "padding: 2px 9px; font-weight: 600; font-size: 11px;"));
+                               "padding: 2px 9px; font-weight: 600; font-size: 9pt;"));
         d_lblShaBadge->setText(
                 tr("SHA-256 Checksum Ready (%1...)").arg(d_info.expectedSha256.left(12)));
         break;
@@ -680,7 +680,7 @@ void UpdateAvailableDialog::updateShaBadgeStyle()
         d_lblShaBadge->setStyleSheet(
                 QStringLiteral("background-color: #F1F5F9; color: #475569;"
                                "border: 1px solid #CBD5E1; border-radius: 10px;"
-                               "padding: 2px 9px; font-size: 11px;"));
+                               "padding: 2px 9px; font-size: 9pt;"));
         d_lblShaBadge->setText(tr("No SHA-256 checksum published"));
         break;
     }

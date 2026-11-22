@@ -547,7 +547,7 @@ void registerApplicationWindowJapaneseStrings()
         add("3D &Plot", "3Dプロット(&P)");
         add("3&D Plot", "3Dプロット(&D)");
         add("&Matrix", "行列(&M)");
-        add("&Table", "テーブル(&T)");
+        add("&Table", "ワークシート(&T)");
         add("&Plot", "作図(&P)");
         add("&Analysis", "解析(&A)");
         add("Anal&yze", "解析(&Y)");
@@ -565,9 +565,9 @@ void registerApplicationWindowJapaneseStrings()
         add("Toolbars", "ツールバー");
         add("Special Line/Symb&ol", "特殊折れ線・シンボル(&O)");
         add("Statistical &Graphs", "統計グラフ(&G)");
-        add("Pa&nel", "パネル・マルチレイヤ(&N)");
+        add("Pa&nel", "パネル・マルチレイヤー(&N)");
         add("&Translate", "曲線移動(&T)");
-        add("&Smooth", "スムージング(&S)");
+        add("&Smooth", "平滑化(&S)");
         add("&FFT Filter", "FFTフィルタ(&F)");
         add("Fit E&xponential Decay", "指数減衰フィット(&X)");
         add("Fit &Multi-Peak", "マルチピークフィット(&M)");
@@ -588,7 +588,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Created", "作成日時");
         add("Label", "ラベル");
         add("Folder", "フォルダ");
-        add("Table", "テーブル");
+        add("Table", "ワークシート");
         add("Graph", "グラフ");
         add("3D Graph", "3Dグラフ");
         add("Matrix", "行列");
@@ -597,7 +597,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Search windows (name / label)...", "ウィンドウ検索 (名前・ラベル)...");
         add("Search windows / labels...", "ウィンドウ検索...");
         add("All Windows", "すべて");
-        add("Tables (Workbooks)", "テーブル");
+        add("Tables (Workbooks)", "ワークシート");
         add("Graphs (2D/3D)", "グラフ");
         add("Matrices", "行列");
         add("Notes / Scripts", "ノート");
@@ -610,7 +610,7 @@ void registerApplicationWindowJapaneseStrings()
         add("New &Project", "新規プロジェクト(&P)");
         add("New &Graph", "新規グラフ(&G)");
         add("New &Note / Script", "新規ノート / スクリプト(&N)");
-        add("New &Table", "新規テーブル(&T)");
+        add("New &Table", "新規ワークシート(&T)");
         add("New &Matrix", "新規行列(&M)");
         add("New &Function Plot", "新規関数プロット(&F)");
         add("New 3D &Surface Plot", "新規3D曲面プロット(&S)");
@@ -625,7 +625,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Import ASCII...", "ASCIIインポート(&I)...");
         add("E&xport ASCII", "ASCIIエクスポート(&X)");
         add("&Current", "現在のグラフ(&C)");
-        add("&All", "すべてのグラフ(&A)");
+        add("&All", "すべて(&A)");
         add("&Export PDF", "PDFエクスポート(&E)");
         add("&Print", "印刷(&P)");
         add("Print All Plo&ts", "全プロットを印刷(&T)");
@@ -637,7 +637,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Copy Selection", "コピー(&C)");
         add("&Paste Selection", "貼り付け(&P)");
         add("&Delete Selection", "選択範囲を削除(&D)");
-        add("Delete &Fit Tables", "フィット結果テーブルを削除(&F)");
+        add("Delete &Fit Tables", "フィット結果ワークシートを削除(&F)");
         add("Clear &Log Information", "結果ログを消去(&L)");
         add("&Preferences...", "環境設定(&P)...");
         add("&Lock Toolbars", "ツールバーを固定(&L)");
@@ -670,10 +670,10 @@ void registerApplicationWindowJapaneseStrings()
         add("Normal &Q-Q Plot", "正規Q-Qプロット (Normal Q-Q)(&Q)");
         add("&Histogram", "ヒストグラム(&H)");
         add("&Stacked Histogram", "積み上げヒストグラム(&S)");
-        add("&Vertical 2 Layers", "垂直2レイヤ(&V)");
-        add("&Horizontal 2 Layers", "水平2レイヤ(&H)");
-        add("&4 Layers", "4レイヤ(&4)");
-        add("&Stacked Layers", "スタックレイヤ(&S)");
+        add("&Vertical 2 Layers", "垂直2レイヤー(&V)");
+        add("&Horizontal 2 Layers", "水平2レイヤー(&H)");
+        add("&4 Layers", "4レイヤー(&4)");
+        add("&Stacked Layers", "スタックレイヤー(&S)");
 
         // Analysis & Peak Analyzer
         add("Peak &Analyzer...", "ピークアナライザ(&A)...");
@@ -703,7 +703,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Rescale to Show All", "全範囲に自動スケール(&R)");
         add("&Plot ...", "プロット詳細(&P)...");
         add("&Scales...", "軸スケール(&S)...");
-        add("&Axes...", "軸と目盛(&A)...");
+        add("&Axes...", "軸と目盛り(&A)...");
         add("&Grid ...", "グリッド(&G)...");
         add("&Title ...", "タイトル(&T)...");
         add("1:1 (Square - ISIJ)", "1:1 (正方形 - ISIJ標準)");
@@ -731,15 +731,15 @@ void registerApplicationWindowJapaneseStrings()
         add("Peak Profile:", "ピーク形状関数:");
         add("Plot Individual Deconvoluted Peak Curves", "分離された各ピーク曲線をプロット");
         add("Plot Baseline Curve on Graph", "ベースライン曲線をグラフにプロット");
-        add("Generate Peak Summary Table", "ピーク特性一覧テーブルを生成");
-        add("Generate Integrated Peak Area Table", "数値積分ピーク面積テーブルを生成");
-        add("Generate Residuals Table", "残差テーブルを生成");
+        add("Generate Peak Summary Table", "ピーク特性一覧ワークシートを生成");
+        add("Generate Integrated Peak Area Table", "数値積分ピーク面積ワークシートを生成");
+        add("Generate Residuals Table", "残差ワークシートを生成");
 
         // Phase 3: OriginPro Top-Level Gadgets Menu & Interactive Gadgets
         add("&Gadgets", "ガジェット(&G)");
         add("Gadgets", "ガジェット");
-        add("&Vertical Cursor (All Layers)", "垂直カーソル (全レイヤ連動)(&V)");
-        add("Vertical Cursor (All Layers)", "垂直カーソル (全レイヤ連動)");
+        add("&Vertical Cursor (All Layers)", "垂直カーソル (全レイヤー連動)(&V)");
+        add("Vertical Cursor (All Layers)", "垂直カーソル (全レイヤー連動)");
         add("&Region Statistics (ROI)...", "領域統計 (ROI)(&R)...");
         add("Region Statistics (ROI)...", "領域統計 (ROI)...");
         add("Quick &Fit (ROI)...", "クイックフィット (ROI)(&F)...");
@@ -776,7 +776,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Clear All Masks on Graph", "グラフ上の全マスクをクリア(&C)");
         add("Clear All Masks on Graph", "グラフ上の全マスクをクリア");
         add("Mask data points on graph without deleting table values",
-            "テーブル値を削除せず非破壊でグラフ上のデータ点をマスクします");
+            "ワークシート値を削除せず非破壊でグラフ上のデータ点をマスクします");
         add("Unmask previously masked data points on graph",
             "マスクされたデータ点のマスクを解除します");
 
@@ -921,8 +921,8 @@ void registerApplicationWindowJapaneseStrings()
         add("Search windows / labels...", "ウィンドウ検索...");
         add("&Console", "スクリプトコンソール(&C)");
         add("New Folder", "新規フォルダ");
-        add("New Table", "新規テーブル");
-        add("New Table (Workbook)", "新規テーブル (ワークブック)");
+        add("New Table", "新規ワークシート");
+        add("New Table (Workbook)", "新規ワークシート (ワークブック)");
         add("New Graph", "新規グラフ");
         add("New 2D Graph", "新規2Dグラフ");
         add("New Aspect", "新規オブジェクト作成");
@@ -942,17 +942,17 @@ void registerApplicationWindowJapaneseStrings()
         // Complete Classic Menu / Action / Toolbar / Context Coverage
         add("&Open...", "開く(&O)...");
         add("Open Image &File...", "画像ファイルを開く(&F)...");
-        add("Arran&ge Layers", "レイヤ配置(&G)");
-        add("Arran&ge Layers...", "レイヤ配置(&G)...");
+        add("Arran&ge Layers", "レイヤー配置(&G)");
+        add("Arran&ge Layers...", "レイヤー配置(&G)...");
         add("&Current...", "現在のグラフ(&C)...");
         add("&All...", "すべてのグラフ(&A)...");
         add("&Export PDF...", "PDFエクスポート(&E)...");
         add("&Print...", "印刷(&P)...");
         add("Print All Plo&ts...", "全プロットを印刷(&T)...");
         add("E&xport ASCII...", "ASCIIエクスポート(&X)...");
-        add("Add La&yer", "レイヤ追加(&Y)");
+        add("Add La&yer", "レイヤー追加(&Y)");
         add("Automatic Layout", "自動レイアウト");
-        add("&Remove Layer", "レイヤ削除(&R)");
+        add("&Remove Layer", "レイヤー削除(&R)");
         add("Add/Remove &Curve...", "曲線の追加/削除(&C)...");
         add("Add &Error Bars...", "エラーバー追加(&E)...");
         add("Add &Function...", "関数曲線の追加(&F)...");
@@ -962,7 +962,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Add &Text", "テキスト追加(&T)");
         add("Draw &Arrow", "矢印を描画(&A)");
         add("Draw &Line", "直線を描画(&L)");
-        add("Manage layers", "レイヤ管理");
+        add("Manage layers", "レイヤー管理");
         add("Add curves / error bars", "曲線・エラーバーの追加");
         add("Enrichments", "注釈・図形要素");
         add("Lines and/or symbols", "折れ線・散布図");
@@ -1001,7 +1001,7 @@ void registerApplicationWindowJapaneseStrings()
         add("3D Wire &Surface", "3Dワイヤ曲面(&S)");
         add("&Invert", "逆行列(&I)");
         add("&Determinant", "行列式(&D)");
-        add("&Convert to Table", "テーブルへ変換(&C)");
+        add("&Convert to Table", "ワークシートへ変換(&C)");
         add("Convert to &Matrix", "行列へ変換(&M)");
         add("&Low Pass...", "ローパスフィルタ(&L)...");
         add("&High Pass...", "ハイパスフィルタ(&H)...");
@@ -1059,7 +1059,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Reset to Full Range", "全データ範囲にリセット(&R)");
         add("Edit &Range...", "データ範囲を編集(&R)...");
         add("&Delete", "削除(&D)");
-        add("&Cut", "切り取り(&C)");
+        add("&Cut", "切り取り(&T)");
         add("&Copy", "コピー(&C)");
         add("&Hide", "非表示(&H)");
         add("Hide &Other Curves", "他の曲線を非表示(&O)");
@@ -1068,11 +1068,11 @@ void registerApplicationWindowJapaneseStrings()
         add("&Copy status bar text", "ステータスバーのテキストをコピー(&C)");
         add("&View Pixel Line Profile", "ピクセルラインプロファイル(&V)");
         add("&View Pixel Line profile", "ピクセルラインプロファイル(&V)");
-        add("&Intensity Table", "強度テーブル作成(&I)");
+        add("&Intensity Table", "強度ワークシート作成(&I)");
         add("&Intensity Matrix", "強度行列作成(&I)");
         add("&Properties", "プロパティ(&P)");
         add("&Properties...", "プロパティ(&P)...");
-        add("&Layer Geometry", "レイヤ配置・サイズ(&L)");
+        add("&Layer Geometry", "レイヤー配置・サイズ(&L)");
         add("&Surface...", "曲面設定(&S)...");
         add("&Data Set...", "データセット選択(&D)...");
         add("Box", "ボックス枠");
@@ -1104,22 +1104,22 @@ void registerApplicationWindowJapaneseStrings()
         // Phase 4: OriginPro Page / Layer / Frame / Mini-Toolbar UX
         add("Page &Setup...", "ページ設定(&S)...");
         add("Page Setup...", "ページ設定...");
-        add("Fit &Page to Layers", "ページをレイヤに合わせる(&P)");
-        add("Fit Page to Layers", "ページをレイヤに合わせる");
-        add("Fit &Layers to Page", "レイヤをページに合わせる(&L)");
-        add("Fit Layers to Page", "レイヤをページに合わせる");
+        add("Fit &Page to Layers", "ページをレイヤーに合わせる(&P)");
+        add("Fit Page to Layers", "ページをレイヤーに合わせる");
+        add("Fit &Layers to Page", "レイヤーをページに合わせる(&L)");
+        add("Fit Layers to Page", "レイヤーをページに合わせる");
         add("Toggle Page &View", "ページ印刷ビュー切替(&V)");
         add("Toggle Page View", "ページ印刷ビュー切替");
-        add("Add Linked &Top-X / Right-Y Layer", "上X・右Y連動レイヤを追加(&T)");
-        add("Add Linked Top-X / Right-Y Layer", "上X・右Y連動レイヤを追加");
-        add("Add &Zoom Inset Layer", "拡大インセットレイヤを追加(&Z)");
-        add("Add Zoom Inset Layer", "拡大インセットレイヤを追加");
+        add("Add Linked &Top-X / Right-Y Layer", "上X・右Y連動レイヤーを追加(&T)");
+        add("Add Linked Top-X / Right-Y Layer", "上X・右Y連動レイヤーを追加");
+        add("Add &Zoom Inset Layer", "拡大インセットレイヤーを追加(&Z)");
+        add("Add Zoom Inset Layer", "拡大インセットレイヤーを追加");
         add("&Frame Presets", "軸フレームプリセット(&F)");
         add("Frame Presets", "軸フレームプリセット");
-        add("&Box Frame (Inward Ticks)", "ボックス枠・内向き目盛 (ISIJ標準)(&B)");
-        add("Box Frame (Inward Ticks)", "ボックス枠・内向き目盛 (ISIJ標準)");
-        add("Box Frame (&Plain Top/Right)", "ボックス枠・上右目盛なし(&P)");
-        add("Box Frame (Plain Top/Right)", "ボックス枠・上右目盛なし");
+        add("&Box Frame (Inward Ticks)", "ボックス枠・内向き目盛り (ISIJ標準)(&B)");
+        add("Box Frame (Inward Ticks)", "ボックス枠・内向き目盛り (ISIJ標準)");
+        add("Box Frame (&Plain Top/Right)", "ボックス枠・上右目盛りなし(&P)");
+        add("Box Frame (Plain Top/Right)", "ボックス枠・上右目盛りなし");
         add("&Open L-Frame", "オープンL字枠 (上右軸なし)(&O)");
         add("Open L-Frame", "オープンL字枠 (上右軸なし)");
         add("&Zero-Crossed Axes", "原点交差軸 (X=0, Y=0)(&Z)");
@@ -1175,9 +1175,9 @@ void registerApplicationWindowJapaneseStrings()
         add("&ISIJ Journal (85 mm, 600 DPI)", "鉄と鋼 / ISIJ 論文標準 (85 mm, 600 DPI)(&I)");
         add("ISIJ Journal (85 mm, 600 DPI)", "鉄と鋼 / ISIJ 論文標準 (85 mm, 600 DPI)");
         add("Apply 1-column ISIJ / Metallurgy journal style (85 mm, 600 DPI, inward ticks, Arial)",
-            "鉄と鋼 / ISIJ 1段組論文スタイルを適用 (85 mm, 600 DPI, 内向き目盛, Arial)");
-        add("&Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)(&P)");
-        add("Presentation Slide (28 pt Arial)", "プレゼン発表スライド (28 pt Arial)");
+            "鉄と鋼 / ISIJ 1段組論文スタイルを適用 (85 mm, 600 DPI, 内向き目盛り, Arial)");
+        add("&Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)(&P)");
+        add("Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)");
         add("Apply high-visibility presentation slide style (185\xC3\x97"
             "185 mm, 28 pt Arial)",
             "発表スライド用の高視認様式を適用 (185\xC3\x97"
@@ -1186,7 +1186,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Copy &Format", "書式をコピー(&F)");
         add("Copy Format", "書式コピー");
         add("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)",
-            "グラフ書式をコピー (フォント・軸・目盛・ページ寸法・線幅・基準線)");
+            "グラフ書式をコピー (フォント・軸・目盛り・ページ寸法・線幅・基準線)");
         add("Paste &Format", "書式を貼り付け(&F)");
         add("Paste Format", "書式貼付");
         add("Paste copied graph format onto active graph", "コピーしたグラフ書式をアクティブグラフへ適用");
@@ -1276,7 +1276,7 @@ void registerApplicationWindowJapaneseStrings()
         add("ToriGraph 2D Graph Template", "ToriGraph 2Dグラフテンプレート");
         add("ToriGraph 3D Surface Template", "ToriGraph 3Dサーフェステンプレート");
         add("ToriGraph Matrix Template", "ToriGraph 行列テンプレート");
-        add("ToriGraph Table Template", "ToriGraph テーブルテンプレート");
+        add("ToriGraph Table Template", "ToriGraph ワークシートテンプレート");
         add("ToriGraph currently does not support Origin import.",
             "現在のビルドではOriginインポートはサポートされていません。");
         add("ToriGraph does not support QtiPlot project files from versions later than 0.9.0.",
@@ -1290,7 +1290,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Choose the location of the ToriGraph help folder!",
             "ToriGraphヘルプフォルダの場所を選択してください！");
         add("Do you want ToriGraph to guess the best position for the new layer?\n Warning: this will rearrange existing layers!",
-            "新規レイヤの最適な配置を自動推定しますか？\n警告: 既存レイヤが再配置されます！");
+            "新規レイヤーの最適な配置を自動推定しますか？\n警告: 既存レイヤーが再配置されます！");
         add("ToriGraph will now try to determine whether a new version of ToriGraph is available. Please modify your firewall settings in order to allow ToriGraph to connect to the internet.",
             "ToriGraphの新しいバージョンが利用可能か確認します。インターネット接続を許可してください。");
         add("There is a newer version of ToriGraph (%1) available for download. Would you like to download it now?",
@@ -1367,14 +1367,14 @@ void registerApplicationWindowJapaneseStrings()
         add("Link Top-X Formula", "上X軸の変換式設定");
         add("Formula in terms of bottom X (variable 'x'):", "下X軸に対する変換式 (変数 'x'):");
         add("Toggle Axis Visibility", "軸の表示切替");
-        add("Change Tick Direction", "目盛の向きを変更");
+        add("Change Tick Direction", "目盛りの向きを変更");
         add("Toggle Axis Grid", "軸グリッドの表示切替");
-        add("Axis Tick Font Size", "目盛数字のフォントサイズ変更");
+        add("Axis Tick Font Size", "目盛り数字のフォントサイズ変更");
         add("Change Curve Plot Style", "曲線のプロット形式を変更");
         add("Select Series Color", "系列の色を選択");
         add("Change Series Color", "系列の色を変更");
         add("Change Line Pen Style", "線種を変更");
-        add("Change Symbol Shape", "記号形状を変更");
+        add("Change Symbol Shape", "シンボル形状を変更");
         add("Assign Curve to Right-Y", "曲線を右Y軸に割当");
         add("Apply Y-Offset Stack", "Yオフセット積上げを適用");
         add("Place Legend", "凡例の配置を変更");
@@ -1444,33 +1444,33 @@ void registerApplicationWindowJapaneseStrings()
         add("Axis Break (Omit Middle Range)", "軸の途中省略 (Break)");
         add("Break Start:", "省略開始:");
         add("Break End:", "省略終了:");
-        add("Ticks & Grids", "目盛・グリッド");
-        add("Ticks:", "目盛の向き:");
-        add("Axis Label & Font (Arial)", "軸ラベル・フォント (Arial)");
-        add("Enter axis label...", "軸ラベルを入力...");
+        add("Ticks & Grids", "目盛り・グリッド");
+        add("Ticks:", "目盛りの向き:");
+        add("Axis Label & Font (Arial)", "軸タイトル・フォント (Arial)");
+        add("Enter axis label...", "軸タイトルを入力...");
         add("Greek", "ギリシャ");
         add("Insert Greek Symbol", "ギリシャ文字を挿入");
         add("Append Scientific Unit", "単位を追記");
         add("Label Size:", "ラベル pt:");
-        add("Tick Numbers:", "目盛数字 pt:");
+        add("Tick Numbers:", "目盛り数字 pt:");
         add("Line Appearance", "線の外観");
         add("Color:", "色:");
         add("Line Width:", "線幅:");
         add("Line Style:", "線種:");
         add("Dash", "破線");
-        add("Symbol & Axis Binding", "記号・軸割当");
+        add("Symbol & Axis Binding", "シンボル・軸割当");
         add("Shape:", "形状:");
         add("Circle", "丸 (○/●)");
         add("Cross (+)", "十字 (+)");
         add("X-Cross (x)", "斜め十字 (×)");
         add("Star", "星 (★)");
-        add("Symbol Size:", "記号サイズ:");
-        add("Quick Error Bars", "クイック誤差棒");
+        add("Symbol Size:", "シンボルサイズ:");
+        add("Quick Error Bars", "クイックエラーバー");
         add("Adjacent Col", "隣接列");
         add("Std Dev (SD)", "標準偏差 SD");
         add("5%", "5%");
-        add("Group Series Style Scheme", "全曲線の配色・記号スキーム");
-        add("B/W (Filled / Hollow)", "白黒（塗り／白抜き）");
+        add("Group Series Style Scheme", "全曲線の配色・シンボルスキーム");
+        add("B/W (Filled / Hollow)", "白黒(塗り／白抜き)");
         add("Cool -> Warm Step", "寒色→暖色ステップ");
         add("Origin Default", "Origin既定");
         add("Non-Destructive Y-Offset Stack", "非破壊 Yオフセット積上げ");
@@ -1491,7 +1491,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Apply Compact Journal Preset", "コンパクト論文プリセットを適用");
         add("&Undo %1", "元に戻す: %1(&U)");
         add("&Redo %1", "やり直し: %1(&R)");
-        add("Drop Error Bars", "誤差棒をドロップ追加");
+        add("Drop Error Bars", "エラーバーをドロップ追加");
         add("Replace Plotted Columns", "プロット列を置換");
         add("Drop Columns onto Graph", "列をグラフへドロップ追加");
         add("Toggle Graph Inspector Dock (Ctrl+Shift+I)",
@@ -1568,15 +1568,15 @@ void registerApplicationWindowJapaneseStrings()
         add("Paste Format &Special", "形式を選択して書式貼り付け(&S)");
         add("Paste Format Special", "形式を選択して書式貼り付け");
         add("Paste copied graph style (fonts, colors, symbols, frame & ticks) onto active graph",
-            "コピーしたグラフ書式（フォント・色・記号・枠・目盛り）を現在のグラフへ貼り付けます");
+            "コピーしたグラフ書式(フォント・色・シンボル・枠・目盛り)を現在のグラフへ貼り付けます");
         add("Paste &Fonts Only", "フォントのみ貼り付け(&F)");
         add("Paste Fonts Only", "フォントのみ貼り付け");
         add("Paste only font family, sizes, weights, and alignments onto active graph",
             "フォント種類・サイズ・太さ・配置のみを現在のグラフへ貼り付けます");
-        add("Paste &Colors && Symbols Only", "色・記号のみ貼り付け(&C)");
+        add("Paste &Colors && Symbols Only", "色・シンボルのみ貼り付け(&C)");
         add("Paste Colors & Symbols Only", "色・記号のみ貼り付け");
         add("Paste only curve pens, symbol styles/sizes, and colors onto active graph",
-            "曲線の線種・色・記号スタイルとサイズのみを現在のグラフへ貼り付けます");
+            "曲線の線種・色・シンボルスタイルとサイズのみを現在のグラフへ貼り付けます");
         add("Paste &Axis Scales Only", "軸スケールのみ貼り付け(&A)");
         add("Paste Axis Scales Only", "軸スケールのみ貼り付け");
         add("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats",
@@ -1627,7 +1627,7 @@ void registerApplicationWindowJapaneseStrings()
             "ISIJ International 1段組様式を適用 (85\xC3\x97"
             "85 mm, 600 DPI, Arial)");
         add("Remove Curve", "曲線を削除");
-        add("Clear Axis Title", "軸ラベルを消去");
+        add("Clear Axis Title", "軸タイトルを消去");
         add("Clear Title", "タイトルを消去");
         add("Remove Reference Line", "基準線を削除");
         add("Edit Annotation", "注釈を編集");
@@ -1643,31 +1643,31 @@ void registerApplicationWindowJapaneseStrings()
             "この操作には少なくとも4つの列が必要です。");
 
         // Worksheet Quick Bar & Multi-Line Column Header Metadata
-        add("Set selected column(s) as X (Abscissa)", "選択列を X（横軸）に設定");
-        add("Set selected column(s) as Y (Ordinate)", "選択列を Y（縦軸）に設定");
-        add("Set selected column(s) as Y Error", "選択列を Y誤差（±y誤差）に設定");
-        add("Set selected column(s) as X Error", "選択列を X誤差（±x誤差）に設定");
+        add("Set selected column(s) as X (Abscissa)", "選択列を X(横軸)に設定");
+        add("Set selected column(s) as Y (Ordinate)", "選択列を Y(縦軸)に設定");
+        add("Set selected column(s) as Y Error", "選択列を Y誤差(±y誤差)に設定");
+        add("Set selected column(s) as X Error", "選択列を X誤差(±x誤差)に設定");
         add("Set selected column(s) as Z", "選択列を Z に設定");
         add("Label", "ラベル");
         add("Set selected column(s) as Text Label", "選択列をテキストラベルに設定");
         add("Disregard", "無視");
-        add("Set selected column(s) as Disregard (None)", "選択列をプロット対象外（無視）に設定");
+        add("Set selected column(s) as Disregard (None)", "選択列をプロット対象外(無視)に設定");
         add("Column formula (e.g. col(\"1\")*2) - Enter to apply",
-            "列の数式（例: col(\"1\")*2）— Enter で適用");
+            "列の数式(例: col(\"1\")*2)— Enter で適用");
         add("Enter formula for active column and press Enter to recalculate",
             "現在の列の数式を入力し、Enter キーで再計算します");
-        add("Line+Sym", "線+記号");
+        add("Line+Sym", "線+シンボル");
         add("Plot Line + Symbol graph (uses selected Y or all Y columns)",
-            "線＋記号グラフを作成（選択Y列、未選択時は全Y列）");
+            "線＋シンボルグラフを作成(選択Y列、未選択時は全Y列)");
         add("Scatter", "散布図");
         add("Plot Scatter graph (uses selected Y or all Y columns)",
-            "散布図を作成（選択Y列、未選択時は全Y列）");
+            "散布図を作成(選択Y列、未選択時は全Y列)");
         add("Line", "折れ線");
         add("Plot Line graph (uses selected Y or all Y columns)",
-            "折れ線グラフを作成（選択Y列、未選択時は全Y列）");
+            "折れ線グラフを作成(選択Y列、未選択時は全Y列)");
         add("+ Add to Graph", "+ グラフへ追加");
         add("Add selected Y column(s) (or all Y columns) to most recent graph",
-            "選択Y列（未選択時は全Y列）を直近のグラフへ追加");
+            "選択Y列(未選択時は全Y列)を直近のグラフへ追加");
         add("Column Props \xE2\x96\xB8", "列設定 \xE2\x96\xB8");
         add("Toggle Column Description & Type Side Panel",
             "列の説明・プロパティパネルの表示切替");
@@ -1684,7 +1684,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Free View", "自由配置");
         add("More", "他");
         add("More column plot roles (\xC2\xB1xErr, Z, Label, Disregard)",
-            "その他の列役割（\xC2\xB1x誤差・Z・ラベル・無視）");
+            "その他の列役割(\xC2\xB1x誤差・Z・ラベル・無視)");
         add("+ Add", "+追加");
         add("Col Props", "列設定");
         add("Panel View", "パネル表示");
@@ -1756,9 +1756,9 @@ void registerApplicationWindowJapaneseStrings()
         add("Name / Unit (ISIJ)", "物理量名 / 単位 (ISIJ)");
         add("Name [Unit]", "物理量名 [単位]");
         add("Change Axis Unit Format", "軸の単位表記を変更");
-        add("Symbol Skip", "記号の間引き");
-        add("Symbol Skip:", "記号の間引き:");
-        add("Change Symbol Skip", "記号の間引き間隔を変更");
+        add("Symbol Skip", "シンボルの間引き");
+        add("Symbol Skip:", "シンボルの間引き:");
+        add("Change Symbol Skip", "シンボルの間引き間隔を変更");
         add("Colorbar Title", "カラーバータイトル");
         add("Colorbar Title:", "カラーバータイトル:");
         add("Change Colorbar Title", "カラーバータイトルを変更");
@@ -1768,9 +1768,9 @@ void registerApplicationWindowJapaneseStrings()
         add("Insert Materials Science Symbol", "材料科学記号・単位を挿入");
         add("Insert Materials Science Symbol / Unit", "材料科学記号・単位を挿入");
         add("Unicode Subscript (select digits or insert \xE2\x82\x82)",
-            "Unicode下付き変換（選択数字を変換、未選択時は \xE2\x82\x82 を挿入）");
+            "Unicode下付き変換(選択数字を変換、未選択時は \xE2\x82\x82 を挿入)");
         add("Unicode Superscript (select digits or insert \xC2\xB2)",
-            "Unicode上付き変換（選択数字を変換、未選択時は \xC2\xB2 を挿入）");
+            "Unicode上付き変換(選択数字を変換、未選択時は \xC2\xB2 を挿入)");
         add("Long Name", "長い名前");
         add("Units", "単位");
         add("Comments", "コメント");
@@ -1778,7 +1778,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Symbols:", "記号・単位:");
         add("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\nAre you sure you want to delete these layers and their curves?", "削除対象の %2 レイヤーのうち %1 レイヤーに %3 個のプロット要素が含まれています。\nこれらのレイヤーと曲線を削除してもよろしいですか？");
         add("%1: invert", "%1: 逆行列");
-        add("Inversion failed, the matrix is singular or ill-conditioned!", "逆行列の計算に失敗しました（特異行列または悪条件行列です）。");
+        add("Inversion failed, the matrix is singular or ill-conditioned!", "逆行列の計算に失敗しました(特異行列または悪条件行列です)。");
         add("Matrix size (%1x%1) exceeds dense LU limit (4096).", "行列サイズ (%1x%1) が密行列LU分解の上限 (4096) を超えています。");
         add("Samples", "サンプル");
         add("Sample Project &Gallery...", "サンプルプロジェクトギャラリー(&G)...");
@@ -1811,8 +1811,8 @@ void registerApplicationWindowJapaneseStrings()
         add("Generate Reproducible Python Script from Active Graph", "アクティブなグラフを再現するPythonスクリプトを生成");
         add("Please open or select a Graph, Worksheet, or Matrix window first.", "先にグラフ、ワークシート、または行列ウィンドウを開くか選択してください。");
         add("Could not generate a Python script for the active window.", "アクティブなウィンドウからPythonスクリプトを生成できませんでした。");
-        add("Generated Python script (%1 lines) and copied to clipboard.", "Pythonスクリプト（%1 行）を生成し、クリップボードにコピーしました。");
-        add("Standalone reproducible ToriGraph SDK Python script for '%1' (copied to clipboard):", "'%1' を再現するスタンドアロン ToriGraph SDK Pythonスクリプト（クリップボードへコピー済み）:");
+        add("Generated Python script (%1 lines) and copied to clipboard.", "Pythonスクリプト(%1 行)を生成し、クリップボードにコピーしました。");
+        add("Standalone reproducible ToriGraph SDK Python script for '%1' (copied to clipboard):", "'%1' を再現するスタンドアロン ToriGraph SDK Pythonスクリプト(クリップボードへコピー済み):");
         add("Copy to Clipboard", "クリップボードにコピー");
         add("Copied Python script to clipboard.", "Pythonスクリプトをクリップボードにコピーしました。");
         add("Save .py File...", ".py ファイルを保存...");
@@ -1839,11 +1839,11 @@ void registerApplicationWindowJapaneseStrings()
             "ワークシート: %1  (%2行 × %3列)  —  列を選択してグラフ作成、または Ctrl+K でコマンド検索");
         add("2D Graph: %1  (Layers: %2 · Curves: %3)  —  Click curve/axis to edit in Inspector",
             "2Dグラフ: %1  (レイヤー: %2 · 曲線: %3)  —  曲線・軸をクリックしてインスペクタで編集");
-        add("Matrix: %1  (%2 × %3)", "マトリクス: %1  (%2 × %3)");
+        add("Matrix: %1  (%2 × %3)", "行列: %1  (%2 × %3)");
         add("Active: %1", "アクティブ: %1");
         add("Categories:", "カテゴリ軸:");
         add("Categories", "カテゴリ軸");
-        add("(Numeric Ticks)", "(数値目盛)");
+        add("(Numeric Ticks)", "(数値目盛り)");
         add("Custom (%1 labels)", "カスタム (%1 ラベル)");
         add("Change Category Labels", "カテゴリ軸ラベルを変更");
         add("Set Category Labels", "カテゴリ軸ラベルを設定");
@@ -1866,7 +1866,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Synchrotron CT / Local Strain", "放射光CT・局所ひずみ");
         add("Ceramics / Fracture Statistics", "セラミックス・破壊統計");
         add("AA7075-T6 Tensile Stress-Strain Curve", "AA7075-T6 引張応力-ひずみ曲線");
-        add("Hydrogen TDS Spectra at 3 Heating Rates (100, 200, 400 °C/h)", "水素昇温脱離 (TDS) スペクトル（昇温速度 100, 200, 400 °C/h）");
+        add("Hydrogen TDS Spectra at 3 Heating Rates (100, 200, 400 °C/h)", "水素昇温脱離 (TDS) スペクトル(昇温速度 100, 200, 400 °C/h)");
         add("Peak-Aged Al-Zn-Mg Alloy XRD Pattern (Cu Kα1)", "ピーク時効 Al-Zn-Mg 合金 XRD パターン (Cu Kα1)");
         add("Hydrogen Interstitial Diffusivity in α-Fe", "α-Fe 中の格子間水素拡散係数");
         add("3D-XRD / Synchrotron CT Crack-Tip Local Strain Map", "3D-XRD / 放射光CT き裂先端局所ひずみマップ");
@@ -1882,15 +1882,15 @@ void registerApplicationWindowJapaneseStrings()
         add("K/h (°C/h)", "K/h (°C/h)");
         add("Peak Temperatures in Celsius (°C)", "ピーク温度を摂氏 (°C) として入力");
         add("Top Temperature Axis in Celsius (°C)", "上X軸の参照温度を摂氏 (°C) で表示");
-        add("TDS Flux Columns (Select 2+ Rates):", "TDS放出速度列（2水準以上を選択）:");
-        add("Heating Rates (comma-separated):", "昇温速度リスト（カンマ区切り）:");
-        add("Peak Temperatures (comma-separated):", "ピーク温度リスト（カンマ区切り）:");
+        add("TDS Flux Columns (Select 2+ Rates):", "TDS放出速度列(2水準以上を選択):");
+        add("Heating Rates (comma-separated):", "昇温速度リスト(カンマ区切り):");
+        add("Peak Temperatures (comma-separated):", "ピーク温度リスト(カンマ区切り):");
         add("Peak Search Window Min T:", "ピーク探索 最小温度 T:");
         add("Peak Search Window Max T:", "ピーク探索 最大温度 T:");
         add("Kissinger analysis requires at least 2 distinct peak temperatures.", "Kissinger解析には少なくとも2つの異なるピーク温度が必要です。");
-        add("Kissinger analysis requires at least 2 valid (heating rate, peak temperature) pairs.", "Kissinger解析には少なくとも2組の有効な（昇温速度, ピーク温度）データ対が必要です。");
+        add("Kissinger analysis requires at least 2 valid (heating rate, peak temperature) pairs.", "Kissinger解析には少なくとも2組の有効な(昇温速度, ピーク温度)データ対が必要です。");
         add("Kocks-Mecking Work-Hardening & Considere Necking Analyzer", "Kocks-Mecking 加工硬化・Considère くびれ解析");
-        add("Savitzky-Golay Smoothing Window (odd points):", "Savitzky-Golay 平滑化窓幅（奇数点数）:");
+        add("Savitzky-Golay Smoothing Window (odd points):", "Savitzky-Golay 平滑化窓幅(奇数点数):");
         add("Create Considere (θ & σt vs εt) Plot", "Considère 線図 (θ・σt vs εt) を作成");
         add("XRD Peak, Scherrer & Williamson-Hall Analyzer", "XRD ピーク・Scherrer結晶子径・Williamson-Hall 解析");
         add("Diffractogram Curve:", "回折プロファイル曲線:");
@@ -1901,26 +1901,26 @@ void registerApplicationWindowJapaneseStrings()
         add("Instrumental FWHM (deg):", "装置関数半値幅 FWHM (deg):");
         add("Scherrer Shape Factor K:", "Scherrer 形状因子 K:");
         add("Crystal System for (hkl) Indexing:", "(hkl) 指数付け結晶系:");
-        add("None (Peak Table & W-H Only)", "なし（ピーク表・W-H図のみ）");
+        add("None (Peak Table & W-H Only)", "なし(ピーク表・W-H図のみ)");
         add("Strip Cu Kα2 Doublet (Rachinger)", "Rachinger法による Kα2 二重線除去");
         add("Add Linked Top Bragg d-Spacing Axis (Å)", "上X軸にブラッグ面間隔 d (Å) リンク軸を追加");
         add("Create Williamson-Hall Plot (β cos θ vs 4 sin θ)", "Williamson-Hall プロット (β cos θ vs 4 sin θ) を作成");
         add("Please open a graph or numeric worksheet with XRD data first.", "先にXRDデータを含むグラフまたは数値ワークシートを開いてください。");
         add("No prominent Bragg diffraction peaks were detected on the curve.", "指定された曲線上に明瞭なブラッグ回折ピークが検出されませんでした。");
-        add("VASP Electronic Structure Plotter (DOS & Band Structure)", "VASP 電子状態プロッタ（状態密度 DOS・バンド構造）");
+        add("VASP Electronic Structure Plotter (DOS & Band Structure)", "VASP 電子状態プロッタ(状態密度 DOS・バンド構造)");
         add("Load VASP DOSCAR / EIGENVAL File...", "VASP DOSCAR / EIGENVAL ファイルを読み込む...");
         add("DOS / PDOS", "状態密度 (DOS / PDOS)");
         add("Band Structure", "バンド構造");
         add("Energy Column (eV):", "エネルギー列 (eV):");
         add("Spin-Up / Total DOS Columns:", "全DOS / Spin-Up DOS 列:");
-        add("Spin-Down DOS Columns (Optional):", "Spin-Down DOS 列（任意）:");
+        add("Spin-Down DOS Columns (Optional):", "Spin-Down DOS 列(任意):");
         add("Fermi Energy E_F (eV):", "フェルミ準位 E_F (eV):");
-        add("Vertical Energy Axis (for side-by-side Band + DOS)", "縦軸をエネルギーにする（バンド図横並び用）");
+        add("Vertical Energy Axis (for side-by-side Band + DOS)", "縦軸をエネルギーにする(バンド図横並び用)");
         add("Wavevector Distance Column (k):", "波数空間距離列 (k):");
         add("Band Eigenvalue Columns:", "バンド固有値列:");
         add("Energy Window Min (E - E_F, eV):", "表示エネルギー最小値 (E - E_F, eV):");
         add("Energy Window Max (E - E_F, eV):", "表示エネルギー最大値 (E - E_F, eV):");
-        add("High-Symmetry k-Tick Positions:", "高対称k点 目盛位置:");
+        add("High-Symmetry k-Tick Positions:", "高対称k点 目盛り位置:");
         add("High-Symmetry k-Tick Labels:", "高対称k点 ラベル (Γ, X, M...):");
         add("Source worksheet is null.", "入力元ワークシートが選択されていません。");
         add("Energy column could not be resolved.", "エネルギー列を特定できませんでした。");
@@ -1937,14 +1937,14 @@ void registerApplicationWindowJapaneseStrings()
         add("Plotted Columns", "プロット列");
         add("Plotted Columns ▾", "プロット列 ▾");
         add("Plotted Columns...", "プロット列...");
-        add("Peak-aged Al-5.6Zn-2.5Mg-1.6Cu (T6) engineering stress-strain curve (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa) for 0.2% offset yield & Kocks-Mecking Considère analysis.", "ピーク時効 Al-5.6Zn-2.5Mg-1.6Cu (T6) 公称応力-ひずみ曲線（E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa）— 0.2%耐力および Kocks-Mecking・Considère くびれ解析用。");
-        add("First-order Polanyi-Wigner thermal desorption spectra of H-charged martensitic steel with dislocation (26.8 kJ/mol) and TiC precipitate (58.4 kJ/mol) traps.", "水素チャージしたマルテンサイト鋼の1次 Polanyi-Wigner 昇温脱離 (TDS) スペクトル（転位トラップ 26.8 kJ/mol・TiC析出物トラップ 58.4 kJ/mol）。");
+        add("Peak-aged Al-5.6Zn-2.5Mg-1.6Cu (T6) engineering stress-strain curve (E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa) for 0.2% offset yield & Kocks-Mecking Considère analysis.", "ピーク時効 Al-5.6Zn-2.5Mg-1.6Cu (T6) 公称応力-ひずみ曲線(E = 71.2 GPa, σ0.2 ≈ 508 MPa, UTS ≈ 578 MPa)— 0.2%耐力および Kocks-Mecking・Considère くびれ解析用。");
+        add("First-order Polanyi-Wigner thermal desorption spectra of H-charged martensitic steel with dislocation (26.8 kJ/mol) and TiC precipitate (58.4 kJ/mol) traps.", "水素チャージしたマルテンサイト鋼の1次 Polanyi-Wigner 昇温脱離 (TDS) スペクトル(転位トラップ 26.8 kJ/mol・TiC析出物トラップ 58.4 kJ/mol)。");
         add("Cu Kα1 (λ = 1.540598 Å) diffractogram (2θ = 20–85°) of fcc-Al broadened by D = 42 nm crystallites and ε = 1.85×10^-3 microstrain for Bragg / Williamson-Hall analysis.", "結晶子径 D = 42 nm および不均一格子ひずみ ε = 1.85×10^-3 により広がった fcc-Al の Cu Kα1 (λ = 1.540598 Å) X線回折プロファイル (2θ = 20–85°) — Bragg / Williamson-Hall 解析用。");
-        add("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.", "α-Fe 中の格子間水素拡散係数 D(T) の温度依存性データ（320–880 K、標準偏差付き）— アレニウス活性化エネルギー回帰解析用。");
-        add("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.", "き裂先端および塑性域前方の微小ボイド周囲 200×200 μm 視野における局所軸ひずみ ε_yy(x, y) (%) の 128×128 2次元マトリクス。");
-        add("30-specimen ceramic 4-point bending dataset (28 fractures + 2 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断28本＋820 MPa 右側打ち切り2本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
-        add("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断25本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
-        add("30-specimen ceramic 4-point bending dataset (28 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ（30試験片：破断28本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa）— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.", "α-Fe 中の格子間水素拡散係数 D(T) の温度依存性データ(320–880 K、標準偏差付き)— アレニウス活性化エネルギー回帰解析用。");
+        add("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.", "き裂先端および塑性域前方の微小ボイド周囲 200×200 μm 視野における局所軸ひずみ ε_yy(x, y) (%) の 128×128 2次元行列。");
+        add("30-specimen ceramic 4-point bending dataset (28 fractures + 2 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ(30試験片:破断28本＋820 MPa 右側打ち切り2本；m ≈ 12.4, σ0 ≈ 785 MPa)— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ(30試験片:破断25本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa)— MRR / 最尤法 (MLE) ワイブル確率解析用。");
+        add("30-specimen ceramic 4-point bending dataset (28 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.", "セラミックス4点曲げ強度データ(30試験片:破断28本＋820 MPa 右側打ち切り5本；m ≈ 12.4, σ0 ≈ 785 MPa)— MRR / 最尤法 (MLE) ワイブル確率解析用。");
         add("HCP (Hexagonal Close-Packed)", "HCP (六方最密充填)");
         add("Hexagonal Close-Packed (HCP)", "六方最密充填 (HCP)");
         add("HCP", "HCP (六方晶)");
@@ -1957,7 +1957,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Considère (θ & σt vs εt)", "Considère 線図 (θ・σt vs εt)");
         add("Kocks-Mecking (θ vs σt)", "Kocks-Mecking プロット (θ vs σt)");
         add("Create Kocks-Mecking (θ vs σt) Plot", "Kocks-Mecking プロット (θ vs σt) を作成");
-        add("Set Custom Tick Labels", "カスタム目盛ラベルを設定");
+        add("Set Custom Tick Labels", "カスタム目盛りラベルを設定");
         add("Set Weibull Probability Axis", "ワイブル確率軸を設定");
         add("Axial Ratio c/a (for HCP):", "軸比 c/a (HCP用):");
         add("HCP / Hexagonal (100, 002, 101...)", "HCP / 六方晶 (100, 002, 101...)");
@@ -7699,6 +7699,9 @@ void ApplicationWindow::setSaveSettings(bool autoSaving, int min)
 
 void ApplicationWindow::changeAppStyle(const QString &s)
 {
+    // H6: ToriGraph always draws with its own theme (ModernUiTheme on top of Fusion); the old
+    // "Style" setting is no longer offered in the preferences. The stored name is kept only so
+    // that the ini file round-trips; whatever it says, the theme is (re)applied unchanged.
     if (s.trimmed().isEmpty())
         return;
     appStyle = s;

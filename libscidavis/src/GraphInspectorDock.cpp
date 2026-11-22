@@ -45,6 +45,7 @@
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "Spectrogram.h"
+#include "PlotStyleLimits.h"
 #include "SymbolBox.h"
 #include "Table.h"
 
@@ -73,7 +74,10 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QRegularExpressionValidator>
+#include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QTextCursor>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -153,14 +157,28 @@ public:
     }
 };
 
-static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
+static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit,
+                                        QPlainTextEdit *multiLineEdit = nullptr)
 {
     QWidget *wrap = new QWidget(parent);
     QVBoxLayout *vlay = new QVBoxLayout(wrap);
     vlay->setContentsMargins(0, 1, 0, 1);
     vlay->setSpacing(2);
 
-    auto insertToken = [targetEdit](const QString &tok) {
+    // When the multi-line editor (text annotations, C16) is the one on screen, the chips act on
+    // it; its own debounced textChanged handler commits the change.
+    auto multiActive = [multiLineEdit]() {
+        return multiLineEdit && !multiLineEdit->isHidden() && multiLineEdit->isEnabled();
+    };
+
+    auto insertToken = [targetEdit, multiLineEdit, multiActive](const QString &tok) {
+        if (multiActive()) {
+            QTextCursor c = multiLineEdit->textCursor();
+            c.insertText(tok);
+            multiLineEdit->setTextCursor(c);
+            multiLineEdit->setFocus();
+            return;
+        }
         if (!targetEdit || !targetEdit->isEnabled())
             return;
         if (targetEdit->hasSelectedText()) {
@@ -182,7 +200,19 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit)
         emit targetEdit->editingFinished();
     };
 
-    auto wrapMarkup = [targetEdit](const QString &openTag, const QString &closeTag) {
+    auto wrapMarkup = [targetEdit, multiLineEdit, multiActive](const QString &openTag,
+                                                               const QString &closeTag) {
+        if (multiActive()) {
+            QTextCursor c = multiLineEdit->textCursor();
+            // QTextCursor uses U+2029 between paragraphs inside a selection.
+            const QString sel = c.selectedText().replace(QChar(0x2029), QLatin1Char('\n'));
+            c.insertText(openTag + sel + closeTag);
+            if (sel.isEmpty())
+                c.movePosition(QTextCursor::Left, QTextCursor::MoveAnchor, closeTag.length());
+            multiLineEdit->setTextCursor(c);
+            multiLineEdit->setFocus();
+            return;
+        }
         if (!targetEdit || !targetEdit->isEnabled())
             return;
         QString txt = targetEdit->text();
@@ -292,10 +322,10 @@ static void registerInspectorExtraTranslations()
         reg("Overall", "全体");
         reg("X/Y", "軸");
         reg("Scope:", "対象:");
-        reg("Active Layer", "現在のレイヤ");
+        reg("Active Layer", "現在のレイヤー");
         reg("All Panels", "全パネル一括");
         reg("Apply Axis/Frame/Grid edits only to the active layer",
-            "軸・枠・グリッドの変更を現在のレイヤのみに適用します");
+            "軸・枠・グリッドの変更を現在のレイヤーのみに適用します");
         reg("Apply Axis/Frame/Grid edits to all primary panels at once",
             "軸・枠・グリッドの変更を全パネルへ一括適用します");
         reg("Reverse Axis", "軸を反転");
@@ -320,9 +350,9 @@ static void registerInspectorExtraTranslations()
         reg("Units / Symbols", "単位・記号");
         reg("Units", "単位");
         reg("Insert Symbol, Unit, or Journal Axis Template",
-            "記号・単位・論文用軸ラベル定型を入力");
+            "記号・単位・論文用軸タイトル定型を入力");
         reg("Symbols", "科学記号");
-        reg("Journal Templates", "論文用軸ラベル定型");
+        reg("Journal Templates", "論文用軸タイトル定型");
         reg("Common Units", "よく使う単位");
         reg("Spline", "スプライン曲線");
         reg("Horizontal Steps", "水平ステップ");
@@ -330,22 +360,22 @@ static void registerInspectorExtraTranslations()
         reg("Drop Lines", "ドロップライン");
         reg("Opacity:", "不透明度:");
         reg("Change Curve Opacity", "曲線の不透明度変更");
-        reg("Link Symbol Color to Line", "記号の色を線の色に連動");
+        reg("Link Symbol Color to Line", "シンボルの色を線の色に連動");
         reg("Edge Color:", "枠線の色:");
         reg("Fill Color:", "塗り色:");
         reg("Edge Width:", "枠線の太さ:");
-        reg("Select Symbol Edge Color", "記号の枠線色を選択");
-        reg("Select Symbol Fill Color", "記号の塗り色を選択");
-        reg("Change Symbol Edge Color", "記号の枠線色変更");
-        reg("Change Symbol Fill Color", "記号の塗り色変更");
-        reg("Change Symbol Edge Width", "記号の枠線幅変更");
-        reg("Link Symbol Color", "記号色を線の色に連動");
+        reg("Select Symbol Edge Color", "シンボルの枠線色を選択");
+        reg("Select Symbol Fill Color", "シンボルの塗り色を選択");
+        reg("Change Symbol Edge Color", "シンボルの枠線色変更");
+        reg("Change Symbol Fill Color", "シンボルの塗り色変更");
+        reg("Change Symbol Edge Width", "シンボルの枠線幅変更");
+        reg("Link Symbol Color", "シンボル色を線の色に連動");
         reg("Plot on Right-Y", "右Y軸にプロット");
         reg("Match Right-Y Color", "右Y軸の色を曲線に合わせる");
         reg("Color Right-Y axis backbone, ticks, and title to match this curve",
             "右Y軸の軸線・目盛り・軸タイトル色をこの曲線の色に合わせます");
         reg("Match Right-Y Axis Color", "右Y軸の色を曲線に合わせる");
-        reg("Cycle Symbol Shapes (● ■ ▲ ▼ ◆)", "記号形状を順に切替 (● ■ ▲ ▼ ◆)");
+        reg("Cycle Symbol Shapes (● ■ ▲ ▼ ◆)", "シンボル形状を順に切替 (● ■ ▲ ▼ ◆)");
         reg("Paired Filled / Hollow (● ○ ■ □)", "塗り・白抜きペア切替 (● ○ ■ □)");
         reg("Error Bar Style", "エラーバー外観");
         reg("Bar Width:", "線の太さ:");
@@ -398,10 +428,10 @@ static void registerInspectorExtraTranslations()
         reg("Name / Unit (ISIJ)", "量名 / 単位 (ISIJ)");
         reg("Name [Unit]", "量名 [単位]");
         reg("Change Unit Format", "単位表記の変更");
-        reg("Symbol Skip:", "記号の間引き:");
-        reg("Symbol Skip", "記号の間引き");
+        reg("Symbol Skip:", "シンボルの間引き:");
+        reg("Symbol Skip", "シンボルの間引き");
         reg("Every %1 pts (0 = Auto)", "%1点ごと (0 = 自動間引き)");
-        reg("Change Symbol Skip", "記号の間引き間隔変更");
+        reg("Change Symbol Skip", "シンボルの間引き間隔変更");
         reg("Colorbar Title:", "カラーバータイトル:");
         reg("Colorbar Title", "カラーバータイトル");
         reg("Enter colorbar title...", "カラーバータイトルを入力...");
@@ -410,9 +440,9 @@ static void registerInspectorExtraTranslations()
         reg("Create publication-ready graphs in 3 easy steps",
             "3ステップで論文品質のグラフを作成できます");
         reg("Enter data in Table or import CSV",
-            "テーブルにデータを入力、またはCSVを読込");
+            "ワークシートにデータを入力、またはCSVを読込");
         reg("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar",
-            "上部の「折れ線」「線+記号」「散布図」をクリック");
+            "上部の「折れ線」「線+シンボル」「散布図」をクリック");
         reg("Drag graph frame to resize; click axes or legend to edit",
             "グラフの枠ドラッグでサイズ変更・クリックで軸や凡例を編集");
         reg("Import CSV / Data...", "CSV / データ読込...");
@@ -427,6 +457,34 @@ static void registerInspectorExtraTranslations()
         reg("Free Resize (Unlock Aspect Ratio)", "自由リサイズ (縦横比ロック解除)");
         reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
         reg("Apply Aspect Ratio Preset", "縦横比プリセット適用");
+        // H3: registered here too, because MultiLayer registers it lazily and the
+        // inspector sets its button text before that happens.
+        reg("Manage Style Presets...", "グラフプリセットの編集・追加...");
+        // H7: tooltips
+        reg("Use the column to the right of the Y column as ± error bars (click again to remove)",
+            "Y 列のすぐ右の列を ± エラーバーとして使います (もう一度押すと外します)");
+        reg("Add the standard deviation of all Y values as the same ± error bar on every point "
+            "(click again to remove)",
+            "Y 列全体の標準偏差を、すべての点に同じ ± エラーバーとして付けます (もう一度押すと外します)");
+        reg("Add ± 5% of each Y value as error bars (click again to remove)",
+            "各点の Y 値の ± 5% をエラーバーとして付けます (もう一度押すと外します)");
+        reg("Move the legend to the %1 corner inside the plot frame",
+            "凡例を枠内の%1へ移動します");
+        reg("Move the legend to the top centre inside the plot frame", "凡例を枠内の上中央へ移動します");
+        reg("Move the legend outside the plot frame, to the right of the layer",
+            "凡例を枠の外 (レイヤーの右側) へ移動します");
+        reg("Move the legend to the corner or edge position that overlaps the data least",
+            "データとの重なりが最も少ない位置 (四隅か上下の中央) へ凡例を移動します");
+        reg("Rebuild the legend text from the current curves (custom text is replaced)",
+            "今の曲線から凡例の文字を作り直します (書き換えた文字は置き換わります)");
+        reg("Click to choose a color (now %1)", "クリックして色を選びます (現在 %1)");
+        reg("Color %1", "色 %1");
+        reg("Edit the text. Each line of a multi-line label is one line here.",
+            "文字を編集します。複数行のテキストは、ここでも 1 行ずつ改行して書きます。");
+        reg("Number of minor ticks between major ticks. On a log axis only 0, 2, 4 or 8 "
+            "are meaningful (8 = 2, 3, ..., 9).",
+            "主目盛りの間の補助目盛りの数。対数軸では 0・2・4・8 のどれか"
+            "(8 は 2, 3, ..., 9 の位置) を選びます。");
     });
 }
 
@@ -685,6 +743,17 @@ static void updateColorSwatchButton(QPushButton *btn, const QColor &c)
     btn->setMaximumHeight(26);
     btn->setIcon(QIcon());
     btn->setText(bgHex);
+    // H7: a swatch is only a coloured rectangle, so say what clicking it does. Buttons that
+    // were given a specific tooltip elsewhere keep it.
+    const QString autoTip = btn->property("autoSwatchTip").toString();
+    if (btn->toolTip().isEmpty() || btn->toolTip() == autoTip) {
+        const QString tip =
+                QCoreApplication::translate("GraphInspectorDock", "Click to choose a color (now %1)")
+                        .arg(bgHex);
+        btn->setToolTip(tip);
+        btn->setProperty("autoSwatchTip", tip);
+    }
+    btn->setAccessibleName(QCoreApplication::translate("GraphInspectorDock", "Color %1").arg(bgHex));
     btn->setStyleSheet(QStringLiteral(
                                "QPushButton#InspectorColorSwatchBtn {"
                                "  background-color: %1;"
@@ -692,7 +761,7 @@ static void updateColorSwatchButton(QPushButton *btn, const QColor &c)
                                "  border: 1px solid %3;"
                                "  border-radius: 5px;"
                                "  font-family: 'Consolas', 'Segoe UI', monospace;"
-                               "  font-size: 11.5px;"
+                               "  font-size: 9pt;"
                                "  font-weight: 600;"
                                "  padding: 0px 8px;"
                                "  min-height: 24px;"
@@ -703,11 +772,53 @@ static void updateColorSwatchButton(QPushButton *btn, const QColor &c)
                                "}"
                                "QPushButton#InspectorColorSwatchBtn:disabled {"
                                "  background-color: #F1F5F9;"
-                               "  color: #94A3B8;"
+                               "  color: #5B6B80;"
                                "  border: 1px solid #E2E8F0;"
                                "}")
                                .arg(bgHex, fgHex, borderHex));
     btn->setProperty("swatchColor", safe);
+}
+
+static QString minorTickItemLabel(int n)
+{
+    if (n <= 0)
+        return QCoreApplication::translate("GraphInspectorDock", "0 (None)");
+    return QCoreApplication::translate("GraphInspectorDock", "%1 (%2 subdiv)").arg(n).arg(n + 1);
+}
+
+// Fills the minor-tick combo with the presets for a linear or log10 axis (shared with
+// AxesDialog through PlotStyleLimits) and selects `current`, adding it when it is not a preset.
+static void fillMinorTickCombo(QComboBox *cb, bool log10Axis, int current)
+{
+    if (!cb)
+        return;
+    QSignalBlocker blocker(cb);
+    cb->clear();
+    for (int v : PlotStyleLimits::minorTickChoices(log10Axis))
+        cb->addItem(minorTickItemLabel(v), v);
+    cb->setProperty("minorLogMode", log10Axis);
+    const int value = qBound(0, current, PlotStyleLimits::kMinorTicksMax);
+    int idx = cb->findData(value);
+    if (idx < 0) {
+        cb->addItem(minorTickItemLabel(value), value);
+        idx = cb->count() - 1;
+    }
+    cb->setCurrentIndex(idx);
+}
+
+// Value of the (editable) minor-tick combo: the selected preset, or the leading number of a
+// typed-in text. Returns `fallback` when nothing usable is entered.
+static int minorTickComboValue(const QComboBox *cb, int fallback)
+{
+    if (!cb)
+        return fallback;
+    const int idx = cb->currentIndex();
+    if (idx >= 0 && cb->itemText(idx) == cb->currentText())
+        return cb->itemData(idx).toInt();
+    const QString token = cb->currentText().trimmed().section(QLatin1Char(' '), 0, 0);
+    bool ok = false;
+    const int v = token.toInt(&ok);
+    return ok ? qBound(0, v, PlotStyleLimits::kMinorTicksMax) : fallback;
 }
 
 } // namespace
@@ -2169,15 +2280,29 @@ QWidget *GraphInspectorDock::buildAxisInspector()
 
     d_lbl_minor_subdiv = new QLabel(page);
     d_combo_minor_subdiv = new QComboBox(page);
-    d_combo_minor_subdiv->addItem(QString(), 0);
-    d_combo_minor_subdiv->addItem(QString(), 1);
-    d_combo_minor_subdiv->addItem(QString(), 4);
-    d_combo_minor_subdiv->addItem(QString(), 9);
+    // C1: the choices follow the axis type (linear 0/1/4/9, log 0/2/4/8 as in AxesDialog) and
+    // any other number can be typed in.
+    d_combo_minor_subdiv->setObjectName(QStringLiteral("InspectorMinorTicksCombo"));
+    d_combo_minor_subdiv->setEditable(true);
+    d_combo_minor_subdiv->setInsertPolicy(QComboBox::NoInsert);
+    d_combo_minor_subdiv->lineEdit()->setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QStringLiteral("^\\s*\\d{1,3}(\\s.*)?$")), d_combo_minor_subdiv));
+    fillMinorTickCombo(d_combo_minor_subdiv, false, 0);
     connect(d_combo_minor_subdiv, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) {
                 if (!d_syncing_props)
                     applyAxisScaleFromUi(-1);
             });
+    connect(d_combo_minor_subdiv->lineEdit(), &QLineEdit::editingFinished, this, [this]() {
+        if (d_syncing_props || !d_combo_minor_subdiv)
+            return;
+        Graph *g = activeLayer();
+        if (!g || !g->plotWidget())
+            return;
+        const int typed = minorTickComboValue(d_combo_minor_subdiv, -1);
+        if (typed >= 0 && typed != g->plotWidget()->axisMaxMinor(d_active_axis))
+            applyAxisScaleFromUi(-1);
+    });
     rngGrid->addWidget(d_lbl_minor_subdiv, 5, 0);
     rngGrid->addWidget(d_combo_minor_subdiv, 5, 1);
 
@@ -2798,7 +2923,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
 
     d_lbl_line_width = new QLabel(d_curve_regular_wrap);
     d_spin_line_width = new QSpinBox(d_curve_regular_wrap);
-    d_spin_line_width->setRange(1, 16);
+    d_spin_line_width->setRange(PlotStyleLimits::kLineWidthMin, PlotStyleLimits::kLineWidthMax);
     d_spin_line_width->setSuffix(QStringLiteral(" px"));
     connect(d_spin_line_width, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int w) {
         Graph *g = activeLayer();
@@ -2977,7 +3102,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
 
     d_lbl_sym_size = new QLabel(d_curve_regular_wrap);
     d_spin_sym_size = new QSpinBox(d_curve_regular_wrap);
-    d_spin_sym_size->setRange(2, 36);
+    d_spin_sym_size->setRange(PlotStyleLimits::kSymbolSizeMin, PlotStyleLimits::kSymbolSizeMax);
     d_spin_sym_size->setValue(8);
     d_spin_sym_size->setSuffix(QStringLiteral(" px"));
     connect(d_spin_sym_size, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int sz) {
@@ -3111,7 +3236,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
 
     d_lbl_sym_edge_width = new QLabel(d_sym_custom_colors_wrap);
     d_spin_sym_edge_width = new QDoubleSpinBox(d_sym_custom_colors_wrap);
-    d_spin_sym_edge_width->setRange(0.5, 4.0);
+    d_spin_sym_edge_width->setRange(PlotStyleLimits::kSymbolEdgeWidthMin,
+                                    PlotStyleLimits::kSymbolEdgeWidthMax);
     d_spin_sym_edge_width->setSingleStep(0.5);
     d_spin_sym_edge_width->setDecimals(1);
     d_spin_sym_edge_width->setValue(1.5);
@@ -3891,12 +4017,38 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         d_target_ml->pushUndoSnapshot(tr("Change Legend Font Size"), before, kMergeLegendFontPt);
     });
 
-    d_leg_sym_bar = createMatSciRichTextBar(page, d_edit_leg_header);
+    // C16: a text annotation may span several lines; the one-line header field could only
+    // edit the first one. Changes are committed shortly after typing stops (one undo step
+    // per burst of typing) to the annotation that was selected when typing began.
+    d_edit_annot_text = new QPlainTextEdit(page);
+    d_edit_annot_text->setObjectName(QStringLiteral("InspectorAnnotationTextEdit"));
+    d_edit_annot_text->setTabChangesFocus(true);
+    d_edit_annot_text->setFixedHeight(78);
+    d_edit_annot_text->setHidden(true);
+    d_annot_commit_timer = new QTimer(this);
+    d_annot_commit_timer->setSingleShot(true);
+    d_annot_commit_timer->setInterval(450);
+    connect(d_edit_annot_text, &QPlainTextEdit::textChanged, this, [this]() {
+        if (d_syncing_props)
+            return;
+        Graph *g = activeLayer();
+        if (!d_annot_commit_timer->isActive() && g
+            && g->currentSelection().kind == Graph::GraphSelection::TextAnnotation) {
+            d_annot_edit_layer = g;
+            d_annot_edit_id = g->currentSelection().primaryId;
+        }
+        d_annot_commit_timer->start();
+    });
+    connect(d_annot_commit_timer, &QTimer::timeout, this,
+            &GraphInspectorDock::flushPendingAnnotationEdit);
+
+    d_leg_sym_bar = createMatSciRichTextBar(page, d_edit_leg_header, d_edit_annot_text);
 
     legGrid->addWidget(d_lbl_leg_frame, 0, 0);
     legGrid->addWidget(d_combo_leg_frame, 0, 1);
     legGrid->addWidget(d_lbl_leg_header, 1, 0);
     legGrid->addWidget(d_edit_leg_header, 1, 1);
+    legGrid->addWidget(d_edit_annot_text, 1, 1);
     legGrid->addWidget(d_leg_sym_bar, 2, 0, 1, 2);
     legGrid->addWidget(d_lbl_leg_cols, 3, 0);
     legGrid->addWidget(d_spin_leg_cols, 3, 1);
@@ -5086,18 +5238,8 @@ void GraphInspectorDock::syncAxisControls()
         if (d_chk_axis_reverse)
             d_chk_axis_reverse->setChecked(isInverted);
 
-        if (d_combo_minor_subdiv) {
-            while (d_combo_minor_subdiv->count() > 4)
-                d_combo_minor_subdiv->removeItem(d_combo_minor_subdiv->count() - 1);
-            const int curMinor = qMax(0, pw->axisMaxMinor(ax));
-            int mIdx = d_combo_minor_subdiv->findData(curMinor);
-            if (mIdx < 0) {
-                d_combo_minor_subdiv->addItem(
-                        tr("%1 (%2 subdiv)").arg(curMinor).arg(curMinor + 1), curMinor);
-                mIdx = d_combo_minor_subdiv->count() - 1;
-            }
-            d_combo_minor_subdiv->setCurrentIndex(mIdx);
-        }
+        if (d_combo_minor_subdiv)
+            fillMinorTickCombo(d_combo_minor_subdiv, isLog10, qMax(0, pw->axisMaxMinor(ax)));
 
         const Graph::AxisBreakSpec brk = g->axisBreak(ax);
         d_chk_axis_break->setChecked(brk.enabled);
@@ -5402,8 +5544,37 @@ void GraphInspectorDock::syncCurveControls()
     d_syncing_props = false;
 }
 
+void GraphInspectorDock::flushPendingAnnotationEdit()
+{
+    if (d_annot_commit_timer)
+        d_annot_commit_timer->stop();
+    Graph *g = d_annot_edit_layer.data();
+    const int id = d_annot_edit_id;
+    d_annot_edit_layer = nullptr;
+    d_annot_edit_id = -1;
+    if (!d_target_ml || !g || id < 0 || !d_edit_annot_text)
+        return;
+    Legend *leg = g->textMarker(id);
+    if (!leg)
+        return;
+    const QString nextTxt = d_edit_annot_text->toPlainText();
+    if (leg->text() == nextTxt)
+        return;
+    const QString before = d_target_ml->captureUndoSnapshot();
+    leg->setText(nextTxt);
+    g->replot();
+    emit g->modifiedGraph();
+    d_target_ml->pushUndoSnapshot(tr("Edit Annotation Text"), before, kMergeLegendHeader);
+    refreshObjectTree();
+}
+
 void GraphInspectorDock::syncLegendControls()
 {
+    // An edit still waiting for its debounce belongs to the annotation selected when typing
+    // began; write it before the editor is refilled from the (possibly new) selection.
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+        flushPendingAnnotationEdit();
+
     Graph *g = activeLayer();
     if (!g)
         return;
@@ -5446,8 +5617,14 @@ void GraphInspectorDock::syncLegendControls()
         d_spin_leg_cols->setEnabled(isPrimaryLegend);
     if (d_combo_leg_frame)
         d_combo_leg_frame->setEnabled(canEditMarker);
-    if (d_edit_leg_header)
+    if (d_edit_leg_header) {
         d_edit_leg_header->setEnabled(canEditMarker);
+        d_edit_leg_header->setHidden(isTextAnn && d_edit_annot_text);
+    }
+    if (d_edit_annot_text) {
+        d_edit_annot_text->setEnabled(canEditMarker);
+        d_edit_annot_text->setHidden(!isTextAnn);
+    }
     if (d_leg_sym_bar)
         d_leg_sym_bar->setEnabled(canEditMarker);
     if (d_spin_leg_font_pt)
@@ -5471,6 +5648,11 @@ void GraphInspectorDock::syncLegendControls()
             const QStringList lines = leg->text().split('\n');
             d_edit_leg_header->setText(lines.isEmpty() ? QString() : lines.first());
             d_edit_leg_header->setModified(false);
+            // Refill only when the text differs, so the cursor stays put while typing.
+            if (d_edit_annot_text && d_edit_annot_text->toPlainText() != leg->text()) {
+                QSignalBlocker bAnn(d_edit_annot_text);
+                d_edit_annot_text->setPlainText(leg->text());
+            }
         } else {
             const QStringList lines = leg->text().split('\n');
             if (!lines.isEmpty() && !lines.first().trimmed().isEmpty()
@@ -5489,6 +5671,10 @@ void GraphInspectorDock::syncLegendControls()
         QSignalBlocker b(d_edit_leg_header);
         d_edit_leg_header->clear();
         d_edit_leg_header->setModified(false);
+        if (d_edit_annot_text) {
+            QSignalBlocker bAnn(d_edit_annot_text);
+            d_edit_annot_text->clear();
+        }
     }
 
     d_syncing_props = false;
@@ -5527,10 +5713,7 @@ void GraphInspectorDock::applyAxisScaleFromUi(int mergeId)
     const bool inv = d_chk_axis_reverse
             ? d_chk_axis_reverse->isChecked()
             : (eng ? eng->testAttribute(QwtScaleEngine::Inverted) : false);
-    const int minorSubdiv =
-            (d_combo_minor_subdiv && d_combo_minor_subdiv->currentIndex() >= 0)
-            ? d_combo_minor_subdiv->currentData().toInt()
-            : pw->axisMaxMinor(d_active_axis);
+    const int minorSubdiv = minorTickComboValue(d_combo_minor_subdiv, pw->axisMaxMinor(d_active_axis));
 
     const QString before = d_target_ml->captureUndoSnapshot();
     for (Graph *lg : targets) {
@@ -6359,14 +6542,14 @@ void GraphInspectorDock::applyTheme()
     QString qss = QStringLiteral(
                           "#InspectorRootContainer { background: %1; color: %5; border-left: 1px solid %4; }"
                           "#InspectorHeaderBar, #InspectorRailPanel, #InspectorScopeStrip { background: %2; border-bottom: 1px solid %4; }"
-                          "#InspectorHeaderTitle { font-weight: 600; font-size: 14.5px; color: %5; }"
-                          "#InspectorHeaderTarget { font-size: 13px; color: %6; }"
-                          "#InspectorSubTitle { font-weight: 600; font-size: 13px; color: %5; }"
-                          "#InspectorSectionHeader { font-weight: 600; font-size: 12.5px; color: %6; padding-top: 6px; padding-bottom: 2px; border-bottom: 1px solid %4; }"
+                          "#InspectorHeaderTitle { font-weight: 600; font-size: 11pt; color: %5; }"
+                          "#InspectorHeaderTarget { font-size: 10pt; color: %6; }"
+                          "#InspectorSubTitle { font-weight: 600; font-size: 10pt; color: %5; }"
+                          "#InspectorSectionHeader { font-weight: 600; font-size: 9pt; color: %6; padding-top: 6px; padding-bottom: 2px; border-bottom: 1px solid %4; }"
                           "#InspectorTabStrip { background: %1; border-top: 1px solid %4; border-bottom: 1px solid %4; }"
                           "QFrame#InspectorSegmentedTrack { background: @TRACK_BG@; border: 1px solid %4; border-radius: 7px; }"
                           "QToolButton#InspectorContextTabBtn, QToolButton#InspectorAxisPillBtn {"
-                          "  background: transparent; color: %6; border: 1px solid transparent; border-radius: 5px; font-size: 10.5pt; font-weight: 500; padding: 1px 4px;"
+                          "  background: transparent; color: %6; border: 1px solid transparent; border-radius: 5px; font-size: 10pt; font-weight: 500; padding: 1px 4px;"
                           "}"
                           "QToolButton#InspectorContextTabBtn:hover, QToolButton#InspectorAxisPillBtn:hover {"
                           "  background: %8; color: %5;"
@@ -6375,13 +6558,13 @@ void GraphInspectorDock::applyTheme()
                           "  background: @SEG_ACT_BG@; color: %7; border: 1px solid @SEG_ACT_BD@; font-weight: 600;"
                           "}"
                           "QToolButton#InspectorScopePillBtn {"
-                          "  background: %3; color: %6; border: 1px solid %4; border-radius: 5px; font-size: 13px; padding: 2px 5px;"
+                          "  background: %3; color: %6; border: 1px solid %4; border-radius: 5px; font-size: 10pt; padding: 2px 5px;"
                           "}"
                           "QToolButton#InspectorScopePillBtn:checked {"
                           "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
                           "}"
                           "QToolButton#InspectorSymbolChipBtn {"
-                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 12.5px; padding: 1px 4px; min-height: 22px; min-width: 24px;"
+                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9pt; padding: 1px 4px; min-height: 22px; min-width: 24px;"
                           "}"
                           "QToolButton#InspectorSymbolChipBtn:hover {"
                           "  background: @CHIP_HOV_BG@; color: %7; border: 1px solid @CHIP_HOV_BD@;"
@@ -6393,7 +6576,7 @@ void GraphInspectorDock::applyTheme()
                           "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
                           "}"
                           "QTreeWidget#GraphObjectManagerTree {"
-                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-size: 13px; padding: 2px; outline: 0;"
+                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-size: 10pt; padding: 2px; outline: 0;"
                           "}"
                           "QTreeWidget#GraphObjectManagerTree::item {"
                           "  height: 22px; padding: 1px 4px; border-radius: 4px;"
@@ -6406,20 +6589,20 @@ void GraphInspectorDock::applyTheme()
                           "}"
                           "#InspectorQuickStartPanel { background: %1; }"
                           "#QuickStartHeroCard { background: %8; border: 1px solid %4; border-radius: 8px; }"
-                          "#QuickStartTitle { font-weight: 700; font-size: 15px; color: %7; }"
-                          "#QuickStartSubtitle { font-size: 13px; color: %5; }"
+                          "#QuickStartTitle { font-weight: 700; font-size: 11pt; color: %7; }"
+                          "#QuickStartSubtitle { font-size: 10pt; color: %5; }"
                           "#QuickStartCard { background: %3; border: 1px solid %4; border-radius: 7px; }"
-                          "#QuickStartStepBadge { background: %7; color: #FFFFFF; font-weight: 700; font-size: 12px; border-radius: 11px; }"
-                          "#QuickStartStepText { font-size: 13px; color: %5; }"
+                          "#QuickStartStepBadge { background: %7; color: #FFFFFF; font-weight: 700; font-size: 9pt; border-radius: 11px; }"
+                          "#QuickStartStepText { font-size: 10pt; color: %5; }"
                           "QPushButton#QuickStartPrimaryBtn {"
-                          "  background: %7; color: #FFFFFF; border: 1px solid %7; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                          "  background: %7; color: #FFFFFF; border: 1px solid %7; border-radius: 6px; font-weight: 600; font-size: 10pt; padding: 5px 10px;"
                           "}"
                           "QPushButton#QuickStartSecondaryBtn {"
-                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 13.5px; padding: 5px 10px;"
+                          "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 10pt; padding: 5px 10px;"
                           "}"
                           "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
-                          "QPushButton { font-size: 13.5px; padding: 4px 6px; }"
-                          "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 13.5px; }")
+                          "QPushButton { font-size: 10pt; padding: 4px 6px; }"
+                          "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 10pt; }")
                           .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
     qss.replace(QStringLiteral("@TRACK_BG@"), trackBg);
     qss.replace(QStringLiteral("@SEG_ACT_BG@"), segActiveBg);
@@ -6507,14 +6690,27 @@ void GraphInspectorDock::retranslateUi()
     if (d_btn_qs_sample_gallery)
         d_btn_qs_sample_gallery->setText(tr("Sample Gallery / Plot"));
 
-    if (d_tab_btn_page)
+    // H7: the tab buttons carry the same explanation as the collapsed-rail buttons.
+    if (d_tab_btn_page) {
         d_tab_btn_page->setText(tr("Overall"));
-    if (d_tab_btn_axis)
+        d_tab_btn_page->setToolTip(tr("Page & Layer Properties"));
+        d_tab_btn_page->setAccessibleName(tr("Page & Layer Properties"));
+    }
+    if (d_tab_btn_axis) {
         d_tab_btn_axis->setText(tr("X/Y"));
-    if (d_tab_btn_curve)
+        d_tab_btn_axis->setToolTip(tr("Axis Scale & Title Properties"));
+        d_tab_btn_axis->setAccessibleName(tr("Axis Scale & Title Properties"));
+    }
+    if (d_tab_btn_curve) {
         d_tab_btn_curve->setText(tr("Curve"));
-    if (d_tab_btn_legend)
+        d_tab_btn_curve->setToolTip(tr("Curve & Series Style Properties"));
+        d_tab_btn_curve->setAccessibleName(tr("Curve & Series Style Properties"));
+    }
+    if (d_tab_btn_legend) {
         d_tab_btn_legend->setText(tr("Legend"));
+        d_tab_btn_legend->setToolTip(tr("Legend & Annotation Properties"));
+        d_tab_btn_legend->setAccessibleName(tr("Legend & Annotation Properties"));
+    }
 
     // Page 0: Page / Layer
     if (d_sec_presets_lbl)
@@ -6632,11 +6828,13 @@ void GraphInspectorDock::retranslateUi()
         d_chk_axis_reverse->setText(tr("Reverse Axis"));
     if (d_lbl_minor_subdiv)
         d_lbl_minor_subdiv->setText(tr("Minor Ticks:"));
-    if (d_combo_minor_subdiv && d_combo_minor_subdiv->count() >= 4) {
-        d_combo_minor_subdiv->setItemText(0, tr("0 (None)"));
-        d_combo_minor_subdiv->setItemText(1, tr("1 (2 subdiv)"));
-        d_combo_minor_subdiv->setItemText(2, tr("4 (5 subdiv)"));
-        d_combo_minor_subdiv->setItemText(3, tr("9 (10 subdiv)"));
+    if (d_combo_minor_subdiv) {
+        fillMinorTickCombo(d_combo_minor_subdiv,
+                           d_combo_minor_subdiv->property("minorLogMode").toBool(),
+                           minorTickComboValue(d_combo_minor_subdiv, 0));
+        d_combo_minor_subdiv->setToolTip(
+                tr("Number of minor ticks between major ticks. On a log axis only 0, 2, 4 or 8 "
+                   "are meaningful (8 = 2, 3, ..., 9)."));
     }
     if (d_chk_axis_break)
         d_chk_axis_break->setText(tr("Axis Break (Omit Middle Range)"));
@@ -6795,12 +6993,23 @@ void GraphInspectorDock::retranslateUi()
 
     if (d_sec_err_bars_lbl)
         d_sec_err_bars_lbl->setText(tr("Quick Error Bars"));
-    if (d_btn_err_adjacent)
+    if (d_btn_err_adjacent) {
         d_btn_err_adjacent->setText(tr("Adjacent Col"));
-    if (d_btn_err_sd)
+        d_btn_err_adjacent->setToolTip(
+                tr("Use the column to the right of the Y column as ± error bars "
+                   "(click again to remove)"));
+    }
+    if (d_btn_err_sd) {
         d_btn_err_sd->setText(tr("Std Dev (SD)"));
-    if (d_btn_err_5pct)
+        d_btn_err_sd->setToolTip(
+                tr("Add the standard deviation of all Y values as the same ± error bar on "
+                   "every point (click again to remove)"));
+    }
+    if (d_btn_err_5pct) {
         d_btn_err_5pct->setText(tr("5%"));
+        d_btn_err_5pct->setToolTip(
+                tr("Add ± 5% of each Y value as error bars (click again to remove)"));
+    }
     if (d_sec_err_style_lbl)
         d_sec_err_style_lbl->setText(tr("Error Bar Style"));
     if (d_lbl_err_width)
@@ -6836,6 +7045,14 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_spec_cmap->setText(tr("Colormap:"));
     if (d_combo_spec_cmap && d_combo_spec_cmap->count() >= 10) {
         d_combo_spec_cmap->setItemText(0, tr("Default"));
+        // Proper colormap names also go through tr() so that the dictionary can add the
+        // short description shown in the other colormap lists ("Viridis (知覚均等)", H3).
+        d_combo_spec_cmap->setItemText(1, tr("Viridis"));
+        d_combo_spec_cmap->setItemText(2, tr("Magma"));
+        d_combo_spec_cmap->setItemText(3, tr("Inferno"));
+        d_combo_spec_cmap->setItemText(4, tr("Plasma"));
+        d_combo_spec_cmap->setItemText(5, tr("Cividis"));
+        d_combo_spec_cmap->setItemText(8, tr("Jet"));
         d_combo_spec_cmap->setItemText(6, tr("Cool-Warm"));
         d_combo_spec_cmap->setItemText(7, tr("Blue-White-Red"));
         d_combo_spec_cmap->setItemText(9, tr("GrayScale"));
@@ -6873,22 +7090,43 @@ void GraphInspectorDock::retranslateUi()
     // Page 3: Legend / Annotation
     if (d_sec_legend_pos_lbl)
         d_sec_legend_pos_lbl->setText(tr("1-Click Legend Placement"));
-    if (d_btn_leg_tl)
+    // H7: placement buttons explain where the legend goes.
+    const QString legTip = tr("Move the legend to the %1 corner inside the plot frame");
+    if (d_btn_leg_tl) {
         d_btn_leg_tl->setText(tr("Top-Left"));
-    if (d_btn_leg_tc)
+        d_btn_leg_tl->setToolTip(legTip.arg(tr("Top-Left")));
+    }
+    if (d_btn_leg_tc) {
         d_btn_leg_tc->setText(tr("Top-Center"));
-    if (d_btn_leg_tr)
+        d_btn_leg_tc->setToolTip(tr("Move the legend to the top centre inside the plot frame"));
+    }
+    if (d_btn_leg_tr) {
         d_btn_leg_tr->setText(tr("Top-Right"));
-    if (d_btn_leg_bl)
+        d_btn_leg_tr->setToolTip(legTip.arg(tr("Top-Right")));
+    }
+    if (d_btn_leg_bl) {
         d_btn_leg_bl->setText(tr("Bottom-Left"));
-    if (d_btn_leg_br)
+        d_btn_leg_bl->setToolTip(legTip.arg(tr("Bottom-Left")));
+    }
+    if (d_btn_leg_br) {
         d_btn_leg_br->setText(tr("Bottom-Right"));
-    if (d_btn_leg_out_r)
+        d_btn_leg_br->setToolTip(legTip.arg(tr("Bottom-Right")));
+    }
+    if (d_btn_leg_out_r) {
         d_btn_leg_out_r->setText(tr("Outside Right"));
-    if (d_btn_leg_auto_avoid)
+        d_btn_leg_out_r->setToolTip(
+                tr("Move the legend outside the plot frame, to the right of the layer"));
+    }
+    if (d_btn_leg_auto_avoid) {
         d_btn_leg_auto_avoid->setText(tr("Place in Empty Space (Avoid Data)"));
-    if (d_btn_leg_rebuild)
+        d_btn_leg_auto_avoid->setToolTip(
+                tr("Move the legend to the corner or edge position that overlaps the data least"));
+    }
+    if (d_btn_leg_rebuild) {
         d_btn_leg_rebuild->setText(tr("Reconstruct Legend"));
+        d_btn_leg_rebuild->setToolTip(
+                tr("Rebuild the legend text from the current curves (custom text is replaced)"));
+    }
 
     if (d_sec_legend_style_lbl)
         d_sec_legend_style_lbl->setText(tr("Legend Frame & Typography (Arial)"));
@@ -6905,6 +7143,9 @@ void GraphInspectorDock::retranslateUi()
                 (g && g->currentSelection().kind == Graph::GraphSelection::TextAnnotation);
         d_lbl_leg_header->setText(isTextAnn ? tr("Text:") : tr("Header:"));
     }
+    if (d_edit_annot_text)
+        d_edit_annot_text->setToolTip(
+                tr("Edit the text. Each line of a multi-line label is one line here."));
     if (d_lbl_leg_cols)
         d_lbl_leg_cols->setText(tr("Columns:"));
     if (d_lbl_leg_font_pt)

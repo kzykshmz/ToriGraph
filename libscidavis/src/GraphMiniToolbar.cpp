@@ -306,20 +306,26 @@ void registerMiniToolbarTranslations()
         ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
                                                                   QString::fromUtf8(ja));
     };
-    reg("Select Symbol Shape", "マーカー形状を選択");
-    reg("Change Symbol Shape", "マーカー形状を変更");
-    reg("Circle", "丸 (●)");
-    reg("Square", "四角 (■)");
-    reg("Up Triangle", "上三角 (▲)");
-    reg("Down Triangle", "下三角 (▼)");
-    reg("Diamond", "ひし形 (◆)");
-    reg("Star", "星 (★)");
-    reg("Cross", "バツ (×)");
-    reg("None (No Symbol)", "なし (マーカー非表示)");
+    // Shape names are generic English words ("Square" is also a pen cap style, "Cross" a
+    // fill pattern), so they are registered for this toolbar's tr() context only (H1).
+    auto regCtx = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphMiniToolbar"), QString::fromUtf8(en), QString::fromUtf8(ja));
+    };
+    reg("Select Symbol Shape", "シンボル形状を選択");
+    reg("Change Symbol Shape", "シンボル形状を変更");
+    regCtx("Circle", "丸 (●)");
+    regCtx("Square", "四角 (■)");
+    regCtx("Up Triangle", "上三角 (▲)");
+    regCtx("Down Triangle", "下三角 (▼)");
+    regCtx("Diamond", "ひし形 (◆)");
+    regCtx("Star", "星 (★)");
+    regCtx("Cross", "バツ (×)");
+    reg("None (No Symbol)", "なし (シンボル非表示)");
     reg("Decrease Line Width", "線幅を細くする");
     reg("Increase Line Width", "線幅を太くする");
-    reg("Decrease Symbol Size", "マーカーを小さくする");
-    reg("Increase Symbol Size", "マーカーを大きくする");
+    reg("Decrease Symbol Size", "シンボルを小さくする");
+    reg("Increase Symbol Size", "シンボルを大きくする");
     reg("Match Y-Right Axis Color", "右Y軸の色をこの曲線に合わせる");
     reg("Match Right-Y Axis Color", "右Y軸の色を曲線に合わせる");
     reg("Clear Masked Points", "マスク点をすべて解除");
@@ -327,7 +333,7 @@ void registerMiniToolbarTranslations()
     reg("Reverse Axis", "軸を反転");
     reg("Add Mean Reference Line", "平均値の参照線を追加");
     reg("Rescale All (Ctrl+R)", "全軸を自動スケール (Ctrl+R)");
-    reg("Box Inward Frame", "四辺枠（内向き目盛り）");
+    reg("Box Inward Frame", "四辺枠 (内向き目盛り)");
     reg("Open-L Frame", "L字枠");
     reg("Select Text Color", "文字色を選択");
     reg("Change Text Color", "文字色を変更");
@@ -441,7 +447,7 @@ void GraphMiniToolbar::applyThemeStyle()
             "  border-radius: 8px;"
             "}"
             "QToolButton {"
-            "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 11pt;"
             "  font-weight: 600;"
             "  color: %3;"
@@ -523,7 +529,7 @@ QToolButton *GraphMiniToolbar::addActionBtn(const QString &text, const QString &
     QToolButton *btn = new QToolButton(this);
     btn->setText(text);
     btn->setToolTip(tooltip);
-    btn->setFocusPolicy(Qt::NoFocus);
+    btn->setFocusPolicy(Qt::TabFocus);
     btn->setCheckable(checkable);
     if (checkable)
         btn->setChecked(checked);
@@ -946,7 +952,7 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         lockAspectBtn->setObjectName(QStringLiteral("MiniToolbarLockAspectBtn"));
         lockAspectBtn->setText(tr("Lock Aspect"));
         lockAspectBtn->setToolTip(tr("Lock / Unlock Aspect Ratio (Free Resize)"));
-        lockAspectBtn->setFocusPolicy(Qt::NoFocus);
+        lockAspectBtn->setFocusPolicy(Qt::TabFocus);
         lockAspectBtn->setCheckable(true);
         lockAspectBtn->setChecked(aspectLocked);
         const QIcon lockIco = miniToolbarDuotoneIcon(QStringLiteral("lock"), true);
@@ -2158,38 +2164,94 @@ void GraphMiniToolbar::onLegendToggleTransparent()
     reclampToAvailableBounds();
 }
 
+// C16: the toggle works line by line on the label part of each legend line, i.e. after the
+// curve-symbol tokens (\c{n}, \l(n), \p{n}). Wrapping the whole multi-line text put the
+// opening tag in front of "\c{1}", where it had no effect, and left stray tags behind.
+// Rules per line: if the label already ends with the closing tag the last tagged part is
+// unwrapped (only when every non-empty label is tagged, so one press toggles all lines
+// consistently); otherwise a trailing number ("x2", "10^-3") or the second character of a
+// two-character symbol ("Hv") is wrapped, else the whole label is.
+QString GraphMiniToolbar::toggleMarkupPerLine(const QString &text, const QString &openTag,
+                                              const QString &closeTag)
+{
+    static const QRegularExpression reTokens(
+            QStringLiteral("^(\\s*(?:\\\\[cp]\\{[^}]*\\}|\\\\l\\([^)]*\\))\\s*)*"));
+    static const QRegularExpression reDigits(QStringLiteral("^(.+\\S)([+-]?[0-9]+)$"));
+    static const QRegularExpression reTwoCharSym(QStringLiteral("^([^\\s<>])([A-Za-z])$"));
+
+    if (text.trimmed().isEmpty())
+        return QStringLiteral("x") + openTag + QStringLiteral("2") + closeTag;
+
+    QStringList lines = text.split(QLatin1Char('\n'));
+    QVector<int> labelStart(lines.size(), 0);
+    bool anyLabel = false;
+    bool allTagged = true;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QRegularExpressionMatch m = reTokens.match(lines.at(i));
+        labelStart[i] = m.hasMatch() ? m.capturedLength(0) : 0;
+        QString label = lines.at(i).mid(labelStart[i]);
+        if (label.endsWith(QLatin1Char('\r')))
+            label.chop(1);
+        if (label.trimmed().isEmpty())
+            continue;
+        anyLabel = true;
+        if (!label.trimmed().endsWith(closeTag))
+            allTagged = false;
+    }
+    if (!anyLabel)
+        return text;
+
+    for (int i = 0; i < lines.size(); ++i) {
+        QString line = lines.at(i);
+        QString cr;
+        if (line.endsWith(QLatin1Char('\r'))) {
+            cr = QStringLiteral("\r");
+            line.chop(1);
+        }
+        const QString prefix = line.left(labelStart[i]);
+        QString label = line.mid(labelStart[i]);
+        if (label.trimmed().isEmpty())
+            continue;
+        // Keep trailing spaces outside the markup.
+        int end = label.size();
+        while (end > 0 && label.at(end - 1).isSpace())
+            --end;
+        const QString tail = label.mid(end);
+        label.truncate(end);
+
+        if (allTagged) {
+            const int openPos = label.lastIndexOf(openTag);
+            if (openPos >= 0) {
+                const int innerStart = openPos + openTag.length();
+                const int innerLen = label.length() - closeTag.length() - innerStart;
+                label = label.left(openPos) + label.mid(innerStart, qMax(0, innerLen));
+            }
+        } else if (!label.endsWith(closeTag)) {
+            const QRegularExpressionMatch mDigits = reDigits.match(label);
+            const QRegularExpressionMatch mSym = reTwoCharSym.match(label);
+            if (mDigits.hasMatch() && !mDigits.captured(1).endsWith(QLatin1Char('>')))
+                label = mDigits.captured(1) + openTag + mDigits.captured(2) + closeTag;
+            else if (mSym.hasMatch())
+                label = mSym.captured(1) + openTag + mSym.captured(2) + closeTag;
+            else
+                label = openTag + label + closeTag;
+        }
+        lines[i] = prefix + label + tail + cr;
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 void GraphMiniToolbar::applyLegendMarkupToggle(const QString &openTag, const QString &closeTag,
                                                const QString &undoLabel)
 {
     if (!d_graph || !isLegendValid())
         return;
 
-    const QString beforeSnap = beginGraphUndo();
     const QString cur = d_legend->text();
-    QString updated = cur;
-
-    if (cur.endsWith(closeTag)) {
-        const int openPos = cur.lastIndexOf(openTag);
-        if (openPos >= 0) {
-            const int innerStart = openPos + openTag.length();
-            const int innerLen = cur.length() - closeTag.length() - innerStart;
-            updated = cur.left(openPos) + cur.mid(innerStart, innerLen);
-        }
-    } else {
-        static const QRegularExpression reDigits(QStringLiteral("^(.+\\S)([+-]?[0-9]+)$"));
-        static const QRegularExpression reTwoCharSym(QStringLiteral("^([^\\s<>])([A-Za-z])$"));
-        const QRegularExpressionMatch mDigits = reDigits.match(cur);
-        const QRegularExpressionMatch mSym = reTwoCharSym.match(cur);
-        if (mDigits.hasMatch() && !mDigits.captured(1).endsWith(QLatin1Char('>'))) {
-            updated = mDigits.captured(1) + openTag + mDigits.captured(2) + closeTag;
-        } else if (mSym.hasMatch()) {
-            updated = mSym.captured(1) + openTag + mSym.captured(2) + closeTag;
-        } else if (!cur.isEmpty()) {
-            updated = openTag + cur + closeTag;
-        } else {
-            updated = QStringLiteral("x") + openTag + QStringLiteral("2") + closeTag;
-        }
-    }
+    const QString updated = toggleMarkupPerLine(cur, openTag, closeTag);
+    if (updated == cur)
+        return;
+    const QString beforeSnap = beginGraphUndo();
 
     d_legend->setText(updated);
     d_graph->replot();

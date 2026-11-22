@@ -159,6 +159,7 @@ static int runSuite55TensileAndWorkHardeningCorrectness(ApplicationWindow *mw);
 static int runSuite57NumericalRobustnessXrdWeibullKissinger(ApplicationWindow *mw);
 static int runSuite56FitConvergenceAndStatistics(ApplicationWindow *mw);
 static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw);
+static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -247,6 +248,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc59;
+    }
+    if (args.contains("--suite63-only")) {
+        const int rc63 = runSuite63JapaneseUiAccessibilityGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc63;
     }
 
     // =========================================================================
@@ -5413,6 +5421,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite59DataImportAndWorksheet(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite63JapaneseUiAccessibilityGate(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -15674,5 +15685,362 @@ static int runSuite59DataImportAndWorksheet(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 59 Data Import & Worksheet passed!\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 63: Japanese dictionary (TSV resource, context-aware lookup, glossary), UI
+// readability/keyboard access, inspector minor ticks / ranges / tooltips / multi-line
+// annotation text, per-line legend sub/superscript (review items H1-H7, C1, C16).
+// =============================================================================
+#include "PlotStyleLimits.h"
+#include "LayerDialog.h"
+#include <QAbstractButton>
+#include <QDoubleSpinBox>
+#include <QSet>
+#include <QSpinBox>
+
+static int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 63: Japanese dictionary, UI readability & keyboard gate...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 63");
+    const QString u8 = QString(); // keeps the macros below readable
+    Q_UNUSED(u8)
+    auto ja = [](const char *s) { return QString::fromUtf8(s); };
+
+    // ---- 63a: the dictionary is loaded from the UTF-8 TSV resource (H2)
+    CHECK_COND(ToriGraphFullJapaneseTranslator::builtinDictionarySize() > 5800,
+               "63a: built-in dictionary resource not loaded (too few entries)");
+    CHECK_COND(ToriGraphFullJapaneseTranslator::contextDictionarySize() >= 20,
+               "63a: context-specific dictionary rows missing");
+    CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("&File").startsWith(ja("ファイル")),
+               "63a: basic lookup from TSV failed");
+    // escapes in the TSV: leading space (\s) and newline (\n)
+    CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(" Area") == ja(" 面グラフ"),
+               "63a: leading-space key from TSV not decoded");
+    CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("\nReleased") == ja("\nリリース日"),
+               "63a: newline escape from TSV not decoded");
+
+    // ---- 63b: two-stage lookup, context first (H1). Contexts are the real class names.
+    {
+        ToriGraphFullJapaneseTranslator t;
+        CHECK_COND(QString::fromLatin1(LayerDialog::staticMetaObject.className()) == "LayerDialog",
+                   "63b: unexpected LayerDialog context name");
+        CHECK_COND(QString::fromLatin1(MultiPeakFit::staticMetaObject.className()) == "MultiPeakFit",
+                   "63b: unexpected MultiPeakFit context name");
+        struct Case {
+            const char *ctx;
+            const char *en;
+            const char *expected;
+        };
+        const Case cases[] = {
+            { "LayerDialog", "Center", "中央揃え" },
+            { "TextDialog", "Left", "左揃え" },
+            { "TextDialog", "&Left", "左揃え(&L)" }, // mnemonic re-attached
+            { "MultiPeakFit", "Center", "中心" },
+            { "SomeOtherClass", "Center", "中央" }, // context-free default
+            { "CurvesDialog", "Area", "面グラフ" },
+            { "GraphInspectorDock", "Area", "面グラフ" },
+            { "Integration", "Area", "面積" },
+            { "PatternBox", "Solid", "塗りつぶし" },
+            { "Graph", "Solid", "実線" },
+            { "PenWidget", "Square", "角端" },
+            { "AxesDialog", "Bottom", "下軸" },
+            { "LayerDialog", "Bottom", "下揃え" },
+            { "RangeSelectorTool", "Right", "右" },
+            { "PlotDialog", "Current", "現在の設定" },
+            { "ApplicationWindow", "&All", "すべて(&A)" },
+            { "ApplicationWindow", "&Cut", "切り取り(&T)" },  // no clash with コピー(&C)
+            { "ApplicationWindow", "&Copy", "コピー(&C)" },
+            { "GraphStatsAndSurfaceFit", "Average", "群平均" },
+            { "SomeOtherClass", "Average", "平均" },
+        };
+        for (const Case &c : cases) {
+            const QString got = t.translate(c.ctx, c.en);
+            if (got != ja(c.expected)) {
+                std::cerr << "[FAIL] 63b: translate(" << c.ctx << ", " << c.en << ") = '"
+                          << got.toUtf8().constData() << "', expected '" << c.expected << "'\n";
+                return 1;
+            }
+        }
+        // Mini toolbar shape names are registered for its own context only
+        GraphMiniToolbar::instance();
+        CHECK_COND(t.translate("GraphMiniToolbar", "Square") == ja("四角 (■)"),
+                   "63b: mini-toolbar 'Square' not context-specific");
+        CHECK_COND(t.translate("GraphMiniToolbar", "Cross") == ja("バツ (×)"),
+                   "63b: mini-toolbar 'Cross' not context-specific");
+        CHECK_COND(t.translate("PatternBox", "Cross") == ja("格子"),
+                   "63b: fill pattern 'Cross' was overridden by the mini toolbar");
+        CHECK_COND(t.translate("PenWidget", "Square") == ja("角端"),
+                   "63b: pen cap 'Square' was overridden by the mini toolbar");
+    }
+
+    // ---- 63c: glossary normalisation (H3)
+    {
+        using T = ToriGraphFullJapaneseTranslator;
+        CHECK_COND(T::normalizeGlossary("Active Layer", ja("現在のレイヤ")) == ja("現在のレイヤー"),
+                   "63c: レイヤ -> レイヤー");
+        CHECK_COND(T::normalizeGlossary("x", ja("目盛と目盛り")) == ja("目盛りと目盛り"),
+                   "63c: 目盛 -> 目盛り");
+        CHECK_COND(T::normalizeGlossary("x", ja("線幅（太さ）：")) == ja("線幅(太さ):"),
+                   "63c: full-width brackets/colon -> half-width");
+        CHECK_COND(T::normalizeGlossary("OK", ja("OK (決定)")) == "OK", "63c: OK (決定) -> OK");
+        CHECK_COND(T::normalizeGlossary("Legend && Text", ja("凡例 && テキスト")) == ja("凡例・テキスト"),
+                   "63c: && must not remain in a translation");
+        CHECK_COND(T::normalizeGlossary("Set Category Labels", ja("カテゴリ軸ラベルを設定"))
+                           == ja("カテゴリ軸ラベルを設定"),
+                   "63c: category (tick) labels must stay 軸ラベル");
+        CHECK_COND(T::normalizeGlossary("Edit Axis Title", ja("軸ラベルを編集")) == ja("軸タイトルを編集"),
+                   "63c: axis title wording");
+        CHECK_COND(T::normalizeGlossary("TeX table export dialog", ja("TeX テーブル")) == ja("TeX テーブル"),
+                   "63c: TeX table must stay テーブル");
+        CHECK_COND(T::normalizeGlossary("New Table", ja("新規テーブル")) == ja("新規ワークシート"),
+                   "63c: Table -> ワークシート");
+        CHECK_COND(T::normalizeGlossary("Symbol Size:", ja("記号サイズ:")) == ja("シンボルサイズ:"),
+                   "63c: plot symbol -> シンボル");
+        CHECK_COND(T::normalizeGlossary("Choose Symbol", ja("特殊記号の挿入")) == ja("特殊記号の挿入"),
+                   "63c: special characters must stay 記号");
+
+        T::registerExtraTranslation("Suite63 Probe Layer", ja("試験レイヤ（目盛）"));
+        CHECK_COND(T::lookupJapanese("Suite63 Probe Layer") == ja("試験レイヤー(目盛り)"),
+                   "63c: registerExtraTranslation does not apply the glossary");
+        // a trailing ':' added by the lookup is half-width
+        const QString colon = T::lookupJapanese("Suite63 Probe Layer:");
+        CHECK_COND(colon == ja("試験レイヤー(目盛り):"), "63c: suffix colon must be half-width");
+        // spot checks on the built-in dictionary
+        CHECK_COND(T::lookupJapanese("OK") == "OK", "63c: 'OK' still has (決定)");
+        CHECK_COND(!T::lookupJapanese("Legend && Text").contains("&&"), "63c: && in dictionary");
+        CHECK_COND(T::lookupJapanese("Presentation Slide (28 pt Arial)") == ja("発表スライド (28 pt Arial)"),
+                   "63c: duplicate key resolved inconsistently");
+        CHECK_COND(T::lookupJapanese("Left") == ja("左軸"), "63c: English echo not removed");
+        CHECK_COND(T::lookupJapanese("Manage Style Presets...").startsWith(ja("グラフプリセット")),
+                   "63c: 'Manage Style Presets...' not translated before first use");
+    }
+
+    // ---- 63d: per-line legend sub/superscript (C16)
+    {
+        const QString sup0 = QStringLiteral("<sup>");
+        const QString sup1 = QStringLiteral("</sup>");
+        const QString two = QStringLiteral("\\l(1)sigma\n\\l(2)epsilon");
+        const QString on = GraphMiniToolbar::toggleMarkupPerLine(two, sup0, sup1);
+        CHECK_COND(on == QStringLiteral("\\l(1)<sup>sigma</sup>\n\\l(2)<sup>epsilon</sup>"),
+                   "63d: tags must go after the \\l(n) token on every line");
+        CHECK_COND(GraphMiniToolbar::toggleMarkupPerLine(on, sup0, sup1) == two,
+                   "63d: second press must restore the original text");
+        const QString cTok = QStringLiteral("\\c{1} A\n\\c{2} B ");
+        const QString cOn = GraphMiniToolbar::toggleMarkupPerLine(
+                cTok, QStringLiteral("<sub>"), QStringLiteral("</sub>"));
+        CHECK_COND(cOn == QStringLiteral("\\c{1} <sub>A</sub>\n\\c{2} <sub>B</sub> "),
+                   "63d: \\c{n} prefix or trailing space not preserved");
+        const QString mixed = QStringLiteral("\\l(1)<sup>a</sup>\n\\l(2)b");
+        CHECK_COND(GraphMiniToolbar::toggleMarkupPerLine(mixed, sup0, sup1)
+                           == QStringLiteral("\\l(1)<sup>a</sup>\n\\l(2)<sup>b</sup>"),
+                   "63d: mixed lines must be completed, not double-wrapped");
+        CHECK_COND(GraphMiniToolbar::toggleMarkupPerLine(QStringLiteral("\\l(1)"), sup0, sup1)
+                           == QStringLiteral("\\l(1)"),
+                   "63d: a line with only a symbol token must stay unchanged");
+    }
+
+    // ---- 63e: inspector (C1 minor ticks / shared ranges, H7 tooltips, C16 multi-line text)
+    const QString prevLang63 = mw->appLanguage;
+    mw->switchToLanguage("ja");
+    QApplication::processEvents();
+    GraphInspectorDock *dock = mw->graphInspectorDock();
+    CHECK_COND(dock != nullptr, "63e: inspector dock missing");
+
+    Table *t63 = mw->newTable("Ui63", 6, 2);
+    CHECK_COND(t63 != nullptr, "63e: table");
+    for (int r = 0; r < 6; ++r) {
+        t63->setCell(r, 0, std::pow(10.0, r * 0.5));
+        t63->setCell(r, 1, 2.0 * r + 1.0);
+    }
+    MultiLayer *ml63 = mw->multilayerPlot(t63, QStringList() << "Ui63_2", Graph::LineSymbols);
+    CHECK_COND(ml63 && ml63->activeGraph(), "63e: graph");
+    mw->activateSubWindow(ml63);
+    ml63->show();
+    QApplication::processEvents();
+    Graph *g63 = ml63->activeGraph();
+    dock->setTargetMultiLayer(ml63, true);
+
+    // minor ticks follow the axis type and accept a typed number
+    g63->setScale(QwtPlot::xBottom, 1.0, 1000.0, 0.0, 5, 3, 1);
+    dock->refreshAll();
+    QApplication::processEvents();
+    QComboBox *minor = dock->findChild<QComboBox *>(QStringLiteral("InspectorMinorTicksCombo"));
+    CHECK_COND(minor != nullptr, "63e: minor tick combo missing");
+    CHECK_COND(minor->isEditable(), "63e: minor tick combo must be editable");
+    QList<int> presets;
+    for (int i = 0; i < 4 && i < minor->count(); ++i)
+        presets << minor->itemData(i).toInt();
+    CHECK_COND(presets == (QList<int>() << 0 << 2 << 4 << 8),
+               "63e: log axis must offer 0/2/4/8 minor ticks");
+    CHECK_COND(minor->itemData(minor->currentIndex()).toInt() == 3,
+               "63e: current non-preset value (3) not shown");
+    minor->setEditText(QStringLiteral("6"));
+    emit minor->lineEdit()->editingFinished();
+    QApplication::processEvents();
+    CHECK_COND(g63->plotWidget()->axisMaxMinor(QwtPlot::xBottom) == 6,
+               "63e: typed minor tick count not applied");
+    g63->setScale(QwtPlot::xBottom, 0.0, 40.0, 0.0, 5, 4, 0);
+    dock->refreshAll();
+    QApplication::processEvents();
+    CHECK_COND(minor->itemData(1).toInt() == 1 && minor->itemData(3).toInt() == 9,
+               "63e: linear axis must offer 0/1/4/9 minor ticks");
+
+    // ranges shared with PlotDialog: a size set elsewhere is not clamped by the inspector
+    bool symSizeOk = false, edgeOk = false;
+    for (QSpinBox *sb : dock->findChildren<QSpinBox *>())
+        if (sb->maximum() == PlotStyleLimits::kSymbolSizeMax && sb->minimum() == PlotStyleLimits::kSymbolSizeMin)
+            symSizeOk = true;
+    for (QDoubleSpinBox *sb : dock->findChildren<QDoubleSpinBox *>())
+        if (qFuzzyCompare(sb->maximum(), PlotStyleLimits::kSymbolEdgeWidthMax))
+            edgeOk = true;
+    CHECK_COND(symSizeOk && edgeOk, "63e: inspector ranges not taken from PlotStyleLimits");
+
+    // tooltips on tabs, quick error bars, legend placement and colour swatches (H7)
+    for (int p = 0; p < 4; ++p) {
+        dock->switchToInspectorPage(static_cast<GraphInspectorDock::InspectorPageIndex>(p));
+        QApplication::processEvents();
+    }
+    {
+        auto trD = [](const char *s) { return QCoreApplication::translate("GraphInspectorDock", s); };
+        const QStringList needTip = QStringList() << trD("Overall") << trD("X/Y") << trD("Curve")
+                                                  << trD("Legend") << trD("Std Dev (SD)") << trD("5%")
+                                                  << trD("Adjacent Col") << trD("Top-Left")
+                                                  << trD("Outside Right");
+        QSet<QString> seen;
+        for (QAbstractButton *b : dock->findChildren<QAbstractButton *>()) {
+            if (!needTip.contains(b->text()))
+                continue;
+            seen.insert(b->text());
+            if (b->toolTip().trimmed().isEmpty()) {
+                std::cerr << "[FAIL] 63e: button without tooltip: '" << b->text().toUtf8().constData()
+                          << "'\n";
+                return 1;
+            }
+            CHECK_COND(isUntranslatedAsciiUiLabel(b->toolTip()) == false,
+                       "63e: tooltip not translated in ja mode");
+        }
+        CHECK_COND(seen.size() == needTip.size(), "63e: some H7 buttons were not found");
+        int swatches = 0;
+        for (QPushButton *b : dock->findChildren<QPushButton *>(QStringLiteral("InspectorColorSwatchBtn"))) {
+            ++swatches;
+            CHECK_COND(!b->toolTip().isEmpty(), "63e: colour swatch without tooltip");
+        }
+        CHECK_COND(swatches > 0, "63e: no colour swatches found");
+    }
+
+    // multi-line text annotation (C16)
+    {
+        Legend *ann = g63->newLegend(QStringLiteral("Line 1\nLine 2"));
+        CHECK_COND(ann != nullptr, "63e: text annotation");
+        const int annId = g63->textMarkerKeys().last();
+        Graph::GraphSelection sel;
+        sel.kind = Graph::GraphSelection::TextAnnotation;
+        sel.primaryId = annId;
+        g63->setCurrentSelection(sel);
+        dock->switchToInspectorPage(GraphInspectorDock::PageTabLegend);
+        dock->refreshAll();
+        QApplication::processEvents();
+        QPlainTextEdit *ed = dock->findChild<QPlainTextEdit *>(QStringLiteral("InspectorAnnotationTextEdit"));
+        CHECK_COND(ed != nullptr, "63e: multi-line annotation editor missing");
+        CHECK_COND(!ed->isHidden(), "63e: multi-line editor hidden for a text annotation");
+        CHECK_COND(ed->toPlainText() == QStringLiteral("Line 1\nLine 2"),
+                   "63e: editor does not show all lines");
+        ed->setPlainText(QStringLiteral("Line 1\nLine 2 edited\nLine 3"));
+        QElapsedTimer et;
+        et.start();
+        while (et.elapsed() < 3000 && ann->text() != ed->toPlainText())
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        CHECK_COND(ann->text() == QStringLiteral("Line 1\nLine 2 edited\nLine 3"),
+                   "63e: edited lines were not written back to the annotation");
+
+        // switching to the primary legend shows the one-line header field again
+        g63->newLegend();
+        Graph::GraphSelection legSel;
+        legSel.kind = Graph::GraphSelection::LegendBox;
+        g63->setCurrentSelection(legSel);
+        dock->refreshAll();
+        QApplication::processEvents();
+        CHECK_COND(ed->isHidden(), "63e: multi-line editor shown for the main legend");
+    }
+
+    // ---- 63f: keyboard access and readability (H4, H5, H6)
+    {
+        int ribbonButtons = 0, ribbonNoFocus = 0;
+        for (QToolButton *b : mw->findChildren<QToolButton *>()) {
+            const QString cls = b->property("class").toString();
+            if (cls != QLatin1String("RibbonActionBtn") && cls != QLatin1String("RibbonPresetBtn"))
+                continue;
+            ++ribbonButtons;
+            if (b->focusPolicy() == Qt::NoFocus)
+                ++ribbonNoFocus;
+        }
+        std::cout << "[INFO] Suite 63f: ribbon buttons " << ribbonButtons << ", NoFocus "
+                  << ribbonNoFocus << "\n";
+        CHECK_COND(ribbonNoFocus == 0, "63f: ribbon buttons cannot be reached with Tab");
+
+        // keyboard focus ring follows Tab focus, not mouse focus
+        QWidget host;
+        QPushButton *b1 = new QPushButton(QStringLiteral("A"), &host);
+        QToolButton *iconOnly = new QToolButton(&host);
+        iconOnly->setToolTip(QStringLiteral("<b>Zoom</b> in"));
+        host.show();
+        QApplication::processEvents();
+        iconOnly->ensurePolished();
+        CHECK_COND(iconOnly->accessibleName() == QStringLiteral("Zoom in"),
+                   "63f: icon-only button got no accessible name from its tooltip");
+        QFocusEvent tabIn(QEvent::FocusIn, Qt::TabFocusReason);
+        QApplication::sendEvent(b1, &tabIn);
+        CHECK_COND(ModernUiTheme::keyboardFocusRingTargets(b1), "63f: no focus ring after Tab focus");
+        QFocusEvent mouseIn(QEvent::FocusIn, Qt::MouseFocusReason);
+        QApplication::sendEvent(iconOnly, &mouseIn);
+        CHECK_COND(!ModernUiTheme::keyboardFocusRingTargets(b1)
+                           && !ModernUiTheme::keyboardFocusRingTargets(iconOnly),
+                   "63f: focus ring shown for mouse focus");
+
+        // disabled text / placeholder contrast >= 4.5:1 on white
+        auto lum = [](const QColor &c) {
+            auto ch = [](double v) {
+                return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * ch(c.redF()) + 0.7152 * ch(c.greenF()) + 0.0722 * ch(c.blueF());
+        };
+        auto contrast = [&](const QColor &a, const QColor &b) {
+            const double la = lum(a), lb = lum(b);
+            return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
+        };
+        const QColor dis = qApp->palette().color(QPalette::Disabled, QPalette::ButtonText);
+        CHECK_COND(contrast(dis, QColor(0xF1, 0xF5, 0xF9)) >= 4.5,
+                   "63f: disabled text contrast below 4.5:1");
+        CHECK_COND(contrast(ModernUiTheme::placeholderTextColor(), Qt::white) >= 4.5,
+                   "63f: placeholder contrast below 4.5:1");
+        // style sheet: pt only, Japanese UI font first
+        const QString qss = ModernUiTheme::modernStyleSheet();
+        CHECK_COND(!QRegularExpression(QStringLiteral("font-size:\\s*[0-9.]+px")).match(qss).hasMatch(),
+                   "63f: px font size left in the UI style sheet");
+        CHECK_COND(!qss.contains(QStringLiteral("'Segoe UI', 'Yu Gothic UI'")),
+                   "63f: Segoe UI listed before Yu Gothic UI");
+
+        // the ineffective "Style" choice is gone from the preferences (H6)
+        ConfigDialog *cd = new ConfigDialog(mw);
+        bool hasStyleCombo = false;
+        for (QComboBox *cb : cd->findChildren<QComboBox *>())
+            if (cb->findText(QStringLiteral("Fusion"), Qt::MatchFixedString) >= 0
+                || cb->findText(QStringLiteral("Windows"), Qt::MatchFixedString) >= 0)
+                hasStyleCombo = true;
+        delete cd;
+        CHECK_COND(!hasStyleCombo, "63f: Qt style combo still present in ConfigDialog");
+    }
+
+    ml63->setAttribute(Qt::WA_DeleteOnClose);
+    ml63->askOnCloseEvent(false);
+    ml63->close();
+    t63->askOnCloseEvent(false);
+    t63->close();
+    QApplication::processEvents();
+    mw->switchToLanguage(prevLang63.isEmpty() ? QStringLiteral("en") : prevLang63);
+    QApplication::processEvents();
+    std::cout << "[INFO] Suite 63 Japanese dictionary, UI readability & keyboard gate passed!\n";
     return 0;
 }

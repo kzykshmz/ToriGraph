@@ -31,6 +31,7 @@
 #include "IconLoader.h"
 #include "ColorButton.h"
 #include "PenWidget.h"
+#include "PlotStyleLimits.h"
 #include "PatternBox.h"
 #include "SymbolBox.h"
 #include "Table.h"
@@ -814,7 +815,7 @@ void PlotDialog::initSymbolsPage()
     gl->addWidget(boxSymbolStyle, 0, 1);
     gl->addWidget(new QLabel(tr("Size")), 1, 0);
     boxSymbolSize = new QSpinBox();
-    boxSymbolSize->setRange(1, 100);
+    boxSymbolSize->setRange(PlotStyleLimits::kSymbolSizeMin, PlotStyleLimits::kSymbolSizeMax);
     boxSymbolSize->setValue(9);
     gl->addWidget(boxSymbolSize, 1, 1);
     boxFillSymbol = new QCheckBox(tr("Fill Color"));
@@ -828,7 +829,7 @@ void PlotDialog::initSymbolsPage()
     gl->addWidget(boxSymbolColor, 4, 1);
     gl->addWidget(new QLabel(tr("Edge Width")), 5, 0);
     boxPenWidth = new QSpinBox();
-    boxPenWidth->setRange(1, 100);
+    boxPenWidth->setRange(1, int(PlotStyleLimits::kSymbolEdgeWidthMax));
     gl->addWidget(boxPenWidth, 5, 1);
     gl->addWidget(new QLabel(tr("Opacity (%):")), 6, 0);
     boxSymbolOpacity = new QSpinBox();

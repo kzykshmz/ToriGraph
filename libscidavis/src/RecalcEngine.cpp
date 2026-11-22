@@ -975,21 +975,21 @@ void RecalcManager::updateLockBadge(Graph *g)
         state = QStringLiteral("Pending");
         style = QStringLiteral(
                 "QPushButton { background-color: rgba(230, 175, 25, 235); color: #181818; "
-                "font-weight: bold; font-size: 11px; border: 1px solid #8a6400; "
+                "font-weight: bold; font-size: 9pt; border: 1px solid #8a6400; "
                 "border-radius: 4px; padding: 2px 6px; }");
     } else if (d_mode == Auto) {
         text = QStringLiteral("[Auto \xE2\x9C\x93]");
         state = QStringLiteral("Auto");
         style = QStringLiteral(
                 "QPushButton { background-color: rgba(34, 139, 34, 225); color: #ffffff; "
-                "font-weight: bold; font-size: 11px; border: 1px solid #145a14; "
+                "font-weight: bold; font-size: 9pt; border: 1px solid #145a14; "
                 "border-radius: 4px; padding: 2px 6px; }");
     } else {
         text = QStringLiteral("[Manual \xE2\x9C\x93]");
         state = QStringLiteral("Manual");
         style = QStringLiteral(
                 "QPushButton { background-color: rgba(65, 105, 155, 220); color: #ffffff; "
-                "font-weight: bold; font-size: 11px; border: 1px solid #2b4a70; "
+                "font-weight: bold; font-size: 9pt; border: 1px solid #2b4a70; "
                 "border-radius: 4px; padding: 2px 6px; }");
     }
 
