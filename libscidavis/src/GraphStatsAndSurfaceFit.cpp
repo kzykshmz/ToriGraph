@@ -6042,18 +6042,19 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                     mleConverged = true;
                     break;
                 }
-                if (iter >= 8 && std::fabs(gVal) <= 1e-9)
+                if (iter >= 8 && std::fabs(gVal) <= 1e-9) {
                     mleConverged = true;
+                    break;
+                }
             }
             double sumW = 0.0;
             for (double lx : allLnShifted)
                 sumW += std::exp(std::clamp(mCur * (lx - maxLnShifted), -700.0, 0.0));
-            if (sumW > 1e-300 && std::isfinite(mCur) && mCur > 0.0) {
+            if (mleConverged && sumW > 1e-300 && std::isfinite(mCur) && mCur > 0.0) {
                 const double lnS0Mle =
                         maxLnShifted + std::log(sumW / static_cast<double>(mFail)) / mCur;
                 mleM = mCur;
                 mleSigma0 = std::exp(std::clamp(lnS0Mle, -500.0, 500.0));
-                mleConverged = true;
 
                 // Observed Fisher information matrix in (m, u0 = ln(sigma0)) -> exact asymptotic SEs
                 double sumZ2ExpZ = 0.0, sumZExpZ = 0.0;

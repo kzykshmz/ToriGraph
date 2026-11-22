@@ -36,6 +36,7 @@
 #include <QPainter>
 #include <QPolygon>
 #include <QMessageBox>
+#include <cmath>
 #include <limits>
 
 #include <qwt_plot.h>
@@ -132,6 +133,28 @@ static int effectiveSampleGap(const QwtText *txt, int defaultHspace)
     if (txt && isCompactLegendFont(txt->font()))
         return qMin(defaultHspace, 5);
     return defaultHspace;
+}
+
+static double legendScreenZoomScale(const Plot *plot)
+{
+    if (!QwtPainter::metricsMap().isIdentity() || !plot)
+        return 1.0;
+    const double s = plot->displayFontScale();
+    if (!std::isfinite(s) || std::abs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
+
+static int scaledMinScatterSampleLen(bool compact, double zScale)
+{
+    const int base = compact ? 11 : 14;
+    return (zScale != 1.0) ? qMax(4, qRound(double(base) * zScale)) : base;
+}
+
+static int scaledSampleGap(const QwtText *txt, int defaultHspace, double zScale)
+{
+    const int base = effectiveSampleGap(txt, defaultHspace);
+    return (zScale != 1.0) ? qMax(2, qRound(double(base) * zScale)) : base;
 }
 } // namespace
 
@@ -424,10 +447,13 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     totalWidth = 0;
     totalHeight = 0;
 
+    const double zScale = legendScreenZoomScale(d_plot);
     const bool scatterOnly = isScatterOnly();
     const bool compact = d_text && isCompactLegendFont(d_text->font());
-    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
-    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
+    const int sampleLen = scatterOnly
+            ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
+            : symbolLineLength;
+    const int sampleOffset = sampleLen + scaledSampleGap(d_text, hspace, zScale);
 
     const QString rawText = d_text ? d_text->text() : QString();
     const QStringList titles = filterVisibleLegendLines(d_plot, rawText);
@@ -513,11 +539,14 @@ int Legend::itemIndexAt(const QPoint &canvasPos) const
     const QwtScaleMap &yMap = d_plot->canvasMap(yAxis());
     const int baseX = xMap.transform(xValue());
     const int baseY = yMap.transform(yValue());
+    const double zScale = legendScreenZoomScale(d_plot);
     const int symbolLineLength = symbolsMaxLineLength();
     const bool scatterOnly = isScatterOnly();
     const bool compact = d_text && isCompactLegendFont(d_text->font());
-    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
-    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
+    const int sampleLen = scatterOnly
+            ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
+            : symbolLineLength;
+    const int sampleOffset = sampleLen + scaledSampleGap(d_text, hspace, zScale);
 
     const int cols = qBound(1, d_num_columns, n);
     const int rows = (n + cols - 1) / cols;
@@ -593,10 +622,14 @@ void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const
     p->save();
     QPen framePen(Qt::black, 1, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
     const QwtMetricsMap map = QwtPainter::metricsMap();
+    const double zScale = legendScreenZoomScale(d_plot);
     if (!map.isIdentity()) {
         const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
         if (scale > 0.0)
             framePen.setWidthF(scale);
+    } else if (zScale != 1.0) {
+        framePen.setCosmetic(false);
+        framePen.setWidthF(zScale);
     } else {
         framePen.setWidthF(1.0);
     }
@@ -636,7 +669,9 @@ void Legend::drawVector(QPainter *p, int x, int y, int l, int curveIndex) const
     p->save();
     p->setRenderHint(QPainter::Antialiasing, true);
 
-    const double sc = Plot::printDeviceScale();
+    const double zScale = legendScreenZoomScale(d_plot);
+    const double sc = (zScale != 1.0) ? (Plot::printDeviceScale() * zScale)
+                                      : Plot::printDeviceScale();
     QPen pen(v->color(), qMax(1.2, double(v->width())) * sc, Qt::SolidLine, Qt::RoundCap,
              Qt::MiterJoin);
     pen.setCosmetic(false);
@@ -666,9 +701,11 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
     Graph *g = (Graph *)d_plot->parent();
     const bool scatterOnly = isScatterOnly();
     const QwtMetricsMap map = QwtPainter::metricsMap();
+    const double zScale = legendScreenZoomScale(d_plot);
 
     const bool compact = d_text && isCompactLegendFont(d_text->font());
-    int l = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
+    int l = scatterOnly ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
+                        : symbolLineLength;
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
@@ -719,7 +756,9 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             p->save();
                             p->setPen(Qt::NoPen);
                             p->setBrush(QBrush(er->bandFillColor()));
-                            QwtPainter::drawRect(p, QRect(w, cy - 5, l, 11));
+                            const int bandTop = (zScale != 1.0) ? qMax(2, qRound(5.0 * zScale)) : 5;
+                            const int bandH = (zScale != 1.0) ? qMax(4, qRound(11.0 * zScale)) : 11;
+                            QwtPainter::drawRect(p, QRect(w, cy - bandTop, l, bandH));
                             p->restore();
                             break;
                         }
@@ -733,13 +772,17 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
                             if (scale > 0.0)
                                 pw *= scale;
+                        } else if (zScale != 1.0) {
+                            pw *= zScale;
                         }
                         pen.setWidthF(pw);
                         if (pen.style() != Qt::NoPen && pen.isCosmetic())
                             pen.setCosmetic(false);
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
-                            QRect lr = QRect(w, cy - 4, l, 10);
+                            const int boxTop = (zScale != 1.0) ? qMax(2, qRound(4.0 * zScale)) : 4;
+                            const int boxH = (zScale != 1.0) ? qMax(4, qRound(10.0 * zScale)) : 10;
+                            QRect lr = QRect(w, cy - boxTop, l, boxH);
                             QBrush effBr = br;
                             if (effBr.style() == Qt::NoBrush && g->curveType(cv) == Graph::Box) {
                                 QColor tint = pen.color();
@@ -760,6 +803,8 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             symb_size = 15;
                         else if (symb_size < 3)
                             symb_size = 3;
+                        if (zScale != 1.0)
+                            symb_size = qMax(2, qRound(double(symb_size) * zScale));
                         QRect symRect;
                         symRect.setSize(map.screenToLayout(QSize(symb_size, symb_size)));
                         symRect.moveCenter(QPoint(w + l / 2, cy));
@@ -770,6 +815,13 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             symPen.setCosmetic(false);
                             if (symPen.widthF() <= 0.0)
                                 symPen.setWidthF(qMax(1.0, double(symb.pen().widthF())));
+                        }
+                        if (zScale != 1.0 && symPen.style() != Qt::NoPen) {
+                            qreal spw = symb.pen().widthF();
+                            if (spw <= 0.0)
+                                spw = qMax(1, symb.pen().width());
+                            symPen.setCosmetic(false);
+                            symPen.setWidthF(spw * zScale);
                         }
                         p->setPen(symPen);
                         symb.draw(p, symRect);
@@ -791,13 +843,17 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     curve = dynamic_cast<QwtPieCurve *>(d_plot->curve(1));
                 if (curve) {
                     const QBrush br = QBrush(curve->color(id - 1), curve->pattern());
-                    QPen swPen(QColor(80, 80, 80), qMax(1.0, Plot::printDeviceScale()),
-                               Qt::SolidLine);
+                    const double swW = (zScale != 1.0)
+                            ? (qMax(1.0, Plot::printDeviceScale()) * zScale)
+                            : qMax(1.0, Plot::printDeviceScale());
+                    QPen swPen(QColor(80, 80, 80), swW, Qt::SolidLine);
                     swPen.setCosmetic(false);
 
                     p->save();
                     p->setPen(swPen);
-                    QRect lr = QRect(w, cy - 4, l, 10);
+                    const int boxTop = (zScale != 1.0) ? qMax(2, qRound(4.0 * zScale)) : 4;
+                    const int boxH = (zScale != 1.0) ? qMax(4, qRound(10.0 * zScale)) : 10;
+                    QRect lr = QRect(w, cy - boxTop, l, boxH);
                     p->setBrush(br);
                     QwtPainter::drawRect(p, lr);
                     p->restore();
@@ -810,10 +866,13 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
+    const double zScale = legendScreenZoomScale(d_plot);
     const bool scatterOnly = isScatterOnly();
     const bool compact = d_text && isCompactLegendFont(d_text->font());
-    const int sampleLen = scatterOnly ? qMax(symbolLineLength, compact ? 11 : 14) : symbolLineLength;
-    const int sampleOffset = sampleLen + effectiveSampleGap(d_text, hspace);
+    const int sampleLen = scatterOnly
+            ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
+            : symbolLineLength;
+    const int sampleOffset = sampleLen + scaledSampleGap(d_text, hspace, zScale);
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
@@ -900,16 +959,20 @@ int Legend::symbolsMaxLineLength() const
     }
     const QFont fnt = d_text ? d_text->font() : QFont(QStringLiteral("Arial"), 12);
     const bool compact = isCompactLegendFont(fnt);
-    if (isScatterOnly())
-        return qMax(maxL + (compact ? 2 : 0), compact ? 11 : 14);
-    if (compact) {
+    int baseLen = 16;
+    if (isScatterOnly()) {
+        baseLen = qMax(maxL + (compact ? 2 : 0), compact ? 11 : 14);
+    } else if (compact) {
         const int fontProportionalLen =
                 qBound(14, qRound(QFontMetricsF(fnt).height() * 1.05), 34);
-        return qBound(14, qMax(maxL + 6, fontProportionalLen), 34);
+        baseLen = qBound(14, qMax(maxL + 6, fontProportionalLen), 34);
+    } else {
+        const int fontProportionalLen =
+                qBound(16, qRound(QFontMetricsF(fnt).height() * 1.45), 34);
+        baseLen = qBound(16, qMax(maxL + 8, fontProportionalLen), 34);
     }
-    const int fontProportionalLen =
-            qBound(16, qRound(QFontMetricsF(fnt).height() * 1.45), 34);
-    return qBound(16, qMax(maxL + 8, fontProportionalLen), 34);
+    const double zScale = legendScreenZoomScale(d_plot);
+    return (zScale != 1.0) ? qMax(4, qRound(double(baseLen) * zScale)) : baseLen;
 }
 
 bool Legend::isScatterOnly() const

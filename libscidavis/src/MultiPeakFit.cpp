@@ -1750,6 +1750,37 @@ void MultiPeakFit::storeCustomFitResults(const vector<double> &par)
     if (!d_doublet_constraints.isEmpty())
         applyDoubletConstraints(d_results);
 
+    if (d_p > 0 && covar && covar->size1 >= d_p && covar->size2 >= d_p) {
+        std::vector<double> scale(d_p, 1.0);
+        bool anyScaled = false;
+        for (int j = 0; j < d_peaks && unsigned(3 * j + 2) < d_p; ++j) {
+            double sA = (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz) ? M_PI_2 : 1.0;
+            const double rawA = (unsigned(3 * j) < d_results.size())
+                    ? d_results[size_t(3 * j)]
+                    : ((unsigned(3 * j) < par.size()) ? par[size_t(3 * j)] : 0.0);
+            if (!d_negative_peaks_allowed && rawA < 0.0)
+                sA = -sA;
+            scale[size_t(3 * j)] = sA;
+
+            const double rawW = (unsigned(3 * j + 2) < d_results.size())
+                    ? d_results[size_t(3 * j + 2)]
+                    : ((unsigned(3 * j + 2) < par.size()) ? par[size_t(3 * j + 2)] : 0.0);
+            if (rawW < 0.0)
+                scale[size_t(3 * j + 2)] = -1.0;
+
+            if (scale[size_t(3 * j)] != 1.0 || scale[size_t(3 * j + 2)] != 1.0)
+                anyScaled = true;
+        }
+        if (anyScaled) {
+            for (unsigned a = 0; a < d_p; ++a) {
+                for (unsigned b = 0; b < d_p; ++b) {
+                    gsl_matrix_set(covar, a, b,
+                                   gsl_matrix_get(covar, a, b) * scale[a] * scale[b]);
+                }
+            }
+        }
+    }
+
     for (int j = 0; j < d_peaks && unsigned(3 * j + 2) < d_results.size(); j++) {
         d_results[3 * j + 2] = std::abs(d_results[3 * j + 2]);
         if (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz)
@@ -2370,30 +2401,15 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
     const size_t nPeakPar = static_cast<size_t>(3 * d_peaks);
     if (covar && chi_2 >= 0.0 && !d_x.empty() && covar->size1 >= nPeakPar + 1
         && covar->size2 >= nPeakPar + 1) {
-        double covFactor = effectiveCovarScale();
-        if (!d_scale_errors
-            && (d_weighting_method == WeightDirect || d_weighting_method == WeightProportional)) {
-            const int dof = int(d_x.size()) - effectiveFreeParameters();
-            if (dof > 0 && std::isfinite(chi_2) && chi_2 >= 0.0)
-                covFactor = chi_2 / double(dof);
-        }
-
-        auto userScale = [&](size_t idx) -> double {
-            if (!usesCustomMultiPeakCallbacks() && d_profile == Lorentz && idx < nPeakPar
-                && (idx % 3 == 0)) {
-                return M_PI_2;
-            }
-            return 1.0;
-        };
+        const double covFactor = effectiveCovarScale();
 
         std::vector<std::vector<double>> cUser(nPeakPar, std::vector<double>(nPeakPar, 0.0));
         bool anyPositiveVar = false;
         for (size_t a = 0; a < nPeakPar; ++a) {
-            const double sa = userScale(a);
             for (size_t b = 0; b < nPeakPar; ++b) {
                 const double rawC = gsl_matrix_get(covar, a, b);
                 if (std::isfinite(rawC))
-                    cUser[a][b] = covFactor * sa * userScale(b) * rawC;
+                    cUser[a][b] = covFactor * rawC;
             }
             if (cUser[a][a] > 0.0)
                 anyPositiveVar = true;

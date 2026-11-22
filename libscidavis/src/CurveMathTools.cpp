@@ -4319,6 +4319,11 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             stressUnit = QStringLiteral("kPa");
         else if (yTitle.contains(QLatin1String("MPa")))
             stressUnit = QStringLiteral("MPa");
+        else if (yTitle.contains(QStringLiteral("N/mm²"), Qt::CaseInsensitive)
+                 || yTitle.contains(QLatin1String("N/mm^2"), Qt::CaseInsensitive)
+                 || yTitle.contains(QLatin1String("N/mm2"), Qt::CaseInsensitive)
+                 || yTitle.contains(QLatin1String("N/mm<sup>2</sup>"), Qt::CaseInsensitive))
+            stressUnit = QStringLiteral("N/mm²");
         else if (yTitle.contains(QLatin1String("(Pa)")) || yTitle.contains(QLatin1String("[Pa]"))
                  || yTitle.endsWith(QLatin1String("/ Pa")))
             stressUnit = QStringLiteral("Pa");
@@ -4803,7 +4808,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
 
     if (addCallout) {
         QString eDisplay;
-        if (stressUnit == QLatin1String("MPa") && res.youngsModulus >= 1000.0) {
+        if (std::fabs(toGPa - 1.0e-3) < 1e-9 && res.youngsModulus >= 1000.0) {
             eDisplay = QStringLiteral("%1 GPa").arg(res.youngsModulus / 1000.0, 0, 'f', 1);
         } else {
             eDisplay = QStringLiteral("%1 %2").arg(res.youngsModulus, 0, 'g', 4).arg(stressUnit);
@@ -5062,52 +5067,99 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
         const int uMode = cbStrainUnit->currentData().toInt();
         bool inPct = (uMode != 0);
         double detMin = qNaN, detMax = qNaN;
+        auto inferColumnStrainPct = [](Column *cX, Column *cY, double &outDetMin,
+                                       double &outDetMax) -> bool {
+            if (!cX)
+                return true;
+            int vote = classifyStrainUnitText(cX->units(), true);
+            if (vote < 0)
+                vote = classifyStrainUnitText(cX->longName(), false);
+            if (vote < 0)
+                vote = classifyStrainUnitText(cX->name(), false);
+
+            double maxX = -1e300, maxY = -1e300;
+            int utsR = -1;
+            const int nX = cX->rowCount();
+            if (cY) {
+                const int nR = std::min(nX, cY->rowCount());
+                for (int r = 0; r < nR; ++r) {
+                    double xv = 0.0, yv = 0.0;
+                    if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
+                        continue;
+                    maxX = std::max(maxX, xv);
+                    if (yv > maxY) {
+                        maxY = yv;
+                        utsR = r;
+                    }
+                }
+            } else {
+                for (int r = 0; r < nX; ++r) {
+                    double xv = 0.0;
+                    if (readMatSciCell(cX, r, xv))
+                        maxX = std::max(maxX, xv);
+                }
+            }
+
+            double slopeEst = std::numeric_limits<double>::quiet_NaN();
+            if (cY && utsR >= 2 && maxY > 0.0) {
+                double xLo = std::numeric_limits<double>::quiet_NaN();
+                double xHi = std::numeric_limits<double>::quiet_NaN();
+                double sx = 0.0, sy = 0.0;
+                std::vector<std::pair<double, double>> bandPts;
+                for (int r = 0; r <= utsR; ++r) {
+                    double xv = 0.0, yv = 0.0;
+                    if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
+                        continue;
+                    if (yv >= 0.10 * maxY && yv <= 0.55 * maxY) {
+                        if (!std::isfinite(xLo))
+                            xLo = xv;
+                        xHi = xv;
+                        sx += xv;
+                        sy += yv;
+                        bandPts.push_back({ xv, yv });
+                    }
+                }
+                if (std::isfinite(xLo) && std::isfinite(xHi) && xHi > xLo) {
+                    outDetMin = xLo;
+                    outDetMax = xHi;
+                }
+                if (bandPts.size() >= 2) {
+                    const double mx = sx / double(bandPts.size());
+                    const double my = sy / double(bandPts.size());
+                    double sxx = 0.0, sxy = 0.0;
+                    for (const auto &pt : bandPts) {
+                        sxx += (pt.first - mx) * (pt.first - mx);
+                        sxy += (pt.first - mx) * (pt.second - my);
+                    }
+                    if (sxx > 1e-30 && sxy > 0.0)
+                        slopeEst = sxy / sxx;
+                }
+            }
+
+            if (vote >= 0)
+                return (vote == 1);
+            if (cY && std::isfinite(slopeEst) && slopeEst > 0.0) {
+                const QString yUnit = cY->units().trimmed().isEmpty() ? QStringLiteral("MPa")
+                                                                      : cY->units().trimmed();
+                const double toGPa = tensileStressUnitToGPa(yUnit);
+                const double ePct = slopeEst * 100.0 * toGPa;
+                const double eFrac = slopeEst * toGPa;
+                const bool pctOk = (ePct >= 5.0 && ePct <= 1000.0);
+                const bool fracOk = (eFrac >= 5.0 && eFrac <= 1000.0);
+                if (pctOk != fracOk)
+                    return pctOk;
+            }
+            return (maxX > -1e290) ? (maxX > 1.2) : true;
+        };
+
         if (cbSourceMode->currentData().toInt() == 1) {
             const int tIdx = cbTable->currentIndex();
             if (tIdx >= 0 && tIdx < tables.size()) {
                 Table *t = tables[tIdx];
                 Column *cX = resolveMatSciColumn(t, cbStrainCol->currentText());
                 Column *cY = resolveMatSciColumn(t, cbStressCol->currentText());
-                if (cX && cY) {
-                    const int nR = std::min(cX->rowCount(), cY->rowCount());
-                    double maxX = -1e300, maxY = -1e300;
-                    int utsR = -1;
-                    for (int r = 0; r < nR; ++r) {
-                        double xv = 0.0, yv = 0.0;
-                        if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
-                            continue;
-                        maxX = std::max(maxX, xv);
-                        if (yv > maxY) {
-                            maxY = yv;
-                            utsR = r;
-                        }
-                    }
-                    if (uMode == 1 || uMode == 0) {
-                        inPct = (uMode == 1);
-                    } else {
-                        int vote = classifyStrainUnitText(cX->units(), true);
-                        if (vote < 0)
-                            vote = classifyStrainUnitText(cX->longName(), false);
-                        inPct = (vote >= 0) ? (vote == 1) : (maxX > 1.2);
-                    }
-                    if (utsR >= 2 && maxY > 0.0) {
-                        double xLo = qNaN, xHi = qNaN;
-                        for (int r = 0; r <= utsR; ++r) {
-                            double xv = 0.0, yv = 0.0;
-                            if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
-                                continue;
-                            if (yv >= 0.10 * maxY && yv <= 0.55 * maxY) {
-                                if (!std::isfinite(xLo))
-                                    xLo = xv;
-                                xHi = xv;
-                            }
-                        }
-                        if (std::isfinite(xLo) && std::isfinite(xHi) && xHi > xLo) {
-                            detMin = xLo;
-                            detMax = xHi;
-                        }
-                    }
-                }
+                const bool inferredPct = inferColumnStrainPct(cX, cY, detMin, detMax);
+                inPct = (uMode == 1 || uMode == 0) ? (uMode == 1) : inferredPct;
             }
         } else {
             const int gIdx = cbGraph->currentIndex();
@@ -5119,6 +5171,16 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
                     inPct = pr.strainInPercent;
                     detMin = pr.elasticXMin;
                     detMax = pr.elasticXMax;
+                } else if (uMode != 1 && uMode != 0) {
+                    if (QwtPlotCurve *cv = resolveCurve(graphs[gIdx], cbCurve->currentText())) {
+                        if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
+                            Table *st = dc->table();
+                            Column *cX = st ? st->column(dc->xColumnName()) : nullptr;
+                            Column *cY = st ? st->column(dc->yColumnName()) : nullptr;
+                            double dummyLo = qNaN, dummyHi = qNaN;
+                            inPct = inferColumnStrainPct(cX, cY, dummyLo, dummyHi);
+                        }
+                    }
                 }
             }
         }
@@ -9038,6 +9100,52 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         sbElasticMin->setEnabled(!autoOn);
         sbElasticMax->setEnabled(!autoOn);
     });
+    auto syncWhElasticSuffix = [&]() {
+        const int uMode = cbStrainUnit->currentData().toInt();
+        bool inPct = (uMode != 0);
+        if (uMode != 1 && uMode != 0) {
+            if (cbSourceMode->currentData().toInt() == 1) {
+                const int tIdx = cbTable->currentIndex();
+                if (tIdx >= 0 && tIdx < tables.size()) {
+                    Table *t = tables[tIdx];
+                    if (Column *cX = resolveMatSciColumn(t, cbStrainCol->currentText())) {
+                        int vote = classifyStrainUnitText(cX->units(), true);
+                        if (vote < 0)
+                            vote = classifyStrainUnitText(cX->longName(), false);
+                        if (vote < 0)
+                            vote = classifyStrainUnitText(cX->name(), false);
+                        if (vote >= 0) {
+                            inPct = (vote == 1);
+                        } else {
+                            double maxX = -1e300;
+                            for (int r = 0; r < cX->rowCount(); ++r) {
+                                double xv = 0.0;
+                                if (readMatSciCell(cX, r, xv))
+                                    maxX = std::max(maxX, xv);
+                            }
+                            if (maxX > -1e290)
+                                inPct = (maxX > 1.2);
+                        }
+                    }
+                }
+            } else {
+                const int gIdx = cbGraph->currentIndex();
+                if (gIdx >= 0 && gIdx < graphs.size()) {
+                    const double qNaN = std::numeric_limits<double>::quiet_NaN();
+                    const TensileResult pr = analyzeTensile(
+                            nullptr, graphs[gIdx], cbCurve->currentText(),
+                            sbOffsetPct->value() / 100.0, uMode, qNaN, qNaN, false, false, false);
+                    if (pr.valid)
+                        inPct = pr.strainInPercent;
+                }
+            }
+        }
+        const QString suf = inPct ? QStringLiteral(" %") : QStringLiteral(" (-)");
+        sbElasticMin->setSuffix(suf);
+        sbElasticMax->setSuffix(suf);
+        sbElasticMin->setSingleStep(inPct ? 0.02 : 0.0002);
+        sbElasticMax->setSingleStep(inPct ? 0.05 : 0.0005);
+    };
     auto syncInherited = [&]() {
         const bool fromTable = (cbSourceMode->currentData().toInt() == 1);
         const bool sameCurve = !fromTable && mem.valid && cbGraph->currentText() == mem.graphName
@@ -9048,10 +9156,21 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         const int ui = cbStrainUnit->findData(mode);
         cbStrainUnit->setCurrentIndex(ui >= 0 ? ui : 0);
         lblInherited->setVisible(sameCurve);
+        syncWhElasticSuffix();
     };
     syncInherited();
     QObject::connect(cbCurve, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { syncInherited(); });
+    QObject::connect(cbSourceMode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhElasticSuffix(); });
+    QObject::connect(cbGraph, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhElasticSuffix(); });
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhElasticSuffix(); });
+    QObject::connect(cbStrainCol, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhElasticSuffix(); });
+    QObject::connect(cbStrainUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWhElasticSuffix(); });
     tenForm->addRow(lblInherited);
     tenForm->addRow(QObject::tr("Strain Unit:"), cbStrainUnit);
     tenForm->addRow(QObject::tr("Offset Proof Strain (%):"), sbOffsetPct);
@@ -9467,7 +9586,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     // 1. Iterative SNIP background estimation in LLS space
     const double avgStep = std::max(1e-4, (ttGrid.back() - ttGrid.front()) / double(N - 1));
     const int snipWin = std::clamp(static_cast<int>(std::llround(2.2 / avgStep)), 6,
-                                   std::max(6, std::min(64, N / 4)));
+                                   std::max(6, std::min(1024, N / 4)));
     std::vector<double> lls(size_t(N), 0.0);
     for (int i = 0; i < N; ++i) {
         const double posI = std::max(0.0, yRaw[size_t(i)] + shiftZero);
@@ -10502,7 +10621,12 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     registerAnalysisNoticeTranslationsOnce();
     QCheckBox *chkStripKa2 = new QCheckBox(
             QObject::tr("Strip K\u03B12 Doublet (Rachinger, per-anode wavelengths)"), &dlg);
-    chkStripKa2->setChecked(false);
+    chkStripKa2->setChecked(true);
+    QObject::connect(cbAnode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) {
+                         const double wl = cbAnode->currentData().toDouble();
+                         chkStripKa2->setChecked(std::fabs(wl - 1.541838) >= 1e-5);
+                     });
 
     QCheckBox *chkTopD =
             new QCheckBox(QObject::tr("Add Linked Top Bragg d-Spacing Axis (Å)"), &dlg);

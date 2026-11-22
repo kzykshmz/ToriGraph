@@ -1028,7 +1028,20 @@ void drawSymbolShapeF(QPainter *painter, QwtSymbol::Style style, double cx, doub
 
 namespace {
 
-QPen scaleFractionalPenForLayout(const QPen &srcPen)
+double screenDisplayScaleForPlot(const QwtPlot *qwtPlot)
+{
+    if (!QwtPainter::metricsMap().isIdentity())
+        return 1.0;
+    const Plot *pl = dynamic_cast<const Plot *>(qwtPlot);
+    if (!pl)
+        return 1.0;
+    const double s = pl->displayFontScale();
+    if (!std::isfinite(s) || std::fabs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
+
+QPen scaleFractionalPenForLayout(const QPen &srcPen, double screenScale = 1.0)
 {
     if (srcPen.style() == Qt::NoPen)
         return srcPen;
@@ -1042,6 +1055,8 @@ QPen scaleFractionalPenForLayout(const QPen &srcPen)
         const double scaleX = double(mm.screenToLayoutX(int(refPx))) / refPx;
         if (scaleX > 0.0 && std::isfinite(scaleX))
             wf *= scaleX;
+    } else if (screenScale != 1.0) {
+        wf *= screenScale;
     }
     out.setCosmetic(false);
     out.setWidthF(wf);
@@ -1069,7 +1084,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
         painter->setRenderHint(QPainter::Antialiasing, true);
 
     if (pen().style() != Qt::NoPen)
-        painter->setPen(scaleFractionalPenForLayout(pen()));
+        painter->setPen(scaleFractionalPenForLayout(pen(), screenDisplayScaleForPlot(plot())));
 
     const int n = dataSize();
     from = qMax(0, from);
@@ -1582,13 +1597,16 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
 
+    const double dispScale = screenDisplayScaleForPlot(plot());
     painter->setBrush(sym.brush());
-    QPen symPen = scaleFractionalPenForLayout(sym.pen());
+    QPen symPen = scaleFractionalPenForLayout(sym.pen(), dispScale);
     painter->setPen(symPen);
 
     const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
-    const double w = double(layoutSz.width());
-    const double h = double(layoutSz.height());
+    const double w = (dispScale != 1.0) ? (double(sym.size().width()) * dispScale)
+                                        : double(layoutSz.width());
+    const double h = (dispScale != 1.0) ? (double(sym.size().height()) * dispScale)
+                                        : double(layoutSz.height());
     if (w <= 0.0 || h <= 0.0)
         return;
 
@@ -1679,9 +1697,12 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         } else {
             int effSkip = 1;
             if (hasCanvasBounds) {
+                const double baseCanvasW = (dispScale != 1.0)
+                        ? (d_canvas_rect.width() / dispScale)
+                        : d_canvas_rect.width();
                 const int targetMarkers =
-                        (d_canvas_rect.width() < 150.0) ? qBound(6, int(d_canvas_rect.width() / 14.0), 12) : 25;
-                if (visCount > 80 || (d_canvas_rect.width() < 150.0 && visCount > targetMarkers * 2))
+                        (baseCanvasW < 150.0) ? qBound(6, int(baseCanvasW / 14.0), 12) : 25;
+                if (visCount > 80 || (baseCanvasW < 150.0 && visCount > targetMarkers * 2))
                     effSkip = qMax(1, visCount / targetMarkers);
             } else if (totalValid > 80) {
                 effSkip = qMax(1, totalValid / 25);
@@ -1885,15 +1906,20 @@ void DataCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         }
     }
 
+    const double dispScale = screenDisplayScaleForPlot(plot());
     painter->save();
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
-    QPen basePen = scaleFractionalPenForLayout(sym.pen());
+    QPen basePen = scaleFractionalPenForLayout(sym.pen(), dispScale);
     const bool whiteHollow = Graph::isSymbolWhiteHollow(sym);
     const bool noFill = (sym.brush().style() == Qt::NoBrush);
     const QSize layoutSz = QwtPainter::metricsMap().screenToLayout(sym.size());
-    const double baseW = qMax(1.0, double(layoutSz.width()));
-    const double baseH = qMax(1.0, double(layoutSz.height()));
+    const double baseW = (dispScale != 1.0)
+            ? qMax(1.0, double(sym.size().width()) * dispScale)
+            : qMax(1.0, double(layoutSz.width()));
+    const double baseH = (dispScale != 1.0)
+            ? qMax(1.0, double(sym.size().height()) * dispScale)
+            : qMax(1.0, double(layoutSz.height()));
     const double pxToLayout =
             double(sym.size().width()) > 0.0 ? baseW / double(sym.size().width()) : 1.0;
 
