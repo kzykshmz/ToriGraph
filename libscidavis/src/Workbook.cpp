@@ -691,7 +691,7 @@ bool WorkbookManager::deleteSheet(Table *t, bool confirm, QString *err)
     if (confirm && !nonInteractive(d_app)) {
         const auto ans = QMessageBox::question(
                 d_app, wbTr("Delete Sheet"),
-                wbTr("Delete the sheet %1 and its data?\nThis cannot be undone.").arg(t->name()),
+                wbTr("Delete the sheet %1 and its data?\nYou can undo this with Ctrl+Z.").arg(t->name()),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (ans != QMessageBox::Yes || !safe)
             return false;
@@ -1741,8 +1741,8 @@ void WorkbookManager::registerTranslations()
         "ブック %1 のワークシート %2 (グラフと列の数式はこの名前で参照します)");
     reg("Sheet of %1", "%1 のシート");
     reg("Delete Sheet", "シートを削除");
-    reg("Delete the sheet %1 and its data?\nThis cannot be undone.",
-        "シート %1 とそのデータを削除しますか?\n元に戻せません。");
+    reg("Delete the sheet %1 and its data?\nYou can undo this with Ctrl+Z.",
+        "シート %1 とそのデータを削除しますか?\n削除後も Ctrl+Z (元に戻す) で復元できます。");
     reg("Rename Sheet", "シート名の変更");
     reg("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new name; "
         "column formulas that name it (col(\"%1/...\")) are not changed.",

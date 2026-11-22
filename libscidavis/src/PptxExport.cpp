@@ -1549,15 +1549,19 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     QObject::connect(rbSel, &QRadioButton::toggled, btnSelectAll, &QWidget::setEnabled);
     QObject::connect(rbSel, &QRadioButton::toggled, btnDeselectAll, &QWidget::setEnabled);
     QObject::connect(btnSelectAll, &QPushButton::clicked, list, [list]() {
-        const QSignalBlocker sb(list);
-        for (int i = 0; i < list->count(); ++i)
-            list->item(i)->setCheckState(Qt::Checked);
+        {
+            const QSignalBlocker sb(list);
+            for (int i = 0; i < list->count(); ++i)
+                list->item(i)->setCheckState(Qt::Checked);
+        }
         emit list->itemSelectionChanged();
     });
     QObject::connect(btnDeselectAll, &QPushButton::clicked, list, [list]() {
-        const QSignalBlocker sb(list);
-        for (int i = 0; i < list->count(); ++i)
-            list->item(i)->setCheckState(Qt::Unchecked);
+        {
+            const QSignalBlocker sb(list);
+            for (int i = 0; i < list->count(); ++i)
+                list->item(i)->setCheckState(Qt::Unchecked);
+        }
         emit list->itemSelectionChanged();
     });
     (active ? rbActive : rbAll)->setChecked(true);
@@ -1913,15 +1917,19 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
         QPointer<MultiLayer> ml;
         QString snapshot;
         QVariant prevPresetProp;
-        int prevUndoCount = 0;
     };
     QVector<PresetRollbackState> rollbackStates;
+    QString presetUndoLabel;
     const bool wasProjectSaved = app->saved;
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     if (applyPreset) {
         MultiLayer::GraphStylePresetSpec spec;
         if (MultiLayer::findStylePreset(labSlidePresetId(), &spec)) {
+            presetUndoLabel = spec.name.trimmed().isEmpty()
+                    ? QCoreApplication::translate("MultiLayer", "Apply Style Preset")
+                    : QCoreApplication::translate("MultiLayer", "Apply Preset: %1")
+                              .arg(spec.name.trimmed());
             for (const QPointer<MyWidget> &wp : safeWindows) {
                 if (!wp || !wp->inherits("MultiLayer"))
                     continue;
@@ -1930,11 +1938,19 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
                 rb.ml = ml;
                 rb.snapshot = ml->captureUndoSnapshot();
                 rb.prevPresetProp = ml->property("toriAppliedStylePreset");
-                rb.prevUndoCount = ml->undoStack() ? ml->undoStack()->count() : 0;
+                const int prevUndoIdx = ml->undoStack() ? ml->undoStack()->index() : 0;
                 rollbackStates.append(rb);
                 ml->applyStylePresetSpec(spec);
+                // Defer committing the Undo snapshot until the .pptx file write succeeds so a
+                // failed write never leaves commands on or unwinds the existing Undo/Redo stack.
+                if (QUndoStack *us = ml->undoStack()) {
+                    while (us->index() > prevUndoIdx) {
+                        if (const QUndoCommand *cmd = us->command(us->index() - 1))
+                            const_cast<QUndoCommand *>(cmd)->setObsolete(true);
+                        us->undo();
+                    }
+                }
             }
-            app->modifiedProject();
             if (GraphInspectorDock *insp = app->graphInspectorDock())
                 insp->refreshAll();
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
@@ -1946,26 +1962,28 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
             windows << wp.data();
     }
     const DeckResult res = exportGraphs(app, windows, opt, path);
-    if (!res.ok && !rollbackStates.isEmpty()) {
-        for (const PresetRollbackState &rb : rollbackStates) {
-            if (!rb.ml)
-                continue;
-            if (QUndoStack *us = rb.ml->undoStack()) {
-                if (rb.prevUndoCount == 0) {
-                    us->clear();
-                } else {
-                    while (us->count() > rb.prevUndoCount && us->canUndo())
-                        us->undo();
-                }
+    if (!rollbackStates.isEmpty()) {
+        if (res.ok) {
+            for (const PresetRollbackState &rb : rollbackStates) {
+                if (rb.ml && !rb.snapshot.isEmpty())
+                    rb.ml->pushUndoSnapshot(presetUndoLabel, rb.snapshot);
             }
-            if (!rb.snapshot.isEmpty())
-                rb.ml->restoreSnapshotInPlace(app, rb.snapshot);
-            rb.ml->setProperty("toriAppliedStylePreset", rb.prevPresetProp);
+            app->modifiedProject();
+            app->updateUndoRedoActionsForActiveWindow();
+        } else {
+            for (const PresetRollbackState &rb : rollbackStates) {
+                if (!rb.ml)
+                    continue;
+                if (!rb.snapshot.isEmpty())
+                    rb.ml->restoreSnapshotInPlace(app, rb.snapshot);
+                rb.ml->setProperty("toriAppliedStylePreset", rb.prevPresetProp);
+            }
+            if (wasProjectSaved)
+                app->markProjectSaved();
+            app->updateUndoRedoActionsForActiveWindow();
+            if (GraphInspectorDock *insp = app->graphInspectorDock())
+                insp->refreshAll();
         }
-        if (wasProjectSaved)
-            app->markProjectSaved();
-        if (GraphInspectorDock *insp = app->graphInspectorDock())
-            insp->refreshAll();
     }
     QApplication::restoreOverrideCursor();
 

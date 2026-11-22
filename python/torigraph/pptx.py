@@ -1279,8 +1279,9 @@ def export_graphs_to_pptx(
         ``warnings`` lists problems that changed what was embedded or how it was sized.
     """
     pptx, _, _, _ = _import_pptx()
-    scale_f = _parse_scale(scale)
-    if scale_f is None and preset and str(preset).strip().lower() == "lab_slide_83mm":
+    explicit_scale_f = _parse_scale(scale)
+    new_placement_scale_f = explicit_scale_f
+    if new_placement_scale_f is None and preset and str(preset).strip().lower() == "lab_slide_83mm":
         box_has_explicit_width = False
         if box is not None:
             box_probe = list(box)
@@ -1289,7 +1290,7 @@ def export_graphs_to_pptx(
             else:
                 box_has_explicit_width = len(box_probe) >= 3
         if not box_has_explicit_width:
-            scale_f = 1.4
+            new_placement_scale_f = 1.4
     embed_scope = str(embed_scope or "graph").strip().lower()
     if embed_scope not in ("graph", "project"):
         raise ValueError(f"embed_scope must be 'graph' or 'project', got {embed_scope!r}.")
@@ -1506,19 +1507,20 @@ def export_graphs_to_pptx(
                 cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                 clamped_orig_cm: Optional[Tuple[float, float]] = None
                 if cur_box is not None:
+                    box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
                     l_e, t_e, w_e, h_e = _explicit_box_emu(
-                        cur_box, item["w_hm"], item["h_hm"], scale_f
+                        cur_box, item["w_hm"], item["h_hm"], box_scale
                     )
-                    if len(cur_box) == 2 and scale_f is not None:
+                    if len(cur_box) == 2 and box_scale is not None:
                         l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                             l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
                         )
-                elif scale_f is not None:
+                elif explicit_scale_f is not None:
                     anchor = _extract_shape_xfrm_emu(matched_el) or _compute_grid_cell_emu(
                         slide_w, slide_h, 1, 1, 0
                     )
                     l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                        item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                        item["w_hm"], item["h_hm"], explicit_scale_f, anchor, center=False
                     )
                     l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                         l_e, t_e, w_e, h_e, slide_w, slide_h, anchor_rect=anchor, center=False
@@ -1591,19 +1593,20 @@ def export_graphs_to_pptx(
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         clamped_orig_cm = None
                         if cur_box is not None:
+                            box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
-                                cur_box, item["w_hm"], item["h_hm"], scale_f
+                                cur_box, item["w_hm"], item["h_hm"], box_scale
                             )
-                            if len(cur_box) == 2 and scale_f is not None:
+                            if len(cur_box) == 2 and box_scale is not None:
                                 l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                     l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
                                 )
-                        elif scale_f is not None:
+                        elif explicit_scale_f is not None:
                             anchor = _extract_shape_xfrm_emu(existing_el) or _compute_grid_cell_emu(
                                 slide_w, slide_h, 1, 1, 0
                             )
                             l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                                item["w_hm"], item["h_hm"], scale_f, anchor, center=False
+                                item["w_hm"], item["h_hm"], explicit_scale_f, anchor, center=False
                             )
                             l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                 l_e, t_e, w_e, h_e, slide_w, slide_h, anchor_rect=anchor, center=False
@@ -1680,10 +1683,11 @@ def export_graphs_to_pptx(
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         clamped_orig_cm = None
                         if cur_box is not None:
+                            box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
-                                cur_box, item["w_hm"], item["h_hm"], scale_f
+                                cur_box, item["w_hm"], item["h_hm"], box_scale
                             )
-                            if len(cur_box) == 2 and scale_f is not None:
+                            if len(cur_box) == 2 and box_scale is not None:
                                 l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                     l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
                                 )
@@ -1696,9 +1700,9 @@ def export_graphs_to_pptx(
                                 local_k % (eff_rows * eff_cols),
                                 has_title=bool(title_list),
                             )
-                            if scale_f is not None:
+                            if new_placement_scale_f is not None:
                                 l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                                    item["w_hm"], item["h_hm"], scale_f, (c_l, c_t, c_w, c_h),
+                                    item["w_hm"], item["h_hm"], new_placement_scale_f, (c_l, c_t, c_w, c_h),
                                     center=True,
                                 )
                                 l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
@@ -1749,10 +1753,11 @@ def export_graphs_to_pptx(
                             cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                             clamped_orig_cm = None
                             if cur_box is not None:
+                                box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
                                 l_e, t_e, w_e, h_e = _explicit_box_emu(
-                                    cur_box, item["w_hm"], item["h_hm"], scale_f
+                                    cur_box, item["w_hm"], item["h_hm"], box_scale
                                 )
-                                if len(cur_box) == 2 and scale_f is not None:
+                                if len(cur_box) == 2 and box_scale is not None:
                                     l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                         l_e, t_e, w_e, h_e, slide_w, slide_h, center=False
                                     )
@@ -1765,9 +1770,9 @@ def export_graphs_to_pptx(
                                     cell_k,
                                     has_title=bool(s_title),
                                 )
-                                if scale_f is not None:
+                                if new_placement_scale_f is not None:
                                     l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                                        item["w_hm"], item["h_hm"], scale_f,
+                                        item["w_hm"], item["h_hm"], new_placement_scale_f,
                                         (c_l, c_t, c_w, c_h), center=True,
                                     )
                                     l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
@@ -1866,7 +1871,7 @@ def export_graphs_to_pptx(
         "clsid": TORIGRAPH_OLE_CLSID_STR,
         "prog_id": TORIGRAPH_OLE_PROG_ID,
         "placements": placements,
-        "scale": scale_f,
+        "scale": explicit_scale_f if (replaced_count > 0 and replaced_count == embedded_count) else new_placement_scale_f,
         "embed_scope": embed_scope,
         "effective_scales": [pl.get("effective_scale") for pl in placements],
         "warnings": warn_list,

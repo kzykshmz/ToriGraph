@@ -641,7 +641,7 @@ QDateTime serialToDateTime(double serial, bool date1904)
     QDate base;
     if (date1904)
         base = QDate(1904, 1, 1);
-    else if (serial >= 1.0 && serial < 60.0)
+    else if (serial < 60.0)
         base = QDate(1899, 12, 31); // before Excel's fictitious 1900-02-29 (serial 60)
     else
         base = QDate(1899, 12, 30);
@@ -944,28 +944,64 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         return any;
     };
 
-    // Detect data start row even when row 1+ contains title / comment preamble lines.
-    int detectedDataStart = -1;
-    for (int r = firstRow; r <= lastRow; ++r) {
-        if (!rowHasNumeric(r))
-            continue;
-        bool hasCleanNumericCol = false;
-        for (int c : targetCols) {
-            if (columnNumericFrom(c, r)) {
-                hasCleanNumericCol = true;
-                break;
-            }
+    auto columnMostlyNumericFrom = [&](int c, int from) {
+        int nums = 0, texts = 0;
+        for (int r = from; r <= lastRow; ++r) {
+            const Cell &cell = cellAt(sheet, r, c);
+            if (isBlank(cell) || cell.type == Cell::Error)
+                continue;
+            if (isNumericCell(cell))
+                ++nums;
+            else
+                ++texts;
         }
-        if (hasCleanNumericCol) {
-            detectedDataStart = r;
+        return nums > 0 && nums >= texts;
+    };
+
+    int firstNumericRow = -1;
+    for (int r = firstRow; r <= lastRow; ++r) {
+        if (rowHasNumeric(r)) {
+            firstNumericRow = r;
             break;
         }
     }
-    if (detectedDataStart < 0) {
-        for (int r = firstRow; r <= lastRow; ++r) {
-            if (rowHasNumeric(r)) {
+
+    // Detect data start row even when row 1+ contains title / comment preamble lines.
+    int detectedDataStart = -1;
+    if (firstNumericRow >= 0) {
+        for (int r = firstNumericRow; r <= lastRow; ++r) {
+            if (!rowHasNumeric(r))
+                continue;
+            bool hasCleanNumericCol = false;
+            for (int c : targetCols) {
+                if (columnNumericFrom(c, r)) {
+                    hasCleanNumericCol = true;
+                    break;
+                }
+            }
+            if (hasCleanNumericCol) {
                 detectedDataStart = r;
                 break;
+            }
+        }
+        if (detectedDataStart < 0) {
+            detectedDataStart = firstNumericRow;
+        } else if (detectedDataStart > firstNumericRow) {
+            for (int r = firstNumericRow; r < detectedDataStart; ++r) {
+                int nonBlankCnt = 0;
+                int numericCnt = 0;
+                for (int c : targetCols) {
+                    const Cell &cell = cellAt(sheet, r, c);
+                    if (isBlank(cell))
+                        continue;
+                    ++nonBlankCnt;
+                    if (isNumericCell(cell))
+                        ++numericCnt;
+                }
+                if (nonBlankCnt > 0 && numericCnt * 2 >= nonBlankCnt) {
+                    detectedDataStart = firstNumericRow;
+                    break;
+                }
             }
         }
     }
@@ -996,35 +1032,45 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             const bool prevTextOnly = rowHasTextual(rPrev) && !rowHasNumeric(rPrev);
             bool lastIsUnits = false;
             if (lastTextOnly && prevTextOnly) {
-                int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
-                bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
-                for (int c : targetCols) {
-                    if (!columnNumericFrom(c, dataStart))
-                        continue;
-                    ++numericCols;
-                    const Cell &uc = cellAt(sheet, rLast, c);
-                    if (isBlank(uc))
-                        continue;
-                    ++nonEmptyUnits;
-                    const QString rawTxt = cellDisplayText(uc, date1904).trimmed();
-                    QString sn, ln, un;
-                    AsciiTableImportFilter::splitHeaderNameAndUnits(rawTxt, sn, ln, un);
-                    if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
-                        hasInlineHeaderUnit = true;
-                    QString cleaned;
-                    if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned))
-                        ++recognized;
-                    else
-                        allRecognized = false;
-                    if (cleaned.size() > 32)
-                        shortCells = false;
-                }
-                const int nonBlankPrev = countRowNonBlank(rPrev);
-                const int nonBlankLast = countRowNonBlank(rLast);
-                lastIsUnits = !hasInlineHeaderUnit && numericCols >= 1
-                        && ((allRecognized && recognized >= 1)
-                            || (nonEmptyUnits >= 1 && shortCells && nonBlankPrev >= nonBlankLast
-                                && !(nonBlankPrev == 1 && targetCols.size() >= 2)));
+                auto scanUnitRowCols = [&](bool allowMissingMarkers) {
+                    int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
+                    bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
+                    for (int c : targetCols) {
+                        const bool okCol = allowMissingMarkers
+                                ? columnMostlyNumericFrom(c, dataStart)
+                                : columnNumericFrom(c, dataStart);
+                        if (!okCol)
+                            continue;
+                        ++numericCols;
+                        const Cell &uc = cellAt(sheet, rLast, c);
+                        if (isBlank(uc))
+                            continue;
+                        ++nonEmptyUnits;
+                        const QString rawTxt = cellDisplayText(uc, date1904).trimmed();
+                        QString sn, ln, un;
+                        AsciiTableImportFilter::splitHeaderNameAndUnits(rawTxt, sn, ln, un);
+                        if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
+                            hasInlineHeaderUnit = true;
+                        QString cleaned;
+                        if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned))
+                            ++recognized;
+                        else
+                            allRecognized = false;
+                        if (cleaned.size() > 32)
+                            shortCells = false;
+                    }
+                    const int nonBlankPrev = countRowNonBlank(rPrev);
+                    const int nonBlankLast = countRowNonBlank(rLast);
+                    const bool isUnits = !hasInlineHeaderUnit && numericCols >= 1
+                            && ((allRecognized && recognized >= 1)
+                                || (nonEmptyUnits >= 1 && shortCells && nonBlankPrev >= nonBlankLast
+                                    && !(nonBlankPrev == 1 && targetCols.size() >= 2)));
+                    return std::make_pair(numericCols, isUnits);
+                };
+                std::pair<int, bool> unitScan = scanUnitRowCols(false);
+                if (unitScan.first == 0)
+                    unitScan = scanUnitRowCols(true);
+                lastIsUnits = unitScan.second;
             }
             if (lastIsUnits) {
                 hasHeader = true;
