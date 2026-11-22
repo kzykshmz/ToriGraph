@@ -179,6 +179,7 @@ public:
         double sizeMinPx = 4.0;
         double sizeMaxPx = 16.0;
         QString colorBarTitle;
+        bool showColorBar = true;
     };
     void setPointColorMap(const PointColorMap &m) { d_point_cmap = m; }
     const PointColorMap &pointColorMap() const { return d_point_cmap; }

@@ -378,6 +378,7 @@ static int runSuite74LegacyUiHidden(ApplicationWindow *mw);
 static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw);
 static int runSuite73SendToPowerPoint(ApplicationWindow *mw);
 static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw);
+static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw);
 
 static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir);
 
@@ -641,6 +642,13 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc75;
+    }
+    if (args.contains("--suite76-only")) {
+        const int rc76 = runSuite76ReviewPolishAndEdgeCases(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc76;
     }
 
     // =========================================================================
@@ -5895,6 +5903,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite75CopyAndExportKeepGraphState(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite76ReviewPolishAndEdgeCases(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -11759,6 +11770,7 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
         polWriter->applyUserSettings();
         MultiLayer *mlPol = polWriter->newGraph("S50PolarGraph");
         CHECK_COND(mlPol != nullptr && mlPol->activeGraph() != nullptr, "Suite 50c: mlPol null");
+        const QString polGraphName = mlPol->name();
         Graph *gPol = mlPol->activeGraph();
         QVector<double> thDeg, radVal;
         for (int k = 0; k <= 36; ++k) {
@@ -11787,7 +11799,7 @@ static int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
         ApplicationWindow *polReader = new ApplicationWindow();
         polReader->applyUserSettings();
         CHECK_COND(polReader->loadProject(polPrjPath), "Suite 50c: loadProject failed on polar .sciprj!");
-        MultiLayer *mlPolRel = qobject_cast<MultiLayer *>(polReader->window("S50PolarGraph"));
+        MultiLayer *mlPolRel = qobject_cast<MultiLayer *>(polReader->window(polGraphName));
         CHECK_COND(mlPolRel != nullptr && mlPolRel->activeGraph() != nullptr
                            && mlPolRel->activeGraph()->isPolarPlot()
                            && !mlPolRel->activeGraph()->plotWidget()->axisEnabled(QwtPlot::xBottom),
@@ -24243,5 +24255,547 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
     delete w75;
     QApplication::processEvents();
     std::cout << "[PASS] Suite 75 passed.\n";
+    return 0;
+}
+
+// =============================================================================
+// Suite 76: Review Polish & Edge-Case Regression Gate
+// =============================================================================
+#include "TextDialog.h"
+
+namespace {
+struct Suite76AxesDialogProbe : public AxesDialog
+{
+    double titlePtBoxValue() const { return boxTitleFontSize ? boxTitleFontSize->value() : -1.0; }
+    double numbersPtBoxValue() const { return boxAxesFontSize ? boxAxesFontSize->value() : -1.0; }
+    void acceptDialog() { accept(); }
+};
+
+struct Suite76TextDialogProbe : public TextDialog
+{
+    explicit Suite76TextDialogProbe(TextType type) : TextDialog(type) {}
+    double fontPtBoxValue() const { return boxFontSize ? boxFontSize->value() : -1.0; }
+    void applyDialog()
+    {
+        if (buttonApply)
+            buttonApply->click();
+    }
+};
+} // namespace
+
+static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 76: review polish, fractional pt/px, workbook undo/redo, "
+                 "pole-figure presets, xlsx N/A & paste disambiguation, and ref-line/colorbar persistence...\n";
+    CHECK_COND(mw != nullptr, "76: ApplicationWindow is null");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir tmp76;
+    CHECK_COND(tmp76.isValid(), "76: QTemporaryDir failed");
+
+    auto storedPt76 = [](const QFont &f) -> double {
+        return (f.pointSizeF() > 0.0) ? f.pointSizeF() : double(f.pointSize());
+    };
+
+    ApplicationWindow *w76 = new ApplicationWindow();
+    w76->applyUserSettings();
+    MultiLayer::setNewGraphStylePresetId(QString());
+
+    // -------------------------------------------------------------------------
+    // 76a: Fractional font sizes (12.9 pt / 11.5 pt) across AxesDialog,
+    //      TextDialog, GraphMiniToolbar (+1 -> -1), saveSettings/readSettings,
+    //      and fractional line/symbol pen widths (1.5 px / 0.5 px) across
+    //      .sciprj round-trip and MultiLayer Undo/Redo.
+    // -------------------------------------------------------------------------
+    {
+        Table *t76a = w76->newTable(QStringLiteral("Tbl76a"), 6, 2);
+        CHECK_COND(t76a != nullptr, "76a: table creation failed");
+        t76a->setColName(0, QStringLiteral("Strain"));
+        t76a->setColName(1, QStringLiteral("Stress"));
+        for (int r = 0; r < 6; ++r) {
+            t76a->setCell(r, 0, 0.05 * (r + 1));
+            t76a->setCell(r, 1, 100.0 * (r + 1));
+        }
+        MultiLayer *ml76a = w76->multilayerPlot(
+                t76a, QStringList() << (t76a->name() + QStringLiteral("_Stress")),
+                Graph::LineSymbols);
+        CHECK_COND(ml76a && ml76a->activeGraph(), "76a: graph creation failed");
+        CHECK_COND(ml76a->applyStylePresetById(QStringLiteral("lab_slide_83mm")),
+                   "76a: apply lab_slide_83mm preset");
+        Graph *g76a = ml76a->activeGraph();
+        Legend *leg76a = g76a->legend();
+        CHECK_COND(leg76a != nullptr, "76a: legend missing");
+        CHECK_COND(std::fabs(storedPt76(g76a->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                           && std::fabs(storedPt76(g76a->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                           && std::fabs(storedPt76(leg76a->font()) - 11.5) < 1e-6,
+                   "76a: preset initial fractional pt mismatch");
+
+        // AxesDialog preserves 12.9 pt without rounding to 13
+        {
+            Suite76AxesDialogProbe axDlg;
+            axDlg.setGraph(g76a);
+            CHECK_COND(std::fabs(axDlg.titlePtBoxValue() - 12.9) < 1e-6
+                               && std::fabs(axDlg.numbersPtBoxValue() - 12.9) < 1e-6,
+                       "76a: AxesDialog spinboxes rounded 12.9 pt");
+            axDlg.acceptDialog();
+            CHECK_COND(std::fabs(storedPt76(g76a->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                               && std::fabs(storedPt76(g76a->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-6,
+                       "76a: AxesDialog::accept rounded 12.9 pt");
+        }
+
+        // TextDialog preserves 11.5 pt without rounding to 12
+        {
+            Suite76TextDialogProbe txtDlg(TextDialog::TextMarker);
+            txtDlg.setFont(leg76a->font());
+            txtDlg.setText(leg76a->text());
+            CHECK_COND(std::fabs(txtDlg.fontPtBoxValue() - 11.5) < 1e-6,
+                       "76a: TextDialog spinbox rounded 11.5 pt");
+            QFont emittedFont;
+            bool gotSignal = false;
+            QObject::connect(&txtDlg, &TextDialog::values, &txtDlg,
+                             [&](const QString &, int, int, const QFont &fnt, const QColor &,
+                                 const QColor &) {
+                                 emittedFont = fnt;
+                                 gotSignal = true;
+                             });
+            txtDlg.applyDialog();
+            CHECK_COND(gotSignal && std::fabs(storedPt76(emittedFont) - 11.5) < 1e-6,
+                       "76a: TextDialog::apply rounded 11.5 pt");
+        }
+
+        // GraphMiniToolbar (+1 -> -1) keeps 12.9 pt and 11.5 pt fractional parts intact
+        {
+            struct ScopedInteractiveForMtb {
+                QVariant prevProp;
+                bool prevEnabled;
+                ScopedInteractiveForMtb()
+                    : prevProp(qApp->property("torigraph_noninteractive")),
+                      prevEnabled(GraphMiniToolbar::isMiniToolbarEnabled())
+                {
+                    qApp->setProperty("torigraph_noninteractive", QVariant());
+                    GraphMiniToolbar::setMiniToolbarEnabled(true);
+                }
+                ~ScopedInteractiveForMtb()
+                {
+                    GraphMiniToolbar::instance()->cancelScheduledAndHide();
+                    GraphMiniToolbar::setMiniToolbarEnabled(prevEnabled);
+                    qApp->setProperty("torigraph_noninteractive", prevProp);
+                }
+            } mtbGuard;
+
+            GraphMiniToolbar *mtb = GraphMiniToolbar::instance();
+            mtb->popupForAxis(g76a, QwtPlot::xBottom, QPoint(120, 120));
+            CHECK_COND(QMetaObject::invokeMethod(mtb, "onAxisFontInc"), "76a: onAxisFontInc invoke");
+            CHECK_COND(std::fabs(storedPt76(g76a->axisTitleFont(QwtPlot::xBottom)) - 13.9) < 1e-6
+                               && std::fabs(storedPt76(g76a->axisFont(QwtPlot::xBottom)) - 13.9) < 1e-6,
+                       "76a: MiniToolbar axis +1 did not preserve .9 fractional part");
+            CHECK_COND(QMetaObject::invokeMethod(mtb, "onAxisFontDec"), "76a: onAxisFontDec invoke");
+            CHECK_COND(std::fabs(storedPt76(g76a->axisTitleFont(QwtPlot::xBottom)) - 12.9) < 1e-6
+                               && std::fabs(storedPt76(g76a->axisFont(QwtPlot::xBottom)) - 12.9) < 1e-6,
+                       "76a: MiniToolbar axis +1 -> -1 lost 12.9 pt");
+
+            mtb->popupForLegend(g76a, leg76a, QPoint(120, 120));
+            CHECK_COND(QMetaObject::invokeMethod(mtb, "onLegendFontInc"), "76a: onLegendFontInc invoke");
+            CHECK_COND(std::fabs(storedPt76(leg76a->font()) - 12.5) < 1e-6,
+                       "76a: MiniToolbar legend +1 did not preserve .5 fractional part");
+            CHECK_COND(QMetaObject::invokeMethod(mtb, "onLegendFontDec"), "76a: onLegendFontDec invoke");
+            CHECK_COND(std::fabs(storedPt76(leg76a->font()) - 11.5) < 1e-6,
+                       "76a: MiniToolbar legend +1 -> -1 lost 11.5 pt");
+        }
+
+        // saveSettings / readSettings preserves fractional pt
+        {
+            const QFont prevAx = w76->plotAxesFont;
+            const QFont prevNum = w76->plotNumbersFont;
+            const QFont prevLeg = w76->plotLegendFont;
+            const QFont prevTit = w76->plotTitleFont;
+
+            w76->plotAxesFont.setPointSizeF(12.9);
+            w76->plotNumbersFont.setPointSizeF(12.9);
+            w76->plotLegendFont.setPointSizeF(11.5);
+            w76->plotTitleFont.setPointSizeF(12.9);
+            w76->saveSettings();
+
+            w76->plotAxesFont.setPointSize(9);
+            w76->plotNumbersFont.setPointSize(9);
+            w76->plotLegendFont.setPointSize(9);
+            w76->plotTitleFont.setPointSize(9);
+            w76->readSettings();
+
+            const bool settingsOk = std::fabs(storedPt76(w76->plotAxesFont) - 12.9) < 1e-6
+                    && std::fabs(storedPt76(w76->plotNumbersFont) - 12.9) < 1e-6
+                    && std::fabs(storedPt76(w76->plotLegendFont) - 11.5) < 1e-6
+                    && std::fabs(storedPt76(w76->plotTitleFont) - 12.9) < 1e-6;
+
+            w76->plotAxesFont = prevAx;
+            w76->plotNumbersFont = prevNum;
+            w76->plotLegendFont = prevLeg;
+            w76->plotTitleFont = prevTit;
+            w76->saveSettings();
+            CHECK_COND(settingsOk, "76a: saveSettings/readSettings rounded fractional font sizes");
+        }
+
+        // Fractional line width (1.5 px) and symbol border width (0.5 px) across Undo/Redo & .sciprj
+        QwtPlotCurve *cv0 = g76a->curve(0);
+        CHECK_COND(cv0 != nullptr, "76a: curve(0) null");
+        {
+            QPen initPen = cv0->pen();
+            initPen.setWidthF(2.5);
+            cv0->setPen(initPen);
+            QwtSymbol initSym = cv0->symbol();
+            QPen initSymPen = initSym.pen();
+            initSymPen.setWidthF(1.25);
+            initSym.setPen(initSymPen);
+            cv0->setSymbol(initSym);
+        }
+        const QString snapBeforeWidths = ml76a->captureUndoSnapshot();
+        {
+            QPen p = cv0->pen();
+            p.setWidthF(1.5);
+            cv0->setPen(p);
+            QwtSymbol sym = cv0->symbol();
+            QPen sp = sym.pen();
+            sp.setWidthF(0.5);
+            sym.setPen(sp);
+            cv0->setSymbol(sym);
+            g76a->replot();
+        }
+        ml76a->pushUndoSnapshot(QStringLiteral("Set 1.5/0.5 px widths"), snapBeforeWidths);
+        CHECK_COND(ml76a->undoStack() && ml76a->undoStack()->canUndo(), "76a: undoStack cannot undo");
+        ml76a->undoStack()->undo();
+        QApplication::processEvents();
+        CHECK_COND(ml76a->activeGraph() && ml76a->activeGraph()->curve(0)
+                           && std::fabs(ml76a->activeGraph()->curve(0)->pen().widthF() - 2.5) < 1e-6
+                           && std::fabs(ml76a->activeGraph()->curve(0)->symbol().pen().widthF() - 1.25) < 1e-6,
+                   "76a: MultiLayer undo lost fractional 2.5 / 1.25 px widths");
+        ml76a->undoStack()->redo();
+        QApplication::processEvents();
+        CHECK_COND(ml76a->activeGraph() && ml76a->activeGraph()->curve(0)
+                           && std::fabs(ml76a->activeGraph()->curve(0)->pen().widthF() - 1.5) < 1e-6
+                           && std::fabs(ml76a->activeGraph()->curve(0)->symbol().pen().widthF() - 0.5) < 1e-6,
+                   "76a: MultiLayer redo lost fractional 1.5 / 0.5 px widths");
+
+        const QString ml76aName = ml76a->name();
+        const QString prj76a = tmp76.filePath(QStringLiteral("suite76a.sciprj"));
+        {
+            QFile pf(prj76a);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "76a: write .sciprj");
+            pf.write(w76->saveProjectToByteArray());
+            pf.close();
+        }
+        ApplicationWindow *reader76a = new ApplicationWindow();
+        reader76a->applyUserSettings();
+        CHECK_COND(reader76a->loadProject(prj76a), "76a: loadProject failed");
+        MultiLayer *ml76aRel = qobject_cast<MultiLayer *>(reader76a->window(ml76aName));
+        CHECK_COND(ml76aRel && ml76aRel->activeGraph() && ml76aRel->activeGraph()->curve(0),
+                   "76a: reloaded graph missing");
+        QwtPlotCurve *cvRel = ml76aRel->activeGraph()->curve(0);
+        CHECK_COND(std::fabs(cvRel->pen().widthF() - 1.5) < 1e-6
+                           && std::fabs(cvRel->symbol().pen().widthF() - 0.5) < 1e-6,
+                   "76a: .sciprj round-trip lost fractional 1.5 / 0.5 px widths");
+        reader76a->savedProject();
+        reader76a->setOleEmbeddedMode(true);
+        delete reader76a;
+    }
+
+    // -------------------------------------------------------------------------
+    // 76b: ApplicationWindow::window("NoSuchWindowName_76") returns nullptr
+    // -------------------------------------------------------------------------
+    CHECK_COND(w76->window(QStringLiteral("NoSuchWindowName_76")) == nullptr
+                       && mw->window(QStringLiteral("NoSuchWindowName_76")) == nullptr,
+               "76b: ApplicationWindow::window() must return nullptr for non-existent name");
+
+    // -------------------------------------------------------------------------
+    // 76c: WorkbookManager addSheet -> undo() -> redo() synchronization &
+    //      saveWindowsToByteArray visibility promotion for background sheet
+    // -------------------------------------------------------------------------
+    {
+        WorkbookManager *wm = WorkbookManager::instance(w76);
+        CHECK_COND(wm != nullptr, "76c: WorkbookManager::instance null");
+        QString wbErr;
+        const QString bk = wm->createBook(QStringLiteral("Bk76"), 2, &wbErr);
+        CHECK_COND(!bk.isEmpty() && wm->sheets(bk).size() == 2, "76c: createBook failed");
+        Table *sh0 = wm->sheets(bk)[0];
+        sh0->setColName(0, QStringLiteral("X"));
+        sh0->setColName(1, QStringLiteral("Y"));
+        for (int r = 0; r < 4; ++r) {
+            sh0->setCell(r, 0, double(r + 1));
+            sh0->setCell(r, 1, double((r + 1) * 10));
+        }
+
+        Table *sh2 = wm->addSheet(bk, QStringLiteral("S3"), -1, true, &wbErr);
+        CHECK_COND(sh2 != nullptr && wm->sheets(bk).size() == 3 && wm->currentSheet(bk) == sh2,
+                   "76c: addSheet failed");
+        QApplication::processEvents();
+
+        w76->activateSubWindow(sh2);
+        w76->undo();
+        QApplication::processEvents();
+        CHECK_COND(wm->sheets(bk).size() == 2 && wm->bookOf(sh2).isEmpty()
+                           && wm->currentSheet(bk) != nullptr
+                           && wm->sheets(bk).contains(wm->currentSheet(bk)),
+                   "76c: undo() after addSheet left dangling sheet or desynced workbook");
+
+        w76->redo();
+        QApplication::processEvents();
+        CHECK_COND(wm->sheets(bk).size() == 3 && wm->bookOf(sh2) == bk
+                           && wm->currentSheet(bk) == sh2,
+                   "76c: redo() after addSheet failed to resync sheet and workbook");
+
+        CHECK_COND(wm->setCurrentSheet(sh2, true), "76c: setCurrentSheet(sh2)");
+        CHECK_COND(w76->hidden(sh0), "76c: background sheet sh0 expected hidden while sh2 is active");
+        MultiLayer *mlBg = w76->multilayerPlot(
+                sh0, QStringList() << (sh0->name() + QStringLiteral("_Y")), Graph::LineSymbols);
+        CHECK_COND(mlBg != nullptr, "76c: plot from background sheet failed");
+        CHECK_COND(wm->setCurrentSheet(sh2, true) && w76->hidden(sh0),
+                   "76c: sh0 must remain background-hidden before mini-project export");
+
+        const QByteArray miniBytes =
+                w76->saveWindowsToByteArray(QList<MyWidget *>() << sh0 << mlBg);
+        CHECK_COND(!miniBytes.isEmpty(), "76c: saveWindowsToByteArray returned empty");
+        const QString miniPath = tmp76.filePath(QStringLiteral("suite76c_mini.sciprj"));
+        {
+            QFile mf(miniPath);
+            CHECK_COND(mf.open(QIODevice::WriteOnly), "76c: open mini .sciprj");
+            mf.write(miniBytes);
+            mf.close();
+        }
+        ApplicationWindow *miniReader = new ApplicationWindow();
+        miniReader->applyUserSettings();
+        CHECK_COND(miniReader->loadProject(miniPath), "76c: load mini .sciprj failed");
+        Table *sh0Rel = miniReader->table(sh0->name());
+        CHECK_COND(sh0Rel != nullptr && !miniReader->hidden(sh0Rel)
+                           && sh0Rel->status() != MyWidget::Hidden,
+                   "76c: background source sheet was not promoted to visible in OLE mini-project");
+        miniReader->savedProject();
+        miniReader->setOleEmbeddedMode(true);
+        delete miniReader;
+    }
+
+    // -------------------------------------------------------------------------
+    // 76d: PoleFigure keeps isPoleFigurePlot() and suppresses Cartesian axes
+    //      across isij_85mm and lab_slide_83mm presets (and clears when spectrogram removed)
+    // -------------------------------------------------------------------------
+    {
+        const int nA = 16, nB = 73;
+        Table *tp76 = w76->newTable(QStringLiteral("Pole76"), nA * nB, 3);
+        CHECK_COND(tp76 != nullptr, "76d: pole table creation failed");
+        tp76->setHeader(QStringList() << QStringLiteral("alpha") << QStringLiteral("beta")
+                                      << QStringLiteral("I"));
+        QVector<qreal> ca(nA * nB), cb(nA * nB), ci(nA * nB);
+        int k = 0;
+        for (int i = 0; i < nA; ++i) {
+            for (int j = 0; j < nB; ++j, ++k) {
+                ca[k] = 5.0 * i;
+                cb[k] = 5.0 * j;
+                ci[k] = suite67PoleIntensity(5.0 * i, 5.0 * j);
+            }
+        }
+        tp76->column(0)->replaceValues(0, ca);
+        tp76->column(1)->replaceValues(0, cb);
+        tp76->column(2)->replaceValues(0, ci);
+
+        ExtraPlotTypes::PoleFigureOptions po76;
+        po76.label = QStringLiteral("(111)");
+        const ExtraPlotTypes::PoleFigureResult pf76 =
+                ExtraPlotTypes::plotPoleFigure(w76, tp76, QStringLiteral("alpha"),
+                                               QStringLiteral("beta"), QStringLiteral("I"), po76);
+        CHECK_COND(pf76.valid && pf76.plot && pf76.plot->activeGraph(), "76d: plotPoleFigure failed");
+        Graph *gPf = pf76.plot->activeGraph();
+        CHECK_COND(gPf->isPoleFigurePlot(), "76d: initial isPoleFigurePlot() false");
+
+        for (const QString &presetId :
+             { QStringLiteral("isij_85mm"), QStringLiteral("lab_slide_83mm") }) {
+            CHECK_COND(pf76.plot->applyStylePresetById(presetId),
+                       "76d: applyStylePresetById failed on pole figure");
+            CHECK_COND(gPf->isPoleFigurePlot()
+                               && !gPf->plotWidget()->axisEnabled(QwtPlot::xBottom)
+                               && !gPf->plotWidget()->axisEnabled(QwtPlot::yLeft)
+                               && !gPf->plotWidget()->axisEnabled(QwtPlot::xTop),
+                       "76d: preset re-enabled Cartesian axes or broke isPoleFigurePlot()");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 76e: .xlsx with mid-column "N/A" string cell keeps all numeric rows above
+    //      it, and Table::pasteText distinguishes 1-col thousands ("985\n1,012\n1,030")
+    //      from 2-col CSV ("1,250\n2,375").
+    // -------------------------------------------------------------------------
+    {
+        const QByteArray contentTypes =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>";
+        const QByteArray rootRels =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+                "</Relationships>";
+        const QByteArray workbook =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+                "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+                "<sheets><sheet name=\"MidNA\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
+        const QByteArray wbRels =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+                "</Relationships>";
+        const QByteArray sheet1 =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+                "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>Strain</t></is></c>"
+                "<c r=\"B1\" t=\"inlineStr\"><is><t>Stress</t></is></c></row>"
+                "<row r=\"2\"><c r=\"A2\"><v>0.1</v></c><c r=\"B2\"><v>120</v></c></row>"
+                "<row r=\"3\"><c r=\"A3\"><v>0.2</v></c><c r=\"B3\"><v>240</v></c></row>"
+                "<row r=\"4\"><c r=\"A4\"><v>0.3</v></c><c r=\"B4\"><v>350</v></c></row>"
+                "<row r=\"5\"><c r=\"A5\"><v>0.4</v></c><c r=\"B5\" t=\"inlineStr\"><is><t>N/A</t></is></c></row>"
+                "<row r=\"6\"><c r=\"A6\"><v>0.5</v></c><c r=\"B6\"><v>480</v></c></row>"
+                "<row r=\"7\"><c r=\"A7\"><v>0.6</v></c><c r=\"B7\"><v>510</v></c></row>"
+                "</sheetData></worksheet>";
+        const QByteArray xlsxBytes = suite64BuildZip({
+                { "[Content_Types].xml", contentTypes, true },
+                { "_rels/.rels", rootRels, true },
+                { "xl/workbook.xml", workbook, true },
+                { "xl/_rels/workbook.xml.rels", wbRels, true },
+                { "xl/worksheets/sheet1.xml", sheet1, true },
+        });
+        const QString xlsxPath = tmp76.filePath(QStringLiteral("mid_na_76.xlsx"));
+        {
+            QFile xf(xlsxPath);
+            CHECK_COND(xf.open(QIODevice::WriteOnly), "76e: open mid_na_76.xlsx");
+            xf.write(xlsxBytes);
+            xf.close();
+        }
+        QString xlsxErr;
+        XlsxImport::ImportResult xlsxRes;
+        CHECK_COND(XlsxImport::importIntoProject(w76, xlsxPath, QString(), &xlsxErr, &xlsxRes, false)
+                           && xlsxRes.tables.size() == 1,
+                   "76e: XlsxImport::importIntoProject failed on mid-N/A workbook");
+        Table *tXlsx = w76->table(xlsxRes.tables[0]);
+        CHECK_COND(tXlsx != nullptr && tXlsx->numCols() == 2 && tXlsx->numRows() == 6,
+                   "76e: mid-column 'N/A' discarded upper numeric rows!");
+        CHECK_COND(std::fabs(tXlsx->cell(0, 0) - 0.1) < 1e-9
+                           && std::fabs(tXlsx->cell(0, 1) - 120.0) < 1e-9
+                           && std::fabs(tXlsx->cell(3, 0) - 0.4) < 1e-9
+                           && std::fabs(tXlsx->cell(5, 0) - 0.6) < 1e-9
+                           && std::fabs(tXlsx->cell(5, 1) - 510.0) < 1e-9,
+                   "76e: imported values from mid-N/A .xlsx mismatch");
+
+        Table *tPaste1 = w76->newTable(QStringLiteral("Paste1Col76"), 3, 2);
+        CHECK_COND(tPaste1 != nullptr, "76e: Paste1Col76 table");
+        tPaste1->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(tPaste1->pasteText(QStringLiteral("985\n1,012\n1,030")),
+                   "76e: pasteText 1-col thousands failed");
+        CHECK_COND(std::fabs(tPaste1->cell(0, 0) - 985.0) < 1e-9
+                           && std::fabs(tPaste1->cell(1, 0) - 1012.0) < 1e-9
+                           && std::fabs(tPaste1->cell(2, 0) - 1030.0) < 1e-9
+                           && tPaste1->column(1)->isInvalid(1),
+                   "76e: '985\\n1,012\\n1,030' was not parsed as 1-column thousands-separated numbers");
+
+        Table *tPaste2 = w76->newTable(QStringLiteral("Paste2Col76"), 2, 2);
+        CHECK_COND(tPaste2 != nullptr, "76e: Paste2Col76 table");
+        tPaste2->setCellsSelected(0, 0, 0, 0, true);
+        CHECK_COND(tPaste2->pasteText(QStringLiteral("1,250\n2,375")),
+                   "76e: pasteText 2-col CSV failed");
+        CHECK_COND(std::fabs(tPaste2->cell(0, 0) - 1.0) < 1e-9
+                           && std::fabs(tPaste2->cell(0, 1) - 250.0) < 1e-9
+                           && std::fabs(tPaste2->cell(1, 0) - 2.0) < 1e-9
+                           && std::fabs(tPaste2->cell(1, 1) - 375.0) < 1e-9,
+                   "76e: '1,250\\n2,375' was misclassified instead of 2-column CSV");
+    }
+
+    // -------------------------------------------------------------------------
+    // 76f: ReferenceLineSpec::visible=false & PointColorMap::showColorBar=false
+    //      persisted across .sciprj save/reload and syncPointColorBar()
+    // -------------------------------------------------------------------------
+    {
+        Table *t76f = w76->newTable(QStringLiteral("Tbl76f"), 5, 3);
+        CHECK_COND(t76f != nullptr, "76f: table creation failed");
+        t76f->setColName(0, QStringLiteral("X"));
+        t76f->setColName(1, QStringLiteral("Y"));
+        t76f->setColName(2, QStringLiteral("Z"));
+        for (int r = 0; r < 5; ++r) {
+            t76f->setCell(r, 0, double(r + 1));
+            t76f->setCell(r, 1, double((r + 1) * 3));
+            t76f->setCell(r, 2, double(100 + r * 25));
+        }
+        MultiLayer *ml76f = w76->multilayerPlot(
+                t76f, QStringList() << (t76f->name() + QStringLiteral("_Y")), Graph::Scatter);
+        CHECK_COND(ml76f && ml76f->activeGraph(), "76f: scatter graph failed");
+        Graph *g76f = ml76f->activeGraph();
+        DataCurve *dc76f = dynamic_cast<DataCurve *>(g76f->curve(0));
+        CHECK_COND(dc76f != nullptr, "76f: DataCurve null");
+
+        DataCurve::PointColorMap pcm;
+        pcm.enabled = true;
+        pcm.zColumn = t76f->name() + QStringLiteral("_Z");
+        pcm.showColorBar = true;
+        dc76f->setPointColorMap(pcm);
+        g76f->syncPointColorBar();
+        CHECK_COND(g76f->hasColorScaleOnAxis(QwtPlot::yRight),
+                   "76f: color bar should be enabled when showColorBar=true");
+
+        pcm.showColorBar = false;
+        dc76f->setPointColorMap(pcm);
+        g76f->syncPointColorBar();
+        CHECK_COND(!g76f->hasColorScaleOnAxis(QwtPlot::yRight)
+                           && !g76f->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(),
+                   "76f: syncPointColorBar() did not hide color bar when showColorBar=false");
+
+        Graph::ReferenceLineSpec rlHidden;
+        rlHidden.orientation = 0;
+        rlHidden.value = 6.0;
+        rlHidden.label = QStringLiteral("HiddenThreshold");
+        rlHidden.visible = false;
+        g76f->addReferenceLine(rlHidden);
+
+        Graph::ReferenceLineSpec rlShown;
+        rlShown.orientation = 1;
+        rlShown.value = 3.0;
+        rlShown.label = QStringLiteral("ShownMarker");
+        rlShown.visible = true;
+        g76f->addReferenceLine(rlShown);
+
+        const QString ml76fName = ml76f->name();
+        const QString prj76f = tmp76.filePath(QStringLiteral("suite76f.sciprj"));
+        {
+            QFile pf(prj76f);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "76f: open .sciprj");
+            pf.write(w76->saveProjectToByteArray());
+            pf.close();
+        }
+        ApplicationWindow *reader76f = new ApplicationWindow();
+        reader76f->applyUserSettings();
+        CHECK_COND(reader76f->loadProject(prj76f), "76f: loadProject failed");
+        MultiLayer *ml76fRel = qobject_cast<MultiLayer *>(reader76f->window(ml76fName));
+        CHECK_COND(ml76fRel && ml76fRel->activeGraph(), "76f: reloaded graph missing");
+        Graph *g76fRel = ml76fRel->activeGraph();
+        CHECK_COND(g76fRel->referenceLines().size() == 2
+                           && !g76fRel->referenceLines()[0].visible
+                           && g76fRel->referenceLines()[0].label == QStringLiteral("HiddenThreshold")
+                           && g76fRel->referenceLines()[1].visible
+                           && g76fRel->referenceLines()[1].label == QStringLiteral("ShownMarker"),
+                   "76f: ReferenceLineSpec::visible or label lost across .sciprj round-trip");
+
+        DataCurve *dc76fRel = dynamic_cast<DataCurve *>(g76fRel->curve(0));
+        CHECK_COND(dc76fRel && dc76fRel->hasPointColorMap()
+                           && !dc76fRel->pointColorMap().showColorBar,
+                   "76f: PointColorMap::showColorBar=false lost across .sciprj round-trip");
+        g76fRel->syncPointColorBar();
+        CHECK_COND(!dc76fRel->pointColorMap().showColorBar
+                           && !g76fRel->hasColorScaleOnAxis(QwtPlot::yRight)
+                           && !g76fRel->plotWidget()->axisWidget(QwtPlot::yRight)->isColorBarEnabled(),
+                   "76f: color bar re-appeared after reload / syncPointColorBar()");
+
+        reader76f->savedProject();
+        reader76f->setOleEmbeddedMode(true);
+        delete reader76f;
+    }
+
+    w76->savedProject();
+    w76->setOleEmbeddedMode(true);
+    delete w76;
+    QApplication::processEvents();
+    std::cout << "[PASS] Suite 76 passed.\n";
     return 0;
 }

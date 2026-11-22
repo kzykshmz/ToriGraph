@@ -5119,7 +5119,15 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
             initialViewZoom = qBound(0.75, std::min(initialViewZoom, fitZoom), 1.6);
         }
     }
-    setPageZoom(initialViewZoom);
+    setPageZoom(1.0);
+    d_zoom_applied_lcanvas = QSize();
+    d_zoom_base_lcanvas = QSizeF();
+    for (int i = 0; i < graphsList.count(); ++i) {
+        if (Graph *gr = qobject_cast<Graph *>(graphsList.at(i))) {
+            gr->setProperty(kZoomAppliedGeomProp, QVariant());
+            gr->setProperty(kZoomBaseGeomProp, QVariant());
+        }
+    }
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
     d_keep_aspect_ratio = spec.keepAspectRatio;
     d_target_aspect_ratio = (pageH > 1.0) ? (pageW / pageH) : 1.0;
@@ -6171,6 +6179,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         gr->plotWidget()->replot();
     }
     syncChildOverlayAndInsetGeometries();
+    if (std::fabs(initialViewZoom - 1.0) > 1e-4)
+        setPageZoom(initialViewZoom);
     emit modifiedPlot();
     pushUndoSnapshot(undoLabel, beforeSnap);
 }
@@ -8123,6 +8133,7 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                 }
             }
             if (changedAny) {
+                pl->updateAxes();
                 gr->updateSecondaryAxis(QwtPlot::xTop);
                 gr->updateSecondaryAxis(QwtPlot::yRight);
                 gr->syncChildLinkedLayers();

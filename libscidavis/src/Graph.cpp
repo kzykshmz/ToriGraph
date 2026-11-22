@@ -3061,6 +3061,13 @@ void Graph::updateSecondaryAxis(int axis)
 
     QwtScaleEngine *se = d_plot->axisScaleEngine(a);
     const QwtScaleDiv *sd = d_plot->axisScaleDiv(a);
+    if (sd && !sd->isValid()) {
+        d_plot->updateAxes();
+        se = d_plot->axisScaleEngine(a);
+        sd = d_plot->axisScaleDiv(a);
+    }
+    if (!se || !sd)
+        return;
 
     QwtScaleEngine *sc_engine = 0;
     if (d_axis_breaks[a].enabled && !d_axis_breaks[axis].enabled)
@@ -7279,7 +7286,7 @@ QString Graph::saveToString(bool saveAsTemplate)
 
         for (const ReferenceLineSpec &rl : d_ref_lines) {
             s += QString("<ToriRefLine orient=\"%1\" value=\"%2\" stat=\"%3\" color=\"%4\" "
-                         "style=\"%5\" width=\"%6\" label=\"%7\" fill=\"%8\" fillColor=\"%9\"/>\n")
+                         "style=\"%5\" width=\"%6\" label=\"%7\" fill=\"%8\" fillColor=\"%9\"")
                          .arg(rl.orientation)
                          .arg(QString::number(rl.value, 'g', 15))
                          .arg(escAttr(rl.statMode))
@@ -7288,7 +7295,8 @@ QString Graph::saveToString(bool saveAsTemplate)
                          .arg(QString::number(rl.width, 'g', 8))
                          .arg(escAttr(rl.label))
                          .arg(rl.fillToAxis ? 1 : 0)
-                         .arg(rl.fillColor.name(QColor::HexArgb));
+                         .arg(rl.fillColor.name(QColor::HexArgb))
+                 + QStringLiteral(" visible=\"%1\"/>\n").arg(rl.visible ? 1 : 0);
         }
 
         if (!saveAsTemplate) {
@@ -7348,6 +7356,7 @@ QString Graph::saveToString(bool saveAsTemplate)
                         + attr("zmax", QString::number(pm.zMax, 'g', 15))
                         + attr("smin", QString::number(pm.sizeMinPx, 'g', 8))
                         + attr("smax", QString::number(pm.sizeMaxPx, 'g', 8))
+                        + attr("cb", QString::number(pm.showColorBar ? 1 : 0))
                         + attr("title", pm.colorBarTitle) + QStringLiteral("/>\n");
             }
         }
@@ -11766,7 +11775,7 @@ public:
 
         painter->save();
         for (const Graph::ReferenceLineSpec &spec : lines) {
-            if (!spec.fillToAxis || !std::isfinite(spec.value))
+            if (!spec.visible || !spec.fillToAxis || !std::isfinite(spec.value))
                 continue;
             if (spec.orientation == 0) {
                 if (logY && spec.value <= 0.0)
@@ -11998,7 +12007,7 @@ public:
                 && yMap.transformation()->type() == QwtScaleTransformation::Log10;
 
         for (const Graph::ReferenceLineSpec &spec : lines) {
-            if (!std::isfinite(spec.value))
+            if (!spec.visible || !std::isfinite(spec.value))
                 continue;
 
             QString displayLabel = spec.label.trimmed();
@@ -12309,13 +12318,31 @@ void Graph::syncPointColorBar()
     if (!sw)
         return;
     DataCurve *src = pointColorMapCurve();
-    if (!src) {
-        if (d_point_colorbar_active) {
+    if (!src || !src->pointColorMap().showColorBar) {
+        if (d_point_colorbar_active || sw->isColorBarEnabled()) {
             d_point_colorbar_active = false;
             sw->setColorBarEnabled(false);
             sw->setMargin(0);
-            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis)))
+            bool anyRightCurve = false;
+            for (int k = 0; k < n_curves && k < c_keys.size(); ++k) {
+                if (QwtPlotItem *it = d_plot->plotItem(c_keys[k])) {
+                    if (it->yAxis() == axis) {
+                        anyRightCurve = true;
+                        break;
+                    }
+                }
+            }
+            if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(axis))) {
                 sd->setColorBarBorder(false, 0, 1);
+                if (!anyRightCurve)
+                    sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            }
+            if (!anyRightCurve) {
+                if (d_plot->axisEnabled(QwtPlot::xTop) && isAxisBackboneVisible(axis))
+                    updateSecondaryAxis(axis);
+                else
+                    enableAxis(axis, false);
+            }
             d_plot->updateLayout();
             d_plot->replot();
         }
@@ -12352,8 +12379,16 @@ void Graph::syncPointColorBar()
 
 bool Graph::isPoleFigurePlot() const
 {
-    return !ExtraPlotTypes::graphTag(const_cast<Graph *>(this), QStringLiteral("ToriPoleFigure"))
-                    .isEmpty();
+    if (!d_plot
+        || ExtraPlotTypes::graphTag(const_cast<Graph *>(this), QStringLiteral("ToriPoleFigure"))
+                   .isEmpty()) {
+        return false;
+    }
+    for (QwtPlotItem *it : d_plot->itemList()) {
+        if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
+            return true;
+    }
+    return false;
 }
 
 void Graph::applyFramePreset(FramePreset preset)
@@ -12613,7 +12648,7 @@ int Graph::referenceLineAtCanvasPos(const QPoint &pos, int tolPx) const
     int bestIdx = -1;
     for (int i = d_ref_lines.size() - 1; i >= 0; --i) {
         const ReferenceLineSpec &spec = d_ref_lines[i];
-        if (!std::isfinite(spec.value))
+        if (!spec.visible || !std::isfinite(spec.value))
             continue;
         if (spec.orientation == 0) {
             const double yPx = yMap.transform(spec.value);
@@ -14356,12 +14391,14 @@ bool Graph::restorePhase5Tag(const QString &line)
                         bool okL = false, okS = false;
                         const double lw = wv[0].toDouble(&okL);
                         const double sw = wv[1].toDouble(&okS);
-                        if (okL && lw > 0.0 && lw <= 200.0) {
+                        if (okL && lw > 0.0 && lw <= 200.0
+                            && std::abs(qRound(lw) - cv->pen().width()) <= 1) {
                             QPen p = cv->pen();
                             p.setWidthF(lw);
                             cv->setPen(p);
                         }
-                        if (okS && sw > 0.0 && sw <= 200.0) {
+                        if (okS && sw > 0.0 && sw <= 200.0
+                            && std::abs(qRound(sw) - cv->symbol().pen().width()) <= 1) {
                             QwtSymbol sym = cv->symbol();
                             QPen sp = sym.pen();
                             sp.setWidthF(sw);
@@ -14468,6 +14505,7 @@ bool Graph::restorePhase5Tag(const QString &line)
             pm.zMax = attrs.value("zmax", "1").toDouble();
             pm.sizeMinPx = attrs.value("smin", "4").toDouble();
             pm.sizeMaxPx = attrs.value("smax", "16").toDouble();
+            pm.showColorBar = (attrs.value("cb", "1") != "0");
             pm.colorBarTitle = attrs.value("title");
             dc->setPointColorMap(pm);
             break;
@@ -14511,6 +14549,7 @@ bool Graph::restorePhase5Tag(const QString &line)
         const QColor fcol(attrs.value("fillColor", "#201e66b8"));
         if (fcol.isValid())
             rl.fillColor = fcol;
+        rl.visible = (attrs.value("visible", "1") != "0");
         addReferenceLine(rl);
         return true;
     }
@@ -16190,6 +16229,8 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                 }
             }
             for (const ReferenceLineSpec &rl : lg->d_ref_lines) {
+                if (!rl.visible)
+                    continue;
                 bool hit = false;
                 double clipLen = 0.0;
                 if (rl.orientation == 0) {
