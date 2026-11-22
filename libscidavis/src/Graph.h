@@ -822,17 +822,28 @@ public slots:
     static const QList<QColor> &okabeItoColors();
     static const QList<QColor> &tab10Colors();
     static const QList<QColor> &originClassicColors();
+    //! ToriGraph's own default for new curves: black first, then Okabe-Ito hues (no yellow).
+    static const QList<QColor> &toriGraphStandardColors();
     //! Canonical palette names. The tab10 list used to be called "ISIJ / Origin Default";
     //! that name is still accepted as an alias by paletteColors().
     static QString tab10PaletteName() { return QStringLiteral("Matplotlib (tab10)"); }
     static QString originClassicPaletteName() { return QStringLiteral("Origin Classic"); }
     static QString okabeItoPaletteName() { return QStringLiteral("Okabe-Ito (Colorblind Safe)"); }
+    static QString toriGraphStandardPaletteName() { return QStringLiteral("ToriGraph Standard"); }
+    //! Palette for new curves when the user has not chosen one (ToriGraph Standard).
+    static QString builtInDefaultCurvePaletteName() { return toriGraphStandardPaletteName(); }
     //! Maps legacy/alias palette names (e.g. "ISIJ / Origin Default", "Okabe-Ito",
     //! "Cool-Warm") to the canonical registered name. Unknown names are returned trimmed.
     static QString canonicalPaletteName(const QString &name);
-    //! Palette used for new curves (setting "/Curves/DefaultPalette"; default Origin Classic).
+    //! Palette used for new curves (setting "/Curves/DefaultPalette"; when the setting is
+    //! absent, builtInDefaultCurvePaletteName()). An empty name removes the setting.
     static QString defaultCurvePaletteName();
     static void setDefaultCurvePaletteName(const QString &name);
+    //! Forgets the cached default so the next defaultCurvePaletteName() re-reads the setting
+    //! (as at start-up).
+    static void reloadDefaultCurvePaletteName();
+    //! Registers the Japanese names of the built-in palettes (idempotent).
+    static void registerPaletteTranslations();
     //! Origin-style symbol increment (SymbolBox indices): square, circle, up/down triangle, ...
     static int defaultCurveSymbolIndex(int seriesIndex);
     static void saveCustomPalette(const QString &name, const QList<QColor> &colors);

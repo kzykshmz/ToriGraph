@@ -6396,8 +6396,10 @@ void GraphInspectorDock::refreshPaletteSchemeCombo()
     for (const QString &nm : names)
         d_combo_series_scheme->addItem(tr(nm.toUtf8().constData()), nm);
 
-    int targetIdx = prevName.isEmpty() ? d_combo_series_scheme->findData(Graph::okabeItoPaletteName())
-                                       : d_combo_series_scheme->findData(prevName);
+    // First fill: start from the palette new curves use, so "apply" keeps their colours.
+    int targetIdx = prevName.isEmpty()
+            ? d_combo_series_scheme->findData(Graph::defaultCurvePaletteName())
+            : d_combo_series_scheme->findData(prevName);
     if (targetIdx < 0)
         targetIdx = 0;
     if (d_combo_series_scheme->count() > 0)

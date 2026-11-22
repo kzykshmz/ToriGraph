@@ -58,6 +58,7 @@
 #include "RangeSelectorTool.h"
 #include "PlotCurve.h"
 #include "ApplicationWindow.h"
+#include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
 #include "core/column/Column.h"
@@ -66,6 +67,7 @@
 #include "MyParser.h"
 #include <algorithm>
 #include <limits>
+#include <mutex>
 
 #include <QApplication>
 #include <QFontMetricsF>
@@ -8654,8 +8656,8 @@ QString Graph::parentPlotName()
 
 void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
 {
-    // New curves follow the configured default palette (Origin Classic unless changed in the
-    // preset manager) together with Origin's symbol-shape increment.
+    // New curves follow the configured default palette (ToriGraph Standard unless changed in
+    // the preset manager) together with Origin's symbol-shape increment.
     const QList<QColor> palette = paletteColors(defaultCurvePaletteName());
     const int kPaletteCount = qMax(1, palette.size());
 
@@ -9577,6 +9579,34 @@ const QList<QColor> &Graph::originClassicColors()
     return kColors;
 }
 
+const QList<QColor> &Graph::toriGraphStandardColors()
+{
+    // Default for new curves. Black first (the order people know from single-colour journal
+    // figures), then the Okabe-Ito hues so that colour-vision deficient readers can tell the
+    // series apart: vermilion, blue, bluish green, orange, sky blue, reddish purple, gray.
+    // Okabe-Ito yellow (#f0e442) is left out because it is hard to see on a white page.
+    // Sky blue comes before reddish purple so that no two colours two steps apart are close
+    // for deuteranopes (bluish green vs reddish purple); the gray is dark enough (#666666,
+    // 5.7:1 on white) to stay readable and still differ from black.
+    static const QList<QColor> kColors = hexListToColors(
+            { "#000000", "#d55e00", "#0072b2", "#009e73", "#e69f00", "#56b4e9", "#cc79a7",
+              "#666666" });
+    return kColors;
+}
+
+void Graph::registerPaletteTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("ToriGraph Standard", "ToriGraph 標準 (黒・朱・青…)");
+        reg("ToriGraph Standard (black, vermilion, blue, ...)", "ToriGraph 標準 (黒・朱・青…)");
+    });
+}
+
 QString Graph::canonicalPaletteName(const QString &name)
 {
     const QString key = name.trimmed();
@@ -9591,6 +9621,10 @@ QString Graph::canonicalPaletteName(const QString &name)
         || key.compare(QLatin1String("Origin"), Qt::CaseInsensitive) == 0
         || key.compare(QLatin1String("origin_classic"), Qt::CaseInsensitive) == 0)
         return originClassicPaletteName();
+    if (key.compare(toriGraphStandardPaletteName(), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("ToriGraph"), Qt::CaseInsensitive) == 0
+        || key.compare(QLatin1String("torigraph_standard"), Qt::CaseInsensitive) == 0)
+        return toriGraphStandardPaletteName();
     if (key.compare(QLatin1String("Okabe-Ito"), Qt::CaseInsensitive) == 0
         || key.compare(QLatin1String("okabe_ito"), Qt::CaseInsensitive) == 0
         || key.compare(okabeItoPaletteName(), Qt::CaseInsensitive) == 0)
@@ -9617,7 +9651,9 @@ QString Graph::defaultCurvePaletteName()
         QSettings &settings = ApplicationWindow::getSettings();
         const QString stored =
                 settings.value(QStringLiteral("/Curves/DefaultPalette"), QString()).toString();
-        cached = stored.trimmed().isEmpty() ? originClassicPaletteName()
+        // Users who never picked a palette follow the built-in default (ToriGraph Standard
+        // since 2026-11; it was Origin Classic before). An explicit choice is kept as is.
+        cached = stored.trimmed().isEmpty() ? builtInDefaultCurvePaletteName()
                                             : canonicalPaletteName(stored);
     }
     return cached;
@@ -9625,11 +9661,21 @@ QString Graph::defaultCurvePaletteName()
 
 void Graph::setDefaultCurvePaletteName(const QString &name)
 {
-    const QString canon = name.trimmed().isEmpty() ? originClassicPaletteName()
-                                                   : canonicalPaletteName(name);
-    defaultCurvePaletteCache() = canon;
     QSettings &settings = ApplicationWindow::getSettings();
+    if (name.trimmed().isEmpty()) {
+        // Back to "not chosen": follow the built-in default, also after it changes.
+        defaultCurvePaletteCache() = builtInDefaultCurvePaletteName();
+        settings.remove(QStringLiteral("/Curves/DefaultPalette"));
+        return;
+    }
+    const QString canon = canonicalPaletteName(name);
+    defaultCurvePaletteCache() = canon;
     settings.setValue(QStringLiteral("/Curves/DefaultPalette"), canon);
+}
+
+void Graph::reloadDefaultCurvePaletteName()
+{
+    defaultCurvePaletteCache().clear();
 }
 
 int Graph::defaultCurveSymbolIndex(int seriesIndex)
@@ -9643,7 +9689,9 @@ int Graph::defaultCurveSymbolIndex(int seriesIndex)
 
 QStringList Graph::builtInPaletteNames()
 {
+    registerPaletteTranslations();
     return QStringList()
+            << "ToriGraph Standard"
             << "Origin Classic"
             << "Matplotlib (tab10)"
             << "Viridis"
@@ -9687,6 +9735,8 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
         return tab10Colors();
     if (key == originClassicPaletteName())
         return originClassicColors();
+    if (key == toriGraphStandardPaletteName())
+        return toriGraphStandardColors();
     if (key.compare("Viridis", Qt::CaseInsensitive) == 0) {
         return hexListToColors({ "#440154", "#482878", "#3e4989", "#31688e", "#26828e",
                                  "#1f9e89", "#35b779", "#6ece58", "#b5de2b", "#fde725" });
@@ -9746,7 +9796,9 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
         return okabeItoColors();
     if (defName == tab10PaletteName())
         return tab10Colors();
-    return originClassicColors();
+    if (defName == originClassicPaletteName())
+        return originClassicColors();
+    return toriGraphStandardColors();
 }
 
 void Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors)

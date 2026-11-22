@@ -8599,7 +8599,8 @@ void registerStylePresetTranslationsOnce()
     reg("Defaults for New Graphs", "新規グラフの既定");
     reg("Preset applied to new graphs:", "新規グラフに適用するプリセット:");
     reg("Colors for new curves:", "新しい曲線の色:");
-    reg("Origin Classic (black, red, blue, ...)", "Origin 既定 (黒・赤・青…)");
+    reg("Origin Classic (black, red, blue, ...)", "Origin クラシック (黒・赤・青…)");
+    Graph::registerPaletteTranslations();
     reg("Okabe-Ito (Colorblind Safe)", "岡部・伊藤 (色覚バリアフリー)");
     reg("Matplotlib (tab10)", "Matplotlib 既定色 (tab10)");
     reg("Multi-panel page size:", "複数パネルのページ寸法:");
@@ -9540,13 +9541,23 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QFormLayout *defForm = new QFormLayout(defaultsBox);
     QComboBox *cbNewGraphPreset = new QComboBox(defaultsBox);
     QComboBox *cbCurvePalette = new QComboBox(defaultsBox);
+    Graph::registerPaletteTranslations();
+    cbCurvePalette->addItem(QObject::tr("ToriGraph Standard (black, vermilion, blue, ...)"),
+                            Graph::toriGraphStandardPaletteName());
     cbCurvePalette->addItem(QObject::tr("Origin Classic (black, red, blue, ...)"),
                             Graph::originClassicPaletteName());
     cbCurvePalette->addItem(QObject::tr("Okabe-Ito (Colorblind Safe)"),
                             Graph::okabeItoPaletteName());
     cbCurvePalette->addItem(QObject::tr("Matplotlib (tab10)"), Graph::tab10PaletteName());
     {
-        const int pIdx = cbCurvePalette->findData(Graph::defaultCurvePaletteName());
+        // A palette chosen elsewhere (lab defaults ini, Python) is shown as it is instead of
+        // silently displaying the first entry.
+        const QString curPal = Graph::defaultCurvePaletteName();
+        int pIdx = cbCurvePalette->findData(curPal);
+        if (pIdx < 0 && !curPal.isEmpty()) {
+            cbCurvePalette->addItem(QObject::tr(curPal.toUtf8().constData()), curPal);
+            pIdx = cbCurvePalette->count() - 1;
+        }
         cbCurvePalette->setCurrentIndex(pIdx >= 0 ? pIdx : 0);
     }
     QComboBox *cbPanelSizing = new QComboBox(defaultsBox);

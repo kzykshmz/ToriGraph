@@ -175,6 +175,7 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw);
 static int runSuite64XlsxImport(ApplicationWindow *mw);
 static int runSuite65E11ExtraGraphTypes(ApplicationWindow *mw);
 static int runSuite70IconCleanupAndLightTheme(ApplicationWindow *mw);
+static int runSuite72ToriGraphStandardDefaultPalette(ApplicationWindow *mw);
 static int runSuite67Density2DAndPoleFigure(ApplicationWindow *mw);
 static int runSuite68RibbonFoldingRecentModelsAndMiniToolbarKeys(ApplicationWindow *mw);
 static int runSuite66Workbooks(ApplicationWindow *mw);
@@ -319,6 +320,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc70;
+    }
+    if (args.contains("--suite72-only")) {
+        const int rc72 = runSuite72ToriGraphStandardDefaultPalette(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc72;
     }
     if (args.contains("--suite65-only")) {
         const int rc65 = runSuite65E11ExtraGraphTypes(mw);
@@ -5563,6 +5571,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite69SettingsTransferAndScriptCoverage(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite72ToriGraphStandardDefaultPalette(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -21148,5 +21159,206 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
     std::cout << "[INFO] Suite 69 settings transfer & script coverage passed!\n";
+    return 0;
+}
+
+// ============================================================================
+// Suite 72: ToriGraph Standard palette is the default for new curves
+// ============================================================================
+static int runSuite72ToriGraphStandardDefaultPalette(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 72: ToriGraph Standard default curve palette...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 72");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QTemporaryDir tmp72;
+    CHECK_COND(tmp72.isValid(), "Suite 72: QTemporaryDir failed");
+
+    const QString kKey = QStringLiteral("/Curves/DefaultPalette");
+    QSettings &settings = ApplicationWindow::getSettings();
+    const bool hadStored = settings.contains(kKey);
+    const QVariant prevStored = settings.value(kKey);
+    const QString prevNewGraphPreset = MultiLayer::newGraphStylePresetId();
+    MultiLayer::setNewGraphStylePresetId(QString()); // plain graphs for colour checks
+
+    const QColor kBlack("#000000"), kVermilion("#d55e00"), kBlue("#0072b2");
+    auto makeTable = [](ApplicationWindow *app, const QString &name, int nY) -> Table * {
+        Table *t = app->newTable(name, 8, nY + 1);
+        if (!t)
+            return nullptr;
+        t->setColName(0, "x");
+        for (int c = 1; c <= nY; ++c)
+            t->setColName(c, QStringLiteral("y%1").arg(c));
+        for (int r = 0; r < 8; ++r) {
+            t->setCell(r, 0, r + 1.0);
+            for (int c = 1; c <= nY; ++c)
+                t->setCell(r, c, (r + 1.0) * c + 0.5 * c);
+        }
+        return t;
+    };
+    auto yCols = [](Table *t, int nY) {
+        QStringList cols;
+        for (int c = 1; c <= nY; ++c)
+            cols << (t->name() + QStringLiteral("_y%1").arg(c));
+        return cols;
+    };
+    auto closeMl = [](MultiLayer *ml) {
+        if (!ml)
+            return;
+        ml->askOnCloseEvent(false);
+        ml->close();
+        QApplication::processEvents();
+    };
+
+    // ---- 72a: palette definition and the default when nothing is stored ------------------
+    {
+        const QList<QColor> std8 = Graph::toriGraphStandardColors();
+        CHECK_COND(std8.size() == 8, "72a: ToriGraph Standard must have 8 colours");
+        CHECK_COND(std8.at(0) == kBlack && std8.at(1) == kVermilion && std8.at(2) == kBlue,
+                   "72a: ToriGraph Standard must start black, vermilion, blue");
+        CHECK_COND(!std8.contains(QColor("#f0e442")),
+                   "72a: Okabe-Ito yellow is hard to see on white and must not be used");
+        for (const QColor &c : std8)
+            CHECK_COND(c != QColor(Qt::white), "72a: no white entry");
+        CHECK_COND(Graph::builtInPaletteNames().value(0) == Graph::toriGraphStandardPaletteName(),
+                   "72a: ToriGraph Standard must be listed first among the built-in palettes");
+        CHECK_COND(Graph::paletteColors(QStringLiteral("torigraph_standard")) == std8
+                           && Graph::paletteColors(QStringLiteral("ToriGraph Standard")) == std8,
+                   "72a: palette name and alias must resolve");
+        // Other palettes are still available and unchanged.
+        CHECK_COND(Graph::paletteColors(Graph::originClassicPaletteName()).value(1) == QColor(Qt::red),
+                   "72a: Origin Classic must stay available (black, red, ...)");
+        CHECK_COND(Graph::paletteColors(QStringLiteral("Okabe-Ito")).value(0) == QColor("#0072b2"),
+                   "72a: Okabe-Ito must stay available");
+
+        // A user who never chose a palette (no key stored) gets the new default.
+        settings.remove(kKey);
+        Graph::reloadDefaultCurvePaletteName();
+        CHECK_COND(Graph::defaultCurvePaletteName() == Graph::toriGraphStandardPaletteName(),
+                   "72a: default palette must be ToriGraph Standard when nothing is stored, got "
+                           << Graph::defaultCurvePaletteName().toStdString());
+        CHECK_COND(!settings.contains(kKey), "72a: reading the default must not store it");
+        // Clearing the choice returns to "not chosen" (the key is removed).
+        Graph::setDefaultCurvePaletteName(QStringLiteral("Okabe-Ito"));
+        CHECK_COND(settings.value(kKey).toString() == Graph::okabeItoPaletteName(), "72a: store");
+        Graph::setDefaultCurvePaletteName(QString());
+        CHECK_COND(!settings.contains(kKey)
+                           && Graph::defaultCurvePaletteName() == Graph::toriGraphStandardPaletteName(),
+                   "72a: an empty name must remove the stored choice");
+    }
+
+    // ---- 72b: three new curves are black, vermilion, blue; shapes cycle as before ----------
+    QString savedGraphName;
+    {
+        // A separate window so the saved project holds only this graph.
+        ApplicationWindow *writer = new ApplicationWindow();
+        writer->applyUserSettings();
+        Table *t = makeTable(writer, QStringLiteral("Pal72"), 3);
+        CHECK_COND(t != nullptr, "72b: table");
+        MultiLayer *ml = writer->multilayerPlot(t, yCols(t, 3), Graph::LineSymbols);
+        CHECK_COND(ml && ml->activeGraph() && ml->activeGraph()->curves() == 3, "72b: graph");
+        Graph *g = ml->activeGraph();
+        const QColor c0 = g->curve(0)->pen().color();
+        const QColor c1 = g->curve(1)->pen().color();
+        const QColor c2 = g->curve(2)->pen().color();
+        std::cout << "[INFO] 72b curve colours: " << c0.name().toStdString() << " "
+                  << c1.name().toStdString() << " " << c2.name().toStdString() << "\n";
+        CHECK_COND(c0 == kBlack && c1 == kVermilion && c2 == kBlue,
+                   "72b: new curves must be black, vermilion, blue");
+        CHECK_COND(g->curve(1)->symbol().pen().color() == kVermilion,
+                   "72b: symbol edge follows the curve colour");
+        CHECK_COND(g->curve(0)->symbol().style() == QwtSymbol::Rect
+                           && g->curve(1)->symbol().style() == QwtSymbol::Ellipse
+                           && g->curve(2)->symbol().style() == QwtSymbol::UTriangle,
+                   "72b: symbol shapes must still cycle square, circle, up-triangle");
+
+        // ---- 72e (write): the graph is saved with the new default colours ----
+        const QString prjPath = tmp72.filePath(QStringLiteral("suite72_palette.sciprj"));
+        {
+            QFile pf(prjPath);
+            CHECK_COND(pf.open(QIODevice::WriteOnly), "72e: cannot write .sciprj");
+            pf.write(writer->saveProjectToByteArray());
+            pf.close();
+        }
+        savedGraphName = ml->name();
+        writer->savedProject();
+        writer->setOleEmbeddedMode(true);
+        delete writer;
+        QApplication::processEvents();
+
+        // ---- 72c: bars follow the default palette too ----
+        Table *tb = makeTable(mw, QStringLiteral("Bar72"), 2);
+        CHECK_COND(tb != nullptr, "72c: table");
+        MultiLayer *mlb = mw->multilayerPlot(tb, yCols(tb, 2), Graph::VerticalBars);
+        CHECK_COND(mlb && mlb->activeGraph() && mlb->activeGraph()->curves() == 2, "72c: graph");
+        const QColor b0 = mlb->activeGraph()->curve(0)->brush().color();
+        const QColor b1 = mlb->activeGraph()->curve(1)->brush().color();
+        std::cout << "[INFO] 72c bar fills: " << b0.name().toStdString() << " "
+                  << b1.name().toStdString() << "\n";
+        CHECK_COND(b0 == kBlack && b1 == kVermilion, "72c: bar fills must follow the default palette");
+        closeMl(mlb);
+        mw->closeWindow(tb);
+
+        // ---- 72d: an explicit Origin Classic choice is respected (also after a restart) ----
+        Graph::setDefaultCurvePaletteName(Graph::originClassicPaletteName());
+        Graph::reloadDefaultCurvePaletteName(); // as if ToriGraph had been restarted
+        CHECK_COND(settings.value(kKey).toString() == Graph::originClassicPaletteName()
+                           && Graph::defaultCurvePaletteName() == Graph::originClassicPaletteName(),
+                   "72d: a stored Origin Classic choice must be kept");
+        Table *tc = makeTable(mw, QStringLiteral("Cls72"), 3);
+        CHECK_COND(tc != nullptr, "72d: table");
+        MultiLayer *mlc = mw->multilayerPlot(tc, yCols(tc, 3), Graph::LineSymbols);
+        CHECK_COND(mlc && mlc->activeGraph() && mlc->activeGraph()->curves() == 3, "72d: graph");
+        Graph *gc = mlc->activeGraph();
+        CHECK_COND(gc->curve(0)->pen().color() == QColor(Qt::black)
+                           && gc->curve(1)->pen().color() == QColor(Qt::red)
+                           && gc->curve(2)->pen().color() == QColor(Qt::blue),
+                   "72d: with Origin Classic chosen, new curves must be black, red, blue");
+        closeMl(mlc);
+        mw->closeWindow(tc);
+
+        // ---- 72e (read): colours are stored per curve, not re-derived from the palette ----
+        ApplicationWindow *reader = new ApplicationWindow();
+        reader->applyUserSettings();
+        CHECK_COND(reader->loadProject(prjPath), "72e: loadProject failed");
+        MultiLayer *mlr = qobject_cast<MultiLayer *>(reader->window(savedGraphName));
+        CHECK_COND(mlr && mlr->activeGraph() && mlr->activeGraph()->curves() == 3,
+                   "72e: reloaded graph not found: " << savedGraphName.toStdString());
+        Graph *gr = mlr->activeGraph();
+        CHECK_COND(gr->curve(0)->pen().color() == kBlack && gr->curve(1)->pen().color() == kVermilion
+                           && gr->curve(2)->pen().color() == kBlue,
+                   "72e: saved colours must survive reload even when the default palette differs");
+        CHECK_COND(gr->curve(1)->symbol().pen().color() == kVermilion, "72e: symbol colour reload");
+        reader->savedProject();
+        reader->setOleEmbeddedMode(true);
+        delete reader;
+        QApplication::processEvents();
+    }
+
+    // ---- 72f: Japanese names show the order ---------------------------------------------
+    {
+        const QString prevLang = mw->appLanguage;
+        mw->switchToLanguage("ja");
+        Graph::registerPaletteTranslations();
+        const QString jaName = QCoreApplication::translate("ApplicationWindow", "ToriGraph Standard");
+        const QString jaLong = QCoreApplication::translate(
+                "QObject", "ToriGraph Standard (black, vermilion, blue, ...)");
+        std::cout << "[INFO] 72f: " << jaName.toUtf8().constData() << " / "
+                  << jaLong.toUtf8().constData() << "\n";
+        CHECK_COND(jaName.contains(QString::fromUtf8("標準"))
+                           && jaName.contains(QString::fromUtf8("黒・朱・青")),
+                   "72f: Japanese palette name must show the colour order");
+        CHECK_COND(jaLong == jaName, "72f: the dialog entry must use the same Japanese name");
+        mw->switchToLanguage(prevLang.isEmpty() ? QStringLiteral("en") : prevLang);
+    }
+
+    // restore
+    if (hadStored)
+        settings.setValue(kKey, prevStored);
+    else
+        settings.remove(kKey);
+    Graph::reloadDefaultCurvePaletteName();
+    MultiLayer::setNewGraphStylePresetId(prevNewGraphPreset);
+    qApp->setProperty("torigraph_noninteractive", QVariant());
+    std::cout << "[INFO] Suite 72 ToriGraph Standard default palette passed!\n";
     return 0;
 }

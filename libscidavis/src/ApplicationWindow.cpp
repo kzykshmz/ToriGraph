@@ -3581,7 +3581,9 @@ void ApplicationWindow::initMainMenu()
     colorPaletteMenu = new QMenu(this);
     colorPaletteMenu->setFont(appFont);
     colorPaletteMenu->setTitle(tr("Apply Color &Palette"));
+    Graph::registerPaletteTranslations();
     static const char *const presetPalettes[] = {
+        QT_TR_NOOP("ToriGraph Standard"), // default for new curves
         QT_TR_NOOP("Matplotlib (tab10)"), // was "ISIJ / Origin Default" (still resolves)
         QT_TR_NOOP("Origin Classic"),
         QT_TR_NOOP("Viridis"),
