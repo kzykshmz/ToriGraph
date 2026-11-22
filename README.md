@@ -95,6 +95,11 @@ with tg.launch(headless=True) as app:
 
 See [python/README.md](python/README.md) for the full SDK guide.
 
+### 3. Settings: Back Up, Move to Another PC, Lab Defaults
+
+- **Edit → Export Settings… / Import Settings… / Reset Settings…** (also under **Tools → Settings File** on the ribbon) write all ToriGraph settings to an INI file, read them back, or erase them. Import and reset take effect after restarting ToriGraph.
+- **Lab defaults:** put a `torigraph-lab-defaults.ini` (same format as an exported file; keep only the keys you want to standardise) in the folder of `ToriGraph.exe`. At start-up its values fill in every setting the user has not set. Priority: the user's own value > lab defaults > built-in default. A revised lab file also updates values that users have left as previously distributed; a setting a user changed is never overwritten. Settings saved before the lab file was installed count as the user's own.
+
 ---
 
 ## Building from Source

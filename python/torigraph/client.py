@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 import weakref
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
@@ -623,6 +624,31 @@ def _name_of(obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", BatchSte
     return str(obj)
 
 
+def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
+    """Return a method ``old`` that warns (:class:`DeprecationWarning`) and forwards to ``canonical``.
+
+    Older scripts keep working; new code should use the canonical name, which is the one
+    listed in ``python/README.md`` and in ``app.describe_api()`` (``sdk_method``).
+    The forward goes through ``getattr`` so a subclass override of ``canonical`` is honoured.
+    """
+
+    def _alias(self: Any, *args: Any, **kwargs: Any) -> Any:
+        cls_name = type(self).__name__
+        warnings.warn(
+            f"{cls_name}.{old}() is a deprecated alias; use {cls_name}.{canonical}() instead "
+            f"({cls_name}.{old}() は非推奨の別名です。{canonical}() を使ってください)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return getattr(self, canonical)(*args, **kwargs)
+
+    _alias.__name__ = old
+    _alias.__qualname__ = old
+    _alias.__doc__ = f"Deprecated alias of :meth:`{canonical}` (非推奨の別名)."
+    _alias._torigraph_alias_of = canonical  # type: ignore[attr-defined]
+    return _alias
+
+
 class _TcpTransport:
     """Newline-delimited UTF-8 JSON-RPC 2.0 transport over loopback TCP."""
 
@@ -1029,7 +1055,7 @@ class TableProxy:
     def info(self) -> Dict[str, Any]:
         return self.session.call("table.get_info", table=self.name)
 
-    get_info = info
+    get_info = _deprecated_alias("info", "get_info")
 
     def resize(self, rows: Optional[int] = None, cols: Optional[int] = None) -> Dict[str, Any]:
         return self.session.call("table.resize", table=self.name, rows=rows, cols=cols)
@@ -1090,8 +1116,8 @@ class TableProxy:
         )
         return res
 
-    set_column_data = set_column
-    set_col = set_column
+    set_column_data = _deprecated_alias("set_column", "set_column_data")
+    set_col = _deprecated_alias("set_column", "set_col")
 
     def get_column(
         self,
@@ -1116,8 +1142,8 @@ class TableProxy:
         )
         return list(res.get("data", res.get("values", [])))
 
-    get_column_data = get_column
-    get_col = get_column
+    get_column_data = _deprecated_alias("get_column", "get_column_data")
+    get_col = _deprecated_alias("get_column", "get_col")
 
     def set_data_dict(
         self,
@@ -1181,7 +1207,7 @@ class TableProxy:
                 out[col_name] = self.get_column(col_name)
         return out
 
-    to_dict = get_data_dict
+    to_dict = _deprecated_alias("get_data_dict", "to_dict")
 
     def to_dataframe(
         self,
@@ -1297,12 +1323,12 @@ class TableProxy:
             precision=precision,
         )
 
-    set_column_meta = set_meta
+    set_column_meta = _deprecated_alias("set_meta", "set_column_meta")
 
     def get_meta(self, col: Union[int, str]) -> Dict[str, Any]:
         return self.session.call("table.get_column_meta", table=self.name, col=col)
 
-    get_column_meta = get_meta
+    get_column_meta = _deprecated_alias("get_meta", "get_column_meta")
 
     def set_formula(
         self, col: Union[int, str], formula: str, recalculate: bool = True
@@ -1385,7 +1411,7 @@ class TableProxy:
             "table.column_stats", table=self.name, col=col, ignore_masked=ignore_masked
         )
 
-    column_stats = stats
+    column_stats = _deprecated_alias("stats", "column_stats")
 
     def row_stats(
         self,
@@ -1531,7 +1557,7 @@ class MatrixProxy:
     def info(self) -> Dict[str, Any]:
         return self.session.call("matrix.get_info", matrix=self.name)
 
-    get_info = info
+    get_info = _deprecated_alias("info", "get_info")
 
     def set_coordinates(
         self, x_min: float, x_max: float, y_min: float, y_max: float
@@ -1642,7 +1668,7 @@ class MatrixProxy:
             **kwargs,
         )
 
-    find_2d_peaks = analyze_2d_peaks
+    find_2d_peaks = _deprecated_alias("analyze_2d_peaks", "find_2d_peaks")
 
     def to_table(self, name: Optional[str] = None) -> TableProxy:
         res = self.session.call("matrix.to_table", matrix=self.name, name=name)
@@ -1697,7 +1723,7 @@ class GraphProxy:
     def info(self) -> Dict[str, Any]:
         return self.session.call("graph.get_info", graph=self.name)
 
-    get_info = info
+    get_info = _deprecated_alias("info", "get_info")
 
     def inspect(
         self,
@@ -1734,7 +1760,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    fix_layout = auto_layout
+    fix_layout = _deprecated_alias("auto_layout", "fix_layout")
 
     def set_title(
         self,
@@ -1861,7 +1887,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    add_inset_layer = add_inset
+    add_inset_layer = _deprecated_alias("add_inset", "add_inset_layer")
 
     def arrange_layers(
         self,
@@ -2610,14 +2636,34 @@ class GraphProxy:
         path: Union[str, os.PathLike[str]],
         dpi: int = 300,
         transparent: bool = False,
+        *,
+        format: Optional[str] = None,
+        quality: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        """Export this graph to an image or vector file (RPC ``graph.export``).
+
+        The format follows the extension of ``path`` (``.png``, ``.tif``, ``.jpg``,
+        ``.pdf``, ``.svg``, ``.eps``, ``.emf``) unless ``format`` is given.
+
+        Args:
+            path: output file; missing folders are created.
+            dpi: resolution for raster formats (36-2400, default 300).
+            transparent: transparent background for PNG/TIFF.
+            format: force the format (e.g. ``"png"``) regardless of the extension.
+            quality: JPEG quality 1-100 (default 100).
+
+        Returns:
+            dict with ``ok``, absolute ``path`` and file size ``bytes``.
+        """
         return self.session.call(
             "graph.export",
             graph=self.name,
             path=os.fspath(path),
             dpi=dpi,
             transparent=transparent,
+            format=format,
+            quality=quality,
             **kwargs,
         )
 
@@ -2697,9 +2743,29 @@ class GraphProxy:
         replace: Optional[Union[bool, str, Sequence[Any], Mapping[str, Any]]] = None,
         dpi: int = 300,
         overwrite: bool = False,
-        **kwargs: Any,
+        titles: Optional[Union[str, Sequence[str]]] = None,
+        preset: Optional[str] = None,
+        widescreen: bool = True,
+        scale: Optional[Union[float, int, str]] = None,
+        embed_scope: str = "graph",
     ) -> Dict[str, Any]:
-        """Embed this graph into a PowerPoint ``.pptx`` deck as a zero-COM native OLE object."""
+        """Embed this graph into a PowerPoint ``.pptx`` deck as an editable OLE object.
+
+        Same as ``session.to_pptx(path, [graph], ...)``; see :meth:`Session.to_pptx`.
+
+        Args:
+            path: output ``.pptx``.
+            deck: existing deck to start from (``deck == path`` needs ``overwrite=True``).
+            slide: 1-based slide to place on (a new slide when omitted).
+            box: ``(left_cm, top_cm, width_cm)`` placement box.
+            replace: update an already embedded graph (``True``) or replace a named shape.
+            preset: style preset applied before export (e.g. ``"slide_28pt"``).
+            scale: place at natural size x scale (``1.4`` or ``"140%"``).
+            embed_scope: ``"graph"`` (graph and its tables) or ``"project"``.
+
+        Returns:
+            dict describing the written deck and each placement.
+        """
         return self.session.to_pptx(
             path,
             [self],
@@ -2710,7 +2776,11 @@ class GraphProxy:
             replace=replace,
             dpi=dpi,
             overwrite=overwrite,
-            **kwargs,
+            titles=titles,
+            preset=preset,
+            widescreen=widescreen,
+            scale=scale,
+            embed_scope=embed_scope,
         )
 
     def copy_image(self, dpi: int = 300) -> Dict[str, Any]:
@@ -2798,7 +2868,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    set_options = set_3d_options
+    set_options = _deprecated_alias("set_3d_options", "set_options")
 
     def attach_gadget(self, gadget_type: str = "roi_stats", **kwargs: Any) -> Dict[str, Any]:
         return self.session.call(
@@ -2825,7 +2895,7 @@ class GraphProxy:
     def clear_gadgets(self, gadget_type: str = "all") -> Dict[str, Any]:
         return self.session.call("gadget.clear", graph=self.name, type=gadget_type)
 
-    clear_gadget = clear_gadgets
+    clear_gadget = _deprecated_alias("clear_gadgets", "clear_gadget")
 
     def analyze_tensile(
         self,
@@ -2856,7 +2926,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    offset_yield = analyze_tensile
+    offset_yield = _deprecated_alias("analyze_tensile", "offset_yield")
 
     def analyze_work_hardening(
         self,
@@ -2877,7 +2947,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    kocks_mecking = analyze_work_hardening
+    kocks_mecking = _deprecated_alias("analyze_work_hardening", "kocks_mecking")
 
     def analyze_xrd(
         self,
@@ -2910,7 +2980,7 @@ class GraphProxy:
             **kwargs,
         )
 
-    xrd_analyze = analyze_xrd
+    xrd_analyze = _deprecated_alias("analyze_xrd", "xrd_analyze")
 
     def bragg_convert(
         self,
@@ -3733,7 +3803,7 @@ class Session:
     # ------------------------------------------------------------------
     def plot_xy(
         self,
-        table: Any,
+        table: Optional[Any] = None,
         x_col: Optional[Any] = None,
         y_cols: Optional[Any] = None,
         y_err_col: Optional[Union[int, str]] = None,
@@ -3741,39 +3811,138 @@ class Session:
         style: str = "line_symbol",
         graph_name: Optional[str] = None,
         *,
+        x: Optional[Any] = None,
+        y: Optional[Any] = None,
+        y_err: Optional[Any] = None,
         y_err_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
+        title: Optional[str] = None,
+        xlabel: Optional[str] = None,
+        ylabel: Optional[str] = None,
+        xlim: Optional[Sequence[float]] = None,
+        ylim: Optional[Sequence[float]] = None,
+        color: Optional[str] = None,
+        lw: Optional[float] = None,
+        ls: Optional[str] = None,
+        marker: Optional[str] = None,
+        ms: Optional[int] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        """Create a 2D XY graph (RPC ``plot.xy``).
+
+        Two ways to give the data:
+
+        * Worksheet columns: ``plot_xy(table, x_col, y_cols)`` where ``table`` is a
+          :class:`TableProxy`, a worksheet name, a ``pandas``/``polars`` DataFrame,
+          a ``dict`` of columns or a 2-D array (DataFrame / dict / array are first
+          copied into a new worksheet).  ``y_cols`` may be one column or a list.
+        * Plain arrays: ``plot_xy(x=[...], y=[...])`` (or positionally
+          ``plot_xy(x_values, y_values)``).  ``y`` may also be a list of arrays for
+          several curves sharing ``x``; ``y_err`` gives error-bar values (one array,
+          or one per curve).  A new worksheet is created for the arrays.
+
+        Args:
+            y_err_col, x_err_col, y_err_cols: error-bar columns (worksheet mode).
+            style: ``"line"``, ``"scatter"``, ``"line_symbol"`` (default), ``"spline"``,
+                ``"vertical_bars"``, ``"horizontal_bars"``, ``"area"``,
+                ``"vertical_steps"``, ``"horizontal_steps"``, ``"drop_lines"``.
+            graph_name: name of the new graph window.
+            title, xlabel, ylabel, xlim, ylim: graph title, axis titles and ranges.
+            color, lw, ls, marker, ms: style of the new curves.
+            **kwargs: further RPC parameters (``app.describe_api("plot.xy")``).
+
+        Returns:
+            :class:`GraphProxy` of the new graph.
+        """
         if graph_name is None and "name" in kwargs:
             graph_name = kwargs.pop("name")
+        kwargs.update(
+            title=title, xlabel=xlabel, ylabel=ylabel, xlim=xlim, ylim=ylim,
+            color=color, lw=lw, ls=ls, marker=marker, ms=ms,
+        )
 
-        # Support direct 2-array plotting: app.plot_xy(x_1d, y_1d, ...)
-        is_x_seq = (
-            _is_1d_series_or_array(table)
-            or (isinstance(table, (list, tuple)) and len(table) > 0 and not isinstance(table[0], (list, tuple)))
-        )
-        is_y_seq = (
-            x_col is not None
-            and not isinstance(x_col, (int, str, bool))
-            and (
-                _is_1d_series_or_array(x_col)
-                or isinstance(x_col, (list, tuple))
+        # Plain-array mode.  Positional ``plot_xy(x_values, y_values)`` is kept for
+        # compatibility; the second positional slot is named ``x_col`` for the
+        # worksheet mode, so it is re-read here explicitly as the Y values.
+        def _is_values(obj: Any) -> bool:
+            return obj is not None and not isinstance(obj, (int, str, bool)) and (
+                _is_1d_series_or_array(obj)
+                or (_is_ndarray_like(obj) and int(obj.ndim) == 2)
+                or isinstance(obj, (list, tuple))
             )
+
+        array_mode = x is not None or y is not None
+        table_is_flat_values = _is_1d_series_or_array(table) or (
+            isinstance(table, (list, tuple))
+            and len(table) > 0
+            and not isinstance(table[0], (list, tuple))
         )
-        if is_x_seq and is_y_seq:
-            x_attrs = _extract_series_attrs(table)
-            y_attrs = _extract_series_attrs(x_col)
+        if not array_mode and table_is_flat_values:
+            if not _is_values(x_col):
+                raise TypeError(
+                    "plot_xy: X values were given without Y values. Use "
+                    "plot_xy(x=[...], y=[...]) or plot_xy(table, x_col, y_cols)."
+                )
+            x, y = table, x_col
+            table, x_col = None, None
+            array_mode = True
+        if array_mode:
+            if table is not None or x_col is not None:
+                raise TypeError(
+                    "plot_xy: give either worksheet columns (table, x_col, y_cols) or "
+                    "arrays (x=..., y=...), not both."
+                )
+            if y_cols is not None:
+                raise TypeError(
+                    "plot_xy: the third positional argument (y_cols) is not used with "
+                    "array data; pass error bars as y_err=... and the style as style=..."
+                )
+            if x is None or y is None:
+                raise TypeError("plot_xy: array mode needs both x=... and y=....")
+            x_attrs = _extract_series_attrs(x)
             xn = x_attrs.get("name", "X")
-            yn = y_attrs.get("name", "Y")
-            if yn == xn:
-                yn = f"{yn}_2"
-            tbl_auto = self.create_table(
-                {xn: table, yn: x_col},
-                designations={xn: "X", yn: "Y"},
-            )
+            if _is_ndarray_like(y) and int(y.ndim) == 2:
+                y_list = [y[:, i] for i in range(int(y.shape[1]))]
+            elif isinstance(y, (list, tuple)) and len(y) > 0 and _is_values(y[0]):
+                y_list = list(y)
+            else:
+                y_list = [y]
+            if y_err is None:
+                err_list: List[Any] = []
+            elif isinstance(y_err, (list, tuple)) and len(y_err) > 0 and _is_values(y_err[0]):
+                err_list = list(y_err)
+            else:
+                err_list = [y_err]
+            if err_list and len(err_list) != len(y_list):
+                raise ValueError(
+                    f"plot_xy: {len(err_list)} y_err arrays for {len(y_list)} y arrays."
+                )
+            cols: Dict[str, Any] = {xn: x}
+            designations: Dict[str, str] = {xn: "X"}
+            y_names: List[str] = []
+            err_names: List[str] = []
+            for i, ys in enumerate(y_list):
+                base = _extract_series_attrs(ys).get("name") or ("Y" if len(y_list) == 1 else f"Y{i + 1}")
+                yn = base
+                k = 2
+                while yn in cols:
+                    yn = f"{base}_{k}"
+                    k += 1
+                cols[yn] = ys
+                designations[yn] = "Y"
+                y_names.append(yn)
+                if err_list:
+                    en = f"{yn}_err"
+                    while en in cols:
+                        en += "_"
+                    cols[en] = err_list[i]
+                    designations[en] = "yErr"
+                    err_names.append(en)
+            tbl_auto = self.create_table(cols, designations=designations)
             eff_table_ref: Optional[str] = tbl_auto.name
             eff_x_col: Optional[Any] = xn
-            eff_y_cols: Optional[Any] = [yn]
+            eff_y_cols: Optional[Any] = y_names
+            if err_names:
+                y_err_cols = err_names
         elif _is_dataframe_like(table) or isinstance(table, Mapping) or _is_ndarray_like(table):
             tbl_auto = self.create_table(table)
             eff_table_ref = tbl_auto.name
@@ -4293,7 +4462,7 @@ class Session:
             **kwargs,
         )
 
-    fix_layout = auto_layout
+    fix_layout = _deprecated_alias("auto_layout", "fix_layout")
 
     def set_category_labels(
         self,
@@ -4374,7 +4543,7 @@ class Session:
         )
         return str(res.get("script") or res.get("code") or "")
 
-    export_python_script = to_python_script
+    export_python_script = _deprecated_alias("to_python_script", "export_python_script")
 
     def to_pptx(
         self,
@@ -4431,8 +4600,59 @@ class Session:
         res = self.call("analysis.list_fit_models", category=category)
         return list(res.get("models", []))
 
-    def fit_linear(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.fit_linear", **kwargs)
+    def fit_linear(
+        self,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        x_min: Optional[float] = None,
+        x_max: Optional[float] = None,
+        plot_curve: Optional[bool] = None,
+        fit_label: Optional[str] = None,
+        weighting: Optional[str] = None,
+        scale_errors: Optional[bool] = None,
+        apparent: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Straight-line least-squares fit ``y = a + b x`` (RPC ``analysis.fit_linear``).
+
+        Give the data either as a plotted curve (``graph`` + optional ``curve`` index or
+        title; the active graph when omitted) or as worksheet columns (``table`` +
+        ``x_col`` + ``y_col``; a graph is created when needed).
+
+        Args:
+            x_min, x_max: fit only the points with ``x_min <= x <= x_max`` (give both).
+            plot_curve: draw the fitted line on the graph (default ``True``).
+            fit_label: name of the fit curve / result entry.
+            weighting: ``"none"`` (default), ``"instrumental"`` (1/error-bar^2),
+                ``"statistical"``, ``"proportional"`` or ``"dataset"``.
+            scale_errors: scale parameter errors by sqrt(reduced chi^2) (default ``True``).
+            apparent: report the "apparent" fit statistics.
+            **kwargs: further RPC parameters (see ``app.describe_api("analysis.fit_linear")``).
+
+        Returns:
+            dict with ``slope``, ``intercept``, ``slope_se``, ``intercept_se``, ``r2``,
+            ``adj_r2``, ``pearson_r``, ``p_value`` and ``n``.
+        """
+        return self.call(
+            "analysis.fit_linear",
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            x_col=x_col,
+            y_col=y_col,
+            x_min=x_min,
+            x_max=x_max,
+            plot_curve=plot_curve,
+            fit_label=fit_label,
+            weighting=weighting,
+            scale_errors=scale_errors,
+            apparent=apparent,
+            **kwargs,
+        )
 
     def fit_york(
         self,
@@ -4459,8 +4679,89 @@ class Session:
     def fit_polynomial(self, order: int = 2, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_polynomial", order=order, **kwargs)
 
-    def fit_nonlinear(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("analysis.fit_nonlinear", **kwargs)
+    def fit_nonlinear(
+        self,
+        model: Optional[str] = None,
+        *,
+        formula: Optional[str] = None,
+        param_names: Optional[Sequence[str]] = None,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        init_params: Optional[Mapping[str, float]] = None,
+        bounds: Optional[Mapping[str, Sequence[Optional[float]]]] = None,
+        fixed: Optional[Sequence[str]] = None,
+        x_min: Optional[float] = None,
+        x_max: Optional[float] = None,
+        max_iter: Optional[int] = None,
+        tolerance: Optional[float] = None,
+        points: Optional[int] = None,
+        weighting: Optional[str] = None,
+        weight_col: Optional[Union[int, str]] = None,
+        algorithm: Optional[str] = None,
+        conf_band: Optional[bool] = None,
+        plot_curve: Optional[bool] = None,
+        fit_label: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Nonlinear least-squares fit (RPC ``analysis.fit_nonlinear``).
+
+        Give exactly one of ``model`` (built-in: ``"Gauss"``, ``"GaussAmp"``,
+        ``"Lorentz"``, ``"PseudoVoigt1"``, ``"Boltzmann"``, ``"Arrhenius"``,
+        ``"Hollomon"``, ``"Voce"``, ...; ``app.list_fit_models()`` lists them) or
+        ``formula`` (muParser expression in ``x``, e.g. ``"a*exp(-x/t)+c"``, with
+        ``param_names`` when they cannot be inferred).
+
+        Args:
+            graph, curve: plotted curve to fit (active graph when omitted).
+            table, x_col, y_col: fit worksheet columns instead of a plotted curve.
+            init_params: initial values ``{"a": 1.0, ...}``.
+            bounds: ``{"a": [lower, upper], ...}`` (``None`` for an open side).
+            fixed: names of parameters held at their initial value.
+            x_min, x_max: fit range in x.
+            max_iter: iteration limit (default 1000); tolerance: default 1e-7.
+            points: number of points of the drawn fit curve (default 200).
+            weighting, weight_col: weighting method (``"none"``, ``"instrumental"``,
+                ``"statistical"``, ``"proportional"``, ``"dataset"``) and, for ``"dataset"``,
+                the weight column.
+            algorithm: Levenberg-Marquardt (default), ``"lm_unscaled"`` or ``"simplex"``.
+            conf_band: also draw the confidence band.
+            plot_curve: draw the fitted curve (default ``True``).
+            **kwargs: further RPC parameters (``app.describe_api("analysis.fit_nonlinear")``).
+
+        Returns:
+            dict with ``params`` / ``param_names`` / ``param_values``, ``errors``, ``chi2``,
+            ``chi2_dof``, ``r2``, ``adj_r2``, ``aic``, ``bic``, ``converged`` and
+            ``convergence_message``.
+        """
+        return self.call(
+            "analysis.fit_nonlinear",
+            model=model,
+            formula=formula,
+            param_names=(list(param_names) if param_names is not None else None),
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            x_col=x_col,
+            y_col=y_col,
+            init_params=init_params,
+            bounds=bounds,
+            fixed=(list(fixed) if fixed is not None else None),
+            x_min=x_min,
+            x_max=x_max,
+            max_iter=max_iter,
+            tolerance=tolerance,
+            points=points,
+            weighting=weighting,
+            weight_col=weight_col,
+            algorithm=algorithm,
+            conf_band=conf_band,
+            plot_curve=plot_curve,
+            fit_label=fit_label,
+            **kwargs,
+        )
 
     def fit_global(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("analysis.fit_global", **kwargs)
@@ -4609,16 +4910,97 @@ class Session:
     ) -> Dict[str, Any]:
         return self.call("gadget.clear", graph=_name_of(graph), **kwargs)
 
-    clear_gadget = clear_gadgets
+    clear_gadget = _deprecated_alias("clear_gadgets", "clear_gadget")
 
-    def smooth(self, method: str = "savgol", **kwargs: Any) -> Dict[str, Any]:
-        return self.call("signal.smooth", method=method, **kwargs)
+    def smooth(
+        self,
+        method: str = "savgol",
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        x_col: Optional[Union[int, str]] = None,
+        y_col: Optional[Union[int, str]] = None,
+        window: Optional[int] = None,
+        poly_order: Optional[int] = None,
+        span: Optional[float] = None,
+        lambda_: Optional[float] = None,
+        sigma: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Smooth a curve and add the smoothed curve (RPC ``signal.smooth``).
+
+        Args:
+            method: ``"savgol"`` (Savitzky-Golay, default), ``"average"`` (moving
+                average), ``"median"``, ``"fft"``, ``"lowess"``, ``"whittaker"`` or
+                ``"gaussian"``.
+            graph, curve: curve to smooth (active graph when omitted).
+            table, x_col, y_col: smooth worksheet columns instead.
+            window: window length in points (default ``min(7, n)``).
+            poly_order: Savitzky-Golay polynomial order (default 2).
+            span: LOWESS span as a fraction of the points (default 0.2).
+            lambda_: Whittaker smoothing parameter (sent as ``lambda``; default 100).
+            sigma: Gaussian kernel width in points.
+            **kwargs: further RPC parameters (``app.describe_api("signal.smooth")``).
+        """
+        if lambda_ is not None and "lambda" not in kwargs:
+            kwargs["lambda"] = lambda_
+        return self.call(
+            "signal.smooth",
+            method=method,
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            x_col=x_col,
+            y_col=y_col,
+            window=window,
+            poly_order=poly_order,
+            span=span,
+            sigma=sigma,
+            **kwargs,
+        )
 
     def savgol_derivative(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.savgol_derivative", **kwargs)
 
-    def fft(self, **kwargs: Any) -> Dict[str, Any]:
-        return self.call("signal.fft", **kwargs)
+    def fft(
+        self,
+        *,
+        graph: Optional[Union[str, GraphProxy]] = None,
+        curve: Optional[Union[int, str]] = None,
+        table: Optional[Union[str, TableProxy]] = None,
+        real_col: Optional[Union[int, str]] = None,
+        imag_col: Optional[Union[int, str]] = None,
+        sampling: Optional[float] = None,
+        inverse: Optional[bool] = None,
+        normalize: Optional[bool] = None,
+        shift: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """1-D forward or inverse FFT (RPC ``signal.fft``).
+
+        Args:
+            graph, curve: transform a plotted curve (active graph when omitted).
+            table, real_col, imag_col: transform worksheet columns instead.
+            sampling: sampling interval (``dt``); taken from the X spacing when omitted.
+            inverse: inverse transform (default ``False``).
+            normalize: normalise the amplitudes (default ``True``).
+            shift: put zero frequency in the centre (default ``False``).
+            **kwargs: further RPC parameters (``app.describe_api("signal.fft")``).
+        """
+        return self.call(
+            "signal.fft",
+            graph=_name_of(graph),
+            curve=curve,
+            table=_name_of(table),
+            real_col=real_col,
+            imag_col=imag_col,
+            sampling=sampling,
+            inverse=inverse,
+            normalize=normalize,
+            shift=shift,
+            **kwargs,
+        )
 
     def fft_filter(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.fft_filter", **kwargs)
@@ -4632,7 +5014,7 @@ class Session:
     def envelope(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.envelope", **kwargs)
 
-    hilbert_envelope = envelope
+    hilbert_envelope = _deprecated_alias("envelope", "hilbert_envelope")
 
     def wavelet_cwt(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.wavelet_cwt", **kwargs)
@@ -4666,7 +5048,7 @@ class Session:
     def fsd(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("signal.fsd", **kwargs)
 
-    fourier_self_deconvolution = fsd
+    fourier_self_deconvolution = _deprecated_alias("fsd", "fourier_self_deconvolution")
 
     def curve_eval(
         self,
@@ -4698,8 +5080,8 @@ class Session:
             **kwargs,
         )
 
-    curve_math = curve_eval
-    eval_curves = curve_eval
+    curve_math = _deprecated_alias("curve_eval", "curve_math")
+    eval_curves = _deprecated_alias("curve_eval", "eval_curves")
 
     def average_curves(
         self,
@@ -4745,7 +5127,7 @@ class Session:
     def subtract_line(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.subtract_line", **kwargs)
 
-    subtract_straight_line = subtract_line
+    subtract_straight_line = _deprecated_alias("subtract_line", "subtract_straight_line")
 
     def intersections(
         self,
@@ -4762,8 +5144,8 @@ class Session:
             **kwargs,
         )
 
-    curve_intersections = intersections
-    find_intersections = intersections
+    curve_intersections = _deprecated_alias("intersections", "curve_intersections")
+    find_intersections = _deprecated_alias("intersections", "find_intersections")
 
     def lookup_xy(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("curvemath.lookup_xy", **kwargs)
@@ -4823,7 +5205,7 @@ class Session:
             **kwargs,
         )
 
-    offset_yield = analyze_tensile
+    offset_yield = _deprecated_alias("analyze_tensile", "offset_yield")
 
     def analyze_work_hardening(
         self,
@@ -4848,7 +5230,7 @@ class Session:
             **kwargs,
         )
 
-    kocks_mecking = analyze_work_hardening
+    kocks_mecking = _deprecated_alias("analyze_work_hardening", "kocks_mecking")
 
     def analyze_kissinger(
         self,
@@ -4888,8 +5270,8 @@ class Session:
             **kwargs,
         )
 
-    kissinger = analyze_kissinger
-    kissinger_plot = analyze_kissinger
+    kissinger = _deprecated_alias("analyze_kissinger", "kissinger")
+    kissinger_plot = _deprecated_alias("analyze_kissinger", "kissinger_plot")
 
     def analyze_xrd(
         self,
@@ -4924,7 +5306,7 @@ class Session:
             **kwargs,
         )
 
-    xrd_analyze = analyze_xrd
+    xrd_analyze = _deprecated_alias("analyze_xrd", "xrd_analyze")
 
     def bragg_convert(
         self,
@@ -4991,8 +5373,8 @@ class Session:
             **kwargs,
         )
 
-    vasp_dos = plot_vasp_dos
-    plot_dos = plot_vasp_dos
+    vasp_dos = _deprecated_alias("plot_vasp_dos", "vasp_dos")
+    plot_dos = _deprecated_alias("plot_vasp_dos", "plot_dos")
 
     def plot_vasp_bands(
         self,
@@ -5052,8 +5434,8 @@ class Session:
             **kwargs,
         )
 
-    vasp_bands = plot_vasp_bands
-    plot_bands = plot_vasp_bands
+    vasp_bands = _deprecated_alias("plot_vasp_bands", "vasp_bands")
+    plot_bands = _deprecated_alias("plot_vasp_bands", "plot_bands")
 
     def plot_vasp_band_dos(
         self,
@@ -5078,8 +5460,8 @@ class Session:
             params["doscar_path"] = str(Path(doscar_path).resolve())
         return self.call("curvemath.vasp_band_dos", **params)
 
-    vasp_band_dos = plot_vasp_band_dos
-    plot_band_dos = plot_vasp_band_dos
+    vasp_band_dos = _deprecated_alias("plot_vasp_band_dos", "vasp_band_dos")
+    plot_band_dos = _deprecated_alias("plot_vasp_band_dos", "plot_band_dos")
 
     def arrhenius(
         self,
@@ -5097,7 +5479,7 @@ class Session:
             **kwargs,
         )
 
-    arrhenius_plot = arrhenius
+    arrhenius_plot = _deprecated_alias("arrhenius", "arrhenius_plot")
 
     def tauc(
         self,
@@ -5115,7 +5497,7 @@ class Session:
             **kwargs,
         )
 
-    tauc_bandgap = tauc
+    tauc_bandgap = _deprecated_alias("tauc", "tauc_bandgap")
 
     def eis_fit(
         self,
@@ -5152,7 +5534,7 @@ class Session:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call("stats.normality", table=tbl_ref, col=col, **kwargs)
 
-    normality_test = normality
+    normality_test = _deprecated_alias("normality", "normality_test")
 
     def outlier(
         self,
@@ -5163,7 +5545,7 @@ class Session:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call("stats.outlier", table=tbl_ref, col=col, **kwargs)
 
-    outlier_test = outlier
+    outlier_test = _deprecated_alias("outlier", "outlier_test")
 
     def anova_oneway(
         self,
@@ -5179,7 +5561,7 @@ class Session:
             **kwargs,
         )
 
-    anova_one_way = anova_oneway
+    anova_one_way = _deprecated_alias("anova_oneway", "anova_one_way")
 
     def anova_twoway(
         self,
@@ -5206,7 +5588,7 @@ class Session:
             **kwargs,
         )
 
-    anova_two_way = anova_twoway
+    anova_two_way = _deprecated_alias("anova_twoway", "anova_two_way")
 
     def nonparametric(
         self,
@@ -5229,7 +5611,7 @@ class Session:
             **kwargs,
         )
 
-    nonparametric_test = nonparametric
+    nonparametric_test = _deprecated_alias("nonparametric", "nonparametric_test")
 
     def paired_plot(
         self,
@@ -5254,7 +5636,7 @@ class Session:
             **kwargs,
         )
 
-    paired_estimation_plot = paired_plot
+    paired_estimation_plot = _deprecated_alias("paired_plot", "paired_estimation_plot")
 
     def bland_altman(
         self,
@@ -5311,7 +5693,7 @@ class Session:
             **kwargs,
         )
 
-    weibull_fit = weibull
+    weibull_fit = _deprecated_alias("weibull", "weibull_fit")
 
     def probability_plot(
         self,
@@ -5504,8 +5886,8 @@ class Session:
             **kwargs,
         )
 
-    roc_analysis = roc
-    roc_curve = roc
+    roc_analysis = _deprecated_alias("roc", "roc_analysis")
+    roc_curve = _deprecated_alias("roc", "roc_curve")
 
     def pca(
         self,
@@ -5535,7 +5917,7 @@ class Session:
             **kwargs,
         )
 
-    correlation_matrix = correlation
+    correlation_matrix = _deprecated_alias("correlation", "correlation_matrix")
 
     def clustering(
         self,
@@ -5558,7 +5940,7 @@ class Session:
     ) -> Dict[str, Any]:
         return self.call("stats.confidence_ellipse", graph=_name_of(graph), **kwargs)
 
-    add_confidence_ellipse = confidence_ellipse
+    add_confidence_ellipse = _deprecated_alias("confidence_ellipse", "add_confidence_ellipse")
 
     def digitize(
         self,
@@ -5572,8 +5954,8 @@ class Session:
             raise ValueError("Provide 'path' (or 'image_path') to image file.")
         return self.call("digitizer.extract", path=os.fspath(eff_path), **kwargs)
 
-    extract_digitizer = digitize
-    digitize_image = digitize
+    extract_digitizer = _deprecated_alias("digitize", "extract_digitizer")
+    digitize_image = _deprecated_alias("digitize", "digitize_image")
 
     def merge_graphs(
         self,
@@ -5767,13 +6149,17 @@ def connect_or_launch(
     *,
     exe_path: Optional[Union[str, os.PathLike[str]]] = None,
     headless: bool = True,
-    language: str = "ja",
+    language: Optional[str] = None,
     timeout: float = 30.0,
     extra_args: Optional[Sequence[str]] = None,
     rpc_timeout: Optional[float] = None,
     check_version: bool = True,
 ) -> Session:
-    """Connect to ``endpoint`` / ``TORIGRAPH_RPC_ENDPOINT`` if available, else launch headless ``ToriGraph``."""
+    """Connect to ``endpoint`` / ``TORIGRAPH_RPC_ENDPOINT`` if available, else launch headless ``ToriGraph``.
+
+    ``language`` is used only when a new process is launched (see :func:`launch`);
+    an existing session's UI language is never changed.
+    """
     resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
     if resolved:
         return connect(
@@ -5793,7 +6179,7 @@ def connect_or_launch(
 def launch(
     exe_path: Optional[Union[str, os.PathLike[str]]] = None,
     headless: bool = True,
-    language: str = "ja",
+    language: Optional[str] = None,
     timeout: float = 30.0,
     extra_args: Optional[Sequence[str]] = None,
     rpc_timeout: Optional[float] = None,
@@ -5804,6 +6190,12 @@ def launch(
     ``timeout`` is the start-up wait (process start until the RPC endpoint answers);
     ``rpc_timeout`` is the default wait for each later RPC answer (``None`` ->
     :data:`DEFAULT_RPC_TIMEOUT`; override per call with ``call(..., rpc_timeout=)``).
+
+    ``language`` (``"ja"`` / ``"en"``) switches the UI language of the launched
+    process.  The default ``None`` leaves it as the user's ToriGraph setting
+    (Japanese on a fresh install).  Pass it explicitly when the script depends on
+    the language of generated labels.  Note that ToriGraph remembers the language
+    it last used, so an explicit value can carry over to the next GUI start.
     """
     exe = _discover_torigraph_executable(exe_path)
 

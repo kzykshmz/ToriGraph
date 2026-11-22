@@ -960,7 +960,7 @@ def run_persona_2_intermediate(app: tg.Session, reg: AtlasRegistry, tmp_dir: Pat
     reg.verify_figure(app, g18, "Fig18_Box_OneWay_ANOVA_Brackets", persona="Intermediate", description="Box Plot + One-Way ANOVA Tukey Brackets")
 
     g18b = app.plot_violin(t_aov, cols=["As_Q", "T6", "RRA"], show_points=True, graph_name="Atlas_Fig18b_ViolinKW")
-    kw_res = app.nonparametric_test(t_aov, cols=["As_Q", "T6", "RRA"], test="kruskal_wallis", graph=g18b, add_brackets=True)
+    kw_res = app.nonparametric(t_aov, cols=["As_Q", "T6", "RRA"], test="kruskal_wallis", graph=g18b, add_brackets=True)
     assert kw_res.get("ok") is True, kw_res
     g18b.isij_style()
     if g18b.diagnose_layout():
