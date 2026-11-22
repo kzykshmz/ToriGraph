@@ -31,7 +31,8 @@ public:
     void setTimestamp(const QDateTime &when);
 
     //! Appends one entry. `name` uses forward slashes and no leading '/'. Fails (with a
-    //! message in *outErr) for an empty or duplicate name (case-insensitive), after finish(),
+    //! message in *outErr) for an empty, duplicate (case-insensitive) or over-long (> 65535
+    //! bytes) name, after finish(),
     //! for more than 65535 entries, or when the archive would exceed about 2 GB (it is built in
     //! one QByteArray; ZIP64 is not written).
     bool addFile(const QString &name, const QByteArray &data,
@@ -63,6 +64,7 @@ private:
     QByteArray d_out;
     QVector<Entry> d_entries;
     QSet<QString> d_namesLower;
+    qint64 d_centralSize = 0; //!< bytes the central directory will take
     quint16 d_dosTime = 0;
     quint16 d_dosDate = 0;
     bool d_hasTimestamp = false;
