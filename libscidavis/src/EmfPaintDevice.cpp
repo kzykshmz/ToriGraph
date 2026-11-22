@@ -1590,20 +1590,59 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
     if (pxSize.width() < 50 || pxSize.height() < 50)
         pxSize = QSize(500, 500);
 
-    const QWidget *dpiWidget = ml ? static_cast<const QWidget *>(ml)
-                                  : static_cast<const QWidget *>(singleLayer);
-    const int dpiX = (dpiWidget && dpiWidget->logicalDpiX() > 0) ? dpiWidget->logicalDpiX() : 96;
-    const int dpiY = (dpiWidget && dpiWidget->logicalDpiY() > 0) ? dpiWidget->logicalDpiY() : 96;
-    const double zoom = ml ? std::max(0.1, ml->pageZoom()) : 1.0;
+    const MultiLayer *ownerMl =
+            ml ? ml : (singleLayer ? singleLayer->multiLayerParent() : nullptr);
+    const double zoom = ownerMl ? std::max(0.1, ownerMl->pageZoom()) : 1.0;
+    const bool hasPhysicalPage = (!singleLayer && ml && ml->pageUnit() != MultiLayer::UnitPx);
+
+    LONG widthHm = 15000L;
+    LONG heightHm = 11250L;
+    double logicalBaseDpiX = 96.0;
+    double logicalBaseDpiY = 96.0;
+    if (hasPhysicalPage) {
+        auto toHm = [](double val, MultiLayer::PageUnit u) -> LONG {
+            double hm = val * 100.0;
+            switch (u) {
+            case MultiLayer::UnitMm:
+                hm = val * 100.0;
+                break;
+            case MultiLayer::UnitCm:
+                hm = val * 1000.0;
+                break;
+            case MultiLayer::UnitInch:
+                hm = val * 2540.0;
+                break;
+            case MultiLayer::UnitPx:
+            default:
+                hm = (val / 96.0) * 2540.0;
+                break;
+            }
+            return std::max(1000L, static_cast<LONG>(std::lround(hm)));
+        };
+        widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
+        heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
+    } else {
+        const double unitPxDpi = (ownerMl && ownerMl->pageUnit() == MultiLayer::UnitPx
+                                  && ownerMl->pageViewMode() && ownerMl->pageDpi() > 0)
+                ? double(ownerMl->pageDpi())
+                : 96.0;
+        logicalBaseDpiX = unitPxDpi;
+        logicalBaseDpiY = unitPxDpi;
+        const double unzoomedW = double(pxSize.width()) / zoom;
+        const double unzoomedH = double(pxSize.height()) / zoom;
+        widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / unitPxDpi)));
+        heightHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedH * 2540.0 / unitPxDpi)));
+    }
 
     OleRenderedGraph out;
     out.pixelSize = pxSize;
+    out.extentHm = SIZEL{ widthHm, heightHm };
     QImage raster;
     auto renderFallbackRaster = [&]() -> const QImage & {
         if (!raster.isNull())
             return raster;
         constexpr int kDibFallbackDpi = 300;
-        double dibScale = double(kDibFallbackDpi) / std::max(36.0, dpiX * zoom);
+        double dibScale = double(kDibFallbackDpi) / std::max(36.0, logicalBaseDpiX * zoom);
         const double maxLogicalSide = double(std::max(pxSize.width(), pxSize.height()));
         if (maxLogicalSide * dibScale > 3600.0)
             dibScale = std::max(1.0, 3600.0 / maxLogicalSide);
@@ -1613,8 +1652,10 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
 
         raster = QImage(dibSize, QImage::Format_ARGB32);
         raster.fill(Qt::white);
-        const int paintDpmX = static_cast<int>(std::lround(std::max(36.0, dpiX * zoom) / 0.0254));
-        const int paintDpmY = static_cast<int>(std::lround(std::max(36.0, dpiY * zoom) / 0.0254));
+        const int paintDpmX =
+                static_cast<int>(std::lround(std::max(36.0, logicalBaseDpiX * zoom) / 0.0254));
+        const int paintDpmY =
+                static_cast<int>(std::lround(std::max(36.0, logicalBaseDpiY * zoom) / 0.0254));
         raster.setDotsPerMeterX(paintDpmX);
         raster.setDotsPerMeterY(paintDpmY);
         {
@@ -1640,48 +1681,6 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
     if (includeDibClipboard) {
         out.dibBytes = imageToDibBytes(renderFallbackRaster());
     }
-
-    LONG widthHm = 15000L;
-    LONG heightHm = 11250L;
-    double logicalBaseDpiX = double(dpiX);
-    double logicalBaseDpiY = double(dpiY);
-    if (!singleLayer && ml && ml->pageUnit() != MultiLayer::UnitPx) {
-        auto toHm = [](double val, MultiLayer::PageUnit u) -> LONG {
-            double hm = val * 100.0;
-            switch (u) {
-            case MultiLayer::UnitMm:
-                hm = val * 100.0;
-                break;
-            case MultiLayer::UnitCm:
-                hm = val * 1000.0;
-                break;
-            case MultiLayer::UnitInch:
-                hm = val * 2540.0;
-                break;
-            case MultiLayer::UnitPx:
-            default:
-                hm = (val / 96.0) * 2540.0;
-                break;
-            }
-            return std::max(1000L, static_cast<LONG>(std::lround(hm)));
-        };
-        widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
-        heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
-    } else {
-        const MultiLayer *ownerMl =
-                ml ? ml : (singleLayer ? singleLayer->multiLayerParent() : nullptr);
-        const double unitPxDpi = (ownerMl && ownerMl->pageUnit() == MultiLayer::UnitPx
-                                  && ownerMl->pageViewMode() && ownerMl->pageDpi() > 0)
-                ? double(ownerMl->pageDpi())
-                : 96.0;
-        logicalBaseDpiX = unitPxDpi;
-        logicalBaseDpiY = unitPxDpi;
-        const double unzoomedW = double(pxSize.width()) / zoom;
-        const double unzoomedH = double(pxSize.height()) / zoom;
-        widthHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedW * 2540.0 / unitPxDpi)));
-        heightHm = std::max(1000L, static_cast<LONG>(std::lround(unzoomedH * 2540.0 / unitPxDpi)));
-    }
-    out.extentHm = SIZEL{ widthHm, heightHm };
 
     if (!ensureGdiplusStarted())
         return renderFromImage(renderFallbackRaster());

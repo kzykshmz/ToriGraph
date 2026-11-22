@@ -122,6 +122,30 @@ QString normalizeSha256Token(QString raw)
     return raw.toLower();
 }
 
+QString normalizeCertThumbprintHex40(const QString &raw)
+{
+    static const QRegularExpression kThumbRe(
+            QStringLiteral("^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{2}(?:[:\\s][0-9A-Fa-f]{2}){19})$"));
+    const QString t = raw.trimmed();
+    if (!kThumbRe.match(t).hasMatch())
+        return QString();
+    QString hex;
+    hex.reserve(40);
+    for (const QChar c : t) {
+        if (c != QLatin1Char(':') && !c.isSpace())
+            hex.append(c.toUpper());
+    }
+    return (hex.size() == 40) ? hex : QString();
+}
+
+bool isX500DistinguishedNameSpec(const QString &raw)
+{
+    static const QRegularExpression kDnPrefixRe(
+            QStringLiteral("^(?:CN|O|OU|C|L|S|ST|E|EMAILADDRESS|DC|UID|SERIALNUMBER|G|SN|T|OID\\.[0-9.]+)\\s*="),
+            QRegularExpression::CaseInsensitiveOption);
+    return kDnPrefixRe.match(raw.trimmed()).hasMatch();
+}
+
 QString stripVersionPrefixes(QString s)
 {
     s = s.trimmed();
@@ -1986,13 +2010,74 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
     }
 
 #ifdef Q_OS_WIN
+    const QString expectedSubj = expectedSignerSubject();
+    QString canonPath = fi.canonicalFilePath();
+    if (canonPath.isEmpty())
+        canonPath = fi.absoluteFilePath();
+    const QString normalizedCanonPath = QDir::cleanPath(canonPath).toLower();
+    const qint64 fileSize = fi.size();
+    const qint64 lastModMsecs = fi.lastModified().toMSecsSinceEpoch();
+
     const std::wstring nativePath = QDir::toNativeSeparators(fi.absoluteFilePath()).toStdWString();
+    quint64 winWriteTicks100ns = 0;
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (GetFileAttributesExW(nativePath.c_str(), GetFileExInfoStandard, &fad)) {
+            winWriteTicks100ns = (static_cast<quint64>(fad.ftLastWriteTime.dwHighDateTime) << 32)
+                    | static_cast<quint64>(fad.ftLastWriteTime.dwLowDateTime);
+        }
+    }
+
+    struct CachedSigVerification
+    {
+        CodeSignatureStatus status = CodeSignatureStatus::InvalidSignature;
+        QString signerSubject;
+        QString errText;
+    };
+    static std::mutex s_sigCacheMutex;
+    static QHash<QString, CachedSigVerification> s_sigCache;
+
+    const QString cacheKey = normalizedCanonPath + QChar(0) + QString::number(fileSize) + QChar(0)
+            + QString::number(lastModMsecs) + QChar(0) + QString::number(winWriteTicks100ns)
+            + QChar(0) + expectedSubj;
+    {
+        std::lock_guard<std::mutex> lock(s_sigCacheMutex);
+        const auto it = s_sigCache.constFind(cacheKey);
+        if (it != s_sigCache.constEnd()) {
+            if (signerSubjectOut)
+                *signerSubjectOut = it->signerSubject;
+            if (errOut)
+                *errOut = it->errText;
+            return it->status;
+        }
+    }
+
+    auto storeAndReturn = [&](CodeSignatureStatus st, const QString &subj,
+                              const QString &err) -> CodeSignatureStatus {
+        {
+            std::lock_guard<std::mutex> lock(s_sigCacheMutex);
+            if (s_sigCache.size() >= 64)
+                s_sigCache.clear();
+            s_sigCache.insert(cacheKey, CachedSigVerification { st, subj, err });
+        }
+        if (signerSubjectOut)
+            *signerSubjectOut = subj;
+        if (errOut)
+            *errOut = err;
+        return st;
+    };
+
     auto runVerifyAttempt = [&](DWORD revokeChecks, DWORD provFlags, QString *outSimpleSubj,
-                                QString *outFullDn, DWORD *outLastErr) -> LONG {
+                                QString *outFullDnRev, QString *outFullDnFwd,
+                                QString *outThumbprint, DWORD *outLastErr) -> LONG {
         if (outSimpleSubj)
             outSimpleSubj->clear();
-        if (outFullDn)
-            outFullDn->clear();
+        if (outFullDnRev)
+            outFullDnRev->clear();
+        if (outFullDnFwd)
+            outFullDnFwd->clear();
+        if (outThumbprint)
+            outThumbprint->clear();
         WINTRUST_FILE_INFO fileInfo = {};
         fileInfo.cbStruct = sizeof(fileInfo);
         fileInfo.pcwszFilePath = nativePath.c_str();
@@ -2025,17 +2110,48 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
                     if (provSigner->pasCertChain && provSigner->csCertChain > 0
                         && provSigner->pasCertChain[0].pCert) {
                         PCCERT_CONTEXT pCert = provSigner->pasCertChain[0].pCert;
-                        wchar_t subjBuf[512] = {};
-                        const DWORD cch = CertGetNameStringW(pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE,
-                                                             0, nullptr, subjBuf, 512);
-                        if (cch > 1 && outSimpleSubj)
-                            *outSimpleSubj = QString::fromWCharArray(subjBuf).trimmed();
+                        if (outSimpleSubj) {
+                            const DWORD reqCch = CertGetNameStringW(
+                                    pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, nullptr, 0);
+                            if (reqCch > 1) {
+                                QVector<wchar_t> subjBuf(static_cast<int>(reqCch), L'\0');
+                                const DWORD cch = CertGetNameStringW(
+                                        pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr,
+                                        subjBuf.data(), reqCch);
+                                if (cch > 1)
+                                    *outSimpleSubj = QString::fromWCharArray(subjBuf.constData()).trimmed();
+                            }
+                        }
 
-                        wchar_t dnBuf[1024] = {};
-                        const DWORD dnCch = CertNameToStrW(X509_ASN_ENCODING, &pCert->pCertInfo->Subject,
-                                                           CERT_X500_NAME_STR, dnBuf, 1024);
-                        if (dnCch > 1 && outFullDn)
-                            *outFullDn = QString::fromWCharArray(dnBuf).trimmed();
+                        auto extractDn = [&](DWORD strType) -> QString {
+                            const DWORD reqCch = CertNameToStrW(
+                                    X509_ASN_ENCODING, &pCert->pCertInfo->Subject, strType, nullptr, 0);
+                            if (reqCch <= 1)
+                                return QString();
+                            QVector<wchar_t> dnBuf(static_cast<int>(reqCch), L'\0');
+                            const DWORD cch = CertNameToStrW(
+                                    X509_ASN_ENCODING, &pCert->pCertInfo->Subject, strType,
+                                    dnBuf.data(), reqCch);
+                            return (cch > 1) ? QString::fromWCharArray(dnBuf.constData()).trimmed()
+                                             : QString();
+                        };
+                        if (outFullDnRev)
+                            *outFullDnRev = extractDn(CERT_X500_NAME_STR | CERT_NAME_STR_REVERSE_FLAG);
+                        if (outFullDnFwd)
+                            *outFullDnFwd = extractDn(CERT_X500_NAME_STR);
+
+                        if (outThumbprint) {
+                            BYTE sha1Hash[64] = {};
+                            DWORD cbSha1 = sizeof(sha1Hash);
+                            if (CertGetCertificateContextProperty(pCert, CERT_HASH_PROP_ID,
+                                                                  sha1Hash, &cbSha1)
+                                && cbSha1 == 20) {
+                                *outThumbprint = QString::fromLatin1(
+                                                         QByteArray(reinterpret_cast<const char *>(sha1Hash), 20)
+                                                                 .toHex())
+                                                         .toUpper();
+                            }
+                        }
                     }
                 }
             }
@@ -2047,47 +2163,58 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
     };
 
     QString simpleSubject;
-    QString fullSubjectDn;
+    QString fullSubjectDnRev;
+    QString fullSubjectDnFwd;
+    QString certThumbprint;
     DWORD winLastErr = 0;
 
-    // 1) Fast cache-only whole-chain revocation check; 2) online revocation check if cache misses;
-    // 3) offline fallback ONLY when CRL/OCSP servers are unreachable (never on CRYPT_E_REVOKED).
+    // GUI-safe verification: always pass WTD_CACHE_ONLY_URL_RETRIEVAL so unreachable CRL/OCSP
+    // servers never block the GUI thread for tens of seconds. Known cached revocations
+    // (CRYPT_E_REVOKED) are still rejected immediately; the elevated/background PowerShell
+    // staging script performs a full online Get-AuthenticodeSignature check before install.
     LONG status = runVerifyAttempt(WTD_REVOKE_WHOLECHAIN,
                                    WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL,
-                                   &simpleSubject, &fullSubjectDn, &winLastErr);
+                                   &simpleSubject, &fullSubjectDnRev, &fullSubjectDnFwd,
+                                   &certThumbprint, &winLastErr);
     HRESULT hr = static_cast<HRESULT>(status);
-    if (hr == CRYPT_E_REVOCATION_OFFLINE || hr == CERT_E_REVOCATION_FAILURE) {
-        status = runVerifyAttempt(WTD_REVOKE_WHOLECHAIN,
-                                  WTD_SAFER_FLAG | WTD_REVOCATION_CHECK_CHAIN,
-                                  &simpleSubject, &fullSubjectDn, &winLastErr);
-        hr = static_cast<HRESULT>(status);
-    }
     if (hr == CRYPT_E_REVOCATION_OFFLINE || hr == CERT_E_REVOCATION_FAILURE) {
         status = runVerifyAttempt(WTD_REVOKE_NONE,
                                   WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL,
-                                  &simpleSubject, &fullSubjectDn, &winLastErr);
+                                  &simpleSubject, &fullSubjectDnRev, &fullSubjectDnFwd,
+                                  &certThumbprint, &winLastErr);
         hr = static_cast<HRESULT>(status);
     }
 
     if (status == ERROR_SUCCESS) {
-        if (signerSubjectOut)
-            *signerSubjectOut = !simpleSubject.isEmpty() ? simpleSubject : fullSubjectDn;
-        const QString expectedSubj = expectedSignerSubject();
+        const QString resolvedDisp = !simpleSubject.isEmpty()
+                ? simpleSubject
+                : (!fullSubjectDnRev.isEmpty() ? fullSubjectDnRev : fullSubjectDnFwd);
         if (!expectedSubj.isEmpty()) {
-            const bool matchSimple = !simpleSubject.isEmpty()
-                    && simpleSubject.contains(expectedSubj, Qt::CaseInsensitive);
-            const bool matchDn = !fullSubjectDn.isEmpty()
-                    && fullSubjectDn.contains(expectedSubj, Qt::CaseInsensitive);
-            if (!matchSimple && !matchDn) {
-                if (errOut) {
-                    const QString actualDisp = !fullSubjectDn.isEmpty() ? fullSubjectDn : simpleSubject;
-                    *errOut = tr("Authenticode signer '%1' does not match expected signer '%2'.")
-                                      .arg(actualDisp, expectedSubj);
-                }
-                return CodeSignatureStatus::InvalidSignature;
+            const QString expectedThumb = normalizeCertThumbprintHex40(expectedSubj);
+            bool matched = false;
+            if (!expectedThumb.isEmpty()) {
+                matched = !certThumbprint.isEmpty()
+                        && certThumbprint.compare(expectedThumb, Qt::CaseInsensitive) == 0;
+            } else if (isX500DistinguishedNameSpec(expectedSubj)) {
+                matched = (!fullSubjectDnRev.isEmpty()
+                           && fullSubjectDnRev.compare(expectedSubj, Qt::CaseInsensitive) == 0)
+                        || (!fullSubjectDnFwd.isEmpty()
+                            && fullSubjectDnFwd.compare(expectedSubj, Qt::CaseInsensitive) == 0);
+            } else {
+                matched = !simpleSubject.isEmpty()
+                        && simpleSubject.compare(expectedSubj, Qt::CaseInsensitive) == 0;
+            }
+            if (!matched) {
+                const QString actualDisp = !fullSubjectDnRev.isEmpty()
+                        ? fullSubjectDnRev
+                        : (!fullSubjectDnFwd.isEmpty() ? fullSubjectDnFwd : simpleSubject);
+                return storeAndReturn(
+                        CodeSignatureStatus::InvalidSignature, QString(),
+                        tr("Authenticode signer '%1' does not match expected signer '%2'.")
+                                .arg(actualDisp, expectedSubj));
             }
         }
-        return CodeSignatureStatus::Valid;
+        return storeAndReturn(CodeSignatureStatus::Valid, resolvedDisp, QString());
     }
 
     if (hr == TRUST_E_NOSIGNATURE || hr == TRUST_E_SUBJECT_FORM_UNKNOWN
@@ -2095,22 +2222,20 @@ AutoUpdater::CodeSignatureStatus AutoUpdater::verifyFileCodeSignature(
         if (winLastErr == static_cast<DWORD>(TRUST_E_BAD_DIGEST)
             || winLastErr == static_cast<DWORD>(TRUST_E_EXPLICIT_DISTRUST)
             || winLastErr == static_cast<DWORD>(CRYPT_E_SECURITY_SETTINGS)) {
-            if (errOut) {
-                *errOut = tr("Authenticode signature verification failed (0x%1).")
-                                  .arg(static_cast<quint32>(winLastErr), 8, 16, QLatin1Char('0'));
-            }
-            return CodeSignatureStatus::InvalidSignature;
+            return storeAndReturn(
+                    CodeSignatureStatus::InvalidSignature, QString(),
+                    tr("Authenticode signature verification failed (0x%1).")
+                            .arg(static_cast<quint32>(winLastErr), 8, 16, QLatin1Char('0')));
         }
-        if (errOut)
-            *errOut = tr("The update package does not carry an Authenticode digital signature.");
-        return CodeSignatureStatus::Unsigned;
+        return storeAndReturn(
+                CodeSignatureStatus::Unsigned, QString(),
+                tr("The update package does not carry an Authenticode digital signature."));
     }
 
-    if (errOut) {
-        *errOut = tr("Authenticode signature is invalid or untrusted (0x%1).")
-                          .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
-    }
-    return CodeSignatureStatus::InvalidSignature;
+    return storeAndReturn(
+            CodeSignatureStatus::InvalidSignature, QString(),
+            tr("Authenticode signature is invalid or untrusted (0x%1).")
+                    .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0')));
 #else
     if (errOut)
         *errOut = tr("Authenticode signature verification is only available on Windows.");
@@ -2226,8 +2351,28 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    }\r\n"
             "    if ($sig.Status -eq 'Valid') {\r\n"
             "        if ($CheckSubject -and $ExpectedSignerSubject.Length -gt 0) {\r\n"
-            "            $subj = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }\r\n"
-            "            if ($subj.IndexOf($ExpectedSignerSubject, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {\r\n"
+            "            $cert = $sig.SignerCertificate\r\n"
+            "            $simpleName = ''\r\n"
+            "            if ($null -ne $cert) {\r\n"
+            "                try { $simpleName = ([string]$cert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)).Trim() } catch { $simpleName = '' }\r\n"
+            "            }\r\n"
+            "            $subj = if ($null -ne $cert -and $null -ne $cert.Subject) { ([string]$cert.Subject).Trim() } else { '' }\r\n"
+            "            $subjFwd = ''\r\n"
+            "            if ($null -ne $cert -and $null -ne $cert.SubjectName) {\r\n"
+            "                try { $subjFwd = ([string]$cert.SubjectName.Format($false)).Trim() } catch { $subjFwd = '' }\r\n"
+            "            }\r\n"
+            "            $thumb = if ($null -ne $cert -and $null -ne $cert.Thumbprint) { ([string]$cert.Thumbprint).Trim() } else { '' }\r\n"
+            "            $exp = $ExpectedSignerSubject.Trim()\r\n"
+            "            $expHex = ($exp -replace '[:\\s]', '')\r\n"
+            "            $signerMatched = $false\r\n"
+            "            if ($exp -match '^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{2}(?:[:\\s][0-9A-Fa-f]{2}){19})$') {\r\n"
+            "                $signerMatched = ($thumb.Length -eq 40) -and ($thumb -ieq $expHex)\r\n"
+            "            } elseif ($exp -match '^(?:CN|O|OU|C|L|S|ST|E|EMAILADDRESS|DC|UID|SERIALNUMBER|G|SN|T|OID\\.[0-9.]+)\\s*=') {\r\n"
+            "                $signerMatched = (($subj.Length -gt 0) -and ($subj -ieq $exp)) -or (($subjFwd.Length -gt 0) -and ($subjFwd -ieq $exp))\r\n"
+            "            } else {\r\n"
+            "                $signerMatched = ($simpleName.Length -gt 0) -and ($simpleName -ieq $exp)\r\n"
+            "            }\r\n"
+            "            if (-not $signerMatched) {\r\n"
             "                if ($OrigDownloadedFile -and (Test-Path -LiteralPath $OrigDownloadedFile -PathType Leaf)) {\r\n"
             "                    Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
             "                }\r\n"
@@ -2307,6 +2452,9 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($shaMsg, 'ToriGraph Security Error') } catch { }\r\n"
             "        }\r\n"
             "        [Console]::Error.WriteLine($shaMsg)\r\n"
+            "        if ($Relaunch -and (Test-Path -LiteralPath $TargetExe)) {\r\n"
+            "            try { Invoke-RelaunchTargetExe } catch { }\r\n"
+            "        }\r\n"
             "        exit 4\r\n"
             "    }\r\n"
             "}\r\n\r\n"

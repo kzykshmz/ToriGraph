@@ -432,15 +432,16 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
     bool appliedToCaller = false;
     for (QWidget *tlw : QApplication::topLevelWidgets()) {
         if (auto *aw = qobject_cast<ApplicationWindow *>(tlw)) {
-            aw->readSettings();
-            aw->applyUserSettings();
-            if (aw == callerGuard.data())
+            const bool isCaller = (aw == callerGuard.data());
+            aw->readSettings(/*restoreWindowLayout=*/false);
+            aw->applyUserSettings(/*resetScriptingLang=*/isCaller);
+            if (isCaller)
                 appliedToCaller = true;
         }
     }
     if (!appliedToCaller && callerGuard) {
-        callerGuard->readSettings();
-        callerGuard->applyUserSettings();
+        callerGuard->readSettings(/*restoreWindowLayout=*/false);
+        callerGuard->applyUserSettings(/*resetScriptingLang=*/true);
     }
     if (callerGuard)
         callerGuard->saveSettings();
