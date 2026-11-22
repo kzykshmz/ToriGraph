@@ -192,6 +192,7 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw);
 static int runSuite74LegacyUiHidden(ApplicationWindow *mw);
 static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw);
 static int runSuite73SendToPowerPoint(ApplicationWindow *mw);
+static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw);
 
 int main(int argc, char **argv)
 {
@@ -402,6 +403,13 @@ int main(int argc, char **argv)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc73;
+    }
+    if (args.contains("--suite75-only")) {
+        const int rc75 = runSuite75CopyAndExportKeepGraphState(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc75;
     }
 
     // =========================================================================
@@ -5616,6 +5624,9 @@ int main(int argc, char **argv)
         return 1;
     mw->savedProject();
     if (runSuite73SendToPowerPoint(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite75CopyAndExportKeepGraphState(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -22130,14 +22141,8 @@ static int runSuite71LabSlideTextAndZoomFollowsText(ApplicationWindow *mw)
                         ++diff;
             return double(diff) / qMax<qint64>(1, qint64(a.width()) * a.height());
         };
-        // Copy Page (copyAllLayers, the PowerPoint copy) re-places the anchored legend as a side
-        // effect, also at 100 %; start every round from the same legend position so only the zoom
-        // differs.
-        const double legX0 = g->legend()->xValue(), legY0 = g->legend()->yValue();
         auto layerOutputs = [&](const QString &tag, QImage &png, QStringList &svgSizes, qint64 &pdfSize,
                                 QImage &layerCopy, QImage &pageCopy) {
-            g->legend()->setOriginCoord(legX0, legY0);
-            g->replot();
             const QString pngPath = tmp71.filePath(QStringLiteral("layer_%1.png").arg(tag));
             const QString svgPath = tmp71.filePath(QStringLiteral("layer_%1.svg").arg(tag));
             const QString pdfPath = tmp71.filePath(QStringLiteral("layer_%1.pdf").arg(tag));
@@ -23157,5 +23162,394 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
                   << rx.ok << " slides=" << rx.slideCount << " " << rx.error.toStdString() << "\n";
     }
     std::cout << "[INFO] Suite 73 Send to PowerPoint passed!\n";
+    return 0;
+}
+
+// Suite 75: copying / exporting a graph must not move anything on it. Copy Page (copyAllLayers,
+// the PowerPoint copy), copyPageAsImage, the OLE metafile, every file export and the layer
+// copies run five times each at 100 % and 200 % view; the legend, a text annotation, an arrow
+// and a picture must keep their data coordinates and pixel boxes exactly, and the axis ranges
+// and layer geometry must stay as they were.
+static QStringList suite75GraphState(MultiLayer *ml)
+{
+    QStringList s;
+    auto num = [](double v) { return QString::number(v, 'g', 17); };
+    auto rectStr = [](const QRect &r) {
+        return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+    };
+    s << QStringLiteral("zoom %1 window %2x%3").arg(num(ml->pageZoom())).arg(ml->width()).arg(ml->height());
+    const QList<Graph *> layers = ml->layersList();
+    for (int li = 0; li < layers.size(); ++li) {
+        Graph *g = layers.at(li);
+        if (!g || !g->plotWidget())
+            continue;
+        Plot *pl = g->plotWidget();
+        const QString L = QStringLiteral("L%1 ").arg(li + 1);
+        s << L + QStringLiteral("geometry ") + rectStr(g->geometry()) + QStringLiteral(" plot ")
+                        + rectStr(pl->geometry()) + QStringLiteral(" canvas ")
+                        + rectStr(pl->canvas()->geometry());
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const QwtScaleDiv *d = pl->axisScaleDiv(a);
+            if (d)
+                s << L + QStringLiteral("axis%1 %2 .. %3").arg(a).arg(num(d->lowerBound())).arg(num(d->upperBound()));
+        }
+        const QVector<int> texts = g->textMarkerKeys();
+        for (int id : texts) {
+            Legend *m = g->textMarker(id);
+            if (!m)
+                continue;
+            s << L + QStringLiteral("text '%1' data (%2, %3) px %4")
+                             .arg(m->text().left(12))
+                             .arg(num(m->xValue()))
+                             .arg(num(m->yValue()))
+                             .arg(rectStr(m->rect()));
+        }
+        const QVector<int> lines = g->lineMarkerKeys();
+        for (int id : lines) {
+            ArrowMarker *m = g->arrow(id);
+            if (!m)
+                continue;
+            const QwtDoubleRect b = m->boundingRect();
+            s << L + QStringLiteral("arrow data (%1, %2)-(%3, %4) px %5")
+                             .arg(num(m->startPointCoord().x()))
+                             .arg(num(m->startPointCoord().y()))
+                             .arg(num(m->endPointCoord().x()))
+                             .arg(num(m->endPointCoord().y()))
+                             .arg(rectStr(QRect(m->startPoint(), m->endPoint())));
+            Q_UNUSED(b);
+        }
+        const QVector<int> images = g->imageMarkerKeys();
+        for (int id : images) {
+            ImageMarker *m = g->imageMarker(id);
+            if (!m)
+                continue;
+            const QwtDoubleRect b = m->boundingRect();
+            s << L + QStringLiteral("image data (%1, %2) %3x%4 px %5")
+                             .arg(num(b.left()))
+                             .arg(num(b.top()))
+                             .arg(num(b.width()))
+                             .arg(num(b.height()))
+                             .arg(rectStr(m->rect()));
+        }
+    }
+    return s;
+}
+
+static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
+{
+    std::cout << "[INFO] Running Suite 75: copy / export leave legend, annotations and axes in place...\n";
+    CHECK_COND(mw != nullptr, "ApplicationWindow is null in Suite 75");
+    qApp->setProperty("torigraph_noninteractive", true);
+    QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir tmp75;
+    CHECK_COND(tmp75.isValid(), "75: QTemporaryDir failed");
+
+    ApplicationWindow *w75 = new ApplicationWindow();
+    w75->applyUserSettings();
+    MultiLayer::setNewGraphStylePresetId(QString());
+    Table *t = w75->newTable(QStringLiteral("Drift75"), 10, 3);
+    CHECK_COND(t != nullptr, "75: table");
+    t->setColName(0, "x");
+    t->setColName(1, "y1");
+    t->setColName(2, "y2");
+    for (int r = 0; r < 10; ++r) {
+        t->setCell(r, 0, 0.02 * (r + 1));
+        t->setCell(r, 1, 2.0 + 1.7 * r);
+        t->setCell(r, 2, 1.0 + 1.1 * r);
+    }
+    MultiLayer *ml = w75->multilayerPlot(
+            t, QStringList() << (t->name() + "_y1") << (t->name() + "_y2"), Graph::LineSymbols);
+    CHECK_COND(ml && ml->activeGraph(), "75: graph");
+    w75->show();
+    ml->show();
+    for (int k = 0; k < 5; ++k)
+        QApplication::processEvents();
+    // The lab slide preset opens the small page at a 160 % view, so the markers are placed while
+    // the view is zoomed (the case seen in practice).
+    CHECK_COND(ml->applyStylePresetById(QStringLiteral("lab_slide_83mm")), "75: apply lab preset");
+    QApplication::processEvents();
+    Graph *g = ml->activeGraph();
+    CHECK_COND(g && g->legend(), "75: legend");
+
+    // Fix the legend at a position chosen by the user (no automatic anchor any more), and add a
+    // text annotation, an arrow and a picture at data positions.
+    g->plotWidget()->setProperty("_toriLegendAnchor", QVariant());
+    Legend *note = g->newLegend(QStringLiteral("annealed 473 K"));
+    CHECK_COND(note != nullptr, "75: text annotation");
+    {
+        ArrowMarker arr;
+        arr.setStartPoint(0.10, 8.0);
+        arr.setEndPoint(0.14, 11.0);
+        arr.setColor(Qt::black);
+        arr.setWidth(1);
+        arr.drawEndArrow(true);
+        g->addArrow(&arr);
+    }
+    CHECK_COND(g->lineMarkerKeys().size() == 1, "75: arrow");
+    ArrowMarker *arrow = g->arrow(g->lineMarkerKeys().first());
+    const QString pngPath = tmp75.filePath(QStringLiteral("inset75.png"));
+    {
+        QImage inset(40, 30, QImage::Format_ARGB32);
+        inset.fill(QColor(30, 120, 200));
+        CHECK_COND(inset.save(pngPath, "PNG"), "75: picture");
+    }
+    ImageMarker *img = g->addImage(pngPath);
+    CHECK_COND(img != nullptr && arrow != nullptr, "75: add picture");
+
+    // Places every marker while the view is at placeZoom (their pixel caches are made there),
+    // then shows the page at viewZoom.
+    auto placeMarkers = [&](double placeZoom, double viewZoom) {
+        ml->setPageZoom(placeZoom);
+        for (int k = 0; k < 3; ++k)
+            QApplication::processEvents();
+        // A different value first: setOriginCoord / setBoundingRect skip equal values.
+        g->legend()->setOriginCoord(0.05, 10.0);
+        g->legend()->setOriginCoord(0.035, 17.5);
+        note->setOriginCoord(0.05, 10.0);
+        note->setOriginCoord(0.12, 6.0);
+        arrow->setBoundingRect(0.10, 8.0, 0.14, 11.0);
+        img->setBoundingRect(0.10, 10.0, 0.12, 8.0);
+        img->setBoundingRect(0.16, 15.0, 0.19, 12.0);
+        g->replot();
+        ml->setPageZoom(viewZoom);
+        for (int k = 0; k < 3; ++k)
+            QApplication::processEvents();
+    };
+    auto placedExactly = [&]() -> bool {
+        return g->legend()->xValue() == 0.035 && g->legend()->yValue() == 17.5 && note->xValue() == 0.12
+                && note->yValue() == 6.0 && img->xValue() == 0.16 && img->yValue() == 15.0
+                && img->right() == 0.19 && img->bottom() == 12.0 && arrow->startPointCoord().x() == 0.10
+                && arrow->endPointCoord().y() == 11.0;
+    };
+
+    struct Op {
+        QString name;
+        std::function<void()> run;
+    };
+    int fileNo = 0;
+    auto out = [&](const QString &ext) {
+        return tmp75.filePath(QStringLiteral("out75_%1.%2").arg(++fileNo).arg(ext));
+    };
+    const QList<Op> ops = {
+        { QStringLiteral("copyAllLayers"), [&]() { ml->copyAllLayers(); } },
+        { QStringLiteral("copyGraphForPowerPoint"),
+          [&]() { (void)SciDAVisOle::copyGraphForPowerPoint(w75, ml, nullptr); } },
+        { QStringLiteral("copyGraphForPowerPoint(layer)"),
+          [&]() { (void)SciDAVisOle::copyGraphForPowerPoint(w75, ml, g); } },
+        { QStringLiteral("copyPageAsImage"), [&]() { (void)ml->copyPageAsImage(300); } },
+        { QStringLiteral("renderMultiLayer"), [&]() { (void)SciDAVisEmf::renderMultiLayer(ml, nullptr, false); } },
+        { QStringLiteral("renderMultiLayer(layer)"), [&]() { (void)SciDAVisEmf::renderMultiLayer(ml, g, true); } },
+        // The refreshes the OLE server and the Python automation server run before drawing.
+        { QStringLiteral("Graph::updatePlot"), [&]() { g->updatePlot(); } },
+        { QStringLiteral("Graph::updateScale"), [&]() { g->updateScale(); } },
+        { QStringLiteral("exportImage png"), [&]() { ml->exportImage(out(QStringLiteral("png")), 100, false, 150); } },
+        { QStringLiteral("exportImage emf"), [&]() { ml->exportImage(out(QStringLiteral("emf"))); } },
+        { QStringLiteral("exportToFile emf"), [&]() { ml->exportToFile(out(QStringLiteral("emf"))); } },
+        { QStringLiteral("exportVector pdf"), [&]() { ml->exportVector(out(QStringLiteral("pdf"))); } },
+        { QStringLiteral("exportPDF"), [&]() { ml->exportPDF(out(QStringLiteral("pdf"))); } },
+        { QStringLiteral("exportSVG"), [&]() { ml->exportSVG(out(QStringLiteral("svg"))); } },
+        { QStringLiteral("layer exportImage"), [&]() { g->exportImage(out(QStringLiteral("png")), 100, false, 150); } },
+        { QStringLiteral("layer exportSVG"), [&]() { g->exportSVG(out(QStringLiteral("svg"))); } },
+        { QStringLiteral("layer exportVector"), [&]() { g->exportVector(out(QStringLiteral("pdf"))); } },
+        { QStringLiteral("layer exportToFile emf"), [&]() { g->exportToFile(out(QStringLiteral("emf"))); } },
+        { QStringLiteral("layer copyImage"), [&]() { g->copyImage(); } },
+    };
+
+    int failures = 0;
+    for (const double zoom : { 1.0, 2.0 }) {
+        for (const Op &op : ops) {
+            // Every operation starts from markers placed at the 160 % view of the preset.
+            placeMarkers(1.6, zoom);
+            CHECK_COND(std::fabs(ml->pageZoom() - zoom) < 1e-9, "75: view zoom");
+            CHECK_COND(placedExactly(), "75: markers not at their data positions after placing");
+            const QStringList before = suite75GraphState(ml);
+            for (int rep = 1; rep <= 5; ++rep) {
+                op.run();
+                QApplication::processEvents();
+                const QStringList after = suite75GraphState(ml);
+                if (after != before || !placedExactly()) {
+                    ++failures;
+                    std::cerr << "[FAIL] 75: " << op.name.toStdString() << " at " << zoom * 100.0
+                              << " % changed the graph (repeat " << rep << "):\n";
+                    for (int i = 0; i < qMax(before.size(), after.size()); ++i) {
+                        if (before.value(i) != after.value(i)) {
+                            std::cerr << "    before: " << before.value(i).toStdString() << "\n"
+                                      << "    after:  " << after.value(i).toStdString() << "\n";
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    std::cout << "[INFO] 75 state at 200 %:\n";
+    for (const QString &ln : suite75GraphState(ml))
+        std::cout << "    " << ln.toStdString() << "\n";
+    CHECK_COND(failures == 0, "75: copy / export moved markers or changed the axes (see above)");
+
+    // The copied picture shows the markers where the page shows them: the same picture whether
+    // the markers were placed at 100 % or at 160 %, at 100 % and 200 % view, before and after
+    // five PowerPoint copies.
+    {
+        placeMarkers(1.0, 1.0);
+        const QImage ref = ml->copyPageAsImage(150).convertToFormat(QImage::Format_ARGB32);
+        CHECK_COND(!ref.isNull(), "75: reference page image");
+        placeMarkers(1.6, 1.0);
+        const QImage stale100 = ml->copyPageAsImage(150).convertToFormat(QImage::Format_ARGB32);
+        for (int rep = 0; rep < 5; ++rep)
+            ml->copyAllLayers();
+        const QImage after100 = ml->copyPageAsImage(150).convertToFormat(QImage::Format_ARGB32);
+        placeMarkers(1.6, 2.0);
+        for (int rep = 0; rep < 5; ++rep)
+            ml->copyAllLayers();
+        const QImage after200 = ml->copyPageAsImage(150).convertToFormat(QImage::Format_ARGB32);
+        std::cout << "[INFO] 75 page image " << ref.width() << "x" << ref.height()
+                  << ": placed at 160 % / after copies at 100 % / at 200 % equal the reference: "
+                  << (stale100 == ref) << " / " << (after100 == ref) << " / " << (after200 == ref) << "\n";
+        CHECK_COND(stale100 == ref && after100 == ref && after200 == ref,
+                   "75: the copied page image differs from the reference drawing");
+    }
+
+    // A real rescale still keeps text markers and pictures where they are drawn on the canvas,
+    // also when they were placed at another view zoom.
+    {
+        // setScale() on a page with a fixed aspect ratio re-arranges the layer, so the canvas may
+        // change size: compare positions as fractions of the canvas.
+        placeMarkers(1.6, 2.0);
+        const QSize cv1 = g->plotWidget()->canvas()->size();
+        const QRect legPx = g->legend()->rect();
+        const QRect notePx = note->rect();
+        const QRect imgPx = img->rect();
+        g->setScale(QwtPlot::xBottom, 0.0, 0.5);
+        QApplication::processEvents();
+        const QSize cv2 = g->plotWidget()->canvas()->size();
+        const QRect legPx2 = g->legend()->rect();
+        const QRect notePx2 = note->rect();
+        const QRect imgPx2 = img->rect();
+        // Within 1.5 px of the same place on the canvas (pixel rounding of the cached origin).
+        auto samePlace = [&](const QRect &a, const QRect &b, bool withSize) {
+            const double tx = 1.5 / cv2.width(), ty = 1.5 / cv2.height();
+            bool ok = std::fabs(double(a.x()) / cv1.width() - double(b.x()) / cv2.width()) <= tx
+                    && std::fabs(double(a.y()) / cv1.height() - double(b.y()) / cv2.height()) <= ty;
+            if (withSize) {
+                ok = ok && std::fabs(double(a.width()) / cv1.width() - double(b.width()) / cv2.width()) <= tx
+                        && std::fabs(double(a.height()) / cv1.height() - double(b.height()) / cv2.height()) <= ty;
+            }
+            return ok;
+        };
+        std::cout << "[INFO] 75 rescale x 0..0.25 -> 0..0.5 at 200 % (canvas " << cv1.width() << "x" << cv1.height()
+                  << " -> " << cv2.width() << "x" << cv2.height() << "): legend " << legPx.x() << "," << legPx.y()
+                  << " -> " << legPx2.x() << "," << legPx2.y() << ", note " << notePx.x() << "," << notePx.y()
+                  << " -> " << notePx2.x() << "," << notePx2.y() << ", picture " << imgPx.x() << ","
+                  << imgPx.y() << " " << imgPx.width() << "x" << imgPx.height() << " -> " << imgPx2.x() << ","
+                  << imgPx2.y() << " " << imgPx2.width() << "x" << imgPx2.height() << "\n";
+        CHECK_COND(samePlace(legPx, legPx2, false) && samePlace(notePx, notePx2, false)
+                           && samePlace(imgPx, imgPx2, true),
+                   "75: a rescale moved the legend, a text or a picture on the canvas");
+    }
+
+    // ---- 75z: view zoom works from the 100 % layer rectangles (no rounding drift, no stuck
+    // 60 px minimum) ----
+    {
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        Graph *gSmall = ml->addLayer(30, 30, 100, 80);
+        QApplication::processEvents();
+        CHECK_COND(gSmall != nullptr, "75z: small layer");
+        auto layerGeoms = [&]() {
+            QStringList s;
+            for (Graph *gr : ml->layersList()) {
+                if (gr && gr->plotWidget()) {
+                    const QRect r = gr->geometry();
+                    const QSize p = gr->plotWidget()->size();
+                    s << QStringLiteral("%1,%2 %3x%4 plot %5x%6")
+                                    .arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height())
+                                    .arg(p.width()).arg(p.height());
+                }
+            }
+            const QSize lc = ml->layerCanvasSize();
+            s << QStringLiteral("layer canvas %1x%2").arg(lc.width()).arg(lc.height());
+            return s;
+        };
+        auto report = [&](const char *what, const QStringList &a, const QStringList &b) {
+            if (a == b)
+                return true;
+            std::cerr << "[FAIL] 75z: " << what << " changed the layer geometry:\n";
+            for (int i = 0; i < qMax(a.size(), b.size()); ++i)
+                if (a.value(i) != b.value(i))
+                    std::cerr << "    " << a.value(i).toStdString() << "  ->  " << b.value(i).toStdString() << "\n";
+            return false;
+        };
+        const QStringList geo100 = layerGeoms();
+        std::cout << "[INFO] 75z layers at 100 %: " << geo100.join(QStringLiteral(" | ")).toStdString() << "\n";
+        CHECK_COND(gSmall->geometry() == QRect(30, 30, 100, 80), "75z: small layer must be 100x80 at 100 %");
+
+        ml->setPageZoom(0.5);
+        QApplication::processEvents();
+        std::cout << "[INFO] 75z small layer at 50 %: " << gSmall->width() << "x" << gSmall->height() << "\n";
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(report("1.0 -> 0.5 -> 1.0", geo100, layerGeoms()), "75z: zoom 50 % and back");
+        CHECK_COND(gSmall->geometry() == QRect(30, 30, 100, 80), "75z: the 100x80 layer must come back from 50 %");
+
+        for (int i = 0; i < 9; ++i) {
+            QWheelEvent we(QPointF(20, 20), ml->mapToGlobal(QPoint(20, 20)), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(ml, &we);
+        }
+        QApplication::processEvents();
+        const double zoomUp = ml->pageZoom();
+        for (int i = 0; i < 9; ++i) {
+            QWheelEvent we(QPointF(20, 20), ml->mapToGlobal(QPoint(20, 20)), QPoint(), QPoint(0, -120),
+                           Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(ml, &we);
+        }
+        QApplication::processEvents();
+        std::cout << "[INFO] 75z Ctrl+wheel 9 steps: zoom " << zoomUp << " and back to " << ml->pageZoom() << "\n";
+        CHECK_COND(zoomUp > 2.0 && std::fabs(ml->pageZoom() - 1.0) < 1e-6, "75z: Ctrl+wheel round trip zoom");
+        CHECK_COND(report("Ctrl+wheel 9 steps there and back", geo100, layerGeoms()), "75z: Ctrl+wheel round trip");
+
+        ml->setPageZoom(2.0);
+        QApplication::processEvents();
+        const QStringList geo200 = layerGeoms();
+        for (int rep = 0; rep < 5; ++rep) {
+            ml->exportImage(tmp75.filePath(QStringLiteral("z75_%1.png").arg(rep)), 100, false, 150);
+            ml->exportSVG(tmp75.filePath(QStringLiteral("z75_%1.svg").arg(rep)));
+            (void)ml->copyPageAsImage(150);
+            (void)SciDAVisEmf::renderMultiLayer(ml, nullptr, false);
+            ml->copyAllLayers();
+            QApplication::processEvents();
+            CHECK_COND(report("an export at 200 %", geo200, layerGeoms()), "75z: export at 200 %");
+        }
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(report("five exports at 200 % and back to 100 %", geo100, layerGeoms()), "75z: exports at 200 %");
+
+        // A layer moved while zoomed takes its 100 % rectangle from the new place.
+        ml->setPageZoom(2.0);
+        QApplication::processEvents();
+        ml->setActiveGraph(gSmall);
+        ml->setGraphGeometry(100, 120, gSmall->width(), gSmall->height());
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        std::cout << "[INFO] 75z layer moved to 100,120 at 200 %: at 100 % " << gSmall->x() << "," << gSmall->y()
+                  << " " << gSmall->width() << "x" << gSmall->height() << "\n";
+        CHECK_COND(gSmall->geometry() == QRect(50, 60, 100, 80),
+                   "75z: a layer moved at 200 % must be at half the place at 100 %, same size");
+        // Moved at 100 %, then zoomed.
+        ml->setGraphGeometry(40, 44, 100, 80);
+        ml->setPageZoom(0.5);
+        ml->setPageZoom(1.0);
+        QApplication::processEvents();
+        CHECK_COND(gSmall->geometry() == QRect(40, 44, 100, 80), "75z: a layer moved at 100 % must keep its place");
+        ml->setActiveGraph(g);
+    }
+
+    ml->askOnCloseEvent(false);
+    w75->savedProject();
+    w75->setOleEmbeddedMode(true);
+    delete w75;
+    QApplication::processEvents();
+    std::cout << "[PASS] Suite 75 passed.\n";
     return 0;
 }

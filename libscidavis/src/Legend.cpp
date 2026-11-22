@@ -366,6 +366,15 @@ void Legend::updateOrigin()
     setYValue(yVal);
 }
 
+void Legend::refreshPixelOrigin(const QwtScaleMap *xMap, const QwtScaleMap *yMap)
+{
+    if (!d_plot)
+        return;
+    const QwtScaleMap &xm = xMap ? *xMap : d_plot->canvasMap(xAxis());
+    const QwtScaleMap &ym = yMap ? *yMap : d_plot->canvasMap(yAxis());
+    d_pos = QPoint(xm.transform(xValue()), ym.transform(yValue()));
+}
+
 void Legend::setOriginCoord(double x, double y)
 {
     if (xValue() == x && yValue() == y)
