@@ -1215,19 +1215,28 @@ def run_persona_3_expert(
     g21_slide_info = g21.info()["layers"][0]["axes"]["x"]
     assert int(g21_slide_info.get("title_font_size") or g21_slide_info.get("font_size") or 28) >= 24
 
-    extracted_sciprj = out_dir / "extracted_from_pptx_ole.sciprj"
+    extracted_sciprjs = []
     with zipfile.ZipFile(pptx_path, "r") as zf:
         ole_parts = sorted(n for n in zf.namelist() if n.startswith("ppt/embeddings/oleObject"))
         emf_parts = sorted(n for n in zf.namelist() if n.startswith("ppt/media/image") and n.endswith(".emf"))
-        assert len(ole_parts) == 4 and len(emf_parts) == 4
-        ole_blob = zf.read(ole_parts[-1])
-        with olefile.OleFileIO(ole_blob) as ole:
-            assert ole.root.clsid.upper() == "8E6B9541-3C74-4D28-A915-7D84E5A12001"
-            assert ole.exists("\x01CompObj") and ole.exists("\x01Ole") and ole.exists("ToriGraphProject")
-            assert not ole.exists("SciDAVisDib"), "oleObject.bin must not contain bloated uncompressed SciDAVisDib!"
-            meta_json = json.loads(ole.openstream("SciDAVisMeta").read().decode("utf-8"))
-            assert meta_json.get("targetWindow") == g24.name, f"Expected canonical targetWindow {g24.name!r}, got {meta_json!r}"
-            extracted_sciprj.write_bytes(ole.openstream("ToriGraphProject").read())
+        assert len(ole_parts) == len(deck_graphs) == 4 and len(emf_parts) == 4
+        placements_by_graph = {pl["graph"]: pl for pl in pptx_res.get("placements", [])}
+        for idx, dg in enumerate(deck_graphs):
+            part_name = placements_by_graph.get(dg.name, {}).get("ole_part", "").lstrip("/") or ole_parts[idx]
+            assert part_name in ole_parts, f"Expected {part_name!r} in {ole_parts!r}"
+            ole_blob = zf.read(part_name)
+            with olefile.OleFileIO(ole_blob) as ole:
+                assert ole.root.clsid.upper() == "8E6B9541-3C74-4D28-A915-7D84E5A12001"
+                assert ole.exists("\x01CompObj") and ole.exists("\x01Ole") and ole.exists("ToriGraphProject")
+                assert not ole.exists("SciDAVisDib"), "oleObject.bin must not contain bloated uncompressed SciDAVisDib!"
+                meta_json = json.loads(ole.openstream("SciDAVisMeta").read().decode("utf-8"))
+                assert meta_json.get("targetWindow") == dg.name, f"Expected canonical targetWindow {dg.name!r}, got {meta_json!r}"
+                sciprj_i = out_dir / f"extracted_from_pptx_ole_{idx + 1}.sciprj"
+                sciprj_bytes = ole.openstream("ToriGraphProject").read()
+                sciprj_i.write_bytes(sciprj_bytes)
+                if dg is g24:
+                    (out_dir / "extracted_from_pptx_ole.sciprj").write_bytes(sciprj_bytes)
+                extracted_sciprjs.append((dg, sciprj_i))
 
     # Also verify copy_ole(preset="slide_28pt") and mixed 2D+Graph3D to_pptx(preset="slide_28pt")
     copy_ole_res = g24.copy_ole(preset="slide_28pt")
@@ -1243,9 +1252,9 @@ def run_persona_3_expert(
     assert mixed_res.get("ok") is True and mixed_res.get("embedded_count") == 2
 
     with launcher.session(language="en") as (fresh_app, _, _):
-        fresh_app.open_project(extracted_sciprj)
-        restored_names = {w["name"] for w in fresh_app.list_windows()}
-        for dg in deck_graphs:
+        for dg, sciprj_path in extracted_sciprjs:
+            fresh_app.open_project(sciprj_path)
+            restored_names = {w["name"] for w in fresh_app.list_windows()}
             assert dg.name in restored_names, f"OLE reloaded project missing {dg.name}: {restored_names}"
 
 

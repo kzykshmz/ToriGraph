@@ -1718,16 +1718,18 @@ bool Table::pasteText(const QString &rawText, bool transposed)
     };
 
     // Detect single-column paste containing thousand-grouped numbers (e.g. "1,012") so it is
-    // not split into two CSV columns ("1" and "12").
+    // not split into two CSV columns ("1" and "12"), while keeping multi-row headerless 2-column
+    // CSV (e.g. "1,250\n2,375") and comma-decimal locales intact.
     bool keepSingleColumn = false;
     bool stripSingleColGroupCommas = false;
-    if (!hasTab && hasComma) {
+    if (!hasTab && hasComma && QLocale().decimalPoint() != QLatin1Char(',')) {
         int checkIdx = 0;
         while (checkIdx < lines.size()
                && (lines.at(checkIdx).trimmed().isEmpty()
                    || lines.at(checkIdx).trimmed().startsWith(QLatin1Char('#')))) {
             ++checkIdx;
         }
+        const int postCommentIdx = checkIdx;
         // Allow up to 2 non-numeric header/unit lines only if they contain no unquoted comma
         for (int hStep = 0; hStep < 2 && checkIdx < lines.size(); ++hStep) {
             const QString rawHdr = lines.at(checkIdx).trimmed();
@@ -1739,15 +1741,22 @@ bool Table::pasteText(const QString &rawText, bool transposed)
                 break;
             ++checkIdx;
         }
+        const int headerLineCount = checkIdx - postCommentIdx;
         bool allValidSingleCol = (checkIdx < lines.size());
-        bool anyGroupedNum = false;
+        int groupedNumCount = 0;
+        int plainNumCount = 0;
+        int nonEmptyDataCount = 0;
+        bool anyUnquotedDataComma = false;
         for (int li = checkIdx; li < lines.size(); ++li) {
             const QString rawLine = lines.at(li).trimmed();
             if (rawLine.isEmpty())
                 continue;
+            ++nonEmptyDataCount;
+            if (hasUnquotedComma(rawLine))
+                anyUnquotedDataComma = true;
             const QString uq = unquoteCellTrim(rawLine);
             if (isGroupedNumberToken(uq)) {
-                anyGroupedNum = true;
+                ++groupedNumCount;
                 continue;
             }
             if (uq.contains(QLatin1Char(','))) {
@@ -1763,9 +1772,15 @@ bool Table::pasteText(const QString &rawText, bool transposed)
                 allValidSingleCol = false;
                 break;
             }
+            ++plainNumCount;
             Q_UNUSED(dv);
         }
-        if (allValidSingleCol && anyGroupedNum) {
+        const int selCols = selectedColumnCount(false);
+        const bool singleDestCol = (selCols == 1) || (selCols == 0 && numCols() <= 1);
+        const bool singleCellPaste =
+                (headerLineCount == 0 && nonEmptyDataCount == 1 && singleDestCol);
+        if (allValidSingleCol && groupedNumCount > 0
+            && (plainNumCount >= 1 || singleCellPaste || !anyUnquotedDataComma)) {
             hasComma = false;
             hasSemicolon = false;
             keepSingleColumn = true;

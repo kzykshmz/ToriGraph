@@ -10796,14 +10796,29 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
         if (Table *tb = qobject_cast<Table *>(w)) {
             QString geom = windowGeometryInfo(tb);
             if (hidden(tb) || tb->status() == MyWidget::Hidden) {
+                bool promoteBgSheet = false;
                 QRect refRect = tb->frameGeometry();
                 if (wm) {
                     const QString bk = wm->bookOf(tb);
                     if (!bk.isEmpty()) {
                         if (Table *cur = wm->currentSheet(bk)) {
-                            if (cur != tb && cur->frameGeometry().width() >= 260
-                                && cur->frameGeometry().height() >= 200) {
-                                refRect = cur->frameGeometry();
+                            if (cur != tb && !hidden(cur) && cur->status() != MyWidget::Hidden) {
+                                const bool curIncluded = windows.contains(cur);
+                                if (!curIncluded) {
+                                    bool earlierSheetIncluded = false;
+                                    for (Table *s : wm->sheets(bk)) {
+                                        if (!s || !windows.contains(s))
+                                            continue;
+                                        if (s != tb)
+                                            earlierSheetIncluded = true;
+                                        break;
+                                    }
+                                    promoteBgSheet = !earlierSheetIncluded;
+                                }
+                                if (cur->frameGeometry().width() >= 260
+                                    && cur->frameGeometry().height() >= 200) {
+                                    refRect = cur->frameGeometry();
+                                }
                             }
                         }
                     }
@@ -10812,7 +10827,9 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
                 const int gy = qMax(0, refRect.y());
                 const int gw = (refRect.width() >= 260) ? refRect.width() : 640;
                 const int gh = (refRect.height() >= 200) ? refRect.height() : 400;
-                geom = QStringLiteral("geometry\t%1\t%2\t%3\t%4\t\n").arg(gx).arg(gy).arg(gw).arg(gh);
+                geom = promoteBgSheet
+                        ? QStringLiteral("geometry\t%1\t%2\t%3\t%4\t\n").arg(gx).arg(gy).arg(gw).arg(gh)
+                        : QStringLiteral("geometry\t%1\t%2\t%3\t%4\thidden\n").arg(gx).arg(gy).arg(gw).arg(gh);
             }
             tb->saveToDevice(&buf, geom);
         } else {
@@ -22739,7 +22756,7 @@ void ApplicationWindow::parseCommandLineArguments(const QStringList &args)
         else
             a = open(file_name, scriptArgs);
 
-        if (a) {
+        if (a && a != this) {
             a->workingDir = workingDir;
             close();
         }
@@ -25139,20 +25156,17 @@ void ApplicationWindow::applyLastGraphWindowGeometry(MultiLayer *g)
             target.moveLeft(qBound(0, target.x(), qMax(0, vp.width() - target.width())));
             target.moveTop(qBound(0, target.y(), qMax(0, vp.height() - target.height())));
 
-            if (canPlaceBesideTable) {
+            if (!hasValidSavedGeo && canPlaceBesideTable) {
                 const QRect srcGeo = srcTbl->geometry();
-                const QRect innerSrc = srcGeo.adjusted(24, 24, -24, -24);
-                if (!hasValidSavedGeo || target.intersects(innerSrc.isValid() ? innerSrc : srcGeo)) {
-                    const int rightX = srcGeo.right() + 8;
-                    const int remRight = vp.width() - rightX - 4;
-                    const int alignedTop =
-                            qBound(0, srcGeo.top(), qMax(0, vp.height() - target.height()));
-                    if (remRight >= target.width()) {
-                        target.moveTo(rightX, alignedTop);
-                    } else if (remRight >= 360
-                               || (vp.width() - target.width() >= 180 && srcGeo.left() < 120)) {
-                        target.moveTo(qMax(0, vp.width() - target.width() - 4), alignedTop);
-                    }
+                const int rightX = srcGeo.right() + 8;
+                const int remRight = vp.width() - rightX - 4;
+                const int alignedTop =
+                        qBound(0, srcGeo.top(), qMax(0, vp.height() - target.height()));
+                if (remRight >= target.width()) {
+                    target.moveTo(rightX, alignedTop);
+                } else if (remRight >= 360
+                           || (vp.width() - target.width() >= 180 && srcGeo.left() < 120)) {
+                    target.moveTo(qMax(0, vp.width() - target.width() - 4), alignedTop);
                 }
             }
 
@@ -29036,15 +29050,16 @@ void ApplicationWindow::resetActiveGraphStackOffsets()
 void ApplicationWindow::copyPageAsHighDpiImage()
 {
     QWidget *w = d_workspace.activeSubWindow();
+    if (!w)
+        w = d_workspace.currentSubWindow();
+    if (!w)
+        w = activeWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
 
     MultiLayer *ml = static_cast<MultiLayer *>(w);
     const QImage img = ml->copyPageAsImage(300);
     if (!img.isNull()) {
-        // Always replace the clipboard: the message below says the page was copied.
-        if (QClipboard *cb = QApplication::clipboard())
-            cb->setImage(img);
         const QString msg = tr("Copied %1 as 300 DPI PNG (%2 x %3 px) to clipboard.")
                                     .arg(ml->name())
                                     .arg(img.width())
