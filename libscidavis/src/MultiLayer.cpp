@@ -404,6 +404,7 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
 {
     if (ml && qAbs(ml->pageZoom() - 1.0) > 1e-4) {
         prevZoom = ml->pageZoom();
+        prevWinPos = ml->pos();
         prevWinSize = ml->size();
         for (Graph *gr : ml->layersList()) {
             if (!gr || !gr->plotWidget())
@@ -436,9 +437,11 @@ void ScopedUnzoomForExport::restoreNow()
     {
         QSignalBlocker sb(ml);
         ml->setPageZoom(prevZoom);
-        if (!ml->isMaximized() && !ml->isMinimized() && prevWinSize.isValid()
-            && ml->size() != prevWinSize) {
-            ml->resize(prevWinSize);
+        if (!ml->isMaximized() && !ml->isMinimized()) {
+            if (prevWinSize.isValid() && ml->size() != prevWinSize)
+                ml->resize(prevWinSize);
+            if (ml->pos() != prevWinPos)
+                ml->move(prevWinPos);
         }
         // Put every layer back on its exact rectangle (see prevLayerGeometry).
         bool moved = false;
@@ -7050,67 +7053,18 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
     QStringList lines = snapshot.split(QLatin1Char('\n'), keepEmpty);
     bool anyChanged = false;
     bool inSpectrogram = false;
+    bool graphCurveChanged = false;
     int layerCurveIndex = 0;
     QHash<int, QPair<QString, QString>> changedLayerCurves;
 
-    auto isIdentChar = [](QChar ch) -> bool {
-        return ch.isLetterOrNumber() || ch == QLatin1Char('_');
-    };
-    auto replaceExactIdentToken = [&](const QString &src, const QString &fromTok,
-                                      const QString &toTok) -> QString {
-        if (fromTok.isEmpty() || fromTok == toTok)
-            return src;
-        QString out;
-        out.reserve(src.size());
-        int pos = 0;
-        while (pos < src.size()) {
-            const int hit = src.indexOf(fromTok, pos);
-            if (hit < 0) {
-                out.append(src.mid(pos));
-                break;
-            }
-            const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
-            const int after = hit + fromTok.size();
-            const bool rightBoundary = (after >= src.size()) || !isIdentChar(src.at(after));
-            if (leftBoundary && rightBoundary) {
-                out.append(src.mid(pos, hit - pos));
-                out.append(toTok);
-                pos = after;
-            } else {
-                out.append(src.mid(pos, (hit - pos) + 1));
-                pos = hit + 1;
-            }
+    auto isSingleColRefToken = [](const QString &tok) -> bool {
+        if (tok.isEmpty())
+            return false;
+        for (const QChar ch : tok) {
+            if (ch.isSpace())
+                return false;
         }
-        return out;
-    };
-    auto replaceTablePrefixTokens = [&](const QString &src, const QString &oldTbl,
-                                        const QString &newTbl) -> QString {
-        if (oldTbl.isEmpty() || oldTbl == newTbl)
-            return src;
-        const QString fromPfx = oldTbl + QLatin1Char('_');
-        const QString toPfx = newTbl + QLatin1Char('_');
-        QString out;
-        out.reserve(src.size());
-        int pos = 0;
-        while (pos < src.size()) {
-            const int hit = src.indexOf(fromPfx, pos);
-            if (hit < 0) {
-                out.append(src.mid(pos));
-                break;
-            }
-            const bool leftBoundary = (hit == 0) || !isIdentChar(src.at(hit - 1));
-            const int after = hit + fromPfx.size();
-            const bool hasColChar = (after < src.size()) && isIdentChar(src.at(after));
-            if (leftBoundary && hasColChar) {
-                out.append(src.mid(pos, hit - pos));
-                out.append(toPfx);
-                pos = after;
-            } else {
-                out.append(src.mid(pos, (hit - pos) + 1));
-                pos = hit + 1;
-            }
-        }
-        return out;
+        return true;
     };
 
     for (int li = 0; li < lines.size(); ++li) {
@@ -7122,6 +7076,7 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
         const QString trimmed = line.trimmed();
         if (trimmed == QLatin1String("<graph>") || trimmed == QLatin1String("</graph>")) {
             inSpectrogram = false;
+            graphCurveChanged = false;
             layerCurveIndex = 0;
             changedLayerCurves.clear();
             continue;
@@ -7184,8 +7139,10 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         }
                     }
                 }
-                if (lineChanged)
+                if (lineChanged) {
                     line = parts.join(QLatin1Char('\t'));
+                    graphCurveChanged = true;
+                }
             }
         } else if (kind != SnapshotRenameKind::MatrixRename
                    && line.startsWith(QLatin1String("PieCurve\t"))) {
@@ -7199,6 +7156,7 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                     changedLayerCurves.insert(layerCurveIndex, qMakePair(prevCol, nextCol));
                     line = parts.join(QLatin1Char('\t'));
                     lineChanged = true;
+                    graphCurveChanged = true;
                 }
             }
         } else if (kind != SnapshotRenameKind::MatrixRename
@@ -7213,10 +7171,12 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         lineChanged = true;
                     }
                 }
-                if (lineChanged)
+                if (lineChanged) {
                     line = parts.join(QLatin1Char('\t'));
+                    graphCurveChanged = true;
+                }
             }
-        } else if (kind != SnapshotRenameKind::MatrixRename
+        } else if (kind != SnapshotRenameKind::MatrixRename && graphCurveChanged
                    && ((trimmed.startsWith(QLatin1String("<legend>\t"))
                         && trimmed.endsWith(QLatin1String("</legend>")))
                        || line.startsWith(QLatin1String("Legend\t")))) {
@@ -7265,29 +7225,23 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                         ++leadSpaces;
                     const QString coreRest = rest.mid(leadSpaces);
                     QString newRest = rest;
-                    const QString fullMapped =
-                            remapFullColRef(coreRest, kind, oldName, newName);
-                    if (fullMapped != coreRest) {
-                        newRest = rest.left(leadSpaces) + fullMapped;
+                    if (changedLayerCurves.contains(oneBased)
+                        && coreRest == changedLayerCurves.value(oneBased).first) {
+                        newRest = rest.left(leadSpaces)
+                                + changedLayerCurves.value(oneBased).second;
                     } else if (kind == SnapshotRenameKind::ColRename
-                               && changedLayerCurves.contains(oneBased) && !oldShortCol.isEmpty()
-                               && !newShortCol.isEmpty() && coreRest == oldShortCol) {
+                               && changedLayerCurves.contains(oneBased)
+                               && !oldShortCol.isEmpty() && !newShortCol.isEmpty()
+                               && coreRest == oldShortCol) {
                         newRest = rest.left(leadSpaces) + newShortCol;
-                    } else if (kind == SnapshotRenameKind::TableRename) {
-                        newRest = replaceTablePrefixTokens(rest, oldName, newName);
-                    } else if (kind == SnapshotRenameKind::ColRename) {
-                        newRest = replaceExactIdentToken(rest, oldName, newName);
+                    } else if (isSingleColRefToken(coreRest)) {
+                        const QString fullMapped =
+                                remapFullColRef(coreRest, kind, oldName, newName);
+                        if (fullMapped != coreRest)
+                            newRest = rest.left(leadSpaces) + fullMapped;
                     }
                     if (newRest != rest) {
                         parts[ti] = cmdPrefix + newRest;
-                        lineChanged = true;
-                    }
-                } else {
-                    const QString nextItem = (kind == SnapshotRenameKind::TableRename)
-                            ? replaceTablePrefixTokens(legLine, oldName, newName)
-                            : replaceExactIdentToken(legLine, oldName, newName);
-                    if (nextItem != legLine) {
-                        parts[ti] = nextItem;
                         lineChanged = true;
                     }
                 }

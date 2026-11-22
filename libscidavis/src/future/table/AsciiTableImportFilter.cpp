@@ -1654,6 +1654,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         return e;
     };
 
+    const bool useCustomLoc =
+            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
+    const bool hasDistinctNumericLocale = (numericLocale != QLocale::c());
+    QLocale primaryLoc = numericLocale;
+    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+
     QString preambleSeparator;
     int forcedUnitsRow = -1;
     if (detectPreamble && ignoredLines == 0 && pos < len) {
@@ -1679,7 +1685,6 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 }
             }
         }
-        const QLocale cLocP = QLocale::c();
         auto splitLine = [&](int idx, QChar sep) -> QStringList {
             const QString ln = QString(buf + lines[idx].start, lines[idx].end - lines[idx].start);
             QStringList parts;
@@ -1748,7 +1753,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 if (f.isEmpty() || isMissingNumericToken(f, false))
                     continue;
                 double dv = 0.0;
-                if (tryParseLabDouble(f, cLocP, false, dv))
+                if (tryParseLabDouble(f, primaryLoc, hasDistinctNumericLocale, dv))
                     ++outNumeric;
                 else
                     ++outText;
@@ -1758,12 +1763,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             if (!isHashCommentLine(idx))
                 return false;
             const QStringList p = splitLine(idx, sep);
-            if (sep == QLatin1Char(' ')) {
-                int num = 0, txt = 0;
-                rowStats(p, num, txt);
-                return p.size() <= 1 || num == 0;
+            if (p.size() <= 1)
+                return true;
+            if (sep == QLatin1Char(' ') && p[0] == QLatin1String("#"))
+                return true;
+            for (int k = 1; k < p.size(); ++k) {
+                if (p[k].isEmpty() || isMissingNumericToken(p[k], false))
+                    continue;
+                double dv = 0.0;
+                if (tryParseLabDouble(p[k], primaryLoc, hasDistinctNumericLocale, dv))
+                    return false;
             }
-            return p.size() <= 1;
+            return true;
         };
         // 1 = numeric-dominant row, 0 = pure text row, -1 = mixed
         auto rowKind = [&](const QStringList &parts) -> int {
@@ -2001,9 +2012,37 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     }
     const QString normSep = effSep.isEmpty() ? QStringLiteral(",") : effSep;
 
-    // Determine whether this table has >= 2 columns so single-cell '# note' lines inside a
-    // multi-column CSV/TSV are skipped as comments while multi-cell '#1, 520' specimen rows
-    // and 1-column '#1\n#2' tables are preserved as data.
+    // Determine whether this table has >= 2 columns so '# ...' comment lines inside a
+    // multi-column CSV/TSV/whitespace file (including '# pause,', '# note,,', '# T=300 K, P=1 atm')
+    // are skipped as comments while '#1, 520' specimen rows and 1-column '#1\n#2' tables are kept.
+    auto effectiveSpanCount = [](const QVector<ZeroCopyCellSpan> &spans) -> int {
+        int n = spans.size();
+        while (n > 0) {
+            if (spans[n - 1].quoted)
+                break;
+            const QChar *p = nullptr;
+            int l = 0;
+            spans[n - 1].trimmedView(p, l);
+            if (l > 0)
+                break;
+            --n;
+        }
+        return n;
+    };
+
+    auto hasFiniteNumericSpanAfterFirst = [&](const QVector<ZeroCopyCellSpan> &spans,
+                                              int effCount) -> bool {
+        for (int k = 1; k < effCount; ++k) {
+            const QChar *pk = nullptr;
+            int nk = 0;
+            spans[k].trimmedView(pk, nk);
+            double dummy = 0.0;
+            if (nk > 0 && tryParseLabDoubleSpan(pk, nk, primaryLoc, hasDistinctNumericLocale, dummy))
+                return true;
+        }
+        return false;
+    };
+
     QVector<ZeroCopyCellSpan> rowSpans;
     rowSpans.reserve(16);
     bool tableHasMultipleCols = !preambleSeparator.isEmpty();
@@ -2018,58 +2057,42 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
             if (skipPeek)
                 continue;
-            if (rowSpans.size() >= 2) {
-                if (!whitespaceDelim) {
-                    tableHasMultipleCols = true;
-                    break;
-                }
+            const int effCols = effectiveSpanCount(rowSpans);
+            if (effCols >= 2) {
                 const QChar *p0 = nullptr;
                 int n0 = 0;
-                rowSpans[0].trimmedView(p0, n0);
-                if (n0 <= 0 || p0[0] != QLatin1Char('#')) {
+                if (!rowSpans[0].quoted)
+                    rowSpans[0].trimmedView(p0, n0);
+                const bool startsWithUnquotedHash =
+                        (!rowSpans[0].quoted && n0 > 0 && p0[0] == QLatin1Char('#'));
+                if (!startsWithUnquotedHash) {
                     tableHasMultipleCols = true;
                     break;
                 }
-                const QLocale cLocPeek = QLocale::c();
-                for (int k = 1; k < rowSpans.size(); ++k) {
-                    const QChar *pk = nullptr;
-                    int nk = 0;
-                    rowSpans[k].trimmedView(pk, nk);
-                    double dummy = 0.0;
-                    if (nk > 0 && tryParseLabDoubleSpan(pk, nk, cLocPeek, false, dummy)) {
-                        tableHasMultipleCols = true;
-                        break;
-                    }
-                }
-                if (tableHasMultipleCols)
+                if (!(whitespaceDelim && n0 == 1)
+                    && hasFiniteNumericSpanAfterFirst(rowSpans, effCols)) {
+                    tableHasMultipleCols = true;
                     break;
+                }
             }
             ++checkedRows;
         }
     }
 
     auto isBodyHashCommentRow = [&](const QVector<ZeroCopyCellSpan> &spans) -> bool {
-        if (!tableHasMultipleCols || spans.isEmpty() || spans[0].quoted)
+        if (spans.isEmpty() || spans[0].quoted)
             return false;
         const QChar *p0 = nullptr;
         int n0 = 0;
         spans[0].trimmedView(p0, n0);
         if (n0 <= 0 || p0[0] != QLatin1Char('#'))
             return false;
-        if (!whitespaceDelim)
-            return spans.size() == 1;
-        if (spans.size() == 1 || n0 == 1)
+        const int effCols = effectiveSpanCount(spans);
+        if (effCols <= 1)
+            return tableHasMultipleCols;
+        if (whitespaceDelim && n0 == 1)
             return true;
-        const QLocale cLocBody = QLocale::c();
-        for (int k = 1; k < spans.size(); ++k) {
-            const QChar *pk = nullptr;
-            int nk = 0;
-            spans[k].trimmedView(pk, nk);
-            double dummy = 0.0;
-            if (nk > 0 && tryParseLabDoubleSpan(pk, nk, cLocBody, false, dummy))
-                return false;
-        }
-        return true;
+        return !hasFiniteNumericSpanAfterFirst(spans, effCols);
     };
 
     // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
@@ -2106,11 +2129,6 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     if (previewRecords.isEmpty())
         return new future::Table(0, 0, effTableName);
-
-    const bool useCustomLoc =
-            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
-    QLocale primaryLoc = numericLocale;
-    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
 
     // Check if '# col1, col2' right above numeric row 0 was actually the column header line
     bool prependedHashHeader = false;
@@ -2155,7 +2173,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             bool allRow1Num = true;
             bool anyFloatMarkerInRow0 = false;
             bool anyFloatMarkerInRow1 = false;
-            bool row0IsOneBasedSeq = (previewRecords[0].size() >= 2);
+            bool row0IsOneBasedSeq = (previewRecords[0].size() >= 3);
             for (int c = 0; c < previewRecords[0].size(); ++c) {
                 const LabCsvCell &c0 = previewRecords[0][c];
                 const QString t = c0.value.trimmed();
@@ -2190,11 +2208,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 }
             }
             if (allRow0Num && allRow1Num) {
-                const bool likelyExplicitHeaderAfterSkip =
-                        (ignoredLines > 0 && !anyFloatMarkerInRow0 && anyFloatMarkerInRow1);
-                const bool likelySeqColHeader =
-                        (row0IsOneBasedSeq && !anyFloatMarkerInRow0 && anyFloatMarkerInRow1);
-                if (!likelyExplicitHeaderAfterSkip && !likelySeqColHeader)
+                const bool likelySeqColHeader = (previewRecords[0].size() >= 3
+                                                 && row0IsOneBasedSeq && !anyFloatMarkerInRow0
+                                                 && anyFloatMarkerInRow1);
+                if (!likelySeqColHeader)
                     treatRow0AsData = true;
             }
         }
@@ -2347,13 +2364,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 break;
             }
             if (skipRow || isBodyHashCommentRow(rowSpans)) {
-                if (!rowSpans.isEmpty()) {
-                    const QChar *p0 = nullptr;
-                    int n0 = 0;
-                    rowSpans[0].trimmedView(p0, n0);
-                    if (n0 > 0) // a '#' comment line inside the data block
-                        ++skippedNonBlankLines;
-                }
+                if (!skipRow)
+                    ++skippedNonBlankLines;
                 continue;
             }
 
@@ -2399,6 +2411,16 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 }
             }
             ++r;
+        }
+        // Also count any '#' comment lines trailing after the final data row
+        while (streamPos < len) {
+            bool skipRow = false;
+            if (!readNextRecordSpans(buf, len, streamPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipRow)) {
+                break;
+            }
+            if (!skipRow && isBodyHashCommentRow(rowSpans))
+                ++skippedNonBlankLines;
         }
     }
 

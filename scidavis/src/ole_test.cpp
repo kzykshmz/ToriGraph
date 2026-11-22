@@ -7773,6 +7773,40 @@ static int runSuite42Round2CriticRegressionGate(ApplicationWindow *mw)
     // 7. #137 P0-4 & P1-4: Bracketed [x64] Live PowerShell Execution & HTTP 403 JSON Error
     // =========================================================================
     {
+        struct Suite42SigSettingsGuard
+        {
+            QString keyReqSig = QStringLiteral("AutoUpdate/RequireCodeSignature");
+            QString keySigner = QStringLiteral("AutoUpdate/ExpectedSignerSubject");
+            bool hadReqSig = false;
+            QVariant prevReqSig;
+            bool hadSigner = false;
+            QVariant prevSigner;
+            Suite42SigSettingsGuard()
+            {
+                QSettings &st = ApplicationWindow::getSettings();
+                hadReqSig = st.contains(keyReqSig);
+                if (hadReqSig)
+                    prevReqSig = st.value(keyReqSig);
+                hadSigner = st.contains(keySigner);
+                if (hadSigner)
+                    prevSigner = st.value(keySigner);
+                st.remove(keyReqSig);
+                st.remove(keySigner);
+            }
+            ~Suite42SigSettingsGuard()
+            {
+                QSettings &st = ApplicationWindow::getSettings();
+                if (hadReqSig)
+                    st.setValue(keyReqSig, prevReqSig);
+                else
+                    st.remove(keyReqSig);
+                if (hadSigner)
+                    st.setValue(keySigner, prevSigner);
+                else
+                    st.remove(keySigner);
+            }
+        } sigSettingsGuard42;
+
         const QByteArray newExeBytes("TORIGRAPH_UPDATED_BINARY_PAYLOAD_V2_5_0");
         const QByteArray pluginBytes("TORIGRAPH_PLUGIN_DLL_PAYLOAD");
         const QByteArray zipBytes = buildStoredZipArchive({
@@ -21226,11 +21260,13 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
     CHECK_COND(suite66Shown(mw, s1) && !suite66Shown(mw, s2) && !suite66Shown(mw, s3),
                "66a: only the current sheet is shown");
     CHECK_COND(wm->bookOf(s2) == book && wm->bookOf(nullptr).isEmpty(), "66a: bookOf");
-    for (int i = 0; i < 3; ++i) {
-        QTabBar *tb = suite66Tabs(sh.at(i));
-        CHECK_COND(tb && tb->count() == 3 && tb->currentIndex() == i, "66a: sheet tab bar");
-        CHECK_COND(tb->tabText(i) == QStringLiteral("Sheet%1").arg(i + 1),
-                   "66a: tab label leaves the book prefix out");
+    {
+        QTabBar *tb1 = suite66Tabs(s1);
+        CHECK_COND(tb1 && tb1->count() == 3 && tb1->currentIndex() == 0, "66a: sheet tab bar");
+        for (int i = 0; i < 3; ++i) {
+            CHECK_COND(tb1->tabText(i) == QStringLiteral("Sheet%1").arg(i + 1),
+                       "66a: tab label leaves the book prefix out");
+        }
     }
     CHECK_COND(suite66ExplorerType(mw, s2).contains("Spec66"), "66a: explorer marks the sheet");
     CHECK_COND(WorkbookManager::sheetLabel("Spec66", "Spec66-Raw") == "Raw"
@@ -21268,10 +21304,10 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
     CHECK_COND(ex && ex->name() == "Spec66_Extra" && wm->currentSheet(book) == ex
                        && suite66Shown(mw, ex) && !suite66Shown(mw, s1),
                "66c: added sheet is shown");
-    CHECK_COND(wm->sheets(book).size() == 4 && suite66Tabs(s2)->count() == 4,
-               "66c: every tab bar has the new sheet");
+    CHECK_COND(wm->sheets(book).size() == 4 && suite66Tabs(ex) && suite66Tabs(ex)->count() == 4,
+               "66c: active tab bar has the new sheet");
     CHECK_COND(wm->renameSheet(s3, QStringLiteral("Raw"), &err), "66c: rename sheet");
-    CHECK_COND(s3->name() == "Spec66-Raw" && suite66Tabs(s3)->tabText(2) == "Raw",
+    CHECK_COND(s3->name() == "Spec66-Raw" && suite66Tabs(ex)->tabText(2) == "Raw",
                QString("66c: renamed table '%1'").arg(s3->name()).toStdString());
     CHECK_COND(wm->moveSheet(book, 3, 0, &err), "66c: moveSheet");
     CHECK_COND(wm->sheets(book) == (QList<Table *>() << ex << s1 << s2 << s3), "66c: order");
@@ -21281,7 +21317,11 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
     CHECK_COND(wm->sheets(book) == (QList<Table *>() << s1 << s2 << s3 << ex),
                QString("66c: tab drag order %1").arg(suite66Names(wm->sheets(book)).join(","))
                        .toStdString());
-    CHECK_COND(suite66Tabs(s1)->tabText(3) == "Extra", "66c: other bars follow the drag");
+    CHECK_COND(wm->setCurrentSheet(s1, true, &err) && suite66Tabs(s1)
+                       && suite66Tabs(s1)->tabText(3) == "Extra",
+               "66c: other bars follow the drag when shown");
+    CHECK_COND(wm->setCurrentSheet(ex, true, &err) && suite66Shown(mw, ex),
+               "66c: restore Extra as shown sheet");
     // take sheet 2 out, then put it back at position 1
     CHECK_COND(wm->detachSheet(s2, true, &err), "66c: detach");
     QApplication::processEvents();
@@ -21334,7 +21374,8 @@ static int runSuite66Workbooks(ApplicationWindow *mw)
     const QString bk = QStringLiteral("Specimens");
     CHECK_COND(wm->hasBook(bk) && !wm->hasBook(book) && s1->name() == "Spec66_Sheet1",
                "66d: book renamed, sheets not");
-    CHECK_COND(suite66Tabs(s1)->tabText(0) == "Sheet1", "66d: labels after renaming the book");
+    CHECK_COND(suite66Tabs(s3) && suite66Tabs(s3)->tabText(0) == "Sheet1",
+               "66d: labels after renaming the book");
     CHECK_COND(suite66ExplorerType(mw, s3).contains("Specimens"),
                "66d: explorer follows the book name");
     CHECK_COND(f66->recalculate(1, false) && f66->cell(0, 1) == 70.0, "66d: formula after rename");
@@ -25282,6 +25323,67 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(ftInt->column(1)->valueAt(0) - 100.0) < 1e-9,
                    "77c: P1-D4 all-integer CSV consumed first data row as header!");
 
+        // Track 2 M2: Excel trailing-comma '# pause,' / '# note,,' and multi-cell text
+        // '# T=300 K, P=1 atm' comments skipped while '#1,520' specimen rows are preserved
+        const QByteArray excelHashMixCsv =
+                "Specimen,UTS_MPa\n"
+                "# pause,\n"
+                "# T=300 K, P=1 atm\n"
+                "#1,520\n"
+                "# note,,\n"
+                "#2,515\n"
+                "# end of test, operator=A\n";
+        AsciiTableImportFilter::ImportReport repExcelHash;
+        std::unique_ptr<future::Table> ftExcelHash(AsciiTableImportFilter::importDroppedTextData(
+                excelHashMixCsv, QStringLiteral("ExcelHashMix77"), QStringLiteral("excel_hash.csv"),
+                &repExcelHash));
+        CHECK_COND(ftExcelHash && ftExcelHash->columnCount() == 2 && ftExcelHash->rowCount() == 2
+                           && ftExcelHash->column(0)->textAt(0) == QStringLiteral("#1")
+                           && ftExcelHash->column(0)->textAt(1) == QStringLiteral("#2")
+                           && ftExcelHash->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && std::fabs(ftExcelHash->column(1)->valueAt(0) - 520.0) < 1e-9
+                           && std::fabs(ftExcelHash->column(1)->valueAt(1) - 515.0) < 1e-9
+                           && repExcelHash.skippedLines == 4,
+                   "77c: M2 mixed '# pause,' / '# T=300 K, P=1 atm' vs '#1,520' CSV failed (rows="
+                           << (ftExcelHash ? ftExcelHash->rowCount() : -1)
+                           << ", skipped=" << repExcelHash.skippedLines << ")!");
+
+        // Track 2 M3: 2-column '1,2\n1.5,2.8\n2,3.1' must keep all 3 rows as numeric data
+        const QByteArray twoColSeqCsv = "1,2\n1.5,2.8\n2,3.1\n";
+        std::unique_ptr<future::Table> ftTwoColSeq(AsciiTableImportFilter::importDroppedTextData(
+                twoColSeqCsv, QStringLiteral("TwoColSeq77"), QStringLiteral("seq2.csv"), nullptr));
+        CHECK_COND(ftTwoColSeq && ftTwoColSeq->columnCount() == 2 && ftTwoColSeq->rowCount() == 3
+                           && std::fabs(ftTwoColSeq->column(0)->valueAt(0) - 1.0) < 1e-9
+                           && std::fabs(ftTwoColSeq->column(1)->valueAt(0) - 2.0) < 1e-9
+                           && std::fabs(ftTwoColSeq->column(0)->valueAt(1) - 1.5) < 1e-9
+                           && std::fabs(ftTwoColSeq->column(1)->valueAt(2) - 3.1) < 1e-9,
+                   "77c: M3 2-column '1,2\\n1.5,2.8\\n2,3.1' dropped first data row as seq header!");
+
+        // Track 2 M3 (b): ignoredLines > 0 above '0,1000\n0.1,998.5' must NOT drop row 0
+        {
+            const QString skipZeroPath = tmp77.filePath(QStringLiteral("skip_zero77.csv"));
+            QFile szf(skipZeroPath);
+            CHECK_COND(szf.open(QIODevice::WriteOnly), "77c: write skip_zero77.csv");
+            szf.write("Instrument metadata line\n0,1000\n0.1,998.5\n");
+            szf.close();
+            AsciiTableImportFilter skipFlt;
+            skipFlt.set_ignored_lines(1);
+            skipFlt.set_separator(QStringLiteral(","));
+            skipFlt.set_first_row_names_columns(true);
+            skipFlt.set_trim_whitespace(true);
+            skipFlt.set_convert_to_numeric(true);
+            skipFlt.set_numeric_locale(QLocale::c());
+            QFile szIn(skipZeroPath);
+            CHECK_COND(szIn.open(QIODevice::ReadOnly), "77c: open skip_zero77.csv");
+            std::unique_ptr<AbstractAspect> szAsp(skipFlt.importAspect(szIn));
+            szIn.close();
+            future::Table *ftSz = dynamic_cast<future::Table *>(szAsp.get());
+            CHECK_COND(ftSz && ftSz->columnCount() == 2 && ftSz->rowCount() == 2
+                               && std::fabs(ftSz->column(0)->valueAt(0) - 0.0) < 1e-9
+                               && std::fabs(ftSz->column(1)->valueAt(0) - 1000.0) < 1e-9,
+                       "77c: M3 ignoredLines > 0 dropped '0,1000' initial data row!");
+        }
+
         // P1-D4 (b): mixed text + numeric header ("Time (s),300,400")
         const QByteArray mixCsv = "Time (s),300,400\n0,1.2,2.4\n10,1.5,3.1\n";
         std::unique_ptr<future::Table> ftMix(AsciiTableImportFilter::importDroppedTextData(
@@ -25450,6 +25552,77 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(!exportedAlloyImg.isNull() && exportedAlloyImg.width() > 50
                            && exportedAlloyImg.height() > 50,
                    "77d: ml->exportImage failed to write valid PNG for dotted filename Al-5.5Zn-2.5Mg.png!");
+
+        // Track 2 M1: safeExportWriteTransaction overwrites existing Al-5.5Zn-2.5Mg.png via short
+        // '.tgexp_<8hex>.png' temp file, and preserves original file intact on callback/lock failure
+        bool sawShortTmpName = false;
+        const bool ovrOk = ApplicationWindow::safeExportWriteTransaction(
+                resolvedPng, QStringLiteral("png"), [&](const QString &writePath) {
+                    const QString fn = QFileInfo(writePath).fileName();
+                    sawShortTmpName = fn.startsWith(QStringLiteral(".tgexp_"))
+                            && fn.endsWith(QStringLiteral(".png")) && fn.size() <= 20;
+                    mlAlloy->exportImage(writePath, 100, false, 210);
+                    return true;
+                });
+        const QImage ovrAlloyImg(resolvedPng);
+        CHECK_COND(ovrOk && sawShortTmpName && !ovrAlloyImg.isNull()
+                           && ovrAlloyImg.width() > exportedAlloyImg.width(),
+                   "77d: M1 safe overwrite of existing Al-5.5Zn-2.5Mg.png failed!");
+        QByteArray savedGoodPngBytes;
+        {
+            QFile gf(resolvedPng);
+            CHECK_COND(gf.open(QIODevice::ReadOnly), "77d: read overwritten PNG");
+            savedGoodPngBytes = gf.readAll();
+            gf.close();
+            CHECK_COND(!savedGoodPngBytes.isEmpty(), "77d: empty overwritten PNG");
+        }
+
+        // Callback returning false or producing 0-byte temp file must leave existing PNG untouched
+        const bool failCb1 = ApplicationWindow::safeExportWriteTransaction(
+                resolvedPng, QStringLiteral("png"),
+                [&](const QString &) { return false; });
+        const bool failCb2 = ApplicationWindow::safeExportWriteTransaction(
+                resolvedPng, QStringLiteral("png"), [&](const QString &writePath) {
+                    QFile zf(writePath);
+                    if (zf.open(QIODevice::WriteOnly))
+                        zf.close();
+                    return true;
+                });
+        {
+            QFile gf(resolvedPng);
+            CHECK_COND(!failCb1 && !failCb2 && gf.open(QIODevice::ReadOnly)
+                               && gf.readAll() == savedGoodPngBytes,
+                       "77d: M1 failed export callback clobbered existing Al-5.5Zn-2.5Mg.png!");
+        }
+#ifdef Q_OS_WIN
+        // Exclusive/read-locked destination file (no FILE_SHARE_DELETE) must NOT delete original or temp data
+        {
+            const std::wstring wLocked = QDir::toNativeSeparators(resolvedPng).toStdWString();
+            HANDLE hLock = CreateFileW(wLocked.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            CHECK_COND(hLock != INVALID_HANDLE_VALUE, "77d: failed to open read lock on PNG");
+            const bool failLocked = ApplicationWindow::safeExportWriteTransaction(
+                    resolvedPng, QStringLiteral("png"), [&](const QString &writePath) {
+                        QFile tf(writePath);
+                        if (!tf.open(QIODevice::WriteOnly))
+                            return false;
+                        tf.write("NEW_PNG_BYTES_WHILE_LOCKED");
+                        tf.close();
+                        return true;
+                    });
+            CloseHandle(hLock);
+            QFile gf(resolvedPng);
+            CHECK_COND(!failLocked && gf.open(QIODevice::ReadOnly)
+                               && gf.readAll() == savedGoodPngBytes,
+                       "77d: M1 export onto locked Al-5.5Zn-2.5Mg.png corrupted or deleted original file!");
+        }
+#endif
+        CHECK_COND(QDir(tmp77.path())
+                           .entryList(QStringList() << QStringLiteral(".tgexp_*")
+                                                    << QStringLiteral("*.tg_bak*"),
+                                      QDir::Files | QDir::Hidden)
+                           .isEmpty(),
+                   "77d: M1 left temporary .tgexp_* or .tg_bak* files behind!");
     }
 
     // -------------------------------------------------------------------------
@@ -25470,11 +25643,13 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(std::fabs(mlZ->pageZoom() - 1.6) < 1e-4, "77e: expected 160% view zoom");
         const double ptBefore = gZ->legend()->font().pointSizeF();
         mlZ->resize(mlZ->width() + 42, mlZ->height() + 28);
+        mlZ->move(95, 75);
         const QSize customWinSz = mlZ->size();
+        const QPoint customWinPos = mlZ->pos();
 
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
-        CHECK_COND(mlZ->size() == customWinSz,
-                   "77e: placeLegendAnchor under zoom reset manually resized MultiLayer window size!");
+        CHECK_COND(mlZ->size() == customWinSz && mlZ->pos() == customWinPos,
+                   "77e: placeLegendAnchor under zoom reset manually resized/moved MultiLayer geometry!");
         const int marginFrom160 = gZ->plotWidget()->property("_outsideRightMargin").toInt();
         mlZ->setPageZoom(1.0);
         gZ->placeLegendAnchor(Graph::LegendOutsideRight);
@@ -25484,7 +25659,11 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            << marginFrom160 << " vs " << marginFrom100 << ")");
 
         mlZ->setPageZoom(0.75);
+        mlZ->move(95, 75);
+        const QPoint posAt75 = mlZ->pos();
         gZ->placeLegendAnchor(Graph::LegendTopRight);
+        CHECK_COND(mlZ->pos() == posAt75,
+                   "77e: placeLegendAnchor under 75% zoom shifted MultiLayer window position!");
         CHECK_COND(std::fabs(gZ->legend()->font().pointSizeF() - ptBefore) < 1e-6,
                    "77e: P0-7 placeLegendAnchor under 75% zoom permanently shrank stored legend pt!");
     }
@@ -25513,6 +25692,8 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            tRen->name() + QStringLiteral("_Err"));
         CHECK_COND(gRen->curves() == 2, "77f: expected data curve + error bar");
 
+        if (gRen->legend())
+            gRen->legend()->setText(gRen->legend()->text() + QStringLiteral("\nModel vs Stress"));
         const QString snapBefore = mlRen->saveToString(QString());
         gRen->setAxisTitle(QwtPlot::xBottom, QStringLiteral("True Strain (-)"));
         mlRen->pushUndoSnapshot(QStringLiteral("Edit X Title"), snapBefore);
@@ -25528,8 +25709,10 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                    "77f: P1-S2 Graph Undo after sheet+column rename deleted the curve!");
         CHECK_COND(mlRen->activeGraph()->legend()
                            && mlRen->activeGraph()->legend()->text().contains(
-                                      QStringLiteral("FlowStress")),
-                   "77f: Graph Undo reverted legend text to stale column name instead of FlowStress!");
+                                      QStringLiteral("FlowStress"))
+                           && mlRen->activeGraph()->legend()->text().contains(
+                                      QStringLiteral("Model vs Stress")),
+                   "77f: Graph Undo failed to remap auto curve legend to FlowStress or corrupted free-form 'Model vs Stress'!");
         mlRen->undoStack()->redo();
         CHECK_COND(mlRen->activeGraph() && mlRen->activeGraph()->curves() == 2,
                    "77f: P1-S2 Graph Redo after sheet+column rename deleted the curve!");
@@ -25567,14 +25750,20 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         reBig->savedProject();
         CHECK_COND(reBig->saved, "77f: expected clean state before appendProject");
         const QString smallPrj = tmp77.filePath(QStringLiteral("small_append.sciprj"));
+        const QString gzPath = tmp77.filePath(QStringLiteral("trunc77.sciprj.gz"));
         {
             AppWinGuard wSmall(new ApplicationWindow());
             wSmall->applyUserSettings();
+            Note *padNote = wSmall->newNote(QStringLiteral("PadNote77"));
+            CHECK_COND(padNote != nullptr, "77f: create PadNote77");
+            padNote->setText(QString(16600, QLatin1Char('P')));
             Table *ts = wSmall->newTable(QStringLiteral("SmallT77"), 2, 2);
             ts->setCell(0, 0, 42.0);
             ts->setCell(1, 1, 84.0);
             CHECK_COND(wSmall->writeProjectFile(wSmall->projectFolder(), smallPrj),
                        "77f: write small_append.sciprj");
+            CHECK_COND(wSmall->writeProjectFile(wSmall->projectFolder(), gzPath),
+                       "77f: write trunc77.sciprj.gz from lightweight smallPrj");
         }
         reBig->appendProject(smallPrj);
         CHECK_COND(!reBig->saved,
@@ -25621,49 +25810,63 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
             return out;
         };
 
-        // Multi-member .sciprj.gz (2 concatenated gzip streams) must load both halves cleanly
+        // Multi-member .sciprj.gz (including exact 16 KB chunk boundary: gzMember1 == 16384 & 16383)
         QByteArray rawSmallBytes;
         {
             QFile sf(smallPrj);
             CHECK_COND(sf.open(QIODevice::ReadOnly), "77f: read small_append.sciprj");
             rawSmallBytes = sf.readAll();
             sf.close();
-            CHECK_COND(rawSmallBytes.size() > 60, "77f: small_append.sciprj unexpectedly tiny");
+            CHECK_COND(rawSmallBytes.size() > 16800,
+                       "77f: small_append.sciprj expected > 16800 bytes for 16KB boundary test");
         }
-        const int halfIdx = rawSmallBytes.size() / 2;
-        const QByteArray gzMember1 = makeStoredGzipMember(rawSmallBytes.left(halfIdx));
-        const QByteArray gzMember2 = makeStoredGzipMember(rawSmallBytes.mid(halfIdx));
-
-        const QString multiGzPath = tmp77.filePath(QStringLiteral("multi77.sciprj.gz"));
-        {
-            QFile mf(multiGzPath);
-            CHECK_COND(mf.open(QIODevice::WriteOnly), "77f: write multi77.sciprj.gz");
-            mf.write(gzMember1);
-            mf.write(gzMember2);
-            mf.close();
+        const int storedGzOverhead = makeStoredGzipMember(QByteArray()).size();
+        for (int targetGz1Size : { 16384, 16383, int(rawSmallBytes.size() / 2) }) {
+            const int raw1Len = (targetGz1Size >= 16383)
+                    ? (targetGz1Size - storedGzOverhead)
+                    : targetGz1Size;
+            const QByteArray gzMember1 = makeStoredGzipMember(rawSmallBytes.left(raw1Len));
+            const QByteArray gzMember2 = makeStoredGzipMember(rawSmallBytes.mid(raw1Len));
+            if (targetGz1Size >= 16383) {
+                CHECK_COND(gzMember1.size() == targetGz1Size,
+                           "77f: expected gzMember1.size() == " << targetGz1Size
+                                                                << ", got " << gzMember1.size());
+            }
+            const QString multiGzPath = tmp77.filePath(
+                    QStringLiteral("multi77_%1.sciprj.gz").arg(targetGz1Size));
+            {
+                QFile mf(multiGzPath);
+                CHECK_COND(mf.open(QIODevice::WriteOnly), "77f: write multi77.sciprj.gz");
+                mf.write(gzMember1);
+                mf.write(gzMember2);
+                mf.close();
+            }
+            AppWinGuard reMultiGz(w77->openProject(multiGzPath));
+            CHECK_COND(reMultiGz != nullptr && reMultiGz->table(QStringLiteral("SmallT77")) != nullptr
+                               && std::fabs(reMultiGz->table(QStringLiteral("SmallT77"))->cell(1, 1)
+                                            - 84.0)
+                                       < 1e-9,
+                       "77f: multi-member .sciprj.gz failed at gzMember1 size " << gzMember1.size());
         }
-        AppWinGuard reMultiGz(w77->openProject(multiGzPath));
-        CHECK_COND(reMultiGz != nullptr && reMultiGz->table(QStringLiteral("SmallT77")) != nullptr
-                           && std::fabs(reMultiGz->table(QStringLiteral("SmallT77"))->cell(1, 1) - 84.0) < 1e-9,
-                   "77f: multi-member .sciprj.gz failed to decompress both concatenated gzip streams!");
-        reMultiGz.reset();
 
         // Multi-member .sciprj.gz with truncated 2nd member must be rejected
-        const QString truncMultiGzPath = tmp77.filePath(QStringLiteral("trunc_multi77.sciprj.gz"));
         {
+            const int halfIdx = rawSmallBytes.size() / 2;
+            const QByteArray gzMember1 = makeStoredGzipMember(rawSmallBytes.left(halfIdx));
+            const QByteArray gzMember2 = makeStoredGzipMember(rawSmallBytes.mid(halfIdx));
+            const QString truncMultiGzPath =
+                    tmp77.filePath(QStringLiteral("trunc_multi77.sciprj.gz"));
             QFile tmf(truncMultiGzPath);
             CHECK_COND(tmf.open(QIODevice::WriteOnly), "77f: write trunc_multi77.sciprj.gz");
             tmf.write(gzMember1);
             tmf.write(gzMember2.left(gzMember2.size() / 2));
             tmf.close();
+            AppWinGuard reTruncMulti(w77->openProject(truncMultiGzPath));
+            CHECK_COND(reTruncMulti == nullptr,
+                       "77f: multi-member .sciprj.gz with truncated 2nd member was not rejected!");
         }
-        AppWinGuard reTruncMulti(w77->openProject(truncMultiGzPath));
-        CHECK_COND(reTruncMulti == nullptr,
-                   "77f: multi-member .sciprj.gz with truncated 2nd member was not rejected!");
 
         // Zero-padded .sciprj.gz (trailing NUL block padding) must open cleanly, while truncated .gz is rejected
-        const QString gzPath = tmp77.filePath(QStringLiteral("trunc77.sciprj.gz"));
-        CHECK_COND(w77->writeProjectFile(w77->projectFolder(), gzPath), "77f: write trunc77.sciprj.gz");
         QByteArray fullGz;
         {
             QFile gf(gzPath);
@@ -25681,7 +25884,8 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
             pf.close();
         }
         AppWinGuard rePadGz(w77->openProject(paddedGzPath));
-        CHECK_COND(rePadGz != nullptr,
+        CHECK_COND(rePadGz != nullptr
+                           && rePadGz->table(QStringLiteral("SmallT77")) != nullptr,
                    "77f: trailing zero-padded .sciprj.gz was falsely rejected!");
         rePadGz.reset();
 

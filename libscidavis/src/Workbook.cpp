@@ -103,6 +103,7 @@ void WorkbookManager::shutdown()
     if (d_app)
         d_app->removeEventFilter(this);
     d_books.clear();
+    d_pending_refresh_books.clear();
     d_archived_sheets.clear();
     d_user_hidden.clear();
     d_last_geometry.clear();
@@ -435,15 +436,29 @@ QString WorkbookManager::createBook(const QString &name, int sheetCount, QString
     nb.name = bookName;
     nb.prefix = bookName;
     d_books.append(nb);
-    for (int i = 0; i < sheetCount; ++i) {
-        if (!addSheet(bookName, QString(), -1, i == 0, err)) {
-            if (Book *b = find(bookName))
-                if (b->sheets.isEmpty())
-                    eraseBook(bookName);
-            return QString();
+    struct ScopedBatchFlag
+    {
+        bool &flag;
+        bool prev;
+        explicit ScopedBatchFlag(bool &f) : flag(f), prev(f) { flag = true; }
+        ~ScopedBatchFlag() { flag = prev; }
+    };
+    {
+        ScopedBatchFlag batchGuard(d_batch_updating);
+        for (int i = 0; i < sheetCount; ++i) {
+            if (!addSheet(bookName, QString(), -1, i == 0, err)) {
+                if (Book *b = find(bookName))
+                    if (b->sheets.isEmpty())
+                        eraseBook(bookName);
+                return QString();
+            }
         }
     }
-    d_app->modifiedProject();
+    if (!d_batch_updating) {
+        refreshBars(bookName);
+        refreshExplorer();
+        d_app->modifiedProject();
+    }
     return bookName;
 }
 
@@ -569,9 +584,11 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
         d_user_hidden[t] = true;
         d_switching = false;
     }
-    refreshBars(book);
-    refreshExplorer();
-    d_app->modifiedProject();
+    if (!d_batch_updating) {
+        refreshBars(book);
+        refreshExplorer();
+        d_app->modifiedProject();
+    }
     return t;
 }
 
@@ -1054,8 +1071,7 @@ void WorkbookManager::checkShown(Table *t)
         }
     }
     d_switching = false;
-    if (hidOne)
-        refreshBars(name);
+    refreshBars(name);
 }
 
 void WorkbookManager::onTableClosed(Table *t, bool preserveForRedo)
@@ -1142,16 +1158,27 @@ void WorkbookManager::removeBar(Table *t)
 
 void WorkbookManager::scheduleRefresh(const QString &book)
 {
-    QTimer::singleShot(0, this, [this, book]() {
+    if (d_shutdown || book.isEmpty())
+        return;
+    const bool wasEmpty = d_pending_refresh_books.isEmpty();
+    d_pending_refresh_books.insert(book);
+    if (!wasEmpty)
+        return;
+    QTimer::singleShot(0, this, [this]() {
         if (d_shutdown)
             return;
-        refreshBars(book);
+        const QSet<QString> pending = std::move(d_pending_refresh_books);
+        d_pending_refresh_books.clear();
+        for (const QString &b : pending)
+            refreshBars(b);
         refreshExplorer();
     });
 }
 
 void WorkbookManager::refreshBars(const QString &book)
 {
+    if (d_batch_updating || d_shutdown)
+        return;
     Book *b = find(book);
     if (!b)
         return;
@@ -1161,8 +1188,10 @@ void WorkbookManager::refreshBars(const QString &book)
         return;
     }
     const Book copy = *b;
-    for (Table *t : copy.sheets)
-        refreshBar(t, copy);
+    for (Table *t : copy.sheets) {
+        if (t && (isShown(t) || t == copy.current))
+            refreshBar(t, copy);
+    }
 }
 
 void WorkbookManager::refreshBar(Table *t, const Book &b)
@@ -1237,10 +1266,10 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
                     order << s;
             bk->sheets = order;
             d_app->modifiedProject();
-            // the other sheets' bars follow; this one is still being dragged
+            // visible/current bars follow; this one is still being dragged
             const Book copy = *bk;
             for (Table *s : copy.sheets)
-                if (s != self)
+                if (s && s != self && (isShown(s) || s == copy.current))
                     refreshBar(s, copy);
         });
         connect(tabs, &QTabBar::tabBarDoubleClicked, this, [this, self, sheetAt](int i) {
@@ -1290,6 +1319,8 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
             return;
     }
 
+    const bool prevBarUpdates = bar->updatesEnabled();
+    bar->setUpdatesEnabled(false);
     const QSignalBlocker blocker(tabs);
     while (tabs->count() > b.sheets.size())
         tabs->removeTab(tabs->count() - 1);
@@ -1299,7 +1330,7 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
         const QString label = sheetLabel(b.prefix, s->name());
         if (i >= tabs->count())
             tabs->addTab(label);
-        else
+        else if (tabs->tabText(i) != label)
             tabs->setTabText(i, label);
         tabs->setTabData(i, s->name());
         tabs->setTabToolTip(i,
@@ -1311,6 +1342,7 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
     }
     tabs->setCurrentIndex(cur);
     bar->setToolTip(wbTr("Workbook %1").arg(b.name));
+    bar->setUpdatesEnabled(prevBarUpdates);
     bar->show();
 }
 
@@ -1514,12 +1546,25 @@ void WorkbookManager::decorateListItem(QTreeWidgetItem *it, MyWidget *w) const
 
 void WorkbookManager::refreshExplorer()
 {
-    if (!d_app || d_shutdown)
+    if (!d_app || d_shutdown || d_batch_updating)
         return;
+    QHash<const MyWidget *, QString> bookBySheet;
+    for (const Book &b : d_books) {
+        for (Table *t : b.sheets) {
+            if (t)
+                bookBySheet.insert(t, b.name);
+        }
+    }
+    const QString plainTableType = QCoreApplication::translate("ApplicationWindow", "Table");
     for (int i = 0; i < d_app->lv.topLevelItemCount(); ++i) {
         QTreeWidgetItem *it = d_app->lv.topLevelItem(i);
-        if (it && it->type() == WindowListItem::WindowType)
-            decorateListItem(it, static_cast<WindowListItem *>(it)->window());
+        if (!it || it->type() != WindowListItem::WindowType)
+            continue;
+        MyWidget *w = static_cast<WindowListItem *>(it)->window();
+        if (!qobject_cast<Table *>(w))
+            continue;
+        const QString book = bookBySheet.value(w);
+        it->setText(1, book.isEmpty() ? plainTableType : wbTr("Sheet of %1").arg(book));
     }
 }
 
@@ -1602,34 +1647,52 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
             sheetNames << val;
         // unknown keys are ignored (room for later additions)
     }
-    auto mapped = [&renamedTables](const QString &n) {
-        for (int k = 0; k + 1 < renamedTables.size(); k += 2)
-            if (renamedTables.at(k) == n)
-                return renamedTables.at(k + 1);
-        return n;
-    };
-    auto findTable = [this, folder](const QString &n) -> Table * {
-        if (folder)
-            for (MyWidget *w : folder->windowsList())
-                if (Table *t = qobject_cast<Table *>(w))
-                    if (t->name() == n)
-                        return t;
-        return nullptr;
+    QHash<QString, QString> renameMap;
+    renameMap.reserve(renamedTables.size() / 2);
+    for (int k = 0; k + 1 < renamedTables.size(); k += 2) {
+        if (!renameMap.contains(renamedTables.at(k)))
+            renameMap.insert(renamedTables.at(k), renamedTables.at(k + 1));
+    }
+    auto mapped = [&renameMap](const QString &n) { return renameMap.value(n, n); };
+
+    QHash<QString, Table *> tablesInFolder;
+    QSet<const MyWidget *> alreadyBooked;
+    for (const Book &eb : d_books) {
+        for (Table *et : eb.sheets)
+            if (et)
+                alreadyBooked.insert(et);
+    }
+    if (folder) {
+        const QList<MyWidget *> folderWins = folder->windowsList();
+        tablesInFolder.reserve(folderWins.size());
+        for (MyWidget *w : folderWins) {
+            if (Table *t = qobject_cast<Table *>(w)) {
+                if (!tablesInFolder.contains(t->name()))
+                    tablesInFolder.insert(t->name(), t);
+            }
+        }
+    }
+    auto findTable = [&tablesInFolder](const QString &n) -> Table * {
+        return tablesInFolder.value(n, nullptr);
     };
     Book nb;
     nb.name = uniqueBookName(name.isEmpty() ? QStringLiteral("Book") : name);
     nb.prefix = sanitizeName(prefix.isEmpty() ? name : prefix);
     if (nb.prefix.isEmpty())
         nb.prefix = nb.name;
+    QSet<Table *> seenInBook;
+    seenInBook.reserve(sheetNames.size());
     for (const QString &sn : sheetNames) {
         Table *t = findTable(mapped(sn));
-        if (t && !bookFor(t) && !nb.sheets.contains(t))
+        if (t && !alreadyBooked.contains(t) && !seenInBook.contains(t)) {
+            seenInBook.insert(t);
             nb.sheets << t;
+        }
     }
     if (nb.sheets.isEmpty())
         return false;
     nb.current = findTable(mapped(current));
-    if (!nb.current || !nb.sheets.contains(nb.current))
+    if (!nb.current || !seenInBook.contains(nb.current))
         nb.current = nb.sheets.first();
     // only one sheet is visible: the current one, unless the whole book was hidden and
     // another sheet was saved visible
@@ -1641,6 +1704,8 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
             }
     }
     d_books.append(nb);
+    const bool prevBatch = d_batch_updating;
+    d_batch_updating = true;
     d_switching = true;
     for (Table *t : nb.sheets) {
         watch(t);
@@ -1650,7 +1715,11 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
         }
     }
     d_switching = false;
-    refreshBars(nb.name);
+    d_batch_updating = prevBatch;
+    if (!d_batch_updating) {
+        refreshBars(nb.name);
+        refreshExplorer();
+    }
     return true;
 }
 

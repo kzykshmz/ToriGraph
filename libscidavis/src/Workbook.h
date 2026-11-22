@@ -22,6 +22,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QRect>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -168,6 +169,8 @@ private:
     QHash<QObject *, QRect> d_last_geometry;
     QHash<QObject *, bool> d_last_maximized;
     QPointer<QAction> d_new_action;
+    QSet<QString> d_pending_refresh_books;
+    bool d_batch_updating = false;
     bool d_switching = false;
     bool d_shutdown = false;
 };
