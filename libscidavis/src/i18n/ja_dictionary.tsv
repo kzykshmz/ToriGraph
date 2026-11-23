@@ -95,8 +95,8 @@
 %1: set matrix coordinates	%1: 行列座標範囲を設定
 %1: set matrix size to %2x%3	%1: 行列サイズを %2×%3 に設定
 %1: set numeric format to '%2'	%1: 数値書式を '%2' に設定
-%1: set plot designation	%1: プロット属性を設定
-%1: set plot designation(s)	%1: プロット属性を設定
+%1: set plot designation	%1: 列の役割を設定
+%1: set plot designation(s)	%1: 列の役割を設定
 %1: set text for row %2	%1: 行 %2 のテキストを設定
 %1: set the number of rows to %2	%1: 行数を %2 に設定
 %1: set value for row %2	%1: 行 %2 の数値を設定
@@ -1028,7 +1028,7 @@ Auto-Trace	自動トレース
 Auto-Trace Curve	曲線を自動トレース
 Auto-Trace by Color	色指定による自動トレース
 Auto-recalculate formulas when source cells change	参照セル変更時に列数式を自動再計算する
-Auto-update axis title from column metadata	列メタデータ (ロングネーム・単位) から軸タイトルを自動更新
+Auto-update axis title from column metadata	列メタデータ (長い名前・単位) から軸タイトルを自動更新
 Autocorrelate	自己相関
 Autoexec	自動実行
 Automatic	自動
@@ -1424,7 +1424,7 @@ Cols	対象列範囲
 Column	列
 Column %1	列 %1
 Column Headings	列ヘッダー
-Column Labels & Designation	列ラベルとプロット属性
+Column Labels & Designation	列ラベルと列の役割
 Column Properties	列プロパティ
 Column Statisti&cs	列統計量(&C)
 Column Statistics	列統計量
@@ -1876,7 +1876,7 @@ Double precision\nfloating point values\n	倍精度浮動小数点数\n(数値�
 Double-&Y Plot	2軸グラフ (Double-Y)(&Y)
 Double-Y	2軸Yグラフ
 Double-Y Plot	2軸 (Double-Y) プロット
-Double-click header to edit Long Name, Units & F(x)=	ヘッダーをダブルクリックしてロングネーム・単位・F(x)=数式を編集
+Double-click header to edit Long Name, Units & F(x)=	ヘッダーをダブルクリックして長い名前・単位・F(x)= を編集
 Double-click on plot to select a data point!	プロット上をダブルクリックして基準データ点を選択してください。
 Down Triangle	下向き三角形 (▼)
 Download && Install Update	更新をダウンロードしてインストール
@@ -1944,7 +1944,7 @@ Edit Color	色を編集
 Edit Color...	色を編集...
 Edit Column &Description	列の説明を編集(&D)
 Edit Column Description	列の説明を編集
-Edit Column Labels & Formula (Long Name / Units / F(x))...	列ラベル・数式の編集 (ロングネーム / 単位 / F(x))...
+Edit Column Labels & Formula (Long Name / Units / F(x))...	列ラベル・数式の編集 (長い名前 / 単位 / F(x))...
 Edit Column Labels & Formula...	列ラベルと数式の編集...
 Edit Function	関数の編集
 Edit Image	画像の編集
@@ -2050,14 +2050,14 @@ Export DPI	出力解像度 (DPI)
 Export DPI:	出力解像度 (DPI):
 Export Error	エクスポートエラー
 Export Graph	グラフをエクスポート
-Export Graph to PNG / TIFF / SVG / EMF	グラフを PNG / TIFF / SVG / EMF に出力
+Export Graph to PNG / TIFF / SVG / EMF	グラフを PNG / TIFF / SVG / EMF にエクスポート
 Export Image / PDF	画像 / PDF エクスポート
 Export Image / PDF...	画像 / PDF エクスポート...
 Export PDF	PDFエクスポート
 Export Page	ページをエクスポート
 Export Points to Table	データ点をワークシートへ出力
 Export Selection	選択範囲のみエクスポート
-Export Vector PDF Document	ベクター PDF として出力
+Export Vector PDF Document	ベクター PDF としてエクスポート
 Export all graphs	すべてのグラフをエクスポート
 Export current graph	現在のグラフをエクスポート
 Export in &color	カラーでエクスポート(&C)
@@ -2840,8 +2840,8 @@ Logistic Regression	ロジスティック回帰
 Logistic Regression Probability Data	ロジスティック回帰・予測確率データ
 Logistic Regression...	ロジスティック回帰...
 Logistic regression could not converge (ensure Y has two distinct binary outcomes and sufficient valid rows).	ロジスティック回帰が収束しませんでした (Y列に2種類の二値結果と十分な有効データ行があるか確認してください)。
-Long Name	ロングネーム
-Long Name:	ロングネーム:
+Long Name	長い名前
+Long Name:	長い名前:
 Look &in:	場所(&I):
 Look in	場所
 Look in:	場所:
@@ -3618,7 +3618,7 @@ Please select the end line point inside the image rectangle!	画像矩形の内�
 Please select three columns (A, B, C) for a Ternary plot!	三角図用に 3 列 (A, B, C) を選択してください。
 Please select two columns for this operation!	この操作には 2 列を選択してください。
 Please select two columns for this operation:\n the first represents the signal and the second the response function!	この操作には 2 列を選択してください:\n1列目が信号、2列目が応答関数を表します。
-Please set a default X column for this table, first!	先にこのワークシートのデフォルト X 列を設定してください。
+Please set a default X column for this table, first!	先にこのワークシートの X 列を設定してください (列見出しを右クリック →「列の役割を設定」→「X」)。
 Please use the project explorer to select a window!	プロジェクトエクスプローラでウィンドウを選択してください。
 Please, click on plot and move cursor!	プロット上をクリックしてカーソルを動かしてください。
 Plot	プロット
@@ -3643,7 +3643,7 @@ Plot CWT Scalogram	CWT スカログラムをプロット
 Plot Coherence Result	コヒーレンス結果をプロット
 Plot Color Map with Peak Overlay	ピーク重畳カラーマップをプロット
 Plot Cubic Spline Curve	3次スプライン曲線グラフを作成
-Plot Designation:	プロット属性:
+Plot Designation:	列の役割:
 Plot Details	プロットの詳細
 Plot Details...	プロット詳細...
 Plot Diagnostic Graphs	残差・予測値診断グラフを作成
@@ -3663,7 +3663,7 @@ Plot Matrix Contour Lines	行列等高線プロットを作成
 Plot Mean ± SD Dashed Curves	平均 ± 標準偏差 (SD) の破線曲線をプロット
 Plot PSD Result	PSD 結果をプロット
 Plot Probability Curve	確率曲線をプロット
-Plot Properties	プロット属性の変更
+Plot Properties	列の役割の変更
 Plot Scatter Graph	散布図を作成
 Plot Selection	選択項目をプロット
 Plot Statistical Box-and-Whisker Chart	統計箱ひげ図を作成
@@ -4551,7 +4551,7 @@ The destination folder already contains a folder called '%1'! Folder skipped!	�
 The downloaded file failed SHA-256 checksum verification and was deleted for your safety.	ダウンロードされたファイルは SHA-256 チェックサム検証に失敗したため、安全のため削除されました。
 The file "%1" was created using "%2" as scripting language.\n\nInitializing support for this language FAILED; I'm using "%3" instead.\nVarious parts of this file may not be displayed as expected.	ファイル "%1" はスクリプト言語 "%2" で作成されていますが、初期化に失敗したため "%3" を使用します。\n一部が正しく表示されない場合があります。
 The file <b>%1</b> is corrupted, but there exists a backup copy.<br>Do you want to open the backup instead?	ファイル <b>%1</b> は破損していますが、バックアップが存在します。<br>バックアップを代わりに開きますか？
-The file <b>%1</b> is not a valid project file.	ファイル <b>%1</b> は有効なプロジェクトファイルではありません。
+The file <b>%1</b> is not a valid project file.	ファイル <b>%1</b> は有効な ToriGraph プロジェクト (.sciprj) ではありません。CSV や Excel (.xlsx) を開く場合はウィンドウへドラッグ&ドロップしてください。
 The file: <b> %1 </b> <p>does not exist anymore!<p>It will be removed from the list.	ファイル <b> %1 </b> <p>は存在しません。<p>履歴リストから削除されます。
 The file: <b> %1 </b> was not created using ToriGraph!	ファイル <b> %1 </b> は ToriGraph で作成されたファイルではありません。
 The file: <b>%1</b> doesn't exist!	ファイル <b>%1</b> は存在しません。
@@ -4593,7 +4593,7 @@ Theme name	テーマ名
 Theme name:	テーマ名:
 Theme:	テーマ:
 Theoretical Normal Quantiles (z)	理論正規分位点 (z)
-There are no available columns with plot designation set to Z!	プロット属性が Z に設定された利用可能な列がありません。
+There are no available columns with plot designation set to Z!	列の役割が Z に設定された利用可能な列がありません (列見出しを右クリック →「列の役割を設定」→「Z」)。
 There are no curves available on this plot!	このプロットには利用可能な曲線がありません。
 There are no curves with more than two points on this plot. Operation aborted!	このプロットには 3 点以上のデータを持つ曲線がありません。操作を中止しました。
 There are no data curves available on the active graph.	アクティブなグラフ上に解析可能なデータ曲線がありません。
@@ -4709,7 +4709,7 @@ ToriGraph Forums	ToriGraph フォーラム
 ToriGraph Homepage	ToriGraph ホームページ
 ToriGraph Matrix Template	ToriGraph 行列テンプレート
 ToriGraph Table Template	ToriGraph ワークシートテンプレート
-ToriGraph currently does not support Origin import.	現在のビルドではOriginインポートはサポートされていません。
+ToriGraph currently does not support Origin import.	この形式の古い Origin プロジェクト (.opj) は読み込めません。Origin 2018 以降の .opju はそのまま読み込めます (古い .opj は Origin で .opju または CSV / Excel に保存し直してください)。
 ToriGraph does not support QtiPlot project files from versions later than 0.9.0.	ToriGraphはバージョン0.9.0以降のQtiPlotプロジェクトファイルには対応していません。
 ToriGraph does not support QtiPlot template files from versions later than 0.9.0.	ToriGraphはバージョン0.9.0以降のQtiPlotテンプレートファイルには対応していません。
 ToriGraph is Up to Date	ToriGraph は最新です
@@ -5152,7 +5152,7 @@ change the table size	ワークシートの行数・列数を変更
 col() works only on tables!	col() はワークシートでのみ使用できます。
 column mode invalid	列モードが無効です
 column mode missing	列モードが未指定です
-column plot designation invalid	列のプロット属性が無効です
+column plot designation invalid	列の役割が無効です
 column type invalid	列データ型が無効です
 column type missing	列データ型が未指定です
 column type or mode invalid	列データ型またはモードが無効です
@@ -5354,7 +5354,7 @@ yEnd	Y終点
 yErr	Y誤差
 years	年
 yellow	黄
-zlib can't open %1.	zlib で %1 を開けません。
+zlib can't open %1.	圧縮プロジェクトファイル %1 を開けませんでした (ファイルが破損しているか、読み取り権限がありません)。同名で末尾に ~ の付いたバックアップファイルがある場合はそちらを開いてみてください。
 Δ (Delta)	Δ (デルタ大)
 ΔX = %1, ΔY = %2\nSlope = %3\nC1(%4, %5) -> C2(%6, %7)	ΔX = %1, ΔY = %2\n傾き = %3\nC1(%4, %5) -> C2(%6, %7)
 ΔX = %1, ΔY = %2\nSlope = %3, Area = %4\nC1(%5, %6) -> C2(%7, %8)	ΔX = %1, ΔY = %2\n傾き = %3, 面積 = %4\nC1(%5, %6) -> C2(%7, %8)
@@ -5470,7 +5470,7 @@ Apply Tick && Axis Style to All 4 Axes	目盛り・軸スタイルを全4軸に�
 Apply Tick & Axis Style to All 4 Axes	目盛り・軸スタイルを全4軸に一括適用
 Horizontal Grid (Left/Right Y)	水平グリッド線 (左/右 Y軸)
 Vertical Grid (Bottom/Top X)	垂直グリッド線 (下/上 X軸)
-Long Name: %1	ロングネーム: %1
+Long Name: %1	長い名前: %1
 Units: %1	単位: %1
 Comments: %1	コメント: %1
 Collapse Inner Gaps (0-gap Stack/Grid)	パネル間隔をゼロにする (密着スタック/グリッド)
@@ -5985,7 +5985,7 @@ Click a worksheet (with 2+ Y columns) or a graph window first.	先にワーク�
 Created a new graph from "%1", the worksheet of the active graph.	アクティブなグラフの元ワークシート "%1" から新しいグラフを作成しました。
 The plot buttons make a graph from worksheet columns. Click a worksheet (or paste data from Excel) first.	作図ボタンはワークシートの列からグラフを作成します。先にワークシートをクリック (またはExcelから貼り付け) してください。
 The plot buttons make a new graph from worksheet columns. This graph has no source worksheet (function or image data); click a worksheet first.	作図ボタンはワークシートの列から新しいグラフを作成します。このグラフには元ワークシートがないため、先にワークシートをクリックしてください。
-Graph export works on a graph window. Click the graph you want to export first.	グラフのエクスポートはグラフウィンドウに対して実行します。先に出力したいグラフをクリックしてください。
+Graph export works on a graph window. Click the graph you want to export first.	画像のエクスポートはグラフのウィンドウが対象です。先にエクスポートしたいグラフをクリックしてください。
 Quick Start Guide	クイックスタートガイド
 Create publication-ready graphs in 3 easy steps	3ステップですぐに論文・発表品質のグラフを作成
 Paste from Excel into the worksheet (Ctrl+V) or drop an Excel (.xlsx) / CSV file	ワークシートに Excel から貼り付け (Ctrl+V)、または Excel (.xlsx) / CSV ファイルをドロップ
@@ -6106,8 +6106,6 @@ PowerPoint Paste Scale (%):	PowerPoint 貼付倍率 (%):
 The PowerPoint link currently points to another ToriGraph installation (%1) instead of this program (%2). Double-clicking the graph in PowerPoint will open that copy.	PowerPoint 連携の登録先が、現在起動中のプログラム (%2) ではなく別の場所の ToriGraph (%1) を指しています。PowerPoint 上でグラフをダブルクリックすると、そちらのプログラムが開きます。
 The embedded project data exceeds the 128 MB PowerPoint limit (%1 MB).	埋め込むプロジェクトデータが PowerPoint の上限 128 MB を超えています (%1 MB)。
 Do&n't Save	保存しない(&N)
-
-# ---- 文脈つきの訳 (H1: 同じ英語でも画面によって意味が違うもの) ----
 Area	面グラフ	CurvesDialog
 Area	面グラフ	GraphInspectorDock
 Center	中央揃え	LayerDialog
@@ -6135,3 +6133,1322 @@ Average	群平均	GraphStatsAndSurfaceFit
 Complete	完全連結	GraphStatsAndSurfaceFit
 Undid "%1" in %2	「%2」の「%1」を元に戻しました
 Redid "%1" in %2	「%2」の「%1」をやり直しました
+\s(Baseline Subtracted)	\s(ベースライン減算済)
+\s(PID %1)	\s(PID %1)
+%1: set long name	%1: 長い名前を設定
+%1: set units	%1: 単位を設定
+&Edit Text Inline	その場で文字を編集(&E)
+(Picked: %1)	(選択数: %1)
+(Picked: 0)	(選択数: 0)
++ Link Doublet	+ ダブレット連動を追加
+6. Lab Slide (18pt) & PowerPoint Export	6. 研究室スライド (18pt) と PowerPoint エクスポート
+ASCII Import	ASCII データの読み込み
+Active doublet links:\s	有効なダブレット連動:\s
+Active doublet links: None	有効なダブレット連動: なし
+Add Box Plot	箱ひげ図を追加
+Add Color-Mapped Scatter	カラーマップ散布図を追加
+Add columns via Table -> Add Column or paste data from Excel.	ワークシートの「+ 列追加」で列を追加するか、Excel からデータを貼り付けてください。
+Angle Column (θ):	角度列 (θ):
+Angle Units:	角度の単位:
+Applied preset '%1' to %2 graph(s).	%2 個のグラフにプリセット「%1」を適用しました。
+Apply Style Preset to Multiple Graphs	複数のグラフにスタイルプリセットを一括適用
+Area Ratio:	面積比:
+Asterisks (*, **, ***)	アスタリスク (*, **, ***)
+Asterisks + p-value (* (p = ...))	アスタリスク + p 値 (* (p = ...))
+Auto-scale axes to each target dataset	各データセットに合わせて軸の範囲を自動調整
+Axis break is outside the current axis range; it is kept and will appear once the range contains it.	軸の省略記号 (ブレーク) は現在の軸範囲の外にあります。設定は保持され、範囲内に入ると表示されます。
+Axis break is outside the current axis range; it is kept and will reappear when the range contains it again.	軸の省略記号 (ブレーク) は現在の軸範囲の外にあります。設定は保持され、再び範囲内に入ると表示されます。
+Baseline subtracted from "%1".	「%1」からベースラインを差し引きました。
+Baseline: Line	ベースライン: 直線
+Baseline: Min	ベースライン: 最小値
+Bold (Ctrl+B)	太字 (Ctrl+B)
+Boltzmann	Boltzmann シグモイド
+Bracket Label:	有意差ブラケット表記:
+Browse .qpt...	.qpt を参照...
+By default, subtraction creates a new column (<Name>_Sub) so raw data is kept.	既定では新しい列 (<列名>_Sub) を作成し、元のデータを残します。
+Choose 2D Graph Template (.qpt)	2D グラフテンプレート (.qpt) を選択
+Clear Peaks	ピーク選択をクリア
+Click at least one peak center on the graph (or switch to Auto peak detection) before running the fit.	フィットを実行する前に、グラフ上でピーク中心を 1 つ以上クリックしてください (または自動ピーク検出に切り替えてください)。
+Click peak centers directly on the graph (Right-click to remove nearest). Baseline, anchors, and shape parameters on Tabs 1 & 3 are preserved.	グラフ上でピーク中心を直接クリックして指定します (右クリックで一番近いピークを削除)。タブ 1・3 のベースライン・アンカー・波形設定はそのまま保たれます。
+Close Without Updating	更新せずに閉じる
+Comparison Mode:	比較手法:
+Confidence/prediction bands skipped: residual degrees of freedom <= 0.	残差自由度が 0 以下のため、信頼帯・予測帯の計算をスキップしました。
+Control Group (Dunnett):	対照群 (Dunnett):
+Copied annotation (Ctrl+V in ToriGraph duplicates the annotation; Ctrl+V in PowerPoint inserts the whole graph).	注釈をコピーしました (ToriGraph 内の Ctrl+V で注釈を複製、PowerPoint 上の Ctrl+V でグラフ全体を貼り付けます)。
+Could not create EMF data for the 3D plot.	3D グラフの EMF データを作成できませんでした。
+Could not import "%1". Check file permissions, separator, and text format.	「%1」を読み込めませんでした。ファイルのアクセス権限・区切り文字・文字コードを確認してください。
+Could not locate Origin global header in CPYUA .opju file.	CPYUA 形式の .opju ファイル内に Origin ヘッダが見つかりませんでした。
+Could not open "%1": %2	「%1」を開けませんでした: %2
+Could not open file %1 for writing.	ファイル %1 を書き込み用に開けませんでした。
+Could not open file %1 for writing: %2	ファイル %1 を書き込み用に開けませんでした: %2
+Could not open file: %1	ファイルを開けませんでした: %1
+Could not open template file: <b>%1</b> (%2)	テンプレートファイルを開けませんでした: <b>%1</b> (%2)
+Could not parse any columns from "%1".	「%1」から列データを読み取れませんでした。
+Could not re-import data for worksheet "%1". Verify that the original file still exists and matches the column structure.	ワークシート「%1」のデータを再読み込みできませんでした。元のファイルが存在し、列構成が一致しているか確認してください。
+Could not render the 3D plot.	3D グラフを描画できませんでした。
+Could not save embedded PowerPoint object	PowerPoint の埋め込みグラフを保存できませんでした
+Could not update embedded PowerPoint object	PowerPoint の埋め込みグラフを更新できませんでした
+Could not write file %1.	ファイル %1 に書き込めませんでした。
+Could not write file %1: %2	ファイル %1 に書き込めませんでした: %2
+Could not write file: %1	ファイルに書き込めませんでした: %1
+Could not write image file %1: %2	画像ファイル %1 に書き込めませんでした: %2
+Could not write to file: <br><h4> %1 </h4><p>%2	ファイルに書き込めませんでした: <br><h4> %1 </h4><p>%2
+Could not write to file: <h4>%1</h4><p>%2	ファイルに書き込めませんでした: <h4>%1</h4><p>%2
+Create Baseline Curve	ベースライン曲線を作成
+Created baseline-subtracted column "%1" (original data kept).	ベースラインを差し引いた列「%1」を作成しました (元のデータは保持されています)。
+Cumulative percentage / %	累積相対度数 / %
+Current folder only (%1)	現在のフォルダのみ (%1)
+Cut Axis Title	軸タイトルの切り取り
+Cut Title	タイトルの切り取り
+Default (Tab 3)	既定 (タブ 3 の設定)
+Degrees (0–360°)	度 (0–360°)
+Delete folder '%1' and all the windows it contains?\nThis operation cannot be undone.	フォルダ「%1」と、その中に含まれるすべてのウィンドウを削除しますか?\nこの操作は元に戻せません。
+Dunnett (Treatments vs Control)	Dunnett 検定 (対照群との多重比較)
+Dynamic Recalculation (%1 active link(s))\n%2	自動再計算 (%1 件の有効なリンク)\n%2
+EMF export is only available on Windows.	EMF エクスポートは Windows 環境でのみ利用できます。
+EMF export is only supported on Windows.	EMF エクスポートは Windows 環境でのみサポートされています。
+Embedded OLE save failed — project not saved.	PowerPoint 埋め込みオブジェクトの保存に失敗しました — プロジェクトは保存されていません。
+ExpDec1	指数減衰 (ExpDec1)
+Export Warnings	エクスポートの警告
+Export failed.	エクスポートに失敗しました。
+Export with uncalibrated defaults anyway?	未校正の既定範囲のままワークシートへ出力しますか?
+Exported %1 graph(s) to %2	%1 個のグラフを %2 にエクスポートしました
+Exported %1 graph(s), %2 failed:\n%3	%1 個のグラフをエクスポートしました (%2 個失敗):\n%3
+Failed to construct ToriGraph windows from .opju project.	.opju プロジェクトから ToriGraph のウィンドウを構築できませんでした。
+Failed to export "%1": %2	「%1」のエクスポートに失敗しました: %2
+Failed to open template '%1'.	テンプレート「%1」を開けませんでした。
+Failed to open template file.	テンプレートファイルを開けませんでした。
+Failed to re-import data into %1	%1 へのデータの再読み込みに失敗しました
+Failed to read CPYUA .opju file '%1'.	CPYUA 形式の .opju ファイル「%1」を読み取れませんでした。
+Failed to update the embedded PowerPoint object before closing%1.\n\nKeep ToriGraph open so you can save a backup copy with File -> Save Project As, or close anyway without updating PowerPoint?	閉じる前に PowerPoint の埋め込みオブジェクトを更新できませんでした%1。\n\nToriGraph を開いたままにして「ファイル」→「名前を付けて保存」で控えを保存しますか、それとも PowerPoint を更新せずに閉じますか?
+File Changed on Disk	ディスク上のファイルが変更されました
+Find Peaks	ピークを検出
+Formula-linked axis scale is controlled by the parent layer.	数式で連動している軸のスケールは親レイヤー側で制御されます。
+Games-Howell (Unequal Variances)	Games-Howell 検定 (不等分散)
+Global nonlinear curve fit failed.	グローバル非線形フィットに失敗しました。
+Group Comparison (ANOVA / Post-Hoc / Nonparametric)	群間比較・多重比較検定 (ANOVA / Post-Hoc / ノンパラメトリック)
+HCP lattice parameters: a0 = %1 Å, c0 = a0 × c/a = %2 Å (c/a = %3 as entered, not refined).	HCP 格子定数: a0 = %1 Å, c0 = a0 × c/a = %2 Å (軸比 c/a = %3 は入力値を使用し、精密化は行っていません)。
+Hollomon power-law fit (σt = K εp^n): only %1 uniform-plastic point(s) with εp > 0.25% before necking (at least 2 are required).	Hollomon べき乗則フィット (σt = K εp^n): くびれ前の均一塑性域 (εp > 0.25%) のデータ点が %1 点しかありません (2 点以上必要です)。
+Hollomon power-law fit uses only 2 uniform-plastic points (0 degrees of freedom); n and K are a 2-point chord, not a regression.	Hollomon べき乗則フィットの均一塑性域データが 2 点のみ (自由度 0) のため、n と K は回帰ではなく 2 点を通る直線の値です。
+Hollomon slope d(ln σt)/d(ln εp) = %1 is negative (strain softening in the selected range); n was clamped to 0.	選択範囲の Hollomon 勾配 d(ln σt)/d(ln εp) = %1 が負 (ひずみ軟化) のため、加工硬化指数 n を 0 に制限しました。
+Holm-Welch (Welch t + Holm)	Holm-Welch 検定 (Welch の t 検定 + Holm 補正)
+Implicit ODR Fit	陰関数直交距離回帰 (ODR) フィット
+Import CSV / Excel...	CSV / Excel を読み込む...
+Importing Origin .opju project ...	Origin .opju プロジェクトを読み込んでいます...
+Integrate Peaks	ピーク面積を積分
+Intensity, I / a.u.	強度, I / a.u.
+Interactive Peak Picking on Graph (Preserves All Settings)	グラフ上でピークを手動選択 (既存の設定を保持)
+Interpolate on Curve	曲線上で線形補間
+Invalid .opju file: %1	無効な .opju ファイルです: %1
+Invalid CPYUA .opju header.	CPYUA 形式の .opju ヘッダが不正です。
+Invalid JSON preset file.	JSON プリセットファイルの形式が不正です。
+Italic (Ctrl+I)	斜体 (Ctrl+I)
+Journal 2-Column (175 mm width)	論文 2 段組 (幅 175 mm)
+Keep Open	開いたままにする
+Legacy Slide (28 pt, 185 mm)	従来スライド (28 pt, 185 mm)
+Nearest Pt	最近傍データ点
+No Y columns were found in '%1'.	「%1」に Y 列が見つかりません。
+No cells or columns are selected to export. Select columns or cells in "%1" or uncheck "Export selection".	エクスポートするセルや列が選択されていません。「%1」で列またはセルを選択するか、「選択範囲のみエクスポート」のチェックを外してください。
+No graph in this folder yet. Create a plot from your worksheet or try a built-in sample.	このフォルダにはまだグラフがありません。ワークシートからグラフを作成するか、内蔵サンプルをお試しください。
+No numeric radius columns were found in '%1'.	「%1」に数値の動径 (r) 列が見つかりません。
+No readable datasets found in CPYUA .opju file.	.opju ファイル内に読み取り可能なデータが見つかりませんでした。
+No valid finite (theta, r) numeric pairs were found.	有効な (θ, r) の数値データ組が見つかりませんでした。
+Nonparametric (Kruskal-Wallis + Dunn / Mann-Whitney U)	ノンパラメトリック検定 (Kruskal-Wallis + Dunn / Mann-Whitney U)
+Nonparametric Paired (Wilcoxon Signed-Rank, 2 Groups)	対応のあるノンパラメトリック検定 (Wilcoxon 符号順位検定, 2 群)
+Normalize (%1): Reference X = %2 is outside the curve range [%3, %4].	規格化 (%1): 基準位置 X = %2 が曲線の X 範囲 [%3, %4] の外にあります。
+Normalize (%1): Y at Reference X = %2 is zero, so division by it is undefined.	規格化 (%1): 基準位置 X = %2 における Y 値が 0 のため、割り算できません。
+Normalize (%1): the normalization factor is zero or undefined (e.g. a constant or all-zero curve).	規格化 (%1): 規格化係数が 0 または未定義です (定数曲線や全点が 0 の曲線など)。
+Not a valid ToriGraph template file.	有効な ToriGraph テンプレートファイルではありません。
+Off	オフ
+One-Way ANOVA & Dunnett Post-Hoc Summary	一元配置分散分析 (ANOVA) と Dunnett 多重比較の結果
+One-Way ANOVA & Games-Howell Post-Hoc Summary	一元配置分散分析 (ANOVA) と Games-Howell 多重比較の結果
+One-Way ANOVA & Holm-Welch Post-Hoc Summary	一元配置分散分析 (ANOVA) と Holm-Welch 多重比較の結果
+One-Way ANOVA & Tukey HSD Post-Hoc Summary	一元配置分散分析 (ANOVA) と Tukey HSD 多重比較の結果
+Open 2D Graph Template (.qpt)	2D グラフテンプレート (.qpt) を開く
+Open Read-Only	読み取り専用で開く
+Open Sample...	サンプルを開く...
+Optimize Lorentz fraction μ freely during fit	フィット時にローレンツ成分比 μ を自由パラメータとして最適化
+Optimized Lorentz fraction (μ) = %1\n	最適化されたローレンツ成分比 (μ) = %1\n
+Overwrite Disk File	ディスクのファイルを上書き
+Overwrite Original Column?	元の列を上書きしますか?
+Overwrite original data column (destructive)	元のデータ列を直接上書きする
+Overwrite the source Y column of "%1" in place?\n\nMasked rows are left unchanged, and any other graph using this column will also change. The edit can be undone with Undo (Ctrl+Z) on the source worksheet.\n\nUncheck "Modify Source Curve In-Place" to write the result to a new table and curve instead.	「%1」の元の Y 列を直接書き換えますか?\n\nマスクされた行は変更されず、この列を使っている他のグラフも更新されます。元のワークシートで「元に戻す (Ctrl+Z)」を使うと元に戻せます。\n\n新しいワークシートと曲線に結果を出力したい場合は「元データを直接更新」のチェックを外してください。
+Overwrite worksheet column "%1" in-place with baseline-subtracted values? (This can be undone with Ctrl+Z.)	ワークシートの列「%1」をベースライン減算後の値で直接上書きしますか? (Ctrl+Z で元に戻せます)
+Parametric (One-Way ANOVA / t-Test)	パラメトリック検定 (一元配置 ANOVA / t 検定)
+Please open or select a worksheet before creating a stacked bar chart.	積み上げ棒グラフを作成する前に、ワークシートを開くか選択してください。
+Please select a Y column in '%1' for Quick Linear Fit.	クイック直線フィットを行うには、「%1」で Y 列を選択してください。
+Please select at least one radius column.	動径 (r) 列を 1 列以上選択してください。
+Please select or activate a graph with plottable curve data first.	先に曲線データを含むグラフを選択またはアクティブにしてください。
+Please select or open a worksheet before applying a graph template.	グラフテンプレートを適用する前に、ワークシートを選択または開いてください。
+Plot Matrix	行列をプロット
+Plot Pole Figure	極点図をプロット
+Polar plot requires a worksheet with at least one angle column and one radius column.	極座標プロットには、角度列と動径列をそれぞれ 1 列以上含むワークシートが必要です。
+Poly2	2次多項式 (Poly2)
+Position, x / px	位置, x / px
+Post-Hoc Test:	事後多重比較検定:
+Primary #:	主ピーク番号 #:
+Project Already Open	プロジェクトは既に開かれています
+Quantile Fit	分位点回帰フィット
+Quick Guide (F1)	かんたんガイド (F1)
+Quick Linear Fit works on an active graph curve or selected worksheet columns.	クイック直線フィットは、選択中のグラフ曲線またはワークシートの選択列に対して実行できます。
+ROC state column '%1' must contain exactly 2 distinct numeric classes (e.g. 0 and 1); found %2 distinct value(s).	ROC 状態列「%1」にはちょうど 2 種類の数値クラス (例: 0 と 1) が必要ですが、%2 種類の値が見つかりました。
+Radians (0–2π)	ラジアン (0–2π)
+Radius Column(s) (r):	動径列 (r):
+Re-import Data	データの再読み込み
+Re-import Failed	再読み込みに失敗しました
+Re-imported source data into %1	%1 に元データを再読み込みしました
+Read-Only Project Lock	読み取り専用ロック
+Recalc failed: %1	再計算に失敗しました: %1
+Recalculation failed: %1	再計算に失敗しました: %1
+Remove Data Point	データ点を削除
+Removed selected curve (press Ctrl+Z to undo). Layer kept.	選択した曲線を削除しました (Ctrl+Z で元に戻せます)。レイヤーはそのまま残っています。
+Removed selected reference line (press Ctrl+Z to undo). Layer kept.	選択した基準線を削除しました (Ctrl+Z で元に戻せます)。レイヤーはそのまま残っています。
+Reset canvas zoom and pan (mouse wheel zooms, Middle-drag or Ctrl+Left-drag pans)	表示の拡大と移動をリセット (ホイールで拡大・縮小、中ボタンドラッグまたは Ctrl+左ドラッグで移動)
+Right-click a column header -> "Set Column(s) As" -> "Z", select it, and try again.	列見出しを右クリック →「列の役割を設定」→「Z」を選んで列を選択してから、もう一度実行してください。
+Right-click the X column header -> "Set Column(s) As" -> "X".	X 列にする見出しを右クリック →「列の役割を設定」→「X」を選んでください。
+Right-click the Y column header -> "Set Column(s) As" -> "Y".	Y 列にする見出しを右クリック →「列の役割を設定」→「Y」を選んでください。
+Run Peak Fit	ピークフィットを実行
+R²	決定係数 R²
+SG %1pt	SG 平滑化 %1 点
+Sample quantiles, %1	標本分位点, %1
+Save As New File...	別名で保存...
+Saved standalone copy to %1	単独のプロジェクト控えを %1 に保存しました
+Saving back into PowerPoint failed%1.\n\nUse File -> Save Project As (.sciprj) to keep a standalone backup copy.	PowerPoint への書き戻し保存に失敗しました%1。\n\n「ファイル」→「名前を付けて保存 (.sciprj)」で単独のバックアップファイルを保存してください。
+Scherrer constant K = %1 is not usable (must be > 0.05); K = 0.90 was used instead.	Scherrer 定数 K = %1 は使用できない値 (0.05 より大きい必要があります) のため、代わりに K = 0.90 を使用しました。
+Secondary #:	副ピーク番号 #:
+Select graph windows to style:	スタイルを適用するグラフを選択:
+Selected element cannot be cut; press Delete to remove it or click the layer background to cut the layer.	選択中の要素は切り取れません。削除するには Delete キーを押すか、レイヤーの背景をクリックしてからレイヤーを切り取ってください。
+Selected file is not a 2D graph (.qpt) template.	選択されたファイルは 2D グラフテンプレート (.qpt) ではありません。
+Share FWHM	半値幅 (FWHM) を共有
+Show 'ns' Brackets for Non-Significant Pairs	有意差なしの対にも「ns」ブラケットを表示
+Snap to Nearest Data Point	最も近いデータ点にスナップ
+Source curve "%1" was not found on the graph.	グラフ上に元の曲線「%1」が見つかりませんでした。
+Spin-Orbit Doublet Constraints (XPS / Spectroscopy)	スピン軌道ダブレット拘束条件 (XPS・分光解析用)
+Split Δx:	分裂間隔 Δx:
+Subtract Baseline	ベースラインを減算
+Switched language to English	表示言語を英語 (English) に切り替えました
+Switched language to Japanese	表示言語を日本語に切り替えました
+Template Error	テンプレートエラー
+The 3D plot is not initialized.	3D グラフが初期化されていません。
+The active worksheet does not have a recorded import source file.	選択中のワークシートには読み込み元ファイルの記録がありません。
+The fit/filter could not be computed for curve "%1" (not enough valid data or invalid settings).	曲線「%1」のフィットまたはフィルタ処理を計算できませんでした (有効なデータ点が不足しているか、設定が無効です)。
+The graph or the source table of the link no longer exists.	リンク先のグラフまたは元のワークシートが存在しません。
+The operation produced no output curve for "%1".	「%1」に対する処理結果の曲線が生成されませんでした。
+The project <b>%1</b> appears to be open in another ToriGraph process%2.<br><br>Opening it writable in two places can overwrite changes.	プロジェクト <b>%1</b> は別の ToriGraph プロセス%2で既に開かれているようです。<br><br>2 か所で書き込み可能として開くと、変更が上書きされる恐れがあります。
+The project file <b>%1</b> has been modified on disk since you opened or last saved it (for example by another program or cloud sync).<br><br>What would you like to do?	プロジェクトファイル <b>%1</b> は、開いた後または最後に保存した後にディスク上で変更されました (別のプログラムやクラウド同期など)。<br><br>どのように処理しますか?
+The project file <b>%1</b> is incomplete or corrupted (unexpected end of file) and could not be loaded safely.	プロジェクトファイル <b>%1</b> は途中までしか書き込まれていないか破損しているため (予期しないファイル終端)、安全に読み込めませんでした。
+The recalculation could not be completed.	再計算を完了できませんでした。
+The stress column has no unit (MPa assumed, UTS = %1) and the strain column has no unit (max = %2). If the stress is in GPa and the strain is in mm/mm, select 'Engineering Fraction (mm/mm)' and label the stress column 'GPa'.	応力列に単位がないため MPa とみなし (引張強さ UTS = %1)、ひずみ列にも単位がありません (最大値 = %2)。応力が GPa・ひずみが無次元 (mm/mm) の場合は、ひずみ単位で「無次元比 (mm/mm)」を選び、応力列の単位に「GPa」と入力してください。
+The template file '%1' does not exist.	テンプレートファイル「%1」が存在しません。
+The worksheet '%1' has no Y columns to plot.	ワークシート「%1」にはプロットできる Y 列がありません。
+Theoretical normal quantiles, z	正規分布の理論分位点, z
+There are no 2D graphs in this project.	このプロジェクトには 2D グラフがありません。
+There are no graphs available to export in this project.	このプロジェクトにはエクスポートできるグラフがありません。
+This file was opened read-only because another ToriGraph process held a lock on <b>%1</b>.\n\nSave under a different name?	このファイルは別の ToriGraph プロセスが <b>%1</b> をロックしていたため、読み取り専用で開かれています。\n\n別の名前を付けて保存しますか?
+This graph layer already uses a linked top/right overlay layer.	このグラフレイヤーには既に上軸・右軸の連動オーバーレイレイヤーがあります。
+Translate Curve Horizontally	曲線を水平方向に平行移動
+Translate Curve Vertically	曲線を垂直方向に平行移動
+Truncated CPYUA .opju file after global header.	CPYUA 形式の .opju ファイルがグローバルヘッダの直後で途切れています。
+Tukey HSD (Tukey-Kramer)	Tukey HSD 検定 (Tukey-Kramer)
+Uncalibrated anchors: %1 (using default bounds).	未設定の基準点: %1 (既定の座標範囲を使用中)。
+Unknown error while exporting the 3D plot.	3D グラフのエクスポート中に不明なエラーが発生しました。
+Unsupported QtiPlot template version (> 0.9.0).	バージョン 0.9.0 より新しい QtiPlot テンプレートには対応していません。
+Warning: %1 of %2 point(s) excluded with weight 0 (%3); degrees of freedom adjusted.	警告: %2 点中 %1 点が重み 0 (%3) のため除外され、自由度を調整しました。
+Warning: '%1' was modified on disk by another program (e.g. cloud sync).	警告: 「%1」が別のプログラム (クラウド同期など) によってディスク上で変更されました。
+Warning: iteration did not converge (SE may be unreliable)	警告: 反復計算が収束しませんでした (標準誤差 SE の信頼性が低い可能性があります)
+Wavelength %1 Å is not usable (must be > 0.05 Å); Cu Kα1 (1.540598 Å) was used instead. Check the wavelength unit (Å, not nm).	波長 %1 Å は使用できない値 (0.05 Å より大きい必要があります) のため、代わりに Cu Kα1 (1.540598 Å) を使用しました。波長の単位 (nm ではなく Å) を確認してください。
+Wavelength %1 Å is not usable (must be > 0.05 Å); Cu K㬑 (1.540598 Å) was used instead. Check the wavelength unit (Å, not nm).	波長 %1 Å は使用できない値 (0.05 Å より大きい必要があります) のため、代わりに Cu Kα1 (1.540598 Å) を使用しました。波長の単位 (nm ではなく Å) を確認してください。
+Wavelength %1 Å is unusually short for a laboratory tube. If it was entered in nm, multiply by 10 (e.g. 0.154 nm = 1.54 Å).	波長 %1 Å は実験室系の X 線管球としては極端に短い値です。nm 単位で入力した場合は 10 倍して Å 単位にしてください (例: 0.154 nm = 1.54 Å)。
+Welch t-Test Summary (Auto Parametric)	Welch の t 検定結果 (自動パラメトリック)
+Worksheet '%1' needs an X column for Quick Linear Fit.	クイック直線フィットを行うには、ワークシート「%1」に X 列が必要です。
+X axis Log10 requires X1 > 0 and X2 > 0 (currently linear fallback).	X 軸の対数 (Log10) には X1 > 0 かつ X2 > 0 が必要です (現在は線形スケールで代用中)。
+Y = 0 or non-finite Y in proportional 1/Y^2 weighting	比例重み付け (1/Y^2) で Y = 0 または非有限の Y 値
+Y axis Log10 requires Y1 > 0 and Y2 > 0 (currently linear fallback).	Y 軸の対数 (Log10) には Y1 > 0 かつ Y2 > 0 が必要です (現在は線形スケールで代用中)。
+York Fit	York 線形フィット (両軸誤差)
+You need at least %1 valid data points (with positive weight) for this fit operation. Operation aborted!	このフィットには有効なデータ点 (正の重みを持つ点) が少なくとも %1 点必要です。処理を中止しました。
+You need at least one X column to plot this worksheet.	このワークシートを作図するには X 列が少なくとも 1 列必要です。
+You need at least two columns (X, Y, and Z) for a 3D plot!	3D プロットには X・Y・Z の各列が必要です。
+You need to define an X column first!	先に X 列を設定してください (列見出しを右クリック →「列の役割を設定」→「X」)。
+[Template] %1	[テンプレート] %1
+[backup]	[バックアップ]
+n/a	N/A
+non-finite Y value	非有限の Y 値
+non-positive or invalid associated Y error	0 以下または無効な Y エラーバー値
+non-positive or invalid custom Y error	0 以下または無効な指定 Y 誤差
+p-value only (p = ...)	p 値のみ (p = ...)
+zero, negative, or invalid direct weight	0 以下または無効な直接重み
+zero, negative, or invalid variance	0 以下または無効な分散
+After K㬒 stripping the pattern is pure %1 K㬑, so d-spacings use λ(K㬑) = %2 Å instead of the Kα average.	Kα2 除去後は %1 Kα1 だけのパターンになるため、面間隔 d は Kα 平均ではなく λ(Kα1) = %2 Å で計算しました。
+K㬒 stripped (Rachinger, %1 anode: λ(K㬑) = %2 Å, λ(K㬒) = %3 Å, I(K㬒)/I(K㬑) = 0.5).	Kα2 を除去しました (Rachinger 法、%1 管球: λ(Kα1) = %2 Å、λ(Kα2) = %3 Å、強度比 I(Kα2)/I(Kα1) = 0.5)。
+K㬒 stripping skipped: λ = %1 Å does not match the K㬑 or Kα-average line of a known anode (Cr, Fe, Co, Cu, Mo).	Kα2 除去を行いませんでした: λ = %1 Å が既知の管球 (Cr, Fe, Co, Cu, Mo) の Kα1 線・Kα 平均線のどれとも一致しません。
+Strip K㬒 Doublet (Rachinger, per-anode wavelengths)	Kα2 線を除去 (Rachinger 法、管球ごとの波長)
+λ = %1 Å is close to (within 0.1 %) but not exactly the %2 %3 line (%4 Å), so K㬒 was stripped assuming a %2 tube. Enter the exact wavelength if this is not a %2 tube.	λ = %1 Å は %2 の %3 線 (%4 Å) と完全には一致しませんが 0.1 % 以内なので、%2 管球とみなして Kα2 を除去しました。%2 管球でない場合は正確な波長を入力してください。
+Font Size	フォントサイズ
+\s/ empty sheets skipped: %1	\s/ 空のシートは読み込みませんでした: %1
+"%1" is the name of a built-in palette. Choose another name.	「%1」は組み込みのパレットの名前です。別の名前にしてください。
+%1 (%2 rows x %3 columns	%1 (%2 行 x %3 列
+%1 duplicate X merged (Y averaged)	重複した X を %1 点まとめた (Y は平均)
+%1 early or transient θ = σt crossing(s) (e.g. serrations) were rejected before the Considère point.	Considère 点より前の早すぎる・一時的な θ = σt の交点 %1 個 (セレーションなど) を除外しました。
+%1 excluded	%1 件除外
+%1 non-finite	数値でない %1 組
+%1 non-numeric	数値でない %1 行
+%1 non-numeric or empty	数値でない・空欄 %1 行
+%1 of %2 points with non-positive values were excluded from the log-space fit.	%2 点のうち、非正値の %1 点を対数空間のフィットから除外しました。
+%1 point(s) before the toe-corrected strain origin were skipped.	トウ補正後のひずみ原点より前の %1 点を除きました。
+%1 point(s) with equal strain were averaged.	ひずみが同じ %1 点を平均しました。
+%1 row(s) after the Considère point (post-necking) are masked in the table and excluded from the fits.	Considère 点より後 (くびれ後) の %1 行は表でマスクし、フィットから除いています。
+%1 rows x %2 columns	%1 行 × %2 列
+%1 scans	%1 スキャン
+%1 settings were read and applied.	%1 件の設定を読み込み、反映しました。
+%1 settings were read. Restart ToriGraph to use them.	%1 件の設定を読み込みました。ToriGraph を再起動すると反映されます。
+%1 settings were written to\n%2	%1 件の設定を書き出しました。\n%2
+%1 value(s) <= 0 were excluded (the lognormal plot needs positive values).	0 以下の値 %1 個を除外しました(対数正規プロットには正の値が必要です)。
+%1 was written by a newer ToriGraph (preset format %2; this version reads format %3). Unknown settings are ignored.	%1 は新しい版の ToriGraph で書かれています (プリセット形式 %2、この版が読めるのは形式 %3 まで)。分からない設定は無視しました。
+%1 with T <= 0 K	T <= 0 K が %1 行
+%1 with Tp <= 0 K	Tp <= 0 K の %1 組
+%1 with heating rate <= 0	昇温速度が 0 以下の %1 組
+%1 with non-positive rate (ln undefined)	速度が 0 以下で対数を取れない %1 行
+%1 with value <= 0 (ln undefined)	値が 0 以下で対数を取れない %1 行
+%1: %2 sheet(s) imported - %3	%1: %2 シートを読み込みました - %3
+%1: input prepared (%2): %3	%1: 入力を前処理しました (%2): %3
+%1: modify column properties	%1: 列プロパティを変更
+%1: re-import from source	%1: 元ファイルから再読込
+%n cell(s) replaced.	%n 個のセルを置換しました。
+%n column(s) imported as text	文字列として読んだ列 %n
+%n empty cell(s)	空欄 %n 個
+%n line(s) skipped	読み飛ばした行 %n
+%n pasted cell(s) were not numbers and were left empty.	数値でない %n 個のセルは空欄にしました。
+%n undecodable character(s) - the text encoding may be wrong	文字コードの不一致により %n 文字が正しく読めませんでした
+&Add Sheet	シートを追加(&A)
+&Delete Sheet...	シートを削除(&D)...
+&Find and Replace...	検索と置換(&F)...
+&Gumbel (Extreme Value) Probability Plot...	Gumbel(極値)確率プロット(&G)...
+&Import Settings...	設定を読み込む(&I)...
+&Lab Slide (18 pt @ 140%, 83.3 mm)	発表スライド (18 pt @ 140%, 83.3 mm)(&L)
+&Lognormal Probability Plot...	対数正規確率プロット(&L)...
+&Make Workbook from This Worksheet	このワークシートからブックを作る(&M)
+&More Gadgets	その他のガジェット(&M)
+&Move Sheet Out of Workbook	シートをブックから出す(&M)
+&Polar Plot...	極座標プロット(&P)...
+&Pole Figure (XRD)...	極点図(XRD)(&P)...
+&Rename Sheet...	シート名の変更(&R)...
+&Reset Settings...	設定を初期化(&R)...
+&Templates (.qpt)	テンプレート (.qpt)(&T)
+&Ungroup Workbook (Separate Worksheets)	ブックを解く (別々のワークシートにする)(&U)
+&Workbook	ブック(&W)
+(None)	(なし)
+(area %1)	(面積 %1)
+(height %1)	(ピーク高さ %1)
+(none yet)	(まだありません)
+(none)	(なし)
++ Add Column	+列追加
++ Add to Graph	+ グラフへ追加
+, %1 date column(s)	、日時 %1 列
+, %1 text column(s)	、文字列 %1 列
+, unit row	、単位行あり
+2 Stacked	上下 2 段
+2 Vertical Panels	上下2段パネル
+2D &Density (2D Histogram)...	2 次元密度図(2 次元ヒストグラム)(&D)...
+2D Density	2 次元密度図
+2D Density Heatmap (count X-Y points on a grid)	2D密度ヒートマップ (X-Y点密度を格子集計して表示)
+2D density of %1: %2 vs %3 (%4 x %5 bins)	%1 の 2 次元密度: %2 対 %3 (%4 × %5 ビン)
+2nd line holds units	2行目を単位として扱う
+2x2 Panels	4 分割
+3-parameter: γ estimated by MRR; m and σ₀ by MLE conditional on that γ (their SE does not include the uncertainty of γ)	3 母数: γ は MRR で推定、m と σ₀ はその γ を固定した条件付き MLE (標準誤差に γ の不確かさは含まない)
+4-Panel Grid (2x2)	4分割パネル (2x2)
+95% CI	95%信頼区間
+<html>The compressed project file <em>%1</em> could not be written:<br>%2<br><br>If there already was a version of this project on disk, it has not been changed.</html>	<html>圧縮プロジェクトファイル <em>%1</em> を書き込めませんでした:<br>%2<br><br>ディスク上に以前のプロジェクトファイルがある場合、そのファイルは変更されていません。</html>
+<html>The project could not be written to disk:<br>%1<br><br>The incomplete file is <em>%2</em>. If there already was a version of this project on disk, it has not been touched.</html>	<html>プロジェクトをディスクに書き込めませんでした:<br>%1<br><br>書きかけのファイルは <em>%2</em> です。ディスク上に以前のプロジェクトファイルがある場合、そのファイルは変更されていません。</html>
+<html>The project file could not be replaced:<br>%1<br><br>The file <em>%2</em> has not been changed. It may be in use by another program (for example a file synchronization service). Your current data was written to <em>%3</em>.<br><br>Please try saving again, or use "Save Project As" with a different name.</html>	<html>プロジェクトファイルを置き換えられませんでした:<br>%1<br><br><em>%2</em> は変更されていません。ほかのプログラム(Dropbox などの同期ソフト)が使用中の可能性があります。現在のデータは <em>%3</em> に書き出してあります。<br><br>もう一度保存するか、「名前を付けて保存」で別の名前を指定してください。</html>
+A ZIP entry name is too long.	ZIP の項目名が長すぎます。
+A ZIP entry needs a name.	ZIP の項目に名前がありません。
+A linked Right-Y overlay layer already owns the right Y axis. Add or edit curves on that layer instead.	リンク済みの右Y軸オーバーレイレイヤーが右Y軸を使用しています。そのレイヤー上で曲線を編集してください。
+A picture of the graph (EMF vector and %1 dpi PNG) was placed on the clipboard instead. It can be pasted, but not edited again from PowerPoint.	代わりにグラフの画像(EMF ベクターと %1 dpi の PNG)をクリップボードに載せました。貼り付けはできますが、PowerPoint から再編集はできません。
+A picture of the graph (bitmap only) was placed on the clipboard instead. It can be pasted, but not edited again from PowerPoint.	代わりにグラフの画像 (ビットマップのみ) をクリップボードに載せました。貼り付けはできますが、PowerPoint から再編集はできません。
+A workbook named %1 already exists.	ブック %1 はすでにあります。
+ASTM E1820 elastic-plastic fracture toughness J-R curve with experimental J-Δa data, power-law fit, construction blunting line (J = 2σY·Δa), and 0.2 mm offset line yielding JQ.	ASTM E1820 準拠の弾塑性破壊靭性 J-R 抵抗曲線。実験点・べき乗則フィット・鈍化線 (J = 2σY·Δa)・0.2 mm オフセット鈍化線を同一グラフに描画し、交点 JQ を視覚化。
+Add &Existing Worksheet	既存のワークシートを加える(&E)
+Add Error &Band...	エラーバンドを追加(&B)...
+Add Error Band	エラーバンドを追加
+Add Error Band...	エラーバンドを追加...
+Add Error Bars / Error Band...	エラーバー / エラーバンドを追加...
+Add Text (click on the graph)	テキストの追加(グラフ上をクリック)
+Add X=0 Line	X=0 の線を追加
+Add Y=0 Line	Y=0 の線を追加
+Add a New Plot Layer to the Active Graph	アクティブなグラフに新しいプロットレイヤーを追加
+Add a UTF-8 &BOM (Excel then shows Japanese text correctly)	UTF-8 の BOM を付ける(Excel で日本語が化けない)(&B)
+Add a sheet to this workbook	このブックにシートを追加
+Add error bars from a column or a percentage	列または割合からエラーバーを付ける
+Add or rebuild the legend	凡例を追加・作り直す
+Add text, legend, error bars or a 2-panel / 4-panel layout	テキスト・凡例・エラーバーの追加、上下 2 段・4 分割の配置
+Add/Remove Curves...	曲線の追加・削除...
+Administrator Rights Needed	管理者権限が必要です
+Advanced MatSci	専門材料解析
+Advanced settings	詳細設定
+After Kα2 stripping the pattern is pure %1 Kα1, so d-spacings use λ(Kα1) = %2 Å instead of the Kα average.	Kα2 除去後は %1 Kα1 だけのパターンになるため、面間隔 d は Kα 平均ではなく λ(Kα1) = %2 Å で計算しました。
+Al-Zn-Mg Alloy Tensile Comparison by Temper (T4 / T6 / T73)	Al-Zn-Mg 合金の時効処理別 引張応力-ひずみ曲線比較 (T4 / T6 / T73)
+All Categories	すべてのカテゴリ
+All files (*)	すべてのファイル (*)
+All sheets of a workbook must be in the same folder.	ブックのシートはすべて同じフォルダーに置く必要があります。
+All values are identical, so no line can be fitted.	すべての値が等しいため、直線を当てはめられません。
+Alpha (tilt) column:	α(傾き)の列:
+Alpha = 90° at the centre (Rigaku style)	α = 90° を中心とする(リガク方式)
+Alpha must lie between 0° and 90°.	α は 0°〜90° の範囲で指定してください。
+Alpha range (deg):	α 範囲 (°):
+Annotate	注釈
+Apparent linear fit needs at least %1 points with positive values on the logarithmic axis, but only %2 remain after excluding non-positive values.	見かけ線形フィットには対数軸で正の値をもつ点が %1 点以上必要ですが、非正値を除くと %2 点しか残りません。
+Apparent linear fit: no axis is logarithmic, so an ordinary linear fit was performed.	見かけ線形フィット: 対数軸が無いため、通常の線形フィットを行いました。
+Append a new Y column to this worksheet	このワークシートの末尾に新しいY列を追加します
+Append results to TensileSummary worksheet	結果を TensileSummary ワークシートに追記
+Append results to WorkHardeningSummary worksheet	結果を WorkHardeningSummary ワークシートに追記
+Append results to XRDSummary worksheet	結果を XRDSummary ワークシートに追記
+Append to existing points	既存の点に追加
+Apply ISIJ 85mm, Lab Slide (18pt), or Custom Style Presets	ISIJ 85mm、研究室スライド (18pt)、カスタムスタイルプリセットを適用
+Apply Preset to Multiple Graphs...	スタイルプリセットを複数グラフへ一括適用...
+Apply Preset: %1	プリセットを適用: %1
+Apply Selected Preset	選択したプリセットを適用
+Apply Style Preset to &Multiple Graphs...	スタイルプリセットを複数グラフへ一括適用(&M)...
+Apply Style Preset to Multiple Graphs...	スタイルプリセットを複数グラフへ一括適用...
+Apply Template (.qpt) to Table...	テンプレート (.qpt) をアクティブ表へ適用...
+Apply a saved graph template (.qpt) to the active worksheet	保存済みのグラフテンプレート (.qpt) を現在のワークシートへ適用します
+Apply a style preset to several open graph windows at once	開いている複数のグラフウィンドウへスタイルプリセットを一括適用します
+Apply lab presentation slide style (83.3 mm, 12.9 pt Arial -> 18 pt at 140% in PowerPoint)	研究室発表スライド標準を適用 (83.3 mm, 12.9 pt Arial -> PowerPoint 140%貼付で18 pt)
+Apply to Graph	グラフに適用
+Arrange Layers...	レイヤー配置...
+Arrange multiple layers, merge open graphs, or create multi-panel figures	レイヤーの配置、開いているグラフの結合、複数パネル図の作成
+Arrange the layers automatically (grid and canvas size are chosen for you).	レイヤーを自動配置します (グリッドとキャンバスサイズは自動で決まります)。
+Arrhenius analysis needs at least 2 distinct temperatures.	アレニウス解析には異なる温度が 2 つ以上必要です。
+Arrhenius analysis needs at least 2 valid (T, k) rows; only %1 remained after exclusion.	アレニウス解析には有効な (T, k) が 2 行以上必要です。除外後に残ったのは %1 行です。
+Arrhenius: %1 of %2 row(s) excluded (%3).	アレニウス: %2 行中 %1 行を除外しました (%3)。
+Arrow / Line Annotation	矢印・直線注釈
+Arrow Style	矢印スタイル
+Arrow Symbols	矢印記号
+Arrow at End	終点に矢尻
+Arrow at Start	始点に矢尻
+Asymmetric (+ and − columns)	非対称(+ と − の 2 列)
+At least 3 values are needed; only %1 remained.	3 個以上の値が必要です(残ったのは %1 個)。
+Attach Adjacent Error Column (%1)	隣接するエラー列 (%1) をエラーバーとして追加
+Auto-Place Legend (Avoid Curves)	凡例を空き領域へ自動配置
+Auto-detect	自動判定 (Auto)
+Automatic (from data minimum)	自動 (データ最小値から開始)
+Autoscale Active Axis	選択中の軸を自動スケール
+Axial Ratio c/a (for HCP):	軸比 c/a (HCP用):
+Axis Line Width (px):	軸線の太さ (px):
+Axis Title Size (pt):	軸タイトルサイズ (pt):
+Axis scale link to the parent layer (available only when an overlay parent is selected).	親レイヤーへの軸範囲リンクです (重ねる先を選んだときだけ有効)。
+Axis title "%1" is wider than the axis at %2 pt (size kept; shorten the title or enlarge the page).	軸タイトル「%1」は %2 pt では軸より長くなります (文字サイズは変えていません。タイトルを短くするか、ページを大きくしてください)。
+Basic & Grayscale	基本色・グレースケール
+Berkovich nanoindentation loading (Kick's law P ∝ h^2), peak-load creep hold, and Oliver-Pharr unloading curves comparing soft pure Al and precipitation-hardened AA7075-T6.	純 Al と時効強化 AA7075-T6 のナノインデンテーション荷重-押込み深さ曲線。負荷域 (Kick 則)・最大荷重保持クリープ・Oliver-Pharr 除荷曲線の弾性回復の違いを比較。
+Beta (rotation) column:	β(回転)の列:
+Beta = 0° at the top	β = 0° を上にする
+Beta increases clockwise	β を時計回りに増やす
+Beta range (deg):	β 範囲 (°):
+Bin start:	ビンの開始値:
+Bin width (0 = automatic):	ビン幅 (0 = 自動):
+Bin width in X (0 = use bins):	X のビン幅 (0 = ビン数で指定):
+Bin width in Y (0 = use bins):	Y のビン幅 (0 = ビン数で指定):
+Bins in X (0 = automatic):	X のビン数 (0 = 自動):
+Bins in Y (0 = automatic):	Y のビン数 (0 = 自動):
+Box + Inward Ticks (ISIJ)	四辺枠 + 内向き目盛り (ISIJ)
+Box + Plain Opposite Axes	四辺枠 (上・右目盛りなし)
+Cannot delete a built-in preset. Use 'Reset Default' to restore its original settings.	組み込みプリセットは削除できません。元に戻すには「初期値に戻す」を使用してください。
+Cannot differentiate: %1 pair(s) of adjacent points have the same X (first at x = %2), which would divide by zero. Remove or average the duplicate X values first.	微分できません: 隣り合う点で X が同じ組が %1 組あり (最初は x = %2)、0 で割ることになります。重複した X を削除するか平均してから実行してください。
+Cannot open %1: %2	%1 を開けません: %2
+Canvas Tools	キャンバス操作
+Category:	カテゴリ:
+Cell Blocks (No Smoothing)	セルブロック表示 (平滑化なし)
+Cell blocks (no smoothing)	セルブロック表示 (平滑化なし)
+Change Arrow Style	矢印スタイルの変更
+Change Image Geometry	画像位置・サイズの変更
+Change Plot Title Color	グラフタイトル色の変更
+Change Plot Title Font	グラフタイトルフォントの変更
+Charpy Impact Toughness Transition Curve (DBTT of Ferritic Steel)	フェライト鋼のシャルピー衝撃吸収エネルギー遷移曲線 (DBTT)
+Charpy V-notch impact absorbed energy vE (J) vs. temperature (-120 to +80 °C) with error bars and ductile-to-brittle transition temperature (DBTT ≈ -25 °C) tanh-sigmoid curve.	フェライト鋼の -120 °C ～ +80 °C におけるシャルピー衝撃吸収エネルギー vE (J) と標準偏差・延性破面率データ。下棚から上棚へ遷移する DBTT ≈ -25 °C のシグモイド遷移曲線を描画。
+Choose a recent model	最近使ったモデルから選ぶ
+Choose the layer on which this layer is overlaid as twin axes. "None" keeps it as an independent layer in its own grid cell.	このレイヤーをツイン軸として重ねる先のレイヤーを選びます。「なし」の場合は独立したグリッドセルのレイヤーのままです。
+Circular reference between worksheets: the values did not settle and may be out of date.	ワークシート間の循環参照: 値が定まらず、古い値の可能性があります。
+Circular reference: the formula depends on its own result. The values were not updated.	循環参照: 数式が自分自身の結果を参照しています。値は更新していません。
+Click 'Line+Sym' on the Worksheet bar, or pick a graph type from the 'Plot' tab	ワークシート上部の「線+シンボル」、または上部の「作図」タブからグラフ種類を選択
+Click (or press Esc) to return to the pointer	クリック(または Esc)でポインタに戻ります
+Click a Matrix or Worksheet first to create a Heatmap, Contour, or 3D Surface.	ヒートマップ・等高線・3D曲面を作成するには、先に行列またはワークシートを選択してください。
+Click a worksheet first to add a column.	列を追加するには、先にワークシートを選択してください。
+Click the second opposite corner on the image to finish the ROI box.	対角となる2点目をクリックしてROI範囲を確定してください。
+Co&lor Palette...	カラーパレット(&L)...
+Color (Z) column:	色 (Z) の列:
+Color map:	カラーマップ:
+Color-Mapped &Scatter (Z)...	カラーマップ散布図(Z 値で色分け)(&S)...
+Colors for new curves:	新しい曲線の色:
+Colours follow log10(z); cells with z <= 0 are transparent.	色を log10(z) に従って割り当てます。z <= 0 のセルは透明になります。
+Column "%1" of the file has a different data type (%2) than column "%3" of the worksheet (%4). Nothing was imported.	ファイルの列「%1」(%2)とワークシートの列「%3」(%4)のデータ型が違うため、何も読み込みませんでした。
+Column %1: %2	列 %1: %2
+Column Props ▸	列設定 ▸
+Column Role	列の役割
+Column formula error in %1: %2	列 %1 の数式エラー: %2
+Columns & Source	列・データ更新
+Compact 11-point two-series X-Y table (Condition A & Condition B) for practicing basic plotting, axis/legend formatting, and PowerPoint / slide copy-paste.	基本的なグラフ作成・軸と凡例の体裁調整・PowerPoint スライド貼付をすぐに試せる 11 点×2 系列(条件 A / 条件 B)のシンプルな X-Y サンプルです。
+Complete research workflow project for Al-Zn-Mg alloys: isothermal age-hardening HV, H-charged tensile embrittlement, 3-rate TDS + Kissinger Ea analysis, XRD pattern, and CT crack-tip strain map.	Al-Zn-Mg 合金の時効組織と水素脆化を統合評価する研究サンプルプロジェクト。時効硬化 HV・水素チャージ引張・3昇温速度 TDS(＋Kissinger 活性化エネルギー解析)・XRD・き裂先端局所ひずみマップを一括生成します。
+Configure Multi-Panel Grid Layout & Layer Spacing	複数パネルの格子レイアウトとレイヤー間隔を設定
+Contour levels:	等強度線の本数:
+Convergence	収束
+Convert Numeric Column to Text?	数値列をテキスト列へ変換しますか?
+Convert the active worksheet into a 2D numeric matrix	アクティブなワークシートを2D数値行列へ変換します
+Convert to Double-Y Plot	2軸Yグラフへ変更
+Convert to Text	テキスト列へ変換
+Copied %1 for PowerPoint (%2 x %3 mm). Paste with Ctrl+V; double-click it on the slide to edit it again.	%1 を PowerPoint 用にコピーしました(%2 × %3 mm)。Ctrl+V で貼り付け、スライド上でダブルクリックすると再編集できます。
+Copy Axis Scale Range	軸スケール範囲をコピー
+Copy Curve Color & Symbol	曲線の色とシンボルをコピー
+Copy Graph for Power&Point	グラフを PowerPoint 用にコピー(&P)
+Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop a CSV file onto the window. Then press the plot button again.	Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、Excel (.xlsx) / CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。
+Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop an Excel (.xlsx) or CSV file onto the window. Then press the plot button again.	Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、Excel (.xlsx) / CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。
+Copy for PowerPoint	PowerPoint 用にコピー
+Copy of %1	%1 のコピー
+Copy selected cells together with Long Name and Units headers	選択セルを長い名前・単位の見出し行ごとコピーします
+Copy the graph for PowerPoint / Word as an editable object. After pasting, double-click it on the slide to edit it again in ToriGraph.	グラフを PowerPoint・Word 用に、編集できるオブジェクトとしてコピーします。貼り付け後、スライド上でダブルクリックすると再編集できます。
+Copy the top row of the selection down to the remaining selected cells (Ctrl+D)	選択範囲の先頭行の値を下の選択セルへコピーします (Ctrl+D)
+Copy w/ Headers	見出し付きコピー
+Copy with &Headers	ヘッダを含めてコピー(&H)
+Copying for PowerPoint works on a graph window. Click the graph you want to copy first.	PowerPoint 用のコピーはグラフのウィンドウが対象です。先にコピーしたいグラフをクリックしてください。
+Could not copy %1 as an editable object for PowerPoint.	%1 を PowerPoint 用の編集できるオブジェクトとしてコピーできませんでした。
+Could not copy image to clipboard.	画像をクリップボードにコピーできませんでした。
+Could not find Windows PowerShell (powershell.exe), so the downloaded update cannot be applied automatically. ToriGraph stays open; download and install the package from the release page instead.	Windows PowerShell (powershell.exe) が見つからないため、ダウンロードした更新を自動では適用できません。ToriGraph は開いたままです。リリースページからパッケージをダウンロードしてインストールしてください。
+Could not find a linear-elastic window automatically (no straight window between 10% and 60% of UTS spanning at least 15% of UTS). Please clear 'Auto-detect' and enter the elastic strain range.	線形弾性域を自動で決められませんでした (UTS の 10〜60% の応力範囲に、UTS の 15% 以上の幅を持つ直線区間がありません)。「線形弾性域を自動検出」を外して、弾性域のひずみ範囲を入力してください。
+Could not launch Windows PowerShell to apply the staged update.\n\nToriGraph was not changed. Restart ToriGraph now?	更新を適用する Windows PowerShell を起動できませんでした。\n\nToriGraph は変更されていません。ToriGraph を再起動しますか？
+Could not open SVG file for writing: %1	SVG ファイルを開けませんでした: %1
+Could not open file for writing: %1	書き込み用にファイルを開けませんでした: %1
+Could not open the file: %1\n%2	ファイルを開けませんでした: %1\n%2
+Could not open vector output file for writing: %1	ベクター出力ファイルを開けませんでした: %1
+Could not serialize the embedded project data.	埋め込みプロジェクトのデータを書き出せませんでした。
+Create Multi-Sheet Workbook, Matrix, Add Column, or Apply Template	複数シートブック、行列、列の追加、またはテンプレート適用
+Create a recovery copy every	回復用コピーを自動作成する間隔
+Create or select a graph window first to copy for PowerPoint.	PowerPoint 用にコピーするには、先にグラフを作成または選択してください。
+Cumulative (%)	累積 (%)
+Cumulative probability, F (%)	累積確率 F (%)
+Current / Custom	現在 / カスタム
+Curve Legend Labels	凡例の各曲線ラベル
+Curve Width (px):	曲線の太さ (px):
+Custom Color...	カスタム色...
+Custom Preset:	プリセット:
+Custom axis labels:	カスタム軸タイトル:
+Custom...	カスタム...
+DOF	自由度
+Data Polar Plot (r, theta)	極座標プロット (データ列)
+Data column:	データの列:
+Decrease Line Width (current: %1 pt)	線幅を細くする (現在: %1 pt)
+Decrease Symbol Size (current: %1 pt)	シンボルを小さくする (現在: %1 pt)
+Defaults for New Graphs	新規グラフの既定
+Degrees of freedom	自由度
+Delete Sheet	シートを削除
+Delete Title	タイトルを削除
+Delete the sheet %1 and its data?\nYou can undo this with Ctrl+Z.	シート %1 とそのデータを削除しますか?\n削除後も Ctrl+Z (元に戻す) で復元できます。
+Detected: %1	自動判定: %1
+Dismiss	閉じる
+Double-Y plot needs at least two curves on the graph. Add another Y column to this graph first, or select two Y columns in a worksheet.	2軸Yグラフにするにはグラフ上に2本以上の曲線が必要です。先に別のY列をこのグラフへ追加するか、ワークシートで2列以上のY列を選択してください。
+Double-Y plot requires at least two Y columns or a graph with two or more curves.	2軸Yグラフには2列以上のY列、または2本以上の曲線があるグラフが必要です。
+Download complete (not verified: no SHA-256 checksum published).	ダウンロード完了 (SHA-256 チェックサムが公開されていないため未検証)
+Draw Arrow, Draw Line, Add Image, Text, Legend, Error Bars & Reference Lines	矢印、直線、画像、テキスト、凡例、エラーバー、基準線をグラフに追加
+Draw a straight line annotation on the active graph	アクティブなグラフ上に直線注釈を描画
+Draw an arrow annotation on the active graph	アクティブなグラフ上に矢印注釈を描画
+Draw each matrix cell as a flat block, like histogram bins.	各セルをヒストグラムのビンのように平坦なブロックとして描きます。
+Duplicate ZIP entry: %1	ZIP の項目が重複しています: %1
+E plausibility (5-1000 GPa)	E の妥当範囲 (5〜1000 GPa)
+E&xport Graph...	画像をエクスポート(&X)...
+E&xport Image...	画像をエクスポート(&X)...
+E&xport Settings...	設定を書き出す(&X)...
+ED / TD (Extruded)	ED / TD (押出材)
+EMF image (*.emf)	EMF 画像 (*.emf)
+EMF: vector for Word and PowerPoint on Windows.	EMF: Windows の Word・PowerPoint 用のベクター。
+EPS/PostScript export is not supported in Qt5 builds; export as PDF or SVG instead.	Qt5 ビルドでは EPS/PostScript エクスポートは未対応です。PDF または SVG で出力してください。
+Each graph is exported at its own page size.	各グラフは自分のページ寸法で出力します。
+Edit Axis Properties...	軸の詳細設定を開く...
+Edit Axis...	軸を編集...
+Edit Data Row Range...	データ行範囲を編集...
+Edit Embedded Graph	埋め込みグラフの編集
+Edit Inset Zoom Region	拡大インセット範囲の編集
+Edit Labels	項目を編集
+Edit Legend Label	凡例ラベルの編集
+Edit Plot Title...	グラフタイトルを編集...
+Edit Text / Properties...	テキスト編集・プロパティ...
+Edit X/Y Data Columns...	X/Y データ列を編集...
+Edit column formula, long name, units, and numeric format	列の数式、長い名前、単位、数値書式を編集
+Edit individual legend labels inline (double-click any line for sub/superscripts)	凡例の各行を個別にインライン編集します (上付き・下付きも対応)
+Edit the page size, unit, DPI, background, zoom and fitting in Page Setup.	ページのサイズ・単位・DPI・背景色・ズーム・フィットは「ページ設定」で変更します。
+Elastic fit range	弾性域フィット範囲
+Elastic fit range: %1 to %2 (shaded on the graph).	弾性域フィット範囲: %1 〜 %2 (グラフに帯で表示)。
+Embed Whole Project in PowerPoint Copies	PowerPoint 用コピーにプロジェクト全体を埋め込む
+Embedded: %1.	埋め込んだウィンドウ: %1。
+Embedded: the whole project.	埋め込み: プロジェクト全体。
+Enable energy window (E - E_F)	エネルギー表示範囲を指定 (E - E_F)
+Enter X and Y numeric data in the worksheet first to plot	ワークシートに X 列と Y 列の数値を入力すると作図できます
+Enter a palette name and at least one colour.	パレットの名前と、少なくとも 1 つの色を指定してください。
+Enter data in Table or import CSV	ワークシートにデータを入力、またはCSVを読込
+Enter formula for selected column(s) and press Enter to recalculate	選択列の数式を入力して Enter で再計算します
+Enter numeric values in column B(Y), or paste both X and Y columns from Excel (Ctrl+V).	B(Y) 列に数値を入力するか、Excel から X と Y の 2 列を貼り付けてください (Ctrl+V)。
+Enter plot title...	グラフタイトルを入力...
+Enter values and press Enter to apply (amber highlight = unsaved edit)	値を入力して Enter で反映します (黄色の枠は未確定の編集)
+Equal-angle (Wulff)	等角(Wulff)
+Equal-area (Schmidt)	等面積(Schmidt)
+Erase all ToriGraph settings (recent files, preferences, window layout, style presets chosen as default...) and return to the defaults?\n\nProjects and data files are not touched. This cannot be undone; use Export Settings first if you may want them back.	ToriGraph の設定(最近使ったファイル、環境設定、ウィンドウの配置、既定のスタイルプリセットなど)をすべて消して既定に戻しますか?\n\nプロジェクトやデータのファイルは消えません。元に戻せないので、必要なら先に「設定を書き出す」で控えを取ってください。
+Erase all ToriGraph settings and return to the defaults (takes effect after restart)	ToriGraph の設定をすべて消して既定に戻します(再起動後に反映)
+Error Band	エラーバンド
+Error Band...	エラーバンド...
+Error columns:	誤差の列:
+Excel Import	Excel の読み込み
+Excel workbook (*.xlsx *.xlsm)	Excel ブック (*.xlsx *.xlsm)
+Excel workbooks cannot be read directly.\nIn Excel, select the cells, copy them (Ctrl+C) and paste them into a worksheet here (Ctrl+V), or save the sheet as CSV and drop the CSV file.	Excel のブック(.xlsx など)は直接読み込めません。\nExcel で範囲を選んでコピー(Ctrl+C)し、ここのワークシートに貼り付ける(Ctrl+V)か、CSV で保存してから CSV ファイルをドロップしてください。
+Excluded from W-H fit	W-H フィット除外
+Excluded points: %1 masked, %2 non-numeric (NaN/empty).	除外した点: マスク %1 点、非数値 (NaN・空欄) %2 点。
+Export Active Layer...	アクティブレイヤーをエクスポート...
+Export Graph...	画像をエクスポート...
+Export Image...	画像をエクスポート...
+Export JSON...	JSON 書出...
+Export Settings	設定を書き出す
+Export stopped at table %1: %2	表 %1 で書き出しを中止しました: %2
+Extra border drawn around the plot area. For a normal 4-sided box use the axis lines (Draw backbones / Frame Presets) instead, otherwise the frame is drawn twice.	プロット領域の外側に重ねる追加の外枠です。通常の4辺の枠は軸線 (Draw backbones / Frame Presets) で描いてください。併用すると二重線になります。
+FFT smoothing assumes equal X spacing; the spacing of the first two points was used.	FFT 平滑化は X の等間隔を前提とし、先頭 2 点の間隔を使いました。
+Failed to initialize SVG painter.	SVG ペインターの初期化に失敗しました。
+Failed to initialize image painter.	画像ペインターの初期化に失敗しました。
+Failed to render EMF graphics.	EMF グラフィックスの描画に失敗しました。
+Failed to update SVG dimensions in %1	%1 の SVG 寸法を更新できませんでした
+Failed to write SVG file: %1	SVG ファイルの書き込みに失敗しました: %1
+Failed to write complete EMF file.	EMF ファイルの書き込みに失敗しました。
+Failed to write image file: %1	画像ファイルの書き込みに失敗しました: %1
+Failed to write vector output file: %1	ベクター出力ファイルの書き込みに失敗しました: %1
+Failure probability, <i>P</i><sub>f</sub> / %	破壊確率, <i>P</i><sub>f</sub> / %
+Fatigue Crack Growth Rate da/dN vs. ΔK (Paris Law: Air vs. H-Charged)	疲労き裂進展速度曲線 da/dN–ΔK (Paris 則: 大気中 vs. 水素環境)
+Fatigue S-N Curves: SCM435 Steel vs. AA7075-T6 (Wöhler Diagram)	疲労 S-N 曲線比較: SCM435 鋼 vs. AA7075-T6 合金 (Wöhler 線図)
+File Not Imported	読み込めなかったファイル
+File not found: %1	ファイルが見つかりません: %1
+File: %1	ファイル: %1
+File: (none)	ファイル: (なし)
+Fill &Down	下へフィル(&D)
+Fill Down	下方向へコピー
+Fill Opacity	塗りの不透明度
+Fill opacity (%):	塗りの不透明度 (%):
+Filled Head	矢尻を塗りつぶす
+Filter columns...	列を検索...
+Filter:	検索:
+Find & Replace	検索と置換
+Find / Replace...	検索と置換...
+Find Next	次を検索
+Find or replace values in the active worksheet (Ctrl+F / Ctrl+H)	アクティブなワークシート内の値を検索・置換します (Ctrl+F / Ctrl+H)
+Find...	検索...
+Find:	検索する文字列:
+Fit Page Zoom to Window	ページ拡大率を画面に合わせる
+Fit Warning	フィットの警告
+Fit failed (%1)	フィット失敗(%1)
+Fit graph page to the current window viewport	グラフページを現在のウィンドウ幅に合わせて表示します
+Fit graph page zoom to the current window	グラフページの拡大率を現在のウィンドウ幅に合わせます
+Fit to Window	画面に合わせる
+Flat cell blocks (no smoothing)	セルごとに塗りつぶす (補間なし)
+Font Family:	フォント:
+Format axis units as ISIJ slash (Quantity, sym / unit)	軸単位を ISIJ スラッシュ形式 (量, 記号 / 単位) に整形
+Formula & Data	数式・データ
+Formula F(x)=	数式 F(x)=
+Formula error: %1	数式のエラー: %1
+Four graphs in a 2x2 grid	2×2 の 4 分割グラフ
+Fraction (mm/mm)	無次元 (mm/mm)
+Fracture Toughness J-R Resistance Curve (ASTM E1820 with Blunting Lines)	構造用鋼の破壊靭性 J-R 抵抗曲線 (ASTM E1820 鈍化線・0.2 mm オフセット線付)
+Frame & Ticks:	枠と目盛り:
+Free	自由変形
+From Current Graph	現在のグラフから作成
+From Peak-Fit Results (Center of Peak N)	ピーク分離の結果から (ピーク N の中心)
+Getting Started	入門・基本操作
+Goodness of fit: ln L = %1 (MLE). R² = %2 refers to the median-rank regression line, not to the MLE.	当てはまり: ln L = %1 (MLE)。R² = %2 はメジアンランク回帰直線の値で、MLE の指標ではありません。
+Gra&ph	グラフ(&P)
+Graph "%1" was not found in the embedded project.	埋め込まれたプロジェクト内にグラフ「%1」が見つかりませんでした。
+Graph Canvas	グラフキャンバス
+Grayscale & Basic	グレースケール・基本色
+Grid XYZ columns into a 2D Matrix (recommended for X, Y, Z tables)	X, Y, Z の3列を2D行列へ格子化して作図 (XYZデータ向け)
+Grid input error	グリッド入力エラー
+Grid size:	格子分割数:
+Group ANOVA (Parametric)	群間比較 ANOVA (パラメトリック)
+Group Compare	群間比較
+Guide	ガイド
+Guide (F1)	ガイド (F1)
+Gumbel Probability	Gumbel 確率
+Gumbel fit	Gumbel フィット
+HCP / Hexagonal (100, 002, 101...)	HCP / 六方最密 (100, 002, 101...)
+Hall-Petch Grain Size Strengthening (Ferritic Steel & Al-Mg Alloy)	結晶粒径と降伏応力の Hall-Petch 関係 (フェライト鋼・Al-Mg 合金)
+Head Angle:	矢尻の角度:
+Head Length:	矢尻の長さ:
+Hide Error Bars	エラーバーを非表示
+High-Temperature Creep Curves of 9Cr-1Mo Steel (600 °C, 3 Stress Levels)	9Cr-1Mo 耐熱鋼の高温クリープ曲線 (600 °C, 120 / 140 / 160 MPa)
+High-cycle fatigue S-N (Wöhler) curves comparing quenched-and-tempered SCM435 steel (distinct endurance limit ~420 MPa at 10^7 cycles) and AA7075-T6 aluminum alloy (no knee).	調質 SCM435 鋼(10^7 回付近に約 420 MPa の明瞭な疲労限度あり)と AA7075-T6 アルミニウム合金(疲労限度なしで連続低下)の疲労 S-N 曲線比較(横軸対数)。
+Histogram + &Cumulative %...	ヒストグラム + 累積 %(&C)...
+How should this worksheet be converted for %1?	このワークシートを%1用にどのように変換して作図しますか?
+Hydrogen Embrittlement Tensile Curves (Uncharged vs. H-Charged)	高強度 Al-Zn-Mg 合金の水素脆化引張試験 (未チャージ vs. 水素チャージ)
+INI files (*.ini);;All files (*)	INI ファイル (*.ini);;すべてのファイル (*)
+Image Annotation	画像注釈
+Image Profile	画像プロファイル
+Image size is too large to allocate for export.	画像サイズが大きすぎるためエクスポートできません。
+Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;All Files (*)	画像ファイル (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;すべてのファイル (*)
+Import CSV / Data...	CSV / データ読込...
+Import Data File(s)	データファイルを読み込む
+Import Excel Workbook	Excel ブックを読み込む
+Import Image to &Matrix...	画像を行列へインポート(&M)...
+Import JSON...	JSON 読込...
+Import Settings	設定を読み込む
+Import failed	読み込みに失敗しました
+Imported %1 preset(s).	%1 件のプリセットを読み込みました。
+Increase Line Width (current: %1 pt)	線幅を太くする (現在: %1 pt)
+Increase Symbol Size (current: %1 pt)	シンボルを大きくする (現在: %1 pt)
+Insert Curve Symbol	曲線の凡例マーカーを挿入
+Insert Simple X-Y Sample	シンプルな X-Y サンプルを挿入
+Inset Zoom Region	拡大インセット範囲
+Install Unverified Update?	検証できない更新をインストールしますか？
+Intensity	強度
+Intensity column:	強度の列:
+Isothermal Age-Hardening Curves of Al-Zn-Mg Alloy (Vickers HV, 120 vs. 160 °C)	Al-Zn-Mg 合金の等温時効硬化曲線 (ビッカース硬さ HV, 120 vs. 160 °C)
+Isothermal Vickers hardness (HV) vs. logarithmic aging time (0.1–1000 h) at 120 °C and 160 °C for Al-Zn-Mg alloy showing under-aged, peak-aged (T6), and over-aged (T7) stages.	Al-Zn-Mg 合金の 120 °C および 160 °C 等温時効におけるビッカース硬さ HV(平均±SD)vs. 対数時効時間曲線。亜時効→ピーク時効 (T6)→過時効 (T7) の典型的な析出硬化挙動を再現。
+Italic (slanted)	斜体 (イタリック)
+JIS R 1625 6.2 c) sets B_n = 1 for n > 120, so m is not reduced (n = %1).	JIS R 1625 の 6.2 c) では n > 120 のとき B_n = 1 と定めているため、m は補正していません (n = %1)。
+JIS R 1625 bias correction not applied: it is defined only for the 2-parameter MLE of complete (uncensored) data.	JIS R 1625 の不偏化は行いませんでした: 打切りのない 2 母数の最尤推定にだけ定められています。
+Johnson-Cook true stress-strain flow curves of Ti-6Al-4V across 6 decades of strain rate (10^-3 s^-1 quasi-static, 1 s^-1 intermediate, 10^3 s^-1 SHPB dynamic with adiabatic softening).	Ti-6Al-4V 合金の準静的 (10^-3 s^-1)・中速度 (1 s^-1)・高速衝撃 SHPB (10^3 s^-1) の真応力-真ひずみ曲線。ひずみ速度強化と高ひずみ速度域での断熱軟化を Johnson-Cook モデルで再現。
+Journal 2-Column (175 mm)	論文 2 段幅 (175 mm)
+Journal 2-Column (175mm)	論文 2 段幅 (175mm)
+Journal 2-Column (175x85 mm, 600 DPI)	論文 2 段幅 (175×85 mm, 600 DPI)
+Journal Templates	論文用軸タイトル定型
+Journal double column (175 mm wide)	論文 2 段幅 (幅 175 mm)
+Keep Fit	グラフへ確定
+Kissinger Analysis (TDS/DSC)...	Kissinger解析 (TDS/DSC)...
+Kissinger input taken from peak-fit centres (peak %1): %2.	Kissinger の入力にピーク分離の中心温度 (ピーク %1) を使いました: %2。
+Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s). Enter exactly one heating rate per source, in this order: %3.	Kissinger: ピーク分離の結果 %2 件に対して昇温速度が %1 個指定されました。結果 1 件につき昇温速度を 1 個ずつ、次の順に入力してください: %3。解析は行っていません。
+Kissinger: %1 heating rate(s) were given for %2 peak-fit source(s); the extra entries were ignored.	Kissinger: ピーク分離の結果 %2 件に対して昇温速度が %1 個指定されました。余った分は使っていません。
+Kissinger: %1 heating rate(s) were given for %2 selected TDS column(s); the extra entries were ignored.	Kissinger: 選んだ TDS 曲線の列 %2 本に対して昇温速度が %1 個指定されました。余った分は使っていません。
+Kissinger: %1 of %2 pair(s) excluded (%3).	Kissinger: %2 組中 %1 組を除外しました (%3)。
+Kissinger: no peak centre found in the selected peak-fit table(s) for peak %1: %2.	Kissinger: 選んだピーク分離の結果表に、ピーク %1 の中心が見つかりません: %2。
+Kissinger: no peak was found inside the temperature window for column(s): %1.	Kissinger: 温度範囲内にピークが見つからなかった列があります: %1。
+Kocks-Mecking Stage-III (θ vs σt)	Kocks-Mecking ステージIII (θ vs σt)
+Kα-average	Kα 平均
+Kα2 stripped (Rachinger, %1 anode: λ(Kα1) = %2 Å, λ(Kα2) = %3 Å, I(Kα2)/I(Kα1) = 0.5).	Kα2 を除去しました (Rachinger 法、%1 管球: λ(Kα1) = %2 Å、λ(Kα2) = %3 Å、強度比 I(Kα2)/I(Kα1) = 0.5)。
+Kα2 stripping skipped: λ = %1 Å does not match the Kα1 or Kα-average line of a known anode (Cr, Fe, Co, Cu, Mo).	Kα2 除去を行いませんでした: λ = %1 Å が既知の管球 (Cr, Fe, Co, Cu, Mo) の Kα1 線・Kα 平均線のどれとも一致しません。
+LD / TD (Longitudinal / Transverse)	LD / TD (長手 / 横方向)
+Lab Slide (18 pt @ 140%, 83.3 mm)	発表スライド (18 pt @ 140%, 83.3 mm)
+Lab Slide (18 pt on slide, 83.3 mm, paste at 140%)	研究室スライド (スライド上で 18 pt、83.3 mm 角、PowerPoint で 140% に拡大)
+Lab Slide (18 pt, 83.3 mm)	研究室スライド (18 pt, 83.3 mm)
+Label (e.g. (111)):	ラベル(例: (111)):
+Layer P&roperties...	レイヤーのプロパティ(&R)...
+Layers are placed row by row. The grid may have more cells than layers (for example 2 x 2 for 3 layers); the unused cells stay empty.	レイヤーは行ごとに順に配置されます。レイヤー数よりセルが多くてもかまいません (例: 3 枚を 2 x 2 に配置。空いたセルはそのまま空白になります)。
+Legend Frame:	凡例枠:
+Legend Properties...	凡例のプロパティ...
+Legend Size (pt):	凡例フォントサイズ (pt):
+Line %1: %2	行 %1: %2
+Line + symbol graph of all Y columns (use the Plot tab for other styles)	すべての Y 列を折れ線+シンボルで描きます (ほかの形は「作図」タブから)
+Line Box	実線枠
+Line Profile	ラインプロファイル
+Line Width: %1 pt — click to choose a preset	線幅: %1 pt (クリックでプリセットを選択)
+Line Width: Off (Scatter mode) — click to show line	線幅: なし (散布図モード・クリックで線を表示)
+Line is hidden (Scatter mode) — click + or the width readout to show line	線は非表示です (散布図モード)。+ または幅の数値を押すと線を表示します
+Load a simple 2-series X-Y sample dataset and plot it right away	シンプルな 2 系列 X-Y サンプルを読み込み、すぐにグラフを作成します
+Lock	固定
+Log Color Scale	対数カラースケール
+Log color scale (log10 z)	対数カラースケール (log10 z)
+Log-log fatigue crack propagation da/dN vs. ΔK showing threshold (Region I), Paris law power-law regime (Region II, m ≈ 3.1), and rapid fracture (Region III) in air and H-charged environments.	両対数グラフによる疲労き裂進展速度 da/dN–ΔK 曲線。下限界 ΔKth (Region I)、Paris 則直線域 (Region II, m ≈ 3.1)、破壊靭性加速域 (Region III) を大気中と水素環境で対比。
+Logarithmic color scale	対数カラースケール
+Lognormal Probability	対数正規確率
+Lognormal fit	対数正規フィット
+Low-Cycle Fatigue Hysteresis Loops of SUS316L (Cycle 1 vs. Stabilized N=50)	SUS316L 低サイクル疲労 応力-ひずみヒステリシスループ (N=1 vs. N=50)
+LowerCI95	95%下限
+Lowercase Greek Letters	ギリシャ文字 (小文字)
+MLE did not converge; median rank regression values are reported instead.	最尤推定が収束しなかったため、メジアンランク回帰の値を出しています。
+Major Tick Length (px):	主目盛りの長さ (px):
+Manage Presets...	プリセット管理...
+Margin (px):	余白 (px):
+Mask Data Points	データ点のマスク
+Mat&erials Analysis	材料解析(&E)
+Match case	大文字と小文字を区別する
+Math & Tools	曲線演算・ツール
+Mathematical Symbols	数学記号
+Matplotlib (tab10)	Matplotlib 既定色 (tab10)
+Matrix: rows = alpha (Y coordinates), columns = beta (X coordinates)	行列: 行 = α(傾き)、列 = β(回転)
+Maximum likelihood, 2-parameter	最尤推定、2 母数
+Mean rank i/(n+1)	平均ランク i/(n+1)
+Median rank (i−0.3)/(n+0.4)	メジアンランク (i−0.3)/(n+0.4)
+Median rank regression (Benard), 2-parameter	メジアンランク回帰 (Benard 近似)、2 母数
+Median rank regression (Benard), 3-parameter: γ chosen to minimise the regression residual	メジアンランク回帰 (Benard 近似)、3 母数: γ は回帰の残差が最小になる値
+Min Curve Width (px):	最小曲線幅 (px):
+Min Symbol Size (px):	最小シンボルサイズ (px):
+Minor Tick Length (px):	副目盛りの長さ (px):
+Mode: %1 (Esc to cancel)	モード: %1(Esc で解除)
+Model / Mode	モデル / モード
+Models you fitted recently (up to 8)	最近フィットに使ったモデル (最大 8 件)
+More / &Legacy Presets	その他 / 旧プリセット(&L)
+More / Legacy Presets	その他 / 旧プリセット
+More Layers	レイヤー操作
+Move &into Workbook	ブックに入れる(&I)
+Move Inset Layer	インセットレイヤーを移動
+Move Sheet &Left	シートを左へ移動(&L)
+Move Sheet Ri&ght	シートを右へ移動(&G)
+Multi-Peak Fit (click the peaks)	複数ピークのフィット(ピークをクリック)
+Multi-curve tensile comparison of solution-treated/naturally aged (T4), peak-aged (T6), and over-aged (T73) Al-Zn-Mg alloy showing strength-ductility trade-off.	自然時効 (T4)・ピーク時効 (T6)・過時効 (T73) の Al-Zn-Mg 合金3条件の公称応力-ひずみ曲線比較。時効に伴う耐力・加工硬化率・伸びのトレードオフを可視化。
+Multi-panel page size:	複数パネルのページ寸法:
+Multi-window sample project generating 5 core metal mechanics datasets (T4/T6/T73 tensile + 0.2% yield & Considère analysis, S-N fatigue, da/dN-ΔK crack growth, Hall-Petch, and Charpy DBTT).	金属の力学特性を体系的に学べる複合サンプルプロジェクト。時効別引張比較(＋0.2%耐力・加工硬化解析)・疲労S-N曲線・疲労き裂進展 da/dN-ΔK・Hall-Petch・シャルピーDBTT の一式を一括生成します。
+Nanoindentation Load-Depth Curves (Oliver-Pharr: Pure Al vs. AA7075-T6)	ナノインデンテーション荷重-押込み深さ曲線 (Oliver-Pharr: 純 Al vs. AA7075-T6)
+New &Workbook	新しいブック(&W)
+New Custom Preset	カスタムプリセット
+New workbook: several worksheets as sheet tabs of one window	新しいブック: 1 つのウィンドウに複数のワークシートをシートのタブとしてまとめます
+No (resolution-limited)	除外 (分解能限界)
+No (unindexed)	除外 (未指数付け)
+No adjacent Y-error column found. Open Add Error Bars... to choose an error column or percentage.	隣接する Y エラー列が見つかりません。「エラーバーの追加...」から列または割合を指定してください。
+No cells are selected. Select the cells to export first.	選択されたセルがありません。書き出すセルを先に選択してください。
+No graph could be rendered from the embedded project.	埋め込まれたプロジェクトからグラフを描画できませんでした。
+No numeric data in Y column of "%1".	「%1」の Y 列に数値データがありません。
+No numeric data in the selected column.	選んだ列に数値データがありません。
+No original source file is recorded for this worksheet.	このワークシートには元のファイルパスが記録されていません。
+No persistent crossing of θ and σt was found (%1 early or transient crossing(s) rejected); the maximum-load (UTS) point is used as the Considère point.	θ と σt の持続する交点が見つかりませんでした (早すぎる・一時的な交点 %1 個を除外)。最大荷重点 (UTS) を Considère 点として使っています。
+No physical page size is set (pixel page at 96 dpi). Apply a preset to fix the size in mm.	物理寸法が未設定です (96 dpi のピクセルページ)。mm で寸法を決めるにはプリセットを適用してください。
+No physical solution	物理的な解なし
+No point has both a numeric X and Y value.	X と Y の両方が数値の点がありません。
+No unit row	単位行なし
+No valid finite XYZ numeric rows found in the selected columns.	選択した列に有効な数値の XYZ データが見つかりません。
+No worksheet was given.	ワークシートが指定されていません。
+None (Hide Line)	なし (線を非表示)
+None (Transparent)	なし (透過)
+None (keep plain pixel page)	なし (ピクセル単位のページのまま)
+None (own grid cell)	なし (独立したグリッドセル)
+Nonparametric (Mann-Whitney / Kruskal-Wallis)	ノンパラメトリック検定 (Mann-Whitney / Kruskal-Wallis)
+Normalize to MRD (multiples of random)	MRD(ランダム比)に規格化
+Not converged	未収束
+Not converged (maximum iterations reached; check the initial values)	未収束(最大反復到達/初期値を確認)
+Not converged (no further improvement; check the initial values)	未収束(改善が止まった/初期値を確認)
+Not found.	見つかりませんでした。
+Not updated: the formula uses a column with a circular reference.	未更新: 循環参照のある列を数式が参照しています。
+Nothing to plot yet	まだ作図できません
+Nothing was placed on the clipboard.	クリップボードには何も載せていません。
+OLE could not be initialized in this ToriGraph session. Restart ToriGraph and try again.	この ToriGraph では OLE を初期化できませんでした。ToriGraph を再起動してからもう一度お試しください。
+Off: every sheet becomes a separate worksheet window.	オフ: シートごとに別々のワークシートのウィンドウになります。
+One heating rate per source, in this order: %1	結果 1 件につき昇温速度を 1 個ずつ、次の順に入力: %1
+Open CSV / Excel...	CSV / Excel を開く...
+Open Image as &Graph...	画像をグラフとして開く(&G)...
+Open L + Outward Ticks (Nature)	L字枠 + 外向き目盛り (Nature)
+Open Quick Guide (F1)	かんたんガイドを開く (F1)
+Open a CSV, TSV, or Excel (.xlsx) data file	CSV・TSV・Excel (.xlsx) データファイルを開きます
+Open full Axis settings dialog	軸の詳細設定ダイアログを開く
+Open full Curve settings dialog	曲線の詳細設定ダイアログを開く
+Open full Layer / Page settings dialog	レイヤー・ページの詳細設定ダイアログを開く
+Open full Legend / Text settings dialog	凡例・テキストの詳細設定ダイアログを開く
+Open the ToriGraph Quick Guide (F1)	ToriGraph クイックガイドを開きます (F1)
+Opposite Axis Line: Off — click to Show	対向軸線: オフ (クリックで表示)
+Opposite Axis Line: On — click to Hide	対向軸線: オン (クリックで非表示)
+Origin Classic (black, red, blue, ...)	Origin クラシック (黒・赤・青…)
+Overlay (Twin Axes) / Axis Link / Layer Geometry	重ね合わせ (ツイン軸) / 軸リンク / レイヤー位置
+Overlay On (Parent Layer)	重ねる先 (親レイヤー)
+PDF: vector, for papers and LaTeX; lines and text stay sharp at any size.	PDF: ベクター。論文・LaTeX 用。拡大しても線と文字がにじみません。
+PNG image (*.png)	PNG 画像 (*.png)
+PNG: slides, Word and web (raster, lossless).	PNG: スライド・Word・Web 用 (画像、劣化なし)。
+Page Height (mm):	ページ高さ (mm):
+Page Width (mm):	ページ幅 (mm):
+Page Zoom: %1% (click to change or fit to window)	ページ拡大率: %1% (クリックで倍率変更・画面合わせ)
+Panel Labels:	パネル記号:
+Parametric ANOVA, Nonparametric Tests, Normality & Outlier Tests	一元配置分散分析 (ANOVA)、ノンパラメトリック検定、正規性検定、外れ値検定
+Parent Layer = None: the layer keeps its own cell in the grid above (independent layer with its own axes).\nParent Layer = Layer N: this layer is drawn on top of layer N as a twin-axis overlay and takes no grid cell; the X/Y link modes then tie its axis scales to layer N.	親レイヤー = なし: 上のグリッド内に独立したセルを持ちます (軸も独立)。\n親レイヤー = レイヤー N: レイヤー N の上にツイン軸として重ねて描画し、グリッドのセルは占有しません。X/Y リンクモードで軸の範囲をレイヤー N に連動させます。
+Paste Axis Scale Range	軸スケール範囲を貼り付け
+Paste Axis Scales Only	軸スケールのみ貼り付け
+Paste Colors & Symbols Only	色・記号のみ貼り付け
+Paste Curve Color & Symbol	曲線の色とシンボルを貼り付け
+Paste Curve Style	曲線の色とシンボルを貼り付け
+Paste Fonts Only	フォントのみ貼り付け
+Paste Format Special	形式を選択して書式貼り付け
+Paste Format to All Graphs in Folder	フォルダ内の全グラフへ書式貼り付け
+Paste from Excel here (Ctrl+V)\nor drop a CSV file onto this window	ここへ Excel から貼り付け (Ctrl+V)\nまたは Excel (.xlsx) / CSV ファイルをこのウィンドウにドロップ
+Paste from Excel here (Ctrl+V)\nor drop an Excel (.xlsx) or CSV file onto this window	ここへ Excel から貼り付け (Ctrl+V)\nまたは Excel (.xlsx) / CSV ファイルをこのウィンドウにドロップ
+Paste from Excel into the table (Ctrl+V) or drop a CSV file	Excel からコピーして表に貼り付け(Ctrl+V)、または CSV ファイルをドロップ
+Peak Number N:	ピーク番号 N (中心の低い順):
+Peak-Fit Result Tables:	ピーク分離の結果表:
+Peaks, ROI Statistics, Integration, Quick Fit & 2D Profile	ピーク解析、ROI統計、積分、クイックフィット、2Dプロファイル
+Pearson's r (x, y)	ピアソンの r (x, y)
+Please enter a sheet name (letters, digits, _ or -).	シート名を入力してください (文字・数字・_・-)。
+Please enter a workbook name (letters, digits, _ or -).	ブック名を入力してください (文字・数字・_・-)。
+Please verify that you have the right to write to this location!	この場所に書き込む権限があるか確認してください。
+Plot Polar Graph from Worksheet Columns (Angle, Radius)	ワークシートの角度・半径列から極座標グラフを作成
+Plot Stacked Vertical Bar Chart	積み上げ縦棒グラフを作成
+Plot Table Using &Template...	テンプレートからワークシートを作図(&T)...
+Plot Table Using Template...	テンプレートからワークシートを作図...
+Plot Title	グラフタイトル
+Plot Title: %1	グラフタイトル: %1
+Plot from Worksheet	ワークシートから作図
+Plot polar (theta, radius) data from active worksheet	アクティブなワークシートから極座標プロット (角度, 半径) を作成
+Plot this data	このデータをグラフにする
+Plot vertical stacked bar chart	選択したY列から積み上げ棒グラフを作成
+Plotting position:	プロット位置(順位法):
+Polar Plot...	極座標プロット...
+PowerPoint could not save the updated graph because the presentation is read-only or locked (0x%1).	プレゼンテーションが読み取り専用またはロックされているため、PowerPoint に更新後のグラフを保存できませんでした (0x%1)。
+PowerPoint could not save the updated graph into the slide (0x%1).	更新後のグラフを PowerPoint のスライドへ保存できませんでした (0x%1)。
+PowerPoint link repaired. Graphs pasted into PowerPoint will open in:\n%1	PowerPoint 連携を修復しました。PowerPoint に貼ったグラフは次のプログラムで開きます:\n%1
+Preset Name:	プリセット名:
+Preset applied to new graphs:	新規グラフに適用するプリセット:
+Preset size per panel (columns x width)	パネルごとにプリセット寸法 (列数 × 幅)
+Preview (first lines):	プレビュー(先頭の数行):
+Preview could not be built for this file.	このファイルのプレビューを作成できませんでした。
+Preview: %1	プレビュー: %1
+Preview: (empty)	プレビュー: (空)
+Primary axis direction:	主基準軸の向き:
+Print...	印刷...
+Printing	印刷
+Project Pack: Al-Zn-Mg Age-Hardening & Hydrogen Embrittlement Study (5 Datasets + Kissinger)	【複合プロジェクト】Al-Zn-Mg 合金の時効硬化・水素脆化 総合研究パッケージ (時効HV・水素引張・TDS/Kissinger・XRD・CTひずみ)
+Project Pack: Metal Mechanical Properties Evaluation Suite (5 Datasets + Analyses)	【複合プロジェクト】金属の力学特性 総合評価パッケージ (引張・加工硬化・疲労S-N・き裂進展・Hall-Petch・DBTT)
+Projected pole figure of %1 (%2)	%1 の極点図の投影 (%2)
+Projection:	投影:
+Properties of the Selection...	選択した要素のプロパティ...
+Put the sheets of a file into one workbook (sheet tabs)	1 つのファイルのシートを 1 つのブックにまとめる (シートのタブ)
+Quick &Linear Fit (No Dialog)	クイック線形フィット (ダイアログなし)(&L)
+Quick Linear Fit (No Dialog)	クイック線形フィット (ダイアログなし)
+RD / TD (Rolled sheet)	RD / TD (圧延材)
+RD direction:	RD の向き:
+Re-&import from Source	元ファイルから再読込(&I)
+Re-import	再読み込み
+Re-import &Source Data	元データを再インポート(&S)
+Re-import Source Data	元データを再インポート
+Re-import from Source	元ファイルから再読込
+Re-imported from %1	元ファイルから再読込しました: %1
+Read settings from an INI file written by Export Settings	「設定を書き出す」で作った INI ファイルから設定を読み込みます
+Read the settings in\n%1\n\nSettings found in the file replace your current ones. Continue?	次のファイルの設定を読み込みます。\n%1\n\nファイルにある設定は今の設定を上書きします。続けますか?
+Rebuild Legend	凡例を再構築
+Rebuilding the legend will overwrite your custom legend labels and header. Continue?	凡例を再構築すると、手編集した凡例ラベルや見出しが上書きされます。続けますか?
+Recently used:	最近使ったモデル:
+Reload data from the original CSV / Excel source file	元の CSV / Excel ファイルからデータを再読み込みします
+Remove Data Points	データ点の削除
+Rena&me Workbook...	ブック名の変更(&M)...
+Rename Sheet	シート名の変更
+Rename Workbook	ブック名の変更
+Repair PowerPoint Link	PowerPoint 連携を修復
+Repair PowerPoint Link (OLE Registration)	PowerPoint 連携を修復(OLE 登録)
+Repair PowerPoint Link (OLE Registration)...	PowerPoint 連携を修復(OLE 登録)...
+Replace	置換
+Replace All	すべて置換
+Replace Image	画像の差し替え
+Replace Image...	画像を差し替え...
+Replace with:	置換後の文字列:
+Rescale All Axes	すべての軸を自動スケール
+Reset Default	初期値に戻す
+Reset Settings	設定を初期化
+Reset View	表示リセット
+Reset the legend to the default curve names? Manual edits to legend labels will be overwritten.	凡例を既定の曲線名に戻しますか? 手動で編集した凡例テキストは上書きされます。
+Reset to automatic curve name	自動の曲線名に戻す
+Restoring opens the copy as a modified project. The project file on disk is only changed when you save.	復元すると、コピーを「変更あり」のプロジェクトとして開きます。ディスク上のプロジェクトファイルは、保存するまで変更されません。
+Restoring opens the copy as a new, unsaved project.	復元すると、コピーを未保存の新しいプロジェクトとして開きます。
+Return period T (0 = none):	再現期間 T (0 = なし):
+Reverse Axis: Off — click to Reverse	軸を反転: オフ (クリックで反転)
+Reverse Axis: On — click for Normal	軸を反転: オン (クリックで通常)
+Reverse color map	カラーマップを反転
+Right (TD top)	右(TD は上)
+Right (secondary top)	右 (副軸は上)
+Rows:	行数:
+SVG export is not supported in this build.	このビルドでは SVG エクスポートに対応していません。
+SVG: vector, for editing in Inkscape or Illustrator.	SVG: ベクター。Inkscape や Illustrator で編集する用。
+Sample Gallery	サンプル集
+Sample Project Pack	サンプルプロジェクト集
+Sample reference axes:	試料基準軸タイトル:
+Save && Apply to Graph	保存してグラフに適用
+Save Changes	変更を保存
+Save all ToriGraph settings to an INI file (to back up or copy to another PC)	ToriGraph のすべての設定を INI ファイルに書き出します(控えや別の PC への移行用)
+Saved presets to %1	プリセットを %1 に保存しました
+Scale: Linear — click for Log10	スケール: 線形 (クリックで対数 Log10)
+Scale: Log10 — click for Linear	スケール: 対数 (Log10) (クリックで線形)
+Scan %1	スキャン %1
+Search by alloy, test type, or keyword...	合金名・試験法・キーワードで絞り込み...
+Search commands...	コマンドを検索...
+Search models:	モデルを検索:
+Select Arrow Color	矢印の色を選択
+Select Plot Title Color	グラフタイトル色を選択
+Select Replacement Image	差し替える画像を選択
+Select a file to see a preview.	ファイルを選ぶと先頭の数行と自動判定の結果を表示します。
+Select a graph window first. "Copy for PowerPoint" copies the active graph.	グラフを選んでください。「PowerPoint 用にコピー」は、選択中のグラフをコピーします。
+Select a worksheet with X, Y, and Z columns first for 3D plotting.	3D作図には X・Y・Z 列を含むワークシートを先に選択してください。
+Selected cells only	選択したセルだけ
+Set Label	ラベルに設定
+Set X	X列に設定
+Set Y	Y列に設定
+Set selected column(s) as X axis data	選択列をX軸データに設定
+Set selected column(s) as Y axis data	選択列をY軸データに設定
+Set selected column(s) as Y error bars (yErr)	選択列をYエラーバー (yErr) に設定
+Set selected column(s) as text labels	選択列をテキストラベル列に設定
+Set ±Y	±Y誤差に設定
+Settings below are inherited from the last tensile analysis of this curve.	以下の設定は、この曲線の直前の引張解析から引き継いでいます。
+Shade the area between Y - error and Y + error from error columns	誤差列から Y - 誤差 と Y + 誤差 の間を半透明で塗ります
+Shadow Box	影付き枠
+Shared preset folder (read-only):	共有プリセットフォルダ (読み取り専用):
+Sheet "%1" is a chart or macro sheet and contains no worksheet table data.	シート「%1」はグラフシートまたはマクロシートのため、表データがありません。
+Sheet "%1" was not found in the workbook.\nSheets: %2	シート「%1」がブックにありません。\nシート: %2
+Sheet '%1' was not found in '%2'.	シート '%1' が '%2' 内に見つかりませんでした。
+Sheet index out of range.	シートの番号が範囲外です。
+Sheet name (letters, digits, _ or -).\nGraphs and column formulas that name this sheet (%1) follow the new name.	シート名 (文字・数字・_・-)。\nこのシート (%1) を使うグラフと列の数式は新しい名前に追従します。
+Sheet of %1	%1 のシート
+Show 30° and 60° tilt circles	30°・60° 補助同心円を表示
+Show Connector Lines	引出線を表示
+Show Error Bars	エラーバーを表示
+Show Legacy UI	旧 UI を表示
+Show Line (currently hidden in Scatter mode)	線を表示 (現在、散布図モードで非表示)
+Show Other-Field / Advanced Features	他分野・詳細機能を表示
+Show Symbols (currently hidden)	シンボルを表示 (現在非表示)
+Show Zoom Connectors	ズーム接続線を表示
+Show medical statistics, EIS, Tauc, wavelet/STFT/Hilbert, pie/Pareto and 3D ribbon in menus, the ribbon and command search	医療統計、EIS、Tauc、ウェーブレット・STFT・Hilbert、円グラフ・パレート図、3D リボンをメニュー・リボン・コマンド検索に表示します
+Show the old toolbar menus, Plot Wizard, Add Time Stamp and Scripting Language in menus, the ribbon and command search	旧ツールバーのメニュー、プロットウィザード、タイムスタンプの追加、スクリプト言語の選択をメニュー・リボン・コマンド検索に表示します
+Show/Hide Object	オブジェクト表示の切替
+Size column (optional):	大きさの列(任意):
+Size: %1 mm x %2 mm (vector, no pixel size)	寸法: 幅 %1 mm × 高さ %2 mm (ベクター形式なので画素数はありません)
+Size: %1 mm x %2 mm, %3 dpi -> %4 x %5 px	寸法: 幅 %1 mm × 高さ %2 mm、%3 dpi → %4 × %5 px
+Size: %1 x %2 px (3D graph)	寸法: 幅 %1 × 高さ %2 px (3D グラフ)
+Skip symbols to avoid crowding on dense data (0 = Auto, 1 = All points, N = show 1 in N)	データ点が多くてシンボルが重なるときに間引いて表示します (0 = 自動、1 = 全点、N = N点ごとに1個表示)
+Snap Mode	スナップ方法
+Sort by X	X で並べ替える
+Sort worksheet columns or rows	ワークシートの列や行を並べ替え
+Sort...	並べ替え...
+Source file not found:\n%1	元のファイルが見つかりません:\n%1
+Source:	元データ:
+St&yle	体裁(&Y)
+Stacked &Bars	積み上げ棒グラフ(&B)
+Stacked Bars	積み上げ棒グラフ
+Stage-III fit	ステージIII 線形外挿
+Stamp	注記貼付
+Strain Unit Check	ひずみ単位の確認
+Strain unit: %1 (decided by %2).	ひずみ単位: %1 (判定: %2)。
+Strain-Rate Dependent Flow Stress of Ti-6Al-4V (10^-3 to 10^3 s^-1)	Ti-6Al-4V 合金のひずみ速度依存性 流動応力曲線 (準静的〜高速衝撃 SHPB)
+Strip Kα2 Doublet (Rachinger, per-anode wavelengths)	Kα2 線を除去 (Rachinger 法、管球ごとの波長)
+Style Preset:	様式プリセット:
+Subscript (X₂)	下付き文字 (X₂)
+Subscript (x₂)	下付き文字 (x₂)
+Superscript (X²)	上付き文字 (X²)
+Superscript (x²)	上付き文字 (x²)
+Symbol Size (px):	シンボルサイズ (px):
+Symbol Size: %1 pt — click to choose a preset	シンボルサイズ: %1 pt (クリックでプリセットを選択)
+Symbol Size: Off — click to show symbols	シンボルサイズ: なし (クリックでシンボルを表示)
+Symbols are hidden — click + or the size readout to show symbols	シンボルは非表示です。+ またはサイズの数値を押すとシンボルを表示します
+Symmetric (one ± column)	対称(± の 1 列)
+Symmetric strain-controlled (±1.0%) cyclic stress-strain hysteresis loops of austenitic SUS316L stainless steel comparing Cycle 1 and stabilized Cycle 50 (cyclic hardening & Bauschinger effect).	オーステナイト系ステンレス鋼 SUS316L の ±1.0% 対称ひずみ制御 低サイクル疲労ヒステリシスループ。第1サイクルと安定化サイクル (N=50) の繰返し加工硬化とバウシンガー効果を可視化。
+Sync Layers	全レイヤー同期
+TIFF image (*.tif *.tiff)	TIFF 画像 (*.tif *.tiff)
+TIFF: raster figures for journal submission (LZW, lossless).	TIFF: 論文投稿用の画像 (LZW 圧縮、劣化なし)。
+Target DPI:	出力解像度 (DPI):
+Tauc Optical Bandgap & EIS Impedance Analysis	Tauc光学バンドギャップとEISインピーダンス解析
+Tensile Analysis Notes	引張解析の注記
+Tensile settings	引張解析の設定
+Tensile settings (shared with the tensile analyzer)	引張解析の設定 (引張解析と共通)
+Text Color:	文字色:
+Text encoding:	文字コード:
+The 2D density needs numeric X and Y columns.	2 次元密度図には数値の X・Y 列が必要です。
+The PowerPoint link could not be registered: %1	PowerPoint 連携を登録できませんでした: %1
+The PowerPoint link of ToriGraph is not registered, or points to a program that no longer exists (%1). Pasting works, but double-clicking the graph in PowerPoint will not open ToriGraph.	ToriGraph の PowerPoint 連携が登録されていないか、存在しないプログラム(%1)を指しています。貼り付けはできますが、PowerPoint でダブルクリックしても ToriGraph は開きません。
+The ZIP archive is already finished.	ZIP の書き出しは既に終わっています。
+The ZIP archive would be too large.	ZIP が大きくなりすぎます。
+The active graph has no data curve to add an error band to.	アクティブなグラフに、エラーバンドを付けられるデータ曲線がありません。
+The built-in guide (manual/index.html) was not found; opening the Japanese README on GitHub instead.	同梱のガイド (manual/index.html) が見つからないため、GitHub の日本語 README を開きます。
+The clipboard is in use by another program. Wait a moment and try again.	クリップボードを他のプログラムが使用中です。少し待ってからもう一度お試しください。
+The colour-mapped scatter needs numeric X, Y and Z columns.	カラーマップ散布図には数値の X・Y・Z 列が必要です。
+The connection to PowerPoint was lost (the presentation may have been closed) (0x%1).	PowerPoint との接続が失われました(プレゼンテーションが閉じられた可能性があります)(0x%1)。
+The curve and parameters shown are the last iterate. Check the initial values, increase the number of iterations, or fix some parameters, and fit again.	表示中の曲線とパラメータは最後の反復値です。初期値を見直す、反復回数を増やす、一部のパラメータを固定する、などをしてからフィットし直してください。
+The data are not on a regular alpha-beta grid.	データが α-β の格子上にありません。
+The elastic window was found only with relaxed criteria (2-85% of UTS, span of at least 10% of UTS). Check the shaded elastic range on the graph.	弾性域は条件を緩めた探索 (UTS の 2〜85%、幅 10% 以上) でのみ見つかりました。グラフの帯で示した弾性域を確認してください。
+The embedded graph window ("%1") was closed or deleted.	埋め込み対象のグラフウィンドウ(「%1」)が閉じられたか削除されています。
+The embedded graph window was closed or deleted.	埋め込み対象のグラフウィンドウが閉じられたか削除されています。
+The embedded object could not be created.	埋め込みオブジェクトを作成できませんでした。
+The embedded project data could not be read.	埋め込まれたプロジェクトデータを読み込めませんでした。
+The embedded project data exceeds the 128 MB PowerPoint limit.	埋め込みデータが PowerPoint 連携の上限 128 MB を超えています。
+The error band could not be added (check the error columns).	エラーバンドを追加できませんでした(誤差の列を確認してください)。
+The file contains no settings.	ファイルに設定がありません。
+The file does not exist.	ファイルがありません。
+The file is damaged or is not an Excel workbook (.xlsx).\nOpen it in Excel and save it again as an Excel Workbook (.xlsx), or save the data as CSV and import that file.\n\nDetails: %1	ファイルが壊れているか、Excel ブック (.xlsx) ではありません。\nExcel で開いて「Excel ブック (.xlsx)」として保存し直すか、データを CSV で保存してそのファイルを読み込んでください。\n\n詳細: %1
+The file is not a valid INI file.	INI ファイルとして読めません。
+The file is too large to import (over 512 MB): %1	ファイルが大きすぎて読み込めません (512 MB 超): %1
+The fit did not converge.	フィットが収束していません。
+The formula could not be evaluated.	数式を計算できませんでした。
+The graph could not be drawn as a picture.	グラフを画像として描画できませんでした。
+The graph could not be drawn as a vector picture (EMF).	グラフをベクター画像(EMF)として描画できませんでした。
+The grid (%1 x %2 = %3 cells) is too small for the %4 layer(s) that occupy a grid cell!	グリッド (%1 x %2 = %3 セル) が、セルを占有する %4 枚のレイヤーに対して小さすぎます。
+The guide could not be opened automatically. Open this address in a web browser:	ガイドを自動で開けませんでした。次のアドレスをブラウザで開いてください:
+The mean intensity is not positive, so the MRD cannot be computed.	平均強度が正でないため、MRD を計算できません。
+The parameters and the curve shown are the last iterate, not a converged result.	表示中のパラメータと曲線は最後の反復値で、収束した結果ではありません。
+The pole figure needs numeric alpha, beta and intensity columns.	極点図には数値の α・β・強度の列が必要です。
+The project file you are working on is not overwritten. A recovery copy is written to the application data folder at this interval and offered for restoring the next time ToriGraph starts after an unexpected exit.	作業中のプロジェクトファイルは上書きされません。この間隔で回復用コピーをアプリケーションデータフォルダに書き出し、異常終了した次の起動時に復元を提案します。
+The proxy server asks for a user name and password, which the updater cannot enter. Open the release page in your web browser and download the package from there, or ask your network administrator.	プロキシ サーバーがユーザー名とパスワードを求めていますが、更新機能からは入力できません。Web ブラウザーでリリースページを開いてパッケージをダウンロードするか、ネットワーク管理者に相談してください。
+The recovery copy could not be opened. It is kept in:<br>%1	回復用のコピーを開けませんでした。次の場所に残してあります:<br>%1
+The replacement text is not numeric for %n column(s).\nConvert those column(s) to Text so the replaced text is preserved?	%n 列で置換後の文字列が数値ではありません。\n文字列を保持するため、該当列をテキスト列へ変換しますか?
+The settings could not be read:\n%1	設定を読み込めませんでした。\n%1
+The settings could not be written:\n%1	設定を書き出せませんでした。\n%1
+The settings were erased. Restart ToriGraph to start with the defaults.	設定を消去しました。ToriGraph を再起動すると既定の状態で始まります。
+The sheet could not be renamed to %1 (the name is invalid or already used).	シート名を %1 に変更できませんでした (使えない名前か、すでに使われています)。
+The staged update script could not be read, so the update was not started. ToriGraph stays open; run "Check for Updates" again.	ステージング済みの更新スクリプトを読み取れなかったため、更新を開始しませんでした。ToriGraph は開いたままです。「更新を確認」をもう一度実行してください。
+The staged update script was not found:\n%1\nToriGraph stays open; run "Check for Updates" again.	更新を適用するスクリプトが見つかりません:\n%1\nToriGraph は開いたままです。「更新を確認」をもう一度実行してください。
+The strain label says %1, but E would then be %2 GPa (outside 5-1000 GPa). Read as %3, E would be %4 GPa. Please check the strain unit.	ひずみの単位表示は %1 ですが、その場合 E = %2 GPa となり 5〜1000 GPa の範囲外です。%3 と読むと E = %4 GPa です。ひずみの単位を確認してください。
+The strain unit could not be decided from the labels or from E (5-1000 GPa): read as percent, E = %1 GPa; read as mm/mm, E = %2 GPa. %3 was assumed.	ひずみの単位を表示からも E の妥当範囲 (5〜1000 GPa) からも決められませんでした: % と読むと E = %1 GPa、mm/mm と読むと E = %2 GPa です。%3 と仮定しました。
+The strain unit of the selected curve is ambiguous.\n\n%1\n\nWhich unit does the strain data use?	選んだ曲線のひずみ単位を判定できません。\n\n%1\n\nひずみデータの単位はどちらですか?
+The temperature or rate column was not found in the worksheet.	ワークシートに温度列または速度列が見つかりません。
+The update package (v%1) has been downloaded and its SHA-256 checksum verified.\n\nToriGraph will now ask you to save unsaved changes and close. The update is applied only after ToriGraph has closed; ToriGraph then restarts automatically.\n\nInstall update and restart now?	更新パッケージ (v%1) をダウンロードし、SHA-256 チェックサムを検証しました。\n\nこのあと未保存の変更を保存するか確認してから ToriGraph を閉じます。更新は ToriGraph が閉じてから適用され、その後自動で再起動します。\n\n今すぐ更新をインストールして再起動しますか？
+The update package (v%1) has been downloaded, but it could NOT be verified because this release does not publish a SHA-256 checksum.\n\nInstall it anyway? ToriGraph will ask you to save unsaved changes, close, and then apply the update.	更新パッケージ (v%1) をダウンロードしましたが、このリリースには SHA-256 チェックサムが公開されていないため、内容を検証できません。\n\nそれでもインストールしますか？未保存の変更を保存するか確認してから ToriGraph を閉じ、更新を適用します。
+The update was not installed because administrator permission was not given (or Windows PowerShell could not be started).\n\nToriGraph was not changed. Restart ToriGraph now?	管理者の許可が得られなかった (または Windows PowerShell を起動できなかった) ため、更新はインストールしていません。\n\nToriGraph は変更されていません。ToriGraph を再起動しますか？
+The workbook contains no data (all sheets are empty): %1	ブックにデータがありません (すべてのシートが空です): %1
+The worksheet "%1" is empty, so no graph was created.	ワークシート「%1」が空のため、グラフは作りませんでした。
+The worksheet %1 already belongs to the workbook %2.	ワークシート %1 はすでにブック %2 に入っています。
+The worksheet could not be created.	ワークシートを作成できませんでした。
+The worksheet is not in a workbook.	このワークシートはブックに入っていません。
+There is no workbook named %1.	ブック %1 はありません。
+These columns could not be imported from %1: %2	%1 から次の列を読み込めませんでした: %2
+These files could not be read as data, graph or project files.\nText tables (CSV, TXT, DAT), Rigaku .ras, images and project files can be dropped. For other formats, save the data as CSV first.	次のファイルはデータ・図・プロジェクトとして読み込めませんでした。\nドロップできるのは、文字の表(CSV・TXT・DAT)、Rigaku の .ras、画像、プロジェクトファイルです。それ以外の形式は、先に CSV で保存してください。
+This is an OpenDocument spreadsheet (.ods), which cannot be read directly.\nSave it as an Excel Workbook (.xlsx) or as CSV and import that file.	これは OpenDocument 形式の表 (.ods) のため、直接は読み込めません。\n「Excel ブック (.xlsx)」または CSV として保存し直し、そのファイルを読み込んでください。
+This is an old Excel 97-2003 workbook (.xls), which cannot be read directly.\nIn Excel, save it as an Excel Workbook (.xlsx) or as CSV and import that file.	これは古い Excel 97-2003 形式のブック (.xls) のため、直接は読み込めません。\nExcel で「Excel ブック (.xlsx)」または CSV として保存し直し、そのファイルを読み込んでください。
+This preset comes from the shared folder and is read-only. Duplicate it to make a personal copy.	このプリセットは共有フォルダのもので読み取り専用です。複製すると自分用のコピーを作れます。
+This workbook contains only chart or macro sheets and no worksheet table data: %1	このブックにはグラフシートまたはマクロシートしかなく、表データがありません: %1
+This workbook is protected with a password (encrypted), so it cannot be read.\nIn Excel, open it, remove the password (File > Info > Protect Workbook > Encrypt with Password, clear the box), save it and import it again.	このブックはパスワードで保護(暗号化)されているため読み込めません。\nExcel で開き、[ファイル] > [情報] > [ブックの保護] > [パスワードを使用して暗号化] でパスワードを消して保存してから、もう一度読み込んでください。
+Three-stage creep strain vs. time curves (primary, steady-state secondary, tertiary to rupture) of 9Cr-1Mo heat-resistant steel at 600 °C under 120, 140, and 160 MPa.	9Cr-1Mo 耐熱鋼の 600 °C における 120 / 140 / 160 MPa の3応力水準クリープ曲線。遷移クリープ(第1期)・定常クリープ(第2期)・加速クリープ(第3期)および破断寿命の応力依存性を再現。
+Tick Label Size (pt):	目盛り数字サイズ (pt):
+Ticks: Inward — click for Outward	目盛り: 内向き (クリックで外向き)
+Ticks: Outward — click for Inward	目盛り: 外向き (クリックで内向き)
+Title Appearance	グラフタイトルの書式
+Title Properties...	タイトルのプロパティ...
+Title Text:	タイトル文字:
+To Matrix	行列へ変換
+To Sheet	表へ出力
+To fix this, click "Repair PowerPoint Link" (also in the Help menu).	直すには「PowerPoint 連携を修復」を押してください(ヘルプメニューにもあります)。
+Toggle Cell Blocks	セルブロック表示の切替
+Toggle Column Type & Format Side Panel	列の型・書式サイドパネルを切り替え
+Toggle Inset Connectors	インセット引出線の切替
+Toggle Log Color Scale	対数カラースケールの切替
+Toggle Zoom Connectors	ズーム接続線の表示切替
+Too many ZIP entries.	ZIP の項目が多すぎます。
+Too many bins (at most 10,000); use a larger bin width.	ビンが多すぎます(最大 10,000)。ビン幅を大きくしてください。
+Too many bins (at most 4096 per axis); use a larger bin width.	ビンが多すぎます(1 軸あたり最大 4096)。ビン幅を大きくしてください。
+Top (TD right)	上(TD は右)
+Top (secondary right)	上 (副軸は右)
+ToriGraph - Embedded Graph Preview Unavailable	ToriGraph - 埋め込みグラフのプレビューを表示できません
+ToriGraph Standard	ToriGraph 標準
+ToriGraph Standard (black, vermilion, blue, ...)	ToriGraph 標準 (黒・朱・青…)
+ToriGraph could not open the graph embedded in this slide (%1).\n\nEditing was cancelled and the object on the slide was not changed.	このスライドに埋め込まれたグラフを ToriGraph で開けませんでした(%1)。\n\n編集を中止しました。スライド上のオブジェクトは変更していません。
+ToriGraph is installed in a folder you cannot write to:\n%1\n\nWindows will ask for administrator permission (User Account Control) after ToriGraph has closed. If you cannot give that permission, choose No and ask the person who installed ToriGraph to update it.\n\nContinue?	ToriGraph は書き込み権限のないフォルダーにインストールされています:\n%1\n\nToriGraph を閉じたあと、Windows が管理者の許可 (ユーザー アカウント制御) を求めます。許可できない場合は「いいえ」を選び、ToriGraph をインストールした人に更新を依頼してください。\n\n続けますか？
+ToriGraph is still open, so the update was not installed. The downloaded package is kept; run "Check for Updates" again when you are ready to install it.	ToriGraph が閉じられなかったため、更新はインストールしていません。ダウンロードしたパッケージは残してあります。インストールするときは「更新を確認」をもう一度実行してください。
+ToriGraph was not closed properly last time. An automatically saved copy of your work was found:<br><br><b>%1</b><br>Saved: %2	前回、ToriGraph が正常に終了しませんでした。自動保存された作業のコピーが見つかりました:<br><br><b>%1</b><br>保存日時: %2
+Translate Curve	曲線の平行移動
+Transparent background	背景を透明にする
+Treat worksheet cells directly as a 2D Z-value grid (Convert to Matrix)	ワークシート全体をそのまま2DのZ値格子として行列変換して作図
+Try Sample Datasets...	サンプル集...
+Tukey 1.5*IQR	Tukey 1.5*IQR (四分位範囲の1.5倍)
+Two graphs stacked vertically	上下 2 段のグラフ
+Type part of a name or description (e.g. gauss, voigt, arrhenius)	名前や説明の一部を入力(例: gauss, voigt, arrhenius)
+Unbias m by JIS R 1625 (MLE, complete data, 2-parameter)	m を JIS R 1625 で不偏化 (MLE・打切りなし・2 母数)
+Uncharged vs. H-charged (0.8 and 2.2 wt.ppm H) high-strength Al-Zn-Mg tensile curves demonstrating identical elastic/yield behavior with severe hydrogen-induced ductility loss.	未チャージ材と水素チャージ材 (0.8 / 2.2 wt.ppm H) の引張応力-ひずみ曲線比較。弾性率・0.2%耐力は一致しつつ、水素量増加に伴い早期破断する典型的な水素脆化挙動を再現。
+Underline (<u>...</u>)	下線 (<u>...</u>)
+Uniform elongation e_u = %1% (plastic %2%), elongation at fracture e_f = %3% (plastic %4%), measured from the toe-corrected origin %5.	一様伸び e_u = %1% (塑性分 %2%)、破断伸び e_f = %3% (塑性分 %4%)。トウ補正後の原点 %5 から測っています。
+Unit row:	単位行:
+Unit:	単位:
+Unmask Data Points	データ点のマスク解除
+Update Not Installed	更新はインストールされていません
+Update active plot (uncheck to create new)	現在のグラフを更新 (外すと新規作成)
+Update formula references to %1	%1 への数式参照を更新
+UpperCI95	95%上限
+Uppercase Greek Letters	ギリシャ文字 (大文字)
+Use large presentation-slide layout rules	スライド向け大フォント・余白レイアウトを使用
+Used in W-H fit	W-H フィット採用
+VASP DOS / Bands Plotter...	VASP 電子状態プロット (DOS / バンド)...
+Warning: %1 of %2 peak(s) have observed FWHM <= instrumental FWHM (%3 deg); Scherrer crystallite size is resolution-limited (N/A).	警告: %2 本中 %1 本のピークは観測半値幅が装置半値幅 (%3°) 以下です。これらの Scherrer 結晶子サイズは分解能の限界で求まりません (N/A)。
+Weibull (%1): method = %2	ワイブル (%1): 推定法 = %2
+Weibull analysis failed: all failure values are identical, so the slope cannot be determined.	ワイブル解析に失敗しました: 破壊データがすべて同じ値のため、傾きを決められません。
+Weibull analysis needs at least 2 failures (uncensored values > 0); only %1 remained.	ワイブル解析には破壊データ (打切りでない 0 より大きい値) が 2 件以上必要です。残ったのは %1 件です。
+Weibull analysis: the source table or the data column was not found.	ワイブル解析: 元のワークシートまたはデータ列が見つかりません。
+Weibull: %1 of %2 row(s) excluded (%3).	ワイブル: %2 行中 %1 行を除外しました (%3)。
+Whole cell	セル全体が一致するものだけ
+Williamson-Hall: fewer than 2 resolved peaks; crystallite size and microstrain are not reported (N/A).	Williamson-Hall: 分離できたピークが 2 本未満のため、結晶子サイズと微視ひずみは出していません (N/A)。
+Williamson-Hall: no physical solution. The intercept Kλ/D = %1 rad is <= 0, so the crystallite size is undefined (N/A). It is NOT replaced by the Scherrer mean.	Williamson-Hall: 物理的な解がありません。切片 Kλ/D = %1 rad が 0 以下のため、結晶子サイズは求まりません (N/A)。Scherrer 平均への置き換えはしていません。
+Williamson-Hall: no physical solution. The slope ε = %1 is negative, so the microstrain is undefined (N/A).	Williamson-Hall: 物理的な解がありません。傾き ε = %1 が負のため、微視ひずみは求まりません (N/A)。
+Williamson-Hall: the resolved peaks have almost the same 4 sinθ, so the slope (microstrain) and the intercept (crystallite size) cannot be separated (N/A). Use peaks spread over a wider 2θ range.	Williamson-Hall: 分離できたピークの 4 sinθ がほぼ同じため、傾き (微視ひずみ) と切片 (結晶子サイズ) を分けて求められません (N/A)。2θ の広い範囲にわたるピークを使ってください。
+Work-Hardening (Kocks-Mecking)...	加工硬化率・Considère解析...
+Work-Hardening Analysis Notes	加工硬化解析の注記
+Workbook %1	ブック %1
+Workbook %1, worksheet %2 (graphs and formulas refer to this name)	ブック %1 のワークシート %2 (グラフと列の数式はこの名前で参照します)
+Workbook name (letters, digits, _ or -).\nThe sheets keep their names, so graphs and formulas are not affected.	ブック名 (文字・数字・_・-)。\nシートの名前は変わらないので、グラフと列の数式には影響しません。
+Worksheet "%1" exceeds the maximum import size (20,000,000 cells).	ワークシート「%1」のセル数が上限(20,000,000セル)を超えているため読み込めません。
+Worksheet &Analysis	表の解析(&A)
+Worksheet Tools (Find/Replace, Fill Down, Re-import)	ワークシートツール (検索/置換・下方向へコピー・元ファイルから再読込)
+Write Long Name and &Units rows (instead of short names)	長い名前と単位の行を書き出す(短い名前の代わりに)(&U)
+Writing failed (%1). The disk may be full or the file may be in use.	書き込みに失敗しました(%1)。ディスクの空きが無いか、ファイルが他のアプリで開かれている可能性があります。
+X Axis (Bottom)	X 軸(下)
+X Axis (Top)	X 軸(上)
+X Axis Link to Parent	X軸の親レイヤーとのリンク
+X Max:	X 最大:
+X Min:	X 最小:
+X column:	X列:
+X is not equally spaced (largest step deviation %1 %); %2 uses the point index, not the X values, so the window width varies along X.	X が等間隔ではありません (刻みのずれ最大 %1 %)。%2 は X 値ではなく点番号で処理するため、X 方向の窓幅が場所によって変わります。
+X is not equally spaced (largest step deviation %1 %); Savitzky-Golay used a local polynomial in the real X values.	X が等間隔ではありません (刻みのずれ最大 %1 %)。Savitzky-Golay 平滑化は実際の X 値で局所多項式を当てはめました。
+X is not monotonic; %1 used the point order, not the X values.	X が単調ではありません。%1 は X 値ではなく点の並び順で処理しました。
+X-Ray Wavelength λ:	X線波長 λ:
+XRD Analyzer (Bragg / W-H)...	XRD解析 (Bragg / W-H)...
+Y Axis (Left)	Y 軸(左)
+Y Axis (Right)	Y 軸(右)
+Y Axis Link to Parent	Y軸の親レイヤーとのリンク
+Y Max:	Y 最大:
+Y Min:	Y 最小:
+Y column:	Y列:
+Yield stress σy vs. inverse square-root grain size d^(-1/2) with error bars and linear Hall-Petch regression for low-carbon ferritic steel (ky ≈ 0.62 MPa·m^1/2) and Al-Mg alloy.	結晶粒径の逆平方根 d^(-1/2) に対する降伏応力 σy の Hall-Petch プロット(標準偏差エラーバー・線形回帰直線付き)。低炭素フェライト鋼と Al-Mg 合金の結晶粒微細化強化係数を比較。
+Z column:	Z列:
+Zero lines (use Reference Lines)	ゼロ基準線 (参照線タブを使用)
+[Getting Started] Simple 2-Series X-Y Sample (for practice & formatting)	【入門】シンプルな 2 系列 X-Y サンプル(操作・体裁の練習用)
+[Inset]	[インセット]
+[restored]	[復元]
+a project that had not been saved yet	まだ一度も保存していなかったプロジェクト
+axis title	軸タイトル
+column unit	列の単位
+converged	収束
+encoding: %1	文字コード: %1
+linearly resampled to %1 equally spaced points (dt = %2)	線形補間で等間隔の %1 点に再サンプリング (dt = %2)
+m bias-corrected by JIS R 1625 (B_n = %1, n = %2): m = %3 → %4; σ₀ is the uncorrected MLE.	m を JIS R 1625 で不偏化しました (B_n = %1、n = %2): m = %3 → %4。σ₀ は補正前の MLE の値です。
+maximum strain (fallback)	最大ひずみによる推定 (代替)
+measured alpha <= %1°	測定範囲 α ≤ %1°
+mm/mm (dimensionless)	mm/mm (無次元)
+numeric	数値
+percent (%)	パーセント (%)
+points re-ordered by X	点を X の順に並べ替え
+selected by user	利用者の指定
+separator: %1	区切り: %1
+spaces	空白
+tab	タブ
+text/date	文字列・日時
+the embedded project could not be read	埋め込まれたプロジェクトを読み込めません
+the graph "%1" was not found in the embedded project	埋め込まれたプロジェクトにグラフ「%1」がありません
+unit row: no	単位行: なし
+unit row: yes	単位行: あり
+x = 0 Reference Line: Off — click to Add	x = 0 基準線: オフ (クリックで追加)
+x = 0 Reference Line: On — click to Remove	x = 0 基準線: オン (クリックで削除)
+y = 0 Reference Line: Off — click to Add	y = 0 基準線: オフ (クリックで追加)
+y = 0 Reference Line: On — click to Remove	y = 0 基準線: オン (クリックで削除)
+± or + error column:	± または + 誤差の列:
+λ = %1 Å is close to (within 0.1 %) but not exactly the %2 %3 line (%4 Å), so Kα2 was stripped assuming a %2 tube. Enter the exact wavelength if this is not a %2 tube.	λ = %1 Å は %2 の %3 線 (%4 Å) と完全には一致しませんが 0.1 % 以内なので、%2 管球とみなして Kα2 を除去しました。%2 管球でない場合は正確な波長を入力してください。
+σs (Stage-III saturation stress) is not available: only %1 point(s) between σ0.2 + 20% and 98% of σu (at least 3 are needed).	σs (Stage III の飽和応力) は求められません: σ0.2 + 20% から σu の 98% までの点が %1 点しかありません (3 点以上必要)。
+σs (Stage-III saturation stress) is not available: θ does not decrease linearly with σt in Stage III (slope %1, intercept %2).	σs (Stage III の飽和応力) は求められません: Stage III で θ が σt とともに直線的に減少していません (傾き %1、切片 %2)。
+− error column:	− 誤差の列:
+Count	度数	ExtraPlotTypes
+Details...	詳細設定…	GraphInspectorDock
+Open the dialog with every setting for this section	この節のすべての設定があるダイアログを開く	GraphInspectorDock
+%1 (%2 x %3 cm) extends beyond the slide.	%1 (%2 × %3 cm) がスライドからはみ出しています。	ToriGraphPptx
+%1 already exists.\nAdd the graphs as new slides at the end, or replace the file?	%1 は既にあります。\nグラフを末尾の新しいスライドとして追加しますか、それともファイルを置き換えますか?	ToriGraphPptx
+%1 could not be drawn: %2	%1 を描けませんでした: %2	ToriGraphPptx
+%1 did not fit at %2 % and was shrunk to %3 %.	%1 は %2 % では入りきらないため、%3 % に縮めました。	ToriGraphPptx
+1 per slide	1 個	ToriGraphPptx
+2 per slide (side by side)	2 個 (横に並べる)	ToriGraphPptx
+3 per slide (1 x 3)	3 個 (1 × 3)	ToriGraphPptx
+4 per slide (2 x 2)	4 個 (2 × 2)	ToriGraphPptx
+6 per slide (2 x 3)	6 個 (2 × 3)	ToriGraphPptx
+Active graph (%1)	作業中のグラフ (%1)	ToriGraphPptx
+Add Slides at End	末尾にスライドを追加	ToriGraphPptx
+Added %1 graph(s) on %2 new slide(s) at the end.	%1 個のグラフを、末尾の %2 枚の新しいスライドに追加しました。	ToriGraphPptx
+All graphs (%1)	すべてのグラフ (%1 個)	ToriGraphPptx
+Apply the lab slide preset to the graphs first (can be undone)	書き出す前に、研究室スライドの体裁をグラフに当てる (元に戻せます)	ToriGraphPptx
+Browse...	参照...	ToriGraphPptx
+Choose a file name.	保存先のファイル名を指定してください。	ToriGraphPptx
+Choose at least one graph.	グラフを 1 つ以上選んでください。	ToriGraphPptx
+Close	閉じる	ToriGraphPptx
+Combined OLE package (%1 MB) exceeds the 256 MB compound-file limit; a static picture was placed instead.	OLE 複合ファイル (%1 MB) が上限 256 MB を超えたため、静止画像として配置しました。	ToriGraphPptx
+Could not send the graphs to PowerPoint.	PowerPoint へ送れませんでした。	ToriGraphPptx
+Could not write %1. If the file is open in PowerPoint, close it and try again.\n\nDetails: %2	%1 に書き込めませんでした。PowerPoint で開いている場合は閉じてから、もう一度試してください。\n\n詳細: %2	ToriGraphPptx
+Deselect All	すべて解除	ToriGraphPptx
+Double-click a graph on the slide to edit it in ToriGraph.	スライド上のグラフをダブルクリックすると ToriGraph で編集できます。	ToriGraphPptx
+Embedded data (%1 MB) exceeds the 128 MB PowerPoint limit; a static picture was placed instead.	埋め込みデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、静止画像として配置しました。	ToriGraphPptx
+File	ファイル	ToriGraphPptx
+Fit the graphs to the slide	スライドの枠に合わせて拡大・縮小する	ToriGraphPptx
+Graphs per slide:	1 枚に並べる数:	ToriGraphPptx
+Graphs to send	送るグラフ	ToriGraphPptx
+If the file already exists, you will be asked whether to add slides at the end or to replace it.	既存のファイルを選ぶと、末尾にスライドを追加するか上書きするかを尋ねます。	ToriGraphPptx
+Lab slide preset "%1": a %2 mm page pasted at %3 % shows %4 pt tick labels on the slide, like an Origin graph.	研究室スライドのプリセット「%1」: %2 mm のページを %3 % で貼ると、目盛りの数字はスライド上で %4 pt になり、Origin のグラフと同じ見え方になります。	ToriGraphPptx
+Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % (~%6 pt tick labels instead of %7 pt).	配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は自動的に約 %5 % へ縮小されます(目盛り文字は約 %7 pt ではなく約 %6 pt になります)。	ToriGraphPptx
+Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % to fit.	配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は枠に収まるよう約 %5 % へ自動縮小されます。	ToriGraphPptx
+Layout preview: at %1 %, the graph (%2 x %3 cm) exceeds the %4-up cell (%5 x %6 cm) and may overlap or clip.	配置プレビュー: %1 % ではグラフ (%2 × %3 cm) が %4 面付けの枠 (%5 × %6 cm) を超えるため、重なりやはみ出しが生じます。	ToriGraphPptx
+No graph to send.	送るグラフがありません。	ToriGraphPptx
+Note: When adding slides to an existing file, that presentation's slide size is kept.	※ 既存のファイルへ末尾追加する場合、スライドの大きさは既存ファイルのサイズが優先されます。	ToriGraphPptx
+Open	開く	ToriGraphPptx
+Paste at	貼り付け倍率	ToriGraphPptx
+PowerPoint Files (*.pptx)	PowerPoint ファイル (*.pptx)	ToriGraphPptx
+Replace File	上書きする	ToriGraphPptx
+Save to:	保存先:	ToriGraphPptx
+Select All	すべて選択	ToriGraphPptx
+Selected graphs:	選んだグラフ:	ToriGraphPptx
+Send Graphs	書き出す	ToriGraphPptx
+Send to Po&werPoint...	PowerPoint へ送る(&W)...	ToriGraphPptx
+Send to PowerPoint	PowerPoint へ送る	ToriGraphPptx
+Sending %1 graph(s) will embed approximately %2 MB of data into the PowerPoint file.\n\nContinue?	%1 個のグラフを書き出すと、約 %2 MB のデータが PowerPoint ファイルに埋め込まれます。\n\n続行しますか?	ToriGraphPptx
+Sending graphs to PowerPoint needs Windows.	PowerPoint へ送る機能は Windows でだけ使えます。	ToriGraphPptx
+Sent %1 graph(s) to %2 slide(s).	%1 個のグラフを %2 枚のスライドに書き出しました。	ToriGraphPptx
+Shrink graphs that do not fit	入りきらないグラフは縮めて入れる	ToriGraphPptx
+Size on the slide	スライド上の大きさ	ToriGraphPptx
+Size on the slide: %1 % of the graph page.	スライド上の大きさ: グラフのページの %1 %。	ToriGraphPptx
+Slide layout	スライドの配置	ToriGraphPptx
+Slide size:	スライドの大きさ:	ToriGraphPptx
+Slides cannot be added to a file saved in the Strict Open XML format. Save it again in PowerPoint as a normal PowerPoint Presentation (.pptx).	Strict Open XML 形式で保存されたファイルには追記できません。PowerPoint で通常の「PowerPoint プレゼンテーション (.pptx)」として保存し直してください。	ToriGraphPptx
+Standard 4:3 (25.4 x 19.1 cm)	標準 4:3 (25.4 × 19.1 cm)	ToriGraphPptx
+The 3D graph could not be captured. Restore its window (not minimized) and try again.	3D グラフを取り込めませんでした。ウィンドウを最小化から戻して、もう一度試してください。	ToriGraphPptx
+The PowerPoint link of ToriGraph is not registered, so double-clicking will not open ToriGraph. Use Help > Repair PowerPoint Link.	ToriGraph の PowerPoint 連携が登録されていないため、ダブルクリックしても ToriGraph は開きません。ヘルプの「PowerPoint 連携を修復」を使ってください。	ToriGraphPptx
+The editable object could not be created; a picture was placed instead.	編集できるオブジェクトを作れなかったため、画像として貼りました。	ToriGraphPptx
+The existing file could not be opened as a PowerPoint file (it may be damaged or protected with a password).\n\nDetails: %1	既存のファイルを PowerPoint のファイルとして開けませんでした (壊れているか、パスワードで保護されている可能性があります)。\n\n詳細: %1	ToriGraphPptx
+The existing presentation has no slide layout to add slides to.	既存のファイルに、スライドを追加するためのレイアウトがありません。	ToriGraphPptx
+The file is not a PowerPoint presentation (.pptx).	このファイルは PowerPoint のプレゼンテーション (.pptx) ではありません。	ToriGraphPptx
+The graph could not be drawn as a vector picture (EMF).	グラフをベクター画像 (EMF) として描けませんでした。	ToriGraphPptx
+The presentation part of the existing file could not be read.	既存のファイルのスライド一覧を読み取れませんでした。	ToriGraphPptx
+Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and its source data (%2 MB) were embedded.	プロジェクト全体のデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、このグラフと元データのみ (%2 MB) を埋め込みました。	ToriGraphPptx
+Widescreen 16:9 (33.9 x 19.1 cm)	ワイド画面 16:9 (33.9 × 19.1 cm)	ToriGraphPptx
+Write graphs into a PowerPoint file (.pptx) as editable objects. Double-click a graph on the slide to edit it in ToriGraph.	グラフを PowerPoint のファイル (.pptx) に、編集できるオブジェクトとして書き出します。スライド上のグラフをダブルクリックすると ToriGraph で編集できます。	ToriGraphPptx
+Fit	全体表示	GraphInspectorDock
+Fit	画面に合わせる	ModernRibbonBar
+Yes	はい	ApplicationWindow
+No	いいえ	ApplicationWindow
+Yes	はい	MultiLayer
+No	いいえ	MultiLayer
+Yes	はい	QMessageBox
+No	いいえ	QMessageBox
+Yes	はい	QDialogButtonBox
+No	いいえ	QDialogButtonBox
+%1 (%2 x %3 cm) extends beyond the slide.	%1 (%2 × %3 cm) がスライドからはみ出しています。
+%1 already exists.\nAdd the graphs as new slides at the end, or replace the file?	%1 は既にあります。\nグラフを末尾の新しいスライドとして追加しますか、それともファイルを置き換えますか?
+%1 could not be drawn: %2	%1 を描けませんでした: %2
+%1 did not fit at %2 % and was shrunk to %3 %.	%1 は %2 % では入りきらないため、%3 % に縮めました。
+1 per slide	1 個
+2 per slide (side by side)	2 個 (横に並べる)
+3 per slide (1 x 3)	3 個 (1 × 3)
+4 per slide (2 x 2)	4 個 (2 × 2)
+6 per slide (2 x 3)	6 個 (2 × 3)
+Active graph (%1)	作業中のグラフ (%1)
+Add Slides at End	末尾にスライドを追加
+Added %1 graph(s) on %2 new slide(s) at the end.	%1 個のグラフを、末尾の %2 枚の新しいスライドに追加しました。
+All graphs (%1)	すべてのグラフ (%1 個)
+Apply the lab slide preset to the graphs first (can be undone)	書き出す前に、研究室スライドの体裁をグラフに当てる (元に戻せます)
+Choose a file name.	保存先のファイル名を指定してください。
+Choose at least one graph.	グラフを 1 つ以上選んでください。
+Combined OLE package (%1 MB) exceeds the 256 MB compound-file limit; a static picture was placed instead.	OLE 複合ファイル (%1 MB) が上限 256 MB を超えたため、静止画像として配置しました。
+Could not send the graphs to PowerPoint.	PowerPoint へ送れませんでした。
+Could not write %1. If the file is open in PowerPoint, close it and try again.\n\nDetails: %2	%1 に書き込めませんでした。PowerPoint で開いている場合は閉じてから、もう一度試してください。\n\n詳細: %2
+Deselect All	すべて解除
+Double-click a graph on the slide to edit it in ToriGraph.	スライド上のグラフをダブルクリックすると ToriGraph で編集できます。
+Embedded data (%1 MB) exceeds the 128 MB PowerPoint limit; a static picture was placed instead.	埋め込みデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、静止画像として配置しました。
+Fit the graphs to the slide	スライドの枠に合わせて拡大・縮小する
+Graphs per slide:	1 枚に並べる数:
+Graphs to send	送るグラフ
+If the file already exists, you will be asked whether to add slides at the end or to replace it.	既存のファイルを選ぶと、末尾にスライドを追加するか上書きするかを尋ねます。
+Lab slide preset "%1": a %2 mm page pasted at %3 % shows %4 pt tick labels on the slide, like an Origin graph.	研究室スライドのプリセット「%1」: %2 mm のページを %3 % で貼ると、目盛りの数字はスライド上で %4 pt になり、Origin のグラフと同じ見え方になります。
+Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % (~%6 pt tick labels instead of %7 pt).	配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は自動的に約 %5 % へ縮小されます(目盛り文字は約 %7 pt ではなく約 %6 pt になります)。
+Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % to fit.	配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は枠に収まるよう約 %5 % へ自動縮小されます。
+Layout preview: at %1 %, the graph (%2 x %3 cm) exceeds the %4-up cell (%5 x %6 cm) and may overlap or clip.	配置プレビュー: %1 % ではグラフ (%2 × %3 cm) が %4 面付けの枠 (%5 × %6 cm) を超えるため、重なりやはみ出しが生じます。
+No graph to send.	送るグラフがありません。
+Note: When adding slides to an existing file, that presentation's slide size is kept.	※ 既存のファイルへ末尾追加する場合、スライドの大きさは既存ファイルのサイズが優先されます。
+Paste at	貼り付け倍率
+PowerPoint Files (*.pptx)	PowerPoint ファイル (*.pptx)
+Replace File	上書きする
+Save to:	保存先:
+Selected graphs:	選んだグラフ:
+Send Graphs	書き出す
+Send to Po&werPoint...	PowerPoint へ送る(&W)...
+Send to PowerPoint	PowerPoint へ送る
+Sending %1 graph(s) will embed approximately %2 MB of data into the PowerPoint file.\n\nContinue?	%1 個のグラフを書き出すと、約 %2 MB のデータが PowerPoint ファイルに埋め込まれます。\n\n続行しますか?
+Sending graphs to PowerPoint needs Windows.	PowerPoint へ送る機能は Windows でだけ使えます。
+Sent %1 graph(s) to %2 slide(s).	%1 個のグラフを %2 枚のスライドに書き出しました。
+Shrink graphs that do not fit	入りきらないグラフは縮めて入れる
+Size on the slide	スライド上の大きさ
+Size on the slide: %1 % of the graph page.	スライド上の大きさ: グラフのページの %1 %。
+Slide layout	スライドの配置
+Slide size:	スライドの大きさ:
+Slides cannot be added to a file saved in the Strict Open XML format. Save it again in PowerPoint as a normal PowerPoint Presentation (.pptx).	Strict Open XML 形式で保存されたファイルには追記できません。PowerPoint で通常の「PowerPoint プレゼンテーション (.pptx)」として保存し直してください。
+Standard 4:3 (25.4 x 19.1 cm)	標準 4:3 (25.4 × 19.1 cm)
+The 3D graph could not be captured. Restore its window (not minimized) and try again.	3D グラフを取り込めませんでした。ウィンドウを最小化から戻して、もう一度試してください。
+The PowerPoint link of ToriGraph is not registered, so double-clicking will not open ToriGraph. Use Help > Repair PowerPoint Link.	ToriGraph の PowerPoint 連携が登録されていないため、ダブルクリックしても ToriGraph は開きません。ヘルプの「PowerPoint 連携を修復」を使ってください。
+The editable object could not be created; a picture was placed instead.	編集できるオブジェクトを作れなかったため、画像として貼りました。
+The existing file could not be opened as a PowerPoint file (it may be damaged or protected with a password).\n\nDetails: %1	既存のファイルを PowerPoint のファイルとして開けませんでした (壊れているか、パスワードで保護されている可能性があります)。\n\n詳細: %1
+The existing presentation has no slide layout to add slides to.	既存のファイルに、スライドを追加するためのレイアウトがありません。
+The file is not a PowerPoint presentation (.pptx).	このファイルは PowerPoint のプレゼンテーション (.pptx) ではありません。
+The presentation part of the existing file could not be read.	既存のファイルのスライド一覧を読み取れませんでした。
+Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and its source data (%2 MB) were embedded.	プロジェクト全体のデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、このグラフと元データのみ (%2 MB) を埋め込みました。
+Widescreen 16:9 (33.9 x 19.1 cm)	ワイド画面 16:9 (33.9 × 19.1 cm)
+Write graphs into a PowerPoint file (.pptx) as editable objects. Double-click a graph on the slide to edit it in ToriGraph.	グラフを PowerPoint のファイル (.pptx) に、編集できるオブジェクトとして書き出します。スライド上のグラフをダブルクリックすると ToriGraph で編集できます。

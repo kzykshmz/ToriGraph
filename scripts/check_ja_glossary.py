@@ -15,7 +15,7 @@
 
 用語集 (ToriGraph 改善レビュー H3 / 研究室配布版の統一訳):
     レイヤー、目盛り、シンボル、エラーバー、ワークシート、行列、フィット、軸タイトル、
-    エクスポート、平滑化、不透明度、インスペクタ、物理量 / 単位 (ISIJ)
+    エクスポート、平滑化、不透明度、インスペクタ、物理量 / 単位 (ISIJ)、長い名前、列の役割
     括弧とコロンは半角、ボタンの「OK」は「OK」だけ、訳に「&&」を残さない。
 
 C++ 側 (I18nJapanese.cpp の normalizeJapaneseGlossary) は、コードから登録される訳に
@@ -221,6 +221,12 @@ def check_entries(entries: List[Entry]) -> List[str]:
         if not e.ja:
             problems.append(f"line {e.line}: 訳が空 {e.en!r}")
         fixed, hits = apply_rules(e.en, e.ja)
+        if "ロングネーム" in fixed:
+            fixed = fixed.replace("ロングネーム", "長い名前")
+            hits.append("long-name")
+        if "プロット属性" in fixed:
+            fixed = fixed.replace("プロット属性", "列の役割")
+            hits.append("column-role")
         if hits:
             problems.append(f"line {e.line}: 用語の揺れ [{', '.join(hits)}] {e.en!r}: "
                             f"{e.ja!r} → {fixed!r}")

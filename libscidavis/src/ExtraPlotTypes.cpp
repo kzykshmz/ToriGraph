@@ -176,12 +176,12 @@ void registerE11Translations()
         reg("Intensity column:", "強度の列:");
         reg("Alpha range (deg):", "α 範囲 (°):");
         reg("Beta range (deg):", "β 範囲 (°):");
-        reg("Sample reference axes:", "試料基準軸ラベル:");
+        reg("Sample reference axes:", "試料基準軸タイトル:");
         reg("RD / TD (Rolled sheet)", "RD / TD (圧延材)");
         reg("ED / TD (Extruded)", "ED / TD (押出材)");
         reg("LD / TD (Longitudinal / Transverse)", "LD / TD (長手 / 横方向)");
         reg("Custom...", "カスタム...");
-        reg("Custom axis labels:", "カスタム軸ラベル:");
+        reg("Custom axis labels:", "カスタム軸タイトル:");
         reg("Primary axis direction:", "主基準軸の向き:");
         reg("Top (secondary right)", "上 (副軸は右)");
         reg("Right (secondary top)", "右 (副軸は上)");

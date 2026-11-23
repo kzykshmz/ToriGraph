@@ -133,11 +133,11 @@ void registerLayerDialogTranslations()
                                                                   QString::fromUtf8(ja));
     };
     reg("Collapse Inner Gaps (0-gap Stack/Grid)", "パネル間の隙間をゼロにする (0-gap スタック/グリッド)");
-    reg("Delete Non-Empty Layers?", "曲線を含むレイヤを削除しますか？");
+    reg("Delete Non-Empty Layers?", "曲線を含むレイヤーを削除しますか？");
     reg("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\n"
         "Are you sure you want to delete these layers and their curves?",
-        "削除対象の %2 レイヤのうち %1 レイヤに合計 %3 個のプロットが含まれています。\n"
-        "これらのレイヤと曲線を削除してもよろしいですか？");
+        "削除対象の %2 レイヤーのうち %1 レイヤーに合計 %3 個のプロットが含まれています。\n"
+        "これらのレイヤーと曲線を削除してもよろしいですか？");
     reg("Units", "単位");
     // B5-2: twin-axis overlay vs. independent grid cell
     reg("Overlay (Twin Axes) / Axis Link / Layer Geometry",

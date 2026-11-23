@@ -166,9 +166,54 @@ static const QVector<GlossaryRule> &glossaryRules()
         add("(?<!不)透明度", "不透明度", "Opacity");
         add("プレゼン発表スライド|プレゼンスライド", "発表スライド");
         add("物理量 / 単位 \\(ISIJ形式\\)", "物理量 / 単位 (ISIJ)");
+        add("ロングネーム", "長い名前");
+        add("プロット属性", "列の役割");
+        add("バンド構造 \\(Band Structure\\)", "バンド構造");
+        add("縦横比を固定 \\(Lock Aspect Ratio\\)", "縦横比を固定");
         return r;
     }();
     return rules;
+}
+
+static QString stripEchoImpl(const QString &sourceEn, const QString &ja)
+{
+    static const QSet<QString> kEchoStripEn = {
+        QStringLiteral("black"), QStringLiteral("blue"), QStringLiteral("cyan"),
+        QStringLiteral("dark cyan"), QStringLiteral("dark gray"), QStringLiteral("dark yellow"),
+        QStringLiteral("gray"), QStringLiteral("green"), QStringLiteral("light cyan"),
+        QStringLiteral("light gray"), QStringLiteral("light magenta"),
+        QStringLiteral("light yellow"), QStringLiteral("magenta"), QStringLiteral("navy"),
+        QStringLiteral("olive"), QStringLiteral("orange"), QStringLiteral("pink"),
+        QStringLiteral("purple"), QStringLiteral("red"), QStringLiteral("royal"),
+        QStringLiteral("violet"), QStringLiteral("white"), QStringLiteral("wine"),
+        QStringLiteral("yellow"), QStringLiteral("linear"), QStringLiteral("left"),
+        QStringLiteral("right"), QStringLiteral("top"), QStringLiteral("bottom"),
+        QStringLiteral("flat"), QStringLiteral("round"), QStringLiteral("square"),
+        QStringLiteral("solid"), QStringLiteral("bevel"), QStringLiteral("miter"),
+        QStringLiteral("bdiagonal"), QStringLiteral("fdiagonal"), QStringLiteral("cross"),
+        QStringLiteral("diagcross"), QStringLiteral("diamond"), QStringLiteral("rectangle"),
+        QStringLiteral("cone"), QStringLiteral("slope"), QStringLiteral("intercept"),
+        QStringLiteral("real"), QStringLiteral("imaginary"), QStringLiteral("median"),
+        QStringLiteral("cross hair"), QStringLiteral("intersect"),
+        QStringLiteral("upper envelope"), QStringLiteral("lower envelope"),
+        QStringLiteral("both (upper & lower)"), QStringLiteral("before column:"),
+        QStringLiteral("after column:"), QStringLiteral("peak analyzer goal"),
+        QStringLiteral("peak analyzer goal:"), QStringLiteral("dissimilarity height"),
+        QStringLiteral("box plot"), QStringLiteral("pareto chart"), QStringLiteral("ternary plot"),
+        QStringLiteral("autoexec"), QStringLiteral("average")
+    };
+    QString key = sourceEn;
+    key.remove(QLatin1Char('&'));
+    key = key.trimmed().toLower();
+    if (!kEchoStripEn.contains(key))
+        return ja;
+    static const QRegularExpression rxEcho(QStringLiteral(
+            "\\s?\\((?:[A-Z][A-Za-z\\- ]*|Both|Before|After|Goal|Height|Pareto|Ternary)\\)"));
+    QString out = ja;
+    const QRegularExpressionMatch m = rxEcho.match(out);
+    if (m.hasMatch())
+        out.remove(m.capturedStart(), m.capturedLength());
+    return out;
 }
 
 static QString stripEnMnemonic(const QString &s, QChar *outMnemonic, bool *outHadDoubleAmp)
@@ -282,7 +327,19 @@ static void ensureInitializedLocked()
         "Matrices",
         "Tables (Workbooks)",
         "All Windows",
-        "Notes / Scripts"
+        "Notes / Scripts",
+        "Fit",
+        "Yes",
+        "No",
+        "Long Name",
+        "Long Name:",
+        "Long Name: %1",
+        "Export Python",
+        "Export Python Script",
+        "Export Active Graph to Python Script...",
+        "Export Reproducible &Python Script...",
+        "Export Reproducible Python Script...",
+        "Export Reproducible Python Script \342\200\224 %1"
     };
     const int nCanon =
             static_cast<int>(sizeof(kCanonicalKeysUtf8) / sizeof(kCanonicalKeysUtf8[0]));
@@ -385,19 +442,20 @@ static QString lookupDictLowerLocked(const QString &lowerKey)
     return QString();
 }
 
-static QString lookupCoreLocked(const QString &s)
+static bool hasNonAsciiChar(const QString &s)
+{
+    for (int i = 0; i < s.size(); ++i) {
+        if (s.at(i).unicode() >= 0x3000)
+            return true;
+    }
+    return false;
+}
+
+static QString lookupCoreLocked(const QString &s, bool allowCaseInsensitive)
 {
     QString direct = lookupDictExactLocked(s);
     if (!direct.isEmpty())
         return direct;
-
-    const QString lowFull = s.toLower();
-    if (!s_guardCaseInsensitive.contains(lowFull) && !s_guardExactCs.contains(s)
-        && !s_guardExactCs.contains(lowFull)) {
-        QString directLow = lookupDictLowerLocked(lowFull);
-        if (!directLow.isEmpty())
-            return directLow;
-    }
 
     QString leadArrows;
     QString trailArrows;
@@ -430,22 +488,38 @@ static QString lookupCoreLocked(const QString &s)
         work = work.trimmed();
     }
 
-    if (work.isEmpty())
-        return QString();
-
-    QString found = lookupDictExactLocked(work);
-    if (found.isEmpty()) {
-        const QString lw = work.toLower();
-        if (!s_guardCaseInsensitive.contains(lw) && !s_guardExactCs.contains(work)
-            && !s_guardExactCs.contains(lw)) {
-            found = lookupDictLowerLocked(lw);
+    if (!work.isEmpty()) {
+        QString foundExact = lookupDictExactLocked(work);
+        if (!foundExact.isEmpty()) {
+            if (!reattachSuffix.isEmpty() && !endsWithPunctuation(foundExact))
+                foundExact += reattachSuffix;
+            return leadArrows + foundExact + trailArrows;
         }
     }
 
-    if (!found.isEmpty()) {
-        if (!reattachSuffix.isEmpty() && !endsWithPunctuation(found))
-            found += reattachSuffix;
-        return leadArrows + found + trailArrows;
+    if (!allowCaseInsensitive)
+        return QString();
+
+    const QString lowFull = s.toLower();
+    if (!s_guardCaseInsensitive.contains(lowFull) && !s_guardExactCs.contains(s)
+        && !s_guardExactCs.contains(lowFull)) {
+        QString directLow = lookupDictLowerLocked(lowFull);
+        if (!directLow.isEmpty())
+            return directLow;
+    }
+
+    if (work.isEmpty())
+        return QString();
+
+    const QString lw = work.toLower();
+    if (!s_guardCaseInsensitive.contains(lw) && !s_guardExactCs.contains(work)
+        && !s_guardExactCs.contains(lw)) {
+        QString foundLow = lookupDictLowerLocked(lw);
+        if (!foundLow.isEmpty()) {
+            if (!reattachSuffix.isEmpty() && !endsWithPunctuation(foundLow))
+                foundLow += reattachSuffix;
+            return leadArrows + foundLow + trailArrows;
+        }
     }
     return QString();
 }
@@ -460,7 +534,7 @@ static QString normalizeGlossaryImpl(const QString &sourceEn, const QString &ja)
             continue;
         out.replace(r.pattern, r.replacement);
     }
-    return out;
+    return stripEchoImpl(sourceEn, out);
 }
 
 // Context-specific lookup (first stage of the two-stage lookup). Tries the source as is,
@@ -567,6 +641,11 @@ void ToriGraphFullJapaneseTranslator::registerExtraTranslation(const QString &so
         return;
     if (s_canonicalMainKeys.contains(sourceEn) || s_canonicalMainKeys.contains(trimmed))
         return;
+    if (!hasNonAsciiChar(targetJa)
+        && ((s_mainDict.contains(sourceEn) && hasNonAsciiChar(s_mainDict.value(sourceEn)))
+            || (s_mainDict.contains(trimmed) && hasNonAsciiChar(s_mainDict.value(trimmed))))) {
+        return;
+    }
 
     s_extraDict.insert(sourceEn, targetJa);
     s_extraLowerDict.insert(sourceEn.toLower(), targetJa);
@@ -664,17 +743,34 @@ QString ToriGraphFullJapaneseTranslator::lookupJapanese(const QString &sourceEn)
     if (isProtectedTokenLocked(trimmed))
         return QString();
 
-    // 2. Trailing "..." / "…" / ":" / arrows stripped + case-insensitive match
-    QString coreRes = lookupCoreLocked(trimmed);
-    if (!coreRes.isEmpty())
-        return leadWs + coreRes + trailWs;
+    // 2. Exact case-sensitive match with trailing "..." / "…" / ":" / arrows stripped
+    QString coreExact = lookupCoreLocked(trimmed, false);
+    if (!coreExact.isEmpty())
+        return leadWs + coreExact + trailWs;
 
-    // 3. &-mnemonic stripped match (preserving mnemonic as (&X) and escaping && if needed)
+    // 3. Exact case-sensitive match with &-mnemonic stripped (preserving mnemonic as (&X))
     QChar mnem;
     bool hadDoubleAmp = false;
     const QString clean = stripEnMnemonic(trimmed, &mnem, &hadDoubleAmp);
-    if (clean != trimmed && !isProtectedTokenLocked(clean)) {
-        QString mnemRes = lookupCoreLocked(clean);
+    const bool canUseClean = (clean != trimmed && !isProtectedTokenLocked(clean));
+    if (canUseClean) {
+        QString mnemExact = lookupCoreLocked(clean, false);
+        if (!mnemExact.isEmpty()) {
+            if (hadDoubleAmp)
+                mnemExact = escapeStandaloneAmpersands(mnemExact);
+            mnemExact = attachMnemonic(mnemExact, mnem);
+            return leadWs + mnemExact + trailWs;
+        }
+    }
+
+    // 4. Case-insensitive fallback on trimmed (and trailing punctuation/arrows stripped)
+    QString coreRes = lookupCoreLocked(trimmed, true);
+    if (!coreRes.isEmpty())
+        return leadWs + coreRes + trailWs;
+
+    // 5. Case-insensitive fallback with &-mnemonic stripped
+    if (canUseClean) {
+        QString mnemRes = lookupCoreLocked(clean, true);
         if (!mnemRes.isEmpty()) {
             if (hadDoubleAmp)
                 mnemRes = escapeStandaloneAmpersands(mnemRes);

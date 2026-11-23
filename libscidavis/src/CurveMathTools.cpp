@@ -1530,7 +1530,7 @@ void registerMatSciTranslationsOnce()
     reg("Imaginary Impedance Column (Z'' or -Z''):", "虚部インピーダンス列 (Z'' または -Z''):");
     reg("Imaginary column is already negated (-Z'' > 0)", "虚部列は既に符号反転済み (-Z'' > 0)");
     reg("Fit Randles + CPE Equivalent Circuit (Rs + Rct || CPE)",
-        "Randles + CPE 等価回路フィッティングを実行 (Rs + Rct || CPE)");
+        "Randles + CPE 等価回路フィットを実行 (Rs + Rct || CPE)");
     reg("Z' (Ω)", "Z' (Ω)");
     reg("-Z'' (Ω)", "-Z'' (Ω)");
     reg("log10(f / Hz)", "log10(f / Hz)");
@@ -1589,11 +1589,11 @@ void registerMatSciTranslationsOnce()
     reg("Try Sample Datasets...", "サンプル集...");
     reg("Getting Started", "入門・基本操作");
     reg("[Getting Started] Simple 2-Series X-Y Sample (for practice & formatting)",
-        "【入門】シンプルな 2 系列 X-Y サンプル（操作・体裁の練習用）");
+        "【入門】シンプルな 2 系列 X-Y サンプル(操作・体裁の練習用)");
     reg("Compact 11-point two-series X-Y table (Condition A & Condition B) for practicing basic plotting, axis/legend formatting, and PowerPoint / slide copy-paste.",
-        "基本的なグラフ作成・軸と凡例の体裁調整・PowerPoint スライド貼付をすぐに試せる 11 点×2 系列（条件 A / 条件 B）のシンプルな X-Y サンプルです。");
+        "基本的なグラフ作成・軸と凡例の体裁調整・PowerPoint スライド貼付をすぐに試せる 11 点×2 系列(条件 A / 条件 B)のシンプルな X-Y サンプルです。");
     reg("Select a built-in materials science dataset to generate a ready-to-analyze worksheet and publication plot:",
-        "内蔵されたサンプルデータ（初心者向けの2系列X-Yサンプルや材料科学データ）を選択し、ワークシートとグラフを自動生成します:");
+        "内蔵されたサンプルデータ(初心者向けの2系列X-Yサンプルや材料科学データ)を選択し、ワークシートとグラフを自動生成します:");
     reg("Category:", "カテゴリ:");
     reg("All Categories", "すべてのカテゴリ");
     reg("Filter:", "検索:");
@@ -1654,17 +1654,17 @@ void registerMatSciTranslationsOnce()
     reg("Uncharged vs. H-charged (0.8 and 2.2 wt.ppm H) high-strength Al-Zn-Mg tensile curves demonstrating identical elastic/yield behavior with severe hydrogen-induced ductility loss.",
         "未チャージ材と水素チャージ材 (0.8 / 2.2 wt.ppm H) の引張応力-ひずみ曲線比較。弾性率・0.2%耐力は一致しつつ、水素量増加に伴い早期破断する典型的な水素脆化挙動を再現。");
     reg("High-cycle fatigue S-N (Wöhler) curves comparing quenched-and-tempered SCM435 steel (distinct endurance limit ~420 MPa at 10^7 cycles) and AA7075-T6 aluminum alloy (no knee).",
-        "調質 SCM435 鋼（10^7 回付近に約 420 MPa の明瞭な疲労限度あり）と AA7075-T6 アルミニウム合金（疲労限度なしで連続低下）の疲労 S-N 曲線比較（横軸対数）。");
+        "調質 SCM435 鋼(10^7 回付近に約 420 MPa の明瞭な疲労限度あり)と AA7075-T6 アルミニウム合金(疲労限度なしで連続低下)の疲労 S-N 曲線比較(横軸対数)。");
     reg("Log-log fatigue crack propagation da/dN vs. ΔK showing threshold (Region I), Paris law power-law regime (Region II, m ≈ 3.1), and rapid fracture (Region III) in air and H-charged environments.",
         "両対数グラフによる疲労き裂進展速度 da/dN–ΔK 曲線。下限界 ΔKth (Region I)、Paris 則直線域 (Region II, m ≈ 3.1)、破壊靭性加速域 (Region III) を大気中と水素環境で対比。");
     reg("Yield stress σy vs. inverse square-root grain size d^(-1/2) with error bars and linear Hall-Petch regression for low-carbon ferritic steel (ky ≈ 0.62 MPa·m^1/2) and Al-Mg alloy.",
-        "結晶粒径の逆平方根 d^(-1/2) に対する降伏応力 σy の Hall-Petch プロット（標準偏差エラーバー・線形回帰直線付き）。低炭素フェライト鋼と Al-Mg 合金の結晶粒微細化強化係数を比較。");
+        "結晶粒径の逆平方根 d^(-1/2) に対する降伏応力 σy の Hall-Petch プロット(標準偏差エラーバー・線形回帰直線付き)。低炭素フェライト鋼と Al-Mg 合金の結晶粒微細化強化係数を比較。");
     reg("Three-stage creep strain vs. time curves (primary, steady-state secondary, tertiary to rupture) of 9Cr-1Mo heat-resistant steel at 600 °C under 120, 140, and 160 MPa.",
-        "9Cr-1Mo 耐熱鋼の 600 °C における 120 / 140 / 160 MPa の3応力水準クリープ曲線。遷移クリープ（第1期）・定常クリープ（第2期）・加速クリープ（第3期）および破断寿命の応力依存性を再現。");
+        "9Cr-1Mo 耐熱鋼の 600 °C における 120 / 140 / 160 MPa の3応力水準クリープ曲線。遷移クリープ(第1期)・定常クリープ(第2期)・加速クリープ(第3期)および破断寿命の応力依存性を再現。");
     reg("Charpy V-notch impact absorbed energy vE (J) vs. temperature (-120 to +80 °C) with error bars and ductile-to-brittle transition temperature (DBTT ≈ -25 °C) tanh-sigmoid curve.",
         "フェライト鋼の -120 °C ～ +80 °C におけるシャルピー衝撃吸収エネルギー vE (J) と標準偏差・延性破面率データ。下棚から上棚へ遷移する DBTT ≈ -25 °C のシグモイド遷移曲線を描画。");
     reg("Isothermal Vickers hardness (HV) vs. logarithmic aging time (0.1–1000 h) at 120 °C and 160 °C for Al-Zn-Mg alloy showing under-aged, peak-aged (T6), and over-aged (T7) stages.",
-        "Al-Zn-Mg 合金の 120 °C および 160 °C 等温時効におけるビッカース硬さ HV（平均±SD）vs. 対数時効時間曲線。亜時効→ピーク時効 (T6)→過時効 (T7) の典型的な析出硬化挙動を再現。");
+        "Al-Zn-Mg 合金の 120 °C および 160 °C 等温時効におけるビッカース硬さ HV(平均±SD)vs. 対数時効時間曲線。亜時効→ピーク時効 (T6)→過時効 (T7) の典型的な析出硬化挙動を再現。");
     reg("Berkovich nanoindentation loading (Kick's law P ∝ h^2), peak-load creep hold, and Oliver-Pharr unloading curves comparing soft pure Al and precipitation-hardened AA7075-T6.",
         "純 Al と時効強化 AA7075-T6 のナノインデンテーション荷重-押込み深さ曲線。負荷域 (Kick 則)・最大荷重保持クリープ・Oliver-Pharr 除荷曲線の弾性回復の違いを比較。");
     reg("Symmetric strain-controlled (±1.0%) cyclic stress-strain hysteresis loops of austenitic SUS316L stainless steel comparing Cycle 1 and stabilized Cycle 50 (cyclic hardening & Bauschinger effect).",
@@ -1674,19 +1674,19 @@ void registerMatSciTranslationsOnce()
     reg("Johnson-Cook true stress-strain flow curves of Ti-6Al-4V across 6 decades of strain rate (10^-3 s^-1 quasi-static, 1 s^-1 intermediate, 10^3 s^-1 SHPB dynamic with adiabatic softening).",
         "Ti-6Al-4V 合金の準静的 (10^-3 s^-1)・中速度 (1 s^-1)・高速衝撃 SHPB (10^3 s^-1) の真応力-真ひずみ曲線。ひずみ速度強化と高ひずみ速度域での断熱軟化を Johnson-Cook モデルで再現。");
     reg("Multi-window sample project generating 5 core metal mechanics datasets (T4/T6/T73 tensile + 0.2% yield & Considère analysis, S-N fatigue, da/dN-ΔK crack growth, Hall-Petch, and Charpy DBTT).",
-        "金属の力学特性を体系的に学べる複合サンプルプロジェクト。時効別引張比較（＋0.2%耐力・加工硬化解析）・疲労S-N曲線・疲労き裂進展 da/dN-ΔK・Hall-Petch・シャルピーDBTT の一式を一括生成します。");
+        "金属の力学特性を体系的に学べる複合サンプルプロジェクト。時効別引張比較(＋0.2%耐力・加工硬化解析)・疲労S-N曲線・疲労き裂進展 da/dN-ΔK・Hall-Petch・シャルピーDBTT の一式を一括生成します。");
     reg("Complete research workflow project for Al-Zn-Mg alloys: isothermal age-hardening HV, H-charged tensile embrittlement, 3-rate TDS + Kissinger Ea analysis, XRD pattern, and CT crack-tip strain map.",
-        "Al-Zn-Mg 合金の時効組織と水素脆化を統合評価する研究サンプルプロジェクト。時効硬化 HV・水素チャージ引張・3昇温速度 TDS（＋Kissinger 活性化エネルギー解析）・XRD・き裂先端局所ひずみマップを一括生成します。");
+        "Al-Zn-Mg 合金の時効組織と水素脆化を統合評価する研究サンプルプロジェクト。時効硬化 HV・水素チャージ引張・3昇温速度 TDS(＋Kissinger 活性化エネルギー解析)・XRD・き裂先端局所ひずみマップを一括生成します。");
     reg("First-order Polanyi-Wigner thermal desorption spectra of H-charged martensitic steel with dislocation (26.8 kJ/mol) and TiC precipitate (58.4 kJ/mol) traps.",
-        "マルテンサイト鋼中水素の1次 Polanyi-Wigner 昇温脱離スペクトル（昇温速度 100, 200, 400 °C/h）。転位トラップ (26.8 kJ/mol) と TiC 析出物トラップ (58.4 kJ/mol) の2ピークを再現。");
+        "マルテンサイト鋼中水素の1次 Polanyi-Wigner 昇温脱離スペクトル(昇温速度 100, 200, 400 °C/h)。転位トラップ (26.8 kJ/mol) と TiC 析出物トラップ (58.4 kJ/mol) の2ピークを再現。");
     reg("Cu Kα1 (λ = 1.540598 Å) diffractogram (2θ = 20–85°) of fcc-Al broadened by D = 42 nm crystallites and ε = 1.85×10^-3 microstrain for Bragg / Williamson-Hall analysis.",
         "Cu Kα1 (λ = 1.540598 Å) による fcc-Al の X 線回折パターン (2θ = 20–85°)。結晶子サイズ D = 42 nm・格子ひずみ ε = 1.85×10^-3 を含み、Bragg / Williamson-Hall 解析に最適。");
     reg("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.",
         "α-Fe 中の格子間水素拡散係数 D(T) の温度依存性データ (320–860 K, 標準偏差付き)。アレニウスプロットによる拡散活性化エネルギー解析用。");
     reg("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.",
-        "200×200 μm 領域のき裂先端および前方マイクロボイド周囲の局所軸ひずみ ε_yy(x, y) (%) を再現した 128×128 2次元マトリクスデータ。");
+        "200×200 μm 領域のき裂先端および前方マイクロボイド周囲の局所軸ひずみ ε_yy(x, y) (%) を再現した 128×128 2次元行列データ。");
     reg("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.",
-        "窒化ケイ素セラミックスの4点曲げ強度データ 30 本分（右打ち切りランアウト含む; m ≈ 12.4, σ0 ≈ 785 MPa）。MRR / MLE ワイブル確率解析用。");
+        "窒化ケイ素セラミックスの4点曲げ強度データ 30 本分(右打ち切りランアウト含む; m ≈ 12.4, σ0 ≈ 785 MPa)。MRR / MLE ワイブル確率解析用。");
 
     reg("Kissinger TDS / DSC Activation Energy Analyzer",
         "Kissinger 昇温脱離 (TDS / DSC) 活性化エネルギー解析");
@@ -1700,7 +1700,7 @@ void registerMatSciTranslationsOnce()
     reg("K/min (°C/min)", "K/min (°C/min)");
     reg("K/h (°C/h)", "K/h (°C/h)");
     reg("Peak Temperatures in Celsius (°C)", "ピーク温度は摂氏 (°C)");
-    reg("Top Temperature Axis in Celsius (°C)", "上軸の温度目盛を摂氏 (°C) で表示");
+    reg("Top Temperature Axis in Celsius (°C)", "上軸の温度目盛りを摂氏 (°C) で表示");
     reg("TDS Flux Columns (Select 2+ Rates):", "脱離フラックス列 (2条件以上選択):");
     reg("Heating Rates (comma-separated):", "昇温速度リスト (カンマ区切り):");
     reg("Peak Temperatures (comma-separated):", "ピーク温度リスト (カンマ区切り):");
@@ -1772,7 +1772,7 @@ void registerMatSciTranslationsOnce()
     reg("Temperature-dependent lattice H diffusivity D(T) in α-Fe (320–880 K) with standard deviations for Arrhenius activation energy regression.",
         "α-Fe 中の格子水素拡散係数 D(T) の温度依存性データ (320–880 K、標準偏差付き)。アレニウス活性化エネルギー回帰用。");
     reg("128×128 2D matrix of local axial strain ε_yy(x, y) (%) over a 200×200 μm field around a crack tip and micro-void ahead of the plastic zone.",
-        "き裂先端および塑性域前方の微小ボイド周囲 200×200 μm 領域における局所軸ひずみ ε_yy(x, y) (%) の 128×128 2次元マトリクス。");
+        "き裂先端および塑性域前方の微小ボイド周囲 200×200 μm 領域における局所軸ひずみ ε_yy(x, y) (%) の 128×128 2次元行列。");
     reg("30-specimen ceramic 4-point bending dataset (25 fractures + 5 right-censored runouts at 820 MPa; m ≈ 12.4, σ0 ≈ 785 MPa) for MRR / MLE Weibull probability analysis.",
         "セラミックス試験片30本の4点曲げ強度データ (破断25本 + 820 MPa 右打ち切りランアウト5本; m ≈ 12.4, σ0 ≈ 785 MPa)。MRR / 最尤法 (MLE) ワイブル統計解析用。");
     reg("Plot Mode:", "プロット形式:");
