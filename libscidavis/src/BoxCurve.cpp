@@ -38,6 +38,49 @@
 #include <gsl/gsl_statistics.h>
 #include <cmath>
 
+namespace {
+
+QPen scaledBoxPen(const QPen &src, double sc)
+{
+    if (src.style() == Qt::NoPen)
+        return src;
+    QPen out = src;
+    double wf = src.widthF();
+    if (wf <= 0.0)
+        wf = (src.width() > 0) ? double(src.width()) : 1.0;
+    out.setCosmetic(false);
+    out.setWidthF(qMax(0.1, wf) * sc);
+    return out;
+}
+
+void computeTukeyWhiskers(const double *dat, int size, double &wLoVal, double &wHiVal,
+                          double &fenceLo, double &fenceHi, double &tol)
+{
+    const double q1 = gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.25);
+    const double q3 = gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.75);
+    const double iqr = qMax(0.0, q3 - q1);
+    fenceLo = q1 - 1.5 * iqr;
+    fenceHi = q3 + 1.5 * iqr;
+    tol = 1e-12 * qMax(1.0, qMax(std::fabs(fenceLo), std::fabs(fenceHi)));
+
+    wLoVal = q1;
+    for (int i = 0; i < size; ++i) {
+        if (dat[i] >= fenceLo - tol) {
+            wLoVal = qMin(dat[i], q1);
+            break;
+        }
+    }
+    wHiVal = q3;
+    for (int i = size - 1; i >= 0; --i) {
+        if (dat[i] <= fenceHi + tol) {
+            wHiVal = qMax(dat[i], q3);
+            break;
+        }
+    }
+}
+
+} // namespace
+
 BoxCurve::BoxCurve(Table *t, QString name, int startRow, int endRow)
     : DataCurve(t, QString(), name, startRow, endRow)
 {
@@ -94,11 +137,8 @@ void BoxCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMa
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    const double sc = Plot::printDeviceScale();
-    QPen cPen = QwtPlotCurve::pen();
-    cPen.setCosmetic(false);
-    cPen.setWidthF(qMax(1.2, cPen.widthF()) * sc);
-    painter->setPen(cPen);
+    const double sc = renderPenScale();
+    painter->setPen(scaledBoxPen(QwtPlotCurve::pen(), sc));
 
     QVector<double> datVec(size);
     for (int i = 0; i < size; ++i)
@@ -115,18 +155,17 @@ void BoxCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMa
 void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                        double *dat, int size) const
 {
-    const double sc = Plot::printDeviceScale();
-    QPen cPen = QwtPlotCurve::pen();
-    cPen.setCosmetic(false);
-    cPen.setWidthF(qMax(1.2, cPen.widthF()) * sc);
+    const double sc = renderPenScale();
+    QPen cPen = scaledBoxPen(QwtPlotCurve::pen(), sc);
     painter->setPen(cPen);
 
     const double pxF = xMap.xTransform(x(0));
     const int px = qRound(pxF);
     const double pxSpan = std::fabs(xMap.xTransform(x(0) + 0.5) - xMap.xTransform(x(0) - 0.5));
     const int box_width = qMax(4, qRound(pxSpan * double(b_width) / 100.0));
-    const int hbw = d_violin_mode ? qMax(qRound(3.5 * sc), box_width / 8) : qMax(2, box_width / 2);
-    const int violin_hbw = qMax(qRound(8.0 * sc), box_width / 2);
+    const int hbw = d_violin_mode ? qMax(qMax(1, qRound(3.5 * sc)), box_width / 8)
+                                  : qMax(qMax(1, qRound(2.0 * sc)), box_width / 2);
+    const int violin_hbw = qMax(qMax(2, qRound(8.0 * sc)), box_width / 2);
     const int median = yMap.transform(gsl_stats_median_from_sorted_data(dat, 1, size));
     int b_lowerq, b_upperq;
     double sd = 0;
@@ -208,7 +247,7 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         dotPen.setCosmetic(false);
         painter->setPen(dotPen);
         painter->setBrush(QBrush(fillCol, Qt::SolidPattern));
-        const double dotRadius = qMax(2.2, 2.7 * sc);
+        const double dotRadius = qMax(0.5, 2.7 * sc);
 
         for (int i = 0; i < size; ++i) {
             const double frac = (size == 1)
@@ -237,6 +276,11 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     } else if (b_range == SE) {
         b_lowerq = yMap.transform(mean - se * b_coeff);
         b_upperq = yMap.transform(mean + se * b_coeff);
+    } else if (b_range == Tukey15IQR) {
+        double wLoVal = 0.0, wHiVal = 0.0, fenceLo = 0.0, fenceHi = 0.0, tol = 0.0;
+        computeTukeyWhiskers(dat, size, wLoVal, wHiVal, fenceLo, fenceHi, tol);
+        b_lowerq = yMap.transform(wLoVal);
+        b_upperq = yMap.transform(wHiVal);
     } else {
         b_lowerq = yMap.transform(
                 gsl_stats_quantile_from_sorted_data(dat, 1, size, 1 - 0.01 * b_coeff));
@@ -247,7 +291,7 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     // 3. Draw whiskers, inner box, and median ON TOP of violin KDE & jittered points
     const int eff_box_width = 2 * hbw;
     if (w_range) {
-        const int l = qMax(qRound(2.0 * sc), int(0.16 * eff_box_width));
+        const int l = qMax(qMax(1, qRound(2.0 * sc)), int(0.16 * eff_box_width));
         int w_upperq, w_lowerq;
         if (w_range == SD) {
             w_lowerq = yMap.transform(mean - sd * w_coeff);
@@ -255,6 +299,11 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         } else if (w_range == SE) {
             w_lowerq = yMap.transform(mean - se * w_coeff);
             w_upperq = yMap.transform(mean + se * w_coeff);
+        } else if (w_range == Tukey15IQR) {
+            double wLoVal = 0.0, wHiVal = 0.0, fenceLo = 0.0, fenceHi = 0.0, tol = 0.0;
+            computeTukeyWhiskers(dat, size, wLoVal, wHiVal, fenceLo, fenceHi, tol);
+            w_lowerq = yMap.transform(wLoVal);
+            w_upperq = yMap.transform(wHiVal);
         } else {
             w_lowerq = yMap.transform(
                     gsl_stats_quantile_from_sorted_data(dat, 1, size, 1 - 0.01 * w_coeff));
@@ -345,7 +394,8 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     if (b_style != Notch && b_style != NoBox) {
         painter->save();
         QPen medPen = cPen;
-        medPen.setWidthF(qMax(1.8 * sc, cPen.widthF() * 1.35));
+        if (medPen.style() != Qt::NoPen)
+            medPen.setWidthF(qMax(0.1 * sc, cPen.widthF() * 1.35));
         painter->setPen(medPen);
         if (b_style == WindBox)
             painter->drawLine(int(px - 0.4 * eff_box_width), median, int(px + 0.4 * eff_box_width),
@@ -363,21 +413,28 @@ void BoxCurve::drawSymbols(QPainter *painter, const QwtScaleMap &xMap, const Qwt
         return;
 
     const int px = xMap.transform(x(0));
-    const double sc = Plot::printDeviceScale();
+    const double sc = renderPenScale();
 
     QwtSymbol s = this->symbol();
     QPen symPen = s.pen();
-    symPen.setCosmetic(false);
-    const double baseW =
-            (symPen.widthF() > 0.0) ? symPen.widthF() : qMax(1.2, QwtPlotCurve::pen().widthF());
-    symPen.setWidthF(qMax(1.2, baseW) * sc);
+    if (symPen.style() != Qt::NoPen) {
+        double baseW = symPen.widthF();
+        if (baseW <= 0.0) {
+            const QPen curvePen = QwtPlotCurve::pen();
+            baseW = (curvePen.widthF() > 0.0)
+                    ? curvePen.widthF()
+                    : ((curvePen.width() > 0) ? double(curvePen.width()) : 1.0);
+        }
+        symPen.setCosmetic(false);
+        symPen.setWidthF(qMax(0.1, baseW) * sc);
+    }
     if (!symPen.color().isValid() || symPen.color() == Qt::black)
         symPen.setColor(QwtPlotCurve::pen().color().darker(125));
     s.setPen(symPen);
     if (s.brush().style() == Qt::NoBrush)
         s.setBrush(QBrush(Qt::white, Qt::SolidPattern));
     const int baseSz = qMax(7, s.size().width());
-    const int symSz = qMax(4, qRound(baseSz * sc));
+    const int symSz = qMax(2, qRound(baseSz * sc));
     s.setSize(symSz, symSz);
 
     // Draw via QwtSymbol::draw(QPainter *, const QRect &) with non-cosmetic symPen already bound,
@@ -392,10 +449,24 @@ void BoxCurve::drawSymbols(QPainter *painter, const QwtScaleMap &xMap, const Qwt
         s.draw(painter, QRect(px - symSz / 2, py - symSz / 2, symSz, symSz));
     };
 
-    if (min_style != QwtSymbol::NoSymbol)
-        drawBoxSymAt(min_style, yMap.transform(dat[0]));
-    if (max_style != QwtSymbol::NoSymbol)
-        drawBoxSymAt(max_style, yMap.transform(dat[size - 1]));
+    if (w_range == Tukey15IQR) {
+        double wLoVal = 0.0, wHiVal = 0.0, fenceLo = 0.0, fenceHi = 0.0, tol = 0.0;
+        computeTukeyWhiskers(dat, size, wLoVal, wHiVal, fenceLo, fenceHi, tol);
+        for (int i = 0; i < size; ++i) {
+            if (dat[i] < fenceLo - tol) {
+                if (min_style != QwtSymbol::NoSymbol)
+                    drawBoxSymAt(min_style, yMap.transform(dat[i]));
+            } else if (dat[i] > fenceHi + tol) {
+                if (max_style != QwtSymbol::NoSymbol)
+                    drawBoxSymAt(max_style, yMap.transform(dat[i]));
+            }
+        }
+    } else {
+        if (min_style != QwtSymbol::NoSymbol)
+            drawBoxSymAt(min_style, yMap.transform(dat[0]));
+        if (max_style != QwtSymbol::NoSymbol)
+            drawBoxSymAt(max_style, yMap.transform(dat[size - 1]));
+    }
     if (p1_style != QwtSymbol::NoSymbol)
         drawBoxSymAt(p1_style, yMap.transform(gsl_stats_quantile_from_sorted_data(dat, 1, size, 0.01)));
     if (p99_style != QwtSymbol::NoSymbol)
@@ -433,6 +504,8 @@ void BoxCurve::setBoxRange(int type, double coeff)
         b_coeff = 99.0;
     else if (b_range == MinMax)
         b_coeff = 100.0;
+    else if (b_range == Tukey15IQR)
+        b_coeff = 1.5;
     else
         b_coeff = coeff;
 }
@@ -451,6 +524,8 @@ void BoxCurve::setWhiskersRange(int type, double coeff)
         w_coeff = 99.0;
     else if (w_range == MinMax)
         w_coeff = 100.0;
+    else if (w_range == Tukey15IQR)
+        w_coeff = 1.5;
     else
         w_coeff = coeff;
 }

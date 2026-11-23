@@ -51,6 +51,7 @@
 #include <QWheelEvent>
 
 #include <cmath>
+#include <typeinfo>
 
 ScalePicker::ScalePicker(QwtPlot *plot)
     : QObject(plot),
@@ -179,6 +180,29 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
                     ke->accept();
                     return true;
                 }
+            }
+        }
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter || ke->key() == Qt::Key_F2)
+            && !(mods & (Qt::ControlModifier | Qt::AltModifier))) {
+            Graph *g = graph();
+            const int axisId = Plot::scaleAlignmentToAxis(scale->alignment());
+            if (d_title_selected && d_selected_axis == scale && g && axisId >= 0) {
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->cancelScheduledAndHide();
+                QRect trRect = titleRect(scale);
+                if (!trRect.isValid() || trRect.isEmpty())
+                    trRect = scale->rect();
+                const QRect globalRect(scale->mapToGlobal(trRect.topLeft()), trRect.size());
+                CanvasInlineTextEditor::openForAxisTitle(g, axisId, globalRect);
+                ke->accept();
+                return true;
+            }
+            if (d_labels_selected && d_selected_axis == scale) {
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->cancelScheduledAndHide();
+                emit axisDblClicked(scale->alignment());
+                ke->accept();
+                return true;
             }
         }
         if (ke->key() == Qt::Key_Escape) {
@@ -692,8 +716,33 @@ bool ScalePicker::commitInlineScaleEditor(bool openOppositeEnd)
         return false;
     }
 
-    const bool isLog = Plot::isLog10ScaleEngine(se);
-    if (isLog && rawNew <= 0.0) {
+    const Graph::AxisBreakSpec brk = g->axisBreak(axisId);
+    const bool hasBreak = brk.enabled;
+    const int mirrorSrc = (axisId == QwtPlot::xTop)
+            ? QwtPlot::xBottom
+            : ((axisId == QwtPlot::yRight) ? QwtPlot::yLeft : -1);
+    const bool mirrorHasBreak = (mirrorSrc >= 0) && g->axisBreak(mirrorSrc).enabled;
+
+    // Preserve FormulaLinkedScaleEngine (and any custom linked scale engine): calling
+    // Graph::setScale() would replace it with a plain QwtLinearScaleEngine.
+    const bool isXAxis = (axisId == QwtPlot::xBottom || axisId == QwtPlot::xTop);
+    const bool isFormulaLinked = (g->linkedParentLayer() != nullptr)
+            && ((isXAxis ? g->xLinkMode() : g->yLinkMode()) == 2);
+    const bool isUnknownCustomEngine = !hasBreak && !mirrorHasBreak
+            && typeid(*se) != typeid(QwtLinearScaleEngine)
+            && typeid(*se) != typeid(QwtLog10ScaleEngine);
+    if (isFormulaLinked || isUnknownCustomEngine) {
+        flagError(tr("Formula-linked axis scale is controlled by the parent layer."));
+        return false;
+    }
+
+    // PiecewiseBreakScaleEngine inherits QwtLinearScaleEngine, so Plot::isLog10ScaleEngine()
+    // returns false even when both break segments are Log10; read log type from the break spec.
+    const bool isLog = hasBreak ? (brk.log10Before && brk.log10After)
+                                : Plot::isLog10ScaleEngine(se);
+    const bool requiresPositive = isLog
+            || (hasBreak && ((brk.log10Before && !wasMax) || (brk.log10After && wasMax)));
+    if (requiresPositive && rawNew <= 0.0) {
         flagError(tr("Log10 scale requires positive values (> 0)."));
         return false;
     }
@@ -718,6 +767,15 @@ bool ScalePicker::commitInlineScaleEditor(bool openOppositeEnd)
 
     g->setScale(axisId, newMin, newMax, g->axisStep(axisId), p->axisMaxMajor(axisId),
                 p->axisMaxMinor(axisId), isLog ? 1 : 0, inverted);
+    if (hasBreak) {
+        const double bf = std::min(brk.breakFrom, brk.breakTo);
+        const double bt = std::max(brk.breakFrom, brk.breakTo);
+        const bool breakValid = (bf > newMin && bt < newMax && bt > bf + 1e-15)
+                && (!brk.log10Before || (newMin > 0.0 && bf > 0.0))
+                && (!brk.log10After || (bt > 0.0 && newMax > 0.0));
+        if (breakValid)
+            g->setAxisBreak(axisId, brk);
+    }
     g->setAxisUserLocked(axisId, true);
     g->enableAutoscaling(false);
     g->syncChildLinkedLayers();
@@ -938,6 +996,12 @@ void ScalePicker::selectTitle(QwtScaleWidget *scale, bool select)
     if (select) {
         scale->setFocusPolicy(Qt::ClickFocus);
         scale->setFocus(Qt::MouseFocusReason);
+    } else if (scale->hasFocus()) {
+        scale->clearFocus();
+        if (QwtPlot *plt = plot()) {
+            if (plt->canvas())
+                plt->canvas()->setFocus(Qt::OtherFocusReason);
+        }
     }
 
     if (Graph *g = graph()) {
@@ -964,6 +1028,12 @@ void ScalePicker::selectLabels(QwtScaleWidget *scale, bool select)
     if (select) {
         scale->setFocusPolicy(Qt::ClickFocus);
         scale->setFocus(Qt::MouseFocusReason);
+    } else if (scale->hasFocus()) {
+        scale->clearFocus();
+        if (QwtPlot *plt = plot()) {
+            if (plt->canvas())
+                plt->canvas()->setFocus(Qt::OtherFocusReason);
+        }
     }
 
     scale->repaint();
@@ -983,18 +1053,35 @@ void ScalePicker::deselect()
     if (d_inline_scale_edit)
         finishInlineScaleEditorOnDefocus();
 
-    if (!d_selected_axis)
-        return;
-
     QwtScaleWidget *prev = d_selected_axis;
     d_title_selected = false;
     d_labels_selected = false;
     d_selected_axis = nullptr;
 
-    if (prev->title().backgroundPen().style() != Qt::NoPen) {
-        QwtText cleanTitle = prev->title();
-        cleanTitle.setBackgroundPen(QPen(Qt::NoPen));
-        prev->setTitle(cleanTitle);
+    bool hadFocus = false;
+    if (prev) {
+        if (prev->hasFocus()) {
+            prev->clearFocus();
+            hadFocus = true;
+        }
+        if (prev->title().backgroundPen().style() != Qt::NoPen) {
+            QwtText cleanTitle = prev->title();
+            cleanTitle.setBackgroundPen(QPen(Qt::NoPen));
+            prev->setTitle(cleanTitle);
+        }
+        prev->repaint();
     }
-    prev->repaint();
+
+    if (QwtPlot *plt = plot()) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (QwtScaleWidget *sw = plt->axisWidget(a)) {
+                if (sw->hasFocus()) {
+                    sw->clearFocus();
+                    hadFocus = true;
+                }
+            }
+        }
+        if (hadFocus && plt->canvas())
+            plt->canvas()->setFocus(Qt::OtherFocusReason);
+    }
 }

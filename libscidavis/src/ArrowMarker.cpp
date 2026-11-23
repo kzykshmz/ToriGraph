@@ -60,6 +60,21 @@ QPoint snapArrowEndpointAngle45(const QPoint &anchor, const QPoint &target)
 #include <qwt_plot_canvas.h>
 #include <qwt_painter.h>
 
+namespace {
+double arrowScreenZoomScale(const QwtPlot *qwtPlot)
+{
+    if (!QwtPainter::metricsMap().isIdentity())
+        return 1.0;
+    const Plot *pl = dynamic_cast<const Plot *>(qwtPlot);
+    if (!pl)
+        return 1.0;
+    const double s = pl->displayFontScale();
+    if (!std::isfinite(s) || std::fabs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
+} // namespace
+
 #ifndef M_PI
 #define M_PI 3.141592653589793238462643;
 #endif
@@ -94,11 +109,11 @@ void ArrowMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &
     const double segLen = std::hypot(dx, dy);
     const double angleDeg = std::atan2(dy, dx) * (180.0 / kPi);
 
-    const double sc = Plot::printDeviceScale();
+    const double sc = Plot::printDeviceScale() * arrowScreenZoomScale(plot());
     QPen pen = linePen();
     pen.setCosmetic(false);
-    const double baseW = (pen.widthF() > 0.0) ? pen.widthF() : 1.2;
-    const double pw = qMax(1.0, baseW) * sc;
+    const double baseW = widthF();
+    const double pw = baseW * sc;
     pen.setWidthF(pw);
 
     const double rawHeadLen = double(qMax(5, d_head_length)) * sc;
@@ -260,11 +275,20 @@ void ArrowMarker::setColor(const QColor &c)
 
 void ArrowMarker::setWidth(int w)
 {
-    if (linePen().width() == w)
+    setWidthF(double(w));
+}
+
+void ArrowMarker::setWidthF(double w)
+{
+    if (!std::isfinite(w) || w <= 0.0)
         return;
 
     QPen pen = linePen();
-    pen.setWidth(w);
+    if (std::fabs(pen.widthF() - w) <= 1e-6 && !pen.isCosmetic())
+        return;
+
+    pen.setCosmetic(false);
+    pen.setWidthF(w);
     setLinePen(pen);
 }
 

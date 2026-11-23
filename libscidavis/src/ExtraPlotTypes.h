@@ -138,6 +138,14 @@ public:
     //! Re-counts a 2D density graph from its recorded source columns and settings (after the
     //! data changed). Returns false if \a g is not a 2D density graph or the source is gone.
     static bool rebuildDensity2D(ApplicationWindow *app, Graph *g);
+    //! Updates an existing 2D density graph \a g in place with new binning, colour map,
+    //! logarithmic colour scale, and cell-block settings.
+    static Density2DResult updateDensity2D(ApplicationWindow *app, Graph *g, Table *t,
+                                           const QString &xCol, const QString &yCol, int binsX = 0,
+                                           int binsY = 0, double widthX = 0.0, double widthY = 0.0,
+                                           bool logColor = false,
+                                           int preset = 2 /*Spectrogram::PresetViridis*/,
+                                           bool cellBlocks = true, bool reverse = false);
 
     // ---- 6. Pole figure -------------------------------------------------------------------
     enum PoleProjection { EqualArea = 0 /*Schmidt / Lambert*/, EqualAngle = 1 /*Wulff*/ };

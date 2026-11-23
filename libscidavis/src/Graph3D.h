@@ -35,6 +35,7 @@
 #include <QTimer>
 #include <QVector>
 #include <QEvent>
+#include <QPoint>
 
 #include "Table.h"
 #include "Matrix.h"
@@ -242,6 +243,17 @@ public slots:
 
     void exportPDF(const QString &fileName);
     void exportVector(const QString &fileName, const QString &fileType = "pdf");
+    //! Dispatch by file suffix (pdf/eps/ps/svg -> vector, emf -> EMF (Windows), else raster).
+    void exportToFile(const QString &fileName);
+
+    //! Checked export variants: never throw; return false and set *errOut on failure.
+    bool exportImageChecked(const QString &fileName, int quality = 100, bool transparent = false,
+                            QString *errOut = nullptr);
+    //! Format inferred from the file suffix.
+    bool exportVectorChecked(const QString &fileName, QString *errOut = nullptr);
+    bool exportVectorChecked(const QString &fileName, const QString &fileType,
+                             QString *errOut = nullptr);
+    bool exportToFileChecked(const QString &fileName, QString *errOut = nullptr);
 
     QString saveToString(const QString &geometry);
     QString saveAsTemplate(const QString &geometryInfo);
@@ -361,6 +373,9 @@ signals:
 private:
     Qwt3D::Triple **allocateData(int columns, int rows);
     void deleteData(Qwt3D::Triple **data, int columns);
+    //! Render the plot offscreen at export DPI (never shown on screen).
+    QImage renderExportImage(int *effDpiOut);
+    bool exportVectorImpl(const QString &fileName, const QString &fileType, QString *errOut);
 
     //! Wait this many msecs before redraw 3D plot (used for animations)
     int animation_redraw_wait;
@@ -389,6 +404,11 @@ private:
     Matrix *d_matrix;
     Qwt3D::PLOTSTYLE style_;
     double d_base_zoom = 1.0;
+    bool d_right_dragging = false;
+    bool d_right_drag_moved = false;
+    bool d_suppress_next_context_menu = false;
+    QPoint d_right_drag_start_pos;
+    QPoint d_right_drag_last_pos;
 };
 
 //! Class for user defined functions

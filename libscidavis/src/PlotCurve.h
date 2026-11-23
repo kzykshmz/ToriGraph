@@ -29,7 +29,10 @@
 #ifndef PLOTCURVE_H
 #define PLOTCURVE_H
 
+#include <QLineF>
+#include <QPolygonF>
 #include <QRectF>
+#include <QVector>
 #include <qwt_plot_curve.h>
 #include "Table.h"
 
@@ -66,6 +69,48 @@ public:
               const QRect &canvasRect) const override;
 
     QwtDoubleRect boundingRect() const override;
+
+    //! Axis-break geometry for this curve's axes: data-space break interval plus the
+    //! device-pixel gap band [xLo, xHi] / [yLo, yHi] that drawing must not bridge.
+    struct AxisBreakBands {
+        bool hasX = false;
+        bool hasY = false;
+        double xBf = 0.0, xBt = 0.0, xEps = 0.0, xBrkPx = 0.0, xLo = 0.0, xHi = 0.0;
+        double yBf = 0.0, yBt = 0.0, yEps = 0.0, yBrkPx = 0.0, yLo = 0.0, yHi = 0.0;
+        bool any() const { return hasX || hasY; }
+        bool xValueInGap(double vx) const { return hasX && vx > xBf + xEps && vx < xBt - xEps; }
+        bool yValueInGap(double vy) const { return hasY && vy > yBf + yEps && vy < yBt - yEps; }
+        bool valueInGap(double vx, double vy) const { return xValueInGap(vx) || yValueInGap(vy); }
+        bool xPixelInGap(double px) const { return hasX && px > xLo && px < xHi; }
+        bool yPixelInGap(double py) const { return hasY && py > yLo && py < yHi; }
+        bool pixelInGap(const QPointF &p) const { return xPixelInGap(p.x()) || yPixelInGap(p.y()); }
+        bool xValuesStraddle(double a, double b) const
+        {
+            return hasX && ((a <= xBf + xEps && b >= xBt - xEps)
+                            || (a >= xBt - xEps && b <= xBf + xEps));
+        }
+        bool yValuesStraddle(double a, double b) const
+        {
+            return hasY && ((a <= yBf + yEps && b >= yBt - yEps)
+                            || (a >= yBt - yEps && b <= yBf + yEps));
+        }
+    };
+    //! Half width (device px) of the visual break gap around the collapsed break position.
+    static constexpr double kAxisBreakHalfGapPx = 4.5;
+
+    AxisBreakBands axisBreakBands(const QwtScaleMap &xMap, const QwtScaleMap &yMap) const;
+    //! Appends the parts of \a seg lying outside the break gap bands to \a out.
+    static void appendSegmentOutsideBreaks(const QLineF &seg, const AxisBreakBands &b,
+                                           QVector<QLineF> &out);
+    //! Splits an open polyline into sub-polylines that do not cross the break gap bands.
+    static QVector<QPolygonF> splitPolylineAtBreaks(const QPolygonF &poly, const AxisBreakBands &b);
+    //! Clips a closed (fill) polygon so no piece lies inside / bridges the break gap bands.
+    static QVector<QPolygonF> clipPolygonToBreaks(const QPolygonF &closedPoly,
+                                                  const AxisBreakBands &b);
+
+    //! Pen/size scale factor for device + page-zoom rendering, identical to the one used for
+    //! data lines: Plot::printDeviceScale() x (on screen only) Plot::displayFontScale().
+    double renderPenScale() const;
 
 protected:
     void drawCurve(QPainter *p, int style, const QwtScaleMap &xMap, const QwtScaleMap &yMap,

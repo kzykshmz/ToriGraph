@@ -54,6 +54,8 @@ public:
 
     int width() { return pen().width(); };
     void setWidth(int w);
+    double widthF() const { return pen().widthF(); }
+    void setWidthF(double w);
 
     QColor color() { return pen().color(); };
     void setColor(const QColor &c);

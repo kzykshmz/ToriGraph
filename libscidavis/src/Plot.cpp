@@ -153,6 +153,27 @@ double Plot::printDeviceScale()
     return qMax(1.0, s_toriPrintDeviceScale);
 }
 
+bool Plot::isScreenWidgetPainter(const QPainter *painter) const
+{
+    if (!painter || !painter->device() || painter->device()->devType() != QInternal::Widget)
+        return false;
+    if (!QwtPainter::metricsMap().isIdentity())
+        return false;
+    const Graph *g = qobject_cast<const Graph *>(parent());
+    return !g || (!g->isExporting() && !g->property("isExporting").toBool());
+}
+
+double Plot::axisDecorationScale(const QPainter *painter) const
+{
+    double s = printDeviceScale();
+    if (isScreenWidgetPainter(painter)) {
+        const double z = displayFontScale();
+        if (std::isfinite(z) && std::fabs(z - 1.0) > 1e-4)
+            s *= qBound(0.25, z, 4.0);
+    }
+    return s;
+}
+
 Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
 {
     setAutoReplot(false);
@@ -233,6 +254,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
             scale->setPalette(pal);
 
             ScaleDraw *sd = new ScaleDraw();
+            sd->setAxisFontHint(defaultTickFont);
             sd->setTickLength(QwtScaleDiv::MinorTick, minTickLength);
             sd->setTickLength(QwtScaleDiv::MediumTick, minTickLength);
             sd->setTickLength(QwtScaleDiv::MajorTick, minTickLength);
@@ -339,9 +361,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                      const QwtPlotPrintFilter &pfilter) const
 {
     Graph *g = qobject_cast<Graph *>(parent());
-    const bool isScreenWidgetPaint = painter && painter->device()
-            && painter->device()->devType() == QInternal::Widget
-            && (!g || (!g->isExporting() && !g->property("isExporting").toBool()));
+    const bool isScreenWidgetPaint = isScreenWidgetPainter(painter);
     auto isNonVertexSpecialtyCurve = [](const QwtPlotCurve *c) -> bool {
         if (!c)
             return false;
@@ -437,7 +457,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                                       ->palette()
                                       .color(QPalette::Active, QPalette::WindowText)
                             : Qt::black;
-                    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+                    const double tickScale = axisDecorationScale(painter);
                     const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
                     const int effMinLen = qMax(1, qRound(double(minTickLength) * tickScale));
                     const int effMajLen = qMax(1, qRound(double(majTickLength) * tickScale));
@@ -451,13 +471,13 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                         for (int j = 0; j < (int)minTickList.count(); ++j) {
                             const int y = map[QwtPlot::yLeft].transform(minTickList[j]);
                             if (y >= low && y <= high)
-                                QwtPainter::drawLine(painter, x + 1, y, x - effMinLen, y);
+                                QwtPainter::drawLine(painter, x, y, x - effMinLen, y);
                         }
                         const QwtValueList medTickList = lScDiv->ticks(QwtScaleDiv::MediumTick);
                         for (int j = 0; j < (int)medTickList.count(); ++j) {
                             const int y = map[QwtPlot::yLeft].transform(medTickList[j]);
                             if (y >= low && y <= high)
-                                QwtPainter::drawLine(painter, x + 1, y, x - effMinLen, y);
+                                QwtPainter::drawLine(painter, x, y, x - effMinLen, y);
                         }
                     }
                     if (lMaj) {
@@ -465,7 +485,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                         for (int j = 0; j < (int)majTickList.count(); ++j) {
                             const int y = map[QwtPlot::yLeft].transform(majTickList[j]);
                             if (y >= low && y <= high)
-                                QwtPainter::drawLine(painter, x + 1, y, x - effMajLen, y);
+                                QwtPainter::drawLine(painter, x, y, x - effMajLen, y);
                         }
                     }
                     painter->restore();
@@ -488,7 +508,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                                       ->palette()
                                       .color(QPalette::Active, QPalette::WindowText)
                             : Qt::black;
-                    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+                    const double tickScale = axisDecorationScale(painter);
                     const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
                     const int effMinLen = qMax(1, qRound(double(minTickLength) * tickScale));
                     const int effMajLen = qMax(1, qRound(double(majTickLength) * tickScale));
@@ -536,7 +556,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
             drawInwardTicks(painter, rect, map[i], i, min, maj);
     }
     if (g && !g->isTernaryPlot() && !g->isPolarPlot() && !g->isPiePlot() && g->axesBackbones()) {
-        const double devScale = qMax(1.0, s_toriPrintDeviceScale);
+        const double devScale = axisDecorationScale(painter);
         const double lw = qMax(1.0, double(axesLinewidth()) * devScale);
         bool clp = painter->hasClipping();
         painter->save();
@@ -544,10 +564,12 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
                              lw, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
         painter->setBrush(Qt::NoBrush);
         painter->setClipping(false);
-        const QRectF br = isScreenWidgetPaint
-                ? QRectF(0.5 * lw, 0.5 * lw, qMax(1.0, double(rect.width()) - lw),
-                         qMax(1.0, double(rect.height()) - lw))
-                : QRectF(rect).adjusted(-0.5 * lw, -0.5 * lw, 0.5 * lw, 0.5 * lw);
+        // Unify screen and print on the same inset 0.5*lw centerline rectangle inside rect so
+        // screen preview (including 160% zoom) and 100%/600-DPI exports align 1:1.
+        const double halfLw = 0.5 * lw;
+        const QRectF br(double(rect.left()) + halfLw, double(rect.top()) + halfLw,
+                        qMax(1.0, double(rect.width()) - lw),
+                        qMax(1.0, double(rect.height()) - lw));
         const bool forceFrame = (pfilter.options() & QwtPlotPrintFilter::PrintFrameWithScales);
         const bool showLeft = g->isAxisBackboneVisible(QwtPlot::yLeft) || forceFrame;
         const bool showRight = g->isAxisBackboneVisible(QwtPlot::yRight) || forceFrame;
@@ -641,8 +663,7 @@ void Plot::drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map
         painter->setClipping(clp);
     }
 
-    if (g && !g->isExporting() && !g->property("isExporting").toBool() && painter
-        && painter->device() && painter->device()->devType() == QInternal::Widget) {
+    if (g && isScreenWidgetPainter(painter)) {
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setClipRect(rect.adjusted(-6, -6, 6, 6));
@@ -821,7 +842,7 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
     QPalette pal = axisWidget(axis)->palette();
     QColor color = pal.color(QPalette::Active, QPalette::WindowText);
 
-    const double tickScale = qMax(1.0, s_toriPrintDeviceScale);
+    const double tickScale = axisDecorationScale(painter);
     const double tickPw = qMax(1.0, double(axesLinewidth()) * tickScale);
     const int effMinTick = qMax(1, qRound(double(minTickLength) * tickScale));
     const int effMajTick = qMax(1, qRound(double(majTickLength) * tickScale));
@@ -917,21 +938,21 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 y = map.transform(minTickList[j]);
-                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMinTick, y))
-                    QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x - effMinTick, y))
+                    QwtPainter::drawLine(painter, x, y, x - effMinTick, y);
             }
             for (j = 0; j < medTicks; j++) {
                 y = map.transform(medTickList[j]);
-                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMinTick, y))
-                    QwtPainter::drawLine(painter, x + 1, y, x - effMinTick, y);
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x - effMinTick, y))
+                    QwtPainter::drawLine(painter, x, y, x - effMinTick, y);
             }
         }
 
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 y = map.transform(majTickList[j]);
-                if (y >= low && y <= high && !hitsFramedCallout(x + 1, y, x - effMajTick, y))
-                    QwtPainter::drawLine(painter, x + 1, y, x - effMajTick, y);
+                if (y >= low && y <= high && !hitsFramedCallout(x, y, x - effMajTick, y))
+                    QwtPainter::drawLine(painter, x, y, x - effMajTick, y);
             }
         }
     } break;
@@ -947,21 +968,21 @@ void Plot::drawInwardTicks(QPainter *painter, const QRect &rect, const QwtScaleM
         if (min) {
             for (j = 0; j < minTicks; j++) {
                 x = map.transform(minTickList[j]);
-                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMinTick))
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y - effMinTick))
+                    QwtPainter::drawLine(painter, x, y, x, y - effMinTick);
             }
             for (j = 0; j < medTicks; j++) {
                 x = map.transform(medTickList[j]);
-                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMinTick))
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMinTick);
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y - effMinTick))
+                    QwtPainter::drawLine(painter, x, y, x, y - effMinTick);
             }
         }
 
         if (maj) {
             for (j = 0; j < majTicks; j++) {
                 x = map.transform(majTickList[j]);
-                if (x >= low && x <= high && !hitsFramedCallout(x, y + 1, x, y - effMajTick))
-                    QwtPainter::drawLine(painter, x, y + 1, x, y - effMajTick);
+                if (x >= low && x <= high && !hitsFramedCallout(x, y, x, y - effMajTick))
+                    QwtPainter::drawLine(painter, x, y, x, y - effMajTick);
             }
         }
         break;
@@ -1070,6 +1091,8 @@ void Plot::updateLayout()
         QwtScaleWidget *sw = axisWidget(axis);
         if (!sw || !sw->scaleDraw())
             continue;
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(sw->scaleDraw()))
+            sd->setAxisFontHint(sw->font());
         if (sw->scaleDraw()->hasComponent(QwtAbstractScaleDraw::Labels)) {
             if (sw->isColorBarEnabled()) {
                 sw->setMinBorderDist(0, 0);
@@ -1159,6 +1182,8 @@ void Plot::updateLayout()
         QwtScaleWidget *sw = axisWidget(a);
         if (!sw || !axisEnabled(a))
             continue;
+        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(sw->scaleDraw()))
+            sd->syncLayoutMetrics(sd->length(), sw->font());
         const int neg = sw->property("_toriNegBaseline").toInt();
         const double normShift = sw->property("_toriAxisNormalShift").toDouble();
         const double parShift = sw->property("_toriAxisParallelShift").toDouble();
@@ -1383,7 +1408,12 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
             || (plotRect.height() > 0 && plotRect.height() < 150)
             || (g && g->multiLayerParent() && g->multiLayerParent()->isInsetLayer(g));
 
-    if (!axisEnabled(QwtPlot::yRight)) {
+    // When alignCanvasToScales() is true, QwtPlotLayout::alignScales() inside QwtPlot::print()
+    // already reserves (endDist - 1) on the right when !axisEnabled(yRight) and startDist on top
+    // when !axisEnabled(xTop), matching on-screen Plot::updateLayout() 1:1. Only pre-inset for
+    // disabled axes when alignCanvasToScales() is false so print() does not deduct twice.
+    const bool layoutAlignsToScales = (plotLayout() && plotLayout()->alignCanvasToScales());
+    if (!axisEnabled(QwtPlot::yRight) && !layoutAlignsToScales) {
         int s = 0, e = 0;
         if (axisEnabled(QwtPlot::xBottom) && axisWidget(QwtPlot::xBottom))
             axisWidget(QwtPlot::xBottom)->getBorderDistHint(s, e);
@@ -1397,7 +1427,7 @@ void Plot::print(QPainter *painter, const QRect &plotRect, const QwtPlotPrintFil
     const int outsideRightMargin = property("_outsideRightMargin").toInt();
     if (outsideRightMargin > 0)
         mRight += outsideRightMargin;
-    if (!axisEnabled(QwtPlot::xTop) && title().isEmpty()) {
+    if (!axisEnabled(QwtPlot::xTop) && title().isEmpty() && !layoutAlignsToScales) {
         int s = 0, e = 0;
         if (axisEnabled(QwtPlot::yLeft) && axisWidget(QwtPlot::yLeft))
             axisWidget(QwtPlot::yLeft)->getBorderDistHint(s, e);
@@ -2032,6 +2062,28 @@ void Plot::syncMirrorAxisIfNeeded(int changedAxis)
     }
 }
 
+void Plot::applyBreakIndicator(int axis)
+{
+    if (!axisValid(axis))
+        return;
+    Graph *g = qobject_cast<Graph *>(parent());
+    if (!g)
+        return;
+    const Graph::AxisBreakSpec brk = g->axisBreak(axis);
+    if (!brk.enabled)
+        return;
+    ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axis));
+    const QwtScaleDiv *div = axisScaleDiv(axis);
+    if (!sd || !div)
+        return;
+    const double lo = qMin(div->lowerBound(), div->upperBound());
+    const double hi = qMax(div->lowerBound(), div->upperBound());
+    const double bf = qMin(brk.breakFrom, brk.breakTo);
+    const double bt = qMax(brk.breakFrom, brk.breakTo);
+    const bool straddles = (bf > lo && bt < hi && bt > bf + 1e-15);
+    sd->setAxisBreakIndicator(straddles, bf, bt, brk.log10Before, brk.log10After);
+}
+
 void Plot::flushPendingWheelUndo()
 {
     if (d_wheel_undo_timer && d_wheel_undo_timer->isActive())
@@ -2072,31 +2124,42 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
     double newMin = minVal;
     double newMax = maxVal;
     if (hasBreak) {
+        // Break-aware zoom: scale the endpoint pixel positions around the cursor and map them back
+        // through the installed piecewise (linear/log per side) transformation, which extrapolates
+        // naturally beyond the current range. Interpolating min/max linearly (or in pure log) would
+        // distort the log side(s) of a mixed lin/log break axis.
         const double p1 = map.p1();
         const double p2 = map.p2();
-        double frac = (std::fabs(p2 - p1) > 1.0)
-                ? qBound(0.0, (double(pixelPos) - p1) / (p2 - p1), 1.0)
-                : 0.5;
-        if (inverted)
-            frac = 1.0 - frac;
+        if (std::fabs(p2 - p1) <= 1.0)
+            return;
+        const double pc = qBound(qMin(p1, p2), double(pixelPos), qMax(p1, p2));
+        const double pMin = map.xTransform(minVal);
+        const double pMax = map.xTransform(maxVal);
+        if (!std::isfinite(pMin) || !std::isfinite(pMax))
+            return;
+        const double a = map.invTransform(pc + (pMin - pc) * factor);
+        const double b = map.invTransform(pc + (pMax - pc) * factor);
+        if (!std::isfinite(a) || !std::isfinite(b))
+            return;
+        newMin = qMin(a, b);
+        newMax = qMax(a, b);
         if (isLog) {
-            if (minVal <= 0.0 || maxVal <= 0.0)
+            if (newMin <= 0.0 && minVal > 0.0) {
+                // View not straddling the break (linear map) zoomed out past 0: fall back to a
+                // pure log10 zoom about the cursor value so log/log axes stay usable.
+                double c = map.invTransform(pc);
+                if (!(c > 0.0) || !std::isfinite(c))
+                    c = std::sqrt(minVal * maxVal);
+                c = qBound(minVal, c, maxVal);
+                const double lc = std::log10(c);
+                newMin = std::pow(10.0, lc + (std::log10(minVal) - lc) * factor);
+                newMax = std::pow(10.0, lc + (std::log10(maxVal) - lc) * factor);
+            }
+            if (newMin <= 0.0 || std::log10(newMax) - std::log10(newMin) < 1e-6
+                || std::log10(newMin) < -300.0 || std::log10(newMax) > 300.0)
                 return;
-            const double logMin = std::log10(minVal);
-            const double logMax = std::log10(maxVal);
-            const double logCenter = logMin + frac * (logMax - logMin);
-            const double newLogMin = logCenter + (logMin - logCenter) * factor;
-            const double newLogMax = logCenter + (logMax - logCenter) * factor;
-            if (newLogMax - newLogMin < 1e-6 || newLogMin < -300.0 || newLogMax > 300.0)
-                return;
-            newMin = std::pow(10.0, newLogMin);
-            newMax = std::pow(10.0, newLogMax);
-        } else {
-            const double centerVal = minVal + frac * (maxVal - minVal);
-            newMin = centerVal + (minVal - centerVal) * factor;
-            newMax = centerVal + (maxVal - centerVal) * factor;
-            if (newMax - newMin <= 1e-15)
-                return;
+        } else if (newMax - newMin <= 1e-15) {
+            return;
         }
     } else {
         double centerVal = map.invTransform(pixelPos);
@@ -2156,15 +2219,12 @@ void Plot::zoomAxisAroundPos(int axis, int pixelPos, double factor)
     }
     setAxisScaleDiv(axis, div);
 
-    if (hasBreak) {
-        const double bf = qMin(brk.breakFrom, brk.breakTo);
-        const double bt = qMax(brk.breakFrom, brk.breakTo);
-        const bool straddlesBreak = (bf > newMin && bt < newMax && bt > bf + 1e-15);
-        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axis)))
-            sd->setAxisBreakIndicator(straddlesBreak, bf);
-    }
-    if (g)
+    if (hasBreak)
+        applyBreakIndicator(axis);
+    if (g) {
         g->setAxisUserLocked(axis, true);
+        g->repositionAnchoredOutsideRightLegend();
+    }
     syncMirrorAxisIfNeeded(axis);
 }
 
@@ -2194,32 +2254,39 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
     double newMin = minVal;
     double newMax = maxVal;
     if (hasBreak) {
+        // Break-aware pan: shift the endpoint pixels and map them back through the installed
+        // piecewise (linear/log per side) transformation, so log sides are not distorted.
         const double p1 = map.p1();
         const double p2 = map.p2();
         if (std::fabs(p2 - p1) <= 1.0)
             return;
-        double fracDelta = double(startPixel - endPixel) / (p2 - p1);
-        if (inverted)
-            fracDelta = -fracDelta;
+        const double dp = double(startPixel - endPixel);
+        const double pMin = map.xTransform(minVal);
+        const double pMax = map.xTransform(maxVal);
+        if (!std::isfinite(pMin) || !std::isfinite(pMax))
+            return;
+        const double a = map.invTransform(pMin + dp);
+        const double b = map.invTransform(pMax + dp);
+        if (!std::isfinite(a) || !std::isfinite(b))
+            return;
+        newMin = qMin(a, b);
+        newMax = qMax(a, b);
         if (isLog) {
-            if (minVal <= 0.0 || maxVal <= 0.0)
+            if (newMin <= 0.0 && minVal > 0.0) {
+                // View not straddling the break (linear map) panned past 0: pan in log10 space.
+                const double vStart = map.invTransform(startPixel);
+                const double vEnd = map.invTransform(endPixel);
+                if (!(vStart > 0.0) || !(vEnd > 0.0))
+                    return;
+                const double logDelta = std::log10(vStart) - std::log10(vEnd);
+                newMin = std::pow(10.0, std::log10(minVal) + logDelta);
+                newMax = std::pow(10.0, std::log10(maxVal) + logDelta);
+            }
+            if (newMin <= 0.0 || std::log10(newMin) < -300.0 || std::log10(newMax) > 300.0)
                 return;
-            const double logMin = std::log10(minVal);
-            const double logMax = std::log10(maxVal);
-            const double logDelta = fracDelta * (logMax - logMin);
-            const double newLogMin = logMin + logDelta;
-            const double newLogMax = logMax + logDelta;
-            if (newLogMin < -300.0 || newLogMax > 300.0)
-                return;
-            newMin = std::pow(10.0, newLogMin);
-            newMax = std::pow(10.0, newLogMax);
-        } else {
-            const double delta = fracDelta * (maxVal - minVal);
-            if (!std::isfinite(delta))
-                return;
-            newMin = minVal + delta;
-            newMax = maxVal + delta;
         }
+        if (!(newMax > newMin))
+            return;
     } else {
         const double vStart = map.invTransform(startPixel);
         const double vEnd = map.invTransform(endPixel);
@@ -2271,15 +2338,12 @@ void Plot::panAxisByPixels(int axis, int startPixel, int endPixel)
     }
     setAxisScaleDiv(axis, div);
 
-    if (hasBreak) {
-        const double bf = qMin(brk.breakFrom, brk.breakTo);
-        const double bt = qMax(brk.breakFrom, brk.breakTo);
-        const bool straddlesBreak = (bf > newMin && bt < newMax && bt > bf + 1e-15);
-        if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axis)))
-            sd->setAxisBreakIndicator(straddlesBreak, bf);
-    }
-    if (g)
+    if (hasBreak)
+        applyBreakIndicator(axis);
+    if (g) {
         g->setAxisUserLocked(axis, true);
+        g->repositionAnchoredOutsideRightLegend();
+    }
     syncMirrorAxisIfNeeded(axis);
 }
 
@@ -2797,7 +2861,10 @@ void Plot::setAxisFont(int axisId, const QFont &f)
         QwtPlot::setAxisFont(axisId, f);
         return;
     }
-    QwtPlot::setAxisFont(axisId, zoomFont(d_zoom_axis_font[axisId], f));
+    const QFont shown = zoomFont(d_zoom_axis_font[axisId], f);
+    QwtPlot::setAxisFont(axisId, shown);
+    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(axisScaleDraw(axisId)))
+        sd->setAxisFontHint(shown);
 }
 
 QFont Plot::axisFont(int axisId) const
@@ -2877,4 +2944,6 @@ void Plot::setDisplayFontScale(double scale)
         setAxisTitle(a, axisTitles[a]);
     }
     setTitle(plotTitle);
+    if (canvas())
+        canvas()->update();
 }

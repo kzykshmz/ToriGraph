@@ -30,6 +30,7 @@
 #define SCALES_H
 
 #include <QDateTime>
+#include <QFont>
 #include <QLinearGradient>
 #include <QStringList>
 #include <QLocale>
@@ -91,6 +92,10 @@ public:
 
     int extent(const QPen &pen, const QFont &font) const override;
 
+    void setAxisFontHint(const QFont &font);
+    QFont axisFontHint() const;
+    void syncLayoutMetrics(int axisLengthPx, const QFont &font);
+
     QwtText label(double value) const override;
 
     void labelFormat(char &f, int &prec) const;
@@ -107,6 +112,7 @@ public:
 protected:
     void drawTick(QPainter *p, double value, int len) const;
     void drawBackbone(QPainter *p) const override;
+    void drawLabel(QPainter *p, double value) const override;
 
 private:
     QString formula_string;
@@ -125,6 +131,9 @@ private:
     int d_colorbar_width = 0;
     int d_colorbar_pen_width = 1;
     QGradientStops d_colorbar_stops;
+    mutable QFont d_axis_font;
+    mutable bool d_has_axis_font = false;
+    mutable int d_cached_layout_len = -1;
 };
 
 class QwtTextScaleDraw : public ScaleDraw

@@ -72,8 +72,14 @@ public:
 
     //! Sets the width of the arrow line
     void setWidth(int w);
+    void setWidthF(double w);
     //! The width of the arrow line
     int width() { return linePen().width(); };
+    double widthF() const
+    {
+        const double wf = linePen().widthF();
+        return (wf > 0.0) ? wf : ((linePen().width() > 0) ? double(linePen().width()) : 1.0);
+    }
 
     //! Sets the pen style for the arrow line
     void setStyle(Qt::PenStyle s);

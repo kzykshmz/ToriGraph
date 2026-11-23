@@ -37,7 +37,9 @@
 #include "ScreenPickerTool.h"
 #include <QMessageBox>
 #include <QLocale>
+#include <QUndoStack>
 #include <qwt_plot_curve.h>
+#include "core/Project.h"
 #include "core/column/Column.h"
 
 #include <stdexcept>
@@ -162,6 +164,13 @@ void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
 
         const int row_start = qMax(0, c->tableRow(0));
         const int row_end = qMin(tab->column(col)->rowCount(), row_start + c->dataSize());
+        QUndoStack *undoStack = (d_app && d_app->project() && d_app->project()->undoStack())
+                ? d_app->project()->undoStack()
+                : (tab->d_future_table ? tab->d_future_table->undoStack() : nullptr);
+        if (undoStack) {
+            undoStack->beginMacro(d_dir == Horizontal ? tr("Translate Curve Horizontally")
+                                                      : tr("Translate Curve Vertically"));
+        }
         for (int i = row_start; i < row_end; i++) {
             const int ptIdx = i - row_start;
             if (!tab->column(col)->isInvalid(i) && ptIdx >= 0 && ptIdx < d_selected_curve->dataSize())
@@ -171,6 +180,8 @@ void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
                                              : d_selected_curve->y(ptIdx))
                                 + d);
         }
+        if (undoStack)
+            undoStack->endMacro();
         d_app->updateCurves(tab, col_name);
         d_app->modifiedProject();
         d_graph->setActiveTool(NULL);
