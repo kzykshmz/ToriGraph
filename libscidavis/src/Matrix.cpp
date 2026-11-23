@@ -137,7 +137,8 @@ Matrix::~Matrix()
         future::Matrix *fm = d_future_matrix.data();
         d_future_matrix.clear();
         fm->setView(nullptr);
-        delete fm;
+        if (!fm->property("_tg_owned_by_undo_cmd").toBool())
+            delete fm;
     }
 }
 
@@ -711,9 +712,11 @@ void Matrix::closeEvent(QCloseEvent *e)
         case 0: {
             e->accept();
             QPointer<Matrix> self(this);
+            const bool retainForUndo = d_future_matrix && d_future_matrix->parentAspect()
+                    && d_future_matrix->undoStack() != nullptr;
             if (d_future_matrix)
                 d_future_matrix->remove();
-            if (self)
+            if (!retainForUndo && self)
                 self->deleteLater();
             return;
         }
@@ -730,9 +733,11 @@ void Matrix::closeEvent(QCloseEvent *e)
     } else {
         e->accept();
         QPointer<Matrix> self(this);
+        const bool retainForUndo = d_future_matrix && d_future_matrix->parentAspect()
+                && d_future_matrix->undoStack() != nullptr;
         if (d_future_matrix)
             d_future_matrix->remove();
-        if (self)
+        if (!retainForUndo && self)
             self->deleteLater();
         return;
     }

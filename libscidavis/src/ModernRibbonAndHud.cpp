@@ -6009,20 +6009,21 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
     if (d_btn_ws_reimport)
         d_btn_ws_reimport->setEnabled(activeTable != nullptr && activeTable->hasImportSource());
 
-    // A1-8: Disable Copy for PowerPoint when no graph window is active.
+    // A1-8: Disable Copy for PowerPoint when no graph window is active, while keeping the
+    // double-click re-editing hint in the tooltip.
+    const QString copyOleTip = hasGraph
+            ? ToriGraphOleUi::copyForPowerPointToolTip()
+            : (ToriGraphOleUi::copyForPowerPointToolTip() + QStringLiteral("\n")
+               + tr("Create or select a graph window first to copy for PowerPoint."));
     if (d_app) {
         if (QAction *aCopyOle = d_app->findChild<QAction *>(QStringLiteral("actionCopyGraphOle"))) {
             aCopyOle->setEnabled(hasGraph);
-            aCopyOle->setToolTip(hasGraph
-                                         ? ToriGraphOleUi::copyForPowerPointToolTip()
-                                         : tr("Create or select a graph window first to copy for PowerPoint."));
+            aCopyOle->setToolTip(copyOleTip);
         }
     }
     if (d_btn_export_copy_ole) {
         d_btn_export_copy_ole->setEnabled(hasGraph);
-        d_btn_export_copy_ole->setToolTip(
-                hasGraph ? ToriGraphOleUi::copyForPowerPointToolTip()
-                         : tr("Create or select a graph window first to copy for PowerPoint."));
+        d_btn_export_copy_ole->setToolTip(copyOleTip);
     }
 
     updateStatusBarZoomIndicator(activeMl);

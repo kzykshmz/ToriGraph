@@ -2127,7 +2127,9 @@ QImage MultiLayer::renderPageToImage(int effectiveDpi, bool transparent, QString
 
     const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
     const bool useAlphaFormat = transparent || (pageBg.alpha() < 255);
-    QImage image(targetSize, useAlphaFormat ? QImage::Format_ARGB32 : QImage::Format_RGB32);
+    // Paint onto Format_ARGB32 even for opaque exports so Qt5's Windows raster engine uses
+    // grayscale font AA instead of ClearType LCD RGB subpixel fringes on publication images.
+    QImage image(targetSize, QImage::Format_ARGB32);
     if (image.isNull()) {
         if (errOut)
             *errOut = tr("Image size is too large to allocate for export.");
@@ -2209,6 +2211,12 @@ QImage MultiLayer::renderPageToImage(int effectiveDpi, bool transparent, QString
         if (errOut)
             *errOut = tr("Failed to initialize image painter.");
         return QImage();
+    }
+
+    if (!useAlphaFormat) {
+        QImage rgb = image.convertToFormat(QImage::Format_RGB32);
+        if (!rgb.isNull())
+            image = std::move(rgb);
     }
 
     const int dpm = qRound(double(effectiveDpi) / 0.0254);
@@ -4565,10 +4573,22 @@ void MultiLayer::autoFitPageZoomToViewport()
         desiredUpper = (wMm <= 110.5 && hMm <= 110.5) ? 1.6 : 1.0;
     }
     const double target = qBound(0.35, std::min(desiredUpper, fitPageZoomFactor()), 1.6);
+    ApplicationWindow *app = findMultiLayerApp(this);
+    const bool splitMode = app && app->modernRibbonBar()
+            && app->modernRibbonBar()->workspaceLayoutMode()
+                    == ModernRibbonBar::LayoutSplitTableGraph;
+    const bool tabbedMode = (mdiArea() && mdiArea()->viewMode() == QMdiArea::TabbedView);
+    const bool keepFreeMdiGeo = property("_tg_has_saved_window_geo").toBool()
+            && !isMaximized() && !tabbedMode && !splitMode;
+    const QRect savedGeo = geometry();
     const bool prevInternal = d_internal_zoom_change;
     d_internal_zoom_change = true;
     setPageZoom(target);
     d_internal_zoom_change = prevInternal;
+    if (keepFreeMdiGeo && savedGeo.width() >= 260 && savedGeo.height() >= 220
+        && geometry() != savedGeo) {
+        setGeometry(savedGeo);
+    }
 }
 
 void MultiLayer::fitPageZoomToViewport()
@@ -10662,12 +10682,16 @@ bool MultiLayer::applyPendingNewGraphStylePreset()
     // A window size/position remembered from the last session (restored just before this
     // runs) wins over the preset's automatic window fit; the preset only sets the page.
     const bool keepWindowGeometry =
-            ApplicationWindow::getSettings()
-                    .value(QStringLiteral("/2DPlots/LastGraphWindow/HasGeometry"), false)
-                    .toBool()
+            (property("_tg_has_saved_window_geo").toBool()
+             || ApplicationWindow::getSettings()
+                        .value(QStringLiteral("/2DPlots/LastGraphWindow/HasGeometry"), false)
+                        .toBool())
             && !isMaximized();
     const QRect geoBefore = geometry();
+    const bool prevUserZoomed = d_user_zoomed;
     applyStylePresetSpec(spec);
+    if (prevUserZoomed)
+        d_user_zoomed = true;
     if (keepWindowGeometry && geoBefore.width() >= 100 && geoBefore.height() >= 100
         && geometry() != geoBefore)
         setGeometry(geoBefore);

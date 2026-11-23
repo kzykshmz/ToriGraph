@@ -257,6 +257,14 @@ namespace {
 
 static thread_local bool s_creating_hidden_table = false;
 
+static QTranslator *sharedBuiltinJaTranslator()
+{
+    static QPointer<ToriGraphFullJapaneseTranslator> s_ja;
+    if (s_ja.isNull() && qApp)
+        s_ja = new ToriGraphFullJapaneseTranslator(qApp);
+    return s_ja.data();
+}
+
 static void syncWorkspaceHiddenTabs(ApplicationWindow *app)
 {
     if (!app)
@@ -2328,8 +2336,8 @@ ApplicationWindow::ApplicationWindow()
                               .toString();
         earlySettings.endGroup();
     }
-    d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
-    if (appLanguage.startsWith("ja")) {
+    d_builtin_ja_translator = sharedBuiltinJaTranslator();
+    if (appLanguage.startsWith("ja") && d_builtin_ja_translator) {
         qApp->installTranslator(d_builtin_ja_translator);
     }
     if (current_folder)
@@ -7682,6 +7690,8 @@ Table *ApplicationWindow::convertMatrixToTable()
 
 void ApplicationWindow::initMatrix(Matrix *m)
 {
+    if (!m)
+        return;
     d_workspace.addSubWindow(m);
     m->setWindowIcon(IconLoader::load("new-matrix"));
     m->askOnCloseEvent(confirmCloseMatrix);
@@ -7696,13 +7706,20 @@ void ApplicationWindow::initMatrix(Matrix *m)
     else
         m->showNormal();
 
-    connect(m, SIGNAL(showTitleBarMenu()), this, SLOT(showWindowTitleBarMenu()));
-    connect(m, SIGNAL(closedWindow(MyWidget *)), this, SLOT(closeWindow(MyWidget *)));
-    connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(modifiedProject(MyWidget *)));
-    connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(updateMatrixPlots(MyWidget *)));
-    connect(m, SIGNAL(hiddenWindow(MyWidget *)), this, SLOT(hideWindow(MyWidget *)));
-    connect(m, SIGNAL(statusChanged(MyWidget *)), this, SLOT(updateWindowStatus(MyWidget *)));
-    connect(m, SIGNAL(showContextMenu()), this, SLOT(showWindowContextMenu()));
+    connect(m, SIGNAL(showTitleBarMenu()), this, SLOT(showWindowTitleBarMenu()),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(closedWindow(MyWidget *)), this, SLOT(closeWindow(MyWidget *)),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(modifiedProject(MyWidget *)),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(updateMatrixPlots(MyWidget *)),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(hiddenWindow(MyWidget *)), this, SLOT(hideWindow(MyWidget *)),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(statusChanged(MyWidget *)), this, SLOT(updateWindowStatus(MyWidget *)),
+            Qt::UniqueConnection);
+    connect(m, SIGNAL(showContextMenu()), this, SLOT(showWindowContextMenu()),
+            Qt::UniqueConnection);
     emit modified();
 }
 
@@ -8221,7 +8238,8 @@ void ApplicationWindow::changeAppStyle(const QString &s)
         QPalette pal = qa->palette();
         if (panelsColor.isValid())
             pal.setColor(QPalette::Active, QPalette::Base, QColor(panelsColor));
-        qa->setPalette(pal);
+        if (qa->palette() != pal)
+            qa->setPalette(pal);
     }
 }
 
@@ -8237,7 +8255,8 @@ void ApplicationWindow::changeAppFont(const QFont &f)
 void ApplicationWindow::updateAppFonts()
 {
     sanitizeUiTableFont(appFont);
-    qApp->setFont(appFont);
+    if (qApp->font() != appFont)
+        qApp->setFont(appFont);
     this->setFont(appFont);
     if (menuBar())
         menuBar()->setFont(appFont);
@@ -9888,15 +9907,21 @@ bool ApplicationWindow::loadProject(const QString &fn)
             else
                 current_folder = parent;
         } else if (s.left(5) == "<log>") { // process analysis information
-            s = t.readLine();
-            while (s != "</log>" && !t.atEnd()) {
-                if (s.isNull())
-                    break;
-                logInfo += s + "\n";
+            if (s.contains(QLatin1String("</log>"))) {
+                logInfo += s.mid(5).section(QLatin1String("</log>"), 0, 0);
+            } else {
                 s = t.readLine();
+                while (s != "</log>" && !s.endsWith(QLatin1String("</log>")) && !t.atEnd()) {
+                    if (s.isNull())
+                        break;
+                    logInfo += s + "\n";
+                    s = t.readLine();
+                }
+                if (s.endsWith(QLatin1String("</log>")) && s != QLatin1String("</log>"))
+                    logInfo += s.left(s.size() - 6);
+                else if (s != QLatin1String("</log>"))
+                    truncatedProject = true;
             }
-            if (s != "</log>")
-                truncatedProject = true;
             results->setText(logInfo);
         }
     }
@@ -15441,19 +15466,16 @@ void ApplicationWindow::closeWindow(MyWidget *window)
         }
         updateUndoRedoActionsForActiveWindow();
     } else if (Matrix *mat = qobject_cast<Matrix *>(window)) {
+        window->setAttribute(Qt::WA_DeleteOnClose, false);
         window->setParent(nullptr);
         if (!undoReplayActive && !calledFromAspectRemoval) {
-            if (mat->d_future_matrix && mat->d_future_matrix->parentAspect() != nullptr)
+            if (mat->d_future_matrix && mat->d_future_matrix->parentAspect() != nullptr) {
                 mat->d_future_matrix->remove();
-            if (d_project && d_project->undoStack()) {
-                QUndoStack *us = d_project->undoStack();
-                const bool inMacro = (us->count() > 0 && !us->canUndo() && !us->canRedo());
-                if (!inMacro)
-                    us->clear();
-            }
-            if (guardedWin)
+            } else if (guardedWin) {
                 guardedWin->deleteLater();
+            }
         }
+        updateUndoRedoActionsForActiveWindow();
     } else {
         window->deleteLater();
     }
@@ -18223,7 +18245,9 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         }
 
         const QString geomLine = stream.readLine();
-        const QString endTableLine = stream.readLine(); // </table>
+        QString endTableLine = stream.readLine(); // </table> (skip optional blank line after geometry\n)
+        while (endTableLine.isEmpty() && !endTableLine.isNull() && !stream.atEnd())
+            endTableLine = stream.readLine();
         if (geomLine.isNull() || endTableLine != QLatin1String("</table>")
             || (length > 0 && !tmp_file.isOpen() && tmp_string.length() < length)) {
             if (app)
@@ -25049,8 +25073,9 @@ void ApplicationWindow::createLanguagesList()
     appTranslator = new QTranslator(this);
     qtTranslator = new QTranslator(this);
     if (!d_builtin_ja_translator)
-        d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
-    qApp->removeTranslator(d_builtin_ja_translator);
+        d_builtin_ja_translator = sharedBuiltinJaTranslator();
+    if (d_builtin_ja_translator)
+        qApp->removeTranslator(d_builtin_ja_translator);
     qApp->installTranslator(appTranslator);
     qApp->installTranslator(qtTranslator);
 
@@ -25136,9 +25161,20 @@ void ApplicationWindow::switchToLanguage(const QString &locale)
 
     appLanguage = targetLocale;
     if (!d_builtin_ja_translator)
-        d_builtin_ja_translator = new ToriGraphFullJapaneseTranslator(this);
+        d_builtin_ja_translator = sharedBuiltinJaTranslator();
 
-    qApp->removeTranslator(d_builtin_ja_translator);
+    if (d_builtin_ja_translator)
+        qApp->removeTranslator(d_builtin_ja_translator);
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *other = qobject_cast<ApplicationWindow *>(tlw)) {
+            if (other == this)
+                continue;
+            if (other->appTranslator)
+                qApp->removeTranslator(other->appTranslator);
+            if (other->qtTranslator)
+                qApp->removeTranslator(other->qtTranslator);
+        }
+    }
     qApp->removeTranslator(appTranslator);
     qApp->removeTranslator(qtTranslator);
     delete appTranslator;
@@ -27592,6 +27628,8 @@ void ApplicationWindow::applyLastGraphWindowGeometry(MultiLayer *g)
         }
         g->resize(target.size());
         g->move(target.topLeft());
+        if (hasValidSavedGeo)
+            g->setProperty("_tg_has_saved_window_geo", true);
         if (d_last_graph_maximized)
             g->showMaximized();
         else
@@ -28224,19 +28262,21 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
     AbstractAspect *aspect = parent->child(index);
     ::future::Matrix *matrix = qobject_cast<::future::Matrix *>(aspect);
     if (matrix) {
-        initMatrix(static_cast<Matrix *>(matrix->view()));
+        if (Matrix *mtxView = static_cast<Matrix *>(matrix->view()))
+            initMatrix(mtxView);
         return;
     }
     ::future::Table *table = qobject_cast<::future::Table *>(aspect);
     if (table) {
-        Table *tblView = static_cast<Table *>(table->view());
-        initTable(tblView);
-        if (WorkbookManager *wm = WorkbookManager::existing(this))
-            wm->onTableReadded(tblView);
-        if (ModernRibbonBar *rib = modernRibbonBar()) {
-            if (FocusTableDrawer *dr = rib->focusTableDrawer()) {
-                if (!dr->isHidden())
-                    dr->refreshTableList(false);
+        if (Table *tblView = static_cast<Table *>(table->view())) {
+            initTable(tblView);
+            if (WorkbookManager *wm = WorkbookManager::existing(this))
+                wm->onTableReadded(tblView);
+            if (ModernRibbonBar *rib = modernRibbonBar()) {
+                if (FocusTableDrawer *dr = rib->focusTableDrawer()) {
+                    if (!dr->isHidden())
+                        dr->refreshTableList(false);
+                }
             }
         }
         return;
@@ -31206,6 +31246,7 @@ void ApplicationWindow::rebuildStylePresetsMenu()
 {
     if (!stylePresetsMenu)
         return;
+    qDeleteAll(stylePresetsMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
     stylePresetsMenu->clear();
     if (actionStyleISIJ)
         stylePresetsMenu->addAction(actionStyleISIJ);

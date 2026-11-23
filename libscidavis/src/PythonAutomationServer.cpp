@@ -2158,15 +2158,20 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
     app->confirmCloseFolder = false;
     app->confirmCloseNotes = false;
 
-    auto collectAllProjectWindows = [app]() -> QList<MyWidget *> {
-        QList<MyWidget *> all = app->windowsList();
+    auto collectAllProjectWindows = [app]() -> QList<QPointer<MyWidget>> {
+        QList<QPointer<MyWidget>> all;
+        for (MyWidget *w : app->windowsList()) {
+            if (w)
+                all.append(QPointer<MyWidget>(w));
+        }
         std::function<void(Folder *)> walkFolder = [&](Folder *f) {
             if (!f)
                 return;
             const QList<MyWidget *> fw = f->windowsList();
             for (MyWidget *w : fw) {
-                if (w && !all.contains(w))
-                    all.append(w);
+                QPointer<MyWidget> wp(w);
+                if (wp && !all.contains(wp))
+                    all.append(wp);
             }
             const QList<Folder *> subs = f->folders();
             for (Folder *sub : subs)
@@ -2177,8 +2182,8 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
     };
 
     // Close dependent graph windows first, then tables/matrices/notes
-    QList<MyWidget *> pass1 = collectAllProjectWindows();
-    for (MyWidget *w : pass1) {
+    QList<QPointer<MyWidget>> pass1 = collectAllProjectWindows();
+    for (const QPointer<MyWidget> &w : pass1) {
         if (w && (w->inherits("MultiLayer") || w->inherits("Graph3D"))) {
             w->askOnCloseEvent(false);
             w->hide();
@@ -2187,8 +2192,8 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
     }
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
-    QList<MyWidget *> pass2 = collectAllProjectWindows();
-    for (MyWidget *w : pass2) {
+    QList<QPointer<MyWidget>> pass2 = collectAllProjectWindows();
+    for (const QPointer<MyWidget> &w : pass2) {
         if (w) {
             w->askOnCloseEvent(false);
             w->hide();
@@ -2198,8 +2203,8 @@ void resetProjectInPlaceHeadless(ApplicationWindow *app)
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
     // Ensure no residual windows remain in lists or subfolders
-    QList<MyWidget *> rem = collectAllProjectWindows();
-    for (MyWidget *w : rem) {
+    QList<QPointer<MyWidget>> rem = collectAllProjectWindows();
+    for (const QPointer<MyWidget> &w : rem) {
         if (w) {
             w->askOnCloseEvent(false);
             w->hide();

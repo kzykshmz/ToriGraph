@@ -1492,8 +1492,16 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
 
     IconLoader::init();
 
-    QStyle *fusionBase = QStyleFactory::create(QStringLiteral("Fusion"));
-    app->setStyle(new ModernFluentProxyStyle(fusionBase));
+    static QPointer<QStyle> s_installedStyle;
+    // Note: QApplication::setStyleSheet() wraps app->style() in a private QStyleSheetStyle
+    // while keeping our ModernFluentProxyStyle alive underneath, whereas replacing the app
+    // style deletes the old style and automatically clears s_installedStyle.
+    if (s_installedStyle.isNull()) {
+        QStyle *fusionBase = QStyleFactory::create(QStringLiteral("Fusion"));
+        auto *proxy = new ModernFluentProxyStyle(fusionBase);
+        s_installedStyle = proxy;
+        app->setStyle(proxy);
+    }
 
     // Upgrade legacy 1998 monochrome bitmap Japanese UI fonts (MS UI Gothic / MS PGothic) to crisp ClearType
     {
@@ -1516,7 +1524,8 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
         if (uiFont.pointSizeF() <= 0.0 || uiFont.pointSizeF() < ModernUiTheme::kFontStandardPt)
             uiFont.setPointSizeF(ModernUiTheme::kFontStandardPt);
         uiFont.setStyleStrategy(QFont::PreferAntialias);
-        app->setFont(uiFont);
+        if (app->font() != uiFont)
+            app->setFont(uiFont);
     }
 
     // Keep WindowText and Text pure black (#000000) and Base pure white (#FFFFFF) so legacy
@@ -1562,7 +1571,10 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
         app->setPalette(pal);
     if (app->styleSheet() != css)
         app->setStyleSheet(css);
-    app->installEventFilter(KeyboardFocusTracker::instance());
+    if (!app->property("_toriKbdFocusFilterInstalled").toBool()) {
+        app->installEventFilter(KeyboardFocusTracker::instance());
+        app->setProperty("_toriKbdFocusFilterInstalled", true);
+    }
 }
 
 bool ModernUiTheme::keyboardFocusRingTargets(const QWidget *w)

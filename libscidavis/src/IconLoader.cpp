@@ -436,6 +436,11 @@ static const DuotoneSvgSpec kIconSpecs[] = {
       "<polygon points='12,4.5 20,18.5 4,18.5'/><path d='M8 11.5h8M8 18.5l4-7 4 7'/>",
       "<circle cx='12' cy='13.2' r='1.8' fill='{{A}}' stroke='none'/><circle cx='10' cy='15.8' r='1.3' fill='{{A}}' stroke='none'/><circle cx='14.2' cy='15.2' r='1.3' fill='{{A}}' stroke='none'/>" },
 
+    { "plot-radar", AccentDomain::BluePlot,
+      "<circle cx='12' cy='12' r='7.5'/>",
+      "<circle cx='12' cy='12' r='7.5'/><circle cx='12' cy='12' r='3.5'/><path d='M12 4.5v15M4.5 12h15'/>",
+      "<polygon points='12,6.5 17,11 14,17 8,14.5'/>" },
+
     { "plot-heatmap", AccentDomain::BluePlot,
       "<rect x='4' y='4.5' width='12.5' height='15' rx='1.5'/>",
       "<rect x='4' y='4.5' width='12.5' height='15' rx='1.5'/><path d='M8.2 4.5v15M12.3 4.5v15M4 9.5h12.5M4 14.5h12.5'/>",

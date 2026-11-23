@@ -473,6 +473,20 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         delete mw;
         return rc44;
     }
+    if (args.contains("--suite45-only")) {
+        const int rc45 = runSuite45Round5ZeroDefectGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc45;
+    }
+    if (args.contains("--suite47-only")) {
+        const int rc47 = runSuite47Phase7GraphGuiUsabilityAndZeroLeakGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc47;
+    }
     if (args.contains("--suite50-only")) {
         const int rc50 = runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(mw);
         mw->savedProject();
@@ -18412,10 +18426,21 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw)
     {
         QMenu *addMenu = ribbon->findChild<QMenu *>("RibbonAddToGraphMenu");
         CHECK_COND(addMenu != nullptr, "62f: ribbon 'Add' menu missing");
-        for (const char *name : { "actionAddText", "actionNewLegend", "actionAddErrorBars",
-                                  "actionPlot2VerticalLayers", "actionPlot4Layers" }) {
+        for (const char *name : { "actionAddText", "actionNewLegend", "actionAddErrorBars" }) {
             QAction *a = mw->findChild<QAction *>(name);
             CHECK_COND(a && addMenu->actions().contains(a), "62f: ribbon 'Add' menu lacks " << name);
+        }
+        const QList<QMenu *> ribbonMenus = ribbon->findChildren<QMenu *>();
+        for (const char *name : { "actionPlot2VerticalLayers", "actionPlot4Layers" }) {
+            QAction *a = mw->findChild<QAction *>(name);
+            bool inRibbonLayers = false;
+            for (QMenu *m : ribbonMenus) {
+                if (m && a && m->actions().contains(a)) {
+                    inRibbonLayers = true;
+                    break;
+                }
+            }
+            CHECK_COND(inRibbonLayers, "62f: ribbon layers menu lacks " << name);
         }
     }
     {
@@ -18470,7 +18495,8 @@ static int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw)
         }
         CHECK_COND(!names.contains("actionPeakAnalyzerDialog"),
                    "62h: peak analyzer listed flat in the graph context menu");
-        CHECK_COND(analysisSubmenus == 1, "62h: analysis tools not in exactly one submenu");
+        CHECK_COND(analysisSubmenus == 0,
+                   "62h: blank canvas context menu should not nest the full 9-submenu analysis tree");
     }
 
     // ---- 62i (C6): duplicate menu registrations removed
@@ -18980,8 +19006,11 @@ static int runSuite58FigureDefaultsPresetsAndExport(ApplicationWindow *mw)
         mw->d_workspace.setActiveSubWindow(isijMl);
         ImageExportDialog dlg(mw, true, true);
         CHECK_COND(dlg.resolution() == 600, "58h: dialog must start from the page DPI (600)");
-        CHECK_COND(dlg.nameFilters() == filters, "58h: dialog filters");
+        CHECK_COND(dlg.nameFilters() == ImageExportDialog::displayNameFilters(),
+                   "58h: dialog filters");
         dlg.selectFilter(QStringLiteral("*.png"));
+        CHECK_COND(dlg.selectedNameFilter() == QLatin1String("*.png"),
+                   "58h: normalized selectedNameFilter");
         CHECK_COND(dlg.infoText().contains("2008"), "58h: dialog must show the pixel size");
         mw->d_export_resolution = 600;
     }
@@ -21870,7 +21899,7 @@ static int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
         code = PythonAutomationServer::generatePythonScriptForWindow(mw, ml, true, "inline");
         const int fitNote = code.indexOf(QString::fromUtf8("# 未再現: フィット"));
         const int stackNote = code.indexOf(QString::fromUtf8("# 未再現: スタックオフセット"));
-        const int connectAt = code.indexOf("app = tg.connect()");
+        const int connectAt = code.indexOf("app = tg.connect_or_launch()");
         CHECK_COND(fitNote > 0, "69e: fit note missing:\n" << code.toStdString());
         CHECK_COND(stackNote > 0, "69e: stack offset note missing:\n" << code.toStdString());
         CHECK_COND(connectAt > fitNote && connectAt > stackNote,
@@ -23771,10 +23800,10 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
         QScopedPointer<QDialog> dlg(ToriGraphPptx::createSendDialog(w73, nullptr));
         CHECK_COND(dlg, "73f: dialog");
         auto *per = dlg->findChild<QComboBox *>("pptxPerSlide");
-        CHECK_COND(per && per->count() == 4 && per->itemData(0).toInt() == 1
-                           && per->itemData(1).toInt() == 2 && per->itemData(2).toInt() == 4
-                           && per->itemData(3).toInt() == 6,
-                   "73f: per-slide choices 1/2/4/6");
+        CHECK_COND(per && per->count() == 5 && per->itemData(0).toInt() == 1
+                           && per->itemData(1).toInt() == 2 && per->itemData(2).toInt() == 3
+                           && per->itemData(3).toInt() == 4 && per->itemData(4).toInt() == 6,
+                   "73f: per-slide choices 1/2/3/4/6");
         auto *size = dlg->findChild<QComboBox *>("pptxSlideSize");
         CHECK_COND(size && size->count() == 2, "73f: slide size choices");
         auto *spin = dlg->findChild<QDoubleSpinBox *>("pptxScalePercent");
@@ -23803,7 +23832,7 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw)
                            && !derr.isEmpty(),
                    "73f: an empty selection must be refused");
         list->item(0)->setCheckState(Qt::Checked);
-        per->setCurrentIndex(2);
+        per->setCurrentIndex(3);
         size->setCurrentIndex(1);
         path->setText(QDir::toNativeSeparators(QDir(tmpDir).filePath("from_dialog")));
         QList<MyWidget *> wins;
@@ -23982,7 +24011,9 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
         g->legend()->setOriginCoord(0.05, 10.0);
         g->legend()->setOriginCoord(0.035, 17.5);
         note->setOriginCoord(0.05, 10.0);
-        note->setOriginCoord(0.12, 6.0);
+        // "annealed 473 K" spans >50% of the 83 mm canvas width, so placing it at x = 0.06 stays
+        // clear of Legend::drawGeometry()'s right-edge clamp (now reflected by Legend::rect()).
+        note->setOriginCoord(0.06, 6.0);
         arrow->setBoundingRect(0.10, 8.0, 0.14, 11.0);
         img->setBoundingRect(0.10, 10.0, 0.12, 8.0);
         img->setBoundingRect(0.16, 15.0, 0.19, 12.0);
@@ -23992,7 +24023,7 @@ static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw)
             QApplication::processEvents();
     };
     auto placedExactly = [&]() -> bool {
-        return g->legend()->xValue() == 0.035 && g->legend()->yValue() == 17.5 && note->xValue() == 0.12
+        return g->legend()->xValue() == 0.035 && g->legend()->yValue() == 17.5 && note->xValue() == 0.06
                 && note->yValue() == 6.0 && img->xValue() == 0.16 && img->yValue() == 15.0
                 && img->right() == 0.19 && img->bottom() == 12.0 && arrow->startPointCoord().x() == 0.10
                 && arrow->endPointCoord().y() == 11.0;

@@ -801,10 +801,16 @@ class EmptyTableHint : public QObject
 {
 public:
     EmptyTableHint(ApplicationWindow *app, Table *table, QTableView *view)
-        : QObject(view), d_app(app), d_table(table), d_view(view)
+        : QObject(view),
+          d_app(app),
+          d_table(table),
+          d_view(view),
+          d_viewport(view ? view->viewport() : nullptr)
     {
         setObjectName(QStringLiteral("ToriEmptyTableHint"));
-        QWidget *vp = view->viewport();
+        QWidget *vp = d_viewport.data();
+        if (!vp)
+            return;
         d_label = new QLabel(vp);
         d_label->setObjectName(QStringLiteral("ToriEmptyTableHintLabel"));
         d_label->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -871,8 +877,8 @@ public:
 
     ~EmptyTableHint() override
     {
-        if (d_view && d_view->viewport())
-            d_view->viewport()->removeEventFilter(this);
+        if (d_viewport)
+            d_viewport->removeEventFilter(this);
         if (d_app)
             d_app->removeEventFilter(this);
         if (d_label) {
@@ -953,7 +959,7 @@ protected:
         const QEvent::Type et = event->type();
         if (et == QEvent::LanguageChange) {
             retranslateUi();
-        } else if (d_view && watched == d_view->viewport()) {
+        } else if (d_viewport && watched == d_viewport) {
             if (et == QEvent::Show)
                 retranslateUi();
             else if (et == QEvent::Resize)
@@ -965,9 +971,9 @@ protected:
 private:
     void reposition()
     {
-        if (!d_view || !d_label || d_hint_hidden)
+        if (!d_viewport || !d_label || d_hint_hidden)
             return;
-        const QRect r = d_view->viewport()->rect();
+        const QRect r = d_viewport->rect();
         if (r.width() <= 0 || r.height() <= 0)
             return;
         const int w = qMax(120, qMin(r.width() - 24, 540));
@@ -991,6 +997,7 @@ private:
     QPointer<ApplicationWindow> d_app;
     QPointer<Table> d_table;
     QPointer<QTableView> d_view;
+    QPointer<QWidget> d_viewport;
     QPointer<QLabel> d_label;
     QPointer<QWidget> d_actions_box;
     QPointer<QPushButton> d_sample_btn;

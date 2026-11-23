@@ -276,7 +276,8 @@ Table::~Table()
         future::Table *ft = d_future_table.data();
         d_future_table.clear();
         ft->setView(nullptr);
-        delete ft;
+        if (!ft->property("_tg_owned_by_undo_cmd").toBool())
+            delete ft;
     }
 }
 
@@ -1955,16 +1956,13 @@ void Table::clearCol()
 void Table::clearCell(int row, int col)
 {
     Column *colPtr = column(col);
-    if (!colPtr)
+    if (!colPtr || row < 0 || row >= numRows())
         return;
     if (d_future_table)
         d_future_table->beginMacro(tr("%1: clear selected cell(s)").arg(name()));
-    if (row >= 0 && row < colPtr->rowCount()) {
-        if (colPtr->columnMode() == SciDAVis::ColumnMode::Text)
-            colPtr->setTextAt(row, QString());
-        else
-            colPtr->setInvalid(row, true);
-    }
+    if (colPtr->columnMode() == SciDAVis::ColumnMode::Text && row < colPtr->rowCount())
+        colPtr->setTextAt(row, QString());
+    colPtr->setInvalid(row, true);
     if (d_future_table)
         d_future_table->endMacro();
 }
@@ -3734,9 +3732,11 @@ void Table::closeEvent(QCloseEvent *e)
         case 0: {
             e->accept();
             QPointer<Table> self(this);
+            const bool retainForUndo = d_future_table && d_future_table->parentAspect()
+                    && d_future_table->undoStack() != nullptr;
             if (d_future_table)
                 d_future_table->remove();
-            if (self)
+            if (!retainForUndo && self)
                 self->deleteLater();
             return;
         }
@@ -3753,9 +3753,11 @@ void Table::closeEvent(QCloseEvent *e)
     } else {
         e->accept();
         QPointer<Table> self(this);
+        const bool retainForUndo = d_future_table && d_future_table->parentAspect()
+                && d_future_table->undoStack() != nullptr;
         if (d_future_table)
             d_future_table->remove();
-        if (self)
+        if (!retainForUndo && self)
             self->deleteLater();
         return;
     }

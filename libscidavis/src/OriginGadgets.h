@@ -250,7 +250,7 @@ private:
     MultiLayer *findParentMultiLayer() const;
     QList<Graph *> targetGraphs() const;
     void rebuildOverlaysAndFilters();
-    void detachAllOverlaysAndFilters();
+    void detachAllOverlaysAndFilters(bool allowSyncReplot = true);
     void updateReadoutAndReplot();
     static bool interpolateCurveAtX(QwtPlotCurve *c, double xQuery, double &yOut);
     QVector<QPair<QString, double>> interpolatedValuesForGraph(Graph *g) const;

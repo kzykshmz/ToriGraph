@@ -4225,7 +4225,7 @@ VerticalCursorTool::~VerticalCursorTool()
         delete d_floating_bar.data();
         d_floating_bar.clear();
     }
-    detachAllOverlaysAndFilters();
+    detachAllOverlaysAndFilters(false);
 }
 
 MultiLayer *VerticalCursorTool::findParentMultiLayer() const
@@ -4261,7 +4261,7 @@ QList<Graph *> VerticalCursorTool::targetGraphs() const
     return list;
 }
 
-void VerticalCursorTool::detachAllOverlaysAndFilters()
+void VerticalCursorTool::detachAllOverlaysAndFilters(bool allowSyncReplot)
 {
     QList<QPointer<Graph>> graphsToReplot = d_filtered_graphs;
     for (const QPointer<Graph> &gPtr : d_filtered_graphs) {
@@ -4285,10 +4285,19 @@ void VerticalCursorTool::detachAllOverlaysAndFilters()
         delete item;
     }
 
-    // C4-#10: repaint every layer that held a cursor overlay so no ghost cursor remains.
+    // C4-#10: repaint every surviving layer that held a cursor overlay so no ghost cursor remains,
+    // without calling replot() synchronously inside a destructor (which may run inside ~Graph()).
     for (const QPointer<Graph> &gPtr : graphsToReplot) {
-        if (gPtr && gPtr->plotWidget())
+        if (!gPtr || !gPtr->plotWidget())
+            continue;
+        if (allowSyncReplot) {
             gPtr->replot();
+        } else {
+            QTimer::singleShot(0, gPtr.data(), [gPtr]() {
+                if (gPtr && gPtr->plotWidget())
+                    gPtr->replot();
+            });
+        }
     }
 }
 

@@ -30,7 +30,9 @@
 
 #include "AspectPrivate.h"
 
+#include <QPointer>
 #include <QUndoCommand>
+#include <QVariant>
 
 class AspectNameChangeCmd : public QUndoCommand
 {
@@ -134,28 +136,37 @@ public:
     }
     ~AspectChildRemoveCmd()
     {
-        if (d_removed && !d_detach)
-            delete d_child;
+        if (d_removed && !d_detach && d_child) {
+            d_child->setProperty("_tg_owned_by_undo_cmd", QVariant());
+            delete d_child.data();
+        }
     }
 
     // calling redo transfers ownership of d_child to the undo command
     virtual void redo()
     {
-        d_index = d_target->removeChild(d_child);
+        if (!d_child)
+            return;
+        d_index = d_target->removeChild(d_child.data());
         d_removed = true;
+        if (!d_detach && d_child)
+            d_child->setProperty("_tg_owned_by_undo_cmd", true);
     }
 
     // calling undo transfers ownership of d_child back to its parent aspect
     virtual void undo()
     {
+        if (!d_child)
+            return;
         Q_ASSERT(d_index != -1); // d_child must be a child of d_target->owner()
-        d_target->insertChild(d_index, d_child);
+        d_child->setProperty("_tg_owned_by_undo_cmd", QVariant());
+        d_target->insertChild(d_index, d_child.data());
         d_removed = false;
     }
 
 protected:
     AbstractAspect::Private *d_target;
-    AbstractAspect *d_child;
+    QPointer<AbstractAspect> d_child;
     int d_index;
     bool d_removed, d_detach;
 };

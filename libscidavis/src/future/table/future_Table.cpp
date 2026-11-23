@@ -289,6 +289,8 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
 void Table::setView(TableView *view)
 {
     d_view = view;
+    if (!d_view)
+        return;
     addActionsToView();
     if (d_view)
         d_view->showComments(d_default_comment_visibility);
@@ -1757,6 +1759,8 @@ void Table::connectActions()
 
 void Table::addActionsToView()
 {
+    if (!d_view)
+        return;
     QPointer<Table> self(this);
     auto *flt = ensureTableLangFilter(this, [self]() {
         if (!self)
