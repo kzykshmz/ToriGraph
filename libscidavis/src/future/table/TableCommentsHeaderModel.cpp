@@ -30,6 +30,22 @@
 
 #include "TableCommentsHeaderModel.h"
 #include "core/column/Column.h"
+#include <QRegularExpression>
+#include <QTextDocument>
+
+namespace {
+QString stripSafeHeaderHtmlTags(const QString &raw)
+{
+    if (!raw.contains(QLatin1Char('<')))
+        return raw;
+    static const QRegularExpression kSafeTag(
+            QStringLiteral("</?(?:i|b|sub|sup|u)>"),
+            QRegularExpression::CaseInsensitiveOption);
+    QString out = raw;
+    out.remove(kSafeTag);
+    return out;
+}
+} // namespace
 
 TableCommentsHeaderModel::TableCommentsHeaderModel(TableModel *table_model, QObject *parent)
     : QAbstractTableModel(parent), d_table_model(table_model)
@@ -121,18 +137,29 @@ QVariant TableCommentsHeaderModel::headerData(int section, Qt::Orientation orien
         return lines.join(QLatin1String("\n"));
     }
 
+    const QString plainTitle = stripSafeHeaderHtmlTags(col->formattedAxisTitle());
+    const QString plainLn = stripSafeHeaderHtmlTags(ln);
+    const QString plainU = stripSafeHeaderHtmlTags(u);
+    const QString plainCmt = stripSafeHeaderHtmlTags(cmt);
+
     QStringList tipLines;
-    tipLines << QString("%1 [%2]").arg(col->name(), col->formattedAxisTitle());
-    if (!ln.isEmpty())
-        tipLines << tr("Long Name:") + QLatin1String(" ") + ln;
-    if (!u.isEmpty())
-        tipLines << tr("Units:") + QLatin1String(" ") + u;
-    if (!cmt.isEmpty())
-        tipLines << tr("Comments:") + QLatin1String(" ") + cmt;
+    tipLines << QString("%1 [%2]").arg(col->name(), plainTitle);
+    if (!plainLn.isEmpty())
+        tipLines << tr("Long Name:") + QLatin1String(" ") + plainLn;
+    if (!plainU.isEmpty())
+        tipLines << tr("Units:") + QLatin1String(" ") + plainU;
+    if (!plainCmt.isEmpty())
+        tipLines << tr("Comments:") + QLatin1String(" ") + plainCmt;
     if (!fx.isEmpty())
         tipLines << QString("F(x)= %1").arg(fx);
+    const QString fxErr = col->formulaError().trimmed();
+    if (!fxErr.isEmpty())
+        tipLines << fxErr;
     tipLines << tr("Double-click header to edit Long Name, Units & F(x)=");
-    return tipLines.join(QLatin1String("\n"));
+    const QString tip = tipLines.join(QLatin1String("\n"));
+    if (Qt::mightBeRichText(tip))
+        return Qt::convertFromPlainText(tip);
+    return tip;
 }
 
 int TableCommentsHeaderModel::rowCount(const QModelIndex &parent) const

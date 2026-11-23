@@ -67,6 +67,7 @@ public:
      */
     ImportASCIIDialog(bool importModeEnabled, QWidget *parent = 0, bool extended = true,
                       Qt::WindowFlags flags = Qt::Widget);
+    ~ImportASCIIDialog() override;
 
     //! Return the selected import mode
     /**
@@ -86,13 +87,21 @@ public:
     //! Whether the user wants the import options to be saved.
     bool rememberOptions() const { return d_remember_options->isChecked(); }
 
-    //! Set the selected columns separator.
+    //! Text encoding chosen in the dialog (empty = automatic).
+    QString encodingHint() const;
+    //! Unit row choice: -1 = auto, 0 = none, 1 = second line holds the units.
+    int unitsRowHint() const;
+
+    //! Set the selected columns separator (empty string = automatic detection).
     void setColumnSeparator(const QString &sep);
 
     //! Returns the locale chosen for conversion to numeric format
     QLocale decimalSeparators();
     //! Returns whether imported data should be interpreted as numbers
     bool convertToNumeric() const { return d_convert_to_numeric->isChecked(); };
+
+protected:
+    void done(int r) override;
 
 private slots:
     //! Display help for advanced options.
@@ -104,6 +113,8 @@ private:
     void closeEvent(QCloseEvent *);
     //! Initialise #d_advanced_options and everything it contains.
     void initAdvancedOptions();
+    //! Re-read the head of the selected file and re-run the import with the current options.
+    void refreshPreview();
 
     //! Container widget for all advanced options.
     QGroupBox *d_advanced_options;
@@ -111,7 +122,9 @@ private:
     QPushButton *d_help_button;
     // the actual options
     QComboBox *d_import_mode, *d_column_separator, *boxDecimalSeparator;
+    QComboBox *d_encoding, *d_units_row;
     QSpinBox *d_ignored_lines;
+    QString d_preview_path;
     QCheckBox *d_rename_columns, *d_simplify_spaces, *d_strip_spaces;
 };
 

@@ -29,9 +29,14 @@ public:
     static bool importFile(ApplicationWindow *app, const QString &fileName,
                            QString *outError = nullptr);
 
-    //! Import an .opju file and optionally report imported object counts.
+    //! Import an .opju file with an explicit Windows code page (e.g. 932 = Shift-JIS; 0 = auto).
     static bool importFile(ApplicationWindow *app, const QString &fileName,
-                           QString *outError, ImportStats *outStats);
+                           QString *outError, int codePage);
+
+    //! Import an .opju file and optionally report imported object counts. `codePage` is the
+    //! Windows code page (e.g. 932) for 8-bit text of CPYUA files; 0 = automatic detection.
+    static bool importFile(ApplicationWindow *app, const QString &fileName,
+                           QString *outError, ImportStats *outStats, int codePage = 0);
 
     //! Fast magic-bytes probe: returns true if the file begins with a ZIP signature.
     static bool isZipOpjuFile(const QString &fileName);

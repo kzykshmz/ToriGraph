@@ -707,15 +707,12 @@ void Matrix::closeEvent(QCloseEvent *e)
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
-                                         tr("Delete"), tr("Hide"), tr("Cancel"), 0, 2)) {
+                                         tr("Delete"), tr("Hide"), tr("Cancel"), 1, 2)) {
         case 0: {
             e->accept();
             QPointer<Matrix> self(this);
-            QUndoStack *us = d_future_matrix ? d_future_matrix->undoStack() : nullptr;
             if (d_future_matrix)
                 d_future_matrix->remove();
-            if (us && !(us->count() > 0 && !us->canUndo() && !us->canRedo()))
-                us->clear();
             if (self)
                 self->deleteLater();
             return;
@@ -733,11 +730,8 @@ void Matrix::closeEvent(QCloseEvent *e)
     } else {
         e->accept();
         QPointer<Matrix> self(this);
-        QUndoStack *us = d_future_matrix ? d_future_matrix->undoStack() : nullptr;
         if (d_future_matrix)
             d_future_matrix->remove();
-        if (us && !(us->count() > 0 && !us->canUndo() && !us->canRedo()))
-            us->clear();
         if (self)
             self->deleteLater();
         return;

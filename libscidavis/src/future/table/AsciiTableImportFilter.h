@@ -66,7 +66,9 @@ public:
           d_trim_whitespace(false),
           d_simplify_whitespace(false),
           d_convert_to_numeric(false),
-          d_numeric_locale(QLocale::c())
+          d_numeric_locale(QLocale::c()),
+          d_encoding(dialogDefaultEncoding()),
+          d_units_row(dialogDefaultUnitsRow())
     {
     }
     virtual AbstractAspect *importAspect(QIODevice &input);
@@ -86,8 +88,17 @@ public:
         int missingCells = 0; //!< empty / missing cells in numeric columns
         int textColumns = 0; //!< columns that had to be imported as text
         int rasBlocks = 0; //!< number of *RAS_INT_START blocks (Rigaku .ras)
+        int invalidChars = 0; //!< characters that could not be decoded with the chosen encoding
         QString preamble; //!< metadata lines above the data (kept as the table comment)
     };
+    //! Text encoding / unit-row choice of the import dialog. New filters start with these
+    //! values so that every import path (new worksheet, append, overwrite) honours the dialog.
+    //! encoding: empty or "Auto", "UTF-8", "Shift-JIS", "UTF-16", "Latin-1";
+    //! unitsRow: -1 = auto, 0 = no unit row, 1 = second line holds the units.
+    static void setDialogImportDefaults(const QString &encoding, int unitsRow);
+    static QString dialogDefaultEncoding();
+    static int dialogDefaultUnitsRow();
+
     //! Report of the most recent import done by this filter in this process.
     static ImportReport lastImportReport();
     //! Short human-readable summary of an ImportReport (translated).
@@ -149,6 +160,9 @@ public:
     ACCESSOR(bool, convert_to_numeric);
     Q_PROPERTY(bool convert_to_numeric READ convert_to_numeric WRITE set_convert_to_numeric)
 
+    ACCESSOR(QString, encoding);
+    ACCESSOR(int, units_row);
+
     ACCESSOR(QLocale, numeric_locale);
     Q_PROPERTY(QLocale numeric_locale READ numeric_locale WRITE set_numeric_locale)
 
@@ -160,6 +174,8 @@ private:
     bool d_simplify_whitespace;
     bool d_convert_to_numeric;
     QLocale d_numeric_locale;
+    QString d_encoding;
+    int d_units_row;
 };
 
 #endif // ifndef ASCII_TABLE_IMPORT_FILTER_H
