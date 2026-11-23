@@ -129,9 +129,6 @@ int alphaForCommit(int percent, int loadedAlpha)
     return alphaFromPercent(percent);
 }
 
-//! BoxCurve::Range value used for "Tukey 1.5*IQR" whiskers: the value after the current last
-//! enumerator (UserDef). It equals BoxCurve::Tukey15IQR once that enumerator exists in BoxCurve.h.
-constexpr int kBoxRangeTukey15IQR = static_cast<int>(BoxCurve::UserDef) + 1;
 constexpr double kTukeyWhiskerCoefficient = 1.5;
 
 QFont clampedFontSize(QFont f)
@@ -1072,8 +1069,7 @@ void PlotDialog::initBoxPage()
     boxWhiskersRange->addItem(tr("99-1"));
     boxWhiskersRange->addItem(tr("Max-Min"));
     boxWhiskersRange->addItem(tr("Constant"));
-    // Item index == BoxCurve::Range value (None = 0 ... UserDef = 8), so this one is
-    // kBoxRangeTukey15IQR (9, i.e. BoxCurve::Tukey15IQR once BoxCurve.h defines it).
+    // Item index == BoxCurve::Range value (None = 0 ... UserDef = 8, Tukey15IQR = 9).
     boxWhiskersRange->addItem(tr("Tukey 1.5*IQR"));
     gl2->addWidget(boxWhiskersRange, 0, 1);
 
@@ -2420,7 +2416,7 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
             setWhiskersRange(boxWhiskersRange->currentIndex());
             if (b->whiskersRangeType() == BoxCurve::SD || b->whiskersRangeType() == BoxCurve::SE)
                 whiskerCnt->setValue(b->whiskersRange());
-            else if (b->whiskersRangeType() != kBoxRangeTukey15IQR)
+            else if (b->whiskersRangeType() != BoxCurve::Tukey15IQR)
                 boxWhiskersCoef->setValue((int)b->whiskersRange());
 
             boxViolinMode->setChecked(b->violinMode());
@@ -3148,8 +3144,8 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                 else
                     b->setBoxRange(boxRange->currentIndex() + 1, (double)boxCoef->value());
 
-                if (boxWhiskersRange->currentIndex() == kBoxRangeTukey15IQR)
-                    b->setWhiskersRange(kBoxRangeTukey15IQR, kTukeyWhiskerCoefficient);
+                if (boxWhiskersRange->currentIndex() == BoxCurve::Tukey15IQR)
+                    b->setWhiskersRange(BoxCurve::Tukey15IQR, kTukeyWhiskerCoefficient);
                 else if (whiskerCnt->isVisible())
                     b->setWhiskersRange(boxWhiskersRange->currentIndex(), whiskerCnt->value());
                 else

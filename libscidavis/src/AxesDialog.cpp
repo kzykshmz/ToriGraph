@@ -116,12 +116,17 @@ void registerAxesDialogTranslations()
 }
 
 // 単位表記のコンボ項目(0 = Name (Unit), 1 = Name / Unit (ISIJ), 2 = Name [Unit])と
-// Column::UnitFormat の相互変換。Bracket(=2)は Column.h 側に別トラックで追加される前提のため、
-// 列挙子名を直接書かず static_cast で扱い、Column.h に未追加でもコンパイルが通るようにする。
+// Column::UnitFormat の相互変換。
 int unitFormatToIndex(Column::UnitFormat fmt)
 {
-    const int v = static_cast<int>(fmt);
-    return (v >= 0 && v <= 2) ? v : 0;
+    switch (fmt) {
+    case Column::UnitFormat::ISIJSlash:
+        return 1;
+    case Column::UnitFormat::Bracket:
+        return 2;
+    default:
+        return 0;
+    }
 }
 
 Column::UnitFormat unitFormatFromIndex(int idx)
@@ -130,7 +135,7 @@ Column::UnitFormat unitFormatFromIndex(int idx)
     case 1:
         return Column::UnitFormat::ISIJSlash;
     case 2:
-        return static_cast<Column::UnitFormat>(2); // Column::UnitFormat::Bracket
+        return Column::UnitFormat::Bracket;
     default:
         return Column::UnitFormat::Paren;
     }
