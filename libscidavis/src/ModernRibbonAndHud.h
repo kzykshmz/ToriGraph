@@ -59,6 +59,7 @@ class QIdentityProxyModel;
 
 class ApplicationWindow;
 class ModernRibbonBar;
+class MultiLayer;
 class MyWidget;
 class Table;
 
@@ -226,6 +227,8 @@ protected:
 
 private:
     void populateQuickPlotMenu();
+    void populateAnalyzeMenu();
+    void populatePresetsMenu();
 
     QPointer<ApplicationWindow> d_app;
     QPointer<ModernRibbonBar> d_ribbon;
@@ -233,11 +236,10 @@ private:
 
     QToolButton *d_btn_plot = nullptr;
     QMenu *d_plot_menu = nullptr;
-    QToolButton *d_btn_peaks = nullptr;
-    QToolButton *d_btn_roi = nullptr;
-    QToolButton *d_btn_profile2d = nullptr;
-    QToolButton *d_btn_isij = nullptr;
-    QToolButton *d_btn_slide = nullptr;
+    QToolButton *d_btn_analyze = nullptr;
+    QMenu *d_analyze_menu = nullptr;
+    QToolButton *d_btn_presets = nullptr;
+    QMenu *d_presets_menu = nullptr;
     QToolButton *d_btn_ole = nullptr;
     QToolButton *d_btn_palette = nullptr;
 
@@ -292,6 +294,8 @@ public:
     void syncCheckableStates();
 
     void triggerPlot2D(int curveType);
+    void triggerMatrixOrXyzPlot(int kind);
+    void triggerTable3DPlot(int graph3dType);
 
     //! G1: show or hide the ribbon entries of other-field features (ROC, EIS, Tauc, ...)
     void setAdvancedDomainFeaturesVisible(bool visible);
@@ -404,6 +408,10 @@ private:
     void updateTabStackHeight();
     void updateHeaderResponsiveness();
     void importOpjInteractive();
+    void invokeAppToggleLanguage();
+    void applyWorksheetColumnRole(int roleCode);
+    void initStatusBarZoomControls();
+    void updateStatusBarZoomIndicator(MultiLayer *ml);
 
     QPointer<ApplicationWindow> d_app;
     QPointer<MyWidget> d_last_active_window;
@@ -419,14 +427,26 @@ private:
     QToolButton *d_btn_layout_mdi = nullptr;
     QToolButton *d_btn_focus_mode = nullptr;
     QToolButton *d_btn_lang_switch = nullptr;
+    QToolButton *d_btn_help_guide = nullptr;
     QLabel *d_context_pill = nullptr;
 
     QToolButton *d_btn_auto_recalc = nullptr;
+    QAction *d_act_add_column = nullptr;
     QAction *d_act_explorer = nullptr;
     QAction *d_act_results_log = nullptr;
     QAction *d_act_inspector = nullptr;
     QToolButton *d_btn_lock_aspect = nullptr;
+    QToolButton *d_btn_export_copy_ole = nullptr;
+    QToolButton *d_btn_plot_3d = nullptr;
     QToolButton *d_btn_classic_toolbars = nullptr;
+    QPointer<QAction> d_act_ribbon_send_pptx;
+
+    QVector<QPointer<QWidget>> d_table_context_widgets;
+    QPointer<QToolButton> d_btn_ws_reimport;
+
+    QPointer<QToolButton> d_status_zoom_btn;
+    QPointer<QToolButton> d_status_fit_btn;
+    QPointer<MultiLayer> d_zoom_bound_ml;
 
     QVector<std::function<QString()>> d_tab_title_fns;
     QVector<RibbonButtonBinding> d_button_bindings;

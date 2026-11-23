@@ -30,6 +30,7 @@
 
 #include "ApplicationWindow.h"
 #include "ArrowMarker.h"
+#include "AxesDialog.h"
 #include "FunctionCurve.h"
 #include "GraphMiniToolbar.h"
 #include "Grid.h"
@@ -43,6 +44,7 @@
 #include "Plot.h"
 #include "CanvasInlineTextEditor.h"
 #include "PlotCurve.h"
+#include "PptxExport.h"
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "Spectrogram.h"
@@ -61,6 +63,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -77,6 +80,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -87,6 +91,7 @@
 #include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QStyle>
 #include <QTextCursor>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -165,6 +170,240 @@ constexpr int kMergePcmCbTitle = 3312;
 constexpr int kMergeLegendHeader = 3401;
 constexpr int kMergeLegendCols = 3402;
 constexpr int kMergeLegendFontPt = 3403;
+constexpr int kMergeArrowWidth = 3404;
+constexpr int kMergeArrowHead = 3405;
+constexpr int kMergeImageGeom = 3406;
+constexpr int kMergePlotTitle = 3407;
+constexpr int kMergePlotTitlePt = 3408;
+constexpr int kMergeInsetRoi = 3409;
+
+// Object Manager clipboard state for B1-9 (Copy/Paste Axis Scale Range & Curve Color/Symbol).
+struct CopiedSingleAxisScale {
+    bool valid = false;
+    double lo = 0.0;
+    double hi = 1.0;
+    double step = 0.0;
+    int maxMajor = 8;
+    int maxMinor = 5;
+    int scaleType = 0; // 0 = Linear, 1 = Log10
+    bool inverted = false;
+    Graph::AxisBreakSpec brk;
+};
+
+struct CopiedAxisScaleClipboard {
+    bool valid = false;
+    bool allAxes = true;
+    int sourceAxis = QwtPlot::xBottom;
+    CopiedSingleAxisScale axes[4];
+};
+
+struct CopiedCurveStyleClipboard {
+    bool valid = false;
+    QColor lineColor;
+    QwtSymbol symbol;
+    bool hasBrush = false;
+    QBrush brush;
+};
+
+CopiedAxisScaleClipboard s_copiedAxisScale;
+CopiedCurveStyleClipboard s_copiedCurveStyle;
+
+QString mapToUnicodeSubscript(const QString &src)
+{
+    QString out;
+    out.reserve(src.size());
+    for (QChar ch : src) {
+        switch (ch.unicode()) {
+        case '0': out += QChar(0x2080); break;
+        case '1': out += QChar(0x2081); break;
+        case '2': out += QChar(0x2082); break;
+        case '3': out += QChar(0x2083); break;
+        case '4': out += QChar(0x2084); break;
+        case '5': out += QChar(0x2085); break;
+        case '6': out += QChar(0x2086); break;
+        case '7': out += QChar(0x2087); break;
+        case '8': out += QChar(0x2088); break;
+        case '9': out += QChar(0x2089); break;
+        case '+': out += QChar(0x208A); break;
+        case '-': out += QChar(0x208B); break;
+        case '=': out += QChar(0x208C); break;
+        case '(': out += QChar(0x208D); break;
+        case ')': out += QChar(0x208E); break;
+        case 'a': out += QChar(0x2090); break;
+        case 'e': out += QChar(0x2091); break;
+        case 'h': out += QChar(0x2095); break;
+        case 'i': out += QChar(0x1D62); break;
+        case 'j': out += QChar(0x2C7C); break;
+        case 'k': out += QChar(0x2096); break;
+        case 'l': out += QChar(0x2097); break;
+        case 'm': out += QChar(0x2098); break;
+        case 'n': out += QChar(0x2099); break;
+        case 'o': out += QChar(0x2092); break;
+        case 'p': out += QChar(0x209A); break;
+        case 'r': out += QChar(0x1D63); break;
+        case 's': out += QChar(0x209B); break;
+        case 't': out += QChar(0x209C); break;
+        case 'u': out += QChar(0x1D64); break;
+        case 'v': out += QChar(0x1D65); break;
+        case 'x': out += QChar(0x2093); break;
+        default: out += ch; break;
+        }
+    }
+    return out;
+}
+
+QString mapToUnicodeSuperscript(const QString &src)
+{
+    QString out;
+    out.reserve(src.size());
+    for (QChar ch : src) {
+        switch (ch.unicode()) {
+        case '0': out += QChar(0x2070); break;
+        case '1': out += QChar(0x00B9); break;
+        case '2': out += QChar(0x00B2); break;
+        case '3': out += QChar(0x00B3); break;
+        case '4': out += QChar(0x2074); break;
+        case '5': out += QChar(0x2075); break;
+        case '6': out += QChar(0x2076); break;
+        case '7': out += QChar(0x2077); break;
+        case '8': out += QChar(0x2078); break;
+        case '9': out += QChar(0x2079); break;
+        case '+': out += QChar(0x207A); break;
+        case '-': out += QChar(0x207B); break;
+        case '=': out += QChar(0x207C); break;
+        case '(': out += QChar(0x207D); break;
+        case ')': out += QChar(0x207E); break;
+        case 'i': out += QChar(0x2071); break;
+        case 'n': out += QChar(0x207F); break;
+        default: out += ch; break;
+        }
+    }
+    return out;
+}
+
+//! Strip scientific HTML formatting tags (<i>, <b>, <u>, <sub>, <sup>, <span>, <font>, <br>)
+//! into clean readable Unicode text for tree items, combos, labels, and tooltips (A3-2).
+QString stripHtmlToCleanUnicode(const QString &raw)
+{
+    if (raw.isEmpty())
+        return raw;
+    if (!raw.contains(QLatin1Char('<')) && !raw.contains(QLatin1Char('&')))
+        return raw;
+
+    QString s = raw;
+    static const QRegularExpression rxSub(QStringLiteral("<sub\\b[^>]*>(.*?)</sub>"),
+                                          QRegularExpression::CaseInsensitiveOption
+                                                  | QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression rxSup(QStringLiteral("<sup\\b[^>]*>(.*?)</sup>"),
+                                          QRegularExpression::CaseInsensitiveOption
+                                                  | QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression rxBr(QStringLiteral("<br\\s*/?>"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression rxSafeTags(
+            QStringLiteral("</?(?:i|b|u|em|strong|span|font|sub|sup|p|div|nobr)(?:\\s+[^>]*)?>"),
+            QRegularExpression::CaseInsensitiveOption);
+
+    // Replace <sub>...</sub> and <sup>...</sup> with clean Unicode characters.
+    QRegularExpressionMatch m;
+    while ((m = rxSub.match(s)).hasMatch()) {
+        const QString inner = stripHtmlToCleanUnicode(m.captured(1));
+        s.replace(m.capturedStart(), m.capturedLength(), mapToUnicodeSubscript(inner));
+    }
+    while ((m = rxSup.match(s)).hasMatch()) {
+        const QString inner = stripHtmlToCleanUnicode(m.captured(1));
+        s.replace(m.capturedStart(), m.capturedLength(), mapToUnicodeSuperscript(inner));
+    }
+    s.replace(rxBr, QStringLiteral(" "));
+    s.remove(rxSafeTags);
+    s.replace(QLatin1String("&nbsp;"), QLatin1String(" "));
+    s.replace(QLatin1String("&deg;"), QString::fromUtf8("\xC2\xB0"));
+    s.replace(QLatin1String("&mu;"), QString::fromUtf8("\xCE\xBC"));
+    s.replace(QLatin1String("&plusmn;"), QString::fromUtf8("\xC2\xB1"));
+    s.replace(QLatin1String("&times;"), QString::fromUtf8("\xC3\x97"));
+    s.replace(QLatin1String("&lt;"), QLatin1String("<"));
+    s.replace(QLatin1String("&gt;"), QLatin1String(">"));
+    s.replace(QLatin1String("&amp;"), QLatin1String("&"));
+    return s;
+}
+
+//! Escape arbitrary user text while preserving safe scientific markup tags for Qt::RichText preview.
+QString renderSafeScientificPreviewHtml(const QString &raw)
+{
+    QString esc = raw.toHtmlEscaped();
+    static const QRegularExpression rxAllowed(
+            QStringLiteral("&lt;(/?(?:i|b|u|sub|sup))&gt;"),
+            QRegularExpression::CaseInsensitiveOption);
+    esc.replace(rxAllowed, QStringLiteral("<\\1>"));
+    return esc;
+}
+
+void setLineEditPendingCue(QLineEdit *ed, bool pending)
+{
+    if (!ed)
+        return;
+    if (ed->property("pendingEdit").toBool() == pending)
+        return;
+    ed->setProperty("pendingEdit", pending);
+    if (QStyle *st = ed->style()) {
+        st->unpolish(ed);
+        st->polish(ed);
+    }
+    ed->update();
+}
+
+void syncLineEditClean(QLineEdit *ed, const QString &text)
+{
+    if (!ed)
+        return;
+    QSignalBlocker blk(ed);
+    ed->setText(text);
+    ed->setProperty("_syncedText", text.trimmed());
+    ed->setModified(false);
+    setLineEditPendingCue(ed, false);
+}
+
+void wirePendingEditCue(QLineEdit *ed)
+{
+    if (!ed)
+        return;
+    QObject::connect(ed, &QLineEdit::textEdited, ed, [ed](const QString &txt) {
+        const QString synced = ed->property("_syncedText").toString();
+        const bool dirty = ed->isModified() && (txt.trimmed() != synced);
+        setLineEditPendingCue(ed, dirty);
+    });
+}
+
+bool tableHasPlottableXY(Table *t)
+{
+    if (!t || t->numCols() < 2 || t->noXColumn() || t->noYColumn())
+        return false;
+    const int nCols = t->numCols();
+    for (int c = 0; c < nCols; ++c) {
+        if (t->colPlotDesignation(c) != SciDAVis::Y)
+            continue;
+        Column *yc = t->column(c);
+        const int xIdx = t->colX(c);
+        Column *xc = (xIdx >= 0) ? t->column(xIdx) : nullptr;
+        if (!yc || !xc)
+            continue;
+        const int rows = qMin(yc->rowCount(), xc->rowCount());
+        for (int r = 0; r < rows; ++r) {
+            if (yc->isInvalid(r) || xc->isInvalid(r))
+                continue;
+            const bool yOk = (yc->columnMode() == SciDAVis::ColumnMode::Numeric)
+                    ? std::isfinite(yc->valueAt(r))
+                    : !yc->textAt(r).trimmed().isEmpty();
+            if (!yOk)
+                continue;
+            const bool xOk = (xc->columnMode() == SciDAVis::ColumnMode::Numeric)
+                    ? std::isfinite(xc->valueAt(r))
+                    : !xc->textAt(r).trimmed().isEmpty();
+            if (xOk)
+                return true;
+        }
+    }
+    return false;
+}
 
 bool isUsableInspectorTable(ApplicationWindow *app, MyWidget *w)
 {
@@ -368,17 +607,17 @@ static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit,
         QObject::connect(bCm, &QToolButton::clicked, wrap,
                          [insertToken]() { insertToken(QStringLiteral("cm<sup>-1</sup>")); });
         QToolButton *bSub = makeBtn(row2, QString::fromUtf8("x\xE2\x82\x82"),
-                                    QObject::tr("Subscript (<sub>...</sub>)"));
-        bSub->setProperty("_tg_tip_fmt", QStringLiteral("Subscript (<sub>...</sub>)"));
+                                    QObject::tr("Subscript (X\xE2\x82\x82)"));
+        bSub->setProperty("_tg_tip_fmt", QString::fromUtf8("Subscript (X\xE2\x82\x82)"));
         QObject::connect(bSub, &QToolButton::clicked, wrap,
                          [wrapMarkup]() { wrapMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>")); });
         QToolButton *bSup = makeBtn(row2, QString::fromUtf8("x\xC2\xB2"),
-                                    QObject::tr("Superscript (<sup>...</sup>)"));
-        bSup->setProperty("_tg_tip_fmt", QStringLiteral("Superscript (<sup>...</sup>)"));
+                                    QObject::tr("Superscript (X\xC2\xB2)"));
+        bSup->setProperty("_tg_tip_fmt", QString::fromUtf8("Superscript (X\xC2\xB2)"));
         QObject::connect(bSup, &QToolButton::clicked, wrap,
                          [wrapMarkup]() { wrapMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>")); });
-        QToolButton *bIt = makeBtn(row2, QStringLiteral("I"), QObject::tr("Italic (<i>...</i>)"));
-        bIt->setProperty("_tg_tip_fmt", QStringLiteral("Italic (<i>...</i>)"));
+        QToolButton *bIt = makeBtn(row2, QStringLiteral("I"), QObject::tr("Italic (slanted)"));
+        bIt->setProperty("_tg_tip_fmt", QStringLiteral("Italic (slanted)"));
         QFont itF = bIt->font();
         itF.setItalic(true);
         bIt->setFont(itF);
@@ -509,7 +748,8 @@ static void registerInspectorExtraTranslations()
         reg("Change Unit Format", "単位表記の変更");
         reg("Symbol Skip:", "シンボルの間引き:");
         reg("Symbol Skip", "シンボルの間引き");
-        reg("Every %1 pts (0 = Auto)", "%1点ごと (0 = 自動間引き)");
+        reg("Skip symbols to avoid crowding on dense data (0 = Auto, 1 = All points, N = show 1 in N)",
+            "データ点が多くてシンボルが重なるときに間引いて表示します (0 = 自動、1 = 全点、N = N点ごとに1個表示)");
         reg("Change Symbol Skip", "シンボルの間引き間隔変更");
         reg("Colorbar Title:", "カラーバータイトル:");
         reg("Colorbar Title", "カラーバータイトル");
@@ -520,15 +760,19 @@ static void registerInspectorExtraTranslations()
             "3ステップで論文品質のグラフを作成できます");
         reg("Enter data in Table or import CSV",
             "ワークシートにデータを入力、またはCSVを読込");
-        reg("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar",
-            "上部の「折れ線」「線+シンボル」「散布図」をクリック");
+        reg("Click 'Line+Sym' on the Worksheet bar, or pick a graph type from the 'Plot' tab",
+            "ワークシート上部の「線+シンボル」、または上部の「作図」タブからグラフ種類を選択");
+        reg("Enter X and Y numeric data in the worksheet first to plot",
+            "ワークシートに X 列と Y 列の数値を入力すると作図できます");
+        reg("Guide (F1)", "ガイド (F1)");
+        reg("Open the ToriGraph Quick Guide (F1)", "ToriGraph クイックガイドを開きます (F1)");
         reg("Drag graph frame to resize; click axes or legend to edit",
             "グラフの枠ドラッグでサイズ変更・クリックで軸や凡例を編集");
         reg("Import CSV / Data...", "CSV / データ読込...");
         reg("New 2D Graph", "新規2Dグラフ");
         reg("Sample Gallery / Plot", "サンプル作図ギャラリー");
         reg("Aspect Ratio & Resizing", "縦横比とリサイズ");
-        reg("Lock Aspect Ratio", "縦横比を固定 (Lock Aspect Ratio)");
+        reg("Lock Aspect Ratio", "縦横比を固定");
         reg("1:1 Square", "1:1 正方形");
         reg("4:3 Landscape", "4:3 横長");
         reg("16:9 Wide", "16:9 ワイド");
@@ -536,6 +780,101 @@ static void registerInspectorExtraTranslations()
         reg("Free Resize (Unlock Aspect Ratio)", "自由リサイズ (縦横比ロック解除)");
         reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
         reg("Apply Aspect Ratio Preset", "縦横比プリセット適用");
+        // Clean markup tooltips (no raw HTML tags)
+        reg("Subscript (X\xE2\x82\x82)", "下付き文字 (X\xE2\x82\x82)");
+        reg("Superscript (X\xC2\xB2)", "上付き文字 (X\xC2\xB2)");
+        reg("Italic (slanted)", "斜体 (イタリック)");
+        // A5-2: 5 missing symbol menu items
+        reg("\xC2\xB1 (plus/minus)", "\xC2\xB1 (プラスマイナス)");
+        reg("\xC3\x97 (times)", "\xC3\x97 (乗算記号)");
+        reg("\xC2\xB7 (cdot)", "\xC2\xB7 (中黒・積)");
+        reg("\xC2\xB0 (degree)", "\xC2\xB0 (度)");
+        reg("\xC3\x85 (Angstrom)", "\xC3\x85 (オングストローム)");
+        // Page unit, Fit to Window, and Inset Layer controls
+        reg("Unit:", "単位:");
+        reg("Fit", "全体表示");
+        reg("Fit graph page to the current window viewport",
+            "グラフページを現在のウィンドウ幅に合わせて表示します");
+        reg("Inset Zoom Region", "拡大インセット範囲");
+        reg("X Min:", "X 最小:");
+        reg("X Max:", "X 最大:");
+        reg("Y Min:", "Y 最小:");
+        reg("Y Max:", "Y 最大:");
+        reg("Show Connector Lines", "引出線を表示");
+        reg("Toggle Inset Connectors", "インセット引出線の切替");
+        reg("Edit Inset Zoom Region", "拡大インセット範囲の編集");
+        reg("[Inset]", "[インセット]");
+        // Axis title live preview
+        reg("Preview: %1", "プレビュー: %1");
+        reg("Preview: (empty)", "プレビュー: (空)");
+        // Right-Y cleanup (B1-5)
+        reg("Enable Right-Y Axis", "右Y軸を有効化");
+        reg("A linked Right-Y overlay layer already owns the right Y axis. Add or edit curves on that layer instead.",
+            "リンク済みの右Y軸オーバーレイレイヤーが右Y軸を使用しています。そのレイヤー上で曲線を編集してください。");
+        // Spectrogram Log / Cell blocks (B2-7)
+        reg("Log Color Scale", "対数カラースケール");
+        reg("Cell Blocks (No Smoothing)", "セルブロック表示 (平滑化なし)");
+        reg("Toggle Log Color Scale", "対数カラースケールの切替");
+        reg("Toggle Cell Blocks", "セルブロック表示の切替");
+        // Per-curve legend labels & rebuild confirmation (A3-4)
+        reg("Curve Legend Labels", "凡例の各曲線ラベル");
+        reg("Reset to automatic curve name", "自動の曲線名に戻す");
+        reg("Edit Legend Label", "凡例ラベルの編集");
+        reg("Rebuild Legend", "凡例を再構築");
+        reg("Rebuilding the legend will overwrite your custom legend labels and header. Continue?",
+            "凡例を再構築すると、手編集した凡例ラベルや見出しが上書きされます。続けますか?");
+        // Arrow / Image / Plot Title editors (A3-5, C2-3)
+        reg("Arrow / Line Annotation", "矢印・直線注釈");
+        reg("Arrow Style", "矢印スタイル");
+        reg("Width:", "幅:");
+        reg("Arrow at Start", "始点に矢尻");
+        reg("Arrow at End", "終点に矢尻");
+        reg("Head Length:", "矢尻の長さ:");
+        reg("Head Angle:", "矢尻の角度:");
+        reg("Filled Head", "矢尻を塗りつぶす");
+        reg("Select Arrow Color", "矢印の色を選択");
+        reg("Change Arrow Style", "矢印スタイルの変更");
+        reg("Image Annotation", "画像注釈");
+        reg("Image Geometry", "画像の位置とサイズ");
+        reg("File: %1", "ファイル: %1");
+        reg("File: (none)", "ファイル: (なし)");
+        reg("X:", "X:");
+        reg("Y:", "Y:");
+        reg("Replace Image...", "画像を差し替え...");
+        reg("Select Replacement Image", "差し替える画像を選択");
+        reg("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;All Files (*)",
+            "画像ファイル (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;すべてのファイル (*)");
+        reg("Replace Image", "画像の差し替え");
+        reg("Change Image Geometry", "画像位置・サイズの変更");
+        reg("Plot Title", "グラフタイトル");
+        reg("Plot Title: %1", "グラフタイトル: %1");
+        reg("Title Appearance", "グラフタイトルの書式");
+        reg("Title Text:", "タイトル文字:");
+        reg("Enter plot title...", "グラフタイトルを入力...");
+        reg("Bold", "太字");
+        reg("Text Color:", "文字色:");
+        reg("Select Plot Title Color", "グラフタイトル色を選択");
+        reg("Edit Plot Title", "グラフタイトルの編集");
+        reg("Change Plot Title Font", "グラフタイトルフォントの変更");
+        reg("Change Plot Title Color", "グラフタイトル色の変更");
+        // Color swatch popup (A3-6)
+        reg("ToriGraph Standard", "ToriGraph 標準");
+        reg("Okabe-Ito", "Okabe-Ito (色覚バリアフリー)");
+        reg("Basic & Grayscale", "基本色・グレースケール");
+        reg("Custom Color...", "カスタム色...");
+        // Object Manager context menu actions (B1-9)
+        reg("Copy Axis Scale Range", "軸スケール範囲をコピー");
+        reg("Paste Axis Scale Range", "軸スケール範囲を貼り付け");
+        reg("Copy Curve Color & Symbol", "曲線の色とシンボルをコピー");
+        reg("Paste Curve Color & Symbol", "曲線の色とシンボルを貼り付け");
+        reg("Edit X/Y Data Columns...", "X/Y データ列を編集...");
+        reg("Edit Data Row Range...", "データ行範囲を編集...");
+        reg("Edit Axis Properties...", "軸の詳細設定...");
+        reg("Add/Remove Curves...", "曲線の追加・削除...");
+        reg("Show/Hide Object", "オブジェクト表示の切替");
+        reg("Paste Curve Style", "曲線の色とシンボルを貼り付け");
+        reg("Enter values and press Enter to apply (amber highlight = unsaved edit)",
+            "値を入力して Enter で反映します (黄色の枠は未確定の編集)");
         // H3: registered here too, because MultiLayer registers it lazily and the
         // inspector sets its button text before that happens.
         reg("Manage Style Presets...", "グラフプリセットの編集・追加...");
@@ -667,9 +1006,9 @@ static QString formatColumnLabelWithMeta(Table *t, int c, const QString &roleTag
 {
     if (!t || c < 0 || c >= t->numCols())
         return QString();
-    const QString colShort = t->colLabel(c);
-    const QString longName = t->colLongName(c).trimmed();
-    const QString units = t->colUnits(c).trimmed();
+    const QString colShort = stripHtmlToCleanUnicode(t->colLabel(c));
+    const QString longName = stripHtmlToCleanUnicode(t->colLongName(c)).trimmed();
+    const QString units = stripHtmlToCleanUnicode(t->colUnits(c)).trimmed();
     QString meta;
     if (!longName.isEmpty() && longName != colShort && !units.isEmpty())
         meta = QStringLiteral(" [%1 (%2)]").arg(longName, units);
@@ -708,6 +1047,7 @@ static QString friendlyCurveDisplayName(Graph *g, int curveIdx)
             }
         }
     }
+    label = stripHtmlToCleanUnicode(label).trimmed();
     if (cv->yAxis() == QwtPlot::yRight)
         label += QCoreApplication::translate("GraphInspectorDock", " [R-Y]");
     return label;
@@ -954,6 +1294,12 @@ GraphInspectorDock::GraphInspectorDock(ApplicationWindow *app, QWidget *parent)
     applyTheme();
     retranslateUi();
     setCollapsedRail(false);
+    if (d_app) {
+        connect(d_app, &ApplicationWindow::modified, this, [this]() {
+            if (isShowingQuickStart())
+                updateQuickStartPlotButtonState();
+        });
+    }
 }
 
 GraphInspectorDock::~GraphInspectorDock() = default;
@@ -1000,9 +1346,27 @@ void GraphInspectorDock::changeEvent(QEvent *event)
 
 void GraphInspectorDock::closeEvent(QCloseEvent *event)
 {
+    // E5-2: flush any debounced text edits before closing the dock.
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+        flushPendingAnnotationEdit();
+    if (d_axis_title_timer && d_axis_title_timer->isActive())
+        flushPendingAxisTitleEdit();
     if (event && event->spontaneous())
         emit closeRequestedByUser();
     QDockWidget::closeEvent(event);
+}
+
+bool GraphInspectorDock::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event) {
+        if (obj == d_edit_annot_text && event->type() == QEvent::FocusOut) {
+            if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+                flushPendingAnnotationEdit();
+        } else if (obj == d_empty_quickstart_panel && event->type() == QEvent::Show) {
+            updateQuickStartPlotButtonState();
+        }
+    }
+    return QDockWidget::eventFilter(obj, event);
 }
 
 void GraphInspectorDock::setUserPinned(bool pinned)
@@ -1014,38 +1378,97 @@ void GraphInspectorDock::setUserPinned(bool pinned)
         QSignalBlocker b(d_btn_pin);
         d_btn_pin->setChecked(pinned);
     }
+    if (d_collapsed_rail)
+        applyCollapsedGeometry();
     emit userPinToggled(pinned);
+}
+
+void GraphInspectorDock::applyCollapsedGeometry()
+{
+    if (d_mode_stack) {
+        d_mode_stack->setCurrentIndex(d_collapsed_rail ? 1 : 0);
+        d_mode_stack->updateGeometry();
+    }
+
+    if (d_collapsed_rail) {
+        // A4-1: when collapsed with no active graph (and not pinned / not OLE embedded),
+        // shrink width to 0px so no empty 48px rail steals width on 911x512 startup,
+        // while keeping isVisible() == true and isCollapsedRail() == true.
+        const bool collapseToZero = !d_target_ml && !d_user_pinned
+                && !(d_app && d_app->isOleEmbeddedMode());
+        const int targetW = collapseToZero ? 0 : 48;
+        setMinimumWidth(targetW);
+        setMaximumWidth(targetW);
+        resize(targetW, height());
+        if (d_app)
+            d_app->resizeDocks({ this }, { targetW }, Qt::Horizontal);
+    } else {
+        setMinimumWidth(252);
+        setMaximumWidth(360);
+        if (width() < 252 || width() > 360)
+            resize(288, height());
+        if (d_app)
+            d_app->resizeDocks({ this }, { 288 }, Qt::Horizontal);
+    }
 }
 
 void GraphInspectorDock::setCollapsedRail(bool collapsed)
 {
     const bool changed = (d_collapsed_rail != collapsed);
     d_collapsed_rail = collapsed;
-
-    if (d_mode_stack) {
-        d_mode_stack->setCurrentIndex(collapsed ? 1 : 0);
-        d_mode_stack->updateGeometry();
-    }
-
-    if (collapsed) {
-        setMinimumWidth(48);
-        setMaximumWidth(48);
-        resize(48, height());
-        if (d_app) {
-            d_app->resizeDocks({ this }, { 48 }, Qt::Horizontal);
-        }
-    } else {
-        setMinimumWidth(252);
-        setMaximumWidth(360);
-        if (width() < 252 || width() > 360)
-            resize(288, height());
-        if (d_app) {
-            d_app->resizeDocks({ this }, { 288 }, Qt::Horizontal);
-        }
-    }
-
+    applyCollapsedGeometry();
     if (changed)
         emit collapsedStateChanged(collapsed);
+}
+
+void GraphInspectorDock::updateQuickStartPlotButtonState()
+{
+    if (!d_btn_qs_new_graph)
+        return;
+    bool canPlot = false;
+    if (d_app) {
+        if (Table *activeTbl = qobject_cast<Table *>(d_app->activeWindow())) {
+            canPlot = tableHasPlottableXY(activeTbl);
+        } else if (QList<MyWidget *> *tblList = d_app->tableList()) {
+            for (MyWidget *w : *tblList) {
+                if (!isUsableInspectorTable(d_app, w))
+                    continue;
+                if (Table *t = qobject_cast<Table *>(w)) {
+                    if (tableHasPlottableXY(t)) {
+                        canPlot = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    d_btn_qs_new_graph->setEnabled(canPlot);
+    d_btn_qs_new_graph->setToolTip(
+            canPlot ? tr("Plot the active worksheet as a Line + Symbol graph")
+                    : tr("Enter X and Y numeric data in the worksheet first to plot"));
+}
+
+void GraphInspectorDock::openAxesDialogForQwtAxis(Graph *g, int qwtAxis, bool showAxesTab)
+{
+    if (!d_app || !g || ApplicationWindow::isNonInteractiveContext(d_app))
+        return;
+    MultiLayer *ml = g->multiLayerParent();
+    if (!ml)
+        ml = d_target_ml.data();
+    if (!ml || ml->isEmpty())
+        return;
+    // C2-1: always use AxesDialog::setCurrentQwtAxis(qwtAxis) when passing a QwtPlot::Axis,
+    // never setCurrentScale() which expects QwtScaleDraw::Alignment.
+    auto &ad = d_app->addChild<AxesDialog>();
+    ad.setAttribute(Qt::WA_DeleteOnClose, true);
+    connect(&ad, &QDialog::finished, &ad, &QObject::deleteLater);
+    ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+    ad.setGraph(g);
+    if (showAxesTab)
+        ad.showAxesPage();
+    ad.setCurrentQwtAxis(qBound(0, qwtAxis, 3));
+    ad.exec();
+    refreshAll();
 }
 
 void GraphInspectorDock::switchToInspectorPage(InspectorPageIndex pageIdx)
@@ -1084,14 +1507,25 @@ void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
             if (d_header_target_lbl->text() != winName)
                 d_header_target_lbl->setText(winName);
         }
+        if (!ml)
+            updateQuickStartPlotButtonState();
         syncInspectorFromSelection();
         return;
     }
 
+    // E5-2: flush any pending debounced text edits BEFORE mutating d_target_ml so edits
+    // commit to the original graph's own MultiLayer Undo stack and never corrupt the next graph.
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+        flushPendingAnnotationEdit();
+    if (d_axis_title_timer && d_axis_title_timer->isActive())
+        flushPendingAxisTitleEdit();
+
     if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
         d_coalesce_refresh_timer->stop();
 
-    if (d_target_ml && d_target_ml != ml)
+    // E5-5: disconnect previous MultiLayer signals whenever rebinding (including forceRefresh)
+    // so signal lambdas never accumulate N-times.
+    if (d_target_ml && (d_target_ml != ml || forceRefresh))
         disconnect(d_target_ml, nullptr, this, nullptr);
     for (const QPointer<Graph> &gPtr : d_bound_layers) {
         if (gPtr)
@@ -1104,6 +1538,8 @@ void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
         connectMultiLayerSignals(ml);
 
     refreshAll();
+    if (d_collapsed_rail)
+        applyCollapsedGeometry();
 }
 
 void GraphInspectorDock::connectMultiLayerSignals(MultiLayer *ml)
@@ -1136,12 +1572,26 @@ void GraphInspectorDock::connectMultiLayerSignals(MultiLayer *ml)
                 d_coalesce_refresh_timer->start();
         }
     });
-    connect(ml, &QObject::destroyed, this, [this](QObject *) {
+    connect(ml, &QObject::destroyed, this, [this](QObject *deadObj) {
         if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
             d_coalesce_refresh_timer->stop();
+        if (d_annot_commit_timer && d_annot_commit_timer->isActive()
+            && (!d_annot_edit_layer || d_annot_edit_layer->multiLayerParent() == deadObj)) {
+            d_annot_commit_timer->stop();
+            d_annot_edit_layer = nullptr;
+            d_annot_edit_id = -1;
+        }
+        if (d_axis_title_timer && d_axis_title_timer->isActive()
+            && (!d_axis_title_edit_layer || d_axis_title_edit_layer->multiLayerParent() == deadObj)) {
+            d_axis_title_timer->stop();
+            d_axis_title_edit_layer = nullptr;
+            d_axis_title_edit_axis = -1;
+        }
         d_target_ml = nullptr;
         d_bound_layers.clear();
         refreshAll();
+        if (d_collapsed_rail)
+            applyCollapsedGeometry();
     });
 
     for (Graph *g : ml->layersList())
@@ -1666,9 +2116,23 @@ QWidget *GraphInspectorDock::buildQuickStartEmptyState()
     });
     lay->addWidget(d_btn_qs_sample_gallery);
 
+    // A1-8: compact ? Guide (F1) button in Quick Start
+    d_btn_qs_help = new QPushButton(content);
+    d_btn_qs_help->setObjectName(QStringLiteral("QuickStartSecondaryBtn"));
+    d_btn_qs_help->setIcon(IconLoader::duotoneIcon(QStringLiteral("help"), 15));
+    d_btn_qs_help->setMinimumHeight(28);
+    d_btn_qs_help->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_qs_help, &QPushButton::clicked, this, [this]() {
+        if (!d_app)
+            return;
+        QMetaObject::invokeMethod(d_app.data(), "showHelp", Qt::DirectConnection);
+    });
+    lay->addWidget(d_btn_qs_help);
+
     lay->addStretch(1);
     scroll->setWidget(content);
     outerLay->addWidget(scroll);
+    outer->installEventFilter(this);
     return outer;
 }
 
@@ -1811,6 +2275,7 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     sizeGrid->setContentsMargins(0, 0, 0, 0);
     sizeGrid->setHorizontalSpacing(6);
     sizeGrid->setVerticalSpacing(4);
+    sizeGrid->setColumnStretch(1, 1);
 
     d_lbl_page_w = new QLabel(page);
     d_spin_page_w_mm = new QDoubleSpinBox(page);
@@ -1818,7 +2283,8 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_spin_page_w_mm->setDecimals(1);
     d_spin_page_w_mm->setSingleStep(5.0);
     d_spin_page_w_mm->setSuffix(QStringLiteral(" mm"));
-    d_spin_page_w_mm->setMinimumWidth(108);
+    d_spin_page_w_mm->setMinimumWidth(76);
+    d_spin_page_w_mm->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     d_lbl_page_h = new QLabel(page);
     d_spin_page_h_mm = new QDoubleSpinBox(page);
@@ -1826,7 +2292,18 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_spin_page_h_mm->setDecimals(1);
     d_spin_page_h_mm->setSingleStep(5.0);
     d_spin_page_h_mm->setSuffix(QStringLiteral(" mm"));
-    d_spin_page_h_mm->setMinimumWidth(108);
+    d_spin_page_h_mm->setMinimumWidth(76);
+    d_spin_page_h_mm->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    // B1-7 + A4-5: include px (MultiLayer::UnitPx) and give Unit its own 2-column row
+    // so 252px dock width never clips Width/Height spinboxes.
+    d_lbl_page_unit = new QLabel(page);
+    d_combo_page_unit = new QComboBox(page);
+    d_combo_page_unit->addItem(QStringLiteral("mm"), int(MultiLayer::UnitMm));
+    d_combo_page_unit->addItem(QStringLiteral("cm"), int(MultiLayer::UnitCm));
+    d_combo_page_unit->addItem(QStringLiteral("in"), int(MultiLayer::UnitInch));
+    d_combo_page_unit->addItem(QStringLiteral("px"), int(MultiLayer::UnitPx));
+    d_combo_page_unit->setObjectName(QStringLiteral("inspectorPageUnitCombo"));
 
     d_lbl_page_dpi = new QLabel(page);
     d_spin_page_dpi = new QSpinBox(page);
@@ -1835,21 +2312,14 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_spin_page_dpi->setSingleStep(50);
     d_spin_page_dpi->setValue(300);
 
-    // E7: page size unit (mm / cm / in). The page keeps the unit chosen here instead of
-    // being rewritten to mm on every edit.
-    d_combo_page_unit = new QComboBox(page);
-    d_combo_page_unit->addItem(QStringLiteral("mm"), int(MultiLayer::UnitMm));
-    d_combo_page_unit->addItem(QStringLiteral("cm"), int(MultiLayer::UnitCm));
-    d_combo_page_unit->addItem(QStringLiteral("in"), int(MultiLayer::UnitInch));
-    d_combo_page_unit->setObjectName(QStringLiteral("inspectorPageUnitCombo"));
-
     sizeGrid->addWidget(d_lbl_page_w, 0, 0);
     sizeGrid->addWidget(d_spin_page_w_mm, 0, 1);
-    sizeGrid->addWidget(d_combo_page_unit, 0, 2, 2, 1, Qt::AlignVCenter);
     sizeGrid->addWidget(d_lbl_page_h, 1, 0);
     sizeGrid->addWidget(d_spin_page_h_mm, 1, 1);
-    sizeGrid->addWidget(d_lbl_page_dpi, 2, 0);
-    sizeGrid->addWidget(d_spin_page_dpi, 2, 1);
+    sizeGrid->addWidget(d_lbl_page_unit, 2, 0);
+    sizeGrid->addWidget(d_combo_page_unit, 2, 1);
+    sizeGrid->addWidget(d_lbl_page_dpi, 3, 0);
+    sizeGrid->addWidget(d_spin_page_dpi, 3, 1);
 
     auto applyPageSize = [this]() {
         if (d_syncing_props || !d_target_ml)
@@ -1892,9 +2362,12 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
         if (d_app)
             d_app->syncGraphPageAndToolbarMenuState();
     });
-    sizeGrid->addWidget(d_chk_page_view, 3, 0, 1, 2);
+    sizeGrid->addWidget(d_chk_page_view, 4, 0, 1, 2);
 
     d_lbl_page_zoom = new QLabel(page);
+    QHBoxLayout *zoomRow = new QHBoxLayout();
+    zoomRow->setContentsMargins(0, 0, 0, 0);
+    zoomRow->setSpacing(4);
     d_combo_page_zoom = new QComboBox(page);
     const QList<int> zoomPcts = { 50, 75, 100, 125, 150, 200 };
     for (int pct : zoomPcts)
@@ -1911,9 +2384,78 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
                     d_target_ml->pushUndoSnapshot(tr("Page Zoom"), before, kMergePageDims);
                 }
             });
-    sizeGrid->addWidget(d_lbl_page_zoom, 4, 0);
-    sizeGrid->addWidget(d_combo_page_zoom, 4, 1);
+    d_btn_page_zoom_fit = new QToolButton(page);
+    d_btn_page_zoom_fit->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
+    d_btn_page_zoom_fit->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    d_btn_page_zoom_fit->setIcon(IconLoader::duotoneIcon(QStringLiteral("fit-page"), 14));
+    d_btn_page_zoom_fit->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_page_zoom_fit, &QToolButton::clicked, this, [this]() {
+        if (!d_target_ml)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        const bool fitted = QMetaObject::invokeMethod(
+                d_target_ml.data(), "fitPageZoomToViewport", Qt::DirectConnection);
+        if (!fitted) {
+            if (!QMetaObject::invokeMethod(d_target_ml.data(), "setPageZoomFactor",
+                                           Qt::DirectConnection, Q_ARG(double, 1.0))) {
+                d_target_ml->setPageZoom(1.0);
+            }
+        }
+        d_target_ml->pushUndoSnapshot(tr("Page Zoom"), before, kMergePageDims);
+        syncPageLayerControls();
+    });
+    zoomRow->addWidget(d_combo_page_zoom, 1);
+    zoomRow->addWidget(d_btn_page_zoom_fit, 0);
+    sizeGrid->addWidget(d_lbl_page_zoom, 5, 0);
+    sizeGrid->addLayout(zoomRow, 5, 1);
     lay->addLayout(sizeGrid);
+
+    // 2b) Inset Layer Controls (B5-8: visible only when active layer is an inset)
+    d_inset_wrap = new QWidget(page);
+    QVBoxLayout *insetLay = new QVBoxLayout(d_inset_wrap);
+    insetLay->setContentsMargins(0, 2, 0, 0);
+    insetLay->setSpacing(4);
+    d_sec_inset_lbl = makeSectionHeaderLabel(d_inset_wrap);
+    insetLay->addWidget(d_sec_inset_lbl);
+
+    QGridLayout *insetGrid = new QGridLayout();
+    insetGrid->setContentsMargins(0, 0, 0, 0);
+    insetGrid->setHorizontalSpacing(4);
+    insetGrid->setVerticalSpacing(4);
+    d_lbl_inset_xmin = new QLabel(d_inset_wrap);
+    d_edit_inset_xmin = new QLineEdit(d_inset_wrap);
+    d_lbl_inset_xmax = new QLabel(d_inset_wrap);
+    d_edit_inset_xmax = new QLineEdit(d_inset_wrap);
+    d_lbl_inset_ymin = new QLabel(d_inset_wrap);
+    d_edit_inset_ymin = new QLineEdit(d_inset_wrap);
+    d_lbl_inset_ymax = new QLabel(d_inset_wrap);
+    d_edit_inset_ymax = new QLineEdit(d_inset_wrap);
+    for (QLineEdit *ed : { d_edit_inset_xmin, d_edit_inset_xmax, d_edit_inset_ymin, d_edit_inset_ymax }) {
+        wirePendingEditCue(ed);
+        connect(ed, &QLineEdit::editingFinished, this, [this]() { applyInsetRoiFromUi(true); });
+    }
+    insetGrid->addWidget(d_lbl_inset_xmin, 0, 0);
+    insetGrid->addWidget(d_edit_inset_xmin, 0, 1);
+    insetGrid->addWidget(d_lbl_inset_xmax, 1, 0);
+    insetGrid->addWidget(d_edit_inset_xmax, 1, 1);
+    insetGrid->addWidget(d_lbl_inset_ymin, 2, 0);
+    insetGrid->addWidget(d_edit_inset_ymin, 2, 1);
+    insetGrid->addWidget(d_lbl_inset_ymax, 3, 0);
+    insetGrid->addWidget(d_edit_inset_ymax, 3, 1);
+    insetLay->addLayout(insetGrid);
+
+    d_chk_inset_connectors = new QCheckBox(d_inset_wrap);
+    connect(d_chk_inset_connectors, &QCheckBox::toggled, this, [this](bool on) {
+        Graph *g = activeLayer();
+        if (d_syncing_props || !d_target_ml || !g || !d_target_ml->isInsetLayer(g))
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        d_target_ml->setInsetShowConnectors(g, on);
+        d_target_ml->pushUndoSnapshot(tr("Toggle Inset Connectors"), before);
+    });
+    insetLay->addWidget(d_chk_inset_connectors);
+    d_inset_wrap->hide();
+    lay->addWidget(d_inset_wrap);
 
     // 3) Frame, Linked Axes & Panel Labels
     d_sec_layer_frame_lbl = makeSectionHeaderLabel(page);
@@ -1938,53 +2480,52 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_btn_link_right_y = new QPushButton(page);
     d_btn_link_right_y->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 15));
     connect(d_btn_link_right_y, &QPushButton::clicked, this, [this]() {
+        // B1-5: Enable the primary layer's yRight cleanly instead of spawning an overlapping
+        // linked right-Y overlay layer (unless a linked right-Y overlay already exists, in which
+        // case focus that existing layer without duplicating yRight).
         Graph *parentLayer = activeLayer();
         if (!d_target_ml || !parentLayer)
             return;
         if (parentLayer->linkedParentLayer())
             parentLayer = parentLayer->linkedParentLayer();
 
-        Graph *existingChild = nullptr;
+        Graph *existingRightOverlay = nullptr;
         for (Graph *cand : d_target_ml->layersList()) {
             if (!cand || cand->linkedParentLayer() != parentLayer || !cand->plotWidget())
                 continue;
             Plot *cp = cand->plotWidget();
-            const QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop);
             const QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight);
-            const bool topHasLabels = sdTop && sdTop->hasComponent(QwtAbstractScaleDraw::Labels);
             const bool rightHasLabels =
                     sdRight && sdRight->hasComponent(QwtAbstractScaleDraw::Labels);
-            if (cp->axisEnabled(QwtPlot::yRight)
-                && (!cp->axisEnabled(QwtPlot::xTop) || (rightHasLabels && !topHasLabels))) {
-                existingChild = cand;
+            if (cp->axisEnabled(QwtPlot::yRight) && rightHasLabels) {
+                existingRightOverlay = cand;
                 break;
             }
         }
 
+        if (existingRightOverlay) {
+            d_target_ml->setActiveGraph(existingRightOverlay);
+            d_active_axis = QwtPlot::yRight;
+            switchToInspectorPage(PageTabAxis);
+            refreshAll();
+            return;
+        }
+
         const QString before = d_target_ml->captureUndoSnapshot();
-        Graph *child = existingChild;
-        if (child) {
-            child->setLinkedParentLayer(parentLayer, 1, QStringLiteral("x"), 0,
-                                        QStringLiteral("y"));
-            d_target_ml->setActiveGraph(child);
-        } else {
-            child = d_target_ml->addLinkedLayer(parentLayer, true, false, QStringLiteral("x"),
-                                                QStringLiteral("y"));
-        }
-        if (child && child->plotWidget()) {
-            Plot *cp = child->plotWidget();
-            if (QwtScaleDraw *sdTop = cp->axisScaleDraw(QwtPlot::xTop))
-                sdTop->enableComponent(QwtAbstractScaleDraw::Labels, false);
-            if (QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight))
+        d_target_ml->setActiveGraph(parentLayer);
+        parentLayer->enableAxis(QwtPlot::yRight, true);
+        parentLayer->setAxisBackboneVisible(QwtPlot::yRight, true);
+        if (Plot *pp = parentLayer->plotWidget()) {
+            if (QwtScaleDraw *sdRight = pp->axisScaleDraw(QwtPlot::yRight))
                 sdRight->enableComponent(QwtAbstractScaleDraw::Labels, true);
-            cp->setMajorTicksType(QwtPlot::xTop, ScaleDraw::None);
-            cp->setMinorTicksType(QwtPlot::xTop, ScaleDraw::None);
-            cp->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
-            cp->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
-            child->syncLinkedAxesFromParent();
-            d_target_ml->applySquareCanvasFrame70Percent();
+            pp->setMajorTicksType(QwtPlot::yRight, ScaleDraw::In);
+            pp->setMinorTicksType(QwtPlot::yRight, ScaleDraw::In);
         }
-        d_target_ml->pushUndoSnapshot(tr("Link Right-Y Axis"), before);
+        parentLayer->replot();
+        emit parentLayer->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Enable Right-Y Axis"), before);
+        d_active_axis = QwtPlot::yRight;
+        switchToInspectorPage(PageTabAxis);
         refreshAll();
     });
     lay->addWidget(d_btn_link_right_y);
@@ -2192,28 +2733,38 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     connect(d_combo_panel_pos, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [applyPanelLabelsFromUi](int) { applyPanelLabelsFromUi(); });
 
-    // 4) Export & OLE Copy
+    // 4) Export & PowerPoint
     d_sec_export_lbl = makeSectionHeaderLabel(page);
     lay->addWidget(d_sec_export_lbl);
 
-    QHBoxLayout *expBtnRow = new QHBoxLayout();
-    expBtnRow->setSpacing(6);
     d_btn_copy_ole = new QPushButton(page);
     d_btn_copy_ole->setIcon(IconLoader::duotoneIcon(QStringLiteral("copy-ole"), 15));
     connect(d_btn_copy_ole, &QPushButton::clicked, this, [this]() {
         if (d_app)
             d_app->copyGraphAsOleObject();
     });
-    expBtnRow->addWidget(d_btn_copy_ole);
+    lay->addWidget(d_btn_copy_ole);
+
+    // A3-7: Send to PowerPoint (.pptx) button directly in Page 0 Export section
+    d_btn_send_pptx = new QPushButton(page);
+    d_btn_send_pptx->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-pptx"), 15));
+    connect(d_btn_send_pptx, &QPushButton::clicked, this, [this]() {
+        if (!d_app)
+            return;
+        if (QAction *aPptx = d_app->findChild<QAction *>(QStringLiteral("actionSendToPowerPoint")))
+            aPptx->trigger();
+        else
+            ToriGraphPptx::sendGraphsToPowerPoint(d_app);
+    });
+    lay->addWidget(d_btn_send_pptx);
 
     d_btn_export_img_pdf = new QPushButton(page);
-    d_btn_export_img_pdf->setIcon(IconLoader::duotoneIcon(QStringLiteral("export"), 15));
+    d_btn_export_img_pdf->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-image"), 15));
     connect(d_btn_export_img_pdf, &QPushButton::clicked, this, [this]() {
         if (d_app)
             d_app->exportGraph();
     });
-    expBtnRow->addWidget(d_btn_export_img_pdf);
-    lay->addLayout(expBtnRow);
+    lay->addWidget(d_btn_export_img_pdf);
 
     lay->addStretch(1);
     return page;
@@ -2226,35 +2777,38 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     lay->setContentsMargins(8, 8, 12, 10);
     lay->setSpacing(6);
 
-    // Axis Selector [Bottom X] [Left Y] [Top X] [Right Y]
+    // Axis Selector: 2x2 grid ([Bottom X][Left Y] / [Top X][Right Y]) so labels never clip at 252px (A4-5)
     QFrame *axisTrack = new QFrame(page);
     axisTrack->setObjectName(QStringLiteral("InspectorSegmentedTrack"));
-    QHBoxLayout *axisSelRow = new QHBoxLayout(axisTrack);
-    axisSelRow->setContentsMargins(2, 2, 2, 2);
-    axisSelRow->setSpacing(2);
+    QGridLayout *axisSelGrid = new QGridLayout(axisTrack);
+    axisSelGrid->setContentsMargins(2, 2, 2, 2);
+    axisSelGrid->setHorizontalSpacing(2);
+    axisSelGrid->setVerticalSpacing(2);
     d_axis_sel_group = new QButtonGroup(this);
     d_axis_sel_group->setExclusive(true);
 
-    auto makeAxisBtn = [&](int qwtAxis) -> QToolButton * {
+    auto makeAxisBtn = [&](int qwtAxis, int row, int col) -> QToolButton * {
         QToolButton *b = new QToolButton(axisTrack);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        b->setFixedHeight(25);
+        b->setFixedHeight(24);
         b->setObjectName(QStringLiteral("InspectorAxisPillBtn"));
         d_axis_sel_group->addButton(b, qwtAxis);
-        axisSelRow->addWidget(b);
+        axisSelGrid->addWidget(b, row, col);
         return b;
     };
 
-    d_btn_axis_bottom = makeAxisBtn(QwtPlot::xBottom);
-    d_btn_axis_left = makeAxisBtn(QwtPlot::yLeft);
-    d_btn_axis_top = makeAxisBtn(QwtPlot::xTop);
-    d_btn_axis_right = makeAxisBtn(QwtPlot::yRight);
+    d_btn_axis_bottom = makeAxisBtn(QwtPlot::xBottom, 0, 0);
+    d_btn_axis_left = makeAxisBtn(QwtPlot::yLeft, 0, 1);
+    d_btn_axis_top = makeAxisBtn(QwtPlot::xTop, 1, 0);
+    d_btn_axis_right = makeAxisBtn(QwtPlot::yRight, 1, 1);
     d_btn_axis_bottom->setChecked(true);
 
     connect(d_axis_sel_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
             [this](int qwtAxis) {
+                if (d_axis_title_timer && d_axis_title_timer->isActive())
+                    flushPendingAxisTitleEdit();
                 d_active_axis = qBound(0, qwtAxis, 3);
                 if (Graph *g = activeLayer()) {
                     GraphMiniToolbar::instance()->cancelScheduledAndHide();
@@ -2314,28 +2868,46 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     lay->addWidget(d_sec_axis_title_lbl);
 
     d_edit_axis_title = new QLineEdit(page);
-    connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
+    d_axis_title_timer = new QTimer(this);
+    d_axis_title_timer->setSingleShot(true);
+    d_axis_title_timer->setInterval(300);
+    connect(d_axis_title_timer, &QTimer::timeout, this,
+            &GraphInspectorDock::flushPendingAxisTitleEdit);
+    connect(d_edit_axis_title, &QLineEdit::textEdited, this, [this](const QString &txt) {
+        updateAxisTitlePreview(txt);
+        if (d_syncing_props)
+            return;
         Graph *g = activeLayer();
-        if (d_syncing_props || !d_target_ml || !g)
+        if (!g)
             return;
-        const QString nextText = d_edit_axis_title->text();
-        if (g->axisTitle(d_active_axis) == nextText)
-            return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        for (Graph *lg : targetLayersForScope()) {
-            if (!lg)
-                continue;
-            lg->setAxisTitleAuto(d_active_axis, false);
-            QFont f = lg->axisTitleFont(d_active_axis);
-            if (f.family().trimmed().isEmpty())
-                f.setFamily(QStringLiteral("Arial"));
-            lg->setAxisTitleFont(d_active_axis, f);
-            lg->setAxisTitle(d_active_axis, nextText);
-            lg->replot();
+        if (!d_axis_title_timer->isActive()) {
+            d_axis_title_edit_layer = g;
+            d_axis_title_edit_axis = d_active_axis;
         }
-        d_target_ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
+        d_axis_title_timer->start();
+    });
+    connect(d_edit_axis_title, &QLineEdit::editingFinished, this, [this]() {
+        if (d_syncing_props)
+            return;
+        if (d_axis_title_timer && d_axis_title_timer->isActive()) {
+            flushPendingAxisTitleEdit();
+            return;
+        }
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        d_axis_title_edit_layer = g;
+        d_axis_title_edit_axis = d_active_axis;
+        flushPendingAxisTitleEdit();
     });
     lay->addWidget(d_edit_axis_title);
+
+    // Rich-text live preview label directly below d_edit_axis_title (claude_review_1 #4, A3-3)
+    d_lbl_axis_title_preview = new QLabel(page);
+    d_lbl_axis_title_preview->setObjectName(QStringLiteral("InspectorAxisTitlePreview"));
+    d_lbl_axis_title_preview->setTextFormat(Qt::RichText);
+    d_lbl_axis_title_preview->setWordWrap(true);
+    lay->addWidget(d_lbl_axis_title_preview);
 
     QHBoxLayout *fmtRow = new QHBoxLayout();
     fmtRow->setSpacing(3);
@@ -2412,12 +2984,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         b->setMinimumWidth(24);
         b->setCursor(Qt::PointingHandCursor);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        connect(b, &QToolButton::clicked, this, [this, sym]() {
-            if (!d_edit_axis_title)
-                return;
-            d_edit_axis_title->insert(sym);
-            emit d_edit_axis_title->editingFinished();
-        });
+        connect(b, &QToolButton::clicked, this, [this, sym]() { insertAxisTitleToken(sym); });
         matSymRow->addWidget(b);
     }
     lay->addLayout(matSymRow);
@@ -2437,6 +3004,9 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     d_edit_axis_max = new QLineEdit(page);
     d_lbl_axis_step = new QLabel(page);
     d_edit_axis_step = new QLineEdit(page);
+    wirePendingEditCue(d_edit_axis_min);
+    wirePendingEditCue(d_edit_axis_max);
+    wirePendingEditCue(d_edit_axis_step);
 
     rngGrid->addWidget(d_lbl_axis_min, 0, 0);
     rngGrid->addWidget(d_edit_axis_min, 0, 1);
@@ -2446,11 +3016,11 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     rngGrid->addWidget(d_edit_axis_step, 2, 1);
 
     connect(d_edit_axis_min, &QLineEdit::editingFinished, this,
-            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale, true); });
     connect(d_edit_axis_max, &QLineEdit::editingFinished, this,
-            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale, true); });
     connect(d_edit_axis_step, &QLineEdit::editingFinished, this,
-            [this]() { applyAxisScaleFromUi(kMergeAxisScale); });
+            [this]() { applyAxisScaleFromUi(kMergeAxisScale, true); });
 
     d_btn_axis_autoscale = new QPushButton(page);
     d_btn_axis_autoscale->setIcon(IconLoader::duotoneIcon(QStringLiteral("zoom-auto"), 14));
@@ -2531,6 +3101,8 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     d_edit_break_from = new QLineEdit(page);
     d_lbl_break_to = new QLabel(page);
     d_edit_break_to = new QLineEdit(page);
+    wirePendingEditCue(d_edit_break_from);
+    wirePendingEditCue(d_edit_break_to);
     d_lbl_break_scale_before = new QLabel(page);
     d_combo_break_scale_before = new QComboBox(page);
     d_combo_break_scale_before->addItem(QString(), 0); // Linear
@@ -2571,21 +3143,21 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         d_combo_break_scale_before->setEnabled(on);
         d_combo_break_scale_after->setEnabled(on);
         if (!d_syncing_props)
-            applyAxisBreakFromUi();
+            applyAxisBreakFromUi(false);
     });
     connect(d_edit_break_from, &QLineEdit::editingFinished, this,
-            &GraphInspectorDock::applyAxisBreakFromUi);
+            [this]() { applyAxisBreakFromUi(true); });
     connect(d_edit_break_to, &QLineEdit::editingFinished, this,
-            &GraphInspectorDock::applyAxisBreakFromUi);
+            [this]() { applyAxisBreakFromUi(true); });
     connect(d_combo_break_scale_before, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) {
                 if (!d_syncing_props)
-                    applyAxisBreakFromUi();
+                    applyAxisBreakFromUi(false);
             });
     connect(d_combo_break_scale_after, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) {
                 if (!d_syncing_props)
-                    applyAxisBreakFromUi();
+                    applyAxisBreakFromUi(false);
             });
 
     // Reference Lines (y = 0, x = 0, + Add Reference Line...)
@@ -2697,12 +3269,13 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                                   << QStringLiteral("1e6") << QStringLiteral("0.01"));
     connect(d_combo_tick_divide, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
         if (!d_syncing_props)
-            applyTickDivideFromUi();
+            applyTickDivideFromUi(false);
     });
     if (QLineEdit *divEdit = d_combo_tick_divide->lineEdit()) {
+        wirePendingEditCue(divEdit);
         connect(divEdit, &QLineEdit::editingFinished, this, [this]() {
             if (!d_syncing_props)
-                applyTickDivideFromUi();
+                applyTickDivideFromUi(true);
         });
     }
     tickGrid->addWidget(d_lbl_tick_divide, 3, 0);
@@ -2803,41 +3376,24 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                             return base + QStringLiteral(" [") + uTrim + QStringLiteral("]");
                         return base + QStringLiteral(" (") + uTrim + QStringLiteral(")");
                     };
+                    const Column::UnitFormat targetFmt = (mode == 1)
+                            ? Column::UnitFormat::ISIJSlash
+                            : (mode == 2 ? Column::UnitFormat::Bracket
+                                         : Column::UnitFormat::Paren);
                     for (Graph *lg : targets) {
                         if (!lg)
                             continue;
-                        if (mode == 2) {
-                            lg->setProperty("_toriBracketUnitFmt", true);
-                            lg->setAxisUnitFormat(Column::UnitFormat::Paren);
-                            lg->refreshAutoAxisTitlesFromColumns();
-                            for (int a = 0; a < 4; ++a) {
+                        // A3-8 / E1-4: use Column::UnitFormat::Bracket natively without any
+                        // dynamic property hack, and also rewrite manually edited titles.
+                        lg->setAxisUnitFormat(targetFmt);
+                        lg->refreshAutoAxisTitlesFromColumns();
+                        for (int a = 0; a < 4; ++a) {
+                            if (!lg->isAxisTitleAuto(a)) {
                                 const QString cur = lg->axisTitle(a);
-                                const QString rew = rewriteManualTitle(cur, 2);
-                                if (rew != cur) {
-                                    const bool wasAuto = lg->isAxisTitleAuto(a);
+                                const QString rew = rewriteManualTitle(cur, mode);
+                                if (rew != cur)
                                     lg->setAxisTitle(a, rew);
-                                    if (wasAuto)
-                                        lg->setProperty(QStringLiteral("_toriBracketAuto_%1").arg(a).toLatin1().constData(), true);
-                                }
                             }
-                        } else {
-                            const bool wasBracket = lg->property("_toriBracketUnitFmt").toBool();
-                            lg->setProperty("_toriBracketUnitFmt", false);
-                            for (int a = 0; a < 4; ++a) {
-                                const QByteArray key = QStringLiteral("_toriBracketAuto_%1").arg(a).toLatin1();
-                                if (wasBracket && lg->property(key.constData()).toBool()) {
-                                    lg->setProperty(key.constData(), false);
-                                    lg->setAxisTitleAuto(a, true);
-                                } else if (!lg->isAxisTitleAuto(a)) {
-                                    const QString cur = lg->axisTitle(a);
-                                    const QString rew = rewriteManualTitle(cur, mode);
-                                    if (rew != cur)
-                                        lg->setAxisTitle(a, rew);
-                                }
-                            }
-                            lg->setAxisUnitFormat(mode == 1 ? Column::UnitFormat::ISIJSlash
-                                                            : Column::UnitFormat::Paren);
-                            lg->refreshAutoAxisTitlesFromColumns();
                         }
                         lg->replot();
                         emit lg->modifiedGraph();
@@ -2861,7 +3417,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
 
     d_lbl_title_pt = new QLabel(page);
     d_spin_axis_title_pt = new InspectorPtSpinBox(page);
-    d_spin_axis_title_pt->setRange(6, 72);
+    d_spin_axis_title_pt->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
     d_spin_axis_title_pt->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_axis_title_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double pt) {
@@ -2870,16 +3426,20 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                 if (d_syncing_props || !d_target_ml || !g || targets.isEmpty())
                     return;
                 const bool lockAll4 = d_chk_lock_all_axes_font && d_chk_lock_all_axes_font->isChecked();
-                const double oldTitlePt =
-                        qMax(6.0, g->axisTitleFont(d_active_axis).pointSizeF() > 0.0
-                                     ? g->axisTitleFont(d_active_axis).pointSizeF()
-                                     : 14.0);
-                const double oldTickPt =
-                        qMax(6.0, g->axisFont(d_active_axis).pointSizeF() > 0.0
-                                     ? g->axisFont(d_active_axis).pointSizeF()
-                                     : 12.0);
-                const double scaledTickPt =
-                        qBound(6.0, std::round(oldTickPt * pt / oldTitlePt * 10.0) / 10.0, 72.0);
+                const double oldTitlePt = qMax(
+                        PlotStyleLimits::kFontSizeMin,
+                        g->axisTitleFont(d_active_axis).pointSizeF() > 0.0
+                                ? g->axisTitleFont(d_active_axis).pointSizeF()
+                                : 14.0);
+                const double oldTickPt = qMax(
+                        PlotStyleLimits::kFontSizeMin,
+                        g->axisFont(d_active_axis).pointSizeF() > 0.0
+                                ? g->axisFont(d_active_axis).pointSizeF()
+                                : 12.0);
+                const double scaledTickPt = qBound(
+                        PlotStyleLimits::kFontSizeMin,
+                        std::round(oldTickPt * pt / oldTitlePt * 10.0) / 10.0,
+                        PlotStyleLimits::kFontSizeMax);
 
                 const QString before = d_target_ml->captureUndoSnapshot();
                 auto applyLayerFonts = [&](Graph *lg) {
@@ -2939,7 +3499,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
 
     d_lbl_tick_pt = new QLabel(page);
     d_spin_axis_tick_pt = new InspectorPtSpinBox(page);
-    d_spin_axis_tick_pt->setRange(6, 72);
+    d_spin_axis_tick_pt->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
     d_spin_axis_tick_pt->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_axis_tick_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double pt) {
@@ -3204,7 +3764,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_spin_line_width->setRange(0.5, double(PlotStyleLimits::kLineWidthMax));
     d_spin_line_width->setDecimals(1);
     d_spin_line_width->setSingleStep(0.5);
-    d_spin_line_width->setSuffix(QStringLiteral(" px"));
+    d_spin_line_width->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_line_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double w) {
                 Graph *g = activeLayer();
@@ -3385,7 +3945,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_spin_sym_size = new QSpinBox(d_curve_regular_wrap);
     d_spin_sym_size->setRange(PlotStyleLimits::kSymbolSizeMin, PlotStyleLimits::kSymbolSizeMax);
     d_spin_sym_size->setValue(8);
-    d_spin_sym_size->setSuffix(QStringLiteral(" px"));
+    d_spin_sym_size->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_sym_size, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int sz) {
         Graph *g = activeLayer();
         if (d_syncing_props || !d_target_ml || !g)
@@ -3522,7 +4082,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_spin_sym_edge_width->setSingleStep(0.5);
     d_spin_sym_edge_width->setDecimals(1);
     d_spin_sym_edge_width->setValue(1.5);
-    d_spin_sym_edge_width->setSuffix(QStringLiteral(" px"));
+    d_spin_sym_edge_width->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_sym_edge_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double w) {
                 Graph *g = activeLayer();
@@ -3591,7 +4151,45 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
         if (!cv)
             return;
+
+        // B1-5: guard against duplicating right-Y axis ticks when a linked overlay layer
+        // already owns the right-Y axis for this primary layer.
+        Graph *rightOverlay = nullptr;
+        if (rightY && !g->linkedParentLayer()) {
+            for (Graph *cand : d_target_ml->layersList()) {
+                if (!cand || cand->linkedParentLayer() != g || !cand->plotWidget())
+                    continue;
+                Plot *cp = cand->plotWidget();
+                const QwtScaleDraw *sdRight = cp->axisScaleDraw(QwtPlot::yRight);
+                if (cp->axisEnabled(QwtPlot::yRight) && sdRight
+                    && sdRight->hasComponent(QwtAbstractScaleDraw::Labels)) {
+                    rightOverlay = cand;
+                    break;
+                }
+            }
+            if (rightOverlay && rightOverlay->curves() > 0) {
+                QSignalBlocker blk(d_chk_curve_right_y);
+                d_chk_curve_right_y->setChecked(false);
+                if (d_app && d_app->statusBar()) {
+                    d_app->statusBar()->showMessage(
+                            tr("A linked Right-Y overlay layer already owns the right Y axis. "
+                               "Add or edit curves on that layer instead."),
+                            5000);
+                }
+                return;
+            }
+        }
+
         const QString before = d_target_ml->captureUndoSnapshot();
+        if (rightY && rightOverlay && rightOverlay->curves() == 0 && rightOverlay->plotWidget()) {
+            // Empty linked right-Y overlay: silence its duplicate right-Y ticks/labels cleanly.
+            Plot *cp = rightOverlay->plotWidget();
+            if (QwtScaleDraw *sd = cp->axisScaleDraw(QwtPlot::yRight))
+                sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
+            cp->setMajorTicksType(QwtPlot::yRight, ScaleDraw::None);
+            cp->setMinorTicksType(QwtPlot::yRight, ScaleDraw::None);
+            rightOverlay->replot();
+        }
         const int targetAxis = rightY ? QwtPlot::yRight : QwtPlot::yLeft;
         cv->setYAxis(targetAxis);
         if (DataCurve *dc = dynamic_cast<DataCurve *>(cv)) {
@@ -3631,8 +4229,11 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_sec_err_bars_lbl = makeSectionHeaderLabel(d_curve_regular_wrap);
     regLay->addWidget(d_sec_err_bars_lbl);
 
-    QHBoxLayout *errRow = new QHBoxLayout();
-    errRow->setSpacing(4);
+    // A4-5: 2-row grid so Adjacent Col / 5% / Std Dev (SD) never clip at 252px dock width
+    QGridLayout *errBtnGrid = new QGridLayout();
+    errBtnGrid->setContentsMargins(0, 0, 0, 0);
+    errBtnGrid->setHorizontalSpacing(4);
+    errBtnGrid->setVerticalSpacing(4);
     d_btn_err_adjacent = new QPushButton(d_curve_regular_wrap);
     d_btn_err_sd = new QPushButton(d_curve_regular_wrap);
     d_btn_err_5pct = new QPushButton(d_curve_regular_wrap);
@@ -3640,10 +4241,10 @@ QWidget *GraphInspectorDock::buildCurveInspector()
             [this]() { applyQuickErrorBars(0); });
     connect(d_btn_err_sd, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(1); });
     connect(d_btn_err_5pct, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(2); });
-    errRow->addWidget(d_btn_err_adjacent);
-    errRow->addWidget(d_btn_err_sd);
-    errRow->addWidget(d_btn_err_5pct);
-    regLay->addLayout(errRow);
+    errBtnGrid->addWidget(d_btn_err_adjacent, 0, 0);
+    errBtnGrid->addWidget(d_btn_err_5pct, 0, 1);
+    errBtnGrid->addWidget(d_btn_err_sd, 1, 0, 1, 2);
+    regLay->addLayout(errBtnGrid);
 
     d_err_style_wrap = new QWidget(d_curve_regular_wrap);
     QVBoxLayout *errStyleLay = new QVBoxLayout(d_err_style_wrap);
@@ -3658,30 +4259,36 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     errGrid->setHorizontalSpacing(6);
     errGrid->setVerticalSpacing(4);
 
+    // C2-5 + claude_review_1 #3: QDoubleSpinBox with PlotStyleLimits::kErrorBarWidthMin/Max/Step and pt suffix
     d_lbl_err_width = new QLabel(d_err_style_wrap);
-    d_spin_err_width = new QSpinBox(d_err_style_wrap);
-    d_spin_err_width->setRange(1, 10);
-    d_spin_err_width->setSuffix(QStringLiteral(" px"));
-    connect(d_spin_err_width, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int w) {
-        Graph *g = activeLayer();
-        if (d_syncing_props || !d_target_ml || !g)
-            return;
-        const QVector<QwtErrorPlotCurve *> errs = effectiveSelectedErrorBars(g);
-        if (errs.isEmpty())
-            return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        for (QwtErrorPlotCurve *er : errs)
-            er->setWidth(w);
-        g->updatePlot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Error Bar Width"), before, kMergeErrWidth);
-    });
+    d_spin_err_width = new QDoubleSpinBox(d_err_style_wrap);
+    d_spin_err_width->setRange(PlotStyleLimits::kErrorBarWidthMin,
+                               PlotStyleLimits::kErrorBarWidthMax);
+    d_spin_err_width->setDecimals(1);
+    d_spin_err_width->setSingleStep(PlotStyleLimits::kErrorBarWidthStep);
+    d_spin_err_width->setValue(1.0);
+    d_spin_err_width->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_err_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double w) {
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g)
+                    return;
+                const QVector<QwtErrorPlotCurve *> errs = effectiveSelectedErrorBars(g);
+                if (errs.isEmpty())
+                    return;
+                const QString before = d_target_ml->captureUndoSnapshot();
+                for (QwtErrorPlotCurve *er : errs)
+                    er->setWidthF(w);
+                g->updatePlot();
+                emit g->modifiedGraph();
+                d_target_ml->pushUndoSnapshot(tr("Change Error Bar Width"), before, kMergeErrWidth);
+            });
 
     d_lbl_err_cap = new QLabel(d_err_style_wrap);
     d_spin_err_cap = new QSpinBox(d_err_style_wrap);
     d_spin_err_cap->setRange(0, 32);
     d_spin_err_cap->setSingleStep(2);
-    d_spin_err_cap->setSuffix(QStringLiteral(" px"));
+    d_spin_err_cap->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_err_cap, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int cap) {
         Graph *g = activeLayer();
         if (d_syncing_props || !d_target_ml || !g)
@@ -3865,11 +4472,33 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_edit_pcm_zmin = new QLineEdit(d_point_cmap_wrap);
     d_lbl_pcm_zmax = new QLabel(d_point_cmap_wrap);
     d_edit_pcm_zmax = new QLineEdit(d_point_cmap_wrap);
+    wirePendingEditCue(d_edit_pcm_zmin);
+    wirePendingEditCue(d_edit_pcm_zmax);
 
-    auto applyPointColorMapFromUi = [this](const QString &undoLabel, int mergeId = -1) {
+    auto applyPointColorMapFromUi = [this](const QString &undoLabel, int mergeId = -1,
+                                           bool fromZEdits = false) {
         Graph *g = activeLayer();
         if (d_syncing_props || !d_target_ml || !g)
             return;
+        if (fromZEdits && d_edit_pcm_zmin && d_edit_pcm_zmax) {
+            const bool anyMod = d_edit_pcm_zmin->isModified() || d_edit_pcm_zmax->isModified();
+            const bool anyDiff = (d_edit_pcm_zmin->text().trimmed()
+                                  != d_edit_pcm_zmin->property("_syncedText").toString())
+                    || (d_edit_pcm_zmax->text().trimmed()
+                        != d_edit_pcm_zmax->property("_syncedText").toString());
+            if (!anyMod && !anyDiff) {
+                setLineEditPendingCue(d_edit_pcm_zmin, false);
+                setLineEditPendingCue(d_edit_pcm_zmax, false);
+                return;
+            }
+            if (!anyDiff) {
+                d_edit_pcm_zmin->setModified(false);
+                d_edit_pcm_zmax->setModified(false);
+                setLineEditPendingCue(d_edit_pcm_zmin, false);
+                setLineEditPendingCue(d_edit_pcm_zmax, false);
+                return;
+            }
+        }
         const int ci = effectiveSelectedCurveIndex(g, true);
         DataCurve *dc = (ci >= 0 && ci < g->curves()) ? dynamic_cast<DataCurve *>(g->curve(ci))
                                                       : nullptr;
@@ -3923,10 +4552,10 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         applyPointColorMapFromUi(tr("Change Scatter Z Range"));
     });
     connect(d_edit_pcm_zmin, &QLineEdit::editingFinished, this, [applyPointColorMapFromUi]() {
-        applyPointColorMapFromUi(tr("Change Scatter Z Range"));
+        applyPointColorMapFromUi(tr("Change Scatter Z Range"), -1, true);
     });
     connect(d_edit_pcm_zmax, &QLineEdit::editingFinished, this, [applyPointColorMapFromUi]() {
-        applyPointColorMapFromUi(tr("Change Scatter Z Range"));
+        applyPointColorMapFromUi(tr("Change Scatter Z Range"), -1, true);
     });
 
     pcmGrid->addWidget(d_lbl_pcm_cmap, 0, 0);
@@ -4070,6 +4699,38 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     specGrid->addWidget(d_combo_spec_cmap, 0, 1);
     specGrid->addWidget(d_chk_spec_reverse, 1, 0, 1, 2);
 
+    // B2-7: Log color scale & Cell blocks checkboxes for Spectrogram / 2D Density
+    d_chk_spec_log_scale = new QCheckBox(d_spectrogram_wrap);
+    connect(d_chk_spec_log_scale, &QCheckBox::toggled, this, [this](bool on) {
+        Graph *g = activeLayer();
+        Spectrogram *sp = effectiveSelectedSpectrogram(g);
+        if (d_syncing_props || !d_target_ml || !g || !sp)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        sp->setLogColorScale(on);
+        sp->syncColorScale();
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Toggle Log Color Scale"), before);
+        syncCurveControls();
+    });
+    specGrid->addWidget(d_chk_spec_log_scale, 2, 0, 1, 2);
+
+    d_chk_spec_cell_blocks = new QCheckBox(d_spectrogram_wrap);
+    connect(d_chk_spec_cell_blocks, &QCheckBox::toggled, this, [this](bool on) {
+        Graph *g = activeLayer();
+        Spectrogram *sp = effectiveSelectedSpectrogram(g);
+        if (d_syncing_props || !d_target_ml || !g || !sp)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        sp->setCellBlocks(on);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Toggle Cell Blocks"), before);
+        syncCurveControls();
+    });
+    specGrid->addWidget(d_chk_spec_cell_blocks, 3, 0, 1, 2);
+
     d_chk_spec_colorbar = new QCheckBox(d_spectrogram_wrap);
     connect(d_chk_spec_colorbar, &QCheckBox::toggled, this, [this](bool on) {
         Graph *g = activeLayer();
@@ -4088,7 +4749,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         d_target_ml->pushUndoSnapshot(tr("Toggle Colorbar"), before);
         syncCurveControls();
     });
-    specGrid->addWidget(d_chk_spec_colorbar, 2, 0, 1, 2);
+    specGrid->addWidget(d_chk_spec_colorbar, 4, 0, 1, 2);
 
     d_lbl_spec_cb_title = new QLabel(d_spectrogram_wrap);
     d_edit_spec_cb_title = new QLineEdit(d_spectrogram_wrap);
@@ -4108,14 +4769,14 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         d_target_ml->pushUndoSnapshot(tr("Edit Colorbar Title"), before, kMergeSpecCbTitle);
     });
     d_spec_cb_sym_bar = createMatSciRichTextBar(d_spectrogram_wrap, d_edit_spec_cb_title);
-    specGrid->addWidget(d_lbl_spec_cb_title, 3, 0);
-    specGrid->addWidget(d_edit_spec_cb_title, 3, 1);
-    specGrid->addWidget(d_spec_cb_sym_bar, 4, 0, 1, 2);
+    specGrid->addWidget(d_lbl_spec_cb_title, 5, 0);
+    specGrid->addWidget(d_edit_spec_cb_title, 5, 1);
+    specGrid->addWidget(d_spec_cb_sym_bar, 6, 0, 1, 2);
 
     d_lbl_spec_cb_width = new QLabel(d_spectrogram_wrap);
     d_spin_spec_cb_width = new QSpinBox(d_spectrogram_wrap);
     d_spin_spec_cb_width->setRange(6, 64);
-    d_spin_spec_cb_width->setSuffix(QStringLiteral(" px"));
+    d_spin_spec_cb_width->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_spec_cb_width, QOverload<int>::of(&QSpinBox::valueChanged), this,
             [this](int w) {
                 Graph *g = activeLayer();
@@ -4129,8 +4790,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
                 d_target_ml->pushUndoSnapshot(tr("Change Colorbar Width"), before,
                                               kMergeSpecCbWidth);
             });
-    specGrid->addWidget(d_lbl_spec_cb_width, 5, 0);
-    specGrid->addWidget(d_spin_spec_cb_width, 5, 1);
+    specGrid->addWidget(d_lbl_spec_cb_width, 7, 0);
+    specGrid->addWidget(d_spin_spec_cb_width, 7, 1);
 
     d_chk_spec_contours = new QCheckBox(d_spectrogram_wrap);
     connect(d_chk_spec_contours, &QCheckBox::toggled, this, [this](bool on) {
@@ -4145,11 +4806,11 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         d_target_ml->pushUndoSnapshot(tr("Toggle Contour Lines"), before);
         syncCurveControls();
     });
-    specGrid->addWidget(d_chk_spec_contours, 6, 0, 1, 2);
+    specGrid->addWidget(d_chk_spec_contours, 8, 0, 1, 2);
 
     d_lbl_spec_levels = new QLabel(d_spectrogram_wrap);
     d_spin_spec_levels = new QSpinBox(d_spectrogram_wrap);
-    d_spin_spec_levels->setRange(2, 50);
+    d_spin_spec_levels->setRange(2, 1000);
     connect(d_spin_spec_levels, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int lv) {
         Graph *g = activeLayer();
         Spectrogram *sp = effectiveSelectedSpectrogram(g);
@@ -4161,20 +4822,41 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         emit g->modifiedGraph();
         d_target_ml->pushUndoSnapshot(tr("Change Contour Levels"), before, kMergeSpecLevels);
     });
-    specGrid->addWidget(d_lbl_spec_levels, 7, 0);
-    specGrid->addWidget(d_spin_spec_levels, 7, 1);
+    specGrid->addWidget(d_lbl_spec_levels, 9, 0);
+    specGrid->addWidget(d_spin_spec_levels, 9, 1);
 
     d_chk_spec_custom_z = new QCheckBox(d_spectrogram_wrap);
     d_lbl_spec_zmin = new QLabel(d_spectrogram_wrap);
     d_edit_spec_zmin = new QLineEdit(d_spectrogram_wrap);
     d_lbl_spec_zmax = new QLabel(d_spectrogram_wrap);
     d_edit_spec_zmax = new QLineEdit(d_spectrogram_wrap);
+    wirePendingEditCue(d_edit_spec_zmin);
+    wirePendingEditCue(d_edit_spec_zmax);
 
-    auto applySpecZRange = [this]() {
+    auto applySpecZRange = [this](bool fromZEdits) {
         Graph *g = activeLayer();
         Spectrogram *sp = effectiveSelectedSpectrogram(g);
         if (d_syncing_props || !d_target_ml || !g || !sp)
             return;
+        if (fromZEdits) {
+            const bool anyMod = d_edit_spec_zmin->isModified() || d_edit_spec_zmax->isModified();
+            const bool anyDiff = (d_edit_spec_zmin->text().trimmed()
+                                  != d_edit_spec_zmin->property("_syncedText").toString())
+                    || (d_edit_spec_zmax->text().trimmed()
+                        != d_edit_spec_zmax->property("_syncedText").toString());
+            if (!anyMod && !anyDiff) {
+                setLineEditPendingCue(d_edit_spec_zmin, false);
+                setLineEditPendingCue(d_edit_spec_zmax, false);
+                return;
+            }
+            if (!anyDiff) {
+                d_edit_spec_zmin->setModified(false);
+                d_edit_spec_zmax->setModified(false);
+                setLineEditPendingCue(d_edit_spec_zmin, false);
+                setLineEditPendingCue(d_edit_spec_zmax, false);
+                return;
+            }
+        }
         const bool custom = d_chk_spec_custom_z->isChecked();
         d_edit_spec_zmin->setEnabled(custom);
         d_edit_spec_zmax->setEnabled(custom);
@@ -4194,15 +4876,17 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         syncCurveControls();
     };
     connect(d_chk_spec_custom_z, &QCheckBox::toggled, this,
-            [applySpecZRange](bool) { applySpecZRange(); });
-    connect(d_edit_spec_zmin, &QLineEdit::editingFinished, this, applySpecZRange);
-    connect(d_edit_spec_zmax, &QLineEdit::editingFinished, this, applySpecZRange);
+            [applySpecZRange](bool) { applySpecZRange(false); });
+    connect(d_edit_spec_zmin, &QLineEdit::editingFinished, this,
+            [applySpecZRange]() { applySpecZRange(true); });
+    connect(d_edit_spec_zmax, &QLineEdit::editingFinished, this,
+            [applySpecZRange]() { applySpecZRange(true); });
 
-    specGrid->addWidget(d_chk_spec_custom_z, 8, 0, 1, 2);
-    specGrid->addWidget(d_lbl_spec_zmin, 9, 0);
-    specGrid->addWidget(d_edit_spec_zmin, 9, 1);
-    specGrid->addWidget(d_lbl_spec_zmax, 10, 0);
-    specGrid->addWidget(d_edit_spec_zmax, 10, 1);
+    specGrid->addWidget(d_chk_spec_custom_z, 10, 0, 1, 2);
+    specGrid->addWidget(d_lbl_spec_zmin, 11, 0);
+    specGrid->addWidget(d_edit_spec_zmin, 11, 1);
+    specGrid->addWidget(d_lbl_spec_zmax, 12, 0);
+    specGrid->addWidget(d_edit_spec_zmax, 12, 1);
 
     specLay->addLayout(specGrid);
     d_spectrogram_wrap->hide();
@@ -4223,16 +4907,25 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_lbl_legend_target->setObjectName(QStringLiteral("InspectorSubTitle"));
     lay->addWidget(d_lbl_legend_target);
 
-    d_sec_legend_pos_lbl = makeSectionHeaderLabel(page);
-    lay->addWidget(d_sec_legend_pos_lbl);
+    // =========================================================================
+    // 1) Primary Legend & Text Annotation Container
+    // =========================================================================
+    d_leg_text_wrap = new QWidget(page);
+    QVBoxLayout *legWrapLay = new QVBoxLayout(d_leg_text_wrap);
+    legWrapLay->setContentsMargins(0, 0, 0, 0);
+    legWrapLay->setSpacing(6);
 
+    d_sec_legend_pos_lbl = makeSectionHeaderLabel(d_leg_text_wrap);
+    legWrapLay->addWidget(d_sec_legend_pos_lbl);
+
+    // A4-5: 2x3 grid so placement labels (Top-Center, Outside Right) never clip at 252px width
     QGridLayout *snapGrid = new QGridLayout();
     snapGrid->setContentsMargins(0, 0, 0, 0);
     snapGrid->setHorizontalSpacing(4);
     snapGrid->setVerticalSpacing(4);
 
     auto makeSnapBtn = [&](Graph::LegendAnchor anchor, int row, int col) -> QPushButton * {
-        QPushButton *b = new QPushButton(page);
+        QPushButton *b = new QPushButton(d_leg_text_wrap);
         connect(b, &QPushButton::clicked, this, [this, anchor]() {
             Graph *g = activeLayer();
             if (!d_target_ml || !g)
@@ -4251,14 +4944,14 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     };
 
     d_btn_leg_tl = makeSnapBtn(Graph::LegendTopLeft, 0, 0);
-    d_btn_leg_tc = makeSnapBtn(Graph::LegendTopCenter, 0, 1);
-    d_btn_leg_tr = makeSnapBtn(Graph::LegendTopRight, 0, 2);
+    d_btn_leg_tr = makeSnapBtn(Graph::LegendTopRight, 0, 1);
     d_btn_leg_bl = makeSnapBtn(Graph::LegendBottomLeft, 1, 0);
     d_btn_leg_br = makeSnapBtn(Graph::LegendBottomRight, 1, 1);
-    d_btn_leg_out_r = makeSnapBtn(Graph::LegendOutsideRight, 1, 2);
-    lay->addLayout(snapGrid);
+    d_btn_leg_tc = makeSnapBtn(Graph::LegendTopCenter, 2, 0);
+    d_btn_leg_out_r = makeSnapBtn(Graph::LegendOutsideRight, 2, 1);
+    legWrapLay->addLayout(snapGrid);
 
-    d_btn_leg_auto_avoid = new QPushButton(page);
+    d_btn_leg_auto_avoid = new QPushButton(d_leg_text_wrap);
     d_btn_leg_auto_avoid->setIcon(IconLoader::duotoneIcon(QStringLiteral("legend"), 15));
     connect(d_btn_leg_auto_avoid, &QPushButton::clicked, this, [this]() {
         Graph *g = activeLayer();
@@ -4273,15 +4966,30 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         refreshObjectTree();
         syncLegendControls();
     });
-    lay->addWidget(d_btn_leg_auto_avoid);
+    legWrapLay->addWidget(d_btn_leg_auto_avoid);
 
-    d_btn_leg_rebuild = new QPushButton(page);
+    d_btn_leg_rebuild = new QPushButton(d_leg_text_wrap);
     d_btn_leg_rebuild->setObjectName(QStringLiteral("InspectorRebuildLegendBtn"));
     d_btn_leg_rebuild->setIcon(IconLoader::duotoneIcon(QStringLiteral("recalc-now"), 15));
     connect(d_btn_leg_rebuild, &QPushButton::clicked, this, [this]() {
         Graph *g = activeLayer();
         if (!d_target_ml || !g)
             return;
+        // A3-4: confirm before overwriting custom legend text (auto-confirmed in non-interactive mode)
+        if (g->hasLegend() && g->legend() && !ApplicationWindow::isNonInteractiveContext(d_app)) {
+            const QString curTxt = g->legend()->text().trimmed();
+            const QString autoTxt =
+                    (g->isPiePlot() ? g->pieLegendText() : g->legendText()).trimmed();
+            if (!curTxt.isEmpty() && curTxt != autoTxt) {
+                const auto ans = QMessageBox::question(
+                        this, tr("Rebuild Legend"),
+                        tr("Rebuilding the legend will overwrite your custom legend labels and "
+                           "header. Continue?"),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (ans != QMessageBox::Yes)
+                    return;
+            }
+        }
         const QString before = d_target_ml->captureUndoSnapshot();
         g->reconstructLegend();
         g->setLegendVisible(true);
@@ -4290,10 +4998,10 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         refreshObjectTree();
         syncLegendControls();
     });
-    lay->addWidget(d_btn_leg_rebuild);
+    legWrapLay->addWidget(d_btn_leg_rebuild);
 
-    d_sec_legend_style_lbl = makeSectionHeaderLabel(page);
-    lay->addWidget(d_sec_legend_style_lbl);
+    d_sec_legend_style_lbl = makeSectionHeaderLabel(d_leg_text_wrap);
+    legWrapLay->addWidget(d_sec_legend_style_lbl);
 
     QGridLayout *legGrid = new QGridLayout();
     legGrid->setContentsMargins(0, 0, 0, 0);
@@ -4304,8 +5012,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     //  0 -> Borderless (Legend::None, transparent bg)
     //  1 -> Black Box + White Fill (Legend::Line, solid white bg)
     //  2 -> Transparent Background + Box (Legend::Line, transparent bg)
-    d_lbl_leg_frame = new QLabel(page);
-    d_combo_leg_frame = new QComboBox(page);
+    d_lbl_leg_frame = new QLabel(d_leg_text_wrap);
+    d_combo_leg_frame = new QComboBox(d_leg_text_wrap);
     d_combo_leg_frame->addItem(QString(), 0);
     d_combo_leg_frame->addItem(QString(), 1);
     d_combo_leg_frame->addItem(QString(), 2);
@@ -4319,7 +5027,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
                 if (selKind == Graph::GraphSelection::TextAnnotation)
                     target = g->textMarker(g->currentSelection().primaryId);
                 else if (selKind != Graph::GraphSelection::ArrowAnnotation
-                         && selKind != Graph::GraphSelection::ImageAnnotation)
+                         && selKind != Graph::GraphSelection::ImageAnnotation
+                         && selKind != Graph::GraphSelection::PlotTitle)
                     target = g->legend();
                 if (!target)
                     return;
@@ -4341,11 +5050,19 @@ QWidget *GraphInspectorDock::buildLegendInspector()
                 d_target_ml->pushUndoSnapshot(tr("Change Legend Frame"), before);
             });
 
-    d_lbl_leg_header = new QLabel(page);
-    d_edit_leg_header = new QLineEdit(page);
+    d_lbl_leg_header = new QLabel(d_leg_text_wrap);
+    d_edit_leg_header = new QLineEdit(d_leg_text_wrap);
+    wirePendingEditCue(d_edit_leg_header);
     connect(d_edit_leg_header, &QLineEdit::editingFinished, this, [this]() {
-        if (d_syncing_props || !d_edit_leg_header || !d_edit_leg_header->isModified())
+        if (d_syncing_props || !d_edit_leg_header)
             return;
+        const bool isMod = d_edit_leg_header->isModified();
+        const bool isDiff = (d_edit_leg_header->text().trimmed()
+                             != d_edit_leg_header->property("_syncedText").toString());
+        if (!isMod && !isDiff) {
+            setLineEditPendingCue(d_edit_leg_header, false);
+            return;
+        }
         Graph *g = activeLayer();
         if (!d_target_ml || !g)
             return;
@@ -4355,7 +5072,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         if (selKind == Graph::GraphSelection::TextAnnotation)
             leg = g->textMarker(g->currentSelection().primaryId);
         else if (selKind != Graph::GraphSelection::ArrowAnnotation
-                 && selKind != Graph::GraphSelection::ImageAnnotation)
+                 && selKind != Graph::GraphSelection::ImageAnnotation
+                 && selKind != Graph::GraphSelection::PlotTitle)
             leg = g->legend();
 
         const bool isPrimaryLegend = (g && leg && leg == g->legend())
@@ -4370,7 +5088,9 @@ QWidget *GraphInspectorDock::buildLegendInspector()
             else
                 lines[0] = d_edit_leg_header->text();
             const QString nextTxt = lines.join('\n');
+            d_edit_leg_header->setProperty("_syncedText", d_edit_leg_header->text().trimmed());
             d_edit_leg_header->setModified(false);
+            setLineEditPendingCue(d_edit_leg_header, false);
             if (leg->text() == nextTxt)
                 return;
             const QString before = d_target_ml->captureUndoSnapshot();
@@ -4403,7 +5123,9 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         }
 
         const QString updated = lines.join(QStringLiteral("\n"));
+        d_edit_leg_header->setProperty("_syncedText", hdr);
         d_edit_leg_header->setModified(false);
+        setLineEditPendingCue(d_edit_leg_header, false);
         if (leg->text() == updated)
             return;
 
@@ -4414,8 +5136,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         d_target_ml->pushUndoSnapshot(tr("Edit Legend Header"), before, kMergeLegendHeader);
     });
 
-    d_lbl_leg_cols = new QLabel(page);
-    d_spin_leg_cols = new QSpinBox(page);
+    d_lbl_leg_cols = new QLabel(d_leg_text_wrap);
+    d_spin_leg_cols = new QSpinBox(d_leg_text_wrap);
     d_spin_leg_cols->setRange(1, 4);
     d_spin_leg_cols->setValue(1);
     connect(d_spin_leg_cols, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int cols) {
@@ -4432,44 +5154,46 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         d_target_ml->pushUndoSnapshot(tr("Change Legend Columns"), before, kMergeLegendCols);
     });
 
-    d_lbl_leg_font_pt = new QLabel(page);
-    d_spin_leg_font_pt = new InspectorPtSpinBox(page);
-    d_spin_leg_font_pt->setRange(6, 72);
+    d_lbl_leg_font_pt = new QLabel(d_leg_text_wrap);
+    d_spin_leg_font_pt = new InspectorPtSpinBox(d_leg_text_wrap);
+    d_spin_leg_font_pt->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
     d_spin_leg_font_pt->setValue(12);
     d_spin_leg_font_pt->setSuffix(QStringLiteral(" pt"));
     connect(d_spin_leg_font_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double pt) {
-        Graph *g = activeLayer();
-        if (d_syncing_props || !d_target_ml || !g)
-            return;
-        Legend *target = nullptr;
-        const auto selKind = g->currentSelection().kind;
-        if (selKind == Graph::GraphSelection::TextAnnotation)
-            target = g->textMarker(g->currentSelection().primaryId);
-        else if (selKind != Graph::GraphSelection::ArrowAnnotation
-                 && selKind != Graph::GraphSelection::ImageAnnotation)
-            target = g->legend();
-        if (!target)
-            return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        QFont f = target->font();
-        if (f.family().trimmed().isEmpty())
-            f.setFamily(QStringLiteral("Arial"));
-        f.setPointSizeF(pt);
-        target->setFont(f);
-        g->replot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Legend Font Size"), before, kMergeLegendFontPt);
-    });
+                Graph *g = activeLayer();
+                if (d_syncing_props || !d_target_ml || !g)
+                    return;
+                Legend *target = nullptr;
+                const auto selKind = g->currentSelection().kind;
+                if (selKind == Graph::GraphSelection::TextAnnotation)
+                    target = g->textMarker(g->currentSelection().primaryId);
+                else if (selKind != Graph::GraphSelection::ArrowAnnotation
+                         && selKind != Graph::GraphSelection::ImageAnnotation
+                         && selKind != Graph::GraphSelection::PlotTitle)
+                    target = g->legend();
+                if (!target)
+                    return;
+                const QString before = d_target_ml->captureUndoSnapshot();
+                QFont f = target->font();
+                if (f.family().trimmed().isEmpty())
+                    f.setFamily(QStringLiteral("Arial"));
+                f.setPointSizeF(pt);
+                target->setFont(f);
+                g->replot();
+                emit g->modifiedGraph();
+                d_target_ml->pushUndoSnapshot(tr("Change Legend Font Size"), before,
+                                              kMergeLegendFontPt);
+            });
 
-    // C16: a text annotation may span several lines; the one-line header field could only
-    // edit the first one. Changes are committed shortly after typing stops (one undo step
-    // per burst of typing) to the annotation that was selected when typing began.
-    d_edit_annot_text = new QPlainTextEdit(page);
+    // C16 + E5-2: multi-line text annotation editor (flushes on 450ms timer, FocusOut,
+    // target/selection switch, or closeEvent using g->multiLayerParent()).
+    d_edit_annot_text = new QPlainTextEdit(d_leg_text_wrap);
     d_edit_annot_text->setObjectName(QStringLiteral("InspectorAnnotationTextEdit"));
     d_edit_annot_text->setTabChangesFocus(true);
     d_edit_annot_text->setFixedHeight(78);
     d_edit_annot_text->setHidden(true);
+    d_edit_annot_text->installEventFilter(this);
     d_annot_commit_timer = new QTimer(this);
     d_annot_commit_timer->setSingleShot(true);
     d_annot_commit_timer->setInterval(450);
@@ -4482,12 +5206,13 @@ QWidget *GraphInspectorDock::buildLegendInspector()
             d_annot_edit_layer = g;
             d_annot_edit_id = g->currentSelection().primaryId;
         }
-        d_annot_commit_timer->start();
+        if (d_annot_edit_layer && d_annot_edit_id >= 0)
+            d_annot_commit_timer->start();
     });
     connect(d_annot_commit_timer, &QTimer::timeout, this,
             &GraphInspectorDock::flushPendingAnnotationEdit);
 
-    d_leg_sym_bar = createMatSciRichTextBar(page, d_edit_leg_header, d_edit_annot_text);
+    d_leg_sym_bar = createMatSciRichTextBar(d_leg_text_wrap, d_edit_leg_header, d_edit_annot_text);
 
     legGrid->addWidget(d_lbl_leg_frame, 0, 0);
     legGrid->addWidget(d_combo_leg_frame, 0, 1);
@@ -4499,7 +5224,307 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     legGrid->addWidget(d_spin_leg_cols, 3, 1);
     legGrid->addWidget(d_lbl_leg_font_pt, 4, 0);
     legGrid->addWidget(d_spin_leg_font_pt, 4, 1);
-    lay->addLayout(legGrid);
+    legWrapLay->addLayout(legGrid);
+
+    // A3-4: Per-curve legend label editor (compact swatch + QLineEdit per curve, primary legend only)
+    d_leg_entries_wrap = new QWidget(d_leg_text_wrap);
+    QVBoxLayout *entriesOuter = new QVBoxLayout(d_leg_entries_wrap);
+    entriesOuter->setContentsMargins(0, 2, 0, 0);
+    entriesOuter->setSpacing(4);
+    d_sec_leg_entries_lbl = makeSectionHeaderLabel(d_leg_entries_wrap);
+    entriesOuter->addWidget(d_sec_leg_entries_lbl);
+    d_leg_entries_layout = new QVBoxLayout();
+    d_leg_entries_layout->setContentsMargins(0, 0, 0, 0);
+    d_leg_entries_layout->setSpacing(3);
+    entriesOuter->addLayout(d_leg_entries_layout);
+    legWrapLay->addWidget(d_leg_entries_wrap);
+
+    lay->addWidget(d_leg_text_wrap);
+
+    // =========================================================================
+    // 2) Arrow / Line Annotation Editor (A3-5, C2-3)
+    // =========================================================================
+    d_arrow_editor_wrap = new QWidget(page);
+    QVBoxLayout *arrowLay = new QVBoxLayout(d_arrow_editor_wrap);
+    arrowLay->setContentsMargins(0, 0, 0, 0);
+    arrowLay->setSpacing(6);
+    d_sec_arrow_lbl = makeSectionHeaderLabel(d_arrow_editor_wrap);
+    arrowLay->addWidget(d_sec_arrow_lbl);
+
+    QGridLayout *arrowGrid = new QGridLayout();
+    arrowGrid->setContentsMargins(0, 0, 0, 0);
+    arrowGrid->setHorizontalSpacing(6);
+    arrowGrid->setVerticalSpacing(4);
+
+    d_lbl_arrow_color = new QLabel(d_arrow_editor_wrap);
+    d_btn_arrow_color = new QPushButton(d_arrow_editor_wrap);
+    updateColorSwatchButton(d_btn_arrow_color, QColor(Qt::black));
+    connect(d_btn_arrow_color, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g)
+            return;
+        const auto sel = g->currentSelection();
+        if (sel.kind != Graph::GraphSelection::ArrowAnnotation)
+            return;
+        ArrowMarker *am = g->arrow(sel.primaryId);
+        if (!am)
+            return;
+        const QColor cur = am->color();
+        const QColor chosen = pickColorInteractive(this, cur, tr("Select Arrow Color"));
+        if (!chosen.isValid() || chosen == cur)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        am->setColor(chosen);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Arrow Style"), before);
+        syncLegendControls();
+    });
+
+    d_lbl_arrow_width = new QLabel(d_arrow_editor_wrap);
+    d_spin_arrow_width = new QDoubleSpinBox(d_arrow_editor_wrap);
+    d_spin_arrow_width->setRange(0.5, 20.0);
+    d_spin_arrow_width->setDecimals(1);
+    d_spin_arrow_width->setSingleStep(0.5);
+    d_spin_arrow_width->setValue(1.5);
+    d_spin_arrow_width->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_arrow_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double) { applyArrowControlsFromUi(tr("Change Arrow Style"), kMergeArrowWidth); });
+
+    d_lbl_arrow_style = new QLabel(d_arrow_editor_wrap);
+    d_combo_arrow_style = new QComboBox(d_arrow_editor_wrap);
+    d_combo_arrow_style->addItem(QString(), int(Qt::SolidLine));
+    d_combo_arrow_style->addItem(QString(), int(Qt::DashLine));
+    d_combo_arrow_style->addItem(QString(), int(Qt::DotLine));
+    d_combo_arrow_style->addItem(QString(), int(Qt::DashDotLine));
+    connect(d_combo_arrow_style, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { applyArrowControlsFromUi(tr("Change Arrow Style")); });
+
+    d_chk_arrow_start = new QCheckBox(d_arrow_editor_wrap);
+    connect(d_chk_arrow_start, &QCheckBox::toggled, this,
+            [this](bool) { applyArrowControlsFromUi(tr("Change Arrow Style")); });
+
+    d_chk_arrow_end = new QCheckBox(d_arrow_editor_wrap);
+    connect(d_chk_arrow_end, &QCheckBox::toggled, this,
+            [this](bool) { applyArrowControlsFromUi(tr("Change Arrow Style")); });
+
+    d_lbl_arrow_head_len = new QLabel(d_arrow_editor_wrap);
+    d_spin_arrow_head_len = new QSpinBox(d_arrow_editor_wrap);
+    d_spin_arrow_head_len->setRange(1, 60);
+    d_spin_arrow_head_len->setValue(10);
+    d_spin_arrow_head_len->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_arrow_head_len, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { applyArrowControlsFromUi(tr("Change Arrow Style"), kMergeArrowHead); });
+
+    d_lbl_arrow_head_angle = new QLabel(d_arrow_editor_wrap);
+    d_spin_arrow_head_angle = new QSpinBox(d_arrow_editor_wrap);
+    d_spin_arrow_head_angle->setRange(5, 85);
+    d_spin_arrow_head_angle->setSingleStep(5);
+    d_spin_arrow_head_angle->setValue(30);
+    d_spin_arrow_head_angle->setSuffix(QString::fromUtf8("\xC2\xB0"));
+    connect(d_spin_arrow_head_angle, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int) { applyArrowControlsFromUi(tr("Change Arrow Style"), kMergeArrowHead); });
+
+    d_chk_arrow_filled = new QCheckBox(d_arrow_editor_wrap);
+    connect(d_chk_arrow_filled, &QCheckBox::toggled, this,
+            [this](bool) { applyArrowControlsFromUi(tr("Change Arrow Style")); });
+
+    arrowGrid->addWidget(d_lbl_arrow_color, 0, 0);
+    arrowGrid->addWidget(d_btn_arrow_color, 0, 1);
+    arrowGrid->addWidget(d_lbl_arrow_width, 1, 0);
+    arrowGrid->addWidget(d_spin_arrow_width, 1, 1);
+    arrowGrid->addWidget(d_lbl_arrow_style, 2, 0);
+    arrowGrid->addWidget(d_combo_arrow_style, 2, 1);
+    arrowGrid->addWidget(d_chk_arrow_start, 3, 0, 1, 2);
+    arrowGrid->addWidget(d_chk_arrow_end, 4, 0, 1, 2);
+    arrowGrid->addWidget(d_lbl_arrow_head_len, 5, 0);
+    arrowGrid->addWidget(d_spin_arrow_head_len, 5, 1);
+    arrowGrid->addWidget(d_lbl_arrow_head_angle, 6, 0);
+    arrowGrid->addWidget(d_spin_arrow_head_angle, 6, 1);
+    arrowGrid->addWidget(d_chk_arrow_filled, 7, 0, 1, 2);
+    arrowLay->addLayout(arrowGrid);
+    d_arrow_editor_wrap->hide();
+    lay->addWidget(d_arrow_editor_wrap);
+
+    // =========================================================================
+    // 3) Image Annotation Editor (A3-5, C2-3)
+    // =========================================================================
+    d_image_editor_wrap = new QWidget(page);
+    QVBoxLayout *imgLay = new QVBoxLayout(d_image_editor_wrap);
+    imgLay->setContentsMargins(0, 0, 0, 0);
+    imgLay->setSpacing(6);
+    d_sec_img_lbl = makeSectionHeaderLabel(d_image_editor_wrap);
+    imgLay->addWidget(d_sec_img_lbl);
+
+    d_lbl_img_filename = new QLabel(d_image_editor_wrap);
+    d_lbl_img_filename->setWordWrap(true);
+    imgLay->addWidget(d_lbl_img_filename);
+
+    QGridLayout *imgGrid = new QGridLayout();
+    imgGrid->setContentsMargins(0, 0, 0, 0);
+    imgGrid->setHorizontalSpacing(6);
+    imgGrid->setVerticalSpacing(4);
+
+    auto makeImgSpin = [&](int minV, int maxV) -> QSpinBox * {
+        QSpinBox *sb = new QSpinBox(d_image_editor_wrap);
+        sb->setRange(minV, maxV);
+        sb->setSuffix(QStringLiteral(" px"));
+        connect(sb, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this](int) { applyImageGeometryFromUi(); });
+        return sb;
+    };
+    d_lbl_img_x = new QLabel(d_image_editor_wrap);
+    d_spin_img_x = makeImgSpin(-2000, 4000);
+    d_lbl_img_y = new QLabel(d_image_editor_wrap);
+    d_spin_img_y = makeImgSpin(-2000, 4000);
+    d_lbl_img_w = new QLabel(d_image_editor_wrap);
+    d_spin_img_w = makeImgSpin(4, 4000);
+    d_lbl_img_h = new QLabel(d_image_editor_wrap);
+    d_spin_img_h = makeImgSpin(4, 4000);
+
+    imgGrid->addWidget(d_lbl_img_x, 0, 0);
+    imgGrid->addWidget(d_spin_img_x, 0, 1);
+    imgGrid->addWidget(d_lbl_img_y, 1, 0);
+    imgGrid->addWidget(d_spin_img_y, 1, 1);
+    imgGrid->addWidget(d_lbl_img_w, 2, 0);
+    imgGrid->addWidget(d_spin_img_w, 2, 1);
+    imgGrid->addWidget(d_lbl_img_h, 3, 0);
+    imgGrid->addWidget(d_spin_img_h, 3, 1);
+    imgLay->addLayout(imgGrid);
+
+    d_btn_img_replace = new QPushButton(d_image_editor_wrap);
+    d_btn_img_replace->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-image"), 14));
+    connect(d_btn_img_replace, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g || ApplicationWindow::isNonInteractiveContext(d_app))
+            return;
+        const auto sel = g->currentSelection();
+        if (sel.kind != Graph::GraphSelection::ImageAnnotation)
+            return;
+        const int oldId = sel.primaryId;
+        ImageMarker *oldIm = g->imageMarker(oldId);
+        if (!oldIm)
+            return;
+        const QString startDir = !oldIm->fileName().isEmpty()
+                ? QFileInfo(oldIm->fileName()).absolutePath()
+                : (d_app ? d_app->workingDir : QString());
+        const QString fn = QFileDialog::getOpenFileName(
+                this, tr("Select Replacement Image"), startDir,
+                tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;All Files (*)"));
+        if (fn.isEmpty() || !QFile::exists(fn))
+            return;
+
+        const double oldLeft = oldIm->xValue();
+        const double oldTop = oldIm->yValue();
+        const double oldRight = oldIm->right();
+        const double oldBottom = oldIm->bottom();
+        const QRect oldPx = oldIm->plot() ? oldIm->rect() : QRect();
+
+        const QString before = d_target_ml->captureUndoSnapshot();
+        ImageMarker *newIm = g->addImage(fn);
+        if (!newIm)
+            return;
+        if (qAbs(oldRight - oldLeft) > 1e-12 && qAbs(oldBottom - oldTop) > 1e-12)
+            newIm->setBoundingRect(oldLeft, oldTop, oldRight, oldBottom);
+        else if (oldPx.isValid() && !oldPx.isEmpty())
+            newIm->setRect(oldPx.x(), oldPx.y(), oldPx.width(), oldPx.height());
+
+        const QVector<int> keys = g->imageMarkerKeys();
+        const int newId = keys.isEmpty() ? -1 : keys.last();
+
+        g->setSelectedMarker(oldId, false);
+        g->removeMarker();
+        if (newId >= 0) {
+            Graph::GraphSelection nextSel;
+            nextSel.kind = Graph::GraphSelection::ImageAnnotation;
+            nextSel.primaryId = newId;
+            g->setCurrentSelection(nextSel, false);
+        }
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Replace Image"), before);
+        refreshAll();
+    });
+    imgLay->addWidget(d_btn_img_replace);
+    d_image_editor_wrap->hide();
+    lay->addWidget(d_image_editor_wrap);
+
+    // =========================================================================
+    // 4) Plot Title Editor (A3-5)
+    // =========================================================================
+    d_plot_title_wrap = new QWidget(page);
+    QVBoxLayout *ptLay = new QVBoxLayout(d_plot_title_wrap);
+    ptLay->setContentsMargins(0, 0, 0, 0);
+    ptLay->setSpacing(6);
+    d_sec_plot_title_lbl = makeSectionHeaderLabel(d_plot_title_wrap);
+    ptLay->addWidget(d_sec_plot_title_lbl);
+
+    QGridLayout *ptGrid = new QGridLayout();
+    ptGrid->setContentsMargins(0, 0, 0, 0);
+    ptGrid->setHorizontalSpacing(6);
+    ptGrid->setVerticalSpacing(4);
+
+    d_lbl_plot_title_text = new QLabel(d_plot_title_wrap);
+    d_edit_plot_title = new QLineEdit(d_plot_title_wrap);
+    wirePendingEditCue(d_edit_plot_title);
+    connect(d_edit_plot_title, &QLineEdit::editingFinished, this, [this]() {
+        if (d_syncing_props || !d_edit_plot_title)
+            return;
+        const bool isMod = d_edit_plot_title->isModified();
+        const bool isDiff = (d_edit_plot_title->text().trimmed()
+                             != d_edit_plot_title->property("_syncedText").toString());
+        if (!isMod && !isDiff) {
+            setLineEditPendingCue(d_edit_plot_title, false);
+            return;
+        }
+        applyPlotTitleFromUi(tr("Edit Plot Title"), kMergePlotTitle);
+    });
+    d_plot_title_sym_bar = createMatSciRichTextBar(d_plot_title_wrap, d_edit_plot_title);
+
+    d_lbl_plot_title_pt = new QLabel(d_plot_title_wrap);
+    d_spin_plot_title_pt = new InspectorPtSpinBox(d_plot_title_wrap);
+    d_spin_plot_title_pt->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
+    d_spin_plot_title_pt->setValue(16.0);
+    d_spin_plot_title_pt->setSuffix(QStringLiteral(" pt"));
+    connect(d_spin_plot_title_pt, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [this](double) {
+                applyPlotTitleFromUi(tr("Change Plot Title Font"), kMergePlotTitlePt);
+            });
+
+    d_chk_plot_title_bold = new QCheckBox(d_plot_title_wrap);
+    connect(d_chk_plot_title_bold, &QCheckBox::toggled, this,
+            [this](bool) { applyPlotTitleFromUi(tr("Change Plot Title Font")); });
+
+    d_lbl_plot_title_color = new QLabel(d_plot_title_wrap);
+    d_btn_plot_title_color = new QPushButton(d_plot_title_wrap);
+    updateColorSwatchButton(d_btn_plot_title_color, QColor(Qt::black));
+    connect(d_btn_plot_title_color, &QPushButton::clicked, this, [this]() {
+        Graph *g = activeLayer();
+        if (!d_target_ml || !g || !g->plotWidget())
+            return;
+        const QColor cur = g->plotWidget()->title().color();
+        const QColor chosen = pickColorInteractive(this, cur, tr("Select Plot Title Color"));
+        if (!chosen.isValid() || chosen == cur)
+            return;
+        const QString before = d_target_ml->captureUndoSnapshot();
+        g->setTitleColor(chosen);
+        g->replot();
+        emit g->modifiedGraph();
+        d_target_ml->pushUndoSnapshot(tr("Change Plot Title Color"), before);
+        syncLegendControls();
+    });
+
+    ptGrid->addWidget(d_lbl_plot_title_text, 0, 0);
+    ptGrid->addWidget(d_edit_plot_title, 0, 1);
+    ptGrid->addWidget(d_plot_title_sym_bar, 1, 0, 1, 2);
+    ptGrid->addWidget(d_lbl_plot_title_pt, 2, 0);
+    ptGrid->addWidget(d_spin_plot_title_pt, 2, 1);
+    ptGrid->addWidget(d_chk_plot_title_bold, 3, 0, 1, 2);
+    ptGrid->addWidget(d_lbl_plot_title_color, 4, 0);
+    ptGrid->addWidget(d_btn_plot_title_color, 4, 1);
+    ptLay->addLayout(ptGrid);
+    d_plot_title_wrap->hide();
+    lay->addWidget(d_plot_title_wrap);
 
     lay->addStretch(1);
     return page;
@@ -4618,8 +5643,102 @@ QColor GraphInspectorDock::pickColorInteractive(QWidget *parent, const QColor &i
 {
     if (ApplicationWindow::isNonInteractiveContext(parent))
         return initial;
-    return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black), parent, title,
-                                  QColorDialog::ShowAlphaChannel);
+
+    // A3-6: compact ToriGraph Standard + Okabe-Ito + Basic/Grayscale color swatch popup,
+    // with a "Custom Color..." button opening QColorDialog::getColor().
+    QMenu popup(parent);
+    QWidget *panel = new QWidget(&popup);
+    QVBoxLayout *vlay = new QVBoxLayout(panel);
+    vlay->setContentsMargins(8, 8, 8, 8);
+    vlay->setSpacing(6);
+
+    QColor chosen;
+    bool openCustom = false;
+
+    auto addSwatchGroup = [&](const QString &heading, const QList<QColor> &colors) {
+        if (colors.isEmpty())
+            return;
+        QLabel *lbl = new QLabel(heading, panel);
+        lbl->setStyleSheet(QStringLiteral(
+                "QLabel { font-size: 9pt; font-weight: 600; color: #475569; }"));
+        vlay->addWidget(lbl);
+
+        QGridLayout *grid = new QGridLayout();
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setHorizontalSpacing(4);
+        grid->setVerticalSpacing(4);
+        const int cols = 8;
+        const int count = qMin(colors.size(), 16);
+        for (int i = 0; i < count; ++i) {
+            const QColor col = colors[i];
+            QToolButton *sw = new QToolButton(panel);
+            sw->setFixedSize(22, 22);
+            sw->setCursor(Qt::PointingHandCursor);
+            const QString hex = col.name(QColor::HexRgb).toUpper();
+            sw->setToolTip(hex);
+            const bool isCurrent = initial.isValid() && (initial.rgb() == col.rgb());
+            const QString borderCss = isCurrent
+                    ? QStringLiteral("2px solid #2563EB")
+                    : QStringLiteral("1px solid #94A3B8");
+            sw->setStyleSheet(QStringLiteral(
+                                      "QToolButton { background-color: %1; border: %2; "
+                                      "border-radius: 4px; }"
+                                      "QToolButton:hover { border: 2px solid #2563EB; }")
+                                      .arg(hex, borderCss));
+            QObject::connect(sw, &QToolButton::clicked, &popup, [&popup, &chosen, col]() {
+                chosen = col;
+                popup.close();
+            });
+            grid->addWidget(sw, i / cols, i % cols);
+        }
+        vlay->addLayout(grid);
+    };
+
+    const QString defPalName = Graph::defaultCurvePaletteName();
+    addSwatchGroup(QCoreApplication::translate("GraphInspectorDock", defPalName.toUtf8().constData()),
+                   Graph::paletteColors(defPalName));
+
+    const QString okabeName = Graph::okabeItoPaletteName();
+    if (Graph::canonicalPaletteName(defPalName) != Graph::canonicalPaletteName(okabeName)) {
+        addSwatchGroup(QCoreApplication::translate("GraphInspectorDock", "Okabe-Ito"),
+                       Graph::paletteColors(okabeName));
+    }
+
+    const QList<QColor> basicColors = {
+        QColor(0x00, 0x00, 0x00), QColor(0x33, 0x41, 0x55), QColor(0x64, 0x74, 0x8B),
+        QColor(0x94, 0xA3, 0xB8), QColor(0xCB, 0xD5, 0xE1), QColor(0xFF, 0xFF, 0xFF),
+        QColor(0xDC, 0x26, 0x26), QColor(0x25, 0x63, 0xEB)
+    };
+    addSwatchGroup(QCoreApplication::translate("GraphInspectorDock", "Basic & Grayscale"),
+                   basicColors);
+
+    QPushButton *btnCustom = new QPushButton(
+            QCoreApplication::translate("GraphInspectorDock", "Custom Color..."), panel);
+    btnCustom->setCursor(Qt::PointingHandCursor);
+    QObject::connect(btnCustom, &QPushButton::clicked, &popup, [&popup, &openCustom]() {
+        openCustom = true;
+        popup.close();
+    });
+    vlay->addWidget(btnCustom);
+
+    QWidgetAction *wa = new QWidgetAction(&popup);
+    wa->setDefaultWidget(panel);
+    popup.addAction(wa);
+
+    QPoint popupPos = QCursor::pos();
+    if (QWidget *fw = QApplication::focusWidget()) {
+        if (fw->objectName() == QLatin1String("InspectorColorSwatchBtn")
+            && (!parent || parent->isAncestorOf(fw))) {
+            popupPos = fw->mapToGlobal(QPoint(0, fw->height() + 2));
+        }
+    }
+    popup.exec(popupPos);
+
+    if (openCustom) {
+        return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black), parent,
+                                      title, QColorDialog::ShowAlphaChannel);
+    }
+    return chosen;
 }
 
 namespace {
@@ -4644,7 +5763,7 @@ QIcon buildReferenceLineSwatchIcon(const Graph::ReferenceLineSpec &spec)
 QString formatReferenceLineTreeLabel(const Graph::ReferenceLineSpec &spec)
 {
     const QString statMode = spec.statMode.trimmed();
-    const QString lbl = spec.label.trimmed();
+    const QString lbl = stripHtmlToCleanUnicode(spec.label).trimmed();
     const QString axisVar = (spec.orientation == 1) ? QStringLiteral("x") : QStringLiteral("y");
     const QString valTxt = QLocale::c().toString(spec.value, 'g', 5);
     QString base = QStringLiteral("%1 = %2").arg(axisVar, valTxt);
@@ -4794,6 +5913,7 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
     widthSpin->setSingleStep(0.5);
     widthSpin->setDecimals(1);
     widthSpin->setValue(1.2);
+    widthSpin->setSuffix(QStringLiteral(" pt"));
 
     QColor chosenColor(0x33, 0x41, 0x55);
     QPushButton *colorBtn =
@@ -4808,8 +5928,8 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
     };
     updateColorBtnStyle(chosenColor);
     connect(colorBtn, &QPushButton::clicked, &dlg, [&dlg, &chosenColor, updateColorBtnStyle]() {
-        const QColor c = QColorDialog::getColor(
-                chosenColor, &dlg, QCoreApplication::translate("Graph", "Reference Line Color"));
+        const QColor c = pickColorInteractive(
+                &dlg, chosenColor, QCoreApplication::translate("Graph", "Reference Line Color"));
         if (c.isValid()) {
             chosenColor = c;
             updateColorBtnStyle(chosenColor);
@@ -4920,6 +6040,9 @@ void GraphInspectorDock::refreshAll()
     if (d_tree_header_strip)
         d_tree_header_strip->setEnabled(hasGraph);
 
+    if (!hasGraph)
+        updateQuickStartPlotButtonState();
+
     refreshPaletteSchemeCombo();
     refreshObjectTree();
     syncInspectorFromSelection();
@@ -4977,11 +6100,16 @@ void GraphInspectorDock::refreshObjectTree()
         bindLayerSignals(g);
 
         QString layerTitle = tr("Layer %1").arg(li + 1);
-        if (g->linkedParentLayer())
+        if (d_target_ml->isInsetLayer(g))
+            layerTitle += QStringLiteral(" ") + tr("[Inset]");
+        else if (g->linkedParentLayer())
             layerTitle += QStringLiteral(" ") + tr("[Linked]");
         QTreeWidgetItem *layerItem = new QTreeWidgetItem(pageItem);
         layerItem->setText(0, layerTitle);
-        layerItem->setIcon(0, IconLoader::duotoneIcon(QStringLiteral("layer-arrange"), 14));
+        layerItem->setIcon(0, IconLoader::duotoneIcon(
+                d_target_ml->isInsetLayer(g) ? QStringLiteral("layer-inset")
+                                             : QStringLiteral("layer-arrange"),
+                14));
         layerItem->setData(0, RoleSelKind, int(Graph::GraphSelection::Layer));
         layerItem->setData(0, RoleLayerIndex, li + 1);
         layerItem->setExpanded(true);
@@ -4993,6 +6121,24 @@ void GraphInspectorDock::refreshObjectTree()
                 && (activeSel.kind == Graph::GraphSelection::None
                     || activeSel.kind == Graph::GraphSelection::Layer)) {
                 itemToSelect = layerItem;
+            }
+        }
+
+        // Plot Title item (if non-empty) so users can select & edit it directly (A3-5)
+        if (g->plotWidget()) {
+            const QString rawPlotTitle = g->plotWidget()->title().text().trimmed();
+            if (!rawPlotTitle.isEmpty()) {
+                QString cleanTitle = stripHtmlToCleanUnicode(rawPlotTitle).simplified();
+                if (cleanTitle.size() > 24)
+                    cleanTitle = cleanTitle.left(22) + QStringLiteral("...");
+                QTreeWidgetItem *ptItem = new QTreeWidgetItem(layerItem);
+                ptItem->setText(0, tr("Plot Title: %1").arg(cleanTitle));
+                ptItem->setIcon(0, IconLoader::duotoneIcon(QStringLiteral("text-label"), 14));
+                ptItem->setData(0, RoleSelKind, int(Graph::GraphSelection::PlotTitle));
+                ptItem->setData(0, RolePrimaryId, 0);
+                ptItem->setData(0, RoleLayerIndex, li + 1);
+                if (g == activeG && activeSel.kind == Graph::GraphSelection::PlotTitle)
+                    itemToSelect = ptItem;
             }
         }
 
@@ -5013,8 +6159,9 @@ void GraphInspectorDock::refreshObjectTree()
         for (int ci = 0; ci < g->curves(); ++ci) {
             if (auto *sp = dynamic_cast<Spectrogram *>(g->plotItem(ci))) {
                 QTreeWidgetItem *spItem = new QTreeWidgetItem(curvesGroup);
-                const QString matName = sp->matrix() ? QString(sp->matrix()->name())
-                                                     : sp->title().text().trimmed();
+                const QString matName = stripHtmlToCleanUnicode(
+                        sp->matrix() ? QString(sp->matrix()->name())
+                                     : sp->title().text().trimmed());
                 spItem->setText(0, matName.isEmpty() ? tr("Heatmap")
                                                      : tr("Heatmap: %1").arg(matName));
                 spItem->setIcon(0, buildCurveSwatchIcon(g, ci));
@@ -5147,7 +6294,7 @@ void GraphInspectorDock::refreshObjectTree()
 
             for (int tid : textIds) {
                 Legend *tm = g->textMarker(tid);
-                QString snippet = tm ? tm->text().simplified() : QString();
+                QString snippet = tm ? stripHtmlToCleanUnicode(tm->text()).simplified() : QString();
                 if (snippet.size() > 22)
                     snippet = snippet.left(20) + QStringLiteral("...");
                 QTreeWidgetItem *tItem = new QTreeWidgetItem(annGroup);
@@ -5202,6 +6349,12 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     if (d_syncing_tree || !item || !d_target_ml)
         return;
 
+    // E5-2: flush any pending debounced edits before switching selection or layer.
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+        flushPendingAnnotationEdit();
+    if (d_axis_title_timer && d_axis_title_timer->isActive())
+        flushPendingAxisTitleEdit();
+
     GraphMiniToolbar::instance()->cancelScheduledAndHide();
 
     const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
@@ -5228,7 +6381,6 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     switch (kind) {
     case Graph::GraphSelection::Page:
     case Graph::GraphSelection::Layer:
-    case Graph::GraphSelection::PlotTitle:
         switchToInspectorPage(PageTabPageLayer);
         syncPageLayerControls();
         break;
@@ -5252,6 +6404,7 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
         switchToInspectorPage(PageTabCurve);
         syncCurveControls();
         break;
+    case Graph::GraphSelection::PlotTitle:
     case Graph::GraphSelection::LegendBox:
     case Graph::GraphSelection::TextAnnotation:
     case Graph::GraphSelection::ArrowAnnotation:
@@ -5292,8 +6445,11 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
     case Graph::GraphSelection::Layer:
         d_app->showGeneralPlotDialog();
         break;
+    case Graph::GraphSelection::PlotTitle:
+        d_app->showTitleDialog();
+        break;
     case Graph::GraphSelection::Axis:
-        d_app->showAxisPageFromAxisDialog(qBound(0, primaryId, 3));
+        openAxesDialogForQwtAxis(g, qBound(0, primaryId, 3), true);
         break;
     case Graph::GraphSelection::ReferenceLine:
         if (!isGroupHeader && g && primaryId >= 0 && primaryId < g->referenceLines().size()) {
@@ -5309,7 +6465,7 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
                 break;
             }
         }
-        d_app->showAxisPageFromAxisDialog(qBound(0, primaryId, 3));
+        openAxesDialogForQwtAxis(g, qBound(0, primaryId, 3), true);
         break;
     case Graph::GraphSelection::Curve:
     case Graph::GraphSelection::ErrorBars:
@@ -5375,7 +6531,7 @@ void GraphInspectorDock::openDetailsDialogForPage()
             if (g->editReferenceLineDialog(sel.primaryId))
                 refreshAll();
         } else {
-            d_app->showAxisPageFromAxisDialog(qBound(0, d_active_axis, 3));
+            openAxesDialogForQwtAxis(g, qBound(0, d_active_axis, 3), true);
         }
         break;
     case PageTabCurve: {
@@ -5393,7 +6549,9 @@ void GraphInspectorDock::openDetailsDialogForPage()
         break;
     }
     case PageTabLegend:
-        if (g && sel.kind == Graph::GraphSelection::ArrowAnnotation && sel.primaryId >= 0) {
+        if (g && sel.kind == Graph::GraphSelection::PlotTitle) {
+            d_app->showTitleDialog();
+        } else if (g && sel.kind == Graph::GraphSelection::ArrowAnnotation && sel.primaryId >= 0) {
             g->setSelectedMarker(sel.primaryId);
             d_app->showLineDialog();
         } else if (g && sel.kind == Graph::GraphSelection::ImageAnnotation && sel.primaryId >= 0) {
@@ -5449,21 +6607,129 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
     d_object_tree->setCurrentItem(item);
     onTreeItemClicked(item, 0);
 
-    Graph *g = activeLayer();
+    // E5-3: capture ONLY value-based descriptors + QPointer guards before menu.exec() —
+    // never capture raw QTreeWidgetItem* or raw Graph* across the nested event loop.
+    const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
     const auto kind =
             static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
     const int primaryId = item->data(0, RolePrimaryId).toInt();
     const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+    const bool isCheckable = !isGroupHeader && (item->flags() & Qt::ItemIsUserCheckable);
+    const bool isVis = isCheckable && (item->checkState(0) == Qt::Checked);
+
+    QPointer<MultiLayer> safeMl(d_target_ml);
+    QPointer<Graph> safeG(
+            (layerOneBased >= 1 && safeMl) ? safeMl->layer(layerOneBased) : activeLayer());
+
+    auto resolveLayer = [safeMl, safeG, layerOneBased]() -> Graph * {
+        if (!safeMl)
+            return nullptr;
+        if (safeG && safeG->multiLayerParent() == safeMl.data())
+            return safeG.data();
+        if (layerOneBased >= 1)
+            return safeMl->layer(layerOneBased);
+        return safeMl->activeGraph() ? safeMl->activeGraph() : safeMl->layer(1);
+    };
+
+    auto captureSingleAxis = [](Graph *lg, int ax, CopiedSingleAxisScale &out) {
+        out = CopiedSingleAxisScale();
+        if (!lg || !lg->plotWidget() || ax < 0 || ax > 3)
+            return;
+        Plot *pw = lg->plotWidget();
+        const QwtScaleDiv *scDiv = pw->axisScaleDiv(ax);
+        if (!scDiv)
+            return;
+        out.lo = qMin(scDiv->lowerBound(), scDiv->upperBound());
+        out.hi = qMax(scDiv->lowerBound(), scDiv->upperBound());
+        out.step = lg->axisStep(ax);
+        out.maxMajor = pw->axisMaxMajor(ax);
+        out.maxMinor = pw->axisMaxMinor(ax);
+        out.inverted = (scDiv->lowerBound() > scDiv->upperBound());
+        out.scaleType = 0;
+        if (const QwtScaleEngine *eng = pw->axisScaleEngine(ax)) {
+            out.inverted = eng->testAttribute(QwtScaleEngine::Inverted);
+            QwtScaleTransformation *xf = eng->transformation();
+            if (xf && xf->type() == QwtScaleTransformation::Log10)
+                out.scaleType = 1;
+            delete xf;
+        }
+        out.brk = lg->axisBreak(ax);
+        out.valid = std::isfinite(out.lo) && std::isfinite(out.hi) && qAbs(out.hi - out.lo) > 1e-30;
+    };
+
+    auto applySingleAxis = [](MultiLayer *ml, Graph *lg, int ax, const CopiedSingleAxisScale &in) {
+        if (!lg || !in.valid || ax < 0 || ax > 3)
+            return;
+        lg->enableAutoscaling(false);
+        lg->setScale(ax, in.lo, in.hi, in.step, in.maxMajor, in.maxMinor, in.scaleType,
+                     in.inverted);
+        if (in.brk.enabled)
+            lg->setAxisBreak(ax, in.brk);
+        else if (lg->axisBreak(ax).enabled)
+            lg->clearAxisBreak(ax);
+        lg->setAxisUserLocked(ax, true);
+        if (ml)
+            syncLinkedChildrenOf(ml, lg);
+    };
 
     QMenu menu(this);
-    if (!isGroupHeader && (item->flags() & Qt::ItemIsUserCheckable)) {
-        const bool isVis = (item->checkState(0) == Qt::Checked);
+    if (isCheckable) {
         QAction *actVis = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("visibility"), 14),
                 isVis ? tr("Hide Object") : tr("Show Object"));
-        connect(actVis, &QAction::triggered, this, [item, isVis]() {
-            item->setCheckState(0, isVis ? Qt::Unchecked : Qt::Checked);
-        });
+        connect(actVis, &QAction::triggered, this,
+                [this, safeMl, resolveLayer, kind, primaryId, nextVis = !isVis]() {
+                    Graph *lg = resolveLayer();
+                    if (!safeMl || !lg)
+                        return;
+                    if (kind == Graph::GraphSelection::Curve
+                        || kind == Graph::GraphSelection::ErrorBars) {
+                        if (primaryId >= 0 && primaryId < lg->curves()
+                            && lg->isCurveVisible(primaryId) != nextVis) {
+                            const QString before = safeMl->captureUndoSnapshot();
+                            lg->showCurve(primaryId, nextVis);
+                            safeMl->pushUndoSnapshot(
+                                    kind == Graph::GraphSelection::ErrorBars
+                                            ? tr("Toggle Error Bar Visibility")
+                                            : tr("Toggle Curve Visibility"),
+                                    before);
+                            refreshAll();
+                        }
+                    } else if (kind == Graph::GraphSelection::Spectrogram) {
+                        if (primaryId >= 0 && primaryId < lg->curves()) {
+                            if (auto *sp = dynamic_cast<Spectrogram *>(lg->plotItem(primaryId))) {
+                                if (sp->isVisible() != nextVis) {
+                                    const QString before = safeMl->captureUndoSnapshot();
+                                    sp->setVisible(nextVis);
+                                    lg->replot();
+                                    emit lg->modifiedGraph();
+                                    safeMl->pushUndoSnapshot(tr("Toggle Heatmap Visibility"),
+                                                             before);
+                                    refreshAll();
+                                }
+                            }
+                        }
+                    } else if (kind == Graph::GraphSelection::LegendBox) {
+                        const QString before = safeMl->captureUndoSnapshot();
+                        if (nextVis && !lg->hasLegend())
+                            lg->newLegend();
+                        lg->setLegendVisible(nextVis);
+                        safeMl->pushUndoSnapshot(tr("Toggle Legend Visibility"), before);
+                        refreshAll();
+                    } else if (kind == Graph::GraphSelection::ReferenceLine) {
+                        if (primaryId >= 0 && primaryId < lg->referenceLines().size()) {
+                            Graph::ReferenceLineSpec spec = lg->referenceLines()[primaryId];
+                            const QString before = safeMl->captureUndoSnapshot();
+                            spec.visible = nextVis;
+                            if (nextVis && spec.style == Qt::NoPen)
+                                spec.style = Qt::DashLine;
+                            lg->updateReferenceLine(primaryId, spec);
+                            safeMl->pushUndoSnapshot(tr("Toggle Reference Line Visibility"),
+                                                     before);
+                            refreshAll();
+                        }
+                    }
+                });
     }
 
     if (!isGroupHeader
@@ -5472,21 +6738,156 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
         QAction *actEdit = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
                 tr("Edit Curve Style..."));
-        connect(actEdit, &QAction::triggered, this, [this, g, primaryId]() {
-            if (d_app)
-                d_app->showPlotDialog((g && primaryId >= 0 && primaryId < g->curves())
-                                              ? int(g->curveKey(primaryId))
-                                              : primaryId);
+        connect(actEdit, &QAction::triggered, this, [this, safeMl, resolveLayer, primaryId]() {
+            Graph *lg = resolveLayer();
+            if (!d_app || !safeMl || !lg)
+                return;
+            safeMl->setActiveGraph(lg);
+            d_app->showPlotDialog((primaryId >= 0 && primaryId < lg->curves())
+                                          ? int(lg->curveKey(primaryId))
+                                          : primaryId);
+        });
+
+        // B1-9: Edit X/Y Data Columns / Range + Copy/Paste Curve Color & Symbol
+        if (kind == Graph::GraphSelection::Curve) {
+            QAction *actEditCols = menu.addAction(
+                    IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 14),
+                    tr("Edit X/Y Data Columns..."));
+            connect(actEditCols, &QAction::triggered, this,
+                    [this, safeMl, resolveLayer, primaryId]() {
+                        Graph *lg = resolveLayer();
+                        if (!d_app || !safeMl || !lg)
+                            return;
+                        safeMl->setActiveGraph(lg);
+                        if (d_app->activeWindow() != safeMl.data())
+                            d_app->activateSubWindow(safeMl.data());
+                        if (primaryId >= 0 && primaryId < lg->curves()
+                            && dynamic_cast<DataCurve *>(lg->curve(primaryId)) != nullptr) {
+                            d_app->showPlotAssociations(primaryId);
+                        } else {
+                            d_app->showCurvesDialog();
+                        }
+                        refreshAll();
+                    });
+
+            if (safeG && primaryId >= 0 && primaryId < safeG->curves()
+                && dynamic_cast<DataCurve *>(safeG->curve(primaryId)) != nullptr) {
+                QAction *actEditRange = menu.addAction(tr("Edit Data Row Range..."));
+                connect(actEditRange, &QAction::triggered, this,
+                        [this, safeMl, resolveLayer, primaryId]() {
+                            Graph *lg = resolveLayer();
+                            if (!d_app || !safeMl || !lg)
+                                return;
+                            if (primaryId >= 0 && primaryId < lg->curves()
+                                && dynamic_cast<DataCurve *>(lg->curve(primaryId)) != nullptr) {
+                                safeMl->setActiveGraph(lg);
+                                d_app->showCurveRangeDialog(lg, primaryId);
+                            }
+                        });
+            }
+
+            menu.addSeparator();
+            QAction *actCopyStyle = menu.addAction(
+                    IconLoader::duotoneIcon(QStringLiteral("copy"), 14),
+                    tr("Copy Curve Color & Symbol"));
+            connect(actCopyStyle, &QAction::triggered, this, [resolveLayer, primaryId]() {
+                Graph *lg = resolveLayer();
+                if (!lg || primaryId < 0 || primaryId >= lg->curves())
+                    return;
+                QwtPlotCurve *cv = lg->curve(primaryId);
+                if (!cv)
+                    return;
+                const bool hasLine =
+                        (cv->style() != QwtPlotCurve::NoCurve && cv->pen().style() != Qt::NoPen);
+                s_copiedCurveStyle.lineColor = (hasLine && cv->pen().color().isValid())
+                        ? cv->pen().color()
+                        : cv->symbol().pen().color();
+                s_copiedCurveStyle.symbol = cv->symbol();
+                s_copiedCurveStyle.hasBrush = (cv->brush().style() != Qt::NoBrush);
+                s_copiedCurveStyle.brush = cv->brush();
+                s_copiedCurveStyle.valid = true;
+            });
+
+            QAction *actPasteStyle = menu.addAction(
+                    IconLoader::duotoneIcon(QStringLiteral("paste"), 14),
+                    tr("Paste Curve Color & Symbol"));
+            actPasteStyle->setEnabled(s_copiedCurveStyle.valid);
+            connect(actPasteStyle, &QAction::triggered, this,
+                    [this, safeMl, resolveLayer, primaryId]() {
+                        Graph *lg = resolveLayer();
+                        if (!safeMl || !lg || !s_copiedCurveStyle.valid || primaryId < 0
+                            || primaryId >= lg->curves()) {
+                            return;
+                        }
+                        QwtPlotCurve *cv = lg->curve(primaryId);
+                        if (!cv)
+                            return;
+                        const QString before = safeMl->captureUndoSnapshot();
+                        if (s_copiedCurveStyle.lineColor.isValid()) {
+                            QPen lp = cv->pen();
+                            lp.setColor(s_copiedCurveStyle.lineColor);
+                            cv->setPen(lp);
+                            if (cv->brush().style() != Qt::NoBrush) {
+                                QColor fc = s_copiedCurveStyle.lineColor;
+                                fc.setAlpha(cv->brush().color().alpha() > 0
+                                                    ? cv->brush().color().alpha()
+                                                    : 65);
+                                cv->setBrush(QBrush(fc));
+                            }
+                            if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
+                                for (DataCurve *eb : dc->errorBarsList()) {
+                                    if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(eb))
+                                        er->setColor(s_copiedCurveStyle.lineColor);
+                                }
+                            }
+                        }
+                        cv->setSymbol(s_copiedCurveStyle.symbol);
+                        lg->reconstructLegend();
+                        lg->updatePlot();
+                        emit lg->modifiedGraph();
+                        safeMl->pushUndoSnapshot(tr("Paste Curve Style"), before);
+                        refreshAll();
+                    });
+        }
+    } else if (isGroupHeader && kind == Graph::GraphSelection::Curve) {
+        QAction *actCurvesDlg = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
+                tr("Add/Remove Curves..."));
+        connect(actCurvesDlg, &QAction::triggered, this, [this, safeMl, resolveLayer]() {
+            Graph *lg = resolveLayer();
+            if (!d_app || !safeMl || !lg)
+                return;
+            safeMl->setActiveGraph(lg);
+            d_app->showCurvesDialog();
         });
     } else if (!isGroupHeader && kind == Graph::GraphSelection::ReferenceLine) {
         QAction *actEditRef = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
                 tr("Edit Reference Line..."));
-        connect(actEditRef, &QAction::triggered, this, [this, g, primaryId]() {
-            if (g && primaryId >= 0 && primaryId < g->referenceLines().size()) {
-                if (g->editReferenceLineDialog(primaryId))
+        connect(actEditRef, &QAction::triggered, this, [this, resolveLayer, primaryId]() {
+            Graph *lg = resolveLayer();
+            if (lg && primaryId >= 0 && primaryId < lg->referenceLines().size()) {
+                if (lg->editReferenceLineDialog(primaryId))
                     refreshAll();
             }
+        });
+    } else if (!isGroupHeader
+               && (kind == Graph::GraphSelection::Axis
+                   || kind == Graph::GraphSelection::AxisTitle)) {
+        QAction *actEditAxis = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("axis-scale"), 14),
+                tr("Edit Axis Properties..."));
+        connect(actEditAxis, &QAction::triggered, this, [this, resolveLayer, primaryId]() {
+            if (Graph *lg = resolveLayer())
+                openAxesDialogForQwtAxis(lg, qBound(0, primaryId, 3), true);
+        });
+    } else if (kind == Graph::GraphSelection::PlotTitle) {
+        QAction *actTitle = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("text-label"), 14),
+                tr("Plot Title"));
+        connect(actTitle, &QAction::triggered, this, [this]() {
+            if (d_app)
+                d_app->showTitleDialog();
         });
     } else if (kind == Graph::GraphSelection::Page) {
         QAction *actPage = menu.addAction(
@@ -5506,25 +6907,84 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
         });
     }
 
+    // B1-9: Copy/Paste Axis Scale Range on Layer, Page, Axis, or AxisTitle
+    if (kind == Graph::GraphSelection::Layer || kind == Graph::GraphSelection::Page
+        || kind == Graph::GraphSelection::Axis || kind == Graph::GraphSelection::AxisTitle) {
+        const bool singleAxisMode =
+                (kind == Graph::GraphSelection::Axis || kind == Graph::GraphSelection::AxisTitle);
+        menu.addSeparator();
+        QAction *actCopyScale = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("copy"), 14),
+                tr("Copy Axis Scale Range"));
+        connect(actCopyScale, &QAction::triggered, this,
+                [resolveLayer, captureSingleAxis, singleAxisMode, primaryId]() {
+                    Graph *lg = resolveLayer();
+                    if (!lg)
+                        return;
+                    CopiedAxisScaleClipboard clip;
+                    clip.allAxes = !singleAxisMode;
+                    clip.sourceAxis = singleAxisMode ? qBound(0, primaryId, 3) : int(QwtPlot::xBottom);
+                    bool anyValid = false;
+                    for (int a = 0; a < 4; ++a) {
+                        captureSingleAxis(lg, a, clip.axes[a]);
+                        if (clip.axes[a].valid)
+                            anyValid = true;
+                    }
+                    clip.valid = anyValid;
+                    if (anyValid)
+                        s_copiedAxisScale = clip;
+                });
+
+        QAction *actPasteScale = menu.addAction(
+                IconLoader::duotoneIcon(QStringLiteral("paste"), 14),
+                tr("Paste Axis Scale Range"));
+        actPasteScale->setEnabled(s_copiedAxisScale.valid);
+        connect(actPasteScale, &QAction::triggered, this,
+                [this, safeMl, resolveLayer, applySingleAxis, singleAxisMode, primaryId]() {
+                    Graph *lg = resolveLayer();
+                    if (!safeMl || !lg || !s_copiedAxisScale.valid)
+                        return;
+                    const QString before = safeMl->captureUndoSnapshot();
+                    if (singleAxisMode) {
+                        const int dstAx = qBound(0, primaryId, 3);
+                        const int srcAx = s_copiedAxisScale.allAxes
+                                ? dstAx
+                                : qBound(0, s_copiedAxisScale.sourceAxis, 3);
+                        applySingleAxis(safeMl.data(), lg, dstAx, s_copiedAxisScale.axes[srcAx]);
+                    } else {
+                        for (int a = 0; a < 4; ++a) {
+                            if (s_copiedAxisScale.axes[a].valid)
+                                applySingleAxis(safeMl.data(), lg, a, s_copiedAxisScale.axes[a]);
+                        }
+                    }
+                    lg->replot();
+                    emit lg->modifiedGraph();
+                    safeMl->pushUndoSnapshot(tr("Paste Axis Scale Range"), before);
+                    refreshAll();
+                });
+    }
+
+    menu.addSeparator();
     QAction *actAdd = menu.addAction(
             IconLoader::duotoneIcon(QStringLiteral("curve-add"), 14),
             tr("Add Curve(s)..."));
     connect(actAdd, &QAction::triggered, this, &GraphInspectorDock::openAddCurvePopover);
 
-    if (g && (kind == Graph::GraphSelection::LegendBox || kind == Graph::GraphSelection::Layer)) {
+    if (safeG && (kind == Graph::GraphSelection::LegendBox || kind == Graph::GraphSelection::Layer)) {
         QAction *actAutoLeg = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("legend"), 14),
                 tr("Auto-Place Legend"));
-        connect(actAutoLeg, &QAction::triggered, this, [this, g]() {
-            if (!d_target_ml || !g)
+        connect(actAutoLeg, &QAction::triggered, this, [this, safeMl, resolveLayer]() {
+            Graph *lg = resolveLayer();
+            if (!safeMl || !lg)
                 return;
-            const QString before = d_target_ml->captureUndoSnapshot();
-            if (!g->hasLegend())
-                g->newLegend();
-            g->setLegendVisible(true);
-            g->autoPlaceLegend();
-            g->replot();
-            d_target_ml->pushUndoSnapshot(tr("Auto-Place Legend"), before);
+            const QString before = safeMl->captureUndoSnapshot();
+            if (!lg->hasLegend())
+                lg->newLegend();
+            lg->setLegendVisible(true);
+            lg->autoPlaceLegend();
+            lg->replot();
+            safeMl->pushUndoSnapshot(tr("Auto-Place Legend"), before);
             refreshAll();
         });
     }
@@ -5622,6 +7082,22 @@ void GraphInspectorDock::onGraphSelectionChanged(MultiLayer *page, Graph *layer,
 {
     if (page != d_target_ml)
         return;
+
+    // E5-2: flush pending debounced text edits if selection moved away from the edited object.
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive()
+        && (layer != d_annot_edit_layer.data()
+            || sel.kind != Graph::GraphSelection::TextAnnotation
+            || sel.primaryId != d_annot_edit_id)) {
+        flushPendingAnnotationEdit();
+    }
+    if (d_axis_title_timer && d_axis_title_timer->isActive()
+        && (layer != d_axis_title_edit_layer.data()
+            || ((sel.kind == Graph::GraphSelection::Axis
+                 || sel.kind == Graph::GraphSelection::AxisTitle)
+                && qBound(0, sel.primaryId, 3) != d_axis_title_edit_axis))) {
+        flushPendingAxisTitleEdit();
+    }
+
     if (layer && d_target_ml && d_target_ml->activeGraph() != layer)
         d_target_ml->setActiveGraph(layer);
 
@@ -5660,6 +7136,7 @@ void GraphInspectorDock::syncInspectorFromSelection()
     case Graph::GraphSelection::Spectrogram:
         switchToInspectorPage(PageTabCurve);
         break;
+    case Graph::GraphSelection::PlotTitle:
     case Graph::GraphSelection::LegendBox:
     case Graph::GraphSelection::TextAnnotation:
     case Graph::GraphSelection::ArrowAnnotation:
@@ -5668,7 +7145,6 @@ void GraphInspectorDock::syncInspectorFromSelection()
         break;
     case Graph::GraphSelection::Page:
     case Graph::GraphSelection::Layer:
-    case Graph::GraphSelection::PlotTitle:
         switchToInspectorPage(PageTabPageLayer);
         break;
     case Graph::GraphSelection::None:
@@ -6049,17 +7525,32 @@ void GraphInspectorDock::configurePageSizeSpins(int unitInt, double wMm, double 
     if (!d_spin_page_w_mm || !d_spin_page_h_mm)
         return;
     const double f = pageUnitToMmFactor(unit);
-    const QString suffix = (unit == MultiLayer::UnitCm)
-            ? QStringLiteral(" cm")
-            : (unit == MultiLayer::UnitInch ? QStringLiteral(" in") : QStringLiteral(" mm"));
-    const int decimals = (unit == MultiLayer::UnitMm) ? 1 : (unit == MultiLayer::UnitCm ? 2 : 3);
-    const double step = (unit == MultiLayer::UnitMm) ? 5.0 : (unit == MultiLayer::UnitCm ? 0.5 : 0.1);
+    QString suffix = QStringLiteral(" mm");
+    int decimals = 1;
+    double step = 5.0;
+    double minVal = 20.0 / f;
+    double maxVal = 1000.0 / f;
+    if (unit == MultiLayer::UnitCm) {
+        suffix = QStringLiteral(" cm");
+        decimals = 2;
+        step = 0.5;
+    } else if (unit == MultiLayer::UnitInch) {
+        suffix = QStringLiteral(" in");
+        decimals = 3;
+        step = 0.1;
+    } else if (unit == MultiLayer::UnitPx) {
+        suffix = QStringLiteral(" px");
+        decimals = 0;
+        step = 20.0;
+        minVal = 50.0;
+        maxVal = 10000.0;
+    }
     for (QDoubleSpinBox *sb : { d_spin_page_w_mm, d_spin_page_h_mm }) {
         QSignalBlocker blk(sb);
         sb->setDecimals(decimals);
         sb->setSingleStep(step);
         sb->setSuffix(suffix);
-        sb->setRange(20.0 / f, 1000.0 / f);
+        sb->setRange(minVal, maxVal);
     }
     {
         QSignalBlocker bw(d_spin_page_w_mm);
@@ -6095,9 +7586,8 @@ void GraphInspectorDock::syncPageLayerControls()
         if (d_chk_keep_aspect)
             d_chk_keep_aspect->setChecked(d_target_ml->keepAspectRatio());
 
-        const MultiLayer::PageUnit shownUnit = (d_target_ml->pageUnit() == MultiLayer::UnitPx)
-                ? MultiLayer::UnitMm
-                : d_target_ml->pageUnit();
+        // B1-7: preserve UnitPx directly instead of silently converting to mm
+        const MultiLayer::PageUnit shownUnit = d_target_ml->pageUnit();
         if (d_combo_page_unit) {
             QSignalBlocker bu(d_combo_page_unit);
             const int uIdx = d_combo_page_unit->findData(int(shownUnit));
@@ -6107,17 +7597,24 @@ void GraphInspectorDock::syncPageLayerControls()
         d_spin_page_dpi->setValue(d_target_ml->pageDpi());
         d_chk_page_view->setChecked(d_target_ml->pageViewMode());
 
-        const int curPct = qRound(d_target_ml->pageZoom() * 100.0);
-        int bestIdx = 2;
-        int bestDiff = 9999;
+        // claude_review_1 #6: display exact zoom % when Fit-to-Window or wheel zoom sets a
+        // non-preset percentage (presets occupy indices 0..5).
+        while (d_combo_page_zoom->count() > 6)
+            d_combo_page_zoom->removeItem(6);
+        const int curPct = qBound(10, qRound(d_target_ml->pageZoom() * 100.0), 800);
+        int exactIdx = -1;
         for (int i = 0; i < d_combo_page_zoom->count(); ++i) {
-            const int diff = qAbs(d_combo_page_zoom->itemData(i).toInt() - curPct);
-            if (diff < bestDiff) {
-                bestDiff = diff;
-                bestIdx = i;
+            if (qAbs(d_combo_page_zoom->itemData(i).toInt() - curPct) <= 1) {
+                exactIdx = i;
+                break;
             }
         }
-        d_combo_page_zoom->setCurrentIndex(bestIdx);
+        if (exactIdx >= 0) {
+            d_combo_page_zoom->setCurrentIndex(exactIdx);
+        } else {
+            d_combo_page_zoom->addItem(QStringLiteral("%1%").arg(curPct), curPct);
+            d_combo_page_zoom->setCurrentIndex(d_combo_page_zoom->count() - 1);
+        }
 
         d_chk_panel_labels->setChecked(d_target_ml->hasPanelLabels());
         const int pIdx = d_combo_panel_pos->findData(int(d_target_ml->panelLabelPlacement()));
@@ -6126,6 +7623,127 @@ void GraphInspectorDock::syncPageLayerControls()
     }
 
     d_syncing_props = false;
+    syncInsetControls();
+}
+
+void GraphInspectorDock::syncInsetControls()
+{
+    if (!d_inset_wrap)
+        return;
+    Graph *g = activeLayer();
+    const bool isInset = (d_target_ml && g
+                          && (d_target_ml->isInsetLayer(g)
+                              || d_target_ml->insetZoomDataRect(g).isValid()));
+    d_inset_wrap->setVisible(isInset);
+    if (!isInset)
+        return;
+
+    const bool prevSync = d_syncing_props;
+    d_syncing_props = true;
+
+    QRectF roi = d_target_ml->insetZoomDataRect(g);
+    if (!roi.isValid() && g->plotWidget()) {
+        const QwtScaleDiv *xDiv = g->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+        const QwtScaleDiv *yDiv = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft);
+        if (xDiv && yDiv) {
+            const double x0 = qMin(xDiv->lowerBound(), xDiv->upperBound());
+            const double x1 = qMax(xDiv->lowerBound(), xDiv->upperBound());
+            const double y0 = qMin(yDiv->lowerBound(), yDiv->upperBound());
+            const double y1 = qMax(yDiv->lowerBound(), yDiv->upperBound());
+            roi = QRectF(QPointF(x0, y0), QPointF(x1, y1));
+        }
+    }
+
+    if (roi.isValid()) {
+        const double xMin = qMin(roi.left(), roi.right());
+        const double xMax = qMax(roi.left(), roi.right());
+        const double yMin = qMin(roi.top(), roi.bottom());
+        const double yMax = qMax(roi.top(), roi.bottom());
+        syncLineEditClean(d_edit_inset_xmin, QString::number(xMin, 'g', 6));
+        syncLineEditClean(d_edit_inset_xmax, QString::number(xMax, 'g', 6));
+        syncLineEditClean(d_edit_inset_ymin, QString::number(yMin, 'g', 6));
+        syncLineEditClean(d_edit_inset_ymax, QString::number(yMax, 'g', 6));
+    }
+    if (d_chk_inset_connectors) {
+        QSignalBlocker bc(d_chk_inset_connectors);
+        d_chk_inset_connectors->setChecked(d_target_ml->insetShowConnectors(g));
+    }
+
+    d_syncing_props = prevSync;
+}
+
+void GraphInspectorDock::applyInsetRoiFromUi(bool fromEdits)
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g || !d_edit_inset_xmin || !d_edit_inset_xmax
+        || !d_edit_inset_ymin || !d_edit_inset_ymax) {
+        return;
+    }
+    if (fromEdits) {
+        const bool anyDiff = (d_edit_inset_xmin->text().trimmed()
+                              != d_edit_inset_xmin->property("_syncedText").toString())
+                || (d_edit_inset_xmax->text().trimmed()
+                    != d_edit_inset_xmax->property("_syncedText").toString())
+                || (d_edit_inset_ymin->text().trimmed()
+                    != d_edit_inset_ymin->property("_syncedText").toString())
+                || (d_edit_inset_ymax->text().trimmed()
+                    != d_edit_inset_ymax->property("_syncedText").toString());
+        if (!anyDiff) {
+            for (QLineEdit *le :
+                 { d_edit_inset_xmin, d_edit_inset_xmax, d_edit_inset_ymin, d_edit_inset_ymax }) {
+                le->setModified(false);
+                setLineEditPendingCue(le, false);
+            }
+            return;
+        }
+    }
+
+    auto parseNum = [](QLineEdit *le, bool *okOut) -> double {
+        const QString s = le->text().trimmed();
+        bool ok = false;
+        double v = QLocale::c().toDouble(s, &ok);
+        if (!ok)
+            v = QLocale().toDouble(s, &ok);
+        if (okOut)
+            *okOut = ok;
+        return v;
+    };
+    bool okX0 = false, okX1 = false, okY0 = false, okY1 = false;
+    const double x0 = parseNum(d_edit_inset_xmin, &okX0);
+    const double x1 = parseNum(d_edit_inset_xmax, &okX1);
+    const double y0 = parseNum(d_edit_inset_ymin, &okY0);
+    const double y1 = parseNum(d_edit_inset_ymax, &okY1);
+    if (!okX0 || !okX1 || !okY0 || !okY1 || !std::isfinite(x0) || !std::isfinite(x1)
+        || !std::isfinite(y0) || !std::isfinite(y1) || qAbs(x1 - x0) < 1e-15
+        || qAbs(y1 - y0) < 1e-15) {
+        return;
+    }
+
+    const QRectF roi(QPointF(qMin(x0, x1), qMin(y0, y1)), QPointF(qMax(x0, x1), qMax(y0, y1)));
+    const QRectF cur = d_target_ml->insetZoomDataRect(g);
+    if (cur.isValid() && qAbs(cur.left() - roi.left()) <= 1e-12
+        && qAbs(cur.right() - roi.right()) <= 1e-12 && qAbs(cur.top() - roi.top()) <= 1e-12
+        && qAbs(cur.bottom() - roi.bottom()) <= 1e-12) {
+        syncInsetControls();
+        return;
+    }
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    const bool invoked = QMetaObject::invokeMethod(
+            d_target_ml.data(), "setInsetZoomDataRect", Qt::DirectConnection, Q_ARG(Graph *, g),
+            Q_ARG(QRectF, roi));
+    if (!invoked && g->plotWidget()) {
+        Plot *pw = g->plotWidget();
+        g->enableAutoscaling(false);
+        g->setScale(QwtPlot::xBottom, roi.left(), roi.right(), 0.0,
+                    pw->axisMaxMajor(QwtPlot::xBottom), pw->axisMaxMinor(QwtPlot::xBottom));
+        g->setScale(QwtPlot::yLeft, roi.top(), roi.bottom(), 0.0,
+                    pw->axisMaxMajor(QwtPlot::yLeft), pw->axisMaxMinor(QwtPlot::yLeft));
+        g->replot();
+    }
+    emit g->modifiedGraph();
+    d_target_ml->pushUndoSnapshot(tr("Edit Inset Zoom Region"), before, kMergeInsetRoi);
+    syncInsetControls();
 }
 
 void GraphInspectorDock::syncAxisControls()
@@ -6134,8 +7752,13 @@ void GraphInspectorDock::syncAxisControls()
     if (!g || !g->plotWidget())
         return;
 
-    d_syncing_props = true;
     const int ax = qBound(0, d_active_axis, 3);
+    if (d_axis_title_timer && d_axis_title_timer->isActive()
+        && (d_axis_title_edit_layer.data() != g || d_axis_title_edit_axis != ax)) {
+        flushPendingAxisTitleEdit();
+    }
+
+    d_syncing_props = true;
     Plot *pw = g->plotWidget();
 
     if (d_axis_sel_group) {
@@ -6175,14 +7798,12 @@ void GraphInspectorDock::syncAxisControls()
             d_chk_tick_labels->setEnabled(pw->axisEnabled(ax));
         }
         if (d_combo_unit_format) {
-            int ufMode = (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash) ? 1 : 0;
-            if (g->property("_toriBracketUnitFmt").toBool()) {
+            // A3-8 / E1-4: read Column::UnitFormat directly (Bracket is native)
+            int ufMode = 0;
+            if (g->axisUnitFormat() == Column::UnitFormat::ISIJSlash)
+                ufMode = 1;
+            else if (g->axisUnitFormat() == Column::UnitFormat::Bracket)
                 ufMode = 2;
-            } else {
-                const QString curTitle = g->axisTitle(ax).trimmed();
-                if (curTitle.endsWith(QLatin1Char(']')) && curTitle.contains(QLatin1String(" [")))
-                    ufMode = 2;
-            }
             const int ufIdx = d_combo_unit_format->findData(ufMode);
             if (ufIdx >= 0)
                 d_combo_unit_format->setCurrentIndex(ufIdx);
@@ -6191,10 +7812,11 @@ void GraphInspectorDock::syncAxisControls()
         const QwtScaleDiv *scDiv = pw->axisScaleDiv(ax);
         const double lo = scDiv ? qMin(scDiv->lowerBound(), scDiv->upperBound()) : 0.0;
         const double hi = scDiv ? qMax(scDiv->lowerBound(), scDiv->upperBound()) : 1.0;
-        d_edit_axis_min->setText(QString::number(lo, 'g', 8));
-        d_edit_axis_max->setText(QString::number(hi, 'g', 8));
+        syncLineEditClean(d_edit_axis_min, QString::number(lo, 'g', 8));
+        syncLineEditClean(d_edit_axis_max, QString::number(hi, 'g', 8));
         const double stp = g->axisStep(ax);
-        d_edit_axis_step->setText(stp > 0.0 ? QString::number(stp, 'g', 8) : QStringLiteral("0"));
+        syncLineEditClean(d_edit_axis_step,
+                          stp > 0.0 ? QString::number(stp, 'g', 8) : QStringLiteral("0"));
 
         bool isLog10 = false;
         bool isInverted = (scDiv && scDiv->lowerBound() > scDiv->upperBound());
@@ -6235,8 +7857,8 @@ void GraphInspectorDock::syncAxisControls()
         const double span = hi - lo;
         const double defFrom = brk.enabled ? brk.breakFrom : (lo + 0.35 * span);
         const double defTo = brk.enabled ? brk.breakTo : (lo + 0.65 * span);
-        d_edit_break_from->setText(QString::number(defFrom, 'g', 6));
-        d_edit_break_to->setText(QString::number(defTo, 'g', 6));
+        syncLineEditClean(d_edit_break_from, QString::number(defFrom, 'g', 6));
+        syncLineEditClean(d_edit_break_to, QString::number(defTo, 'g', 6));
 
         if (d_btn_ref_zero_y) {
             QSignalBlocker bRy(d_btn_ref_zero_y);
@@ -6276,6 +7898,11 @@ void GraphInspectorDock::syncAxisControls()
                 d_combo_tick_divide->setCurrentIndex(foundDiv);
             else
                 d_combo_tick_divide->setEditText(divTxt);
+            if (QLineEdit *divEdit = d_combo_tick_divide->lineEdit()) {
+                divEdit->setProperty("_syncedText", divEdit->text().trimmed());
+                divEdit->setModified(false);
+                setLineEditPendingCue(divEdit, false);
+            }
         }
         refreshCategoryColumnCombo();
 
@@ -6285,7 +7912,15 @@ void GraphInspectorDock::syncAxisControls()
             d_chk_minor_grid->setChecked(isX ? gr->xMinEnabled() : gr->yMinEnabled());
         }
 
-        d_edit_axis_title->setText(g->axisTitle(ax));
+        const bool editingSameAxisTitle =
+                (d_axis_title_timer && d_axis_title_timer->isActive()
+                 && d_axis_title_edit_layer.data() == g && d_axis_title_edit_axis == ax);
+        if (!editingSameAxisTitle) {
+            d_edit_axis_title->setText(g->axisTitle(ax));
+            d_edit_axis_title->setModified(false);
+        }
+        updateAxisTitlePreview(d_edit_axis_title->text());
+
         const QFont tf = g->axisTitleFont(ax);
         d_spin_axis_title_pt->setValue(tf.pointSizeF() > 0.0 ? tf.pointSizeF() : 14.0);
         const QFont nf = g->axisFont(ax);
@@ -6310,13 +7945,17 @@ void GraphInspectorDock::syncCurveControls()
         if (d_spectrogram_wrap)
             d_spectrogram_wrap->show();
 
-        const QString matName =
-                sp->matrix() ? QString(sp->matrix()->name()) : sp->title().text().trimmed();
+        const QString matName = stripHtmlToCleanUnicode(
+                                        sp->matrix() ? QString(sp->matrix()->name())
+                                                     : sp->title().text())
+                                        .trimmed();
         d_lbl_active_curve_name->setText(matName.isEmpty() ? tr("Heatmap")
                                                            : tr("Heatmap: %1").arg(matName));
 
         QSignalBlocker bs1(d_combo_spec_cmap);
         QSignalBlocker bs2(d_chk_spec_reverse);
+        QSignalBlocker bsLog(d_chk_spec_log_scale);
+        QSignalBlocker bsCells(d_chk_spec_cell_blocks);
         QSignalBlocker bs3(d_chk_spec_colorbar);
         QSignalBlocker bsTitle(d_edit_spec_cb_title);
         QSignalBlocker bs4(d_spin_spec_cb_width);
@@ -6330,6 +7969,10 @@ void GraphInspectorDock::syncCurveControls()
         if (cmIdx >= 0)
             d_combo_spec_cmap->setCurrentIndex(cmIdx);
         d_chk_spec_reverse->setChecked(sp->reversePalette());
+        if (d_chk_spec_log_scale)
+            d_chk_spec_log_scale->setChecked(sp->logColorScale());
+        if (d_chk_spec_cell_blocks)
+            d_chk_spec_cell_blocks->setChecked(sp->cellBlocks());
 
         const bool hasCb = sp->hasColorScale();
         d_chk_spec_colorbar->setChecked(hasCb);
@@ -6345,7 +7988,7 @@ void GraphInspectorDock::syncCurveControls()
         const bool hasContours = sp->testDisplayMode(QwtPlotSpectrogram::ContourMode);
         d_chk_spec_contours->setChecked(hasContours);
         d_spin_spec_levels->setEnabled(hasContours);
-        d_spin_spec_levels->setValue(qBound(2, sp->levels(), 50));
+        d_spin_spec_levels->setValue(qBound(2, sp->levels(), 1000));
 
         const bool customZ = sp->hasCustomValueRange();
         d_chk_spec_custom_z->setChecked(customZ);
@@ -6354,8 +7997,8 @@ void GraphInspectorDock::syncCurveControls()
         const QwtDoubleInterval effRange = sp->effectiveValueRange();
         const double zLo = customZ ? sp->customZMin() : effRange.minValue();
         const double zHi = customZ ? sp->customZMax() : effRange.maxValue();
-        d_edit_spec_zmin->setText(QString::number(zLo, 'g', 6));
-        d_edit_spec_zmax->setText(QString::number(zHi, 'g', 6));
+        syncLineEditClean(d_edit_spec_zmin, QString::number(zLo, 'g', 6));
+        syncLineEditClean(d_edit_spec_zmax, QString::number(zHi, 'g', 6));
 
         d_syncing_props = false;
         return;
@@ -6549,8 +8192,8 @@ void GraphInspectorDock::syncCurveControls()
             double zLo = pcm.zMin, zHi = pcm.zMax;
             if (pcm.autoRange)
                 dc->pointColorRange(&zLo, &zHi);
-            d_edit_pcm_zmin->setText(QString::number(zLo, 'g', 6));
-            d_edit_pcm_zmax->setText(QString::number(zHi, 'g', 6));
+            syncLineEditClean(d_edit_pcm_zmin, QString::number(zLo, 'g', 6));
+            syncLineEditClean(d_edit_pcm_zmax, QString::number(zHi, 'g', 6));
         }
     }
     if (hasPcm) {
@@ -6570,7 +8213,10 @@ void GraphInspectorDock::syncCurveControls()
             QSignalBlocker be1(d_spin_err_width);
             QSignalBlocker be2(d_spin_err_cap);
             QSignalBlocker be3(d_combo_err_dir);
-            d_spin_err_width->setValue(qBound(1, er->width(), 10));
+            const double ew = er->widthF() > 0.0 ? er->widthF() : double(qMax(1, er->width()));
+            d_spin_err_width->setValue(
+                    qBound(PlotStyleLimits::kErrorBarWidthMin, ew,
+                           PlotStyleLimits::kErrorBarWidthMax));
             d_spin_err_cap->setValue(qBound(0, er->capLength(), 32));
             int dirMode = 0;
             if (er->plusSide() && !er->minusSide())
@@ -6606,19 +8252,273 @@ void GraphInspectorDock::flushPendingAnnotationEdit()
     const int id = d_annot_edit_id;
     d_annot_edit_layer = nullptr;
     d_annot_edit_id = -1;
-    if (!d_target_ml || !g || id < 0 || !d_edit_annot_text)
+    // E5-2: resolve the owning MultiLayer from g itself so edits flush reliably even when
+    // switching graphs or closing a graph window (when d_target_ml may already be null or changed).
+    if (!g || id < 0 || !d_edit_annot_text)
         return;
+    MultiLayer *ml = g->multiLayerParent();
     Legend *leg = g->textMarker(id);
     if (!leg)
         return;
     const QString nextTxt = d_edit_annot_text->toPlainText();
     if (leg->text() == nextTxt)
         return;
-    const QString before = d_target_ml->captureUndoSnapshot();
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
     leg->setText(nextTxt);
     g->replot();
     emit g->modifiedGraph();
-    d_target_ml->pushUndoSnapshot(tr("Edit Annotation Text"), before, kMergeLegendHeader);
+    if (ml && !before.isEmpty())
+        ml->pushUndoSnapshot(tr("Edit Annotation Text"), before, kMergeLegendHeader);
+    if (ml && ml == d_target_ml.data())
+        refreshObjectTree();
+}
+
+void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
+{
+    if (!d_leg_entries_wrap || !d_leg_entries_layout)
+        return;
+
+    while (QLayoutItem *it = d_leg_entries_layout->takeAt(0)) {
+        if (QWidget *w = it->widget()) {
+            w->hide();
+            w->setParent(nullptr);
+            w->deleteLater();
+        }
+        delete it;
+    }
+
+    if (!g || g->isPiePlot()) {
+        d_leg_entries_wrap->hide();
+        return;
+    }
+
+    const QStringList existingLines = leg ? leg->text().split(QLatin1Char('\n')) : QStringList();
+    int rowCount = 0;
+    const int maxRows = 24;
+
+    for (int ci = 0; ci < g->curves() && rowCount < maxRows; ++ci) {
+        QwtPlotCurve *cv = g->curve(ci);
+        if (!cv || cv->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
+            || g->curveType(ci) == Graph::ErrorBars
+            || !cv->testItemAttribute(QwtPlotItem::Legend)) {
+            continue;
+        }
+
+        const int num = ci + 1;
+        const QRegularExpression rxEntry(
+                QStringLiteral("^\\\\(?:c\\{%1\\}|l\\(%1\\))\\s?(.*)$").arg(num));
+        const QString autoMacro = QStringLiteral("%(%1)").arg(num);
+
+        QString autoLbl = g->resolvedAutoCurveLabel(ci).trimmed();
+        if (autoLbl.isEmpty())
+            autoLbl = cv->title().text().trimmed();
+
+        QString currentLbl = autoLbl;
+        for (const QString &ln : existingLines) {
+            const QRegularExpressionMatch m = rxEntry.match(ln.trimmed());
+            if (m.hasMatch()) {
+                const QString tail = m.captured(1);
+                if (!tail.isEmpty() && tail.trimmed() != autoMacro)
+                    currentLbl = tail;
+                break;
+            }
+        }
+
+        QWidget *rowW = new QWidget(d_leg_entries_wrap);
+        QHBoxLayout *rowL = new QHBoxLayout(rowW);
+        rowL->setContentsMargins(0, 0, 0, 0);
+        rowL->setSpacing(4);
+
+        QLabel *swLbl = new QLabel(rowW);
+        swLbl->setPixmap(buildCurveSwatchIcon(g, ci).pixmap(22, 14));
+        swLbl->setFixedSize(24, 16);
+
+        QLineEdit *edit = new QLineEdit(rowW);
+        syncLineEditClean(edit, currentLbl);
+        wirePendingEditCue(edit);
+
+        QToolButton *resetBtn = new QToolButton(rowW);
+        resetBtn->setIcon(IconLoader::duotoneIcon(QStringLiteral("undo"), 12));
+        resetBtn->setFixedSize(22, 22);
+        resetBtn->setAutoRaise(true);
+        resetBtn->setCursor(Qt::PointingHandCursor);
+        resetBtn->setToolTip(tr("Reset to automatic curve name"));
+
+        const QPointer<Graph> gp(g);
+        auto commitCurveLabel = [this, gp, ci](const QString &newLbl) {
+            if (d_syncing_props || !gp || !d_target_ml)
+                return;
+            if (!gp->hasLegend())
+                gp->newLegend();
+            Legend *curLeg = gp->legend();
+            if (!curLeg)
+                return;
+
+            const int curveNum = ci + 1;
+            const QRegularExpression rxLine(
+                    QStringLiteral("^\\\\(?:c\\{%1\\}|l\\(%1\\))\\s?(.*)$").arg(curveNum));
+            QStringList lines = curLeg->text().split(QLatin1Char('\n'));
+            while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
+                lines.removeLast();
+
+            const QString newLine = QStringLiteral("\\c{%1}%2").arg(curveNum).arg(newLbl);
+            bool replaced = false;
+            for (int li = 0; li < lines.size(); ++li) {
+                if (rxLine.match(lines[li].trimmed()).hasMatch()) {
+                    lines[li] = newLine;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+                lines.append(newLine);
+
+            const QString updated = lines.join(QStringLiteral("\n"));
+            if (curLeg->text() == updated)
+                return;
+
+            const QString before = d_target_ml->captureUndoSnapshot();
+            curLeg->setText(updated);
+            gp->replot();
+            emit gp->modifiedGraph();
+            d_target_ml->pushUndoSnapshot(tr("Edit Legend Label"), before, kMergeLegendHeader);
+        };
+
+        connect(edit, &QLineEdit::editingFinished, this, [edit, commitCurveLabel]() {
+            const QString trimmed = edit->text().trimmed();
+            const bool isDiff = (trimmed != edit->property("_syncedText").toString());
+            if (!edit->isModified() && !isDiff) {
+                setLineEditPendingCue(edit, false);
+                return;
+            }
+            edit->setProperty("_syncedText", trimmed);
+            edit->setModified(false);
+            setLineEditPendingCue(edit, false);
+            if (!isDiff)
+                return;
+            commitCurveLabel(edit->text());
+        });
+
+        connect(resetBtn, &QToolButton::clicked, this, [gp, ci, edit, commitCurveLabel]() {
+            if (!gp || ci < 0 || ci >= gp->curves())
+                return;
+            QwtPlotCurve *c = gp->curve(ci);
+            QString resetLbl = gp->resolvedAutoCurveLabel(ci).trimmed();
+            if (resetLbl.isEmpty() && c)
+                resetLbl = c->title().text().trimmed();
+            syncLineEditClean(edit, resetLbl);
+            commitCurveLabel(resetLbl);
+        });
+
+        rowL->addWidget(swLbl, 0);
+        rowL->addWidget(edit, 1);
+        rowL->addWidget(resetBtn, 0);
+        d_leg_entries_layout->addWidget(rowW);
+        ++rowCount;
+    }
+
+    d_leg_entries_wrap->setVisible(rowCount > 0);
+}
+
+void GraphInspectorDock::applyArrowControlsFromUi(const QString &undoLabel, int mergeId)
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g)
+        return;
+    const auto sel = g->currentSelection();
+    if (sel.kind != Graph::GraphSelection::ArrowAnnotation)
+        return;
+    ArrowMarker *am = g->arrow(sel.primaryId);
+    if (!am)
+        return;
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    if (d_spin_arrow_width)
+        am->setWidthF(d_spin_arrow_width->value());
+    if (d_combo_arrow_style && d_combo_arrow_style->currentIndex() >= 0)
+        am->setStyle(static_cast<Qt::PenStyle>(d_combo_arrow_style->currentData().toInt()));
+    if (d_chk_arrow_start)
+        am->drawStartArrow(d_chk_arrow_start->isChecked());
+    if (d_chk_arrow_end)
+        am->drawEndArrow(d_chk_arrow_end->isChecked());
+    if (d_spin_arrow_head_len)
+        am->setHeadLength(d_spin_arrow_head_len->value());
+    if (d_spin_arrow_head_angle)
+        am->setHeadAngle(d_spin_arrow_head_angle->value());
+    if (d_chk_arrow_filled)
+        am->fillArrowHead(d_chk_arrow_filled->isChecked());
+
+    const bool anyHead = am->hasStartArrow() || am->hasEndArrow();
+    if (d_spin_arrow_head_len)
+        d_spin_arrow_head_len->setEnabled(anyHead);
+    if (d_spin_arrow_head_angle)
+        d_spin_arrow_head_angle->setEnabled(anyHead);
+    if (d_chk_arrow_filled)
+        d_chk_arrow_filled->setEnabled(anyHead);
+
+    g->replot();
+    emit g->modifiedGraph();
+    d_target_ml->pushUndoSnapshot(undoLabel, before, mergeId);
+}
+
+void GraphInspectorDock::applyImageGeometryFromUi()
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g)
+        return;
+    const auto sel = g->currentSelection();
+    if (sel.kind != Graph::GraphSelection::ImageAnnotation)
+        return;
+    ImageMarker *im = g->imageMarker(sel.primaryId);
+    if (!im || !im->plot() || !d_spin_img_x || !d_spin_img_y || !d_spin_img_w || !d_spin_img_h)
+        return;
+
+    const int nx = d_spin_img_x->value();
+    const int ny = d_spin_img_y->value();
+    const int nw = qMax(4, d_spin_img_w->value());
+    const int nh = qMax(4, d_spin_img_h->value());
+    const QRect cur = im->rect();
+    if (cur.x() == nx && cur.y() == ny && cur.width() == nw && cur.height() == nh)
+        return;
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    im->setRect(nx, ny, nw, nh);
+    g->replot();
+    emit g->modifiedGraph();
+    d_target_ml->pushUndoSnapshot(tr("Change Image Geometry"), before, kMergeImageGeom);
+}
+
+void GraphInspectorDock::applyPlotTitleFromUi(const QString &undoLabel, int mergeId)
+{
+    Graph *g = activeLayer();
+    if (d_syncing_props || !d_target_ml || !g || !g->plotWidget())
+        return;
+
+    const QwtText curTitle = g->plotWidget()->title();
+    const QString nextTxt = d_edit_plot_title ? d_edit_plot_title->text() : curTitle.text();
+    QFont nextFont = curTitle.font();
+    if (nextFont.family().trimmed().isEmpty())
+        nextFont.setFamily(QStringLiteral("Arial"));
+    if (d_spin_plot_title_pt)
+        nextFont.setPointSizeF(d_spin_plot_title_pt->value());
+    if (d_chk_plot_title_bold)
+        nextFont.setBold(d_chk_plot_title_bold->isChecked());
+
+    if (d_edit_plot_title) {
+        d_edit_plot_title->setProperty("_syncedText", nextTxt.trimmed());
+        d_edit_plot_title->setModified(false);
+        setLineEditPendingCue(d_edit_plot_title, false);
+    }
+
+    if (curTitle.text() == nextTxt && curTitle.font() == nextFont)
+        return;
+
+    const QString before = d_target_ml->captureUndoSnapshot();
+    g->setTitle(nextTxt);
+    g->setTitleFont(nextFont);
+    g->replot();
+    emit g->modifiedGraph();
+    d_target_ml->pushUndoSnapshot(undoLabel, before, mergeId);
     refreshObjectTree();
 }
 
@@ -6635,17 +8535,142 @@ void GraphInspectorDock::syncLegendControls()
 
     d_syncing_props = true;
 
-    const auto selKind = g->currentSelection().kind;
-    Legend *leg = nullptr;
-    if (selKind == Graph::GraphSelection::TextAnnotation)
-        leg = g->textMarker(g->currentSelection().primaryId);
-    else if (selKind != Graph::GraphSelection::ArrowAnnotation
-             && selKind != Graph::GraphSelection::ImageAnnotation)
-        leg = g->legend();
+    const auto sel = g->currentSelection();
+    const auto selKind = sel.kind;
+    const bool isArrowAnn = (selKind == Graph::GraphSelection::ArrowAnnotation);
+    const bool isImageAnn = (selKind == Graph::GraphSelection::ImageAnnotation);
+    const bool isPlotTitle = (selKind == Graph::GraphSelection::PlotTitle);
+    const bool isTextAnn = (selKind == Graph::GraphSelection::TextAnnotation);
 
+    if (d_arrow_editor_wrap)
+        d_arrow_editor_wrap->setVisible(isArrowAnn);
+    if (d_image_editor_wrap)
+        d_image_editor_wrap->setVisible(isImageAnn);
+    if (d_plot_title_wrap)
+        d_plot_title_wrap->setVisible(isPlotTitle);
+    if (d_leg_text_wrap)
+        d_leg_text_wrap->setVisible(!isArrowAnn && !isImageAnn && !isPlotTitle);
+
+    // Keep Suite 63e invariant: d_edit_annot_text is ALWAYS hidden unless TextAnnotation is selected.
+    if (d_edit_annot_text)
+        d_edit_annot_text->setHidden(!isTextAnn);
+    if (d_edit_leg_header)
+        d_edit_leg_header->setHidden(isTextAnn && d_edit_annot_text);
+
+    // A3-5 / C2-3: Arrow / Line Annotation editor
+    if (isArrowAnn) {
+        d_lbl_legend_target->setText(tr("Arrow / Line Annotation"));
+        ArrowMarker *am = g->arrow(sel.primaryId);
+        const bool hasAm = (am != nullptr);
+        if (d_btn_arrow_color)
+            d_btn_arrow_color->setEnabled(hasAm);
+        if (d_spin_arrow_width)
+            d_spin_arrow_width->setEnabled(hasAm);
+        if (d_combo_arrow_style)
+            d_combo_arrow_style->setEnabled(hasAm);
+        if (d_chk_arrow_start)
+            d_chk_arrow_start->setEnabled(hasAm);
+        if (d_chk_arrow_end)
+            d_chk_arrow_end->setEnabled(hasAm);
+        if (am) {
+            QSignalBlocker bw(d_spin_arrow_width);
+            QSignalBlocker bs(d_combo_arrow_style);
+            QSignalBlocker bSt(d_chk_arrow_start);
+            QSignalBlocker bEn(d_chk_arrow_end);
+            QSignalBlocker bHl(d_spin_arrow_head_len);
+            QSignalBlocker bHa(d_spin_arrow_head_angle);
+            QSignalBlocker bFl(d_chk_arrow_filled);
+
+            updateColorSwatchButton(d_btn_arrow_color, am->color());
+            const double aw = am->widthF() > 0.0 ? am->widthF() : double(qMax(1, am->width()));
+            d_spin_arrow_width->setValue(qBound(0.5, aw, 20.0));
+            const int stIdx = d_combo_arrow_style->findData(int(am->style()));
+            d_combo_arrow_style->setCurrentIndex(stIdx >= 0 ? stIdx : 0);
+            d_chk_arrow_start->setChecked(am->hasStartArrow());
+            d_chk_arrow_end->setChecked(am->hasEndArrow());
+            d_spin_arrow_head_len->setValue(qBound(1, am->headLength(), 60));
+            d_spin_arrow_head_angle->setValue(qBound(5, am->headAngle(), 85));
+            d_chk_arrow_filled->setChecked(am->filledArrowHead());
+            const bool anyHead = am->hasStartArrow() || am->hasEndArrow();
+            d_spin_arrow_head_len->setEnabled(anyHead);
+            d_spin_arrow_head_angle->setEnabled(anyHead);
+            d_chk_arrow_filled->setEnabled(anyHead);
+        } else {
+            if (d_spin_arrow_head_len)
+                d_spin_arrow_head_len->setEnabled(false);
+            if (d_spin_arrow_head_angle)
+                d_spin_arrow_head_angle->setEnabled(false);
+            if (d_chk_arrow_filled)
+                d_chk_arrow_filled->setEnabled(false);
+        }
+        d_syncing_props = false;
+        return;
+    }
+
+    // A3-5 / C2-3: Image Annotation editor
+    if (isImageAnn) {
+        d_lbl_legend_target->setText(tr("Image Annotation"));
+        ImageMarker *im = g->imageMarker(sel.primaryId);
+        const bool hasIm = (im != nullptr);
+        if (d_spin_img_x)
+            d_spin_img_x->setEnabled(hasIm);
+        if (d_spin_img_y)
+            d_spin_img_y->setEnabled(hasIm);
+        if (d_spin_img_w)
+            d_spin_img_w->setEnabled(hasIm);
+        if (d_spin_img_h)
+            d_spin_img_h->setEnabled(hasIm);
+        if (d_btn_img_replace)
+            d_btn_img_replace->setEnabled(hasIm);
+        if (im) {
+            const QString base = QFileInfo(im->fileName()).fileName();
+            if (d_lbl_img_filename) {
+                d_lbl_img_filename->setText(base.isEmpty() ? tr("File: (none)")
+                                                           : tr("File: %1").arg(base));
+                d_lbl_img_filename->setToolTip(im->fileName());
+            }
+            const QRect r = im->plot() ? im->rect() : QRect();
+            QSignalBlocker bx(d_spin_img_x);
+            QSignalBlocker by(d_spin_img_y);
+            QSignalBlocker bw(d_spin_img_w);
+            QSignalBlocker bh(d_spin_img_h);
+            d_spin_img_x->setValue(r.x());
+            d_spin_img_y->setValue(r.y());
+            d_spin_img_w->setValue(qMax(4, r.width()));
+            d_spin_img_h->setValue(qMax(4, r.height()));
+        } else if (d_lbl_img_filename) {
+            d_lbl_img_filename->setText(tr("File: (none)"));
+            d_lbl_img_filename->setToolTip(QString());
+        }
+        d_syncing_props = false;
+        return;
+    }
+
+    // A3-5: Plot Title editor
+    if (isPlotTitle) {
+        d_lbl_legend_target->setText(tr("Plot Title"));
+        if (g->plotWidget()) {
+            const QwtText t = g->plotWidget()->title();
+            QSignalBlocker bt(d_edit_plot_title);
+            QSignalBlocker bp(d_spin_plot_title_pt);
+            QSignalBlocker bb(d_chk_plot_title_bold);
+            syncLineEditClean(d_edit_plot_title, t.text());
+            const QFont tf = t.font();
+            d_spin_plot_title_pt->setValue(
+                    qBound(PlotStyleLimits::kFontSizeMin,
+                           tf.pointSizeF() > 0.0 ? tf.pointSizeF() : 16.0,
+                           PlotStyleLimits::kFontSizeMax));
+            d_chk_plot_title_bold->setChecked(tf.bold());
+            updateColorSwatchButton(d_btn_plot_title_color,
+                                    t.color().isValid() ? t.color() : QColor(Qt::black));
+        }
+        d_syncing_props = false;
+        return;
+    }
+
+    Legend *leg = isTextAnn ? g->textMarker(sel.primaryId) : g->legend();
     const bool isPrimaryLegend = (g && leg && leg == g->legend())
             || (g && !leg && selKind == Graph::GraphSelection::LegendBox);
-    const bool isTextAnn = (selKind == Graph::GraphSelection::TextAnnotation);
     const bool canEditMarker = isPrimaryLegend || (isTextAnn && leg != nullptr);
 
     d_lbl_legend_target->setText(isPrimaryLegend ? tr("Graph Legend") : tr("Text Annotation"));
@@ -6671,14 +8696,10 @@ void GraphInspectorDock::syncLegendControls()
         d_spin_leg_cols->setEnabled(isPrimaryLegend);
     if (d_combo_leg_frame)
         d_combo_leg_frame->setEnabled(canEditMarker);
-    if (d_edit_leg_header) {
+    if (d_edit_leg_header)
         d_edit_leg_header->setEnabled(canEditMarker);
-        d_edit_leg_header->setHidden(isTextAnn && d_edit_annot_text);
-    }
-    if (d_edit_annot_text) {
+    if (d_edit_annot_text)
         d_edit_annot_text->setEnabled(canEditMarker);
-        d_edit_annot_text->setHidden(!isTextAnn);
-    }
     if (d_leg_sym_bar)
         d_leg_sym_bar->setEnabled(canEditMarker);
     if (d_spin_leg_font_pt)
@@ -6700,8 +8721,7 @@ void GraphInspectorDock::syncLegendControls()
 
         if (!isPrimaryLegend) {
             const QStringList lines = leg->text().split('\n');
-            d_edit_leg_header->setText(lines.isEmpty() ? QString() : lines.first());
-            d_edit_leg_header->setModified(false);
+            syncLineEditClean(d_edit_leg_header, lines.isEmpty() ? QString() : lines.first());
             // Refill only when the text differs, so the cursor stays put while typing.
             if (d_edit_annot_text && d_edit_annot_text->toPlainText() != leg->text()) {
                 QSignalBlocker bAnn(d_edit_annot_text);
@@ -6711,11 +8731,10 @@ void GraphInspectorDock::syncLegendControls()
             const QStringList lines = leg->text().split('\n');
             if (!lines.isEmpty() && !lines.first().trimmed().isEmpty()
                 && !isLegendEntryLine(lines.first())) {
-                d_edit_leg_header->setText(lines.first().trimmed());
+                syncLineEditClean(d_edit_leg_header, lines.first().trimmed());
             } else {
-                d_edit_leg_header->clear();
+                syncLineEditClean(d_edit_leg_header, QString());
             }
-            d_edit_leg_header->setModified(false);
             d_spin_leg_cols->setValue(qBound(1, leg->numColumns(), 4));
         }
 
@@ -6723,23 +8742,45 @@ void GraphInspectorDock::syncLegendControls()
         d_spin_leg_font_pt->setValue(lf.pointSizeF() > 0.0 ? lf.pointSizeF() : 12.0);
     } else {
         QSignalBlocker b(d_edit_leg_header);
-        d_edit_leg_header->clear();
-        d_edit_leg_header->setModified(false);
+        syncLineEditClean(d_edit_leg_header, QString());
         if (d_edit_annot_text) {
             QSignalBlocker bAnn(d_edit_annot_text);
             d_edit_annot_text->clear();
         }
     }
 
+    if (isPrimaryLegend)
+        rebuildLegendCurveEntryRows(g, leg);
+    else if (d_leg_entries_wrap)
+        d_leg_entries_wrap->hide();
+
     d_syncing_props = false;
 }
 
-void GraphInspectorDock::applyAxisScaleFromUi(int mergeId)
+void GraphInspectorDock::applyAxisScaleFromUi(int mergeId, bool fromRangeEdits)
 {
     Graph *g = activeLayer();
     const QVector<Graph *> targets = targetLayersForScope();
     if (d_syncing_props || !d_target_ml || !g || !g->plotWidget() || targets.isEmpty())
         return;
+
+    // E5-6: ignore no-op focus-out on Min/Max/Step so simply clicking or tabbing through the
+    // line edits never disables AutoScale, locks the axis, or pushes a phantom Undo entry.
+    if (fromRangeEdits && d_edit_axis_min && d_edit_axis_max && d_edit_axis_step) {
+        const bool anyDiff = (d_edit_axis_min->text().trimmed()
+                              != d_edit_axis_min->property("_syncedText").toString())
+                || (d_edit_axis_max->text().trimmed()
+                    != d_edit_axis_max->property("_syncedText").toString())
+                || (d_edit_axis_step->text().trimmed()
+                    != d_edit_axis_step->property("_syncedText").toString());
+        if (!anyDiff) {
+            for (QLineEdit *le : { d_edit_axis_min, d_edit_axis_max, d_edit_axis_step }) {
+                le->setModified(false);
+                setLineEditPendingCue(le, false);
+            }
+            return;
+        }
+    }
 
     bool okMin = false, okMax = false, okStep = false;
     double lo = d_edit_axis_min->text().trimmed().toDouble(&okMin);
@@ -6763,6 +8804,19 @@ void GraphInspectorDock::applyAxisScaleFromUi(int mergeId)
         hi = lo + 1.0;
 
     Plot *pw = g->plotWidget();
+    if (fromRangeEdits && targets.size() == 1) {
+        const QwtScaleDiv *scDiv = pw->axisScaleDiv(d_active_axis);
+        const double curLo = scDiv ? qMin(scDiv->lowerBound(), scDiv->upperBound()) : 0.0;
+        const double curHi = scDiv ? qMax(scDiv->lowerBound(), scDiv->upperBound()) : 1.0;
+        const double curStp = g->axisStep(d_active_axis);
+        const double eps = qMax(1e-12, qAbs(curHi - curLo) * 1e-9);
+        if (qAbs(lo - curLo) <= eps && qAbs(hi - curHi) <= eps
+            && qAbs(stp - qMax(0.0, curStp)) <= eps) {
+            syncAxisControls();
+            return;
+        }
+    }
+
     const QwtScaleEngine *eng = pw->axisScaleEngine(d_active_axis);
     const bool inv = d_chk_axis_reverse
             ? d_chk_axis_reverse->isChecked()
@@ -6785,7 +8839,7 @@ void GraphInspectorDock::applyAxisScaleFromUi(int mergeId)
     syncAxisControls();
 }
 
-void GraphInspectorDock::applyAxisBreakFromUi()
+void GraphInspectorDock::applyAxisBreakFromUi(bool fromBreakEdits)
 {
     Graph *g = activeLayer();
     const QVector<Graph *> targets = targetLayersForScope();
@@ -6793,8 +8847,22 @@ void GraphInspectorDock::applyAxisBreakFromUi()
         return;
 
     const bool enabled = d_chk_axis_break->isChecked();
-    const QString before = d_target_ml->captureUndoSnapshot();
+    if (fromBreakEdits && d_edit_break_from && d_edit_break_to) {
+        const bool anyDiff = (d_edit_break_from->text().trimmed()
+                              != d_edit_break_from->property("_syncedText").toString())
+                || (d_edit_break_to->text().trimmed()
+                    != d_edit_break_to->property("_syncedText").toString());
+        if (!anyDiff) {
+            d_edit_break_from->setModified(false);
+            d_edit_break_to->setModified(false);
+            setLineEditPendingCue(d_edit_break_from, false);
+            setLineEditPendingCue(d_edit_break_to, false);
+            return;
+        }
+    }
+
     if (!enabled) {
+        const QString before = d_target_ml->captureUndoSnapshot();
         for (Graph *lg : targets) {
             if (lg)
                 lg->clearAxisBreak(d_active_axis);
@@ -6810,6 +8878,15 @@ void GraphInspectorDock::applyAxisBreakFromUi()
     if (!okFrom || !okTo || !std::isfinite(bf) || !std::isfinite(bt) || qAbs(bt - bf) < 1e-12)
         return;
 
+    if (fromBreakEdits && targets.size() == 1) {
+        const Graph::AxisBreakSpec cur = g->axisBreak(d_active_axis);
+        if (cur.enabled && qAbs(cur.breakFrom - bf) <= 1e-12 && qAbs(cur.breakTo - bt) <= 1e-12) {
+            syncAxisControls();
+            return;
+        }
+    }
+
+    const QString before = d_target_ml->captureUndoSnapshot();
     for (Graph *lg : targets) {
         if (!lg)
             continue;
@@ -6881,16 +8958,37 @@ void GraphInspectorDock::applyTickFormatFromUi(int mergeId)
     d_target_ml->pushUndoSnapshot(tr("Change Tick Format"), before, mergeId);
 }
 
-void GraphInspectorDock::applyTickDivideFromUi()
+void GraphInspectorDock::applyTickDivideFromUi(bool fromLineEdit)
 {
     const QVector<Graph *> targets = targetLayersForScope();
     if (d_syncing_props || !d_target_ml || targets.isEmpty() || !d_combo_tick_divide)
         return;
 
+    QLineEdit *divEdit = d_combo_tick_divide->lineEdit();
+    if (fromLineEdit && divEdit) {
+        const bool isDiff =
+                (divEdit->text().trimmed() != divEdit->property("_syncedText").toString());
+        if (!isDiff) {
+            divEdit->setModified(false);
+            setLineEditPendingCue(divEdit, false);
+            return;
+        }
+    }
+
     bool ok = false;
     const double factor = d_combo_tick_divide->currentText().trimmed().toDouble(&ok);
     if (!ok || !std::isfinite(factor) || std::fabs(factor) <= 1e-300)
         return;
+
+    if (fromLineEdit && targets.size() == 1 && targets.first()
+        && std::fabs(targets.first()->tickDivideFactor(d_active_axis) - factor) <= 1e-12) {
+        if (divEdit) {
+            divEdit->setProperty("_syncedText", divEdit->text().trimmed());
+            divEdit->setModified(false);
+            setLineEditPendingCue(divEdit, false);
+        }
+        return;
+    }
 
     const QString before = d_target_ml->captureUndoSnapshot();
     for (Graph *lg : targets) {
@@ -6900,6 +8998,11 @@ void GraphInspectorDock::applyTickDivideFromUi()
                                   lg->tickSuffix(d_active_axis));
         lg->replot();
         emit lg->modifiedGraph();
+    }
+    if (divEdit) {
+        divEdit->setProperty("_syncedText", divEdit->text().trimmed());
+        divEdit->setModified(false);
+        setLineEditPendingCue(divEdit, false);
     }
     d_target_ml->pushUndoSnapshot(tr("Change Tick Divide Factor"), before);
 }
@@ -7025,6 +9128,60 @@ void GraphInspectorDock::applyCategoryColumnFromUi()
     d_target_ml->pushUndoSnapshot(tr("Change Category Labels"), before);
 }
 
+void GraphInspectorDock::updateAxisTitlePreview(const QString &raw)
+{
+    if (!d_lbl_axis_title_preview)
+        return;
+    if (raw.trimmed().isEmpty()) {
+        d_lbl_axis_title_preview->setText(tr("Preview: (empty)"));
+    } else {
+        d_lbl_axis_title_preview->setText(
+                tr("Preview: %1").arg(renderSafeScientificPreviewHtml(raw)));
+    }
+}
+
+void GraphInspectorDock::flushPendingAxisTitleEdit()
+{
+    if (d_axis_title_timer)
+        d_axis_title_timer->stop();
+    Graph *g = d_axis_title_edit_layer.data();
+    const int ax = d_axis_title_edit_axis;
+    d_axis_title_edit_layer = nullptr;
+    d_axis_title_edit_axis = -1;
+    if (!g || ax < 0 || ax >= 4 || !d_edit_axis_title)
+        return;
+
+    MultiLayer *ml = g->multiLayerParent();
+    QVector<Graph *> targets;
+    if (ml && ml == d_target_ml.data() && d_scope_all_panels)
+        targets = targetLayersForScope();
+    if (targets.isEmpty())
+        targets.append(g);
+
+    const QString newTitle = d_edit_axis_title->text();
+    bool anyDiff = false;
+    for (Graph *lg : targets) {
+        if (lg && lg->axisTitle(ax) != newTitle) {
+            anyDiff = true;
+            break;
+        }
+    }
+    d_edit_axis_title->setModified(false);
+    if (!anyDiff)
+        return;
+
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
+    for (Graph *lg : targets) {
+        if (!lg)
+            continue;
+        lg->setAxisTitle(ax, newTitle);
+        lg->replot();
+        emit lg->modifiedGraph();
+    }
+    if (ml && !before.isEmpty())
+        ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
+}
+
 void GraphInspectorDock::applyAxisTitleMarkup(const QString &openTag, const QString &closeTag)
 {
     if (!d_edit_axis_title)
@@ -7041,6 +9198,8 @@ void GraphInspectorDock::applyAxisTitleMarkup(const QString &openTag, const QStr
         d_edit_axis_title->setText(txt);
         d_edit_axis_title->setCursorPosition(pos + openTag.length());
     }
+    d_edit_axis_title->setModified(true);
+    updateAxisTitlePreview(d_edit_axis_title->text());
     emit d_edit_axis_title->editingFinished();
 }
 
@@ -7053,6 +9212,8 @@ void GraphInspectorDock::insertAxisTitleToken(const QString &token)
     txt.insert(pos, token);
     d_edit_axis_title->setText(txt);
     d_edit_axis_title->setCursorPosition(pos + token.length());
+    d_edit_axis_title->setModified(true);
+    updateAxisTitlePreview(d_edit_axis_title->text());
     emit d_edit_axis_title->editingFinished();
 }
 
@@ -7148,6 +9309,8 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
             } else {
                 d_edit_axis_title->setText(tmpl);
             }
+            d_edit_axis_title->setModified(true);
+            updateAxisTitlePreview(d_edit_axis_title->text());
             emit d_edit_axis_title->editingFinished();
         });
     }
@@ -7682,6 +9845,13 @@ void GraphInspectorDock::applyTheme()
                           "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 10pt; padding: 5px 10px;"
                           "}"
                           "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
+                          "QLabel#InspectorAxisTitlePreview {"
+                          "  font-size: 9.5pt; color: #334155; background: #F1F5F9;"
+                          "  border: 1px solid %4; border-radius: 4px; padding: 3px 6px;"
+                          "}"
+                          "QLineEdit[pendingEdit=\"true\"] {"
+                          "  border: 1.5px solid #D97706; background-color: #FFFBEB;"
+                          "}"
                           "QPushButton { font-size: 10pt; padding: 4px 6px; }"
                           "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 10pt; }")
                           .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
@@ -7762,7 +9932,8 @@ void GraphInspectorDock::retranslateUi()
         d_qs_step1_lbl->setText(
                 tr("Paste from Excel into the worksheet (Ctrl+V) or drop an Excel (.xlsx) / CSV file"));
     if (d_qs_step2_lbl)
-        d_qs_step2_lbl->setText(tr("Click 'Line', 'Line+Sym', or 'Scatter' on the top bar"));
+        d_qs_step2_lbl->setText(
+                tr("Click 'Line+Sym' on the Worksheet bar, or pick a graph type from the 'Plot' tab"));
     if (d_qs_step3_lbl)
         d_qs_step3_lbl->setText(tr("Drag graph frame to resize; click axes or legend to edit"));
     if (d_btn_qs_import_csv) {
@@ -7777,6 +9948,11 @@ void GraphInspectorDock::retranslateUi()
     }
     if (d_btn_qs_sample_gallery)
         d_btn_qs_sample_gallery->setText(tr("Sample Gallery / Plot"));
+    if (d_btn_qs_help) {
+        d_btn_qs_help->setText(tr("Guide (F1)"));
+        d_btn_qs_help->setToolTip(tr("Open the ToriGraph Quick Guide (F1)"));
+    }
+    updateQuickStartPlotButtonState();
 
     // H7: the tab buttons carry the same explanation as the collapsed-rail buttons.
     if (d_tab_btn_page) {
@@ -7855,6 +10031,8 @@ void GraphInspectorDock::retranslateUi()
 
     if (d_sec_page_size_lbl)
         d_sec_page_size_lbl->setText(tr("Page Size & View"));
+    if (d_lbl_page_unit)
+        d_lbl_page_unit->setText(tr("Unit:"));
     if (d_lbl_page_w)
         d_lbl_page_w->setText(tr("Width:"));
     if (d_lbl_page_h)
@@ -7865,6 +10043,30 @@ void GraphInspectorDock::retranslateUi()
         d_chk_page_view->setText(tr("Print Page View"));
     if (d_lbl_page_zoom)
         d_lbl_page_zoom->setText(tr("Page Zoom:"));
+    if (d_btn_page_zoom_fit) {
+        d_btn_page_zoom_fit->setText(tr("Fit"));
+        d_btn_page_zoom_fit->setToolTip(tr("Fit graph page to the current window viewport"));
+    }
+
+    const QString pendingEditTip =
+            tr("Enter values and press Enter to apply (amber highlight = unsaved edit)");
+    if (d_sec_inset_lbl)
+        d_sec_inset_lbl->setText(tr("Inset Zoom Region"));
+    if (d_lbl_inset_xmin)
+        d_lbl_inset_xmin->setText(tr("X Min:"));
+    if (d_lbl_inset_xmax)
+        d_lbl_inset_xmax->setText(tr("X Max:"));
+    if (d_lbl_inset_ymin)
+        d_lbl_inset_ymin->setText(tr("Y Min:"));
+    if (d_lbl_inset_ymax)
+        d_lbl_inset_ymax->setText(tr("Y Max:"));
+    for (QLineEdit *le :
+         { d_edit_inset_xmin, d_edit_inset_xmax, d_edit_inset_ymin, d_edit_inset_ymax }) {
+        if (le)
+            le->setToolTip(pendingEditTip);
+    }
+    if (d_chk_inset_connectors)
+        d_chk_inset_connectors->setText(tr("Show Connector Lines"));
 
     if (d_sec_layer_frame_lbl)
         d_sec_layer_frame_lbl->setText(tr("Frame, Linked Axes & Panels"));
@@ -7886,6 +10088,11 @@ void GraphInspectorDock::retranslateUi()
     if (d_btn_copy_ole) {
         d_btn_copy_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
         d_btn_copy_ole->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
+    }
+    if (d_btn_send_pptx) {
+        ToriGraphPptx::registerTranslations();
+        d_btn_send_pptx->setText(ToriGraphPptx::sendToPowerPointLabel());
+        d_btn_send_pptx->setToolTip(ToriGraphPptx::sendToPowerPointToolTip());
     }
     if (d_btn_export_img_pdf)
         d_btn_export_img_pdf->setText(tr("Export Image / PDF"));
@@ -7912,6 +10119,11 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_axis_max->setText(tr("Max:"));
     if (d_lbl_axis_step)
         d_lbl_axis_step->setText(tr("Step (0=Auto):"));
+    for (QLineEdit *le :
+         { d_edit_axis_min, d_edit_axis_max, d_edit_axis_step, d_edit_break_from, d_edit_break_to }) {
+        if (le)
+            le->setToolTip(pendingEditTip);
+    }
     if (d_btn_axis_autoscale)
         d_btn_axis_autoscale->setText(tr("Auto Range"));
     if (d_lbl_axis_scale_type)
@@ -8010,12 +10222,13 @@ void GraphInspectorDock::retranslateUi()
     }
     if (d_edit_axis_title)
         d_edit_axis_title->setPlaceholderText(tr("Enter axis label..."));
+    updateAxisTitlePreview(d_edit_axis_title ? d_edit_axis_title->text() : QString());
     if (d_btn_fmt_italic)
-        d_btn_fmt_italic->setToolTip(tr("Italic (<i>...</i>)"));
+        d_btn_fmt_italic->setToolTip(tr("Italic (slanted)"));
     if (d_btn_fmt_sub)
-        d_btn_fmt_sub->setToolTip(tr("Subscript (<sub>...</sub>)"));
+        d_btn_fmt_sub->setToolTip(tr("Subscript (X\xE2\x82\x82)"));
     if (d_btn_fmt_sup)
-        d_btn_fmt_sup->setToolTip(tr("Superscript (<sup>...</sup>)"));
+        d_btn_fmt_sup->setToolTip(tr("Superscript (X\xC2\xB2)"));
     if (d_btn_fmt_greek) {
         d_btn_fmt_greek->setText(tr("Greek"));
         d_btn_fmt_greek->setToolTip(tr("Insert Greek Symbol"));
@@ -8092,12 +10305,13 @@ void GraphInspectorDock::retranslateUi()
     if (d_lbl_sym_size)
         d_lbl_sym_size->setText(tr("Symbol Size:"));
     if (d_spin_sym_size)
-        d_spin_sym_size->setSuffix(QStringLiteral(" px"));
+        d_spin_sym_size->setSuffix(QStringLiteral(" pt"));
     if (d_lbl_sym_skip)
         d_lbl_sym_skip->setText(tr("Symbol Skip:"));
     if (d_spin_sym_skip) {
         d_spin_sym_skip->setSpecialValueText(tr("Auto"));
-        d_spin_sym_skip->setToolTip(tr("Every %1 pts (0 = Auto)").arg(QStringLiteral("N")));
+        d_spin_sym_skip->setToolTip(
+                tr("Skip symbols to avoid crowding on dense data (0 = Auto, 1 = All points, N = show 1 in N)"));
     }
     if (d_chk_sym_hollow)
         d_chk_sym_hollow->setText(tr("Hollow Symbol (White Fill)"));
@@ -8220,6 +10434,10 @@ void GraphInspectorDock::retranslateUi()
     }
     if (d_chk_spec_reverse)
         d_chk_spec_reverse->setText(tr("Reverse Colormap"));
+    if (d_chk_spec_log_scale)
+        d_chk_spec_log_scale->setText(tr("Log Color Scale"));
+    if (d_chk_spec_cell_blocks)
+        d_chk_spec_cell_blocks->setText(tr("Cell Blocks (No Smoothing)"));
     if (d_chk_spec_colorbar)
         d_chk_spec_colorbar->setText(tr("Show Colorbar"));
     if (d_lbl_spec_cb_title)
@@ -8311,6 +10529,72 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_leg_cols->setText(tr("Columns:"));
     if (d_lbl_leg_font_pt)
         d_lbl_leg_font_pt->setText(tr("Font Size:"));
+    if (d_sec_leg_entries_lbl)
+        d_sec_leg_entries_lbl->setText(tr("Curve Legend Labels"));
+
+    // Arrow / Line Annotation editor (A3-5, C2-3)
+    if (d_sec_arrow_lbl)
+        d_sec_arrow_lbl->setText(tr("Arrow Style"));
+    if (d_lbl_arrow_color)
+        d_lbl_arrow_color->setText(tr("Color:"));
+    if (d_lbl_arrow_width)
+        d_lbl_arrow_width->setText(tr("Width:"));
+    if (d_lbl_arrow_style)
+        d_lbl_arrow_style->setText(tr("Line Style:"));
+    if (d_combo_arrow_style && d_combo_arrow_style->count() >= 4) {
+        d_combo_arrow_style->setItemText(0, tr("Solid Line"));
+        d_combo_arrow_style->setItemText(1, tr("Dash"));
+        d_combo_arrow_style->setItemText(2, tr("Dot"));
+        d_combo_arrow_style->setItemText(3, tr("Dash-Dot"));
+    }
+    if (d_chk_arrow_start)
+        d_chk_arrow_start->setText(tr("Arrow at Start"));
+    if (d_chk_arrow_end)
+        d_chk_arrow_end->setText(tr("Arrow at End"));
+    if (d_lbl_arrow_head_len)
+        d_lbl_arrow_head_len->setText(tr("Head Length:"));
+    if (d_lbl_arrow_head_angle)
+        d_lbl_arrow_head_angle->setText(tr("Head Angle:"));
+    if (d_chk_arrow_filled)
+        d_chk_arrow_filled->setText(tr("Filled Head"));
+
+    // Image Annotation editor (A3-5, C2-3)
+    if (d_sec_img_lbl)
+        d_sec_img_lbl->setText(tr("Image Geometry"));
+    if (d_lbl_img_filename)
+        d_lbl_img_filename->setText(tr("File: (none)"));
+    if (!d_target_ml) {
+        if (d_header_target_lbl)
+            d_header_target_lbl->setText(tr("(No Active Graph)"));
+        if (d_lbl_active_curve_name)
+            d_lbl_active_curve_name->setText(tr("(No Curve Selected)"));
+        if (d_lbl_legend_target)
+            d_lbl_legend_target->setText(tr("Graph Legend"));
+    }
+    if (d_lbl_img_x)
+        d_lbl_img_x->setText(tr("X:"));
+    if (d_lbl_img_y)
+        d_lbl_img_y->setText(tr("Y:"));
+    if (d_lbl_img_w)
+        d_lbl_img_w->setText(tr("Width:"));
+    if (d_lbl_img_h)
+        d_lbl_img_h->setText(tr("Height:"));
+    if (d_btn_img_replace)
+        d_btn_img_replace->setText(tr("Replace Image..."));
+
+    // Plot Title editor (A3-5)
+    if (d_sec_plot_title_lbl)
+        d_sec_plot_title_lbl->setText(tr("Title Appearance"));
+    if (d_lbl_plot_title_text)
+        d_lbl_plot_title_text->setText(tr("Title Text:"));
+    if (d_edit_plot_title)
+        d_edit_plot_title->setPlaceholderText(tr("Enter plot title..."));
+    if (d_lbl_plot_title_pt)
+        d_lbl_plot_title_pt->setText(tr("Font Size:"));
+    if (d_chk_plot_title_bold)
+        d_chk_plot_title_bold->setText(tr("Bold"));
+    if (d_lbl_plot_title_color)
+        d_lbl_plot_title_color->setText(tr("Text Color:"));
 
     for (QToolButton *tb : findChildren<QToolButton *>()) {
         if (!tb)
@@ -8345,4 +10629,8 @@ void GraphInspectorDock::retranslateUi()
         sw->setProperty("autoSwatchTip", tip);
         sw->setAccessibleName(QCoreApplication::translate("GraphInspectorDock", "Color %1").arg(hex));
     }
+
+    // A5-1: retranslate Object Manager tree nodes and dynamic labels immediately on language switch.
+    refreshObjectTree();
+    syncInspectorFromSelection();
 }
