@@ -115,6 +115,7 @@ public:
     bool contains(ArrowMarker *m) const { return d_line_markers.contains(m); };
     //! Returns true if m is one of targets, false else.
     bool contains(ImageMarker *m) const { return d_image_markers.contains(m); };
+    bool isInKeyNudge() const { return d_in_key_nudge; }
 
 public slots:
     //! Add target to the list of items to be moved/resized together.
@@ -223,6 +224,7 @@ private:
     //! Difference between current and start position during operation.
     QPoint d_op_dp;
     bool d_drag_threshold_passed = false;
+    bool d_in_key_nudge = false;
     QString d_undo_before_snapshot;
     QPointer<QWidget> d_target_parent;
     QPointer<Graph> d_owning_graph;

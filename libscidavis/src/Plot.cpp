@@ -27,15 +27,20 @@
  *                                                                         *
  ***************************************************************************/
 #include "Plot.h"
+#include "CanvasInlineTextEditor.h"
 #include "Graph.h"
+#include "GraphMiniToolbar.h"
 #include "Grid.h"
 #include "Legend.h"
 #include "MultiLayer.h"
 #include "ScaleDraw.h"
+#include "ScalePicker.h"
+#include "SelectionMoveResizer.h"
 #include "Spectrogram.h"
 #include "PlotCurve.h"
 #include "QwtErrorPlotCurve.h"
 
+#include <qwt_double_interval.h>
 #include <qwt_plot.h>
 #include <qwt_painter.h>
 #include <qwt_plot_canvas.h>
@@ -59,6 +64,7 @@
 #include <QVariant>
 #include <QWheelEvent>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QKeyEvent>
 
 #include <cmath>
@@ -69,6 +75,77 @@ using namespace std;
 void setToriSuppressScaleBackboneInPrint(bool suppress);
 namespace {
 static double s_toriPrintDeviceScale = 1.0;
+
+class PlotAxisTitleOverlay : public QWidget
+{
+public:
+    explicit PlotAxisTitleOverlay(Plot *plot) : QWidget(plot), d_plot(plot)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setFocusPolicy(Qt::NoFocus);
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (!d_plot)
+            return;
+
+        QPainter painter(this);
+        const double zoom = qMax(0.05, d_plot->displayFontScale());
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            if (!d_plot->axisEnabled(a))
+                continue;
+            const QwtScaleWidget *sw = d_plot->axisWidget(a);
+            if (!sw || !sw->isVisible() || sw->title().isEmpty() || !sw->scaleDraw())
+                continue;
+            const QPointF shift = sw->property("_toriAxisTitleShift").toPointF();
+            if (std::hypot(shift.x(), shift.y()) <= 1e-4)
+                continue;
+
+            QRect r = sw->rect();
+            if (sw->scaleDraw()->orientation() == Qt::Horizontal) {
+                r.setLeft(r.left() + sw->startBorderDist());
+                r.setWidth(r.width() - sw->endBorderDist());
+            } else {
+                r.setTop(r.top() + sw->startBorderDist());
+                r.setHeight(r.height() - sw->endBorderDist());
+            }
+
+            int colorBarW = 0;
+            if (sw->isColorBarEnabled() && sw->colorBarInterval().isValid())
+                colorBarW = sw->colorBarWidth() + sw->spacing();
+            const int titleOffset = sw->margin() + sw->spacing() + colorBarW
+                    + sw->scaleDraw()->extent(QPen(Qt::black, sw->penWidth()), sw->font());
+
+            QRect tr = r;
+            switch (sw->alignment()) {
+            case QwtScaleDraw::LeftScale:
+                tr.setRight(r.right() - titleOffset);
+                break;
+            case QwtScaleDraw::RightScale:
+                tr.setLeft(r.left() + titleOffset);
+                break;
+            case QwtScaleDraw::BottomScale:
+                tr.setTop(r.top() + titleOffset);
+                break;
+            case QwtScaleDraw::TopScale:
+            default:
+                tr.setBottom(r.bottom() - titleOffset);
+                break;
+            }
+
+            tr.translate(sw->pos());
+            tr.translate(qRound(shift.x() * zoom), qRound(shift.y() * zoom));
+            sw->drawTitle(&painter, sw->alignment(), tr);
+        }
+    }
+
+private:
+    Plot *d_plot = nullptr;
+};
 } // namespace
 
 double Plot::printDeviceScale()
@@ -201,6 +278,11 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
     this->installEventFilter(this);
     if (parent)
         parent->installEventFilter(this);
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        if (QwtScaleWidget *sw = axisWidget(a))
+            sw->installEventFilter(this);
+    }
+    d_axis_title_overlay = new PlotAxisTitleOverlay(this);
 
     QColor background = QColor(Qt::white);
     background.setAlpha(255);
@@ -1069,33 +1151,42 @@ void Plot::updateLayout()
 
     QwtPlot::updateLayout();
 
-    // Support negative Stand-off (baseline distance < 0) and parallel shift for axis scales
+    const double zoom = qMax(0.05, d_display_font_scale);
+
+    // Support negative Stand-off (baseline distance < 0) and pure visual normal/parallel shifts for axis scales
+    bool anyShiftedAxisTitle = false;
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         QwtScaleWidget *sw = axisWidget(a);
         if (!sw || !axisEnabled(a))
             continue;
         const int neg = sw->property("_toriNegBaseline").toInt();
-        const int par = sw->property("_toriAxisParallelShift").toInt();
-        if (neg < 0 || par != 0) {
-            const int inShift = (neg < 0) ? -neg : 0;
+        const double normShift = sw->property("_toriAxisNormalShift").toDouble();
+        const double parShift = sw->property("_toriAxisParallelShift").toDouble();
+        const int outPx = qRound((((neg < 0) ? double(neg) : 0.0) + normShift) * zoom);
+        const int parPx = qRound(parShift * zoom);
+        if (outPx != 0 || parPx != 0) {
             QRect gRect = sw->geometry();
             if (a == QwtPlot::yLeft)
-                gRect.translate(inShift, par);
+                gRect.translate(-outPx, parPx);
             else if (a == QwtPlot::yRight)
-                gRect.translate(-inShift, par);
+                gRect.translate(outPx, parPx);
             else if (a == QwtPlot::xBottom)
-                gRect.translate(par, -inShift);
+                gRect.translate(parPx, outPx);
             else if (a == QwtPlot::xTop)
-                gRect.translate(par, inShift);
+                gRect.translate(parPx, -outPx);
             sw->setGeometry(gRect);
             sw->raise();
         }
+        const QPointF atShift = sw->property("_toriAxisTitleShift").toPointF();
+        if (!sw->title().isEmpty() && std::hypot(atShift.x(), atShift.y()) > 1e-4)
+            anyShiftedAxisTitle = true;
+        sw->update();
     }
 
-    const QPoint titleShift = property("_toriPlotTitleShift").toPoint();
-    if (!titleShift.isNull() && titleLabel()) {
+    const QPointF titleShift = property("_toriPlotTitleShift").toPointF();
+    if (std::hypot(titleShift.x(), titleShift.y()) > 1e-4 && titleLabel()) {
         QRect tr = titleLabel()->geometry();
-        tr.translate(titleShift);
+        tr.translate(qRound(titleShift.x() * zoom), qRound(titleShift.y() * zoom));
         titleLabel()->setGeometry(tr);
         titleLabel()->raise();
     }
@@ -1105,6 +1196,17 @@ void Plot::updateLayout()
     if (axisWidget(QwtPlot::xTop))
         axisWidget(QwtPlot::xTop)->clearMask();
 
+    if (d_axis_title_overlay) {
+        if (anyShiftedAxisTitle) {
+            d_axis_title_overlay->setGeometry(rect());
+            d_axis_title_overlay->show();
+            d_axis_title_overlay->raise();
+            d_axis_title_overlay->update();
+        } else {
+            d_axis_title_overlay->hide();
+        }
+    }
+
     if (g)
         g->updateSelectionOverlayGeometry();
 }
@@ -1112,36 +1214,119 @@ void Plot::updateLayout()
 void Plot::printTitle(QPainter *painter, const QRect &rect) const
 {
     QRect adjRect = rect;
-    const QPoint titleShift = property("_toriPlotTitleShift").toPoint();
-    if (!titleShift.isNull()) {
-        adjRect.translate(qRound(double(titleShift.x()) * s_toriPrintDeviceScale),
-                          qRound(double(titleShift.y()) * s_toriPrintDeviceScale));
-    }
+    const QPointF titleShift = property("_toriPlotTitleShift").toPointF();
+    if (std::hypot(titleShift.x(), titleShift.y()) > 1e-4)
+        adjRect.translate(qRound(titleShift.x()), qRound(titleShift.y()));
     QwtPlot::printTitle(painter, adjRect);
 }
 
 void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist, int baseDist,
                       const QRect &rect) const
 {
+    if (!axisEnabled(axisId))
+        return;
+
     QRect adjRect = rect;
     const QwtScaleWidget *sw = axisWidget(axisId);
     if (sw) {
         const int neg = sw->property("_toriNegBaseline").toInt();
-        const int par = sw->property("_toriAxisParallelShift").toInt();
-        if (neg < 0 || par != 0) {
-            const int inShift = (neg < 0) ? qRound(double(-neg) * s_toriPrintDeviceScale) : 0;
-            const int parShift = qRound(double(par) * s_toriPrintDeviceScale);
+        const double normShift = sw->property("_toriAxisNormalShift").toDouble();
+        const double parShift = sw->property("_toriAxisParallelShift").toDouble();
+        const int outPx = qRound(((neg < 0) ? double(neg) : 0.0) + normShift);
+        const int parPx = qRound(parShift);
+        if (outPx != 0 || parPx != 0) {
             if (axisId == QwtPlot::yLeft)
-                adjRect.translate(inShift, parShift);
+                adjRect.translate(-outPx, parPx);
             else if (axisId == QwtPlot::yRight)
-                adjRect.translate(-inShift, parShift);
+                adjRect.translate(outPx, parPx);
             else if (axisId == QwtPlot::xBottom)
-                adjRect.translate(parShift, -inShift);
+                adjRect.translate(parPx, outPx);
             else if (axisId == QwtPlot::xTop)
-                adjRect.translate(parShift, inShift);
+                adjRect.translate(parPx, -outPx);
         }
     }
-    QwtPlot::printScale(painter, axisId, startDist, endDist, baseDist, adjRect);
+
+    const QPointF titleShift = sw ? sw->property("_toriAxisTitleShift").toPointF() : QPointF();
+    if (!sw || std::hypot(titleShift.x(), titleShift.y()) <= 1e-4) {
+        QwtPlot::printScale(painter, axisId, startDist, endDist, baseDist, adjRect);
+        return;
+    }
+
+    if (sw->isColorBarEnabled() && sw->colorBarWidth() > 0) {
+        const QwtMetricsMap map = QwtPainter::metricsMap();
+
+        QRect r = map.layoutToScreen(adjRect);
+        r.setWidth(r.width() - 1);
+        r.setHeight(r.height() - 1);
+
+        sw->drawColorBar(painter, sw->colorBarRect(r));
+
+        const int off = sw->colorBarWidth() + sw->spacing();
+        if (sw->scaleDraw()->orientation() == Qt::Horizontal)
+            baseDist += map.screenToLayoutY(off);
+        else
+            baseDist += map.screenToLayoutX(off);
+    }
+
+    QwtScaleDraw::Alignment align;
+    int x = 0, y = 0, w = 0;
+
+    switch (axisId) {
+    case yLeft:
+        x = adjRect.right() - baseDist;
+        y = adjRect.y() + startDist;
+        w = adjRect.height() - startDist - endDist;
+        align = QwtScaleDraw::LeftScale;
+        break;
+    case yRight:
+        x = adjRect.left() + baseDist;
+        y = adjRect.y() + startDist;
+        w = adjRect.height() - startDist - endDist;
+        align = QwtScaleDraw::RightScale;
+        break;
+    case xTop:
+        x = adjRect.left() + startDist;
+        y = adjRect.bottom() - baseDist;
+        w = adjRect.width() - startDist - endDist;
+        align = QwtScaleDraw::TopScale;
+        break;
+    case xBottom:
+        x = adjRect.left() + startDist;
+        y = adjRect.top() + baseDist;
+        w = adjRect.width() - startDist - endDist;
+        align = QwtScaleDraw::BottomScale;
+        break;
+    default:
+        return;
+    }
+
+    sw->drawTitle(painter, align,
+                  adjRect.translated(qRound(titleShift.x()), qRound(titleShift.y())));
+
+    painter->save();
+    painter->setFont(sw->font());
+
+    QPen pen = painter->pen();
+    pen.setWidth(sw->penWidth());
+    painter->setPen(pen);
+
+    QwtScaleDraw *sd = const_cast<QwtScaleDraw *>(sw->scaleDraw());
+    if (sd) {
+        const QPoint sdPos = sd->pos();
+        const int sdLength = sd->length();
+
+        sd->move(x, y);
+        sd->setLength(w);
+
+        QPalette palette = sw->palette();
+        palette.setCurrentColorGroup(QPalette::Active);
+        sd->draw(painter, palette);
+
+        sd->move(sdPos);
+        sd->setLength(sdLength);
+    }
+
+    painter->restore();
 }
 
 void Plot::replot()
@@ -2093,6 +2278,34 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
 {
     Graph *g = qobject_cast<Graph *>(parent());
 
+    if (e->type() == QEvent::Paint) {
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            QwtScaleWidget *sw = axisWidget(a);
+            if (sw && object == sw) {
+                const QPointF shift = sw->property("_toriAxisTitleShift").toPointF();
+                if (std::hypot(shift.x(), shift.y()) > 1e-4) {
+                    QPaintEvent *pe = static_cast<QPaintEvent *>(e);
+                    if (pe->rect().isValid()) {
+                        QPainter painter(sw);
+                        painter.save();
+                        QPen scalePen = painter.pen();
+                        scalePen.setWidth(sw->penWidth());
+                        painter.setPen(scalePen);
+                        if (sw->scaleDraw())
+                            sw->scaleDraw()->draw(&painter, sw->palette());
+                        painter.restore();
+                        if (sw->isColorBarEnabled() && sw->colorBarWidth() > 0
+                            && sw->colorBarInterval().isValid()) {
+                            sw->drawColorBar(&painter, sw->colorBarRect(sw->rect()));
+                        }
+                    }
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+
     if (object == this && e->type() == QEvent::Paint) {
         if (g && !g->isExporting() && g->isLegendVisible()) {
             if (Legend *leg = g->legend()) {
@@ -2105,6 +2318,62 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
             }
         }
         return false;
+    }
+
+    if ((object == canvas() || object == this)
+        && (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick)) {
+        if (g && g->scalePicker && !d_is_panning && !d_space_pressed && !d_z_pressed
+            && !g->zoomOn() && !g->activeTool() && !g->rangeSelectorsEnabled()
+            && !g->drawLineActive() && !g->drawTextActive()) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(e);
+            QWidget *objWidget = static_cast<QWidget *>(object);
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                if (!axisEnabled(a))
+                    continue;
+                QwtScaleWidget *sw = axisWidget(a);
+                if (!sw || !sw->isVisible() || sw->title().text().isEmpty())
+                    continue;
+                const QPointF shift = sw->property("_toriAxisTitleShift").toPointF();
+                if (std::hypot(shift.x(), shift.y()) <= 1e-4)
+                    continue;
+                const QRect trSw = g->scalePicker->titleRect(sw);
+                if (!trSw.isValid() || trSw.isEmpty())
+                    continue;
+                const QPoint topLeftInObj = objWidget->mapFromGlobal(sw->mapToGlobal(trSw.topLeft()));
+                const QRect trInObj(topLeftInObj, trSw.size());
+                if (trInObj.contains(me->pos())) {
+                    if (e->type() == QEvent::MouseButtonDblClick
+                        && me->button() == Qt::LeftButton) {
+                        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                            bar->hide();
+                        sw->setFocus();
+                        g->activateGraph();
+                        g->scalePicker->selectTitle(sw, true);
+                        const QRect globalRect(sw->mapToGlobal(trSw.topLeft()), trSw.size());
+                        CanvasInlineTextEditor::openForAxisTitle(g, a, globalRect);
+                        me->accept();
+                        return true;
+                    } else if (e->type() == QEvent::MouseButtonPress
+                               && me->button() == Qt::LeftButton) {
+                        if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                            bar->hide();
+                        sw->setFocus();
+                        g->activateGraph();
+                        g->scalePicker->selectTitle(sw, true);
+                        me->accept();
+                        return true;
+                    } else if (e->type() == QEvent::MouseButtonPress
+                               && me->button() == Qt::RightButton) {
+                        sw->setFocus();
+                        g->activateGraph();
+                        g->scalePicker->selectTitle(sw, true);
+                        emit g->scalePicker->axisTitleRightClicked(sw->alignment());
+                        me->accept();
+                        return true;
+                    }
+                }
+            }
+        }
     }
 
     if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) {
@@ -2120,6 +2389,32 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
         if (e->type() == QEvent::KeyPress) {
             QKeyEvent *ke = static_cast<QKeyEvent *>(e);
             const Qt::KeyboardModifiers mods = ke->modifiers();
+            if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up
+                || ke->key() == Qt::Key_Down) {
+                QWidget *fw = QApplication::focusWidget();
+                const auto *smr = qobject_cast<SelectionMoveResizer *>(fw);
+                if ((!smr || smr->parentWidget() == canvas()) && g && !g->activeTool()
+                    && !g->rangeSelectorsEnabled()) {
+                    int step = 2;
+                    if (mods & Qt::ShiftModifier)
+                        step = 10;
+                    else if (mods & (Qt::ControlModifier | Qt::AltModifier))
+                        step = 1;
+                    int dx = 0, dy = 0;
+                    if (ke->key() == Qt::Key_Left)
+                        dx = -step;
+                    else if (ke->key() == Qt::Key_Right)
+                        dx = step;
+                    else if (ke->key() == Qt::Key_Up)
+                        dy = -step;
+                    else if (ke->key() == Qt::Key_Down)
+                        dy = step;
+                    if (g->nudgeSelectedElement(dx, dy)) {
+                        ke->accept();
+                        return true;
+                    }
+                }
+            }
             if (ke->key() == Qt::Key_Z && (mods & Qt::AltModifier) && !(mods & Qt::ControlModifier)) {
                 d_z_pressed = false;
                 flushPendingWheelUndo();

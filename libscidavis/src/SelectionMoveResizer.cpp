@@ -400,7 +400,7 @@ Graph *SelectionMoveResizer::owningGraph() const
         if (Graph *g = qobject_cast<Graph *>(p))
             return g;
     }
-    return nullptr;
+    return d_owning_graph.data();
 }
 
 MultiLayer *SelectionMoveResizer::owningMultiLayer() const
@@ -415,14 +415,19 @@ MultiLayer *SelectionMoveResizer::owningMultiLayer() const
 void SelectionMoveResizer::operateOnTargets()
 {
     QSet<QwtPlot *> plotsToReplot;
+    Graph *ownerGraph = owningGraph();
     foreach (Legend *i, d_legend_markers) {
         if (!i)
             continue;
+        const bool isMainLegend = (ownerGraph && ownerGraph->legend() == i);
         const QRect old_rect = i->rect();
         QRect new_rect = operateOn(old_rect);
         i->setOrigin(new_rect.topLeft());
         if (QwtPlot *plt = i->plot()) {
-            if (plt->property("_outsideRightMargin").toInt() > 0 && plt->canvas()
+            if (isMainLegend)
+                plt->setProperty("_toriLegendAnchor", QVariant());
+            if (isMainLegend && !d_in_key_nudge
+                && plt->property("_outsideRightMargin").toInt() > 0 && plt->canvas()
                 && new_rect.right() <= plt->canvas()->width()) {
                 plt->setProperty("_outsideRightMargin", 0);
                 plt->updateLayout();
@@ -802,7 +807,9 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         d_op = Move;
         d_op_start = QPoint(0, 0);
         d_op_dp = delta;
+        d_in_key_nudge = true;
         operateOnTargets();
+        d_in_key_nudge = false;
         d_op = None;
         d_op_dp = QPoint(0, 0);
         if (ml && !beforeSnap.isEmpty())
