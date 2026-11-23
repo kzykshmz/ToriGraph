@@ -97,7 +97,7 @@ void registerSignalProcTranslationsOnce()
     };
     reg("2D Spatial Filter & Plane Leveling", "2D空間フィルタ・平面傾斜補正");
     reg("2D Spatial Filter & Plane Leveling...", "2D空間フィルタ・平面傾斜補正...");
-    reg("Source Matrix:", "入力マトリクス:");
+    reg("Source Matrix:", "入力行列:");
     reg("2D Filter Method:", "2Dフィルタ手法:");
     reg("Gaussian Smoothing (2D)", "2Dガウシアン平滑化");
     reg("Median Despike Filter (Cosmic-Ray Removal)",
@@ -110,10 +110,10 @@ void registerSignalProcTranslationsOnce()
     reg("Sharpening Strength:", "先鋭化強度:");
     reg("Parameter:", "パラメータ:");
     reg("Kernel Radius (pixels):", "カーネル半径 (ピクセル):");
-    reg("Modify Source Matrix In-Place (Undoable)", "元マトリクスを直接更新 (元に戻す対応)");
+    reg("Modify Source Matrix In-Place (Undoable)", "元行列を直接更新 (元に戻す対応)");
     reg("Plot Filtered 2D Heatmap", "フィルタ後の2Dヒートマップを作成");
-    reg("Please open a Matrix window first.", "先にマトリクスウィンドウを開いてください。");
-    reg("2D Matrix Filter", "2Dマトリクスフィルタ");
+    reg("Please open a Matrix window first.", "先に行列ウィンドウを開いてください。");
+    reg("2D Matrix Filter", "2D行列フィルタ");
     reg("Fourier Self-Deconvolution (Peak Sharpening)", "フーリエ自己デコンボリューション (ピーク先鋭化)");
     reg("Fourier Self-Deconvolution (Peak Sharpening)...",
         "フーリエ自己デコンボリューション (ピーク先鋭化)...");
