@@ -385,6 +385,7 @@ static int runSuite73SendToPowerPoint(ApplicationWindow *mw);
 static int runSuite75CopyAndExportKeepGraphState(ApplicationWindow *mw);
 static int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw);
 static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw);
+static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw);
 
 static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir);
 
@@ -676,6 +677,13 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         mw->setOleEmbeddedMode(true);
         delete mw;
         return rc77;
+    }
+    if (args.contains("--suite78-only")) {
+        const int rc78 = runSuite78ZeroBaseUxAndQualityGate(mw);
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        return rc78;
     }
 
     // =========================================================================
@@ -5936,6 +5944,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite77Nov22NightReviewRegressions(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite78ZeroBaseUxAndQualityGate(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
@@ -26804,6 +26815,574 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
 
     w77.reset();
     std::cout << "[PASS] Suite 77 passed.\n";
+    return 0;
+}
+
+#include "future/matrix/future_Matrix.h"
+
+namespace {
+struct Suite78AxesDialogProbe : public AxesDialog
+{
+    QListWidget *scaleAxisList() const { return axesList; }
+    QListWidget *titleAxisList() const { return axesTitlesList; }
+    QListWidget *breakAxisList() const { return axisBreakAxesList; }
+};
+} // namespace
+
+static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
+{
+    Q_UNUSED(mw);
+    std::cout << "[INFO] Running Suite 78: Zero-Base UX & Quality Revamp Comprehensive Gate...\n";
+
+    struct Suite78EnvGuard
+    {
+        QVariant prevNonInteractive;
+        bool prevTestMode = false;
+        Suite78EnvGuard()
+            : prevNonInteractive(qApp->property("torigraph_noninteractive")),
+              prevTestMode(QStandardPaths::isTestModeEnabled())
+        {
+            qApp->setProperty("torigraph_noninteractive", true);
+            QStandardPaths::setTestModeEnabled(true);
+        }
+        ~Suite78EnvGuard()
+        {
+            QStandardPaths::setTestModeEnabled(prevTestMode);
+            qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+        }
+    } envGuard78;
+
+    struct AppWinGuard78
+    {
+        ApplicationWindow *win = nullptr;
+        explicit AppWinGuard78(ApplicationWindow *w = nullptr) : win(w) {}
+        ~AppWinGuard78()
+        {
+            reset();
+            QApplication::processEvents();
+        }
+        AppWinGuard78(const AppWinGuard78 &) = delete;
+        AppWinGuard78 &operator=(const AppWinGuard78 &) = delete;
+        void reset(ApplicationWindow *next = nullptr)
+        {
+            if (win) {
+                win->savedProject();
+                win->setOleEmbeddedMode(true);
+                delete win;
+            }
+            win = next;
+        }
+        ApplicationWindow *get() const { return win; }
+        ApplicationWindow *operator->() const { return win; }
+        operator ApplicationWindow *() const { return win; }
+    };
+
+    QTemporaryDir tmp78;
+    CHECK_COND(tmp78.isValid(), "78: temp dir creation failed");
+
+    AppWinGuard78 w78(new ApplicationWindow());
+    w78->applyUserSettings();
+    w78->resize(1440, 860);
+    w78->show();
+    w78->switchToLanguage("en");
+    QCoreApplication::processEvents();
+
+    // -------------------------------------------------------------------------
+    // 78a: Table/Matrix close -> DeferredDelete -> Undo -> Redo -> savedProject()
+    // -------------------------------------------------------------------------
+    {
+        QUndoStack *projUndo = w78->project() ? w78->project()->undoStack() : nullptr;
+        CHECK_COND(projUndo != nullptr, "78a: project undoStack null");
+        projUndo->clear();
+
+        Table *t = w78->newTable(4, 2, "T78Undo", "UndoTable");
+        Matrix *m = w78->newMatrix("M78Undo", 3, 3);
+        CHECK_COND(t != nullptr && m != nullptr, "78a: failed to create Table/Matrix");
+        t->setCell(0, 0, 1.0);
+        t->setCell(0, 1, 2.0);
+        m->setCell(0, 0, 9.5);
+        t->showNormal();
+        m->showNormal();
+        QCoreApplication::processEvents();
+
+        QPointer<Table> pTbl(t);
+        QPointer<Matrix> pMtx(m);
+        t->askOnCloseEvent(false);
+        m->askOnCloseEvent(false);
+        t->close();
+        m->close();
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+        CHECK_COND(w78->table("T78Undo") == nullptr && w78->matrix("M78Undo") == nullptr,
+                   "78a: Table/Matrix still registered after close");
+        CHECK_COND(projUndo->canUndo(), "78a: project undoStack empty after closing Table & Matrix");
+
+        projUndo->undo();
+        projUndo->undo();
+        QCoreApplication::processEvents();
+        Table *restoredT = w78->table("T78Undo");
+        Matrix *restoredM = w78->matrix("M78Undo");
+        CHECK_COND(restoredT != nullptr && restoredM != nullptr,
+                   "78a: project undo failed to restore closed Table/Matrix");
+        CHECK_COND(std::fabs(restoredT->cell(0, 1) - 2.0) < 1e-9
+                           && std::fabs(restoredM->cell(0, 0) - 9.5) < 1e-9,
+                   "78a: restored Table/Matrix lost cell contents");
+
+        QPointer<Table> pRestT(restoredT);
+        QPointer<Matrix> pRestM(restoredM);
+        projUndo->redo();
+        projUndo->redo();
+        w78->savedProject();
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+        CHECK_COND(pTbl.isNull() && pMtx.isNull() && pRestT.isNull() && pRestM.isNull(),
+                   "78a: closed Table/Matrix survived redo + savedProject() + DeferredDelete!");
+        CHECK_COND(w78->table("T78Undo") == nullptr && w78->matrix("M78Undo") == nullptr,
+                   "78a: redo did not remove restored Table/Matrix cleanly");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78b: ModernUiTheme active subwindow preservation & language toggle idempotence
+    // -------------------------------------------------------------------------
+    MultiLayer *mlActiveKeep = w78->newGraph("G78Active");
+    CHECK_COND(mlActiveKeep != nullptr, "78b: failed to create mlActiveKeep");
+    Table *tblOther = w78->newTable(3, 2, "T78Other", "Other");
+    CHECK_COND(tblOther != nullptr, "78b: failed to create tblOther");
+    w78->d_workspace.setActiveSubWindow(mlActiveKeep);
+    QCoreApplication::processEvents();
+    CHECK_COND(w78->activeWindow() == mlActiveKeep, "78b: failed to activate mlActiveKeep");
+
+    ModernUiTheme::applyModernTheme(qApp);
+    QCoreApplication::processEvents();
+    CHECK_COND(w78->activeWindow() == mlActiveKeep,
+               "78b: ModernUiTheme::applyModernTheme altered active MDI subwindow!");
+
+    CHECK_COND(w78->stylePresetsMenu != nullptr, "78b: stylePresetsMenu null");
+    const int baseSubMenus = w78->stylePresetsMenu
+                                     ->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly)
+                                     .size();
+    const int basePresetActions = w78->stylePresetsMenu->actions().size();
+    for (int i = 0; i < 3; ++i) {
+        w78->switchToLanguage("ja");
+        QCoreApplication::processEvents();
+        w78->switchToLanguage("en");
+        QCoreApplication::processEvents();
+    }
+    w78->toggleLanguage();
+    QCoreApplication::processEvents();
+    w78->toggleLanguage();
+    QCoreApplication::processEvents();
+    CHECK_COND(w78->stylePresetsMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly).size()
+                               == baseSubMenus
+                       && w78->stylePresetsMenu->actions().size() == basePresetActions,
+               "78b: language switching leaked submenus/actions in stylePresetsMenu!");
+
+    {
+        AppWinGuard78 w78Twin(new ApplicationWindow());
+        w78Twin->applyUserSettings();
+        w78->switchToLanguage("ja");
+        QCoreApplication::processEvents();
+        w78->switchToLanguage("en");
+        QCoreApplication::processEvents();
+        PlotDialog pdEn(false, w78);
+        CHECK_COND(!pdEn.windowTitle().contains(QChar(0x30B0)) && pdEn.windowTitle() == QStringLiteral("Plot details"),
+                   "78b: stale JA translator leaked into PlotDialog after multi-window en switch!");
+        w78Twin.reset();
+    }
+
+    // -------------------------------------------------------------------------
+    // 78c: 300-DPI PNG zero ClearType chromatic leak & Table::clearCell on empty column
+    // -------------------------------------------------------------------------
+    {
+        Table *tClr = w78->newTable(5, 2, "T78ClearEmpty", "Clear");
+        CHECK_COND(tClr != nullptr && tClr->column(1) != nullptr, "78c: T78ClearEmpty creation failed");
+        CHECK_COND(tClr->column(1)->rowCount() == 0, "78c: expected fresh column rowCount() == 0");
+        tClr->clearCell(1, 1);
+        CHECK_COND(tClr->column(1)->isInvalid(1),
+                   "78c: Table::clearCell(1, 1) on empty column (rowCount==0) failed to mark cell invalid!");
+
+        for (int r = 0; r < 5; ++r) {
+            tClr->setCell(r, 0, double(r));
+            tClr->setCell(r, 1, double(r) * 2.0 + 1.0);
+        }
+        MultiLayer *mlPng = w78->multilayerPlot(tClr, QStringList() << tClr->colName(1), Graph::Line);
+        CHECK_COND(mlPng != nullptr && mlPng->activeGraph() != nullptr, "78c: mlPng failed");
+        Graph *gPng = mlPng->activeGraph();
+        QwtPlotCurve *cPng = gPng->curve(0);
+        CHECK_COND(cPng != nullptr, "78c: expected curve 0 on mlPng");
+        cPng->setPen(QPen(Qt::black, 2.0));
+        gPng->setTitle(QStringLiteral("Publication Black Text Check"));
+        gPng->setAxisTitle(QwtPlot::xBottom, QStringLiteral("Strain"));
+        gPng->setAxisTitle(QwtPlot::yLeft, QStringLiteral("Stress / MPa"));
+        gPng->replot();
+        QCoreApplication::processEvents();
+
+        const QString png300 = tmp78.filePath("clearType_check_300dpi.png");
+        CHECK_COND(mlPng->exportImageChecked(png300, -1, false, 300), "78c: exportImageChecked failed");
+        QImage pngImg(png300);
+        CHECK_COND(!pngImg.isNull() && pngImg.width() > 300, "78c: exported PNG unreadable");
+        int chromaLeaks = 0;
+        for (int y = 0; y < pngImg.height(); ++y) {
+            for (int x = 0; x < pngImg.width(); ++x) {
+                const QRgb px = pngImg.pixel(x, y);
+                const int r = qRed(px), g = qGreen(px), b = qBlue(px);
+                if (std::max({ r, g, b }) - std::min({ r, g, b }) >= 35)
+                    ++chromaLeaks;
+            }
+        }
+        CHECK_COND(chromaLeaks == 0,
+                   "78c: 300-DPI PNG still exhibits ClearType RGB chromatic fringes (" << chromaLeaks << ")");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78d: Truncated .sciprj EOF detection & "~" backup creation on save
+    // -------------------------------------------------------------------------
+    {
+        AppWinGuard78 wBak(new ApplicationWindow());
+        wBak->applyUserSettings();
+        Table *tBak = wBak->newTable(3, 2, "T78Bak", "Backup");
+        tBak->setCell(0, 1, 12.5);
+        const QString prjBak = tmp78.filePath("backup_test_78.sciprj");
+        CHECK_COND(wBak->writeProjectFile(wBak->projectFolder(), prjBak), "78d: 1st writeProjectFile failed");
+        tBak->setCell(0, 1, 99.5);
+        CHECK_COND(wBak->writeProjectFile(wBak->projectFolder(), prjBak), "78d: 2nd writeProjectFile failed");
+        const QString tildePath = prjBak + QLatin1Char('~');
+        CHECK_COND(QFileInfo::exists(tildePath), "78d: '~' backup file was not created on 2nd save");
+
+        AppWinGuard78 reTilde(wBak->openProject(tildePath));
+        CHECK_COND(reTilde != nullptr && reTilde->table("T78Bak") != nullptr
+                           && std::fabs(reTilde->table("T78Bak")->cell(0, 1) - 12.5) < 1e-9,
+                   "78d: '~' backup did not retain previous saved state (expected 12.5)");
+        reTilde.reset();
+
+        QByteArray fullBytes;
+        {
+            QFile pf(prjBak);
+            CHECK_COND(pf.open(QIODevice::ReadOnly), "78d: read prjBak failed");
+            fullBytes = pf.readAll();
+            pf.close();
+        }
+        CHECK_COND(fullBytes.size() > 200, "78d: prjBak unexpectedly tiny");
+        const QString truncPath = tmp78.filePath("truncated_78.sciprj");
+        {
+            QFile tf(truncPath);
+            CHECK_COND(tf.open(QIODevice::WriteOnly | QIODevice::Truncate), "78d: write truncPath failed");
+            tf.write(fullBytes.left(fullBytes.size() / 2));
+            tf.close();
+        }
+        AppWinGuard78 reTrunc(wBak->openProject(truncPath));
+        CHECK_COND(reTrunc == nullptr, "78d: truncated .sciprj was not rejected on openProject!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78e: Non-table safety guards on addColToTable() & cutSelection()
+    // -------------------------------------------------------------------------
+    {
+        const int colsBefore = tblOther->numCols();
+        w78->d_workspace.setActiveSubWindow(mlActiveKeep);
+        QCoreApplication::processEvents();
+        w78->addColToTable();
+        w78->cutSelection();
+        QCoreApplication::processEvents();
+        CHECK_COND(tblOther->numCols() == colsBefore,
+                   "78e: addColToTable() mutated non-active table while graph window was active");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78f: AxesDialog::setCurrentQwtAxis()
+    // -------------------------------------------------------------------------
+    {
+        Suite78AxesDialogProbe axDlg;
+        axDlg.setGraph(mlActiveKeep->activeGraph());
+        struct AxisCase { int qwtId; int expectedRow; };
+        const AxisCase cases[] = {
+            { QwtPlot::xBottom, 0 },
+            { QwtPlot::yLeft, 1 },
+            { QwtPlot::xTop, 2 },
+            { QwtPlot::yRight, 3 },
+        };
+        for (const AxisCase &c : cases) {
+            axDlg.setCurrentQwtAxis(c.qwtId);
+            CHECK_COND(axDlg.scaleAxisList() && axDlg.scaleAxisList()->currentRow() == c.expectedRow,
+                       "78f: scaleAxisList row mismatch for qwtAxis " << c.qwtId);
+            CHECK_COND(axDlg.titleAxisList() && axDlg.titleAxisList()->currentRow() == c.expectedRow,
+                       "78f: titleAxisList row mismatch for qwtAxis " << c.qwtId);
+            CHECK_COND(axDlg.breakAxisList() && axDlg.breakAxisList()->currentRow() == c.expectedRow,
+                       "78f: breakAxisList row mismatch for qwtAxis " << c.qwtId);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 78g: BoxCurve::Tukey15IQR & Column::UnitFormat::Bracket XML round-trip
+    // -------------------------------------------------------------------------
+    {
+        Table *tBox = w78->newTable(7, 2, "T78BoxUnit", "BoxUnit");
+        const double vals[7] = { 10.0, 12.0, 14.0, 15.0, 16.0, 18.0, 100.0 };
+        for (int r = 0; r < 7; ++r) {
+            tBox->setCell(r, 0, double(r + 1));
+            tBox->setCell(r, 1, vals[r]);
+        }
+        MultiLayer *mlBox = w78->multilayerPlot(tBox, QStringList() << tBox->colName(1), Graph::Box);
+        mlBox->setName("G78BoxUnit");
+        Graph *gBox = mlBox->activeGraph();
+        CHECK_COND(gBox != nullptr, "78g: gBox null");
+        BoxCurve *bc = dynamic_cast<BoxCurve *>(gBox->curve(0));
+        CHECK_COND(bc != nullptr, "78g: curve 0 is not BoxCurve");
+        bc->setWhiskersRange(BoxCurve::Tukey15IQR, 1.5);
+        gBox->setAxisUnitFormat(Column::UnitFormat::Bracket);
+        gBox->replot();
+
+        const QString boxPrj = tmp78.filePath("box_unit_78.sciprj");
+        CHECK_COND(w78->writeProjectFile(w78->projectFolder(), boxPrj), "78g: write boxPrj failed");
+        AppWinGuard78 reBoxWin(w78->openProject(boxPrj));
+        CHECK_COND(reBoxWin != nullptr, "78g: reload boxPrj failed");
+        MultiLayer *reMlBox = qobject_cast<MultiLayer *>(reBoxWin->window("G78BoxUnit"));
+        CHECK_COND(reMlBox != nullptr && reMlBox->activeGraph() != nullptr, "78g: reloaded G78BoxUnit missing");
+        BoxCurve *reBc = dynamic_cast<BoxCurve *>(reMlBox->activeGraph()->curve(0));
+        CHECK_COND(reBc != nullptr && reBc->whiskersRangeType() == BoxCurve::Tukey15IQR,
+                   "78g: BoxCurve::Tukey15IQR lost across .sciprj XML round-trip!");
+        CHECK_COND(reMlBox->activeGraph()->axisUnitFormat() == Column::UnitFormat::Bracket,
+                   "78g: Column::UnitFormat::Bracket lost across .sciprj XML round-trip!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78h: RecalcManager XML round-trip, rename tracking, & non-destructive failure
+    // -------------------------------------------------------------------------
+    {
+        Table *tRec = w78->newTable(6, 2, "RecSrc78", "Recalc");
+        tRec->setColName(0, "X");
+        tRec->setColPlotDesignation(0, SciDAVis::X);
+        tRec->setColName(1, "Y");
+        tRec->setColPlotDesignation(1, SciDAVis::Y);
+        for (int r = 0; r < 6; ++r) {
+            tRec->setCell(r, 0, double(r));
+            tRec->setCell(r, 1, 3.0 * double(r) + 2.0);
+        }
+        MultiLayer *mlRec = w78->multilayerPlot(tRec, QStringList() << "RecSrc78_Y", Graph::Scatter);
+        Graph *gRec = mlRec->activeGraph();
+        RecalcManager *rm = RecalcManager::instance(w78);
+        CHECK_COND(rm != nullptr && gRec != nullptr, "78h: RecalcManager/gRec null");
+        rm->setRecalcMode(RecalcManager::Auto);
+
+        const int lid = rm->registerLink(w78, gRec, tRec, "RecSrc78_Y", "Rec78Fit", RecalcManager::OpLinearFit);
+        CHECK_COND(lid > 0 && rm->activeLinkCount(gRec) == 1 && gRec->curve("Rec78Fit") != nullptr,
+                   "78h: initial RecalcManager link registration failed");
+
+        const QString xml = rm->saveLinksXmlForGraph(gRec);
+        CHECK_COND(!xml.isEmpty() && xml.contains("RecSrc78_Y"), "78h: saveLinksXmlForGraph returned empty/invalid XML");
+
+        rm->removeLinksForGraph(gRec);
+        CHECK_COND(rm->activeLinkCount(gRec) == 0, "78h: removeLinksForGraph failed");
+        rm->restoreLinkXmlForGraph(w78, gRec, xml);
+        CHECK_COND(rm->activeLinkCount(gRec) == 1, "78h: restoreLinkXmlForGraph did not restore link");
+
+        w78->renameWindow(tRec, "RecSrc78Ren");
+        tRec->setColName(1, "Y2");
+        rm->notifyTableRenamed("RecSrc78", "RecSrc78Ren");
+        rm->notifyColumnRenamed("RecSrc78Ren", "Y", "Y2");
+        QCoreApplication::processEvents();
+        const int updated = rm->recalculateAll(gRec);
+        CHECK_COND(updated >= 1 && rm->lastError(gRec).isEmpty() && gRec->curve("Rec78Fit") != nullptr,
+                   "78h: RecalcManager failed after rename tracking!");
+
+        // Corrupt source data -> recalculate must fail non-destructively and record lastError(gRec)
+        const int ptsBefore = gRec->curve("Rec78Fit")->dataSize();
+        for (int r = 0; r < 6; ++r)
+            tRec->clearCell(r, 1);
+        QCoreApplication::processEvents();
+        rm->recalculateAll(gRec);
+        CHECK_COND(!rm->lastError(gRec).isEmpty(), "78h: expected non-empty lastError after degenerate source data");
+        CHECK_COND(gRec->curve("Rec78Fit") != nullptr && gRec->curve("Rec78Fit")->dataSize() == ptsBefore,
+                   "78h: failed recalculation destroyed previous output curve!");
+        rm->removeLinksForGraph(gRec);
+    }
+
+    // -------------------------------------------------------------------------
+    // 78i & 78j: lab_slide_83mm XML round-trip & fitPageZoomToViewport() at 1440x860 / 911x512
+    // -------------------------------------------------------------------------
+    MultiLayer *mlLab = w78->newGraph("G78LabSlide");
+    CHECK_COND(mlLab != nullptr, "78i: mlLab null");
+    const QString labWinName = mlLab->name();
+    CHECK_COND(mlLab->applyStylePresetById(QStringLiteral("lab_slide_83mm")),
+               "78i: applyStylePresetById('lab_slide_83mm') failed");
+    CHECK_COND(mlLab->appliedStylePresetId() == QStringLiteral("lab_slide_83mm"),
+               "78i: appliedStylePresetId() != lab_slide_83mm");
+    const QString savedStr = mlLab->saveToString(QString());
+    CHECK_COND(savedStr.contains(QStringLiteral("<ToriAppliedStylePreset id=\"lab_slide_83mm\"/>")),
+               "78i: saveToString missing <ToriAppliedStylePreset id=\"lab_slide_83mm\"/>");
+
+    const QString labPrj = tmp78.filePath("lab_slide_78.sciprj");
+    CHECK_COND(w78->writeProjectFile(w78->projectFolder(), labPrj), "78i: write labPrj failed");
+    {
+        AppWinGuard78 reLab(w78->openProject(labPrj));
+        CHECK_COND(reLab != nullptr, "78i: openProject(labPrj) returned null!");
+        MultiLayer *reMl = qobject_cast<MultiLayer *>(reLab->window(labWinName));
+        CHECK_COND(reMl != nullptr, "78i: reloaded project missing " << labWinName.toStdString());
+        CHECK_COND(reMl->appliedStylePresetId() == QStringLiteral("lab_slide_83mm"),
+                   "78i: lab_slide_83mm appliedStylePresetId lost on .sciprj reload (got '"
+                           << reMl->appliedStylePresetId().toStdString() << "')!");
+    }
+
+    for (const QSize &vpSz : { QSize(1440, 860), QSize(911, 512) }) {
+        w78->resize(vpSz);
+        mlLab->showNormal();
+        QCoreApplication::processEvents();
+        mlLab->fitPageZoomToViewport();
+        QCoreApplication::processEvents();
+        const double zf = mlLab->fitPageZoomFactor();
+        CHECK_COND(zf >= 0.35 && zf <= 1.6, "78j: fitPageZoomFactor out of bounds");
+        if (QScrollArea *cs = mlLab->widget()
+                    ? mlLab->widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
+                    : nullptr) {
+            if (cs->viewport() && mlLab->canvasWidget()) {
+                CHECK_COND(mlLab->canvasWidget()->width() <= cs->viewport()->width() + 2,
+                           "78j: page canvas clipped horizontally at size " << vpSz.width() << "x" << vpSz.height());
+            }
+        }
+    }
+    w78->resize(1440, 860);
+    QCoreApplication::processEvents();
+
+    // -------------------------------------------------------------------------
+    // 78k: EmptyTableHint JA/LanguageChange & safe teardown; FocusTableDrawer opaque card
+    // -------------------------------------------------------------------------
+    {
+        Table *tHint = w78->newTable(4, 2, "T78EmptyHint", "Hint");
+        w78->attachEmptyTableHint(tHint);
+        tHint->showNormal();
+        QCoreApplication::processEvents();
+        QLabel *hintLbl = tHint->findChild<QLabel *>(QStringLiteral("ToriEmptyTableHintLabel"));
+        CHECK_COND(hintLbl != nullptr, "78k: ToriEmptyTableHintLabel not attached");
+        const QString enHintText = hintLbl->text();
+        w78->switchToLanguage("ja");
+        QCoreApplication::processEvents();
+        CHECK_COND(hintLbl->text() != enHintText && !hintLbl->text().isEmpty(),
+                   "78k: EmptyTableHint did not retranslate on LanguageChange");
+        tHint->askOnCloseEvent(false);
+        tHint->close();
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+        w78->switchToLanguage("en");
+        QCoreApplication::processEvents();
+
+        if (w78->modernRibbonBar() && w78->modernRibbonBar()->focusTableDrawer()) {
+            FocusTableDrawer *drawer = w78->modernRibbonBar()->focusTableDrawer();
+            CHECK_COND(drawer->styleSheet().contains(QStringLiteral("#FFFFFF")),
+                       "78k: FocusTableDrawer should use solid opaque #FFFFFF card background");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 78l: GraphInspectorDock empty state, E5-2 flush on switch, E5-5 disconnect, E5-6 no-op FocusOut
+    // -------------------------------------------------------------------------
+    {
+        GraphInspectorDock *insp = w78->graphInspectorDock();
+        CHECK_COND(insp != nullptr, "78l: graphInspectorDock null");
+        insp->setTargetMultiLayer(nullptr);
+        QCoreApplication::processEvents();
+        CHECK_COND(insp->isShowingQuickStart(), "78l: inspector should show QuickStart when target is null");
+        insp->setCollapsedRail(true);
+        QCoreApplication::processEvents();
+        CHECK_COND(insp->isCollapsedRail(), "78l: failed to collapse inspector rail with null graph");
+        insp->setCollapsedRail(false);
+        QCoreApplication::processEvents();
+
+        MultiLayer *ml1 = w78->newGraph("G78Insp1");
+        MultiLayer *ml2 = w78->newGraph("G78Insp2");
+        CHECK_COND(ml1 && ml1->activeGraph() && ml2 && ml2->activeGraph(), "78l: ml1/ml2 creation failed");
+        ml1->activeGraph()->setAxisTitle(QwtPlot::xBottom, QStringLiteral("InitX1"));
+        ml2->activeGraph()->setAxisTitle(QwtPlot::xBottom, QStringLiteral("InitX2"));
+
+        insp->setTargetMultiLayer(ml1, true);
+        insp->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
+        QCoreApplication::processEvents();
+
+        QWidget *axisPage = insp->propertyStack()->widget(GraphInspectorDock::PageTabAxis);
+        CHECK_COND(axisPage != nullptr, "78l: inspector Axis page null");
+        QLineEdit *titleEdit = nullptr;
+        QLineEdit *minEdit = nullptr;
+        for (QLineEdit *le : axisPage->findChildren<QLineEdit *>()) {
+            if (!le->placeholderText().isEmpty() && !le->property("_syncedText").isValid() && !titleEdit)
+                titleEdit = le;
+            else if (le->property("_syncedText").isValid() && le->isEnabled() && !minEdit)
+                minEdit = le;
+        }
+        CHECK_COND(titleEdit != nullptr && minEdit != nullptr, "78l: failed to locate axis title/min edits");
+
+        // E5-6: no-op editingFinished on minEdit must NOT push onto Undo stack
+        const int undoBeforeMin = ml1->undoStack() ? ml1->undoStack()->count() : 0;
+        QMetaObject::invokeMethod(minEdit, "editingFinished", Qt::DirectConnection);
+        QCoreApplication::processEvents();
+        const int undoAfterMin = ml1->undoStack() ? ml1->undoStack()->count() : 0;
+        CHECK_COND(undoAfterMin == undoBeforeMin,
+                   "78l: no-op focus-out on Axis Min pushed spurious Undo entry!");
+
+        // E5-2 & E5-5: pending debounced title edit flushes cleanly onto ml1 before rebinding to ml2
+        titleEdit->setText(QStringLiteral("FlushedX1"));
+        emit titleEdit->textEdited(QStringLiteral("FlushedX1"));
+        insp->setTargetMultiLayer(ml2);
+        QCoreApplication::processEvents();
+        CHECK_COND(ml1->activeGraph()->axisTitle(QwtPlot::xBottom) == QStringLiteral("FlushedX1"),
+                   "78l: pending debounced axis title edit did not flush to original ml1 on switch!");
+        CHECK_COND(ml2->activeGraph()->axisTitle(QwtPlot::xBottom) == QStringLiteral("InitX2"),
+                   "78l: flushed axis title leaked into new target ml2!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78m: RPC allow-list security, malformed JSON, & Graph3D::exportImageChecked
+    // -------------------------------------------------------------------------
+    {
+        PythonAutomationServer *srv = w78->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "78m: pythonAutomationServer null");
+
+        QJsonObject badActReq;
+        badActReq["jsonrpc"] = "2.0";
+        badActReq["id"] = 7801;
+        badActReq["method"] = "app.trigger_action";
+        badActReq["params"] = QJsonObject{ { "name", "deleteWindow" } };
+        const QJsonObject badActResp = srv->handleRpcRequest(badActReq);
+        CHECK_COND(badActResp.contains("error"),
+                   "78m: app.trigger_action allowed non-allowlisted target!");
+
+        const QByteArray parseRespRaw = srv->handleRpcLine(QByteArray("{not-valid-json\n"));
+        const QJsonObject parseResp = QJsonDocument::fromJson(parseRespRaw).object();
+        CHECK_COND(parseResp.contains("error") && parseResp.value("error").toObject().value("code").toInt() == -32700,
+                   "78m: malformed JSON line did not return JSON-RPC -32700 parse error!");
+
+        Graph3D *g3d = w78->newPlot3D();
+        CHECK_COND(g3d != nullptr, "78m: newPlot3D failed");
+        QCoreApplication::processEvents();
+        QString errBad;
+        CHECK_COND(!g3d->exportImageChecked(tmp78.filePath("missing_dir_78/out.png"), 100, false, &errBad)
+                           && !errBad.isEmpty(),
+                   "78m: Graph3D::exportImageChecked failed to report error on unwritable path!");
+        QString errOk;
+        const QString ok3dPath = tmp78.filePath("ok_3d_78.png");
+        CHECK_COND(g3d->exportImageChecked(ok3dPath, 100, false, &errOk) && QFileInfo::exists(ok3dPath),
+                   "78m: Graph3D::exportImageChecked failed on valid path: " << errOk.toStdString());
+    }
+
+    // -------------------------------------------------------------------------
+    // 78n: Standalone future::Table/Matrix setView(nullptr) teardown safety
+    // -------------------------------------------------------------------------
+    {
+        Table *tNv = w78->newTable(3, 2, "T78NullView", "NullView");
+        Matrix *mNv = w78->newMatrix("M78NullView", 3, 3);
+        CHECK_COND(tNv != nullptr && tNv->d_future_table != nullptr
+                           && mNv != nullptr && mNv->d_future_matrix != nullptr,
+                   "78n: future Table/Matrix missing");
+        tNv->d_future_table->setView(nullptr);
+        mNv->d_future_matrix->setView(nullptr);
+        QCoreApplication::processEvents();
+    }
+
+    w78->switchToLanguage("en");
+    QCoreApplication::processEvents();
+    w78.reset();
+    std::cout << "[PASS] Suite 78 passed.\n";
     return 0;
 }
 
