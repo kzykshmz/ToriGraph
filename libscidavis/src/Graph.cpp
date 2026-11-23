@@ -7269,8 +7269,8 @@ QString Graph::saveToString(bool saveAsTemplate)
             QStringList shiftAttrs;
             const QPointF ptShift = d_plot->property("_toriPlotTitleShift").toPointF();
             if (std::fabs(ptShift.x()) > 1e-6 || std::fabs(ptShift.y()) > 1e-6) {
-                shiftAttrs << QString("titleDx=\"%1\"").arg(QString::number(ptShift.x(), 'g', 8));
-                shiftAttrs << QString("titleDy=\"%1\"").arg(QString::number(ptShift.y(), 'g', 8));
+                shiftAttrs << QString("titleDx=\"%1\"").arg(QString::number(ptShift.x(), 'g', 17));
+                shiftAttrs << QString("titleDy=\"%1\"").arg(QString::number(ptShift.y(), 'g', 17));
             }
             for (int a = 0; a < QwtPlot::axisCnt; ++a) {
                 if (const QwtScaleWidget *sw = d_plot->axisWidget(a)) {
@@ -7278,22 +7278,22 @@ QString Graph::saveToString(bool saveAsTemplate)
                     if (std::fabs(atShift.x()) > 1e-6 || std::fabs(atShift.y()) > 1e-6) {
                         shiftAttrs << QString("ax%1TitleDx=\"%2\"")
                                               .arg(a)
-                                              .arg(QString::number(atShift.x(), 'g', 8));
+                                              .arg(QString::number(atShift.x(), 'g', 17));
                         shiftAttrs << QString("ax%1TitleDy=\"%2\"")
                                               .arg(a)
-                                              .arg(QString::number(atShift.y(), 'g', 8));
+                                              .arg(QString::number(atShift.y(), 'g', 17));
                     }
                     const double normShift = sw->property("_toriAxisNormalShift").toDouble();
                     if (std::fabs(normShift) > 1e-6) {
                         shiftAttrs << QString("ax%1Norm=\"%2\"")
                                               .arg(a)
-                                              .arg(QString::number(normShift, 'g', 8));
+                                              .arg(QString::number(normShift, 'g', 17));
                     }
                     const double parShift = sw->property("_toriAxisParallelShift").toDouble();
                     if (std::fabs(parShift) > 1e-6) {
                         shiftAttrs << QString("ax%1Par=\"%2\"")
                                               .arg(a)
-                                              .arg(QString::number(parShift, 'g', 8));
+                                              .arg(QString::number(parShift, 'g', 17));
                     }
                 }
             }
@@ -7312,13 +7312,17 @@ QString Graph::saveToString(bool saveAsTemplate)
         }
 
         int lockMask = 0;
+        int autoMask = 0;
         for (int a = 0; a < 4; ++a) {
             if (isAxisUserLocked(a))
                 lockMask |= (1 << a);
+            if (d_plot && d_plot->axisAutoScale(a))
+                autoMask |= (1 << a);
         }
-        s += QString("<ToriAxisLocks mask=\"%1\" autoscale=\"%2\"/>\n")
+        s += QString("<ToriAxisLocks mask=\"%1\" autoscale=\"%2\" autoMask=\"%3\"/>\n")
                      .arg(lockMask)
-                     .arg(m_autoscale ? 1 : 0);
+                     .arg(m_autoscale ? 1 : 0)
+                     .arg(autoMask);
 
         s += QString("<ToriAutoscaleFonts val=\"%1\"/>\n").arg(autoScaleFonts ? 1 : 0);
 
@@ -14881,6 +14885,26 @@ bool Graph::restorePhase5Tag(const QString &line)
             m_autoscale = (attrs.value("autoscale").toInt() != 0);
             if (d_plot)
                 d_plot->setProperty("_toriRestoredAutoscale", true);
+        }
+        if (attrs.contains("autoMask") && d_plot && !isTernaryPlot() && !isPolarPlot()
+            && !isPiePlot() && !isPoleFigurePlot()) {
+            const int autoMask = attrs.value("autoMask", "0").toInt();
+            bool restoredAnyAuto = false;
+            for (int a = 0; a < 4; ++a) {
+                if ((autoMask & (1 << a)) != 0 && (mask & (1 << a)) == 0 && !axisBreak(a).enabled
+                    && !hasColorScaleOnAxis(a) && !hasWeibullProbabilityAxis(a)
+                    && !hasCustomTickLabels(a)) {
+                    d_plot->setAxisAutoScale(a);
+                    restoredAnyAuto = true;
+                }
+            }
+            if (restoredAnyAuto) {
+                d_plot->updateAxes();
+                if (d_plot->axisEnabled(QwtPlot::xTop) && !isAxisUserLocked(QwtPlot::xTop))
+                    updateSecondaryAxis(QwtPlot::xTop);
+                if (d_plot->axisEnabled(QwtPlot::yRight) && !isAxisUserLocked(QwtPlot::yRight))
+                    updateSecondaryAxis(QwtPlot::yRight);
+            }
         }
         if (isPiePlot()) {
             drawCanvasFrame(false, 0);

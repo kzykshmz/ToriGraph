@@ -810,10 +810,8 @@ void ScalePicker::mouseRightClicked(const QwtScaleWidget *scale, const QPoint &p
 
     if (titleRect(scale).contains(pos))
         emit axisTitleRightClicked(scale->alignment());
-    else if (scaleRect(scale).contains(pos))
-        emit axisRightClicked(scale->alignment());
     else
-        emit axisTitleRightClicked(scale->alignment());
+        emit axisRightClicked(scale->alignment());
 }
 
 // The rect of a scale without the title
@@ -825,10 +823,6 @@ QRect ScalePicker::scaleRect(const QwtScaleWidget *scale) const
                  rect.height() + 2 * margin);
 
     if (scale->title().text().isEmpty())
-        return rect;
-
-    const QPointF shift = scale->property("_toriAxisTitleShift").toPointF();
-    if (std::hypot(shift.x(), shift.y()) > 1e-4)
         return rect;
 
     int dh = scale->title().textSize().height();

@@ -76,6 +76,8 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::MouseButtonPress) {
         const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
+        if (me->button() != Qt::LeftButton && me->button() != Qt::RightButton)
+            return false;
         if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
             bar->hide();
         if (title)
@@ -85,9 +87,9 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
 
         if (me->button() == Qt::RightButton)
             emit showTitleMenu();
-        if (me->button() == Qt::LeftButton || me->button() == Qt::RightButton)
-            return true;
-        return false;
+        // Consume Left/Right press (including Shift+click) so clicking the plot title never
+        // bubbles to MultiLayer::mousePressEvent and creates a stale d_layers_selector on Graph.
+        return true;
     }
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::KeyPress) {

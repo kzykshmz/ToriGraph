@@ -1184,11 +1184,20 @@ void Plot::updateLayout()
     }
 
     const QPointF titleShift = property("_toriPlotTitleShift").toPointF();
-    if (std::hypot(titleShift.x(), titleShift.y()) > 1e-4 && titleLabel()) {
-        QRect tr = titleLabel()->geometry();
-        tr.translate(qRound(titleShift.x() * zoom), qRound(titleShift.y() * zoom));
-        titleLabel()->setGeometry(tr);
-        titleLabel()->raise();
+    if (titleLabel()) {
+        if (std::hypot(titleShift.x(), titleShift.y()) > 1e-4) {
+            QRect tr = titleLabel()->geometry();
+            tr.translate(qRound(titleShift.x() * zoom), qRound(titleShift.y() * zoom));
+            titleLabel()->setGeometry(tr);
+            const QRect txtRect = titleLabel()->textRect();
+            if (txtRect.isValid() && !txtRect.isEmpty())
+                titleLabel()->setMask(QRegion(txtRect.adjusted(-6, -3, 6, 3)));
+            else
+                titleLabel()->clearMask();
+            titleLabel()->raise();
+        } else {
+            titleLabel()->clearMask();
+        }
     }
 
     if (axisWidget(QwtPlot::xBottom))

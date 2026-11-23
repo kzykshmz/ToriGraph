@@ -1210,14 +1210,22 @@ void MultiLayer::clearLayerSelector()
 {
     if (!d_layers_selector)
         return;
-    const bool hadFocus = d_layers_selector->hasFocus();
-    delete d_layers_selector;
+    SelectionMoveResizer *old = d_layers_selector.data();
+    d_layers_selector = nullptr;
+    const bool hadFocus = old->hasFocus();
+    old->blockSignals(true);
+    old->disconnect();
+    if (QWidget *pw = old->parentWidget())
+        pw->removeEventFilter(old);
+    old->hide();
+    old->setParent(nullptr);
     if (hadFocus && active_graph) {
         if (active_graph->plotWidget() && active_graph->plotWidget()->canvas())
             active_graph->plotWidget()->canvas()->setFocus();
         else
             active_graph->setFocus();
     }
+    old->deleteLater();
 }
 
 void MultiLayer::activateGraph(LayerButton *button)

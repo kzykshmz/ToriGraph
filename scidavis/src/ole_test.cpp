@@ -26435,12 +26435,14 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(std::hypot(xShiftAfterUndo.x(), xShiftAfterUndo.y()) < 1e-3,
                    "77g: undo() did not restore _toriAxisTitleShift to (0, 0), got ("
                            << xShiftAfterUndo.x() << ", " << xShiftAfterUndo.y() << ")");
+        CHECK_COND(plt->plotLayout()->canvasRect() == origCanvasRect160,
+                   "77g: undo() mutated 160%-zoom canvasRect!");
         ml->exportImage(pngUndo, 100, false, 300);
         const QImage imgUndo(pngUndo);
         CHECK_COND(imgUndo == imgBefore,
                    "77g: exported PNG after undo() differed from imgBefore!");
 
-        // Redo restores nudged _toriAxisTitleShift (+20, -15)
+        // Redo restores nudged _toriAxisTitleShift (+20, -15) and exact exported PNG
         CHECK_COND(ml->undoStack()->canRedo(), "77g: expected undoStack()->canRedo()");
         while (ml->undoStack()->canRedo())
             ml->undoStack()->redo();
@@ -26455,6 +26457,13 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                            && std::fabs(xShiftAfterRedo.y() - (-15.0)) < 1e-3,
                    "77g: redo() did not restore _toriAxisTitleShift (+20, -15), got ("
                            << xShiftAfterRedo.x() << ", " << xShiftAfterRedo.y() << ")");
+        CHECK_COND(plt->plotLayout()->canvasRect() == origCanvasRect160,
+                   "77g: redo() mutated 160%-zoom canvasRect!");
+        const QString pngRedo = tmp77.filePath(QStringLiteral("nudge77g_redo.png"));
+        ml->exportImage(pngRedo, 100, false, 300);
+        const QImage imgRedo(pngRedo);
+        CHECK_COND(imgRedo == img160,
+                   "77g: exported PNG after redo() differed from img160!");
 
         // Also verify yLeft AxisTitle nudging at 160% zoom with 0 px layout delta
         ml->setPageZoom(1.6);

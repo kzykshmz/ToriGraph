@@ -32,6 +32,7 @@
 #include <QObject>
 #include <QMap>
 #include <QPoint>
+#include <QPointer>
 
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
@@ -183,6 +184,6 @@ private:
     ZoomFontSlot d_zoom_axis_font[axisCnt];
     ZoomFontSlot d_zoom_axis_title_font[axisCnt];
     ZoomFontSlot d_zoom_title_font;
-    QWidget *d_axis_title_overlay = nullptr;
+    QPointer<QWidget> d_axis_title_overlay;
 };
 #endif

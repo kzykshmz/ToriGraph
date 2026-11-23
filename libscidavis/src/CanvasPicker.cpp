@@ -38,6 +38,7 @@
 #include "PlotCurve.h"
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
+#include "ScalePicker.h"
 #include "MultiLayer.h"
 #include "ApplicationWindow.h"
 
@@ -63,6 +64,7 @@
 #include <qwt_plot_canvas.h>
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
+#include <qwt_scale_widget.h>
 #include <qwt_symbol.h>
 #include <qwt_text_label.h>
 
@@ -92,6 +94,57 @@ QPoint constrainAxisPoint(const QPoint &origin, const QPoint &target)
     if (std::abs(dx) >= std::abs(dy))
         return QPoint(target.x(), origin.y());
     return QPoint(origin.x(), target.y());
+}
+
+bool hitShiftedAxisTitleOnCanvas(Plot *pl, Graph *g, const QPoint &canvasPos)
+{
+    if (!pl || !pl->canvas() || !g || !g->scalePicker)
+        return false;
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        if (!pl->axisEnabled(a))
+            continue;
+        QwtScaleWidget *sw = pl->axisWidget(a);
+        if (!sw || !sw->isVisible() || sw->title().text().isEmpty())
+            continue;
+        const QPointF shift = sw->property("_toriAxisTitleShift").toPointF();
+        if (std::hypot(shift.x(), shift.y()) <= 1e-4)
+            continue;
+        const QRect trSw = g->scalePicker->titleRect(sw);
+        if (!trSw.isValid() || trSw.isEmpty())
+            continue;
+        const QSize ts = sw->title().textSize();
+        const int flags = sw->title().renderFlags();
+        QRect tightSw = trSw;
+        if (sw->alignment() == QwtScaleDraw::BottomScale
+            || sw->alignment() == QwtScaleDraw::TopScale) {
+            const int tw = qBound(12, ts.width() + 8, trSw.width());
+            int x0 = trSw.left() + (trSw.width() - tw) / 2;
+            if (flags & Qt::AlignLeft)
+                x0 = trSw.left();
+            else if (flags & Qt::AlignRight)
+                x0 = trSw.right() - tw + 1;
+            tightSw = QRect(x0, trSw.top() - 2, tw, trSw.height() + 4);
+        } else {
+            const int th = qBound(12, ts.width() + 8, trSw.height());
+            int y0 = trSw.top() + (trSw.height() - th) / 2;
+            if (sw->alignment() == QwtScaleDraw::LeftScale) {
+                if (flags & Qt::AlignLeft)
+                    y0 = trSw.bottom() - th + 1;
+                else if (flags & Qt::AlignRight)
+                    y0 = trSw.top();
+            } else {
+                if (flags & Qt::AlignLeft)
+                    y0 = trSw.top();
+                else if (flags & Qt::AlignRight)
+                    y0 = trSw.bottom() - th + 1;
+            }
+            tightSw = QRect(trSw.left() - 2, y0, trSw.width() + 4, th);
+        }
+        const QPoint topLeftInCv = pl->canvas()->mapFromGlobal(sw->mapToGlobal(tightSw.topLeft()));
+        if (QRect(topLeftInCv, tightSw.size()).contains(canvasPos))
+            return true;
+    }
+    return false;
 }
 
 QPoint snapLineEndpoint45(const QPoint &startPt, const QPoint &endPt)
@@ -692,6 +745,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
             if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                 bar->cancelScheduledAndHide();
+            if ((me->button() == Qt::LeftButton || me->button() == Qt::RightButton)
+                && hitShiftedAxisTitleOnCanvas(plotWidget, g, me->pos())) {
+                return false;
+            }
             if (me->button() == Qt::LeftButton || me->button() == Qt::RightButton) {
                 g->deselect();
                 g->setCurrentSelection({ Graph::GraphSelection::Layer, -1, -1 });
@@ -783,6 +840,10 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 }
                 emit showPlotDialog(curveKey);
             } else {
+                if (dblMe->button() == Qt::LeftButton
+                    && hitShiftedAxisTitleOnCanvas(plotWidget, g, dblMe->pos())) {
+                    return false;
+                }
                 emit showPlotDialog(-1);
             }
             return true;
