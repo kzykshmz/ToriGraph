@@ -2316,13 +2316,20 @@ bool Plot::eventFilter(QObject *object, QEvent *e)
     }
 
     if (object == this && e->type() == QEvent::Paint) {
-        if (g && !g->isExporting() && g->isLegendVisible()) {
-            if (Legend *leg = g->legend()) {
-                if (canvas() && leg->isVisible() && leg->rect().right() > canvas()->width()) {
+        if (g && !g->isExporting() && canvas()) {
+            const QRect cvRect = canvas()->rect();
+            for (int key : g->textMarkerKeys()) {
+                Legend *mrk = g->textMarker(key);
+                if (!mrk || !mrk->isVisible())
+                    continue;
+                if (mrk == g->legend() && !g->isLegendVisible())
+                    continue;
+                const QRect mr = mrk->rect();
+                if (mr.right() > cvRect.width() || mr.left() < 0 || mr.bottom() > cvRect.height()
+                    || mr.top() < 0) {
                     QPainter p(this);
                     p.translate(canvas()->pos());
-                    leg->draw(&p, canvasMap(leg->xAxis()), canvasMap(leg->yAxis()),
-                              canvas()->rect());
+                    mrk->draw(&p, canvasMap(mrk->xAxis()), canvasMap(mrk->yAxis()), cvRect);
                 }
             }
         }

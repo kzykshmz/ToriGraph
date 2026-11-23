@@ -13263,6 +13263,7 @@ bool Graph::nudgeSelectedElement(int dx, int dy)
 
     if (changed) {
         d_plot->replot();
+        d_plot->update();
         updateSelectionOverlayGeometry();
         if (ml) {
             if (!beforeSnap.isEmpty())

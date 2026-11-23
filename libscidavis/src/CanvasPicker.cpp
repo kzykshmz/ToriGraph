@@ -469,11 +469,12 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                     if (e->type() == QEvent::MouseButtonPress) {
                         emit selectPlot();
                         disableEditing();
-                        g->setSelectedMarker(hitKey, false);
                         const Graph::GraphSelection::Kind kind = (g->legend() == hitLeg)
                                 ? Graph::GraphSelection::LegendBox
                                 : Graph::GraphSelection::TextAnnotation;
                         g->setCurrentSelection({ kind, int(hitKey), -1 });
+                        if (cv)
+                            cv->setFocus(Qt::MouseFocusReason);
                         if (me->button() == Qt::RightButton) {
                             d_outer_legend_dragging = false;
                             emit showMarkerPopupMenu();

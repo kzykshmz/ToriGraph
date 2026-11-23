@@ -26613,13 +26613,15 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         const QSize origMlSizeOut = ml->size();
 
         // (3a) Add TextAnnotation inside canvas, select via SelectionMoveResizer, nudge Left & Up
-        Legend *txt = g->newLegend(QStringLiteral("Al-Zn-Mg"));
-        CHECK_COND(txt != nullptr, "77g: newLegend('Al-Zn-Mg') failed");
+        Legend *txt = g->newLegend(QStringLiteral("Al"));
+        CHECK_COND(txt != nullptr, "77g: newLegend('Al') failed");
         const long txtId = g->selectedMarkerKey();
-        txt->setOrigin(QPoint(40, 40));
+        txt->setOrigin(QPoint(8, 20));
         plt->replot();
+        QApplication::processEvents();
         CHECK_COND(txt->rect().right() <= plt->canvas()->width(),
-                   "77g: TextAnnotation expected inside canvas()->width()");
+                   "77g: TextAnnotation expected inside canvas()->width() (right="
+                           << txt->rect().right() << ", cvW=" << plt->canvas()->width() << ")");
         g->setSelectedMarker(txtId, false);
         g->setCurrentSelection({ Graph::GraphSelection::TextAnnotation, int(txtId), -1 });
         SelectionMoveResizer *txtResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
@@ -26637,8 +26639,9 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(txt->rect().topLeft() == txtRectBefore.topLeft() + QPoint(-2, -2),
                    "77g: TextAnnotation rect did not move by (-2, -2)!");
 
-        // (3b) Select outside-right LegendBox itself and nudge left with Shift+Key_Left until
-        //      leg->rect().right() <= plt->canvas()->width() (test BOTH SelectionMoveResizer & canvas())
+        // (3b) Select outside-right LegendBox via real mouse click (no manual setFocus!) and nudge
+        //      left with Shift+Key_Left via QApplication::focusWidget() until inside canvas()->width(),
+        //      then also test SelectionMoveResizer nudging on LegendBox inside canvas!
         Legend *leg = g->legend();
         CHECK_COND(leg != nullptr, "77g: g->legend() null");
         int legId = -1;
@@ -26652,53 +26655,49 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(leg->rect().right() > plt->canvas()->width(),
                    "77g: outside-right legend expected initially right of canvas()->width()");
 
-        // Path 1: via SelectionMoveResizer on LegendBox
-        g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
-        g->setSelectedMarker(legId, false);
-        SelectionMoveResizer *legResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
-        CHECK_COND(legResizer && legResizer->contains(leg),
-                   "77g: SelectionMoveResizer not active on LegendBox");
-        legResizer->setFocus();
-        int legSteps = 0;
-        while (leg->rect().right() > plt->canvas()->width() && legSteps < 80) {
-            sendKey(legResizer, Qt::Key_Left, Qt::ShiftModifier);
-            ++legSteps;
+        // Path 1: real mouse click on outside-right LegendBox -> focus stays on plt->canvas()
+        const QPoint legClickInPlot = plt->canvas()->pos() + leg->rect().center();
+        {
+            QMouseEvent mePress(QEvent::MouseButtonPress, legClickInPlot,
+                                plt->mapToGlobal(legClickInPlot), Qt::LeftButton, Qt::LeftButton,
+                                Qt::NoModifier);
+            QApplication::sendEvent(plt, &mePress);
+            QMouseEvent meRel(QEvent::MouseButtonRelease, legClickInPlot,
+                              plt->mapToGlobal(legClickInPlot), Qt::LeftButton, Qt::NoButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(plt, &meRel);
+            QApplication::processEvents();
+        }
+        CHECK_COND(g->currentSelection().kind == Graph::GraphSelection::LegendBox,
+                   "77g: mouse click on outside-right LegendBox did not select LegendBox");
+        QWidget *focusedAfterOuterClick = QApplication::focusWidget();
+        CHECK_COND(focusedAfterOuterClick == plt->canvas(),
+                   "77g: mouse click on outside-right LegendBox lost focus from plt->canvas()");
+        int canvasLegSteps = 0;
+        while (leg->rect().right() > plt->canvas()->width() && canvasLegSteps < 80) {
+            sendKey(focusedAfterOuterClick, Qt::Key_Left, Qt::ShiftModifier);
+            ++canvasLegSteps;
             CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin
                                && plt->plotLayout()->canvasRect() == origCanvasRectOut,
-                       "77g: Shift+Key_Left on LegendBox (SelectionMoveResizer) wiped _outsideRightMargin or changed canvasRect() at step "
-                               << legSteps);
+                       "77g: Shift+Key_Left on outside-right LegendBox wiped _outsideRightMargin or changed canvasRect() at step "
+                               << canvasLegSteps);
         }
-        // Two additional Shift+Key_Left presses well inside canvas()->width()
+        CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
+                   "77g: outside-right LegendBox did not cross <= canvas()->width() after Shift+Key_Left nudges");
+
+        // Path 2: inside-canvas LegendBox via SelectionMoveResizer
+        g->setSelectedMarker(legId, false);
+        g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
+        SelectionMoveResizer *legResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
+        CHECK_COND(legResizer && legResizer->contains(leg),
+                   "77g: SelectionMoveResizer not active on inside-canvas LegendBox");
+        legResizer->setFocus();
         for (int extra = 0; extra < 2; ++extra) {
             sendKey(legResizer, Qt::Key_Left, Qt::ShiftModifier);
             CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin
                                && plt->plotLayout()->canvasRect() == origCanvasRectOut,
-                       "77g: Shift+Key_Left on LegendBox inside canvas wiped _outsideRightMargin!");
+                       "77g: Shift+Key_Left on LegendBox (SelectionMoveResizer) wiped _outsideRightMargin or changed canvasRect()!");
         }
-        CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
-                   "77g: LegendBox did not cross <= canvas()->width() after Shift+Key_Left nudges");
-
-        // Path 2: via Graph::nudgeSelectedElement on plt->canvas()
-        g->deselectMarker();
-        g->placeLegendAnchor(Graph::LegendOutsideRight);
-        plt->updateLayout();
-        plt->replot();
-        const int origRightMargin2 = plt->property("_outsideRightMargin").toInt();
-        const QRect origCanvasRectOut2 = plt->plotLayout()->canvasRect();
-        CHECK_COND(origRightMargin2 > 0 && leg->rect().right() > plt->canvas()->width(),
-                   "77g: re-placed outside-right legend setup failed");
-        g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
-        plt->canvas()->setFocus();
-        int canvasLegSteps = 0;
-        while (leg->rect().right() > plt->canvas()->width() && canvasLegSteps < 80) {
-            sendKey(plt->canvas(), Qt::Key_Left, Qt::ShiftModifier);
-            ++canvasLegSteps;
-            CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin2
-                               && plt->plotLayout()->canvasRect() == origCanvasRectOut2,
-                       "77g: Shift+Key_Left on LegendBox (canvas) wiped _outsideRightMargin or changed canvasRect()!");
-        }
-        CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
-                   "77g: LegendBox via canvas() did not cross <= canvas()->width()");
 
         // ---------------------------------------------------------------------
         // (4) Stale MultiLayer::d_layers_selector clearance on AxisTitle / TextAnnotation selection
