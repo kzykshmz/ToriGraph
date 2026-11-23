@@ -57,9 +57,24 @@ if (-not $py) {
 Write-Info "Using Python: $($py.Exe) $($py.PrefixArgs -join ' ')"
 
 if ($Uninstall) {
-    $uArgs = @($py.PrefixArgs + @("-m", "pip", "uninstall", "-y", "torigraph"))
-    & $py.Exe @uArgs 2>&1 | Out-Null
-    Write-Info "Uninstalled torigraph Python SDK (if previously installed)."
+    # pip writes "WARNING: Skipping torigraph as it is not installed." to stderr. With
+    # $ErrorActionPreference = "Stop", Windows PowerShell 5.1 turns redirected native stderr into a
+    # terminating error, which would abort the uninstaller. Run pip with "Continue" and never throw.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $uArgs = @($py.PrefixArgs + @("-m", "pip", "uninstall", "-y", "torigraph"))
+        $null = & $py.Exe @uArgs 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Info "Uninstalled torigraph Python SDK (if previously installed)."
+        } else {
+            Write-Info "pip uninstall exited with code $LASTEXITCODE (the SDK may not have been installed)."
+        }
+    } catch {
+        Write-Info "Could not uninstall the torigraph Python SDK: $($_.Exception.Message)"
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     exit 0
 }
 

@@ -156,6 +156,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
+#include <QTextCharFormat>
 #include <QTextCodec>
 #include <QTextCursor>
 #include <QTextDecoder>
@@ -171,6 +172,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -1667,6 +1669,45 @@ void enforceArialGraphFonts(Graph *g)
     }
 }
 
+bool resolveStylePresetForRpc(const QString &rawPreset, MultiLayer::GraphStylePresetSpec *outSpec,
+                              bool throwOnUnknown = true)
+{
+    const QString trimmed = rawPreset.trimmed();
+    if (trimmed.isEmpty())
+        return false;
+    const QString lower = trimmed.toLower();
+    MultiLayer::GraphStylePresetSpec spec;
+    bool resolved = false;
+    if (lower == QStringLiteral("journal"))
+        resolved = MultiLayer::findStylePreset(QStringLiteral("isij_85mm"), &spec);
+    else
+        resolved = MultiLayer::findStylePreset(trimmed, &spec);
+    if (!resolved) {
+        if (!throwOnUnknown)
+            return false;
+        QStringList avail;
+        for (const auto &s : MultiLayer::listStylePresets())
+            avail << s.id;
+        throwInvalidParamsWithAvailable(
+                QStringLiteral("Unknown style preset '%1'.").arg(trimmed), avail);
+    }
+    if (outSpec)
+        *outSpec = spec;
+    return true;
+}
+
+void applyResolvedStylePreset(MultiLayer *ml, const MultiLayer::GraphStylePresetSpec &spec)
+{
+    if (!ml)
+        return;
+    ml->applyStylePresetSpec(spec);
+    if (spec.fontFamily.compare(QStringLiteral("Arial"), Qt::CaseInsensitive) == 0
+        && !spec.boldTitle && !spec.boldTick && !spec.boldLegend) {
+        for (Graph *lg : ml->layersList())
+            enforceArialGraphFonts(lg);
+    }
+}
+
 void replotGraphOrDefer(Graph *g)
 {
     if (!g)
@@ -2946,16 +2987,52 @@ QString PythonAutomationServer::resolvePythonExecutable(bool *explicitInvalidOut
         return envPy;
     }
 
-    QString found = QStandardPaths::findExecutable(QStringLiteral("python"));
-    if (!found.isEmpty())
-        return found;
-    found = QStandardPaths::findExecutable(QStringLiteral("python3"));
-    if (!found.isEmpty())
-        return found;
-    found = QStandardPaths::findExecutable(QStringLiteral("py"));
-    if (!found.isEmpty())
-        return found;
+    // Search PATH ourselves so that Microsoft Store "WindowsApps" app-execution-alias stubs
+    // (python.exe / python3.exe that only open the Store) are skipped. On Windows the "py"
+    // launcher (always started with -3, see pythonLauncherPrefixArgs()) is preferred.
+    auto findOnPathSkippingStubs = [](const QString &name) -> QString {
+        const QStringList dirs =
+                qEnvironmentVariable("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
+        for (const QString &dir : dirs) {
+            const QString hit = QStandardPaths::findExecutable(name, QStringList() << dir);
+            if (hit.isEmpty())
+                continue;
+            if (hit.contains(QStringLiteral("WindowsApps"), Qt::CaseInsensitive)
+                && name != QStringLiteral("py"))
+                continue;
+            return hit;
+        }
+        return QString();
+    };
+
+    QStringList order;
+#ifdef Q_OS_WIN
+    order << QStringLiteral("py") << QStringLiteral("python") << QStringLiteral("python3");
+#else
+    order << QStringLiteral("python3") << QStringLiteral("python") << QStringLiteral("py");
+#endif
+    for (const QString &name : order) {
+        const QString found = findOnPathSkippingStubs(name);
+        if (!found.isEmpty())
+            return found;
+    }
+#ifdef Q_OS_WIN
+    {
+        const QString winDir = qEnvironmentVariable("WINDIR", QStringLiteral("C:\\Windows"));
+        const QString pyLauncher = QDir(winDir).filePath(QStringLiteral("py.exe"));
+        if (QFileInfo(pyLauncher).isExecutable())
+            return pyLauncher;
+    }
+#endif
     return QStringLiteral("python");
+}
+
+QStringList PythonAutomationServer::pythonLauncherPrefixArgs(const QString &exe)
+{
+    const QString base = QFileInfo(exe).completeBaseName().toLower();
+    if (base == QStringLiteral("py"))
+        return QStringList() << QStringLiteral("-3");
+    return QStringList();
 }
 
 QString PythonAutomationServer::resolvePythonExecutable()
@@ -2981,24 +3058,29 @@ QString PythonAutomationServer::resolvePythonSdkDir()
     return QFileInfo(QDir(appDir).filePath(QStringLiteral("python"))).absoluteFilePath();
 }
 
-QProcess *PythonAutomationServer::startPythonScriptProcess(const QString &scriptPath,
-                                                           const QStringList &extraArgs,
-                                                           QObject *parent)
+namespace {
+
+QProcess *startPythonScriptProcessImpl(PythonAutomationServer *server, const QString &scriptPath,
+                                       const QStringList &extraArgs, QObject *parent,
+                                       const QString &workingDir,
+                                       const std::function<void(QProcess *)> &beforeStart)
 {
-    if (!isTcpListening() && !isLocalPipeListening()) {
-        if (!startLocalPipe())
-            startTcp(0, QHostAddress::LocalHost);
+    if (!server)
+        return nullptr;
+    if (!server->isTcpListening() && !server->isLocalPipeListening()) {
+        if (!server->startLocalPipe())
+            server->startTcp(0, QHostAddress::LocalHost);
     }
 
-    auto *proc = new QProcess(parent ? parent : this);
+    auto *proc = new QProcess(parent ? parent : static_cast<QObject *>(server));
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("TORIGRAPH_RPC_ENDPOINT"), endpointString());
-    if (!d_tcp_auth_token.isEmpty())
-        env.insert(QStringLiteral("TORIGRAPH_RPC_TOKEN"), d_tcp_auth_token);
+    env.insert(QStringLiteral("TORIGRAPH_RPC_ENDPOINT"), server->endpointString());
+    if (!server->tcpAuthToken().isEmpty())
+        env.insert(QStringLiteral("TORIGRAPH_RPC_TOKEN"), server->tcpAuthToken());
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
 
-    const QString sdkDir = resolvePythonSdkDir();
+    const QString sdkDir = PythonAutomationServer::resolvePythonSdkDir();
     const QString sep =
 #ifdef Q_OS_WIN
             QStringLiteral(";");
@@ -3012,15 +3094,35 @@ QProcess *PythonAutomationServer::startPythonScriptProcess(const QString &script
     env.insert(QStringLiteral("PYTHONPATH"), newPyPath);
     proc->setProcessEnvironment(env);
 
-    const QFileInfo sfi(scriptPath);
-    if (sfi.exists())
-        proc->setWorkingDirectory(sfi.absolutePath());
+    // The working directory and signal connections must be set before start().
+    const QFileInfo wdi(workingDir);
+    if (!workingDir.isEmpty() && wdi.isDir()) {
+        proc->setWorkingDirectory(wdi.absoluteFilePath());
+    } else {
+        const QFileInfo sfi(scriptPath);
+        if (sfi.exists())
+            proc->setWorkingDirectory(sfi.absolutePath());
+    }
 
-    QStringList args;
+    if (beforeStart)
+        beforeStart(proc);
+
+    const QString pyExe = PythonAutomationServer::resolvePythonExecutable();
+    QStringList args = PythonAutomationServer::pythonLauncherPrefixArgs(pyExe);
     args << QStringLiteral("-u") << scriptPath;
     args.append(extraArgs);
-    proc->start(resolvePythonExecutable(), args);
+    proc->start(pyExe, args);
     return proc;
+}
+
+} // namespace
+
+QProcess *PythonAutomationServer::startPythonScriptProcess(const QString &scriptPath,
+                                                           const QStringList &extraArgs,
+                                                           QObject *parent,
+                                                           const QString &workingDir)
+{
+    return startPythonScriptProcessImpl(this, scriptPath, extraArgs, parent, workingDir, {});
 }
 
 // ============================================================================
@@ -3038,6 +3140,33 @@ QString extractCurrentVersionClean()
         return m.captured(1);
     return raw.section(QLatin1Char(' '), -1);
 }
+
+QVariant &rpcPrevNonInteractiveSlot()
+{
+    static QVariant v; // value of "torigraph_noninteractive" before the current RPC call
+    return v;
+}
+
+//! While alive, restores the pre-RPC value of the application-global "torigraph_noninteractive"
+//! property so that the user's own GUI actions inside a nested event loop (network waits, ...)
+//! keep their normal save-confirmation behaviour. The RPC value is reinstated afterwards.
+struct RpcInteractiveWindow
+{
+    QCoreApplication *qa;
+    QVariant rpcValue;
+    RpcInteractiveWindow() : qa(QCoreApplication::instance())
+    {
+        if (qa) {
+            rpcValue = qa->property("torigraph_noninteractive");
+            qa->setProperty("torigraph_noninteractive", rpcPrevNonInteractiveSlot());
+        }
+    }
+    ~RpcInteractiveWindow()
+    {
+        if (qa)
+            qa->setProperty("torigraph_noninteractive", rpcValue);
+    }
+};
 
 QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
 {
@@ -3064,6 +3193,8 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
     }
     {
         QNetworkAccessManager nam;
+        // Same proxy policy as the GUI updater (system/PAC proxy for remote hosts, none for loopback).
+        AutoUpdater::applyNetworkProxyPolicy(nam, qurl);
         QNetworkRequest req(qurl);
         req.setHeader(QNetworkRequest::UserAgentHeader,
                       QStringLiteral("ToriGraph-Updater/%1").arg(currentVer));
@@ -3089,7 +3220,10 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
         QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         timer.start(timeoutMs);
-        loop.exec();
+        {
+            RpcInteractiveWindow interactiveWindow;
+            loop.exec();
+        }
 
         if (!reply->isFinished()) {
             reply->abort();
@@ -3190,12 +3324,8 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
     }
 
     const QString body = relObj.value(QStringLiteral("body")).toString();
-    if (sha256Hex.isEmpty() && !body.isEmpty()) {
-        QRegularExpression shaRx(QStringLiteral("\\b([A-Fa-f0-9]{64})\\b"));
-        QRegularExpressionMatch sm = shaRx.match(body);
-        if (sm.hasMatch())
-            sha256Hex = sm.captured(1).toLower();
-    }
+    // NOTE: a bare 64-hex string in the release body is deliberately NOT accepted as a digest
+    // (AutoUpdater dropped that heuristic as well); only the asset "digest" field is trusted.
 
     QJsonObject out;
     out[QStringLiteral("ok")] = true;
@@ -4299,6 +4429,19 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
     info[QStringLiteral("background_color")] = ml->pageBackgroundColor().name(QColor::HexArgb);
     info[QStringLiteral("can_undo")] = ml->undoStack() ? ml->undoStack()->canUndo() : false;
     info[QStringLiteral("can_redo")] = ml->undoStack() ? ml->undoStack()->canRedo() : false;
+    {
+        const QString appliedPreset = ml->property("toriAppliedStylePreset").toString().trimmed();
+        if (!appliedPreset.isEmpty()) {
+            info[QStringLiteral("applied_style_preset")] = appliedPreset;
+            info[QStringLiteral("style_preset")] = appliedPreset;
+            MultiLayer::GraphStylePresetSpec presetSpec;
+            if (MultiLayer::findStylePreset(appliedPreset, &presetSpec)
+                && presetSpec.slidePastePercent > 0.0) {
+                info[QStringLiteral("slide_paste_percent")] =
+                        safeJsonDouble(presetSpec.slidePastePercent);
+            }
+        }
+    }
     {
         QJsonObject plObj;
         plObj[QStringLiteral("enabled")] = ml->hasPanelLabels();
@@ -6688,10 +6831,10 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "List built-in curated Materials Science & physics sample datasets (Arrhenius, DP980 tensile, FCC Cu XRD, TiO2 Tauc, LiFePO4 EIS, DSC Kissinger, Si bands).",
       "category:str=''", "app.list_sample_datasets()" },
     { "app.load_sample_dataset", "app",
-      "Session.load_sample_dataset(dataset_id='fe_c_arrhenius', *, auto_plot=True, preset=None)",
+      "Session.load_sample_dataset(dataset_id='arrhenius_diffusion', *, auto_plot=True, preset=None)",
       "Load a built-in curated scientific sample dataset into a worksheet/matrix and optionally create a publication-styled plot.",
-      "id:str='fe_c_arrhenius'; auto_plot:bool=true; preset:str=''",
-      "res = app.load_sample_dataset('dp980_tensile', auto_plot=True)" },
+      "id:str='arrhenius_diffusion'; auto_plot:bool=true; preset:str=''",
+      "res = app.load_sample_dataset('tensile_alznmg', auto_plot=True)" },
     { "app.list_windows", "app", "Session.list_windows(window_type=None)",
       "List open workspace windows (optionally filtered by Table, Matrix, MultiLayer, Graph3D, Note).",
       "type:str=''", "app.list_windows('MultiLayer')" },
@@ -6739,7 +6882,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "List registered QAction commands and shortcuts.", "filter:str=''",
       "app.list_actions('grid')" },
     { "app.trigger_action", "app", "Session.trigger_action(name, *, checked=None)",
-      "Trigger a non-modal QAction or 0-arg slot (interactive modal dialogs are safely blocked).",
+      "Trigger a safe view/navigation/toggle QAction or 0-arg slot from a fixed allow-list (destructive commands and modal dialogs are rejected with -32602).",
       "name:str*; checked:bool=null", "app.trigger_action('actionNextWindow')" },
     { "app.grab_gui_diagnostic", "app", "Session.call(method='app.grab_gui_diagnostic', path='')",
       "Capture main-window screenshot and ribbon/dock geometry diagnostics.",
@@ -7079,8 +7222,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Refit all primary layers into the current physical page dimensions.", "graph:str=''",
       "g.fit_layers_to_page()" },
     { "graph.apply_style_preset", "graph", "GraphProxy.apply_style_preset(preset='isij_85mm')",
-      "Apply one-click journal/slide typography & sizing preset ('isij_85mm', 'slide_28pt', or custom user preset).",
-      "graph:str=''; preset:str='isij_85mm'[isij_85mm|slide_28pt]",
+      "Apply one-click journal/slide typography & sizing preset ('isij_85mm', 'lab_slide_83mm', 'slide_28pt', 'journal_2col_175mm', or custom user preset).",
+      "graph:str=''; preset:str='isij_85mm'[isij_85mm|lab_slide_83mm|slide_28pt|journal_2col_175mm]",
       "g.apply_style_preset('isij_85mm')" },
     { "graph.apply_frame_preset", "graph", "GraphProxy.apply_frame_preset(preset='box_inward', *, layer=None)",
       "Apply 4-wall box + inward ticks ('box_inward'/'box'), plain box ('box_plain'), open L-axes ('open_l'/'top_right_off'), or origin-crossed ('zero_crossed').",
@@ -7173,9 +7316,9 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; palette:str='okabe_ito'[okabe_ito|Okabe-Ito|Paul Tol Bright|Paul Tol Muted|ISIJ Monochrome|Nature NPG|Science AAAS|Viridis|Plasma|Inferno|Cividis|CoolWarm]; sequential:bool=false; apply_to_symbols:bool=true; layer:int=null",
       "g.apply_palette('okabe_ito')" },
     { "graph.set_colorbar", "graph",
-      "GraphProxy.set_colorbar(*, palette='viridis', z_min=None, z_max=None, title=None, levels=None, show_contour_lines=None, use_colormap_pen=None, layer=None)",
-      "Configure spectrogram colormap, Z range, contour levels, colormap contour pen, and colorbar title.",
-      "graph:str=''; palette:str='viridis'[viridis|plasma|inferno|magma|cividis|jet|coolwarm|bwr|grayscale]; z_min:float=null; z_max:float=null; title:str=null; levels:int=null; show_contour_lines:bool=null; use_colormap_pen:bool=null; layer:int=null",
+      "GraphProxy.set_colorbar(*, palette='viridis', reverse=None, z_min=None, z_max=None, title=None, levels=None, show_contour_lines=None, use_colormap_pen=None, log=None, cell_blocks=None, layer=None)",
+      "Configure spectrogram colormap, log color scale, discrete cell blocks, Z range, contour levels, colormap contour pen, and colorbar title.",
+      "graph:str=''; palette:str='viridis'[viridis|plasma|inferno|magma|cividis|jet|coolwarm|bwr|grayscale]; reverse:bool=null; z_min:float=null; z_max:float=null; title:str=null; levels:int=null; show_contour_lines:bool=null; use_colormap_pen:bool=null; log:bool=null; cell_blocks:bool=null; layer:int=null",
       "g.set_colorbar(palette='viridis', title='Intensity (a.u.)')" },
     { "graph.set_legend", "graph",
       "GraphProxy.set_legend(*, visible=None, position=None, columns=None, font_size=None, frame=None, framed=None, text=None, layer=None)",
@@ -7227,13 +7370,13 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "graph.copy_image", "graph", "GraphProxy.copy_image(dpi=300)",
       "Copy rendered graph raster image to the system clipboard.", "graph:str=''; dpi:int=300",
       "g.copy_image(dpi=300)" },
-    { "graph.copy_ole", "graph", "GraphProxy.copy_ole()",
+    { "graph.copy_ole", "graph", "GraphProxy.copy_ole(*, preset=None, active_layer_only=False)",
       "Place editable ToriGraph OLE object + vector EMF on Windows clipboard for Word/PowerPoint.",
-      "graph:str=''; active_layer_only:bool=false", "g.copy_ole()" },
+      "graph:str=''; preset:str=''; active_layer_only:bool=false", "g.copy_ole()" },
     { "graph.export_ole", "graph",
-      "GraphProxy.export_ole(*, emf_path=None, ole_path=None, dpi=300, active_layer_only=False, include_base64=True, skip_project_stream=False, embed_scope='graph')",
+      "GraphProxy.export_ole(*, emf_path=None, ole_path=None, dpi=300, preset=None, active_layer_only=False, include_base64=True, skip_project_stream=False, embed_scope='graph')",
       "Export editable ToriGraph OLE Compound Document (.bin), crisp vector EMF preview, .sciprj XML, and physical dimensions (mm/hm) for zero-COM PowerPoint (.pptx) embedding.",
-      "graph:str=''; emf_path:str=''; ole_path:str=''; dpi:int=300; active_layer_only:bool=false; include_base64:bool=true; skip_project_stream:bool=false; embed_scope:str='graph'[graph|project]",
+      "graph:str=''; emf_path:str=''; ole_path:str=''; dpi:int=300; preset:str=''; active_layer_only:bool=false; include_base64:bool=true; skip_project_stream:bool=false; embed_scope:str='graph'[graph|project]",
       "pkg = g.export_ole(dpi=300)" },
     { "graph.auto_layout", "graph",
       "GraphProxy.auto_layout(*, pad_fraction=0.05, allow_page_resize=True, allow_tick_rotation=True, allow_outside_legend=True, max_passes=3, dry_run=False)",
@@ -9897,6 +10040,23 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     };
 
+    auto parseXmlTagAttrs = [](const QString &tag) -> QMap<QString, QString> {
+        QMap<QString, QString> out;
+        static const QRegularExpression rxAttr(QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
+        auto it = rxAttr.globalMatch(tag);
+        while (it.hasNext()) {
+            const auto m = it.next();
+            QString val = m.captured(2);
+            val.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+            val.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+            val.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+            val.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+            val.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            out.insert(m.captured(1), val);
+        }
+        return out;
+    };
+
     if (window->inherits("Table")) {
         addTableRef(static_cast<Table *>(window));
     } else if (window->inherits("Matrix")) {
@@ -9912,6 +10072,26 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         for (Graph *lg : ml->layersList()) {
             if (!lg)
                 continue;
+            bool poleHasSource = false;
+            if (lg->isPoleFigurePlot()) {
+                const QString pfTag =
+                        ExtraPlotTypes::graphTag(lg, QStringLiteral("ToriPoleFigure"));
+                if (!pfTag.isEmpty()) {
+                    const QMap<QString, QString> pfa = parseXmlTagAttrs(pfTag);
+                    if (Table *pt = app->table(pfa.value(QStringLiteral("table")))) {
+                        if (pt->colIndex(pfa.value(QStringLiteral("a"))) >= 0
+                            && pt->colIndex(pfa.value(QStringLiteral("b"))) >= 0
+                            && pt->colIndex(pfa.value(QStringLiteral("i"))) >= 0) {
+                            addTableRef(pt);
+                            poleHasSource = true;
+                        }
+                    } else if (Matrix *pm =
+                                       app->matrix(pfa.value(QStringLiteral("sourceMatrix")))) {
+                        addMatrixRef(pm);
+                        poleHasSource = true;
+                    }
+                }
+            }
             for (int ci = 0; ci < lg->curves(); ++ci) {
                 if (auto *dc = dynamic_cast<DataCurve *>(lg->curve(ci))) {
                     addTableRef(dc->table());
@@ -9921,7 +10101,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                     }
                 }
             }
-            if (lg->plotWidget()) {
+            if (!poleHasSource && lg->plotWidget()) {
                 for (QwtPlotItem *it : lg->plotWidget()->itemList()) {
                     if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
                         if (auto *sp = dynamic_cast<Spectrogram *>(it))
@@ -9960,7 +10140,14 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         return out.join(QLatin1Char('\n')) + QLatin1Char('\n');
     };
     if (standalone) {
-        lines << QStringLiteral("app = tg.connect()");
+        lines << QStringLiteral("app = tg.connect_or_launch()");
+        lines << QString();
+    }
+
+    if (embedMode == QStringLiteral("csv") && !refTables.isEmpty()) {
+        lines << QStringLiteral("import os");
+        lines << QStringLiteral(
+                "_script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else '.'");
         lines << QString();
     }
 
@@ -9978,14 +10165,16 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
         if (embedMode == QStringLiteral("csv")) {
             const QString csvName = QStringLiteral("%1.csv").arg(t->name());
-            QString csvRefPath = csvName;
             if (!csvSidecarDir.isEmpty()) {
                 const QString fullCsv = QDir(csvSidecarDir).filePath(csvName);
                 t->exportASCII(fullCsv, QStringLiteral(","), true, false);
-                csvRefPath = fullCsv;
+            } else {
+                noteUnreproduced(QStringLiteral(
+                        "embed_data='csv' は保存先パス未指定のため CSV ファイル(%1)を書き出していません")
+                                         .arg(csvName));
             }
-            lines << QStringLiteral("%1 = app.import_csv(%2, name=%3)")
-                             .arg(varName, pyEscapeStr(csvRefPath), pyEscapeStr(t->name()));
+            lines << QStringLiteral("%1 = app.import_csv(os.path.join(_script_dir, %2), name=%3)")
+                             .arg(varName, pyEscapeStr(csvName), pyEscapeStr(t->name()));
             continue;
         }
 
@@ -10110,9 +10299,11 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
     if (window->inherits("Graph3D")) {
         auto *g3d = static_cast<Graph3D *>(window);
+        bool emittedG3 = false;
         if (g3d->matrix() && matVarMap.contains(g3d->matrix())) {
             lines << QStringLiteral("g3 = app.plot_3d_matrix(%1.name)")
                              .arg(matVarMap.value(g3d->matrix()));
+            emittedG3 = true;
         } else if (g3d->getTable() && tblVarMap.contains(g3d->getTable())) {
             Table *t3 = g3d->getTable();
             const QString c0 = (t3->numCols() > 0) ? t3->colLabel(0) : QStringLiteral("1");
@@ -10121,12 +10312,19 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             lines << QStringLiteral("g3 = app.plot_3d_xyz(%1.name, %2, %3, %4)")
                              .arg(tblVarMap.value(t3), pyEscapeStr(c0), pyEscapeStr(c1),
                                   pyEscapeStr(c2));
+            emittedG3 = true;
         } else if (!g3d->formula().trimmed().isEmpty()) {
             lines << QStringLiteral(
                              "g3 = app.plot_3d_function(%1, x_min=%2, x_max=%3, y_min=%4, y_max=%5)")
                              .arg(pyEscapeStr(g3d->formula().trimmed()),
                                   pyFormatNum(g3d->xStart()), pyFormatNum(g3d->xStop()),
                                   pyFormatNum(g3d->yStart()), pyFormatNum(g3d->yStop()));
+            emittedG3 = true;
+        }
+        if (!emittedG3) {
+            noteUnreproduced(QStringLiteral(
+                    "3D グラフの元データ(Matrix・Table・数式のいずれも特定できず、3D グラフ本体を再現できない)"));
+            return finishScript();
         }
         lines << QStringLiteral(
                          "g3.set_3d_options(title=%1, x_rotation=%2, y_rotation=%3, z_rotation=%4, orthogonal=%5)")
@@ -10213,6 +10411,248 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     };
 
+    auto colorMapPresetPyName = [](int presetInt) -> QString {
+        switch (static_cast<Spectrogram::ColorMapPreset>(presetInt)) {
+        case Spectrogram::PresetGrayScale:
+            return QStringLiteral("grayscale");
+        case Spectrogram::PresetViridis:
+            return QStringLiteral("viridis");
+        case Spectrogram::PresetMagma:
+            return QStringLiteral("magma");
+        case Spectrogram::PresetInferno:
+            return QStringLiteral("inferno");
+        case Spectrogram::PresetPlasma:
+            return QStringLiteral("plasma");
+        case Spectrogram::PresetCividis:
+            return QStringLiteral("cividis");
+        case Spectrogram::PresetJet:
+            return QStringLiteral("jet");
+        case Spectrogram::PresetBlueWhiteRed:
+            return QStringLiteral("bwr");
+        case Spectrogram::PresetCoolWarm:
+            return QStringLiteral("coolwarm");
+        default:
+            return QString();
+        }
+    };
+
+    auto spectrogramStyleStr = [](Spectrogram *sp) -> QString {
+        if (!sp)
+            return QStringLiteral("colormap");
+        if (!sp->testDisplayMode(QwtPlotSpectrogram::ImageMode)
+            && sp->testDisplayMode(QwtPlotSpectrogram::ContourMode))
+            return QStringLiteral("contour");
+        if (sp->colorMapPreset() == Spectrogram::PresetGrayScale)
+            return QStringLiteral("grayscale");
+        return QStringLiteral("colormap");
+    };
+
+    auto emitSpectrogramColorbar = [&](Spectrogram *sp, const QString &layerKw) {
+        if (!sp)
+            return;
+        QStringList cbArgs;
+        const QString palName = colorMapPresetPyName(int(sp->colorMapPreset()));
+        if (!palName.isEmpty())
+            cbArgs << QStringLiteral("palette=%1").arg(pyEscapeStr(palName));
+        else if (sp->colorMapPreset() == Spectrogram::PresetCustom)
+            noteUnreproduced(QStringLiteral("カスタムカラーマップの配色(既定パレットになります)"));
+        if (sp->reversePalette())
+            cbArgs << QStringLiteral("reverse=True");
+        const QwtDoubleInterval zInt = sp->colorAxisRange();
+        if (std::isfinite(zInt.minValue()) && std::isfinite(zInt.maxValue())
+            && zInt.maxValue() > zInt.minValue()) {
+            cbArgs << QStringLiteral("z_min=%1").arg(pyFormatNum(zInt.minValue()));
+            cbArgs << QStringLiteral("z_max=%1").arg(pyFormatNum(zInt.maxValue()));
+        }
+        cbArgs << QStringLiteral("title=%1").arg(pyEscapeStr(sp->colorBarTitle()));
+        cbArgs << QStringLiteral("levels=%1").arg(sp->levels());
+        const bool showContours = sp->testDisplayMode(QwtPlotSpectrogram::ContourMode);
+        cbArgs << QStringLiteral("show_contour_lines=%1")
+                          .arg(showContours ? QStringLiteral("True") : QStringLiteral("False"));
+        if (showContours && sp->defaultContourPen().style() == Qt::NoPen)
+            cbArgs << QStringLiteral("use_colormap_pen=True");
+        if (sp->logColorScale())
+            cbArgs << QStringLiteral("log=True");
+        if (sp->cellBlocks())
+            cbArgs << QStringLiteral("cell_blocks=True");
+        if (!sp->hasColorScale())
+            cbArgs << QStringLiteral("visible=False");
+        lines << QStringLiteral("g.set_colorbar(%1%2)")
+                         .arg(cbArgs.join(QStringLiteral(", ")), layerKw);
+    };
+
+    auto boxWhiskerExtra = [](BoxCurve *bc) -> QString {
+        if (!bc)
+            return QString();
+        const int wType = bc->whiskersRangeType();
+        if (wType == BoxCurve::Tukey15IQR)
+            return QStringLiteral(", whisker_mode='1.5iqr'");
+        if (wType == BoxCurve::MinMax)
+            return QStringLiteral(", whisker_mode='minmax'");
+        if (wType == BoxCurve::SD)
+            return QStringLiteral(", whisker_mode='sd'");
+        if (wType == BoxCurve::SE)
+            return QStringLiteral(", whisker_mode='se'");
+        if (wType == BoxCurve::r5_95)
+            return QStringLiteral(", whisker_mode='p5_95'");
+        if (wType == BoxCurve::r10_90)
+            return QStringLiteral(", whisker_mode='p10_90'");
+        if (wType == BoxCurve::r1_99)
+            return QStringLiteral(", whisker_mode='p1_99'");
+        return QString();
+    };
+
+    auto firstSpectrogramOn = [](Graph *lg) -> Spectrogram * {
+        if (!lg || !lg->plotWidget())
+            return nullptr;
+        for (QwtPlotItem *it : lg->plotWidget()->itemList()) {
+            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (auto *sp = dynamic_cast<Spectrogram *>(it))
+                    return sp;
+            }
+        }
+        return nullptr;
+    };
+
+    auto emitPoleFigureForLayer = [&](Graph *lg, int li, bool isBaseLayer,
+                                      const QString &layerKw) -> bool {
+        if (!lg || !lg->isPoleFigurePlot())
+            return false;
+        const QString pfTag = ExtraPlotTypes::graphTag(lg, QStringLiteral("ToriPoleFigure"));
+        if (pfTag.isEmpty())
+            return false;
+        const QMap<QString, QString> pfa = parseXmlTagAttrs(pfTag);
+        Spectrogram *sp = firstSpectrogramOn(lg);
+
+        QStringList args;
+        bool hasSrc = false;
+        if (Table *pt = app->table(pfa.value(QStringLiteral("table")))) {
+            const int aIdx = pt->colIndex(pfa.value(QStringLiteral("a")));
+            const int bIdx = pt->colIndex(pfa.value(QStringLiteral("b")));
+            const int iIdx = pt->colIndex(pfa.value(QStringLiteral("i")));
+            if (tblVarMap.contains(pt) && aIdx >= 0 && bIdx >= 0 && iIdx >= 0) {
+                args << QStringLiteral("table=%1.name").arg(tblVarMap.value(pt));
+                args << QStringLiteral("alpha=%1").arg(pyEscapeStr(pt->colLabel(aIdx)));
+                args << QStringLiteral("beta=%1").arg(pyEscapeStr(pt->colLabel(bIdx)));
+                args << QStringLiteral("intensity=%1").arg(pyEscapeStr(pt->colLabel(iIdx)));
+                hasSrc = true;
+            }
+        }
+        if (!hasSrc) {
+            if (Matrix *pm = app->matrix(pfa.value(QStringLiteral("sourceMatrix")))) {
+                if (matVarMap.contains(pm)) {
+                    args << QStringLiteral("matrix=%1.name").arg(matVarMap.value(pm));
+                    hasSrc = true;
+                }
+            }
+        }
+        if (!hasSrc) {
+            noteUnreproduced(QStringLiteral(
+                    "極点図のステレオ投影枠(元データが見つからないため行列ヒートマップとして再現)"));
+            return false;
+        }
+        const QString projStr =
+                (pfa.value(QStringLiteral("proj")).toInt() == int(ExtraPlotTypes::EqualAngle))
+                ? QStringLiteral("wulff")
+                : QStringLiteral("schmidt");
+        args << QStringLiteral("projection=%1").arg(pyEscapeStr(projStr));
+        args << QStringLiteral("mrd=%1")
+                        .arg(pfa.value(QStringLiteral("mrd"), QStringLiteral("1")).toInt() != 0
+                                     ? QStringLiteral("True")
+                                     : QStringLiteral("False"));
+        args << QStringLiteral("alpha_from_rim=%1")
+                        .arg(pfa.value(QStringLiteral("rim"), QStringLiteral("0")).toInt() != 0
+                                     ? QStringLiteral("True")
+                                     : QStringLiteral("False"));
+        args << QStringLiteral("beta_zero_top=%1")
+                        .arg(pfa.value(QStringLiteral("zeroTop"), QStringLiteral("0")).toInt() != 0
+                                     ? QStringLiteral("True")
+                                     : QStringLiteral("False"));
+        args << QStringLiteral("clockwise=%1")
+                        .arg(pfa.value(QStringLiteral("cw"), QStringLiteral("0")).toInt() != 0
+                                     ? QStringLiteral("True")
+                                     : QStringLiteral("False"));
+        args << QStringLiteral("rd=%1")
+                        .arg(pyEscapeStr(
+                                pfa.value(QStringLiteral("rdTop"), QStringLiteral("1")).toInt() != 0
+                                        ? QStringLiteral("top")
+                                        : QStringLiteral("right")));
+        if (sp) {
+            args << QStringLiteral("levels=%1").arg(sp->levels());
+            const QString palName = colorMapPresetPyName(int(sp->colorMapPreset()));
+            if (!palName.isEmpty())
+                args << QStringLiteral("palette=%1").arg(pyEscapeStr(palName));
+        }
+        const QString lbl = pfa.value(QStringLiteral("label")).trimmed();
+        if (!lbl.isEmpty())
+            args << QStringLiteral("label=%1").arg(pyEscapeStr(lbl));
+        const QString ax1 = pfa.value(QStringLiteral("ax1")).trimmed();
+        if (!ax1.isEmpty())
+            args << QStringLiteral("axis1_label=%1").arg(pyEscapeStr(ax1));
+        const QString ax2 = pfa.value(QStringLiteral("ax2")).trimmed();
+        if (!ax2.isEmpty())
+            args << QStringLiteral("axis2_label=%1").arg(pyEscapeStr(ax2));
+        if (pfa.value(QStringLiteral("rings")).toInt() != 0)
+            args << QStringLiteral("tilt_circles=True");
+
+        if (isBaseLayer) {
+            args << QStringLiteral("graph_name=%1").arg(pyEscapeStr(ml->name()));
+            lines << QStringLiteral("_pf_res = app.plot_pole_figure(%1)")
+                             .arg(args.join(QStringLiteral(", ")));
+            lines << QStringLiteral("g = app.graph(_pf_res['graph'])");
+        } else {
+            lines << QStringLiteral("app.call('plot.pole_figure', graph=g.name, layer=%1, %2)")
+                             .arg(li)
+                             .arg(args.join(QStringLiteral(", ")));
+        }
+        if (sp)
+            emitSpectrogramColorbar(sp, layerKw);
+        return true;
+    };
+
+    auto emitColorScatterCurve = [&](DataCurve *dc, int li, bool isBaseLayer) -> bool {
+        if (!dc || !dc->hasPointColorMap() || !dc->table() || !tblVarMap.contains(dc->table()))
+            return false;
+        Table *ct = dc->table();
+        const DataCurve::PointColorMap &pm = dc->pointColorMap();
+        const int xIdx = ct->colIndex(dc->xColumnName());
+        const int yIdx = ct->colIndex(dc->yColumnName());
+        const int zIdx = ct->colIndex(pm.zColumn);
+        if (xIdx < 0 || yIdx < 0 || zIdx < 0)
+            return false;
+        const int sIdx = pm.sizeColumn.isEmpty() ? -1 : ct->colIndex(pm.sizeColumn);
+        QStringList args;
+        args << QStringLiteral("x=%1").arg(pyEscapeStr(ct->colLabel(xIdx)));
+        args << QStringLiteral("y=%1").arg(pyEscapeStr(ct->colLabel(yIdx)));
+        args << QStringLiteral("z=%1").arg(pyEscapeStr(ct->colLabel(zIdx)));
+        if (sIdx >= 0)
+            args << QStringLiteral("size=%1").arg(pyEscapeStr(ct->colLabel(sIdx)));
+        const QString palName = colorMapPresetPyName(pm.preset);
+        if (!palName.isEmpty())
+            args << QStringLiteral("palette=%1").arg(pyEscapeStr(palName));
+        if (pm.reverse)
+            args << QStringLiteral("reverse=True");
+        if (!pm.autoRange && std::isfinite(pm.zMin) && std::isfinite(pm.zMax) && pm.zMax > pm.zMin) {
+            args << QStringLiteral("z_min=%1").arg(pyFormatNum(pm.zMin));
+            args << QStringLiteral("z_max=%1").arg(pyFormatNum(pm.zMax));
+        }
+        if (!pm.colorBarTitle.isEmpty())
+            args << QStringLiteral("colorbar_title=%1").arg(pyEscapeStr(pm.colorBarTitle));
+        if (!pm.showColorBar)
+            args << QStringLiteral("show_colorbar=False");
+        if (isBaseLayer) {
+            lines << QStringLiteral("g = app.plot_color_scatter(%1.name, %2, graph_name=%3)")
+                             .arg(tblVarMap.value(ct), args.join(QStringLiteral(", ")),
+                                  pyEscapeStr(ml->name()));
+        } else {
+            lines << QStringLiteral(
+                             "app.call('plot.color_scatter', graph=g.name, layer=%1, table=%2.name, %3)")
+                             .arg(li)
+                             .arg(tblVarMap.value(ct), args.join(QStringLiteral(", ")));
+        }
+        return true;
+    };
+
     // Emit Layer 0 base plot
     Graph *g0 = layers.first();
     bool emittedBasePlot = false;
@@ -10220,25 +10660,23 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
     int firstEmittedCurveOnL0 = -1;
     QSet<int> preCreatedPrimaryLayers;
     QSet<QPair<int, int>> preHandledLayerCurves;
-    if (g0 && g0->plotWidget()) {
-        for (QwtPlotItem *it : g0->plotWidget()->itemList()) {
-            if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
-                if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
-                    if (sp->matrix() && matVarMap.contains(sp->matrix())) {
-                        lines << QStringLiteral("g = app.plot_matrix(%1.name, graph_name=%2)")
-                                         .arg(matVarMap.value(sp->matrix()),
-                                              pyEscapeStr(ml->name()));
-                        const QwtDoubleInterval zInt = sp->effectiveValueRange();
-                        lines << QStringLiteral(
-                                         "g.set_colorbar(z_min=%1, z_max=%2, title=%3, levels=%4)")
-                                         .arg(pyFormatNum(zInt.minValue()),
-                                              pyFormatNum(zInt.maxValue()),
-                                              pyEscapeStr(sp->colorBarTitle()))
-                                         .arg(sp->levels());
-                        emittedBasePlot = true;
-                        break;
-                    }
-                }
+    const QString l0LayerKw =
+            (layers.size() > 1) ? QStringLiteral(", layer=0") : QString();
+    if (g0 && g0->isPoleFigurePlot()) {
+        if (emitPoleFigureForLayer(g0, 0, true, l0LayerKw)) {
+            emittedBasePlot = true;
+            l0HandledAllCurves = true;
+        }
+    }
+    if (!emittedBasePlot && g0) {
+        if (Spectrogram *sp = firstSpectrogramOn(g0)) {
+            if (sp->matrix() && matVarMap.contains(sp->matrix())) {
+                lines << QStringLiteral("g = app.plot_matrix(%1.name, style=%2, graph_name=%3)")
+                                 .arg(matVarMap.value(sp->matrix()),
+                                      pyEscapeStr(spectrogramStyleStr(sp)),
+                                      pyEscapeStr(ml->name()));
+                emitSpectrogramColorbar(sp, l0LayerKw);
+                emittedBasePlot = true;
             }
         }
     }
@@ -10433,16 +10871,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                                                 : QStringLiteral("False"),
                                           pyEscapeStr(ml->name()));
                 } else {
-                    QString wExtra;
-                    const int wType = bc0->whiskersRangeType();
-                    if (wType == BoxCurve::MinMax)
-                        wExtra = QStringLiteral(", whisker_mode='minmax'");
-                    else if (wType == BoxCurve::SD)
-                        wExtra = QStringLiteral(", whisker_mode='sd'");
-                    else if (wType == BoxCurve::SE)
-                        wExtra = QStringLiteral(", whisker_mode='se'");
-                    else if (wType == BoxCurve::r5_95)
-                        wExtra = QStringLiteral(", whisker_mode='p5_95'");
+                    const QString wExtra = boxWhiskerExtra(bc0);
                     lines << QStringLiteral(
                                      "g = app.plot_box(%1.name, cols=[%2], notched=%3, show_points=%4%5, graph_name=%6)")
                                      .arg(tblVarMap.value(ctBox),
@@ -10550,6 +10979,19 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     }
     if (!emittedBasePlot && g0) {
+        if (DataCurve *cmDc = g0->pointColorMapCurve()) {
+            if (emitColorScatterCurve(cmDc, 0, true)) {
+                emittedBasePlot = true;
+                for (int ci = 0; ci < g0->curves(); ++ci) {
+                    if (g0->curve(ci) == cmDc) {
+                        firstEmittedCurveOnL0 = ci;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!emittedBasePlot && g0) {
         for (int ci = 0; ci < g0->curves(); ++ci) {
             if (g0->curveType(ci) == Graph::ErrorBars)
                 continue;
@@ -10599,6 +11041,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     }
     if (!emittedBasePlot) {
+        noteUnreproduced(QStringLiteral(
+                "第1レイヤーの基底プロットを再構築できないため空のグラフとして出力されます"));
         lines << QStringLiteral("g = app.plot_function('0', x_min=0.0, x_max=1.0, graph_name=%1)")
                          .arg(pyEscapeStr(ml->name()));
         lines << QStringLiteral("g.remove_curve(0)");
@@ -10732,8 +11176,16 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         if (!lg->fitCurvesList().isEmpty())
             noteUnreproduced(QStringLiteral(
                     "フィット(フィット曲線は数値データとして描き直すが、フィットの条件と結果のパラメータは再現しない)"));
-        if (lg->pointColorMapCurve())
-            noteUnreproduced(QStringLiteral("値で色を変える散布図の色付けとカラーバー"));
+        if (DataCurve *cmDc = lg->pointColorMapCurve()) {
+            Table *ct = cmDc->table();
+            const DataCurve::PointColorMap &pm = cmDc->pointColorMap();
+            const bool canReproduce = ct && tblVarMap.contains(ct)
+                    && ct->colIndex(cmDc->xColumnName()) >= 0
+                    && ct->colIndex(cmDc->yColumnName()) >= 0
+                    && ct->colIndex(pm.zColumn) >= 0;
+            if (!canReproduce)
+                noteUnreproduced(QStringLiteral("値で色を変える散布図の色付けとカラーバー"));
+        }
         for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
             if (lg->hasWeibullProbabilityAxis(ax) || lg->hasCustomTickLabels(ax)) {
                 noteUnreproduced(QStringLiteral(
@@ -10769,19 +11221,83 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
     }
 
     // Per-layer curves, styles, error bars, axes, reference lines, shaded bands, annotations
-    const QJsonObject fullInspect = inspectGraphDetailed(ml, false, false);
-    const QJsonArray inspectLayers = fullInspect.value(QStringLiteral("layers")).toArray();
-
     for (int li = 0; li < layers.size(); ++li) {
         Graph *lg = layers[li];
         Plot *plt = lg ? lg->plotWidget() : nullptr;
         if (!lg || !plt)
             continue;
         const bool isInset = ml->isInsetLayer(lg);
-        const bool isNonCartesianLayer =
-                invokeGraphIsPolarPlot(lg) || lg->isTernaryPlot() || lg->isPiePlot();
+        const bool isNonCartesianLayer = invokeGraphIsPolarPlot(lg) || lg->isTernaryPlot()
+                || lg->isPiePlot() || lg->isPoleFigurePlot();
         const QString layerKw =
                 (layers.size() > 1) ? QStringLiteral(", layer=%1").arg(li) : QString();
+
+        // Non-L0 PoleFigure / Spectrogram / BoxCurve / Violin reproduction
+        if (li >= 1 && !isInset) {
+            bool layerHandledSpec = false;
+            if (lg->isPoleFigurePlot()) {
+                layerHandledSpec = emitPoleFigureForLayer(lg, li, false, layerKw);
+            }
+            if (!layerHandledSpec) {
+                if (Spectrogram *sp = firstSpectrogramOn(lg)) {
+                    if (sp->matrix() && matVarMap.contains(sp->matrix())) {
+                        lines << QStringLiteral(
+                                         "app.call('plot.matrix', matrix=%1.name, style=%2, graph=g.name, layer=%3)")
+                                         .arg(matVarMap.value(sp->matrix()),
+                                              pyEscapeStr(spectrogramStyleStr(sp)))
+                                         .arg(li);
+                        emitSpectrogramColorbar(sp, layerKw);
+                    }
+                }
+            }
+            // Group any unhandled BoxCurve / Violin curves on this layer by source table.
+            for (int ci = 0; ci < lg->curves(); ++ci) {
+                if (preHandledLayerCurves.contains(qMakePair(li, ci)))
+                    continue;
+                auto *bc0 = dynamic_cast<BoxCurve *>(lg->curve(ci));
+                Table *ctBox = bc0 ? bc0->table() : nullptr;
+                if (!bc0 || !ctBox || !tblVarMap.contains(ctBox))
+                    continue;
+                const bool wantViolin = bc0->violinMode();
+                QStringList qBoxCols;
+                for (int cj = ci; cj < lg->curves(); ++cj) {
+                    if (preHandledLayerCurves.contains(qMakePair(li, cj)))
+                        continue;
+                    if (auto *bc = dynamic_cast<BoxCurve *>(lg->curve(cj))) {
+                        if (bc->table() == ctBox && bc->violinMode() == wantViolin) {
+                            const int yIdx = ctBox->colIndex(bc->yColumnName());
+                            if (yIdx >= 0) {
+                                qBoxCols << pyEscapeStr(ctBox->colLabel(yIdx));
+                                preHandledLayerCurves.insert(qMakePair(li, cj));
+                            }
+                        }
+                    }
+                }
+                if (!qBoxCols.isEmpty()) {
+                    if (wantViolin) {
+                        lines << QStringLiteral(
+                                         "app.call('plot.violin', graph=g.name, layer=%1, table=%2.name, cols=[%3], show_points=%4)")
+                                         .arg(li)
+                                         .arg(tblVarMap.value(ctBox),
+                                              qBoxCols.join(QStringLiteral(", ")),
+                                              bc0->showDataPoints() ? QStringLiteral("True")
+                                                                    : QStringLiteral("False"));
+                    } else {
+                        lines << QStringLiteral(
+                                         "app.call('plot.box', graph=g.name, layer=%1, table=%2.name, cols=[%3], notched=%4, show_points=%5%6)")
+                                         .arg(li)
+                                         .arg(tblVarMap.value(ctBox),
+                                              qBoxCols.join(QStringLiteral(", ")),
+                                              (bc0->boxStyle() == BoxCurve::Notch)
+                                                      ? QStringLiteral("True")
+                                                      : QStringLiteral("False"),
+                                              bc0->showDataPoints() ? QStringLiteral("True")
+                                                                    : QStringLiteral("False"),
+                                              boxWhiskerExtra(bc0));
+                    }
+                }
+            }
+        }
 
         // Additional curves on this layer (skip inset auto-cloned curves)
         int nonErrIdx = 0;
@@ -10793,11 +11309,11 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                     || dynamic_cast<QwtErrorPlotCurve *>(c) != nullptr) {
                     continue;
                 }
-                const bool isSpecialtySingleCol = lg->isPiePlot()
-                        || lg->curveType(ci) == Graph::Pie || lg->curveType(ci) == Graph::Box
+                auto *boxC = dynamic_cast<BoxCurve *>(c);
+                const bool isPieOrHist = lg->isPiePlot()
+                        || lg->curveType(ci) == Graph::Pie
                         || lg->curveType(ci) == Graph::Histogram
                         || dynamic_cast<QwtPieCurve *>(c) != nullptr
-                        || dynamic_cast<BoxCurve *>(c) != nullptr
                         || dynamic_cast<QwtHistogram *>(c) != nullptr;
                 auto *dc = dynamic_cast<DataCurve *>(c);
                 auto *fc = dynamic_cast<FunctionCurve *>(c);
@@ -10807,7 +11323,9 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 bool curvePresent = (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
                         || preHandledLayerCurves.contains(qMakePair(li, ci));
                 if (!curvePresent) {
-                    if (dc && dc->table() && tblVarMap.contains(dc->table())) {
+                    if (dc && dc->hasPointColorMap() && emitColorScatterCurve(dc, li, false)) {
+                        curvePresent = true;
+                    } else if (dc && dc->table() && tblVarMap.contains(dc->table())) {
                         Table *ct = dc->table();
                         const int xIdx = ct->colIndex(dc->xColumnName());
                         const int yIdx = ct->colIndex(dc->yColumnName());
@@ -10852,7 +11370,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 }
                 if (!curvePresent)
                     continue;
-                if (isSpecialtySingleCol) {
+                if (isPieOrHist) {
                     ++nonErrIdx;
                     continue;
                 }
@@ -10860,18 +11378,44 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 const double lw = c->pen().widthF() > 0.0 ? c->pen().widthF()
                                                           : double(std::max(1, c->pen().width()));
                 const int skip = pc ? std::max(1, pc->symbolSkip()) : 1;
-                lines << QStringLiteral(
-                                 "g.set_curve_style(%1, color=%2, lw=%3, ls=%4, marker=%5, ms=%6, symbol_hollow=%7, symbol_skip=%8%9)")
-                                 .arg(nonErrIdx)
-                                 .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
-                                      pyFormatNum(lw), pyEscapeStr(penStyleStr(c->pen().style())),
-                                      pyEscapeStr(symStyleStr(c->symbol().style())))
-                                 .arg(std::max(1, c->symbol().size().width()))
-                                 .arg(Graph::isSymbolWhiteHollow(c->symbol())
-                                              ? QStringLiteral("True")
-                                              : QStringLiteral("False"))
-                                 .arg(skip)
-                                 .arg(layerKw);
+                if (boxC) {
+                    QString boxStyleExtra;
+                    if (c->brush().style() != Qt::NoBrush) {
+                        const QColor fillCol = c->brush().color();
+                        const QString fcHex = (fillCol.alpha() < 255)
+                                ? fillCol.name(QColor::HexArgb)
+                                : fillCol.name(QColor::HexRgb);
+                        boxStyleExtra = QStringLiteral(", fill_area=True, fill_color=%1")
+                                                .arg(pyEscapeStr(fcHex));
+                    } else {
+                        boxStyleExtra = QStringLiteral(", fill_area=False");
+                    }
+                    lines << QStringLiteral("g.set_curve_style(%1, color=%2, lw=%3%4%5)")
+                                     .arg(nonErrIdx)
+                                     .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
+                                          pyFormatNum(lw), boxStyleExtra, layerKw);
+                } else if (dc && dc->hasPointColorMap()) {
+                    lines << QStringLiteral(
+                                     "g.set_curve_style(%1, marker=%2, ms=%3, symbol_skip=%4%5)")
+                                     .arg(nonErrIdx)
+                                     .arg(pyEscapeStr(symStyleStr(c->symbol().style())))
+                                     .arg(std::max(1, c->symbol().size().width()))
+                                     .arg(skip)
+                                     .arg(layerKw);
+                } else {
+                    lines << QStringLiteral(
+                                     "g.set_curve_style(%1, color=%2, lw=%3, ls=%4, marker=%5, ms=%6, symbol_hollow=%7, symbol_skip=%8%9)")
+                                     .arg(nonErrIdx)
+                                     .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
+                                          pyFormatNum(lw), pyEscapeStr(penStyleStr(c->pen().style())),
+                                          pyEscapeStr(symStyleStr(c->symbol().style())))
+                                     .arg(std::max(1, c->symbol().size().width()))
+                                     .arg(Graph::isSymbolWhiteHollow(c->symbol())
+                                                  ? QStringLiteral("True")
+                                                  : QStringLiteral("False"))
+                                     .arg(skip)
+                                     .arg(layerKw);
+                }
                 if (!lg->isCurveVisible(ci)) {
                     lines << QStringLiteral("g.set_curve_visible(%1, False%2)")
                                      .arg(nonErrIdx)
@@ -11118,15 +11662,36 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 const QString y2Csv = am.contains(QStringLiteral("yHigh"))
                         ? am.value(QStringLiteral("yHigh"))
                         : am.value(QStringLiteral("y2"));
-                if (!xCsv.isEmpty() && !y1Csv.isEmpty() && !y2Csv.isEmpty()) {
+                auto sanitizeBandNumCsv = [](const QString &rawCsv, QString *outPyList) -> bool {
+                    const QStringList parts =
+                            rawCsv.split(QLatin1Char(','), Qt::SkipEmptyParts);
+                    if (parts.isEmpty())
+                        return false;
+                    QStringList formatted;
+                    formatted.reserve(parts.size());
+                    for (const QString &tok : parts) {
+                        bool ok = false;
+                        const double v = tok.trimmed().toDouble(&ok);
+                        if (!ok || !std::isfinite(v))
+                            return false;
+                        formatted << pyFormatNum(v);
+                    }
+                    *outPyList = formatted.join(QStringLiteral(", "));
+                    return true;
+                };
+                QString xSafe, y1Safe, y2Safe;
+                if (sanitizeBandNumCsv(xCsv, &xSafe) && sanitizeBandNumCsv(y1Csv, &y1Safe)
+                    && sanitizeBandNumCsv(y2Csv, &y2Safe)) {
                     const QColor bc(am.value(QStringLiteral("color")));
                     lines << QStringLiteral(
                                      "g.add_shaded_band([%1], [%2], [%3], color=%4, alpha=%5, label=%6%7)")
-                                     .arg(xCsv, y1Csv, y2Csv,
+                                     .arg(xSafe, y1Safe, y2Safe,
                                           pyEscapeStr(bc.isValid() ? bc.name(QColor::HexRgb)
                                                                    : QStringLiteral("#4C78A8")))
                                      .arg(bc.isValid() ? bc.alpha() : 55)
                                      .arg(pyEscapeStr(am.value(QStringLiteral("title"))), layerKw);
+                } else if (!xCsv.isEmpty() || !y1Csv.isEmpty() || !y2Csv.isEmpty()) {
+                    noteUnreproduced(QStringLiteral("シェード帯の数値データ(非数値を含むためスキップ)"));
                 }
             }
         }
@@ -11196,7 +11761,6 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                                       : QStringLiteral("False"),
                                   layerKw);
         }
-        Q_UNUSED(inspectLayers)
     }
     if (wantStackedHistSquareFrame)
         lines << QStringLiteral("g.apply_square_frame()");
@@ -12546,18 +13110,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParamsWithAvailable(
                     QStringLiteral("Unknown sample dataset '%1'.").arg(dsId), availIds);
         }
-        const QString preset = optionalJsonString(params, QStringLiteral("preset"))
-                                       .trimmed()
-                                       .toLower();
+        const QString rawPreset = optionalJsonString(params, QStringLiteral("preset")).trimmed();
         if (ml) {
-            if (preset == QStringLiteral("isij_85mm") || preset == QStringLiteral("isij"))
-                ml->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
-            else if (preset == QStringLiteral("slide_28pt") || preset == QStringLiteral("slide"))
-                ml->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
-            for (Graph *lg : ml->layersList()) {
-                enforceArialGraphFonts(lg);
-                replotGraphOrDefer(lg);
+            MultiLayer::GraphStylePresetSpec spec;
+            if (resolveStylePresetForRpc(rawPreset, &spec, true)) {
+                applyResolvedStylePreset(ml, spec);
+            } else {
+                for (Graph *lg : ml->layersList())
+                    enforceArialGraphFonts(lg);
             }
+            for (Graph *lg : ml->layersList())
+                replotGraphOrDefer(lg);
         }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("id")] = dsId;
@@ -13356,6 +13919,61 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return false;
         };
 
+        // Allow-list (not deny-list): RPC may only drive view/navigation/toggle commands and a few
+        // harmless creation commands. Destructive or project-replacing commands (newProject,
+        // deleteSelectedItems, clearTable, closeActiveWindow, ...) have dedicated RPC methods
+        // with explicit `force` semantics and must never be reachable by name from here.
+        auto isAllowedTriggerTarget = [](const QString &ident) -> bool {
+            const QString id = ident.trimmed();
+            if (id.isEmpty())
+                return false;
+            static const QSet<QString> kAllowedTriggerTargets = {
+                QStringLiteral("actionNextWindow"),
+                QStringLiteral("actionPrevWindow"),
+                QStringLiteral("hideActiveWindow"),
+                QStringLiteral("actionHideActiveWindow"),
+                QStringLiteral("actionMinimizeWindow"),
+                QStringLiteral("actionMaximizeWindow"),
+                QStringLiteral("actionShowExplorer"),
+                QStringLiteral("actionShowLog"),
+                QStringLiteral("actionShowHistory"),
+                QStringLiteral("actionTabbedWorkspaceView"),
+                QStringLiteral("actionTogglePageView"),
+                QStringLiteral("actionToggleMiniToolbar"),
+                QStringLiteral("actionRecalcAuto"),
+                QStringLiteral("actionRecalcManual"),
+                QStringLiteral("actionRecalcDisabled"),
+                QStringLiteral("actionRecalculateNow"),
+                QStringLiteral("actionUnzoom"),
+                QStringLiteral("actionShowAllCurves"),
+                QStringLiteral("actionBoxPlot"),
+                QStringLiteral("cascade"),
+                QStringLiteral("hideAllFolderWindows"),
+                QStringLiteral("addFolder"),
+                QStringLiteral("actionToggleFocusHudMode"),
+                QStringLiteral("toggleFocusHudMode"),
+                QStringLiteral("actionToggleGraphInspector"),
+                QStringLiteral("toggleGraphInspectorDock"),
+                QStringLiteral("toggleTabbedWorkspaceView"),
+                QStringLiteral("togglePageViewMode"),
+                QStringLiteral("actionWorkspaceLayoutMdi"),
+                QStringLiteral("actionWorkspaceLayoutSplit"),
+                QStringLiteral("actionWorkspaceLayoutTabbed"),
+                QStringLiteral("actionOpenPythonConsole"),
+                QStringLiteral("actionPythonConsole"),
+                QStringLiteral("openPythonConsole"),
+                QStringLiteral("zoomIn"),
+                QStringLiteral("zoomOut"),
+                QStringLiteral("setRecalcModeAuto"),
+                QStringLiteral("setRecalcModeManual"),
+                QStringLiteral("setRecalcModeDisabled"),
+            };
+            if (kAllowedTriggerTargets.contains(id))
+                return true;
+            // Plot-from-selection commands are non-destructive (they only add a new graph).
+            return id.startsWith(QStringLiteral("actionPlot"));
+        };
+
         const bool nonInteractive = d_app->isNonInteractive()
                 || ApplicationWindow::isNonInteractiveContext(d_app);
 
@@ -13365,6 +13983,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 continue;
             const QString cleanTxt = act->text().remove(QLatin1Char('&')).trimmed();
             if (act->objectName() == name || cleanTxt == name) {
+                if (!isAllowedTriggerTarget(act->objectName())) {
+                    throwInvalidParams(
+                            QStringLiteral("Action '%1' is not in the RPC allow-list for app.trigger_action; use the dedicated JSON-RPC method instead.")
+                                    .arg(act->objectName().isEmpty() ? cleanTxt : act->objectName()));
+                }
                 if (nonInteractive
                     && isBlockedInteractiveDialogTarget(act->objectName(), cleanTxt)) {
                     throwInvalidParams(
@@ -13399,6 +14022,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (QString::fromLatin1(mm.name()) == name && mm.parameterCount() == 0
                 && (mm.methodType() == QMetaMethod::Slot
                     || mm.methodType() == QMetaMethod::Method)) {
+                if (!isAllowedTriggerTarget(name)) {
+                    throwInvalidParams(
+                            QStringLiteral("Slot '%1' is not in the RPC allow-list for app.trigger_action; use the dedicated JSON-RPC method instead.")
+                                    .arg(name));
+                }
                 if (nonInteractive && isBlockedInteractiveDialogTarget(name)) {
                     throwInvalidParams(
                             QStringLiteral("Interactive modal dialog slot '%1' cannot be invoked headlessly via RPC; use the dedicated JSON-RPC method instead.")
@@ -13738,10 +14366,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         Table *t = resolveTable(d_app, params, QStringLiteral("table"), false);
+        const bool tableWasCreated = (t == nullptr);
+        int preexistingCols = 0;
         if (!t) {
             t = createUniqueTableHeadless(d_app, maxRows, keys.size(),
                                           params.value(QStringLiteral("name")).toString());
         } else {
+            preexistingCols = t->numCols();
             if (t->numCols() < keys.size())
                 t->setNumCols(keys.size());
             if (t->numRows() < maxRows)
@@ -13756,7 +14387,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         for (int c = 0; c < keys.size(); ++c) {
             const QString colKey = keys[c];
             t->setColName(c, colKey);
-            t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
+            // Default X,Y,Y,... roles only for a freshly created table or newly appended columns;
+            // an existing table keeps the roles the user (or table.create) already assigned.
+            if (tableWasCreated || c >= preexistingCols)
+                t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
             if (dataDict.value(colKey).isArray()) {
                 writeBulkColumnArray(t, c, dataDict.value(colKey).toArray(), QString());
             }
@@ -15806,8 +16440,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 && optionalJsonBool(params, QStringLiteral("stacked"), false)
                 && cols.size() > 1;
 
+        const bool attachToExisting = (method == QStringLiteral("plot.box")
+                                       || method == QStringLiteral("plot.violin"))
+                && !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
         MultiLayer *ml = nullptr;
-        if (wantStackedHist) {
+        Graph *targetBoxLayer = nullptr;
+        int prevCurveCount = 0;
+        if (attachToExisting) {
+            ml = resolveMultiLayer(d_app, params);
+            targetBoxLayer = resolveGraphLayer(ml, params);
+            prevCurveCount = targetBoxLayer->curves();
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Box Plot"));
+            targetBoxLayer->plotBoxDiagram(t, cols, 0, t->numRows() - 1);
+            enforceArialGraphFonts(targetBoxLayer);
+            undoGuard.commit();
+        } else if (wantStackedHist) {
             ml = d_app->multilayerPlot(t, QStringList() << cols.first(), Graph::Histogram, 0,
                                        t->numRows() - 1);
             if (ml) {
@@ -15830,8 +16477,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create statistical plot."));
-        if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
-            closeAndDeleteEmptyPlot(d_app, ml);
+        Graph *checkG = targetBoxLayer ? targetBoxLayer : ml->activeGraph();
+        if (!checkG || checkG->curves() <= prevCurveCount) {
+            if (!attachToExisting)
+                closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(
                     QStringLiteral("%1 created 0 curves from '%2' (check for all-NaN or non-numeric columns).")
                             .arg(method, t->name()));
@@ -16122,7 +16771,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 }
                 applyPlotLevelConvenienceParams(lg, params);
             }
-        } else if (Graph *g = ml->activeGraph()) {
+        } else if (Graph *g = targetBoxLayer ? targetBoxLayer : ml->activeGraph()) {
             const bool notched = optionalJsonBool(params, QStringLiteral("notched"), false);
             const QString whiskerStr =
                     optionalJsonString(params, QStringLiteral("whisker_mode")).trimmed().toLower();
@@ -16139,7 +16788,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         { QStringLiteral("1.5iqr"), QStringLiteral("minmax"), QStringLiteral("sd"),
                           QStringLiteral("se"), QStringLiteral("5_95"), QStringLiteral("10_90") });
             }
-            for (int i = 0; i < g->curves(); ++i) {
+            for (int i = prevCurveCount; i < g->curves(); ++i) {
                 if (auto *bc = dynamic_cast<BoxCurve *>(g->curve(i))) {
                     if (method == QStringLiteral("plot.violin")) {
                         bc->setViolinMode(true);
@@ -16151,8 +16800,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         if (params.contains(QStringLiteral("show_points")))
                             bc->setShowDataPoints(
                                     optionalJsonBool(params, QStringLiteral("show_points"), false));
-                        if (whiskerStr == QStringLiteral("minmax")
-                            || whiskerStr == QStringLiteral("min_max"))
+                        if (whiskerStr.isEmpty() || whiskerStr == QStringLiteral("1.5iqr")
+                            || whiskerStr == QStringLiteral("iqr")
+                            || whiskerStr == QStringLiteral("tukey"))
+                            bc->setWhiskersRange(BoxCurve::Tukey15IQR, 1.5);
+                        else if (whiskerStr == QStringLiteral("minmax")
+                                 || whiskerStr == QStringLiteral("min_max"))
                             bc->setWhiskersRange(BoxCurve::MinMax, 0.0);
                         else if (whiskerStr == QStringLiteral("sd"))
                             bc->setWhiskersRange(BoxCurve::SD, 1.0);
@@ -16164,13 +16817,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         else if (whiskerStr == QStringLiteral("10_90")
                                  || whiskerStr == QStringLiteral("p10_90"))
                             bc->setWhiskersRange(BoxCurve::r10_90, 0.0);
+                        else if (whiskerStr == QStringLiteral("1_99")
+                                 || whiskerStr == QStringLiteral("p1_99"))
+                            bc->setWhiskersRange(BoxCurve::r1_99, 0.0);
                         bc->loadData();
                     }
                 }
             }
             applyPlotLevelConvenienceParams(g, params);
         }
-        applyRequestedWindowName(d_app, ml, params);
+        if (!attachToExisting)
+            applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -17100,10 +17757,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     QStringLiteral("Unknown plot.matrix style '%1' (expected 'colormap'|'contour'|'grayscale').")
                             .arg(style));
         }
-        MultiLayer *ml = d_app->plotSpectrogram(m, cType);
+        const bool attachToExisting =
+                !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
+        MultiLayer *ml = nullptr;
+        Graph *targetG = nullptr;
+        if (attachToExisting) {
+            ml = resolveMultiLayer(d_app, params);
+            targetG = resolveGraphLayer(ml, params);
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Plot Matrix"));
+            targetG->plotSpectrogram(m, cType);
+            enforceArialGraphFonts(targetG);
+            undoGuard.commit();
+        } else {
+            ml = d_app->plotSpectrogram(m, cType);
+            targetG = ml ? ml->activeGraph() : nullptr;
+        }
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create matrix spectrogram plot."));
-        if (Graph *g = ml->activeGraph()) {
+        if (Graph *g = targetG) {
             const QString cmapParam = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
                     ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
                     : (!optionalJsonString(params, QStringLiteral("colormap")).trimmed().isEmpty()
@@ -17160,7 +17831,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
             applyPlotLevelConvenienceParams(g, params);
         }
-        applyRequestedWindowName(d_app, ml, params);
+        if (!attachToExisting)
+            applyRequestedWindowName(d_app, ml, params);
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -17873,16 +18545,17 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         merged->setMargins(10, 10, 10, 10);
         merged->setSpacing(12, 14);
 
-        const QString preset = params.value(QStringLiteral("preset")).toString().trimmed().toLower();
-        if (preset == QStringLiteral("isij_85mm") || preset == QStringLiteral("isij")) {
-            merged->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
-        } else if (preset == QStringLiteral("isij_175mm")) {
+        const QString rawPreset = params.value(QStringLiteral("preset")).toString().trimmed();
+        const QString preset = rawPreset.toLower();
+        if (preset == QStringLiteral("isij_175mm")) {
             merged->applyStylePreset(MultiLayer::StyleISIJJournal85mm);
             const double hMm = std::clamp(175.0 * double(rows) / double(cols), 60.0, 260.0);
             merged->setPageSizePhysical(175.0, hMm, MultiLayer::UnitMm, 600);
             merged->setPageViewMode(true);
-        } else if (preset == QStringLiteral("slide_28pt") || preset == QStringLiteral("slide")) {
-            merged->applyStylePreset(MultiLayer::StylePresentationSlide28pt);
+        } else if (!rawPreset.isEmpty()) {
+            MultiLayer::GraphStylePresetSpec spec;
+            if (resolveStylePresetForRpc(rawPreset, &spec, true))
+                applyResolvedStylePreset(merged, spec);
         }
 
         const double wMm = optionalJsonFiniteDouble(params, QStringLiteral("width_mm"), 0.0, 5000.0);
@@ -18245,27 +18918,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
     if (method == QStringLiteral("graph.apply_style_preset")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         const QString rawP = params.value(QStringLiteral("preset")).toString().trimmed();
-        const QString p = rawP.toLower();
         MultiLayer::GraphStylePresetSpec spec;
-        bool resolved = false;
-        if (p == QStringLiteral("journal"))
-            resolved = MultiLayer::findStylePreset(QStringLiteral("isij_85mm"), &spec);
-        else
-            resolved = MultiLayer::findStylePreset(rawP, &spec);
-        if (!resolved) {
+        if (!resolveStylePresetForRpc(rawP, &spec, true)) {
             QStringList avail;
             for (const auto &s : MultiLayer::listStylePresets())
                 avail << s.id;
             throwInvalidParamsWithAvailable(
-                    QStringLiteral("Unknown style preset '%1'.").arg(rawP), avail);
+                    QStringLiteral("Style preset 'preset' is required."), avail);
         }
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
-        ml->applyStylePresetSpec(spec);
-        if (spec.fontFamily.compare(QStringLiteral("Arial"), Qt::CaseInsensitive) == 0
-            && !spec.boldTitle && !spec.boldTick && !spec.boldLegend) {
-            for (Graph *lg : ml->layersList())
-                enforceArialGraphFonts(lg);
-        }
+        applyResolvedStylePreset(ml, spec);
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -20032,6 +20694,18 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 targetSpec->setDisplayMode(QwtPlotSpectrogram::ContourMode, true);
             }
         }
+        if (params.contains(QStringLiteral("log")) && !params.value(QStringLiteral("log")).isNull()) {
+            targetSpec->setLogColorScale(optionalJsonBool(params, QStringLiteral("log"), false));
+        } else if (params.contains(QStringLiteral("log_scale"))
+                   && !params.value(QStringLiteral("log_scale")).isNull()) {
+            targetSpec->setLogColorScale(
+                    optionalJsonBool(params, QStringLiteral("log_scale"), false));
+        }
+        if (params.contains(QStringLiteral("cell_blocks"))
+            && !params.value(QStringLiteral("cell_blocks")).isNull()) {
+            targetSpec->setCellBlocks(
+                    optionalJsonBool(params, QStringLiteral("cell_blocks"), false));
+        }
         targetSpec->enforceColorBarArialFont();
         targetSpec->syncColorScale();
         enforceArialGraphFonts(g);
@@ -20698,7 +21372,32 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 targetG3D = static_cast<Graph3D *>(actW);
         }
         if (targetG3D) {
-            QFile::remove(absPath);
+            // Never delete the existing destination up-front: render into a sibling temp file
+            // and atomically replace the target only after a non-empty result was produced.
+            const bool is3dEmf = (ext == QStringLiteral("emf"));
+            QString tmp3d;
+            if (!is3dEmf) {
+                if (!ApplicationWindow::probeExportWritableNoTruncate(absPath)) {
+                    throwRpcRuntime(QStringLiteral(
+                                            "Failed to export 3D graph to '%1': destination is not writable.")
+                                            .arg(absPath));
+                }
+                const QDir dst3d = fi.dir();
+                for (int attempt = 0; attempt < 16 && tmp3d.isEmpty(); ++attempt) {
+                    const QString hex8 = QStringLiteral("%1").arg(
+                            QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));
+                    const QString cand =
+                            dst3d.filePath(QStringLiteral(".tgrpc_%1_%2").arg(hex8, fi.fileName()));
+                    if (!QFileInfo::exists(cand))
+                        tmp3d = cand;
+                }
+                if (tmp3d.isEmpty())
+                    throwRpcRuntime(QStringLiteral("Failed to allocate a temporary export file."));
+            }
+            auto cleanup3dTemp = [&]() {
+                if (!tmp3d.isEmpty() && QFileInfo::exists(tmp3d))
+                    QFile::remove(tmp3d);
+            };
             targetG3D->update();
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
             if (targetG3D->sp) {
@@ -20706,11 +21405,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 (void)targetG3D->sp->grabFramebuffer();
             }
             if (ext == QStringLiteral("pdf")) {
-                targetG3D->exportPDF(absPath);
+                targetG3D->exportPDF(tmp3d);
             } else if (ext == QStringLiteral("svg") || ext == QStringLiteral("eps")
                        || ext == QStringLiteral("ps")) {
-                targetG3D->exportVector(absPath, ext);
-            } else if (ext == QStringLiteral("emf")) {
+                targetG3D->exportVector(tmp3d, ext);
+            } else if (is3dEmf) {
 #ifdef Q_OS_WIN
                 QImage fb;
                 if (targetG3D->sp) {
@@ -20744,9 +21443,21 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 throwInvalidParams(QStringLiteral("EMF export is only supported on Windows."));
 #endif
             } else {
-                targetG3D->exportImage(absPath,
+                targetG3D->exportImage(tmp3d,
                                        params.value(QStringLiteral("quality")).toInt(100),
                                        params.value(QStringLiteral("transparent")).toBool(false));
+            }
+            if (!is3dEmf) {
+                if (!QFileInfo::exists(tmp3d) || QFileInfo(tmp3d).size() <= 0) {
+                    cleanup3dTemp();
+                    throwRpcRuntime(
+                            QStringLiteral("Failed to export 3D graph to '%1'.").arg(absPath));
+                }
+                if (!ApplicationWindow::commitExportTempFile(tmp3d, absPath)) {
+                    cleanup3dTemp();
+                    throwRpcRuntime(
+                            QStringLiteral("Failed to export 3D graph to '%1'.").arg(absPath));
+                }
             }
             if (!QFileInfo::exists(absPath) || QFileInfo(absPath).size() <= 0) {
                 throwRpcRuntime(
@@ -20934,22 +21645,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             return true;
         }
         MultiLayer *ml = resolveMultiLayer(d_app, params);
-        const QString presetStr = optionalJsonString(params, QStringLiteral("preset")).trimmed().toLower();
+        const QString presetStr = optionalJsonString(params, QStringLiteral("preset")).trimmed();
         if (!presetStr.isEmpty()) {
-            MultiLayer::StylePreset sp = MultiLayer::StyleISIJJournal85mm;
-            if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
-                || presetStr == QStringLiteral("presentation"))
-                sp = MultiLayer::StylePresentationSlide28pt;
-            else if (presetStr != QStringLiteral("isij_85mm") && presetStr != QStringLiteral("isij")) {
-                throwInvalidParams(
-                        QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt').")
-                                .arg(presetStr));
+            MultiLayer::GraphStylePresetSpec spec;
+            if (resolveStylePresetForRpc(presetStr, &spec, true)) {
+                ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
+                applyResolvedStylePreset(ml, spec);
+                undoGuard.commit();
             }
-            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
-            ml->applyStylePreset(sp);
-            for (Graph *lg : ml->layersList())
-                enforceArialGraphFonts(lg);
-            undoGuard.commit();
         }
         Graph *singleG = params.value(QStringLiteral("active_layer_only")).toBool(false)
                 ? ml->activeGraph()
@@ -21095,24 +21798,14 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (!targetG3D) {
             ml = resolveMultiLayer(d_app, params);
-            const QString presetStr =
-                    optionalJsonString(params, QStringLiteral("preset")).trimmed().toLower();
+            const QString presetStr = optionalJsonString(params, QStringLiteral("preset")).trimmed();
             if (!presetStr.isEmpty()) {
-                MultiLayer::StylePreset sp = MultiLayer::StyleISIJJournal85mm;
-                if (presetStr == QStringLiteral("slide_28pt") || presetStr == QStringLiteral("slide")
-                    || presetStr == QStringLiteral("presentation"))
-                    sp = MultiLayer::StylePresentationSlide28pt;
-                else if (presetStr != QStringLiteral("isij_85mm")
-                         && presetStr != QStringLiteral("isij")) {
-                    throwInvalidParams(
-                            QStringLiteral("Unknown style preset '%1' (expected 'isij_85mm'|'slide_28pt').")
-                                    .arg(presetStr));
+                MultiLayer::GraphStylePresetSpec spec;
+                if (resolveStylePresetForRpc(presetStr, &spec, true)) {
+                    ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
+                    applyResolvedStylePreset(ml, spec);
+                    undoGuard.commit();
                 }
-                ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Apply Style Preset"));
-                ml->applyStylePreset(sp);
-                for (Graph *lg : ml->layersList())
-                    enforceArialGraphFonts(lg);
-                undoGuard.commit();
             }
             for (Graph *lg : ml->layersList()) {
                 if (lg) {
@@ -21282,6 +21975,19 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("graph")] = targetName;
+        if (!targetG3D && ml) {
+            const QString appliedPreset = ml->property("toriAppliedStylePreset").toString().trimmed();
+            if (!appliedPreset.isEmpty()) {
+                outResult[QStringLiteral("applied_style_preset")] = appliedPreset;
+                outResult[QStringLiteral("style_preset")] = appliedPreset;
+                MultiLayer::GraphStylePresetSpec presetSpec;
+                if (MultiLayer::findStylePreset(appliedPreset, &presetSpec)
+                    && presetSpec.slidePastePercent > 0.0) {
+                    outResult[QStringLiteral("slide_paste_percent")] =
+                            safeJsonDouble(presetSpec.slidePastePercent);
+                }
+            }
+        }
         outResult[QStringLiteral("clsid")] =
                 QStringLiteral("{8E6B9541-3C74-4D28-A915-7D84E5A12001}");
         outResult[QStringLiteral("prog_id")] = QStringLiteral("ToriGraph.Graph.1");
@@ -27288,32 +27994,115 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
     if (method == QStringLiteral("plot.color_scatter")) {
         Table *t = resolveTable(d_app, params);
-        auto colOf = [&](const char *key, int def) {
+        auto colIdxOf = [&](const char *key, int def) {
             const QString k = QString::fromLatin1(key);
-            return t->colName(resolveColumnIndex(
-                    t, params.contains(k) ? params.value(k) : QJsonValue(def), true));
+            return resolveColumnIndex(
+                    t, params.contains(k) ? params.value(k) : QJsonValue(def), true);
         };
-        const QString xc = colOf("x", 0), yc = colOf("y", 1), zc = colOf("z", 2);
+        const int xIdx = colIdxOf("x", 0), yIdx = colIdxOf("y", 1), zIdx = colIdxOf("z", 2);
+        const QString xc = t->colName(xIdx), yc = t->colName(yIdx), zc = t->colName(zIdx);
         QString sc;
         if (params.contains(QStringLiteral("size")) && !params.value(QStringLiteral("size")).isNull())
             sc = t->colName(resolveColumnIndex(t, params.value(QStringLiteral("size")), true));
         const QString pal = optionalJsonString(params, QStringLiteral("palette"), QStringLiteral("viridis"));
         const Spectrogram::ColorMapPreset preset = parseColorMapPreset(pal, nullptr, true);
-        MultiLayer *ml = ExtraPlotTypes::plotColorMappedScatter(
-                d_app, t, xc, yc, zc, sc, int(preset),
-                optionalJsonBool(params, QStringLiteral("reverse"), false));
-        if (!ml)
-            throwInvalidParams(QStringLiteral("plot.color_scatter needs numeric x, y and z columns."));
-        applyRequestedWindowName(d_app, ml, params);
+        const bool rev = optionalJsonBool(params, QStringLiteral("reverse"), false);
+        const bool attachToExisting =
+                !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
+
+        MultiLayer *ml = nullptr;
+        Graph *targetG = nullptr;
+        DataCurve *cmDc = nullptr;
+        if (attachToExisting) {
+            Column *cx = t->column(xIdx);
+            Column *cy = t->column(yIdx);
+            Column *cz = t->column(zIdx);
+            if (!cx || !cy || !cz
+                || cx->columnMode() != SciDAVis::ColumnMode::Numeric
+                || cy->columnMode() != SciDAVis::ColumnMode::Numeric
+                || cz->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                throwInvalidParams(QStringLiteral("plot.color_scatter needs numeric x, y and z columns."));
+            }
+            ml = resolveMultiLayer(d_app, params);
+            targetG = resolveGraphLayer(ml, params);
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Color-Mapped Scatter"));
+            if (!targetG->insertCurve(t, xc, yc, Graph::Scatter))
+                throwRpcRuntime(QStringLiteral("Failed to add color-mapped scatter curve."));
+            const int idx = targetG->curves() - 1;
+            cmDc = dynamic_cast<DataCurve *>(targetG->curve(idx));
+            if (cmDc) {
+                QwtSymbol sym = cmDc->symbol();
+                if (sym.style() == QwtSymbol::NoSymbol)
+                    sym.setStyle(QwtSymbol::Ellipse);
+                sym.setSize(QSize(8, 8));
+                const QwtLinearColorMap map = Spectrogram::presetColorMap(preset, rev);
+                const QColor mid(map.rgb(QwtDoubleInterval(0.0, 1.0), 0.5));
+                sym.setBrush(QBrush(mid));
+                sym.setPen(QPen(mid.darker(150), 1.0));
+                targetG->setCurveSymbol(idx, sym);
+                DataCurve::PointColorMap pm;
+                pm.enabled = true;
+                pm.zColumn = zc;
+                pm.sizeColumn = sc;
+                pm.preset = int(preset);
+                pm.reverse = rev;
+                pm.autoRange = true;
+                pm.colorBarTitle = cz->longName().trimmed().isEmpty() ? cz->name()
+                                                                      : cz->longName().trimmed();
+                if (!cz->units().trimmed().isEmpty())
+                    pm.colorBarTitle += QStringLiteral(" (%1)").arg(cz->units().trimmed());
+                cmDc->setPointColorMap(pm);
+            }
+            targetG->syncPointColorBar();
+            replotGraphOrDefer(targetG);
+            undoGuard.commit();
+        } else {
+            ml = ExtraPlotTypes::plotColorMappedScatter(d_app, t, xc, yc, zc, sc, int(preset), rev);
+            if (!ml)
+                throwInvalidParams(QStringLiteral("plot.color_scatter needs numeric x, y and z columns."));
+            applyRequestedWindowName(d_app, ml, params);
+            targetG = ml->activeGraph();
+            cmDc = targetG ? targetG->pointColorMapCurve() : nullptr;
+        }
+        if (cmDc && targetG) {
+            bool pmChanged = false;
+            DataCurve::PointColorMap pm = cmDc->pointColorMap();
+            if (params.contains(QStringLiteral("z_min")) && params.contains(QStringLiteral("z_max"))
+                && !params.value(QStringLiteral("z_min")).isNull()
+                && !params.value(QStringLiteral("z_max")).isNull()) {
+                const double zLo = parseFiniteCoordDouble(params.value(QStringLiteral("z_min")),
+                                                          QStringLiteral("z_min"));
+                const double zHi = parseFiniteCoordDouble(params.value(QStringLiteral("z_max")),
+                                                          QStringLiteral("z_max"));
+                validateFiniteCoordRange(zLo, zHi, QStringLiteral("Colorbar [z_min, z_max]"));
+                pm.autoRange = false;
+                pm.zMin = std::min(zLo, zHi);
+                pm.zMax = std::max(zLo, zHi);
+                pmChanged = true;
+            }
+            if (params.contains(QStringLiteral("colorbar_title"))
+                && !params.value(QStringLiteral("colorbar_title")).isNull()) {
+                pm.colorBarTitle = optionalJsonString(params, QStringLiteral("colorbar_title"));
+                pmChanged = true;
+            }
+            if (params.contains(QStringLiteral("show_colorbar"))
+                && !params.value(QStringLiteral("show_colorbar")).isNull()) {
+                pm.showColorBar = optionalJsonBool(params, QStringLiteral("show_colorbar"), true);
+                pmChanged = true;
+            }
+            if (pmChanged) {
+                cmDc->setPointColorMap(pm);
+                targetG->syncPointColorBar();
+                replotGraphOrDefer(targetG);
+            }
+        }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("graph")] = ml->name();
-        if (Graph *g = ml->activeGraph()) {
-            if (DataCurve *dc = g->pointColorMapCurve()) {
-                double lo = 0.0, hi = 1.0;
-                dc->pointColorRange(&lo, &hi);
-                outResult[QStringLiteral("z_min")] = safeJsonDouble(lo);
-                outResult[QStringLiteral("z_max")] = safeJsonDouble(hi);
-            }
+        if (cmDc) {
+            double lo = 0.0, hi = 1.0;
+            cmDc->pointColorRange(&lo, &hi);
+            outResult[QStringLiteral("z_min")] = safeJsonDouble(lo);
+            outResult[QStringLiteral("z_max")] = safeJsonDouble(hi);
         }
         return true;
     }
@@ -27479,11 +28268,29 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
         opt.preset = int(parseColorMapPreset(
                 optionalJsonString(params, QStringLiteral("palette"), QStringLiteral("viridis")), nullptr, true));
         opt.label = optionalJsonString(params, QStringLiteral("label"));
+        opt.axis1Label = optionalJsonString(params, QStringLiteral("axis1_label"));
+        opt.axis2Label = optionalJsonString(params, QStringLiteral("axis2_label"));
+        opt.showTiltCircles = optionalJsonBool(params, QStringLiteral("tilt_circles"), false);
         const bool wantPlot = optionalJsonBool(params, QStringLiteral("plot"), true);
+        const bool attachToExisting =
+                wantPlot && !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
         ExtraPlotTypes::PoleFigureResult pr;
+        QString sourceTagAttrs;
+        auto xmlEscAttr = [](const QString &s) {
+            QString out = s;
+            out.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+            out.replace(QLatin1Char('"'), QStringLiteral("&quot;"));
+            out.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+            out.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+            return out;
+        };
         if (!optionalJsonString(params, QStringLiteral("matrix")).trimmed().isEmpty()) {
             Matrix *m = resolveMatrix(d_app, params);
-            pr = ExtraPlotTypes::plotPoleFigureFromMatrix(d_app, m, opt, wantPlot);
+            pr = ExtraPlotTypes::plotPoleFigureFromMatrix(d_app, m, opt,
+                                                          wantPlot && !attachToExisting);
+            if (m) {
+                sourceTagAttrs = QStringLiteral(" sourceMatrix=\"%1\"").arg(xmlEscAttr(m->name()));
+            }
         } else {
             Table *t = resolveTable(d_app, params);
             auto colOf = [&](const char *key, int def) {
@@ -27491,13 +28298,72 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
                 return t->colName(resolveColumnIndex(
                         t, params.contains(k) ? params.value(k) : QJsonValue(def), true));
             };
-            pr = ExtraPlotTypes::plotPoleFigure(d_app, t, colOf("alpha", 0), colOf("beta", 1),
-                                                colOf("intensity", 2), opt, wantPlot);
+            const QString aCol = colOf("alpha", 0);
+            const QString bCol = colOf("beta", 1);
+            const QString iCol = colOf("intensity", 2);
+            pr = ExtraPlotTypes::plotPoleFigure(d_app, t, aCol, bCol, iCol, opt,
+                                                wantPlot && !attachToExisting);
+            if (t) {
+                const auto shortName = [&](const QString &full) {
+                    const int idx = t->colIndex(full);
+                    return (idx >= 0) ? t->colLabel(idx) : full;
+                };
+                sourceTagAttrs = QStringLiteral(" table=\"%1\" a=\"%2\" b=\"%3\" i=\"%4\"")
+                                         .arg(xmlEscAttr(t->name()), xmlEscAttr(shortName(aCol)),
+                                              xmlEscAttr(shortName(bCol)),
+                                              xmlEscAttr(shortName(iCol)));
+            }
         }
         if (!pr.valid)
             throwInvalidParams(pr.error.isEmpty() ? QStringLiteral("Pole figure failed.") : pr.error);
-        if (pr.plot)
+        if (attachToExisting && pr.matrix) {
+            MultiLayer *ml = resolveMultiLayer(d_app, params);
+            Graph *targetG = resolveGraphLayer(ml, params);
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Plot Pole Figure"));
+            targetG->plotSpectrogram(pr.matrix, Graph::ColorMap);
+            if (targetG->plotWidget()) {
+                for (QwtPlotItem *it : targetG->plotWidget()->itemList()) {
+                    if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                        if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                            sp->setMaskInvalidCells(true);
+                            sp->setColorMapPreset(static_cast<Spectrogram::ColorMapPreset>(opt.preset),
+                                                  false);
+                            sp->setDisplayMode(QwtPlotSpectrogram::ContourMode, true);
+                            sp->setDefaultContourPen(QPen(QColor(25, 25, 25), 1));
+                            sp->setLevelsNumber(qBound(2, opt.levels, 50));
+                            sp->setColorBarTitle(opt.normalizeMRD ? QStringLiteral("MRD")
+                                                                  : QStringLiteral("Intensity"));
+                            sp->syncColorScale();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (targetG->legend())
+                targetG->removeLegend();
+            QString extraAttrs;
+            if (!opt.axis1Label.trimmed().isEmpty())
+                extraAttrs += QStringLiteral(" ax1=\"%1\"").arg(xmlEscAttr(opt.axis1Label.trimmed()));
+            if (!opt.axis2Label.trimmed().isEmpty())
+                extraAttrs += QStringLiteral(" ax2=\"%1\"").arg(xmlEscAttr(opt.axis2Label.trimmed()));
+            if (opt.showTiltCircles)
+                extraAttrs += QStringLiteral(" rings=\"1\"");
+            const QString tag = QStringLiteral("<ToriPoleFigure matrix=\"")
+                    + xmlEscAttr(pr.matrix->name()) + QStringLiteral("\"") + sourceTagAttrs
+                    + QStringLiteral(" proj=\"") + QString::number(int(opt.projection))
+                    + QStringLiteral("\" mrd=\"") + QString::number(opt.normalizeMRD ? 1 : 0)
+                    + QStringLiteral("\" rim=\"") + QString::number(opt.alphaFromRim ? 1 : 0)
+                    + QStringLiteral("\" zeroTop=\"") + QString::number(opt.betaZeroAtTop ? 1 : 0)
+                    + QStringLiteral("\" cw=\"") + QString::number(opt.clockwise ? 1 : 0)
+                    + QStringLiteral("\" rdTop=\"") + QString::number(opt.rdTop ? 1 : 0)
+                    + QStringLiteral("\"") + extraAttrs + QStringLiteral(" label=\"")
+                    + xmlEscAttr(opt.label) + QStringLiteral("\"/>");
+            ExtraPlotTypes::restoreGraphTag(targetG, tag);
+            pr.plot = ml;
+            undoGuard.commit();
+        } else if (pr.plot) {
             applyRequestedWindowName(d_app, pr.plot, params);
+        }
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("max")] = safeJsonDouble(pr.maxValue);
         outResult[QStringLiteral("max_alpha")] = safeJsonDouble(pr.maxAlpha);
@@ -28186,6 +29052,22 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                                                    const QJsonObject &params)
 {
+    // Re-entrancy guard: nested event loops (e.g. app.check_updates waiting on the network,
+    // modal dialogs opened by a handler) can deliver another socket request while a handler is
+    // still running. Executing it would interleave two handlers on the UI thread.
+    if (d_rpc_dispatching) {
+        throw RpcDispatchException(
+                -32003,
+                QStringLiteral("Server busy: another RPC request is still being processed. "
+                               "Retry after the previous call completes."));
+    }
+    struct ScopedDispatchFlag
+    {
+        bool &flag;
+        explicit ScopedDispatchFlag(bool &f) : flag(f) { flag = true; }
+        ~ScopedDispatchFlag() { flag = false; }
+    } dispatchFlag(d_rpc_dispatching);
+
     struct ScopedCallerInteractiveTracker
     {
         bool &slot;
@@ -28195,6 +29077,9 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     } callerInteractiveGuard(d_caller_noninteractive,
                              ApplicationWindow::isNonInteractiveContext(d_app));
 
+    // torigraph_noninteractive is application-global; it is only forced to true for the
+    // duration of this call and handlers that spin a nested event loop must restore the
+    // previous value around it (see RpcInteractiveWindow).
     struct ScopedNonInteractiveGuard
     {
         QCoreApplication *appInstance;
@@ -28203,6 +29088,7 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
             : appInstance(qa),
               prevProp(qa ? qa->property("torigraph_noninteractive") : QVariant())
         {
+            rpcPrevNonInteractiveSlot() = prevProp;
             if (appInstance)
                 appInstance->setProperty("torigraph_noninteractive", true);
         }
@@ -28210,6 +29096,7 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
         {
             if (appInstance)
                 appInstance->setProperty("torigraph_noninteractive", prevProp);
+            rpcPrevNonInteractiveSlot() = QVariant();
         }
     } nonInteractiveGuard(QCoreApplication::instance());
 
@@ -28433,7 +29320,7 @@ void PythonConsoleDialog::buildUi()
 
     d_example_label = new QLabel(this);
     d_example_combo = new QComboBox(this);
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 7; ++i)
         d_example_combo->addItem(QString());
     d_example_combo->setMinimumWidth(260);
 
@@ -28532,7 +29419,7 @@ void PythonConsoleDialog::retranslateUi()
     if (d_example_label)
         d_example_label->setText(tr("Examples:"));
 
-    if (d_example_combo && d_example_combo->count() >= 6) {
+    if (d_example_combo && d_example_combo->count() >= 7) {
         const bool oldBlock = d_example_combo->blockSignals(true);
         d_example_combo->setItemText(0, tr("Select Example Workflow..."));
         d_example_combo->setItemText(1, tr("1. ISIJ 85mm Stress-Strain Plot"));
@@ -28540,6 +29427,7 @@ void PythonConsoleDialog::retranslateUi()
         d_example_combo->setItemText(3, tr("3. EIS Randles Nyquist Fit"));
         d_example_combo->setItemText(4, tr("4. Weibull 3P Reliability & ANOVA"));
         d_example_combo->setItemText(5, tr("5. 2D Matrix Filter & Heatmap"));
+        d_example_combo->setItemText(6, tr("6. Lab Slide (18pt) & PowerPoint Export"));
         d_example_combo->blockSignals(oldBlock);
     }
 
@@ -28714,19 +29602,29 @@ void PythonConsoleDialog::runCurrentScript()
     }
 
     resetStreamDecoders();
-    d_process = d_server->startPythonScriptProcess(d_temp_script_path, QStringList(), this);
-    if (!d_current_file_path.isEmpty() && QFileInfo::exists(d_current_file_path)) {
-        d_process->setWorkingDirectory(QFileInfo(d_current_file_path).absolutePath());
-    }
+    // Working directory and signal connections must be set before QProcess::start();
+    // unsaved scripts fall back to the application's working directory rather than %TEMP%.
+    QString scriptDir;
+    if (!d_current_file_path.isEmpty() && QFileInfo::exists(d_current_file_path))
+        scriptDir = QFileInfo(d_current_file_path).absolutePath();
+    else if (d_app && !d_app->workingDir.isEmpty() && QFileInfo(d_app->workingDir).isDir())
+        scriptDir = QFileInfo(d_app->workingDir).absoluteFilePath();
 
-    connect(d_process, &QProcess::readyReadStandardOutput, this,
-            &PythonConsoleDialog::onProcessReadyReadStdout);
-    connect(d_process, &QProcess::readyReadStandardError, this,
-            &PythonConsoleDialog::onProcessReadyReadStderr);
-    connect(d_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this](int code, QProcess::ExitStatus st) { onProcessFinished(code, int(st)); });
-    connect(d_process, &QProcess::errorOccurred, this,
-            [this](QProcess::ProcessError err) { onProcessErrorOccurred(int(err)); });
+    startPythonScriptProcessImpl(
+            d_server.data(), d_temp_script_path, QStringList(), this, scriptDir,
+            [this](QProcess *proc) {
+                d_process = proc;
+                connect(proc, &QProcess::readyReadStandardOutput, this,
+                        &PythonConsoleDialog::onProcessReadyReadStdout);
+                connect(proc, &QProcess::readyReadStandardError, this,
+                        &PythonConsoleDialog::onProcessReadyReadStderr);
+                connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                        [this](int code, QProcess::ExitStatus st) {
+                            onProcessFinished(code, int(st));
+                        });
+                connect(proc, &QProcess::errorOccurred, this,
+                        [this](QProcess::ProcessError err) { onProcessErrorOccurred(int(err)); });
+            });
 }
 
 void PythonConsoleDialog::stopRunningScript()
@@ -28819,12 +29717,23 @@ void PythonConsoleDialog::onProcessErrorOccurred(int processError)
     }
 }
 
-void PythonConsoleDialog::appendOutput(const QString &text, bool /*isError*/)
+void PythonConsoleDialog::appendOutput(const QString &text, bool isError)
 {
     if (!d_output || text.isEmpty())
         return;
     d_output->moveCursor(QTextCursor::End);
-    d_output->insertPlainText(text);
+    QTextCursor cur = d_output->textCursor();
+    QTextCharFormat fmt;
+    if (isError) {
+        // Pick a red that stays readable on both light and dark editor backgrounds.
+        const bool darkBase = d_output->palette().base().color().lightness() < 128;
+        fmt.setForeground(darkBase ? QColor(255, 120, 120) : QColor(200, 30, 30));
+    } else {
+        // Explicitly reset so a preceding error run does not bleed its colour.
+        fmt.setForeground(d_output->palette().text());
+    }
+    cur.insertText(text, fmt);
+    d_output->setTextCursor(cur);
     d_output->moveCursor(QTextCursor::End);
     if (QScrollBar *sb = d_output->verticalScrollBar())
         sb->setValue(sb->maximum());
@@ -28905,8 +29814,8 @@ QString PythonConsoleDialog::exampleScriptCode(int index) const
                 "batch_b = [465.0, 488.0, 504.0, 519.0, 532.0, 546.0, 561.0, 578.0, 595.0, 615.0]\n\n"
                 "tbl = app.create_table(rows=len(batch_a), cols=2, name='CeramicsStrength')\n"
                 "tbl.set_data_dict({'Batch_A': batch_a, 'Batch_B': batch_b}, units={'Batch_A': 'MPa', 'Batch_B': 'MPa'})\n"
-                "anova = app.anova_one_way(table=tbl.name, cols=['Batch_A', 'Batch_B'])\n"
-                "wb = app.weibull_fit(table=tbl.name, col='Batch_A', three_param=True, plot=True)\n"
+                "anova = app.anova_oneway(table=tbl.name, cols=['Batch_A', 'Batch_B'])\n"
+                "wb = app.weibull(table=tbl.name, col='Batch_A', three_param=True, plot=True)\n"
                 "print(f\"ANOVA p = {anova['p_value']:.4e}, Weibull beta = {wb['beta']:.2f}, eta = {wb['eta']:.1f} MPa\")\n");
 
     case 5:
@@ -28920,6 +29829,19 @@ QString PythonConsoleDialog::exampleScriptCode(int index) const
                 "g.set_colorbar(palette='viridis', show_contour_lines=True, levels=8, title='Intensity (a.u.)')\n"
                 "pks = m.analyze_2d_peaks(prominence=0.15, max_peaks=4)\n"
                 "print(f\"Detected {pks['peak_count']} 2D peaks on {g.name}\")\n");
+
+    case 6:
+        return QStringLiteral(
+                "import torigraph as tg\n\n"
+                "app = tg.connect()\n"
+                "x = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]\n"
+                "y = [0.0, 42.0, 86.0, 128.0, 165.0, 198.0]\n"
+                "tbl = app.create_table({'Strain': x, 'Stress': y}, units={'Strain': '%', 'Stress': 'MPa'}, name='LabSlideData')\n"
+                "g = app.plot_xy(tbl.name, x_col='Strain', y_cols=['Stress'], style='line_symbol')\n"
+                "g.lab_slide_style()  # 83.3 mm / 12.9 pt -> placed at 140% (18 pt) in PPTX\n"
+                "res = app.to_pptx('lab_slide_demo.pptx', [g], per_slide=2, overwrite=True,\n"
+                "                  titles=['Al-Zn-Mg Tensile Response'])\n"
+                "print('Exported PPTX:', res['path'], 'effective_scales:', res.get('effective_scales'))\n");
 
     default:
         return QString();

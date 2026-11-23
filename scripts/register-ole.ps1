@@ -12,21 +12,24 @@ $ErrorActionPreference = "Stop"
 
 function Resolve-DefaultExePath {
     param([string]$Candidate)
-    if ($Candidate -and (Test-Path $Candidate)) {
-        return (Resolve-Path $Candidate).Path
+    if ($Candidate -and (Test-Path -LiteralPath $Candidate)) {
+        return (Resolve-Path -LiteralPath $Candidate).Path
     }
     $repoRoot = Split-Path -Parent $PSScriptRoot
     $defaults = @(
         (Join-Path $repoRoot "ToriGraph.exe"),
         (Join-Path $PSScriptRoot "ToriGraph.exe"),
         (Join-Path $repoRoot "build\scidavis\ToriGraph.exe"),
+        (Join-Path $repoRoot "build\scidavis\Release\ToriGraph.exe"),
         (Join-Path $repoRoot "build\scidavis\scidavis.exe"),
+        (Join-Path $repoRoot "build\scidavis\Release\scidavis.exe"),
+        (Join-Path $repoRoot "dist\ToriGraph-win64\ToriGraph.exe"),
         (Join-Path $repoRoot "dist\ToriGraph.exe"),
         (Join-Path $repoRoot "dist\scidavis.exe")
     )
     foreach ($item in $defaults) {
-        if (Test-Path $item) {
-            return (Resolve-Path $item).Path
+        if (Test-Path -LiteralPath $item) {
+            return (Resolve-Path -LiteralPath $item).Path
         }
     }
     if ($Mode -eq "Install") {
@@ -37,30 +40,46 @@ function Resolve-DefaultExePath {
 
 function Set-DefaultValue {
     param([string]$RegistryPath, [string]$Value)
-    if (-not (Test-Path $RegistryPath)) {
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
         New-Item -Path $RegistryPath -Force | Out-Null
     }
-    New-ItemProperty -Path $RegistryPath -Name "(default)" -Value $Value -PropertyType String -Force | Out-Null
+    New-ItemProperty -LiteralPath $RegistryPath -Name "(default)" -Value $Value -PropertyType String -Force | Out-Null
 }
 
 function Set-NamedValue {
     param([string]$RegistryPath, [string]$Name, [string]$Value)
-    if (-not (Test-Path $RegistryPath)) {
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
         New-Item -Path $RegistryPath -Force | Out-Null
     }
-    New-ItemProperty -Path $RegistryPath -Name $Name -Value $Value -PropertyType String -Force | Out-Null
+    New-ItemProperty -LiteralPath $RegistryPath -Name $Name -Value $Value -PropertyType String -Force | Out-Null
+}
+
+# Path of the all-users (HKLM) OLE server, or $null when there is none.
+function Get-HklmServerPath {
+    $key = "HKLM:\Software\Classes\CLSID\$Clsid\LocalServer32"
+    if (-not (Test-Path -LiteralPath $key)) { return $null }
+    $item = Get-Item -LiteralPath $key
+    $v = $item.GetValue("ServerExecutable")
+    if (-not $v) {
+        $cmd = [string]$item.GetValue("")
+        if ($cmd -match '^\s*"([^"]+)"') { $v = $Matches[1] }
+        elseif ($cmd -match '^(.+?\.exe)') { $v = $Matches[1] }
+        else { $v = $cmd.Trim() }
+    }
+    if ($v) { return [string]$v }
+    return $null
 }
 
 function Get-KeySummary {
     param([string]$RegistryPath)
-    if (-not (Test-Path $RegistryPath)) {
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
         return [pscustomobject]@{
             Path = $RegistryPath
             Exists = $false
             Default = $null
         }
     }
-    $item = Get-Item -Path $RegistryPath
+    $item = Get-Item -LiteralPath $RegistryPath
     return [pscustomobject]@{
         Path = $RegistryPath
         Exists = $true
@@ -71,6 +90,8 @@ function Get-KeySummary {
 $resolvedExe = Resolve-DefaultExePath -Candidate $ExePath
 $clsidBase = "HKCU:\Software\Classes\CLSID\$Clsid"
 $progIdBase = "HKCU:\Software\Classes\$ProgId"
+# The Inno Setup installer registers both the current and the legacy ProgID; keep them in step.
+$progIds = @($ProgId, "SciDAVis.Graph.1") | Select-Object -Unique
 $localServerCommand = "`"$resolvedExe`" -Embedding"
 
 switch ($Mode) {
@@ -81,11 +102,20 @@ switch ($Mode) {
             (Get-KeySummary -RegistryPath "$clsidBase\ProgID"),
             (Get-KeySummary -RegistryPath "$clsidBase\Insertable"),
             (Get-KeySummary -RegistryPath $progIdBase),
-            (Get-KeySummary -RegistryPath "$progIdBase\CLSID")
+            (Get-KeySummary -RegistryPath "$progIdBase\CLSID"),
+            (Get-KeySummary -RegistryPath "HKCU:\Software\Classes\SciDAVis.Graph.1"),
+            (Get-KeySummary -RegistryPath "HKLM:\Software\Classes\CLSID\$Clsid"),
+            (Get-KeySummary -RegistryPath "HKLM:\Software\Classes\CLSID\$Clsid\LocalServer32")
         )
         $summary | Format-Table -AutoSize
+        $hklmSrv = Get-HklmServerPath
+        $hklmExists = [bool]($hklmSrv -and (Test-Path -LiteralPath $hklmSrv))
+        $resolvedExists = [bool]($resolvedExe -and (Test-Path -LiteralPath $resolvedExe))
         Write-Host ""
-        Write-Host "Planned server command: $localServerCommand"
+        Write-Host "Planned server command: $localServerCommand (exe exists: $resolvedExists)"
+        if ($hklmSrv) {
+            Write-Host "All-users (HKLM) server: $hklmSrv (exe exists: $hklmExists)"
+        }
     }
     "Install" {
         Set-DefaultValue -RegistryPath $clsidBase -Value $FriendlyName
@@ -94,7 +124,7 @@ switch ($Mode) {
         Set-DefaultValue -RegistryPath "$clsidBase\ProgID" -Value $ProgId
         Set-DefaultValue -RegistryPath "$clsidBase\VersionIndependentProgID" -Value "ToriGraph.Graph"
         Set-DefaultValue -RegistryPath "$clsidBase\InprocHandler32" -Value "ole32.dll"
-        Set-DefaultValue -RegistryPath "$clsidBase\DefaultIcon" -Value "$resolvedExe,0"
+        Set-DefaultValue -RegistryPath "$clsidBase\DefaultIcon" -Value "`"$resolvedExe`",0"
         Set-DefaultValue -RegistryPath "$clsidBase\Verb\0" -Value "編集(&E),0,2"
         Set-DefaultValue -RegistryPath "$clsidBase\Verb\1" -Value "開く(&O),0,2"
         Set-DefaultValue -RegistryPath "$clsidBase\DataFormats\GetSet\0" -Value "Embed Source,1,8,1"
@@ -103,22 +133,38 @@ switch ($Mode) {
         Set-DefaultValue -RegistryPath "$clsidBase\DataFormats\GetSet\3" -Value "14,1,64,1"
         Set-DefaultValue -RegistryPath "$clsidBase\MiscStatus" -Value "0"
         Set-DefaultValue -RegistryPath "$clsidBase\MiscStatus\1" -Value "1"
-        Set-DefaultValue -RegistryPath "$clsidBase\AuxUserType\2" -Value $FriendlyName
+        Set-DefaultValue -RegistryPath "$clsidBase\AuxUserType\2" -Value "ToriGraph"
+        Set-DefaultValue -RegistryPath "$clsidBase\AuxUserType\3" -Value "ToriGraph"
         Set-DefaultValue -RegistryPath "$clsidBase\Insertable" -Value ""
 
-        Set-DefaultValue -RegistryPath $progIdBase -Value $FriendlyName
-        Set-DefaultValue -RegistryPath "$progIdBase\CLSID" -Value $Clsid
-        Set-DefaultValue -RegistryPath "$progIdBase\Insertable" -Value ""
-        Set-DefaultValue -RegistryPath "$progIdBase\shell\open\command" -Value "`"$resolvedExe`" `"%1`""
+        foreach ($pid_ in $progIds) {
+            $base = "HKCU:\Software\Classes\$pid_"
+            Set-DefaultValue -RegistryPath $base -Value $FriendlyName
+            Set-DefaultValue -RegistryPath "$base\CLSID" -Value $Clsid
+            Set-DefaultValue -RegistryPath "$base\Insertable" -Value ""
+            Set-DefaultValue -RegistryPath "$base\shell\open\command" -Value "`"$resolvedExe`" `"%1`""
+        }
 
-        Write-Host "Registered HKCU OLE keys for $ProgId -> $resolvedExe"
+        # A machine-wide (all users) registration is still visible; this per-user one overrides it
+        # for the current user only. Say so when the two disagree.
+        $hklmServer = Get-HklmServerPath
+        if ($hklmServer -and ($hklmServer -ine $resolvedExe)) {
+            Write-Warning "An all-users OLE registration exists and points to '$hklmServer'. This per-user registration (-> '$resolvedExe') takes precedence for the current user only."
+        }
+
+        Write-Host "Registered HKCU OLE keys for $($progIds -join ', ') -> $resolvedExe"
     }
     "Uninstall" {
-        foreach ($path in @($clsidBase, $progIdBase)) {
-            if (Test-Path $path) {
-                Remove-Item -Path $path -Recurse -Force
+        $paths = @($clsidBase)
+        foreach ($pid_ in $progIds) { $paths += "HKCU:\Software\Classes\$pid_" }
+        foreach ($path in $paths) {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item -LiteralPath $path -Recurse -Force
             }
         }
-        Write-Host "Removed HKCU OLE keys for $ProgId and $Clsid"
+        Write-Host "Removed HKCU OLE keys for $($progIds -join ', ') and $Clsid"
+        if (Get-HklmServerPath) {
+            Write-Warning "An all-users (HKLM) OLE registration remains; remove it by uninstalling ToriGraph from Windows Settings (needs administrator rights)."
+        }
     }
 }

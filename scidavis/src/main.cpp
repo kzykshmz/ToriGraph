@@ -36,6 +36,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QGuiApplication>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QPointer>
@@ -185,6 +186,12 @@ int main(int argc, char **argv)
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
     QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps, true);
     QCoreApplication::setAttribute(Qt::AA_UseDesktopOpenGL, true);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    // Fractional scales (125 % / 150 %) must not be rounded to 100 % / 200 %: plots and fonts
+    // would otherwise be drawn at the wrong physical size. Must precede QApplication creation.
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+            Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
     QCoreApplication::setOrganizationName("ToriGraph");
     QCoreApplication::setApplicationName("ToriGraph");
 
@@ -204,13 +211,21 @@ int main(int argc, char **argv)
     QStringList filteredArgs;
     bool afterRunPython = false;
 
-    auto isToriGraphStandaloneFlag = [](const QString &a) -> bool {
-        return a == QStringLiteral("-a") || a == QStringLiteral("--about")
-                || a == QStringLiteral("-h") || a == QStringLiteral("--help")
-                || a == QStringLiteral("-m") || a == QStringLiteral("--manual")
-                || a == QStringLiteral("-x") || a == QStringLiteral("--execute")
-                || a.startsWith(QStringLiteral("-l="))
-                || a.startsWith(QStringLiteral("--lang="));
+    QString cmdLineError;
+
+    // Parses a TCP port strictly (0 = ephemeral, 1..65535); the old toUInt()+quint16 cast
+    // silently wrapped "70000" to 4464 and "abc" to 0.
+    auto parseRpcPort = [&](const QString &text) {
+        bool ok = false;
+        const uint v = text.trimmed().toUInt(&ok);
+        if (!ok || v > 65535u) {
+            if (cmdLineError.isEmpty())
+                cmdLineError = QStringLiteral("invalid --rpc-port value '%1' (expected 0-65535)")
+                                       .arg(text);
+            return;
+        }
+        hasRpcPort = true;
+        rpcPort = static_cast<quint16>(v);
     };
 
     for (int i = 0; i < args.count(); ++i) {
@@ -236,12 +251,14 @@ int main(int argc, char **argv)
             wantVersion = true;
         } else if (arg == QStringLiteral("--headless")) {
             headlessMode = true;
-        } else if (arg == QStringLiteral("--rpc-port") && i + 1 < args.count()) {
-            hasRpcPort = true;
-            rpcPort = static_cast<quint16>(args[++i].toUInt());
+        } else if (arg == QStringLiteral("--rpc-port")) {
+            if (i + 1 < args.count()) {
+                parseRpcPort(args[++i]);
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--rpc-port requires a value (0-65535)");
+            }
         } else if (arg.startsWith(QStringLiteral("--rpc-port="))) {
-            hasRpcPort = true;
-            rpcPort = static_cast<quint16>(arg.mid(11).toUInt());
+            parseRpcPort(arg.mid(11));
         } else if (arg == QStringLiteral("--rpc-port-file") && i + 1 < args.count()) {
             rpcPortFile = args[++i];
         } else if (arg.startsWith(QStringLiteral("--rpc-port-file="))) {
@@ -250,17 +267,27 @@ int main(int argc, char **argv)
             rpcPipeName = args[++i];
         } else if (arg.startsWith(QStringLiteral("--rpc-pipe="))) {
             rpcPipeName = arg.mid(11);
-        } else if (arg == QStringLiteral("--run-python") && i + 1 < args.count()) {
+        } else if (!afterRunPython && arg == QStringLiteral("--run-python")
+                   && i + 1 < args.count()) {
             runPythonScript = args[++i];
             afterRunPython = true;
-        } else if (arg.startsWith(QStringLiteral("--run-python="))) {
+        } else if (!afterRunPython && arg.startsWith(QStringLiteral("--run-python="))) {
             runPythonScript = arg.mid(13);
             afterRunPython = true;
-        } else if (afterRunPython && !isToriGraphStandaloneFlag(arg)) {
+        } else if (afterRunPython) {
+            // Everything after the script path belongs to the script (including -h/--help,
+            // -a, -l=..., -m, -x ...); only --headless/--rpc-* above are taken by ToriGraph.
             runPythonExtraArgs.append(arg);
         } else {
             filteredArgs.append(arg);
         }
+    }
+
+    if (!cmdLineError.isEmpty()) {
+        const QByteArray msg = QByteArray("ToriGraph: ") + cmdLineError.toUtf8() + '\n';
+        std::fwrite(msg.constData(), 1, static_cast<size_t>(msg.size()), stderr);
+        std::fflush(stderr);
+        return 2;
     }
 
     if (wantVersion) {
@@ -272,6 +299,76 @@ int main(int argc, char **argv)
         std::fwrite(verUtf8.constData(), 1, static_cast<size_t>(verUtf8.size()), stdout);
         std::fflush(stdout);
         return 0;
+    }
+
+    // -h/--help and -a/--about are answered before any OLE registration or window creation,
+    // and leave through a normal return (no ::exit() that would skip OLE shutdown).
+    {
+        const bool wantHelp = filteredArgs.contains(QStringLiteral("-h"))
+                || filteredArgs.contains(QStringLiteral("--help"));
+        const bool wantAbout = !headlessMode && filteredArgs.count() == 1
+                && (filteredArgs[0] == QStringLiteral("-a")
+                    || filteredArgs[0] == QStringLiteral("--about"));
+        if (wantHelp) {
+            QString s = QStringLiteral("\n") + QObject::tr("Usage") + QStringLiteral(": ToriGraph [")
+                    + QObject::tr("options") + QStringLiteral("] [") + QObject::tr("file")
+                    + QStringLiteral("_") + QObject::tr("name") + QStringLiteral("]\n\n");
+            s += QObject::tr("Valid options are") + QStringLiteral(":\n");
+            s += QStringLiteral("-a ") + QObject::tr("or") + QStringLiteral(" --about: ")
+                    + QObject::tr("show about dialog and exit") + QStringLiteral("\n");
+            s += QStringLiteral("-h ") + QObject::tr("or") + QStringLiteral(" --help: ")
+                    + QObject::tr("show command line options") + QStringLiteral("\n");
+            s += QStringLiteral("-l=XX ") + QObject::tr("or") + QStringLiteral(" --lang=XX: ")
+                    + QObject::tr("start ToriGraph in language")
+                    + QStringLiteral(" XX ('en', 'fr', 'de', ...)\n");
+            s += QStringLiteral("-m ") + QObject::tr("or") + QStringLiteral(" --manual: ")
+                    + QObject::tr("show ToriGraph manual in a standalone window")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("-v ") + QObject::tr("or") + QStringLiteral(" --version: ")
+                    + QObject::tr("print ToriGraph version and release date")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("-x ") + QObject::tr("or") + QStringLiteral(" --execute: ")
+                    + QObject::tr("execute the script file given as argument")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("--headless: ")
+                    + QObject::tr("run without visible GUI window for Python automation")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("--rpc-port <port>: ")
+                    + QObject::tr("bind localhost JSON-RPC 2.0 server to <port> (0 = ephemeral)")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("--rpc-port-file <path>: ")
+                    + QObject::tr("write bound JSON-RPC endpoint URL atomically to <path>")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("--rpc-pipe <name>: ")
+                    + QObject::tr("start local named pipe JSON-RPC 2.0 server")
+                    + QStringLiteral("\n");
+            s += QStringLiteral("--run-python <script.py> [args...]: ")
+                    + QObject::tr("execute Python automation script against this ToriGraph instance "
+                                  "(all following arguments are passed to the script)")
+                    + QStringLiteral("\n\n");
+            s += QStringLiteral("'") + QObject::tr("file") + QStringLiteral("_")
+                    + QObject::tr("name") + QStringLiteral("' ")
+                    + QObject::tr("can be any .sciprj, .sciprj.gz, .qti, qti.gz, .opj, .ogm, "
+                                  ".ogw, .ogg, .org, .py or ASCII file")
+                    + QStringLiteral("\n");
+#ifdef Q_OS_WIN
+            if (!headlessMode) {
+                // a GUI-subsystem executable has no console: show the text in a dialog
+                QMessageBox::information(nullptr, QObject::tr("ToriGraph - Help"), s);
+            } else
+#endif
+            {
+                const QByteArray helpUtf8 = s.toUtf8();
+                std::fwrite(helpUtf8.constData(), 1, static_cast<size_t>(helpUtf8.size()), stdout);
+                std::fflush(stdout);
+            }
+            return 0;
+        }
+        if (wantAbout) {
+            ModernUiTheme::applyModernTheme(&app);
+            ApplicationWindow::about();
+            return 0;
+        }
     }
 
     ModernUiTheme::applyModernTheme(&app);
@@ -298,14 +395,7 @@ int main(int argc, char **argv)
     }
 #endif
 
-    if ((filteredArgs.count() == 1) && (filteredArgs[0] == "-a" || filteredArgs[0] == "--about")
-        && !headlessMode) {
-        ApplicationWindow::about();
-#ifdef Q_OS_WIN
-        SciDAVisOle::shutdownOleServer();
-#endif
-        exit(0);
-    } else if (oleEmbedded) {
+    if (oleEmbedded) {
         app.setQuitOnLastWindowClosed(false);
     } else {
         if (headlessMode)
@@ -350,31 +440,58 @@ int main(int argc, char **argv)
 
             PythonAutomationServer *rpcServer = activeMw->pythonAutomationServer();
             if (rpcServer) {
+                bool rpcStarted = true;
+                QString rpcWhat;
                 if (!wantRpc) {
                     // Normal interactive GUI launch: never expose an unsolicited RPC listener.
                     rpcServer->stop();
                 } else if (hasRpcPort) {
-                    rpcServer->startTcp(rpcPort);
-                    if (!rpcPipeName.isEmpty())
-                        rpcServer->startLocalPipe(rpcPipeName);
+                    rpcWhat = QStringLiteral("TCP port %1").arg(rpcPort);
+                    rpcStarted = rpcServer->startTcp(rpcPort);
+                    if (rpcStarted && !rpcPipeName.isEmpty()) {
+                        rpcWhat = QStringLiteral("named pipe '%1'").arg(rpcPipeName);
+                        rpcStarted = rpcServer->startLocalPipe(rpcPipeName);
+                    }
                 } else if (!rpcPipeName.isEmpty()) {
                     if (rpcServer->isTcpListening())
                         rpcServer->stop();
-                    rpcServer->startLocalPipe(rpcPipeName);
+                    rpcWhat = QStringLiteral("named pipe '%1'").arg(rpcPipeName);
+                    rpcStarted = rpcServer->startLocalPipe(rpcPipeName);
                 } else if (!rpcPortFile.isEmpty()) {
-                    rpcServer->startTcp(0);
+                    rpcWhat = QStringLiteral("ephemeral TCP port");
+                    rpcStarted = rpcServer->startTcp(0);
                 } else {
                     // --headless / --run-python without --rpc-port and without --rpc-port-file:
                     // prefer per-user Named Pipe (QLocalServer::UserAccessOption).
                     if (rpcServer->isTcpListening())
                         rpcServer->stop();
-                    if (!rpcServer->startLocalPipe())
-                        rpcServer->startTcp(0);
+                    rpcWhat = QStringLiteral("named pipe or ephemeral TCP port");
+                    rpcStarted = rpcServer->startLocalPipe() || rpcServer->startTcp(0);
+                }
+
+                if (wantRpc && rpcStarted && !rpcPortFile.isEmpty()
+                    && !rpcServer->writeEndpointPortFile(rpcPortFile)) {
+                    rpcStarted = false;
+                    rpcWhat = QStringLiteral("endpoint file '%1'").arg(rpcPortFile);
+                }
+
+                if (wantRpc && !rpcStarted) {
+                    // Automation clients wait for the endpoint line: fail loudly, not silently.
+                    const QByteArray errLine =
+                            QByteArray("ToriGraph: failed to start the JSON-RPC server on ")
+                            + rpcWhat.toUtf8() + '\n';
+                    std::fwrite(errLine.constData(), 1, static_cast<size_t>(errLine.size()),
+                                stderr);
+                    std::fflush(stderr);
+                    rpcServer->stop();
+#ifdef Q_OS_WIN
+                    SciDAVisOle::shutdownOleServer();
+#endif
+                    return 2;
                 }
 
                 if (wantRpc) {
-                    if (!rpcPortFile.isEmpty())
-                        rpcServer->writeEndpointPortFile(rpcPortFile);
+
                     const QByteArray epLine = QByteArray("TORIGRAPH_RPC_ENDPOINT=")
                             + rpcServer->endpointString().toUtf8() + '\n';
                     std::fwrite(epLine.constData(), 1, static_cast<size_t>(epLine.size()), stdout);
