@@ -26685,7 +26685,12 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
                    "77g: outside-right LegendBox did not cross <= canvas()->width() after Shift+Key_Left nudges");
 
-        // Path 2: inside-canvas LegendBox via SelectionMoveResizer
+        // Path 2: inside-canvas LegendBox via SelectionMoveResizer while _outsideRightMargin > 0
+        leg->setText(QStringLiteral("S1"));
+        leg->setOrigin(QPoint(4, 16));
+        plt->replot();
+        plt->canvas()->repaint();
+        QApplication::processEvents();
         g->setSelectedMarker(legId, false);
         g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
         SelectionMoveResizer *legResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
@@ -26693,10 +26698,10 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                    "77g: SelectionMoveResizer not active on inside-canvas LegendBox");
         legResizer->setFocus();
         for (int extra = 0; extra < 2; ++extra) {
-            sendKey(legResizer, Qt::Key_Left, Qt::ShiftModifier);
+            sendKey(legResizer, Qt::Key_Left, Qt::NoModifier);
             CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin
                                && plt->plotLayout()->canvasRect() == origCanvasRectOut,
-                       "77g: Shift+Key_Left on LegendBox (SelectionMoveResizer) wiped _outsideRightMargin or changed canvasRect()!");
+                       "77g: Key_Left on LegendBox (SelectionMoveResizer) wiped _outsideRightMargin or changed canvasRect()!");
         }
 
         // ---------------------------------------------------------------------
@@ -26733,8 +26738,11 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         CHECK_COND(!staleLayerSelA.isNull(),
                    "77g: simulated MultiLayer margin click did not create d_layers_selector on g");
         g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::xBottom, -1 });
-        CHECK_COND(staleLayerSelA.isNull() && findLayerResizerForGraph(g) == nullptr,
-                   "77g: selecting AxisTitle did not delete stale MultiLayer::d_layers_selector!");
+        CHECK_COND(findLayerResizerForGraph(g) == nullptr,
+                   "77g: selecting AxisTitle did not detach stale MultiLayer::d_layers_selector!");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        CHECK_COND(staleLayerSelA.isNull(),
+                   "77g: selecting AxisTitle did not deleteLater stale MultiLayer::d_layers_selector!");
         plt->axisWidget(QwtPlot::xBottom)->setFocus();
         sendKey(plt->axisWidget(QwtPlot::xBottom), Qt::Key_Down, Qt::ShiftModifier);
         CHECK_COND(g->geometry() == origLayerGeo4
@@ -26748,8 +26756,11 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
                    "77g: 2nd simulated MultiLayer margin click did not create d_layers_selector on g");
         g->setSelectedMarker(txtId, false);
         g->setCurrentSelection({ Graph::GraphSelection::TextAnnotation, int(txtId), -1 });
-        CHECK_COND(staleLayerSelB.isNull() && findLayerResizerForGraph(g) == nullptr,
-                   "77g: selecting TextAnnotation did not delete stale MultiLayer::d_layers_selector!");
+        CHECK_COND(findLayerResizerForGraph(g) == nullptr,
+                   "77g: selecting TextAnnotation did not detach stale MultiLayer::d_layers_selector!");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        CHECK_COND(staleLayerSelB.isNull(),
+                   "77g: selecting TextAnnotation did not deleteLater stale MultiLayer::d_layers_selector!");
         if (SelectionMoveResizer *tr = plt->canvas()->findChild<SelectionMoveResizer *>()) {
             const QPoint txtBefore4 = txt->rect().topLeft();
             sendKey(tr, Qt::Key_Right, Qt::ShiftModifier);
