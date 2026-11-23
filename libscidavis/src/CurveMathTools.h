@@ -298,6 +298,7 @@ public:
         double whInterceptRaw = 0.0; // unclipped W-H regression intercept (= K lambda / D)
         bool whPhysical = false;     // true only when slope >= 0 and intercept > 0
         double latticeParamAngstrom = 0.0;
+        double latticeParamCAngstrom = 0.0; // HCP only: c0 = a0 * (c/a); 0 for cubic systems
         QString anodeName;            // matched X-ray tube anode ("Cu", "Co", ...) or empty
         double kAlpha2Angstrom = 0.0; // Ka2 wavelength used for stripping (0 = none)
         bool kAlpha2Stripped = false;

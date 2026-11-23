@@ -1301,6 +1301,344 @@ bool computeSavGolDerivVector(Graph *g, const QString &curveTitle,
     return true;
 }
 
+bool computeHilbertAnalyticVectors(Graph *g, const QString &curveTitle,
+                                   std::vector<double> &tOut,
+                                   std::vector<double> &upperEnvOut,
+                                   std::vector<double> &lowerEnvOut,
+                                   double &fsOut,
+                                   std::vector<double> *imagOut = nullptr,
+                                   std::vector<double> *instPhaseOut = nullptr,
+                                   std::vector<double> *instFreqOut = nullptr)
+{
+    tOut.clear();
+    upperEnvOut.clear();
+    lowerEnvOut.clear();
+    if (imagOut)
+        imagOut->clear();
+    if (instPhaseOut)
+        instPhaseOut->clear();
+    if (instFreqOut)
+        instFreqOut->clear();
+    fsOut = 1.0;
+
+    std::vector<double> y;
+    if (!extractUniformSignal(g, curveTitle, tOut, y, fsOut) || y.size() < 2)
+        return false;
+
+    const size_t n = y.size();
+    std::vector<double> z(2 * n, 0.0);
+    for (size_t i = 0; i < n; ++i)
+        z[2 * i] = y[i];
+
+    // Forward FFT -> X[k]
+    runComplexFft1D(z, n, false);
+
+    // Exact Marple (1999) discrete analytic spectrum:
+    // Z[0] = X[0]; Z[k] = 2*X[k] for 0 < k < (N+1)/2; Z[N/2] = X[N/2] (if N even); Z[k] = 0 for k > N/2
+    const size_t posLimit = (n + 1) / 2;
+    for (size_t k = 1; k < posLimit; ++k) {
+        z[2 * k] *= 2.0;
+        z[2 * k + 1] *= 2.0;
+    }
+    const size_t zeroStart = (n / 2) + 1;
+    for (size_t k = zeroStart; k < n; ++k) {
+        z[2 * k] = 0.0;
+        z[2 * k + 1] = 0.0;
+    }
+
+    // Inverse FFT -> z(t) = y(t) + j * H{y}(t)
+    runComplexFft1D(z, n, true);
+
+    upperEnvOut.resize(n);
+    lowerEnvOut.resize(n);
+    if (imagOut)
+        imagOut->resize(n);
+    const bool needPhaseOrFreq = (instPhaseOut != nullptr || instFreqOut != nullptr);
+    std::vector<double> localPhase;
+    std::vector<double> *phaseVec = instPhaseOut ? instPhaseOut : (needPhaseOrFreq ? &localPhase : nullptr);
+    if (phaseVec)
+        phaseVec->resize(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        const double re = z[2 * i];
+        const double im = z[2 * i + 1];
+        const double env = std::hypot(re, im);
+        upperEnvOut[i] = env;
+        lowerEnvOut[i] = -env;
+        if (imagOut)
+            (*imagOut)[i] = im;
+        if (phaseVec)
+            (*phaseVec)[i] = std::atan2(im, re);
+    }
+
+    if (phaseVec) {
+        // Unwrap phase
+        for (size_t i = 1; i < n; ++i) {
+            double diff = (*phaseVec)[i] - (*phaseVec)[i - 1];
+            while (diff > M_PI) {
+                (*phaseVec)[i] -= 2.0 * M_PI;
+                diff -= 2.0 * M_PI;
+            }
+            while (diff < -M_PI) {
+                (*phaseVec)[i] += 2.0 * M_PI;
+                diff += 2.0 * M_PI;
+            }
+        }
+    }
+
+    if (instFreqOut) {
+        // Instantaneous frequency f(t) = (1 / 2pi) * d(phi)/dt
+        instFreqOut->assign(n, 0.0);
+        const double dt = 1.0 / fsOut;
+        if (n >= 2 && phaseVec) {
+            (*instFreqOut)[0] = ((*phaseVec)[1] - (*phaseVec)[0]) / (2.0 * M_PI * dt);
+            for (size_t i = 1; i + 1 < n; ++i)
+                (*instFreqOut)[i] = ((*phaseVec)[i + 1] - (*phaseVec)[i - 1]) / (4.0 * M_PI * dt);
+            (*instFreqOut)[n - 1] = ((*phaseVec)[n - 1] - (*phaseVec)[n - 2]) / (2.0 * M_PI * dt);
+        }
+    }
+
+    return true;
+}
+
+bool computeWaveletDenoiseVector(Graph *g, const QString &curveTitle,
+                                 AdvancedSignalProc::WaveletType wtype, int levels,
+                                 bool softThreshold, double thresholdScale,
+                                 std::vector<double> &tOut, std::vector<double> &denoisedOut)
+{
+    tOut.clear();
+    denoisedOut.clear();
+
+    std::vector<double> y;
+    double fs = 1.0;
+    if (!extractUniformSignal(g, curveTitle, tOut, y, fs) || y.size() < 4)
+        return false;
+
+    const int n = static_cast<int>(y.size());
+    const std::vector<double> &h = waveletLowpassFilter(wtype);
+    const int K = static_cast<int>(h.size());
+    std::vector<double> gHigh(static_cast<size_t>(K), 0.0);
+    for (int k = 0; k < K; ++k) {
+        const double sign = (k % 2 == 0) ? 1.0 : -1.0;
+        gHigh[static_cast<size_t>(k)] = sign * h[static_cast<size_t>(K - 1 - k)];
+    }
+
+    // Symmetric boundary extension + pad to multiple of 2^L
+    const int L = std::clamp(levels, 1, 10);
+    const int padLeft = std::min(n - 1, std::max(K, 16));
+    const int block = 1 << L;
+    const int minPadded = std::max(block * std::max(1, K), n + 2 * padLeft);
+    const int P = ((minPadded + block - 1) / block) * block;
+
+    std::vector<double> approx(static_cast<size_t>(P), 0.0);
+    auto mirrorSample = [&](int idx) -> double {
+        if (n == 1)
+            return y[0];
+        const int period = 2 * (n - 1);
+        int m = idx % period;
+        if (m < 0)
+            m += period;
+        if (m >= n)
+            m = period - m;
+        return y[static_cast<size_t>(m)];
+    };
+
+    for (int i = 0; i < P; ++i)
+        approx[static_cast<size_t>(i)] = mirrorSample(i - padLeft);
+
+    // Forward pyramid DWT
+    std::vector<std::vector<double>> details(static_cast<size_t>(L));
+    int actualLevels = 0;
+    for (int lev = 0; lev < L; ++lev) {
+        const int M = static_cast<int>(approx.size());
+        if (M < 2 || M < K || (M % 2 != 0))
+            break;
+        const int half = M / 2;
+        std::vector<double> nextApprox(static_cast<size_t>(half), 0.0);
+        std::vector<double> det(static_cast<size_t>(half), 0.0);
+
+        for (int m = 0; m < half; ++m) {
+            double sa = 0.0, sd = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const double val = approx[static_cast<size_t>((2 * m + k) % M)];
+                sa += h[static_cast<size_t>(k)] * val;
+                sd += gHigh[static_cast<size_t>(k)] * val;
+            }
+            nextApprox[static_cast<size_t>(m)] = sa;
+            det[static_cast<size_t>(m)] = sd;
+        }
+        approx.swap(nextApprox);
+        details[static_cast<size_t>(lev)] = std::move(det);
+        ++actualLevels;
+    }
+
+    if (actualLevels > 0 && !details[0].empty()) {
+        // Estimate noise sigma via MAD on finest-level central detail coefficients
+        const int d1Start = std::clamp(padLeft / 2, 0, static_cast<int>(details[0].size()) - 1);
+        const int d1Count = std::clamp(n / 2, 1, static_cast<int>(details[0].size()) - d1Start);
+        std::vector<double> coreD1(details[0].begin() + d1Start,
+                                   details[0].begin() + d1Start + d1Count);
+        const double medD1 = computeMedian(coreD1);
+        for (double &v : coreD1)
+            v = std::fabs(v - medD1);
+        const double mad = computeMedian(coreD1);
+        const double sigmaHat = mad / 0.6744897501960817;
+        const double scaleMult = std::max(0.0, thresholdScale);
+        const double lambda = scaleMult * sigmaHat
+                * std::sqrt(2.0 * std::log(static_cast<double>(std::max(2, n))));
+
+        for (int lev = 0; lev < actualLevels; ++lev) {
+            for (double &d : details[static_cast<size_t>(lev)]) {
+                const double ad = std::fabs(d);
+                if (softThreshold) {
+                    d = (ad > lambda) ? std::copysign(ad - lambda, d) : 0.0;
+                } else {
+                    if (ad < lambda)
+                        d = 0.0;
+                }
+            }
+        }
+    }
+
+    // Exact orthogonal transpose inverse pyramid IDWT
+    for (int lev = actualLevels - 1; lev >= 0; --lev) {
+        const std::vector<double> &det = details[static_cast<size_t>(lev)];
+        const int half = static_cast<int>(approx.size());
+        const int M = 2 * half;
+        std::vector<double> recon(static_cast<size_t>(M), 0.0);
+
+        for (int m = 0; m < half; ++m) {
+            const double ca = approx[static_cast<size_t>(m)];
+            const double cd = det[static_cast<size_t>(m)];
+            for (int k = 0; k < K; ++k) {
+                const size_t dst = static_cast<size_t>((2 * m + k) % M);
+                recon[dst] += h[static_cast<size_t>(k)] * ca + gHigh[static_cast<size_t>(k)] * cd;
+            }
+        }
+        approx.swap(recon);
+    }
+
+    denoisedOut.assign(approx.begin() + padLeft, approx.begin() + padLeft + n);
+    return denoisedOut.size() == tOut.size() && denoisedOut.size() >= 2;
+}
+
+bool computeDecimatedVectors(Graph *g, const QString &curveTitle,
+                             int factor, bool firAntiAlias,
+                             std::vector<double> &xDecOut, std::vector<double> &yDecOut)
+{
+    xDecOut.clear();
+    yDecOut.clear();
+
+    std::vector<double> xs, ys;
+    if (!extractSortedSignalXY(g, curveTitle, xs, ys) || xs.size() < 2)
+        return false;
+
+    const int n = static_cast<int>(ys.size());
+    if (n >= 3) {
+        const double meanDx = (xs.back() - xs.front()) / static_cast<double>(n - 1);
+        if (meanDx > 1e-300) {
+            double maxDev = 0.0;
+            for (int i = 0; i + 1 < n; ++i) {
+                const double dxi = xs[static_cast<size_t>(i + 1)] - xs[static_cast<size_t>(i)];
+                maxDev = std::max(maxDev, std::fabs(dxi - meanDx));
+            }
+            if (maxDev > 0.05 * meanDx) {
+                // Non-uniform spacing (>5% step variation): resample onto uniform grid before FIR/decimation
+                std::vector<double> uniX(static_cast<size_t>(n), 0.0);
+                std::vector<double> uniY(static_cast<size_t>(n), 0.0);
+                uniX[0] = xs.front();
+                uniY[0] = ys.front();
+                uniX[static_cast<size_t>(n - 1)] = xs.back();
+                uniY[static_cast<size_t>(n - 1)] = ys.back();
+                size_t seg = 0;
+                for (int i = 1; i < n - 1; ++i) {
+                    const double xq = xs.front() + static_cast<double>(i) * meanDx;
+                    uniX[static_cast<size_t>(i)] = xq;
+                    while (seg + 1 < static_cast<size_t>(n - 1) && xs[seg + 1] < xq)
+                        ++seg;
+                    const double dxSeg = xs[seg + 1] - xs[seg];
+                    const double alpha = (dxSeg > 1e-300) ? ((xq - xs[seg]) / dxSeg) : 0.0;
+                    uniY[static_cast<size_t>(i)] = ys[seg] + alpha * (ys[seg + 1] - ys[seg]);
+                }
+                xs.swap(uniX);
+                ys.swap(uniY);
+            }
+        }
+    }
+
+    const int M = std::clamp(factor, 2, std::max(2, n));
+
+    xDecOut.reserve(static_cast<size_t>((n + M - 1) / M));
+    yDecOut.reserve(static_cast<size_t>((n + M - 1) / M));
+
+    if (firAntiAlias) {
+        // Symmetric Kaiser-windowed sinc lowpass anti-aliasing FIR filter (cutoff = 0.8 / M Nyquist)
+        const int halfTap = std::clamp(8 * M, 16, 256);
+        const double fcNorm = 0.8 / static_cast<double>(M); // fraction of Nyquist
+        const double beta = 5.658; // ~60 dB stopband attenuation
+        const double invI0Beta = 1.0 / besselI0(beta);
+
+        std::vector<double> h(static_cast<size_t>(2 * halfTap + 1), 0.0);
+        double hSum = 0.0;
+        for (int k = -halfTap; k <= halfTap; ++k) {
+            const double sincVal = (k == 0)
+                    ? fcNorm
+                    : (std::sin(M_PI * fcNorm * static_cast<double>(k))
+                       / (M_PI * static_cast<double>(k)));
+            const double u = static_cast<double>(k) / static_cast<double>(halfTap);
+            const double winVal = besselI0(beta * std::sqrt(std::max(0.0, 1.0 - u * u))) * invI0Beta;
+            const double tap = sincVal * winVal;
+            h[static_cast<size_t>(k + halfTap)] = tap;
+            hSum += tap;
+        }
+        if (std::fabs(hSum) > 1e-30) {
+            for (double &tap : h)
+                tap /= hSum;
+        }
+
+        auto sampleOddReflect = [&](int idx) -> double {
+            if (n == 1)
+                return ys[0];
+            if (idx >= 0 && idx < n)
+                return ys[static_cast<size_t>(idx)];
+            if (idx < 0) {
+                const int m = std::min(n - 1, -idx);
+                return 2.0 * ys[0] - ys[static_cast<size_t>(m)];
+            }
+            const int m = std::max(0, 2 * (n - 1) - idx);
+            return 2.0 * ys[static_cast<size_t>(n - 1)] - ys[static_cast<size_t>(m)];
+        };
+
+        for (int i = 0; i < n; i += M) {
+            double acc = 0.0;
+            for (int k = -halfTap; k <= halfTap; ++k)
+                acc += h[static_cast<size_t>(k + halfTap)] * sampleOddReflect(i - k);
+            xDecOut.push_back(xs[static_cast<size_t>(i)]);
+            yDecOut.push_back(acc);
+        }
+    } else {
+        // Block moving average downsampling
+        const int halfLeft = (M - 1) / 2;
+        const int halfRight = M - 1 - halfLeft;
+        for (int i = 0; i < n; i += M) {
+            const int lo = std::max(0, i - halfLeft);
+            const int hi = std::min(n - 1, i + halfRight);
+            double sumY = 0.0;
+            for (int k = lo; k <= hi; ++k)
+                sumY += ys[static_cast<size_t>(k)];
+            xDecOut.push_back(xs[static_cast<size_t>(i)]);
+            yDecOut.push_back(sumY / static_cast<double>(hi - lo + 1));
+        }
+    }
+
+    if (xDecOut.size() < 2 && n >= 2) {
+        xDecOut.push_back(xs.back());
+        yDecOut.push_back(ys.back());
+    }
+
+    return xDecOut.size() >= 2 && xDecOut.size() == yDecOut.size();
+}
+
 } // namespace
 
 // ============================================================================
@@ -1470,68 +1808,13 @@ QwtPlotCurve *AdvancedSignalProc::hilbertEnvelope(ApplicationWindow *app, Graph 
     if (!app || !g)
         return nullptr;
 
-    std::vector<double> t, y;
+    std::vector<double> t, upperEnv, lowerEnv, imagPart, instPhase, instFreq;
     double fs = 1.0;
-    if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 2)
+    if (!computeHilbertAnalyticVectors(g, curveTitle, t, upperEnv, lowerEnv, fs,
+                                       &imagPart, &instPhase, &instFreq))
         return nullptr;
     reportSignalPrep(app, QStringLiteral("Hilbert"), curveTitle, s_lastSignalPrepNote);
-
-    const size_t n = y.size();
-    std::vector<double> z(2 * n, 0.0);
-    for (size_t i = 0; i < n; ++i)
-        z[2 * i] = y[i];
-
-    // Forward FFT -> X[k]
-    runComplexFft1D(z, n, false);
-
-    // Exact Marple (1999) discrete analytic spectrum:
-    // Z[0] = X[0]; Z[k] = 2*X[k] for 0 < k < (N+1)/2; Z[N/2] = X[N/2] (if N even); Z[k] = 0 for k > N/2
-    const size_t posLimit = (n + 1) / 2;
-    for (size_t k = 1; k < posLimit; ++k) {
-        z[2 * k] *= 2.0;
-        z[2 * k + 1] *= 2.0;
-    }
-    const size_t zeroStart = (n / 2) + 1;
-    for (size_t k = zeroStart; k < n; ++k) {
-        z[2 * k] = 0.0;
-        z[2 * k + 1] = 0.0;
-    }
-
-    // Inverse FFT -> z(t) = y(t) + j * H{y}(t)
-    runComplexFft1D(z, n, true);
-
-    std::vector<double> upperEnv(n), lowerEnv(n), imagPart(n), instPhase(n), instFreq(n, 0.0);
-    for (size_t i = 0; i < n; ++i) {
-        const double re = z[2 * i];
-        const double im = z[2 * i + 1];
-        const double env = std::hypot(re, im);
-        upperEnv[i] = env;
-        lowerEnv[i] = -env;
-        imagPart[i] = im;
-        instPhase[i] = std::atan2(im, re);
-    }
-
-    // Unwrap phase
-    for (size_t i = 1; i < n; ++i) {
-        double diff = instPhase[i] - instPhase[i - 1];
-        while (diff > M_PI) {
-            instPhase[i] -= 2.0 * M_PI;
-            diff -= 2.0 * M_PI;
-        }
-        while (diff < -M_PI) {
-            instPhase[i] += 2.0 * M_PI;
-            diff += 2.0 * M_PI;
-        }
-    }
-
-    // Instantaneous frequency f(t) = (1 / 2pi) * d(phi)/dt
-    const double dt = 1.0 / fs;
-    if (n >= 2) {
-        instFreq[0] = (instPhase[1] - instPhase[0]) / (2.0 * M_PI * dt);
-        for (size_t i = 1; i + 1 < n; ++i)
-            instFreq[i] = (instPhase[i + 1] - instPhase[i - 1]) / (4.0 * M_PI * dt);
-        instFreq[n - 1] = (instPhase[n - 1] - instPhase[n - 2]) / (2.0 * M_PI * dt);
-    }
+    const size_t n = t.size();
 
     QStringList cols;
     cols << "Time" << "UpperEnvelope" << "LowerEnvelope" << "HilbertImag" << "InstPhaseRad"
@@ -1694,117 +1977,12 @@ QwtPlotCurve *AdvancedSignalProc::waveletDenoiseDWT(ApplicationWindow *app, Grap
     if (!app || !g)
         return nullptr;
 
-    std::vector<double> t, y;
-    double fs = 1.0;
-    if (!extractUniformSignal(g, curveTitle, t, y, fs) || y.size() < 4)
+    std::vector<double> t, denoised;
+    if (!computeWaveletDenoiseVector(g, curveTitle, wtype, levels, softThreshold, thresholdScale,
+                                     t, denoised))
         return nullptr;
     reportSignalPrep(app, QStringLiteral("DWT"), curveTitle, s_lastSignalPrepNote);
-
-    const int n = static_cast<int>(y.size());
-    const std::vector<double> &h = waveletLowpassFilter(wtype);
-    const int K = static_cast<int>(h.size());
-    std::vector<double> gHigh(static_cast<size_t>(K), 0.0);
-    for (int k = 0; k < K; ++k) {
-        const double sign = (k % 2 == 0) ? 1.0 : -1.0;
-        gHigh[static_cast<size_t>(k)] = sign * h[static_cast<size_t>(K - 1 - k)];
-    }
-
-    // Symmetric boundary extension + pad to multiple of 2^L
-    const int L = std::clamp(levels, 1, 10);
-    const int padLeft = std::min(n - 1, std::max(K, 16));
-    const int block = 1 << L;
-    const int minPadded = std::max(block * std::max(1, K), n + 2 * padLeft);
-    const int P = ((minPadded + block - 1) / block) * block;
-
-    std::vector<double> approx(static_cast<size_t>(P), 0.0);
-    auto mirrorSample = [&](int idx) -> double {
-        if (n == 1)
-            return y[0];
-        const int period = 2 * (n - 1);
-        int m = idx % period;
-        if (m < 0)
-            m += period;
-        if (m >= n)
-            m = period - m;
-        return y[static_cast<size_t>(m)];
-    };
-
-    for (int i = 0; i < P; ++i)
-        approx[static_cast<size_t>(i)] = mirrorSample(i - padLeft);
-
-    // Forward pyramid DWT
-    std::vector<std::vector<double>> details(static_cast<size_t>(L));
-    int actualLevels = 0;
-    for (int lev = 0; lev < L; ++lev) {
-        const int M = static_cast<int>(approx.size());
-        if (M < 2 || M < K || (M % 2 != 0))
-            break;
-        const int half = M / 2;
-        std::vector<double> nextApprox(static_cast<size_t>(half), 0.0);
-        std::vector<double> det(static_cast<size_t>(half), 0.0);
-
-        for (int m = 0; m < half; ++m) {
-            double sa = 0.0, sd = 0.0;
-            for (int k = 0; k < K; ++k) {
-                const double val = approx[static_cast<size_t>((2 * m + k) % M)];
-                sa += h[static_cast<size_t>(k)] * val;
-                sd += gHigh[static_cast<size_t>(k)] * val;
-            }
-            nextApprox[static_cast<size_t>(m)] = sa;
-            det[static_cast<size_t>(m)] = sd;
-        }
-        approx.swap(nextApprox);
-        details[static_cast<size_t>(lev)] = std::move(det);
-        ++actualLevels;
-    }
-
-    if (actualLevels > 0 && !details[0].empty()) {
-        // Estimate noise sigma via MAD on finest-level central detail coefficients
-        const int d1Start = std::clamp(padLeft / 2, 0, static_cast<int>(details[0].size()) - 1);
-        const int d1Count = std::clamp(n / 2, 1, static_cast<int>(details[0].size()) - d1Start);
-        std::vector<double> coreD1(details[0].begin() + d1Start,
-                                   details[0].begin() + d1Start + d1Count);
-        const double medD1 = computeMedian(coreD1);
-        for (double &v : coreD1)
-            v = std::fabs(v - medD1);
-        const double mad = computeMedian(coreD1);
-        const double sigmaHat = mad / 0.6744897501960817;
-        const double scaleMult = std::max(0.0, thresholdScale);
-        const double lambda = scaleMult * sigmaHat
-                * std::sqrt(2.0 * std::log(static_cast<double>(std::max(2, n))));
-
-        for (int lev = 0; lev < actualLevels; ++lev) {
-            for (double &d : details[static_cast<size_t>(lev)]) {
-                const double ad = std::fabs(d);
-                if (softThreshold) {
-                    d = (ad > lambda) ? std::copysign(ad - lambda, d) : 0.0;
-                } else {
-                    if (ad < lambda)
-                        d = 0.0;
-                }
-            }
-        }
-    }
-
-    // Exact orthogonal transpose inverse pyramid IDWT
-    for (int lev = actualLevels - 1; lev >= 0; --lev) {
-        const std::vector<double> &det = details[static_cast<size_t>(lev)];
-        const int half = static_cast<int>(approx.size());
-        const int M = 2 * half;
-        std::vector<double> recon(static_cast<size_t>(M), 0.0);
-
-        for (int m = 0; m < half; ++m) {
-            const double ca = approx[static_cast<size_t>(m)];
-            const double cd = det[static_cast<size_t>(m)];
-            for (int k = 0; k < K; ++k) {
-                const size_t dst = static_cast<size_t>((2 * m + k) % M);
-                recon[dst] += h[static_cast<size_t>(k)] * ca + gHigh[static_cast<size_t>(k)] * cd;
-            }
-        }
-        approx.swap(recon);
-    }
-
-    std::vector<double> denoised(approx.begin() + padLeft, approx.begin() + padLeft + n);
+    const int n = static_cast<int>(denoised.size());
 
     Table *tbl = buildSignalTable(app, "WaveletDenoise",
                                   QStringList() << "Time" << "DenoisedY",
@@ -1840,6 +2018,17 @@ QwtPlotCurve *AdvancedSignalProc::waveletDenoiseDWT(ApplicationWindow *app, Grap
 Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
                                   bool inverse, bool shiftCenter)
 {
+    return fft2D(app, srcMatrix, inverse, shiftCenter, nullptr, nullptr, Fft2DMagnitudeOrReal);
+}
+
+Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
+                                  bool inverse, bool shiftCenter,
+                                  Matrix *imagOrPhaseMatrix,
+                                  Matrix **outAuxMatrix,
+                                  Fft2DOutputMode outputMode)
+{
+    if (outAuxMatrix)
+        *outAuxMatrix = nullptr;
     if (!app || !srcMatrix)
         return nullptr;
 
@@ -1850,20 +2039,40 @@ Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
 
     const size_t R = static_cast<size_t>(rows);
     const size_t C = static_cast<size_t>(cols);
+    const bool hasValidAuxInput = (imagOrPhaseMatrix != nullptr
+                                   && imagOrPhaseMatrix->numRows() == rows
+                                   && imagOrPhaseMatrix->numCols() == cols);
 
     std::vector<double> grid(2 * R * C, 0.0);
     for (size_t r = 0; r < R; ++r) {
         for (size_t c = 0; c < C; ++c) {
-            const double val = srcMatrix->cell(static_cast<int>(r), static_cast<int>(c));
-            grid[2 * (r * C + c)] = std::isfinite(val) ? val : 0.0;
+            const double rawA = srcMatrix->cell(static_cast<int>(r), static_cast<int>(c));
+            const double valA = std::isfinite(rawA) ? rawA : 0.0;
+            const size_t idx = 2 * (r * C + c);
+            if (hasValidAuxInput) {
+                const double rawB =
+                        imagOrPhaseMatrix->cell(static_cast<int>(r), static_cast<int>(c));
+                const double valB = std::isfinite(rawB) ? rawB : 0.0;
+                if (inverse && outputMode == Fft2DMagnitudeAndPhase) {
+                    grid[idx] = valA * std::cos(valB);
+                    grid[idx + 1] = valA * std::sin(valB);
+                } else {
+                    grid[idx] = valA;
+                    grid[idx + 1] = valB;
+                }
+            } else {
+                grid[idx] = valA;
+            }
         }
     }
 
     // If inverse and input was centered, undo shift prior to 2D IFFT
+    // Forward places unshifted[r, c] into shifted[(r + R/2) % R, (c + C/2) % C],
+    // so reading shifted[(r + R/2) % R, (c + C/2) % C] restores unshifted[r, c] for both even and odd sizes.
     if (inverse && shiftCenter) {
         std::vector<double> unshifted(2 * R * C, 0.0);
-        const size_t sr = (R + 1) / 2;
-        const size_t sc = (C + 1) / 2;
+        const size_t sr = R / 2;
+        const size_t sc = C / 2;
         for (size_t r = 0; r < R; ++r) {
             for (size_t c = 0; c < C; ++c) {
                 const size_t srcIdx = 2 * (((r + sr) % R) * C + ((c + sc) % C));
@@ -1931,7 +2140,10 @@ Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
         grid.swap(shifted);
     }
 
-    Matrix *outMat = app->newMatrix(uniqueWinName(app, inverse ? "IFFT2D" : "FFT2D"), rows, cols);
+    const QString primaryPrefix = (outputMode == Fft2DComplexReIm)
+            ? (inverse ? QStringLiteral("IFFT2DRe") : QStringLiteral("FFT2DRe"))
+            : (inverse ? QStringLiteral("IFFT2D") : QStringLiteral("FFT2D"));
+    Matrix *outMat = app->newMatrix(uniqueWinName(app, primaryPrefix), rows, cols);
     if (!outMat)
         return nullptr;
 
@@ -1943,25 +2155,59 @@ Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
                                  : 1.0;
     const double fxMax = (dx > 1e-15) ? (0.5 / dx) : 0.5;
     const double fyMax = (dy > 1e-15) ? (0.5 / dy) : 0.5;
+    double outXStart = srcMatrix->xStart();
+    double outXEnd = srcMatrix->xEnd();
+    double outYStart = srcMatrix->yStart();
+    double outYEnd = srcMatrix->yEnd();
     if (!inverse) {
-        if (shiftCenter)
-            outMat->setCoordinates(-fxMax, fxMax, -fyMax, fyMax);
-        else
-            outMat->setCoordinates(0.0, 2.0 * fxMax, 0.0, 2.0 * fyMax);
-    } else {
-        outMat->setCoordinates(srcMatrix->xStart(), srcMatrix->xEnd(),
-                               srcMatrix->yStart(), srcMatrix->yEnd());
+        if (shiftCenter) {
+            outXStart = -fxMax;
+            outXEnd = fxMax;
+            outYStart = -fyMax;
+            outYEnd = fyMax;
+        } else {
+            outXStart = 0.0;
+            outXEnd = 2.0 * fxMax;
+            outYStart = 0.0;
+            outYEnd = 2.0 * fyMax;
+        }
     }
+    outMat->setCoordinates(outXStart, outXEnd, outYStart, outYEnd);
 
+    const bool outputSignedReal = (inverse || outputMode == Fft2DComplexReIm);
     outMat->d_future_matrix->beginMacro(inverse ? trSig("2D IFFT") : trSig("2D FFT"));
     for (size_t r = 0; r < R; ++r) {
         for (size_t c = 0; c < C; ++c) {
             const size_t idx = 2 * (r * C + c);
-            const double val = std::hypot(grid[idx], grid[idx + 1]);
+            const double val = outputSignedReal
+                    ? grid[idx]
+                    : std::hypot(grid[idx], grid[idx + 1]);
             outMat->setCell(static_cast<int>(r), static_cast<int>(c), val);
         }
     }
     outMat->d_future_matrix->endMacro();
+
+    if (outAuxMatrix
+        && (outputMode == Fft2DComplexReIm || (!inverse && outputMode == Fft2DMagnitudeAndPhase))) {
+        const QString auxPrefix = (outputMode == Fft2DComplexReIm)
+                ? (inverse ? QStringLiteral("IFFT2DIm") : QStringLiteral("FFT2DIm"))
+                : QStringLiteral("FFT2DPhase");
+        if (Matrix *auxMat = app->newMatrix(uniqueWinName(app, auxPrefix), rows, cols)) {
+            auxMat->setCoordinates(outXStart, outXEnd, outYStart, outYEnd);
+            auxMat->d_future_matrix->beginMacro(inverse ? trSig("2D IFFT") : trSig("2D FFT"));
+            for (size_t r = 0; r < R; ++r) {
+                for (size_t c = 0; c < C; ++c) {
+                    const size_t idx = 2 * (r * C + c);
+                    const double auxVal = (outputMode == Fft2DComplexReIm)
+                            ? grid[idx + 1]
+                            : std::atan2(grid[idx + 1], grid[idx]);
+                    auxMat->setCell(static_cast<int>(r), static_cast<int>(c), auxVal);
+                }
+            }
+            auxMat->d_future_matrix->endMacro();
+            *outAuxMatrix = auxMat;
+        }
+    }
 
     return outMat;
 }
@@ -2444,6 +2690,7 @@ void AdvancedSignalProc::showHilbertDialog(ApplicationWindow *app, Graph *g)
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -2456,9 +2703,34 @@ void AdvancedSignalProc::showHilbertDialog(ApplicationWindow *app, Graph *g)
     cbCurve->addItems(curves);
     QCheckBox *chkLower = new QCheckBox(trSig("Also Plot Lower Envelope (-|z(t)|)"), &dlg);
     chkLower->setChecked(true);
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> px, upperEnv, lowerEnv;
+        double fs = 1.0;
+        if (!computeHilbertAnalyticVectors(g, cbCurve->currentText(), px, upperEnv, lowerEnv, fs)) {
+            previewGuard.clear();
+            return;
+        }
+        previewGuard.setDual(px, &upperEnv, QPen(QColor(213, 94, 0), 2.0, Qt::DashLine),
+                             chkLower->isChecked() ? &lowerEnv : nullptr,
+                             QPen(QColor(213, 94, 0, 200), 1.6, Qt::DotLine));
+    };
+
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &) { refreshPreview(); });
+    QObject::connect(chkLower, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
 
     form->addRow(trSig("Curve:"), cbCurve);
     form->addRow(QString(), chkLower);
+    form->addRow(QString(), chkPreview);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -2468,14 +2740,19 @@ void AdvancedSignalProc::showHilbertDialog(ApplicationWindow *app, Graph *g)
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    if (dlg.exec() == QDialog::Accepted)
+    refreshPreview();
+
+    if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         hilbertEnvelope(app, g, cbCurve->currentText(), chkLower->isChecked(), nullptr);
+    }
 }
 
 void AdvancedSignalProc::showWaveletDialog(ApplicationWindow *app, Graph *g)
 {
     if (!app || !g)
         return;
+    registerSignalProcTranslationsOnce();
     const QStringList curves = g->analysableCurvesList();
     if (curves.isEmpty())
         return;
@@ -2523,11 +2800,44 @@ void AdvancedSignalProc::showWaveletDialog(ApplicationWindow *app, Graph *g)
     sbThreshScale->setDecimals(2);
     sbThreshScale->setSingleStep(0.1);
     sbThreshScale->setValue(1.0);
+    QCheckBox *chkDwtPreview = new QCheckBox(QObject::tr("Live Preview"), tabDwt);
+    chkDwtPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (tabs->currentIndex() != 1 || !chkDwtPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> px, py;
+        if (computeWaveletDenoiseVector(
+                    g, cbDwtCurve->currentText(),
+                    static_cast<WaveletType>(cbDwtType->currentData().toInt()), sbLevels->value(),
+                    chkSoft->isChecked(), sbThreshScale->value(), px, py)) {
+            previewGuard.setSingle(px, py, QPen(QColor(0, 158, 115), 2.0, Qt::DashLine));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
+    QObject::connect(tabs, &QTabWidget::currentChanged, &dlg, [&](int) { refreshPreview(); });
+    QObject::connect(cbDwtCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &) { refreshPreview(); });
+    QObject::connect(cbDwtType, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(sbLevels, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(sbThreshScale, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) { refreshPreview(); });
+    QObject::connect(chkSoft, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+    QObject::connect(chkDwtPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+
     fDwt->addRow(trSig("Curve:"), cbDwtCurve);
     fDwt->addRow(trSig("Wavelet Family:"), cbDwtType);
     fDwt->addRow(trSig("Decomposition Levels:"), sbLevels);
     fDwt->addRow(trSig("Threshold Scale:"), sbThreshScale);
     fDwt->addRow(QString(), chkSoft);
+    fDwt->addRow(QString(), chkDwtPreview);
     tabs->addTab(tabDwt, trSig("DWT Denoise"));
 
     vbox->addWidget(tabs);
@@ -2537,7 +2847,10 @@ void AdvancedSignalProc::showWaveletDialog(ApplicationWindow *app, Graph *g)
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
+    refreshPreview();
+
     if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         if (tabs->currentIndex() == 0) {
             waveletCWT(app, g, cbCwtCurve->currentText(), sbScales->value(),
                        static_cast<WaveletType>(cbCwtType->currentData().toInt()),
@@ -2763,114 +3076,9 @@ QwtPlotCurve *AdvancedSignalProc::decimateCurve(ApplicationWindow *app, Graph *g
     if (!app || !g)
         return nullptr;
 
-    std::vector<double> xs, ys;
-    if (!extractSortedSignalXY(g, curveTitle, xs, ys) || xs.size() < 2)
+    std::vector<double> xDec, yDec;
+    if (!computeDecimatedVectors(g, curveTitle, factor, firAntiAlias, xDec, yDec))
         return nullptr;
-
-    const int n = static_cast<int>(ys.size());
-    if (n >= 3) {
-        const double meanDx = (xs.back() - xs.front()) / static_cast<double>(n - 1);
-        if (meanDx > 1e-300) {
-            double maxDev = 0.0;
-            for (int i = 0; i + 1 < n; ++i) {
-                const double dxi = xs[static_cast<size_t>(i + 1)] - xs[static_cast<size_t>(i)];
-                maxDev = std::max(maxDev, std::fabs(dxi - meanDx));
-            }
-            if (maxDev > 0.05 * meanDx) {
-                // Non-uniform spacing (>5% step variation): resample onto uniform grid before FIR/decimation
-                std::vector<double> uniX(static_cast<size_t>(n), 0.0);
-                std::vector<double> uniY(static_cast<size_t>(n), 0.0);
-                uniX[0] = xs.front();
-                uniY[0] = ys.front();
-                uniX[static_cast<size_t>(n - 1)] = xs.back();
-                uniY[static_cast<size_t>(n - 1)] = ys.back();
-                size_t seg = 0;
-                for (int i = 1; i < n - 1; ++i) {
-                    const double xq = xs.front() + static_cast<double>(i) * meanDx;
-                    uniX[static_cast<size_t>(i)] = xq;
-                    while (seg + 1 < static_cast<size_t>(n - 1) && xs[seg + 1] < xq)
-                        ++seg;
-                    const double dxSeg = xs[seg + 1] - xs[seg];
-                    const double alpha = (dxSeg > 1e-300) ? ((xq - xs[seg]) / dxSeg) : 0.0;
-                    uniY[static_cast<size_t>(i)] = ys[seg] + alpha * (ys[seg + 1] - ys[seg]);
-                }
-                xs.swap(uniX);
-                ys.swap(uniY);
-            }
-        }
-    }
-
-    const int M = std::clamp(factor, 2, std::max(2, n));
-
-    std::vector<double> xDec;
-    std::vector<double> yDec;
-    xDec.reserve(static_cast<size_t>((n + M - 1) / M));
-    yDec.reserve(static_cast<size_t>((n + M - 1) / M));
-
-    if (firAntiAlias) {
-        // Symmetric Kaiser-windowed sinc lowpass anti-aliasing FIR filter (cutoff = 0.8 / M Nyquist)
-        const int halfTap = std::clamp(8 * M, 16, 256);
-        const double fcNorm = 0.8 / static_cast<double>(M); // fraction of Nyquist
-        const double beta = 5.658; // ~60 dB stopband attenuation
-        const double invI0Beta = 1.0 / besselI0(beta);
-
-        std::vector<double> h(static_cast<size_t>(2 * halfTap + 1), 0.0);
-        double hSum = 0.0;
-        for (int k = -halfTap; k <= halfTap; ++k) {
-            const double sincVal = (k == 0)
-                    ? fcNorm
-                    : (std::sin(M_PI * fcNorm * static_cast<double>(k))
-                       / (M_PI * static_cast<double>(k)));
-            const double u = static_cast<double>(k) / static_cast<double>(halfTap);
-            const double winVal = besselI0(beta * std::sqrt(std::max(0.0, 1.0 - u * u))) * invI0Beta;
-            const double tap = sincVal * winVal;
-            h[static_cast<size_t>(k + halfTap)] = tap;
-            hSum += tap;
-        }
-        if (std::fabs(hSum) > 1e-30) {
-            for (double &tap : h)
-                tap /= hSum;
-        }
-
-        auto sampleOddReflect = [&](int idx) -> double {
-            if (n == 1)
-                return ys[0];
-            if (idx >= 0 && idx < n)
-                return ys[static_cast<size_t>(idx)];
-            if (idx < 0) {
-                const int m = std::min(n - 1, -idx);
-                return 2.0 * ys[0] - ys[static_cast<size_t>(m)];
-            }
-            const int m = std::max(0, 2 * (n - 1) - idx);
-            return 2.0 * ys[static_cast<size_t>(n - 1)] - ys[static_cast<size_t>(m)];
-        };
-
-        for (int i = 0; i < n; i += M) {
-            double acc = 0.0;
-            for (int k = -halfTap; k <= halfTap; ++k)
-                acc += h[static_cast<size_t>(k + halfTap)] * sampleOddReflect(i - k);
-            xDec.push_back(xs[static_cast<size_t>(i)]);
-            yDec.push_back(acc);
-        }
-    } else {
-        // Block moving average downsampling
-        const int halfLeft = (M - 1) / 2;
-        const int halfRight = M - 1 - halfLeft;
-        for (int i = 0; i < n; i += M) {
-            const int lo = std::max(0, i - halfLeft);
-            const int hi = std::min(n - 1, i + halfRight);
-            double sumY = 0.0;
-            for (int k = lo; k <= hi; ++k)
-                sumY += ys[static_cast<size_t>(k)];
-            xDec.push_back(xs[static_cast<size_t>(i)]);
-            yDec.push_back(sumY / static_cast<double>(hi - lo + 1));
-        }
-    }
-
-    if (xDec.size() < 2 && n >= 2) {
-        xDec.push_back(xs.back());
-        yDec.push_back(ys.back());
-    }
 
     const int nOut = static_cast<int>(xDec.size());
     Table *tbl = buildSignalTable(
@@ -3101,9 +3309,35 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
             new QCheckBox(QObject::tr("Apply Kaiser-Sinc FIR Anti-Aliasing Filter"), &dlg);
     chkFir->setChecked(true);
 
+    QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
+    chkPreview->setChecked(true);
+
+    SignalPreviewGuard previewGuard(g);
+    auto refreshPreview = [&]() {
+        if (!chkPreview->isChecked()) {
+            previewGuard.clear();
+            return;
+        }
+        std::vector<double> px, py;
+        if (computeDecimatedVectors(g, cbCurve->currentText(), sbFactor->value(),
+                                    chkFir->isChecked(), px, py)) {
+            previewGuard.setSingle(px, py, QPen(QColor(15, 135, 95), 2.0, Qt::DashLine));
+        } else {
+            previewGuard.clear();
+        }
+    };
+
+    QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
+                     [&](const QString &) { refreshPreview(); });
+    QObject::connect(sbFactor, QOverload<int>::of(&QSpinBox::valueChanged), &dlg,
+                     [&](int) { refreshPreview(); });
+    QObject::connect(chkFir, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+    QObject::connect(chkPreview, &QCheckBox::toggled, &dlg, [&](bool) { refreshPreview(); });
+
     form->addRow(QObject::tr("Curve:"), cbCurve);
     form->addRow(QObject::tr("Decimation Factor:"), sbFactor);
     form->addRow(QString(), chkFir);
+    form->addRow(QString(), chkPreview);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -3113,7 +3347,10 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
+    refreshPreview();
+
     if (dlg.exec() == QDialog::Accepted) {
+        previewGuard.clear();
         decimateCurve(app, g, cbCurve->currentText(), sbFactor->value(), chkFir->isChecked());
     }
 }

@@ -78,6 +78,191 @@ inline double effectiveDoniachAlpha(double alpha)
     return (!std::isfinite(alpha) || alpha < 0.0 || alpha >= 0.85) ? 0.15 : alpha;
 }
 
+// Shape metrics of a unit-amplitude (A = 1), unit-width (w = 1) Asym2Sig / DoniachSunjic peak.
+// Both profiles are pure functions of (x - xc) / w scaled by A, so for arbitrary (A, w):
+//   area = A * w * unitArea, height = A * unitHeight, FWHM = w * unitFwhm.
+struct AsymUnitShape
+{
+    double area = 0.0;
+    double height = 0.0;
+    double fwhm = 1.0;
+};
+
+template<class F>
+double adaptiveSimpsonRec(const F &f, double a, double b, double fa, double fm, double fb,
+                          double whole, double eps, int depth)
+{
+    const double m = 0.5 * (a + b);
+    const double lm = 0.5 * (a + m), rm = 0.5 * (m + b);
+    const double flm = f(lm), frm = f(rm);
+    const double left = (m - a) / 6.0 * (fa + 4.0 * flm + fm);
+    const double right = (b - m) / 6.0 * (fm + 4.0 * frm + fb);
+    const double delta = left + right - whole;
+    if (depth <= 0 || std::abs(delta) <= 15.0 * eps)
+        return left + right + delta / 15.0;
+    return adaptiveSimpsonRec(f, a, m, fa, flm, fm, left, 0.5 * eps, depth - 1)
+            + adaptiveSimpsonRec(f, m, b, fm, frm, fb, right, 0.5 * eps, depth - 1);
+}
+
+// Integrates f over [a, b] split into nPieces fixed sub-intervals (so narrow features are never
+// skipped by the initial coarse Simpson sample), each refined adaptively.
+template<class F>
+double piecewiseAdaptiveIntegral(const F &f, double a, double b, int nPieces, double eps)
+{
+    if (!(b > a) || nPieces < 1)
+        return 0.0;
+    const double h = (b - a) / double(nPieces);
+    double total = 0.0;
+    for (int i = 0; i < nPieces; ++i) {
+        const double lo = a + h * double(i);
+        const double hi = (i + 1 == nPieces) ? b : (lo + h);
+        const double fa = f(lo), fb = f(hi), fm = f(0.5 * (lo + hi));
+        const double whole = (hi - lo) / 6.0 * (fa + 4.0 * fm + fb);
+        total += adaptiveSimpsonRec(f, lo, hi, fa, fm, fb, whole, eps / double(nPieces), 16);
+    }
+    return total;
+}
+
+AsymUnitShape computeAsymUnitShape(int prof, double alphaEff)
+{
+    AsymUnitShape s;
+    auto g = [prof, alphaEff](double dx) -> double {
+        const double v = eval_origin_peak_profile(prof, 1.0, 0.0, 1.0, dx, 0.5, 1.5, alphaEff, 1.0);
+        return (std::isfinite(v) && v > 0.0) ? v : 0.0;
+    };
+    const bool isDS = (prof == int(MultiPeakFit::DoniachSunjic));
+
+    // --- Area ---
+    if (isDS) {
+        // DS has algebraic tails: right ~ (1-a) u^(a-2), left ~ sin(pi a) |u|^(a-1)
+        // + cos(pi a)(1-a) |u|^(a-2) with u = 2 dx / w. The sin(pi a) left tail is not
+        // integrable for a > 0 (the DS line has formally infinite area), so the area is defined
+        // on the window |dx| <= 25 w (|u| <= 50) plus the analytic convergent u^(a-2) tails
+        // (which makes alpha = 0 reproduce the exact Lorentzian area pi w / 2 * A).
+        const double U = 50.0;
+        const double T = std::asinh(U);
+        auto integrand = [&g](double t) { return g(0.5 * std::sinh(t)) * 0.5 * std::cosh(t); };
+        double area = piecewiseAdaptiveIntegral(integrand, -T, T, 48, 1e-10);
+        const double a = alphaEff;
+        area += 0.5 * std::pow(U, a - 1.0) * (1.0 + std::cos(M_PI * a));
+        s.area = area;
+    } else {
+        // Asym2Sig: exponential sigmoid edges at dx = -w/2 (scale s1) and +w/2 (scale s2)
+        const double a = (alphaEff > 0.05) ? alphaEff : 1.5;
+        const double s1 = std::max(1e-15, 0.25 / (1.0 + a));
+        const double s2 = std::max(1e-15, 0.25 * a / (1.0 + a));
+        const double lo = std::min(-25.0, -0.5 - 60.0 * s1);
+        const double hi = std::max(25.0, 0.5 + 60.0 * s2);
+        std::vector<double> br = { lo, -0.5 - 12.0 * s1, -0.5 + 12.0 * s1, 0.5 - 12.0 * s2,
+                                   0.5 + 12.0 * s2, hi };
+        for (double &v : br)
+            v = std::min(hi, std::max(lo, v));
+        std::sort(br.begin(), br.end());
+        double area = 0.0;
+        for (size_t i = 0; i + 1 < br.size(); ++i)
+            area += piecewiseAdaptiveIntegral(g, br[i], br[i + 1], 16, 1e-10);
+        s.area = area;
+    }
+
+    // --- Height (maximum) ---
+    const int nScan = 6001;
+    const double scanLo = -3.0, scanHi = 3.0;
+    const double scanStep = (scanHi - scanLo) / double(nScan - 1);
+    int iMax = 0;
+    double vMax = -1.0;
+    for (int i = 0; i < nScan; ++i) {
+        const double v = g(scanLo + scanStep * double(i));
+        if (v > vMax) {
+            vMax = v;
+            iMax = i;
+        }
+    }
+    double xa = scanLo + scanStep * double(std::max(0, iMax - 1));
+    double xb = scanLo + scanStep * double(std::min(nScan - 1, iMax + 1));
+    const double gr = 0.5 * (std::sqrt(5.0) - 1.0);
+    double xc1 = xb - gr * (xb - xa), xc2 = xa + gr * (xb - xa);
+    double f1 = g(xc1), f2 = g(xc2);
+    for (int it = 0; it < 80; ++it) {
+        if (f1 >= f2) {
+            xb = xc2;
+            xc2 = xc1;
+            f2 = f1;
+            xc1 = xb - gr * (xb - xa);
+            f1 = g(xc1);
+        } else {
+            xa = xc1;
+            xc1 = xc2;
+            f1 = f2;
+            xc2 = xa + gr * (xb - xa);
+            f2 = g(xc2);
+        }
+    }
+    double xPeak = 0.5 * (xa + xb);
+    double hPeak = g(xPeak);
+    if (vMax > hPeak) {
+        hPeak = vMax;
+        xPeak = scanLo + scanStep * double(iMax);
+    }
+    s.height = std::max(0.0, hPeak);
+
+    // --- Measured FWHM (left/right half-maximum crossings, bracketed then bisected) ---
+    s.fwhm = 1.0;
+    if (s.height > 1e-300) {
+        const double half = 0.5 * s.height;
+        auto findCrossing = [&](double dir, double &xOut) -> bool {
+            double inner = xPeak, step = 1e-3;
+            for (int k = 0; k < 400; ++k) {
+                const double outer = inner + dir * step;
+                if (g(outer) <= half) {
+                    double aIn = inner, aOut = outer;
+                    for (int it = 0; it < 100; ++it) {
+                        const double mid = 0.5 * (aIn + aOut);
+                        if (g(mid) > half)
+                            aIn = mid;
+                        else
+                            aOut = mid;
+                    }
+                    xOut = 0.5 * (aIn + aOut);
+                    return true;
+                }
+                inner = outer;
+                step *= 1.1;
+                if (std::abs(inner - xPeak) > 1e6)
+                    break;
+            }
+            return false;
+        };
+        double xl = 0.0, xr = 0.0;
+        if (findCrossing(-1.0, xl) && findCrossing(1.0, xr) && xr > xl)
+            s.fwhm = xr - xl;
+    }
+    if (!std::isfinite(s.area) || s.area < 0.0)
+        s.area = 0.0;
+    if (!std::isfinite(s.fwhm) || s.fwhm <= 0.0)
+        s.fwhm = 1.0;
+    return s;
+}
+
+// Cached per-thread (the shape only depends on profile and alpha; the multi-peak fit callbacks
+// query it on every function evaluation when doublet constraints are active).
+AsymUnitShape asymUnitShape(int prof, double alphaEff)
+{
+    struct Slot
+    {
+        bool valid = false;
+        double alpha = 0.0;
+        AsymUnitShape shape;
+    };
+    thread_local Slot cacheSlots[2];
+    Slot &sl = cacheSlots[(prof == int(MultiPeakFit::DoniachSunjic)) ? 1 : 0];
+    if (!sl.valid || sl.alpha != alphaEff) {
+        sl.shape = computeAsymUnitShape(prof, alphaEff);
+        sl.alpha = alphaEff;
+        sl.valid = true;
+    }
+    return sl.shape;
+}
+
 } // namespace
 
 MultiPeakFit::MultiPeakFit(ApplicationWindow *parent, Graph *g, PeakProfile profile, int peaks)
@@ -199,6 +384,12 @@ double MultiPeakFit::peakFWHMFromW(PeakProfile prof, double w) const
         return wSafe * std::sqrt(2.0 * M_LN2);
     case GaussAmp:
         return wSafe * 2.0 * std::sqrt(2.0 * M_LN2);
+    case Asym2Sig:
+    case DoniachSunjic: {
+        const double alphaEff =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
+        return wSafe * asymUnitShape(int(prof), alphaEff).fwhm;
+    }
     default:
         return wSafe;
     }
@@ -213,6 +404,13 @@ double MultiPeakFit::wFromPeakFWHM(PeakProfile prof, double fwhm) const
         return fSafe / std::sqrt(2.0 * M_LN2);
     case GaussAmp:
         return fSafe / (2.0 * std::sqrt(2.0 * M_LN2));
+    case Asym2Sig:
+    case DoniachSunjic: {
+        const double alphaEff =
+                (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
+        const double uf = asymUnitShape(int(prof), alphaEff).fwhm;
+        return (uf > 1e-12) ? (fSafe / uf) : fSafe;
+    }
     default:
         return fSafe;
     }
@@ -247,24 +445,11 @@ double MultiPeakFit::peakTrueArea(PeakProfile prof, double rawA, double w) const
     }
     case Asym2Sig:
     case DoniachSunjic: {
+        // Full-tail adaptive integral (Asym2Sig) / ±25w window + analytic tails (DS) instead of
+        // the former fixed ±4w trapezoid that under-estimated the area (E4-7).
         double alphaEff =
                 (prof == DoniachSunjic) ? effectiveDoniachAlpha(d_asym_alpha) : d_asym_alpha;
-        const int nGrid = 161;
-        double x0_grid = -4.0 * wSafe;
-        double step_g = (8.0 * wSafe) / double(nGrid - 1);
-        double area = 0.0;
-        double prev_v = 0.0;
-        for (int gi = 0; gi < nGrid; ++gi) {
-            double dx = x0_grid + gi * step_g;
-            double v = std::max(0.0,
-                                eval_origin_peak_profile(int(prof), aAbs, 0.0, wSafe, dx,
-                                                         d_voigt_mu, d_pearson_m, alphaEff,
-                                                         d_tail_tau));
-            if (gi > 0)
-                area += 0.5 * (prev_v + v) * step_g;
-            prev_v = v;
-        }
-        return area;
+        return aAbs * wSafe * asymUnitShape(int(prof), alphaEff).area;
     }
     }
     return aAbs;
@@ -1676,17 +1861,33 @@ void MultiPeakFit::setNegativePeaksAllowed(bool allow)
 
 void MultiPeakFit::setPerPeakProfiles(const QVector<PeakProfile> &profiles)
 {
+    const bool oldCustom = usesCustomMultiPeakCallbacks();
     if (profiles.isEmpty()) {
         d_per_peak_profiles.clear();
+        const bool newCustom = usesCustomMultiPeakCallbacks();
+        if (d_param_init && d_p >= unsigned(3 * d_peaks + 1) && d_profile == Lorentz
+            && oldCustom != newCustom) {
+            const double factor = newCustom ? M_PI_2 : M_2_PI;
+            for (int j = 0; j < d_peaks; ++j)
+                gsl_vector_set(d_param_init, 3 * j, factor * gsl_vector_get(d_param_init, 3 * j));
+        }
         updateProfileFunctions();
         d_formula = buildFormula();
         return;
     }
 
+    const bool resized = (profiles.size() != d_peaks);
     d_per_peak_profiles.clear();
-    if (profiles.size() != d_peaks)
+    if (resized)
         setNumPeaks(profiles.size());
     d_per_peak_profiles = profiles;
+    const bool newCustom = usesCustomMultiPeakCallbacks();
+    if (!resized && d_param_init && d_p >= unsigned(3 * d_peaks + 1) && d_profile == Lorentz
+        && oldCustom != newCustom) {
+        const double factor = newCustom ? M_PI_2 : M_2_PI;
+        for (int j = 0; j < d_peaks; ++j)
+            gsl_vector_set(d_param_init, 3 * j, factor * gsl_vector_get(d_param_init, 3 * j));
+    }
     d_explanation = tr("Mixed-Profile(%1) multi-peak").arg(d_peaks);
     d_param_explain = generateExplanationList(d_peaks, d_profile, d_per_peak_profiles);
     d_formula = buildFormula();
@@ -1704,8 +1905,11 @@ void MultiPeakFit::addPeakDoubletConstraint(int secondaryPeakIdx, int primaryPea
     if (secondaryPeakIdx < 0 || primaryPeakIdx < 0 || secondaryPeakIdx == primaryPeakIdx)
         return;
 
+    const bool oldCustom = usesCustomMultiPeakCallbacks();
+
     int reqPeaks = std::max(secondaryPeakIdx, primaryPeakIdx) + 1;
-    if (reqPeaks > d_peaks)
+    const bool resized = (reqPeaks > d_peaks);
+    if (resized)
         setNumPeaks(reqPeaks);
 
     DoubletConstraint dc;
@@ -1725,6 +1929,16 @@ void MultiPeakFit::addPeakDoubletConstraint(int secondaryPeakIdx, int primaryPea
     }
     if (!replaced)
         d_doublet_constraints.push_back(dc);
+
+    const bool newCustom = usesCustomMultiPeakCallbacks();
+
+    // Convert Lorentz solver amplitude scale if callback convention changed (E4-7)
+    if (!resized && d_param_init && d_p >= unsigned(3 * d_peaks + 1) && d_profile == Lorentz
+        && oldCustom != newCustom) {
+        const double factor = newCustom ? M_PI_2 : M_2_PI;
+        for (int j = 0; j < d_peaks; ++j)
+            gsl_vector_set(d_param_init, 3 * j, factor * gsl_vector_get(d_param_init, 3 * j));
+    }
 
     setParameterFixed(3 * secondaryPeakIdx, true);
     setParameterFixed(3 * secondaryPeakIdx + 1, true);
@@ -2327,37 +2541,12 @@ void MultiPeakFit::evalSinglePeakMetrics(PeakProfile prof, double signedRawA, do
     }
     case Asym2Sig:
     case DoniachSunjic: {
-        fwhm = wSafe;
-        height = 0.0;
-        area = 0.0;
-        const int nGrid = 201;
-        double x0_grid = -4.0 * wSafe;
-        double step_g = (8.0 * wSafe) / double(nGrid - 1);
-        double prev_v = 0.0;
-        std::vector<double> gv(static_cast<size_t>(nGrid), 0.0);
-        int maxG = 0;
-        for (int gi = 0; gi < nGrid; ++gi) {
-            double dx = x0_grid + gi * step_g;
-            double v = std::max(0.0, eval_origin_peak_profile(int(prof), rawA, 0.0, wSafe, dx,
-                                                              d_voigt_mu, d_pearson_m, alphaEff,
-                                                              d_tail_tau));
-            gv[size_t(gi)] = v;
-            if (v > height) {
-                height = v;
-                maxG = gi;
-            }
-            if (gi > 0)
-                area += 0.5 * (prev_v + v) * step_g;
-            prev_v = v;
-        }
-        if (maxG > 0 && maxG + 1 < nGrid) {
-            const double ym1 = gv[size_t(maxG - 1)], y0p = gv[size_t(maxG)], yp1 = gv[size_t(maxG + 1)];
-            const double denom = 2.0 * (2.0 * y0p - ym1 - yp1);
-            if (denom > 1e-15) {
-                const double delta = std::clamp((ym1 - yp1) / denom, -0.5, 0.5);
-                height = std::max(height, y0p + 0.25 * (ym1 - yp1) * delta);
-            }
-        }
+        // Shape metrics scale exactly with (A, w); the unit shape is integrated over the full
+        // tails and the FWHM is measured from the half-maximum crossings (E4-7).
+        const AsymUnitShape us = asymUnitShape(int(prof), alphaEff);
+        fwhm = wSafe * us.fwhm;
+        height = rawA * us.height;
+        area = rawA * wSafe * us.area;
         break;
     }
     }
@@ -2606,19 +2795,24 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
 
     QString name = tableName.isEmpty() ? app->generateUniqueName(tr("PeakSummary"))
                                        : app->generateUniqueName(tableName, false);
-    Table *t = app->newTable(name, d_peaks, 12);
+    Table *t = app->newTable(name, d_peaks, 17);
     if (!t)
         return nullptr;
 
     t->setHeader(QStringList() << tr("Peak") << tr("Center") << tr("FWHM") << tr("Height")
                                << tr("Area") << tr("AreaPercent") << tr("y0") << tr("COD_R2")
                                << tr("Center_SE") << tr("FWHM_SE") << tr("Height_SE")
-                               << tr("Area_SE"));
-    for (int col = 0; col < 12; ++col)
-        t->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                               << tr("Area_SE") << tr("Profile") << QStringLiteral("mu")
+                               << QStringLiteral("m") << QStringLiteral("alpha")
+                               << QStringLiteral("tau"));
+    for (int col = 0; col < 17; ++col) {
+        t->column(col)->setColumnMode(col == 12 ? SciDAVis::ColumnMode::Text
+                                                : SciDAVis::ColumnMode::Numeric);
+    }
 
     double r2 = rSquare();
     for (int i = 0; i < d_peaks && i < int(rows.size()); ++i) {
+        const PeakProfile prof = peakProfileAt(i);
         t->column(0)->setValueAt(i, rows[i].index);
         t->column(1)->setValueAt(i, rows[i].center);
         t->column(2)->setValueAt(i, rows[i].fwhm);
@@ -2631,6 +2825,17 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
         t->column(9)->setValueAt(i, rows[i].fwhmSE);
         t->column(10)->setValueAt(i, rows[i].heightSE);
         t->column(11)->setValueAt(i, rows[i].areaSE);
+        t->column(12)->setTextAt(i, profileDisplayName(prof));
+        if (prof == PseudoVoigt || prof == Voigt)
+            t->column(13)->setValueAt(i, d_voigt_mu);
+        if (prof == PearsonVII)
+            t->column(14)->setValueAt(i, d_pearson_m);
+        if (prof == BiGaussian || prof == LogNormal || prof == Asym2Sig)
+            t->column(15)->setValueAt(i, d_asym_alpha);
+        else if (prof == DoniachSunjic)
+            t->column(15)->setValueAt(i, effectiveDoniachAlpha(d_asym_alpha));
+        if (prof == EMG)
+            t->column(16)->setValueAt(i, d_tail_tau);
     }
 
     QString xU, yU;
@@ -2644,7 +2849,8 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
         t->column(col)->setUnits(aU);
     t->column(5)->setUnits(QStringLiteral("%"));
 
-    t->showNormal();
+    if (!d_silent)
+        t->showNormal();
     return t;
 }
 

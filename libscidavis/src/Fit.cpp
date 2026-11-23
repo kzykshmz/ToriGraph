@@ -510,20 +510,6 @@ static CompiledLinearConstraints compileLinearConstraintsForFit(
     return out;
 }
 
-static void sanitizePositiveErrorVector(std::vector<double> &errs)
-{
-    double minPos = std::numeric_limits<double>::infinity();
-    for (double s : errs) {
-        if (std::isfinite(s) && s > 0.0 && s < minPos)
-            minPos = s;
-    }
-    const double fallback = std::isfinite(minPos) ? std::max(minPos, 1e-15) : 1.0;
-    for (double &s : errs) {
-        if (!std::isfinite(s) || s <= 0.0)
-            s = fallback;
-    }
-}
-
 enum ParamBoundMode {
     BoundNone = 0,
     BoundBoth = 1,
@@ -1112,9 +1098,17 @@ QString Fit::convergenceMessage() const
     return QString();
 }
 
+QStringList Fit::fitNotes() const
+{
+    QStringList notes = d_fit_notes;
+    if (!d_weighting_note.isEmpty() && !notes.contains(d_weighting_note))
+        notes << d_weighting_note;
+    return notes;
+}
+
 int Fit::degreesOfFreedom() const
 {
-    return int(d_x.size()) - effectiveFreeParameters();
+    return effectivePointCount() - effectiveFreeParameters();
 }
 
 double Fit::parameterStdError(int i) const
@@ -1200,13 +1194,35 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         gsl_matrix_set_zero(covar);
 
     const std::vector<double> weightsVec = computeWeightsVector();
-    d_y_errors.resize(d_x.size(), 1.0);
-    for (size_t i = 0; i < d_x.size(); ++i) {
-        const double wi = (i < weightsVec.size() && std::isfinite(weightsVec[i]) && weightsVec[i] > 0.0)
-                                  ? weightsVec[i]
-                                  : 1.0;
-        d_y_errors[i] = 1.0 / std::sqrt(std::max(wi, 1e-300));
-    }
+    applyWeightsToErrorVector(weightsVec);
+
+    auto populateYFit = [this](const gsl_vector *f_vec, const std::vector<double> &solverPar) {
+        bool anyExcluded = false;
+        d_y_fit.resize(d_x.size());
+        for (size_t i = 0; i < d_x.size(); ++i) {
+            if (std::isfinite(d_y_errors[i]) && d_y_errors[i] > 0.0) {
+                d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+            } else {
+                d_y_fit[i] = std::numeric_limits<double>::quiet_NaN();
+                anyExcluded = true;
+            }
+        }
+        if (anyExcluded && !solverPar.empty()) {
+            const bool oldGen = d_gen_function;
+            const int oldPts = d_points;
+            d_gen_function = false;
+            d_points = int(d_x.size());
+            std::vector<double> X_tmp(d_x.size()), Y_tmp(d_x.size());
+            if (evaluateModelCurve(solverPar, X_tmp, Y_tmp) && Y_tmp.size() == d_x.size()) {
+                for (size_t i = 0; i < d_x.size(); ++i) {
+                    if (!std::isfinite(d_y_fit[i]))
+                        d_y_fit[i] = Y_tmp[i];
+                }
+            }
+            d_gen_function = oldGen;
+            d_points = oldPts;
+        }
+    };
 
     // declare input data
     struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), d_y_errors.data(),
@@ -1350,9 +1366,7 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 return result;
             }
             gsl_blas_ddot(f_vec, f_vec, &chi_2);
-            d_y_fit.resize(d_x.size());
-            for (size_t i = 0; i < d_x.size(); ++i)
-                d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+            populateYFit(f_vec, result);
             gsl_vector_free(f_vec);
             gsl_matrix_set_zero(covar);
             iterations = 0;
@@ -1465,15 +1479,11 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         gsl_vector *f_final = gsl_vector_alloc(d_x.size());
         if (d_f(ctx.x_full_buf, &data, f_final) == GSL_SUCCESS) {
             gsl_blas_ddot(f_final, f_final, &chi_2);
-            d_y_fit.resize(d_x.size());
-            for (size_t i = 0; i < d_x.size(); ++i)
-                d_y_fit[i] = d_y[i] + gsl_vector_get(f_final, i) * d_y_errors[i];
+            populateYFit(f_final, result);
         } else {
             gsl_vector_view fDataView = gsl_vector_subvector(s->f, 0, d_x.size());
             gsl_blas_ddot(&fDataView.vector, &fDataView.vector, &chi_2);
-            d_y_fit.resize(d_x.size());
-            for (size_t i = 0; i < d_x.size(); ++i)
-                d_y_fit[i] = d_y[i] + gsl_vector_get(s->f, i) * d_y_errors[i];
+            populateYFit(s->f, result);
         }
         gsl_vector_free(f_final);
 
@@ -1679,9 +1689,7 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         result.assign(d_p, std::numeric_limits<double>::quiet_NaN());
         return result;
     }
-    d_y_fit.resize(d_x.size());
-    for (size_t i = 0; i < d_x.size(); ++i)
-        d_y_fit[i] = d_y[i] + gsl_vector_get(s->f, i) * d_y_errors[i];
+    populateYFit(s->f, result);
 #if GSL_MAJOR_VERSION < 2
     gsl_multifit_covar(s->J, 0.0, covar);
 #else
@@ -1709,13 +1717,35 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
         gsl_matrix_set_zero(covar);
 
     const std::vector<double> weightsVec = computeWeightsVector();
-    d_y_errors.resize(d_x.size(), 1.0);
-    for (size_t i = 0; i < d_x.size(); ++i) {
-        const double wi = (i < weightsVec.size() && std::isfinite(weightsVec[i]) && weightsVec[i] > 0.0)
-                                  ? weightsVec[i]
-                                  : 1.0;
-        d_y_errors[i] = 1.0 / std::sqrt(std::max(wi, 1e-300));
-    }
+    applyWeightsToErrorVector(weightsVec);
+
+    auto populateYFit = [this](const gsl_vector *f_vec, const std::vector<double> &solverPar) {
+        bool anyExcluded = false;
+        d_y_fit.resize(d_x.size());
+        for (size_t i = 0; i < d_x.size(); ++i) {
+            if (std::isfinite(d_y_errors[i]) && d_y_errors[i] > 0.0) {
+                d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+            } else {
+                d_y_fit[i] = std::numeric_limits<double>::quiet_NaN();
+                anyExcluded = true;
+            }
+        }
+        if (anyExcluded && !solverPar.empty()) {
+            const bool oldGen = d_gen_function;
+            const int oldPts = d_points;
+            d_gen_function = false;
+            d_points = int(d_x.size());
+            std::vector<double> X_tmp(d_x.size()), Y_tmp(d_x.size());
+            if (evaluateModelCurve(solverPar, X_tmp, Y_tmp) && Y_tmp.size() == d_x.size()) {
+                for (size_t i = 0; i < d_x.size(); ++i) {
+                    if (!std::isfinite(d_y_fit[i]))
+                        d_y_fit[i] = Y_tmp[i];
+                }
+            }
+            d_gen_function = oldGen;
+            d_points = oldPts;
+        }
+    };
 
     // declare input data
     struct FitData data = { d_x.size(), size_t(d_p), d_x.data(), d_y.data(), d_y_errors.data(),
@@ -1843,11 +1873,8 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             }
             if (d_f) {
                 gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
-                if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS) {
-                    d_y_fit.resize(d_x.size());
-                    for (size_t i = 0; i < d_x.size(); ++i)
-                        d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
-                }
+                if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS)
+                    populateYFit(f_vec, result);
                 gsl_vector_free(f_vec);
             }
             gsl_matrix_set_zero(covar);
@@ -1922,9 +1949,7 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
             if (d_f(ctx.x_full_buf, &data, f_vec) == GSL_SUCCESS) {
                 gsl_blas_ddot(f_vec, f_vec, &chi_2);
-                d_y_fit.resize(d_x.size());
-                for (size_t i = 0; i < d_x.size(); ++i)
-                    d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
+                populateYFit(f_vec, result);
             }
             gsl_vector_free(f_vec);
         }
@@ -1992,11 +2017,8 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
     } else {
         if (d_f) {
             gsl_vector *f_vec = gsl_vector_alloc(d_x.size());
-            if (d_f(s_min->x, (void *)f.params, f_vec) == GSL_SUCCESS) {
-                d_y_fit.resize(d_x.size());
-                for (size_t i = 0; i < d_x.size(); ++i)
-                    d_y_fit[i] = d_y[i] + gsl_vector_get(f_vec, i) * d_y_errors[i];
-            }
+            if (d_f(s_min->x, (void *)f.params, f_vec) == GSL_SUCCESS)
+                populateYFit(f_vec, result);
             gsl_vector_free(f_vec);
         }
         gsl_matrix *J = gsl_matrix_alloc(d_x.size(), d_p);
@@ -2098,7 +2120,7 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
                    "result.")
                 + "\n";
     }
-    for (const QString &note : d_fit_notes)
+    for (const QString &note : fitNotes())
         info += note + "\n";
 
     auto fmtNum = [this](double v) -> QString {
@@ -2117,13 +2139,12 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
     }
     info += "--------------------------------------------------------------------------------------"
             "\n";
-    info += "Chi^2 = " + QLocale().toString(chi_2, 'g', d_prec) + "\n";
-    info += tr("Reduced Chi^2") + " (Chi^2/doF) = "
-            + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
+    info += "Chi^2 = " + fmtNum(chi_2) + "\n";
+    info += tr("Reduced Chi^2") + " (Chi^2/doF) = " + fmtNum(chi_2_dof) + "\n";
     info += tr("Degrees of freedom") + " = " + QString::number(std::max(0, dof)) + "\n";
-    info += tr("RSS") + " = " + QLocale().toString(rss(), 'g', d_prec) + "\n";
-    info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
-    info += tr("Adjusted R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
+    info += tr("RSS") + " = " + fmtNum(rss()) + "\n";
+    info += tr("R^2") + " (COD) = " + fmtNum(rSquare()) + "\n";
+    info += tr("Adjusted R^2") + " = " + fmtNum(adjustedRSquare()) + "\n";
     if (d_straight_line_fit)
         info += tr("Pearson's r (x, y)") + " = " + fmtNum(pearsonR()) + "\n";
     info += "--------------------------------------------------------------------------------------"
@@ -2142,21 +2163,23 @@ QString Fit::logFitInfo(const vector<double> &par, int iterations, int status,
 
 double Fit::effectiveCovarScale() const
 {
-    const int dof = int(d_x.size()) - effectiveFreeParameters();
-    return (d_y_error_source == UnknownErrors || d_scale_errors)
-                   ? ((dof > 0 && std::isfinite(chi_2) && chi_2 >= 0.0) ? (chi_2 / double(dof))
-                                                                        : 1.0)
-                   : 1.0;
+    if (d_y_error_source == UnknownErrors || d_scale_errors) {
+        const int dof = degreesOfFreedom();
+        if (dof > 0 && std::isfinite(chi_2) && chi_2 >= 0.0)
+            return chi_2 / double(dof);
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return 1.0;
 }
 
 double Fit::reducedChiSquare() const
 {
     if (!std::isfinite(chi_2) || chi_2 < 0.0)
-        return chi_2;
-    int p_eff = effectiveFreeParameters();
-    if (int(d_x.size()) <= p_eff)
-        return chi_2;
-    return chi_2 / double(int(d_x.size()) - p_eff);
+        return std::numeric_limits<double>::quiet_NaN();
+    const int dof = degreesOfFreedom();
+    if (dof <= 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return chi_2 / double(dof);
 }
 
 namespace {
@@ -2198,14 +2221,26 @@ double Fit::rss() const
 {
     if (!hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
+    if (d_has_custom_rss) {
+        return (std::isfinite(d_custom_rss) && d_custom_rss >= 0.0)
+                ? d_custom_rss
+                : std::numeric_limits<double>::quiet_NaN();
+    }
     if (d_y_fit.size() == d_y.size() && !d_y.empty()) {
+        const std::vector<double> w = computeWeightsVector();
         double sum = 0.0;
+        size_t activeCount = 0;
         for (size_t i = 0; i < d_y.size(); ++i) {
+            if (i < w.size() && !(w[i] > 0.0))
+                continue;
             if (!std::isfinite(d_y[i]) || !std::isfinite(d_y_fit[i]))
                 return std::numeric_limits<double>::quiet_NaN();
             double r = d_y[i] - d_y_fit[i];
             sum += r * r;
+            ++activeCount;
         }
+        if (activeCount == 0)
+            return std::numeric_limits<double>::quiet_NaN();
         return std::isfinite(sum) ? sum : std::numeric_limits<double>::quiet_NaN();
     }
     return (std::isfinite(chi_2) && chi_2 >= 0.0)
@@ -2215,11 +2250,14 @@ double Fit::rss() const
 
 double Fit::rSquare() const
 {
-    if (d_has_custom_r2)
+    if (d_has_custom_r2) {
+        if (d_init_err || !std::isfinite(d_custom_r2))
+            return std::numeric_limits<double>::quiet_NaN();
         return d_custom_r2;
+    }
 
-    // A failed fit has no coefficient of determination: report NaN, not a misleading 0.
-    if (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0)
+    // A failed or degenerate fit (e.g. collinear linear fit) has no valid R^2.
+    if (!hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
 
     double mean = 0.0, tss = 0.0, weights_sum = 0.0;
@@ -2232,13 +2270,19 @@ double Fit::rSquare() const
         const std::vector<double> w = computeWeightsVector();
         const size_t n = std::min(d_y.size(), w.size());
         for (size_t i = 0; i < n; ++i) {
+            if (!(w[i] > 0.0) || !std::isfinite(w[i]))
+                continue;
             mean += d_y[i] * w[i];
             weights_sum += w[i];
         }
-        if (weights_sum > 0.0)
-            mean /= weights_sum;
-        for (size_t i = 0; i < n; ++i)
+        if (!(weights_sum > 0.0))
+            return std::numeric_limits<double>::quiet_NaN();
+        mean /= weights_sum;
+        for (size_t i = 0; i < n; ++i) {
+            if (!(w[i] > 0.0) || !std::isfinite(w[i]))
+                continue;
             tss += (d_y[i] - mean) * (d_y[i] - mean) * w[i];
+        }
     }
     if (tss <= 0.0)
         return 1.0;
@@ -2247,13 +2291,14 @@ double Fit::rSquare() const
 
 double Fit::adjustedRSquare() const
 {
-    if (!d_has_custom_r2 && (d_y.empty() || !std::isfinite(chi_2) || chi_2 < 0.0))
+    const double r2 = rSquare();
+    if (!std::isfinite(r2))
         return std::numeric_limits<double>::quiet_NaN();
-    double r2 = rSquare();
-    int p_eff = effectiveFreeParameters();
-    if (int(d_x.size()) <= p_eff || d_x.size() <= 1)
-        return r2;
-    return 1.0 - (1.0 - r2) * double(d_x.size() - 1) / double(int(d_x.size()) - p_eff);
+    const int nEff = effectivePointCount();
+    const int dof = degreesOfFreedom();
+    if (dof <= 0 || nEff <= 1)
+        return std::numeric_limits<double>::quiet_NaN();
+    return 1.0 - (1.0 - r2) * double(nEff - 1) / double(dof);
 }
 
 double Fit::pearsonR() const
@@ -2277,10 +2322,13 @@ QString Fit::legendInfo()
     info += tr("Dataset") + ": " + curveTitle + "\n";
     info += tr("Function") + ": " + d_formula + "\n\n";
 
+    auto fmtNum = [this](double v) -> QString {
+        return std::isfinite(v) ? QLocale().toString(v, 'g', d_prec) : QString::fromUtf8("—");
+    };
     double chi_2_dof = reducedChiSquare();
-    info += "Chi^2/doF = " + QLocale().toString(chi_2_dof, 'g', d_prec) + "\n";
-    info += tr("R^2") + " (COD) = " + QLocale().toString(rSquare(), 'g', d_prec) + "\n";
-    info += tr("Adj. R^2") + " = " + QLocale().toString(adjustedRSquare(), 'g', d_prec) + "\n";
+    info += "Chi^2/doF = " + fmtNum(chi_2_dof) + "\n";
+    info += tr("R^2") + " (COD) = " + fmtNum(rSquare()) + "\n";
+    info += tr("Adj. R^2") + " = " + fmtNum(adjustedRSquare()) + "\n";
 
     for (unsigned i = 0; i < d_p; i++) {
         const double se = parameterStdError(int(i));
@@ -2290,6 +2338,75 @@ QString Fit::legendInfo()
                 + "\n";
     }
     return info;
+}
+
+void Fit::applyWeightsToErrorVector(const std::vector<double> &weightsVec)
+{
+    d_y_errors.resize(d_x.size(), 1.0);
+    const double inf = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        const double wi =
+                (i < weightsVec.size() && std::isfinite(weightsVec[i]) && weightsVec[i] > 0.0)
+                        ? weightsVec[i]
+                        : 0.0;
+        if (wi > 0.0) {
+            const double sig = 1.0 / std::sqrt(wi);
+            d_y_errors[i] = std::isfinite(sig) ? sig : inf;
+        } else {
+            // Excluded point (weight == 0): infinite sigma yields zero residual and zero Jacobian row.
+            d_y_errors[i] = inf;
+        }
+    }
+}
+
+bool Fit::readAlignedColumnValues(const QString &colName, std::vector<double> &valsOut,
+                                  bool failSilently) const
+{
+    if (colName.isEmpty())
+        return false;
+    ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(parent());
+    Table *t = app ? app->table(colName) : nullptr;
+    if (!t)
+        return false;
+    const int col = t->colIndex(colName);
+    if (col < 0)
+        return false;
+    if (unsigned(t->numRows()) < d_x.size()) {
+        if (!failSilently && !isNonInteractiveFit(app, d_silent))
+            QMessageBox::critical(app, tr("Error"),
+                                  tr("The column %1 has less points than the fitted data set. "
+                                     "Please choose another column!")
+                                          .arg(colName));
+        return false;
+    }
+
+    Column *colPtr = t->column(col);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    valsOut.assign(d_x.size(), nan);
+    DataCurve *dc = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
+            ? dynamic_cast<DataCurve *>(d_curve)
+            : nullptr;
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        int row = (i < d_indices.size()) ? int(d_indices[i]) : int(i);
+        if (dc && dc->table() == t && i < d_indices.size()) {
+            int trRow = dc->tableRow(int(d_indices[i]));
+            if (trRow >= 0)
+                row = trRow;
+        }
+        if (row < 0 || row >= t->numRows()) {
+            if (!failSilently && !isNonInteractiveFit(app, d_silent))
+                QMessageBox::critical(app, tr("Error"),
+                                      tr("The column %1 has less points than the fitted data set. "
+                                         "Please choose another column!")
+                                              .arg(colName));
+            return false;
+        }
+        if (!colPtr || colPtr->isInvalid(row))
+            valsOut[i] = nan;
+        else
+            valsOut[i] = t->cell(row, col);
+    }
+    return true;
 }
 
 bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_silently)
@@ -2308,12 +2425,31 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
         return false;
     }
 
+    auto updateExclusionNote = [this](const std::vector<double> &w, const QString &reason) {
+        int excluded = 0;
+        for (double wi : w) {
+            if (!std::isfinite(wi) || !(wi > 0.0))
+                ++excluded;
+        }
+        if (excluded > 0) {
+            d_weighting_note = tr("Warning: %1 of %2 point(s) excluded with weight 0 (%3); "
+                                  "degrees of freedom adjusted.")
+                                       .arg(excluded)
+                                       .arg(int(w.size()))
+                                       .arg(reason);
+        } else {
+            d_weighting_note.clear();
+        }
+    };
+
     d_y_error_source = err;
+    d_weighting_note.clear();
     switch (d_y_error_source) {
     case UnknownErrors: {
         d_y_error_dataset = QString();
         d_weighting_method = WeightNone;
         d_raw_weights.clear();
+        d_raw_y_errors.clear();
         // using 1.0 here is important for correct error estimates,
         // cmp. Fit::fitGslMultifit and Fit::fitGslMultimin
         std::fill(d_y_errors.begin(), d_y_errors.end(), 1.0);
@@ -2343,67 +2479,40 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
                                               .arg(curveAlive ? d_curve->title().text() : QString()));
             return false;
         }
+        d_raw_weights.clear();
+        d_raw_y_errors.assign(d_x.size(), std::numeric_limits<double>::quiet_NaN());
         if (er) {
-            for (unsigned j = 0; j < d_y_errors.size(); j++)
-                d_y_errors[j] = er->errorValue(d_indices[j]);
+            for (unsigned j = 0; j < d_raw_y_errors.size(); j++)
+                d_raw_y_errors[j] = er->errorValue(int(d_indices[j]));
         }
-        sanitizePositiveErrorVector(d_y_errors);
         d_weighting_method = WeightInstrumental;
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("non-positive or invalid associated Y error"));
         break;
     }
     case PoissonErrors: {
         const bool curveAlive = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0);
         d_y_error_dataset = curveAlive ? d_curve->title().text() : QString();
-        for (unsigned i = 0; i < d_y.size(); i++) {
-            double yv = std::isfinite(d_y[i]) ? d_y[i] : 0.0;
-            d_y_errors[i] = std::sqrt(std::max(std::abs(yv), 1.0));
-        }
+        d_raw_weights.clear();
+        d_raw_y_errors.clear();
         d_weighting_method = WeightStatistical;
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("non-finite Y value"));
     } break;
     case CustomErrors: { // d_y_errors are equal to the values of the arbitrary dataset
-        if (colName.isEmpty())
+        std::vector<double> rawErrs;
+        if (!readAlignedColumnValues(colName, rawErrs, fail_silently))
             return false;
-
-        ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(parent());
-        Table *t = app ? app->table(colName) : nullptr;
-        if (!t)
-            return false;
-
-        if (unsigned(t->numRows()) < d_y_errors.size()) {
-            if (!fail_silently && !isNonInteractiveFit(app, d_silent))
-                QMessageBox::critical(app, tr("Error"),
-                                      tr("The column %1 has less points than the fitted data set. "
-                                         "Please choose another column!")
-                                              .arg(colName));
-            return false;
-        }
 
         d_y_error_dataset = colName;
-
-        int col = t->colIndex(colName);
-        DataCurve *dc = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
-                ? dynamic_cast<DataCurve *>(d_curve)
-                : nullptr;
-        for (unsigned i = 0; i < d_y_errors.size(); i++) {
-            int row = int(d_indices[i]);
-            if (dc && dc->table() == t) {
-                int trRow = dc->tableRow(int(d_indices[i]));
-                if (trRow >= 0)
-                    row = trRow;
-            }
-            if (row < 0 || row >= t->numRows()) {
-                if (!fail_silently && !isNonInteractiveFit(app, d_silent))
-                    QMessageBox::critical(app, tr("Error"),
-                                          tr("The column %1 has less points than the fitted data set. "
-                                             "Please choose another column!")
-                                                  .arg(colName));
-                return false;
-            }
-            d_y_errors[i] = t->cell(row, col);
-        }
-        sanitizePositiveErrorVector(d_y_errors);
         d_raw_weights.clear();
+        d_raw_y_errors = std::move(rawErrs);
         d_weighting_method = WeightArbitraryDataset;
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("non-positive or invalid custom Y error"));
     } break;
     }
     return true;
@@ -2411,32 +2520,21 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
 
 bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
 {
-    auto readAlignedColumn = [this](const QString &cName, std::vector<double> &valsOut) -> bool {
-        if (cName.isEmpty())
-            return false;
-        ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(parent());
-        Table *t = app ? app->table(cName) : nullptr;
-        if (!t)
-            return false;
-        const int col = t->colIndex(cName);
-        if (col < 0 || unsigned(t->numRows()) < d_x.size())
-            return false;
-        valsOut.resize(d_x.size(), 1.0);
-        DataCurve *dc = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
-                ? dynamic_cast<DataCurve *>(d_curve)
-                : nullptr;
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            int row = (i < d_indices.size()) ? int(d_indices[i]) : int(i);
-            if (dc && dc->table() == t && i < d_indices.size()) {
-                int trRow = dc->tableRow(int(d_indices[i]));
-                if (trRow >= 0)
-                    row = trRow;
-            }
-            if (row < 0 || row >= t->numRows())
-                return false;
-            valsOut[i] = t->cell(row, col);
+    auto updateExclusionNote = [this](const std::vector<double> &w, const QString &reason) {
+        int excluded = 0;
+        for (double wi : w) {
+            if (!std::isfinite(wi) || !(wi > 0.0))
+                ++excluded;
         }
-        return true;
+        if (excluded > 0) {
+            d_weighting_note = tr("Warning: %1 of %2 point(s) excluded with weight 0 (%3); "
+                                  "degrees of freedom adjusted.")
+                                       .arg(excluded)
+                                       .arg(int(w.size()))
+                                       .arg(reason);
+        } else {
+            d_weighting_note.clear();
+        }
     };
 
     switch (m) {
@@ -2447,6 +2545,8 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_explicit_weighting = false;
         d_weighting_col.clear();
         d_raw_weights.clear();
+        d_raw_y_errors.clear();
+        d_weighting_note.clear();
         return true;
 
     case WeightInstrumental: {
@@ -2474,45 +2574,24 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
 
     case WeightDirect: {
         std::vector<double> rawW;
-        if (!readAlignedColumn(colName, rawW))
+        if (!readAlignedColumnValues(colName, rawW, d_silent))
             return false;
-        d_raw_weights = rawW;
-        d_y_errors.resize(d_x.size(), 1.0);
-        double minPosW = std::numeric_limits<double>::infinity();
-        for (double w : rawW) {
-            if (std::isfinite(w) && w > 0.0 && w < minPosW)
-                minPosW = w;
-        }
-        const double fallbackW = std::isfinite(minPosW) ? std::max(minPosW, 1e-15) : 1.0;
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            double wi = (std::isfinite(rawW[i]) && rawW[i] > 0.0) ? rawW[i] : fallbackW;
-            d_y_errors[i] = 1.0 / std::sqrt(std::max(wi, 1e-30));
-        }
-        sanitizePositiveErrorVector(d_y_errors);
+        d_raw_weights = std::move(rawW);
+        d_raw_y_errors.clear();
         d_y_error_source = CustomErrors;
         d_y_error_dataset = colName;
         d_weighting_method = WeightDirect;
         d_explicit_weighting = true;
         d_weighting_col = colName;
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("zero, negative, or invalid direct weight"));
         return true;
     }
 
     case WeightStatistical: {
         d_raw_weights.clear();
-        d_y_errors.resize(d_x.size(), 1.0);
-        double maxAbsY = 0.0;
-        for (double yv : d_y) {
-            if (std::isfinite(yv))
-                maxAbsY = std::max(maxAbsY, std::abs(yv));
-        }
-        const double floorVal = (maxAbsY > 0.0 && maxAbsY < 1.0)
-                                        ? std::max(1e-12, 1e-3 * maxAbsY)
-                                        : 1.0;
-        for (size_t i = 0; i < d_y.size(); ++i) {
-            double yv = std::isfinite(d_y[i]) ? std::abs(d_y[i]) : 0.0;
-            d_y_errors[i] = std::sqrt(std::max(yv, floorVal));
-        }
-        sanitizePositiveErrorVector(d_y_errors);
+        d_raw_y_errors.clear();
         d_y_error_source = PoissonErrors;
         d_y_error_dataset = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
                 ? d_curve->title().text()
@@ -2520,25 +2599,15 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_weighting_method = WeightStatistical;
         d_explicit_weighting = true;
         d_weighting_col.clear();
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("non-finite Y value"));
         return true;
     }
 
     case WeightProportional: {
         d_raw_weights.clear();
-        d_y_errors.resize(d_x.size(), 1.0);
-        double minPosAbsY = std::numeric_limits<double>::infinity();
-        for (double yv : d_y) {
-            if (std::isfinite(yv) && std::abs(yv) > 0.0 && std::abs(yv) < minPosAbsY)
-                minPosAbsY = std::abs(yv);
-        }
-        const double fallbackY = std::isfinite(minPosAbsY)
-                                         ? std::max(1e-12, 0.01 * minPosAbsY)
-                                         : 1.0;
-        for (size_t i = 0; i < d_y.size(); ++i) {
-            double ay = std::isfinite(d_y[i]) ? std::abs(d_y[i]) : 0.0;
-            d_y_errors[i] = (ay > 0.0) ? std::max(ay, 1e-15) : fallbackY;
-        }
-        sanitizePositiveErrorVector(d_y_errors);
+        d_raw_y_errors.clear();
         d_y_error_source = CustomErrors;
         d_y_error_dataset = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0)
                 ? d_curve->title().text()
@@ -2546,31 +2615,26 @@ bool Fit::setWeightingMethod(WeightingMethod m, const QString &colName)
         d_weighting_method = WeightProportional;
         d_explicit_weighting = true;
         d_weighting_col.clear();
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("Y = 0 or non-finite Y in proportional 1/Y^2 weighting"));
         return true;
     }
 
     case WeightVariance: {
         std::vector<double> rawVar;
-        if (!readAlignedColumn(colName, rawVar))
+        if (!readAlignedColumnValues(colName, rawVar, d_silent))
             return false;
-        d_raw_weights = rawVar;
-        d_y_errors.resize(d_x.size(), 1.0);
-        double minPosV = std::numeric_limits<double>::infinity();
-        for (double v : rawVar) {
-            if (std::isfinite(v) && v > 0.0 && v < minPosV)
-                minPosV = v;
-        }
-        const double fallbackV = std::isfinite(minPosV) ? std::max(minPosV, 1e-30) : 1.0;
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            double vi = (std::isfinite(rawVar[i]) && rawVar[i] > 0.0) ? rawVar[i] : fallbackV;
-            d_y_errors[i] = std::sqrt(std::max(vi, 1e-30));
-        }
-        sanitizePositiveErrorVector(d_y_errors);
+        d_raw_weights = std::move(rawVar);
+        d_raw_y_errors.clear();
         d_y_error_source = CustomErrors;
         d_y_error_dataset = colName;
         d_weighting_method = WeightVariance;
         d_explicit_weighting = true;
         d_weighting_col = colName;
+        const std::vector<double> w = computeWeightsVector();
+        applyWeightsToErrorVector(w);
+        updateExclusionNote(w, tr("zero, negative, or invalid variance"));
         return true;
     }
     }
@@ -2584,38 +2648,40 @@ std::vector<double> Fit::computeWeightsVector() const
     if (n == 0)
         return w;
 
-    auto errorsToSafeWeights = [&](const std::vector<double> &errs) {
-        double minPos = std::numeric_limits<double>::infinity();
-        const size_t lim = std::min(n, errs.size());
-        for (size_t i = 0; i < lim; ++i) {
-            if (std::isfinite(errs[i]) && errs[i] > 0.0 && errs[i] < minPos)
-                minPos = errs[i];
-        }
-        const double fallbackS = std::isfinite(minPos) ? std::max(minPos, 1e-15) : 1.0;
+    // Never fabricate a minimum-positive fallback for <=0 or non-finite errors:
+    // invalid points receive weight 0 (excluded from the objective and DOF).
+    auto errorsToWeights = [&](const std::vector<double> &errs) {
         for (size_t i = 0; i < n; ++i) {
-            const double s = (i < errs.size() && std::isfinite(errs[i]) && errs[i] > 0.0)
-                                     ? std::max(errs[i], 1e-15)
-                                     : fallbackS;
-            w[i] = 1.0 / (s * s);
+            if (i < errs.size() && std::isfinite(errs[i]) && errs[i] > 0.0 && errs[i] < 1e140) {
+                const double s = errs[i];
+                const double wi = 1.0 / (s * s);
+                w[i] = (std::isfinite(wi) && wi > 0.0) ? wi : 0.0;
+            } else {
+                w[i] = 0.0;
+            }
         }
     };
 
     if (d_in_bootstrap && d_y_errors.size() == n) {
         if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone)
             return w;
-        errorsToSafeWeights(d_y_errors);
+        errorsToWeights(d_y_errors);
         return w;
     }
 
     switch (d_weighting_method) {
     case WeightNone:
-        if (d_y_error_source != UnknownErrors && !d_y_errors.empty())
-            errorsToSafeWeights(d_y_errors);
+        if (d_y_error_source != UnknownErrors) {
+            if (d_raw_y_errors.size() == n)
+                errorsToWeights(d_raw_y_errors);
+            else if (!d_y_errors.empty())
+                errorsToWeights(d_y_errors);
+        }
         return w;
 
     case WeightInstrumental:
     case WeightArbitraryDataset:
-        errorsToSafeWeights(d_y_errors);
+        errorsToWeights((d_raw_y_errors.size() == n) ? d_raw_y_errors : d_y_errors);
         return w;
 
     case WeightStatistical: {
@@ -2629,66 +2695,54 @@ std::vector<double> Fit::computeWeightsVector() const
                                         ? std::max(1e-12, 1e-3 * maxAbsY)
                                         : 1.0;
         for (size_t i = 0; i < n; ++i) {
-            const double yv = (i < d_y.size() && std::isfinite(d_y[i])) ? std::abs(d_y[i]) : 0.0;
-            w[i] = 1.0 / std::max(yv, floorVal);
+            if (i < d_y.size() && std::isfinite(d_y[i]))
+                w[i] = 1.0 / std::max(std::abs(d_y[i]), floorVal);
+            else
+                w[i] = 0.0;
         }
         return w;
     }
 
     case WeightProportional: {
-        double minPosAbsY = std::numeric_limits<double>::infinity();
-        const size_t lim = std::min(n, d_y.size());
-        for (size_t i = 0; i < lim; ++i) {
-            if (std::isfinite(d_y[i]) && std::abs(d_y[i]) > 0.0 && std::abs(d_y[i]) < minPosAbsY)
-                minPosAbsY = std::abs(d_y[i]);
-        }
-        const double fallbackY = std::isfinite(minPosAbsY)
-                                         ? std::max(1e-12, 0.01 * minPosAbsY)
-                                         : 1.0;
+        // w_i = 1 / y_i^2; points with y_i == 0 or non-finite y_i are excluded (w_i = 0)
+        // rather than assigned an artificially tiny sigma that dominates the fit.
         for (size_t i = 0; i < n; ++i) {
-            const double ay = (i < d_y.size() && std::isfinite(d_y[i])) ? std::abs(d_y[i]) : 0.0;
-            const double s = (ay > 0.0) ? std::max(ay, 1e-15) : fallbackY;
-            w[i] = 1.0 / (s * s);
+            if (i < d_y.size() && std::isfinite(d_y[i]) && std::abs(d_y[i]) > 0.0) {
+                const double ay = std::abs(d_y[i]);
+                const double wi = 1.0 / (ay * ay);
+                w[i] = (std::isfinite(wi) && wi > 0.0) ? wi : 0.0;
+            } else {
+                w[i] = 0.0;
+            }
         }
         return w;
     }
 
     case WeightDirect: {
         if (d_raw_weights.size() == n) {
-            double minPosW = std::numeric_limits<double>::infinity();
-            for (double v : d_raw_weights) {
-                if (std::isfinite(v) && v > 0.0 && v < minPosW)
-                    minPosW = v;
-            }
-            const double fallbackW = std::isfinite(minPosW) ? std::max(minPosW, 1e-15) : 1.0;
             for (size_t i = 0; i < n; ++i) {
-                const double wi = (std::isfinite(d_raw_weights[i]) && d_raw_weights[i] > 0.0)
-                                          ? d_raw_weights[i]
-                                          : fallbackW;
-                w[i] = std::max(wi, 1e-30);
+                const double wi = d_raw_weights[i];
+                w[i] = (std::isfinite(wi) && wi > 0.0) ? wi : 0.0;
             }
         } else {
-            errorsToSafeWeights(d_y_errors);
+            errorsToWeights(d_y_errors);
         }
         return w;
     }
 
     case WeightVariance: {
         if (d_raw_weights.size() == n) {
-            double minPosV = std::numeric_limits<double>::infinity();
-            for (double v : d_raw_weights) {
-                if (std::isfinite(v) && v > 0.0 && v < minPosV)
-                    minPosV = v;
-            }
-            const double fallbackV = std::isfinite(minPosV) ? std::max(minPosV, 1e-30) : 1.0;
             for (size_t i = 0; i < n; ++i) {
-                const double vi = (std::isfinite(d_raw_weights[i]) && d_raw_weights[i] > 0.0)
-                                          ? d_raw_weights[i]
-                                          : fallbackV;
-                w[i] = 1.0 / std::max(vi, 1e-30);
+                const double vi = d_raw_weights[i];
+                if (std::isfinite(vi) && vi > 0.0) {
+                    const double wi = 1.0 / vi;
+                    w[i] = (std::isfinite(wi) && wi > 0.0) ? wi : 0.0;
+                } else {
+                    w[i] = 0.0;
+                }
             }
         } else {
-            errorsToSafeWeights(d_y_errors);
+            errorsToWeights(d_y_errors);
         }
         return w;
     }
@@ -2744,9 +2798,20 @@ Matrix *Fit::covarianceMatrix(const QString &matrixName)
     ApplicationWindow *app = (ApplicationWindow *)parent();
     Matrix *m = app->newMatrix(matrixName, d_p, d_p);
     const double covScale = effectiveCovarScale();
+    const bool undefined = !covar || !std::isfinite(covScale);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     for (unsigned i = 0; i < d_p; i++) {
-        for (unsigned j = 0; j < d_p; j++)
-            m->setText(i, j, QLocale().toString(covScale * gsl_matrix_get(covar, i, j), 'g', d_prec));
+        for (unsigned j = 0; j < d_p; j++) {
+            if (undefined) {
+                m->setCell(i, j, nan);
+            } else {
+                const double val = covScale * gsl_matrix_get(covar, i, j);
+                if (std::isfinite(val))
+                    m->setText(i, j, QLocale().toString(val, 'g', d_prec));
+                else
+                    m->setCell(i, j, nan);
+            }
+        }
     }
     m->showNormal();
     return m;
@@ -2784,11 +2849,17 @@ Table *Fit::createResidualsTable(const QString &tableName)
     }
 
     const int rows = int(d_x.size());
-    std::vector<double> sigmaVec(size_t(rows), 1.0);
+    const std::vector<double> weightsVec = computeWeightsVector();
+    std::vector<double> sqrtW(size_t(rows), 0.0);
+    int activeRows = 0;
     for (int i = 0; i < rows; ++i) {
-        if (size_t(i) < d_y_errors.size() && std::isfinite(d_y_errors[size_t(i)])
-            && d_y_errors[size_t(i)] > 0.0) {
-            sigmaVec[size_t(i)] = d_y_errors[size_t(i)];
+        const double wi = (size_t(i) < weightsVec.size() && std::isfinite(weightsVec[size_t(i)])
+                           && weightsVec[size_t(i)] > 0.0)
+                                  ? weightsVec[size_t(i)]
+                                  : 0.0;
+        if (wi > 0.0) {
+            sqrtW[size_t(i)] = std::sqrt(wi);
+            ++activeRows;
         }
     }
 
@@ -2852,8 +2923,9 @@ Table *Fit::createResidualsTable(const QString &tableName)
                     && calculateFitCurveData(pMinus, X_tmp, Y_minus)) {
                     for (int i = 0; i < rows; ++i) {
                         double dy_dp = (Y_plus[size_t(i)] - Y_minus[size_t(i)]) / (2.0 * h);
+                        const double sw = sqrtW[size_t(i)];
                         gsl_matrix_set(Jw, size_t(i), k,
-                                       std::isfinite(dy_dp) ? (dy_dp / sigmaVec[size_t(i)]) : 0.0);
+                                       (sw > 0.0 && std::isfinite(dy_dp)) ? (dy_dp * sw) : 0.0);
                     }
                 } else {
                     jacOk = false;
@@ -2890,11 +2962,15 @@ Table *Fit::createResidualsTable(const QString &tableName)
 
     double weightedSse = 0.0;
     for (int i = 0; i < rows; ++i) {
-        double rw = (d_y[size_t(i)] - d_y_fit[size_t(i)]) / sigmaVec[size_t(i)];
+        if (!(sqrtW[size_t(i)] > 0.0))
+            continue;
+        double rw = (d_y[size_t(i)] - d_y_fit[size_t(i)]) * sqrtW[size_t(i)];
         weightedSse += rw * rw;
     }
-    const double dof = double(std::max(1, rows - p_eff));
-    const double s2_w = weightedSse / dof;
+    const int dofInt = activeRows - p_eff;
+    const bool validDof = (dofInt > 0);
+    const double s2_w = validDof ? (weightedSse / double(dofInt))
+                                 : std::numeric_limits<double>::quiet_NaN();
 
     QString name = tableName.isEmpty() ? app->generateUniqueName(tr("Residuals"))
                                        : app->generateUniqueName(tableName, false);
@@ -2913,22 +2989,34 @@ Table *Fit::createResidualsTable(const QString &tableName)
 
     for (int i = 0; i < rows; ++i) {
         const double rawRes = d_y[size_t(i)] - d_y_fit[size_t(i)];
-        const double wRes = rawRes / sigmaVec[size_t(i)];
+        const double sw = sqrtW[size_t(i)];
         const double hii = leverage[size_t(i)];
-        const double oneMinusH = std::max(1e-6, 1.0 - hii);
-        double stdRes = 0.0;
-        double cooksD = 0.0;
-        if (s2_w > 1e-300) {
-            stdRes = wRes / std::sqrt(s2_w * oneMinusH);
-            cooksD = (stdRes * stdRes / double(std::max(1, p_eff))) * (hii / oneMinusH);
-        }
         t->column(0)->setValueAt(i, d_x[size_t(i)]);
         t->column(1)->setValueAt(i, d_y[size_t(i)]);
         t->column(2)->setValueAt(i, d_y_fit[size_t(i)]);
         t->column(3)->setValueAt(i, rawRes);
-        t->column(4)->setValueAt(i, std::isfinite(stdRes) ? stdRes : 0.0);
         t->column(5)->setValueAt(i, hii);
-        t->column(6)->setValueAt(i, std::isfinite(cooksD) ? cooksD : 0.0);
+        if (!validDof || !(sw > 0.0)) {
+            t->column(4)->setInvalid(i, true);
+            t->column(6)->setInvalid(i, true);
+        } else {
+            const double wRes = rawRes * sw;
+            const double oneMinusH = std::max(1e-6, 1.0 - hii);
+            double stdRes = 0.0;
+            double cooksD = 0.0;
+            if (std::isfinite(s2_w) && s2_w > 1e-300) {
+                stdRes = wRes / std::sqrt(s2_w * oneMinusH);
+                cooksD = (stdRes * stdRes / double(std::max(1, p_eff))) * (hii / oneMinusH);
+            }
+            if (std::isfinite(stdRes))
+                t->column(4)->setValueAt(i, stdRes);
+            else
+                t->column(4)->setInvalid(i, true);
+            if (std::isfinite(cooksD))
+                t->column(6)->setValueAt(i, cooksD);
+            else
+                t->column(6)->setInvalid(i, true);
+        }
     }
 
     if (!d_silent)
@@ -2943,12 +3031,21 @@ const vector<double> &Fit::errors()
         if (covar) {
             const double covScale = effectiveCovarScale();
             // Residual-scaled errors are undefined without residual degrees of freedom
-            const bool undefined = (d_y_error_source == UnknownErrors || d_scale_errors)
-                    && degreesOfFreedom() <= 0;
-            for (unsigned i = 0; i < d_p; i++)
-                d_result_errors[i] = undefined
-                        ? std::numeric_limits<double>::quiet_NaN()
-                        : std::sqrt(std::max(0.0, covScale * gsl_matrix_get(covar, i, i)));
+            const bool undefined = !std::isfinite(covScale)
+                    || ((d_y_error_source == UnknownErrors || d_scale_errors)
+                        && degreesOfFreedom() <= 0);
+            for (unsigned i = 0; i < d_p; i++) {
+                if (isParameterFixed(int(i)))
+                    d_result_errors[i] = 0.0;
+                else if (undefined)
+                    d_result_errors[i] = std::numeric_limits<double>::quiet_NaN();
+                else {
+                    const double v = covScale * gsl_matrix_get(covar, i, i);
+                    d_result_errors[i] = std::isfinite(v)
+                            ? std::sqrt(std::max(0.0, v))
+                            : std::numeric_limits<double>::quiet_NaN();
+                }
+            }
         }
     }
     return d_result_errors;
@@ -2978,12 +3075,16 @@ void Fit::fit()
                     tr("There are no parameters specified for this fit operation. Operation aborted!"));
         return;
     }
-    int minNeeded = std::max(1, effectiveFreeParameters());
-    if (unsigned(minNeeded) > d_x.size()) {
+    d_has_custom_dof = false;
+    d_has_custom_rss = false;
+    const int minNeeded = std::max(1, effectiveFreeParameters());
+    const int nActive = effectivePointCount();
+    if (minNeeded > nActive) {
         if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(
                     (ApplicationWindow *)parent(), tr("Fit Error"),
-                    tr("You need at least %1 data points for this fit operation. Operation aborted!")
+                    tr("You need at least %1 valid data points (with positive weight) for this fit operation. "
+                       "Operation aborted!")
                             .arg(minNeeded));
         return;
     }
@@ -3065,6 +3166,10 @@ int Fit::evaluate_f(const gsl_vector *x, gsl_vector *f)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     }
     for (unsigned j = 0; j < d_x.size(); j++) {
+        if (j >= d_y_errors.size() || !std::isfinite(d_y_errors[j]) || !(d_y_errors[j] > 0.0)) {
+            gsl_vector_set(f, j, 0.0);
+            continue;
+        }
         if (!d_script->setDouble(d_x[j], "x"))
             return GSL_EINVAL;
         bool success;
@@ -3085,6 +3190,8 @@ double Fit::evaluate_d(const gsl_vector *x)
     for (unsigned i = 0; i < d_p; i++)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     for (unsigned j = 0; j < d_x.size(); j++) {
+        if (j >= d_y_errors.size() || !std::isfinite(d_y_errors[j]) || !(d_y_errors[j] > 0.0))
+            continue;
         if (!d_script->setDouble(d_x[j], "x"))
             return std::numeric_limits<double>::quiet_NaN();
         bool success = false;
@@ -3143,9 +3250,14 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
     for (unsigned i = 0; i < d_p; i++)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
     for (unsigned i = 0; i < d_x.size(); i++) {
+        if (i >= d_y_errors.size() || !std::isfinite(d_y_errors[i]) || !(d_y_errors[i] > 0.0)) {
+            for (unsigned j = 0; j < d_p; j++)
+                gsl_matrix_set(J, i, j, 0.0);
+            continue;
+        }
         if (!d_script->setDouble(d_x[i], "x"))
             return GSL_EINVAL;
-        double s = (i < d_y_errors.size() && d_y_errors[i] > 0.0) ? d_y_errors[i] : 1.0;
+        double s = d_y_errors[i];
         for (unsigned j = 0; j < d_p; j++) {
             if (isParameterFixed(int(j))) {
                 gsl_matrix_set(J, i, j, 0.0);
@@ -3420,8 +3532,27 @@ bool Fit::setLinearConstraintExpr(const QString &exprList)
     return true;
 }
 
+int Fit::effectivePointCount() const
+{
+    if (d_has_custom_dof)
+        return std::max(0, d_custom_n_points);
+    if (d_x.empty())
+        return 0;
+    if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone)
+        return int(d_x.size());
+    const std::vector<double> w = computeWeightsVector();
+    int active = 0;
+    for (double wi : w) {
+        if (std::isfinite(wi) && wi > 0.0)
+            ++active;
+    }
+    return active;
+}
+
 int Fit::effectiveFreeParameters() const
 {
+    if (d_has_custom_dof)
+        return std::max(0, d_custom_p_free);
     int count = 0;
     std::vector<bool> fixedMask(d_p, false);
     std::vector<bool> boundedMask(d_p, false);
@@ -3579,6 +3710,8 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     const std::vector<double> savedY = d_y;
     const std::vector<double> savedYFit = d_y_fit;
     const std::vector<double> savedYErrors = d_y_errors;
+    const std::vector<double> savedRawYErrors = d_raw_y_errors;
+    const QString savedWeightingNote = d_weighting_note;
     const std::vector<double> savedResults = d_results;
     const std::vector<double> savedResultErrors = d_result_errors;
     const double savedChi2 = chi_2;
@@ -3589,6 +3722,11 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     const bool savedStraightLine = d_straight_line_fit;
     const double savedLineR = d_line_pearson_r;
     const bool savedCovarScaled = d_covar_scaled;
+    const bool savedHasCustomDof = d_has_custom_dof;
+    const int savedCustomN = d_custom_n_points;
+    const int savedCustomP = d_custom_p_free;
+    const bool savedHasCustomRss = d_has_custom_rss;
+    const double savedCustomRss = d_custom_rss;
 
     std::vector<double> savedParamInit(d_p, 0.0);
     if (d_param_init) {
@@ -3603,22 +3741,34 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     }
 
     const size_t n = d_x.size();
-    const int pEff = std::max(0, effectiveFreeParameters());
-    const double dofScale = std::sqrt(double(n) / std::max(1.0, double(int(n) - pEff)));
-
-    std::vector<double> sigmaVec(n, 1.0);
-    std::vector<double> normRes(n, 0.0);
-    double meanNormRes = 0.0;
+    const std::vector<double> baseWeights = computeWeightsVector();
+    std::vector<size_t> activeIdx;
+    activeIdx.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        if (i < savedYErrors.size() && std::isfinite(savedYErrors[i]) && savedYErrors[i] > 0.0)
-            sigmaVec[i] = savedYErrors[i];
-        normRes[i] = (savedY[i] - savedYFit[i]) / sigmaVec[i];
-        meanNormRes += normRes[i];
+        if (i < baseWeights.size() && std::isfinite(baseWeights[i]) && baseWeights[i] > 0.0)
+            activeIdx.push_back(i);
     }
-    meanNormRes /= double(n);
-    std::vector<double> centeredScaledNormRes(n, 0.0);
-    for (size_t i = 0; i < n; ++i)
-        centeredScaledNormRes[i] = dofScale * (normRes[i] - meanNormRes);
+    if (activeIdx.empty())
+        return out;
+
+    const int pEff = std::max(0, effectiveFreeParameters());
+    const double dofScale =
+            std::sqrt(double(activeIdx.size()) / std::max(1.0, double(int(activeIdx.size()) - pEff)));
+
+    std::vector<double> sigmaVec(n, std::numeric_limits<double>::infinity());
+    std::vector<double> activeNormRes;
+    activeNormRes.reserve(activeIdx.size());
+    double meanNormRes = 0.0;
+    for (size_t idx : activeIdx) {
+        sigmaVec[idx] = 1.0 / std::sqrt(baseWeights[idx]);
+        const double nr = (savedY[idx] - savedYFit[idx]) / sigmaVec[idx];
+        activeNormRes.push_back(nr);
+        meanNormRes += nr;
+    }
+    meanNormRes /= double(activeIdx.size());
+    std::vector<double> centeredScaledNormRes(activeIdx.size(), 0.0);
+    for (size_t k = 0; k < activeIdx.size(); ++k)
+        centeredScaledNormRes[k] = dofScale * (activeNormRes[k] - meanNormRes);
 
     bool createdBootScript = false;
     if (is_non_linear && !d_script && !d_formula.isEmpty() && scriptEnv) {
@@ -3635,7 +3785,7 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
         replicates[j].reserve(size_t(nSamples));
 
     std::mt19937_64 rng(0x5EED2026ULL);
-    std::uniform_int_distribution<size_t> idxDist(0, n - 1);
+    std::uniform_int_distribution<size_t> idxDist(0, activeIdx.size() - 1);
     std::bernoulli_distribution rademacher(0.5);
 
     d_silent = true;
@@ -3644,15 +3794,16 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_max_iterations = std::min(savedMaxIter, 250);
 
     for (int b = 0; b < nSamples; ++b) {
-        for (size_t i = 0; i < n; ++i) {
+        d_y = savedY;
+        for (size_t idx : activeIdx) {
             if (mode == 1) {
                 // Wild Bootstrap (Rademacher sign flip for heteroscedastic errors)
                 const double sign = rademacher(rng) ? 1.0 : -1.0;
-                d_y[i] = savedYFit[i] + sign * dofScale * (savedY[i] - savedYFit[i]);
+                d_y[idx] = savedYFit[idx] + sign * dofScale * (savedY[idx] - savedYFit[idx]);
             } else {
                 // Nonparametric Residual Bootstrap
                 const size_t u = idxDist(rng);
-                d_y[i] = savedYFit[i] + sigmaVec[i] * centeredScaledNormRes[u];
+                d_y[idx] = savedYFit[idx] + sigmaVec[idx] * centeredScaledNormRes[u];
             }
         }
         d_y_errors = savedYErrors;
@@ -3665,13 +3816,15 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
             int st = GSL_FAILURE;
             std::vector<double> par = (d_solver == NelderMeadSimplex) ? fitGslMultimin(iter, st)
                                                                       : fitGslMultifit(iter, st);
-            if (st == GSL_SUCCESS && par.size() == d_p) {
+            // Exclude non-converged replicates rather than polluting the bootstrap distribution.
+            if (st == GSL_SUCCESS && converged() && std::isfinite(chi_2) && chi_2 >= 0.0
+                && par.size() == d_p) {
                 storeCustomFitResults(par);
                 repOk = (d_results.size() >= d_p);
             }
         } else {
             fit();
-            repOk = (d_results.size() >= d_p);
+            repOk = (converged() && std::isfinite(chi_2) && chi_2 >= 0.0 && d_results.size() >= d_p);
         }
 
         if (repOk) {
@@ -3697,6 +3850,8 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_y = savedY;
     d_y_fit = savedYFit;
     d_y_errors = savedYErrors;
+    d_raw_y_errors = savedRawYErrors;
+    d_weighting_note = savedWeightingNote;
     d_results = savedResults;
     d_result_errors = savedResultErrors;
     chi_2 = savedChi2;
@@ -3706,6 +3861,11 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_fit_notes = savedNotes;
     d_straight_line_fit = savedStraightLine;
     d_line_pearson_r = savedLineR;
+    d_has_custom_dof = savedHasCustomDof;
+    d_custom_n_points = savedCustomN;
+    d_custom_p_free = savedCustomP;
+    d_has_custom_rss = savedHasCustomRss;
+    d_custom_rss = savedCustomRss;
     d_in_bootstrap = false;
     d_silent = origSilent;
     d_suppress_curve_output = origSuppress;
@@ -3810,6 +3970,13 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         || !covar || solverPar.size() < d_p)
         return;
 
+    const int dofInt = degreesOfFreedom();
+    const double covScale = effectiveCovarScale();
+    if (dofInt <= 0 || !std::isfinite(covScale)) {
+        d_fit_notes << tr("Confidence/prediction bands skipped: residual degrees of freedom <= 0.");
+        return;
+    }
+
     int savedPoints = d_points;
     int nPts = d_gen_function ? std::max(2, d_points) : int(d_x.size());
     d_points = nPts;
@@ -3841,11 +4008,69 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
     }
     d_points = savedPoints;
 
-    int p_free = std::max(1, effectiveFreeParameters());
-    double dof = (int(d_x.size()) > p_free) ? double(int(d_x.size()) - p_free) : 1.0;
-    double s2 = std::max(0.0, rss() / dof);
+    const double dof = double(dofInt);
+    const double rawRss = rss();
+    const double s2Unweighted = (std::isfinite(rawRss) && rawRss >= 0.0) ? (rawRss / dof) : 0.0;
+    const bool isWeighted = (d_y_error_source != UnknownErrors || d_weighting_method != WeightNone);
 
-    const double covScale = effectiveCovarScale();
+    // Build local observation variance sigma^2(x) for weighted prediction bands
+    std::vector<std::pair<double, double>> activeXVar;
+    double medianVar = s2Unweighted;
+    double statFloor = 1.0;
+    if (isWeighted) {
+        const std::vector<double> w = computeWeightsVector();
+        std::vector<double> varList;
+        double maxAbsY = 0.0;
+        for (size_t i = 0; i < d_x.size(); ++i) {
+            if (i < d_y.size() && std::isfinite(d_y[i]))
+                maxAbsY = std::max(maxAbsY, std::abs(d_y[i]));
+            if (i < w.size() && std::isfinite(w[i]) && w[i] > 0.0) {
+                const double v = 1.0 / w[i];
+                if (std::isfinite(v)) {
+                    activeXVar.emplace_back(d_x[i], v);
+                    varList.push_back(v);
+                }
+            }
+        }
+        statFloor = (maxAbsY > 0.0 && maxAbsY < 1.0) ? std::max(1e-12, 1e-3 * maxAbsY) : 1.0;
+        std::sort(activeXVar.begin(), activeXVar.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+        if (!varList.empty()) {
+            std::sort(varList.begin(), varList.end());
+            medianVar = varList[varList.size() / 2];
+        }
+    }
+
+    auto localObsVariance = [&](double xq, double yHat) -> double {
+        if (!isWeighted)
+            return s2Unweighted;
+        double baseVar = medianVar;
+        if (d_weighting_method == WeightStatistical) {
+            baseVar = std::max(std::abs(yHat), statFloor);
+        } else if (d_weighting_method == WeightProportional) {
+            baseVar = (std::isfinite(yHat) && std::abs(yHat) > 0.0) ? (yHat * yHat) : medianVar;
+        } else if (!activeXVar.empty()) {
+            if (xq <= activeXVar.front().first) {
+                baseVar = activeXVar.front().second;
+            } else if (xq >= activeXVar.back().first) {
+                baseVar = activeXVar.back().second;
+            } else {
+                auto it = std::lower_bound(
+                        activeXVar.begin(), activeXVar.end(), xq,
+                        [](const std::pair<double, double> &p, double val) { return p.first < val; });
+                if (it == activeXVar.begin()) {
+                    baseVar = it->second;
+                } else {
+                    const auto &p1 = *it;
+                    const auto &p0 = *(it - 1);
+                    const double dx = p1.first - p0.first;
+                    const double t = (dx > 1e-30) ? ((xq - p0.first) / dx) : 0.0;
+                    baseVar = p0.second + t * (p1.second - p0.second);
+                }
+            }
+        }
+        return std::max(0.0, (d_scale_errors ? covScale : 1.0) * baseVar);
+    };
 
     double confAlpha = std::max(0.50, std::min(0.9999, d_conf_level));
     double predAlpha = std::max(0.50, std::min(0.9999, d_pred_level));
@@ -3862,7 +4087,8 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
                 var_mean += G[k][a] * (covScale * gsl_matrix_get(covar, a, b)) * G[k][b];
         }
         var_mean = std::max(0.0, var_mean);
-        double var_pred = std::max(0.0, s2 + var_mean);
+        const double obsVar = localObsVariance(X_band[k], Y_hat[k]);
+        double var_pred = std::max(0.0, obsVar + var_mean);
 
         confUpper[k] = Y_hat[k] + t_conf * std::sqrt(var_mean);
         confLower[k] = Y_hat[k] - t_conf * std::sqrt(var_mean);
@@ -3870,13 +4096,19 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         predLower[k] = Y_hat[k] - t_pred * std::sqrt(var_pred);
     }
 
+    // Preserve the graph legend text so band boundaries do not pollute the legend with 4 extra rows.
+    Legend *existingLegend = d_graph->legend();
+    const QString savedLegendText = existingLegend ? existingLegend->text() : QString();
+
     auto insertBandCurve = [this](const QString &exactTitle, const std::vector<double> &Xb,
-                                  const std::vector<double> &Yb, const QColor &col) {
+                                  const std::vector<double> &Yb, const QColor &col,
+                                  Qt::PenStyle penStyle) {
         if (d_graph->curveIndex(exactTitle) >= 0)
             d_graph->removeCurve(exactTitle);
         FunctionCurve *c = new FunctionCurve((ApplicationWindow *)parent(), FunctionCurve::Normal,
                                              exactTitle);
-        c->setPen(QPen(col, 1, Qt::DashLine));
+        c->setPen(QPen(col, 1, penStyle));
+        c->setItemAttribute(QwtPlotItem::Legend, false);
         c->setData(Xb.data(), Yb.data(), int(Xb.size()));
         if (!Xb.empty())
             c->setRange(Xb.front(), Xb.back());
@@ -3887,20 +4119,55 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
     QString baseName =
             (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text()
                                                                       : objectName();
-    if (d_conf_band) {
-        insertBandCurve(baseName + "_ConfUpper", X_band, confUpper, QColor(Qt::red));
-        insertBandCurve(baseName + "_ConfLower", X_band, confLower, QColor(Qt::red));
-    }
+    QVector<double> qX(nPts);
+    for (int k = 0; k < nPts; ++k)
+        qX[k] = X_band[k];
+
     if (d_pred_band) {
-        insertBandCurve(baseName + "_PredUpper", X_band, predUpper, QColor(255, 140, 0));
-        insertBandCurve(baseName + "_PredLower", X_band, predLower, QColor(255, 140, 0));
+        QVector<double> qLo(nPts), qHi(nPts);
+        for (int k = 0; k < nPts; ++k) {
+            qLo[k] = predLower[k];
+            qHi[k] = predUpper[k];
+        }
+        const QString predBandTitle = baseName + QStringLiteral("_PredBand");
+        d_graph->removeShadedBandByTitle(predBandTitle);
+        if (QwtPlotItem *band = d_graph->addShadedBand(qX, qLo, qHi, QColor(255, 140, 0, 30),
+                                                       predBandTitle)) {
+            band->setZ(0.8);
+            band->setItemAttribute(QwtPlotItem::Legend, false);
+        }
+        insertBandCurve(baseName + "_PredUpper", X_band, predUpper, QColor(230, 125, 0, 130),
+                        Qt::DotLine);
+        insertBandCurve(baseName + "_PredLower", X_band, predLower, QColor(230, 125, 0, 130),
+                        Qt::DotLine);
     }
+    if (d_conf_band) {
+        QVector<double> qLo(nPts), qHi(nPts);
+        for (int k = 0; k < nPts; ++k) {
+            qLo[k] = confLower[k];
+            qHi[k] = confUpper[k];
+        }
+        const QString confBandTitle = baseName + QStringLiteral("_ConfBand");
+        d_graph->removeShadedBandByTitle(confBandTitle);
+        if (QwtPlotItem *band = d_graph->addShadedBand(qX, qLo, qHi, QColor(205, 35, 45, 42),
+                                                       confBandTitle)) {
+            band->setZ(1.0);
+            band->setItemAttribute(QwtPlotItem::Legend, false);
+        }
+        insertBandCurve(baseName + "_ConfUpper", X_band, confUpper, QColor(205, 35, 45, 135),
+                        Qt::DashLine);
+        insertBandCurve(baseName + "_ConfLower", X_band, confLower, QColor(205, 35, 45, 135),
+                        Qt::DashLine);
+    }
+
+    if (existingLegend && d_graph->legend() == existingLegend)
+        existingLegend->setText(savedLegendText);
     d_graph->replot();
 }
 
 double Fit::aic() const
 {
-    int n = int(d_x.size());
+    int n = effectivePointCount();
     if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
     const double rawRss = rss();
@@ -3913,21 +4180,21 @@ double Fit::aic() const
 
 double Fit::aicc() const
 {
-    int n = int(d_x.size());
+    int n = effectivePointCount();
     if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
+    if (n <= k + 1)
+        return std::numeric_limits<double>::quiet_NaN();
     double baseAic = aic();
     if (!std::isfinite(baseAic))
         return std::numeric_limits<double>::quiet_NaN();
-    if (n > k + 1)
-        return baseAic + (2.0 * double(k) * double(k + 1)) / double(n - k - 1);
-    return baseAic + 2.0 * double(k) * double(k + 1);
+    return baseAic + (2.0 * double(k) * double(k + 1)) / double(n - k - 1);
 }
 
 double Fit::bic() const
 {
-    int n = int(d_x.size());
+    int n = effectivePointCount();
     if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
     const double rawRss = rss();
@@ -3940,25 +4207,39 @@ double Fit::bic() const
 
 double Fit::anovaFValue() const
 {
-    int n = int(d_x.size());
-    if (n <= 1 || d_y.empty() || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
+    const int n = effectivePointCount();
+    const int p_free = std::max(1, effectiveFreeParameters());
+    const int df_err = n - p_free;
+    if (n <= 1 || df_err <= 0 || d_y.empty()
+        || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
     const double rawRss = rss();
     if (!std::isfinite(rawRss) || rawRss < 0.0)
         return std::numeric_limits<double>::quiet_NaN();
 
-    double mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(n);
+    const std::vector<double> w = computeWeightsVector();
+    double mean = 0.0;
+    int activeCnt = 0;
+    for (size_t i = 0; i < d_y.size(); ++i) {
+        if (i < w.size() && !(w[i] > 0.0))
+            continue;
+        mean += d_y[i];
+        ++activeCnt;
+    }
+    if (activeCnt <= 1)
+        return std::numeric_limits<double>::quiet_NaN();
+    mean /= double(activeCnt);
     double tss = 0.0;
-    for (double yv : d_y) {
-        double d = yv - mean;
+    for (size_t i = 0; i < d_y.size(); ++i) {
+        if (i < w.size() && !(w[i] > 0.0))
+            continue;
+        double d = d_y[i] - mean;
         tss += d * d;
     }
     double rssVal = std::max(0.0, rawRss);
     double mss = std::max(0.0, tss - rssVal);
 
-    int p_free = std::max(1, effectiveFreeParameters());
     int df_model = (p_free > 1) ? (p_free - 1) : 1;
-    int df_err = std::max(1, n - p_free);
 
     double ms_model = mss / double(df_model);
     double ms_err = rssVal / double(df_err);
@@ -3969,16 +4250,18 @@ double Fit::anovaFValue() const
 
 double Fit::anovaPValue() const
 {
-    int n = int(d_x.size());
-    if (n <= 1 || d_y.empty())
-        return 1.0;
+    const int n = effectivePointCount();
+    const int p_free = std::max(1, effectiveFreeParameters());
+    const int df_err = n - p_free;
+    if (n <= 1 || df_err <= 0 || d_y.empty())
+        return std::numeric_limits<double>::quiet_NaN();
 
-    int p_free = std::max(1, effectiveFreeParameters());
     int df_model = (p_free > 1) ? (p_free - 1) : 1;
-    int df_err = std::max(1, n - p_free);
 
     double F = anovaFValue();
-    if (!std::isfinite(F) || F <= 0.0)
+    if (!std::isfinite(F))
+        return std::numeric_limits<double>::quiet_NaN();
+    if (F <= 0.0)
         return 1.0;
     if (F >= 1e14)
         return 0.0;
@@ -4023,8 +4306,11 @@ void Fit::insertFitSummaryBoxOnGraph()
     if (!converged())
         lines << convergenceMessage();
 
+    const double r2Val = rSquare();
     lines << QStringLiteral("%1 = %2")
-                     .arg(tr("R\u00B2"), QLocale().toString(rSquare(), 'f', 4));
+                     .arg(tr("R\u00B2"),
+                          std::isfinite(r2Val) ? QLocale().toString(r2Val, 'f', 4)
+                                               : QString::fromUtf8("—"));
 
     const int valPrec = qBound(3, d_prec, 5);
     const int errPrec = qBound(2, d_prec - 1, 3);
@@ -4292,9 +4578,15 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
         tbl->column(1)->setValueAt(i, r.numParams);
         tbl->column(2)->setValueAt(i, r.rssVal);
         tbl->column(3)->setValueAt(i, r.r2Val);
-        tbl->column(4)->setValueAt(i, r.adjR2Val);
+        if (std::isfinite(r.adjR2Val))
+            tbl->column(4)->setValueAt(i, r.adjR2Val);
+        else
+            tbl->column(4)->setInvalid(i);
         tbl->column(5)->setValueAt(i, r.aicVal);
-        tbl->column(6)->setValueAt(i, r.aiccVal);
+        if (std::isfinite(r.aiccVal))
+            tbl->column(6)->setValueAt(i, r.aiccVal);
+        else
+            tbl->column(6)->setInvalid(i);
         tbl->column(7)->setValueAt(i, r.bicVal);
         if (r.converged) {
             tbl->column(8)->setValueAt(i, r.deltaAic);

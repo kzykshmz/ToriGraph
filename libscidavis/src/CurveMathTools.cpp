@@ -202,7 +202,9 @@ bool extractUnmaskedCurvePoints(Graph *g, const QString &curveTitle,
                             const std::pair<double, double> &b) { return a.first < b.first; });
 
         if (mergeDuplicateX && pts.size() >= 2) {
-            const double span = std::max(1.0, std::fabs(pts.back().first - pts.front().first));
+            const double rawSpan = std::fabs(pts.back().first - pts.front().first);
+            const double scaleX = std::max(std::fabs(pts.front().first), std::fabs(pts.back().first));
+            const double span = (rawSpan > 0.0) ? rawSpan : std::max(1e-300, scaleX);
             const double eps = 1e-13 * span;
             std::vector<std::pair<double, double>> merged;
             merged.reserve(pts.size());
@@ -352,7 +354,10 @@ QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
 
     const double xLo = std::max(xA.front(), xB.front());
     const double xHi = std::min(xA.back(), xB.back());
-    const double span = std::max(1.0, std::max(xA.back() - xA.front(), xB.back() - xB.front()));
+    const double rawSpan = std::max(xA.back() - xA.front(), xB.back() - xB.front());
+    const double scaleX = std::max({ std::fabs(xA.front()), std::fabs(xA.back()),
+                                     std::fabs(xB.front()), std::fabs(xB.back()) });
+    const double span = (rawSpan > 0.0) ? rawSpan : std::max(1e-300, scaleX);
     const double tol = 1e-12 * span;
 
     if (xLo > xHi + tol)
@@ -483,6 +488,11 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
         Column *xCol = (tbl && dc) ? tbl->column(dc->xColumnName()) : nullptr;
         Column *yCol = (tbl && dc) ? tbl->column(dc->yColumnName()) : nullptr;
         if (dc && tbl && yCol) {
+            MultiLayer *ml = g->multiLayerParent();
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+            future::Table *ft = tbl->d_future_table;
+            if (ft)
+                ft->beginMacro(trMath("Subtract Straight Line"));
             const int n = dc->dataSize();
             for (int i = 0; i < n; ++i) {
                 int row = dc->tableRow(i);
@@ -497,8 +507,12 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
                 if (std::isfinite(xv) && std::isfinite(yv))
                     yCol->setValueAt(row, yv - evalLine(xv));
             }
+            if (ft)
+                ft->endMacro();
             dc->loadData();
             g->updatePlot();
+            if (ml && !beforeSnap.isEmpty())
+                ml->pushUndoSnapshot(trMath("Subtract Straight Line"), beforeSnap);
             return dc;
         }
     }
@@ -574,7 +588,7 @@ QwtPlotCurve *CurveMathTools::averageMultipleCurves(ApplicationWindow *app, Grap
 
     const int nGrid = std::max(2, numPoints);
     const double step = (xEnd - xStart) / static_cast<double>(nGrid - 1);
-    const double rangeTol = 1e-12 * std::max(1.0, xEnd - xStart);
+    const double rangeTol = 1e-12 * std::max(1e-300, xEnd - xStart);
 
     std::vector<double> gridX, meanY, sdY, plusSdY, minusSdY;
     gridX.reserve(static_cast<size_t>(nGrid));
@@ -673,9 +687,47 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
     if (mode == DivideByRefX) {
         std::vector<double> xm, ym;
         extractUnmaskedCurvePoints(g, curveTitle, xm, ym, true, true);
-        refValue = interpLinearSorted(xm, ym, refX);
+        if (xm.empty())
+            return nullptr;
+        const double rawSpanX = xm.back() - xm.front();
+        const double tolX = 1e-11 * ((rawSpanX > 0.0) ? rawSpanX
+                                                      : std::max(1e-300, std::fabs(xm.front())));
+        if (!std::isfinite(refX) || refX < xm.front() - tolX || refX > xm.back() + tolX) {
+            const QString msg = QObject::tr(
+                    "Normalize (%1): Reference X = %2 is outside the curve range [%3, %4].")
+                                        .arg(curveTitle)
+                                        .arg(refX, 0, 'g', 6)
+                                        .arg(xm.front(), 0, 'g', 6)
+                                        .arg(xm.back(), 0, 'g', 6);
+            app->updateLog(msg + QLatin1Char('\n'));
+            if (!ApplicationWindow::isNonInteractiveContext(app))
+                QMessageBox::warning(app, trMath("Normalize Curves"), msg);
+            return nullptr;
+        }
+        refValue = interpLinearSorted(xm, ym, std::clamp(refX, xm.front(), xm.back()));
+        if (!std::isfinite(refValue) || std::fabs(refValue) <= 1e-300) {
+            const QString msg = QObject::tr(
+                    "Normalize (%1): Y at Reference X = %2 is zero, so division by it is undefined.")
+                                        .arg(curveTitle)
+                                        .arg(refX, 0, 'g', 6);
+            app->updateLog(msg + QLatin1Char('\n'));
+            if (!ApplicationWindow::isNonInteractiveContext(app))
+                QMessageBox::warning(app, trMath("Normalize Curves"), msg);
+            return nullptr;
+        }
     }
     const std::vector<double> outY = normalizeValues(xs, ys, mode, refValue);
+    const bool anyFinite = std::any_of(outY.begin(), outY.end(),
+                                       [](double v) { return std::isfinite(v); });
+    if (!anyFinite) {
+        const QString msg = QObject::tr(
+                "Normalize (%1): the normalization factor is zero or undefined (e.g. a constant or all-zero curve).")
+                                    .arg(curveTitle);
+        app->updateLog(msg + QLatin1Char('\n'));
+        if (!ApplicationWindow::isNonInteractiveContext(app))
+            QMessageBox::warning(app, trMath("Normalize Curves"), msg);
+        return nullptr;
+    }
 
     Table *t = createNumericTable(app, "NormCurve",
                                   QStringList() << "X" << "NormalizedY",
@@ -695,7 +747,8 @@ std::vector<double> CurveMathTools::normalizeValues(const std::vector<double> &x
                                                     double refValue)
 {
     const size_t n = std::min(xs.size(), ys.size());
-    std::vector<double> outY(n, 0.0);
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> outY(n, kNaN);
     if (n == 0)
         return outY;
 
@@ -706,16 +759,10 @@ std::vector<double> CurveMathTools::normalizeValues(const std::vector<double> &x
 
     switch (mode) {
     case DivideByMax: {
-        double denom = yMax;
-        if (std::fabs(denom) <= 1e-300) {
-            double maxAbs = 0.0;
-            for (double v : ys) {
-                if (std::fabs(v) > std::fabs(maxAbs))
-                    maxAbs = v;
-            }
-            denom = maxAbs;
-        }
-        if (std::fabs(denom) > 1e-300) {
+        // Divide by yMax when positive; for non-positive data use |yMin| (> 0) so the sign of
+        // an all-negative curve is preserved instead of flipping to positive.
+        double denom = (yMax > 1e-300) ? yMax : std::max(std::fabs(yMin), std::fabs(yMax));
+        if (denom > 1e-300) {
             for (size_t i = 0; i < n; ++i)
                 outY[i] = ys[i] / denom;
         }
@@ -826,8 +873,12 @@ QVector<QPointF> CurveMathTools::findCurveIntersections(Graph *g, const QString 
     expandBounds(xA, yA);
     expandBounds(xB, yB);
 
-    const double spanX = std::max(1.0, maxX - minX);
-    const double spanY = std::max(1.0, maxY - minY);
+    const double rawSpanX = maxX - minX;
+    const double rawSpanY = maxY - minY;
+    const double scaleX = std::max(std::fabs(minX), std::fabs(maxX));
+    const double scaleY = std::max(std::fabs(minY), std::fabs(maxY));
+    const double spanX = (rawSpanX > 0.0) ? rawSpanX : std::max(1e-300, scaleX);
+    const double spanY = (rawSpanY > 0.0) ? rawSpanY : std::max(1e-300, scaleY);
     const double epsParam = 1e-11;
     const double dedupX = 1e-9 * spanX;
     const double dedupY = 1e-9 * spanY;
@@ -890,8 +941,8 @@ QVector<QPointF> CurveMathTools::findCurveIntersections(Graph *g, const QString 
         }
     }
 
-    std::sort(rawPts.begin(), rawPts.end(), [](const QPointF &a, const QPointF &b) {
-        if (std::fabs(a.x() - b.x()) > 1e-12)
+    std::sort(rawPts.begin(), rawPts.end(), [&](const QPointF &a, const QPointF &b) {
+        if (std::fabs(a.x() - b.x()) > 1e-12 * spanX)
             return a.x() < b.x();
         return a.y() < b.y();
     });
@@ -951,15 +1002,20 @@ QVector<double> CurveMathTools::findXFromY(Graph *g, const QString &curveTitle, 
         return roots;
 
     if (xs.size() == 1) {
-        if (std::fabs(ys[0] - targetY) <= 1e-12 * std::max(1.0, std::fabs(targetY)))
+        const double scaleY = std::max(1e-300, std::max(std::fabs(ys[0]), std::fabs(targetY)));
+        if (std::fabs(ys[0] - targetY) <= 1e-12 * scaleY)
             roots.append(xs[0]);
         return roots;
     }
 
     const auto xMM = std::minmax_element(xs.begin(), xs.end());
     const auto yMM = std::minmax_element(ys.begin(), ys.end());
-    const double spanX = std::max(1.0, *xMM.second - *xMM.first);
-    const double spanY = std::max(1.0, *yMM.second - *yMM.first);
+    const double rawSpanX = *xMM.second - *xMM.first;
+    const double rawSpanY = *yMM.second - *yMM.first;
+    const double scaleX = std::max(std::fabs(*xMM.first), std::fabs(*xMM.second));
+    const double scaleY = std::max({ std::fabs(*yMM.first), std::fabs(*yMM.second), std::fabs(targetY) });
+    const double spanX = (rawSpanX > 0.0) ? rawSpanX : std::max(1e-300, scaleX);
+    const double spanY = (rawSpanY > 0.0) ? rawSpanY : std::max(1e-300, scaleY);
     const double yTol = 1e-12 * spanY;
     const double xDedup = 1e-9 * spanX;
 
@@ -998,7 +1054,9 @@ double CurveMathTools::findYFromX(Graph *g, const QString &curveTitle, double ta
     if (!extractUnmaskedCurvePoints(g, curveTitle, xs, ys, true, true) || xs.empty())
         return std::numeric_limits<double>::quiet_NaN();
 
-    const double spanX = std::max(1.0, xs.back() - xs.front());
+    const double rawSpanX = xs.back() - xs.front();
+    const double scaleX = std::max(std::fabs(xs.front()), std::fabs(xs.back()));
+    const double spanX = (rawSpanX > 0.0) ? rawSpanX : std::max(1e-300, scaleX);
     const double tolX = 1e-11 * spanX;
     if (targetX < xs.front() - tolX || targetX > xs.back() + tolX)
         return std::numeric_limits<double>::quiet_NaN();
@@ -1133,6 +1191,7 @@ void CurveMathTools::showSubtractLineDialog(ApplicationWindow *app, Graph *g)
     QDoubleSpinBox *sbX2 = makeSpin(x2Init);
     QDoubleSpinBox *sbY2 = makeSpin(y2Init);
     QCheckBox *chkInPlace = new QCheckBox(trMath("Modify Source Curve In-Place"), &dlg);
+    chkInPlace->setChecked(false);
 
     QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg, [&](const QString &name) {
         std::vector<double> cx, cy;
@@ -1161,6 +1220,20 @@ void CurveMathTools::showSubtractLineDialog(ApplicationWindow *app, Graph *g)
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
     if (dlg.exec() == QDialog::Accepted) {
+        if (chkInPlace->isChecked()) {
+            const QMessageBox::StandardButton ans = QMessageBox::warning(
+                    app, trMath("Subtract Straight Line"),
+                    QObject::tr("Overwrite the source Y column of \"%1\" in place?\n\n"
+                                "Masked rows are left unchanged, and any other graph using this "
+                                "column will also change. The edit can be undone with Undo (Ctrl+Z) "
+                                "on the source worksheet.\n\n"
+                                "Uncheck \"Modify Source Curve In-Place\" to write the result to a "
+                                "new table and curve instead.")
+                            .arg(cbCurve->currentText()),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (ans != QMessageBox::Yes)
+                return;
+        }
         subtractStraightLine(app, g, cbCurve->currentText(),
                              QPointF(sbX1->value(), sbY1->value()),
                              QPointF(sbX2->value(), sbY2->value()), chkInPlace->isChecked());
@@ -1511,10 +1584,16 @@ void registerMatSciTranslationsOnce()
         "%1% オフセット耐力線に交差する前に破断しました。");
 
     // Campaign 2 Materials Science Workbench (Sample Gallery, Kissinger, Kocks-Mecking, XRD, VASP)
-    reg("Materials Science Sample Gallery", "材料科学サンプルデータギャラリー");
-    reg("Try Sample Datasets...", "サンプルデータで試す...");
+    reg("Materials Science Sample Gallery", "サンプル集");
+    reg("Sample Gallery", "サンプル集");
+    reg("Try Sample Datasets...", "サンプル集...");
+    reg("Getting Started", "入門・基本操作");
+    reg("[Getting Started] Simple 2-Series X-Y Sample (for practice & formatting)",
+        "【入門】シンプルな 2 系列 X-Y サンプル（操作・体裁の練習用）");
+    reg("Compact 11-point two-series X-Y table (Condition A & Condition B) for practicing basic plotting, axis/legend formatting, and PowerPoint / slide copy-paste.",
+        "基本的なグラフ作成・軸と凡例の体裁調整・PowerPoint スライド貼付をすぐに試せる 11 点×2 系列（条件 A / 条件 B）のシンプルな X-Y サンプルです。");
     reg("Select a built-in materials science dataset to generate a ready-to-analyze worksheet and publication plot:",
-        "内蔵された材料科学サンプルデータまたは複合サンプルプロジェクトを選択し、ワークシートと論文品質グラフを自動生成します:");
+        "内蔵されたサンプルデータ（初心者向けの2系列X-Yサンプルや材料科学データ）を選択し、ワークシートとグラフを自動生成します:");
     reg("Category:", "カテゴリ:");
     reg("All Categories", "すべてのカテゴリ");
     reg("Filter:", "検索:");
@@ -1703,6 +1782,17 @@ void registerMatSciTranslationsOnce()
     reg("Axial Ratio c/a (for HCP):", "軸比 c/a (HCP用):");
     reg("Append results to TensileSummary worksheet",
         "結果を TensileSummary ワークシートに追記");
+    reg("Append results to WorkHardeningSummary worksheet",
+        "結果を WorkHardeningSummary ワークシートに追記");
+    reg("Append results to XRDSummary worksheet",
+        "結果を XRDSummary ワークシートに追記");
+    reg("X-Ray Wavelength λ:", "X線波長 λ:");
+    reg("Used in W-H fit", "W-H フィット採用");
+    reg("Excluded from W-H fit", "W-H フィット除外");
+    reg("Yes", "採用");
+    reg("No", "除外");
+    reg("No (resolution-limited)", "除外 (分解能限界)");
+    reg("No (unindexed)", "除外 (未指数付け)");
     reg("Enable energy window (E - E_F)", "エネルギー表示範囲を指定 (E - E_F)");
     reg("Stage-III fit", "ステージIII 線形外挿");
 }
@@ -2854,7 +2944,7 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
         knots.push_back(xStart + (xEnd - xStart) * static_cast<double>(k) / kMinDense);
 
     std::sort(knots.begin(), knots.end());
-    const double dedupEps = 1e-12 * std::max(1.0, xEnd - xStart);
+    const double dedupEps = 1e-12 * std::max(1e-300, xEnd - xStart);
     std::vector<double> baseGrid;
     baseGrid.reserve(knots.size());
     for (double xv : knots) {
@@ -4311,24 +4401,37 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
 
     // Detect stress unit (default MPa)
     QString stressUnit = yCol ? yCol->units().trimmed() : QString();
+    auto parseStressUnitText = [](const QString &txt) -> QString {
+        if (txt.isEmpty())
+            return QString();
+        if (txt.contains(QLatin1String("GPa")))
+            return QStringLiteral("GPa");
+        if (txt.contains(QLatin1String("kPa")))
+            return QStringLiteral("kPa");
+        if (txt.contains(QLatin1String("MPa")))
+            return QStringLiteral("MPa");
+        if (txt.contains(QStringLiteral("N/mm²"), Qt::CaseInsensitive)
+            || txt.contains(QLatin1String("N/mm^2"), Qt::CaseInsensitive)
+            || txt.contains(QLatin1String("N/mm2"), Qt::CaseInsensitive)
+            || txt.contains(QLatin1String("N/mm<sup>2</sup>"), Qt::CaseInsensitive))
+            return QStringLiteral("N/mm²");
+        if (txt.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
+            return QStringLiteral("ksi");
+        if (txt.contains(QLatin1String("psi"), Qt::CaseInsensitive))
+            return QStringLiteral("psi");
+        if (txt.contains(QLatin1String("(Pa)")) || txt.contains(QLatin1String("[Pa]"))
+            || txt.endsWith(QLatin1String("/ Pa")))
+            return QStringLiteral("Pa");
+        return QString();
+    };
+    if (stressUnit.isEmpty() && yCol)
+        stressUnit = parseStressUnitText(yCol->longName() + QLatin1Char(' ') + yCol->name());
     if (stressUnit.isEmpty() && targetGraph->plotWidget()) {
-        const QString yTitle = targetGraph->plotWidget()->axisTitle(srcCurve->yAxis()).text();
-        if (yTitle.contains(QLatin1String("GPa")))
-            stressUnit = QStringLiteral("GPa");
-        else if (yTitle.contains(QLatin1String("kPa")))
-            stressUnit = QStringLiteral("kPa");
-        else if (yTitle.contains(QLatin1String("MPa")))
-            stressUnit = QStringLiteral("MPa");
-        else if (yTitle.contains(QStringLiteral("N/mm²"), Qt::CaseInsensitive)
-                 || yTitle.contains(QLatin1String("N/mm^2"), Qt::CaseInsensitive)
-                 || yTitle.contains(QLatin1String("N/mm2"), Qt::CaseInsensitive)
-                 || yTitle.contains(QLatin1String("N/mm<sup>2</sup>"), Qt::CaseInsensitive))
-            stressUnit = QStringLiteral("N/mm²");
-        else if (yTitle.contains(QLatin1String("(Pa)")) || yTitle.contains(QLatin1String("[Pa]"))
-                 || yTitle.endsWith(QLatin1String("/ Pa")))
-            stressUnit = QStringLiteral("Pa");
+        stressUnit = parseStressUnitText(
+                targetGraph->plotWidget()->axisTitle(srcCurve->yAxis()).text());
     }
-    if (stressUnit.isEmpty())
+    const bool stressUnitAssumed = stressUnit.isEmpty();
+    if (stressUnitAssumed)
         stressUnit = QStringLiteral("MPa");
     res.stressUnit = stressUnit;
 
@@ -4556,6 +4659,17 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         } else if (pctOk != fracOk) {
             strainInPercent = pctOk;
             res.strainUnitSource = QStringLiteral("E range");
+            // When the stress unit was not labelled (assumed MPa) and the peak stress is small
+            // (< 5), the stresses may actually be in GPa with mm/mm strain (e.g. UTS ~ 0.5 GPa,
+            // slope ~ 70 -> read as % because 70 * 100 MPa = 7 GPa fits 5-1000 GPa). Flag this
+            // as ambiguous so the dialog asks the user instead of silently multiplying E by 100.
+            if (stressUnitAssumed && res.utsY < 5.0 && maxX < 1.2) {
+                res.strainUnitAmbiguous = true;
+                res.warnings << QObject::tr(
+                        "The stress column has no unit (MPa assumed, UTS = %1) and the strain column has no unit (max = %2). If the stress is in GPa and the strain is in mm/mm, select 'Engineering Fraction (mm/mm)' and label the stress column 'GPa'.")
+                                        .arg(res.utsY, 0, 'g', 4)
+                                        .arg(maxX, 0, 'g', 4);
+            }
         } else {
             strainInPercent = (maxX > 1.2);
             res.strainUnitSource = QStringLiteral("max strain");
@@ -5265,6 +5379,7 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
 
     Graph *chosenGraph = nullptr;
     QString chosenCurve;
+    MultiLayer *createdMl = nullptr;
     if (cbSourceMode->currentData().toInt() == 1) {
         const int tIdx = cbTable->currentIndex();
         if (tIdx < 0 || tIdx >= tables.size())
@@ -5272,10 +5387,10 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
         Table *t = tables[tIdx];
         const QString xName = cbStrainCol->currentText();
         const QString yName = cbStressCol->currentText();
-        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
-        if (!ml || !ml->activeGraph())
+        createdMl = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
+        if (!createdMl || !createdMl->activeGraph())
             return;
-        chosenGraph = ml->activeGraph();
+        chosenGraph = createdMl->activeGraph();
         const QString fullX = t->name() + QStringLiteral("_") + xName;
         const QString fullY = t->name() + QStringLiteral("_") + yName;
         if (chosenGraph->insertCurve(t, fullX, fullY, Graph::Line)) {
@@ -5305,15 +5420,22 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     const double offFrac = sbOffsetPct->value() / 100.0;
 
     // F2: when the unit is auto-detected, run a side-effect-free probe first and ask the
-    // user if the decision is ambiguous.
+    // user if the decision is ambiguous. If the user cancels after we made a new TensilePlot
+    // from worksheet columns, remove that graph so no orphan plot window is left behind.
     int strainMode = cbStrainUnit->currentData().toInt();
     if (strainMode < 0) {
         const TensileResult probe = analyzeTensile(nullptr, chosenGraph, chosenCurve, offFrac, -1,
                                                    eMin, eMax, false, false, false);
         if (probe.strainUnitAmbiguous) {
             const int ans = askTensileStrainUnit(app, probe);
-            if (ans == -2)
+            if (ans == -2) {
+                if (createdMl) {
+                    app->removeWindowFromLists(createdMl);
+                    createdMl->close();
+                    delete createdMl;
+                }
                 return;
+            }
             strainMode = ans;
         }
     }
@@ -5324,13 +5446,18 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
             chkTrueTable->isChecked());
 
     if (trRes.valid && chkSummarySheet->isChecked()) {
+        auto matchesTensileSummary = [](Table *cand) {
+            return cand && cand->name().startsWith(QLatin1String("TensileSummary"))
+                    && cand->numCols() >= 9 && cand->colLabel(0) == QLatin1String("Specimen")
+                    && cand->colLabel(1) == QLatin1String("YoungsModulus")
+                    && cand->colLabel(4) == QLatin1String("UTS");
+        };
         Table *sumTbl = app->table(QStringLiteral("TensileSummary"));
-        if (!sumTbl || sumTbl->numCols() < 9) {
+        if (!matchesTensileSummary(sumTbl)) {
             sumTbl = nullptr;
             for (MyWidget *w : app->windowsList()) {
                 Table *cand = qobject_cast<Table *>(w);
-                if (cand && cand->name().startsWith(QLatin1String("TensileSummary"))
-                    && cand->numCols() >= 9) {
+                if (matchesTensileSummary(cand)) {
                     sumTbl = cand;
                     break;
                 }
@@ -5370,14 +5497,22 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
             sumTbl->setNumRows(rowIdx + 1);
         }
         if (sumTbl) {
+            // Convert E, proof stress and UTS into the summary table's stress unit so a GPa
+            // specimen and an MPa specimen are never mixed in the same column without scaling.
+            const QString tblStressUnit = sumTbl->column(4)->units().trimmed().isEmpty()
+                    ? trRes.stressUnit
+                    : sumTbl->column(4)->units().trimmed();
+            const double srcToGPa = tensileStressUnitToGPa(trRes.stressUnit);
+            const double dstToGPa = tensileStressUnitToGPa(tblStressUnit);
+            const double stressScale = (dstToGPa > 0.0) ? (srcToGPa / dstToGPa) : 1.0;
             const QString specName = !chosenCurve.isEmpty()
                     ? chosenCurve
                     : (chosenGraph ? chosenGraph->parentPlotName() : QStringLiteral("Specimen"));
             sumTbl->column(0)->setTextAt(rowIdx, specName);
-            sumTbl->column(1)->setValueAt(rowIdx, trRes.youngsModulus);
+            sumTbl->column(1)->setValueAt(rowIdx, trRes.youngsModulus * stressScale);
             sumTbl->column(2)->setValueAt(rowIdx, trRes.elasticR2);
-            sumTbl->column(3)->setValueAt(rowIdx, trRes.offsetYieldY);
-            sumTbl->column(4)->setValueAt(rowIdx, trRes.utsY);
+            sumTbl->column(3)->setValueAt(rowIdx, trRes.offsetYieldY * stressScale);
+            sumTbl->column(4)->setValueAt(rowIdx, trRes.utsY * stressScale);
             sumTbl->column(5)->setValueAt(rowIdx, trRes.uniformElongationPct);
             sumTbl->column(6)->setValueAt(rowIdx, trRes.uniformPlasticElongationPct);
             sumTbl->column(7)->setValueAt(rowIdx, trRes.fractureElongationPct);
@@ -5526,6 +5661,75 @@ MultiLayer *CurveMathTools::loadSampleDataset(ApplicationWindow *app, const QStr
         return nullptr;
 
     const QString key = datasetId.trimmed().toLower();
+
+    // 0. Getting Started: Simple 2-Series X-Y Sample (11 points, Condition A & Condition B)
+    if (key == QLatin1String("intro_simple_xy") || key == QLatin1String("simple_xy")
+        || key == QLatin1String("intro")) {
+        constexpr int N = 11;
+        std::vector<double> colX(N), colA(N), colB(N);
+        for (int i = 0; i < N; ++i) {
+            const double t = double(i);
+            colX[size_t(i)] = t;
+            colA[size_t(i)] = 20.0 + 6.5 * t - 0.18 * t * t;
+            colB[size_t(i)] = 15.0 + 4.2 * t - 0.08 * t * t;
+        }
+        Table *tbl = createNumericTable(
+                app, QStringLiteral("SimpleXYSample"),
+                QStringList() << QStringLiteral("Time") << QStringLiteral("ConditionA")
+                              << QStringLiteral("ConditionB"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::Y << SciDAVis::Y,
+                { colX, colA, colB });
+        if (outTable)
+            *outTable = tbl;
+        if (!tbl)
+            return nullptr;
+        if (Column *c0 = tbl->column(0)) {
+            c0->setLongName(QStringLiteral("Time, <i>t</i>"));
+            c0->setUnits(QStringLiteral("min"));
+        }
+        if (Column *c1 = tbl->column(1)) {
+            c1->setLongName(QStringLiteral("Response, <i>Y</i>"));
+            c1->setUnits(QStringLiteral("arb. units"));
+            c1->setComment(QStringLiteral("Condition A"));
+        }
+        if (Column *c2 = tbl->column(2)) {
+            c2->setLongName(QStringLiteral("Response, <i>Y</i>"));
+            c2->setUnits(QStringLiteral("arb. units"));
+            c2->setComment(QStringLiteral("Condition B"));
+        }
+        if (!autoPlot)
+            return nullptr;
+
+        MultiLayer *ml =
+                app->newGraph(makeUniqueTableName(app, QStringLiteral("SimpleXYSamplePlot")));
+        if (ml && ml->activeGraph()) {
+            Graph *g = ml->activeGraph();
+            const QColor cols[2] = { QColor(0, 114, 178), QColor(213, 94, 0) };
+            const QwtSymbol::Style syms[2] = { QwtSymbol::Ellipse, QwtSymbol::Rect };
+            for (int k = 0; k < 2; ++k) {
+                if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(k + 1),
+                                   Graph::LineSymbols, 0, N - 1)) {
+                    const int idx = g->curves() - 1;
+                    g->setCurvePen(idx, QPen(cols[k], 2.0, Qt::SolidLine));
+                    g->setCurveSymbol(idx,
+                                      QwtSymbol(syms[k], QBrush(cols[k]),
+                                                QPen(cols[k].darker(125), 1.2), QSize(7, 7)));
+                }
+            }
+            g->setXAxisTitle(QStringLiteral("Time, <i>t</i> / min"));
+            g->setYAxisTitle(QStringLiteral("Response, <i>Y</i> / arb. units"));
+            g->setTitle(QString());
+            if (g->legend())
+                g->legend()->setText(g->legendText());
+            g->applyFramePreset(Graph::FrameBoxInwardTicks);
+            g->setAutoScale();
+            applyArialToMatSciGraph(g);
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            g->replot();
+        }
+        return ml;
+    }
 
     // 1. AA7075-T6 Tensile Stress-Strain
     if (key == QLatin1String("tensile_alznmg") || key == QLatin1String("tensile")) {
@@ -7084,12 +7288,17 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
         return;
     registerMatSciTranslationsOnce();
 
-    const QVector<SampleDatasetInfo> datasets = listSampleDatasets();
+    QVector<SampleDatasetInfo> datasets;
+    datasets.append({ QStringLiteral("intro_simple_xy"),
+                      QObject::tr("[Getting Started] Simple 2-Series X-Y Sample (for practice & formatting)"),
+                      QObject::tr("Getting Started"),
+                      QObject::tr("Compact 11-point two-series X-Y table (Condition A & Condition B) for practicing basic plotting, axis/legend formatting, and PowerPoint / slide copy-paste.") });
+    datasets += listSampleDatasets();
     if (datasets.isEmpty())
         return;
 
     QDialog dlg(app);
-    dlg.setWindowTitle(QObject::tr("Materials Science Sample Gallery"));
+    dlg.setWindowTitle(QObject::tr("Sample Gallery"));
     dlg.setMinimumSize(740, 520);
     QVBoxLayout *vbox = new QVBoxLayout(&dlg);
 
@@ -7225,7 +7434,9 @@ void CurveMathTools::showSampleGalleryDialog(ApplicationWindow *app)
     MultiLayer *ml = loadSampleDataset(app, id, !skipAutoForArrhenius, &tbl, &mat);
 
     if (chosenAction == 2) {
-        if (id == QLatin1String("tensile_alznmg") && ml && ml->activeGraph()) {
+        if (id == QLatin1String("intro_simple_xy") && ml && ml->activeGraph()) {
+            averageMultipleCurves(app, ml->activeGraph(), QStringList(), 11, true, nullptr);
+        } else if (id == QLatin1String("tensile_alznmg") && ml && ml->activeGraph()) {
             analyzeTensile(app, ml->activeGraph(), QString(), 0.002, 1,
                            std::numeric_limits<double>::quiet_NaN(),
                            std::numeric_limits<double>::quiet_NaN(), true, true, false);
@@ -8303,9 +8514,11 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
     }
 
     // F4: the tensile settings (strain unit, offset, elastic range) are passed through so
-    // that E, sigma_0.2 and the toe origin are identical to the tensile analysis.
+    // that E, sigma_0.2 and the toe origin are identical to the tensile analysis. Pass nullptr
+    // as the app here so analyzeTensile does not write a separate [Tensile Analysis] log block
+    // before our single [Work Hardening] log entry.
     const TensileResult tr = analyzeTensile(
-            app, targetGraph, curveTitle, offsetFraction, strainInPercentMode, elasticXMin,
+            nullptr, targetGraph, curveTitle, offsetFraction, strainInPercentMode, elasticXMin,
             elasticXMax, false /*plotConstruction*/, false /*addCallout*/,
             false /*createTrueStressTable*/);
     res.warnings = tr.warnings;
@@ -8602,7 +8815,15 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 v.push_back(std::log(st));
             }
         }
-        if (u.size() >= 2) {
+        if (u.size() < 2) {
+            res.warnings << QObject::tr(
+                    "Hollomon power-law fit (σt = K εp^n): only %1 uniform-plastic point(s) with εp > 0.25% before necking (at least 2 are required).")
+                                    .arg(int(u.size()));
+        } else {
+            if (u.size() == 2) {
+                res.warnings << QObject::tr(
+                        "Hollomon power-law fit uses only 2 uniform-plastic points (0 degrees of freedom); n and K are a 2-point chord, not a regression.");
+            }
             const double mu = std::accumulate(u.begin(), u.end(), 0.0) / double(u.size());
             const double mv = std::accumulate(v.begin(), v.end(), 0.0) / double(v.size());
             double suu = 0.0, suv = 0.0;
@@ -8611,7 +8832,13 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 suv += (u[k] - mu) * (v[k] - mv);
             }
             if (suu > 1e-24) {
-                res.hollomonN = std::max(0.0, suv / suu);
+                const double rawN = suv / suu;
+                if (rawN < 0.0) {
+                    res.warnings << QObject::tr(
+                            "Hollomon slope d(ln σt)/d(ln εp) = %1 is negative (strain softening in the selected range); n was clamped to 0.")
+                                            .arg(rawN, 0, 'g', 4);
+                }
+                res.hollomonN = std::max(0.0, rawN);
                 res.hollomonK = std::exp(std::clamp(mv - res.hollomonN * mu, -50.0, 50.0));
             }
         }
@@ -8715,8 +8942,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                     QStringLiteral("<i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>"));
         }
         if (Column *c4 = tbl->column(4)) {
-            c4->setLongName(
-                    QStringLiteral("<i>\u03B8</i> = d<i>\u03C3</i><sub>t</sub>/d<i>\u03B5</i><sub>t</sub>"));
+            c4->setLongName(QStringLiteral("<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>"));
             c4->setUnits(tr.stressUnit);
             c4->setComment(QStringLiteral("<i>\u03B8</i> = <i>\u03C3</i><sub>t</sub>"));
         }
@@ -8760,11 +8986,20 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
     if (!createPlot || !tbl)
         return res;
 
-    // Find start row of plastic hardening branch where theta <= 2.6 * considereTrueStress so elastic E doesn't blow up Y scale
+    // Find start row of plastic hardening branch. On the Considere plot (theta & sigma_t vs eps_t)
+    // keep theta <= 2.5 * sigma_u so the elastic E (~70-200 GPa) does not squash sigma_t; on the
+    // Kocks-Mecking plot (theta vs sigma_t) begin right at yield so the entire Stage-II/III branch
+    // and the Voce intercept theta0 stay visible.
     int thetaPlotStart = yieldIdx;
-    const double yCeil = 2.5 * res.considereTrueStress;
-    while (thetaPlotStart + 2 < N && theta[size_t(thetaPlotStart)] > yCeil)
-        ++thetaPlotStart;
+    if (!kocksMeckingPlot) {
+        const double yCeil = 2.5 * res.considereTrueStress;
+        while (thetaPlotStart + 2 < N && theta[size_t(thetaPlotStart)] > yCeil)
+            ++thetaPlotStart;
+    } else {
+        while (thetaPlotStart + 2 < N
+               && theta[size_t(thetaPlotStart)] > 0.65 * tr.youngsModulus)
+            ++thetaPlotStart;
+    }
 
     const QString plotBaseName = kocksMeckingPlot ? QStringLiteral("KocksMeckingPlot")
                                                   : QStringLiteral("ConsiderePlot");
@@ -8880,7 +9115,28 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
             const double xMaxKm = std::isfinite(res.voceSigmaS)
                     ? std::max(maxSig * 1.12, res.voceSigmaS * 1.06)
                     : maxSig * 1.12;
-            const double yTopKm = std::max(res.considereTrueStress * 2.4, tr.utsY * 1.7);
+            // Scale the Kocks-Mecking Y axis from the uniform-plastic theta data (95th percentile)
+            // and the Stage-III intercept theta0, not from 2.4 * sigma_u, so alloys whose
+            // post-yield theta is 5-10 x UTS are not clipped at the top.
+            std::vector<double> plThetas;
+            for (int i = thetaPlotStart; i <= neckIdx && i < N; ++i) {
+                const double th = theta[size_t(i)];
+                if (std::isfinite(th) && th > 0.0 && th < 0.75 * tr.youngsModulus)
+                    plThetas.push_back(th);
+            }
+            double p95Theta = 0.0;
+            if (!plThetas.empty()) {
+                std::sort(plThetas.begin(), plThetas.end());
+                const size_t idx95 = std::min(plThetas.size() - 1,
+                                              size_t(0.95 * double(plThetas.size() - 1)));
+                p95Theta = plThetas[idx95];
+            }
+            const double voceTop = (std::isfinite(kmTheta0) && kmTheta0 > 0.0
+                                    && kmTheta0 < 0.75 * tr.youngsModulus)
+                    ? (kmTheta0 * 1.08)
+                    : 0.0;
+            const double yTopKm = std::max({ res.considereTrueStress * 2.4, tr.utsY * 1.7,
+                                             p95Theta * 1.15, voceTop });
             gp->setScale(QwtPlot::xBottom, 0.0, xMaxKm);
             gp->setScale(QwtPlot::yLeft, -0.05 * yTopKm, yTopKm);
         }
@@ -9178,6 +9434,10 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     tenForm->addRow(QObject::tr("Elastic Strain Min:"), sbElasticMin);
     tenForm->addRow(QObject::tr("Elastic Strain Max:"), sbElasticMax);
 
+    QCheckBox *chkWhSummary = new QCheckBox(
+            QObject::tr("Append results to WorkHardeningSummary worksheet"), &dlg);
+    chkWhSummary->setChecked(false);
+
     if (cbSourceMode->count() > 1)
         form->addRow(QObject::tr("Data Source:"), cbSourceMode);
     form->addRow(lblGraph, cbGraph);
@@ -9189,6 +9449,7 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     form->addRow(QObject::tr("Savitzky-Golay Smoothing Window (odd points):"), sbWin);
     form->addRow(QString(), chkPlot);
     form->addRow(QObject::tr("Plot Mode:"), cbPlotMode);
+    form->addRow(QString(), chkWhSummary);
     syncWhSourceVis();
 
     QDialogButtonBox *btns =
@@ -9202,6 +9463,7 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
 
     Graph *chosenGraph = nullptr;
     QString chosenCurve;
+    MultiLayer *createdMl = nullptr;
     if (cbSourceMode->currentData().toInt() == 1) {
         const int tIdx = cbTable->currentIndex();
         if (tIdx < 0 || tIdx >= tables.size())
@@ -9209,10 +9471,10 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
         Table *t = tables[tIdx];
         const QString xName = cbStrainCol->currentText();
         const QString yName = cbStressCol->currentText();
-        MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
-        if (!ml || !ml->activeGraph())
+        createdMl = app->newGraph(makeUniqueTableName(app, QStringLiteral("TensilePlot")));
+        if (!createdMl || !createdMl->activeGraph())
             return;
-        chosenGraph = ml->activeGraph();
+        chosenGraph = createdMl->activeGraph();
         const QString fullX = t->name() + QStringLiteral("_") + xName;
         const QString fullY = t->name() + QStringLiteral("_") + yName;
         if (chosenGraph->insertCurve(t, fullX, fullY, Graph::Line)) {
@@ -9243,8 +9505,14 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
                                                    eMin, eMax, false, false, false);
         if (probe.strainUnitAmbiguous) {
             const int ans = askTensileStrainUnit(app, probe);
-            if (ans == -2)
+            if (ans == -2) {
+                if (createdMl) {
+                    app->removeWindowFromLists(createdMl);
+                    createdMl->close();
+                    delete createdMl;
+                }
                 return;
+            }
             strainMode = ans;
         }
     }
@@ -9252,6 +9520,74 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     const WorkHardeningResult wr = analyzeWorkHardening(
             app, chosenGraph, chosenCurve, sbWin->value(), chkPlot->isChecked(),
             cbPlotMode->currentData().toBool(), strainMode, offFrac, eMin, eMax);
+    if (wr.valid && chkWhSummary->isChecked()) {
+        const QString resStressUnit = (wr.resultTable && wr.resultTable->column(1)
+                                       && !wr.resultTable->column(1)->units().trimmed().isEmpty())
+                ? wr.resultTable->column(1)->units().trimmed()
+                : QStringLiteral("MPa");
+        Table *sumTbl = nullptr;
+        for (MyWidget *w : app->windowsList()) {
+            Table *cand = qobject_cast<Table *>(w);
+            if (cand && cand->name().startsWith(QLatin1String("WorkHardeningSummary"))
+                && cand->numCols() >= 8 && cand->colLabel(0) == QLatin1String("Specimen")
+                && cand->colLabel(1) == QLatin1String("ConsidereTrueStrain")) {
+                sumTbl = cand;
+                break;
+            }
+        }
+        int rowIdx = 0;
+        if (!sumTbl) {
+            const QString sumName =
+                    app->generateUniqueName(QStringLiteral("WorkHardeningSummary"), false);
+            sumTbl = app->newTable(sumName, 1, 8);
+            if (sumTbl) {
+                sumTbl->setHeader(QStringList()
+                                  << QStringLiteral("Specimen")
+                                  << QStringLiteral("ConsidereTrueStrain")
+                                  << QStringLiteral("ConsidereEngStrain_pct")
+                                  << QStringLiteral("ConsidereTrueStress")
+                                  << QStringLiteral("Hollomon_n")
+                                  << QStringLiteral("Hollomon_K")
+                                  << QStringLiteral("Voce_SigmaS")
+                                  << QStringLiteral("YoungsModulus"));
+                sumTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                sumTbl->column(0)->setPlotDesignation(SciDAVis::X);
+                for (int c = 1; c < 8; ++c) {
+                    sumTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                    sumTbl->column(c)->setPlotDesignation(SciDAVis::Y);
+                }
+                sumTbl->column(2)->setUnits(QStringLiteral("%"));
+                sumTbl->column(3)->setUnits(resStressUnit);
+                sumTbl->column(5)->setUnits(resStressUnit);
+                sumTbl->column(6)->setUnits(resStressUnit);
+                sumTbl->column(7)->setUnits(resStressUnit);
+                rowIdx = 0;
+            }
+        } else {
+            rowIdx = sumTbl->numRows();
+            sumTbl->setNumRows(rowIdx + 1);
+        }
+        if (sumTbl) {
+            const QString tblStressUnit = sumTbl->column(3)->units().trimmed().isEmpty()
+                    ? resStressUnit
+                    : sumTbl->column(3)->units().trimmed();
+            const double srcToGPa = tensileStressUnitToGPa(resStressUnit);
+            const double dstToGPa = tensileStressUnitToGPa(tblStressUnit);
+            const double stressScale = (dstToGPa > 0.0) ? (srcToGPa / dstToGPa) : 1.0;
+            const QString specName = !chosenCurve.isEmpty()
+                    ? chosenCurve
+                    : (chosenGraph ? chosenGraph->parentPlotName() : QStringLiteral("Specimen"));
+            sumTbl->column(0)->setTextAt(rowIdx, specName);
+            sumTbl->column(1)->setValueAt(rowIdx, wr.considereTrueStrain);
+            sumTbl->column(2)->setValueAt(rowIdx, wr.considereEngStrainPct);
+            sumTbl->column(3)->setValueAt(rowIdx, wr.considereTrueStress * stressScale);
+            sumTbl->column(4)->setValueAt(rowIdx, wr.hollomonN);
+            sumTbl->column(5)->setValueAt(rowIdx, wr.hollomonK * stressScale);
+            sumTbl->column(6)->setValueAt(rowIdx, wr.voceSigmaS * stressScale);
+            sumTbl->column(7)->setValueAt(rowIdx, wr.youngsModulus * stressScale);
+            sumTbl->showNormal();
+        }
+    }
     if (!wr.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
         QString msg = wr.error;
         if (!wr.warnings.isEmpty())
@@ -9450,9 +9786,18 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     registerMatSciTranslationsOnce();
     registerAnalysisNoticeTranslationsOnce();
     XRDAnalysisResult res;
-    res.wavelengthAngstrom = (std::isfinite(wavelengthAngstrom) && wavelengthAngstrom > 0.05)
-            ? wavelengthAngstrom
-            : 1.540598;
+    const bool lambdaUsable = std::isfinite(wavelengthAngstrom) && wavelengthAngstrom > 0.05;
+    res.wavelengthAngstrom = lambdaUsable ? wavelengthAngstrom : 1.540598;
+    if (!lambdaUsable) {
+        // Never substitute silently: the d-spacings and sizes depend directly on lambda.
+        res.notes << QObject::tr(
+                "Wavelength %1 \u00C5 is not usable (must be > 0.05 \u00C5); Cu K\u03B11 (1.540598 \u00C5) was used instead. Check the wavelength unit (\u00C5, not nm).")
+                             .arg(wavelengthAngstrom, 0, 'g', 6);
+    } else if (wavelengthAngstrom < 0.3) {
+        res.notes << QObject::tr(
+                "Wavelength %1 \u00C5 is unusually short for a laboratory tube. If it was entered in nm, multiply by 10 (e.g. 0.154 nm = 1.54 \u00C5).")
+                             .arg(wavelengthAngstrom, 0, 'g', 6);
+    }
     double effLambda = res.wavelengthAngstrom;
 
     // Per-anode Ka1/Ka2 lines: the Rachinger correction needs lambda(Ka2)/lambda(Ka1) of the
@@ -9498,6 +9843,11 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     }
     const double effInstFwhm = (std::isfinite(instrFwhmDeg) && instrFwhmDeg > 0.0) ? instrFwhmDeg : 0.0;
     const double effK = (std::isfinite(scherrerK) && scherrerK > 0.05) ? scherrerK : 0.90;
+    if (!(std::isfinite(scherrerK) && scherrerK > 0.05)) {
+        res.notes << QObject::tr(
+                "Scherrer constant K = %1 is not usable (must be > 0.05); K = 0.90 was used instead.")
+                             .arg(scherrerK, 0, 'g', 4);
+    }
 
     Graph *targetGraph = findActiveOrFirstGraph(app, g);
     if (!targetGraph) {
@@ -9585,8 +9935,10 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
 
     // 1. Iterative SNIP background estimation in LLS space
     const double avgStep = std::max(1e-4, (ttGrid.back() - ttGrid.front()) / double(N - 1));
+    // Window ~2.2 deg wide whatever the step: no fixed point cap, so high-resolution
+    // (synchrotron, 0.001 deg step) patterns keep a wide enough background window.
     const int snipWin = std::clamp(static_cast<int>(std::llround(2.2 / avgStep)), 6,
-                                   std::max(6, std::min(1024, N / 4)));
+                                   std::max(6, N / 4));
     std::vector<double> lls(size_t(N), 0.0);
     for (int i = 0; i < N; ++i) {
         const double posI = std::max(0.0, yRaw[size_t(i)] + shiftZero);
@@ -9624,6 +9976,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             const double thRad = 0.5 * ttGrid[size_t(i)] * (M_PI / 180.0);
             const double sinTh1 = std::sin(thRad) / kAlphaRatio;
             double sub = 0.0;
+            bool solvedImplicitly = false;
             if (sinTh1 > 0.0 && sinTh1 < 1.0) {
                 const double tt1 = 2.0 * std::asin(sinTh1) * (180.0 / M_PI);
                 if (tt1 >= ttGrid.front() && tt1 < ttGrid[size_t(i)]) {
@@ -9633,13 +9986,27 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                         const double x0 = ttGrid[size_t(idx - 1)];
                         const double x1 = ttGrid[size_t(idx)];
                         const double t = (x1 > x0) ? ((tt1 - x0) / (x1 - x0)) : 0.0;
-                        const double i1 = alpha1[size_t(idx - 1)]
-                                + t * (alpha1[size_t(idx)] - alpha1[size_t(idx - 1)]);
-                        sub = 0.5 * std::max(0.0, i1);
+                        if (idx == i) {
+                            // The Ka2 offset is below one step: the upper interpolation node is
+                            // alpha1[i] itself, which is not known yet (it was 0 here, so the
+                            // subtraction came out (1 - t) times too small). Solve
+                            //   a_i = y_i - 0.5 * ((1 - t) a_{i-1} + t a_i)
+                            // for a_i instead.
+                            const double aPrev = alpha1[size_t(idx - 1)];
+                            const double ai = (yNet[size_t(i)] - 0.5 * (1.0 - t) * aPrev)
+                                    / (1.0 + 0.5 * t);
+                            alpha1[size_t(i)] = std::clamp(ai, 0.0, yNet[size_t(i)]);
+                            solvedImplicitly = true;
+                        } else {
+                            const double i1 = alpha1[size_t(idx - 1)]
+                                    + t * (alpha1[size_t(idx)] - alpha1[size_t(idx - 1)]);
+                            sub = 0.5 * std::max(0.0, i1);
+                        }
                     }
                 }
             }
-            alpha1[size_t(i)] = std::max(0.0, yNet[size_t(i)] - sub);
+            if (!solvedImplicitly)
+                alpha1[size_t(i)] = std::max(0.0, yNet[size_t(i)] - sub);
         }
         yNet.swap(alpha1);
     }
@@ -9677,7 +10044,39 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             candIdx.push_back(i);
     }
 
-    // Merge close candidates (< 0.32 deg apart) keeping taller peak, cap at top 20
+    // Merge close candidates keeping the taller peak, cap at top 20. Candidates closer than
+    // 0.32 deg used to be merged unconditionally, which collapsed genuinely resolved neighbours
+    // in high-resolution (synchrotron) data. Now two candidates within 0.32 deg are kept apart
+    // when they are separated by more than a few data steps / half the instrumental FWHM, a
+    // real valley (< 75 % of the lower apex) lies between them, and they are not a Ka1/Ka2
+    // doublet of the matched anode. Everything else behaves as before.
+    const double kLegacyMergeDeg = 0.32;
+    const double hardMinSepDeg = std::max(3.0 * avgStep, 0.5 * effInstFwhm);
+    // Ka1/Ka2 doublets of a known anode always merge (unstripped doublet, or the small residual
+    // left after Rachinger stripping).
+    const bool mergeKaDoublets = anodeKnown && anodeLines.kAlpha1 > 0.0
+            && anodeLines.kAlpha2 > anodeLines.kAlpha1;
+    auto isKaDoubletPair = [&](int a, int b) {
+        if (!mergeKaDoublets)
+            return false;
+        const double ttLo = std::min(ttGrid[size_t(a)], ttGrid[size_t(b)]);
+        const double ttHi = std::max(ttGrid[size_t(a)], ttGrid[size_t(b)]);
+        const double s2 = std::sin(0.5 * ttLo * (M_PI / 180.0)) * (anodeLines.kAlpha2 / anodeLines.kAlpha1);
+        if (!(s2 > 0.0 && s2 < 1.0))
+            return false;
+        const double expSep = 2.0 * std::asin(s2) * (180.0 / M_PI) - ttLo;
+        return std::fabs((ttHi - ttLo) - expSep) <= 0.4 * expSep + 2.0 * avgStep;
+    };
+    auto hasDeepValley = [&](int a, int b) {
+        const int lo = std::min(a, b);
+        const int hi = std::max(a, b);
+        if (hi - lo < 2)
+            return false;
+        double vMin = ySmooth[size_t(lo)];
+        for (int k = lo + 1; k < hi; ++k)
+            vMin = std::min(vMin, ySmooth[size_t(k)]);
+        return vMin < 0.75 * std::min(ySmooth[size_t(a)], ySmooth[size_t(b)]);
+    };
     std::sort(candIdx.begin(), candIdx.end(), [&](int a, int b) {
         return yNet[size_t(a)] > yNet[size_t(b)];
     });
@@ -9685,7 +10084,10 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     for (int idx : candIdx) {
         bool tooClose = false;
         for (int kept : selIdx) {
-            if (std::fabs(ttGrid[size_t(idx)] - ttGrid[size_t(kept)]) < 0.32) {
+            const double sep = std::fabs(ttGrid[size_t(idx)] - ttGrid[size_t(kept)]);
+            if (sep >= kLegacyMergeDeg)
+                continue;
+            if (sep < hardMinSepDeg || !hasDeepValley(idx, kept) || isKaDoubletPair(idx, kept)) {
                 tooClose = true;
                 break;
             }
@@ -9888,6 +10290,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
 
     // 5. Optional (hkl) auto-indexing ("fcc", "bcc", "sc", "hcp")
     const QString sysKey = crystalSystem.trimmed().toLower();
+    double hcpCOverAUsed = 0.0; // > 0 only for the hexagonal system
     if (!sysKey.isEmpty() && sysKey != QLatin1String("none")) {
         struct AllowedRefl {
             double M; // d = a / sqrt(M)
@@ -9911,6 +10314,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             const double effCA = (std::isfinite(cOverA) && cOverA > 0.3 && cOverA < 6.0)
                     ? cOverA
                     : 1.632993161855452;
+            hcpCOverAUsed = effCA;
             const double invCA2 = 1.0 / (effCA * effCA);
             struct HcpCand {
                 int h, k, l;
@@ -9990,6 +10394,14 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
 
             if (bestA0 > 0.0) {
                 res.latticeParamAngstrom = bestA0;
+                if (hcpCOverAUsed > 0.0) {
+                    res.latticeParamCAngstrom = bestA0 * hcpCOverAUsed;
+                    res.notes << QObject::tr(
+                            "HCP lattice parameters: a0 = %1 \u00C5, c0 = a0 \u00D7 c/a = %2 \u00C5 (c/a = %3 as entered, not refined).")
+                                         .arg(bestA0, 0, 'f', 4)
+                                         .arg(res.latticeParamCAngstrom, 0, 'f', 4)
+                                         .arg(hcpCOverAUsed, 0, 'f', 4);
+                }
                 for (size_t p = 0; p < pks.size(); ++p) {
                     if (bestAssign[p] >= 0) {
                         pks[p].pub.hklLabel =
@@ -10032,6 +10444,12 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         for (size_t p = 0; p < pks.size(); ++p)
             whPool.push_back(p);
     }
+    std::vector<char> inWhPool(pks.size(), 0);
+    for (size_t idx : whPool)
+        inWhPool[idx] = 1;
+    int whExcludedCount = 0;
+    for (char f : inWhPool)
+        whExcludedCount += f ? 0 : 1;
 
     double whSlope = 0.0;
     double whIntercept = 0.0;
@@ -10378,10 +10796,49 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         cHkl->setPlotDesignation(SciDAVis::noDesignation);
         for (int i = 0; i < M; ++i)
             cHkl->setTextAt(i, pks[size_t(i)].pub.hklLabel);
-        if (tbl->d_future_table)
-            tbl->d_future_table->appendColumns(QList<Column *>() << cHkl);
-        else
+        // Whether each peak entered the W-H regression, and why not.
+        Column *cIncl = new Column(QStringLiteral("IncludedWH"), SciDAVis::ColumnMode::Text);
+        cIncl->setPlotDesignation(SciDAVis::noDesignation);
+        cIncl->setLongName(QObject::tr("Used in W-H fit"));
+        // beta cos(theta) split into the regression points and the excluded ones, so the W-H
+        // plot can draw them as separate series.
+        Column *cUsed = new Column(QStringLiteral("BetaCosUsed"), SciDAVis::ColumnMode::Numeric);
+        cUsed->setPlotDesignation(SciDAVis::Y);
+        cUsed->setLongName(QStringLiteral("<i>\u03B2</i> cos <i>\u03B8</i>"));
+        cUsed->setUnits(QStringLiteral("rad"));
+        cUsed->setComment(QObject::tr("Used in W-H fit"));
+        Column *cExcl = new Column(QStringLiteral("BetaCosExcluded"), SciDAVis::ColumnMode::Numeric);
+        cExcl->setPlotDesignation(SciDAVis::Y);
+        cExcl->setLongName(QStringLiteral("<i>\u03B2</i> cos <i>\u03B8</i>"));
+        cExcl->setUnits(QStringLiteral("rad"));
+        cExcl->setComment(QObject::tr("Excluded from W-H fit"));
+        for (int i = 0; i < M; ++i) {
+            const InternalPeak &ipk = pks[size_t(i)];
+            QString why;
+            if (inWhPool[size_t(i)])
+                why = QObject::tr("Yes");
+            else if (ipk.resolutionLimited)
+                why = QObject::tr("No (resolution-limited)");
+            else if (!ipk.indexed)
+                why = QObject::tr("No (unindexed)");
+            else
+                why = QObject::tr("No");
+            cIncl->setTextAt(i, why);
+            cUsed->setValueAt(i, colWhY[size_t(i)]);
+            cExcl->setValueAt(i, colWhY[size_t(i)]);
+            if (inWhPool[size_t(i)])
+                cExcl->setInvalid(i, true);
+            else
+                cUsed->setInvalid(i, true);
+        }
+        if (tbl->d_future_table) {
+            tbl->d_future_table->appendColumns(QList<Column *>() << cHkl << cIncl << cUsed << cExcl);
+        } else {
             delete cHkl;
+            delete cIncl;
+            delete cUsed;
+            delete cExcl;
+        }
     }
 
     // 9. Optional Williamson-Hall plot (β cos θ vs 4 sin θ)
@@ -10403,12 +10860,26 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                     band->setItemAttribute(QwtPlotItem::Legend, false);
                 }
             }
-            if (gw->insertCurve(tbl, tbl->colName(7), tbl->colName(8), Graph::Scatter, 0, M - 1)) {
+            // Draw the peaks used by the W-H fit and any excluded peaks (unindexed or
+            // resolution-limited) as two distinct scatter series so an unindexed impurity peak
+            // or a beta=0 point is not mistaken for a point the fit line missed.
+            const QString usedCol = (whExcludedCount > 0 && tbl->numCols() > 14)
+                    ? tbl->colName(14)
+                    : tbl->colName(8);
+            if (gw->insertCurve(tbl, tbl->colName(7), usedCol, Graph::Scatter, 0, M - 1)) {
                 const int idx = gw->curves() - 1;
                 gw->setCurvePen(idx, QPen(QColor(25, 65, 135), 1.5));
                 gw->setCurveSymbol(idx,
                                    QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 95, 185)),
                                              QPen(QColor(15, 45, 95), 1.2), QSize(8, 8)));
+            }
+            if (whExcludedCount > 0 && tbl->numCols() > 15
+                && gw->insertCurve(tbl, tbl->colName(7), tbl->colName(15), Graph::Scatter, 0, M - 1)) {
+                const int idx = gw->curves() - 1;
+                gw->setCurvePen(idx, QPen(QColor(145, 150, 160), 1.4));
+                gw->setCurveSymbol(idx,
+                                   QwtSymbol(QwtSymbol::Ellipse, QBrush(Qt::NoBrush),
+                                             QPen(QColor(135, 140, 150), 1.5), QSize(8, 8)));
             }
             insertStyledCurve(gw, tbl, 7, 9, M, QPen(QColor(205, 35, 45), 2.1, Qt::SolidLine));
 
@@ -10440,6 +10911,10 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             if (res.latticeParamAngstrom > 0.0) {
                 summary += QStringLiteral("\n<i>a</i><sub>0</sub> = %1 \u00C5")
                                    .arg(res.latticeParamAngstrom, 0, 'f', 4);
+                if (res.latticeParamCAngstrom > 0.0) {
+                    summary += QStringLiteral(", <i>c</i><sub>0</sub> = %1 \u00C5")
+                                       .arg(res.latticeParamCAngstrom, 0, 'f', 4);
+                }
             }
             const double xSpan = std::max(1e-6, colWhX.back() - colWhX.front());
             const auto yMM = std::minmax_element(colWhY.begin(), colWhY.end());
@@ -10581,11 +11056,53 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     cbAnode->addItem(QStringLiteral("Mo K\u03B11 (0.709319 \u00C5)"), 0.709319);
 
     QDoubleSpinBox *sbLambda = new QDoubleSpinBox(&dlg);
-    sbLambda->setRange(0.05, 10.0);
+    sbLambda->setRange(0.005, 50.0);
     sbLambda->setDecimals(6);
     sbLambda->setValue(1.540598);
+
+    QComboBox *cbLambdaUnit = new QComboBox(&dlg);
+    cbLambdaUnit->addItem(QStringLiteral("\u00C5"), 0);
+    cbLambdaUnit->addItem(QStringLiteral("nm"), 1);
+    cbLambdaUnit->addItem(QStringLiteral("keV"), 2);
+    constexpr double kHcKeVAngstrom = 12.398419843320026;
+    auto lambdaBoxToAngstrom = [&]() -> double {
+        const double v = sbLambda->value();
+        const int u = cbLambdaUnit->currentData().toInt();
+        if (u == 1)
+            return v * 10.0;
+        if (u == 2)
+            return (v > 1e-9) ? (kHcKeVAngstrom / v) : 1.540598;
+        return v;
+    };
+    auto setLambdaBoxFromAngstrom = [&](double ang) {
+        const int u = cbLambdaUnit->currentData().toInt();
+        if (u == 1)
+            sbLambda->setValue(ang * 0.1);
+        else if (u == 2)
+            sbLambda->setValue((ang > 1e-9) ? (kHcKeVAngstrom / ang) : 8.0478);
+        else
+            sbLambda->setValue(ang);
+    };
+    auto prevLambdaUnit = std::make_shared<int>(0);
+    QObject::connect(cbLambdaUnit, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&, prevLambdaUnit](int) {
+                         const double v = sbLambda->value();
+                         double ang = v;
+                         if (*prevLambdaUnit == 1)
+                             ang = v * 10.0;
+                         else if (*prevLambdaUnit == 2 && v > 1e-9)
+                             ang = kHcKeVAngstrom / v;
+                         *prevLambdaUnit = cbLambdaUnit->currentData().toInt();
+                         setLambdaBoxFromAngstrom(ang);
+                     });
     QObject::connect(cbAnode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [&](int) { sbLambda->setValue(cbAnode->currentData().toDouble()); });
+                     [&](int) { setLambdaBoxFromAngstrom(cbAnode->currentData().toDouble()); });
+
+    QWidget *lambdaRow = new QWidget(&dlg);
+    QHBoxLayout *lambdaLay = new QHBoxLayout(lambdaRow);
+    lambdaLay->setContentsMargins(0, 0, 0, 0);
+    lambdaLay->addWidget(sbLambda, 1);
+    lambdaLay->addWidget(cbLambdaUnit);
 
     QDoubleSpinBox *sbInst = new QDoubleSpinBox(&dlg);
     sbInst->setRange(0.0, 2.0);
@@ -10621,11 +11138,13 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     registerAnalysisNoticeTranslationsOnce();
     QCheckBox *chkStripKa2 = new QCheckBox(
             QObject::tr("Strip K\u03B12 Doublet (Rachinger, per-anode wavelengths)"), &dlg);
-    chkStripKa2->setChecked(true);
+    // Initial anode is monochromatic Cu Ka1 (1.540598 A): Ka2 stripping must start OFF and turn
+    // ON automatically only when the unmonochromated Cu Ka average (1.541838 A) is picked.
+    chkStripKa2->setChecked(false);
     QObject::connect(cbAnode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {
                          const double wl = cbAnode->currentData().toDouble();
-                         chkStripKa2->setChecked(std::fabs(wl - 1.541838) >= 1e-5);
+                         chkStripKa2->setChecked(std::fabs(wl - 1.541838) < 1e-5);
                      });
 
     QCheckBox *chkTopD =
@@ -10636,6 +11155,10 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
             QObject::tr("Create Williamson-Hall Plot (β cos θ vs 4 sin θ)"), &dlg);
     chkWH->setChecked(true);
 
+    QCheckBox *chkXrdSummary = new QCheckBox(
+            QObject::tr("Append results to XRDSummary worksheet"), &dlg);
+    chkXrdSummary->setChecked(false);
+
     if (cbSource->count() > 1)
         form->addRow(QObject::tr("Data Source:"), cbSource);
     form->addRow(lblG, cbGraph);
@@ -10644,7 +11167,7 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     form->addRow(lblX, cbTwoTheta);
     form->addRow(lblY, cbInten);
     form->addRow(QObject::tr("Radiation Source:"), cbAnode);
-    form->addRow(QObject::tr("X-Ray Wavelength λ (Å):"), sbLambda);
+    form->addRow(QObject::tr("X-Ray Wavelength λ:"), lambdaRow);
     form->addRow(QObject::tr("Instrumental FWHM (deg):"), sbInst);
     form->addRow(QObject::tr("Scherrer Shape Factor K:"), sbK);
     form->addRow(QObject::tr("Crystal System for (hkl) Indexing:"), cbCrystal);
@@ -10652,6 +11175,7 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     form->addRow(QString(), chkStripKa2);
     form->addRow(QString(), chkTopD);
     form->addRow(QString(), chkWH);
+    form->addRow(QString(), chkXrdSummary);
     syncSrc();
 
     QDialogButtonBox *btns =
@@ -10693,9 +11217,69 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     }
 
     const XRDAnalysisResult xr = analyzeXRD(
-            app, chosenG, chosenC, sbLambda->value(), sbInst->value(), sbK->value(),
+            app, chosenG, chosenC, lambdaBoxToAngstrom(), sbInst->value(), sbK->value(),
             cbCrystal->currentData().toString(), chkStripKa2->isChecked(),
             chkTopD->isChecked(), chkWH->isChecked(), sbCOverA->value());
+    if (xr.valid && chkXrdSummary->isChecked()) {
+        Table *sumTbl = nullptr;
+        for (MyWidget *w : app->windowsList()) {
+            Table *cand = qobject_cast<Table *>(w);
+            if (cand && cand->name().startsWith(QLatin1String("XRDSummary"))
+                && cand->numCols() >= 9 && cand->colLabel(0) == QLatin1String("Specimen")
+                && cand->colLabel(1) == QLatin1String("Wavelength_A")) {
+                sumTbl = cand;
+                break;
+            }
+        }
+        int rowIdx = 0;
+        if (!sumTbl) {
+            const QString sumName =
+                    app->generateUniqueName(QStringLiteral("XRDSummary"), false);
+            sumTbl = app->newTable(sumName, 1, 9);
+            if (sumTbl) {
+                sumTbl->setHeader(QStringList()
+                                  << QStringLiteral("Specimen")
+                                  << QStringLiteral("Wavelength_A")
+                                  << QStringLiteral("PeakCount")
+                                  << QStringLiteral("MeanScherrerD_nm")
+                                  << QStringLiteral("WH_D_nm")
+                                  << QStringLiteral("WH_Microstrain")
+                                  << QStringLiteral("WH_R2")
+                                  << QStringLiteral("Lattice_a0_A")
+                                  << QStringLiteral("Lattice_c0_A"));
+                sumTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                sumTbl->column(0)->setPlotDesignation(SciDAVis::X);
+                for (int c = 1; c < 9; ++c) {
+                    sumTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                    sumTbl->column(c)->setPlotDesignation(SciDAVis::Y);
+                }
+                sumTbl->column(1)->setUnits(QStringLiteral("\u00C5"));
+                sumTbl->column(3)->setUnits(QStringLiteral("nm"));
+                sumTbl->column(4)->setUnits(QStringLiteral("nm"));
+                sumTbl->column(7)->setUnits(QStringLiteral("\u00C5"));
+                sumTbl->column(8)->setUnits(QStringLiteral("\u00C5"));
+                rowIdx = 0;
+            }
+        } else {
+            rowIdx = sumTbl->numRows();
+            sumTbl->setNumRows(rowIdx + 1);
+        }
+        if (sumTbl) {
+            const QString specName = !chosenC.isEmpty()
+                    ? chosenC
+                    : (chosenG ? chosenG->parentPlotName() : QStringLiteral("Specimen"));
+            sumTbl->column(0)->setTextAt(rowIdx, specName);
+            sumTbl->column(1)->setValueAt(rowIdx, xr.wavelengthAngstrom);
+            sumTbl->column(2)->setValueAt(rowIdx, double(xr.peaks.size()));
+            sumTbl->column(3)->setValueAt(rowIdx, xr.meanScherrerSizeNm);
+            sumTbl->column(4)->setValueAt(rowIdx, xr.whSizeNm);
+            sumTbl->column(5)->setValueAt(rowIdx, xr.whMicrostrain);
+            sumTbl->column(6)->setValueAt(rowIdx, xr.whRSquare);
+            sumTbl->column(7)->setValueAt(rowIdx, xr.latticeParamAngstrom);
+            sumTbl->column(8)->setValueAt(rowIdx, xr.latticeParamCAngstrom);
+            sumTbl->showNormal();
+        }
+    }
     if (!xr.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
         QMessageBox::warning(app, QObject::tr("XRD Peak, Scherrer & Williamson-Hall Analyzer"),
                              xr.error);
@@ -10983,13 +11567,73 @@ static CurveMathTools::VaspPlotResult plotVaspDosImpl(
               [](const DosRow &a, const DosRow &b) { return a.eShift < b.eShift; });
     const int N = static_cast<int>(rows.size());
 
-    // Compute bandgap around E - E_F = 0 and Hammer-Norskov d-band center if a d-PDOS column exists
+    // Compute bandgap around E - E_F = 0 and Hammer-Norskov d-band center if a d-PDOS column exists.
+    // Prefer a column explicitly named Total/tot for the fundamental gap; if the user selected only
+    // partial orbital columns (s/p/d/f PDOS) without a Total DOS column, sum the selected orbitals
+    // and mark the reported gap as a PDOS-based estimate so an orbital pseudo-gap is not confused
+    // with the material's true bandgap.
+    auto isTotalDosName = [](const Column *col) {
+        if (!col)
+            return false;
+        const QString s = (col->name() + QLatin1Char(' ') + col->longName()).toLower();
+        return s.contains(QLatin1String("tot")) || s.contains(QLatin1String("tdos"));
+    };
+    auto isPartialOrbitalName = [](const Column *col) {
+        if (!col)
+            return false;
+        const QString s = (col->name() + QLatin1Char(' ') + col->longName()).toLower();
+        if (s.contains(QLatin1String("tot")) || s.contains(QLatin1String("tdos")))
+            return false;
+        static const QRegularExpression kPdosRe(
+                QStringLiteral("(^|[^a-z0-9])(pdos|[1-7]?[spdf](_[a-z0-9]+)?|[spdf]-?dos|[spdf]_dos)([^a-z0-9]|$)"));
+        return kPdosRe.match(s).hasMatch();
+    };
+    int totUpIdx = -1;
+    for (int j = 0; j < upCols.size(); ++j) {
+        if (isTotalDosName(upCols[j])) {
+            totUpIdx = j;
+            break;
+        }
+    }
+    int totDnIdx = -1;
+    for (int j = 0; j < dnCols.size(); ++j) {
+        if (isTotalDosName(dnCols[j])) {
+            totDnIdx = j;
+            break;
+        }
+    }
+    bool allUpArePdos = (totUpIdx < 0) && !upCols.isEmpty();
+    if (allUpArePdos) {
+        for (Column *c : upCols) {
+            if (!isPartialOrbitalName(c)) {
+                allUpArePdos = false;
+                break;
+            }
+        }
+    }
+    const bool gapFromPdosOnly = allUpArePdos;
+    if (totUpIdx < 0 && !gapFromPdosOnly) {
+        totUpIdx = 0;
+        if (!dnCols.isEmpty())
+            totDnIdx = 0;
+    }
+
     std::vector<double> totDos(size_t(N), 0.0);
     double maxNearFermi = 0.0;
     for (int i = 0; i < N; ++i) {
-        double s = std::fabs(rows[size_t(i)].up[0]);
-        if (!rows[size_t(i)].dn.empty())
-            s += std::fabs(rows[size_t(i)].dn[0]);
+        double s = 0.0;
+        if (totUpIdx >= 0) {
+            s = std::fabs(rows[size_t(i)].up[size_t(totUpIdx)]);
+            if (totDnIdx >= 0 && totDnIdx < int(rows[size_t(i)].dn.size()))
+                s += std::fabs(rows[size_t(i)].dn[size_t(totDnIdx)]);
+            else if (!rows[size_t(i)].dn.empty() && totUpIdx < int(rows[size_t(i)].dn.size()))
+                s += std::fabs(rows[size_t(i)].dn[size_t(totUpIdx)]);
+        } else {
+            for (double uv : rows[size_t(i)].up)
+                s += std::fabs(uv);
+            for (double dv : rows[size_t(i)].dn)
+                s += std::fabs(dv);
+        }
         totDos[size_t(i)] = s;
         if (std::fabs(rows[size_t(i)].eShift) <= 8.0)
             maxNearFermi = std::max(maxNearFermi, s);
@@ -11249,9 +11893,11 @@ static CurveMathTools::VaspPlotResult plotVaspDosImpl(
     }
 
     {
-        const QString gapStr = (res.bandgapEV > 0.0)
+        QString gapStr = (res.bandgapEV > 0.0)
                 ? QStringLiteral("%1 eV").arg(res.bandgapEV, 0, 'f', 3)
                 : QStringLiteral("0 eV (metallic)");
+        if (gapFromPdosOnly)
+            gapStr += QStringLiteral(" [PDOS-only estimate; include Total DOS for fundamental gap]");
         QString logText = QStringLiteral("[%1] VASP DOS (%2): E_F = %3 eV, Band gap = %4")
                                   .arg(QLocale().toString(QDateTime::currentDateTime()),
                                        srcTable->name())
@@ -11508,11 +12154,27 @@ CurveMathTools::VaspPlotResult CurveMathTools::plotVaspBands(
                 Plot *pw = g->plotWidget();
                 if (!pw)
                     return;
+                // Keep the current X zoom range if the user has zoomed or panned the band plot;
+                // fall back to the full [kMin, kMax] path only when the axis is uninitialised.
+                double curLo = kMin;
+                double curHi = kMax;
+                if (const QwtScaleDiv *xd = pw->axisScaleDiv(QwtPlot::xBottom)) {
+                    const double lo = xd->lowerBound();
+                    const double hi = xd->upperBound();
+                    if (std::isfinite(lo) && std::isfinite(hi) && std::fabs(hi - lo) > 1e-12) {
+                        curLo = lo;
+                        curHi = hi;
+                    }
+                }
                 g->setCustomTickLabels(QwtPlot::xBottom, cleanPos, cleanLbls, 0.0);
                 QwtValueList ticks[QwtScaleDiv::NTickTypes];
-                for (double p : cleanPos)
-                    ticks[QwtScaleDiv::MajorTick] << p;
-                pw->setAxisScaleDiv(QwtPlot::xBottom, QwtScaleDiv(kMin, kMax, ticks));
+                const double loB = std::min(curLo, curHi) - 1e-7;
+                const double hiB = std::max(curLo, curHi) + 1e-7;
+                for (double p : cleanPos) {
+                    if (p >= loB && p <= hiB)
+                        ticks[QwtScaleDiv::MajorTick] << p;
+                }
+                pw->setAxisScaleDiv(QwtPlot::xBottom, QwtScaleDiv(curLo, curHi, ticks));
             };
             installKTicks();
 
@@ -11525,11 +12187,18 @@ CurveMathTools::VaspPlotResult CurveMathTools::plotVaspBands(
                                          gPtr->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
                                  bool sameTicks = false;
                                  if (xd) {
+                                     const double loB = std::min(xd->lowerBound(), xd->upperBound()) - 1e-7;
+                                     const double hiB = std::max(xd->lowerBound(), xd->upperBound()) + 1e-7;
+                                     QVector<double> expTicks;
+                                     for (double p : cleanPos) {
+                                         if (p >= loB && p <= hiB)
+                                             expTicks.append(p);
+                                     }
                                      const QwtValueList maj = xd->ticks(QwtScaleDiv::MajorTick);
-                                     if (maj.size() == cleanPos.size()) {
+                                     if (maj.size() == expTicks.size()) {
                                          sameTicks = true;
                                          for (int i = 0; i < maj.size(); ++i) {
-                                             if (std::fabs(maj[i] - cleanPos[i]) > 1e-5) {
+                                             if (std::fabs(maj[i] - expTicks[i]) > 1e-5) {
                                                  sameTicks = false;
                                                  break;
                                              }

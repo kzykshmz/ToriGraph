@@ -193,7 +193,7 @@ public:
     QString convergenceMessage() const;
     int lastIterationCount() const { return d_last_iterations; }
     //! Notes about the data used for the last fit (e.g. excluded non-positive points)
-    QStringList fitNotes() const { return d_fit_notes; }
+    QStringList fitNotes() const;
 
     //! Residual degrees of freedom n - p_eff (may be <= 0)
     int degreesOfFreedom() const;
@@ -287,7 +287,11 @@ protected:
         return 1.0;
     }
 
+    int effectivePointCount() const;
     int effectiveFreeParameters() const;
+    bool readAlignedColumnValues(const QString &colName, std::vector<double> &valsOut,
+                                 bool failSilently = true) const;
+    void applyWeightsToErrorVector(const std::vector<double> &weightsVec);
     bool hasActiveConstraints() const;
     void ensureConstraintCapacity(int index);
     void applyExplicitInitialGuesses();
@@ -370,6 +374,8 @@ protected:
     bool d_in_bootstrap = false;
     QString d_weighting_col;
     std::vector<double> d_raw_weights;
+    std::vector<double> d_raw_y_errors;
+    QString d_weighting_note;
     QString d_linear_constraint_expr;
 
     //! Confidence and prediction band flags and confidence levels
@@ -378,9 +384,14 @@ protected:
     double d_conf_level = 0.95;
     double d_pred_level = 0.95;
 
-    //! Optional custom R^2 override (e.g. apparent log-space fit or implicit ODR)
+    //! Optional custom R^2 / global DOF / global RSS overrides (e.g. apparent log-space fit, global fit, implicit ODR)
     bool d_has_custom_r2 = false;
     double d_custom_r2 = 0.0;
+    bool d_has_custom_dof = false;
+    int d_custom_n_points = 0;
+    int d_custom_p_free = 0;
+    bool d_has_custom_rss = false;
+    double d_custom_rss = 0.0;
 
     //! Convergence bookkeeping of the last fit (set by fitGslMultifit / fitGslMultimin)
     ConvergenceState d_convergence = Converged;
