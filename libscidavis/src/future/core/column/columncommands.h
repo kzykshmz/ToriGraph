@@ -290,6 +290,42 @@ private:
 ///////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////
+// class ColumnSetLongNameCmd / ColumnSetUnitsCmd
+///////////////////////////////////////////////////////////////////////////
+//! Sets a column's long name (undoable)
+class ColumnSetLongNameCmd : public QUndoCommand
+{
+public:
+    ColumnSetLongNameCmd(Column::Private *col, const QString &s, QUndoCommand *parent = 0);
+    ~ColumnSetLongNameCmd();
+    virtual void redo();
+    virtual void undo();
+
+private:
+    Column::Private *d_col;
+    QString d_new_value;
+    QString d_old_value;
+};
+
+//! Sets a column's units (undoable)
+class ColumnSetUnitsCmd : public QUndoCommand
+{
+public:
+    ColumnSetUnitsCmd(Column::Private *col, const QString &s, QUndoCommand *parent = 0);
+    ~ColumnSetUnitsCmd();
+    virtual void redo();
+    virtual void undo();
+
+private:
+    Column::Private *d_col;
+    QString d_new_value;
+    QString d_old_value;
+};
+///////////////////////////////////////////////////////////////////////////
+// end of class ColumnSetLongNameCmd / ColumnSetUnitsCmd
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
 // class ColumnClearCmd
 ///////////////////////////////////////////////////////////////////////////
 //! Clear the column

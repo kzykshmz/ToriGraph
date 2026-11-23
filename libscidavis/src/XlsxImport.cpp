@@ -19,6 +19,7 @@
 #include "future/table/AsciiTableImportFilter.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QCheckBox>
 #include <QFileDialog>
@@ -152,15 +153,25 @@ QString readRichText(QXmlStreamReader &r)
     return text;
 }
 
-QStringList parseSharedStrings(const QByteArray &xml)
+// Returns false (with `outErr` set) when the XML is malformed instead of silently handing
+// back the strings read so far (C3-12).
+bool parseSharedStrings(const QByteArray &xml, QStringList &strings, QString *outErr)
 {
-    QStringList strings;
+    strings.clear();
     QXmlStreamReader r(xml);
     while (!r.atEnd()) {
         if (r.readNext() == QXmlStreamReader::StartElement && r.name() == QLatin1String("si"))
             strings << readRichText(r);
     }
-    return strings;
+    if (r.hasError()) {
+        strings.clear();
+        if (outErr)
+            *outErr = QStringLiteral("sharedStrings.xml (line %1): %2")
+                              .arg(r.lineNumber())
+                              .arg(r.errorString());
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,8 +249,9 @@ FormatKind classifyBuiltinFormat(int id)
     return k;
 }
 
-QVector<FormatKind> parseStyles(const QByteArray &xml)
+bool parseStyles(const QByteArray &xml, QVector<FormatKind> &kinds, QString *outErr)
 {
+    kinds.clear();
     QHash<int, QString> customFormats;
     QVector<int> xfFormatIds;
     QXmlStreamReader r(xml);
@@ -260,14 +272,20 @@ QVector<FormatKind> parseStyles(const QByteArray &xml)
             inCellXfs = false;
         }
     }
-    QVector<FormatKind> kinds;
+    if (r.hasError()) {
+        if (outErr)
+            *outErr = QStringLiteral("styles.xml (line %1): %2")
+                              .arg(r.lineNumber())
+                              .arg(r.errorString());
+        return false;
+    }
     kinds.reserve(xfFormatIds.size());
     for (int id : xfFormatIds) {
         auto it = customFormats.constFind(id);
         kinds << ((it != customFormats.constEnd()) ? classifyFormatCode(it.value())
                                                    : classifyBuiltinFormat(id));
     }
-    return kinds;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -429,11 +447,28 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                 cell.text = valueText;
             }
         }
-        if (cell.type == Cell::Empty)
+        // Blank styled cells (e.g. XFD1048576 with only a style, or an empty/whitespace <v/>/<is/>)
+        // carry no data: never let them grow rows/columns (E1-9).
+        if (cell.type == Cell::Empty
+            || ((cell.type == Cell::Text || cell.type == Cell::Error)
+                && cell.text.trimmed().isEmpty()))
             continue;
 
-        if (row >= sheet.rows.size())
+        if (row >= sheet.rows.size()) {
+            // Rows are allocated up to the first row that really holds data; charge the
+            // growth against the same budget as cells so memory stays bounded by real data.
+            const qint64 rowDelta = qint64(row + 1) - qint64(sheet.rows.size());
+            if (allocatedCells + rowDelta > kMaxTotalCells * 2) {
+                if (outErr) {
+                    *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
+                                  "(20,000,000 cells).")
+                                      .arg(sheet.name);
+                }
+                return false;
+            }
+            allocatedCells += rowDelta;
             sheet.rows.resize(row + 1);
+        }
         QVector<Cell> &rowCells = sheet.rows[row];
         if (col >= rowCells.size()) {
             const qint64 delta = qint64(col + 1) - qint64(rowCells.size());
@@ -459,6 +494,20 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                               .arg(r.errorString());
         return false;
     }
+    // Trim any trailing empty cells/rows so sheet bounds strictly reflect real data (E1-9).
+    int maxColCount = 0;
+    for (QVector<Cell> &rowCells : sheet.rows) {
+        while (!rowCells.isEmpty()
+               && (rowCells.last().type == Cell::Empty
+                   || ((rowCells.last().type == Cell::Text || rowCells.last().type == Cell::Error)
+                       && rowCells.last().text.trimmed().isEmpty()))) {
+            rowCells.removeLast();
+        }
+        maxColCount = std::max(maxColCount, rowCells.size());
+    }
+    while (!sheet.rows.isEmpty() && sheet.rows.last().isEmpty())
+        sheet.rows.removeLast();
+    sheet.columnCount = maxColCount;
     return true;
 }
 
@@ -753,17 +802,19 @@ bool readWorkbookData(const QByteArray &data, Workbook &out, QString *outError,
     QStringList sharedStrings;
     {
         QByteArray xml;
-        if (readPart(zip, sstPart, xml, &err, &missing))
-            sharedStrings = parseSharedStrings(xml);
-        else if (!missing)
+        if (readPart(zip, sstPart, xml, &err, &missing)) {
+            if (!parseSharedStrings(xml, sharedStrings, &err))
+                return fail(damagedMessage(err));
+        } else if (!missing)
             return fail(damagedMessage(err));
     }
     QVector<FormatKind> styles;
     {
         QByteArray xml;
-        if (readPart(zip, stylesPart, xml, &err, &missing))
-            styles = parseStyles(xml);
-        else if (!missing)
+        if (readPart(zip, stylesPart, xml, &err, &missing)) {
+            if (!parseStyles(xml, styles, &err))
+                return fail(damagedMessage(err));
+        } else if (!missing)
             return fail(damagedMessage(err));
     }
 
@@ -1410,12 +1461,19 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
         }
         const QString name =
                 uniqueWindowName(app, tableBaseName(fi.completeBaseName(), sh.name));
-        Table *t = app->newTable(name, QStringLiteral("%1 [%2]").arg(fi.fileName(), sh.name),
-                                 cols);
+        // D4-5: keep the full source path (not just the file name) in the window label
+        Table *t = app->newTable(
+                name,
+                QStringLiteral("%1 [%2]").arg(QDir::toNativeSeparators(fi.absoluteFilePath()),
+                                              sh.name),
+                cols);
         if (!t) {
             qDeleteAll(cols);
             continue;
         }
+        if (t->d_future_table)
+            t->d_future_table->setImportSource(QDir::toNativeSeparators(fi.absoluteFilePath()),
+                                            sh.name);
         result.tables << t->name();
         QString part = trX("%1 (%2 rows x %3 columns").arg(sh.name).arg(layout.dataRows).arg(
                 cols.size());

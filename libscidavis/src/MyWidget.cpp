@@ -79,7 +79,7 @@ void MyWidget::closeEvent(QCloseEvent *e)
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
-                                         tr("Delete"), tr("Hide"), tr("Cancel"), 0, 2)) {
+                                         tr("Delete"), tr("Hide"), tr("Cancel"), 1, 2)) {
         case 0:
             emit closedWindow(this);
             e->accept();

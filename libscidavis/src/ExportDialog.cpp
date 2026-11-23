@@ -50,9 +50,9 @@ void registerExportDialogTranslations()
                                                                       QString::fromUtf8(ja));
         };
         reg("Write Long Name and &Units rows (instead of short names)",
-            "Long Name と単位の行を書き出す（短い名前の代わりに）(&U)");
+            "ロングネームと単位の行を書き出す(短い名前の代わりに)(&U)");
         reg("Add a UTF-8 &BOM (Excel then shows Japanese text correctly)",
-            "UTF-8 の BOM を付ける（Excel で日本語が化けない）(&B)");
+            "UTF-8 の BOM を付ける(Excel で日本語が化けない)(&B)");
     });
 }
 } // namespace
@@ -97,14 +97,17 @@ ExportDialog::ExportDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     boxSeparator->setToolTip(help);
     sepText->setToolTip(help);
 
-    boxNames = new QCheckBox(tr("Include Column &Names"));
-    boxNames->setChecked(true);
-
-    boxSelection = new QCheckBox(tr("Export &Selection"));
-    boxSelection->setChecked(false);
-
     registerExportDialogTranslations();
     auto &settings = ApplicationWindow::getSettings();
+    boxNames = new QCheckBox(tr("Include Column &Names"));
+    boxNames->setChecked(settings.value("/General/ExportASCII/IncludeNames", true).toBool());
+
+    boxSelection = new QCheckBox(tr("Export &Selection"));
+    boxSelection->setChecked(settings.value("/General/ExportASCII/ExportSelection", false).toBool());
+
+    if (settings.contains("/General/ExportASCII/Separator"))
+        setColumnSeparator(settings.value("/General/ExportASCII/Separator").toString());
+
     QCheckBox *boxLongNameUnits =
             new QCheckBox(tr("Write Long Name and &Units rows (instead of short names)"));
     boxLongNameUnits->setObjectName(QStringLiteral("ExportLongNameUnits"));
@@ -183,6 +186,9 @@ void ExportDialog::accept()
     }
 
     auto &settings = ApplicationWindow::getSettings();
+    settings.setValue("/General/ExportASCII/Separator", sep);
+    settings.setValue("/General/ExportASCII/IncludeNames", boxNames->isChecked());
+    settings.setValue("/General/ExportASCII/ExportSelection", boxSelection->isChecked());
     if (QCheckBox *cb = findChild<QCheckBox *>(QStringLiteral("ExportLongNameUnits")))
         settings.setValue("/General/ExportASCII/LongNameUnits", cb->isChecked());
     if (QCheckBox *cb = findChild<QCheckBox *>(QStringLiteral("ExportUtf8Bom")))
@@ -199,24 +205,31 @@ void ExportDialog::accept()
 
 void ExportDialog::setColumnSeparator(const QString &sep)
 {
-    if (sep == "\t")
+    QString effective = sep;
+    if (effective.isEmpty()) {
+        auto &settings = ApplicationWindow::getSettings();
+        effective = settings.value("/General/ExportASCII/Separator", QStringLiteral("\t")).toString();
+        if (effective.isEmpty())
+            effective = QStringLiteral("\t");
+    }
+    if (effective == "\t")
         boxSeparator->setCurrentIndex(0);
-    else if (sep == " ")
+    else if (effective == " ")
         boxSeparator->setCurrentIndex(1);
-    else if (sep == ";\t")
+    else if (effective == ";\t")
         boxSeparator->setCurrentIndex(2);
-    else if (sep == ",\t")
+    else if (effective == ",\t")
         boxSeparator->setCurrentIndex(3);
-    else if (sep == "; ")
+    else if (effective == "; ")
         boxSeparator->setCurrentIndex(4);
-    else if (sep == ", ")
+    else if (effective == ", ")
         boxSeparator->setCurrentIndex(5);
-    else if (sep == ";")
+    else if (effective == ";")
         boxSeparator->setCurrentIndex(6);
-    else if (sep == ",")
+    else if (effective == ",")
         boxSeparator->setCurrentIndex(7);
     else {
-        QString separator = sep;
+        QString separator = effective;
         boxSeparator->setEditText(separator.replace(" ", "\\s").replace("\t", "\\t"));
     }
 }

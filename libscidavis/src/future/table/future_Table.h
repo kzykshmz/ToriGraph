@@ -261,8 +261,12 @@ public slots:
     void addRows();
     void cutSelection();
     void copySelection();
+    void copySelectionWithHeaders();
     void pasteIntoSelection(const bool isTransposed = false);
     void pasteIntoSelectionTransposed();
+    void fillSelectionDown();
+    void showFindReplaceDialog();
+    void reimportFromSource();
     void clearSelectedCells();
     void goToCell();
 #ifndef LEGACY_CODE_0_2_x
@@ -355,6 +359,21 @@ public:
     void setAutoRecalcFormulas(bool on);
     bool autoRecalcFormulas() const { return d_auto_recalc_formulas; }
 
+    //! Generate \a count non-colliding sequential column names ("1", "2", ... after existing ones).
+    QStringList nextSequentialColumnNames(int count) const;
+
+    //! Original file metadata for Re-import from Source (D4-5).
+    void setImportSource(const QString &path, const QString &sheet = QString(),
+                         const QString &separator = QString(),
+                         const QString &encoding = QString(), int ignoredLines = 0,
+                         int unitsRow = -1);
+    QString importSourcePath() const { return d_import_source_path; }
+    QString importSourceSheet() const { return d_import_source_sheet; }
+    QString importSourceSeparator() const { return d_import_source_separator; }
+    QString importSourceEncoding() const { return d_import_source_encoding; }
+    int importSourceIgnoredLines() const { return d_import_ignored_lines; }
+    int importSourceUnitsRow() const { return d_import_units_row; }
+
 private:
     //! Internal function to connect all column signals
     void connectColumn(const Column *col);
@@ -408,8 +427,11 @@ private:
     //@{
     QAction *action_cut_selection;
     QAction *action_copy_selection;
+    QAction *action_copy_with_headers;
     QAction *action_paste_into_selection;
     QAction *action_paste_into_selection_transposed;
+    QAction *action_fill_down;
+    QAction *action_find_replace;
 #ifndef LEGACY_CODE_0_2_x
     QAction *action_mask_selection;
     QAction *action_unmask_selection;
@@ -429,6 +451,7 @@ private:
     QAction *action_add_column;
     QAction *action_clear_table;
     QAction *action_export_to_TeX;
+    QAction *action_reimport_source;
 #ifndef LEGACY_CODE_0_2_x
     QAction *action_clear_masks;
 #endif
@@ -608,6 +631,12 @@ public:
 private:
     Private d_table_private;
     bool d_auto_recalc_formulas = true;
+    QString d_import_source_path;
+    QString d_import_source_sheet;
+    QString d_import_source_separator;
+    QString d_import_source_encoding;
+    int d_import_ignored_lines = 0;
+    int d_import_units_row = -1;
 };
 
 } // namespace

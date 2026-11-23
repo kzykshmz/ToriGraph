@@ -29,6 +29,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
+#include <QShortcut>
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
@@ -44,6 +45,85 @@ namespace {
 const char *const kManagerObjectName = "torigraph_workbook_manager";
 const char *const kBarObjectName = "torigraph_workbook_sheet_bar";
 const char *const kTabBarObjectName = "torigraph_workbook_tabs";
+const char *const kPrevSheetShortcutName = "torigraph_wb_prev_sheet";
+const char *const kNextSheetShortcutName = "torigraph_wb_next_sheet";
+
+QString rewriteTableRefsInFormula(const QString &formula, const QString &oldTableName,
+                                  const QString &newTableName)
+{
+    const QString escapedOld = QRegularExpression::escape(oldTableName);
+    const QRegularExpression tableColRx(
+            QStringLiteral("((?<![A-Za-z0-9_])(?:tablecol|column__)\\s*\\(\\s*\")") + escapedOld
+            + QStringLiteral("(\"\\s*,)"));
+    const QRegularExpression pathColRx(
+            QStringLiteral("((?<![A-Za-z0-9_])(?:col|column|column_|cell|cell_)\\s*\\(\\s*\")")
+            + escapedOld + QStringLiteral("(\\\\/|/)"));
+
+    auto replaceWithCapture = [](const QString &src, const QRegularExpression &rx,
+                                 const QString &midText) -> QString {
+        QRegularExpressionMatchIterator it = rx.globalMatch(src);
+        if (!it.hasNext())
+            return src;
+        QString out;
+        int lastPos = 0;
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            out.append(src.mid(lastPos, m.capturedStart(0) - lastPos));
+            out.append(m.captured(1));
+            out.append(midText);
+            out.append(m.captured(2));
+            lastPos = m.capturedEnd(0);
+        }
+        out.append(src.mid(lastPos));
+        return out;
+    };
+
+    QString out = replaceWithCapture(formula, tableColRx, newTableName);
+    out = replaceWithCapture(out, pathColRx, newTableName);
+    return out;
+}
+
+void updateCrossTableFormulaReferences(ApplicationWindow *app, const QString &oldTableName,
+                                       const QString &newTableName)
+{
+    if (!app || oldTableName.isEmpty() || newTableName.isEmpty() || oldTableName == newTableName)
+        return;
+    const QList<MyWidget *> wins = app->windowsList();
+    for (MyWidget *mw : wins) {
+        Table *other = qobject_cast<Table *>(mw);
+        if (!other || !other->d_future_table)
+            continue;
+        struct PendingUpdate
+        {
+            int col = 0;
+            Interval<int> iv;
+            QString formula;
+        };
+        QVector<PendingUpdate> updates;
+        for (int c = 0; c < other->numCols(); ++c) {
+            Column *cp = other->column(c);
+            if (!cp)
+                continue;
+            const QList<Interval<int>> ivs = cp->formulaIntervals();
+            for (const Interval<int> &iv : ivs) {
+                const QString f = cp->formula(iv.start());
+                const QString updated = rewriteTableRefsInFormula(f, oldTableName, newTableName);
+                if (updated != f)
+                    updates.push_back({ c, iv, updated });
+            }
+        }
+        if (updates.isEmpty())
+            continue;
+        other->d_future_table->beginMacro(
+                QCoreApplication::translate("WorkbookManager", "Update formula references to %1")
+                        .arg(newTableName));
+        for (const PendingUpdate &u : updates) {
+            if (Column *cp = other->column(u.col))
+                cp->setFormula(u.iv, u.formula);
+        }
+        other->d_future_table->endMacro();
+    }
+}
 
 QString wbTr(const char *s)
 {
@@ -323,6 +403,27 @@ void WorkbookManager::watch(Table *t)
     if (!t)
         return;
     t->installEventFilter(this);
+    QPointer<Table> safe(t);
+    if (!t->findChild<QShortcut *>(QString::fromLatin1(kPrevSheetShortcutName),
+                                   Qt::FindDirectChildrenOnly)) {
+        auto *scPrev = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageUp), t, nullptr, nullptr,
+                                     Qt::WidgetWithChildrenShortcut);
+        scPrev->setObjectName(QString::fromLatin1(kPrevSheetShortcutName));
+        connect(scPrev, &QShortcut::activated, this, [this, safe]() {
+            if (safe && !d_shutdown)
+                switchAdjacentSheet(safe, -1);
+        });
+    }
+    if (!t->findChild<QShortcut *>(QString::fromLatin1(kNextSheetShortcutName),
+                                   Qt::FindDirectChildrenOnly)) {
+        auto *scNext = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), t, nullptr, nullptr,
+                                     Qt::WidgetWithChildrenShortcut);
+        scNext->setObjectName(QString::fromLatin1(kNextSheetShortcutName));
+        connect(scNext, &QShortcut::activated, this, [this, safe]() {
+            if (safe && !d_shutdown)
+                switchAdjacentSheet(safe, 1);
+        });
+    }
     connect(t, &MyWidget::closedWindow, this, [this](MyWidget *w) {
         if (!d_shutdown)
             removeSheetInternal(w, false);
@@ -347,11 +448,33 @@ void WorkbookManager::unwatch(Table *t)
     if (!t)
         return;
     t->removeEventFilter(this);
+    if (auto *scPrev = t->findChild<QShortcut *>(QString::fromLatin1(kPrevSheetShortcutName),
+                                                 Qt::FindDirectChildrenOnly)) {
+        delete scPrev;
+    }
+    if (auto *scNext = t->findChild<QShortcut *>(QString::fromLatin1(kNextSheetShortcutName),
+                                                 Qt::FindDirectChildrenOnly)) {
+        delete scNext;
+    }
     disconnect(t, nullptr, this, nullptr);
     d_user_hidden.remove(t);
     d_last_geometry.remove(t);
     d_last_maximized.remove(t);
     removeBar(t);
+}
+
+void WorkbookManager::switchAdjacentSheet(Table *t, int delta)
+{
+    Book *b = bookFor(t);
+    if (!b || b->sheets.size() < 2)
+        return;
+    const int curIdx = b->sheets.indexOf(t);
+    if (curIdx < 0)
+        return;
+    const int n = b->sheets.size();
+    const int nextIdx = ((curIdx + delta) % n + n) % n;
+    if (nextIdx != curIdx && b->sheets.at(nextIdx))
+        setCurrentSheet(b->sheets.at(nextIdx), true);
 }
 
 void WorkbookManager::prune(Book &b)
@@ -859,11 +982,13 @@ bool WorkbookManager::renameSheet(Table *t, const QString &label, QString *err)
     const QString newName = prefixed ? prefix + QLatin1Char('_') + lbl : lbl;
     if (newName == t->name())
         return true;
+    const QString oldTableName = t->name();
     if (!d_app->renameWindow(t, newName)) {
         setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
                             .arg(newName));
         return false;
     }
+    updateCrossTableFormulaReferences(d_app, oldTableName, t->name());
     refreshBars(bookName);
     return true;
 }
@@ -1444,6 +1569,10 @@ void WorkbookManager::refreshBar(Table *t, const Book &b)
     }
     tabs->setCurrentIndex(cur);
     bar->setToolTip(wbTr("Workbook %1").arg(b.name));
+    if (QToolButton *plus = bar->findChild<QToolButton *>(
+                QStringLiteral("torigraph_workbook_add_sheet"), Qt::FindDirectChildrenOnly)) {
+        plus->setToolTip(wbTr("Add a sheet to this workbook"));
+    }
     bar->setUpdatesEnabled(prevBarUpdates);
     bar->show();
 }
@@ -1461,8 +1590,8 @@ void WorkbookManager::showRenameSheetDialog(Table *t)
     const QString cur = sheetLabel(b->prefix, t->name());
     const QString text = QInputDialog::getText(
             d_app, wbTr("Rename Sheet"),
-            wbTr("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new "
-                 "name; column formulas that name it (tablecol(\"%1\", \"...\")) are not changed.")
+            wbTr("Sheet name (letters, digits, _ or -).\nGraphs and column formulas that name "
+                 "this sheet (%1) follow the new name.")
                     .arg(t->name()),
             QLineEdit::Normal, cur, &ok);
     if (!ok || !safe || d_shutdown || !bookFor(safe))
@@ -1633,6 +1762,10 @@ void WorkbookManager::retranslateUi()
                 wbTr("New workbook: several worksheets as sheet tabs of one window"));
         d_new_action->setStatusTip(d_new_action->toolTip());
     }
+    const QList<Book> booksCopy = d_books;
+    for (const Book &b : booksCopy)
+        refreshBars(b.name);
+    refreshExplorer();
 }
 
 void WorkbookManager::decorateListItem(QTreeWidgetItem *it, MyWidget *w) const
@@ -2033,14 +2166,11 @@ void WorkbookManager::registerTranslations()
     reg("Delete the sheet %1 and its data?\nYou can undo this with Ctrl+Z.",
         "シート %1 とそのデータを削除しますか?\n削除後も Ctrl+Z (元に戻す) で復元できます。");
     reg("Rename Sheet", "シート名の変更");
-    reg("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new name; "
-        "column formulas that name it (col(\"%1/...\")) are not changed.",
-        "シート名 (文字・数字・_・-)。\nこのシートを使うグラフは新しい名前に追従します。"
-        "このシートを名前で参照する列の数式 (col(\"%1/...\")) は変わりません。");
-    reg("Sheet name (letters, digits, _ or -).\nGraphs that use this sheet follow the new name; "
-        "column formulas that name it (tablecol(\"%1\", \"...\")) are not changed.",
-        "シート名 (文字・数字・_・-)。\nこのシートを使うグラフは新しい名前に追従します。"
-        "このシートを名前で参照する列の数式 (tablecol(\"%1\", \"...\")) は変わりません。");
+    reg("Sheet name (letters, digits, _ or -).\nGraphs and column formulas that name "
+        "this sheet (%1) follow the new name.",
+        "シート名 (文字・数字・_・-)。\nこのシート (%1) を使うグラフと列の数式は"
+        "新しい名前に追従します。");
+    reg("Update formula references to %1", "%1 への数式参照を更新");
     reg("Rename Workbook", "ブック名の変更");
     reg("Workbook name (letters, digits, _ or -).\nThe sheets keep their names, so graphs and "
         "formulas are not affected.",

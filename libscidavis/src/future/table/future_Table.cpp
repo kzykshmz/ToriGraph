@@ -61,8 +61,12 @@
 #include "MultiLayer.h"
 #include "Graph.h"
 #include "Table.h"
+#include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
+#include <algorithm>
+#include <mutex>
+#include <QSet>
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
 #include <QRandomGenerator>
 #endif
@@ -130,6 +134,32 @@ TableLangChangeFilter *ensureTableLangFilter(Table *tbl, std::function<void()> c
         tbl->installEventFilter(flt);
     }
     return flt;
+}
+
+void registerTableFutureTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Copy with &Headers", "ヘッダを含めてコピー(&H)");
+        reg("Fill &Down", "下へフィル(&D)");
+        reg("&Find and Replace...", "検索と置換(&F)...");
+        reg("Re-&import from Source", "元ファイルから再読込(&I)");
+    });
+}
+
+QString quoteTsvCell(const QString &raw)
+{
+    const bool needsQuotes = raw.contains(QLatin1Char('\t')) || raw.contains(QLatin1Char('\n'))
+            || raw.contains(QLatin1Char('\r')) || raw.contains(QLatin1Char('"'));
+    if (!needsQuotes)
+        return raw;
+    QString esc = raw;
+    esc.replace(QLatin1Char('"'), QLatin1String("\"\""));
+    return QLatin1Char('"') + esc + QLatin1Char('"');
 }
 } // anonymous namespace
 
@@ -377,6 +407,37 @@ int Table::columnCount(SciDAVis::PlotDesignation pd) const
     return count;
 }
 
+QStringList Table::nextSequentialColumnNames(int count) const
+{
+    QStringList out;
+    if (count <= 0)
+        return out;
+    QSet<QString> existing;
+    int maxNum = columnCount();
+    for (int i = 0; i < columnCount(); ++i) {
+        const Column *c = column(i);
+        if (!c)
+            continue;
+        const QString nm = c->name();
+        existing.insert(nm);
+        bool ok = false;
+        const int v = nm.toInt(&ok);
+        if (ok && v > maxNum)
+            maxNum = v;
+    }
+    int candidate = maxNum + 1;
+    out.reserve(count);
+    for (int k = 0; k < count; ++k) {
+        while (existing.contains(QString::number(candidate)))
+            ++candidate;
+        const QString name = QString::number(candidate);
+        existing.insert(name);
+        out << name;
+        ++candidate;
+    }
+    return out;
+}
+
 void Table::setColumnCount(int new_size)
 {
     int old_size = columnCount();
@@ -388,8 +449,9 @@ void Table::setColumnCount(int new_size)
         removeColumns(new_size, old_size - new_size);
     else {
         QList<Column *> cols;
-        for (int i = 0; i < new_size - old_size; i++) {
-            Column *new_col = new Column(QString::number(i + 1), SciDAVis::ColumnMode::Numeric);
+        const QStringList names = nextSequentialColumnNames(new_size - old_size);
+        for (const QString &nm : names) {
+            Column *new_col = new Column(nm, SciDAVis::ColumnMode::Numeric);
             new_col->setPlotDesignation(SciDAVis::Y);
             cols << new_col;
         }
@@ -489,32 +551,34 @@ void Table::copySelection()
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             Column *col_ptr = column(first_col + c);
-            if (d_view->isCellSelected(first_row + r, first_col + c)) {
+            if (col_ptr && d_view->isCellSelected(first_row + r, first_col + c)) {
+                QString cellOut;
                 if (d_view->formulaModeActive()) {
-                    output_str += col_ptr->formula(first_row + r);
+                    cellOut = col_ptr->formula(first_row + r);
                 } else if (col_ptr->dataType() == SciDAVis::TypeDouble) {
                     if ((col_ptr->isInvalid(first_row + r))
                         || (col_ptr->rowCount() <= first_row + r)) {
                         // Copy invalid / missing cells as empty string (""), not "-"
                     } else {
                         Double2StringFilter *out_fltr =
-                            static_cast<Double2StringFilter *>(col_ptr->outputFilter());
-                    // create a copy of current locale
-                    QLocale noSeparators;
-                    // we do not need separators on output!
-                    noSeparators.setNumberOptions(noSeparators.numberOptions()
-                                                  | QLocale::OmitGroupSeparator);
-                    // convert using modified locale
-                    output_str += noSeparators.toString(col_ptr->valueAt(first_row + r),
+                                static_cast<Double2StringFilter *>(col_ptr->outputFilter());
+                        // create a copy of current locale
+                        QLocale noSeparators;
+                        // we do not need separators on output!
+                        noSeparators.setNumberOptions(noSeparators.numberOptions()
+                                                      | QLocale::OmitGroupSeparator);
+                        // convert using modified locale
+                        cellOut = noSeparators.toString(col_ptr->valueAt(first_row + r),
                                                         out_fltr->numericFormat(),
                                                         16); // copy with max. precision
                     }
                 } else {
                     if (!col_ptr->isInvalid(first_row + r)
                         && col_ptr->rowCount() > first_row + r) {
-                        output_str += text(first_row + r, first_col + c);
+                        cellOut = text(first_row + r, first_col + c);
                     }
                 }
+                output_str += quoteTsvCell(cellOut);
             }
             if (c < cols - 1)
                 output_str += "\t";
@@ -524,6 +588,91 @@ void Table::copySelection()
     }
     QApplication::clipboard()->setText(output_str);
     RESET_CURSOR;
+}
+
+void Table::copySelectionWithHeaders()
+{
+    if (!d_view)
+        return;
+    int first_col = d_view->firstSelectedColumn(false);
+    int last_col = d_view->lastSelectedColumn(false);
+    int first_row = d_view->firstSelectedRow(false);
+    int last_row = d_view->lastSelectedRow(false);
+    const bool copyAll = (d_view->firstSelectedColumn(false) < 0 || d_view->firstSelectedRow(false) < 0);
+    if (copyAll || last_col < first_col) {
+        if (columnCount() <= 0)
+            return;
+        first_col = 0;
+        last_col = columnCount() - 1;
+        first_row = 0;
+        last_row = rowCount() - 1;
+    }
+
+    WAIT_CURSOR;
+    QStringList lines;
+    QStringList nameRow;
+    QStringList unitRow;
+    bool anyUnit = false;
+    for (int c = first_col; c <= last_col; ++c) {
+        Column *col_ptr = column(c);
+        const QString ln = col_ptr ? col_ptr->longName().trimmed() : QString();
+        const QString hdr = !ln.isEmpty() ? ln : (col_ptr ? col_ptr->name() : QString());
+        nameRow << quoteTsvCell(hdr);
+        const QString u = col_ptr ? col_ptr->units().trimmed() : QString();
+        if (!u.isEmpty())
+            anyUnit = true;
+        unitRow << quoteTsvCell(u);
+    }
+    lines << nameRow.join(QLatin1Char('\t'));
+    if (anyUnit)
+        lines << unitRow.join(QLatin1Char('\t'));
+
+    QLocale noSeparators;
+    noSeparators.setNumberOptions(noSeparators.numberOptions() | QLocale::OmitGroupSeparator);
+    const bool formulaMode = d_view->formulaModeActive();
+    for (int r = first_row; r <= last_row; ++r) {
+        QStringList rowCells;
+        for (int c = first_col; c <= last_col; ++c) {
+            Column *col_ptr = column(c);
+            QString cellOut;
+            if (col_ptr && (copyAll || d_view->isCellSelected(r, c))) {
+                if (formulaMode) {
+                    cellOut = col_ptr->formula(r);
+                } else if (col_ptr->dataType() == SciDAVis::TypeDouble) {
+                    if (!col_ptr->isInvalid(r) && col_ptr->rowCount() > r) {
+                        Double2StringFilter *out_fltr =
+                                static_cast<Double2StringFilter *>(col_ptr->outputFilter());
+                        cellOut = noSeparators.toString(col_ptr->valueAt(r),
+                                                        out_fltr->numericFormat(), 16);
+                    }
+                } else if (!col_ptr->isInvalid(r) && col_ptr->rowCount() > r) {
+                    cellOut = text(r, c);
+                }
+            }
+            rowCells << quoteTsvCell(cellOut);
+        }
+        lines << rowCells.join(QLatin1Char('\t'));
+    }
+    QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+    RESET_CURSOR;
+}
+
+void Table::fillSelectionDown()
+{
+    if (::Table *legacy = qobject_cast<::Table *>(d_view.data()))
+        legacy->fillSelectionDown();
+}
+
+void Table::showFindReplaceDialog()
+{
+    if (::Table *legacy = qobject_cast<::Table *>(d_view.data()))
+        legacy->showFindReplaceDialog(true);
+}
+
+void Table::reimportFromSource()
+{
+    if (::Table *legacy = qobject_cast<::Table *>(d_view.data()))
+        legacy->reimportFromSource();
 }
 
 void Table::pasteIntoSelection(const bool isTransposed)
@@ -598,8 +747,9 @@ void Table::pasteIntoSelection(const bool isTransposed)
             // resize the table if necessary
             if (last_col >= columnCount()) {
                 QList<Column *> cols;
-                for (int i = 0; i < last_col + 1 - columnCount(); i++) {
-                    Column *new_col = new Column(QString::number(i + 1), SciDAVis::ColumnMode::Numeric);
+                const QStringList names = nextSequentialColumnNames(last_col + 1 - columnCount());
+                for (const QString &nm : names) {
+                    Column *new_col = new Column(nm, SciDAVis::ColumnMode::Numeric);
                     new_col->setPlotDesignation(SciDAVis::Y);
                     cols << new_col;
                 }
@@ -891,8 +1041,9 @@ void Table::insertEmptyColumns()
         while (current <= last && d_view->isColumnSelected(current))
             current++;
         count = current - first;
-        for (int i = 0; i < count; i++) {
-            Column *new_col = new Column(QString::number(i + 1), SciDAVis::ColumnMode::Numeric);
+        const QStringList names = nextSequentialColumnNames(count);
+        for (const QString &nm : names) {
+            Column *new_col = new Column(nm, SciDAVis::ColumnMode::Numeric);
             new_col->setPlotDesignation(SciDAVis::Y);
             cols << new_col;
         }
@@ -1113,8 +1264,13 @@ void Table::removeSelectedRows()
 
     WAIT_CURSOR;
     beginMacro(QObject::tr("%1: remove selected rows(s)").arg(name()));
-    foreach (Interval<int> i, d_view->selectedRows().intervals())
-        removeRows(i.start(), i.size());
+    // Remove from the bottom up so earlier removals do not shift the row indices of the
+    // intervals that are still to be removed (multi-interval selections deleted wrong rows).
+    QList<Interval<int>> rowIntervals = d_view->selectedRows().intervals();
+    std::sort(rowIntervals.begin(), rowIntervals.end(),
+              [](const Interval<int> &a, const Interval<int> &b) { return a.start() > b.start(); });
+    for (int k = 0; k < rowIntervals.size(); ++k)
+        removeRows(rowIntervals.at(k).start(), rowIntervals.at(k).size());
     endMacro();
     RESET_CURSOR;
 }
@@ -1132,20 +1288,39 @@ void Table::clearSelectedCells()
     WAIT_CURSOR;
     beginMacro(QObject::tr("%1: clear selected cell(s)").arg(name()));
     QList<Column *> list = d_view->selectedColumns();
+    const bool formulaMode = d_view->formulaModeActive();
     foreach (Column *col_ptr, list) {
-        if (d_view->formulaModeActive())
-            foreach (Interval<int> i, d_view->selectedRows().intervals())
-                col_ptr->setFormula(i, "");
-        else
-            foreach (Interval<int> i, d_view->selectedRows().intervals())
-                if (i.end() == col_ptr->rowCount() - 1)
-                    col_ptr->removeRows(i.start(), i.size());
-                else {
-                    QStringList empties;
-                    for (int j = 0; j < i.size(); j++)
-                        empties << QString();
-                    col_ptr->asStringColumn()->replaceTexts(i.start(), empties);
-                }
+        const int colIdx = columnIndex(col_ptr);
+        const int rows = col_ptr->rowCount();
+        // Walk the *actually selected* cells of this column (not the union of the selected rows
+        // of all columns, which erased unselected cells for non-rectangular selections) and
+        // build one run per contiguous block, never beyond the column's own length.
+        QList<Interval<int>> runs;
+        int runStart = -1;
+        for (int r = 0; r <= rows; ++r) {
+            const bool sel = (r < rows) && d_view->isCellSelected(r, colIdx);
+            if (sel && runStart < 0)
+                runStart = r;
+            else if (!sel && runStart >= 0) {
+                runs.append(Interval<int>(runStart, r - 1));
+                runStart = -1;
+            }
+        }
+        // bottom-up so that removing a trailing run cannot shift the remaining ones
+        for (int k = runs.size() - 1; k >= 0; --k) {
+            const Interval<int> i = runs.at(k);
+            if (formulaMode)
+                col_ptr->setFormula(i, QString());
+            else if (i.end() == rows - 1)
+                col_ptr->removeRows(i.start(), i.size());
+            else if (col_ptr->columnMode() == SciDAVis::ColumnMode::Text) {
+                QStringList empties;
+                for (int j = 0; j < i.size(); j++)
+                    empties << QString();
+                col_ptr->replaceTexts(i.start(), empties);
+            } else
+                col_ptr->setInvalid(i, true);
+        }
     }
     endMacro();
     RESET_CURSOR;
@@ -1224,6 +1399,7 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->addAction(action_clear_masks);
 #endif
     menu->addAction(action_sort_table);
+    menu->addAction(action_reimport_source);
     menu->addSeparator();
     menu->addAction(action_set_formula);
     menu->addAction(action_recalculate);
@@ -1231,6 +1407,7 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->addAction(action_add_column);
     menu->addAction(action_dimensions_dialog);
     menu->addSeparator();
+    menu->addAction(action_find_replace);
     menu->addAction(action_go_to_cell);
 
     translateActionsStrings();
@@ -1300,6 +1477,10 @@ void Table::createActions()
     action_copy_selection = new QAction(IconLoader::duotoneIcon("copy"), tr("&Copy"), this);
     actionManager()->addAction(action_copy_selection, "copy_selection");
 
+    action_copy_with_headers =
+            new QAction(IconLoader::duotoneIcon("copy"), tr("Copy with &Headers"), this);
+    actionManager()->addAction(action_copy_with_headers, "copy_with_headers");
+
     action_paste_into_selection =
             new QAction(IconLoader::duotoneIcon("paste"), tr("Past&e"), this);
     actionManager()->addAction(action_paste_into_selection, "paste_into_selection");
@@ -1307,6 +1488,14 @@ void Table::createActions()
     action_paste_into_selection_transposed =
             new QAction(IconLoader::duotoneIcon("paste"), tr("Paste transposed"), this);
     actionManager()->addAction(action_paste_into_selection_transposed, "paste_into_selection_transposed");
+
+    action_fill_down =
+            new QAction(IconLoader::duotoneIcon("row-numbers"), tr("Fill &Down"), this);
+    actionManager()->addAction(action_fill_down, "fill_down");
+
+    action_find_replace =
+            new QAction(IconLoader::duotoneIcon("find"), tr("&Find and Replace..."), this);
+    actionManager()->addAction(action_find_replace, "find_replace");
 #ifndef LEGACY_CODE_0_2_x
     action_mask_selection =
             new QAction(IconLoader::duotoneIcon("mask-points"), tr("&Mask", "mask selection"), this);
@@ -1370,6 +1559,11 @@ void Table::createActions()
     action_export_to_TeX =
             new QAction(IconLoader::duotoneIcon("export-pdf"), tr("Export to TeX..."), this);
     actionManager()->addAction(action_export_to_TeX, "export_to_TeX");
+
+    action_reimport_source = new QAction(IconLoader::duotoneIcon("recalc-now"),
+                                         tr("Re-&import from Source"), this);
+    action_reimport_source->setEnabled(!d_import_source_path.isEmpty());
+    actionManager()->addAction(action_reimport_source, "reimport_source");
 
 #ifndef LEGACY_CODE_0_2_x
     action_clear_masks =
@@ -1503,8 +1697,11 @@ void Table::connectActions()
 {
     connect(action_cut_selection, SIGNAL(triggered()), this, SLOT(cutSelection()));
     connect(action_copy_selection, SIGNAL(triggered()), this, SLOT(copySelection()));
+    connect(action_copy_with_headers, SIGNAL(triggered()), this, SLOT(copySelectionWithHeaders()));
     connect(action_paste_into_selection, SIGNAL(triggered()), this, SLOT(pasteIntoSelection()));
     connect(action_paste_into_selection_transposed, SIGNAL(triggered()), this, SLOT(pasteIntoSelectionTransposed()));
+    connect(action_fill_down, SIGNAL(triggered()), this, SLOT(fillSelectionDown()));
+    connect(action_find_replace, SIGNAL(triggered()), this, SLOT(showFindReplaceDialog()));
 #ifndef LEGACY_CODE_0_2_x
     connect(action_mask_selection, SIGNAL(triggered()), this, SLOT(maskSelection()));
     connect(action_unmask_selection, SIGNAL(triggered()), this, SLOT(unmaskSelection()));
@@ -1522,6 +1719,7 @@ void Table::connectActions()
 
     // Export to TeX
     connect(action_export_to_TeX, SIGNAL(triggered()), this, SLOT(showTeXTableExportDialog()));
+    connect(action_reimport_source, SIGNAL(triggered()), this, SLOT(reimportFromSource()));
 
 #ifndef LEGACY_CODE_0_2_x
     connect(action_clear_masks, SIGNAL(triggered()), this, SLOT(clearMasks()));
@@ -1586,8 +1784,11 @@ void Table::addActionsToView()
 
     d_view->addAction(action_cut_selection);
     d_view->addAction(action_copy_selection);
+    d_view->addAction(action_copy_with_headers);
     d_view->addAction(action_paste_into_selection);
     d_view->addAction(action_paste_into_selection_transposed);
+    d_view->addAction(action_fill_down);
+    d_view->addAction(action_find_replace);
 #ifndef LEGACY_CODE_0_2_x
     d_view->addAction(action_mask_selection);
     d_view->addAction(action_unmask_selection);
@@ -1604,6 +1805,7 @@ void Table::addActionsToView()
     d_view->addAction(action_add_column);
     d_view->addAction(action_clear_table);
     d_view->addAction(action_export_to_TeX);
+    d_view->addAction(action_reimport_source);
 #ifndef LEGACY_CODE_0_2_x
     d_view->addAction(action_clear_masks);
 #endif
@@ -1638,8 +1840,11 @@ void Table::translateActionsStrings()
 {
     action_cut_selection->setText(tr("Cu&t"));
     action_copy_selection->setText(tr("&Copy"));
+    action_copy_with_headers->setText(tr("Copy with &Headers"));
     action_paste_into_selection->setText(tr("Past&e"));
     action_paste_into_selection_transposed->setText(tr("Paste transposed"));
+    action_fill_down->setText(tr("Fill &Down"));
+    action_find_replace->setText(tr("&Find and Replace..."));
 #ifndef LEGACY_CODE_0_2_x
     action_mask_selection->setText(tr("&Mask", "mask selection"));
     action_unmask_selection->setText(tr("&Unmask", "unmask selection"));
@@ -1655,6 +1860,7 @@ void Table::translateActionsStrings()
     action_add_column->setText(tr("&Add Column"));
     action_clear_table->setText(tr("Clear Table"));
     action_export_to_TeX->setText(tr("Export to TeX..."));
+    action_reimport_source->setText(tr("Re-&import from Source"));
     action_sort_table->setText(tr("&Sort Table"));
     action_go_to_cell->setText(tr("&Go to Cell"));
     action_dimensions_dialog->setText(tr("&Dimensions", "table size"));
@@ -1874,6 +2080,8 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
         menu = new QMenu();
 
     QMenu *submenu = new QMenu(tr("Fi&ll Selection with"));
+    submenu->addAction(action_fill_down);
+    submenu->addSeparator();
     submenu->addAction(action_fill_row_numbers);
     submenu->addAction(action_fill_random);
     menu->addMenu(submenu);
@@ -1881,9 +2089,13 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
 
     menu->addAction(action_cut_selection);
     menu->addAction(action_copy_selection);
+    menu->addAction(action_copy_with_headers);
     menu->addAction(action_paste_into_selection);
     menu->addAction(action_paste_into_selection_transposed);
+    menu->addAction(action_fill_down);
     menu->addAction(action_clear_selection);
+    menu->addSeparator();
+    menu->addAction(action_find_replace);
     menu->addSeparator();
 #ifndef LEGACY_CODE_0_2_x
     menu->addAction(action_mask_selection);
@@ -1990,6 +2202,7 @@ QMenu *Table::createColumnMenu(QMenu *append_to)
                      [triggerAddToActiveGraph]() { triggerAddToActiveGraph(true); });
 
     menu->addAction(action_edit_column_labels_formula);
+    menu->addAction(action_copy_with_headers);
     menu->addSeparator();
 
     QMenu *submenu = new QMenu(tr("S&et Column(s) As"), menu);
@@ -2039,6 +2252,11 @@ QMenu *Table::createTableMenu(QMenu *append_to)
         menu = new QMenu();
 
     connect(menu, SIGNAL(aboutToShow()), this, SLOT(adjustActionNames()));
+    QPointer<QAction> reimportAct(action_reimport_source);
+    connect(menu, &QMenu::aboutToShow, this, [this, reimportAct]() {
+        if (reimportAct)
+            reimportAct->setEnabled(!d_import_source_path.isEmpty());
+    });
     menu->addAction(action_edit_column_labels_formula);
     menu->addAction(action_toggle_comments);
     menu->addAction(action_toggle_tabbar);
@@ -2051,9 +2269,11 @@ QMenu *Table::createTableMenu(QMenu *append_to)
     menu->addAction(action_clear_masks);
     menu->addAction(action_sort_table);
 #endif
+    menu->addAction(action_reimport_source);
     menu->addSeparator();
     menu->addAction(action_add_column);
     menu->addSeparator();
+    menu->addAction(action_find_replace);
     menu->addAction(action_go_to_cell);
     ModernUiTheme::upgradeMenuIcons(menu);
 
@@ -2144,6 +2364,8 @@ void Table::copy(Table *other)
         new_col->setLongName(src_col->longName());
         new_col->setUnits(src_col->units());
         new_col->setComment(src_col->comment());
+        if (src_col->property("_tg_label_role").isValid())
+            new_col->setProperty("_tg_label_role", src_col->property("_tg_label_role"));
         QList<Interval<int>> masks = src_col->maskedIntervals();
         foreach (Interval<int> iv, masks)
             new_col->setMasked(iv);
@@ -2153,6 +2375,9 @@ void Table::copy(Table *other)
         columns.append(new_col);
     }
     appendColumns(columns);
+    setImportSource(other->importSourcePath(), other->importSourceSheet(),
+                    other->importSourceSeparator(), other->importSourceEncoding(),
+                    other->importSourceIgnoredLines(), other->importSourceUnitsRow());
     setCaptionSpec(other->captionSpec());
     setComment(other->comment());
     for (int i = 0; i < columnCount(); i++)
@@ -2646,6 +2871,19 @@ void Table::setAutoRecalcFormulas(bool on)
     emit autoRecalcFormulasChanged(on);
 }
 
+void Table::setImportSource(const QString &path, const QString &sheet, const QString &separator,
+                            const QString &encoding, int ignoredLines, int unitsRow)
+{
+    d_import_source_path = path;
+    d_import_source_sheet = sheet;
+    d_import_source_separator = separator;
+    d_import_source_encoding = encoding;
+    d_import_ignored_lines = ignoredLines;
+    d_import_units_row = unitsRow;
+    if (action_reimport_source)
+        action_reimport_source->setEnabled(!d_import_source_path.isEmpty());
+}
+
 void Table::save(QXmlStreamWriter *writer) const
 {
     int cols = columnCount();
@@ -2655,6 +2893,20 @@ void Table::save(QXmlStreamWriter *writer) const
     writer->writeAttribute("columns", QString::number(cols));
     writer->writeAttribute("rows", QString::number(rows));
     writer->writeAttribute("auto_recalc_formulas", QString::number(d_auto_recalc_formulas ? 1 : 0));
+    if (!d_import_source_path.isEmpty()) {
+        writer->writeAttribute("import_source_path", d_import_source_path);
+        if (!d_import_source_sheet.isEmpty())
+            writer->writeAttribute("import_source_sheet", d_import_source_sheet);
+        if (!d_import_source_separator.isEmpty())
+            writer->writeAttribute("import_source_separator", d_import_source_separator);
+        if (!d_import_source_encoding.isEmpty())
+            writer->writeAttribute("import_source_encoding", d_import_source_encoding);
+        if (d_import_ignored_lines != 0)
+            writer->writeAttribute("import_source_ignored",
+                                   QString::number(d_import_ignored_lines));
+        if (d_import_units_row >= 0)
+            writer->writeAttribute("import_source_units", QString::number(d_import_units_row));
+    }
     writeCommentElement(writer);
 
     for (int col = 0; col < cols; col++)
@@ -2682,6 +2934,19 @@ bool Table::load(XmlStreamReader *reader)
         const bool loadedAutoRecalc = arAttr.isEmpty() ? true : (arAttr.toInt() != 0);
         d_auto_recalc_formulas = false;
         emit autoRecalcFormulasChanged(false);
+
+        const QXmlStreamAttributes attrs = reader->attributes();
+        const int loadedIgnored = attrs.hasAttribute("import_source_ignored")
+                ? attrs.value("import_source_ignored").toInt()
+                : 0;
+        const int loadedUnits = attrs.hasAttribute("import_source_units")
+                ? attrs.value("import_source_units").toInt()
+                : -1;
+        setImportSource(attrs.value("import_source_path").toString(),
+                        attrs.value("import_source_sheet").toString(),
+                        attrs.value("import_source_separator").toString(),
+                        attrs.value("import_source_encoding").toString(), loadedIgnored,
+                        loadedUnits);
 
         // read dimensions
         bool ok1, ok2;

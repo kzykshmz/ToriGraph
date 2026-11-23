@@ -3001,11 +3001,131 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
     return !outValues.isEmpty() || totalRows == 0;
 }
 
-bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *outErr)
+// Best-effort decoder for non-0x05 CPYUA dataset payloads (e.g. text columns).
+// Returns true when at least one printable text cell was recovered (D4-8).
+bool decodeCpyuaTextPayload(const QByteArray &pay, const QString &encodingHint,
+                            QVector<QString> &outTexts)
 {
+    outTexts.clear();
+    if (pay.isEmpty())
+        return false;
+
+    int end = pay.size();
+    if (end >= 2 && static_cast<unsigned char>(pay[end - 2]) == 0xCEU
+        && static_cast<unsigned char>(pay[end - 1]) == 0xFAU) {
+        end -= 2; // strip trailing 0xFACE marker
+    }
+    while (end > 0 && pay[end - 1] == '\0')
+        --end;
+    if (end <= 0)
+        return false;
+
+    int start = 0;
+    const auto *buf = reinterpret_cast<const unsigned char *>(pay.constData());
+    if (buf[0] < 0x20U && buf[0] != '\t' && buf[0] != '\r' && buf[0] != '\n') {
+        qint64 p = 1;
+        quint64 totalRows = 0;
+        if (readLeb128(buf, end, p, totalRows) && totalRows <= 50000000ULL && p <= end) {
+            if (p + 2 <= end && (static_cast<quint16>(buf[p]) | (static_cast<quint16>(buf[p + 1]) << 8)) == 0xFFFFU) {
+                qint64 p2 = p + 2;
+                quint64 cnt = 0;
+                if (readLeb128(buf, end, p2, cnt) && p2 < end)
+                    p = p2 + 1;
+            }
+            start = static_cast<int>(p);
+        }
+    }
+    if (start >= end)
+        return false;
+
+    auto isPrintableCell = [](const QString &s) -> bool {
+        if (s.isEmpty())
+            return false;
+        for (const QChar ch : s) {
+            const ushort u = ch.unicode();
+            if (u == 0xFFFD || (u < 0x20 && u != '\t'))
+                return false;
+        }
+        return true;
+    };
+
+    const QByteArray slice = pay.mid(start, end - start);
+    QVector<QString> cells;
+    int nonEmptyCount = 0;
+    if (slice.contains('\0')) {
+        const QList<QByteArray> parts = slice.split('\0');
+        for (const QByteArray &part : parts) {
+            if (part.isEmpty()) {
+                cells.append(QString());
+                continue;
+            }
+            const QString s = decodeTextBytes(part, encodingHint);
+            if (!isPrintableCell(s))
+                return false;
+            cells.append(s);
+            ++nonEmptyCount;
+        }
+    } else {
+        const QString all = decodeTextBytes(slice, encodingHint);
+        const QStringList lines = all.split(QRegularExpression(QStringLiteral("\\r?\\n")));
+        for (const QString &ln : lines) {
+            if (ln.isEmpty()) {
+                cells.append(QString());
+                continue;
+            }
+            if (!isPrintableCell(ln))
+                return false;
+            cells.append(ln);
+            ++nonEmptyCount;
+        }
+    }
+    while (!cells.isEmpty() && cells.last().isEmpty())
+        cells.removeLast();
+    if (nonEmptyCount <= 0 || cells.isEmpty())
+        return false;
+    outTexts = cells;
+    return true;
+}
+
+// Windows code page number -> QTextCodec name hint for decodeTextBytes(). 0 (or an unknown
+// page) returns an empty hint = automatic detection (UTF-8, then Shift-JIS/CP932).
+QString cpyuaCodecHint(int codePage)
+{
+    switch (codePage) {
+    case 932:
+        return QStringLiteral("Shift-JIS");
+    case 936:
+        return QStringLiteral("GBK");
+    case 949:
+        return QStringLiteral("EUC-KR");
+    case 950:
+        return QStringLiteral("Big5");
+    case 65001:
+        return QStringLiteral("UTF-8");
+    default:
+        break;
+    }
+    if (codePage <= 0)
+        return QString();
+    const QString candidates[] = { QStringLiteral("windows-%1").arg(codePage),
+                                   QStringLiteral("CP%1").arg(codePage),
+                                   QStringLiteral("IBM%1").arg(codePage) };
+    for (const QString &name : candidates) {
+        if (QTextCodec::codecForName(name.toUtf8()))
+            return name;
+    }
+    return QString();
+}
+
+// `codePage` selects the 8-bit text encoding of column names / comments (Windows code page
+// number, e.g. 932 = Shift-JIS); 0 keeps the automatic detection used so far.
+bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *outErr,
+                          int codePage = 0)
+{
+    const QString textHint = cpyuaCodecHint(codePage);
     if (data.size() < 64 || !data.startsWith("CPYU")) {
         if (outErr)
-            *outErr = QStringLiteral("Invalid CPYUA .opju header.");
+            *outErr = QObject::tr("Invalid CPYUA .opju header.");
         return false;
     }
 
@@ -3014,14 +3134,14 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
     const int ghPos = data.indexOf(ghMarker);
     if (ghPos < 0) {
         if (outErr)
-            *outErr = QStringLiteral("Could not locate Origin global header in CPYUA .opju file.");
+            *outErr = QObject::tr("Could not locate Origin global header in CPYUA .opju file.");
         return false;
     }
 
     qint64 pos = static_cast<qint64>(ghPos) + 5 + 0x7C + 1 + 5;
     if (pos >= data.size()) {
         if (outErr)
-            *outErr = QStringLiteral("Truncated CPYUA .opju file after global header.");
+            *outErr = QObject::tr("Truncated CPYUA .opju file after global header.");
         return false;
     }
 
@@ -3032,6 +3152,10 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         QString tableName;
         QString colName;
         QVector<double> values;
+        QVector<QString> textValues;
+        bool hasNumeric = false;
+        bool isText = false;
+        bool skipped = false;
         bool hasMetadata = false;
         SciDAVis::PlotDesignation designation = SciDAVis::Y;
         QString longName;
@@ -3042,49 +3166,173 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
     QVector<RawCpyuaDataset> datasets;
     static const QRegularExpression kDsNameRe(QStringLiteral("[A-Za-z0-9_@.\\-]{2,}"));
 
-    // 1. Walk sequential dataset list (0x80 zero-RLE header + 0x18 compressed data block)
+    // 1. Walk sequential dataset list (0x80 zero-RLE header + 0x18 or raw data block).
+    //    An unknown tag (`tag != 0x18U`) or non-0x05 block is safely skipped/decoded by size or
+    //    bounds-checked resync to the next valid dataset header instead of terminating the walk.
+    auto isDatasetHeaderAt = [&data](qint64 p) -> bool {
+        if (p < 0 || p + 3 > data.size()
+            || static_cast<unsigned char>(data[static_cast<int>(p)]) != 0x80U) {
+            return false;
+        }
+        const int hl = static_cast<unsigned char>(data[static_cast<int>(p + 1)]);
+        if (hl < 12 || hl > 220 || p + 2 + hl >= data.size())
+            return false;
+        QByteArray tmp;
+        if (!decodeCpyuaZeroRle(data, p + 2, hl, tmp))
+            return false;
+        // Dataset headers decode to ~114-120 bytes (Window headers are ~538, Column headers ~468).
+        if (tmp.size() < 80 || tmp.size() > 240)
+            return false;
+        const unsigned char nextTag = static_cast<unsigned char>(data[static_cast<int>(p + 2 + hl)]);
+        if (nextTag == 0x18U)
+            return true;
+        if (tmp.size() >= 4 && static_cast<unsigned char>(tmp[2]) == 0x01U
+            && static_cast<unsigned char>(tmp[3]) == 0xFAU)
+            return true;
+        if (tmp.size() > 0x30) {
+            const QString hdrAscii = QString::fromLatin1(tmp.constData() + 0x30, tmp.size() - 0x30);
+            if (kDsNameRe.match(hdrAscii).hasMatch())
+                return true;
+        }
+        return false;
+    };
+    auto isDatasetListEndAt = [&data](qint64 p) -> bool {
+        return p >= 0 && p + 6 <= data.size() && data[static_cast<int>(p)] == '\0'
+                && data[static_cast<int>(p + 1)] == '\0' && data[static_cast<int>(p + 2)] == '\0'
+                && data[static_cast<int>(p + 3)] == '\0' && data[static_cast<int>(p + 4)] == '\0'
+                && data[static_cast<int>(p + 5)] == '\x0A';
+    };
+    // Finds the next valid dataset header strictly after `from` (stopping at the end-of-dataset
+    // marker before Window/Column metadata); returns -1 when there is none.
+    auto findNextDatasetHeader = [&](qint64 from, qint64 *outEndMarker = nullptr) -> qint64 {
+        for (qint64 p = from + 1; p + 3 < data.size(); ++p) {
+            if (isDatasetListEndAt(p)) {
+                if (outEndMarker)
+                    *outEndMarker = p;
+                return -1;
+            }
+            if (isDatasetHeaderAt(p))
+                return p;
+        }
+        return -1;
+    };
+
     int dsSeq = 0;
+    qint64 lastGoodEnd = pos; // end of the last processed dataset block
     while (pos + 2 < data.size() && static_cast<unsigned char>(data[static_cast<int>(pos)]) == 0x80U) {
+        const qint64 blockStart = pos;
         const int hdrLen = static_cast<unsigned char>(data[static_cast<int>(pos + 1)]);
         QByteArray hdrDec;
-        if (!decodeCpyuaZeroRle(data, pos + 2, hdrLen, hdrDec))
-            break;
-        pos += 2 + hdrLen;
-        if (pos >= data.size())
-            break;
-
-        const unsigned char tag = static_cast<unsigned char>(data[static_cast<int>(pos)]);
-        if (tag != 0x18U)
-            break;
-        pos += 1;
-
-        quint64 uncompSz = 0, compSz = 0;
-        if (!readU64LE(data, pos, uncompSz) || !readU64LE(data, pos + 8, compSz))
-            break;
-        Q_UNUSED(uncompSz);
-        pos += 25; // 8B uncomp + 8B comp + 8B hash + 1B newline
-        if (compSz > static_cast<quint64>(data.size() - pos))
-            break;
-
-        const QByteArray payload = data.mid(static_cast<int>(pos), static_cast<int>(compSz));
-        pos += static_cast<qint64>(compSz);
-
-        quint32 maskSz = 0;
-        if (!readU32LE(data, pos, maskSz)
-            || pos + 4 + static_cast<qint64>(maskSz) > data.size()) {
+        bool blockOk = decodeCpyuaZeroRle(data, pos + 2, hdrLen, hdrDec);
+        if (blockOk && hdrDec.size() >= 380) {
+            // Reached a Window/Column header block rather than a ~114-120B dataset header.
             break;
         }
-        pos += 4 + static_cast<qint64>(maskSz);
+        qint64 payloadPos = 0;
+        quint64 compSz = 0;
+        qint64 blockEnd = 0;
+        if (blockOk) {
+            const qint64 afterHdr = pos + 2 + hdrLen;
+            if (afterHdr >= data.size()) {
+                blockOk = false;
+            } else {
+                const unsigned char tag =
+                        static_cast<unsigned char>(data[static_cast<int>(afterHdr)]);
+                if (tag == 0x18U
+                    || (tag >= 0x10U && tag < 0x80U && afterHdr + 1 + tag < data.size()
+                        && static_cast<unsigned char>(data[static_cast<int>(afterHdr + 1 + tag)])
+                                == 0x0AU)) {
+                    // <tag:1B> <meta:tag B (8B uncomp + 8B comp + ...)> <0x0A> <payload> <4B maskSz> <mask>
+                    const qint64 bodyPos = afterHdr + 1;
+                    const int descLen = static_cast<int>(tag);
+                    quint64 uncompSz = 0;
+                    blockOk = bodyPos + descLen + 1 <= data.size()
+                            && readU64LE(data, bodyPos, uncompSz)
+                            && readU64LE(data, bodyPos + 8, compSz);
+                    Q_UNUSED(uncompSz);
+                    if (blockOk) {
+                        payloadPos = bodyPos + descLen + 1;
+                        blockOk = compSz <= static_cast<quint64>(data.size() - payloadPos);
+                    }
+                    if (blockOk) {
+                        quint32 maskSz = 0;
+                        blockEnd = payloadPos + static_cast<qint64>(compSz);
+                        blockOk = readU32LE(data, blockEnd, maskSz)
+                                && blockEnd + 4 + static_cast<qint64>(maskSz) <= data.size();
+                        if (blockOk)
+                            blockEnd += 4 + static_cast<qint64>(maskSz);
+                    }
+                } else if (afterHdr + 5 <= data.size()
+                           && static_cast<unsigned char>(data[static_cast<int>(afterHdr + 4)])
+                                   == 0x0AU) {
+                    // Raw Origin block framing: <uint32_le rawSz> <0x0A> <payload> [<4B maskSz> <mask>]
+                    quint32 rawSz = 0;
+                    blockOk = readU32LE(data, afterHdr, rawSz)
+                            && static_cast<qint64>(rawSz) <= (data.size() - (afterHdr + 5));
+                    if (blockOk) {
+                        payloadPos = afterHdr + 5;
+                        compSz = rawSz;
+                        blockEnd = payloadPos + static_cast<qint64>(compSz);
+                        quint32 maskSz = 0;
+                        if (blockEnd + 4 <= data.size() && readU32LE(data, blockEnd, maskSz)
+                            && blockEnd + 4 + static_cast<qint64>(maskSz) <= data.size()) {
+                            const qint64 withMask = blockEnd + 4 + static_cast<qint64>(maskSz);
+                            if (withMask == data.size() || isDatasetHeaderAt(withMask)
+                                || isDatasetListEndAt(withMask)) {
+                                blockEnd = withMask;
+                            }
+                        }
+                    }
+                } else {
+                    blockOk = false;
+                }
+            }
+        }
+        if (!blockOk) {
+            // Unknown tag or unframed block: resync to the next valid dataset header.
+            qint64 endMarker = -1;
+            const qint64 next = findNextDatasetHeader(blockStart, &endMarker);
+            ++dsSeq;
+            RawCpyuaDataset skippedDs;
+            skippedDs.oneBasedId = dsSeq;
+            skippedDs.skipped = true;
+            datasets.append(skippedDs);
+            if (next < 0) {
+                if (endMarker >= 0)
+                    lastGoodEnd = endMarker;
+                break;
+            }
+            pos = next;
+            lastGoodEnd = pos;
+            continue;
+        }
+
+        const QByteArray payload = data.mid(static_cast<int>(payloadPos), static_cast<int>(compSz));
+        pos = blockEnd;
+        lastGoodEnd = pos;
 
         ++dsSeq;
         RawCpyuaDataset ds;
         ds.oneBasedId = dsSeq;
 
-        // Extract dataset name (typically at offset >= 0x30 in decoded 114-120 byte header)
-        if (hdrDec.size() > 0x30) {
-            const QString hdrAscii = QString::fromLatin1(hdrDec.constData() + 0x30,
-                                                         hdrDec.size() - 0x30);
-            const QRegularExpressionMatch m = kDsNameRe.match(hdrAscii);
+        // Extract dataset name: in CPYUA 114-120 byte headers, the 22-byte null-terminated name
+        // field sits at offset (hdrDec.size() - 53) right before 0xCA 0x10; fall back to regex
+        // scan from offset 0x30.
+        if (hdrDec.size() >= 64) {
+            const int fixedOff = hdrDec.size() - 53;
+            int nul = hdrDec.indexOf('\0', fixedOff);
+            if (nul < 0 || nul > fixedOff + 22)
+                nul = std::min(hdrDec.size(), fixedOff + 22);
+            if (nul > fixedOff) {
+                const QString cand =
+                        decodeTextBytes(hdrDec.mid(fixedOff, nul - fixedOff), textHint).trimmed();
+                if (cand.contains(QLatin1Char('_')))
+                    ds.fullName = cand;
+            }
+        }
+        if (ds.fullName.isEmpty() && hdrDec.size() > 0x30) {
+            const QString hdrText = decodeTextBytes(hdrDec.mid(0x30), textHint);
+            const QRegularExpressionMatch m = kDsNameRe.match(hdrText);
             if (m.hasMatch())
                 ds.fullName = m.captured(0);
         }
@@ -3100,13 +3348,22 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             ds.colName = ds.fullName;
         }
 
-        decodeCpyuaNumericPayload(payload, ds.values);
+        if (decodeCpyuaNumericPayload(payload, ds.values)) {
+            ds.hasNumeric = true;
+        } else if (decodeCpyuaTextPayload(payload, textHint, ds.textValues)) {
+            ds.isText = true;
+        } else {
+            // Non-0x05 block with no decodable numeric/text payload: keep dataset slot for ID
+            // alignment and continue to subsequent datasets instead of aborting (D4-8).
+            ds.skipped = true;
+        }
         datasets.append(ds);
     }
+    pos = lastGoodEnd;
 
     if (datasets.isEmpty()) {
         if (outErr)
-            *outErr = QStringLiteral("No readable datasets found in CPYUA .opju file.");
+            *outErr = QObject::tr("No readable datasets found in CPYUA .opju file.");
         return false;
     }
 
@@ -3181,7 +3438,7 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         while (nameEnd < std::min(colDec.size(), 24) && colDec[nameEnd] != '\0')
             ++nameEnd;
         if (nameEnd > 9) {
-            const QString sn = decodeTextBytes(colDec.mid(9, nameEnd - 9)).trimmed();
+            const QString sn = decodeTextBytes(colDec.mid(9, nameEnd - 9), textHint).trimmed();
             if (!sn.isEmpty())
                 ds.colName = sn;
         }
@@ -3194,7 +3451,7 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             if (totalLen > 0 && strLen > 0 && strLen <= totalLen
                 && tail + 3 + strLen <= data.size()) {
                 const QString metaStr = decodeTextBytes(
-                        data.mid(static_cast<int>(tail + 3), strLen));
+                        data.mid(static_cast<int>(tail + 3), strLen), textHint);
                 const QStringList parts = metaStr.split(QStringLiteral("\r\n"));
                 if (!parts.isEmpty())
                     ds.longName = parts[0].trimmed();
@@ -3209,6 +3466,8 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
     // 3. Group datasets into Worksheets preserving appearance order
     QHash<QString, int> wsIdxByName;
     for (const RawCpyuaDataset &ds : datasets) {
+        if (ds.skipped)
+            continue;
         const QString key = ds.tableName.toLower();
         int wsIdx = wsIdxByName.value(key, -1);
         if (wsIdx < 0) {
@@ -3222,21 +3481,43 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         }
 
         OpjuWorksheet &ws = proj.worksheets[wsIdx];
+        bool wsHasNumericX = false;
+        for (const OpjuColumn &existing : ws.columns) {
+            if (existing.designation == SciDAVis::X) {
+                wsHasNumericX = true;
+                break;
+            }
+        }
         OpjuColumn col;
         col.shortName = ds.colName;
         col.longName = ds.longName;
         col.units = ds.units;
         col.comment = ds.comment;
-        col.designation = ds.hasMetadata
-                ? ds.designation
-                : (ws.columns.isEmpty() ? SciDAVis::X : SciDAVis::Y);
-        col.dataType = OpjuDataType::Double;
-        col.hasNumeric = true;
-        col.numericValues = ds.values;
+        if (ds.hasMetadata) {
+            col.designation = ds.designation;
+        } else if (ds.isText) {
+            col.designation = SciDAVis::noDesignation;
+        } else {
+            col.designation = wsHasNumericX ? SciDAVis::Y : SciDAVis::X;
+        }
+        if (ds.isText) {
+            col.dataType = OpjuDataType::Text;
+            col.hasText = true;
+            col.textValues = ds.textValues;
+        } else {
+            col.dataType = OpjuDataType::Double;
+            col.hasNumeric = true;
+            col.numericValues = ds.values;
+        }
         ws.columns.append(col);
     }
 
-    return !proj.worksheets.isEmpty();
+    if (proj.worksheets.isEmpty()) {
+        if (outErr)
+            *outErr = QObject::tr("No readable datasets found in CPYUA .opju file.");
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -3273,11 +3554,18 @@ bool ImportOPJU::isSupportedOpjuFile(const QString &fileName)
 bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QString *outError)
 {
     ImportStats stats;
-    return importFile(app, fileName, outError, &stats);
+    return importFile(app, fileName, outError, &stats, 0);
 }
 
 bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QString *outError,
-                            ImportStats *outStats)
+                            int codePage)
+{
+    ImportStats stats;
+    return importFile(app, fileName, outError, &stats, codePage);
+}
+
+bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QString *outError,
+                            ImportStats *outStats, int codePage)
 {
     if (!app) {
         if (outError)
@@ -3295,12 +3583,12 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
         if (f.size() <= 0 || f.size() > kMaxArchiveBytes || !f.open(QIODevice::ReadOnly)) {
             app->setStatusBarText(QString());
             if (outError)
-                *outError = QStringLiteral("Failed to read CPYUA .opju file '%1'.").arg(fileName);
+                *outError = QObject::tr("Failed to read CPYUA .opju file '%1'.").arg(fileName);
             return false;
         }
         const QByteArray raw = f.readAll();
         f.close();
-        if (!parseCpyuaOpjuBuffer(raw, project, &err)) {
+        if (!parseCpyuaOpjuBuffer(raw, project, &err, codePage)) {
             app->setStatusBarText(QString());
             if (outError)
                 *outError = err;
@@ -3311,7 +3599,7 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
         if (!zip.open(fileName, &err)) {
             app->setStatusBarText(QString());
             if (outError)
-                *outError = QStringLiteral("Invalid .opju file: %1").arg(err);
+                *outError = QObject::tr("Invalid .opju file: %1").arg(err);
             return false;
         }
 
@@ -3323,7 +3611,7 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
                 QByteArray entryBytes;
                 QString ignored;
                 if (zip.extract(i, entryBytes, &ignored) && entryBytes.startsWith("CPYU")) {
-                    if (parseCpyuaOpjuBuffer(entryBytes, project, &ignored)) {
+                    if (parseCpyuaOpjuBuffer(entryBytes, project, &ignored, codePage)) {
                         decodedEmbeddedCpyua = true;
                         break;
                     }
@@ -3344,6 +3632,6 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
     if (outStats)
         *outStats = stats;
     if (!ok && outError && outError->isEmpty())
-        *outError = QStringLiteral("Failed to construct ToriGraph windows from .opju project.");
+        *outError = QObject::tr("Failed to construct ToriGraph windows from .opju project.");
     return ok;
 }

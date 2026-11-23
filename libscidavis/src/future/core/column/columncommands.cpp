@@ -312,6 +312,46 @@ void ColumnSetPlotDesignationCmd::undo()
 // end of class ColumnSetPlotDesignationCmd
 ///////////////////////////////////////////////////////////////////////////
 
+ColumnSetLongNameCmd::ColumnSetLongNameCmd(Column::Private *col, const QString &s,
+                                           QUndoCommand *parent)
+    : QUndoCommand(parent), d_col(col), d_new_value(s)
+{
+    setText(QObject::tr("%1: set long name").arg(col->name()));
+}
+
+ColumnSetLongNameCmd::~ColumnSetLongNameCmd() { }
+
+void ColumnSetLongNameCmd::redo()
+{
+    d_old_value = d_col->longName();
+    d_col->setLongName(d_new_value);
+}
+
+void ColumnSetLongNameCmd::undo()
+{
+    d_col->setLongName(d_old_value);
+}
+
+ColumnSetUnitsCmd::ColumnSetUnitsCmd(Column::Private *col, const QString &s,
+                                     QUndoCommand *parent)
+    : QUndoCommand(parent), d_col(col), d_new_value(s)
+{
+    setText(QObject::tr("%1: set units").arg(col->name()));
+}
+
+ColumnSetUnitsCmd::~ColumnSetUnitsCmd() { }
+
+void ColumnSetUnitsCmd::redo()
+{
+    d_old_value = d_col->units();
+    d_col->setUnits(d_new_value);
+}
+
+void ColumnSetUnitsCmd::undo()
+{
+    d_col->setUnits(d_old_value);
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // class ColumnClearCmd
 ///////////////////////////////////////////////////////////////////////////
