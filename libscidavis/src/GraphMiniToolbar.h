@@ -12,6 +12,7 @@
 #include <QPoint>
 #include <QPointer>
 
+class QCoreApplication;
 class QHBoxLayout;
 class QTimer;
 class QToolButton;
@@ -77,8 +78,10 @@ private slots:
     // Curve actions
     void onCurvePickColor();
     void onCurvePickSymbolShape();
+    void onCurvePickLineWidth();
     void onCurveLineWidthDec();
     void onCurveLineWidthInc();
+    void onCurvePickSymbolSize();
     void onCurveSymbolSizeDec();
     void onCurveSymbolSizeInc();
     void onCurveStyleLine();
@@ -119,10 +122,14 @@ private slots:
     void onLegendToggleTransparent();
     void onLegendToggleSubscript();
     void onLegendToggleSuperscript();
+    void onLegendEditInline();
     void onLegendFontDec();
     void onLegendFontInc();
     void onLegendReconstruct();
     void onLegendCycleColumns();
+
+    // Common full-settings action
+    void onOpenDetails();
 
 private:
     struct SavedSymbolState {
@@ -151,10 +158,16 @@ private:
                                  const QString &undoLabel);
     void adjustAxisFont(int deltaPt);
     void adjustLegendFont(int deltaPt);
+    QColor pickColorWithPalettePopup(QWidget *anchorWidget, const QColor &initial,
+                                     const QString &dialogTitle);
+    void shutdownForQuit();
     QString beginGraphUndo() const;
     void commitGraphUndo(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
 
     static bool s_enabled;
+    static QPointer<GraphMiniToolbar> s_instance;
+    static QPointer<QCoreApplication> s_bound_app;
+    static bool s_shutting_down;
 
     QHBoxLayout *d_layout;
     QTimer *d_popup_timer;

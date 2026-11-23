@@ -37,6 +37,7 @@
 #include "Graph.h"
 
 class ApplicationWindow;
+class Legend;
 class MultiLayer;
 class QButtonGroup;
 class QCheckBox;
@@ -58,6 +59,7 @@ class QTimer;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QVBoxLayout;
 class QWidget;
 
 /**
@@ -129,6 +131,7 @@ signals:
 protected:
     void changeEvent(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
     void buildUi();
@@ -137,6 +140,10 @@ private:
     QWidget *buildAxisInspector();
     QWidget *buildCurveInspector();
     QWidget *buildLegendInspector();
+
+    void applyCollapsedGeometry();
+    void updateQuickStartPlotButtonState();
+    void openAxesDialogForQwtAxis(Graph *g, int qwtAxis, bool showAxesTab = true);
 
     void connectMultiLayerSignals(MultiLayer *ml);
     void bindLayerSignals(Graph *g);
@@ -154,24 +161,32 @@ private:
     void removeSelectedObject();
 
     void syncPageLayerControls();
+    void syncInsetControls();
     void syncAxisControls();
     void syncCurveControls();
     void syncLegendControls();
 
-    void applyAxisScaleFromUi(int mergeId = -1);
-    void applyAxisBreakFromUi();
+    void applyInsetRoiFromUi(bool fromEdits = true);
+    void applyAxisScaleFromUi(int mergeId = -1, bool fromRangeEdits = false);
+    void applyAxisBreakFromUi(bool fromBreakEdits = false);
     void applyTickFormatFromUi(int mergeId = -1);
-    void applyTickDivideFromUi();
+    void applyTickDivideFromUi(bool fromLineEdit = false);
     void refreshCategoryColumnCombo();
     void applyCategoryColumnFromUi();
     void applyAxisTitleMarkup(const QString &openTag, const QString &closeTag);
     void insertAxisTitleToken(const QString &token);
+    void updateAxisTitlePreview(const QString &raw);
+    void flushPendingAxisTitleEdit();
     void rebuildGreekSymbolMenu();
     void rebuildUnitsSymbolMenu();
     void applyQuickErrorBars(int mode /*0=Adjacent, 1=SD, 2=5pct*/);
     void matchRightYAxisColorToCurve();
     void refreshPaletteSchemeCombo();
     void applyGroupAutoStyleFromUi();
+    void rebuildLegendCurveEntryRows(Graph *g, Legend *leg);
+    void applyArrowControlsFromUi(const QString &undoLabel, int mergeId = -1);
+    void applyImageGeometryFromUi();
+    void applyPlotTitleFromUi(const QString &undoLabel, int mergeId = -1);
     QVector<Graph *> targetLayersForScope() const;
 
     static QIcon buildCurveSwatchIcon(Graph *g, int curveIndex);
@@ -223,6 +238,7 @@ private:
     QPushButton *d_btn_qs_import_csv = nullptr;
     QPushButton *d_btn_qs_new_graph = nullptr;
     QPushButton *d_btn_qs_sample_gallery = nullptr;
+    QPushButton *d_btn_qs_help = nullptr;
 
     QFrame *d_scope_strip = nullptr;
     QLabel *d_lbl_scope = nullptr;
@@ -277,12 +293,27 @@ private:
     QDoubleSpinBox *d_spin_page_h_mm = nullptr;
     QLabel *d_lbl_page_dpi = nullptr;
     QSpinBox *d_spin_page_dpi = nullptr;
+    QLabel *d_lbl_page_unit = nullptr;
     QComboBox *d_combo_page_unit = nullptr;
     int inspectorPageUnit() const; // MultiLayer::PageUnit
     void configurePageSizeSpins(int unit, double wMm, double hMm);
     QCheckBox *d_chk_page_view = nullptr;
     QLabel *d_lbl_page_zoom = nullptr;
     QComboBox *d_combo_page_zoom = nullptr;
+    QToolButton *d_btn_page_zoom_fit = nullptr;
+
+    // Inset Layer ROI & Connector Controls (visible when active layer is an inset)
+    QWidget *d_inset_wrap = nullptr;
+    QLabel *d_sec_inset_lbl = nullptr;
+    QLabel *d_lbl_inset_xmin = nullptr;
+    QLineEdit *d_edit_inset_xmin = nullptr;
+    QLabel *d_lbl_inset_xmax = nullptr;
+    QLineEdit *d_edit_inset_xmax = nullptr;
+    QLabel *d_lbl_inset_ymin = nullptr;
+    QLineEdit *d_edit_inset_ymin = nullptr;
+    QLabel *d_lbl_inset_ymax = nullptr;
+    QLineEdit *d_edit_inset_ymax = nullptr;
+    QCheckBox *d_chk_inset_connectors = nullptr;
 
     QLabel *d_sec_layer_frame_lbl = nullptr;
     QPushButton *d_btn_box_inward = nullptr;
@@ -294,6 +325,7 @@ private:
 
     QLabel *d_sec_export_lbl = nullptr;
     QPushButton *d_btn_copy_ole = nullptr;
+    QPushButton *d_btn_send_pptx = nullptr;
     QPushButton *d_btn_export_img_pdf = nullptr;
 
     // --- Page 1: Axis Controls ---
@@ -352,6 +384,10 @@ private:
     QLabel *d_lbl_unit_format = nullptr;
     QComboBox *d_combo_unit_format = nullptr;
     QLineEdit *d_edit_axis_title = nullptr;
+    QLabel *d_lbl_axis_title_preview = nullptr;
+    QTimer *d_axis_title_timer = nullptr;
+    QPointer<Graph> d_axis_title_edit_layer;
+    int d_axis_title_edit_axis = -1;
     QToolButton *d_btn_fmt_italic = nullptr;
     QToolButton *d_btn_fmt_sub = nullptr;
     QToolButton *d_btn_fmt_sup = nullptr;
@@ -407,7 +443,7 @@ private:
     QWidget *d_err_style_wrap = nullptr;
     QLabel *d_sec_err_style_lbl = nullptr;
     QLabel *d_lbl_err_width = nullptr;
-    QSpinBox *d_spin_err_width = nullptr;
+    QDoubleSpinBox *d_spin_err_width = nullptr;
     QLabel *d_lbl_err_cap = nullptr;
     QSpinBox *d_spin_err_cap = nullptr;
     QLabel *d_lbl_err_dir = nullptr;
@@ -453,6 +489,8 @@ private:
     QLabel *d_lbl_spec_cmap = nullptr;
     QComboBox *d_combo_spec_cmap = nullptr;
     QCheckBox *d_chk_spec_reverse = nullptr;
+    QCheckBox *d_chk_spec_log_scale = nullptr;
+    QCheckBox *d_chk_spec_cell_blocks = nullptr;
     QCheckBox *d_chk_spec_colorbar = nullptr;
     QLabel *d_lbl_spec_cb_title = nullptr;
     QLineEdit *d_edit_spec_cb_title = nullptr;
@@ -468,8 +506,9 @@ private:
     QLabel *d_lbl_spec_zmax = nullptr;
     QLineEdit *d_edit_spec_zmax = nullptr;
 
-    // --- Page 3: Legend / Annotation Controls ---
+    // --- Page 3: Legend / Annotation / Plot Title Controls ---
     QLabel *d_lbl_legend_target = nullptr;
+    QWidget *d_leg_text_wrap = nullptr;
     QLabel *d_sec_legend_pos_lbl = nullptr;
     QPushButton *d_btn_leg_tl = nullptr;
     QPushButton *d_btn_leg_tc = nullptr;
@@ -496,6 +535,54 @@ private:
     QSpinBox *d_spin_leg_cols = nullptr;
     QLabel *d_lbl_leg_font_pt = nullptr;
     QDoubleSpinBox *d_spin_leg_font_pt = nullptr;
+
+    // Per-curve legend label editor (primary legend only)
+    QWidget *d_leg_entries_wrap = nullptr;
+    QLabel *d_sec_leg_entries_lbl = nullptr;
+    QVBoxLayout *d_leg_entries_layout = nullptr;
+
+    // Arrow / Line Annotation editor
+    QWidget *d_arrow_editor_wrap = nullptr;
+    QLabel *d_sec_arrow_lbl = nullptr;
+    QLabel *d_lbl_arrow_color = nullptr;
+    QPushButton *d_btn_arrow_color = nullptr;
+    QLabel *d_lbl_arrow_width = nullptr;
+    QDoubleSpinBox *d_spin_arrow_width = nullptr;
+    QLabel *d_lbl_arrow_style = nullptr;
+    QComboBox *d_combo_arrow_style = nullptr;
+    QCheckBox *d_chk_arrow_start = nullptr;
+    QCheckBox *d_chk_arrow_end = nullptr;
+    QLabel *d_lbl_arrow_head_len = nullptr;
+    QSpinBox *d_spin_arrow_head_len = nullptr;
+    QLabel *d_lbl_arrow_head_angle = nullptr;
+    QSpinBox *d_spin_arrow_head_angle = nullptr;
+    QCheckBox *d_chk_arrow_filled = nullptr;
+
+    // Image Annotation editor
+    QWidget *d_image_editor_wrap = nullptr;
+    QLabel *d_sec_img_lbl = nullptr;
+    QLabel *d_lbl_img_filename = nullptr;
+    QLabel *d_lbl_img_x = nullptr;
+    QSpinBox *d_spin_img_x = nullptr;
+    QLabel *d_lbl_img_y = nullptr;
+    QSpinBox *d_spin_img_y = nullptr;
+    QLabel *d_lbl_img_w = nullptr;
+    QSpinBox *d_spin_img_w = nullptr;
+    QLabel *d_lbl_img_h = nullptr;
+    QSpinBox *d_spin_img_h = nullptr;
+    QPushButton *d_btn_img_replace = nullptr;
+
+    // Plot Title editor
+    QWidget *d_plot_title_wrap = nullptr;
+    QLabel *d_sec_plot_title_lbl = nullptr;
+    QLabel *d_lbl_plot_title_text = nullptr;
+    QLineEdit *d_edit_plot_title = nullptr;
+    QWidget *d_plot_title_sym_bar = nullptr;
+    QLabel *d_lbl_plot_title_pt = nullptr;
+    QDoubleSpinBox *d_spin_plot_title_pt = nullptr;
+    QCheckBox *d_chk_plot_title_bold = nullptr;
+    QLabel *d_lbl_plot_title_color = nullptr;
+    QPushButton *d_btn_plot_title_color = nullptr;
 };
 
 #endif // GRAPH_INSPECTOR_DOCK_H

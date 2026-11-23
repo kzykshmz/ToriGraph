@@ -5,6 +5,9 @@
  ***************************************************************************/
 #include "GraphMiniToolbar.h"
 #include "ApplicationWindow.h"
+#include "AxesDialog.h"
+#include "CanvasInlineTextEditor.h"
+#include "ExtraPlotTypes.h"
 #include "Graph.h"
 #include "GraphInspectorDock.h"
 #include "Grid.h"
@@ -16,6 +19,7 @@
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "PlotStyleLimits.h"
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "Table.h"
@@ -23,13 +27,17 @@
 
 #include <QApplication>
 #include <QColorDialog>
+#include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHideEvent>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMdiSubWindow>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
@@ -40,12 +48,15 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QVector>
+#include <QWidgetAction>
 
 #include <algorithm>
 #include <cmath>
 
 #include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 #include <qwt_scale_div.h>
 #include <qwt_scale_engine.h>
@@ -323,18 +334,56 @@ void registerMiniToolbarTranslations()
     regCtx("Diamond", "ひし形 (◆)");
     regCtx("Star", "星 (★)");
     regCtx("Cross", "バツ (×)");
+    regCtx("Mean", "平均");
+    regCtx("Off", "なし");
     reg("None (No Symbol)", "なし (シンボル非表示)");
+    reg("None (Hide Line)", "なし (線を非表示)");
     reg("Decrease Line Width", "線幅を細くする");
     reg("Increase Line Width", "線幅を太くする");
+    reg("Decrease Line Width (current: %1 pt)", "線幅を細くする (現在: %1 pt)");
+    reg("Increase Line Width (current: %1 pt)", "線幅を太くする (現在: %1 pt)");
+    reg("Line Width: %1 pt — click to choose a preset", "線幅: %1 pt (クリックでプリセットを選択)");
+    reg("Line Width: Off (Scatter mode) — click to show line",
+        "線幅: なし (散布図モード・クリックで線を表示)");
+    reg("Line is hidden (Scatter mode) — click + or the width readout to show line",
+        "線は非表示です (散布図モード)。+ または幅の数値を押すと線を表示します");
+    reg("Show Line (currently hidden in Scatter mode)", "線を表示 (現在、散布図モードで非表示)");
     reg("Decrease Symbol Size", "シンボルを小さくする");
     reg("Increase Symbol Size", "シンボルを大きくする");
+    reg("Decrease Symbol Size (current: %1 pt)", "シンボルを小さくする (現在: %1 pt)");
+    reg("Increase Symbol Size (current: %1 pt)", "シンボルを大きくする (現在: %1 pt)");
+    reg("Symbol Size: %1 pt — click to choose a preset",
+        "シンボルサイズ: %1 pt (クリックでプリセットを選択)");
+    reg("Symbol Size: Off — click to show symbols", "シンボルサイズ: なし (クリックでシンボルを表示)");
+    reg("Symbols are hidden — click + or the size readout to show symbols",
+        "シンボルは非表示です。+ またはサイズの数値を押すとシンボルを表示します");
+    reg("Show Symbols (currently hidden)", "シンボルを表示 (現在非表示)");
     reg("Match Y-Right Axis Color", "右Y軸の色をこの曲線に合わせる");
     reg("Match Right-Y Axis Color", "右Y軸の色を曲線に合わせる");
     reg("Clear Masked Points", "マスク点をすべて解除");
+    reg("Hide Error Bars", "エラーバーを非表示");
+    reg("Show Error Bars", "エラーバーを表示");
+    reg("Attach Adjacent Error Column (%1)", "隣接するエラー列 (%1) をエラーバーとして追加");
+    reg("Add Error Bars / Error Band...", "エラーバー / エラーバンドを追加...");
+    reg("Add Error Band...", "エラーバンドを追加...");
+    reg("No adjacent Y-error column found. Open Add Error Bars... to choose an error column or percentage.",
+        "隣接する Y エラー列が見つかりません。「エラーバーの追加...」から列または割合を指定してください。");
     reg("Rescale This Axis", "この軸を自動スケール");
     reg("Reverse Axis", "軸を反転");
+    reg("Scale: Log10 — click for Linear", "スケール: 対数 (Log10) (クリックで線形)");
+    reg("Scale: Linear — click for Log10", "スケール: 線形 (クリックで対数 Log10)");
+    reg("Reverse Axis: On — click for Normal", "軸を反転: オン (クリックで通常)");
+    reg("Reverse Axis: Off — click to Reverse", "軸を反転: オフ (クリックで反転)");
+    reg("Ticks: Inward — click for Outward", "目盛り: 内向き (クリックで外向き)");
+    reg("Ticks: Outward — click for Inward", "目盛り: 外向き (クリックで内向き)");
+    reg("Opposite Axis Line: On — click to Hide", "対向軸線: オン (クリックで非表示)");
+    reg("Opposite Axis Line: Off — click to Show", "対向軸線: オフ (クリックで表示)");
     reg("Toggle y = 0 Reference Line", "y = 0 基準線の表示切替");
     reg("Toggle x = 0 Reference Line", "x = 0 基準線の表示切替");
+    reg("y = 0 Reference Line: On — click to Remove", "y = 0 基準線: オン (クリックで削除)");
+    reg("y = 0 Reference Line: Off — click to Add", "y = 0 基準線: オフ (クリックで追加)");
+    reg("x = 0 Reference Line: On — click to Remove", "x = 0 基準線: オン (クリックで削除)");
+    reg("x = 0 Reference Line: Off — click to Add", "x = 0 基準線: オフ (クリックで追加)");
     reg("Add Mean Reference Line", "平均値の基準線を追加");
     reg("Add Reference Line...", "基準線を追加...");
     reg("Rescale All (Ctrl+R)", "全軸を自動スケール (Ctrl+R)");
@@ -342,13 +391,76 @@ void registerMiniToolbarTranslations()
     reg("Open-L Frame", "L字枠");
     reg("Select Text Color", "文字色を選択");
     reg("Change Text Color", "文字色を変更");
+    reg("Grayscale & Basic", "グレースケール・基本色");
+    reg("Custom Color...", "カスタム色...");
     reg("Toggle Subscript", "下付き文字を切替");
     reg("Toggle Superscript", "上付き文字を切替");
+    reg("Subscript (x\u2082)", "下付き文字 (x\u2082)");
+    reg("Superscript (x\u00B2)", "上付き文字 (x\u00B2)");
+    reg("Edit Labels", "項目を編集");
+    reg("Edit individual legend labels inline (double-click any line for sub/superscripts)",
+        "凡例の各行を個別にインライン編集します (上付き・下付きも対応)");
+    reg("Line %1: %2", "行 %1: %2");
+    reg("Reset the legend to the default curve names? Manual edits to legend labels will be overwritten.",
+        "凡例を既定の曲線名に戻しますか? 手動で編集した凡例テキストは上書きされます。");
     reg("Decrease Text Font Size", "文字サイズを小さくする");
     reg("Increase Text Font Size", "文字サイズを大きくする");
     reg("Lock Aspect", "縦横比固定");
     reg("Lock / Unlock Aspect Ratio (Free Resize)", "縦横比固定 / 自由リサイズを切替");
     reg("Toggle Aspect Ratio Lock", "縦横比固定の切替");
+    reg("Open full Axis settings dialog", "軸の詳細設定ダイアログを開く");
+    reg("Open full Curve settings dialog", "曲線の詳細設定ダイアログを開く");
+    reg("Open full Legend / Text settings dialog", "凡例・テキストの詳細設定ダイアログを開く");
+    reg("Open full Layer / Page settings dialog", "レイヤー・ページの詳細設定ダイアログを開く");
+}
+
+QString formatCompactPt(double val)
+{
+    const double rounded = std::round(val * 10.0) / 10.0;
+    if (std::fabs(rounded - std::round(rounded)) < 1e-4)
+        return QString::number(static_cast<int>(std::lround(rounded)));
+    return QString::number(rounded, 'f', 1);
+}
+
+bool legendTextAllLinesEndWithTag(const QString &text, const QString &closeTag)
+{
+    static const QRegularExpression reTokens(
+            QStringLiteral("^(\\s*(?:\\\\[cp]\\{[^}]*\\}|\\\\l\\([^)]*\\))\\s*)*"));
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    bool anyLabel = false;
+    for (QString line : lines) {
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
+        const QRegularExpressionMatch m = reTokens.match(line);
+        const int start = m.hasMatch() ? m.capturedLength(0) : 0;
+        const QString label = line.mid(start).trimmed();
+        if (label.isEmpty())
+            continue;
+        anyLabel = true;
+        if (!label.endsWith(closeTag))
+            return false;
+    }
+    return anyLabel;
+}
+
+QString readableLegendLinePreview(Graph *g, const QString &rawLine)
+{
+    static const QRegularExpression reTok(
+            QStringLiteral("^(\\s*(?:\\\\[cp]\\{(\\d+)\\}|\\\\l\\((\\d+)\\))\\s*)*"));
+    static const QRegularExpression rePlaceholder(QStringLiteral("^%\\((\\d+)\\)$"));
+    QString line = rawLine;
+    if (line.endsWith(QLatin1Char('\r')))
+        line.chop(1);
+    const QRegularExpressionMatch m = reTok.match(line);
+    QString label = m.hasMatch() ? line.mid(m.capturedLength(0)).trimmed() : line.trimmed();
+    const QRegularExpressionMatch pm = rePlaceholder.match(label);
+    if (pm.hasMatch() && g) {
+        const int idx = pm.captured(1).toInt() - 1;
+        if (idx >= 0 && idx < g->curves() && g->curve(idx))
+            label = g->curve(idx)->title().text();
+    }
+    label.remove(QRegularExpression(QStringLiteral("<[^>]+>")));
+    return label.trimmed();
 }
 
 double effectivePenWidthF(const QPen &pen, double fallback = 1.0)
@@ -379,6 +491,9 @@ MiniBarPalette miniBarPalette()
 } // namespace
 
 bool GraphMiniToolbar::s_enabled = true;
+QPointer<GraphMiniToolbar> GraphMiniToolbar::s_instance = nullptr;
+QPointer<QCoreApplication> GraphMiniToolbar::s_bound_app = nullptr;
+bool GraphMiniToolbar::s_shutting_down = false;
 
 GraphMiniToolbar::GraphMiniToolbar(QWidget *parent)
     : QFrame(parent, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus),
@@ -419,14 +534,47 @@ GraphMiniToolbar::~GraphMiniToolbar()
         qApp->removeEventFilter(this);
         d_filter_installed = false;
     }
+    if (s_instance.data() == this)
+        s_instance.clear();
+}
+
+void GraphMiniToolbar::shutdownForQuit()
+{
+    d_in_modal_dialog = false;
+    d_keyboard_mode = false;
+    d_activating = false;
+    d_popup_pending = false;
+    if (d_popup_timer && d_popup_timer->isActive())
+        d_popup_timer->stop();
+    if (d_filter_installed && qApp) {
+        qApp->removeEventFilter(this);
+        d_filter_installed = false;
+    }
+    if (isVisible())
+        hide();
+    if (s_instance.data() == this)
+        s_instance.clear();
+    deleteLater();
 }
 
 GraphMiniToolbar *GraphMiniToolbar::instance()
 {
-    static GraphMiniToolbar *s_bar = nullptr;
-    if (!s_bar && qApp)
-        s_bar = new GraphMiniToolbar(nullptr);
-    return s_bar;
+    if (!qApp || QCoreApplication::closingDown())
+        return nullptr;
+    if (s_bound_app.data() != qApp) {
+        s_bound_app = qApp;
+        s_shutting_down = false;
+        QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, []() {
+            s_shutting_down = true;
+            if (GraphMiniToolbar *bar = s_instance.data())
+                bar->shutdownForQuit();
+        });
+    }
+    if (s_shutting_down)
+        return nullptr;
+    if (!s_instance)
+        s_instance = new GraphMiniToolbar(nullptr);
+    return s_instance.data();
 }
 
 void GraphMiniToolbar::setMiniToolbarEnabled(bool enabled)
@@ -463,7 +611,7 @@ void GraphMiniToolbar::applyThemeStyle()
             "}"
             "QToolButton {"
             "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11pt;"
+            "  font-size: 10pt;"
             "  font-weight: 600;"
             "  color: %3;"
             "  background-color: %4;"
@@ -472,6 +620,16 @@ void GraphMiniToolbar::applyThemeStyle()
             "  padding: 3px 6px;"
             "  min-width: 26px;"
             "  min-height: 26px;"
+            "}"
+            "QToolButton[miniStepper=\"true\"] {"
+            "  min-width: 20px;"
+            "  padding: 2px 4px;"
+            "}"
+            "QToolButton[miniReadout=\"true\"] {"
+            "  font-size: 9.5pt;"
+            "  font-weight: 600;"
+            "  min-width: 40px;"
+            "  padding: 2px 6px;"
             "}"
             "QToolButton:hover {"
             "  background-color: %6;"
@@ -482,6 +640,19 @@ void GraphMiniToolbar::applyThemeStyle()
             "  background-color: %7;"
             "  color: #FFFFFF;"
             "  border-color: %8;"
+            "}"
+            "QToolButton:disabled {"
+            "  color: #94A3B8;"
+            "  background-color: #F1F5F9;"
+            "  border-color: %5;"
+            "}"
+            "QLabel[miniReadoutLabel=\"true\"] {"
+            "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+            "  font-size: 9.5pt;"
+            "  font-weight: 600;"
+            "  color: %3;"
+            "  padding: 0 3px;"
+            "  background: transparent;"
             "}")
                           .arg(pal.surfaceBg.name(), pal.borderStrong.name(),
                                pal.textPrimary.name(), pal.surfaceAltBg.name(),
@@ -827,11 +998,30 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         addActionBtn(QString(), tr("Line + Symbol"), SLOT(onCurveStyleLineSymbol()), true,
                      hasLine && hasSym, QStringLiteral("plot-line-symbol"));
 
-        // 5. Line width -/+
-        addActionBtn(QStringLiteral("W\u2212"), tr("Decrease Line Width"),
-                     SLOT(onCurveLineWidthDec()));
-        addActionBtn(QStringLiteral("W+"), tr("Increase Line Width"),
-                     SLOT(onCurveLineWidthInc()));
+        // 5. Line width: - [readout pt] +
+        const double curW = effectivePenWidthF(c->pen(), 1.0);
+        const QString wStr = formatCompactPt(curW);
+        QToolButton *wDecBtn = addActionBtn(
+                QStringLiteral("\u2212"),
+                hasLine ? tr("Decrease Line Width (current: %1 pt)").arg(wStr)
+                        : tr("Line is hidden (Scatter mode) — click + or the width readout to show line"),
+                SLOT(onCurveLineWidthDec()));
+        wDecBtn->setProperty("miniStepper", true);
+        wDecBtn->setEnabled(hasLine);
+
+        QToolButton *wReadoutBtn = addActionBtn(
+                hasLine ? QStringLiteral("%1 pt").arg(wStr) : tr("Off"),
+                hasLine ? tr("Line Width: %1 pt — click to choose a preset").arg(wStr)
+                        : tr("Line Width: Off (Scatter mode) — click to show line"),
+                SLOT(onCurvePickLineWidth()));
+        wReadoutBtn->setProperty("miniReadout", true);
+
+        QToolButton *wIncBtn = addActionBtn(
+                QStringLiteral("+"),
+                hasLine ? tr("Increase Line Width (current: %1 pt)").arg(wStr)
+                        : tr("Show Line (currently hidden in Scatter mode)"),
+                SLOT(onCurveLineWidthInc()));
+        wIncBtn->setProperty("miniStepper", true);
 
         addSeparatorLine();
 
@@ -849,11 +1039,30 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         hollowBtn->setIconSize(QSize(16, 16));
         hollowBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-        // 8. Symbol size -/+
-        addActionBtn(QStringLiteral("S\u2212"), tr("Decrease Symbol Size"),
-                     SLOT(onCurveSymbolSizeDec()));
-        addActionBtn(QStringLiteral("S+"), tr("Increase Symbol Size"),
-                     SLOT(onCurveSymbolSizeInc()));
+        // 8. Symbol size: - [readout pt] +
+        const int curSymSz = hasSym ? qMax(1, c->symbol().size().width()) : 0;
+        const QString sStr = QString::number(curSymSz);
+        QToolButton *sDecBtn = addActionBtn(
+                QStringLiteral("\u2212"),
+                hasSym ? tr("Decrease Symbol Size (current: %1 pt)").arg(sStr)
+                       : tr("Symbols are hidden — click + or the size readout to show symbols"),
+                SLOT(onCurveSymbolSizeDec()));
+        sDecBtn->setProperty("miniStepper", true);
+        sDecBtn->setEnabled(hasSym);
+
+        QToolButton *sReadoutBtn = addActionBtn(
+                hasSym ? QStringLiteral("%1 pt").arg(sStr) : tr("Off"),
+                hasSym ? tr("Symbol Size: %1 pt — click to choose a preset").arg(sStr)
+                       : tr("Symbol Size: Off — click to show symbols"),
+                SLOT(onCurvePickSymbolSize()));
+        sReadoutBtn->setProperty("miniReadout", true);
+
+        QToolButton *sIncBtn = addActionBtn(
+                QStringLiteral("+"),
+                hasSym ? tr("Increase Symbol Size (current: %1 pt)").arg(sStr)
+                       : tr("Show Symbols (currently hidden)"),
+                SLOT(onCurveSymbolSizeInc()));
+        sIncBtn->setProperty("miniStepper", true);
 
         addSeparatorLine();
 
@@ -874,21 +1083,41 @@ void GraphMiniToolbar::rebuildCurrentButtons()
             matchYBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
         }
 
-        // 10. Error Bars toggle
+        // 10. Error Bars toggle / safe menu
         bool errOn = false;
+        bool hasAttachedErr = false;
+        QString adjacentErrLabel;
         int maskedPts = 0;
         if (auto *errSelf = dynamic_cast<QwtErrorPlotCurve *>(c)) {
+            hasAttachedErr = true;
             errOn = errSelf->isVisible();
         } else if (auto *dc = dynamic_cast<DataCurve *>(c)) {
             maskedPts = dc->maskedPointCount();
-            for (DataCurve *ec : dc->errorBarsList()) {
+            const QList<DataCurve *> errs = dc->errorBarsList();
+            hasAttachedErr = !errs.isEmpty();
+            for (DataCurve *ec : errs) {
                 if (ec && ec->isVisible()) {
                     errOn = true;
                     break;
                 }
             }
+            if (!hasAttachedErr && dc->table()) {
+                const int colIdx = dc->table()->colIndex(dc->yColumnName());
+                const int explicitIdx = findExplicitYErrColumnForCurve(dc->table(), colIdx);
+                if (explicitIdx >= 0)
+                    adjacentErrLabel = dc->table()->colLabel(explicitIdx);
+            }
         }
-        addActionBtn(QString(), tr("Toggle Error Bars"), SLOT(onCurveToggleErrorBars()),
+        QString errTip;
+        if (errOn)
+            errTip = tr("Hide Error Bars");
+        else if (hasAttachedErr)
+            errTip = tr("Show Error Bars");
+        else if (!adjacentErrLabel.isEmpty())
+            errTip = tr("Attach Adjacent Error Column (%1)").arg(adjacentErrLabel);
+        else
+            errTip = tr("Add Error Bars / Error Band...");
+        addActionBtn(QString(), errTip, SLOT(onCurveToggleErrorBars()),
                      true, errOn, QStringLiteral("error-bars"));
 
         // 11. Conditional Clear Mask button
@@ -897,6 +1126,11 @@ void GraphMiniToolbar::rebuildCurrentButtons()
             addActionBtn(QString(), tr("Clear Masked Points"), SLOT(onCurveClearMask()),
                          false, false, QStringLiteral("unmask-points"));
         }
+
+        // 12. Full Curve settings dialog
+        addSeparatorLine();
+        addActionBtn(tr("Details..."), tr("Open full Curve settings dialog"),
+                     SLOT(onOpenDetails()), false, false, QStringLiteral("settings"));
     } else if (d_target == TargetAxis) {
         Plot *p = d_graph->plotWidget();
         if (!p)
@@ -929,44 +1163,100 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         // 1. Rescale This Axis
         addActionBtn(QString(), tr("Rescale This Axis"), SLOT(onAxisAutoRange()),
                      false, false, QStringLiteral("zoom-auto"));
-        // 2. Log10 / Linear toggle
-        addActionBtn(QString(), tr("Toggle Log10 / Linear Scale"), SLOT(onAxisToggleLog()),
-                     true, isLog, QStringLiteral("axis-log"));
-        // 3. Reverse Axis toggle
-        QToolButton *revBtn = addActionBtn(QString(), tr("Reverse Axis"),
-                                           SLOT(onAxisToggleReverse()), true, isReversed);
+        // 2. Log10 / Linear toggle (tooltip reports current state)
+        addActionBtn(QString(),
+                     isLog ? tr("Scale: Log10 — click for Linear")
+                           : tr("Scale: Linear — click for Log10"),
+                     SLOT(onAxisToggleLog()), true, isLog, QStringLiteral("axis-log"));
+        // 3. Reverse Axis toggle (tooltip reports current state)
+        QToolButton *revBtn = addActionBtn(
+                QString(),
+                isReversed ? tr("Reverse Axis: On — click for Normal")
+                           : tr("Reverse Axis: Off — click to Reverse"),
+                SLOT(onAxisToggleReverse()), true, isReversed);
         revBtn->setIcon(makeReverseAxisIcon(pal.textPrimary));
         revBtn->setIconSize(QSize(16, 16));
         revBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-        // 4. Ticks In / Out toggle
-        addActionBtn(QString(), tr("Ticks In/Out"), SLOT(onAxisToggleTicksInOut()),
-                     true, ticksIn, QStringLiteral("axis-ticks-in"));
-        // 5. Opposite Axis Line toggle
-        addActionBtn(QString(), tr("Opposite Axis Line"), SLOT(onAxisToggleOppositeLine()),
-                     true, oppVisible, QStringLiteral("frame-box-plain"));
+        // 4. Ticks In / Out toggle (tooltip reports current state)
+        addActionBtn(QString(),
+                     ticksIn ? tr("Ticks: Inward — click for Outward")
+                             : tr("Ticks: Outward — click for Inward"),
+                     SLOT(onAxisToggleTicksInOut()), true, ticksIn,
+                     QStringLiteral("axis-ticks-in"));
+        // 5. Opposite Axis Line toggle (tooltip reports current state)
+        addActionBtn(QString(),
+                     oppVisible ? tr("Opposite Axis Line: On — click to Hide")
+                                : tr("Opposite Axis Line: Off — click to Show"),
+                     SLOT(onAxisToggleOppositeLine()), true, oppVisible,
+                     QStringLiteral("frame-box-plain"));
         addSeparatorLine();
-        // 6. Zero Reference Lines (y = 0, x = 0), Mean (mu), and + Reference Line...
+        // 6. Zero Reference Lines (y = 0, x = 0), Mean, and + Reference Line...
         const bool hasZeroY = GraphInspectorDock::hasZeroReferenceLine(d_graph, 0);
         const bool hasZeroX = GraphInspectorDock::hasZeroReferenceLine(d_graph, 1);
-        addActionBtn(QStringLiteral("y=0"), tr("Toggle y = 0 Reference Line"),
+        addActionBtn(QStringLiteral("y=0"),
+                     hasZeroY ? tr("y = 0 Reference Line: On — click to Remove")
+                              : tr("y = 0 Reference Line: Off — click to Add"),
                      SLOT(onAxisToggleZeroYLine()), true, hasZeroY);
-        addActionBtn(QStringLiteral("x=0"), tr("Toggle x = 0 Reference Line"),
+        addActionBtn(QStringLiteral("x=0"),
+                     hasZeroX ? tr("x = 0 Reference Line: On — click to Remove")
+                              : tr("x = 0 Reference Line: Off — click to Add"),
                      SLOT(onAxisToggleZeroXLine()), true, hasZeroX);
-        addActionBtn(QStringLiteral("\u03BC"), tr("Add Mean Reference Line"),
-                     SLOT(onAxisAddMeanLine()));
+        addActionBtn(tr("Mean"), tr("Add Mean Reference Line"), SLOT(onAxisAddMeanLine()),
+                     false, false, QStringLiteral("mean-line"));
         addActionBtn(QString(), tr("Add Reference Line..."), SLOT(onAxisAddRefLineDialog()),
                      false, false, QStringLiteral("curve-add"));
 
         addSeparatorLine();
-        // 7-8. Font -/+
+        // 7-8. Font - [readout pt] +
+        const double axPt = PlotStyleLimits::effectiveFontPointSizeF(p->axisFont(d_axis_id), 12.0);
         addActionBtn(QString(), tr("Decrease Axis Font Size"), SLOT(onAxisFontDec()),
                      false, false, QStringLiteral("font-dec"));
+        QLabel *axFontLbl = new QLabel(QStringLiteral("%1 pt").arg(formatCompactPt(axPt)), this);
+        axFontLbl->setProperty("miniReadoutLabel", true);
+        axFontLbl->setFocusPolicy(Qt::NoFocus);
+        d_layout->addWidget(axFontLbl);
         addActionBtn(QString(), tr("Increase Axis Font Size"), SLOT(onAxisFontInc()),
                      false, false, QStringLiteral("font-inc"));
+
+        // 9. Full Axis settings dialog (opens on exact QwtPlot::Axis via setCurrentQwtAxis)
+        addSeparatorLine();
+        addActionBtn(tr("Details..."), tr("Open full Axis settings dialog"),
+                     SLOT(onOpenDetails()), false, false, QStringLiteral("settings"));
     } else if (d_target == TargetCanvas) {
-        const bool boxOn = d_graph->isAxisBackboneVisible(QwtPlot::xTop)
+        const bool hasBottomLeft = d_graph->isAxisBackboneVisible(QwtPlot::xBottom)
+                && d_graph->isAxisBackboneVisible(QwtPlot::yLeft);
+        const bool hasTopRight = d_graph->isAxisBackboneVisible(QwtPlot::xTop)
                 && d_graph->isAxisBackboneVisible(QwtPlot::yRight);
+        bool hasTopCurve = false;
+        bool hasRightCurve = false;
+        for (int i = 0; i < d_graph->curves(); ++i) {
+            if (QwtPlotCurve *cv = d_graph->curve(i)) {
+                if (cv->xAxis() == QwtPlot::xTop)
+                    hasTopCurve = true;
+                if (cv->yAxis() == QwtPlot::yRight)
+                    hasRightCurve = true;
+            }
+        }
+        const bool topExpectedOpenL = hasTopCurve || d_graph->hasColorScaleOnAxis(QwtPlot::xTop);
+        const bool rightExpectedOpenL =
+                hasRightCurve || d_graph->hasColorScaleOnAxis(QwtPlot::yRight);
+        Plot *p = d_graph->plotWidget();
+        const int xMaj = (p && QwtPlot::xBottom < p->getMajorTicksType().size())
+                ? p->getMajorTicksType().at(QwtPlot::xBottom)
+                : (int)ScaleDraw::Out;
+        const int yMaj = (p && QwtPlot::yLeft < p->getMajorTicksType().size())
+                ? p->getMajorTicksType().at(QwtPlot::yLeft)
+                : (int)ScaleDraw::Out;
+        const bool boxInwardOn = hasBottomLeft && hasTopRight
+                && (xMaj == (int)ScaleDraw::In || xMaj == (int)ScaleDraw::Both)
+                && (yMaj == (int)ScaleDraw::In || yMaj == (int)ScaleDraw::Both);
+        const bool gridZeroOn = d_graph->grid()
+                && (d_graph->grid()->xZeroLineEnabled() || d_graph->grid()->yZeroLineEnabled());
+        const bool openLOn = hasBottomLeft && !gridZeroOn
+                && (d_graph->isAxisBackboneVisible(QwtPlot::xTop) == topExpectedOpenL)
+                && (d_graph->isAxisBackboneVisible(QwtPlot::yRight) == rightExpectedOpenL)
+                && !(topExpectedOpenL && rightExpectedOpenL);
         const bool gridOn = d_graph->grid()
                 && d_graph->grid()->xEnabled() && d_graph->grid()->yEnabled();
 
@@ -976,9 +1266,9 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         addSeparatorLine();
         // 2-3. Box Inward / Open-L Frame quick buttons
         addActionBtn(QString(), tr("Box Inward Frame"), SLOT(onCanvasSetBoxInward()),
-                     true, boxOn, QStringLiteral("frame-box-inward"));
+                     true, boxInwardOn, QStringLiteral("frame-box-inward"));
         addActionBtn(QString(), tr("Open-L Frame"), SLOT(onCanvasSetOpenL()),
-                     true, !boxOn, QStringLiteral("frame-open-l"));
+                     true, openLOn, QStringLiteral("frame-open-l"));
         // 4. Major Grid
         addActionBtn(QString(), tr("Toggle Major Grid"), SLOT(onCanvasToggleMajorGrid()),
                      true, gridOn, QStringLiteral("axis-grid"));
@@ -1024,6 +1314,11 @@ void GraphMiniToolbar::rebuildCurrentButtons()
                      SLOT(onCanvasAspectSquare()));
         addActionBtn(QString(), tr("Fit Page to Layers"), SLOT(onCanvasFitPageToLayers()),
                      false, false, QStringLiteral("layer-arrange"));
+
+        // 8. Full Layer / Page settings dialog
+        addSeparatorLine();
+        addActionBtn(tr("Details..."), tr("Open full Layer / Page settings dialog"),
+                     SLOT(onOpenDetails()), false, false, QStringLiteral("settings"));
     } else if (d_target == TargetLegend) {
         if (!isLegendValid())
             return;
@@ -1033,8 +1328,14 @@ void GraphMiniToolbar::rebuildCurrentButtons()
         const bool transp = (d_legend->backgroundColor().alpha() == 0);
         const int nCols = qMax(1, d_legend->numColumns());
         const QString curTxt = d_legend->text();
-        const bool hasSub = curTxt.endsWith(QStringLiteral("</sub>"));
-        const bool hasSup = curTxt.endsWith(QStringLiteral("</sup>"));
+        int nonEmptyLineCount = 0;
+        for (const QString &ln : curTxt.split(QLatin1Char('\n'))) {
+            if (!ln.trimmed().isEmpty())
+                ++nonEmptyLineCount;
+        }
+        const bool isMultiLineMainLegend = isMainLegend && (nonEmptyLineCount > 1);
+        const bool hasSub = legendTextAllLinesEndWithTag(curTxt, QStringLiteral("</sub>"));
+        const bool hasSup = legendTextAllLinesEndWithTag(curTxt, QStringLiteral("</sup>"));
 
         if (isMainLegend) {
             QToolButton *autoPlaceBtn =
@@ -1061,18 +1362,32 @@ void GraphMiniToolbar::rebuildCurrentButtons()
 
         addSeparatorLine();
 
-        // Subscript x₂ & Superscript x² quick toggles
-        addActionBtn(QStringLiteral("x\u2082"), tr("Subscript (<sub>...</sub>)"),
-                     SLOT(onLegendToggleSubscript()), true, hasSub);
-        addActionBtn(QStringLiteral("x\u00B2"), tr("Superscript (<sup>...</sup>)"),
-                     SLOT(onLegendToggleSuperscript()), true, hasSup);
+        // A3-4: Multi-line primary legends edit individual lines inline instead of applying
+        // whole-legend all-line sub/superscript toggles; single-line legends and TextAnnotations
+        // keep direct x2 / x^2 toggles.
+        if (isMultiLineMainLegend) {
+            addActionBtn(
+                    tr("Edit Labels"),
+                    tr("Edit individual legend labels inline (double-click any line for sub/superscripts)"),
+                    SLOT(onLegendEditInline()), false, false, QStringLiteral("text-label"));
+        } else {
+            addActionBtn(QStringLiteral("x\u2082"), tr("Subscript (x\u2082)"),
+                         SLOT(onLegendToggleSubscript()), true, hasSub);
+            addActionBtn(QStringLiteral("x\u00B2"), tr("Superscript (x\u00B2)"),
+                         SLOT(onLegendToggleSuperscript()), true, hasSup);
+        }
 
         addSeparatorLine();
 
-        // Font -/+
+        // Font - [readout pt] +
+        const double legPt = PlotStyleLimits::effectiveFontPointSizeF(d_legend->font(), 12.0);
         addActionBtn(QString(),
                      isMainLegend ? tr("Decrease Legend Font Size") : tr("Decrease Text Font Size"),
                      SLOT(onLegendFontDec()), false, false, QStringLiteral("font-dec"));
+        QLabel *legFontLbl = new QLabel(QStringLiteral("%1 pt").arg(formatCompactPt(legPt)), this);
+        legFontLbl->setProperty("miniReadoutLabel", true);
+        legFontLbl->setFocusPolicy(Qt::NoFocus);
+        d_layout->addWidget(legFontLbl);
         addActionBtn(QString(),
                      isMainLegend ? tr("Increase Legend Font Size") : tr("Increase Text Font Size"),
                      SLOT(onLegendFontInc()), false, false, QStringLiteral("font-inc"));
@@ -1084,6 +1399,11 @@ void GraphMiniToolbar::rebuildCurrentButtons()
             addActionBtn(QString(), tr("Reconstruct Legend"), SLOT(onLegendReconstruct()),
                          false, false, QStringLiteral("recalc-now"));
         }
+
+        // Full Legend / Text settings dialog
+        addSeparatorLine();
+        addActionBtn(tr("Details..."), tr("Open full Legend / Text settings dialog"),
+                     SLOT(onOpenDetails()), false, false, QStringLiteral("settings"));
     }
 }
 
@@ -1325,6 +1645,96 @@ void GraphMiniToolbar::commitGraphUndo(const QString &label, const QString &befo
     }
 }
 
+QColor GraphMiniToolbar::pickColorWithPalettePopup(QWidget *anchorWidget, const QColor &initial,
+                                                   const QString &dialogTitle)
+{
+    if (!d_graph || ApplicationWindow::isNonInteractiveContext(d_graph))
+        return QColor();
+
+    Graph::registerPaletteTranslations();
+    const QString defName = Graph::defaultCurvePaletteName();
+    const QList<QColor> defColors = Graph::paletteColors(defName);
+    const bool defIsOkabe = (Graph::canonicalPaletteName(defName) == Graph::okabeItoPaletteName());
+    const QString altName =
+            defIsOkabe ? Graph::toriGraphStandardPaletteName() : Graph::okabeItoPaletteName();
+    const QList<QColor> altColors =
+            defIsOkabe ? Graph::toriGraphStandardColors() : Graph::okabeItoColors();
+    const QList<QColor> basicColors = {
+        QColor(0x00, 0x00, 0x00), QColor(0x33, 0x41, 0x55), QColor(0x64, 0x74, 0x8B),
+        QColor(0x94, 0xA3, 0xB8), QColor(0xFF, 0xFF, 0xFF), QColor(0xDC, 0x26, 0x26),
+        QColor(0x1D, 0x4E, 0xD8), QColor(0x15, 0x80, 0x3D)
+    };
+
+    QMenu menu(this);
+    QColor chosen;
+
+    QWidget *panel = new QWidget(&menu);
+    QVBoxLayout *vlay = new QVBoxLayout(panel);
+    vlay->setContentsMargins(8, 6, 8, 8);
+    vlay->setSpacing(5);
+
+    auto addRow = [&](const QString &heading, const QList<QColor> &colors) {
+        if (colors.isEmpty())
+            return;
+        QLabel *lbl = new QLabel(heading, panel);
+        lbl->setStyleSheet(QStringLiteral(
+                "QLabel { font-size: 8.5pt; font-weight: 600; color: #475569; background: transparent; }"));
+        vlay->addWidget(lbl);
+
+        QGridLayout *grid = new QGridLayout();
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setSpacing(4);
+        const int maxCols = 8;
+        const int count = qMin(colors.size(), 16);
+        for (int i = 0; i < count; ++i) {
+            const QColor col = colors.at(i);
+            QToolButton *sw = new QToolButton(panel);
+            sw->setFixedSize(22, 22);
+            sw->setAutoRaise(false);
+            sw->setToolTip(col.name().toUpper());
+            const bool isCur = initial.isValid() && (col.rgb() == initial.rgb());
+            const QString borderCss = isCur ? QStringLiteral("2px solid #0F6CBD")
+                                            : QStringLiteral("1px solid #94A3B8");
+            sw->setStyleSheet(QStringLiteral(
+                    "QToolButton { background-color: %1; border: %2; border-radius: 4px; "
+                    "min-width: 20px; min-height: 20px; padding: 0; }"
+                    "QToolButton:hover { border: 2px solid #0F6CBD; }")
+                                      .arg(col.name(), borderCss));
+            connect(sw, &QToolButton::clicked, &menu, [&chosen, &menu, col]() {
+                chosen = col;
+                menu.close();
+            });
+            grid->addWidget(sw, i / maxCols, i % maxCols);
+        }
+        vlay->addLayout(grid);
+    };
+
+    const QString defDisplay = QCoreApplication::translate("Graph", defName.toUtf8().constData());
+    const QString altDisplay = QCoreApplication::translate("Graph", altName.toUtf8().constData());
+    addRow(defDisplay, defColors);
+    addRow(altDisplay, altColors);
+    addRow(tr("Grayscale & Basic"), basicColors);
+
+    QWidgetAction *wa = new QWidgetAction(&menu);
+    wa->setDefaultWidget(panel);
+    menu.addAction(wa);
+    menu.addSeparator();
+    QAction *customAct = menu.addAction(tr("Custom Color..."));
+
+    QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
+    if (anchorWidget)
+        menuPos = anchorWidget->mapToGlobal(QPoint(0, anchorWidget->height() + 2));
+
+    QPointer<Graph> safeG(d_graph);
+    d_in_modal_dialog = true;
+    QAction *pickedAct = menu.exec(menuPos);
+    if (!chosen.isValid() && pickedAct == customAct && safeG) {
+        chosen = QColorDialog::getColor(initial, safeG.data(), dialogTitle);
+    }
+    d_in_modal_dialog = false;
+    return safeG ? chosen : QColor();
+}
+
 void GraphMiniToolbar::onCurvePickColor()
 {
     if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
@@ -1333,11 +1743,10 @@ void GraphMiniToolbar::onCurvePickColor()
     if (!c)
         return;
 
-    QColor initial = (c->style() != QwtPlotCurve::NoCurve) ? c->pen().color()
-                                                           : c->symbol().pen().color();
-    d_in_modal_dialog = true;
-    QColor chosen = QColorDialog::getColor(initial, d_graph, tr("Select Curve Color"));
-    d_in_modal_dialog = false;
+    const QColor initial = (c->style() != QwtPlotCurve::NoCurve) ? c->pen().color()
+                                                                 : c->symbol().pen().color();
+    const QColor chosen = pickColorWithPalettePopup(
+            qobject_cast<QWidget *>(sender()), initial, tr("Select Curve Color"));
     if (!chosen.isValid() || !d_graph)
         return;
 
@@ -1513,12 +1922,91 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
     reclampToAvailableBounds();
 }
 
-void GraphMiniToolbar::onCurveLineWidthDec()
+void GraphMiniToolbar::onCurvePickLineWidth()
 {
     if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
         return;
     QwtPlotCurve *c = d_graph->curve(d_curve_index);
     if (!c)
+        return;
+
+    const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
+    const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
+    const double curW = hasLine ? effectivePenWidthF(c->pen(), 1.0) : 0.0;
+
+    QMenu menu(this);
+    if (hasSym) {
+        QAction *offAct = menu.addAction(tr("None (Hide Line)"));
+        offAct->setData(0.0);
+        offAct->setCheckable(true);
+        offAct->setChecked(!hasLine);
+        menu.addSeparator();
+    }
+    const double presets[] = { 0.5, 1.0, 1.5, 2.0, 3.0, 4.0 };
+    for (double w : presets) {
+        QAction *act = menu.addAction(QStringLiteral("%1 pt").arg(formatCompactPt(w)));
+        act->setData(w);
+        act->setCheckable(true);
+        if (hasLine && std::fabs(curW - w) < 0.05)
+            act->setChecked(true);
+    }
+
+    QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
+    if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
+        menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
+
+    QPointer<Graph> safeG(d_graph);
+    d_in_modal_dialog = true;
+    QAction *picked = menu.exec(menuPos);
+    d_in_modal_dialog = false;
+    if (!picked || !safeG || d_curve_index < 0 || d_curve_index >= safeG->curves())
+        return;
+
+    c = safeG->curve(d_curve_index);
+    if (!c)
+        return;
+
+    const double nextW = picked->data().toDouble();
+    if (nextW <= 0.0) {
+        if (c->symbol().style() != QwtSymbol::NoSymbol)
+            applyCurveLineSymbolMode(1); // Scatter
+        return;
+    }
+
+    const QString beforeSnap = beginGraphUndo();
+    const bool wasNoLine = (c->style() == QwtPlotCurve::NoCurve);
+    if (wasNoLine) {
+        c->setStyle(QwtPlotCurve::Lines);
+        const bool symNow = (c->symbol().style() != QwtSymbol::NoSymbol);
+        safeG->setCurveType(d_curve_index, symNow ? Graph::LineSymbols : Graph::Line, false);
+        c = safeG->curve(d_curve_index);
+        if (!c)
+            return;
+        c->setStyle(QwtPlotCurve::Lines);
+    }
+    QPen pen = c->pen();
+    if (pen.style() == Qt::NoPen)
+        pen.setStyle(Qt::SolidLine);
+    if (wasNoLine && !pen.color().isValid())
+        pen.setColor(c->symbol().pen().color().isValid() ? c->symbol().pen().color()
+                                                         : QColor(Qt::black));
+    pen.setWidthF(qBound(0.5, nextW, 20.0));
+    c->setPen(pen);
+    safeG->reconstructLegend();
+    safeG->replot();
+    safeG->notifyChanges();
+    commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
+    rebuildCurrentButtons();
+    adjustSize();
+    reclampToAvailableBounds();
+}
+
+void GraphMiniToolbar::onCurveLineWidthDec()
+{
+    if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
+        return;
+    QwtPlotCurve *c = d_graph->curve(d_curve_index);
+    if (!c || c->style() == QwtPlotCurve::NoCurve)
         return;
     const QString beforeSnap = beginGraphUndo();
     QPen pen = c->pen();
@@ -1530,6 +2018,11 @@ void GraphMiniToolbar::onCurveLineWidthDec()
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
+    if (isVisible()) {
+        rebuildCurrentButtons();
+        adjustSize();
+        reclampToAvailableBounds();
+    }
 }
 
 void GraphMiniToolbar::onCurveLineWidthInc()
@@ -1540,10 +2033,22 @@ void GraphMiniToolbar::onCurveLineWidthInc()
     if (!c)
         return;
     const QString beforeSnap = beginGraphUndo();
-    if (c->style() == QwtPlotCurve::NoCurve)
+    const bool wasNoLine = (c->style() == QwtPlotCurve::NoCurve);
+    if (wasNoLine) {
+        const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
+        d_graph->setCurveType(d_curve_index, hasSym ? Graph::LineSymbols : Graph::Line, false);
+        c = d_graph->curve(d_curve_index);
+        if (!c)
+            return;
         c->setStyle(QwtPlotCurve::Lines);
+    }
     QPen pen = c->pen();
-    const double curW = effectivePenWidthF(pen, 1.0);
+    if (pen.style() == Qt::NoPen)
+        pen.setStyle(Qt::SolidLine);
+    if (wasNoLine && !pen.color().isValid())
+        pen.setColor(c->symbol().pen().color().isValid() ? c->symbol().pen().color()
+                                                         : QColor(Qt::black));
+    const double curW = wasNoLine ? 1.0 : effectivePenWidthF(pen, 1.0);
     const double nextW = qBound(0.5, std::round((curW + 0.5) * 10.0) / 10.0, 20.0);
     pen.setWidthF(nextW);
     c->setPen(pen);
@@ -1551,6 +2056,98 @@ void GraphMiniToolbar::onCurveLineWidthInc()
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
+    if (isVisible()) {
+        rebuildCurrentButtons();
+        adjustSize();
+        reclampToAvailableBounds();
+    }
+}
+
+void GraphMiniToolbar::onCurvePickSymbolSize()
+{
+    if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
+        return;
+    QwtPlotCurve *c = d_graph->curve(d_curve_index);
+    if (!c)
+        return;
+
+    const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
+    const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
+    const int curSz = hasSym ? qMax(1, c->symbol().size().width()) : 0;
+
+    QMenu menu(this);
+    if (hasLine) {
+        QAction *offAct = menu.addAction(tr("None (No Symbol)"));
+        offAct->setData(0);
+        offAct->setCheckable(true);
+        offAct->setChecked(!hasSym);
+        menu.addSeparator();
+    }
+    const int presets[] = { 4, 5, 6, 7, 8, 10, 12, 16 };
+    for (int sz : presets) {
+        QAction *act = menu.addAction(QStringLiteral("%1 pt").arg(sz));
+        act->setData(sz);
+        act->setCheckable(true);
+        if (hasSym && curSz == sz)
+            act->setChecked(true);
+    }
+
+    QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
+    if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
+        menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
+
+    QPointer<Graph> safeG(d_graph);
+    d_in_modal_dialog = true;
+    QAction *picked = menu.exec(menuPos);
+    d_in_modal_dialog = false;
+    if (!picked || !safeG || d_curve_index < 0 || d_curve_index >= safeG->curves())
+        return;
+
+    c = safeG->curve(d_curve_index);
+    if (!c)
+        return;
+
+    const int nextSz = picked->data().toInt();
+    if (nextSz <= 0) {
+        if (c->style() != QwtPlotCurve::NoCurve)
+            applyCurveLineSymbolMode(0); // Line only
+        return;
+    }
+
+    const QString beforeSnap = beginGraphUndo();
+    QwtSymbol sym = c->symbol();
+    const bool wasNoSym = (sym.style() == QwtSymbol::NoSymbol);
+    if (wasNoSym) {
+        const long key = safeG->curveKey(d_curve_index);
+        const SavedSymbolState st = d_saved_symbol_states.value(key);
+        const QColor col = c->pen().color().isValid() ? c->pen().color() : QColor(Qt::black);
+        sym.setStyle(st.style != (int)QwtSymbol::NoSymbol
+                             ? static_cast<QwtSymbol::Style>(st.style)
+                             : QwtSymbol::Ellipse);
+        QPen sp(col);
+        sp.setWidthF(qMax(0.5, st.penWidth));
+        sym.setPen(sp);
+        if (st.hollowWhite)
+            sym.setBrush(QBrush(Qt::white));
+        else if (st.noFill)
+            sym.setBrush(Qt::NoBrush);
+        else
+            sym.setBrush(QBrush(col));
+    }
+    const int clampedSz = qBound(PlotStyleLimits::kSymbolSizeMin, nextSz,
+                                 PlotStyleLimits::kSymbolSizeMax);
+    sym.setSize(QSize(clampedSz, clampedSz));
+    c->setSymbol(sym);
+    if (wasNoSym) {
+        const bool lineNow = (c->style() != QwtPlotCurve::NoCurve);
+        safeG->setCurveType(d_curve_index, lineNow ? Graph::LineSymbols : Graph::Scatter, false);
+        if (QwtPlotCurve *after = safeG->curve(d_curve_index))
+            after->setSymbol(sym);
+    }
+    safeG->reconstructLegend();
+    safeG->replot();
+    safeG->notifyChanges();
+    commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
     rebuildCurrentButtons();
     adjustSize();
     reclampToAvailableBounds();
@@ -1561,17 +2158,22 @@ void GraphMiniToolbar::onCurveSymbolSizeDec()
     if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
         return;
     QwtPlotCurve *c = d_graph->curve(d_curve_index);
-    if (!c)
+    if (!c || c->symbol().style() == QwtSymbol::NoSymbol)
         return;
     const QString beforeSnap = beginGraphUndo();
     QwtSymbol sym = c->symbol();
-    int sz = qMax(3, sym.size().width() - 2);
+    const int sz = qMax(3, sym.size().width() - 2);
     sym.setSize(QSize(sz, sz));
     c->setSymbol(sym);
     d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
+    if (isVisible()) {
+        rebuildCurrentButtons();
+        adjustSize();
+        reclampToAvailableBounds();
+    }
 }
 
 void GraphMiniToolbar::onCurveSymbolSizeInc()
@@ -1585,19 +2187,37 @@ void GraphMiniToolbar::onCurveSymbolSizeInc()
     QwtSymbol sym = c->symbol();
     const bool wasNoSym = (sym.style() == QwtSymbol::NoSymbol);
     if (wasNoSym) {
-        sym.setStyle(QwtSymbol::Ellipse);
-        QColor col = c->pen().color();
-        sym.setPen(QPen(col, 1));
-        sym.setBrush(QBrush(col));
+        const long key = d_graph->curveKey(d_curve_index);
+        const SavedSymbolState st = d_saved_symbol_states.value(key);
+        const QColor col = c->pen().color().isValid() ? c->pen().color() : QColor(Qt::black);
+        sym.setStyle(st.style != (int)QwtSymbol::NoSymbol
+                             ? static_cast<QwtSymbol::Style>(st.style)
+                             : QwtSymbol::Ellipse);
+        QPen sp(col);
+        sp.setWidthF(qMax(0.5, st.penWidth));
+        sym.setPen(sp);
+        if (st.hollowWhite)
+            sym.setBrush(QBrush(Qt::white));
+        else if (st.noFill)
+            sym.setBrush(Qt::NoBrush);
+        else
+            sym.setBrush(QBrush(col));
     }
-    int sz = qMin(41, qMax(5, sym.size().width() + 2));
+    const int baseSz = wasNoSym ? 5 : sym.size().width();
+    const int sz = qBound(5, baseSz + 2, PlotStyleLimits::kSymbolSizeMax);
     sym.setSize(QSize(sz, sz));
     c->setSymbol(sym);
+    if (wasNoSym) {
+        const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
+        d_graph->setCurveType(d_curve_index, hasLine ? Graph::LineSymbols : Graph::Scatter, false);
+        if (QwtPlotCurve *after = d_graph->curve(d_curve_index))
+            after->setSymbol(sym);
+    }
     d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
-    if (wasNoSym) {
+    if (isVisible()) {
         rebuildCurrentButtons();
         adjustSize();
         reclampToAvailableBounds();
@@ -1886,69 +2506,56 @@ void GraphMiniToolbar::onCurveToggleErrorBars()
                         QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(explicitYErrIdx);
                 changed = d_graph->addErrorBars(dc->xColumnName(), dc->title().text(), tbl, errFull,
                                                 QwtErrorPlotCurve::Vertical);
-            } else if (Column *data = (colIdx >= 0) ? tbl->column(colIdx) : nullptr) {
-                const QString baseLabel = tbl->colLabel(colIdx) + QStringLiteral("_yErr");
-                QString uniqueColName = baseLabel;
-                int suffix = 2;
-                const QStringList existingCols = tbl->colNames();
-                while (existingCols.contains(uniqueColName)
-                       || tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + uniqueColName)
-                               >= 0) {
-                    uniqueColName = baseLabel + QStringLiteral("_") + QString::number(suffix++);
+            } else {
+                // P0 (A3-1): Never silently mutate the source Table or invent fake constant-SD
+                // error bars without user choice. Offer explicit Error Bars / Error Band dialogs.
+                if (!app || ApplicationWindow::isNonInteractiveContext(d_graph)) {
+                    if (app && app->statusBar()) {
+                        app->statusBar()->showMessage(
+                                tr("No adjacent Y-error column found. Open Add Error Bars... to "
+                                   "choose an error column or percentage."),
+                                5000);
+                    }
+                    rebuildCurrentButtons();
+                    adjustSize();
+                    reclampToAvailableBounds();
+                    return;
                 }
-                Column *errCol = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
-                errCol->setPlotDesignation(SciDAVis::yErr);
-                const int rows = data->rowCount();
-                if (rows > 0) {
-                    const int r0 = qMax(0, dc->startRow());
-                    const int r1 = (dc->endRow() >= 0) ? qMin(rows - 1, dc->endRow()) : (rows - 1);
-                    const int xColIdx = tbl->colIndex(dc->xColumnName());
-                    Column *xCol = (xColIdx >= 0) ? tbl->column(xColIdx) : nullptr;
-                    QVector<bool> pointMaskedAtRow(rows, false);
-                    for (int p = 0; p < dc->dataSize(); ++p) {
-                        if (dc->isPointMasked(p)) {
-                            const int tr = dc->tableRow(p);
-                            if (tr >= 0 && tr < rows)
-                                pointMaskedAtRow[tr] = true;
-                        }
-                    }
 
-                    QVector<int> validRows;
-                    validRows.reserve(qMax(0, r1 - r0 + 1));
-                    double sum = 0.0;
-                    for (int i = r0; i <= r1; ++i) {
-                        if (data->isInvalid(i) || data->isMasked(i)
-                            || (xCol && xCol->isMasked(i)) || pointMaskedAtRow[i]) {
-                            continue;
-                        }
-                        const double v = data->valueAt(i);
-                        if (!std::isfinite(v))
-                            continue;
-                        validRows.append(i);
-                        sum += v;
-                    }
+                QMenu menu(this);
+                QAction *actBars = menu.addAction(
+                        IconLoader::duotoneIcon(QStringLiteral("error-bars"), 16),
+                        tr("Add Error Bars..."));
+                QAction *actBand = menu.addAction(
+                        IconLoader::duotoneIcon(QStringLiteral("error-bars"), 16),
+                        tr("Add Error Band..."));
 
-                    const int validCount = validRows.size();
-                    double sdVal = 0.0;
-                    if (validCount >= 2) {
-                        const double mean = sum / double(validCount);
-                        double sqSum = 0.0;
-                        for (int idx : validRows) {
-                            const double diff = data->valueAt(idx) - mean;
-                            sqSum += diff * diff;
-                        }
-                        sdVal = std::sqrt(sqSum / double(validCount - 1));
+                QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
+                if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
+                    menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
+
+                QPointer<Graph> safeG(d_graph);
+                QPointer<ApplicationWindow> safeApp(app);
+                d_in_modal_dialog = true;
+                QAction *picked = menu.exec(menuPos);
+                d_in_modal_dialog = false;
+
+                if (picked && safeG && safeApp) {
+                    cancelScheduledAndHide();
+                    if (MultiLayer *targetMl = safeG->multiLayerParent()) {
+                        targetMl->setActiveGraph(safeG.data());
+                        safeApp->activateSubWindow(targetMl);
                     }
-                    for (int idx : validRows)
-                        errCol->setValueAt(idx, sdVal);
+                    if (picked == actBars)
+                        safeApp->addErrorBars();
+                    else if (picked == actBand)
+                        ExtraPlotTypes::showErrorBandDialog(safeApp.data());
+                } else if (safeG && isVisible()) {
+                    rebuildCurrentButtons();
+                    adjustSize();
+                    reclampToAvailableBounds();
                 }
-                tbl->d_future_table->addChild(errCol);
-                const QString fullErrColName =
-                        QString(tbl->name()) + QStringLiteral("_") + errCol->name();
-                changed = d_graph->addErrorBars(dc->xColumnName(), dc->title().text(), tbl,
-                                                fullErrColName, QwtErrorPlotCurve::Vertical);
-                if (changed && app)
-                    emit app->modified();
+                return;
             }
         }
     }
@@ -2175,8 +2782,9 @@ void GraphMiniToolbar::adjustAxisFont(int deltaPt)
     const double tickPt = (tickFont.pointSizeF() > 0.0)
             ? tickFont.pointSizeF()
             : (tickFont.pointSize() > 0 ? double(tickFont.pointSize()) : 12.0);
-    tickFont.setPointSizeF(
-            qBound(6.0, std::round((tickPt + double(deltaPt)) * 10.0) / 10.0, 72.0));
+    tickFont.setPointSizeF(qBound(PlotStyleLimits::kFontSizeMin,
+                                  std::round((tickPt + double(deltaPt)) * 10.0) / 10.0,
+                                  PlotStyleLimits::kFontSizeMax));
     d_graph->setAxisFont(d_axis_id, tickFont);
 
     QFont titleFont = d_graph->axisTitleFont(d_axis_id);
@@ -2185,13 +2793,19 @@ void GraphMiniToolbar::adjustAxisFont(int deltaPt)
     const double titlePt = (titleFont.pointSizeF() > 0.0)
             ? titleFont.pointSizeF()
             : (titleFont.pointSize() > 0 ? double(titleFont.pointSize()) : 14.0);
-    titleFont.setPointSizeF(
-            qBound(6.0, std::round((titlePt + double(deltaPt)) * 10.0) / 10.0, 72.0));
+    titleFont.setPointSizeF(qBound(PlotStyleLimits::kFontSizeMin,
+                                   std::round((titlePt + double(deltaPt)) * 10.0) / 10.0,
+                                   PlotStyleLimits::kFontSizeMax));
     d_graph->setAxisTitleFont(d_axis_id, titleFont);
 
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Adjust Axis Font Size"), beforeSnap, kMergeMiniFont);
+    if (isVisible()) {
+        rebuildCurrentButtons();
+        adjustSize();
+        reclampToAvailableBounds();
+    }
 }
 
 void GraphMiniToolbar::onAxisFontDec()
@@ -2312,9 +2926,8 @@ void GraphMiniToolbar::onLegendPickTextColor()
     if (!d_graph || !isLegendValid())
         return;
     const QColor initial = d_legend->textColor().isValid() ? d_legend->textColor() : QColor(Qt::black);
-    d_in_modal_dialog = true;
-    const QColor chosen = QColorDialog::getColor(initial, d_graph, tr("Select Text Color"));
-    d_in_modal_dialog = false;
+    const QColor chosen = pickColorWithPalettePopup(
+            qobject_cast<QWidget *>(sender()), initial, tr("Select Text Color"));
     if (!chosen.isValid() || !d_graph || !isLegendValid())
         return;
 
@@ -2471,6 +3084,74 @@ void GraphMiniToolbar::onLegendToggleSuperscript()
                             tr("Toggle Superscript"));
 }
 
+void GraphMiniToolbar::onLegendEditInline()
+{
+    if (!d_graph || !isLegendValid())
+        return;
+    Plot *p = d_graph->plotWidget();
+    if (!p || !p->canvas())
+        return;
+
+    long markerKey = -1;
+    for (int k : p->markerKeys()) {
+        if (p->marker(k) == d_legend) {
+            markerKey = k;
+            break;
+        }
+    }
+    if (markerKey < 0)
+        return;
+
+    const bool isMainLegend = (d_legend == d_graph->legend());
+    const QRect legRect = d_legend->rect();
+    const QRect anchorGlobal(p->canvas()->mapToGlobal(legRect.topLeft()), legRect.size());
+
+    if (!isMainLegend) {
+        QPointer<Graph> safeG(d_graph);
+        cancelScheduledAndHide();
+        if (safeG)
+            CanvasInlineTextEditor::openForLegendOrText(safeG.data(), markerKey, -1, anchorGlobal);
+        return;
+    }
+
+    const QStringList lines = d_legend->text().split(QLatin1Char('\n'));
+    QVector<int> nonEmptyIndices;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (!lines.at(i).trimmed().isEmpty())
+            nonEmptyIndices.append(i);
+    }
+
+    int chosenLine = nonEmptyIndices.isEmpty() ? 0 : nonEmptyIndices.first();
+    if (nonEmptyIndices.size() > 1 && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
+        QMenu menu(this);
+        for (int idx : nonEmptyIndices) {
+            QString preview = readableLegendLinePreview(d_graph.data(), lines.at(idx));
+            if (preview.length() > 36)
+                preview = preview.left(35) + QStringLiteral("\u2026");
+            if (preview.isEmpty())
+                preview = QStringLiteral("#%1").arg(idx + 1);
+            QAction *act = menu.addAction(tr("Line %1: %2").arg(idx + 1).arg(preview));
+            act->setData(idx);
+        }
+        QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
+        if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
+            menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
+        QPointer<Graph> safeG(d_graph);
+        d_in_modal_dialog = true;
+        QAction *picked = menu.exec(menuPos);
+        d_in_modal_dialog = false;
+        if (!picked || !safeG)
+            return;
+        chosenLine = picked->data().toInt();
+    }
+
+    QPointer<Graph> safeG(d_graph);
+    cancelScheduledAndHide();
+    if (safeG)
+        CanvasInlineTextEditor::openForLegendOrText(safeG.data(), markerKey, chosenLine,
+                                                    anchorGlobal);
+}
+
 void GraphMiniToolbar::adjustLegendFont(int deltaPt)
 {
     if (!isLegendValid())
@@ -2482,11 +3163,18 @@ void GraphMiniToolbar::adjustLegendFont(int deltaPt)
     const double pt = (f.pointSizeF() > 0.0)
             ? f.pointSizeF()
             : (f.pointSize() > 0 ? double(f.pointSize()) : 12.0);
-    f.setPointSizeF(qBound(6.0, std::round((pt + double(deltaPt)) * 10.0) / 10.0, 72.0));
+    f.setPointSizeF(qBound(PlotStyleLimits::kFontSizeMin,
+                           std::round((pt + double(deltaPt)) * 10.0) / 10.0,
+                           PlotStyleLimits::kFontSizeMax));
     d_legend->setFont(f);
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Adjust Legend Font Size"), beforeSnap, kMergeMiniFont);
+    if (isVisible()) {
+        rebuildCurrentButtons();
+        adjustSize();
+        reclampToAvailableBounds();
+    }
 }
 
 void GraphMiniToolbar::onLegendFontDec()
@@ -2503,6 +3191,20 @@ void GraphMiniToolbar::onLegendReconstruct()
 {
     if (!d_graph)
         return;
+    const bool hasCustomEdits = isLegendValid()
+            && d_legend->text().trimmed() != d_graph->legendText().trimmed();
+    if (hasCustomEdits && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
+        QPointer<Graph> safeG(d_graph);
+        d_in_modal_dialog = true;
+        const QMessageBox::StandardButton ans = QMessageBox::question(
+                safeG.data(), tr("Reconstruct Legend"),
+                tr("Reset the legend to the default curve names? Manual edits to legend labels "
+                   "will be overwritten."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        d_in_modal_dialog = false;
+        if (ans != QMessageBox::Yes || !safeG)
+            return;
+    }
     const QString beforeSnap = beginGraphUndo();
     d_graph->reconstructLegend();
     d_legend = d_graph->legend();
@@ -2532,4 +3234,72 @@ void GraphMiniToolbar::onLegendCycleColumns()
     rebuildCurrentButtons();
     adjustSize();
     reclampToAvailableBounds();
+}
+
+void GraphMiniToolbar::onOpenDetails()
+{
+    if (!d_graph)
+        return;
+    ApplicationWindow *app = findAppWindow(d_graph);
+    if (!app || ApplicationWindow::isNonInteractiveContext(app))
+        return;
+
+    QPointer<Graph> safeG(d_graph);
+    QPointer<ApplicationWindow> safeApp(app);
+    const TargetType target = d_target;
+    const int axisId = d_axis_id;
+    const int curveIdx = d_curve_index;
+    Legend *leg = d_legend;
+    long markerKey = -1;
+    if (target == TargetLegend && leg && safeG->plotWidget()) {
+        for (int k : safeG->plotWidget()->markerKeys()) {
+            if (safeG->plotWidget()->marker(k) == leg) {
+                markerKey = k;
+                break;
+            }
+        }
+    }
+
+    cancelScheduledAndHide();
+    if (!safeG || !safeApp)
+        return;
+
+    MultiLayer *ml = safeG->multiLayerParent();
+    if (ml) {
+        ml->setActiveGraph(safeG.data());
+        safeApp->activateSubWindow(ml);
+    }
+
+    switch (target) {
+    case TargetCanvas:
+        safeApp->showGeneralPlotDialog();
+        break;
+    case TargetAxis: {
+        // C2-1: always select the exact QwtPlot::Axis via setCurrentQwtAxis()
+        auto &ad = safeApp->addChild<AxesDialog>();
+        ad.setAttribute(Qt::WA_DeleteOnClose, true);
+        connect(&ad, &QDialog::finished, &ad, &QObject::deleteLater);
+        if (ml)
+            ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+        ad.setGraph(safeG.data());
+        ad.showAxesPage();
+        ad.setCurrentQwtAxis(qBound(0, axisId, QwtPlot::axisCnt - 1));
+        ad.exec();
+        break;
+    }
+    case TargetCurve: {
+        const int resolved = resolveMasterCurveIndex(safeG.data(), curveIdx);
+        const int key = (resolved >= 0 && resolved < safeG->curves())
+                ? int(safeG->curveKey(resolved))
+                : -1;
+        safeApp->showPlotDialog(key);
+        break;
+    }
+    case TargetLegend:
+        if (markerKey >= 0) {
+            safeG->setSelectedMarker(markerKey);
+            safeApp->showTextDialog();
+        }
+        break;
+    }
 }
