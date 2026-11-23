@@ -41,12 +41,26 @@
 #include <QLocale>
 #include <cmath>
 
+#include <qwt_painter.h>
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_layout.h>
 #include <qwt_scale_map.h>
 #include <qwt_text.h>
 
 namespace {
+double pieScreenZoomScale(const QwtPlot *qwtPlot)
+{
+    if (!QwtPainter::metricsMap().isIdentity())
+        return 1.0;
+    const Plot *pl = dynamic_cast<const Plot *>(qwtPlot);
+    if (!pl)
+        return 1.0;
+    const double s = pl->displayFontScale();
+    if (!std::isfinite(s) || std::fabs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
+
 // Pie slices use the canonical Okabe-Ito definition (Graph::okabeItoColors()).
 QColor okabeItoPieColor(int i)
 {
@@ -174,10 +188,13 @@ void QwtPieCurve::drawPie(QPainter *painter, const QwtScaleMap &xMap, const QwtS
     if (sum <= 0.0)
         return;
 
-    const double sc = Plot::printDeviceScale();
+    const double sc = Plot::printDeviceScale() * pieScreenZoomScale(plot());
     QPen slicePen = QwtPlotCurve::pen();
     slicePen.setCosmetic(false);
-    slicePen.setWidthF(qMax(1.0, slicePen.widthF()) * sc);
+    const double baseW = (slicePen.widthF() > 0.0)
+            ? slicePen.widthF()
+            : ((slicePen.width() > 0) ? double(slicePen.width()) : 1.0);
+    slicePen.setWidthF(baseW * sc);
 
     int angle = int(5760 * 0.75);
     painter->save();

@@ -1697,7 +1697,19 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
                                           | QPainter::SmoothPixmapTransform,
                                   true);
                 if (singleLayer) {
-                    vp.fillRect(QRect(QPoint(0, 0), pxSize), Qt::white);
+                    // D3-6: do not force an opaque white backdrop. Use the layer's own
+                    // background; if that is transparent, fall back to the owning page
+                    // background; if that is transparent too, keep the EMF transparent.
+                    QColor singleBg;
+                    if (const Plot *lp = singleLayer->plotWidget())
+                        singleBg = lp->paletteBackgroundColor();
+                    if (!singleBg.isValid() || singleBg.alpha() == 0) {
+                        singleBg = ownerMl ? ownerMl->pageBackgroundColor() : QColor();
+                        if (ownerMl && !singleBg.isValid())
+                            singleBg = QColor(Qt::white);
+                    }
+                    if (singleBg.isValid() && singleBg.alpha() > 0)
+                        vp.fillRect(QRect(QPoint(0, 0), pxSize), singleBg);
                     singleLayer->exportPainter(vp, false, QRect(QPoint(0, 0), pxSize), pxSize);
                 } else if (ml) {
                     ml->exportPainter(vp, false, mlLayersRect, pxSize);

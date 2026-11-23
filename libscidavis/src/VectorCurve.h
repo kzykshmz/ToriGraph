@@ -66,6 +66,8 @@ public:
 
     int width();
     void setWidth(int w);
+    double widthF() const;
+    void setWidthF(double w);
 
     QColor color();
     void setColor(const QColor &c);

@@ -47,6 +47,7 @@
 #include "ImageMarker.h"
 #include "PlotEnrichement.h"
 #include "Graph.h"
+#include "CanvasPicker.h"
 #include "GraphMiniToolbar.h"
 #include "Plot.h"
 #include "MultiLayer.h"
@@ -743,7 +744,34 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
     switch (ke->key()) {
     case Qt::Key_Enter:
     case Qt::Key_Return:
+    case Qt::Key_F2:
         if (d_op == None) {
+            // Same entry as double-click: a single selected legend / text annotation opens
+            // the inline text editor instead of the legacy modal TextDialog.
+            if (!(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
+                && d_legend_markers.size() == 1 && d_line_markers.isEmpty()
+                && d_image_markers.isEmpty()) {
+                if (Graph *g = owningGraph()) {
+                    long key = g->selectedMarkerKey();
+                    if (key < 0 || g->textMarker(key) != d_legend_markers.first()) {
+                        key = -1;
+                        for (int k : g->textMarkerKeys()) {
+                            if (g->textMarker(k) == d_legend_markers.first()) {
+                                key = k;
+                                break;
+                            }
+                        }
+                    }
+                    if (key >= 0 && CanvasPicker::openInlineTextEditorForMarker(g, key)) {
+                        ke->accept();
+                        return;
+                    }
+                }
+            }
+            ke->ignore();
+            break;
+        }
+        if (ke->key() == Qt::Key_F2) {
             ke->ignore();
             break;
         }

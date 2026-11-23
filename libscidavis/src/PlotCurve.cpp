@@ -643,23 +643,30 @@ void DataCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleM
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    const QPen maskPen(QColor(220, 30, 30), 2, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+    const double sc = renderPenScale();
+    QPen maskPen(QColor(220, 30, 30), 2.0 * sc, Qt::SolidLine, Qt::RoundCap, Qt::MiterJoin);
+    maskPen.setCosmetic(false);
     painter->setPen(maskPen);
     painter->setBrush(Qt::NoBrush);
-    const double r = qMax(5.0, 0.5 * symbol().size().width() + 2.0);
+    const double r = qMax(5.0, 0.5 * symbol().size().width() + 2.0) * sc;
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
 
     for (int i = startIdx; i <= endIdx; ++i) {
         if (!isPointMaskedFast(i, xCol, yCol))
             continue;
-        const double px = xMap.xTransform(x(i));
-        const double py = yMap.xTransform(y(i));
+        const double vx = x(i);
+        const double vy = y(i);
+        if (brk.valueInGap(vx, vy))
+            continue;
+        const double px = xMap.xTransform(vx);
+        const double py = yMap.xTransform(vy);
         if (!std::isfinite(px) || !std::isfinite(py))
             continue;
         painter->drawRect(QRectF(px - r, py - r, 2.0 * r, 2.0 * r));
-        painter->drawLine(QPointF(px - r + 1.0, py - r + 1.0),
-                          QPointF(px + r - 1.0, py + r - 1.0));
-        painter->drawLine(QPointF(px - r + 1.0, py + r - 1.0),
-                          QPointF(px + r - 1.0, py - r + 1.0));
+        painter->drawLine(QPointF(px - r + sc, py - r + sc),
+                          QPointF(px + r - sc, py + r - sc));
+        painter->drawLine(QPointF(px - r + sc, py + r - sc),
+                          QPointF(px + r - sc, py - r + sc));
     }
     painter->restore();
 }
@@ -874,7 +881,8 @@ QPointF clampExtremePoint(const QPointF &pt)
 }
 
 void fillCurvePolygonF(QPainter *painter, const PlotCurve *curve, const QwtScaleMap &xMap,
-                       const QwtScaleMap &yMap, const QPolygonF &openPoly)
+                       const QwtScaleMap &yMap, const QPolygonF &openPoly,
+                       const PlotCurve::AxisBreakBands *bands = nullptr)
 {
     if (!painter || !curve || curve->brush().style() == Qt::NoBrush || openPoly.size() < 2)
         return;
@@ -897,7 +905,15 @@ void fillCurvePolygonF(QPainter *painter, const PlotCurve *curve, const QwtScale
     painter->save();
     painter->setPen(QPen(Qt::NoPen));
     painter->setBrush(b);
-    painter->drawPolygon(closed);
+    if (bands && bands->any()) {
+        // The area fill must not bridge an axis-break gap (neither the X gap between the two
+        // sides nor the Y gap between the curve and a baseline on the other side of the break).
+        const QVector<QPolygonF> pieces = PlotCurve::clipPolygonToBreaks(closed, *bands);
+        for (const QPolygonF &piece : pieces)
+            painter->drawPolygon(piece);
+    } else {
+        painter->drawPolygon(closed);
+    }
     painter->restore();
 }
 
@@ -1063,7 +1079,225 @@ QPen scaleFractionalPenForLayout(const QPen &srcPen, double screenScale = 1.0)
     return out;
 }
 
+QPolygonF clipPolygonHalfPlane(const QPolygonF &poly, bool alongX, double edge, bool keepLess)
+{
+    QPolygonF out;
+    if (poly.size() < 3)
+        return out;
+    auto coord = [alongX](const QPointF &p) { return alongX ? p.x() : p.y(); };
+    auto inside = [&](const QPointF &p) { return keepLess ? coord(p) <= edge : coord(p) >= edge; };
+    auto intersect = [&](const QPointF &a, const QPointF &b) {
+        const double ca = coord(a);
+        const double cb = coord(b);
+        const double d = cb - ca;
+        const double t = (std::fabs(d) > 1e-12) ? (edge - ca) / d : 0.0;
+        QPointF r = a + t * (b - a);
+        if (alongX)
+            r.setX(edge);
+        else
+            r.setY(edge);
+        return r;
+    };
+    out.reserve(poly.size() + 4);
+    QPointF prev = poly.last();
+    bool prevIn = inside(prev);
+    for (const QPointF &cur : poly) {
+        const bool curIn = inside(cur);
+        if (curIn) {
+            if (!prevIn)
+                out.append(intersect(prev, cur));
+            out.append(cur);
+        } else if (prevIn) {
+            out.append(intersect(prev, cur));
+        }
+        prev = cur;
+        prevIn = curIn;
+    }
+    return out;
+}
+
 } // namespace
+
+PlotCurve::AxisBreakBands PlotCurve::axisBreakBands(const QwtScaleMap &xMap,
+                                                    const QwtScaleMap &yMap) const
+{
+    AxisBreakBands b;
+    const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
+    if (!g)
+        return b;
+    const double halfGap = kAxisBreakHalfGapPx * renderPenScale();
+    Graph::AxisBreakSpec xb = g->axisBreak(xAxis());
+    if (!xb.enabled && xAxis() == QwtPlot::xTop && !g->hasColorScaleOnAxis(QwtPlot::xTop))
+        xb = g->axisBreak(QwtPlot::xBottom);
+    if (xb.enabled && std::isfinite(xb.breakFrom) && std::isfinite(xb.breakTo)
+        && xb.breakFrom != xb.breakTo) {
+        const double bf = qMin(xb.breakFrom, xb.breakTo);
+        const double bt = qMax(xb.breakFrom, xb.breakTo);
+        const double sLo = qMin(xMap.s1(), xMap.s2());
+        const double sHi = qMax(xMap.s1(), xMap.s2());
+        if (bf > sLo && bt < sHi && bt > bf + 1e-15) {
+            b.xBf = bf;
+            b.xBt = bt;
+            b.xBrkPx = 0.5 * (xMap.xTransform(b.xBf) + xMap.xTransform(b.xBt));
+            b.xEps = 1e-12 * qMax(1.0, b.xBt - b.xBf);
+            b.xLo = b.xBrkPx - halfGap;
+            b.xHi = b.xBrkPx + halfGap;
+            b.hasX = std::isfinite(b.xBrkPx);
+        }
+    }
+    Graph::AxisBreakSpec yb = g->axisBreak(yAxis());
+    if (!yb.enabled && yAxis() == QwtPlot::yRight && !g->hasColorScaleOnAxis(QwtPlot::yRight))
+        yb = g->axisBreak(QwtPlot::yLeft);
+    if (yb.enabled && std::isfinite(yb.breakFrom) && std::isfinite(yb.breakTo)
+        && yb.breakFrom != yb.breakTo) {
+        const double bf = qMin(yb.breakFrom, yb.breakTo);
+        const double bt = qMax(yb.breakFrom, yb.breakTo);
+        const double sLo = qMin(yMap.s1(), yMap.s2());
+        const double sHi = qMax(yMap.s1(), yMap.s2());
+        if (bf > sLo && bt < sHi && bt > bf + 1e-15) {
+            b.yBf = bf;
+            b.yBt = bt;
+            b.yBrkPx = 0.5 * (yMap.xTransform(b.yBf) + yMap.xTransform(b.yBt));
+            b.yEps = 1e-12 * qMax(1.0, b.yBt - b.yBf);
+            b.yLo = b.yBrkPx - halfGap;
+            b.yHi = b.yBrkPx + halfGap;
+            b.hasY = std::isfinite(b.yBrkPx);
+        }
+    }
+    return b;
+}
+
+void PlotCurve::appendSegmentOutsideBreaks(const QLineF &seg, const AxisBreakBands &b,
+                                           QVector<QLineF> &out)
+{
+    if (!b.any()) {
+        out.append(seg);
+        return;
+    }
+    double cut[2][2] = { { 0.0, 0.0 }, { 0.0, 0.0 } };
+    int nCut = 0;
+    // Returns false when the whole segment lies inside the band (axis-parallel segment).
+    auto addCut = [&](double p0, double p1, double lo, double hi) -> bool {
+        const double d = p1 - p0;
+        if (std::fabs(d) < 1e-9)
+            return !(p0 > lo && p0 < hi);
+        double t0 = (lo - p0) / d;
+        double t1 = (hi - p0) / d;
+        if (t0 > t1)
+            std::swap(t0, t1);
+        t0 = qMax(0.0, t0);
+        t1 = qMin(1.0, t1);
+        if (t1 > t0) {
+            cut[nCut][0] = t0;
+            cut[nCut][1] = t1;
+            ++nCut;
+        }
+        return true;
+    };
+    if (b.hasX && !addCut(seg.x1(), seg.x2(), b.xLo, b.xHi))
+        return;
+    if (b.hasY && !addCut(seg.y1(), seg.y2(), b.yLo, b.yHi))
+        return;
+    if (nCut == 0) {
+        out.append(seg);
+        return;
+    }
+    if (nCut == 2 && cut[1][0] < cut[0][0]) {
+        std::swap(cut[0][0], cut[1][0]);
+        std::swap(cut[0][1], cut[1][1]);
+    }
+    double cur = 0.0;
+    for (int k = 0; k < nCut; ++k) {
+        if (cut[k][0] > cur + 1e-9)
+            out.append(QLineF(seg.pointAt(cur), seg.pointAt(cut[k][0])));
+        cur = qMax(cur, cut[k][1]);
+    }
+    if (cur < 1.0 - 1e-9)
+        out.append(QLineF(seg.pointAt(cur), seg.p2()));
+}
+
+QVector<QPolygonF> PlotCurve::splitPolylineAtBreaks(const QPolygonF &poly, const AxisBreakBands &b)
+{
+    QVector<QPolygonF> out;
+    if (poly.isEmpty())
+        return out;
+    if (!b.any()) {
+        out.append(poly);
+        return out;
+    }
+    if (poly.size() == 1) {
+        const QPointF &p = poly.first();
+        const bool inX = b.hasX && p.x() > b.xLo && p.x() < b.xHi;
+        const bool inY = b.hasY && p.y() > b.yLo && p.y() < b.yHi;
+        if (!inX && !inY)
+            out.append(poly);
+        return out;
+    }
+    QPolygonF cur;
+    QVector<QLineF> segs;
+    for (int i = 1; i < poly.size(); ++i) {
+        segs.clear();
+        appendSegmentOutsideBreaks(QLineF(poly[i - 1], poly[i]), b, segs);
+        for (const QLineF &s : segs) {
+            if (!cur.isEmpty() && std::fabs(cur.last().x() - s.x1()) < 1e-9
+                && std::fabs(cur.last().y() - s.y1()) < 1e-9) {
+                cur.append(s.p2());
+            } else {
+                if (cur.size() >= 2)
+                    out.append(cur);
+                cur.clear();
+                cur.append(s.p1());
+                cur.append(s.p2());
+            }
+        }
+    }
+    if (cur.size() >= 2)
+        out.append(cur);
+    return out;
+}
+
+QVector<QPolygonF> PlotCurve::clipPolygonToBreaks(const QPolygonF &closedPoly,
+                                                  const AxisBreakBands &b)
+{
+    QVector<QPolygonF> pieces;
+    if (closedPoly.size() < 3)
+        return pieces;
+    pieces.append(closedPoly);
+    if (!b.any())
+        return pieces;
+    auto splitAlong = [&pieces](bool alongX, double lo, double hi) {
+        QVector<QPolygonF> next;
+        next.reserve(2 * pieces.size());
+        for (const QPolygonF &p : pieces) {
+            const QPolygonF a = clipPolygonHalfPlane(p, alongX, lo, true);
+            if (a.size() >= 3)
+                next.append(a);
+            const QPolygonF c = clipPolygonHalfPlane(p, alongX, hi, false);
+            if (c.size() >= 3)
+                next.append(c);
+        }
+        pieces.swap(next);
+    };
+    if (b.hasX)
+        splitAlong(true, b.xLo, b.xHi);
+    if (b.hasY)
+        splitAlong(false, b.yLo, b.yHi);
+    return pieces;
+}
+
+double PlotCurve::renderPenScale() const
+{
+    const QwtMetricsMap &mm = QwtPainter::metricsMap();
+    if (!mm.isIdentity()) {
+        const double refPx = 1000.0;
+        const double mmScale = double(mm.screenToLayoutX(int(refPx))) / refPx;
+        if (std::isfinite(mmScale) && mmScale > 0.0)
+            return qMax(Plot::printDeviceScale(), mmScale);
+        return Plot::printDeviceScale();
+    }
+    const double s = Plot::printDeviceScale() * screenDisplayScaleForPlot(plot());
+    return (std::isfinite(s) && s > 0.0) ? s : 1.0;
+}
 
 void PlotCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                      const QRect &canvasRect) const
@@ -1092,6 +1326,8 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
     if (from > to)
         return;
 
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
+
     switch (style) {
     case Lines: {
         const bool isFitted = testCurveAttribute(Fitted) && (curveFitter() != nullptr);
@@ -1116,48 +1352,30 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
                         fitted[k] = clampExtremePoint(fitted[k]);
                     run.swap(fitted);
                 }
+                if (brk.any() && run.size() >= 2) {
+                    const QVector<QPolygonF> pieces = splitPolylineAtBreaks(run, brk);
+                    for (const QPolygonF &piece : pieces) {
+                        if (piece.size() >= 2) {
+                            painter->drawPolyline(piece);
+                            if (brush().style() != Qt::NoBrush)
+                                fillCurvePolygonF(painter, this, xMap, yMap, piece, &brk);
+                        } else if (piece.size() == 1) {
+                            painter->drawPoint(piece[0]);
+                        }
+                    }
+                    run.clear();
+                    return;
+                }
             }
             if (run.size() >= 2) {
                 painter->drawPolyline(run);
                 if (brush().style() != Qt::NoBrush)
-                    fillCurvePolygonF(painter, this, xMap, yMap, run);
+                    fillCurvePolygonF(painter, this, xMap, yMap, run, &brk);
             } else if (run.size() == 1) {
                 painter->drawPoint(run[0]);
             }
             run.clear();
         };
-
-        const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
-        bool hasXBreak = false;
-        double xBf = 0.0, xBt = 0.0, xBrkPx = 0.0, xEps = 0.0;
-        bool hasYBreak = false;
-        double yBf = 0.0, yBt = 0.0, yBrkPx = 0.0, yEps = 0.0;
-        if (g) {
-            Graph::AxisBreakSpec xb = g->axisBreak(xAxis());
-            if (!xb.enabled && xAxis() == QwtPlot::xTop && !g->hasColorScaleOnAxis(QwtPlot::xTop))
-                xb = g->axisBreak(QwtPlot::xBottom);
-            if (xb.enabled && std::isfinite(xb.breakFrom) && std::isfinite(xb.breakTo)
-                && xb.breakFrom != xb.breakTo) {
-                hasXBreak = true;
-                xBf = qMin(xb.breakFrom, xb.breakTo);
-                xBt = qMax(xb.breakFrom, xb.breakTo);
-                xBrkPx = 0.5 * (xMap.xTransform(xBf) + xMap.xTransform(xBt));
-                xEps = 1e-12 * qMax(1.0, xBt - xBf);
-            }
-            Graph::AxisBreakSpec yb = g->axisBreak(yAxis());
-            if (!yb.enabled && yAxis() == QwtPlot::yRight
-                && !g->hasColorScaleOnAxis(QwtPlot::yRight))
-                yb = g->axisBreak(QwtPlot::yLeft);
-            if (yb.enabled && std::isfinite(yb.breakFrom) && std::isfinite(yb.breakTo)
-                && yb.breakFrom != yb.breakTo) {
-                hasYBreak = true;
-                yBf = qMin(yb.breakFrom, yb.breakTo);
-                yBt = qMax(yb.breakFrom, yb.breakTo);
-                yBrkPx = 0.5 * (yMap.xTransform(yBf) + yMap.xTransform(yBt));
-                yEps = 1e-12 * qMax(1.0, yBt - yBf);
-            }
-        }
-        const double halfGap = 4.5;
 
         // 4-point (first, min, max, last) per-device-pixel-column envelope decimation for dense
         // monotonic X waveforms (e.g. 200k points -> <= 4 * devPixelWidth vertices, preserving
@@ -1175,7 +1393,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
         const double devPixelWidth = std::max(250.0, std::fabs(xMap.pDist()) * colScale);
         const int spanCount = to - from + 1;
 
-        if (!isFitted && !hasXBreak && !hasYBreak
+        if (!isFitted && !brk.any()
             && spanCount > qMax(2000, int(4.0 * devPixelWidth))) {
             bool monoAsc = true;
             bool monoDesc = true;
@@ -1375,130 +1593,80 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
 
         QPolygonF run;
         run.reserve(qMin(4096, to - from + 1));
-        bool hasPrev = false;
-        double prevVx = 0.0, prevVy = 0.0;
-        QPointF prevPt;
-        for (int i = from; i <= to; ++i) {
-            const double vx = x(i);
-            const double vy = y(i);
-            const double px = xMap.xTransform(vx);
-            const double py = yMap.xTransform(vy);
-            if (!std::isfinite(px) || !std::isfinite(py)) {
-                flushRun(run);
-                hasPrev = false;
-                continue;
-            }
-            if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
-                || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps)) {
-                flushRun(run);
-                hasPrev = false;
-                continue;
-            }
-
-            const QPointF pt = clampExtremePoint(QPointF(px, py));
-            bool splitHandled = false;
-            if (hasPrev && hasXBreak) {
-                const bool straddlesX = (prevVx <= xBf + xEps && vx >= xBt - xEps)
-                        || (prevVx >= xBt - xEps && vx <= xBf + xEps);
-                const double loX = xBrkPx - halfGap;
-                const double hiX = xBrkPx + halfGap;
-                const double dx = pt.x() - prevPt.x();
-                if (straddlesX || (prevPt.x() <= loX && pt.x() >= hiX)
-                    || (prevPt.x() >= hiX && pt.x() <= loX)) {
-                    if (std::fabs(dx) > 1e-6 && ((prevPt.x() < loX && pt.x() > hiX)
-                                                 || (prevPt.x() > hiX && pt.x() < loX))) {
-                        const double edge1X = (dx > 0.0) ? loX : hiX;
-                        const double edge2X = (dx > 0.0) ? hiX : loX;
-                        const double t1 = qBound(0.0, (edge1X - prevPt.x()) / dx, 1.0);
-                        const double t2 = qBound(0.0, (edge2X - prevPt.x()) / dx, 1.0);
-                        const double dy = pt.y() - prevPt.y();
-                        run.append(clampExtremePoint(QPointF(edge1X, prevPt.y() + t1 * dy)));
-                        flushRun(run);
-                        run.append(clampExtremePoint(QPointF(edge2X, prevPt.y() + t2 * dy)));
-                    } else {
-                        flushRun(run);
-                    }
-                    splitHandled = true;
-                } else if (pt.x() > loX && pt.x() < hiX) {
-                    if (!run.isEmpty() && std::fabs(dx) > 1e-6
-                        && (prevPt.x() <= loX || prevPt.x() >= hiX)) {
-                        const double edge1X = (prevPt.x() <= loX) ? loX : hiX;
-                        const double t1 = qBound(0.0, (edge1X - prevPt.x()) / dx, 1.0);
-                        run.append(clampExtremePoint(
-                                QPointF(edge1X, prevPt.y() + t1 * (pt.y() - prevPt.y()))));
-                    }
+        if (!brk.any()) {
+            for (int i = from; i <= to; ++i) {
+                const double px = xMap.xTransform(x(i));
+                const double py = yMap.xTransform(y(i));
+                if (!std::isfinite(px) || !std::isfinite(py)) {
                     flushRun(run);
-                    prevVx = vx;
-                    prevVy = vy;
+                    continue;
+                }
+                const QPointF pt = clampExtremePoint(QPointF(px, py));
+                if (decimateSubPixel && !run.isEmpty() && i < to) {
+                    const double dx = pt.x() - run.last().x();
+                    const double dy = pt.y() - run.last().y();
+                    if (dx * dx + dy * dy < 4e-4)
+                        continue;
+                }
+                run.append(pt);
+            }
+        } else {
+            QVector<QLineF> segs;
+            segs.reserve(4);
+            bool hasPrev = false;
+            QPointF prevPt;
+            for (int i = from; i <= to; ++i) {
+                const double vx = x(i);
+                const double vy = y(i);
+                if (brk.valueInGap(vx, vy)) {
+                    flushRun(run);
+                    hasPrev = false;
+                    continue;
+                }
+                const double px = xMap.xTransform(vx);
+                const double py = yMap.xTransform(vy);
+                if (!std::isfinite(px) || !std::isfinite(py)) {
+                    flushRun(run);
+                    hasPrev = false;
+                    continue;
+                }
+                const QPointF pt = clampExtremePoint(QPointF(px, py));
+                if (!hasPrev) {
+                    if (!brk.pixelInGap(pt))
+                        run.append(pt);
                     prevPt = pt;
                     hasPrev = true;
                     continue;
-                } else if (prevPt.x() > loX && prevPt.x() < hiX && std::fabs(dx) > 1e-6
-                           && (pt.x() <= loX || pt.x() >= hiX)) {
-                    flushRun(run);
-                    const double edge2X = (pt.x() >= hiX) ? hiX : loX;
-                    const double t2 = qBound(0.0, (edge2X - prevPt.x()) / dx, 1.0);
-                    run.append(clampExtremePoint(
-                            QPointF(edge2X, prevPt.y() + t2 * (pt.y() - prevPt.y()))));
-                    splitHandled = true;
                 }
-            }
-            if (hasPrev && !splitHandled && hasYBreak) {
-                const bool straddlesY = (prevVy <= yBf + yEps && vy >= yBt - yEps)
-                        || (prevVy >= yBt - yEps && vy <= yBf + yEps);
-                const double loY = yBrkPx - halfGap;
-                const double hiY = yBrkPx + halfGap;
-                const double dy = pt.y() - prevPt.y();
-                if (straddlesY || (prevPt.y() <= loY && pt.y() >= hiY)
-                    || (prevPt.y() >= hiY && pt.y() <= loY)) {
-                    if (std::fabs(dy) > 1e-6 && ((prevPt.y() < loY && pt.y() > hiY)
-                                                 || (prevPt.y() > hiY && pt.y() < loY))) {
-                        const double edge1Y = (dy > 0.0) ? loY : hiY;
-                        const double edge2Y = (dy > 0.0) ? hiY : loY;
-                        const double t1 = qBound(0.0, (edge1Y - prevPt.y()) / dy, 1.0);
-                        const double t2 = qBound(0.0, (edge2Y - prevPt.y()) / dy, 1.0);
-                        const double dx = pt.x() - prevPt.x();
-                        run.append(clampExtremePoint(QPointF(prevPt.x() + t1 * dx, edge1Y)));
-                        flushRun(run);
-                        run.append(clampExtremePoint(QPointF(prevPt.x() + t2 * dx, edge2Y)));
+                if (decimateSubPixel && !run.isEmpty() && !brk.pixelInGap(prevPt)
+                    && !brk.pixelInGap(pt) && i < to) {
+                    const double dx = pt.x() - run.last().x();
+                    const double dy = pt.y() - run.last().y();
+                    if (dx * dx + dy * dy < 4e-4)
+                        continue;
+                }
+                segs.clear();
+                appendSegmentOutsideBreaks(QLineF(prevPt, pt), brk, segs);
+                for (const QLineF &s : segs) {
+                    const QPointF p1 = clampExtremePoint(s.p1());
+                    const QPointF p2 = clampExtremePoint(s.p2());
+                    if (!run.isEmpty() && std::fabs(run.last().x() - p1.x()) < 1e-9
+                        && std::fabs(run.last().y() - p1.y()) < 1e-9) {
+                        if (std::fabs(p2.x() - run.last().x()) >= 1e-9
+                            || std::fabs(p2.y() - run.last().y()) >= 1e-9)
+                            run.append(p2);
                     } else {
-                        flushRun(run);
+                        if (!run.isEmpty())
+                            flushRun(run);
+                        run.append(p1);
+                        if (std::fabs(p2.x() - p1.x()) >= 1e-9
+                            || std::fabs(p2.y() - p1.y()) >= 1e-9)
+                            run.append(p2);
                     }
-                } else if (pt.y() > loY && pt.y() < hiY) {
-                    if (!run.isEmpty() && std::fabs(dy) > 1e-6
-                        && (prevPt.y() <= loY || prevPt.y() >= hiY)) {
-                        const double edge1Y = (prevPt.y() <= loY) ? loY : hiY;
-                        const double t1 = qBound(0.0, (edge1Y - prevPt.y()) / dy, 1.0);
-                        run.append(clampExtremePoint(
-                                QPointF(prevPt.x() + t1 * (pt.x() - prevPt.x()), edge1Y)));
-                    }
-                    flushRun(run);
-                    prevVx = vx;
-                    prevVy = vy;
-                    prevPt = pt;
-                    hasPrev = true;
-                    continue;
-                } else if (prevPt.y() > loY && prevPt.y() < hiY && std::fabs(dy) > 1e-6
-                           && (pt.y() <= loY || pt.y() >= hiY)) {
-                    flushRun(run);
-                    const double edge2Y = (pt.y() >= hiY) ? hiY : loY;
-                    const double t2 = qBound(0.0, (edge2Y - prevPt.y()) / dy, 1.0);
-                    run.append(clampExtremePoint(
-                            QPointF(prevPt.x() + t2 * (pt.x() - prevPt.x()), edge2Y)));
                 }
+                prevPt = pt;
+                hasPrev = true;
             }
-
-            if (decimateSubPixel && !run.isEmpty() && i < to) {
-                const double dx = pt.x() - run.last().x();
-                const double dy = pt.y() - run.last().y();
-                if (dx * dx + dy * dy < 4e-4)
-                    continue;
-            }
-            run.append(pt);
-            prevVx = vx;
-            prevVy = vy;
-            prevPt = pt;
-            hasPrev = true;
         }
         flushRun(run);
         break;
@@ -1509,15 +1677,21 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
         QVector<QLineF> sticks;
         sticks.reserve(to - from + 1);
         for (int i = from; i <= to; ++i) {
-            const double px = xMap.xTransform(x(i));
-            const double py = yMap.xTransform(y(i));
+            const double vx = x(i);
+            const double vy = y(i);
+            if (brk.valueInGap(vx, vy))
+                continue;
+            const double px = xMap.xTransform(vx);
+            const double py = yMap.xTransform(vy);
             if (!std::isfinite(px) || !std::isfinite(py))
                 continue;
             const QPointF pt = clampExtremePoint(QPointF(px, py));
-            if (curveType() == Xfy)
-                sticks.append(QLineF(QPointF(x0, pt.y()), pt));
+            const QLineF seg = (curveType() == Xfy) ? QLineF(QPointF(x0, pt.y()), pt)
+                                                    : QLineF(QPointF(pt.x(), y0), pt);
+            if (brk.any())
+                appendSegmentOutsideBreaks(seg, brk, sticks);
             else
-                sticks.append(QLineF(QPointF(pt.x(), y0), pt));
+                sticks.append(seg);
         }
         if (!sticks.isEmpty())
             painter->drawLines(sticks);
@@ -1532,7 +1706,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
             if (poly.size() >= 2) {
                 painter->drawPolyline(poly);
                 if (brush().style() != Qt::NoBrush)
-                    fillCurvePolygonF(painter, this, xMap, yMap, poly);
+                    fillCurvePolygonF(painter, this, xMap, yMap, poly, &brk);
             } else if (poly.size() == 1) {
                 painter->drawPoint(poly[0]);
             }
@@ -1541,39 +1715,134 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
 
         QPolygonF poly;
         poly.reserve(2 * (to - from) + 1);
-        for (int i = from; i <= to; ++i) {
-            const double px = xMap.xTransform(x(i));
-            const double py = yMap.xTransform(y(i));
-            if (!std::isfinite(px) || !std::isfinite(py)) {
-                flushStepRun(poly);
-                continue;
+        if (!brk.any()) {
+            for (int i = from; i <= to; ++i) {
+                const double px = xMap.xTransform(x(i));
+                const double py = yMap.xTransform(y(i));
+                if (!std::isfinite(px) || !std::isfinite(py)) {
+                    flushStepRun(poly);
+                    continue;
+                }
+                const QPointF pt = clampExtremePoint(QPointF(px, py));
+                if (!poly.isEmpty()) {
+                    const QPointF prev = poly.last();
+                    poly.append(inverted ? QPointF(prev.x(), pt.y()) : QPointF(pt.x(), prev.y()));
+                }
+                poly.append(pt);
             }
-            const QPointF pt = clampExtremePoint(QPointF(px, py));
-            if (!poly.isEmpty()) {
-                const QPointF prev = poly.last();
-                poly.append(inverted ? QPointF(prev.x(), pt.y()) : QPointF(pt.x(), prev.y()));
+        } else {
+            QVector<QLineF> segs;
+            segs.reserve(4);
+            auto pushSeg = [&](const QPointF &a, const QPointF &b) {
+                segs.clear();
+                appendSegmentOutsideBreaks(QLineF(a, b), brk, segs);
+                for (const QLineF &s : segs) {
+                    const QPointF p1 = clampExtremePoint(s.p1());
+                    const QPointF p2 = clampExtremePoint(s.p2());
+                    if (!poly.isEmpty() && std::fabs(poly.last().x() - p1.x()) < 1e-9
+                        && std::fabs(poly.last().y() - p1.y()) < 1e-9) {
+                        if (std::fabs(p2.x() - poly.last().x()) >= 1e-9
+                            || std::fabs(p2.y() - poly.last().y()) >= 1e-9)
+                            poly.append(p2);
+                    } else {
+                        if (!poly.isEmpty())
+                            flushStepRun(poly);
+                        poly.append(p1);
+                        if (std::fabs(p2.x() - p1.x()) >= 1e-9
+                            || std::fabs(p2.y() - p1.y()) >= 1e-9)
+                            poly.append(p2);
+                    }
+                }
+            };
+
+            bool hasPrev = false;
+            QPointF prevPt;
+            for (int i = from; i <= to; ++i) {
+                const double vx = x(i);
+                const double vy = y(i);
+                if (brk.valueInGap(vx, vy)) {
+                    flushStepRun(poly);
+                    hasPrev = false;
+                    continue;
+                }
+                const double px = xMap.xTransform(vx);
+                const double py = yMap.xTransform(vy);
+                if (!std::isfinite(px) || !std::isfinite(py)) {
+                    flushStepRun(poly);
+                    hasPrev = false;
+                    continue;
+                }
+                const QPointF pt = clampExtremePoint(QPointF(px, py));
+                if (!hasPrev) {
+                    if (!brk.pixelInGap(pt))
+                        poly.append(pt);
+                } else {
+                    const QPointF corner =
+                            inverted ? QPointF(prevPt.x(), pt.y()) : QPointF(pt.x(), prevPt.y());
+                    pushSeg(prevPt, corner);
+                    pushSeg(corner, pt);
+                }
+                prevPt = pt;
+                hasPrev = true;
             }
-            poly.append(pt);
         }
         flushStepRun(poly);
         break;
     }
     case Dots: {
         const bool doFill = (brush().style() != Qt::NoBrush);
+        auto flushDotsRun = [&](QPolygonF &pts) {
+            if (!pts.isEmpty()) {
+                painter->drawPoints(pts);
+                if (doFill && pts.size() >= 2)
+                    fillCurvePolygonF(painter, this, xMap, yMap, pts, &brk);
+                pts.clear();
+            }
+        };
+
         QPolygonF pts;
         pts.reserve(to - from + 1);
+        bool hasPrev = false;
+        double prevVx = 0.0, prevVy = 0.0;
+        QPointF prevPt;
         for (int i = from; i <= to; ++i) {
-            const double px = xMap.xTransform(x(i));
-            const double py = yMap.xTransform(y(i));
-            if (!std::isfinite(px) || !std::isfinite(py))
+            const double vx = x(i);
+            const double vy = y(i);
+            if (brk.valueInGap(vx, vy)) {
+                flushDotsRun(pts);
+                hasPrev = false;
                 continue;
-            pts.append(clampExtremePoint(QPointF(px, py)));
+            }
+            const double px = xMap.xTransform(vx);
+            const double py = yMap.xTransform(vy);
+            if (!std::isfinite(px) || !std::isfinite(py)) {
+                flushDotsRun(pts);
+                hasPrev = false;
+                continue;
+            }
+            const QPointF pt = clampExtremePoint(QPointF(px, py));
+            if (brk.pixelInGap(pt)) {
+                flushDotsRun(pts);
+                hasPrev = false;
+                continue;
+            }
+            if (hasPrev && brk.any()) {
+                const bool straddlesX = brk.xValuesStraddle(prevVx, vx)
+                        || (brk.hasX && ((prevPt.x() <= brk.xLo && pt.x() >= brk.xHi)
+                                         || (prevPt.x() >= brk.xHi && pt.x() <= brk.xLo)));
+                const bool straddlesY = brk.yValuesStraddle(prevVy, vy)
+                        || (brk.hasY && ((prevPt.y() <= brk.yLo && pt.y() >= brk.yHi)
+                                         || (prevPt.y() >= brk.yHi && pt.y() <= brk.yLo)));
+                if (straddlesX || straddlesY)
+                    flushDotsRun(pts);
+            }
+            pts.append(pt);
+            prevVx = vx;
+            prevVy = vy;
+            prevPt = pt;
+            hasPrev = true;
         }
-        if (!pts.isEmpty()) {
-            painter->drawPoints(pts);
-            if (doFill && pts.size() >= 2)
-                fillCurvePolygonF(painter, this, xMap, yMap, pts);
-        }
+        flushDotsRun(pts);
         break;
     }
     case NoCurve:
@@ -1610,33 +1879,7 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     if (w <= 0.0 || h <= 0.0)
         return;
 
-    const Graph *g = plot() ? qobject_cast<const Graph *>(plot()->parent()) : nullptr;
-    bool hasXBreak = false;
-    double xBf = 0.0, xBt = 0.0, xEps = 0.0;
-    bool hasYBreak = false;
-    double yBf = 0.0, yBt = 0.0, yEps = 0.0;
-    if (g) {
-        Graph::AxisBreakSpec xb = g->axisBreak(xAxis());
-        if (!xb.enabled && xAxis() == QwtPlot::xTop && !g->hasColorScaleOnAxis(QwtPlot::xTop))
-            xb = g->axisBreak(QwtPlot::xBottom);
-        if (xb.enabled && std::isfinite(xb.breakFrom) && std::isfinite(xb.breakTo)
-            && xb.breakFrom != xb.breakTo) {
-            hasXBreak = true;
-            xBf = qMin(xb.breakFrom, xb.breakTo);
-            xBt = qMax(xb.breakFrom, xb.breakTo);
-            xEps = 1e-12 * qMax(1.0, xBt - xBf);
-        }
-        Graph::AxisBreakSpec yb = g->axisBreak(yAxis());
-        if (!yb.enabled && yAxis() == QwtPlot::yRight && !g->hasColorScaleOnAxis(QwtPlot::yRight))
-            yb = g->axisBreak(QwtPlot::yLeft);
-        if (yb.enabled && std::isfinite(yb.breakFrom) && std::isfinite(yb.breakTo)
-            && yb.breakFrom != yb.breakTo) {
-            hasYBreak = true;
-            yBf = qMin(yb.breakFrom, yb.breakTo);
-            yBt = qMax(yb.breakFrom, yb.breakTo);
-            yEps = 1e-12 * qMax(1.0, yBt - yBf);
-        }
-    }
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
 
     const bool hasCanvasBounds = d_canvas_rect.isValid() && d_canvas_rect.width() > 1.0
             && d_canvas_rect.height() > 1.0;
@@ -1670,8 +1913,7 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
         for (int i = from; i <= to; ++i) {
             const double vx = x(i);
             const double vy = y(i);
-            if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
-                || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps))
+            if (brk.valueInGap(vx, vy))
                 continue;
             const double cx = xMap.xTransform(vx);
             const double cy = yMap.xTransform(vy);
@@ -1747,8 +1989,7 @@ void PlotCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     for (int i = from; i <= to; ++i) {
         const double vx = x(i);
         const double vy = y(i);
-        if ((hasXBreak && vx > xBf + xEps && vx < xBt - xEps)
-            || (hasYBreak && vy > yBf + yEps && vy < yBt - yEps))
+        if (brk.valueInGap(vx, vy))
             continue;
         const double cx = xMap.xTransform(vx);
         const double cy = yMap.xTransform(vy);
@@ -1923,9 +2164,15 @@ void DataCurve::drawSymbols(QPainter *painter, const QwtSymbol &sym, const QwtSc
     const double pxToLayout =
             double(sym.size().width()) > 0.0 ? baseW / double(sym.size().width()) : 1.0;
 
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
+
     for (int i = from; i <= to; ++i) {
-        const double cx = xMap.xTransform(x(i));
-        const double cy = yMap.xTransform(y(i));
+        const double vx = x(i);
+        const double vy = y(i);
+        if (brk.valueInGap(vx, vy))
+            continue;
+        const double cx = xMap.xTransform(vx);
+        const double cy = yMap.xTransform(vy);
         if (!std::isfinite(cx) || !std::isfinite(cy) || std::fabs(cx) > kMaxSafeCoord
             || std::fabs(cy) > kMaxSafeCoord)
             continue;

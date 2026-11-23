@@ -334,6 +334,17 @@ public slots:
                       QPageLayout::Orientation orientation = QPageLayout::Portrait);
     void exportImage(const QString &fileName, int quality = -1, bool transparent = false,
                      int dpi = 0);
+
+    //! Checked export variants returning write status and optional error string (C2-#11).
+    bool exportToFileChecked(const QString &fileName, QString *errOut = nullptr);
+    bool exportSVGChecked(const QString &fname, QString *errOut = nullptr);
+    bool exportVectorChecked(const QString &fileName, int res = 0, bool color = true,
+                             bool keepAspect = true,
+                             QPageSize pageSize = QPageSize(QPageSize::Custom),
+                             QPageLayout::Orientation orientation = QPageLayout::Portrait,
+                             QString *errOut = nullptr);
+    bool exportImageChecked(const QString &fileName, int quality = -1, bool transparent = false,
+                            int dpi = 0, QString *errOut = nullptr);
     //@}
 
     void replot() { d_plot->replot(); };
@@ -970,6 +981,13 @@ public:
     void setAxisBreak(int axis, const AxisBreakSpec &spec);
     AxisBreakSpec axisBreak(int axis) const;
     void clearAxisBreak(int axis);
+    //! Break spec kept while the current axis range cannot show it (drawing suspended).
+    //! enabled==true means a suspended break exists and will be restored once valid again.
+    AxisBreakSpec suspendedAxisBreak(int axis) const;
+    bool axisBreakSuspended(int axis) const;
+    //! Re-applies the full 5-argument break indicator (from/to/log flags) of axis
+    //! (or of its primary mirror axis) to the axis' ScaleDraw.
+    void refreshAxisBreakIndicator(int axis);
 
     void setTickLabelTransform(int axis, double divideByFactor,
                                const QString &prefix = QString(),
@@ -997,8 +1015,39 @@ public:
     bool isAxisUserLocked(int axis) const;
     void setAxisUserLocked(int axis, bool locked);
     void cancelInlineScaleEditor();
+    //! Data-independent curve series styling persisted in .qpt templates (B1-4).
+    struct TemplateCurveStyle {
+        int curveType = LineSymbols;
+        int penStyle = int(Qt::SolidLine);
+        double lineWidth = 1.5;
+        QColor lineColor = Qt::black;
+        int brushStyle = int(Qt::NoBrush);
+        QColor brushColor = Qt::black;
+        int symbolStyle = -1; // QwtSymbol::NoSymbol
+        int symbolSize = 7;
+        double symbolPenWidth = 1.0;
+        QColor symbolEdgeColor = Qt::black;
+        QColor symbolFillColor = Qt::black;
+        bool symbolHollow = false;
+        int symbolSkip = 0;
+        int barGap = 0;
+        int barOffset = 0;
+        int xAxis = QwtPlot::xBottom;
+        int yAxis = QwtPlot::yLeft;
+    };
+
+    QVector<TemplateCurveStyle> templateCurveStyles() const { return d_template_curve_styles; }
+    void setTemplateCurveStyles(const QVector<TemplateCurveStyle> &styles)
+    {
+        d_template_curve_styles = styles;
+    }
+    bool applyTemplateCurveStyle(int curveIndex, int styleIndex = -1);
+    void applyTemplateCurveStylesToAll();
+
     QString placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore = nullptr,
                               int marginPx = 12);
+    //! Re-anchors an OutsideRight legend relative to the right canvas edge (D1-2).
+    bool repositionAnchoredOutsideRightLegend();
     void applySeriesStyleScheme(SeriesStyleScheme scheme);
     static bool isSymbolWhiteHollow(const QwtSymbol &sym);
     void setCurveSymbolHollow(int curveIndex, bool hollowWhite);
@@ -1166,6 +1215,8 @@ private:
 
     bool d_is_exporting = false;
     AxisBreakSpec d_axis_breaks[4];
+    AxisBreakSpec d_suspended_axis_breaks[4];
+    QVector<TemplateCurveStyle> d_template_curve_styles;
     double d_tick_divide_factor[4] = { 1.0, 1.0, 1.0, 1.0 };
     QString d_tick_prefix[4];
     QString d_tick_suffix[4];

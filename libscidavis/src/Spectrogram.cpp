@@ -39,12 +39,26 @@
 #include <QPainter>
 #include <QRegularExpression>
 
+#include <qwt_painter.h>
 #include <qwt_plot_layout.h>
 #include <qwt_scale_engine.h>
 #include <qwt_scale_widget.h>
 #include <qwt_text.h>
 
 namespace {
+
+double spectrogramScreenZoomScale(const QwtPlot *qwtPlot)
+{
+    if (!QwtPainter::metricsMap().isIdentity())
+        return 1.0;
+    const Plot *pl = dynamic_cast<const Plot *>(qwtPlot);
+    if (!pl)
+        return 1.0;
+    const double s = pl->displayFontScale();
+    if (!std::isfinite(s) || std::fabs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
 
 QString unwrapColorBarTitleNoWrap(const QString &s)
 {
@@ -799,12 +813,14 @@ QString Spectrogram::saveToString()
 
 QPen Spectrogram::contourPen(double level) const
 {
-    const double sc = Plot::printDeviceScale();
+    const double sc = Plot::printDeviceScale() * spectrogramScreenZoomScale(plot());
     QPen defPen = defaultContourPen();
     if (defPen.style() != Qt::NoPen) {
         defPen.setCosmetic(false);
-        const double baseW = (defPen.widthF() > 0.0) ? defPen.widthF() : 1.2;
-        defPen.setWidthF(qMax(1.0, baseW) * sc);
+        const double baseW = (defPen.widthF() > 0.0)
+                ? defPen.widthF()
+                : ((defPen.width() > 0) ? double(defPen.width()) : 1.2);
+        defPen.setWidthF(baseW * sc);
         return defPen;
     }
 

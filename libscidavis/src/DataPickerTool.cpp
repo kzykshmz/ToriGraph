@@ -36,6 +36,7 @@
 #include "PlotCurve.h"
 #include "QwtErrorPlotCurve.h"
 #include "ApplicationWindow.h"
+#include "core/Project.h"
 #include "core/column/Column.h"
 
 #include <qwt_symbol.h>
@@ -46,6 +47,18 @@
 #include <QLocale>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QUndoStack>
+
+namespace {
+QUndoStack *resolveProjectUndoStack(ApplicationWindow *app, Table *t)
+{
+    if (app && app->project() && app->project()->undoStack())
+        return app->project()->undoStack();
+    if (t && t->d_future_table)
+        return t->d_future_table->undoStack();
+    return nullptr;
+}
+} // namespace
 
 DataPickerTool::DataPickerTool(Graph *graph, ApplicationWindow *app, Mode mode,
                                const QObject *status_target, const char *status_slot)
@@ -157,9 +170,15 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
 
         if (dc && (d_mode == Mask || d_mode == Unmask)) {
             const bool doMask = (d_mode == Mask);
-            MultiLayer *ml = d_graph ? d_graph->multiLayerParent() : nullptr;
-            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+            // DataCurve::maskPoint() mutates the underlying table Column(s) (and records
+            // ColumnSetMaskedCmd on the project undo stack). Wrap in a single project undo
+            // macro instead of pushing a no-op MultiLayer graph snapshot.
+            QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
+            if (undoStack)
+                undoStack->beginMacro(doMask ? tr("Mask Data Point") : tr("Unmask Data Point"));
             dc->maskPoint(d_selected_point, doMask);
+            if (undoStack)
+                undoStack->endMacro();
             const int xCol = t ? t->colIndex(dc->xColumnName()) : -1;
             const int yCol = t ? t->colIndex(d_selected_curve->title().text()) : -1;
             const QString xStr = (t && row >= 0 && xCol >= 0)
@@ -174,10 +193,6 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
                                     .arg(row + 1)
                                     .arg(xStr)
                                     .arg(yStr));
-            if (ml && !beforeSnap.isEmpty()) {
-                ml->pushUndoSnapshot(doMask ? tr("Mask Data Point") : tr("Unmask Data Point"),
-                                     beforeSnap);
-            }
             if (d_app)
                 d_app->modifiedProject();
         } else if (t && row >= 0) {
@@ -425,8 +440,13 @@ void DataPickerTool::removePoint()
     int row = dc->tableRow(d_selected_point);
     if (col >= 0 && t->column(col) && row >= 0 && row < t->numRows()
         && t->columnType(col) == SciDAVis::ColumnMode::Numeric) {
+        QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
+        if (undoStack)
+            undoStack->beginMacro(tr("Remove Data Point"));
         t->column(col)->setValueAt(row, 0.0);
         t->column(col)->setInvalid(row, true);
+        if (undoStack)
+            undoStack->endMacro();
     } else if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
         QMessageBox::warning(const_cast<Graph *>(d_graph), tr("Warning"),
                              tr("This operation cannot be performed on curves plotted from columns "
@@ -508,8 +528,13 @@ bool DataPickerTool::end(bool ok)
         if (row >= 0 && row < t->numRows() && xcol >= 0 && ycol >= 0 && t->column(xcol)
             && t->column(ycol) && t->columnType(xcol) == SciDAVis::ColumnMode::Numeric
             && t->columnType(ycol) == SciDAVis::ColumnMode::Numeric) {
+            QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
+            if (undoStack)
+                undoStack->beginMacro(tr("Move Data Point"));
             t->column(xcol)->setValueAt(row, new_x_val);
             t->column(ycol)->setValueAt(row, new_y_val);
+            if (undoStack)
+                undoStack->endMacro();
             if (d_app) {
                 d_app->updateCurves(t, d_selected_curve->title().text());
                 d_app->modifiedProject();

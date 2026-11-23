@@ -103,6 +103,18 @@ public:
     void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap, const QRect &r) const;
 
 private:
+    struct DrawGeometry {
+        QRect layoutRect;
+        QwtArray<long> heights;
+        int symbolLineLength = 0;
+        bool intentionallyOutside = false;
+        bool valid = false;
+    };
+
+    DrawGeometry drawGeometry(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                              const QRect &canvasRect) const;
+    QRect screenCanvasRect() const;
+
     void computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVector<int> &cellX,
                             QVector<int> &cellCenterY, int &totalWidth, int &totalHeight) const;
 

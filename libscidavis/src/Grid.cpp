@@ -95,15 +95,19 @@ void Grid::drawLines(QPainter *painter, const QRect &rect, Qt::Orientation orien
     const int x2 = rect.right() + 1;
     const int y1 = rect.top();
     const int y2 = rect.bottom() + 1;
-    const int margin = 10;
+    const QwtMetricsMap &mm = QwtPainter::metricsMap();
+    const int marginX = mm.isIdentity() ? qMax(1, qRound(Plot::printDeviceScale()))
+                                        : qMax(1, mm.screenToLayoutX(1));
+    const int marginY = mm.isIdentity() ? qMax(1, qRound(Plot::printDeviceScale()))
+                                        : qMax(1, mm.screenToLayoutY(1));
 
     for (uint i = 0; i < (uint)values.count(); i++) {
         const int value = map.transform(values[i]);
         if (orientation == Qt::Horizontal) {
-            if ((value >= y1 + margin) && (value <= y2 - margin))
+            if ((value >= y1 + marginY) && (value <= y2 - marginY))
                 QwtPainter::drawLine(painter, x1, value, x2, value);
         } else {
-            if ((value >= x1 + margin) && (value <= x2 - margin))
+            if ((value >= x1 + marginX) && (value <= x2 - marginX))
                 QwtPainter::drawLine(painter, value, y1, value, y2);
         }
     }

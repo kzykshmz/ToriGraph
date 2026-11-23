@@ -291,22 +291,22 @@ void CanvasInlineTextEditor::buildUi(bool multiLine, const QString &initialText)
         return b;
     };
 
-    QToolButton *btnItalic = makeBtn(QStringLiteral("I"), tr("Italic (<i>...</i>)"), false, true);
+    QToolButton *btnItalic = makeBtn(QStringLiteral("I"), tr("Italic (Ctrl+I)"), false, true);
     connect(btnItalic, &QToolButton::clicked, this,
             [this]() { wrapSelection(QStringLiteral("<i>"), QStringLiteral("</i>")); });
     strip->addWidget(btnItalic);
 
-    QToolButton *btnBold = makeBtn(QStringLiteral("B"), tr("Bold (<b>...</b>)"), true, false);
+    QToolButton *btnBold = makeBtn(QStringLiteral("B"), tr("Bold (Ctrl+B)"), true, false);
     connect(btnBold, &QToolButton::clicked, this,
             [this]() { wrapSelection(QStringLiteral("<b>"), QStringLiteral("</b>")); });
     strip->addWidget(btnBold);
 
-    QToolButton *btnSub = makeBtn(QStringLiteral("X\u2082"), tr("Subscript (<sub>...</sub>)"));
+    QToolButton *btnSub = makeBtn(QStringLiteral("X\u2082"), tr("Subscript"));
     connect(btnSub, &QToolButton::clicked, this,
             [this]() { wrapSelection(QStringLiteral("<sub>"), QStringLiteral("</sub>")); });
     strip->addWidget(btnSub);
 
-    QToolButton *btnSup = makeBtn(QStringLiteral("X\u00B2"), tr("Superscript (<sup>...</sup>)"));
+    QToolButton *btnSup = makeBtn(QStringLiteral("X\u00B2"), tr("Superscript"));
     connect(btnSup, &QToolButton::clicked, this,
             [this]() { wrapSelection(QStringLiteral("<sup>"), QStringLiteral("</sup>")); });
     strip->addWidget(btnSup);
@@ -338,8 +338,8 @@ void CanvasInlineTextEditor::buildUi(bool multiLine, const QString &initialText)
         { QStringLiteral("mass ppm"), QStringLiteral("mass ppm") },
         { QStringLiteral("K"), QStringLiteral("K") },
         { QStringLiteral("\u00B0C"), QStringLiteral("\u00B0C") },
-        { QStringLiteral("s\u207B\u00B9  (s<sup>-1</sup>)"), QStringLiteral("s<sup>-1</sup>") },
-        { QStringLiteral("mm\u207B\u00B3  (mm<sup>-3</sup>)"), QStringLiteral("mm<sup>-3</sup>") },
+        { QStringLiteral("s\u207B\u00B9"), QStringLiteral("s<sup>-1</sup>") },
+        { QStringLiteral("mm\u207B\u00B3"), QStringLiteral("mm<sup>-3</sup>") },
         { QStringLiteral("\u03BCm"), QStringLiteral("\u03BCm") },
         { QStringLiteral("nm"), QStringLiteral("nm") }
     };

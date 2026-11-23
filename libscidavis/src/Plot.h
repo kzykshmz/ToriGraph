@@ -107,6 +107,11 @@ public:
     void zoomAxisAroundPos(int axis, int pixelPos, double factor);
     void panAxisByPixels(int axis, int startPixel, int endPixel);
     void syncMirrorAxisIfNeeded(int changedAxis);
+    //! Re-sync the axis' ScaleDraw break indicator with Graph::axisBreak(axis) and the current
+    //! axisScaleDiv(axis) bounds, passing all 5 args (straddles, breakFrom, breakTo, log10Before,
+    //! log10After) so the log-side label flags are never reset. No-op when the axis has no
+    //! enabled break (or the Plot has no Graph parent / ScaleDraw).
+    void applyBreakIndicator(int axis);
     bool isMirrorOppositeAxis(int primaryAxis, int secondaryAxis) const;
     bool hasVisibleItemOnAxis(int axis) const;
     bool hasAnyItemOnAxis(int axis) const;
@@ -179,6 +184,12 @@ private:
     };
     QFont zoomFont(ZoomFontSlot &slot, const QFont &stored);
     QFont unzoomFont(const ZoomFontSlot &slot, const QFont &shown) const;
+    //! Pen/tick scale for the axis frame & inward ticks drawn by drawItems/drawInwardTicks:
+    //! printDeviceScale() on print/export, times displayFontScale() on on-screen widget paint, so
+    //! a 160 % page-zoom preview is geometrically similar to the 100 % export.
+    double axisDecorationScale(const QPainter *painter) const;
+    //! True when \a painter paints the on-screen widget (not an export / print device).
+    bool isScreenWidgetPainter(const QPainter *painter) const;
 
     double d_display_font_scale = 1.0;
     ZoomFontSlot d_zoom_axis_font[axisCnt];
