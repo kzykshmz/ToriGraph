@@ -7,6 +7,10 @@ if( CMAKE_GENERATOR STREQUAL "Visual Studio 15 2017" OR
 endif()
 
 cmake_policy(SET CMP0091 NEW)
+if( POLICY CMP0141 )
+  cmake_policy(SET CMP0141 NEW)
+  set( CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>" )
+endif()
 
 project( scidavis
   VERSION 3.0.0
@@ -57,6 +61,31 @@ set( CMAKE_C_STANDARD 11)
 set( CMAKE_C_STANDARD_REQUIRED TRUE )
 set( CMAKE_C_EXTENSIONS OFF )
 
+# Export compile_commands.json for clang-tidy / clangd / cppcheck when supported (Ninja / Makefiles).
+set( CMAKE_EXPORT_COMPILE_COMMANDS ON )
+
+option( TORIGRAPH_USE_CCACHE "Auto-detect sccache/ccache compiler launcher" ON )
+option( TORIGRAPH_ENABLE_PCH "Enable C++ precompiled headers for faster builds" ON )
+option( TORIGRAPH_SANITIZE_ADDRESS "Enable AddressSanitizer (/fsanitize=address)" OFF )
+option( TORIGRAPH_GENERATE_PDB "Generate detached .pdb symbols in Release builds (MSVC)" ON )
+
+if( TORIGRAPH_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER )
+  find_program( TORIGRAPH_CCACHE_PROGRAM
+    NAMES sccache ccache
+    HINTS
+      "${CMAKE_SOURCE_DIR}/.tools/dev-env/Library/bin"
+      "${CMAKE_SOURCE_DIR}/.tools/dev-env/bin"
+      "${CMAKE_SOURCE_DIR}/.tools/bin"
+      "${CMAKE_SOURCE_DIR}/.deps/Library/bin"
+      "${CMAKE_SOURCE_DIR}/.deps/bin"
+  )
+  if( TORIGRAPH_CCACHE_PROGRAM )
+    message( STATUS "Using compiler launcher: ${TORIGRAPH_CCACHE_PROGRAM}" )
+    set( CMAKE_C_COMPILER_LAUNCHER "${TORIGRAPH_CCACHE_PROGRAM}" )
+    set( CMAKE_CXX_COMPILER_LAUNCHER "${TORIGRAPH_CCACHE_PROGRAM}" )
+  endif()
+endif()
+
 get_property( MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG )
 
 set( CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH} )
@@ -102,12 +131,46 @@ if( MSVC )
   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /utf-8 /W4 /permissive-" )
   if( CMAKE_CXX_COMPILER_ID STREQUAL "Clang" )
     set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nonportable-include-path" )
-  else()
+  elseif( NOT CMAKE_GENERATOR MATCHES "Ninja" AND NOT CMAKE_CXX_COMPILER_LAUNCHER )
+    # Only pass /MP for MSBuild; Ninja already parallelizes per TU and /MP inhibits sccache caching.
     add_compile_options( "/MP" )
+  endif()
+
+  foreach( _cfg_flag CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_RELWITHDEBINFO )
+    if( DEFINED ${_cfg_flag} )
+      string( REPLACE "/Zi" "/Z7" ${_cfg_flag} "${${_cfg_flag}}" )
+    endif()
+  endforeach()
+
+  if( TORIGRAPH_GENERATE_PDB )
+    # /Z7 embeds debug info in .obj (100% compatible with sccache and PCH) while producing .pdb at link time.
+    add_compile_options( "$<$<CONFIG:Release>:/Z7>" )
+    add_link_options( "$<$<CONFIG:Release>:/DEBUG>" "$<$<CONFIG:Release>:/OPT:REF>" "$<$<CONFIG:Release>:/OPT:ICF>" )
+  endif()
+
+  if( TORIGRAPH_SANITIZE_ADDRESS )
+    message( STATUS "AddressSanitizer enabled (/fsanitize=address)" )
+    string( REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}" )
+    string( REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}" )
+    add_compile_options( "/fsanitize=address" "/Z7" "/bigobj" )
+    add_link_options( "/INCREMENTAL:NO" "/DEBUG" )
+    get_filename_component( _tg_msvc_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY )
+    find_file( TORIGRAPH_ASAN_RUNTIME_DLL
+      NAMES "clang_rt.asan_dynamic-x86_64.dll"
+      HINTS "${_tg_msvc_bin_dir}"
+      NO_DEFAULT_PATH
+    )
+    if( TORIGRAPH_ASAN_RUNTIME_DLL )
+      message( STATUS "Found MSVC ASan runtime: ${TORIGRAPH_ASAN_RUNTIME_DLL}" )
+    endif()
   endif()
 else()
   set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -Wall -Wextra -pedantic" )
   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic" )
+  if( TORIGRAPH_SANITIZE_ADDRESS )
+    add_compile_options( "-fsanitize=address" "-fno-omit-frame-pointer" "-g" )
+    add_link_options( "-fsanitize=address" )
+  endif()
 endif()
 
 # Guard against a garbled MSVC /showIncludes prefix with the Ninja generator.
@@ -175,6 +238,8 @@ find_path( MUPARSER_INCLUDE_DIR
 message( STATUS "Found muParser : ${MUPARSER_LIB} include: ${MUPARSER_INCLUDE_DIR}" )
 endif()
 
+enable_testing()
+
 add_subdirectory( 3rdparty )
 
 add_subdirectory( libscidavis )
@@ -184,7 +249,6 @@ add_subdirectory( scidavis )
 add_subdirectory( fitPlugins )
 
 if( BUILD_TESTS )
-  enable_testing()
   add_subdirectory( test )
 endif()
 

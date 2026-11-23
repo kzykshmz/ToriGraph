@@ -69,6 +69,7 @@ jobs:
             zlib
             ninja
             cmake
+            sccache
             python=3.11
             setuptools
             wheel
@@ -77,6 +78,16 @@ jobs:
             pandas
             python-pptx
             pytest
+            pytest-xdist
+
+      - name: Restore sccache compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-release-msvc-${{ github.sha }}
+          restore-keys: |
+            sccache-release-msvc-
+            sccache-win-msvc-
 
       - name: Link .deps junction to micromamba environment
         run: |
@@ -85,7 +96,10 @@ jobs:
           if (Test-Path .deps) { Remove-Item -Recurse -Force .deps }
           New-Item -ItemType Junction -Path .deps -Target $envDir | Out-Null
 
-      - name: Configure with CMake (Ninja + MSVC)
+      - name: Configure with CMake (Ninja + MSVC + sccache + PCH)
+        env:
+          SCCACHE_DIR: ${{ runner.temp }}\sccache
+          VSLANG: "1033"
         run: |
           $prefix = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library"
           micromamba run -n torigraph-release cmake -B build -G Ninja `
@@ -97,8 +111,14 @@ jobs:
             -DBUILD_TESTS=OFF
 
       - name: Build ToriGraph, Fit Plugins & Regression Test Suite
+        env:
+          SCCACHE_DIR: ${{ runner.temp }}\sccache
+          VSLANG: "1033"
         run: |
           micromamba run -n torigraph-release cmake --build build --target scidavis scidavis_ole_test explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          micromamba run -n torigraph-release sccache --show-stats
+          micromamba run -n torigraph-release sccache --stop-server ; $global:LASTEXITCODE = 0
 
       - name: Set display resolution to 1920x1080 for GUI layout tests
         run: ./scripts/ci-set-display-resolution.ps1
@@ -177,6 +197,15 @@ jobs:
             dist/ToriGraph-*-win64-setup.exe
             dist/ToriGraph-*-win64-portable.zip
             dist/SHA256SUMS.txt
+
+      - name: Upload Detached Debug Symbols (.pdb) for Crash Triage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ToriGraph-Windows-PDB-${{ env.RELEASE_VERSION }}
+          if-no-files-found: ignore
+          path: |
+            build/scidavis/ToriGraph.pdb
+            build/fitPlugins/**/*.pdb
 
       - name: Generate Release Notes with SHA-256 Checksums
         # Only a real tag push publishes; workflow_dispatch run on a tag ref must not.

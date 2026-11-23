@@ -1105,7 +1105,7 @@ class _LocalPipeTransport:
                         continue
                     sleep_step = 0.001
                     to_read = min(65536, int(avail.value))
-                    chunk = self._run_win_op(lambda: fh_cur.read(to_read), "read", rem)
+                    chunk = self._run_win_op(lambda fh=fh_cur, n=to_read: fh.read(n), "read", rem)
                     if not chunk:
                         raise TransportError(f"Named pipe closed ({self._endpoint}).")
                     self._buf.extend(chunk)

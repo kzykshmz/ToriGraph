@@ -114,6 +114,7 @@ set( HEADERS
   "src/ModernRibbonAndHud.h"
   "src/UxNavigation.h"
   "src/AutoUpdater.h"
+  "src/CrashHandler.h"
   "src/PythonAutomationServer.h"
   "src/PiecewiseAndRobustFit.h"
   "src/GraphDigitizer.h"
@@ -300,6 +301,7 @@ set( SRCS
   "src/ModernRibbonAndHud.cpp"
   "src/UxNavigation.cpp"
   "src/AutoUpdater.cpp"
+  "src/CrashHandler.cpp"
   "src/PythonAutomationServer.cpp"
   "src/PiecewiseAndRobustFit.cpp"
   "src/GraphDigitizer.cpp"
@@ -379,8 +381,12 @@ add_library( libscidavis STATIC
   )
 
 if( MSVC )
-  # PythonAutomationServer.cpp needs more COFF sections than the default object format allows
-  set_source_files_properties( "src/PythonAutomationServer.cpp" PROPERTIES COMPILE_OPTIONS "/bigobj" )
+  # ApplicationWindow.cpp (33k lines) and PythonAutomationServer.cpp (30k lines) need >65k COFF sections
+  set_source_files_properties(
+    "src/ApplicationWindow.cpp"
+    "src/PythonAutomationServer.cpp"
+    PROPERTIES COMPILE_OPTIONS "/bigobj"
+  )
 endif()
   
 if( MSVC )
@@ -507,3 +513,35 @@ target_include_directories( libscidavis PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/future"
   )
+
+if( TORIGRAPH_ENABLE_PCH )
+  target_precompile_headers( libscidavis PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:<cmath>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<cstdint>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<algorithm>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<functional>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<memory>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<string>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<vector>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QApplication>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QByteArray>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QColor>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QDialog>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QFile>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QHash>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QJsonArray>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QJsonDocument>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QJsonObject>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QList>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QMap>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QObject>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QPainter>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QPointer>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QRegularExpression>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QString>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QStringList>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QVariant>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QVector>>"
+    "$<$<COMPILE_LANGUAGE:CXX>:<QWidget>>"
+  )
+endif()

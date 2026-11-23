@@ -92,6 +92,11 @@ if( WIN32 )
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TORIGRAPH_RUNTIME_DLLS} "${CMAKE_CURRENT_BINARY_DIR}"
     )
   endif()
+  if( TORIGRAPH_ASAN_RUNTIME_DLL )
+    add_custom_command(TARGET scidavis POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TORIGRAPH_ASAN_RUNTIME_DLL}" "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+  endif()
 endif()
 
 if( WIN32 )
@@ -186,12 +191,45 @@ endif()
 endif()
 
 if( WIN32 )
-  add_executable( scidavis_ole_test "src/ole_test.cpp" "${RESOURCES}" )
+  set( OLE_TEST_SRCS
+    "src/ole_test.cpp"
+    "src/ole_test_suites_36_46.cpp"
+    "src/ole_test_suites_47_52.cpp"
+    "src/ole_test_suites_53_63.cpp"
+    "src/ole_test_suites_64_72.cpp"
+    "src/ole_test_suites_73_78.cpp"
+    "src/ole_test_common.h"
+  )
+  add_executable( scidavis_ole_test ${OLE_TEST_SRCS} "${RESOURCES}" )
   target_link_libraries( scidavis_ole_test libscidavis )
   target_include_directories( scidavis_ole_test PRIVATE "${CMAKE_BINARY_DIR}/libscidavis/libscidavis_autogen/include" "${CMAKE_SOURCE_DIR}/libscidavis/src" )
+  if( TORIGRAPH_ENABLE_PCH )
+    target_precompile_headers( scidavis_ole_test PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/ole_test_common.h>"
+    )
+  endif()
   if( TORIGRAPH_RUNTIME_DLLS )
     add_custom_command(TARGET scidavis_ole_test POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TORIGRAPH_RUNTIME_DLLS} "${CMAKE_CURRENT_BINARY_DIR}"
     )
   endif()
+  if( TORIGRAPH_ASAN_RUNTIME_DLL )
+    add_custom_command(TARGET scidavis_ole_test POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TORIGRAPH_ASAN_RUNTIME_DLL}" "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+  endif()
+
+  # Register modular regression suites (36..78, note: 54 was never allocated) with CTest
+  foreach( _sid RANGE 36 78 )
+    if( NOT _sid EQUAL 54 )
+      add_test(
+        NAME "ole_suite_${_sid}"
+        COMMAND scidavis_ole_test "--suite=${_sid}"
+      )
+      set_tests_properties( "ole_suite_${_sid}" PROPERTIES
+        ENVIRONMENT "QT_OPENGL=software;TORIGRAPH_NO_OLE_REGISTER=1"
+        RESOURCE_LOCK "win32_ole_clipboard"
+      )
+    endif()
+  endforeach()
 endif()

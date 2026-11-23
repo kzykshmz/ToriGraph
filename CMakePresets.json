@@ -1,0 +1,98 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 16,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "environment": {
+        "VSLANG": "1033",
+        "TORIGRAPH_NO_OLE_REGISTER": "1"
+      },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.deps/Library",
+        "ORIGIN_IMPORT": "ON",
+        "BUILD_QWT": "ON",
+        "BUILD_QWTPLOT3D": "ON",
+        "BUILD_TESTS": "OFF",
+        "TORIGRAPH_USE_CCACHE": "ON",
+        "TORIGRAPH_ENABLE_PCH": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Windows Ninja Release (PCH + sccache + detached PDB)",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TORIGRAPH_GENERATE_PDB": "ON",
+        "TORIGRAPH_SANITIZE_ADDRESS": "OFF"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Windows Ninja RelWithDebInfo + MSVC AddressSanitizer",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "TORIGRAPH_SANITIZE_ADDRESS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Windows Ninja Debug",
+      "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TORIGRAPH_SANITIZE_ADDRESS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "targets": [
+        "scidavis",
+        "scidavis_ole_test",
+        "explin",
+        "exp_saturation",
+        "fitRational0",
+        "fitRational1",
+        "planck_wavelength"
+      ]
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "targets": [
+        "scidavis",
+        "scidavis_ole_test"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

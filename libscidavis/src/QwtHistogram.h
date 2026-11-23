@@ -26,6 +26,9 @@
  *   Boston, MA  02110-1301  USA                                           *
  *                                                                         *
  ***************************************************************************/
+#ifndef QWT_HISTOGRAM_H
+#define QWT_HISTOGRAM_H
+
 #include "QwtBarCurve.h"
 
 //! Histogram class
@@ -62,3 +65,5 @@ private:
     //! Variables storing statistical information
     double d_mean, d_standard_deviation, d_min, d_max;
 };
+
+#endif // QWT_HISTOGRAM_H

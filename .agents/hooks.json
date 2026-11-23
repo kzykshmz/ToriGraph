@@ -1,0 +1,12 @@
+{
+  "phone-notify-on-stop": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python ./hooks/stop-notify.py",
+        "timeout": 12
+      }
+    ]
+  }
+}

@@ -71,11 +71,24 @@ jobs:
             zlib
             ninja
             cmake
+            sccache
             python=3.11
             numpy
             pandas
             python-pptx
             pytest
+            pytest-xdist
+            hypothesis
+            pillow
+
+      - name: Restore sccache compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-win-msvc-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            sccache-win-msvc-${{ github.ref_name }}-
+            sccache-win-msvc-
 
       - name: Link .deps junction to micromamba environment
         run: |
@@ -85,7 +98,10 @@ jobs:
           if (Test-Path .deps) { Remove-Item -Recurse -Force .deps }
           New-Item -ItemType Junction -Path .deps -Target $envDir | Out-Null
 
-      - name: Configure with CMake (Ninja + MSVC)
+      - name: Configure with CMake (Ninja + MSVC + sccache + PCH)
+        env:
+          SCCACHE_DIR: ${{ runner.temp }}\sccache
+          VSLANG: "1033"
         run: |
           $prefix = Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library"
           micromamba run -n torigraph-ci cmake -B build -G Ninja `
@@ -97,8 +113,14 @@ jobs:
             -DBUILD_TESTS=OFF
 
       - name: Build ToriGraph & OLE/Regression Test Suite
+        env:
+          SCCACHE_DIR: ${{ runner.temp }}\sccache
+          VSLANG: "1033"
         run: |
           micromamba run -n torigraph-ci cmake --build build --target scidavis scidavis_ole_test --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          micromamba run -n torigraph-ci sccache --show-stats
+          micromamba run -n torigraph-ci sccache --stop-server ; $global:LASTEXITCODE = 0
 
       - name: Set display resolution to 1920x1080 for GUI layout tests
         run: ./scripts/ci-set-display-resolution.ps1
@@ -120,5 +142,5 @@ jobs:
           $env:PATH = (Join-Path $env:TORIGRAPH_CONDA_PREFIX "Library\bin") + ";" + $env:PATH
           $env:TORIGRAPH_EXE = (Resolve-Path .\build\scidavis\ToriGraph.exe).Path
           micromamba run -n torigraph-ci python -m pip install --no-build-isolation --no-deps -e ./python
-          micromamba run -n torigraph-ci python -m pytest python/tests -m "not slow" --durations=10
+          micromamba run -n torigraph-ci python -m pytest python/tests -m "not slow" -n auto --dist loadfile --durations=10
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

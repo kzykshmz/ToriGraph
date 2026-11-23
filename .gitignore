@@ -13,8 +13,17 @@ CMakeLists.txt.user*
 .deps/
 .tools/
 build/
+build-*/
 dist/
+coverage/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+*.dmp
+.ntfy-topic
+.ntfy-auto
+
 

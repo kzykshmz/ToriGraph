@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "ApplicationWindow.h"
+#include "CrashHandler.h"
 #include "ModernUiTheme.h"
 #include "PythonAutomationServer.h"
 #include "globals.h"
@@ -196,6 +197,7 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName("ToriGraph");
 
     Application app(argc, argv);
+    ToriGraphCrash::installCrashHandler();
     QStringList args = app.arguments();
     args.removeFirst(); // remove application name
 
