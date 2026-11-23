@@ -27491,6 +27491,24 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         DataCurve *dcRe = dynamic_cast<DataCurve *>(gRe->curve(0));
         CHECK_COND(dcRe != nullptr && dcRe->dataSize() == 5 && std::fabs(dcRe->y(4) - 55.0) < 1e-9,
                    "78o: linked DataCurve not refreshed after reimportFromSource!");
+
+        // Swapped columns ([X, Y] -> [Y, X]) must rename cleanly via two-pass rename without '-1' collision,
+        // and stale formulas/masks must be cleared.
+        tRe->column(0)->setFormula(0, QStringLiteral("col(\"Y\")"));
+        tRe->column(0)->setMasked(0, true);
+        {
+            QFile cf(reimpCsvPath);
+            CHECK_COND(cf.open(QIODevice::WriteOnly | QIODevice::Truncate), "78o: overwrite swapped CSV");
+            cf.write("Y,X\n100,1\n200,2\n");
+            cf.close();
+        }
+        CHECK_COND(tRe->reimportFromSource(), "78o: swapped reimportFromSource failed");
+        QCoreApplication::processEvents();
+        CHECK_COND(tRe->column(0)->name() == QStringLiteral("Y")
+                           && tRe->column(1)->name() == QStringLiteral("X"),
+                   "78o: swapped reimportFromSource collided column names!");
+        CHECK_COND(tRe->column(0)->formula(0).isEmpty() && !tRe->column(0)->isMasked(0),
+                   "78o: reimportFromSource retained stale formula or mask on reused column!");
     }
 
     // -------------------------------------------------------------------------

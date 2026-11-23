@@ -2244,6 +2244,10 @@ bool Table::reimportFromSource()
     QApplication::setOverrideCursor(Qt::WaitCursor);
     d_future_table->beginMacro(tr("%1: re-import from source").arg(name()));
     d_future_table->setRowCount(maxRows);
+    if (oldCount > newCols.size())
+        d_future_table->removeColumns(newCols.size(), oldCount - newCols.size());
+
+    QVector<QString> targetNames(common);
     for (int i = 0; i < common; ++i) {
         Column *dst = d_future_table->column(i);
         Column *src = newCols.at(i);
@@ -2251,10 +2255,12 @@ bool Table::reimportFromSource()
             delete src;
             continue;
         }
-        if (dst->dataType() != src->dataType())
+        dst->clearFormulas();
+        dst->clearMasks();
+        if (dst->columnMode() != src->columnMode())
             dst->setColumnMode(src->columnMode());
         dst->copy(src);
-        dst->setName(src->name());
+        targetNames[i] = src->name();
         dst->setPlotDesignation(src->plotDesignation());
         dst->setLongName(src->longName());
         dst->setUnits(src->units());
@@ -2262,8 +2268,27 @@ bool Table::reimportFromSource()
         dst->setProperty("_tg_label_role", src->property("_tg_label_role"));
         delete src;
     }
-    if (oldCount > newCols.size())
-        d_future_table->removeColumns(newCols.size(), oldCount - newCols.size());
+
+    // Two-pass rename prevents sibling collisions when columns are swapped or removed (e.g. [A,B]->[B,A]).
+    int tmpIdx = 0;
+    for (int i = 0; i < common; ++i) {
+        Column *dst = d_future_table->column(i);
+        if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+            continue;
+        QString tmpName;
+        do {
+            tmpName = QStringLiteral("__tg_reimp_tmp_%1").arg(tmpIdx++);
+        } while (d_future_table->column(tmpName, false) != nullptr
+                 || targetNames.contains(tmpName));
+        dst->setName(tmpName);
+    }
+    for (int i = 0; i < common; ++i) {
+        Column *dst = d_future_table->column(i);
+        if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+            continue;
+        dst->setName(targetNames[i]);
+    }
+
     if (newCols.size() > common) {
         QList<Column *> extraCols;
         extraCols.reserve(newCols.size() - common);

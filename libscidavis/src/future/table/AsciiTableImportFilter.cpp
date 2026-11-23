@@ -3217,7 +3217,12 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     auto decodeWithCodec = [](QTextCodec *codec, const char *data, int size) -> QString {
         QTextCodec::ConverterState state;
         QString s = codec->toUnicode(data, size, &state);
-        g_lastDecodeInvalidChars = state.invalidChars;
+        if (state.remainingChars > 0) {
+            s.append(QChar::ReplacementCharacter);
+            g_lastDecodeInvalidChars = state.invalidChars + 1;
+        } else {
+            g_lastDecodeInvalidChars = state.invalidChars;
+        }
         if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
             s.remove(0, 1);
         return s;
@@ -3328,7 +3333,12 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8")) {
         QTextCodec::ConverterState state;
         utf8Decoded = utf8->toUnicode(rawBytes.constData(), rawBytes.size(), &state);
-        utf8Invalid = state.invalidChars;
+        if (state.remainingChars > 0) {
+            utf8Decoded.append(QChar::ReplacementCharacter);
+            utf8Invalid = state.invalidChars + 1;
+        } else {
+            utf8Invalid = state.invalidChars;
+        }
         if (utf8Invalid == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-8");
             if (!utf8Decoded.isEmpty() && utf8Decoded.at(0) == QChar(0xFEFF))
@@ -3346,11 +3356,16 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     if (sjis) {
         QTextCodec::ConverterState sjisState;
         QString decoded = sjis->toUnicode(rawBytes.constData(), rawBytes.size(), &sjisState);
-        if (sjisState.invalidChars == 0) {
+        int sjisInvalid = sjisState.invalidChars;
+        if (sjisState.remainingChars > 0) {
+            decoded.append(QChar::ReplacementCharacter);
+            ++sjisInvalid;
+        }
+        if (sjisInvalid == 0) {
             g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
             return decoded;
         }
-        if (utf8Invalid >= 0 && utf8Invalid < sjisState.invalidChars) {
+        if (utf8Invalid >= 0 && utf8Invalid < sjisInvalid) {
             // Mostly valid UTF-8 with a few damaged bytes: keep UTF-8 and warn.
             g_lastDecodedEncoding = QStringLiteral("UTF-8");
             g_lastDecodeInvalidChars = utf8Invalid;
@@ -3359,7 +3374,7 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
             return utf8Decoded;
         }
         g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
-        g_lastDecodeInvalidChars = sjisState.invalidChars;
+        g_lastDecodeInvalidChars = sjisInvalid;
         return decoded;
     }
     g_lastDecodedEncoding = QStringLiteral("Latin-1");

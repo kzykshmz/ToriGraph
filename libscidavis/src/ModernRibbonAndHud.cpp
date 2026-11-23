@@ -6690,7 +6690,10 @@ void ModernRibbonBar::syncActionBoundButtons()
             QSignalBlocker blocker(btn);
             btn->setChecked(a->isChecked());
         }
-        if (!a->toolTip().isEmpty() && btn->toolTip() != a->toolTip())
+        const bool syncTip = (it.key() == QLatin1String("actionCopyGraphOle")
+                              || it.key() == QLatin1String("actionUndo")
+                              || it.key() == QLatin1String("actionRedo"));
+        if (syncTip && !a->toolTip().isEmpty() && btn->toolTip() != a->toolTip())
             btn->setToolTip(a->toolTip());
     }
 }

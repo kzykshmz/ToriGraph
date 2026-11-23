@@ -7252,12 +7252,31 @@ void MultiLayer::updateCanvasStatusPill()
                          QString::number(hDisp, 'f', decimals), unitStr, sep, ratioStr,
                          QString::number(d_page_dpi), fontFam);
 
+    const QString miniStatusText =
+            QStringLiteral("%1%2%3%4 %5 %6 DPI %5 %7")
+                    .arg(QString::number(wDisp, 'f', decimals), times,
+                         QString::number(hDisp, 'f', decimals), unitStr, sep,
+                         QString::number(d_page_dpi), fontFam);
+    const QString microStatusText =
+            QStringLiteral("%1%2%3%4 %5 %6 %5 %7")
+                    .arg(QString::number(wDisp, 'f', decimals), times,
+                         QString::number(hDisp, 'f', decimals), unitStr, sep,
+                         QString::number(d_page_dpi), fontFam);
+    const QString picoStatusText =
+            QStringLiteral("%1%2%3 %4")
+                    .arg(QString::number(wDisp, 'f', decimals), times,
+                         QString::number(hDisp, 'f', decimals), unitStr);
+
     d_canvas_status_pill->setProperty("_fullStatusText", fullStatusText);
     d_canvas_status_pill->setProperty("_compactStatusText", compactStatusText);
     d_canvas_status_pill->setProperty("_shortStatusText", shortStatusText);
+    d_canvas_status_pill->setProperty("_miniStatusText", miniStatusText);
+    d_canvas_status_pill->setProperty("_microStatusText", microStatusText);
+    d_canvas_status_pill->setProperty("_picoStatusText", picoStatusText);
     d_canvas_status_pill->setText(fullStatusText);
     d_canvas_status_pill->setToolTip(
-            tr("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets"));
+            tr("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets")
+            + QLatin1Char('\n') + fullStatusText);
     repositionCanvasStatusPill();
 }
 
@@ -7318,6 +7337,9 @@ void MultiLayer::repositionCanvasStatusPill()
     const QString fullTxt = d_canvas_status_pill->property("_fullStatusText").toString();
     const QString compactTxt = d_canvas_status_pill->property("_compactStatusText").toString();
     const QString shortTxt = d_canvas_status_pill->property("_shortStatusText").toString();
+    const QString miniTxt = d_canvas_status_pill->property("_miniStatusText").toString();
+    const QString microTxt = d_canvas_status_pill->property("_microStatusText").toString();
+    const QString picoTxt = d_canvas_status_pill->property("_picoStatusText").toString();
     auto measurePillWidth = [&](const QString &txt) -> int {
         const QFontMetrics fm(d_canvas_status_pill->font());
         const int textW = fm.horizontalAdvance(txt) + 26;
@@ -7346,24 +7368,33 @@ void MultiLayer::repositionCanvasStatusPill()
                 ? (d_layer_pill_frame->geometry().right() + 10)
                 : 8;
         const int availTopW = refSz.width() - leftReserved - 8 - sbRight;
-        if (availTopW < fullW && !compactTxt.isEmpty()) {
-            const int compactW = measurePillWidth(compactTxt);
-            if (availTopW < compactW && !shortTxt.isEmpty()) {
-                const int shortW = measurePillWidth(shortTxt);
-                pw = qMin(shortW, qMax(60, availTopW));
-            } else {
-                pw = qMin(compactW, qMax(60, availTopW));
+        if (availTopW < 95) {
+            d_canvas_status_pill->hide();
+            return;
+        }
+        if (availTopW < fullW) {
+            QString chosen = fullTxt;
+            int chosenW = fullW;
+            for (const QString &cand : { compactTxt, shortTxt, miniTxt, microTxt, picoTxt }) {
+                if (cand.isEmpty())
+                    continue;
+                chosen = cand;
+                chosenW = measurePillWidth(cand);
+                if (chosenW <= availTopW)
+                    break;
             }
+            if (chosenW > availTopW && !chosen.isEmpty()) {
+                const QFontMetrics fm(d_canvas_status_pill->font());
+                const QString rightElided = fm.elidedText(chosen, Qt::ElideRight, qMax(36, availTopW - 26));
+                chosenW = measurePillWidth(rightElided);
+            }
+            pw = qMin(chosenW, qMax(60, availTopW));
             pillSz = d_canvas_status_pill->sizeHint().expandedTo(
                     d_canvas_status_pill->minimumSizeHint());
             ph = qMax(20, qMin(LayerButton::btnSize(), pillSz.height()));
         } else {
             pw = fullW;
             ph = qMax(20, qMin(LayerButton::btnSize(), ph));
-        }
-        if (availTopW < 95) {
-            d_canvas_status_pill->hide();
-            return;
         }
         x = qMax(leftReserved, refSz.width() - pw - 8 - sbRight);
         y = qMax(1, (LayerButton::btnSize() + 4 - ph) / 2);

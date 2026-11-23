@@ -2174,11 +2174,23 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     lay->addWidget(d_btn_preset_slide28);
 
     QHBoxLayout *customPresetRow = new QHBoxLayout();
-    customPresetRow->setSpacing(4);
+    customPresetRow->setSpacing(3);
     d_cb_user_presets = new QComboBox(page);
     d_cb_user_presets->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d_cb_user_presets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    d_cb_user_presets->setMinimumContentsLength(10);
+    d_cb_user_presets->setStyleSheet(
+            QStringLiteral("QComboBox { font-size: 8.5pt; padding: 2px 18px 2px 6px; }"));
+    if (QAbstractItemView *pv = d_cb_user_presets->view())
+        pv->setTextElideMode(Qt::ElideNone);
+    connect(d_cb_user_presets, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) {
+                if (d_cb_user_presets)
+                    d_cb_user_presets->setToolTip(d_cb_user_presets->currentText());
+            });
     d_btn_apply_user_preset = new QPushButton(page);
-    d_btn_apply_user_preset->setMaximumWidth(64);
+    d_btn_apply_user_preset->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    d_btn_apply_user_preset->setMaximumWidth(54);
     connect(d_btn_apply_user_preset, &QPushButton::clicked, this, [this]() {
         if (!d_target_ml || !d_cb_user_presets || d_cb_user_presets->currentIndex() < 0)
             return;
@@ -2917,7 +2929,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     lay->addWidget(d_lbl_axis_title_preview);
 
     QHBoxLayout *fmtRow = new QHBoxLayout();
-    fmtRow->setSpacing(3);
+    fmtRow->setSpacing(2);
     auto makeFmtBtn = [&](const QString &label, bool compact) -> QToolButton * {
         QToolButton *b = new QToolButton(page);
         b->setObjectName(compact ? QStringLiteral("InspectorSymbolChipBtn")
@@ -2925,11 +2937,11 @@ QWidget *GraphInspectorDock::buildAxisInspector()
         b->setText(label);
         b->setFixedHeight(24);
         if (compact) {
-            b->setFixedWidth(28);
+            b->setFixedWidth(25);
             b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
             fmtRow->addWidget(b, 0);
         } else {
-            b->setMinimumWidth(62);
+            b->setMinimumWidth(58);
             b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             fmtRow->addWidget(b, 1);
         }
@@ -9868,10 +9880,10 @@ void GraphInspectorDock::applyTheme()
                           "  background: %8; color: %7; border: 1px solid %7; font-weight: 600;"
                           "}"
                           "QToolButton#InspectorSymbolChipBtn {"
-                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9pt; padding: 1px 4px; min-height: 22px; min-width: 24px;"
+                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9pt; padding: 1px 3px; min-height: 22px; min-width: 22px;"
                           "}"
                           "QToolButton#InspectorMenuChipBtn {"
-                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9pt; padding: 1px 16px 1px 6px; min-height: 22px; min-width: 60px;"
+                          "  background: @CHIP_BG@; color: %5; border: 1px solid %4; border-radius: 4px; font-size: 9pt; padding: 1px 16px 1px 5px; min-height: 22px; min-width: 56px;"
                           "}"
                           "QToolButton#InspectorMenuChipBtn::menu-indicator {"
                           "  subcontrol-origin: padding; subcontrol-position: right center; right: 4px; width: 8px;"
@@ -10058,8 +10070,14 @@ void GraphInspectorDock::retranslateUi()
         d_btn_preset_slide28->setToolTip(
                 tr("83.3 mm square, 12.9 pt Arial. Becomes 18 pt on the slide with 'Send to PowerPoint' (140% paste)."));
     }
-    if (d_btn_apply_user_preset)
+    if (d_btn_apply_user_preset) {
         d_btn_apply_user_preset->setText(tr("Apply"));
+        const int w = qMax(42, d_btn_apply_user_preset->fontMetrics().horizontalAdvance(
+                                       d_btn_apply_user_preset->text())
+                                       + 16);
+        d_btn_apply_user_preset->setMaximumWidth(w);
+        d_btn_apply_user_preset->setFixedWidth(w);
+    }
     if (d_btn_manage_presets)
         d_btn_manage_presets->setText(tr("Manage Style Presets..."));
     if (d_cb_user_presets) {
@@ -10078,6 +10096,7 @@ void GraphInspectorDock::retranslateUi()
         }
         if (d_cb_user_presets->count() > 0)
             d_cb_user_presets->setCurrentIndex(selIdx);
+        d_cb_user_presets->setToolTip(d_cb_user_presets->currentText());
         d_cb_user_presets->blockSignals(false);
     }
     if (d_btn_square_frame70)

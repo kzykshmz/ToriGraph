@@ -4161,9 +4161,11 @@ double tensileStressUnitToGPa(const QString &unitIn)
         return 1.0e-6;
     if (u.contains(QLatin1String("TPa"), Qt::CaseInsensitive))
         return 1.0e3;
-    if (u.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
+    static const QRegularExpression reKsi(QStringLiteral("(?:^|[^a-zA-Z])ksi\\b"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    if (u.contains(reKsi))
         return 6.894757e-3;
-    static const QRegularExpression rePsi(QStringLiteral("\\bpsi\\b"),
+    static const QRegularExpression rePsi(QStringLiteral("(?:^|[^a-zA-Z])psi\\b"),
                                           QRegularExpression::CaseInsensitiveOption);
     if (u.contains(rePsi))
         return 6.894757e-6;
@@ -4439,9 +4441,11 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             || txt.contains(QLatin1String("N/mm2"), Qt::CaseInsensitive)
             || txt.contains(QLatin1String("N/mm<sup>2</sup>"), Qt::CaseInsensitive))
             return QStringLiteral("N/mm²");
-        if (txt.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
+        static const QRegularExpression reKsi(QStringLiteral("(?:^|[^a-zA-Z])ksi\\b"),
+                                              QRegularExpression::CaseInsensitiveOption);
+        if (txt.contains(reKsi))
             return QStringLiteral("ksi");
-        static const QRegularExpression rePsi(QStringLiteral("\\bpsi\\b"),
+        static const QRegularExpression rePsi(QStringLiteral("(?:^|[^a-zA-Z])psi\\b"),
                                               QRegularExpression::CaseInsensitiveOption);
         if (txt.contains(rePsi))
             return QStringLiteral("psi");
