@@ -38,7 +38,7 @@ class BoxCurve : public DataCurve
 {
 public:
     enum BoxStyle { NoBox, Rect, Diamond, WindBox, Notch };
-    enum Range { None, SD, SE, r25_75, r10_90, r5_95, r1_99, MinMax, UserDef };
+    enum Range { None, SD, SE, r25_75, r10_90, r5_95, r1_99, MinMax, UserDef, Tukey15IQR };
 
     BoxCurve(Table *t, QString name = QString(), int startRow = 0, int endRow = -1);
 

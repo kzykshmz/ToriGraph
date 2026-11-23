@@ -154,6 +154,7 @@ private:
     QString nextSheetLabel(const Book &b) const;
     bool isShown(Table *t) const;
     void showInPlaceOf(Table *t, const QRect &geometry, bool maximized);
+    void switchAdjacentSheet(Table *t, int delta);
 
     struct ArchivedSheet
     {

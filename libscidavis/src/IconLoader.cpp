@@ -107,7 +107,7 @@ static QString accentHexColor(AccentDomain domain, bool darkSurface, bool disabl
 }
 
 // ============================================================================
-// 195 Distinct 24x24 Publication-Grade 2-Color Duotone Vector SVG Geometries
+// Distinct 24x24 Publication-Grade 2-Color Duotone Vector SVG Geometries (197 ids)
 // ============================================================================
 static const DuotoneSvgSpec kIconSpecs[] = {
     // --- 1. File & Workspace (33 + extras) ---
@@ -140,6 +140,19 @@ static const DuotoneSvgSpec kIconSpecs[] = {
       "<circle cx='12' cy='12' r='8'/>",
       "<circle cx='12' cy='12' r='8.5'/><path d='M7.5 14.5c2-4.5 4.5-4.5 9-2'/>",
       "<path d='M12 5v6m0 0l-2.5-2.5M12 11l2.5-2.5'/><circle cx='12' cy='15.5' r='1.8'/>" },
+
+    // Excel workbook import: a worksheet grid under an import arrow, with the green Excel "X".
+    { "import-xlsx", AccentDomain::EmeraldSignalStats,
+      "<rect x='3' y='10' width='12' height='11' rx='1.5'/>",
+      "<rect x='3' y='10' width='12' height='11' rx='1.5'/><path d='M3 13.7h12M3 17.3h12M9 10v11'/>",
+      "<path d='M7 3v4.5m0 0l-2-2m2 2l2-2'/><path d='M16.5 3.5l5 6m0-6l-5 6'/>" },
+
+    // PowerPoint export ("Send to PowerPoint"): a slide on a stand with an outgoing arrow.
+    // Distinct from preset-slide (the Lab Slide style preset) and copy-ole (clipboard copy).
+    { "export-pptx", AccentDomain::OrangeStyleExport,
+      "<rect x='3' y='3.5' width='14' height='11' rx='1.5'/>",
+      "<rect x='3' y='3.5' width='14' height='11' rx='1.5'/><path d='M10 14.5v3.5M7 18h6M6.5 8h7M6.5 11h4'/>",
+      "<path d='M15.5 19h5.5m0 0l-2.6-2.6M21 19l-2.6 2.6'/>" },
 
     { "export-image", AccentDomain::OrangeStyleExport,
       "<rect x='3' y='5' width='15' height='14' rx='2'/>",
@@ -422,6 +435,11 @@ static const DuotoneSvgSpec kIconSpecs[] = {
       "<polygon points='12,4.5 20,18.5 4,18.5'/>",
       "<polygon points='12,4.5 20,18.5 4,18.5'/><path d='M8 11.5h8M8 18.5l4-7 4 7'/>",
       "<circle cx='12' cy='13.2' r='1.8' fill='{{A}}' stroke='none'/><circle cx='10' cy='15.8' r='1.3' fill='{{A}}' stroke='none'/><circle cx='14.2' cy='15.2' r='1.3' fill='{{A}}' stroke='none'/>" },
+
+    { "plot-radar", AccentDomain::BluePlot,
+      "<circle cx='12' cy='12' r='7.5'/>",
+      "<circle cx='12' cy='12' r='7.5'/><circle cx='12' cy='12' r='3.5'/><path d='M12 4.5v15M4.5 12h15'/>",
+      "<polygon points='12,6.5 17,11 14,17 8,14.5'/>" },
 
     { "plot-heatmap", AccentDomain::BluePlot,
       "<rect x='4' y='4.5' width='12.5' height='15' rx='1.5'/>",
@@ -1627,7 +1645,23 @@ static const AliasPair kAliasTable[] = {
     { "draw-line", "mean-line" },
     { "reference-line", "mean-line" },
     { "grid-major", "axis-grid" },
-    { "merge-graphs", "layer-arrange" }
+    { "merge-graphs", "layer-arrange" },
+
+    // Excel import and PowerPoint export have their own icons (they used to share import-csv,
+    // preset-slide and copy-ole with CSV import, the Lab Slide preset and the OLE copy).
+    { "xlsx", "import-xlsx" },
+    { "xlsm", "import-xlsx" },
+    { "excel", "import-xlsx" },
+    { "import-excel", "import-xlsx" },
+    { "import-workbook", "import-xlsx" },
+    { "excel-workbook", "import-xlsx" },
+    { "pptx", "export-pptx" },
+    { "powerpoint", "export-pptx" },
+    { "export-powerpoint", "export-pptx" },
+    { "send-to-powerpoint", "export-pptx" },
+    { "sendtopowerpoint", "export-pptx" },
+    { "send-pptx", "export-pptx" },
+    { "export-slides", "export-pptx" }
 };
 
 struct IconRegistryState {
@@ -1712,6 +1746,10 @@ static QString resolveCanonicalUnlocked(IconRegistryState &st, const QString &ra
         st.unresolved.append(rawId);
 
     // Keyword-aware semantic fallback so even arbitrary caller IDs render crisp 2-color SVGs
+    if (norm.contains(QStringLiteral("pptx")) || norm.contains(QStringLiteral("powerpoint")))
+        return QStringLiteral("export-pptx");
+    if (norm.contains(QStringLiteral("xlsx")) || norm.contains(QStringLiteral("excel")))
+        return QStringLiteral("import-xlsx");
     if (norm.contains(QStringLiteral("delete")) || norm.contains(QStringLiteral("trash"))
         || norm.contains(QStringLiteral("remove")))
         return QStringLiteral("delete");

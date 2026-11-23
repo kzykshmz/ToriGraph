@@ -29,7 +29,9 @@
 #include "ScaleDraw.h"
 #include "MyParser.h"
 
+#include <QApplication>
 #include <QDateTime>
+#include <QFontMetricsF>
 #include <QMessageBox>
 #include <QPainter>
 #include <QVector>
@@ -115,6 +117,158 @@ QwtText formatSuperscriptScientificLabel(double transformed, char fmt, int prec,
     return QwtText(prefix + core + suffix);
 }
 
+QFont makeSuperscriptFont(const QFont &base)
+{
+    QFont sup = base;
+    if (sup.pointSizeF() > 0.0)
+        sup.setPointSizeF(qMax(1.0, sup.pointSizeF() * 0.7));
+    else if (sup.pixelSize() > 0)
+        sup.setPixelSize(qMax(1, qRound(double(sup.pixelSize()) * 0.7)));
+    return sup;
+}
+
+QString stripHtmlTags(const QString &s)
+{
+    QString out;
+    out.reserve(s.size());
+    bool inTag = false;
+    for (const QChar ch : s) {
+        if (ch == QLatin1Char('<')) {
+            inTag = true;
+        } else if (ch == QLatin1Char('>')) {
+            inTag = false;
+        } else if (!inTag) {
+            out.append(ch);
+        }
+    }
+    return out;
+}
+
+double measureSuperscriptLabelWidth(const QString &richText, const QFont &font, double rotDeg)
+{
+    const QFontMetricsF fm(font);
+    const QFontMetricsF supFm(makeSuperscriptFont(font));
+
+    double w = 0.0;
+    int pos = 0;
+    const QString openTag = QStringLiteral("<sup>");
+    const QString closeTag = QStringLiteral("</sup>");
+    while (pos < richText.size()) {
+        const int openIdx = richText.indexOf(openTag, pos, Qt::CaseInsensitive);
+        if (openIdx < 0) {
+            w += fm.horizontalAdvance(stripHtmlTags(richText.mid(pos)));
+            break;
+        }
+        if (openIdx > pos)
+            w += fm.horizontalAdvance(stripHtmlTags(richText.mid(pos, openIdx - pos)));
+        const int bodyStart = openIdx + openTag.size();
+        const int closeIdx = richText.indexOf(closeTag, bodyStart, Qt::CaseInsensitive);
+        if (closeIdx < 0) {
+            w += supFm.horizontalAdvance(stripHtmlTags(richText.mid(bodyStart)));
+            break;
+        }
+        w += supFm.horizontalAdvance(stripHtmlTags(richText.mid(bodyStart, closeIdx - bodyStart)));
+        pos = closeIdx + closeTag.size();
+    }
+
+    if (std::fabs(rotDeg) > 1e-3) {
+        constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+        const double rad = std::fabs(rotDeg) * kDegToRad;
+        const double h = fm.height();
+        return w * std::fabs(std::cos(rad)) + h * std::fabs(std::sin(rad));
+    }
+    return w;
+}
+
+double normalizedMantissa10(double v)
+{
+    const double e10 = std::floor(std::log10(v) + 1e-9);
+    double m = v / std::pow(10.0, e10);
+    if (m >= 10.0 - 1e-4)
+        m /= 10.0;
+    return m;
+}
+
+struct LogTickCandidate
+{
+    double tv;
+    double px;
+    double widthPx;
+    bool isIntMant;
+    bool is125;
+    bool is15;
+    bool isDecade;
+};
+
+QVector<int> selectNonCollidingLogTickIndices(const QVector<LogTickCandidate> &items, double minGap)
+{
+    auto collidesPair = [&](int idxA, int idxB) -> bool {
+        const LogTickCandidate &a = items[idxA];
+        const LogTickCandidate &b = items[idxB];
+        return std::fabs(b.px - a.px) < 0.5 * (a.widthPx + b.widthPx) + minGap;
+    };
+    auto hasCollision = [&](const QVector<int> &idxs) -> bool {
+        for (int k = 0; k + 1 < idxs.size(); ++k) {
+            if (collidesPair(idxs[k], idxs[k + 1]))
+                return true;
+        }
+        return false;
+    };
+
+    QVector<int> allIdxs(items.size());
+    for (int i = 0; i < items.size(); ++i)
+        allIdxs[i] = i;
+    if (!hasCollision(allIdxs))
+        return allIdxs;
+
+    QVector<int> intIdxs, m125Idxs, m15Idxs, decIdxs;
+    for (int i = 0; i < items.size(); ++i) {
+        if (items[i].isIntMant)
+            intIdxs.append(i);
+        if (items[i].is125)
+            m125Idxs.append(i);
+        if (items[i].is15)
+            m15Idxs.append(i);
+        if (items[i].isDecade)
+            decIdxs.append(i);
+    }
+
+    if (intIdxs.size() >= 2 && intIdxs.size() < items.size()
+        && intIdxs.size() * 5 >= items.size() * 2 && !hasCollision(intIdxs)) {
+        return intIdxs;
+    }
+    if (m125Idxs.size() >= 2 && !hasCollision(m125Idxs))
+        return m125Idxs;
+    if (m15Idxs.size() >= 2 && !hasCollision(m15Idxs))
+        return m15Idxs;
+    if (decIdxs.size() >= 2) {
+        if (!hasCollision(decIdxs))
+            return decIdxs;
+        for (int step = 2; step <= decIdxs.size(); ++step) {
+            QVector<int> strided;
+            for (int k = 0; k < decIdxs.size(); k += step)
+                strided.append(decIdxs[k]);
+            if (strided.size() >= 2 && !hasCollision(strided))
+                return strided;
+        }
+    }
+
+    QVector<int> fallback;
+    const int lastIdx = items.size() - 1;
+    fallback.append(0);
+    if (lastIdx > 0 && !collidesPair(0, lastIdx)) {
+        int prev = 0;
+        for (int i = 1; i < lastIdx; ++i) {
+            if (!collidesPair(prev, i) && !collidesPair(i, lastIdx)) {
+                fallback.append(i);
+                prev = i;
+            }
+        }
+        fallback.append(lastIdx);
+    }
+    return fallback;
+}
+
 } // namespace
 
 ScaleDraw::ScaleDraw(const QString &s)
@@ -143,7 +297,9 @@ ScaleDraw::ScaleDraw(const ScaleDraw &other, const QString &s)
       d_colorbar_border(other.d_colorbar_border),
       d_colorbar_width(other.d_colorbar_width),
       d_colorbar_pen_width(other.d_colorbar_pen_width),
-      d_colorbar_stops(other.d_colorbar_stops)
+      d_colorbar_stops(other.d_colorbar_stops),
+      d_axis_font(other.d_axis_font),
+      d_has_axis_font(other.d_has_axis_font)
 {
     other.labelFormat(d_fmt, d_prec);
     invalidateCache();
@@ -392,8 +548,35 @@ void ScaleDraw::drawTick(QPainter *p, double value, int len) const
     }
 }
 
+void ScaleDraw::setAxisFontHint(const QFont &font)
+{
+    if (!d_has_axis_font || d_axis_font != font) {
+        d_axis_font = font;
+        d_has_axis_font = true;
+        invalidateCache();
+    }
+}
+
+QFont ScaleDraw::axisFontHint() const
+{
+    if (d_has_axis_font)
+        return d_axis_font;
+    return QApplication::font();
+}
+
+void ScaleDraw::syncLayoutMetrics(int axisLengthPx, const QFont &font)
+{
+    if (d_cached_layout_len != axisLengthPx || !d_has_axis_font || d_axis_font != font) {
+        d_cached_layout_len = axisLengthPx;
+        d_axis_font = font;
+        d_has_axis_font = true;
+        invalidateCache();
+    }
+}
+
 int ScaleDraw::extent(const QPen &pen, const QFont &font) const
 {
+    const_cast<ScaleDraw *>(this)->syncLayoutMetrics(length(), font);
     const int ext = QwtScaleDraw::extent(pen, font);
     if (d_colorbar_border) {
         const QwtMetricsMap map = QwtPainter::metricsMap();
@@ -401,6 +584,13 @@ int ScaleDraw::extent(const QPen &pen, const QFont &font) const
         return ext + extra;
     }
     return ext;
+}
+
+void ScaleDraw::drawLabel(QPainter *painter, double value) const
+{
+    if (painter)
+        const_cast<ScaleDraw *>(this)->syncLayoutMetrics(length(), painter->font());
+    QwtScaleDraw::drawLabel(painter, value);
 }
 
 static int s_suppressScaleBackboneDepth = 0;
@@ -519,7 +709,14 @@ QString TimeScaleDraw::origin()
 
 QwtText TimeScaleDraw::label(double value) const
 {
-    QTime t = t_origin.addMSecs((int)value);
+    if (!std::isfinite(value) || value < -9e18 || value > 9e18)
+        return QwtText();
+    // Compute in 64-bit ms modulo 24h before QTime::addMSecs(int) so spans >= 24.85 days never
+    // overflow 32-bit int.
+    constexpr qint64 kMsPerDay = 86400000LL;
+    const qint64 ms = static_cast<qint64>(std::llround(value));
+    const int dayMs = static_cast<int>(ms % kMsPerDay);
+    const QTime t = t_origin.addMSecs(dayMs);
     return QwtText(t.toString(t_format));
 }
 
@@ -566,7 +763,30 @@ QString DateTimeScaleDraw::origin()
 
 QwtText DateTimeScaleDraw::label(double value) const
 {
-    QDateTime dt = QDateTime::fromMSecsSinceEpoch(round((value - 2440587.5) * 86400000.));
+    if (!std::isfinite(value))
+        return QwtText();
+
+    // ColumnMode::DateTime values (PlotCurve/VectorCurve/AxesDialog) are stored as absolute
+    // Julian Days (>= ~1.72e6 for AD dates, ~2.44e6 around 1970..2030), while PlotCurve also
+    // records the first sample's QDateTime in d_origin. Small offsets (< 1721058.0, i.e. before
+    // Julian Day 0001-01-01) represent days elapsed relative to d_origin when d_origin is valid.
+    constexpr double kJulianDayAd1 = 1721058.0;
+    constexpr double kJulianUnixEpoch = 2440587.5;
+    constexpr double kMsPerDay = 86400000.0;
+
+    if (d_origin.isValid() && value < kJulianDayAd1) {
+        if (std::fabs(value) > 1e11)
+            return QwtText();
+        const qint64 offsetMs = static_cast<qint64>(std::llround(value * kMsPerDay));
+        const QDateTime dt = d_origin.addMSecs(offsetMs);
+        return QwtText(dt.toString(d_format));
+    }
+
+    const double epochDays = value - kJulianUnixEpoch;
+    if (std::fabs(epochDays) > 1e11)
+        return QwtText();
+    const qint64 epochMs = static_cast<qint64>(std::llround(epochDays * kMsPerDay));
+    const QDateTime dt = QDateTime::fromMSecsSinceEpoch(epochMs);
     return QwtText(dt.toString(d_format));
 }
 
@@ -659,44 +879,63 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
     if (!std::isfinite(transformed))
         return QwtText();
 
-    // Prevent horizontal rich-text superscript collisions on narrow sub-decade Log10 X axes
-    // (e.g. 1.5x10^1 .. 3.5x10^1 on 85 mm single-column panels).
+    // Dynamically prevent horizontal rich-text superscript collisions on Log10 X axes using actual
+    // scale-map pixel positions and QFontMetricsF label widths of the axis font, keeping 1/2/5
+    // preference when thinning is needed (and preserving dense ticks on wide panels).
     if ((alignment() == BottomScale || alignment() == TopScale) && transformed > 0.0
         && this->map().transformation()
         && this->map().transformation()->type() == QwtScaleTransformation::Log10) {
+        const QwtScaleMap &scMap = this->map();
+        const double spanPx = std::fabs(scMap.p2() - scMap.p1());
         const QwtScaleDiv scDiv = scaleDiv();
-        const double lo = qMin(scDiv.lowerBound(), scDiv.upperBound());
-        const double hi = qMax(scDiv.lowerBound(), scDiv.upperBound());
         const QwtValueList maj = scDiv.ticks(QwtScaleDiv::MajorTick);
-        if (lo > 0.0 && hi > lo && std::log10(hi / lo) < 1.65 && maj.size() >= 5) {
-            auto mantissaOf = [](double v) -> double {
-                const double e10 = std::floor(std::log10(v) + 1e-12);
-                return v / std::pow(10.0, e10);
-            };
-            int intMantCount = 0;
-            int matchIdx = -1;
+        if (spanPx > 20.0 && maj.size() >= 2) {
+            const QFont font = axisFontHint();
+            const QFontMetricsF fm(font);
+            const double minGap = qMax(4.0, 0.35 * fm.height());
+            const double rotDeg = labelRotation();
+
+            QVector<LogTickCandidate> items;
+            items.reserve(maj.size());
             for (int i = 0; i < maj.size(); ++i) {
-                const double tv = transformValue(maj[i]);
-                if (tv > 0.0 && std::isfinite(tv)) {
-                    const double m = mantissaOf(tv);
-                    if (std::fabs(m - std::round(m)) <= 1e-4)
-                        ++intMantCount;
-                    if (std::fabs(tv - transformed) <= 1e-7 * qMax(1.0, std::fabs(transformed)))
-                        matchIdx = i;
+                const double rv = maj[i];
+                if (!scDiv.contains(rv))
+                    continue;
+                const double tv = transformValue(rv);
+                if (!(tv > 0.0) || !std::isfinite(tv))
+                    continue;
+                const double px = scMap.xTransform(rv);
+                if (!std::isfinite(px))
+                    continue;
+                const QwtText candText =
+                        formatSuperscriptScientificLabel(tv, f, prec, prefix(), suffix());
+                const double wPx = measureSuperscriptLabelWidth(candText.text(), font, rotDeg);
+                const double m = normalizedMantissa10(tv);
+                const bool isInt = (std::fabs(m - std::round(m)) <= 1e-4);
+                const bool is1 = (std::fabs(m - 1.0) <= 1e-4);
+                const bool is2 = (std::fabs(m - 2.0) <= 1e-4);
+                const bool is5 = (std::fabs(m - 5.0) <= 1e-4);
+                items.append({ tv, px, wPx, isInt, is1 || is2 || is5, is1 || is5, is1 });
+            }
+
+            std::sort(items.begin(), items.end(),
+                      [](const LogTickCandidate &a, const LogTickCandidate &b) {
+                          return a.px < b.px;
+                      });
+
+            int matchPos = -1;
+            for (int i = 0; i < items.size(); ++i) {
+                if (std::fabs(items[i].tv - transformed)
+                    <= 1e-7 * qMax(1.0, std::fabs(transformed))) {
+                    matchPos = i;
+                    break;
                 }
             }
-            const double curMant = mantissaOf(transformed);
-            if (intMantCount >= 5) {
-                const bool is125 = (std::fabs(curMant - 1.0) <= 1e-4
-                                    || std::fabs(curMant - 2.0) <= 1e-4
-                                    || std::fabs(curMant - 5.0) <= 1e-4);
-                if (!is125)
+
+            if (matchPos >= 0 && items.size() >= 2) {
+                const QVector<int> chosen = selectNonCollidingLogTickIndices(items, minGap);
+                if (!chosen.contains(matchPos))
                     return QwtText();
-            } else if (intMantCount >= 2) {
-                if (std::fabs(curMant - std::round(curMant)) > 1e-4)
-                    return QwtText();
-            } else if (matchIdx >= 0 && (matchIdx % 2) != 0) {
-                return QwtText();
             }
         }
     }

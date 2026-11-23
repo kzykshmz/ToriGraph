@@ -64,8 +64,8 @@ japanese.TaskRegisterOle=PowerPoint / Word 用 OLE サーバーを登録する (
 english.TaskRegisterOle=Register OLE Server for PowerPoint / Word (in-place double-click graph editing)
 japanese.TaskInstallPython=Python 自動化 SDK (torigraph) を検出された Python 環境へ自動インストールする
 english.TaskInstallPython=Install torigraph Python automation SDK into detected Python environment
-japanese.TaskEnvPath=環境変数 TORIGRAPH_EXE およびユーザー PATH に ToriGraph を追加する
-english.TaskEnvPath=Set TORIGRAPH_EXE environment variable and add ToriGraph to user PATH
+japanese.TaskEnvPath=環境変数 TORIGRAPH_EXE と PATH に ToriGraph を追加する (全ユーザー用インストールではシステム PATH)
+english.TaskEnvPath=Set TORIGRAPH_EXE environment variable and add ToriGraph to PATH (system PATH for an all-users install)
 japanese.TaskAssocProject=プロジェクトファイル (.sciprj) を ToriGraph に関連付ける
 english.TaskAssocProject=Associate project files (.sciprj) with ToriGraph
 japanese.MenuRepairOle=OLE サーバーを再登録 (PowerPoint 連携修復)
@@ -94,9 +94,9 @@ Source: "{#StageDir}\manual\index.html"; DestDir: "{app}\manual"; Flags: ignorev
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{cm:MenuRepairOle}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuRepairOle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"
 Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.html"
-Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"""; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -142,8 +142,23 @@ Root: HKA; Subkey: "Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE";
 Root: HKA; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue; Tasks: addtopath; Check: IsAdminInstallMode
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"" -Silent"; StatusMsg: "{cm:StatusInstallPython}"; Flags: runhidden waituntilterminated; Tasks: installpython
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"" -Silent"; StatusMsg: "{cm:StatusInstallPython}"; Flags: runhidden waituntilterminated; Tasks: installpython
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchAfterInstall}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Runs before the files are removed; best-effort (exit 0), never blocks the uninstall. HKCU/HKLM OLE keys are
+; removed by the [Registry] uninsdeletekey flags and CleanupStaleHkcuOleRegistration below.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -Uninstall -Silent"; RunOnceId: "UninstallPythonSdk"; Flags: runhidden waituntilterminated skipifdoesntexist; Tasks: installpython
+
+[UninstallDelete]
+; Files created after installation (pip build output, byte-code caches) that Inno does not track.
+Type: filesandordirs; Name: "{app}\python\build"
+Type: filesandordirs; Name: "{app}\python\torigraph.egg-info"
+Type: filesandordirs; Name: "{app}\python\torigraph\__pycache__"
+Type: filesandordirs; Name: "{app}\scripts\__pycache__"
+Type: filesandordirs; Name: "{localappdata}\ToriGraph\UpdateStaging"
+Type: dirifempty; Name: "{app}\python"
+Type: dirifempty; Name: "{app}"
 
 [Code]
 const
@@ -246,38 +261,59 @@ begin
   end;
 end;
 
-function NeedsAddPath(Param: string): Boolean;
+{ An all-users (admin) install must put ToriGraph on the machine PATH, otherwise the
+  standard users who actually run it never see it; a per-user install uses HKCU. }
+function PathRootKey(): Integer;
+begin
+  if IsAdminInstallMode then
+    Result := HKEY_LOCAL_MACHINE
+  else
+    Result := HKEY_CURRENT_USER;
+end;
+
+function PathSubKey(): string;
+begin
+  if IsAdminInstallMode then
+    Result := 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+  else
+    Result := EnvSubKey;
+end;
+
+function PathContainsDir(RootKey: Integer; SubKey, DirPath: string): Boolean;
 var
   OrigPath: string;
 begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvSubKey, 'Path', OrigPath) then
-  begin
-    Result := True;
+  Result := False;
+  if not RegQueryStringValue(RootKey, SubKey, 'Path', OrigPath) then
     exit;
-  end;
-  Result := Pos(';' + UpperCase(Param) + ';', ';' + UpperCase(OrigPath) + ';') = 0;
+  Result := Pos(';' + UpperCase(DirPath) + ';', ';' + UpperCase(OrigPath) + ';') > 0;
 end;
 
-procedure AddDirToUserPath(DirPath: string);
+function NeedsAddPath(Param: string): Boolean;
+begin
+  Result := not PathContainsDir(PathRootKey(), PathSubKey(), Param);
+end;
+
+procedure AddDirToPath(DirPath: string);
 var
   OrigPath: string;
 begin
   if not NeedsAddPath(DirPath) then
     exit;
-  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvSubKey, 'Path', OrigPath) then
+  if not RegQueryStringValue(PathRootKey(), PathSubKey(), 'Path', OrigPath) then
     OrigPath := '';
   if (OrigPath <> '') and (OrigPath[Length(OrigPath)] <> ';') then
     OrigPath := OrigPath + ';';
   OrigPath := OrigPath + DirPath;
-  RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvSubKey, 'Path', OrigPath);
+  RegWriteExpandStringValue(PathRootKey(), PathSubKey(), 'Path', OrigPath);
 end;
 
-procedure RemoveDirFromUserPath(DirPath: string);
+procedure RemoveDirFromPathAt(RootKey: Integer; SubKey, DirPath: string);
 var
   OrigPath, UpperPath, UpperDir, NewPath: string;
   P: Integer;
 begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvSubKey, 'Path', OrigPath) then
+  if not RegQueryStringValue(RootKey, SubKey, 'Path', OrigPath) then
     exit;
   UpperPath := ';' + UpperCase(OrigPath) + ';';
   UpperDir := ';' + UpperCase(DirPath) + ';';
@@ -290,7 +326,15 @@ begin
   while (Length(NewPath) > 0) and (NewPath[Length(NewPath)] = ';') do
     Delete(NewPath, Length(NewPath), 1);
   StringChangeEx(NewPath, ';;', ';', True);
-  RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvSubKey, 'Path', NewPath);
+  RegWriteExpandStringValue(RootKey, SubKey, 'Path', NewPath);
+end;
+
+procedure RemoveDirFromPath(DirPath: string);
+begin
+  { the current mode's PATH, plus a leftover per-user entry from an earlier per-user install }
+  RemoveDirFromPathAt(PathRootKey(), PathSubKey(), DirPath);
+  if IsAdminInstallMode then
+    RemoveDirFromPathAt(HKEY_CURRENT_USER, EnvSubKey, DirPath);
 end;
 
 procedure CleanupOriginalUserStaleHkcuOle();
@@ -365,7 +409,7 @@ begin
       CleanupOriginalUserStaleHkcuOle();
     end;
     if WizardIsTaskSelected('addtopath') then
-      AddDirToUserPath(ExpandConstant('{app}'));
+      AddDirToPath(ExpandConstant('{app}'));
   end;
 end;
 
@@ -373,7 +417,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    RemoveDirFromUserPath(ExpandConstant('{app}'));
+    RemoveDirFromPath(ExpandConstant('{app}'));
     CleanupStaleHkcuOleRegistration();
   end;
 end;

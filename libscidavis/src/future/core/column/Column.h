@@ -155,7 +155,7 @@ public:
     void setPlotDesignation(SciDAVis::PlotDesignation pd);
 
     //! OriginPro-style Worksheet Column Metadata (Long Name & Units) -> Auto Axis Title
-    enum class UnitFormat { Paren = 0, ISIJSlash = 1 };
+    enum class UnitFormat { Paren = 0, ISIJSlash = 1, Bracket = 2 };
     QString longName() const;
     void setLongName(const QString &s);
     QString units() const;

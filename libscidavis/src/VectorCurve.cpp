@@ -39,6 +39,19 @@
 
 namespace {
 
+double vectorScreenZoomScale(const QwtPlot *qwtPlot)
+{
+    if (!QwtPainter::metricsMap().isIdentity())
+        return 1.0;
+    const Plot *pl = dynamic_cast<const Plot *>(qwtPlot);
+    if (!pl)
+        return 1.0;
+    const double s = pl->displayFontScale();
+    if (!std::isfinite(s) || std::fabs(s - 1.0) <= 1e-4)
+        return 1.0;
+    return qBound(0.25, s, 4.0);
+}
+
 int resolveVectorColIndex(Table *table, const QString &spec)
 {
     if (!table || !table->d_future_table || spec.isEmpty())
@@ -183,10 +196,10 @@ void VectorCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
-    const double sc = Plot::printDeviceScale();
+    const double sc = Plot::printDeviceScale() * vectorScreenZoomScale(plot());
     QPen vPen = QwtPlotCurve::pen();
     vPen.setCosmetic(false);
-    vPen.setWidthF(qMax(1.2, vPen.widthF()) * sc);
+    vPen.setWidthF(widthF() * sc);
     painter->setPen(vPen);
     drawVector(painter, xMap, yMap, from, to);
     painter->restore();
@@ -205,9 +218,9 @@ void VectorCurve::drawVector(QPainter *painter, const QwtScaleMap &xMap, const Q
         return;
 
     constexpr double kPi = 3.14159265358979323846;
-    const double sc = Plot::printDeviceScale();
+    const double sc = Plot::printDeviceScale() * vectorScreenZoomScale(plot());
     const QPen curPen = painter->pen();
-    const double pw = qMax(1.2 * sc, curPen.widthF());
+    const double pw = (curPen.widthF() > 0.0) ? curPen.widthF() : (widthF() * sc);
     const double effHeadLen = qMax(double(qMax(6, d_headLength)) * sc, 2.8 * pw);
     const double effAngle = qBound(14.0, double(d_headAngle), 55.0);
     const double headHalfW = effHeadLen * std::tan(kPi * effAngle / 180.0);
@@ -354,9 +367,23 @@ int VectorCurve::width()
 
 void VectorCurve::setWidth(int w)
 {
+    setWidthF(double(qMax(1, w)));
+}
+
+double VectorCurve::widthF() const
+{
+    const QPen &p = QwtPlotCurve::pen();
+    const double wf = p.widthF();
+    return (wf > 0.0) ? wf : ((p.width() > 0) ? double(p.width()) : 1.0);
+}
+
+void VectorCurve::setWidthF(double w)
+{
+    if (!std::isfinite(w) || w <= 0.0)
+        return;
     QPen p = QwtPlotCurve::pen();
     p.setCosmetic(false);
-    p.setWidth(qMax(1, w));
+    p.setWidthF(w);
     setPen(p);
 }
 

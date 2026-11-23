@@ -18,6 +18,7 @@
 #include <qwt_plot.h>
 #include <qwt_symbol.h>
 
+#include <QCheckBox>
 #include <QClipboard>
 #include <QColorDialog>
 #include <QComboBox>
@@ -35,10 +36,12 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <algorithm>
@@ -103,6 +106,18 @@ void registerDigitizerTranslationsOnce()
     ToriGraphFullJapaneseTranslator::registerExtraTranslation(
             QStringLiteral("Graph Image Digitizer"),
             QStringLiteral("グラフ画像デジタイザ"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Reset View"),
+            QStringLiteral("表示リセット"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Sort by X"),
+            QStringLiteral("X で並べ替える"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Append to existing points"),
+            QStringLiteral("既存の点に追加"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QStringLiteral("Click the second opposite corner on the image to finish the ROI box."),
+            QStringLiteral("対角となる2点目をクリックしてROI範囲を確定してください。"));
 }
 
 class DigitizerMagnifierLoupe : public QWidget
@@ -241,10 +256,27 @@ public:
     void setImage(const QImage &img)
     {
         d_image = img;
+        d_zoom = 1.0;
+        d_pan = QPointF();
         update();
+        if (onZoomChanged)
+            onZoomChanged(d_zoom);
     }
 
     const QImage &image() const { return d_image; }
+
+    //! C4-9: back to "whole image fits the canvas" (zoom 100 %, no pan).
+    void resetView()
+    {
+        d_zoom = 1.0;
+        d_pan = QPointF();
+        d_panning = false;
+        update();
+        if (onZoomChanged)
+            onZoomChanged(d_zoom);
+    }
+
+    double zoom() const { return d_zoom; }
 
     void setCalibration(const GraphDigitizer::AxisCalibration &cal,
                         bool hasX1, bool hasX2, bool hasY1, bool hasY2)
@@ -274,10 +306,12 @@ public:
     std::function<void(const QPointF &, Qt::MouseButton)> onImageClicked;
     std::function<void(const QPointF &)> onImageHovered;
     std::function<void(const QRect &)> onRoiDragged;
+    std::function<void(double)> onZoomChanged;
     bool roiDragMode = false;
 
 protected:
-    QRectF computeTargetImageRect() const
+    //! Rectangle in which the whole image fits the widget (zoom 100 %).
+    QRectF computeFitImageRect() const
     {
         if (d_image.isNull() || d_image.width() <= 0 || d_image.height() <= 0)
             return QRectF();
@@ -291,6 +325,36 @@ protected:
         const double left = 0.5 * (static_cast<double>(width()) - drawW);
         const double top = 0.5 * (static_cast<double>(height()) - drawH);
         return QRectF(left, top, drawW, drawH);
+    }
+
+    //! Rectangle the image is drawn into, including wheel zoom and pan (C4-9).
+    QRectF computeTargetImageRect() const
+    {
+        const QRectF base = computeFitImageRect();
+        if (base.isEmpty() || d_zoom <= 1.0 + 1e-9)
+            return base;
+        const double w = base.width() * d_zoom;
+        const double h = base.height() * d_zoom;
+        const double left = 0.5 * (static_cast<double>(width()) - w) + d_pan.x();
+        const double top = 0.5 * (static_cast<double>(height()) - h) + d_pan.y();
+        return QRectF(left, top, w, h);
+    }
+
+    //! Keep the zoomed image covering the canvas (never pan it out of sight).
+    void clampPan()
+    {
+        const QRectF base = computeFitImageRect();
+        if (base.isEmpty() || d_zoom <= 1.0 + 1e-9) {
+            d_pan = QPointF();
+            return;
+        }
+        const double pad = 10.0;
+        const double w = base.width() * d_zoom;
+        const double h = base.height() * d_zoom;
+        const double maxX = (w > width()) ? 0.5 * (w - width()) + pad : 0.0;
+        const double maxY = (h > height()) ? 0.5 * (h - height()) + pad : 0.0;
+        d_pan.setX(std::clamp(d_pan.x(), -maxX, maxX));
+        d_pan.setY(std::clamp(d_pan.y(), -maxY, maxY));
     }
 
     QPointF widgetToImagePixel(const QPointF &wPt, bool *insideOut = nullptr) const
@@ -336,7 +400,19 @@ protected:
         }
 
         const QRectF imgRect = computeTargetImageRect();
-        p.drawImage(imgRect, d_image);
+        // Draw only the visible part of the image (the zoomed rect can be much larger
+        // than the canvas); keep pixels crisp at high zoom.
+        const QRectF visRect = imgRect.intersected(QRectF(rect()));
+        if (!visRect.isEmpty() && imgRect.width() > 0.0 && imgRect.height() > 0.0) {
+            const double sx = static_cast<double>(d_image.width()) / imgRect.width();
+            const double sy = static_cast<double>(d_image.height()) / imgRect.height();
+            const QRectF srcRect((visRect.left() - imgRect.left()) * sx,
+                                 (visRect.top() - imgRect.top()) * sy, visRect.width() * sx,
+                                 visRect.height() * sy);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, d_zoom < 3.0);
+            p.drawImage(visRect, d_image, srcRect);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        }
         p.setPen(QPen(QColor(160, 168, 180), 1));
         p.drawRect(imgRect);
 
@@ -403,6 +479,15 @@ protected:
     {
         if (d_image.isNull() || !ev)
             return;
+        // C4-9: middle-drag (or Ctrl+left-drag) pans the zoomed image.
+        if (ev->button() == Qt::MiddleButton
+            || (ev->button() == Qt::LeftButton && (ev->modifiers() & Qt::ControlModifier))) {
+            d_panning = true;
+            d_panButton = ev->button();
+            d_panLast = ev->localPos();
+            setCursor(Qt::ClosedHandCursor);
+            return;
+        }
         bool inside = false;
         const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
         if (inside && roiDragMode && ev->button() == Qt::LeftButton) {
@@ -422,6 +507,12 @@ protected:
     {
         if (d_image.isNull() || !ev)
             return;
+        if (d_panning) {
+            d_pan += ev->localPos() - d_panLast;
+            d_panLast = ev->localPos();
+            clampPan();
+            update();
+        }
         bool inside = false;
         const QPointF pix = widgetToImagePixel(ev->localPos(), &inside);
         if (d_draggingRoi) {
@@ -438,7 +529,14 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *ev) override
     {
-        if (!d_draggingRoi || !ev || ev->button() != Qt::LeftButton)
+        if (!ev)
+            return;
+        if (d_panning && ev->button() == d_panButton) {
+            d_panning = false;
+            setCursor(Qt::CrossCursor);
+            return;
+        }
+        if (!d_draggingRoi || ev->button() != Qt::LeftButton)
             return;
         d_draggingRoi = false;
         const QPointF pix = widgetToImagePixel(ev->localPos(), nullptr);
@@ -451,8 +549,64 @@ protected:
             d_traceRoi = finalRoi;
             if (onRoiDragged)
                 onRoiDragged(d_traceRoi);
+        } else if (onImageClicked) {
+            // C4-#12: a press/release without a real drag is a plain click, so the
+            // "click two opposite corners" route of the ROI mode actually works.
+            onImageClicked(d_dragStartPix, Qt::LeftButton);
         }
         update();
+    }
+
+    void wheelEvent(QWheelEvent *ev) override
+    {
+        if (!ev || d_image.isNull()) {
+            if (ev)
+                ev->ignore();
+            return;
+        }
+        const int dy = ev->angleDelta().y();
+        if (dy == 0) {
+            ev->ignore();
+            return;
+        }
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        const QPointF pos = ev->position();
+#else
+        const QPointF pos = ev->posF();
+#endif
+        const QRectF r0 = computeTargetImageRect();
+        if (r0.isEmpty()) {
+            ev->ignore();
+            return;
+        }
+        // Zoom about the cursor: the image point under the mouse stays put.
+        const double ux = (pos.x() - r0.left()) / r0.width();
+        const double uy = (pos.y() - r0.top()) / r0.height();
+        const double factor = std::pow(1.25, static_cast<double>(dy) / 120.0);
+        const double newZoom = std::clamp(d_zoom * factor, 1.0, 32.0);
+        ev->accept();
+        if (std::fabs(newZoom - d_zoom) < 1e-9)
+            return;
+        d_zoom = newZoom;
+        const QRectF base = computeFitImageRect();
+        const double w = base.width() * d_zoom;
+        const double h = base.height() * d_zoom;
+        d_pan.setX(pos.x() - ux * w - 0.5 * (static_cast<double>(width()) - w));
+        d_pan.setY(pos.y() - uy * h - 0.5 * (static_cast<double>(height()) - h));
+        clampPan();
+        update();
+        if (onZoomChanged)
+            onZoomChanged(d_zoom);
+        bool inside = false;
+        const QPointF pix = widgetToImagePixel(pos, &inside);
+        if (inside && onImageHovered)
+            onImageHovered(pix);
+    }
+
+    void resizeEvent(QResizeEvent *ev) override
+    {
+        QWidget::resizeEvent(ev);
+        clampPan();
     }
 
 private:
@@ -467,6 +621,11 @@ private:
     bool d_draggingRoi = false;
     QPointF d_dragStartPix;
     QRect d_liveDragRoi;
+    double d_zoom = 1.0;
+    QPointF d_pan;
+    bool d_panning = false;
+    Qt::MouseButton d_panButton = Qt::MiddleButton;
+    QPointF d_panLast;
 };
 
 class DigitizerDialog : public QDialog
@@ -481,14 +640,19 @@ public:
 
         QVBoxLayout *rootLay = new QVBoxLayout(this);
 
-        // Top toolbar: Image loading + Mode indicator
+        // Top toolbar: Image loading + Zoom + Mode indicator
         QHBoxLayout *topBar = new QHBoxLayout();
         QPushButton *btnOpen = new QPushButton(tr("Open Image..."), this);
         QPushButton *btnPaste = new QPushButton(tr("Paste from Clipboard"), this);
+        QPushButton *btnResetZoom = new QPushButton(tr("Reset View"), this);
+        btnResetZoom->setToolTip(tr("Reset canvas zoom and pan (mouse wheel zooms, Middle-drag or Ctrl+Left-drag pans)"));
+        d_lblZoom = new QLabel(QStringLiteral("100%"), this);
         d_lblModeStatus = new QLabel(tr("Step 1: Load an image and calibrate X1, X2, Y1, Y2."), this);
         d_lblCursorReadout = new QLabel(tr("Cursor: (-, -)"), this);
         topBar->addWidget(btnOpen);
         topBar->addWidget(btnPaste);
+        topBar->addWidget(btnResetZoom);
+        topBar->addWidget(d_lblZoom);
         topBar->addSpacing(12);
         topBar->addWidget(d_lblModeStatus, 1);
         topBar->addWidget(d_lblCursorReadout);
@@ -562,6 +726,11 @@ public:
         d_cbScaleY->addItem(tr("Log10"), true);
         calForm->addRow(tr("Y Axis Scale:"), d_cbScaleY);
 
+        d_lblCalWarning = new QLabel(grpCal);
+        d_lblCalWarning->setWordWrap(true);
+        d_lblCalWarning->setStyleSheet(QStringLiteral("color: #B91C1C; font-weight: bold;"));
+        calForm->addRow(d_lblCalWarning);
+
         sideLay->addWidget(grpCal);
 
         // 2. Digitizing & Auto-Trace Group
@@ -596,6 +765,15 @@ public:
         d_sbSamples->setValue(100);
         traceForm->addRow(tr("Sample Points:"), d_sbSamples);
         traceLay->addLayout(traceForm);
+
+        QHBoxLayout *traceOptsRow = new QHBoxLayout();
+        d_chkTraceAppend = new QCheckBox(tr("Append to existing points"), grpTrace);
+        d_chkTraceAppend->setChecked(false);
+        d_chkSortX = new QCheckBox(tr("Sort by X"), grpTrace);
+        d_chkSortX->setChecked(false);
+        traceOptsRow->addWidget(d_chkTraceAppend);
+        traceOptsRow->addWidget(d_chkSortX);
+        traceLay->addLayout(traceOptsRow);
 
         QHBoxLayout *roiRow = new QHBoxLayout();
         QPushButton *btnSetRoi = new QPushButton(tr("Set Trace ROI"), grpTrace);
@@ -665,6 +843,13 @@ public:
             setWorkingImage(clipImg);
         });
 
+        connect(btnResetZoom, &QPushButton::clicked, this, [this]() {
+            if (d_canvas)
+                d_canvas->resetView();
+        });
+        connect(d_chkSortX, &QCheckBox::toggled, this,
+                [this](bool) { refreshCalibrationAndPreview(); });
+
         connect(btnSetX1, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetX1); });
         connect(btnSetX2, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetX2); });
         connect(btnSetY1, &QPushButton::clicked, this, [this]() { setMode(DigitizerToolMode::SetY1); });
@@ -711,13 +896,23 @@ public:
 
         connect(btnRemoveSel, &QPushButton::clicked, this, [this]() {
             const int row = d_tablePreview->currentRow();
-            if (row >= 0 && row < d_pixelPts.size()) {
-                d_pixelPts.remove(row);
+            if (row < 0)
+                return;
+            QTableWidgetItem *item = d_tablePreview->item(row, 0);
+            if (!item)
+                return;
+            bool okIdx = false;
+            const int origIdx = item->data(Qt::UserRole).toInt(&okIdx);
+            if (okIdx && origIdx >= 0 && origIdx < d_pixelPts.size()) {
+                d_pixelPts.remove(origIdx);
+                if (origIdx < d_pointIsManual.size())
+                    d_pointIsManual.remove(origIdx);
                 refreshCalibrationAndPreview();
             }
         });
         connect(btnClearPts, &QPushButton::clicked, this, [this]() {
             d_pixelPts.clear();
+            d_pointIsManual.clear();
             refreshCalibrationAndPreview();
         });
 
@@ -750,8 +945,14 @@ public:
             setMode(DigitizerToolMode::PickColorAutoTrace);
         };
 
+        d_canvas->onZoomChanged = [this](double z) {
+            if (d_lblZoom)
+                d_lblZoom->setText(QStringLiteral("%1%").arg(qRound(z * 100.0)));
+        };
+
         if (!initialPath.trimmed().isEmpty())
             loadImageFile(initialPath);
+        refreshCalibrationAndPreview();
     }
 
 private:
@@ -824,11 +1025,15 @@ private:
         d_cal.pixelX2 = QPointF(0.90 * w, 0.88 * h);
         d_cal.pixelY1 = QPointF(0.10 * w, 0.88 * h);
         d_cal.pixelY2 = QPointF(0.10 * w, 0.12 * h);
-        d_hasX1 = true;
-        d_hasX2 = true;
-        d_hasY1 = true;
-        d_hasY2 = true;
+        // C4-#8: anchors are not calibrated until the user actually clicks them.
+        d_hasX1 = false;
+        d_hasX2 = false;
+        d_hasY1 = false;
+        d_hasY2 = false;
         d_pixelPts.clear();
+        d_pointIsManual.clear();
+        if (d_chkSortX)
+            d_chkSortX->setChecked(false);
         d_hasRoiFirstCorner = false;
         d_canvas->setTraceRoi(QRect());
         if (d_lblRoiStatus)
@@ -845,6 +1050,8 @@ private:
         if (btn == Qt::RightButton) {
             if (!d_pixelPts.isEmpty()) {
                 d_pixelPts.removeLast();
+                if (!d_pointIsManual.isEmpty())
+                    d_pointIsManual.removeLast();
                 refreshCalibrationAndPreview();
             }
             return;
@@ -875,6 +1082,7 @@ private:
             break;
         case DigitizerToolMode::PickPoints:
             d_pixelPts.append(pix);
+            d_pointIsManual.append(true);
             break;
         case DigitizerToolMode::PickColorAutoTrace: {
             const QImage &im = d_canvas->image();
@@ -892,6 +1100,10 @@ private:
             if (!d_hasRoiFirstCorner) {
                 d_roiFirstCorner = pt;
                 d_hasRoiFirstCorner = true;
+                if (d_lblModeStatus) {
+                    d_lblModeStatus->setText(
+                            tr("Click the second opposite corner on the image to finish the ROI box."));
+                }
             } else {
                 const QRect roi = QRect(d_roiFirstCorner, pt).normalized();
                 d_hasRoiFirstCorner = false;
@@ -922,23 +1134,115 @@ private:
         const QVector<QPointF> tracedData = GraphDigitizer::autoTraceCurveByColor(
                 im, cal, d_targetColor, d_sbTol->value(), d_sbSamples->value(),
                 d_canvas->traceRoi());
-        d_pixelPts.clear();
-        d_pixelPts.reserve(tracedData.size());
-        for (const QPointF &dp : tracedData)
+        const bool append = d_chkTraceAppend && d_chkTraceAppend->isChecked();
+        if (!append) {
+            const bool hasManualPts = std::any_of(
+                    d_pointIsManual.cbegin(), d_pointIsManual.cend(),
+                    [](bool isManual) { return isManual; });
+            const QObject *ctxObj = d_app ? static_cast<const QObject *>(d_app)
+                                          : static_cast<const QObject *>(this);
+            if (hasManualPts && !ApplicationWindow::isNonInteractiveContext(ctxObj)) {
+                const auto ans = QMessageBox::question(
+                        this, tr("Graph Image Digitizer"),
+                        tr("Auto-trace with \"Append\" unchecked will replace your existing manually picked points.\nContinue and replace existing points?"),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (ans != QMessageBox::Yes)
+                    return;
+            }
+            d_pixelPts.clear();
+            d_pointIsManual.clear();
+            if (d_chkSortX)
+                d_chkSortX->setChecked(true);
+        }
+        d_pixelPts.reserve(d_pixelPts.size() + tracedData.size());
+        d_pointIsManual.reserve(d_pointIsManual.size() + tracedData.size());
+        for (const QPointF &dp : tracedData) {
             d_pixelPts.append(GraphDigitizer::mapDataToPixel(dp, cal));
+            d_pointIsManual.append(false);
+        }
         refreshCalibrationAndPreview();
     }
 
-    QVector<QPointF> currentSortedDataPoints() const
+    struct OrderedPoint
+    {
+        int origIndex;
+        QPointF dataPt;
+    };
+
+    QVector<OrderedPoint> currentOrderedDataPoints() const
     {
         const GraphDigitizer::AxisCalibration cal = currentCalibration();
-        QVector<QPointF> out;
+        QVector<OrderedPoint> out;
         out.reserve(d_pixelPts.size());
-        for (const QPointF &pp : d_pixelPts)
-            out.append(GraphDigitizer::mapPixelToData(pp, cal));
-        std::sort(out.begin(), out.end(),
-                  [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
+        for (int i = 0; i < d_pixelPts.size(); ++i)
+            out.append({ i, GraphDigitizer::mapPixelToData(d_pixelPts[i], cal) });
+        if (d_chkSortX && d_chkSortX->isChecked()) {
+            std::stable_sort(out.begin(), out.end(),
+                             [](const OrderedPoint &a, const OrderedPoint &b) {
+                                 return a.dataPt.x() < b.dataPt.x();
+                             });
+        }
         return out;
+    }
+
+    QString calibrationWarningMessage(const GraphDigitizer::AxisCalibration &cal,
+                                      bool *hasLogErrorOut = nullptr,
+                                      bool *hasMissingAnchorsOut = nullptr,
+                                      bool *hasDegenerateOut = nullptr) const
+    {
+        QStringList missing;
+        if (!d_hasX1)
+            missing << QStringLiteral("X1");
+        if (!d_hasX2)
+            missing << QStringLiteral("X2");
+        if (!d_hasY1)
+            missing << QStringLiteral("Y1");
+        if (!d_hasY2)
+            missing << QStringLiteral("Y2");
+        const bool missingAnchors = !missing.isEmpty();
+
+        QStringList logBad;
+        if (cal.logX && (cal.valueX1 <= 0.0 || cal.valueX2 <= 0.0))
+            logBad << tr("X axis Log10 requires X1 > 0 and X2 > 0 (currently linear fallback).");
+        if (cal.logY && (cal.valueY1 <= 0.0 || cal.valueY2 <= 0.0))
+            logBad << tr("Y axis Log10 requires Y1 > 0 and Y2 > 0 (currently linear fallback).");
+        const bool logError = !logBad.isEmpty();
+
+        QStringList degenBad;
+        const bool xValsEqual = !std::isfinite(cal.valueX1) || !std::isfinite(cal.valueX2)
+                || std::fabs(cal.valueX2 - cal.valueX1)
+                        <= 1e-12 * std::max(std::fabs(cal.valueX1), std::fabs(cal.valueX2));
+        const bool yValsEqual = !std::isfinite(cal.valueY1) || !std::isfinite(cal.valueY2)
+                || std::fabs(cal.valueY2 - cal.valueY1)
+                        <= 1e-12 * std::max(std::fabs(cal.valueY1), std::fabs(cal.valueY2));
+        if (xValsEqual)
+            degenBad << tr("X axis calibration requires X1 != X2.");
+        if (yValsEqual)
+            degenBad << tr("Y axis calibration requires Y1 != Y2.");
+
+        const double pxDistX = std::hypot(cal.pixelX2.x() - cal.pixelX1.x(),
+                                          cal.pixelX2.y() - cal.pixelX1.y());
+        const double pxDistY = std::hypot(cal.pixelY2.x() - cal.pixelY1.x(),
+                                          cal.pixelY2.y() - cal.pixelY1.y());
+        if (d_hasX1 && d_hasX2 && pxDistX < 1.0)
+            degenBad << tr("X1 and X2 pixel anchors must be distinct (distance >= 1 px).");
+        if (d_hasY1 && d_hasY2 && pxDistY < 1.0)
+            degenBad << tr("Y1 and Y2 pixel anchors must be distinct (distance >= 1 px).");
+        const bool degenerateError = !degenBad.isEmpty();
+
+        if (hasMissingAnchorsOut)
+            *hasMissingAnchorsOut = missingAnchors;
+        if (hasLogErrorOut)
+            *hasLogErrorOut = logError;
+        if (hasDegenerateOut)
+            *hasDegenerateOut = degenerateError;
+
+        QStringList lines;
+        if (missingAnchors)
+            lines << tr("Uncalibrated anchors: %1 (using default bounds).").arg(missing.join(QStringLiteral(", ")));
+        lines.append(logBad);
+        lines.append(degenBad);
+        return lines.join(QStringLiteral("\n"));
     }
 
     void refreshCalibrationAndPreview()
@@ -947,19 +1251,54 @@ private:
         d_canvas->setCalibration(cal, d_hasX1, d_hasX2, d_hasY1, d_hasY2);
         d_canvas->setPickedPixelPoints(d_pixelPts);
 
-        const QVector<QPointF> dataPts = currentSortedDataPoints();
-        d_tablePreview->setRowCount(dataPts.size());
-        for (int i = 0; i < dataPts.size(); ++i) {
-            d_tablePreview->setItem(
-                    i, 0, new QTableWidgetItem(QString::number(dataPts[i].x(), 'g', 7)));
-            d_tablePreview->setItem(
-                    i, 1, new QTableWidgetItem(QString::number(dataPts[i].y(), 'g', 7)));
+        if (d_lblCalWarning) {
+            const QString warn = calibrationWarningMessage(cal);
+            d_lblCalWarning->setText(warn);
+            d_lblCalWarning->setVisible(!warn.isEmpty());
+        }
+
+        const QVector<OrderedPoint> ordered = currentOrderedDataPoints();
+        d_tablePreview->setRowCount(ordered.size());
+        for (int i = 0; i < ordered.size(); ++i) {
+            QTableWidgetItem *xItem = new QTableWidgetItem(
+                    QString::number(ordered[i].dataPt.x(), 'g', 7));
+            // C4-2 / C4-#7: remember original index in d_pixelPts even when sorted by X.
+            xItem->setData(Qt::UserRole, ordered[i].origIndex);
+            QTableWidgetItem *yItem = new QTableWidgetItem(
+                    QString::number(ordered[i].dataPt.y(), 'g', 7));
+            yItem->setData(Qt::UserRole, ordered[i].origIndex);
+            d_tablePreview->setItem(i, 0, xItem);
+            d_tablePreview->setItem(i, 1, yItem);
         }
     }
 
     void exportData(bool withPlot)
     {
-        const QVector<QPointF> dataPts = currentSortedDataPoints();
+        const GraphDigitizer::AxisCalibration cal = currentCalibration();
+        bool logError = false;
+        bool missingAnchors = false;
+        bool degenerateError = false;
+        const QString warn =
+                calibrationWarningMessage(cal, &logError, &missingAnchors, &degenerateError);
+        if (logError || degenerateError) {
+            QMessageBox::warning(this, tr("Graph Image Digitizer"), warn);
+            return;
+        }
+        if (missingAnchors) {
+            const auto ans = QMessageBox::warning(
+                    this, tr("Graph Image Digitizer"),
+                    warn + QStringLiteral("\n\n") + tr("Export with uncalibrated defaults anyway?"),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (ans != QMessageBox::Yes)
+                return;
+        }
+
+        const QVector<OrderedPoint> ordered = currentOrderedDataPoints();
+        QVector<QPointF> dataPts;
+        dataPts.reserve(ordered.size());
+        for (const OrderedPoint &op : ordered)
+            dataPts.append(op.dataPt);
+
         if (dataPts.isEmpty()) {
             QMessageBox::information(this, tr("Graph Image Digitizer"),
                                      tr("Please pick or auto-trace at least one curve point first."));
@@ -981,13 +1320,18 @@ private:
     DigitizerToolMode d_mode = DigitizerToolMode::SetX1;
     QColor d_targetColor = QColor(220, 30, 30);
     QVector<QPointF> d_pixelPts;
+    QVector<bool> d_pointIsManual;
     bool d_hasRoiFirstCorner = false;
     QPoint d_roiFirstCorner;
 
     QLabel *d_lblModeStatus = nullptr;
+    QLabel *d_lblZoom = nullptr;
     QLabel *d_lblCursorReadout = nullptr;
+    QLabel *d_lblCalWarning = nullptr;
     QLabel *d_lblColorSwatch = nullptr;
     QLabel *d_lblRoiStatus = nullptr;
+    QCheckBox *d_chkTraceAppend = nullptr;
+    QCheckBox *d_chkSortX = nullptr;
     QDoubleSpinBox *d_sbX1 = nullptr;
     QDoubleSpinBox *d_sbX2 = nullptr;
     QDoubleSpinBox *d_sbY1 = nullptr;

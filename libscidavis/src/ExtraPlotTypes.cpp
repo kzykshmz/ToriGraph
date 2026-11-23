@@ -161,6 +161,10 @@ void registerE11Translations()
         reg("Bin width in X (0 = use bins):", "X のビン幅 (0 = ビン数で指定):");
         reg("Bin width in Y (0 = use bins):", "Y のビン幅 (0 = ビン数で指定):");
         reg("Logarithmic color scale", "対数カラースケール");
+        reg("Flat cell blocks (no smoothing)", "セルごとに塗りつぶす (補間なし)");
+        reg("Reverse color map", "カラーマップを反転");
+        reg("Update active plot (uncheck to create new)", "現在のグラフを更新 (外すと新規作成)");
+        reg("Current / Custom", "現在 / カスタム");
         reg("The 2D density needs numeric X and Y columns.", "2 次元密度図には数値の X・Y 列が必要です。");
         reg("No point has both a numeric X and Y value.", "X と Y の両方が数値の点がありません。");
         reg("Too many bins (at most 4096 per axis); use a larger bin width.",
@@ -172,12 +176,12 @@ void registerE11Translations()
         reg("Intensity column:", "強度の列:");
         reg("Alpha range (deg):", "α 範囲 (°):");
         reg("Beta range (deg):", "β 範囲 (°):");
-        reg("Sample reference axes:", "試料基準軸ラベル:");
+        reg("Sample reference axes:", "試料基準軸タイトル:");
         reg("RD / TD (Rolled sheet)", "RD / TD (圧延材)");
         reg("ED / TD (Extruded)", "ED / TD (押出材)");
         reg("LD / TD (Longitudinal / Transverse)", "LD / TD (長手 / 横方向)");
         reg("Custom...", "カスタム...");
-        reg("Custom axis labels:", "カスタム軸ラベル:");
+        reg("Custom axis labels:", "カスタム軸タイトル:");
         reg("Primary axis direction:", "主基準軸の向き:");
         reg("Top (secondary right)", "上 (副軸は右)");
         reg("Right (secondary top)", "右 (副軸は上)");
@@ -2084,6 +2088,41 @@ QString density2DLabel(Table *t, Column *cx, Column *cy, const ExtraPlotTypes::D
             .arg(r.binsY);
 }
 
+QString buildDensity2DTag(Matrix *m, Table *t, Column *cx, Column *cy, int binsX, int binsY,
+                          double widthX, double widthY, bool logColor, bool cellBlocks,
+                          const ExtraPlotTypes::Density2DResult &r)
+{
+    return QStringLiteral("<ToriDensity2D") + tagAttr("matrix", m ? m->name() : QString())
+            + tagAttr("table", t ? t->name() : QString())
+            + tagAttr("x", cx ? cx->name() : QString())
+            + tagAttr("y", cy ? cy->name() : QString()) + tagAttr("bx", QString::number(binsX))
+            + tagAttr("by", QString::number(binsY)) + tagNum("wx", widthX) + tagNum("wy", widthY)
+            + tagAttr("log", QString::number(logColor ? 1 : 0))
+            + tagAttr("blocks", QString::number(cellBlocks ? 1 : 0))
+            + tagAttr("nbx", QString::number(r.binsX))
+            + tagAttr("nby", QString::number(r.binsY))
+            + tagAttr("n", QString::number(r.n)) + QStringLiteral("/>");
+}
+
+void applyDensity2DSpectrogramSettings(Spectrogram *sp, int preset, bool reverse, bool logColor,
+                                       bool cellBlocks, Matrix *mForUpdate = nullptr)
+{
+    if (!sp)
+        return;
+    sp->setCellBlocks(cellBlocks);
+    sp->setLogColorScale(logColor);
+    if (preset == int(Spectrogram::PresetCustom)) {
+        if (sp->reversePalette() != reverse)
+            sp->setReversePalette(reverse);
+    } else {
+        sp->setColorMapPreset(static_cast<Spectrogram::ColorMapPreset>(preset), reverse);
+    }
+    if (mForUpdate)
+        sp->updateData(mForUpdate);
+    sp->setColorBarTitle(trE11Count());
+    sp->syncColorScale();
+}
+
 } // namespace
 
 ExtraPlotTypes::Density2DResult
@@ -2125,30 +2164,76 @@ ExtraPlotTypes::plotDensity2D(ApplicationWindow *app, Table *t, const QString &x
     if (!g)
         return r;
     g->plotSpectrogram(m, Graph::ColorMap);
-    if (Spectrogram *sp = firstSpectrogram(g)) {
-        sp->setCellBlocks(true);
-        sp->setColorMapPreset(static_cast<Spectrogram::ColorMapPreset>(preset), false);
-        if (logColor)
-            sp->setLogColorScale(true);
-        sp->setColorBarTitle(trE11Count());
-        sp->syncColorScale();
-    }
+    applyDensity2DSpectrogramSettings(firstSpectrogram(g), preset, false, logColor, true);
     g->setXAxisTitle(columnAxisTitle(cx, g));
     g->setYAxisTitle(columnAxisTitle(cy, g));
     g->setScale(QwtPlot::xBottom, r.x0, r.x0 + r.binsX * r.widthX);
     g->setScale(QwtPlot::yLeft, r.y0, r.y0 + r.binsY * r.widthY);
     if (g->legend())
         g->removeLegend();
-    storeExtraTag(g,
-                  QStringLiteral("ToriDensity2D"),
-                  QStringLiteral("<ToriDensity2D") + tagAttr("matrix", m->name())
-                          + tagAttr("table", t->name()) + tagAttr("x", cx->name())
-                          + tagAttr("y", cy->name()) + tagAttr("bx", QString::number(binsX))
-                          + tagAttr("by", QString::number(binsY)) + tagNum("wx", widthX)
-                          + tagNum("wy", widthY) + tagAttr("log", QString::number(logColor ? 1 : 0))
-                          + tagAttr("nbx", QString::number(r.binsX))
-                          + tagAttr("nby", QString::number(r.binsY))
-                          + tagAttr("n", QString::number(r.n)) + QStringLiteral("/>"));
+    storeExtraTag(g, QStringLiteral("ToriDensity2D"),
+                  buildDensity2DTag(m, t, cx, cy, binsX, binsY, widthX, widthY, logColor, true, r));
+    g->replot();
+    emit g->modifiedGraph();
+    return r;
+}
+
+ExtraPlotTypes::Density2DResult
+ExtraPlotTypes::updateDensity2D(ApplicationWindow *app, Graph *g, Table *t, const QString &xCol,
+                                const QString &yCol, int binsX, int binsY, double widthX,
+                                double widthY, bool logColor, int preset, bool cellBlocks,
+                                bool reverse)
+{
+    registerE11Translations();
+    Density2DResult r;
+    if (!app || !g)
+        return r;
+    Column *cx = resolveColumn(t, xCol);
+    Column *cy = resolveColumn(t, yCol);
+    if (!t || !cx || !cy || cx->columnMode() != SciDAVis::ColumnMode::Numeric
+        || cy->columnMode() != SciDAVis::ColumnMode::Numeric) {
+        r.error = trE11("The 2D density needs numeric X and Y columns.");
+        return r;
+    }
+    QVector<double> xs, ys;
+    int excluded = 0;
+    readColumnPairs(t, cx, cy, xs, ys, excluded);
+    r = binDensity2D(xs, ys, binsX, binsY, widthX, widthY);
+    r.excluded += excluded;
+    if (!r.valid)
+        return r;
+
+    const QMap<QString, QString> prevAttrs =
+            parseTagAttrs(graphTag(g, QStringLiteral("ToriDensity2D")));
+    Spectrogram *sp = firstSpectrogram(g);
+    Matrix *m = app->matrix(prevAttrs.value(QStringLiteral("matrix")));
+    if (!m && sp)
+        m = sp->matrix();
+    if (!m) {
+        m = app->newMatrix(matrixSafeName(app, QStringLiteral("Density2D") + t->name()),
+                           r.binsY, r.binsX);
+    }
+    r.matrix = m;
+    r.plot = g->multiLayerParent();
+    if (!m)
+        return r;
+
+    fillDensityMatrix(m, r);
+    m->setWindowLabel(density2DLabel(t, cx, cy, r));
+    if (!sp) {
+        g->plotSpectrogram(m, Graph::ColorMap);
+        sp = firstSpectrogram(g);
+        applyDensity2DSpectrogramSettings(sp, preset, reverse, logColor, cellBlocks);
+    } else {
+        applyDensity2DSpectrogramSettings(sp, preset, reverse, logColor, cellBlocks, m);
+    }
+    g->setXAxisTitle(columnAxisTitle(cx, g));
+    g->setYAxisTitle(columnAxisTitle(cy, g));
+    g->setScale(QwtPlot::xBottom, r.x0, r.x0 + r.binsX * r.widthX);
+    g->setScale(QwtPlot::yLeft, r.y0, r.y0 + r.binsY * r.widthY);
+    storeExtraTag(g, QStringLiteral("ToriDensity2D"),
+                  buildDensity2DTag(m, t, cx, cy, binsX, binsY, widthX, widthY, logColor,
+                                    cellBlocks, r));
     g->replot();
     emit g->modifiedGraph();
     return r;
@@ -2173,25 +2258,31 @@ bool ExtraPlotTypes::rebuildDensity2D(ApplicationWindow *app, Graph *g)
     QVector<double> xs, ys;
     int excluded = 0;
     readColumnPairs(t, cx, cy, xs, ys, excluded);
-    const Density2DResult r = binDensity2D(
-            xs, ys, a.value(QStringLiteral("bx")).toInt(), a.value(QStringLiteral("by")).toInt(),
-            a.value(QStringLiteral("wx")).toDouble(), a.value(QStringLiteral("wy")).toDouble());
+    const int binsX = a.value(QStringLiteral("bx")).toInt();
+    const int binsY = a.value(QStringLiteral("by")).toInt();
+    const double widthX = a.value(QStringLiteral("wx")).toDouble();
+    const double widthY = a.value(QStringLiteral("wy")).toDouble();
+    const Density2DResult r = binDensity2D(xs, ys, binsX, binsY, widthX, widthY);
     if (!r.valid)
         return false;
     fillDensityMatrix(m, r);
     m->setWindowLabel(density2DLabel(t, cx, cy, r));
-    if (Spectrogram *sp = firstSpectrogram(g))
+    Spectrogram *sp = firstSpectrogram(g);
+    const bool logColor = sp ? sp->logColorScale() : (a.value(QStringLiteral("log")).toInt() != 0);
+    const bool cellBlocks = sp
+            ? sp->cellBlocks()
+            : (a.value(QStringLiteral("blocks"), QStringLiteral("1")).toInt() != 0);
+    if (sp) {
+        sp->setCellBlocks(cellBlocks);
+        sp->setLogColorScale(logColor);
         sp->updateData(m);
+        sp->syncColorScale();
+    }
     g->setScale(QwtPlot::xBottom, r.x0, r.x0 + r.binsX * r.widthX);
     g->setScale(QwtPlot::yLeft, r.y0, r.y0 + r.binsY * r.widthY);
-    QMap<QString, QString> upd = a;
-    QString nt = QStringLiteral("<ToriDensity2D");
-    upd.insert(QStringLiteral("nbx"), QString::number(r.binsX));
-    upd.insert(QStringLiteral("nby"), QString::number(r.binsY));
-    upd.insert(QStringLiteral("n"), QString::number(r.n));
-    for (auto it = upd.constBegin(); it != upd.constEnd(); ++it)
-        nt += tagAttr(it.key().toLatin1().constData(), it.value());
-    storeExtraTag(g, QStringLiteral("ToriDensity2D"), nt + QStringLiteral("/>"));
+    storeExtraTag(g, QStringLiteral("ToriDensity2D"),
+                  buildDensity2DTag(m, t, cx, cy, binsX, binsY, widthX, widthY, logColor,
+                                    cellBlocks, r));
     g->replot();
     emit g->modifiedGraph();
     return true;
@@ -2460,6 +2551,15 @@ bool ExtraPlotTypes::restoreGraphTag(Graph *g, const QString &line)
     const QString s = line.trimmed();
     if (s.startsWith(QLatin1String("<ToriDensity2D"))) {
         storeExtraTag(g, QStringLiteral("ToriDensity2D"), s);
+        const QMap<QString, QString> a = parseTagAttrs(s);
+        if (Spectrogram *sp = firstSpectrogram(g)) {
+            if (a.contains(QStringLiteral("blocks")))
+                sp->setCellBlocks(a.value(QStringLiteral("blocks")).toInt() != 0);
+            if (a.contains(QStringLiteral("log")))
+                sp->setLogColorScale(a.value(QStringLiteral("log")).toInt() != 0);
+            sp->syncColorScale();
+            g->replot();
+        }
         return true;
     }
     if (s.startsWith(QLatin1String("<ToriPoleFigure"))) {
@@ -2490,7 +2590,17 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
     const QList<Table *> tables = projectTables(app);
     if (tables.isEmpty())
         return;
-    Table *act = activeTable(app);
+    Graph *ag = activeGraph(app);
+    const QString existingTag = ag ? graphTag(ag, QStringLiteral("ToriDensity2D")) : QString();
+    const bool isEditing = !existingTag.isEmpty();
+    const QMap<QString, QString> existingAttrs =
+            isEditing ? parseTagAttrs(existingTag) : QMap<QString, QString>();
+    Spectrogram *existingSp = isEditing ? firstSpectrogram(ag) : nullptr;
+
+    Table *act = isEditing ? app->table(existingAttrs.value(QStringLiteral("table"))) : nullptr;
+    if (!act)
+        act = activeTable(app);
+
     QDialog dlg(app);
     dlg.setWindowTitle(trE11("2D Density (2D Histogram)"));
     auto *lay = new QVBoxLayout(&dlg);
@@ -2503,6 +2613,7 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
     }
     auto *cbX = new QComboBox(&dlg);
     auto *cbY = new QComboBox(&dlg);
+    bool applyInitialCols = isEditing;
     auto refresh = [&]() {
         cbX->clear();
         cbY->clear();
@@ -2518,6 +2629,17 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
                 cbY->addItem(col->name());
             }
         }
+        if (applyInitialCols && t == act) {
+            applyInitialCols = false;
+            const QString ex = existingAttrs.value(QStringLiteral("x"));
+            const QString ey = existingAttrs.value(QStringLiteral("y"));
+            if (numericCols.contains(ex))
+                cbX->setCurrentText(ex);
+            if (numericCols.contains(ey))
+                cbY->setCurrentText(ey);
+            return;
+        }
+        applyInitialCols = false;
         QStringList sel;
         for (const QString &full : t->selectedColumns()) {
             const QString nm = full.startsWith(t->name() + QStringLiteral("_"))
@@ -2548,7 +2670,40 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
     sbWy->setRange(0.0, 1e12);
     auto *cbMap = new QComboBox(&dlg);
     fillPresetCombo(cbMap);
+    auto *chkReverse = new QCheckBox(trE11("Reverse color map"), &dlg);
     auto *chkLog = new QCheckBox(trE11("Logarithmic color scale"), &dlg);
+    auto *chkCellBlocks = new QCheckBox(trE11("Flat cell blocks (no smoothing)"), &dlg);
+    QCheckBox *chkUpdateExisting = nullptr;
+
+    bool initLog = false;
+    bool initBlocks = true;
+    bool initReverse = false;
+    int initPreset = int(Spectrogram::PresetViridis);
+    if (isEditing) {
+        sbBx->setValue(existingAttrs.value(QStringLiteral("bx")).toInt());
+        sbBy->setValue(existingAttrs.value(QStringLiteral("by")).toInt());
+        sbWx->setValue(existingAttrs.value(QStringLiteral("wx")).toDouble());
+        sbWy->setValue(existingAttrs.value(QStringLiteral("wy")).toDouble());
+        initLog = existingSp ? existingSp->logColorScale()
+                             : (existingAttrs.value(QStringLiteral("log")).toInt() != 0);
+        initBlocks = existingSp
+                ? existingSp->cellBlocks()
+                : (existingAttrs.value(QStringLiteral("blocks"), QStringLiteral("1")).toInt() != 0);
+        if (existingSp) {
+            initPreset = int(existingSp->colorMapPreset());
+            initReverse = existingSp->reversePalette();
+        }
+    }
+    int mapIdx = cbMap->findData(initPreset);
+    if (mapIdx < 0) {
+        cbMap->insertItem(0, trE11("Current / Custom"), initPreset);
+        mapIdx = 0;
+    }
+    cbMap->setCurrentIndex(mapIdx);
+    chkReverse->setChecked(initReverse);
+    chkLog->setChecked(initLog);
+    chkCellBlocks->setChecked(initBlocks);
+
     form->addRow(trE11("Source Table:"), cbTable);
     form->addRow(trE11("X column:"), cbX);
     form->addRow(trE11("Y column:"), cbY);
@@ -2557,7 +2712,15 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
     form->addRow(trE11("Bin width in X (0 = use bins):"), sbWx);
     form->addRow(trE11("Bin width in Y (0 = use bins):"), sbWy);
     form->addRow(trE11("Color map:"), cbMap);
+    form->addRow(QString(), chkReverse);
     form->addRow(QString(), chkLog);
+    form->addRow(QString(), chkCellBlocks);
+    if (isEditing) {
+        chkUpdateExisting =
+                new QCheckBox(trE11("Update active plot (uncheck to create new)"), &dlg);
+        chkUpdateExisting->setChecked(true);
+        form->addRow(QString(), chkUpdateExisting);
+    }
     lay->addLayout(form);
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -2565,10 +2728,38 @@ void ExtraPlotTypes::showDensity2DDialog(ApplicationWindow *app)
     lay->addWidget(btns);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const Density2DResult r = plotDensity2D(
-            app, tables.value(cbTable->currentIndex()), cbX->currentText(), cbY->currentText(),
-            sbBx->value(), sbBy->value(), sbWx->value(), sbWy->value(), chkLog->isChecked(),
-            cbMap->currentData().toInt(), true);
+
+    Table *selTable = tables.value(cbTable->currentIndex());
+    Density2DResult r;
+    if (isEditing && chkUpdateExisting && chkUpdateExisting->isChecked()) {
+        r = updateDensity2D(app, ag, selTable, cbX->currentText(), cbY->currentText(),
+                            sbBx->value(), sbBy->value(), sbWx->value(), sbWy->value(),
+                            chkLog->isChecked(), cbMap->currentData().toInt(),
+                            chkCellBlocks->isChecked(), chkReverse->isChecked());
+    } else {
+        r = plotDensity2D(app, selTable, cbX->currentText(), cbY->currentText(), sbBx->value(),
+                          sbBy->value(), sbWx->value(), sbWy->value(), chkLog->isChecked(),
+                          cbMap->currentData().toInt(), true);
+        if (r.valid && r.plot) {
+            if (Graph *ng = r.plot->activeGraph()) {
+                if (!chkCellBlocks->isChecked() || chkReverse->isChecked()) {
+                    applyDensity2DSpectrogramSettings(firstSpectrogram(ng),
+                                                      cbMap->currentData().toInt(),
+                                                      chkReverse->isChecked(),
+                                                      chkLog->isChecked(),
+                                                      chkCellBlocks->isChecked());
+                    Column *cx = resolveColumn(selTable, cbX->currentText());
+                    Column *cy = resolveColumn(selTable, cbY->currentText());
+                    storeExtraTag(ng, QStringLiteral("ToriDensity2D"),
+                                  buildDensity2DTag(r.matrix, selTable, cx, cy, sbBx->value(),
+                                                    sbBy->value(), sbWx->value(), sbWy->value(),
+                                                    chkLog->isChecked(),
+                                                    chkCellBlocks->isChecked(), r));
+                    ng->replot();
+                }
+            }
+        }
+    }
     if (!r.valid)
         QMessageBox::warning(app, trE11("2D Density (2D Histogram)"), r.error);
     else

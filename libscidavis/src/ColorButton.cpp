@@ -29,6 +29,9 @@
 #include "ColorButton.h"
 #include "IconLoader.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include <QColorDialog>
 #include <QPalette>
 #include <QPushButton>
@@ -89,6 +92,29 @@ const QColor ColorButton::colors[] = {
 
 const unsigned int ColorButton::colors_count = sizeof(colors) / sizeof(colors[0]);
 
+namespace {
+// ToriGraph standard palette (A3-6): the first row of the colour dialog's basic-colour grid.
+// Origin's default line colours, which stay distinguishable in print and for colour-blind
+// readers: black, red, blue, green, magenta, orange.
+//
+// This is deliberately NOT part of ColorButton::colors[]. Projects, imported OPJ/OPJU files and
+// scripts store colours as indices into that array (ColorButton::colorIndex()/color()), so its
+// order and size (colors_count also drives pie-slice and import colour cycling) must not change.
+// Colours of this palette that are not in colors[] are stored by value (rgba) as usual.
+const QColor kStandardPaletteFirstRow[] = {
+    QColor(0x00, 0x00, 0x00), // black
+    QColor(0xFF, 0x00, 0x00), // red
+    QColor(0x00, 0x00, 0xFF), // blue
+    QColor(0x00, 0x80, 0x00), // green
+    QColor(0xFF, 0x00, 0xFF), // magenta
+    QColor(0xFF, 0x80, 0x00), // orange
+};
+constexpr int kBasicGridCols = 6;
+static_assert(sizeof(kStandardPaletteFirstRow) / sizeof(kStandardPaletteFirstRow[0])
+                      == kBasicGridCols,
+              "the standard palette fills exactly the first row of the 6-column basic grid");
+} // namespace
+
 ColorButton::ColorButton(QWidget *parent) : QWidget(parent)
 {
     init();
@@ -97,14 +123,17 @@ ColorButton::ColorButton(QWidget *parent) : QWidget(parent)
 void ColorButton::init()
 {
     // transpose colors in the 6x8 basic colour grid.
-    constexpr int rows = 8, cols = 6;
+    constexpr int rows = 8, cols = kBasicGridCols;
     static_assert(rows * cols <= sizeof(colors) / sizeof(colors[0]), "");
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             QColorDialog::setStandardColor(j + cols * i, colors[i + rows * j].rgb());
         }
     }
-    const int btn_size = 28;
+    // first row: ToriGraph standard palette (overrides the transposed entries 0..5)
+    for (int j = 0; j < cols; j++)
+        QColorDialog::setStandardColor(j, kStandardPaletteFirstRow[j].rgb());
+    btn_size = 28;
     selectButton = new QPushButton(IconLoader::duotoneIcon("color-palette"), QString(), this);
     selectButton->setMinimumWidth(btn_size);
     selectButton->setMinimumHeight(btn_size);
@@ -166,7 +195,12 @@ QColor ColorButton::color(unsigned int colorIndex)
 bool ColorButton::isValidColor(const QColor &c)
 {
     const QColor *ite = std::find(std::begin(colors), std::end(colors), c);
-    return (ite != std::end(colors) && ite->isValid());
+    if (ite != std::end(colors) && ite->isValid())
+        return true;
+    // the ToriGraph standard palette (first row of the colour dialog) is also a predefined set
+    const QColor *pal = std::find(std::begin(kStandardPaletteFirstRow),
+                                  std::end(kStandardPaletteFirstRow), c);
+    return pal != std::end(kStandardPaletteFirstRow) && pal->isValid();
 }
 
 QSize ColorButton::sizeHint() const

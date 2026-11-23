@@ -122,6 +122,9 @@ protected:
     QSpinBox *boxWidthMinor;
     QCheckBox *boxXLine;
     QCheckBox *boxYLine;
+    //! Legacy grid zero-line controls: shown only while a grid zero line is enabled (the zero
+    //! lines are now created in the Reference Lines tab).
+    QLabel *labelGridZeroLines = nullptr;
     QListWidget *axesGridList;
     QWidget *axesPage, *frame;
     QListWidget *axesTitlesList;
@@ -155,7 +158,9 @@ protected:
     ColorButton *refColorBtn, *refFillColorBtn;
     QLineEdit *refLabelEdit;
     QCheckBox *refFillBox;
+    QSpinBox *refFillOpacityBox = nullptr;
     QPushButton *btnRefAdd, *btnRefUpdate, *btnRefRemove, *btnRefClear;
+    QPushButton *btnRefAddZeroY = nullptr, *btnRefAddZeroX = nullptr;
     QWidget *axisBreakPage;
     QListWidget *axisBreakAxesList;
     QCheckBox *boxEnableAxisBreak;
@@ -189,7 +194,12 @@ public slots:
     void updateTickLabelsList(bool);
     void updateMinorTicksList(int scaleType);
     void setTicksType(int);
+    //! Select an axis by QwtScaleDraw::Alignment (BottomScale / LeftScale / ...); a plain 0-3 is
+    //! taken as the tab row (0 = Bottom, 1 = Left, 2 = Top, 3 = Right).
     void setCurrentScale(int axisPos);
+    //! Select an axis by QwtPlot axis id (QwtPlot::xBottom / yLeft / xTop / yRight) in every tab
+    //! that has an axis list. Does not change the visible tab.
+    void setCurrentQwtAxis(int qwtAxis);
 
     void updateMajTicksType(int);
     void updateMinTicksType(int);
@@ -222,6 +232,8 @@ public slots:
     void selectReferenceLine(int row);
     void refStatModeChanged(int index);
     void addRefLineFromUi();
+    //! Append a constant X=0 (orientation 1) or Y=0 (orientation 0) reference line.
+    void addZeroRefLine(int orientation);
     void updateSelectedRefLineFromUi();
     void removeSelectedRefLine();
     void clearAllRefLines();
@@ -343,6 +355,7 @@ protected:
     Graph::ReferenceLineSpec buildRefLineSpecFromUi() const;
     QString formatRefLineListLabel(const Graph::ReferenceLineSpec &sp) const;
     void syncSelectedRefLineFromUi();
+    void updateLegacyZeroLineVisibility();
 
     QStringList tickLabelsOn, formatInfo;
     QStringList tablesList;

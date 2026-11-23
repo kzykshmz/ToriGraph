@@ -138,6 +138,8 @@ Matrix::~Matrix()
 void Matrix::setView(MatrixView *view)
 {
     d_view = view;
+    if (!d_view)
+        return;
     addActionsToView();
     connect(d_view, SIGNAL(controlTabBarStatusChanged(bool)), this, SLOT(adjustTabBarAction(bool)));
     adjustTabBarAction(true);
@@ -761,6 +763,8 @@ void Matrix::connectActions()
 
 void Matrix::addActionsToView()
 {
+    if (!d_view)
+        return;
     QPointer<Matrix> self(this);
     auto *flt = ensureMatrixLangFilter(this, [self]() {
         if (!self)

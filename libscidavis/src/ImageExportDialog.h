@@ -57,15 +57,15 @@ private:
     // vector format options
     //! Container widget for all options available for vector formats.
     QGroupBox *d_vector_options;
+    //! Hidden DPI holder of the PDF page (D2-3: a vector PDF has no DPI, so the row is not shown;
+    //! the value only follows the raster DPI so resolution() stays meaningful).
     QSpinBox *d_resolution;
     QCheckBox *d_color;
     QCheckBox *d_keep_aspect;
-    QCheckBox *d_standard_page;
-    QComboBox *d_box_page_size;
-    QComboBox *d_box_page_orientation;
     // raster format options
     //! Container widget for all options available for raster formats.
     QGroupBox *d_raster_options;
+    //! Hidden (D2-5): every offered raster format (PNG/TIFF) is lossless, so quality is fixed.
     QSpinBox *d_quality;
     QSpinBox *d_raster_resolution;
     QCheckBox *d_transparency;
@@ -94,9 +94,10 @@ public:
     bool color() const { return d_color->isChecked(); }
     //! For vector formats: returns whether the output should preserve aspect ratio of the plot (default: true).
     bool keepAspect() const { return d_keep_aspect->isChecked(); }
-    //! For vector formats: returns a standard output page size (default: QPrinter::Custom).
+    //! The standard-page-size option was removed (D2-5): always QPageSize::Custom.
     QPageSize pageSize() const;
     void setPageSize(QPageSize size);
+    //! Always portrait (only meaningful together with a standard page size).
     QPageLayout::Orientation pageOrientation() const;
     void setOrientation(QPrinter::Orientation orientation);
     //! Return the quality (in percent) the user selected for export to raster formats.
@@ -104,8 +105,17 @@ public:
 
     void selectFilter(const QString &filter);
 
+    //! Hides QFileDialog::selectedNameFilter(): returns the bare pattern ("*.png", "*.tif",
+    //! "*.pdf", ...) even though the dialog lists descriptive names (D2-7), so callers that store
+    //! or compare the filter keep working.
+    QString selectedNameFilter() const;
+
     //! B9: the offered formats ("*.png", "*.tif", "*.pdf", "*.svg", "*.emf").
     static QStringList supportedFilters();
+    //! D2-7: descriptive names shown in the dialog, e.g. "PNG 画像 (*.png)".
+    static QStringList displayNameFilters();
+    //! D2-7: the descriptive name that belongs to a (bare or stored) filter.
+    static QString displayFilterFor(const QString &filter);
     //! Maps any stored filter text (".png", "*.jpg", "*.eps", ...) to a supported filter.
     static QString normalizedFilter(const QString &filter);
     //! One-line description of what the format is for.

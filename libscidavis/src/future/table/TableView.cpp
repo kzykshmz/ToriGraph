@@ -75,6 +75,10 @@
 #include <QTextCursor>
 #include <QMdiArea>
 #include <QMdiSubWindow>
+#include <QMetaObject>
+#include <QStatusBar>
+#include <QStyle>
+#include <QToolTip>
 #include <algorithm>
 #include "ApplicationWindow.h"
 #include "Graph.h"
@@ -98,6 +102,16 @@ static void registerTableViewTranslations()
     reg("Add to Graph", "グラフへ追加");
     reg("+ Add Column", "+列追加");
     reg("Append a new Y column to this worksheet", "このワークシートの末尾に新しいY列を追加します");
+    reg("Tools", "ツール");
+    reg("Worksheet Tools (Find/Replace, Fill Down, Re-import)",
+        "ワークシートツール (検索/置換・下方向へコピー・元ファイルから再読込)");
+    reg("Find / Replace...", "検索と置換...");
+    reg("Find...", "検索...");
+    reg("Fill Down", "下方向へコピー");
+    reg("Re-import from Source", "元ファイルから再読込");
+    reg("Toggle Column Type & Format Side Panel", "列の型・書式サイドパネルを切り替え");
+    reg("Enter formula for selected column(s) and press Enter to recalculate",
+        "選択列の数式を入力して Enter で再計算します");
 }
 
 static QChar toUnicodeSubChar(QChar ch, bool *converted = nullptr)
@@ -278,117 +292,195 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     if (!quickBar)
         return;
 
-    auto calcBtnWidth = [](QToolButton *b, Qt::ToolButtonStyle st) -> int {
+    // An icon-only button without an icon would be invisible: fall back to its text.
+    auto effectiveStyle = [](QToolButton *b, Qt::ToolButtonStyle st) -> Qt::ToolButtonStyle {
+        if (b && st == Qt::ToolButtonIconOnly && b->icon().isNull())
+            return Qt::ToolButtonTextOnly;
+        if (b && st == Qt::ToolButtonTextBesideIcon && b->icon().isNull())
+            return Qt::ToolButtonTextOnly;
+        return st;
+    };
+
+    auto calcBtnWidth = [&effectiveStyle](QToolButton *b, Qt::ToolButtonStyle st) -> int {
         if (!b)
             return 0;
         b->ensurePolished();
+        st = effectiveStyle(b, st);
         if (st == Qt::ToolButtonIconOnly)
-            return b->iconSize().width() + 14;
+            return b->iconSize().width() + 10;
         QFont bf = b->font();
         bf.setBold(true);
-        if (bf.pointSizeF() > 0.0 && bf.pointSizeF() < 11.0)
-            bf.setPointSizeF(11.0);
+        if (bf.pointSizeF() > 0.0 && bf.pointSizeF() < 10.8)
+            bf.setPointSizeF(10.8);
         const QFontMetrics fm(bf);
         const int textW = fm.horizontalAdvance(b->text());
         const int iconW = (st == Qt::ToolButtonTextBesideIcon && !b->icon().isNull())
                 ? (b->iconSize().width() + 5)
                 : 0;
-        const int pad = (b->menu() != nullptr) ? 28 : 18;
-        return textW + iconW + pad;
+        return textW + iconW + 12;
     };
-
-    const int barW = quickBar->width();
-    const int availW = qMax(0, barW - 14); // 6px left + 6px right layout margin + 2px safety
 
     QToolButton *btnAddCol =
             quickBar->findChild<QToolButton *>(QStringLiteral("WorksheetQuickAddColumnBtn"));
-    const int roleFullW = calcBtnWidth(btnX, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnY, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnYErr, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(moreBtn, Qt::ToolButtonTextOnly) + 14;
-    const int settingsTextW = calcBtnWidth(btnAddCol, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnColProps, Qt::ToolButtonTextOnly) + 10;
-    const int settingsIconW = calcBtnWidth(btnAddCol, Qt::ToolButtonIconOnly)
-            + calcBtnWidth(btnColProps, Qt::ToolButtonIconOnly) + 10;
+    QToolButton *btnTools =
+            quickBar->findChild<QToolButton *>(QStringLiteral("WorksheetQuickToolsBtn"));
+    QWidget *rows[3] = { quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1")),
+                         quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1Wrap")),
+                         quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow2Wrap")) };
+    QFrame *groups[3] = { quickBar->findChild<QFrame *>(QStringLiteral("WorksheetRoleGroup")),
+                          quickBar->findChild<QFrame *>(QStringLiteral("WorksheetPlotGroup")),
+                          quickBar->findChild<QFrame *>(
+                                  QStringLiteral("WorksheetSettingsGroup")) };
 
-    const int plotBesideW = calcBtnWidth(btnLine, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnLp, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnScatter, Qt::ToolButtonTextBesideIcon)
-            + calcBtnWidth(btnAdd, Qt::ToolButtonTextBesideIcon) + 16;
-    const int plotTextOnlyW = calcBtnWidth(btnLine, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnLp, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnScatter, Qt::ToolButtonTextOnly)
-            + calcBtnWidth(btnAdd, Qt::ToolButtonTextOnly) + 16;
+    // Candidate configurations, richest first.
+    struct Cfg
+    {
+        Qt::ToolButtonStyle plot;
+        Qt::ToolButtonStyle settings;
+        bool foldYErr;
+    };
+    static const Cfg cfgs[] = {
+        { Qt::ToolButtonTextBesideIcon, Qt::ToolButtonTextBesideIcon, false },
+        { Qt::ToolButtonTextOnly, Qt::ToolButtonTextBesideIcon, false },
+        { Qt::ToolButtonTextBesideIcon, Qt::ToolButtonIconOnly, false },
+        { Qt::ToolButtonTextOnly, Qt::ToolButtonIconOnly, false },
+        { Qt::ToolButtonIconOnly, Qt::ToolButtonIconOnly, false },
+        { Qt::ToolButtonIconOnly, Qt::ToolButtonIconOnly, true },
+    };
+    const int cfgCount = int(sizeof(cfgs) / sizeof(cfgs[0]));
 
-    bool wantWrap = false;
-    bool foldYErr = false;
-    Qt::ToolButtonStyle colPropsStyle = Qt::ToolButtonTextOnly;
-    Qt::ToolButtonStyle plotStyle = Qt::ToolButtonTextBesideIcon;
+    const int barW = quickBar->width();
+    const int availW = qMax(0, barW - 14); // 6px left + 6px right layout margin + 2px safety
+    const int groupSpacing = 6;
 
-    if (barW <= 0) {
-        wantWrap = false;
-        foldYErr = false;
-        colPropsStyle = Qt::ToolButtonTextOnly;
-        plotStyle = Qt::ToolButtonTextBesideIcon;
-    } else if (roleFullW + plotBesideW + settingsTextW + 16 <= availW) {
-        wantWrap = false;
-        foldYErr = false;
-        colPropsStyle = Qt::ToolButtonTextOnly;
-        plotStyle = Qt::ToolButtonTextBesideIcon;
-    } else if (roleFullW + plotTextOnlyW + settingsTextW + 16 <= availW) {
-        wantWrap = false;
-        foldYErr = false;
-        colPropsStyle = Qt::ToolButtonTextOnly;
-        plotStyle = Qt::ToolButtonTextOnly;
-    } else {
-        // Narrow table: wrap quick-plot group onto its own row so Line/Scatter never clip or hide
-        wantWrap = true;
-        if (roleFullW + settingsTextW + 8 <= availW) {
-            foldYErr = false;
-            colPropsStyle = Qt::ToolButtonTextOnly;
-        } else if (roleFullW + settingsIconW + 8 <= availW) {
-            foldYErr = false;
-            colPropsStyle = Qt::ToolButtonIconOnly;
-        } else {
-            foldYErr = true;
-            colPropsStyle = Qt::ToolButtonIconOnly;
+    auto pillWidth = [](int sum, int n) -> int { return n > 0 ? sum + 2 * (n - 1) + 8 : 0; };
+
+    auto groupWidths = [&](const Cfg &c, int gw[3]) {
+        const Qt::ToolButtonStyle roleSt = Qt::ToolButtonTextOnly;
+        int roleSum = calcBtnWidth(btnX, roleSt) + calcBtnWidth(btnY, roleSt)
+                + calcBtnWidth(moreBtn, roleSt);
+        int roleN = 3;
+        if (!c.foldYErr && btnYErr) {
+            roleSum += calcBtnWidth(btnYErr, roleSt);
+            ++roleN;
         }
+        gw[0] = pillWidth(roleSum, roleN);
+        gw[1] = pillWidth(calcBtnWidth(btnLine, c.plot) + calcBtnWidth(btnLp, c.plot)
+                                  + calcBtnWidth(btnScatter, c.plot)
+                                  + calcBtnWidth(btnAdd, c.plot),
+                          4);
+        const Qt::ToolButtonStyle colPropsSt = (c.settings == Qt::ToolButtonIconOnly)
+                ? Qt::ToolButtonIconOnly
+                : Qt::ToolButtonTextOnly;
+        int settingsSum = calcBtnWidth(btnAddCol, c.settings)
+                + calcBtnWidth(btnColProps, colPropsSt);
+        int settingsN = 2;
+        if (btnTools) {
+            settingsSum += calcBtnWidth(btnTools, c.settings);
+            ++settingsN;
+        }
+        gw[2] = pillWidth(settingsSum, settingsN);
+    };
 
-        if (plotBesideW <= availW)
-            plotStyle = Qt::ToolButtonTextBesideIcon;
-        else if (plotTextOnlyW <= availW)
-            plotStyle = Qt::ToolButtonTextOnly;
-        else
-            plotStyle = Qt::ToolButtonIconOnly;
-    }
+    // Check whether a specific row assignment keeps every row within availW.
+    auto fitsLayout = [&](const int gw[3], const int ro[3]) -> bool {
+        int rowW[3] = { 0, 0, 0 };
+        int rowCnt[3] = { 0, 0, 0 };
+        for (int g = 0; g < 3; ++g) {
+            const int r = ro[g];
+            if (rowCnt[r] > 0)
+                rowW[r] += groupSpacing;
+            rowW[r] += gw[g];
+            ++rowCnt[r];
+        }
+        for (int r = 0; r < 3; ++r) {
+            if (rowW[r] > availW)
+                return false;
+        }
+        return true;
+    };
 
-    QWidget *row1Widget = quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1"));
-    QWidget *row1WrapWidget =
-            quickBar->findChild<QWidget *>(QStringLiteral("WorksheetQuickRow1Wrap"));
-    QFrame *plotGroup = quickBar->findChild<QFrame *>(QStringLiteral("WorksheetPlotGroup"));
-    if (row1Widget && row1WrapWidget && plotGroup) {
-        auto *qh1 = qobject_cast<QHBoxLayout *>(row1Widget->layout());
-        auto *qh1Wrap = qobject_cast<QHBoxLayout *>(row1WrapWidget->layout());
-        if (qh1 && qh1Wrap) {
-            const bool isWrapped = (qh1Wrap->indexOf(plotGroup) >= 0);
-            if (wantWrap && !isWrapped) {
-                qh1->removeWidget(plotGroup);
-                plotGroup->setParent(row1WrapWidget);
-                qh1Wrap->insertWidget(0, plotGroup);
-                plotGroup->show();
-            } else if (!wantWrap && isWrapped) {
-                qh1Wrap->removeWidget(plotGroup);
-                plotGroup->setParent(row1Widget);
-                qh1->insertWidget(1, plotGroup);
-                plotGroup->show();
+    int chosen = 0;
+    int rowOf[3] = { 0, 0, 0 };
+    if (barW > 0) {
+        int gw[3];
+        bool matched = false;
+        auto tryPass = [&](const int ro[3], bool allowFoldYErr) {
+            for (int i = 0; i < cfgCount && !matched; ++i) {
+                if (!allowFoldYErr && cfgs[i].foldYErr)
+                    continue;
+                groupWidths(cfgs[i], gw);
+                if (fitsLayout(gw, ro)) {
+                    chosen = i;
+                    rowOf[0] = ro[0];
+                    rowOf[1] = ro[1];
+                    rowOf[2] = ro[2];
+                    matched = true;
+                }
             }
-            if (row1WrapWidget->isVisible() != wantWrap)
-                row1WrapWidget->setVisible(wantWrap);
+        };
+
+        const int singleRow[3] = { 0, 0, 0 };
+        const int twoRowPlotWrap[3] = { 0, 1, 0 };
+        const int twoRowSettingsWrap[3] = { 0, 0, 1 };
+        const int threeRow[3] = { 0, 1, 2 };
+
+        // Pass 1: 1 row keeping ±Y visible
+        tryPass(singleRow, false);
+        // Pass 2: 2 rows (role + settings on row 0, plot on row 1) keeping ±Y visible
+        tryPass(twoRowPlotWrap, false);
+        // Pass 3: 2 rows (role + plot on row 0, settings on row 1) keeping ±Y visible
+        tryPass(twoRowSettingsWrap, false);
+        // Pass 4: 2 rows folding ±Y into More menu
+        tryPass(twoRowPlotWrap, true);
+        tryPass(twoRowSettingsWrap, true);
+        // Pass 5: 3 rows (each group on its own row)
+        tryPass(threeRow, false);
+        tryPass(threeRow, true);
+        if (!matched) {
+            chosen = cfgCount - 1;
+            rowOf[0] = 0;
+            rowOf[1] = 1;
+            rowOf[2] = 2;
+        }
+    }
+    const Cfg &cfg = cfgs[chosen];
+
+    if (rows[0] && rows[1] && rows[2] && groups[0] && groups[1] && groups[2]) {
+        const QString assign = QStringLiteral("%1%2%3").arg(rowOf[0]).arg(rowOf[1]).arg(rowOf[2]);
+        if (quickBar->property("wsRowAssign").toString() != assign) {
+            quickBar->setProperty("wsRowAssign", assign);
+            for (int r = 0; r < 3; ++r) {
+                if (QLayout *lay = rows[r]->layout()) {
+                    while (QLayoutItem *it = lay->takeAt(0))
+                        delete it; // widgets themselves are re-added below
+                }
+            }
+            for (int r = 0; r < 3; ++r) {
+                auto *lay = qobject_cast<QHBoxLayout *>(rows[r]->layout());
+                if (!lay)
+                    continue;
+                bool hasAny = false;
+                for (int g = 0; g < 3; ++g) {
+                    if (rowOf[g] != r)
+                        continue;
+                    if (g == 2 && hasAny)
+                        lay->addStretch(1);
+                    lay->addWidget(groups[g]);
+                    groups[g]->show();
+                    hasAny = true;
+                }
+                if (hasAny && rowOf[2] != r)
+                    lay->addStretch(1);
+                if (r > 0)
+                    rows[r]->setVisible(hasAny);
+            }
+            quickBar->updateGeometry();
         }
     }
 
-    if (btnYErr && btnYErr->isHidden() != foldYErr)
-        btnYErr->setVisible(!foldYErr);
+    if (btnYErr && btnYErr->isHidden() != cfg.foldYErr)
+        btnYErr->setVisible(!cfg.foldYErr);
     if (btnLp && btnLp->isHidden())
         btnLp->setVisible(true);
     if (btnScatter && btnScatter->isHidden())
@@ -396,22 +488,24 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
     if (moreBtn && moreBtn->menu()) {
         for (QAction *act : moreBtn->menu()->actions()) {
             if (act && act->data().toInt() == int(SciDAVis::yErr))
-                act->setVisible(foldYErr);
+                act->setVisible(cfg.foldYErr);
         }
     }
 
-    if (btnColProps && btnColProps->toolButtonStyle() != colPropsStyle)
-        btnColProps->setToolButtonStyle(colPropsStyle);
-    const Qt::ToolButtonStyle addColStyle = (colPropsStyle == Qt::ToolButtonIconOnly)
+    const Qt::ToolButtonStyle colPropsStyle = (cfg.settings == Qt::ToolButtonIconOnly)
             ? Qt::ToolButtonIconOnly
-            : Qt::ToolButtonTextBesideIcon;
-    if (btnAddCol && btnAddCol->toolButtonStyle() != addColStyle)
-        btnAddCol->setToolButtonStyle(addColStyle);
+            : Qt::ToolButtonTextOnly;
+    if (btnColProps && btnColProps->toolButtonStyle() != effectiveStyle(btnColProps, colPropsStyle))
+        btnColProps->setToolButtonStyle(effectiveStyle(btnColProps, colPropsStyle));
+    if (btnAddCol && btnAddCol->toolButtonStyle() != effectiveStyle(btnAddCol, cfg.settings))
+        btnAddCol->setToolButtonStyle(effectiveStyle(btnAddCol, cfg.settings));
+    if (btnTools && btnTools->toolButtonStyle() != effectiveStyle(btnTools, cfg.settings))
+        btnTools->setToolButtonStyle(effectiveStyle(btnTools, cfg.settings));
 
     QToolButton *plotBtns[] = { btnLine, btnLp, btnScatter, btnAdd };
     for (QToolButton *pb : plotBtns) {
-        if (pb && pb->toolButtonStyle() != plotStyle)
-            pb->setToolButtonStyle(plotStyle);
+        if (pb && pb->toolButtonStyle() != effectiveStyle(pb, cfg.plot))
+            pb->setToolButtonStyle(effectiveStyle(pb, cfg.plot));
     }
 
     QToolButton *textOnlyBtns[] = { btnX, btnY, btnYErr, moreBtn };
@@ -420,8 +514,17 @@ static void updateWorksheetQuickBarMetrics(QFrame *quickBar, QToolButton *btnX, 
             tb->setToolButtonStyle(Qt::ToolButtonTextOnly);
     }
 
+    // Icon-only buttons must still explain themselves.
+    if (btnAddCol && btnAddCol->toolTip().isEmpty())
+        btnAddCol->setToolTip(btnAddCol->text());
+    if (btnTools && btnTools->toolTip().isEmpty())
+        btnTools->setToolTip(btnTools->text());
+    if (btnColProps && btnColProps->toolTip().isEmpty())
+        btnColProps->setToolTip(btnColProps->text());
+
     QToolButton *visibleRow1[] = { btnX,       btnY,    btnYErr,    moreBtn,    btnLine,
-                                   btnLp,      btnScatter, btnAdd,  btnAddCol,  btnColProps };
+                                   btnLp,      btnScatter, btnAdd,  btnAddCol,  btnTools,
+                                   btnColProps };
     for (QToolButton *b : visibleRow1) {
         if (!b || b->isHidden())
             continue;
@@ -639,6 +742,27 @@ void TableView::init()
     for (QLabel *lbl : shortLabels) {
         if (lbl)
             lbl->setWordWrap(false);
+    }
+    // Simplify ControlTabs side panel (A2-5): keep only Type & Format tab visible,
+    // while keeping description_tab and formula_tab alive as hidden children of
+    // d_control_tabs so Table.cpp / TableStatistics.cpp ui.* pointers stay valid.
+    if (ui.tab_widget) {
+        if (ui.description_tab) {
+            const int idx = ui.tab_widget->indexOf(ui.description_tab);
+            if (idx >= 0)
+                ui.tab_widget->removeTab(idx);
+            ui.description_tab->setParent(d_control_tabs);
+            ui.description_tab->hide();
+        }
+        if (ui.formula_tab) {
+            const int idx = ui.tab_widget->indexOf(ui.formula_tab);
+            if (idx >= 0)
+                ui.tab_widget->removeTab(idx);
+            ui.formula_tab->setParent(d_control_tabs);
+            ui.formula_tab->hide();
+        }
+        if (ui.format_tab)
+            ui.tab_widget->setCurrentWidget(ui.format_tab);
     }
     d_control_tabs->hide();
     d_main_layout->addWidget(d_control_tabs);
@@ -925,7 +1049,7 @@ void TableView::retranslateStrings()
         d_edit_quick_fx->setPlaceholderText(
                 tr("Column formula (e.g. col(\"1\")*2) - Enter to apply"));
         d_edit_quick_fx->setToolTip(
-                tr("Enter formula for active column and press Enter to recalculate"));
+                tr("Enter formula for selected column(s) and press Enter to recalculate"));
     }
     if (d_btn_quick_plot_lp) {
         d_btn_quick_plot_lp->setIcon(
@@ -965,12 +1089,35 @@ void TableView::retranslateStrings()
             btnAddCol->setToolTip(tr("Append a new Y column to this worksheet"));
         }
     }
+    if (d_quick_bar) {
+        if (QToolButton *btnTools = d_quick_bar->findChild<QToolButton *>(
+                    QStringLiteral("WorksheetQuickToolsBtn"))) {
+            btnTools->setIcon(IconLoader::duotoneIcon(QStringLiteral("find"), 14, false));
+            btnTools->setIconSize(QSize(14, 14));
+            btnTools->setText(tr("Tools"));
+            btnTools->setToolTip(
+                    tr("Worksheet Tools (Find/Replace, Fill Down, Re-import)"));
+            if (QMenu *m = btnTools->menu()) {
+                for (QAction *act : m->actions()) {
+                    const QString tag = act->data().toString();
+                    if (tag == QLatin1String("find_replace"))
+                        act->setText(tr("Find / Replace..."));
+                    else if (tag == QLatin1String("find"))
+                        act->setText(tr("Find..."));
+                    else if (tag == QLatin1String("fill_down"))
+                        act->setText(tr("Fill Down"));
+                    else if (tag == QLatin1String("reimport"))
+                        act->setText(tr("Re-import from Source"));
+                }
+            }
+        }
+    }
     if (d_btn_quick_col_props) {
         d_btn_quick_col_props->setIcon(
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14, false));
         d_btn_quick_col_props->setIconSize(QSize(14, 14));
         d_btn_quick_col_props->setText(tr("Col Props"));
-        d_btn_quick_col_props->setToolTip(tr("Toggle Column Description & Type Side Panel"));
+        d_btn_quick_col_props->setToolTip(tr("Toggle Column Type & Format Side Panel"));
     }
     if (d_quick_bar) {
         if (QToolButton *moreBtn = d_quick_bar->findChild<QToolButton *>(
@@ -1422,29 +1569,41 @@ void TableView::handleFormatLineEditChange()
 
 void TableView::showControlDescriptionTab()
 {
-    d_control_tabs->setVisible(true);
-    d_hide_button->setArrowType(Qt::RightArrow);
-    ui.tab_widget->setCurrentIndex(0);
-    ui.tab_widget->setFocus();
-    syncQuickBarState();
+    if (d_table && d_table->columnCount() > 0) {
+        int col = -1;
+        if (d_view_widget && d_view_widget->selectionModel())
+            col = d_view_widget->selectionModel()->currentIndex().column();
+        if (col < 0 || col >= d_table->columnCount())
+            col = firstSelectedColumn(false);
+        if (col < 0 || col >= d_table->columnCount())
+            col = 0;
+        d_table->setCurrentColumn(col);
+        emit d_table->requestColumnPropertiesDialog(col);
+        return;
+    }
+    showControlTypeTab();
 }
 
 void TableView::showControlTypeTab()
 {
     d_control_tabs->setVisible(true);
     d_hide_button->setArrowType(Qt::RightArrow);
-    ui.tab_widget->setCurrentIndex(1);
+    if (ui.tab_widget && ui.format_tab)
+        ui.tab_widget->setCurrentWidget(ui.format_tab);
     ui.tab_widget->setFocus();
     syncQuickBarState();
 }
 
 void TableView::showControlFormulaTab()
 {
-    d_control_tabs->setVisible(true);
-    d_hide_button->setArrowType(Qt::RightArrow);
-    ui.tab_widget->setCurrentIndex(2);
-    ui.tab_widget->setFocus();
-    syncQuickBarState();
+    if (d_edit_quick_fx) {
+        if (d_quick_bar && d_quick_bar->isHidden())
+            d_quick_bar->show();
+        d_edit_quick_fx->setFocus(Qt::ShortcutFocusReason);
+        d_edit_quick_fx->selectAll();
+        return;
+    }
+    showControlTypeTab();
 }
 
 void TableView::applyDescription()
@@ -2150,14 +2309,18 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #334155;"
             "  border: 1px solid #D5DEE8;"
             "  border-radius: 4px;"
-            "  padding: 1px 6px;"
+            "  padding: 1px 4px;"
             "  min-height: 24px;"
             "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10.8pt;"
             "  font-weight: 600;"
             "}"
-            "#WorksheetQuickBar QToolButton#WorksheetMoreRoleBtn::menu-indicator {"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"x\"] { border-bottom: 3px solid #0EA5E9; }"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"y\"] { border-bottom: 3px solid #16A34A; }"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"yerr\"] { border-bottom: 3px solid #F59E0B; }"
+            "#WorksheetQuickBar QToolButton#WorksheetMoreRoleBtn::menu-indicator,"
+            "#WorksheetQuickBar QToolButton#WorksheetQuickToolsBtn::menu-indicator {"
             "  image: none;"
             "  width: 0px;"
             "}"
@@ -2171,12 +2334,27 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  border-color: #1D4ED8;"
             "  color: #FFFFFF;"
             "}"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"x\"]:checked {"
+            "  background: #0284C7;"
+            "  border-color: #0369A1;"
+            "  color: #FFFFFF;"
+            "}"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"y\"]:checked {"
+            "  background: #16A34A;"
+            "  border-color: #15803D;"
+            "  color: #FFFFFF;"
+            "}"
+            "#WorksheetQuickBar QToolButton[wsRoleKind=\"yerr\"]:checked {"
+            "  background: #D97706;"
+            "  border-color: #B45309;"
+            "  color: #FFFFFF;"
+            "}"
             "#WorksheetQuickBar QToolButton[wsPlotBtn=\"true\"] {"
             "  background: #FFFFFF;"
             "  color: #1E293B;"
             "  border: 1px solid #D5DEE8;"
             "  border-radius: 4px;"
-            "  padding: 1px 6px;"
+            "  padding: 1px 4px;"
             "  min-height: 24px;"
             "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
@@ -2198,7 +2376,7 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "  color: #1D4ED8;"
             "  border: 1px solid #93C5FD;"
             "  border-radius: 4px;"
-            "  padding: 1px 6px;"
+            "  padding: 1px 4px;"
             "  min-height: 24px;"
             "  max-height: 26px;"
             "  font-family: 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', sans-serif;"
@@ -2222,6 +2400,10 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
             "}"
             "#WorksheetQuickBar QLineEdit#WorksheetQuickFormulaEdit:focus {"
             "  border-color: #2563EB;"
+            "}"
+            "#WorksheetQuickBar QLineEdit#WorksheetQuickFormulaEdit[wsFormulaError=\"true\"] {"
+            "  border-color: #DC2626;"
+            "  background: #FEF2F2;"
             "}"));
 
     QVBoxLayout *qv = new QVBoxLayout(d_quick_bar);
@@ -2262,6 +2444,10 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     d_btn_role_x = makeRolePill(QuickRoleX);
     d_btn_role_y = makeRolePill(QuickRoleY);
     d_btn_role_yerr = makeRolePill(QuickRoleYErr);
+    // colour accents keep X / Y / ±Y distinguishable even in the compact layout
+    d_btn_role_x->setProperty("wsRoleKind", QStringLiteral("x"));
+    d_btn_role_y->setProperty("wsRoleKind", QStringLiteral("y"));
+    d_btn_role_yerr->setProperty("wsRoleKind", QStringLiteral("yerr"));
     d_btn_role_xerr = makeRolePill(QuickRoleXErr);
     d_btn_role_z = makeRolePill(QuickRoleZ);
     d_btn_role_label = makeRolePill(QuickRoleLabel);
@@ -2354,6 +2540,69 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     });
     settingsLay->addWidget(btnAddCol);
 
+    QToolButton *btnTools = new QToolButton(settingsGroup);
+    btnTools->setObjectName(QStringLiteral("WorksheetQuickToolsBtn"));
+    btnTools->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btnTools->setIconSize(QSize(14, 14));
+    btnTools->setPopupMode(QToolButton::InstantPopup);
+    btnTools->setAutoRaise(false);
+    btnTools->setCursor(Qt::PointingHandCursor);
+    btnTools->setProperty("wsPlotBtn", true);
+    QMenu *toolsMenu = new QMenu(btnTools);
+    QAction *actFindReplace = toolsMenu->addAction(tr("Find / Replace..."));
+    actFindReplace->setData(QStringLiteral("find_replace"));
+    actFindReplace->setIcon(IconLoader::duotoneIcon(QStringLiteral("find"), 14, false));
+    connect(actFindReplace, &QAction::triggered, this, [this]() {
+        if (::Table *legacyTbl = qobject_cast<::Table *>(this))
+            legacyTbl->showFindReplaceDialog(true);
+    });
+    QAction *actFind = toolsMenu->addAction(tr("Find..."));
+    actFind->setData(QStringLiteral("find"));
+    connect(actFind, &QAction::triggered, this, [this]() {
+        if (::Table *legacyTbl = qobject_cast<::Table *>(this))
+            legacyTbl->showFindReplaceDialog(false);
+    });
+    QAction *actFillDown = toolsMenu->addAction(tr("Fill Down"));
+    actFillDown->setData(QStringLiteral("fill_down"));
+    connect(actFillDown, &QAction::triggered, this, [this]() {
+        if (::Table *legacyTbl = qobject_cast<::Table *>(this))
+            legacyTbl->fillSelectionDown();
+    });
+    toolsMenu->addSeparator();
+    QAction *actReimport = toolsMenu->addAction(tr("Re-import from Source"));
+    actReimport->setData(QStringLiteral("reimport"));
+    actReimport->setIcon(IconLoader::duotoneIcon(QStringLiteral("import-csv"), 14, false));
+    connect(actReimport, &QAction::triggered, this, [this]() {
+        if (::Table *legacyTbl = qobject_cast<::Table *>(this)) {
+            if (legacyTbl->metaObject()->indexOfMethod("reimportFromSource()") >= 0)
+                QMetaObject::invokeMethod(legacyTbl, "reimportFromSource");
+        }
+    });
+    connect(toolsMenu, &QMenu::aboutToShow, this,
+            [this, actFindReplace, actFind, actFillDown, actReimport]() {
+                ::Table *legacyTbl = qobject_cast<::Table *>(this);
+                const bool hasLegacy = (legacyTbl != nullptr);
+                actFindReplace->setEnabled(hasLegacy);
+                actFind->setEnabled(hasLegacy);
+                actFillDown->setEnabled(hasLegacy);
+                bool canReimport = false;
+                if (hasLegacy
+                    && legacyTbl->metaObject()->indexOfMethod("reimportFromSource()") >= 0) {
+                    canReimport = true;
+                    if (legacyTbl->metaObject()->indexOfMethod("hasImportSource()") >= 0) {
+                        bool hasSrc = false;
+                        if (QMetaObject::invokeMethod(legacyTbl, "hasImportSource",
+                                                      Qt::DirectConnection,
+                                                      Q_RETURN_ARG(bool, hasSrc))) {
+                            canReimport = hasSrc;
+                        }
+                    }
+                }
+                actReimport->setEnabled(canReimport);
+            });
+    btnTools->setMenu(toolsMenu);
+    settingsLay->addWidget(btnTools);
+
     d_btn_quick_col_props = new QToolButton(settingsGroup);
     d_btn_quick_col_props->setCheckable(true);
     d_btn_quick_col_props->setAutoRaise(false);
@@ -2374,6 +2623,15 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
     qh1Wrap->addStretch(1);
     row1WrapWidget->hide();
     qv->addWidget(row1WrapWidget);
+
+    // Third row: only used on extremely narrow worksheets so nothing is ever clipped
+    QWidget *row2WrapWidget = new QWidget(d_quick_bar);
+    row2WrapWidget->setObjectName(QStringLiteral("WorksheetQuickRow2Wrap"));
+    QHBoxLayout *qh2Wrap = new QHBoxLayout(row2WrapWidget);
+    qh2Wrap->setContentsMargins(0, 0, 0, 0);
+    qh2Wrap->setSpacing(4);
+    row2WrapWidget->hide();
+    qv->addWidget(row2WrapWidget);
 
     // Row 2: Unclipped F(x) = Formula Bar spanning full worksheet width
     QHBoxLayout *qh2 = new QHBoxLayout();
@@ -2449,6 +2707,18 @@ void TableView::syncQuickBarState()
         }
         d_edit_quick_fx->setText(fxStr);
         d_edit_quick_fx->setEnabled(activeCol != nullptr);
+        const QString colErr = activeCol ? activeCol->formulaError().trimmed() : QString();
+        const bool hasErr = !colErr.isEmpty();
+        if (d_edit_quick_fx->property("wsFormulaError").toBool() != hasErr) {
+            d_edit_quick_fx->setProperty("wsFormulaError", hasErr);
+            if (QStyle *st = d_edit_quick_fx->style()) {
+                st->unpolish(d_edit_quick_fx);
+                st->polish(d_edit_quick_fx);
+            }
+        }
+        d_edit_quick_fx->setToolTip(
+                hasErr ? colErr
+                       : tr("Enter formula for selected column(s) and press Enter to recalculate"));
     }
 
     auto columnRoleCode = [](Column *c) -> int {
@@ -2576,39 +2846,90 @@ void TableView::applyQuickFormula()
     if (!d_table || !d_edit_quick_fx || d_table->columnCount() == 0)
         return;
 
-    int targetCol = -1;
-    if (d_view_widget && d_view_widget->selectionModel())
-        targetCol = d_view_widget->selectionModel()->currentIndex().column();
-    if (targetCol < 0 || targetCol >= d_table->columnCount()) {
-        const QList<int> selCols = selectedColumnIndices(false);
-        if (!selCols.isEmpty())
-            targetCol = selCols.first();
+    QList<int> targetCols = selectedColumnIndices(false);
+    if (targetCols.isEmpty() && d_view_widget && d_view_widget->selectionModel()) {
+        const int curIdx = d_view_widget->selectionModel()->currentIndex().column();
+        if (curIdx >= 0 && curIdx < d_table->columnCount())
+            targetCols.append(curIdx);
     }
-    if (targetCol < 0 || targetCol >= d_table->columnCount())
-        targetCol = 0;
+    if (targetCols.isEmpty())
+        targetCols.append(0);
 
-    const QString fx = d_edit_quick_fx->text().trimmed();
+    QString fx = d_edit_quick_fx->text().trimmed();
+    if (fx.startsWith(QLatin1Char('=')))
+        fx = fx.mid(1).trimmed();
+
+    {
+        QSignalBlocker sb(d_edit_quick_fx);
+        d_edit_quick_fx->setText(fx);
+    }
     if (ui.formula_box) {
         QSignalBlocker sb(ui.formula_box);
         ui.formula_box->setText(fx);
     }
 
-    if (::Table *legacyTbl = qobject_cast<::Table *>(this)) {
-        legacyTbl->setCommand(targetCol, fx);
-        if (!fx.isEmpty())
-            legacyTbl->recalculate(targetCol, false);
-    } else if (Column *c = d_table->column(targetCol)) {
-        if (fx.isEmpty())
-            c->clearFormulas();
-        else
-            c->setFormula(Interval<int>(0, qMax(0, d_table->rowCount() - 1)), fx);
+    const bool multiCol = (targetCols.size() > 1);
+    if (multiCol)
+        d_table->beginMacro(tr("%1: apply formula to column").arg(d_table->name()));
+
+    ::Table *legacyTbl = qobject_cast<::Table *>(this);
+    for (int colIdx : targetCols) {
+        if (colIdx < 0 || colIdx >= d_table->columnCount())
+            continue;
+        if (legacyTbl) {
+            legacyTbl->setCommand(colIdx, fx);
+        } else if (Column *c = d_table->column(colIdx)) {
+            if (fx.isEmpty())
+                c->clearFormulas();
+            else
+                c->setFormula(Interval<int>(0, qMax(0, d_table->rowCount() - 1)), fx);
+        }
     }
 
+    if (multiCol)
+        d_table->endMacro();
+
+    if (d_view_widget)
+        d_view_widget->setFocus();
     if (d_horizontal_header)
         d_horizontal_header->refresh();
     syncQuickBarState();
-    if (d_view_widget)
-        d_view_widget->setFocus();
+
+    QStringList errorLines;
+    for (int colIdx : targetCols) {
+        if (Column *c = d_table->column(colIdx)) {
+            const QString err = c->formulaError().trimmed();
+            if (!err.isEmpty())
+                errorLines << QStringLiteral("%1: %2").arg(c->name(), err);
+        }
+    }
+    if (!errorLines.isEmpty()) {
+        const QString errText = errorLines.join(QLatin1Char('\n'));
+        d_edit_quick_fx->setToolTip(errText);
+        if (!d_edit_quick_fx->property("wsFormulaError").toBool()) {
+            d_edit_quick_fx->setProperty("wsFormulaError", true);
+            if (QStyle *st = d_edit_quick_fx->style()) {
+                st->unpolish(d_edit_quick_fx);
+                st->polish(d_edit_quick_fx);
+            }
+        }
+        if (ApplicationWindow *app = findOwningAppWindow(this)) {
+            if (QStatusBar *sb = app->statusBar())
+                sb->showMessage(errorLines.join(QStringLiteral(" | ")), 8000);
+        }
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QToolTip::showText(d_edit_quick_fx->mapToGlobal(QPoint(0, d_edit_quick_fx->height())),
+                               errText, d_edit_quick_fx);
+        }
+    } else if (d_edit_quick_fx->property("wsFormulaError").toBool()) {
+        d_edit_quick_fx->setProperty("wsFormulaError", false);
+        if (QStyle *st = d_edit_quick_fx->style()) {
+            st->unpolish(d_edit_quick_fx);
+            st->polish(d_edit_quick_fx);
+        }
+        d_edit_quick_fx->setToolTip(
+                tr("Enter formula for selected column(s) and press Enter to recalculate"));
+    }
 }
 
 void TableView::triggerQuickPlot(int curveStyle)
@@ -2667,7 +2988,20 @@ void TableViewWidget::updateHeaderGeometry(Qt::Orientation o, int first, int las
 
 void TableViewWidget::keyPressEvent(QKeyEvent *event)
 {
-    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
-        emit advanceCell();
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        const Qt::KeyboardModifiers mods = event->modifiers();
+        if (!(mods & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            if (mods & Qt::ShiftModifier) {
+                const QModelIndex idx = currentIndex();
+                if (idx.isValid() && idx.row() > 0)
+                    setCurrentIndex(idx.sibling(idx.row() - 1, idx.column()));
+                event->accept();
+                return;
+            }
+            emit advanceCell();
+            event->accept();
+            return;
+        }
+    }
     QTableView::keyPressEvent(event);
 }

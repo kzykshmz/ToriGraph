@@ -2,6 +2,7 @@
 
 from .client import (
     BatchContext,
+    BatchReadError,
     DEFAULT_RPC_TIMEOUT,
     BatchStepRef,
     GraphProxy,
@@ -9,8 +10,10 @@ from .client import (
     RpcError,
     Session,
     TableProxy,
+    ToriGraphDisconnectedError,
     ToriGraphError,
     ToriGraphRpcError,
+    ToriGraphTimeoutError,
     ToriGraphVersionWarning,
     TransportError,
     WorkbookProxy,
@@ -31,6 +34,9 @@ __all__ = [
     "ToriGraphError",
     "ToriGraphRpcError",
     "TransportError",
+    "ToriGraphTimeoutError",
+    "ToriGraphDisconnectedError",
+    "BatchReadError",
     "ToriGraphVersionWarning",
     "DEFAULT_RPC_TIMEOUT",
     "check_app_version",

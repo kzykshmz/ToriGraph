@@ -33,6 +33,7 @@
 #include "ApplicationWindow.h"
 #ifdef Q_OS_WIN
 #include "OleServer.h"
+#include "EmfPaintDevice.h"
 #endif
 #include "Bar.h"
 #include "Cone3D.h"
@@ -43,21 +44,26 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QPrinter>
 #include <QPrintDialog>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QPixmap>
 #include <QBitmap>
 #include <QDateTime>
 #include <QCursor>
 #include <QImageWriter>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPdfWriter>
 #include <QResizeEvent>
 #include <QTextStream>
+#include <QWheelEvent>
 
 #include <qwt3d_io_gl2ps.h>
 #include <qwt3d_coordsys.h>
@@ -1923,6 +1929,11 @@ void Graph3D::resizeEvent(QResizeEvent *e)
 
 void Graph3D::contextMenuEvent(QContextMenuEvent *e)
 {
+    if (d_suppress_next_context_menu) {
+        d_suppress_next_context_menu = false;
+        e->accept();
+        return;
+    }
     if (widget()->geometry().contains(e->pos())) {
         emit showContextMenu();
     } else {
@@ -2257,16 +2268,84 @@ void Graph3D::copyImage()
     sp->updateData();
 }
 
-void Graph3D::exportImage(const QString &fileName, int quality, bool transparent)
+namespace {
+void setGraph3DExportError(QString *errOut, const QString &msg)
 {
-    if (!sp || fileName.isEmpty())
-        return;
+    if (errOut)
+        *errOut = msg;
+}
+} // namespace
+
+void Graph3D::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
+{
+    // Never let an exception escape to the Qt event loop; callers that need the result
+    // should use exportImageChecked().
+    QString err;
+    if (!exportImageChecked(fileName, quality, transparent, &err, dpi))
+        qWarning("Graph3D::exportImage(%s) failed: %s", qPrintable(fileName), qPrintable(err));
+}
+
+bool Graph3D::exportImageChecked(const QString &fileName, int quality, bool transparent,
+                                 QString *errOut, int dpi)
+{
+    if (fileName.isEmpty()) {
+        setGraph3DExportError(errOut, tr("Please provide a valid file name!"));
+        return false;
+    }
+    if (!sp) {
+        setGraph3DExportError(errOut, tr("The 3D plot is not initialized."));
+        return false;
+    }
+    try {
+        int effDpi = 300;
+        QImage im = renderExportImage(&effDpi, dpi);
+        if (im.isNull()) {
+            setGraph3DExportError(errOut, tr("Could not render the 3D plot."));
+            return false;
+        }
+        if (transparent) {
+            QImage rgba = im.convertToFormat(QImage::Format_ARGB32);
+            const QRgb bgRgb = bgCol.isValid() ? bgCol.rgb() : QColor(Qt::white).rgb();
+            for (int y = 0; y < rgba.height(); ++y) {
+                QRgb *scan = reinterpret_cast<QRgb *>(rgba.scanLine(y));
+                for (int x = 0; x < rgba.width(); ++x) {
+                    if ((scan[x] & 0x00FFFFFF) == (bgRgb & 0x00FFFFFF))
+                        scan[x] = 0x00000000;
+                }
+            }
+            im = rgba;
+        }
+        QImageWriter iw(fileName);
+        if (!fileName.endsWith(".png", Qt::CaseInsensitive) && quality >= 0)
+            iw.setQuality(quality);
+        if (!iw.write(im)) {
+            setGraph3DExportError(errOut,
+                                  tr("Could not write image file %1: %2")
+                                          .arg(QDir::toNativeSeparators(fileName), iw.errorString()));
+            return false;
+        }
+        return true;
+    } catch (const std::exception &e) {
+        setGraph3DExportError(errOut, QString::fromLocal8Bit(e.what()));
+    } catch (...) {
+        setGraph3DExportError(errOut, tr("Unknown error while exporting the 3D plot."));
+    }
+    return false;
+}
+
+QImage Graph3D::renderExportImage(int *effDpiOut, int dpiOverride)
+{
+    if (!sp)
+        return QImage();
     if (sp->width() <= 0 || sp->height() <= 0)
         sp->resize(600, 480);
 
     const QSize origSize = sp->size();
     const int propDpi = property("export_dpi").toInt();
-    const int effDpi = (propDpi >= 72) ? qMin(propDpi, 600) : 300;
+    const int rawDpi = (dpiOverride > 0) ? dpiOverride : propDpi;
+    const int effDpi = (rawDpi >= 72)
+            ? qMin(rawDpi, 600)
+            : ((dpiOverride > 0) ? qBound(72, dpiOverride, 600) : 300);
     double renderScale = double(effDpi) / 96.0;
     const int maxDim = qMax(origSize.width(), origSize.height());
     if (maxDim * renderScale > 3200.0)
@@ -2348,27 +2427,74 @@ void Graph3D::exportImage(const QString &fileName, int quality, bool transparent
     const int dpm = qRound(double(effDpi) / 0.0254);
     im.setDotsPerMeterX(dpm);
     im.setDotsPerMeterY(dpm);
+    if (effDpiOut)
+        *effDpiOut = effDpi;
+    return im;
+}
 
-    if (transparent) {
-        QImage rgba = im.convertToFormat(QImage::Format_ARGB32);
-        const QRgb bgRgb = bgCol.isValid() ? bgCol.rgb() : QColor(Qt::white).rgb();
-        for (int y = 0; y < rgba.height(); ++y) {
-            QRgb *scan = reinterpret_cast<QRgb *>(rgba.scanLine(y));
-            for (int x = 0; x < rgba.width(); ++x) {
-                if ((scan[x] & 0x00FFFFFF) == (bgRgb & 0x00FFFFFF))
-                    scan[x] = 0x00000000;
-            }
-        }
-        QImageWriter iw(fileName);
-        if (!fileName.endsWith(".png", Qt::CaseInsensitive) && quality >= 0)
-            iw.setQuality(quality);
-        iw.write(rgba);
-    } else {
-        QImageWriter iw(fileName);
-        if (!fileName.endsWith(".png", Qt::CaseInsensitive) && quality >= 0)
-            iw.setQuality(quality);
-        iw.write(im);
+void Graph3D::exportToFile(const QString &fileName)
+{
+    QString err;
+    if (!exportToFileChecked(fileName, &err))
+        qWarning("Graph3D::exportToFile(%s) failed: %s", qPrintable(fileName), qPrintable(err));
+}
+
+bool Graph3D::exportToFileChecked(const QString &fileName, QString *errOut)
+{
+    if (fileName.isEmpty()) {
+        setGraph3DExportError(errOut, tr("Please provide a valid file name!"));
+        return false;
     }
+    const QString ext = QFileInfo(fileName).suffix().toLower();
+    if (ext == QLatin1String("pdf") || ext == QLatin1String("eps") || ext == QLatin1String("ps")
+        || ext == QLatin1String("svg"))
+        return exportVectorChecked(fileName, ext, errOut);
+    if (ext == QLatin1String("emf")) {
+#ifdef Q_OS_WIN
+        if (!sp) {
+            setGraph3DExportError(errOut, tr("The 3D plot is not initialized."));
+            return false;
+        }
+        try {
+            const QImage im = renderExportImage(nullptr);
+            if (im.isNull()) {
+                setGraph3DExportError(errOut, tr("Could not render the 3D plot."));
+                return false;
+            }
+            const OleRenderedGraph rendered = SciDAVisEmf::renderFromImage(im);
+            if (rendered.emfBytes.isEmpty()) {
+                setGraph3DExportError(errOut, tr("Could not create EMF data for the 3D plot."));
+                return false;
+            }
+            QFile f(fileName);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                setGraph3DExportError(errOut,
+                                      tr("Could not open file %1 for writing: %2")
+                                              .arg(QDir::toNativeSeparators(fileName), f.errorString()));
+                return false;
+            }
+            if (f.write(rendered.emfBytes) != rendered.emfBytes.size()) {
+                setGraph3DExportError(errOut,
+                                      tr("Could not write file %1: %2")
+                                              .arg(QDir::toNativeSeparators(fileName), f.errorString()));
+                f.close();
+                QFile::remove(fileName);
+                return false;
+            }
+            f.close();
+            return true;
+        } catch (const std::exception &e) {
+            setGraph3DExportError(errOut, QString::fromLocal8Bit(e.what()));
+        } catch (...) {
+            setGraph3DExportError(errOut, tr("Unknown error while exporting the 3D plot."));
+        }
+        return false;
+#else
+        setGraph3DExportError(errOut, tr("EMF export is only available on Windows."));
+        return false;
+#endif
+    }
+    return exportImageChecked(fileName, 100, false, errOut);
 }
 
 void Graph3D::exportPDF(const QString &fileName)
@@ -2383,9 +2509,41 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
             QMessageBox::critical(0, tr("Error"), tr("Please provide a valid file name!"));
         return;
     }
-    if (!sp)
-        return;
+    // Never let an exception escape to the Qt event loop; callers that need the result
+    // should use exportVectorChecked().
+    QString err;
+    if (!exportVectorChecked(fileName, fileType, &err))
+        qWarning("Graph3D::exportVector(%s) failed: %s", qPrintable(fileName), qPrintable(err));
+}
 
+bool Graph3D::exportVectorChecked(const QString &fileName, QString *errOut)
+{
+    return exportVectorChecked(fileName, QFileInfo(fileName).suffix(), errOut);
+}
+
+bool Graph3D::exportVectorChecked(const QString &fileName, const QString &fileType,
+                                  QString *errOut)
+{
+    if (fileName.isEmpty()) {
+        setGraph3DExportError(errOut, tr("Please provide a valid file name!"));
+        return false;
+    }
+    if (!sp) {
+        setGraph3DExportError(errOut, tr("The 3D plot is not initialized."));
+        return false;
+    }
+    try {
+        return exportVectorImpl(fileName, fileType, errOut);
+    } catch (const std::exception &e) {
+        setGraph3DExportError(errOut, QString::fromLocal8Bit(e.what()));
+    } catch (...) {
+        setGraph3DExportError(errOut, tr("Unknown error while exporting the 3D plot."));
+    }
+    return false;
+}
+
+bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType, QString *errOut)
+{
     if (sp->width() <= 0 || sp->height() <= 0)
         sp->resize(600, 480);
 
@@ -2398,7 +2556,10 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
     if (format == QLatin1String("PDF") || fileName.endsWith(".pdf", Qt::CaseInsensitive)) {
         const QSize origSize = sp->size();
         constexpr int kPdfRenderDpi = 300;
-        const double renderScale = double(kPdfRenderDpi) / 96.0;
+        double renderScale = double(kPdfRenderDpi) / 96.0;
+        const int maxDim = qMax(origSize.width(), origSize.height());
+        if (maxDim * renderScale > 3200.0)
+            renderScale = qMax(1.0, 3200.0 / double(maxDim));
         const QSize hiSize(qMax(200, qRound(origSize.width() * renderScale)),
                            qMax(200, qRound(origSize.height() * renderScale)));
 
@@ -2444,6 +2605,11 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
         sp->updateData();
         ignoreFonts = prevIgnoreFonts;
 
+        if (hiImg.isNull()) {
+            setGraph3DExportError(errOut, tr("Could not render the 3D plot."));
+            return false;
+        }
+
         const double pageW_pt = double(origSize.width()) * 72.0 / 96.0;
         const double pageH_pt = double(origSize.height()) * 72.0 / 96.0;
         QPdfWriter pdf(fileName);
@@ -2453,13 +2619,18 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
         pdf.setPageSize(QPageSize(QSizeF(pageW_pt, pageH_pt), QPageSize::Point));
         pdf.setPageMargins(QMarginsF(0, 0, 0, 0));
 
-        QPainter pdfPainter(&pdf);
+        QPainter pdfPainter;
+        if (!pdfPainter.begin(&pdf)) {
+            setGraph3DExportError(errOut,
+                                  tr("Could not open file %1 for writing.")
+                                          .arg(QDir::toNativeSeparators(fileName)));
+            return false;
+        }
         pdfPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
                                   | QPainter::SmoothPixmapTransform);
         const QRect pagePxRect(0, 0, pdf.width(), pdf.height());
         pdfPainter.fillRect(pagePxRect, bgCol.isValid() ? bgCol : QColor(Qt::white));
-        if (!hiImg.isNull())
-            pdfPainter.drawImage(pagePxRect, hiImg);
+        pdfPainter.drawImage(pagePxRect, hiImg);
         if (!savedTitle.trimmed().isEmpty()) {
             QFont vecTitleFont = normalizePlot3DFont(titleFnt, 14);
             pdfPainter.setFont(vecTitleFont);
@@ -2469,8 +2640,15 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
             pdfPainter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextSingleLine,
                                 savedTitle);
         }
-        pdfPainter.end();
-        return;
+        const bool endOk = pdfPainter.end();
+        const QFileInfo pdfInfo(fileName);
+        if (!endOk || !pdfInfo.exists() || pdfInfo.size() <= 0) {
+            setGraph3DExportError(errOut,
+                                  tr("Could not write file %1.")
+                                          .arg(QDir::toNativeSeparators(fileName)));
+            return false;
+        }
+        return true;
     }
 
     if (!sp->context())
@@ -2547,22 +2725,123 @@ void Graph3D::exportVector(const QString &fileName, const QString &fileType)
             svg += QStringLiteral("</svg>\n");
 
             QFile outFile(fileName);
-            if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-                throw std::runtime_error((fileType + tr(" not supported")).toStdString());
-            outFile.write(svg.toUtf8());
+            if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                setGraph3DExportError(errOut,
+                                      tr("Could not open file %1 for writing: %2")
+                                              .arg(QDir::toNativeSeparators(fileName),
+                                                   outFile.errorString()));
+                return false;
+            }
+            const QByteArray svgBytes = svg.toUtf8();
+            const bool svgWritten = (outFile.write(svgBytes) == svgBytes.size());
+            const bool flushOk = outFile.flush();
+            const QFile::FileError ferr = outFile.error();
+            const QString ferrStr = outFile.errorString();
             outFile.close();
-            return;
+            if (!svgWritten || !flushOk || ferr != QFile::NoError) {
+                setGraph3DExportError(
+                        errOut,
+                        ferrStr.isEmpty()
+                                ? tr("Could not write file %1.")
+                                          .arg(QDir::toNativeSeparators(fileName))
+                                : tr("Could not write file %1: %2")
+                                          .arg(QDir::toNativeSeparators(fileName), ferrStr));
+                return false;
+            }
+            return true;
         }
     }
-    if (!gl2psOk)
-        throw std::runtime_error((fileType + tr(" not supported")).toStdString());
+    if (!gl2psOk) {
+        setGraph3DExportError(errOut, (fileType.isEmpty() ? format : fileType) + tr(" not supported"));
+        return false;
+    }
+    return true;
 }
 
 bool Graph3D::eventFilter(QObject *object, QEvent *e)
 {
-    if (e->type() == QEvent::MouseButtonDblClick && object == (QObject *)this->sp) {
-        emit showOptionsDialog();
-        return true;
+    if (object == (QObject *)this->sp) {
+        if (e->type() == QEvent::MouseButtonDblClick) {
+            emit showOptionsDialog();
+            return true;
+        }
+        if (e->type() == QEvent::MouseButtonPress) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::RightButton && me->modifiers() == Qt::NoModifier) {
+                d_right_dragging = true;
+                d_right_drag_moved = false;
+                d_suppress_next_context_menu = false;
+                d_right_drag_start_pos = me->pos();
+                d_right_drag_last_pos = me->pos();
+                if (sp->mouseEnabled())
+                    return true;
+            }
+        } else if (e->type() == QEvent::MouseMove) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (d_right_dragging && (me->buttons() & Qt::RightButton)) {
+                if (!d_right_drag_moved
+                    && (me->pos() - d_right_drag_start_pos).manhattanLength()
+                            >= QApplication::startDragDistance()) {
+                    d_right_drag_moved = true;
+                }
+                if (d_right_drag_moved && sp->mouseEnabled()) {
+                    const QPoint diff = me->pos() - d_right_drag_last_pos;
+                    const double w = qMax(1, sp->width());
+                    const double h = qMax(1, sp->height());
+                    const double relx = 2.0 * diff.x() / w;
+                    const double rely = 2.0 * diff.y() / h;
+                    sp->setViewportShift(sp->xViewportShift() + relx,
+                                         sp->yViewportShift() - rely);
+                    emit modified();
+                }
+                d_right_drag_last_pos = me->pos();
+                if (d_right_drag_moved) {
+                    me->accept();
+                    return true;
+                }
+            }
+        } else if (e->type() == QEvent::MouseButtonRelease) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::RightButton && d_right_dragging) {
+                const bool dragged = d_right_drag_moved;
+                d_right_dragging = false;
+                d_right_drag_moved = false;
+                if (dragged) {
+                    d_suppress_next_context_menu = true;
+                    me->accept();
+                    return true;
+                }
+            }
+        } else if (e->type() == QEvent::ContextMenu) {
+            if (d_suppress_next_context_menu) {
+                d_suppress_next_context_menu = false;
+                e->accept();
+                return true;
+            }
+        } else if (e->type() == QEvent::Wheel) {
+            auto *we = static_cast<QWheelEvent *>(e);
+            if (!sp->mouseEnabled()) {
+                we->ignore();
+                return true;
+            }
+            if (!(we->modifiers() & Qt::ShiftModifier)) {
+                double deltaSteps = we->angleDelta().y() / 120.0;
+                if (qFuzzyIsNull(deltaSteps) && !we->pixelDelta().isNull())
+                    deltaSteps = we->pixelDelta().y() / 40.0;
+                if (!qFuzzyIsNull(deltaSteps)) {
+                    const double curZoom = sp->zoom();
+                    const double base = (d_base_zoom > 1e-12 && std::isfinite(d_base_zoom))
+                            ? d_base_zoom
+                            : 1.0;
+                    const double minZoom = qMax(1e-9, base * 0.02);
+                    const double maxZoom = base * 50.0;
+                    const double factor = std::exp(0.10 * deltaSteps);
+                    sp->setZoom(qBound(minZoom, curZoom * factor, maxZoom));
+                    we->accept();
+                }
+                return true;
+            }
+        }
     }
     return MyWidget::eventFilter(object, e);
 }

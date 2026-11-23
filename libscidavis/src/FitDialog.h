@@ -60,6 +60,9 @@ public:
     static QString expandUserFunctions(const QString &rawFormula, const QStringList &names,
                                        const QStringList &defs);
 
+    //! Esc goes through close() so it behaves exactly like the Close buttons (C4-#12).
+    void reject() override;
+
 protected:
     //! On closing show the fit function in the plot window if that option is selected
     void closeEvent(QCloseEvent *e);

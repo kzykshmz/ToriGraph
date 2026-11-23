@@ -15,7 +15,7 @@
 
 用語集 (ToriGraph 改善レビュー H3 / 研究室配布版の統一訳):
     レイヤー、目盛り、シンボル、エラーバー、ワークシート、行列、フィット、軸タイトル、
-    エクスポート、平滑化、不透明度、インスペクタ、物理量 / 単位 (ISIJ)
+    エクスポート、平滑化、不透明度、インスペクタ、物理量 / 単位 (ISIJ)、長い名前、列の役割
     括弧とコロンは半角、ボタンの「OK」は「OK」だけ、訳に「&&」を残さない。
 
 C++ 側 (I18nJapanese.cpp の normalizeJapaneseGlossary) は、コードから登録される訳に
@@ -184,6 +184,14 @@ RULES: List[Rule] = [
          "Presentation Slide → 発表スライド", runtime_safe=True),
     Rule("isij-unit", r"物理量 / 単位 \(ISIJ形式\)", "物理量 / 単位 (ISIJ)",
          "物理量 / 単位 (ISIJ) の表記", runtime_safe=False),
+    Rule("long-name", "ロングネーム", "長い名前",
+         "ロングネーム → 長い名前", runtime_safe=True),
+    Rule("column-role", "プロット属性", "列の役割",
+         "プロット属性 → 列の役割", runtime_safe=True),
+    Rule("band-structure", r"バンド構造\s*\(Band Structure\)", "バンド構造",
+         "バンド構造 (Band Structure) → バンド構造", runtime_safe=True),
+    Rule("lock-aspect-ratio", r"縦横比を固定\s*\(Lock Aspect Ratio\)", "縦横比を固定",
+         "縦横比を固定 (Lock Aspect Ratio) → 縦横比を固定", runtime_safe=True),
 ]
 
 

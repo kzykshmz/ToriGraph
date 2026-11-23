@@ -11,6 +11,7 @@
 #include "Fit.h"
 #include "FunctionCurve.h"
 #include "Graph.h"
+#include "I18nJapanese.h"
 #include "Legend.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
@@ -36,14 +37,18 @@
 #include <QCoreApplication>
 #include <QCursor>
 #include <QFontMetrics>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLocale>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPaintDevice>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QPushButton>
 #include <QTimer>
 
 #include <gsl/gsl_blas.h>
@@ -531,6 +536,143 @@ static QString quickFitConvergenceMessage(int convState)
             ? QObject::tr("Not converged (maximum iterations reached; check the initial values)")
             : QObject::tr("Not converged (no further improvement; check the initial values)");
 }
+
+static double clampNonZeroSignPreserving(double v, double floorAbs = 1e-12)
+{
+    if (!std::isfinite(v))
+        return floorAbs;
+    return (std::fabs(v) < floorAbs) ? ((v >= 0.0) ? floorAbs : -floorAbs) : v;
+}
+
+// B4-6 / C4-7: shared Boltzmann ROI fit used by both QuickFit(FitBoltzmann) and QuickSigmoidal.
+struct BoltzmannFitOutput
+{
+    std::vector<double> params; // A1, A2, x0, dx
+    std::vector<double> se;
+    double r2 = 0.0;
+    int convState = 0;
+};
+
+static BoltzmannFitOutput fitBoltzmannRoiData(const std::vector<double> &xv,
+                                              const std::vector<double> &yv)
+{
+    BoltzmannFitOutput out;
+    const size_t n = xv.size();
+    const double a1Guess = yv.front();
+    const double a2Guess = yv.back();
+    const double yMid = 0.5 * (a1Guess + a2Guess);
+    double x0Guess = 0.5 * (xv.front() + xv.back());
+    for (size_t i = 0; i + 1 < n; ++i) {
+        if ((yv[i] <= yMid && yv[i + 1] >= yMid) || (yv[i] >= yMid && yv[i + 1] <= yMid)) {
+            const double dy = yv[i + 1] - yv[i];
+            x0Guess = xv[i]
+                    + ((std::fabs(dy) > 1e-15) ? ((yMid - yv[i]) / dy) : 0.5)
+                            * (xv[i + 1] - xv[i]);
+            break;
+        }
+    }
+    const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
+    out.params = { a1Guess, a2Guess, x0Guess, dxGuess };
+    runLmSolver(5, xv, yv, xv.front(), out.params, &out.se, &out.convState);
+    out.params[3] = clampNonZeroSignPreserving(out.params[3]);
+    std::vector<double> yHat(n);
+    for (size_t i = 0; i < n; ++i) {
+        const double u = std::clamp((xv[i] - out.params[2]) / out.params[3], -500.0, 500.0);
+        yHat[i] = out.params[1] + (out.params[0] - out.params[1]) / (1.0 + std::exp(u));
+    }
+    out.r2 = computeR2(yv, yHat);
+    return out;
+}
+
+static void registerGadgetFloatingBarStringsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Model / Mode", "モデル / モード");
+    reg("Keep Fit", "グラフへ確定");
+    reg("To Sheet", "表へ出力");
+    reg("Stamp", "注記貼付");
+    reg("Sync Layers", "全レイヤー同期");
+    reg("Snap Mode", "スナップ方法");
+    reg("Mask", "マスク確定");
+    reg("Unmask", "マスク解除");
+}
+
+// C4-6: compact non-intrusive canvas toolbar so gadgets are discoverable without right-click.
+class GadgetFloatingBar : public QFrame
+{
+public:
+    explicit GadgetFloatingBar(Graph *graph, QWidget *canvasParent)
+        : QFrame(canvasParent), d_graph(graph)
+    {
+        registerGadgetFloatingBarStringsOnce();
+        setObjectName(QStringLiteral("gadgetFloatingBar"));
+        setFocusPolicy(Qt::NoFocus);
+        setAttribute(Qt::WA_StyledBackground, true);
+        setStyleSheet(QStringLiteral(
+                "QFrame#gadgetFloatingBar { background: rgba(255, 255, 255, 236);"
+                " border: 1px solid #CBD5E1; border-radius: 5px; }"
+                "QFrame#gadgetFloatingBar QPushButton { background: #F8FAFC; color: #1E293B;"
+                " border: 1px solid #CBD5E1; border-radius: 3px; padding: 2px 7px;"
+                " font-size: 11px; }"
+                "QFrame#gadgetFloatingBar QPushButton:hover { background: #E2E8F0; }"
+                "QFrame#gadgetFloatingBar QPushButton:checked { background: #DBEAFE;"
+                " border-color: #3B82F6; color: #1D4ED8; }"
+                "QFrame#gadgetFloatingBar QPushButton#gadgetBarClose { color: #B91C1C;"
+                " font-weight: bold; padding: 2px 6px; }"));
+
+        QHBoxLayout *lay = new QHBoxLayout(this);
+        lay->setContentsMargins(5, 3, 5, 3);
+        lay->setSpacing(4);
+
+        auto makeBtn = [this, lay](const QString &text, const QString &objName = QString()) {
+            QPushButton *b = new QPushButton(text, this);
+            b->setFocusPolicy(Qt::NoFocus);
+            if (!objName.isEmpty())
+                b->setObjectName(objName);
+            lay->addWidget(b);
+            return b;
+        };
+
+        btnOption = makeBtn(QCoreApplication::translate("OriginGadgets", "Model / Mode"));
+        btnCommit = makeBtn(QCoreApplication::translate("OriginGadgets", "Keep Fit"));
+        btnTable = makeBtn(QCoreApplication::translate("OriginGadgets", "To Sheet"));
+        btnClose = makeBtn(QStringLiteral("\u00D7"), QStringLiteral("gadgetBarClose"));
+        btnClose->setToolTip(QCoreApplication::translate("OriginGadgets", "Close Gadget"));
+    }
+
+    void reposition()
+    {
+        QWidget *p = parentWidget();
+        if (!p)
+            return;
+        adjustSize();
+        const int x = std::max(4, p->width() - width() - 8);
+        const int y = 8;
+        move(x, y);
+        raise();
+    }
+
+    QPointer<Graph> d_graph;
+    QPushButton *btnOption = nullptr;
+    QPushButton *btnCommit = nullptr;
+    QPushButton *btnTable = nullptr;
+    QPushButton *btnClose = nullptr;
+
+protected:
+    void paintEvent(QPaintEvent *ev) override
+    {
+        if (d_graph && (d_graph->isExporting() || d_graph->property("isExporting").toBool()))
+            return;
+        QFrame::paintEvent(ev);
+    }
+};
 
 static void drawReadoutBox(QPainter *painter, const QRect &canvasRect, const QPoint &anchorPos,
                            const QString &text, const QColor &borderColor, const QColor &bgColor,
@@ -1077,12 +1219,17 @@ RoiGadgetTool::RoiGadgetTool(ApplicationWindow *app, Graph *graph, GadgetMode mo
     }
     initDefaultRoi();
     recalculate();
+    setupFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
 
 RoiGadgetTool::~RoiGadgetTool()
 {
+    if (d_floating_bar) {
+        delete d_floating_bar.data();
+        d_floating_bar.clear();
+    }
     if (d_graph_guard && d_graph_guard->plotWidget()) {
         if (d_graph_guard->plotWidget()->canvas()) {
             d_graph_guard->plotWidget()->canvas()->removeEventFilter(this);
@@ -1257,6 +1404,7 @@ void RoiGadgetTool::setGadgetMode(GadgetMode mode)
 {
     d_mode = mode;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
@@ -1265,6 +1413,7 @@ void RoiGadgetTool::setQuickFitModel(QuickFitModel model)
 {
     d_fit_model = model;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
@@ -1273,6 +1422,7 @@ void RoiGadgetTool::setIntegrateBaseline(IntegrateBaseline b)
 {
     d_integrate_baseline = b;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
@@ -1281,6 +1431,7 @@ void RoiGadgetTool::setDetectNegativePeaks(bool on)
 {
     d_detect_negative_peaks = on;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
@@ -1292,6 +1443,7 @@ void RoiGadgetTool::setSavGolWindow(int windowSize)
         ++w;
     d_sg_window = w;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
@@ -1411,20 +1563,24 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
     const QString prevMainLegendText =
             hadMainLegend ? d_graph_guard->legend()->text() : QString();
 
-    if (d_graph_guard->insertCurve(fitTbl, fitTbl->colName(0), fitTbl->colName(1), Graph::Line)) {
-        const int newIdx = d_graph_guard->curves() - 1;
-        if (QwtPlotCurve *added = (newIdx >= 0) ? d_graph_guard->curve(newIdx) : nullptr) {
-            added->setItemAttribute(QwtPlotItem::Legend, false);
-            if (hasTarget)
-                added->setAxis(targetXAxis, targetYAxis);
-            added->setPen(QPen(QColor(214, 39, 40), 2.0, Qt::SolidLine));
-            added->setRenderHint(QwtPlotItem::RenderAntialiased, true);
-        }
-        if (!hadMainLegend) {
-            d_graph_guard->removeLegend();
-        } else if (Legend *mainLeg = d_graph_guard->legend()) {
-            mainLeg->setText(prevMainLegendText);
-        }
+    if (!d_graph_guard->insertCurve(fitTbl, fitTbl->colName(0), fitTbl->colName(1), Graph::Line)) {
+        // C4-#12: avoid leaving an orphaned hidden GadgetFit_* table behind if insertion fails.
+        fitTbl->askOnCloseEvent(false);
+        d_app->closeWindow(fitTbl);
+        return;
+    }
+    const int newIdx = d_graph_guard->curves() - 1;
+    if (QwtPlotCurve *added = (newIdx >= 0) ? d_graph_guard->curve(newIdx) : nullptr) {
+        added->setItemAttribute(QwtPlotItem::Legend, false);
+        if (hasTarget)
+            added->setAxis(targetXAxis, targetYAxis);
+        added->setPen(QPen(QColor(214, 39, 40), 2.0, Qt::SolidLine));
+        added->setRenderHint(QwtPlotItem::RenderAntialiased, true);
+    }
+    if (!hadMainLegend) {
+        d_graph_guard->removeLegend();
+    } else if (Legend *mainLeg = d_graph_guard->legend()) {
+        mainLeg->setText(prevMainLegendText);
     }
 
     if (!d_summary_text.isEmpty()) {
@@ -2245,8 +2401,9 @@ void RoiGadgetTool::recalculate()
             std::vector<double> p = { yv.back(), yv.front() - yv.back(), span / 3.0 };
             std::vector<double> se;
             runLmSolver(4, xv, yv, xRef, p, &se, &convState);
+            const double t1Safe = clampNonZeroSignPreserving(p[2]);
             for (size_t i = 0; i < n; ++i) {
-                const double u = std::clamp((xv[i] - xRef) / p[2], -500.0, 500.0);
+                const double u = std::clamp((xv[i] - xRef) / t1Safe, -500.0, 500.0);
                 yHat[i] = p[0] + p[1] * std::exp(-u);
             }
             const double r2 = computeR2(yv, yHat);
@@ -2270,33 +2427,16 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("y0_SE"), seY0);
             for (int k = 0; k < nGrid; ++k) {
                 const double gx = gridX(k);
-                const double u = std::clamp((gx - xRef) / p[2], -500.0, 500.0);
+                const double u = std::clamp((gx - xRef) / t1Safe, -500.0, 500.0);
                 appendCurvePt(gx, p[0] + p[1] * std::exp(-u));
             }
         } else if (d_fit_model == FitBoltzmann && n >= 4) {
-            const double a1Guess = yv.front();
-            const double a2Guess = yv.back();
-            const double yMid = 0.5 * (a1Guess + a2Guess);
-            double x0Guess = 0.5 * (xv.front() + xv.back());
-            for (size_t i = 0; i + 1 < n; ++i) {
-                if ((yv[i] <= yMid && yv[i + 1] >= yMid)
-                    || (yv[i] >= yMid && yv[i + 1] <= yMid)) {
-                    const double dy = yv[i + 1] - yv[i];
-                    x0Guess = xv[i]
-                            + ((std::fabs(dy) > 1e-15) ? ((yMid - yv[i]) / dy) : 0.5)
-                                    * (xv[i + 1] - xv[i]);
-                    break;
-                }
-            }
-            const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
-            std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
-            std::vector<double> se;
-            runLmSolver(5, xv, yv, xv.front(), p, &se, &convState);
-            for (size_t i = 0; i < n; ++i) {
-                const double u = std::clamp((xv[i] - p[2]) / p[3], -500.0, 500.0);
-                yHat[i] = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
-            }
-            const double r2 = computeR2(yv, yHat);
+            const BoltzmannFitOutput bf = fitBoltzmannRoiData(xv, yv);
+            const auto &p = bf.params;
+            const auto &se = bf.se;
+            convState = bf.convState;
+            const double r2 = bf.r2;
+            const double dxSafe = clampNonZeroSignPreserving(p[3]);
             const double seX0 = (se.size() > 2) ? se[2] : 0.0;
             const double seDx = (se.size() > 3) ? se[3] : 0.0;
             const double seA1 = (se.size() > 0) ? se[0] : 0.0;
@@ -2320,7 +2460,7 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("A2_SE"), seA2);
             for (int k = 0; k < nGrid; ++k) {
                 const double gx = gridX(k);
-                const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
+                const double u = std::clamp((gx - p[2]) / dxSafe, -500.0, 500.0);
                 appendCurvePt(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u)));
             }
         } else {
@@ -2444,32 +2584,11 @@ void RoiGadgetTool::recalculate()
 
     case QuickSigmoidal: {
         if (n >= 4) {
-            const double a1Guess = yv.front();
-            const double a2Guess = yv.back();
-            const double yMidGuess = 0.5 * (a1Guess + a2Guess);
-            double x0Guess = 0.5 * (xv.front() + xv.back());
-            for (size_t i = 0; i + 1 < n; ++i) {
-                if ((yv[i] <= yMidGuess && yv[i + 1] >= yMidGuess)
-                    || (yv[i] >= yMidGuess && yv[i + 1] <= yMidGuess)) {
-                    const double dy = yv[i + 1] - yv[i];
-                    x0Guess = xv[i]
-                            + ((std::fabs(dy) > 1e-15) ? ((yMidGuess - yv[i]) / dy) : 0.5)
-                                    * (xv[i + 1] - xv[i]);
-                    break;
-                }
-            }
-            const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
-            std::vector<double> p = { a1Guess, a2Guess, x0Guess, dxGuess };
-            std::vector<double> se;
-            int sigConv = 0;
-            runLmSolver(5, xv, yv, xv.front(), p, &se, &sigConv);
-
-            std::vector<double> yHat(n);
-            for (size_t i = 0; i < n; ++i) {
-                const double u = std::clamp((xv[i] - p[2]) / p[3], -500.0, 500.0);
-                yHat[i] = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
-            }
-            const double r2 = computeR2(yv, yHat);
+            const BoltzmannFitOutput bf = fitBoltzmannRoiData(xv, yv);
+            const auto &p = bf.params;
+            const auto &se = bf.se;
+            const int sigConv = bf.convState;
+            const double r2 = bf.r2;
             const double seEc50 = (se.size() > 2) ? se[2] : 0.0;
             d_primary_metric = p[2]; // EC50
             d_secondary_metric = r2;
@@ -2481,6 +2600,7 @@ void RoiGadgetTool::recalculate()
             const bool logX = isAxisLog10(plotPtr, curve->xAxis()) && roi.left() > 0.0
                     && roi.right() > roi.left();
             const bool logY = isAxisLog10(plotPtr, curve->yAxis());
+            const double dxSafe = clampNonZeroSignPreserving(p[3]);
             const int nGrid = 120;
             for (int k = 0; k < nGrid; ++k) {
                 const double t = double(k) / double(nGrid - 1);
@@ -2489,11 +2609,12 @@ void RoiGadgetTool::recalculate()
                                    std::log10(roi.left())
                                            + t * (std::log10(roi.right()) - std::log10(roi.left())))
                         : (roi.left() + roi.width() * t);
-                const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
+                const double u = std::clamp((gx - p[2]) / dxSafe, -500.0, 500.0);
                 double gy = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
                 if (logY && gy <= 0.0)
                     gy = std::max(1e-100, minY > 0.0 ? minY * 0.1 : 1e-12);
-                d_overlay_curve_pts.append(QPointF(gx, gy));
+                if (std::isfinite(gx) && std::isfinite(gy))
+                    d_overlay_curve_pts.append(QPointF(gx, gy));
             }
 
             d_output_metrics << qMakePair(QString("EC50"), p[2])
@@ -2729,8 +2850,10 @@ void RoiGadgetTool::recalculate()
                 }
                 midY = yv[bestIdx];
             }
-            for (size_t i = 0; i < n; ++i)
-                d_overlay_curve_pts.append(QPointF(xv[i], yv[i]));
+            for (size_t i = 0; i < n; ++i) {
+                if (std::isfinite(xv[i]) && std::isfinite(yv[i]))
+                    d_overlay_curve_pts.append(QPointF(xv[i], yv[i]));
+            }
         } else {
             // Deduplicate strictly increasing X for spline/linear interpolation
             std::vector<double> ux, uy;
@@ -2758,7 +2881,9 @@ void RoiGadgetTool::recalculate()
                 for (int k = 0; k < nGrid; ++k) {
                     const double gx =
                             ux.front() + (ux.back() - ux.front()) * double(k) / double(nGrid - 1);
-                    d_overlay_curve_pts.append(QPointF(gx, gsl_spline_eval(spline, gx, acc)));
+                    const double gy = gsl_spline_eval(spline, gx, acc);
+                    if (std::isfinite(gx) && std::isfinite(gy))
+                        d_overlay_curve_pts.append(QPointF(gx, gy));
                 }
                 gsl_spline_free(spline);
                 gsl_interp_accel_free(acc);
@@ -2770,8 +2895,10 @@ void RoiGadgetTool::recalculate()
                 const double dx = ux[idx + 1] - ux[idx];
                 slope = (std::fabs(dx) > 1e-15) ? ((uy[idx + 1] - uy[idx]) / dx) : 0.0;
                 midY = uy[idx] + slope * (xMid - ux[idx]);
-                for (size_t i = 0; i < ux.size(); ++i)
-                    d_overlay_curve_pts.append(QPointF(ux[i], uy[i]));
+                for (size_t i = 0; i < ux.size(); ++i) {
+                    if (std::isfinite(ux[i]) && std::isfinite(uy[i]))
+                        d_overlay_curve_pts.append(QPointF(ux[i], uy[i]));
+                }
             }
         }
 
@@ -3400,129 +3527,336 @@ void RoiGadgetTool::updateCursorForPos(const QPoint &pos)
     case DragBottom:
         canvas->setCursor(Qt::SizeVerCursor);
         break;
-    case DragMove:
-        canvas->setCursor(Qt::SizeAllCursor);
+    case DragMove: {
+        const bool rubberMode = (d_mode == MaskRegion || d_mode == UnmaskRegion
+                                 || d_mode == Cluster);
+        const bool altHeld = (QApplication::keyboardModifiers() & Qt::AltModifier);
+        canvas->setCursor((rubberMode && !altHeld) ? Qt::CrossCursor : Qt::SizeAllCursor);
         break;
-    default:
-        canvas->setCursor(Qt::ArrowCursor);
+    }
+    default: {
+        const bool rubberMode = (d_mode == MaskRegion || d_mode == UnmaskRegion
+                                 || d_mode == Cluster);
+        canvas->setCursor(rubberMode ? Qt::CrossCursor : Qt::ArrowCursor);
         break;
+    }
     }
 }
 
-void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
+void RoiGadgetTool::setupFloatingBar()
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()
+        || !d_graph_guard->plotWidget()->canvas())
+        return;
+    QWidget *canvas = d_graph_guard->plotWidget()->canvas();
+    auto *bar = new GadgetFloatingBar(d_graph_guard, canvas);
+    d_floating_bar = bar;
+
+    connect(bar->btnOption, &QPushButton::clicked, this, [this, bar]() {
+        if (!d_graph_guard)
+            return;
+        QMenu m(bar);
+        ApplicationWindow *appWin = d_app ? d_app.data() : resolveAppWindowFromGraph(d_graph_guard);
+        const bool showAdvDomain = appWin ? appWin->showsAdvancedDomainFeatures() : false;
+
+        if (d_mode == QuickFit || d_mode == QuickSigmoidal) {
+            struct FitItem { QuickFitModel model; const char *label; };
+            const FitItem fitModels[] = {
+                { FitLinear, QT_TR_NOOP("Linear") },
+                { FitPoly2, QT_TR_NOOP("Polynomial (Order 2)") },
+                { FitGauss, QT_TR_NOOP("Gaussian") },
+                { FitLorentz, QT_TR_NOOP("Lorentzian") },
+                { FitExpDec1, QT_TR_NOOP("Exponential Decay (ExpDec1)") },
+                { FitBoltzmann, QT_TR_NOOP("Boltzmann Sigmoidal") }
+            };
+            for (const auto &fi : fitModels) {
+                if (!showAdvDomain && fi.model == FitBoltzmann && d_fit_model != fi.model)
+                    continue;
+                QAction *act = m.addAction(tr(fi.label));
+                act->setCheckable(true);
+                act->setChecked(d_fit_model == fi.model);
+                connect(act, &QAction::triggered, this, [this, fm = fi.model]() {
+                    d_mode = QuickFit;
+                    setQuickFitModel(fm);
+                });
+            }
+        } else if (d_mode == Integrate) {
+            struct BaseItem { IntegrateBaseline base; const char *label; };
+            const BaseItem baseItems[] = {
+                { BaseYZero, QT_TR_NOOP("Y = 0") },
+                { BaseEndpointsLine, QT_TR_NOOP("Straight Line (Endpoints)") },
+                { BaseRoiMin, QT_TR_NOOP("ROI Minimum") }
+            };
+            for (const auto &bi : baseItems) {
+                QAction *act = m.addAction(tr(bi.label));
+                act->setCheckable(true);
+                act->setChecked(d_integrate_baseline == bi.base);
+                connect(act, &QAction::triggered, this,
+                        [this, b = bi.base]() { setIntegrateBaseline(b); });
+            }
+        } else if (d_mode == QuickPeaks) {
+            QAction *actPos = m.addAction(tr("Quick Peaks"));
+            actPos->setCheckable(true);
+            actPos->setChecked(!d_detect_negative_peaks);
+            connect(actPos, &QAction::triggered, this,
+                    [this]() { setDetectNegativePeaks(false); });
+            QAction *actNeg = m.addAction(tr("Detect Negative Peaks (Troughs)"));
+            actNeg->setCheckable(true);
+            actNeg->setChecked(d_detect_negative_peaks);
+            connect(actNeg, &QAction::triggered, this,
+                    [this]() { setDetectNegativePeaks(true); });
+        } else if (d_mode == Differentiate) {
+            const int sgWindows[] = { 5, 9, 15, 25 };
+            for (int w : sgWindows) {
+                QAction *act = m.addAction(tr("%1 Points").arg(w));
+                act->setCheckable(true);
+                act->setChecked(d_sg_window == w);
+                connect(act, &QAction::triggered, this, [this, w]() { setSavGolWindow(w); });
+            }
+        } else {
+            struct ModeItem { GadgetMode mode; const char *label; };
+            const ModeItem modes[] = {
+                { RegionStats, QT_TR_NOOP("Region Statistics") },
+                { QuickFit, QT_TR_NOOP("Quick Fit") },
+                { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
+                { Integrate, QT_TR_NOOP("Integrate") },
+                { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
+                { Intersect, QT_TR_NOOP("Curve Intersection") },
+                { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
+                { MaskRegion, QT_TR_NOOP("Mask Region") },
+                { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
+            };
+            for (const auto &mi : modes) {
+                QAction *act = m.addAction(tr(mi.label));
+                act->setCheckable(true);
+                act->setChecked(d_mode == mi.mode);
+                connect(act, &QAction::triggered, this, [this, gm = mi.mode]() { setGadgetMode(gm); });
+            }
+        }
+        m.exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+    });
+
+    connect(bar->btnCommit, &QPushButton::clicked, this, [this]() {
+        if (d_mode == QuickFit || d_mode == QuickSigmoidal)
+            keepFittedCurveOnGraph();
+        else if (d_mode == MaskRegion || d_mode == Cluster)
+            applyClusterMask(true);
+        else if (d_mode == UnmaskRegion)
+            applyClusterMask(false);
+    });
+    connect(bar->btnTable, &QPushButton::clicked, this, [this]() { createOutputTable(); });
+    QPointer<Graph> gPtr = d_graph_guard;
+    connect(bar->btnClose, &QPushButton::clicked, this, [gPtr]() {
+        if (gPtr)
+            QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+    });
+
+    updateFloatingBar();
+    bar->show();
+}
+
+void RoiGadgetTool::updateFloatingBar()
+{
+    auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data());
+    if (!bar)
+        return;
+
+    QString optLabel = tr("Mode");
+    if (d_mode == QuickFit || d_mode == QuickSigmoidal) {
+        switch (d_fit_model) {
+        case FitLinear: optLabel = tr("Linear"); break;
+        case FitPoly2: optLabel = tr("Poly2"); break;
+        case FitGauss: optLabel = tr("Gaussian"); break;
+        case FitLorentz: optLabel = tr("Lorentzian"); break;
+        case FitExpDec1: optLabel = tr("ExpDec1"); break;
+        case FitBoltzmann: optLabel = tr("Boltzmann"); break;
+        }
+        if (d_mode == QuickSigmoidal)
+            optLabel = tr("Boltzmann");
+    } else if (d_mode == Integrate) {
+        switch (d_integrate_baseline) {
+        case BaseYZero: optLabel = tr("Y = 0"); break;
+        case BaseEndpointsLine: optLabel = tr("Baseline: Line"); break;
+        case BaseRoiMin: optLabel = tr("Baseline: Min"); break;
+        }
+    } else if (d_mode == QuickPeaks) {
+        optLabel = d_detect_negative_peaks ? tr("Troughs") : tr("Quick Peaks");
+    } else if (d_mode == Differentiate) {
+        optLabel = tr("SG %1pt").arg(d_sg_window);
+    } else if (d_mode == RegionStats) {
+        optLabel = tr("Region Statistics");
+    } else if (d_mode == MaskRegion) {
+        optLabel = tr("Mask Region");
+    } else if (d_mode == UnmaskRegion) {
+        optLabel = tr("Unmask Region");
+    } else if (d_mode == Cluster) {
+        optLabel = tr("Cluster Selector");
+    } else if (d_mode == Intersect) {
+        optLabel = tr("Curve Intersection");
+    } else if (d_mode == Integrate2D) {
+        optLabel = tr("2D Integration");
+    }
+    bar->btnOption->setText(optLabel + QStringLiteral(" \u25BE"));
+
+    if (d_mode == QuickFit || d_mode == QuickSigmoidal) {
+        bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Keep Fit"));
+        bar->btnCommit->setVisible(true);
+    } else if (d_mode == MaskRegion || d_mode == Cluster) {
+        bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Mask"));
+        bar->btnCommit->setVisible(true);
+    } else if (d_mode == UnmaskRegion) {
+        bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Unmask"));
+        bar->btnCommit->setVisible(true);
+    } else {
+        bar->btnCommit->setVisible(false);
+    }
+
+    bar->reposition();
+}
+
+void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos, bool insideRoi)
 {
     if (!d_graph_guard)
         return;
 
     QMenu menu;
-    QMenu *modeMenu = menu.addMenu(tr("Gadget Mode"));
-    struct ModeItem {
-        GadgetMode mode;
-        const char *label;
-    };
-    const ModeItem modes[] = {
-        { RegionStats, QT_TR_NOOP("Region Statistics") },
-        { QuickFit, QT_TR_NOOP("Quick Fit") },
-        { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
-        { QuickSigmoidal, QT_TR_NOOP("Quick Sigmoidal Fit") },
-        { Integrate, QT_TR_NOOP("Integrate") },
-        { Interpolate, QT_TR_NOOP("Interpolate") },
-        { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
-        { Intersect, QT_TR_NOOP("Curve Intersection") },
-        { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
-        { FFT, QT_TR_NOOP("FFT Preview") },
-        { RiseTime, QT_TR_NOOP("Rise Time (10-90%)") },
-        { Cluster, QT_TR_NOOP("Cluster Selector") },
-        { MaskRegion, QT_TR_NOOP("Mask Region") },
-        { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
-    };
     ApplicationWindow *appWin = d_app ? d_app.data() : resolveAppWindowFromGraph(d_graph_guard);
     const bool showAdvDomain = appWin ? appWin->showsAdvancedDomainFeatures() : false;
-    for (const auto &mi : modes) {
-        if (!showAdvDomain && (mi.mode == QuickSigmoidal || mi.mode == RiseTime)
-            && d_mode != mi.mode) {
-            continue;
-        }
-        QAction *act = modeMenu->addAction(tr(mi.label));
-        act->setCheckable(true);
-        act->setChecked(d_mode == mi.mode);
-        connect(act, &QAction::triggered, this, [this, m = mi.mode]() { setGadgetMode(m); });
-    }
 
-    QMenu *fitMenu = menu.addMenu(tr("Quick Fit Model"));
-    struct FitItem {
-        QuickFitModel model;
-        const char *label;
-    };
-    const FitItem fitModels[] = {
-        { FitLinear, QT_TR_NOOP("Linear") },
-        { FitPoly2, QT_TR_NOOP("Polynomial (Order 2)") },
-        { FitGauss, QT_TR_NOOP("Gaussian") },
-        { FitLorentz, QT_TR_NOOP("Lorentzian") },
-        { FitExpDec1, QT_TR_NOOP("Exponential Decay (ExpDec1)") },
-        { FitBoltzmann, QT_TR_NOOP("Boltzmann Sigmoidal") }
-    };
-    for (const auto &fi : fitModels) {
-        if (!showAdvDomain && fi.model == FitBoltzmann && d_fit_model != fi.model)
-            continue;
-        QAction *act = fitMenu->addAction(tr(fi.label));
-        act->setCheckable(true);
-        act->setChecked(d_fit_model == fi.model);
-        connect(act, &QAction::triggered, this, [this, fm = fi.model]() {
-            d_mode = QuickFit;
-            setQuickFitModel(fm);
-        });
-    }
-
-    const QStringList curveNames = d_graph_guard->analysableCurvesList();
-    if (!curveNames.isEmpty()) {
-        QMenu *curveMenu = menu.addMenu(tr("Target Curve"));
-        for (const QString &cn : curveNames) {
-            QAction *act = curveMenu->addAction(cn);
+    auto populateModeMenu = [&](QMenu *modeMenu) {
+        struct ModeItem {
+            GadgetMode mode;
+            const char *label;
+        };
+        const ModeItem modes[] = {
+            { RegionStats, QT_TR_NOOP("Region Statistics") },
+            { QuickFit, QT_TR_NOOP("Quick Fit") },
+            { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
+            { QuickSigmoidal, QT_TR_NOOP("Quick Sigmoidal Fit") },
+            { Integrate, QT_TR_NOOP("Integrate") },
+            { Interpolate, QT_TR_NOOP("Interpolate") },
+            { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
+            { Intersect, QT_TR_NOOP("Curve Intersection") },
+            { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
+            { FFT, QT_TR_NOOP("FFT Preview") },
+            { RiseTime, QT_TR_NOOP("Rise Time (10-90%)") },
+            { Cluster, QT_TR_NOOP("Cluster Selector") },
+            { MaskRegion, QT_TR_NOOP("Mask Region") },
+            { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
+        };
+        for (const auto &mi : modes) {
+            // C4-7: hide redundant/specialty modes unless advanced mode is enabled or already active.
+            const bool redundantOrAdv = (mi.mode == QuickSigmoidal || mi.mode == RiseTime
+                                         || mi.mode == Cluster || mi.mode == Interpolate
+                                         || mi.mode == FFT);
+            if (!showAdvDomain && redundantOrAdv && d_mode != mi.mode)
+                continue;
+            QAction *act = modeMenu->addAction(tr(mi.label));
             act->setCheckable(true);
-            act->setChecked(cn == d_curve_title);
-            connect(act, &QAction::triggered, this, [this, cn]() { setTargetCurve(cn); });
+            act->setChecked(d_mode == mi.mode);
+            connect(act, &QAction::triggered, this, [this, m = mi.mode]() { setGadgetMode(m); });
+        }
+    };
+
+    if (!insideRoi) {
+        // C4-6: right-clicking outside the ROI offers a quick way to close or switch modes.
+        QMenu *modeMenu = menu.addMenu(tr("Gadget Mode"));
+        populateModeMenu(modeMenu);
+        QAction *actOutTable = menu.addAction(tr("Output Results to Worksheet"));
+        connect(actOutTable, &QAction::triggered, this, [this]() { createOutputTable(); });
+        menu.addSeparator();
+        QAction *actClose = menu.addAction(tr("Close Gadget"));
+        QPointer<Graph> gPtr = d_graph_guard;
+        connect(actClose, &QAction::triggered, this, [gPtr]() {
+            if (gPtr)
+                QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+        });
+        menu.exec(globalPos);
+        return;
+    }
+
+    QMenu *modeMenu = menu.addMenu(tr("Gadget Mode"));
+    populateModeMenu(modeMenu);
+
+    // C4-6: only show options that apply to the active gadget mode.
+    if (d_mode == QuickFit || d_mode == QuickSigmoidal) {
+        QMenu *fitMenu = menu.addMenu(tr("Quick Fit Model"));
+        struct FitItem {
+            QuickFitModel model;
+            const char *label;
+        };
+        const FitItem fitModels[] = {
+            { FitLinear, QT_TR_NOOP("Linear") },
+            { FitPoly2, QT_TR_NOOP("Polynomial (Order 2)") },
+            { FitGauss, QT_TR_NOOP("Gaussian") },
+            { FitLorentz, QT_TR_NOOP("Lorentzian") },
+            { FitExpDec1, QT_TR_NOOP("Exponential Decay (ExpDec1)") },
+            { FitBoltzmann, QT_TR_NOOP("Boltzmann Sigmoidal") }
+        };
+        for (const auto &fi : fitModels) {
+            if (!showAdvDomain && fi.model == FitBoltzmann && d_fit_model != fi.model)
+                continue;
+            QAction *act = fitMenu->addAction(tr(fi.label));
+            act->setCheckable(true);
+            act->setChecked(d_fit_model == fi.model);
+            connect(act, &QAction::triggered, this, [this, fm = fi.model]() {
+                d_mode = QuickFit;
+                setQuickFitModel(fm);
+            });
+        }
+    } else if (d_mode == Integrate) {
+        QMenu *baseMenu = menu.addMenu(tr("Integrate Baseline"));
+        struct BaseItem {
+            IntegrateBaseline base;
+            const char *label;
+        };
+        const BaseItem baseItems[] = {
+            { BaseYZero, QT_TR_NOOP("Y = 0") },
+            { BaseEndpointsLine, QT_TR_NOOP("Straight Line (Endpoints)") },
+            { BaseRoiMin, QT_TR_NOOP("ROI Minimum") }
+        };
+        for (const auto &bi : baseItems) {
+            QAction *act = baseMenu->addAction(tr(bi.label));
+            act->setCheckable(true);
+            act->setChecked(d_integrate_baseline == bi.base);
+            connect(act, &QAction::triggered, this, [this, b = bi.base]() {
+                d_mode = Integrate;
+                setIntegrateBaseline(b);
+            });
+        }
+    } else if (d_mode == QuickPeaks) {
+        QAction *actNegPeaks = menu.addAction(tr("Detect Negative Peaks (Troughs)"));
+        actNegPeaks->setCheckable(true);
+        actNegPeaks->setChecked(d_detect_negative_peaks);
+        connect(actNegPeaks, &QAction::triggered, this, [this](bool on) {
+            d_mode = QuickPeaks;
+            setDetectNegativePeaks(on);
+        });
+    } else if (d_mode == Differentiate) {
+        QMenu *sgMenu = menu.addMenu(tr("Savitzky-Golay Window"));
+        const int sgWindows[] = { 5, 9, 15, 25 };
+        for (int w : sgWindows) {
+            QAction *act = sgMenu->addAction(tr("%1 Points").arg(w));
+            act->setCheckable(true);
+            act->setChecked(d_sg_window == w);
+            connect(act, &QAction::triggered, this, [this, w]() {
+                d_mode = Differentiate;
+                setSavGolWindow(w);
+            });
         }
     }
 
-    QMenu *baseMenu = menu.addMenu(tr("Integrate Baseline"));
-    struct BaseItem {
-        IntegrateBaseline base;
-        const char *label;
-    };
-    const BaseItem baseItems[] = {
-        { BaseYZero, QT_TR_NOOP("Y = 0") },
-        { BaseEndpointsLine, QT_TR_NOOP("Straight Line (Endpoints)") },
-        { BaseRoiMin, QT_TR_NOOP("ROI Minimum") }
-    };
-    for (const auto &bi : baseItems) {
-        QAction *act = baseMenu->addAction(tr(bi.label));
-        act->setCheckable(true);
-        act->setChecked(d_integrate_baseline == bi.base);
-        connect(act, &QAction::triggered, this, [this, b = bi.base]() {
-            d_mode = Integrate;
-            setIntegrateBaseline(b);
-        });
-    }
-
-    QAction *actNegPeaks = menu.addAction(tr("Detect Negative Peaks (Troughs)"));
-    actNegPeaks->setCheckable(true);
-    actNegPeaks->setChecked(d_detect_negative_peaks);
-    connect(actNegPeaks, &QAction::triggered, this, [this](bool on) {
-        d_mode = QuickPeaks;
-        setDetectNegativePeaks(on);
-    });
-
-    QMenu *sgMenu = menu.addMenu(tr("Savitzky-Golay Window"));
-    const int sgWindows[] = { 5, 9, 15, 25 };
-    for (int w : sgWindows) {
-        QAction *act = sgMenu->addAction(tr("%1 Points").arg(w));
-        act->setCheckable(true);
-        act->setChecked(d_sg_window == w);
-        connect(act, &QAction::triggered, this, [this, w]() {
-            d_mode = Differentiate;
-            setSavGolWindow(w);
-        });
+    if (d_mode != Integrate2D && d_mode != Intersect) {
+        const QStringList curveNames = d_graph_guard->analysableCurvesList();
+        if (!curveNames.isEmpty()) {
+            QMenu *curveMenu = menu.addMenu(tr("Target Curve"));
+            for (const QString &cn : curveNames) {
+                QAction *act = curveMenu->addAction(cn);
+                act->setCheckable(true);
+                act->setChecked(cn == d_curve_title);
+                connect(act, &QAction::triggered, this, [this, cn]() { setTargetCurve(cn); });
+            }
+        }
     }
 
     menu.addSeparator();
@@ -3530,14 +3864,15 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos)
         QAction *actKeepFit = menu.addAction(tr("Keep Fitted Curve on Graph"));
         connect(actKeepFit, &QAction::triggered, this, [this]() { keepFittedCurveOnGraph(); });
     }
+    if (d_mode == MaskRegion || d_mode == Cluster) {
+        QAction *actMask = menu.addAction(tr("Mask Points in ROI"));
+        connect(actMask, &QAction::triggered, this, [this]() { applyClusterMask(true); });
+    } else if (d_mode == UnmaskRegion) {
+        QAction *actUnmask = menu.addAction(tr("Unmask Points in ROI"));
+        connect(actUnmask, &QAction::triggered, this, [this]() { applyClusterMask(false); });
+    }
     QAction *actOutTable = menu.addAction(tr("Output Results to Worksheet"));
     connect(actOutTable, &QAction::triggered, this, [this]() { createOutputTable(); });
-
-    QAction *actMask = menu.addAction(tr("Mask Points in ROI"));
-    connect(actMask, &QAction::triggered, this, [this]() { applyClusterMask(true); });
-
-    QAction *actUnmask = menu.addAction(tr("Unmask Points in ROI"));
-    connect(actUnmask, &QAction::triggered, this, [this]() { applyClusterMask(false); });
 
     QAction *actCopy = menu.addAction(tr("Copy Summary to Clipboard"));
     connect(actCopy, &QAction::triggered, this,
@@ -3565,40 +3900,51 @@ bool RoiGadgetTool::eventFilter(QObject *obj, QEvent *event)
     const int yAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
 
     switch (event->type()) {
+    case QEvent::Resize:
+    case QEvent::Show:
+        if (auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data()))
+            bar->reposition();
+        break;
+
     case QEvent::ContextMenu: {
         auto *ce = static_cast<QContextMenuEvent *>(event);
-        if (hitTestPixelPos(ce->pos()) != DragNone) {
-            showRoiContextMenu(ce->globalPos());
-            ce->accept();
-            return true;
-        }
-        break;
+        const bool inside = (hitTestPixelPos(ce->pos()) != DragNone);
+        showRoiContextMenu(ce->globalPos(), inside);
+        ce->accept();
+        return true;
     }
 
     case QEvent::MouseButtonPress: {
         auto *me = static_cast<QMouseEvent *>(event);
-        if (me->button() == Qt::RightButton && hitTestPixelPos(me->pos()) != DragNone) {
-            showRoiContextMenu(me->globalPos());
+        if (me->button() == Qt::RightButton) {
+            const bool inside = (hitTestPixelPos(me->pos()) != DragNone);
+            showRoiContextMenu(me->globalPos(), inside);
             me->accept();
             return true;
         }
         if (me->button() == Qt::LeftButton) {
             const DragMode hit = hitTestPixelPos(me->pos());
-            if (hit != DragNone) {
-                d_drag_mode = hit;
-                d_drag_start_pos = me->pos();
-                d_drag_start_roi = d_roi_rect.normalized();
-                plot->canvas()->setFocus();
-                me->accept();
-                return true;
-            }
-            if ((me->modifiers() & Qt::ShiftModifier) || d_mode == MaskRegion
-                || d_mode == UnmaskRegion || d_mode == Cluster) {
+            const bool isRubberMode = (d_mode == MaskRegion || d_mode == UnmaskRegion
+                                       || d_mode == Cluster);
+            // C4-#11: in Mask/Unmask/Cluster mode, dragging inside the ROI starts a new
+            // rubber-band selection unless Alt is held to move the box or a handle is grabbed.
+            const bool forceRubberBand = (me->modifiers() & Qt::ShiftModifier)
+                    || (isRubberMode && (hit == DragNone || hit == DragMove)
+                        && !(me->modifiers() & Qt::AltModifier));
+            if (forceRubberBand) {
                 d_drag_mode = DragRubberBand;
                 d_drag_start_pos = me->pos();
                 const double x0 = plot->invTransform(xAxis, me->pos().x());
                 const double y0 = plot->invTransform(yAxis, me->pos().y());
                 d_drag_start_roi = QRectF(x0, y0, 0.0, 0.0);
+                plot->canvas()->setFocus();
+                me->accept();
+                return true;
+            }
+            if (hit != DragNone) {
+                d_drag_mode = hit;
+                d_drag_start_pos = me->pos();
+                d_drag_start_roi = d_roi_rect.normalized();
                 plot->canvas()->setFocus();
                 me->accept();
                 return true;
@@ -3753,11 +4099,12 @@ bool RoiGadgetTool::eventFilter(QObject *obj, QEvent *event)
 // VerticalCursorOverlayItem — Custom QwtPlotItem per synced Graph layer
 // ============================================================================
 
-class VerticalCursorOverlayItem : public QwtPlotItem
+class VerticalCursorOverlayItem : public QObject, public QwtPlotItem
 {
 public:
     VerticalCursorOverlayItem(VerticalCursorTool *owner, Graph *layerGraph)
-        : QwtPlotItem(QwtText("OriginVerticalCursorOverlay")),
+        : QObject(nullptr),
+          QwtPlotItem(QwtText("OriginVerticalCursorOverlay")),
           d_owner(owner),
           d_layer_graph(layerGraph)
     {
@@ -3770,7 +4117,7 @@ public:
     ~VerticalCursorOverlayItem() override
     {
         if (d_owner)
-            d_owner->d_overlay_items.removeAll(this);
+            d_owner->d_overlay_items.removeAll(QPointer<VerticalCursorOverlayItem>(this));
     }
 
     int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 42; }
@@ -3886,12 +4233,17 @@ VerticalCursorTool::VerticalCursorTool(ApplicationWindow *app, Graph *graph, boo
     }
 
     rebuildOverlaysAndFilters();
+    setupFloatingBar();
     updateReadoutAndReplot();
 }
 
 VerticalCursorTool::~VerticalCursorTool()
 {
-    detachAllOverlaysAndFilters();
+    if (d_floating_bar) {
+        delete d_floating_bar.data();
+        d_floating_bar.clear();
+    }
+    detachAllOverlaysAndFilters(false);
 }
 
 MultiLayer *VerticalCursorTool::findParentMultiLayer() const
@@ -3927,8 +4279,9 @@ QList<Graph *> VerticalCursorTool::targetGraphs() const
     return list;
 }
 
-void VerticalCursorTool::detachAllOverlaysAndFilters()
+void VerticalCursorTool::detachAllOverlaysAndFilters(bool allowSyncReplot)
 {
+    QList<QPointer<Graph>> graphsToReplot = d_filtered_graphs;
     for (const QPointer<Graph> &gPtr : d_filtered_graphs) {
         if (gPtr && gPtr->plotWidget() && gPtr->plotWidget()->canvas()) {
             gPtr->plotWidget()->canvas()->removeEventFilter(this);
@@ -3937,15 +4290,73 @@ void VerticalCursorTool::detachAllOverlaysAndFilters()
     }
     d_filtered_graphs.clear();
 
-    const QList<VerticalCursorOverlayItem *> itemsCopy = d_overlay_items;
+    const QList<QPointer<VerticalCursorOverlayItem>> itemsCopy = d_overlay_items;
     d_overlay_items.clear();
-    for (VerticalCursorOverlayItem *item : itemsCopy) {
+    for (const QPointer<VerticalCursorOverlayItem> &itemPtr : itemsCopy) {
+        VerticalCursorOverlayItem *item = itemPtr.data();
         if (!item)
             continue;
+        if (item->d_layer_graph && !graphsToReplot.contains(item->d_layer_graph))
+            graphsToReplot.append(item->d_layer_graph);
         item->d_owner = nullptr;
         item->detach();
         delete item;
     }
+
+    // C4-#10: repaint every surviving layer that held a cursor overlay so no ghost cursor remains,
+    // without calling replot() synchronously inside a destructor (which may run inside ~Graph()).
+    for (const QPointer<Graph> &gPtr : graphsToReplot) {
+        if (!gPtr || !gPtr->plotWidget())
+            continue;
+        if (allowSyncReplot) {
+            gPtr->replot();
+        } else {
+            QTimer::singleShot(0, gPtr.data(), [gPtr]() {
+                if (gPtr && gPtr->plotWidget())
+                    gPtr->replot();
+            });
+        }
+    }
+}
+
+void VerticalCursorTool::setupFloatingBar()
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()
+        || !d_graph_guard->plotWidget()->canvas())
+        return;
+    QWidget *canvas = d_graph_guard->plotWidget()->canvas();
+    auto *bar = new GadgetFloatingBar(d_graph_guard, canvas);
+    d_floating_bar = bar;
+
+    bar->btnOption->setText(QCoreApplication::translate("OriginGadgets", "Sync Layers"));
+    bar->btnOption->setCheckable(true);
+    bar->btnOption->setChecked(d_sync_layers);
+    connect(bar->btnOption, &QPushButton::toggled, this,
+            [this](bool on) { setSyncAllLayers(on); });
+
+    bar->btnCommit->setVisible(false);
+
+    connect(bar->btnTable, &QPushButton::clicked, this, [this]() { createReadoutTable(); });
+    QPointer<Graph> gPtr = d_graph_guard;
+    connect(bar->btnClose, &QPushButton::clicked, this, [gPtr]() {
+        if (gPtr)
+            QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+    });
+
+    updateFloatingBar();
+    bar->show();
+}
+
+void VerticalCursorTool::updateFloatingBar()
+{
+    auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data());
+    if (!bar)
+        return;
+    {
+        QSignalBlocker blocker(bar->btnOption);
+        bar->btnOption->setChecked(d_sync_layers);
+    }
+    bar->reposition();
 }
 
 void VerticalCursorTool::rebuildOverlaysAndFilters()
@@ -4093,6 +4504,7 @@ void VerticalCursorTool::setSyncAllLayers(bool sync)
         return;
     d_sync_layers = sync;
     rebuildOverlaysAndFilters();
+    updateFloatingBar();
     updateReadoutAndReplot();
 }
 
@@ -4198,6 +4610,14 @@ bool VerticalCursorTool::eventFilter(QObject *obj, QEvent *event)
     primaryAxesForGraph(eventGraph, xAxis, yAxis);
 
     switch (event->type()) {
+    case QEvent::Resize:
+    case QEvent::Show:
+        if (eventGraph == d_graph_guard.data()) {
+            if (auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data()))
+                bar->reposition();
+        }
+        break;
+
     case QEvent::ContextMenu: {
         auto *ce = static_cast<QContextMenuEvent *>(event);
         showCursorContextMenu(ce->globalPos());
@@ -4448,12 +4868,17 @@ DeltaCursorTool::DeltaCursorTool(ApplicationWindow *app, Graph *graph, SnapMode 
     }
     initDefaultPositions();
     recalculate();
+    setupFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
 
 DeltaCursorTool::~DeltaCursorTool()
 {
+    if (d_floating_bar) {
+        delete d_floating_bar.data();
+        d_floating_bar.clear();
+    }
     if (d_graph_guard && d_graph_guard->plotWidget()) {
         if (QwtPlotCanvas *canvas = d_graph_guard->plotWidget()->canvas()) {
             canvas->removeEventFilter(this);
@@ -4637,8 +5062,63 @@ void DeltaCursorTool::setSnapMode(SnapMode mode)
     d_snap_idx1 = -1;
     d_snap_idx2 = -1;
     recalculate();
+    updateFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
+}
+
+void DeltaCursorTool::setupFloatingBar()
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()
+        || !d_graph_guard->plotWidget()->canvas())
+        return;
+    QWidget *canvas = d_graph_guard->plotWidget()->canvas();
+    auto *bar = new GadgetFloatingBar(d_graph_guard, canvas);
+    d_floating_bar = bar;
+
+    connect(bar->btnOption, &QPushButton::clicked, this, [this, bar]() {
+        QMenu m(bar);
+        QAction *a1 = m.addAction(tr("Interpolate on Curve"));
+        a1->setCheckable(true);
+        a1->setChecked(d_snap_mode == SnapInterpolateCurve);
+        connect(a1, &QAction::triggered, this, [this]() { setSnapMode(SnapInterpolateCurve); });
+        QAction *a2 = m.addAction(tr("Snap to Nearest Data Point"));
+        a2->setCheckable(true);
+        a2->setChecked(d_snap_mode == SnapNearestPoint);
+        connect(a2, &QAction::triggered, this, [this]() { setSnapMode(SnapNearestPoint); });
+        QAction *a3 = m.addAction(tr("Free Screen Crosshair"));
+        a3->setCheckable(true);
+        a3->setChecked(d_snap_mode == FreeScreenCrosshair);
+        connect(a3, &QAction::triggered, this, [this]() { setSnapMode(FreeScreenCrosshair); });
+        m.exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
+    });
+
+    bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Stamp"));
+    connect(bar->btnCommit, &QPushButton::clicked, this, [this]() { stampCalloutOnGraph(); });
+    connect(bar->btnTable, &QPushButton::clicked, this, [this]() { createReadoutTable(); });
+    QPointer<Graph> gPtr = d_graph_guard;
+    connect(bar->btnClose, &QPushButton::clicked, this, [gPtr]() {
+        if (gPtr)
+            QTimer::singleShot(0, gPtr, [gPtr]() { RoiGadgetTool::clearGadget(gPtr); });
+    });
+
+    updateFloatingBar();
+    bar->show();
+}
+
+void DeltaCursorTool::updateFloatingBar()
+{
+    auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data());
+    if (!bar)
+        return;
+    QString lbl;
+    switch (d_snap_mode) {
+    case SnapInterpolateCurve: lbl = tr("Interpolate"); break;
+    case SnapNearestPoint: lbl = tr("Nearest Pt"); break;
+    case FreeScreenCrosshair: lbl = tr("Free"); break;
+    }
+    bar->btnOption->setText(lbl + QStringLiteral(" \u25BE"));
+    bar->reposition();
 }
 
 void DeltaCursorTool::setTargetCurve(const QString &curveTitle)
@@ -5101,6 +5581,12 @@ bool DeltaCursorTool::eventFilter(QObject *obj, QEvent *event)
     const int yAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
 
     switch (event->type()) {
+    case QEvent::Resize:
+    case QEvent::Show:
+        if (auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data()))
+            bar->reposition();
+        break;
+
     case QEvent::ShortcutOverride: {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab || ke->key() == Qt::Key_Left
@@ -5651,12 +6137,17 @@ ImageProfileGadgetTool::ImageProfileGadgetTool(Graph *graph, ApplicationWindow *
     }
     initDefaultPosition();
     recalculate();
+    setupFloatingBar();
     if (d_graph_guard)
         d_graph_guard->replot();
 }
 
 ImageProfileGadgetTool::~ImageProfileGadgetTool()
 {
+    if (d_floating_bar) {
+        delete d_floating_bar.data();
+        d_floating_bar.clear();
+    }
     if (d_graph_guard && d_graph_guard->plotWidget()) {
         if (QwtPlotCanvas *canvas = d_graph_guard->plotWidget()->canvas()) {
             canvas->removeEventFilter(this);
@@ -6149,6 +6640,37 @@ void ImageProfileGadgetTool::showContextMenu(const QPoint &globalPos)
     menu.exec(globalPos);
 }
 
+void ImageProfileGadgetTool::setupFloatingBar()
+{
+    if (!d_graph_guard || !d_graph_guard->plotWidget()
+        || !d_graph_guard->plotWidget()->canvas())
+        return;
+    QWidget *canvas = d_graph_guard->plotWidget()->canvas();
+    auto *bar = new GadgetFloatingBar(d_graph_guard, canvas);
+    d_floating_bar = bar;
+
+    bar->btnOption->setVisible(false);
+    bar->btnCommit->setText(QCoreApplication::translate("OriginGadgets", "Stamp"));
+    connect(bar->btnCommit, &QPushButton::clicked, this, [this]() { stampCalloutOnGraph(); });
+    connect(bar->btnTable, &QPushButton::clicked, this,
+            [this]() { extractProfilesToTableAndGraph(true); });
+    QPointer<Graph> gPtr = d_graph_guard;
+    QPointer<ImageProfileGadgetTool> selfPtr = this;
+    connect(bar->btnClose, &QPushButton::clicked, this, [gPtr, selfPtr]() {
+        if (!selfPtr)
+            return;
+        QTimer::singleShot(0, selfPtr.data(), [gPtr, selfPtr]() {
+            if (gPtr && selfPtr && gPtr->activeTool() == selfPtr.data())
+                RoiGadgetTool::clearGadget(gPtr);
+            else if (selfPtr)
+                selfPtr->deleteLater();
+        });
+    });
+
+    bar->reposition();
+    bar->show();
+}
+
 bool ImageProfileGadgetTool::eventFilter(QObject *obj, QEvent *event)
 {
     if (!d_graph_guard || !d_graph_guard->plotWidget()
@@ -6160,6 +6682,12 @@ bool ImageProfileGadgetTool::eventFilter(QObject *obj, QEvent *event)
     const int yAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
 
     switch (event->type()) {
+    case QEvent::Resize:
+    case QEvent::Show:
+        if (auto *bar = static_cast<GadgetFloatingBar *>(d_floating_bar.data()))
+            bar->reposition();
+        break;
+
     case QEvent::ShortcutOverride: {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up

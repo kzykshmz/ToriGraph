@@ -13,16 +13,28 @@
 #include "UxNavigation.h"
 
 #include "ApplicationWindow.h"
+#include "AxesDialog.h"
+#include "CanvasInlineTextEditor.h"
+#include "CurveMathTools.h"
 #include "Graph.h"
+#include "GraphInspectorDock.h"
 #include "I18nJapanese.h"
 #include "Legend.h"
 #include "ModernRibbonAndHud.h"
 #include "MultiLayer.h"
+#include "Plot.h"
 #include "PlotToolInterface.h"
 #include "Table.h"
 #include "IconLoader.h"
 #include "core/column/Column.h"
 #include "future/table/TableModel.h"
+
+#include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
+#include <qwt_scale_widget.h>
+#include <qwt_text_label.h>
+
+#include <cmath>
 
 #include <QAbstractButton>
 #include <QAbstractItemModel>
@@ -105,9 +117,15 @@ void registerUxTranslations()
         reg("The worksheet \"%1\" is empty, so no graph was created.",
             "ワークシート「%1」が空のため、グラフは作りませんでした。");
         reg("Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop a CSV file onto the window. Then press the plot button again.",
-            "Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。");
+            "Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、Excel (.xlsx) / CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。");
+        reg("Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop an Excel (.xlsx) or CSV file onto the window. Then press the plot button again.",
+            "Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、Excel (.xlsx) / CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。");
+        reg("No numeric data in Y column of \"%1\".",
+            "「%1」の Y 列に数値データがありません。");
+        reg("Enter numeric values in column B(Y), or paste both X and Y columns from Excel (Ctrl+V).",
+            "B(Y) 列に数値を入力するか、Excel から X と Y の 2 列を貼り付けてください (Ctrl+V)。");
         reg("Graph export works on a graph window. Click the graph you want to export first.",
-            "画像の書き出しはグラフのウィンドウが対象です。先に書き出したいグラフをクリックしてください。");
+            "画像のエクスポートはグラフのウィンドウが対象です。先にエクスポートしたいグラフをクリックしてください。");
         reg("Copying for PowerPoint works on a graph window. Click the graph you want to copy first.",
             "PowerPoint 用のコピーはグラフのウィンドウが対象です。先にコピーしたいグラフをクリックしてください。");
         // B6 ribbon plot buttons
@@ -119,10 +137,20 @@ void registerUxTranslations()
             "作図ボタンはワークシートの列からグラフを作ります。先にワークシートをクリックしてください(Excel から貼り付けても始められます)。");
         // B4
         reg("Paste from Excel here (Ctrl+V)\nor drop a CSV file onto this window",
-            "ここへ Excel から貼り付け(Ctrl+V)\nまたは CSV ファイルをこのウィンドウにドロップ");
+            "ここへ Excel から貼り付け (Ctrl+V)\nまたは Excel (.xlsx) / CSV ファイルをこのウィンドウにドロップ");
+        reg("Paste from Excel here (Ctrl+V)\nor drop an Excel (.xlsx) or CSV file onto this window",
+            "ここへ Excel から貼り付け (Ctrl+V)\nまたは Excel (.xlsx) / CSV ファイルをこのウィンドウにドロップ");
+        reg("Insert Simple X-Y Sample", "シンプルな X-Y サンプルを挿入");
+        reg("Sample X-Y Data", "X-Y サンプル");
+        reg("Load a simple 2-series X-Y sample dataset and plot it right away",
+            "シンプルな 2 系列 X-Y サンプルを読み込み、すぐにグラフを作成します");
+        reg("Open CSV / Excel...", "CSV / Excel を開く...");
+        reg("Open a CSV, TSV, or Excel (.xlsx) data file",
+            "CSV・TSV・Excel (.xlsx) データファイルを開きます");
         reg("Plot this data", "このデータをグラフにする");
+        reg("Plot Data", "グラフ作成");
         reg("Line + symbol graph of all Y columns (use the Plot tab for other styles)",
-            "すべての Y 列を折れ線+シンボルで描きます(ほかの形はプロットタブから)");
+            "すべての Y 列を折れ線+シンボルで描きます (ほかの形は「作図」タブから)");
         reg("Dismiss", "閉じる");
         // C3 tool mode
         reg("Mode: %1 (Esc to cancel)", "モード: %1(Esc で解除)");
@@ -151,13 +179,30 @@ void registerUxTranslations()
         // C7 context menu
         reg("Properties of the Selection...", "選択した要素のプロパティ...");
         reg("Delete Selection", "選択した要素を削除");
+        reg("Edit Title", "タイトルを編集");
+        reg("Title Properties...", "タイトルのプロパティ...");
+        reg("Delete Title", "タイトルを削除");
+        reg("Edit Reference Line...", "基準線を編集...");
+        reg("Delete Reference Line", "基準線を削除");
+        reg("Edit Axis Title", "軸タイトルを編集");
+        reg("Edit Axis...", "軸を編集...");
+        reg("Edit Text", "テキストを編集");
+        reg("Rescale This Axis", "この軸を自動スケール");
+        reg("Add Reference Line...", "基準線を追加...");
+        reg("Lab Slide (18pt)", "研究室スライド (18pt)");
+        reg("ISIJ 85mm", "ISIJ 85mm");
+        reg("Journal 2-Column (175mm)", "論文 2 段幅 (175mm)");
         reg("&Axes...", "軸(&A)...");
         reg("Add &Text", "テキストの追加(&T)");
         reg("Anal&yze", "解析(&Y)");
         reg("St&yle", "体裁(&Y)");
         reg("Layer P&roperties...", "レイヤーのプロパティ(&R)...");
-        reg("E&xport Graph...", "画像を書き出し(&X)...");
-        reg("Export Graph...", "画像を書き出し...");
+        reg("E&xport Graph...", "画像をエクスポート(&X)...");
+        reg("Export Graph...", "画像をエクスポート...");
+        reg("E&xport Image...", "画像をエクスポート(&X)...");
+        reg("Export Image...", "画像をエクスポート...");
+        reg("Export Image / PDF...", "画像 / PDF エクスポート...");
+        reg("Export Active Layer...", "アクティブレイヤーをエクスポート...");
         reg("&Print...", "印刷(&P)...");
         reg("Print...", "印刷...");
         // C6 menus
@@ -218,7 +263,6 @@ void registerUxTranslations()
         reg("Y Axis (Right)", "Y 軸(右)");
         // C14 ribbon tabs
         reg("Home", "ホーム");
-        reg("Plot", "作図");
         reg("Materials", "材料解析");
         reg("Analysis", "解析");
         reg("Format & Export", "書式・出力");
@@ -675,6 +719,18 @@ void installDialogScreenFit()
 // ===========================================================================
 namespace {
 
+bool columnHasFiniteNumeric(Column *col)
+{
+    if (!col || col->columnMode() != SciDAVis::ColumnMode::Numeric)
+        return false;
+    const int rows = col->rowCount();
+    for (int r = 0; r < rows; ++r) {
+        if (!col->isInvalid(r) && std::isfinite(col->valueAt(r)))
+            return true;
+    }
+    return false;
+}
+
 bool tableHasAnyData(Table *t)
 {
     if (!t)
@@ -696,6 +752,41 @@ bool tableHasAnyData(Table *t)
     return false;
 }
 
+// A1-4: Verify that at least one plottable Y column (or single-column target for
+// Histogram/Pie/Box) contains at least one finite numeric value so a lone X cell never
+// creates a blank graph or shows "Plot this data" prematurely.
+bool tableHasPlottableYData(Table *t, int curveType = Graph::LineSymbols)
+{
+    if (!t)
+        return false;
+    auto anyNamedColumnHasNumeric = [t](const QStringList &colNames) -> bool {
+        for (const QString &name : colNames) {
+            const int idx = t->colIndex(name);
+            if (idx >= 0 && columnHasFiniteNumeric(t->column(idx)))
+                return true;
+        }
+        return false;
+    };
+    const bool singleColPlot = (curveType == Graph::Histogram || curveType == Graph::Pie
+                                || curveType == Graph::Box);
+    if (singleColPlot) {
+        QStringList cols = t->selectedColumns();
+        if (cols.isEmpty())
+            cols = t->YColumns();
+        if (!cols.isEmpty())
+            return anyNamedColumnHasNumeric(cols);
+        return t->numCols() > 0 && columnHasFiniteNumeric(t->column(t->numCols() - 1));
+    }
+    const QStringList selY = t->selectedYColumns();
+    if (!selY.isEmpty())
+        return anyNamedColumnHasNumeric(selY);
+    for (int c = 0; c < t->columnCount(); ++c) {
+        if (t->colPlotDesignation(c) == SciDAVis::Y && columnHasFiniteNumeric(t->column(c)))
+            return true;
+    }
+    return false;
+}
+
 QTableView *mainTableView(Table *t)
 {
     if (!t)
@@ -712,31 +803,121 @@ class EmptyTableHint : public QObject
 {
 public:
     EmptyTableHint(ApplicationWindow *app, Table *table, QTableView *view)
-        : QObject(view), d_app(app), d_table(table), d_view(view)
+        : QObject(view),
+          d_app(app),
+          d_table(table),
+          d_view(view),
+          d_viewport(view ? view->viewport() : nullptr)
     {
         setObjectName(QStringLiteral("ToriEmptyTableHint"));
-        d_label = new QLabel(view->viewport());
+        QWidget *vp = d_viewport.data();
+        if (!vp)
+            return;
+        d_label = new QLabel(vp);
         d_label->setObjectName(QStringLiteral("ToriEmptyTableHintLabel"));
         d_label->setAttribute(Qt::WA_TransparentForMouseEvents);
         d_label->setAlignment(Qt::AlignCenter);
         d_label->setWordWrap(true);
         d_label->setStyleSheet(QStringLiteral(
-                "QLabel#ToriEmptyTableHintLabel { color: rgba(71, 85, 105, 150); font-size: 13pt;"
+                "QLabel#ToriEmptyTableHintLabel { color: rgba(71, 85, 105, 165); font-size: 13pt;"
                 " background: transparent; }"));
-        d_label->setText(ApplicationWindow::tr(
-                "Paste from Excel here (Ctrl+V)\nor drop a CSV file onto this window"));
-        view->viewport()->installEventFilter(this);
+
+        // Separate non-transparent container for quick-action buttons below the watermark label.
+        d_actions_box = new QWidget(vp);
+        d_actions_box->setObjectName(QStringLiteral("ToriEmptyTableActions"));
+        d_actions_box->setStyleSheet(QStringLiteral(
+                "QWidget#ToriEmptyTableActions { background: transparent; }"
+                "QPushButton {"
+                "  background: #FFFFFF; color: #1E293B; border: 1px solid #CBD5E1;"
+                "  border-radius: 6px; padding: 4px 10px; font-size: 9.5pt; font-weight: 600;"
+                "}"
+                "QPushButton:hover {"
+                "  background: #EFF6FF; color: #0F6CBD; border-color: #2563EB;"
+                "}"));
+        d_act_layout = new QBoxLayout(QBoxLayout::LeftToRight, d_actions_box);
+        d_act_layout->setContentsMargins(0, 0, 0, 0);
+        d_act_layout->setSpacing(6);
+
+        d_sample_btn = new QPushButton(d_actions_box);
+        d_sample_btn->setObjectName(QStringLiteral("ToriEmptyTableSampleBtn"));
+        d_sample_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 15));
+        d_sample_btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+        d_sample_btn->setCursor(Qt::PointingHandCursor);
+
+        d_open_btn = new QPushButton(d_actions_box);
+        d_open_btn->setObjectName(QStringLiteral("ToriEmptyTableOpenBtn"));
+        d_open_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("file-open"), 15));
+        d_open_btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+        d_open_btn->setCursor(Qt::PointingHandCursor);
+
+        d_act_layout->addWidget(d_sample_btn);
+        d_act_layout->addWidget(d_open_btn);
+
+        QPointer<ApplicationWindow> safeApp(app);
+        connect(d_sample_btn, &QPushButton::clicked, this, [safeApp]() {
+            if (safeApp)
+                CurveMathTools::loadSampleDataset(safeApp.data(),
+                                                  QStringLiteral("intro_simple_xy"), true);
+        });
+        connect(d_open_btn, &QPushButton::clicked, this, [safeApp]() {
+            if (safeApp)
+                safeApp->open();
+        });
+
+        vp->installEventFilter(this);
+        if (d_app)
+            d_app->installEventFilter(this);
         if (QAbstractItemModel *m = view->model()) {
             connect(m, &QAbstractItemModel::dataChanged, this, &EmptyTableHint::recheck);
             connect(m, &QAbstractItemModel::modelReset, this, &EmptyTableHint::recheck);
             connect(m, &QAbstractItemModel::rowsInserted, this, &EmptyTableHint::recheck);
             connect(m, &QAbstractItemModel::columnsInserted, this, &EmptyTableHint::recheck);
         }
-        reposition();
+        retranslateUi();
         d_label->show();
+        d_actions_box->show();
+        reposition();
+    }
+
+    ~EmptyTableHint() override
+    {
+        if (d_viewport)
+            d_viewport->removeEventFilter(this);
+        if (d_app)
+            d_app->removeEventFilter(this);
+        if (d_label) {
+            d_label->hide();
+            d_label->deleteLater();
+        }
+        if (d_actions_box) {
+            d_actions_box->hide();
+            d_actions_box->deleteLater();
+        }
     }
 
     QLabel *label() const { return d_label; }
+
+    void retranslateUi()
+    {
+        if (d_label) {
+            d_label->setText(ApplicationWindow::tr(
+                    "Paste from Excel here (Ctrl+V)\nor drop an Excel (.xlsx) or CSV file onto "
+                    "this window"));
+        }
+        if (d_sample_btn) {
+            d_sample_btn->setText(ApplicationWindow::tr("Sample X-Y Data"));
+            d_sample_btn->setToolTip(ApplicationWindow::tr(
+                    "Load a simple 2-series X-Y sample dataset and plot it right away"));
+        }
+        if (d_open_btn) {
+            d_open_btn->setText(ApplicationWindow::tr("Open CSV / Excel..."));
+            d_open_btn->setToolTip(
+                    ApplicationWindow::tr("Open a CSV, TSV, or Excel (.xlsx) data file"));
+        }
+        if (d_actions_box)
+            d_actions_box->adjustSize();
+        reposition();
+    }
 
     void recheck()
     {
@@ -750,10 +931,23 @@ public:
             d_pending = false;
             if (d_done || !d_table)
                 return;
-            if (tableHasAnyData(d_table)) {
-                d_done = true;
+            if (!d_hint_hidden && tableHasAnyData(d_table)) {
+                d_hint_hidden = true;
                 if (d_label)
                     d_label->hide();
+                if (d_actions_box)
+                    d_actions_box->hide();
+            }
+            if (tableHasPlottableYData(d_table)) {
+                d_done = true;
+                if (d_label) {
+                    d_label->hide();
+                    d_label->deleteLater();
+                }
+                if (d_actions_box) {
+                    d_actions_box->hide();
+                    d_actions_box->deleteLater();
+                }
                 if (d_app && d_table)
                     d_app->offerPlotAfterImport(d_table);
                 deleteLater();
@@ -764,26 +958,69 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (d_view && watched == d_view->viewport() && event->type() == QEvent::Resize)
-            reposition();
+        if (!event)
+            return QObject::eventFilter(watched, event);
+        const QEvent::Type et = event->type();
+        if (et == QEvent::LanguageChange) {
+            retranslateUi();
+        } else if (d_viewport && watched == d_viewport) {
+            if (et == QEvent::Show)
+                retranslateUi();
+            else if (et == QEvent::Resize)
+                reposition();
+        }
         return QObject::eventFilter(watched, event);
     }
 
 private:
     void reposition()
     {
-        if (!d_view || !d_label)
+        if (!d_viewport || !d_label || d_hint_hidden)
             return;
-        const QRect r = d_view->viewport()->rect();
-        const int w = qMin(r.width() - 24, 520);
-        const int h = 90;
-        d_label->setGeometry(r.center().x() - w / 2, qMax(8, r.center().y() - h / 2 - 20), w, h);
+        const QRect r = d_viewport->rect();
+        if (r.width() <= 0 || r.height() <= 0)
+            return;
+        const int w = qMax(120, qMin(r.width() - 20, 540));
+        const int h = qMax(48, d_label->heightForWidth(w) + 6);
+        QSize actSz;
+        if (d_actions_box && d_act_layout) {
+            const int maxActW = qMax(80, r.width() - 20);
+            d_act_layout->setDirection(QBoxLayout::LeftToRight);
+            d_actions_box->adjustSize();
+            actSz = d_actions_box->sizeHint();
+            if (actSz.width() > maxActW) {
+                d_act_layout->setDirection(QBoxLayout::TopToBottom);
+                d_actions_box->adjustSize();
+                actSz = d_actions_box->sizeHint();
+            }
+        }
+        const int gap = 10;
+        const int totalH = d_actions_box ? (h + gap + actSz.height()) : h;
+        const int labelTop = qMax(8, r.center().y() - totalH / 2);
+        d_label->setGeometry(r.center().x() - w / 2, labelTop, w, h);
+        if (d_actions_box) {
+            const int actW = qMin(qMax(40, r.width() - 16), actSz.width());
+            const int actH = actSz.height();
+            const int actTop = labelTop + h + gap;
+            const bool canFit = (r.width() >= 140 && actTop + actH <= r.bottom() - 4);
+            d_actions_box->setVisible(canFit);
+            if (canFit) {
+                d_actions_box->setGeometry(r.center().x() - actW / 2, actTop, actW, actH);
+                d_actions_box->raise();
+            }
+        }
     }
 
     QPointer<ApplicationWindow> d_app;
     QPointer<Table> d_table;
     QPointer<QTableView> d_view;
+    QPointer<QWidget> d_viewport;
     QPointer<QLabel> d_label;
+    QPointer<QWidget> d_actions_box;
+    QBoxLayout *d_act_layout = nullptr;
+    QPointer<QPushButton> d_sample_btn;
+    QPointer<QPushButton> d_open_btn;
+    bool d_hint_hidden = false;
     bool d_done = false;
     bool d_pending = false;
 };
@@ -791,11 +1028,45 @@ private:
 class PlotThisDataBarController : public QObject
 {
 public:
-    PlotThisDataBarController(QWidget *viewport, QFrame *bar)
-        : QObject(bar), d_viewport(viewport), d_bar(bar)
+    PlotThisDataBarController(ApplicationWindow *app, QWidget *viewport, QFrame *bar,
+                              QPushButton *plotBtn, QToolButton *closeBtn)
+        : QObject(bar),
+          d_app(app),
+          d_viewport(viewport),
+          d_bar(bar),
+          d_plot_btn(plotBtn),
+          d_close_btn(closeBtn)
     {
         if (d_viewport)
             d_viewport->installEventFilter(this);
+        if (d_bar)
+            d_bar->installEventFilter(this);
+        if (d_app)
+            d_app->installEventFilter(this);
+        retranslateUi();
+    }
+
+    ~PlotThisDataBarController() override
+    {
+        if (d_viewport)
+            d_viewport->removeEventFilter(this);
+        if (d_bar)
+            d_bar->removeEventFilter(this);
+        if (d_app)
+            d_app->removeEventFilter(this);
+    }
+
+    void retranslateUi()
+    {
+        if (d_plot_btn) {
+            d_plot_btn->setText(ApplicationWindow::tr("Plot this data"));
+            d_plot_btn->setToolTip(ApplicationWindow::tr(
+                    "Line + symbol graph of all Y columns (use the Plot tab for other styles)"));
+        }
+        if (d_close_btn)
+            d_close_btn->setToolTip(ApplicationWindow::tr("Dismiss"));
+        if (d_bar)
+            d_bar->adjustSize();
         reposition();
     }
 
@@ -806,9 +1077,17 @@ public:
         const QRect vr = d_viewport->rect();
         if (vr.width() <= 0 || vr.height() <= 0)
             return;
-        const int margin = 10;
-        const int availW = qMax(80, vr.width() - 2 * margin);
-        const QSize hint = d_bar->sizeHint();
+        const int margin = 8;
+        const int availW = qMax(64, vr.width() - 2 * margin);
+        if (d_plot_btn)
+            d_plot_btn->setText(ApplicationWindow::tr("Plot this data"));
+        d_bar->adjustSize();
+        QSize hint = d_bar->sizeHint();
+        if (hint.width() > availW && d_plot_btn) {
+            d_plot_btn->setText(ApplicationWindow::tr("Plot Data"));
+            d_bar->adjustSize();
+            hint = d_bar->sizeHint();
+        }
         const int w = qMin(hint.width(), availW);
         const int h = qMin(qMax(28, hint.height()), qMax(28, vr.height() - 2 * margin));
         const int x = qMax(4, vr.right() - w - margin + 1);
@@ -820,17 +1099,27 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == d_viewport
-            && (event->type() == QEvent::Resize || event->type() == QEvent::Show
-                || event->type() == QEvent::LayoutRequest)) {
-            reposition();
+        if (!event)
+            return QObject::eventFilter(watched, event);
+        const QEvent::Type et = event->type();
+        if (et == QEvent::LanguageChange) {
+            retranslateUi();
+        } else if (watched == d_viewport
+                   && (et == QEvent::Resize || et == QEvent::Show || et == QEvent::LayoutRequest)) {
+            if (et == QEvent::Show)
+                retranslateUi();
+            else
+                reposition();
         }
         return QObject::eventFilter(watched, event);
     }
 
 private:
+    QPointer<ApplicationWindow> d_app;
     QPointer<QWidget> d_viewport;
     QPointer<QFrame> d_bar;
+    QPointer<QPushButton> d_plot_btn;
+    QPointer<QToolButton> d_close_btn;
 };
 
 } // namespace
@@ -977,7 +1266,6 @@ void ApplicationWindow::cancelCurrentToolMode()
 
 QString ApplicationWindow::plotBlockerForTable(Table *table, int curveType) const
 {
-    Q_UNUSED(curveType);
     if (!table)
         return tr("The plot buttons make a graph from worksheet columns. Click a worksheet (or "
                   "paste data from Excel) first.");
@@ -985,7 +1273,14 @@ QString ApplicationWindow::plotBlockerForTable(Table *table, int curveType) cons
         return tr("The worksheet \"%1\" is empty, so no graph was created.").arg(table->name())
                 + QStringLiteral("<p>")
                 + tr("Copy a range in Excel and paste it into the worksheet with Ctrl+V, or drop "
-                     "a CSV file onto the window. Then press the plot button again.");
+                     "an Excel (.xlsx) or CSV file onto the window. Then press the plot button "
+                     "again.");
+    }
+    if (!tableHasPlottableYData(table, curveType)) {
+        return tr("No numeric data in Y column of \"%1\".").arg(table->name())
+                + QStringLiteral("<p>")
+                + tr("Enter numeric values in column B(Y), or paste both X and Y columns from "
+                     "Excel (Ctrl+V).");
     }
     return QString();
 }
@@ -1072,8 +1367,10 @@ void ApplicationWindow::applyAdvancedFeatureVisibility()
 {
     const bool show = d_show_advanced_domain_features;
     for (const QString &name : advancedDomainActionNames()) {
-        if (QAction *a = findChild<QAction *>(name))
+        if (QAction *a = findChild<QAction *>(name)) {
+            a->setProperty("_tg_advanced_domain_action", true);
             a->setVisible(show);
+        }
     }
     if (QAction *toggle = findChild<QAction *>(QStringLiteral("actionShowAdvancedDomainFeatures"))) {
         if (toggle->isChecked() != show) {
@@ -1228,7 +1525,7 @@ void ApplicationWindow::attachEmptyTableHint(Table *table)
 
 void ApplicationWindow::offerPlotAfterImport(Table *table)
 {
-    if (!table || d_headless_mode || m_batch || !tableHasAnyData(table))
+    if (!table || d_headless_mode || m_batch || !tableHasPlottableYData(table))
         return;
     if (table->findChild<QFrame *>(QStringLiteral("ToriPlotThisDataBar")))
         return;
@@ -1241,7 +1538,7 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
     bar->setStyleSheet(QStringLiteral(
             "QFrame#ToriPlotThisDataBar { background: #EFF6FF; border: 1px solid #93C5FD;"
             " border-radius: 6px; }"
-            "QPushButton { padding: 3px 12px; }"));
+            "QPushButton { padding: 3px 10px; }"));
     QHBoxLayout *row = new QHBoxLayout(bar);
     row->setContentsMargins(8, 4, 4, 4);
     row->setSpacing(6);
@@ -1255,7 +1552,7 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
     row->addWidget(plotBtn);
     row->addWidget(close);
     bar->adjustSize();
-    auto *posCtrl = new PlotThisDataBarController(view->viewport(), bar);
+    auto *posCtrl = new PlotThisDataBarController(this, view->viewport(), bar, plotBtn, close);
     bar->show();
     posCtrl->reposition();
 
@@ -1276,6 +1573,7 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
     if (!plot)
         return;
     Graph *ag = plot->activeGraph();
+    QPointer<MultiLayer> safeMl(plot);
 
     if (fromLayerButton) {
         cm.addAction(actionAddLayer);
@@ -1286,105 +1584,242 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
     if (ag && ag->isPiePlot()) {
         cm.addAction(tr("Re&move Pie Curve"), ag, SLOT(removePie()));
     } else if (ag) {
-        // 1. The selected element first: properties and delete.
+        QPointer<Graph> safeG(ag);
+
+        // 1. Selection-first top actions (PlotTitle, ReferenceLine, Axis, Curve, Legend/Annotation).
         const Graph::GraphSelection sel = ag->currentSelection();
-        const bool markerSel = ag->markerSelected();
-        const bool curveSel = (sel.kind == Graph::GraphSelection::Curve
-                               || sel.kind == Graph::GraphSelection::ErrorBars)
-                && sel.primaryId >= 0 && sel.primaryId < ag->curves();
+        const bool plotTitleSel =
+                (sel.kind == Graph::GraphSelection::PlotTitle) || ag->titleSelected();
+        const bool refLineSel = (sel.kind == Graph::GraphSelection::ReferenceLine
+                                 && sel.primaryId >= 0
+                                 && sel.primaryId < ag->referenceLines().size());
         const bool axisSel = (sel.kind == Graph::GraphSelection::Axis
                               || sel.kind == Graph::GraphSelection::AxisTitle)
-                && sel.primaryId >= 0;
-        if (curveSel || axisSel || markerSel) {
-            QPointer<Graph> safeG(ag);
-            QPointer<MultiLayer> safeMl(plot);
-            const int primary = sel.primaryId;
-            cm.addAction(tr("Properties of the Selection..."), this,
-                         [this, safeG, curveSel, axisSel, primary]() {
+                && sel.primaryId >= 0 && sel.primaryId < QwtPlot::axisCnt;
+        const bool curveSel = (sel.kind == Graph::GraphSelection::Curve
+                               || sel.kind == Graph::GraphSelection::ErrorBars
+                               || sel.kind == Graph::GraphSelection::Spectrogram)
+                && sel.primaryId >= 0 && sel.primaryId < ag->curves();
+        const bool markerSel = ag->markerSelected() && !plotTitleSel && !refLineSel;
+
+        if (plotTitleSel) {
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("text-label"), 16), tr("Edit Title"),
+                         this, [this, safeG]() {
                              if (!safeG)
                                  return;
-                             if (curveSel)
-                                 showPlotDialog(safeG->curveKey(primary));
-                             else if (axisSel)
-                                 showAxisPageFromAxisDialog(primary);
-                             else if (safeG->arrow(safeG->selectedMarkerKey()))
+                             Plot *p = safeG->plotWidget();
+                             if (p && p->titleLabel()) {
+                                 QwtTextLabel *tl = p->titleLabel();
+                                 QRect r = tl->textRect();
+                                 if (!r.isValid() || r.isEmpty())
+                                     r = tl->rect();
+                                 const QRect globalR(tl->mapToGlobal(r.topLeft()), r.size());
+                                 CanvasInlineTextEditor::openForPlotTitle(safeG.data(), globalR);
+                             } else {
+                                 showTitleDialog();
+                             }
+                         });
+            cm.addAction(tr("Title Properties..."), this, SLOT(showTitleDialog()));
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("delete"), 16), tr("Delete Title"),
+                         this, [this, safeG, safeMl]() {
+                             if (!safeG || !safeMl)
+                                 return;
+                             const QString before = safeMl->captureUndoSnapshot();
+                             safeG->removeTitle();
+                             safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                             safeMl->pushUndoSnapshot(tr("Delete Title"), before);
+                             emit modified();
+                             if (d_graph_inspector_dock)
+                                 d_graph_inspector_dock->refreshAll();
+                         });
+            cm.addSeparator();
+        } else if (refLineSel) {
+            const int refIdx = sel.primaryId;
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("mean-line"), 16),
+                         tr("Edit Reference Line..."), this, [this, safeG, refIdx]() {
+                             if (!safeG)
+                                 return;
+                             if (safeG->editReferenceLineDialog(refIdx) && d_graph_inspector_dock)
+                                 d_graph_inspector_dock->refreshAll();
+                         });
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("delete"), 16),
+                         tr("Delete Reference Line"), this, [this, safeG, safeMl, refIdx]() {
+                             if (!safeG || !safeMl)
+                                 return;
+                             if (refIdx < 0 || refIdx >= safeG->referenceLines().size())
+                                 return;
+                             const QString before = safeMl->captureUndoSnapshot();
+                             safeG->removeReferenceLine(refIdx);
+                             safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                             safeG->replot();
+                             safeG->notifyChanges();
+                             safeMl->pushUndoSnapshot(tr("Delete Reference Line"), before);
+                             emit modified();
+                             if (d_graph_inspector_dock)
+                                 d_graph_inspector_dock->refreshAll();
+                         });
+            cm.addSeparator();
+        } else if (axisSel) {
+            const int qwtAxis = sel.primaryId;
+            if (sel.kind == Graph::GraphSelection::AxisTitle) {
+                cm.addAction(IconLoader::duotoneIcon(QStringLiteral("text-label"), 16),
+                             tr("Edit Axis Title"), this, [safeG, qwtAxis]() {
+                                 if (!safeG || !safeG->plotWidget())
+                                     return;
+                                 QWidget *aw = safeG->plotWidget()->axisWidget(qwtAxis);
+                                 QRect anchor;
+                                 if (aw)
+                                     anchor = QRect(aw->mapToGlobal(QPoint(0, 0)), aw->size());
+                                 else
+                                     anchor = QRect(QCursor::pos(), QSize(120, 28));
+                                 CanvasInlineTextEditor::openForAxisTitle(safeG.data(), qwtAxis,
+                                                                          anchor);
+                             });
+            }
+            // P0 (C2-1): Always use AxesDialog::setCurrentQwtAxis() for QwtPlot::Axis ids.
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("axis-scale"), 16),
+                         tr("Edit Axis..."), this, [this, qwtAxis]() {
+                             openAxesDialogConfigured([qwtAxis](AxesDialog *gd) {
+                                 gd->showAxesPage();
+                                 gd->setCurrentQwtAxis(qwtAxis);
+                             });
+                         });
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-auto"), 16),
+                         tr("Rescale This Axis"), this, [safeG, safeMl, qwtAxis]() {
+                             if (!safeG || !safeMl)
+                                 return;
+                             const QString before = safeMl->captureUndoSnapshot();
+                             safeG->setAxisUserLocked(qwtAxis, false);
+                             safeG->setAutoScaleAxis(qwtAxis);
+                             safeG->replot();
+                             safeG->notifyChanges();
+                             safeMl->pushUndoSnapshot(tr("Rescale This Axis"), before);
+                         });
+            cm.addSeparator();
+        } else if (curveSel) {
+            const int primary = sel.primaryId;
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("settings"), 16),
+                         tr("Properties of the Selection..."), this, [this, safeG, primary]() {
+                             if (!safeG || primary < 0 || primary >= safeG->curves())
+                                 return;
+                             showPlotDialog(safeG->curveKey(primary));
+                         });
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("delete"), 16),
+                         tr("Delete Selection"), this, [this, safeG, primary]() {
+                             if (!safeG || primary < 0 || primary >= safeG->curves())
+                                 return;
+                             actionRemoveCurve->setData(int(safeG->curveKey(primary)));
+                             removeCurve();
+                         });
+            cm.addSeparator();
+        } else if (markerSel) {
+            const long mKey = ag->selectedMarkerKey();
+            if (Legend *leg = dynamic_cast<Legend *>(ag->selectedMarkerPtr())) {
+                const bool isMainLeg = (ag->legend() == leg);
+                cm.addAction(IconLoader::duotoneIcon(QStringLiteral("text-label"), 16),
+                             tr("Edit Text"), this, [safeG, mKey, isMainLeg]() {
+                                 if (!safeG || !safeG->plotWidget())
+                                     return;
+                                 Legend *curLeg =
+                                         dynamic_cast<Legend *>(safeG->plotWidget()->marker(mKey));
+                                 if (!curLeg || !safeG->plotWidget()->canvas())
+                                     return;
+                                 const QRect lr = curLeg->rect();
+                                 const QRect globalR(
+                                         safeG->plotWidget()->canvas()->mapToGlobal(lr.topLeft()),
+                                         lr.size());
+                                 CanvasInlineTextEditor::openForLegendOrText(
+                                         safeG.data(), mKey, isMainLeg ? 0 : -1, globalR);
+                             });
+            }
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("settings"), 16),
+                         tr("Properties of the Selection..."), this, [this, safeG]() {
+                             if (!safeG)
+                                 return;
+                             if (safeG->arrow(safeG->selectedMarkerKey()))
                                  showLineDialog();
                              else if (safeG->imageMarker(safeG->selectedMarkerKey()))
                                  showImageDialog();
                              else
                                  showTextDialog();
                          });
-            if (curveSel || markerSel) {
-                cm.addAction(IconLoader::load("close"), tr("Delete Selection"), this,
-                             [this, safeG, safeMl, curveSel, primary]() {
-                                 if (!safeG || !safeMl)
-                                     return;
-                                 if (curveSel) {
-                                     actionRemoveCurve->setData(int(safeG->curveKey(primary)));
-                                     removeCurve();
-                                     return;
-                                 }
-                                 const QString before = safeMl->captureUndoSnapshot();
-                                 safeG->removeMarker();
-                                 safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
-                                 safeMl->pushUndoSnapshot(tr("Delete Annotation"), before);
-                                 emit modified();
-                             });
-            }
+            cm.addAction(IconLoader::duotoneIcon(QStringLiteral("delete"), 16),
+                         tr("Delete Selection"), this, [this, safeG, safeMl]() {
+                             if (!safeG || !safeMl)
+                                 return;
+                             const QString before = safeMl->captureUndoSnapshot();
+                             safeG->removeMarker();
+                             safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+                             safeMl->pushUndoSnapshot(tr("Delete Annotation"), before);
+                             emit modified();
+                         });
             cm.addSeparator();
         }
 
-        // 2. Things to add or change on this graph.
-        cm.addAction(actionShowAxisDialog);
-        cm.addAction(actionNewLegend);
+        // 2. Clean, focused canvas actions (B4-5: no bloated 9 nested analysis submenus).
+        cm.addAction(actionUnzoom);
         cm.addAction(actionAddText);
-        cm.addAction(actionShowCurvesDialog);
-        cm.addAction(actionAddErrorBars);
-        cm.addAction(actionAddFunctionCurve);
+        cm.addAction(actionNewLegend);
+        cm.addAction(IconLoader::duotoneIcon(QStringLiteral("mean-line"), 16),
+                     tr("Add Reference Line..."), this, [safeG]() {
+                         if (safeG)
+                             GraphInspectorDock::addReferenceLineInteractive(safeG.data(), 0);
+                     });
         if (ag->visibleCurves() != ag->curves())
             cm.addAction(actionShowAllCurves);
-        cm.addAction(actionUnzoom);
         cm.addSeparator();
 
-        // 3. Copy and formats.
+        // 3. Style Presets (Lab Slide 18pt via lab_slide_83mm, ISIJ 85mm, 2-col & user presets;
+        //    never promote legacy 185 mm slide_28pt as a 1-click slide preset).
+        QMenu *presetsMenu = cm.addMenu(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 16),
+                                        tr("&Style Presets"));
+        auto addPresetItem = [this, presetsMenu, safeMl](const QString &presetId,
+                                                         const QString &label,
+                                                         const QString &iconId) {
+            presetsMenu->addAction(IconLoader::duotoneIcon(iconId, 16), label, this,
+                                   [this, safeMl, presetId]() {
+                                       if (!safeMl)
+                                           return;
+                                       safeMl->applyStylePresetById(presetId);
+                                       modifiedProject();
+                                       if (d_graph_inspector_dock)
+                                           d_graph_inspector_dock->refreshAll();
+                                   });
+        };
+        addPresetItem(QStringLiteral("lab_slide_83mm"), tr("Lab Slide (18pt)"),
+                      QStringLiteral("preset-slide"));
+        addPresetItem(QStringLiteral("isij_85mm"), tr("ISIJ 85mm"), QStringLiteral("preset-isij"));
+        const QVector<MultiLayer::GraphStylePresetSpec> allPresets = MultiLayer::listStylePresets();
+        for (const auto &sp : allPresets) {
+            if (sp.id.compare(QLatin1String("journal_2col_175mm"), Qt::CaseInsensitive) == 0) {
+                addPresetItem(sp.id, tr("Journal 2-Column (175mm)"), QStringLiteral("preset-isij"));
+                break;
+            }
+        }
+        bool addedUserSep = false;
+        for (const auto &sp : allPresets) {
+            if (sp.builtIn)
+                continue;
+            if (!addedUserSep) {
+                presetsMenu->addSeparator();
+                addedUserSep = true;
+            }
+            addPresetItem(sp.id, sp.name, QStringLiteral("page-setup"));
+        }
+        presetsMenu->addSeparator();
+        presetsMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 16),
+                               tr("Manage Style Presets..."), this,
+                               SLOT(showStylePresetManagerDialog()));
+        cm.addSeparator();
+
+        // 4. PowerPoint copy & format copy/paste.
         cm.addAction(actionCopyGraphOle);
         cm.addAction(actionCopyGraphFormat);
         cm.addAction(actionPasteGraphFormat);
-        if (pasteFormatSpecialMenu)
-            cm.addMenu(pasteFormatSpecialMenu);
         cm.addSeparator();
 
-        // 4. One analysis submenu (no flat duplicates).
-        QMenu *an = cm.addMenu(tr("Anal&yze"));
-        for (QMenu *m : { curveMathMenu, advFitMenu, peaksBaselineMenu, advSignalMenu,
-                          graphStatsMenu, translateMenu }) {
-            if (m)
-                an->addMenu(m);
-        }
-        an->addSeparator();
-        if (gadgetsMenu)
-            an->addMenu(gadgetsMenu);
-        if (dataMaskMenu)
-            an->addMenu(dataMaskMenu);
-        if (recalcMenu)
-            an->addMenu(recalcMenu);
-
-        // 5. Look of the graph.
-        QMenu *st = cm.addMenu(tr("St&yle"));
-        if (stylePresetsMenu)
-            st->addMenu(stylePresetsMenu);
-        if (framePresetsMenu)
-            st->addMenu(framePresetsMenu);
-        if (colorPaletteMenu)
-            st->addMenu(colorPaletteMenu);
-        if (aspectRatioMenu) {
-            if (actionKeepAspectRatio)
-                actionKeepAspectRatio->setChecked(plot->keepAspectRatio());
-            st->addMenu(aspectRatioMenu);
-        }
-        st->addSeparator();
-        st->addAction(actionWaterfallStackOffset);
-        st->addAction(actionResetStackOffsets);
+        // 5. Axis properties & export.
+        cm.addAction(actionShowAxisDialog);
     }
 
     if (copiedLayer) {
@@ -1403,41 +1838,18 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
             cm.addAction(IconLoader::load("paste"), tr("&Paste Image"), plot,
                          SIGNAL(pasteMarker()));
     }
-    cm.addSeparator();
-    QMenu *copy = cm.addMenu(tr("&Copy"));
-    copy->setIcon(IconLoader::load("copy"));
-    copy->addAction(actionCopyGraphOle);
-    copy->addAction(actionCopyPageImage);
+
+    cm.addAction(IconLoader::duotoneIcon(QStringLiteral("export-image"), 16),
+                 tr("Export Image / PDF..."), this, SLOT(exportGraph()));
     if (plot->layers() > 1) {
-        copy->addAction(tr("&Layer"), this, SLOT(copyActiveLayer()));
-        copy->addAction(tr("&Window"), plot, SLOT(copyAllLayers()));
+        cm.addAction(IconLoader::duotoneIcon(QStringLiteral("export-image"), 16),
+                     tr("Export Active Layer..."), this, SLOT(exportLayer()));
     }
-    if (actionExportPythonScript)
-        copy->addAction(actionExportPythonScript);
-
-    if (plot->layers() <= 1) {
-        cm.addAction(IconLoader::duotoneIcon(QStringLiteral("export-image")),
-                     tr("E&xport Graph..."), this, SLOT(exportGraph()));
-        cm.addAction(IconLoader::load("print"), tr("&Print..."), plot, SLOT(print()));
-    } else {
-        QMenu *exports = cm.addMenu(tr("E&xport"));
-        exports->addAction(tr("&Layer"), this, SLOT(exportLayer()));
-        exports->addAction(tr("&Window"), this, SLOT(exportGraph()));
-
-        QMenu *prints = cm.addMenu(tr("&Print"));
-        prints->setIcon(IconLoader::load("print"));
-        prints->addAction(tr("&Layer"), plot, SLOT(printActiveLayer()));
-        prints->addAction(tr("&Window"), plot, SLOT(print()));
-    }
-
     cm.addSeparator();
-    cm.addAction(IconLoader::load("fit-page"), tr("&Geometry..."), plot,
-                 SIGNAL(showGeometryDialog()));
     cm.addAction(tr("Layer P&roperties..."), this, SLOT(showGeneralPlotDialog()));
     if (!fromLayerButton) {
-        cm.addSeparator();
-        cm.addAction(IconLoader::load("close"), tr("&Delete Layer"), plot,
-                     SLOT(confirmRemoveLayer()));
+        cm.addAction(IconLoader::duotoneIcon(QStringLiteral("delete"), 16), tr("&Delete Layer"),
+                     plot, SLOT(confirmRemoveLayer()));
     }
 }
 

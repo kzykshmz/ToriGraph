@@ -45,6 +45,12 @@
 #include "future/table/TableView.h"
 #include "globals.h"
 
+class QDialog;
+class QLineEdit;
+class QCheckBox;
+class QLabel;
+class QPushButton;
+
 /*!\brief MDI window providing a spreadsheet table with column logic.
  */
 class Table : public TableView, public scripted
@@ -262,10 +268,16 @@ public slots:
                         bool wholeCell, bool selectionOnly);
     //! Column indices whose formula failed or is circular in the last automatic recalculation.
     QList<int> formulaErrorColumns() const;
+    //! True when an original ASCII or Excel source file is recorded for re-import.
+    Q_INVOKABLE bool hasImportSource() const;
     void selectAllTable();
     void deselect();
     void clear();
     //@}
+
+public slots:
+    bool reimportFromSource();
+    void copySelectionWithHeaders();
 
     void init();
     QStringList selectedColumns();
@@ -367,7 +379,9 @@ private:
     //! Evaluate the formula columns `fCols` in dependency order, marking failed and circular
     //! columns. Returns true if any value changed.
     bool recalculateFormulaColumnsOrdered(const QVector<int> &fCols);
+    bool evaluateCrossTableDag(const QVector<int> &localEvalCols, bool includeProjectTables);
     void setColumnFormulaError(int col, const QString &message);
+    void reportFormulaErrorsToUser(int focusCol = -1) const;
 
     QHash<const AbstractAspect *, QString> d_stored_column_labels;
     bool d_auto_recalc_formulas = true;
@@ -376,6 +390,16 @@ private:
     int d_pending_recalc_first_col = -1;
     int d_pending_recalc_col_count = 0;
     QString d_last_export_error;
+    QPointer<QDialog> d_find_replace_dialog;
+    QPointer<QLineEdit> d_fr_find_edit;
+    QPointer<QLabel> d_fr_replace_label;
+    QPointer<QLineEdit> d_fr_replace_edit;
+    QPointer<QCheckBox> d_fr_case_box;
+    QPointer<QCheckBox> d_fr_whole_box;
+    QPointer<QCheckBox> d_fr_sel_box;
+    QPointer<QLabel> d_fr_status_label;
+    QPointer<QPushButton> d_fr_replace_one_btn;
+    QPointer<QPushButton> d_fr_replace_all_btn;
 };
 
 #endif

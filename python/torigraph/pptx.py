@@ -17,11 +17,14 @@ import ctypes
 import json
 import math
 import os
+import re
 import struct
 import tempfile
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+from .client import BatchReadError
 
 if TYPE_CHECKING:
     from .client import GraphProxy, Session
@@ -931,6 +934,57 @@ def _compute_grid_cell_emu(
     return left, top, cell_w, cell_h
 
 
+_WIN_FORBIDDEN_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WIN_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _safe_tmp_component(name: str, max_len: int = 40) -> str:
+    """Make a window name (``Al/Zn``, ``Sample:1``, ``CON`` ...) safe as part of a temp file name."""
+    slug = _WIN_FORBIDDEN_FILENAME_CHARS.sub("_", str(name)).strip(" .")
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip(" .")
+    if not slug:
+        slug = "graph"
+    if slug.split(".", 1)[0].upper() in _WIN_RESERVED_NAMES:
+        slug = "_" + slug
+    return slug
+
+
+def _atomic_save_presentation(prs: Any, out_path: Path) -> None:
+    """Save ``prs`` next to ``out_path`` first and ``os.replace`` it over the target.
+
+    A crash or a full disk while writing never leaves a truncated ``.pptx`` behind, and an
+    existing deck is only replaced once the new file is complete.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{_safe_tmp_component(out_path.stem, 24)}.", suffix=".tmp", dir=os.fspath(out_path.parent)
+    )
+    os.close(fd)
+    try:
+        prs.save(tmp_name)
+        os.replace(tmp_name, os.fspath(out_path))
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+        except OSError:
+            pass
+
+
+_LAB_SLIDE_PRESETS = frozenset({"lab_slide_83mm", "lab_slide"})
+#: Placement scale of the lab slide preset (83.3 mm / 12.9 pt x 1.4 = 18 pt on the slide).
+LAB_SLIDE_PLACEMENT_SCALE = 1.4
+
+
+def _is_lab_slide_preset(preset: Any) -> bool:
+    return bool(preset) and str(preset).strip().lower() in _LAB_SLIDE_PRESETS
+
+
 def _fetch_graph_ole_payload(
     session: "Session",
     graph_name: str,
@@ -941,6 +995,8 @@ def _fetch_graph_ole_payload(
     cached_project_bytes: Optional[bytes],
     embed_scope: str = "graph",
     warn_list: Optional[List[str]] = None,
+    allow_whole_project: bool = False,
+    ole_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bytes, bytes, int, int, int, int, str, str, Optional[bytes]]:
     """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, canonical_window, updated_cache)`` via RPC.
 
@@ -948,15 +1004,27 @@ def _fetch_graph_ole_payload(
     tables it plots), so the project cache is only used for ``embed_scope="project"``.
     Problems that change what is embedded or how large it is are appended to ``warn_list``
     and issued as :class:`UserWarning` instead of being hidden.
+
+    A per-graph object must never silently contain the whole project (other windows, the
+    results log): unless ``allow_whole_project`` is true, every path that would embed it
+    raises :class:`ToriGraphError` instead.
     """
-    from .client import RpcError
+    from .client import RpcError, ToriGraphError
+
+    def _refuse_whole_project(why: str, cause: Optional[BaseException] = None) -> None:
+        if allow_whole_project:
+            return
+        raise ToriGraphError(
+            f"{why} Embedding the whole project in the slide object could leak other windows "
+            "and the results log; pass allow_whole_project=True to accept that."
+        ) from cause
 
     def _warn(msg: str) -> None:
         if warn_list is not None:
             warn_list.append(msg)
         warnings.warn(msg, UserWarning, stacklevel=3)
 
-    emf_tmp = tmp_dir / f"preview_{seq_idx}_{graph_name}.emf"
+    emf_tmp = tmp_dir / f"preview_{seq_idx}_{_safe_tmp_component(graph_name)}.emf"
     proj_bytes: Optional[bytes] = None
     emf_bytes: Optional[bytes] = None
     w_mm: Optional[float] = None
@@ -981,11 +1049,18 @@ def _fetch_graph_ole_payload(
                 _warn(str(ole_res["warning"]))
             got_scope = ole_res.get("embed_scope")
             if per_graph_project and got_scope not in (None, "graph"):
+                _refuse_whole_project(
+                    f"graph.export_ole embedded scope {got_scope!r} for '{graph_name}' instead of 'graph'."
+                )
                 _warn(
                     f"graph.export_ole embedded scope {got_scope!r} for '{graph_name}' instead of "
                     "'graph'; the slide object contains the whole project."
                 )
             elif per_graph_project and got_scope is None and not skip_proj:
+                _refuse_whole_project(
+                    f"This ToriGraph does not support embed_scope, so the object for '{graph_name}' "
+                    "would contain the whole project."
+                )
                 _warn(
                     f"This ToriGraph does not support embed_scope; the object for '{graph_name}' "
                     "contains the whole project (all windows and the results log)."
@@ -997,6 +1072,10 @@ def _fetch_graph_ole_payload(
                 w_mm = float(ole_res["width_mm"])
             if ole_res.get("height_mm"):
                 h_mm = float(ole_res["height_mm"])
+            if ole_meta is not None:
+                for k in ("slide_paste_percent", "applied_style_preset", "style_preset"):
+                    if ole_res.get(k) is not None:
+                        ole_meta[k] = ole_res[k]
 
             xml_val = ole_res.get("sciprj_xml") or ole_res.get("project_xml")
             if isinstance(xml_val, str) and xml_val:
@@ -1011,6 +1090,7 @@ def _fetch_graph_ole_payload(
             elif isinstance(ole_res.get("emf_base64"), str) and ole_res["emf_base64"]:
                 emf_bytes = base64.b64decode(ole_res["emf_base64"])
     except RpcError as exc:
+        _refuse_whole_project(f"graph.export_ole failed for '{graph_name}' ({exc}).", exc)
         _warn(
             f"graph.export_ole failed for '{graph_name}' ({exc}). Falling back to a snapshot of "
             "the whole project and to the size recorded in the EMF preview; check the size on "
@@ -1022,6 +1102,7 @@ def _fetch_graph_ole_payload(
             proj_bytes = cached_project_bytes
         else:
             if per_graph_project:
+                _refuse_whole_project(f"No per-graph project was returned for '{graph_name}'.")
                 _warn(
                     f"No per-graph project was returned for '{graph_name}'; the slide object "
                     "contains the whole project instead."
@@ -1093,14 +1174,47 @@ def _parse_scale(scale: Optional[Union[float, int, str]]) -> Optional[float]:
     return val
 
 
-def _graph_nominal_font_pts(session: "Session", graph_name: str) -> Dict[str, Optional[float]]:
-    """Largest axis-title and tick-label font sizes (pt) of the graph at 100 % size."""
-    out: Dict[str, Optional[float]] = {"axis_title_pt": None, "tick_label_pt": None}
+def _graph_info_safe(session: "Session", graph_name: str) -> Optional[Mapping[str, Any]]:
     try:
         info = session.call("graph.get_info", graph=graph_name)
+    except BatchReadError:
+        raise
     except Exception:  # Graph3D windows and older servers have no 2D axis info
-        return out
-    if not isinstance(info, Mapping):
+        return None
+    return info if isinstance(info, Mapping) else None
+
+
+def _graph_slide_scale(session: "Session", graph_name: str, info: Optional[Mapping[str, Any]]) -> Optional[float]:
+    """Placement factor (e.g. 1.4) of a graph that already carries the lab slide preset.
+
+    Sources, in order: the percentage ToriGraph reports (``slide_paste_percent``), the preset
+    id it reports (``applied_style_preset`` / ``style_preset``), and — only when ``info``
+    lacks the slide-preset fields (older server) — the presets this SDK session applied itself
+    (``Session._slide_preset_graphs``, filled by ``graph.apply_style_preset``).
+    ``None`` means "no slide preset known".
+    """
+    if info is not None:
+        pct = info.get("slide_paste_percent")
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool) and math.isfinite(pct) and pct > 0:
+            return float(pct) / 100.0
+        applied = info.get("applied_style_preset") or info.get("style_preset")
+        if _is_lab_slide_preset(applied):
+            return LAB_SLIDE_PLACEMENT_SCALE
+        if any(k in info for k in ("slide_paste_percent", "applied_style_preset", "style_preset")):
+            return None
+    if graph_name in (getattr(session, "_slide_preset_graphs", None) or ()):
+        return LAB_SLIDE_PLACEMENT_SCALE
+    return None
+
+
+def _graph_nominal_font_pts(
+    session: "Session", graph_name: str, info: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Optional[float]]:
+    """Largest axis-title and tick-label font sizes (pt) of the graph at 100 % size."""
+    out: Dict[str, Optional[float]] = {"axis_title_pt": None, "tick_label_pt": None}
+    if info is None:
+        info = _graph_info_safe(session, graph_name)
+    if info is None:
         return out
     titles: List[float] = []
     ticks: List[float] = []
@@ -1227,6 +1341,7 @@ def export_graphs_to_pptx(
     widescreen: bool = True,
     scale: Optional[Union[float, int, str]] = None,
     embed_scope: str = "graph",
+    allow_whole_project: bool = False,
 ) -> Dict[str, Any]:
     """Export one or more ToriGraph figures into a PowerPoint ``.pptx`` as editable native OLE objects.
 
@@ -1258,11 +1373,19 @@ def export_graphs_to_pptx(
     dpi:
         Target render resolution (36..2400).
     overwrite:
-        Allow writing back to the exact same file when ``path == deck``.
+        An existing ``path`` is never replaced silently: ``FileExistsError`` unless
+        ``overwrite=True``.  The same flag is required to update ``path == deck`` in place
+        and to update an existing ``path`` via ``replace=`` / ``slide=`` without ``deck``.
+        The file is written to a temporary name next to ``path`` and moved over it with
+        ``os.replace`` so a failure never leaves a broken deck.
     titles:
         Optional slide title (or per-slide sequence of titles) when generating new slides.
     preset:
-        Optional style preset (e.g. ``"slide_28pt"``) applied to each graph before export.
+        Optional style preset (e.g. ``"lab_slide_83mm"``) applied to each 2D graph before
+        export (Graph3D windows are skipped); an RPC error such as an unknown preset or graph
+        name is raised.  Graphs that carry ``lab_slide_83mm`` -- via ``preset=`` or applied
+        earlier (``g.lab_slide_style()``) -- are placed at 140 % automatically (12.9 pt -> 18 pt)
+        unless ``scale=`` or a ``box`` width is given.
     widescreen:
         Use 16:9 widescreen (``13.333 x 7.5 in``) when creating a brand-new deck.
     scale:
@@ -1274,6 +1397,11 @@ def export_graphs_to_pptx(
     embed_scope:
         ``"graph"`` (default) embeds each graph with only the tables/matrices it plots;
         ``"project"`` embeds the whole project (all windows and the results log) in every object.
+    allow_whole_project:
+        ``False`` (default): if a per-graph object cannot be produced (``graph.export_ole``
+        fails or the server returns no per-graph project) a ``ToriGraphError`` is raised.
+        ``True`` falls back to embedding a snapshot of the whole project (other windows and
+        the results log included) with a warning.
 
     Returns
     -------
@@ -1286,16 +1414,18 @@ def export_graphs_to_pptx(
     pptx, _, _, _ = _import_pptx()
     explicit_scale_f = _parse_scale(scale)
     new_placement_scale_f = explicit_scale_f
-    if new_placement_scale_f is None and preset and str(preset).strip().lower() == "lab_slide_83mm":
-        box_has_explicit_width = False
-        if box is not None:
-            box_probe = list(box)
-            if box_probe and isinstance(box_probe[0], (list, tuple)):
-                box_has_explicit_width = any(len(b) >= 3 for b in box_probe)  # type: ignore[arg-type]
-            else:
-                box_has_explicit_width = len(box_probe) >= 3
-        if not box_has_explicit_width:
-            new_placement_scale_f = 1.4
+    # Lab slide preset (83.3 mm / 12.9 pt) is pasted at 140 % -> 18 pt, unless the caller
+    # chose a size (scale= or a box with a width).  Graphs that got the preset earlier
+    # (g.lab_slide_style() / apply_style_preset) are detected per graph below.
+    box_has_explicit_width = False
+    if box is not None:
+        box_probe = list(box)
+        if box_probe and isinstance(box_probe[0], (list, tuple)):
+            box_has_explicit_width = any(len(b) >= 3 for b in box_probe)  # type: ignore[arg-type]
+        else:
+            box_has_explicit_width = len(box_probe) >= 3
+    if new_placement_scale_f is None and _is_lab_slide_preset(preset) and not box_has_explicit_width:
+        new_placement_scale_f = LAB_SLIDE_PLACEMENT_SCALE
     embed_scope = str(embed_scope or "graph").strip().lower()
     if embed_scope not in ("graph", "project"):
         raise ValueError(f"embed_scope must be 'graph' or 'project', got {embed_scope!r}.")
@@ -1318,12 +1448,28 @@ def export_graphs_to_pptx(
                 f"Safety check failed: output path '{out_path}' equals source deck '{deck_path}'. "
                 "Pass overwrite=True to update the source deck in-place, or specify a new output path."
             )
+    if out_path.exists() and not overwrite:
+        updates_in_place = deck_path is None and (
+            (replace is not None and replace is not False) or slide is not None
+        )
+        raise FileExistsError(
+            f"'{out_path}' already exists"
+            + (" and would be updated in place" if updates_in_place else " and would be replaced")
+            + ". Pass overwrite=True to allow it, or choose a new output path."
+        )
 
     # Resolve target graph names
+    try:
+        _windows = list(session.list_windows())
+    except BatchReadError:
+        raise
+    except Exception:  # very old servers
+        _windows = []
+    graph3d_names = {str(w["name"]) for w in _windows if w.get("type") == "Graph3D" and w.get("name")}
     if graphs is None:
         graph_names = [
             str(w["name"])
-            for w in session.list_windows()
+            for w in _windows
             if w.get("type") in ("MultiLayer", "Graph3D") and w.get("name")
         ]
     elif isinstance(graphs, str) or hasattr(graphs, "name"):
@@ -1338,14 +1484,14 @@ def export_graphs_to_pptx(
         raise ValueError("No graphs specified (and no open graph windows found in session).")
 
     if preset:
-        from .client import RpcError
-
+        # Style presets exist for 2D graphs only; Graph3D windows are exported as they are.
+        # RpcErrors (unknown preset, misspelled graph name, ...) are not swallowed.
         for g_nm in graph_names:
-            try:
-                session.call("graph.apply_style_preset", graph=g_nm, preset=str(preset))
-            except RpcError as exc:
-                if "Unknown style preset" in str(exc):
-                    raise
+            if g_nm in graph3d_names:
+                msg = f"Style preset '{preset}' is not applied to 3D graph '{g_nm}' (2D graphs only)."
+                warn_list.append(msg)
+                continue
+            session.call("graph.apply_style_preset", graph=g_nm, preset=str(preset))
 
     # Normalize explicit per-graph boxes if provided
     per_graph_boxes: Optional[List[Sequence[float]]] = None
@@ -1437,6 +1583,7 @@ def export_graphs_to_pptx(
         # Pre-build OLE payloads for all requested graphs
         built_items: List[Dict[str, Any]] = []
         for idx, g_nm in enumerate(graph_names):
+            ole_meta: Dict[str, Any] = {}
             (
                 proj_b,
                 emf_b,
@@ -1456,8 +1603,16 @@ def export_graphs_to_pptx(
                 cached_project_bytes=cached_proj,
                 embed_scope=embed_scope,
                 warn_list=warn_list,
+                allow_whole_project=allow_whole_project,
+                ole_meta=ole_meta,
             )
-            ole_bin_path = tmp_dir / f"ole_{idx}_{canonical_win}.bin"
+            graph_info = _graph_info_safe(session, canonical_win)
+            merged_info: Optional[Dict[str, Any]] = (
+                {**ole_meta, **dict(graph_info)}
+                if graph_info is not None
+                else (ole_meta or None)
+            )
+            ole_bin_path = tmp_dir / f"ole_{idx}_{_safe_tmp_component(canonical_win)}.bin"
             build_ole_compound_file(
                 ole_bin_path,
                 project_bytes=proj_b,
@@ -1477,9 +1632,22 @@ def export_graphs_to_pptx(
                     "w_hm": w_hm,
                     "h_hm": h_hm,
                     "prog_id": prog_id,
-                    "font_pts": _graph_nominal_font_pts(session, canonical_win),
+                    "font_pts": _graph_nominal_font_pts(session, canonical_win, merged_info),
+                    "slide_scale": _graph_slide_scale(session, canonical_win, merged_info),
                 }
             )
+
+        slide_scale_used: List[bool] = []
+
+        def _item_scale(item: Mapping[str, Any]) -> Optional[float]:
+            """Placement factor of one graph: scale= / lab preset arg, else its own slide preset."""
+            if new_placement_scale_f is not None:
+                return new_placement_scale_f
+            s = item.get("slide_scale")
+            if s is not None and not box_has_explicit_width:
+                slide_scale_used.append(True)
+                return float(s)
+            return None
 
         # Mode A: Named-shape replacement `replace=[(2, "Picture 3"), ...]`
         if named_replace_targets is not None:
@@ -1512,7 +1680,7 @@ def export_graphs_to_pptx(
                 cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                 clamped_orig_cm: Optional[Tuple[float, float]] = None
                 if cur_box is not None:
-                    box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
+                    box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                     l_e, t_e, w_e, h_e = _explicit_box_emu(
                         cur_box, item["w_hm"], item["h_hm"], box_scale
                     )
@@ -1598,7 +1766,7 @@ def export_graphs_to_pptx(
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         clamped_orig_cm = None
                         if cur_box is not None:
-                            box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
+                            box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
                                 cur_box, item["w_hm"], item["h_hm"], box_scale
                             )
@@ -1688,7 +1856,7 @@ def export_graphs_to_pptx(
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         clamped_orig_cm = None
                         if cur_box is not None:
-                            box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
+                            box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
                                 cur_box, item["w_hm"], item["h_hm"], box_scale
                             )
@@ -1705,9 +1873,9 @@ def export_graphs_to_pptx(
                                 local_k % (eff_rows * eff_cols),
                                 has_title=bool(title_list),
                             )
-                            if new_placement_scale_f is not None:
+                            if _item_scale(item) is not None:
                                 l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                                    item["w_hm"], item["h_hm"], new_placement_scale_f, (c_l, c_t, c_w, c_h),
+                                    item["w_hm"], item["h_hm"], _item_scale(item), (c_l, c_t, c_w, c_h),
                                     center=True,
                                 )
                                 l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
@@ -1758,7 +1926,7 @@ def export_graphs_to_pptx(
                             cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                             clamped_orig_cm = None
                             if cur_box is not None:
-                                box_scale = explicit_scale_f if len(cur_box) >= 3 else new_placement_scale_f
+                                box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                                 l_e, t_e, w_e, h_e = _explicit_box_emu(
                                     cur_box, item["w_hm"], item["h_hm"], box_scale
                                 )
@@ -1775,9 +1943,9 @@ def export_graphs_to_pptx(
                                     cell_k,
                                     has_title=bool(s_title),
                                 )
-                                if new_placement_scale_f is not None:
+                                if _item_scale(item) is not None:
                                     l_e, t_e, w_e, h_e = _scaled_rect_emu(
-                                        item["w_hm"], item["h_hm"], new_placement_scale_f,
+                                        item["w_hm"], item["h_hm"], _item_scale(item),
                                         (c_l, c_t, c_w, c_h), center=True,
                                     )
                                     l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
@@ -1861,8 +2029,7 @@ def export_graphs_to_pptx(
             warn_list.append(msg)
             warnings.warn(msg, UserWarning, stacklevel=2)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    prs.save(os.fspath(out_path))
+    _atomic_save_presentation(prs, out_path)
 
     return {
         "ok": True,
@@ -1876,7 +2043,7 @@ def export_graphs_to_pptx(
         "clsid": TORIGRAPH_OLE_CLSID_STR,
         "prog_id": TORIGRAPH_OLE_PROG_ID,
         "placements": placements,
-        "scale": explicit_scale_f if (replaced_count > 0 and replaced_count == embedded_count) else new_placement_scale_f,
+        "scale": explicit_scale_f if (replaced_count > 0 and replaced_count == embedded_count) else (new_placement_scale_f if new_placement_scale_f is not None else (LAB_SLIDE_PLACEMENT_SCALE if slide_scale_used else None)),
         "embed_scope": embed_scope,
         "effective_scales": [pl.get("effective_scale") for pl in placements],
         "warnings": warn_list,

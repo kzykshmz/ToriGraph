@@ -89,6 +89,7 @@ void QwtErrorPlotCurve::drawErrorBand(QPainter *painter, const QwtScaleMap &xMap
     const bool logVal = valMap.transformation()
             && valMap.transformation()->type() == QwtScaleTransformation::Log10;
     const double logFloor = qMin(valMap.s1(), valMap.s2());
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
 
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(Qt::NoPen);
@@ -105,18 +106,29 @@ void QwtErrorPlotCurve::drawErrorBand(QPainter *painter, const QwtScaleMap &xMap
                 poly << pt;
             for (int k = lower.size() - 1; k >= 0; --k)
                 poly << lower[k];
-            painter->drawPolygon(poly);
+            if (brk.any()) {
+                const QVector<QPolygonF> pieces = clipPolygonToBreaks(poly, brk);
+                for (const QPolygonF &piece : pieces)
+                    painter->drawPolygon(piece);
+            } else {
+                painter->drawPolygon(poly);
+            }
         }
         upper.clear();
         lower.clear();
     };
 
+    bool hasPrev = false;
+    double prevVx = 0.0, prevVy = 0.0, prevIndPx = 0.0;
     for (int i = from; i <= to && i < err.size(); i++) {
-        const double v = vertical ? y(i) : x(i);
+        const double vx = x(i);
+        const double vy = y(i);
+        const double v = vertical ? vy : vx;
         const double e = err[i];
-        if (!std::isfinite(v) || !std::isfinite(e) || !std::isfinite(x(i))
-            || !std::isfinite(y(i))) {
+        if (!std::isfinite(v) || !std::isfinite(e) || !std::isfinite(vx) || !std::isfinite(vy)
+            || brk.valueInGap(vx, vy)) {
             flush();
+            hasPrev = false;
             continue;
         }
         double hi = plus ? v + e : v;
@@ -124,32 +136,52 @@ void QwtErrorPlotCurve::drawErrorBand(QPainter *painter, const QwtScaleMap &xMap
         if (logVal) {
             if (hi <= 0.0) {
                 flush();
+                hasPrev = false;
                 continue;
             }
             if (lo <= 0.0)
                 lo = logFloor;
         }
         if (vertical) {
-            const double px = xMap.xTransform(x(i));
+            const double px = xMap.xTransform(vx);
             const double pHi = yMap.xTransform(hi);
             const double pLo = yMap.xTransform(lo);
-            if (!std::isfinite(px) || !std::isfinite(pHi) || !std::isfinite(pLo)) {
+            if (!std::isfinite(px) || !std::isfinite(pHi) || !std::isfinite(pLo)
+                || brk.xPixelInGap(px)) {
                 flush();
+                hasPrev = false;
                 continue;
+            }
+            if (hasPrev && (brk.xValuesStraddle(prevVx, vx)
+                            || (brk.hasX && ((prevIndPx <= brk.xLo && px >= brk.xHi)
+                                             || (prevIndPx >= brk.xHi && px <= brk.xLo))))) {
+                flush();
             }
             upper << QPointF(px, pHi);
             lower << QPointF(px, pLo);
+            prevIndPx = px;
         } else {
-            const double py = yMap.xTransform(y(i));
+            const double py = yMap.xTransform(vy);
             const double pHi = xMap.xTransform(hi);
             const double pLo = xMap.xTransform(lo);
-            if (!std::isfinite(py) || !std::isfinite(pHi) || !std::isfinite(pLo)) {
+            if (!std::isfinite(py) || !std::isfinite(pHi) || !std::isfinite(pLo)
+                || brk.yPixelInGap(py)) {
                 flush();
+                hasPrev = false;
                 continue;
+            }
+            if (hasPrev && (brk.yValuesStraddle(prevVy, vy)
+                            || (brk.hasY && ((prevIndPx <= brk.yLo && py >= brk.yHi)
+                                             || (prevIndPx >= brk.yHi && py <= brk.yLo))))) {
+                flush();
             }
             upper << QPointF(pHi, py);
             lower << QPointF(pLo, py);
+            prevIndPx = py;
         }
+        prevVx = vx;
+        prevVy = vy;
+        hasPrev = true;
     }
     flush();
 }
@@ -182,18 +214,24 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     if (testRenderHint(QwtPlotItem::RenderAntialiased))
         painter->setRenderHint(QPainter::Antialiasing, true);
 
-    QPen p = painter->pen();
-    if (p.style() != Qt::NoPen && (p.isCosmetic() || p.widthF() <= 0.0)) {
+    const double sc = renderPenScale();
+    QPen p = pen();
+    if (p.style() != Qt::NoPen) {
+        double wf = p.widthF();
+        if (wf <= 0.0)
+            wf = (p.width() > 0) ? double(p.width()) : 1.0;
         p.setCosmetic(false);
-        if (p.widthF() <= 0.0)
-            p.setWidthF(qMax(1.0, double(pen().widthF())));
-        painter->setPen(p);
+        p.setWidthF(qMax(0.1, wf) * sc);
     }
+    painter->setPen(p);
 
     double sh = 0.0;
     const QwtSymbol symbol = d_master_curve->symbol();
-    if (symbol.style() != QwtSymbol::NoSymbol)
-        sh = double(symbol.size().height());
+    if (symbol.style() != QwtSymbol::NoSymbol) {
+        const double baseSym = (type == Horizontal) ? double(symbol.size().width())
+                                                    : double(symbol.size().height());
+        sh = baseSym * sc;
+    }
 
     double d_xOffset = 0.0;
     double d_yOffset = 0.0;
@@ -202,84 +240,112 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     else if (d_master_curve->type() == Graph::HorizontalBars)
         d_yOffset = ((QwtBarCurve *)d_master_curve)->dataOffset();
 
-    const double halfCap = 0.5 * double(cap);
+    const double halfCap = 0.5 * double(cap) * sc;
     const double halfSym = 0.5 * sh;
+    const AxisBreakBands brk = axisBreakBands(xMap, yMap);
+
+    QVector<QLineF> segs;
+    segs.reserve(4);
+    auto drawBreakAwareLine = [&](const QPointF &a, const QPointF &b) {
+        if (!brk.any()) {
+            painter->drawLine(QLineF(a, b));
+            return;
+        }
+        segs.clear();
+        appendSegmentOutsideBreaks(QLineF(a, b), brk, segs);
+        if (!segs.isEmpty())
+            painter->drawLines(segs);
+    };
 
     for (int i = from; i <= to && i < err.size(); i++) {
-        const double xi = xMap.xTransform(x(i) + d_xOffset);
-        const double yi = yMap.xTransform(y(i) + d_yOffset);
+        const double vx = x(i) + d_xOffset;
+        const double vy = y(i) + d_yOffset;
+        if (brk.valueInGap(vx, vy))
+            continue;
+        const double xi = xMap.xTransform(vx);
+        const double yi = yMap.xTransform(vy);
         if (!std::isfinite(xi) || !std::isfinite(yi))
+            continue;
+        if (brk.pixelInGap(QPointF(xi, yi)))
             continue;
 
         if (type == Vertical) {
-            double y_plus = yMap.xTransform(y(i) + err[i]);
-            double y_minus = yMap.xTransform(y(i) - err[i]);
+            const double yPlusVal = y(i) + err[i];
+            const double yMinusVal = y(i) - err[i];
+            double y_plus = yMap.xTransform(yPlusVal);
+            double y_minus = yMap.xTransform(yMinusVal);
             bool y_minus_is_finite = std::isfinite(y_minus);
 
-            if (yMap.transformation()->type() == QwtScaleTransformation::Log10 && err[i] >= y(i)) {
+            if (yMap.transformation()
+                && yMap.transformation()->type() == QwtScaleTransformation::Log10
+                && err[i] >= y(i)) {
                 y_minus = yMap.xTransform(qMin(yMap.s1(), yMap.s2()));
                 y_minus_is_finite = false;
             }
             if (!std::isfinite(y_plus) || !std::isfinite(y_minus))
                 continue;
 
-            if (plus)
-                painter->drawLine(QPointF(xi - halfCap, y_plus), QPointF(xi + halfCap, y_plus));
-            if (minus && y_minus_is_finite)
-                painter->drawLine(QPointF(xi - halfCap, y_minus), QPointF(xi + halfCap, y_minus));
+            if (plus && !brk.yValueInGap(yPlusVal))
+                drawBreakAwareLine(QPointF(xi - halfCap, y_plus), QPointF(xi + halfCap, y_plus));
+            if (minus && y_minus_is_finite && !brk.yValueInGap(yMinusVal))
+                drawBreakAwareLine(QPointF(xi - halfCap, y_minus), QPointF(xi + halfCap, y_minus));
 
             if (through) {
                 if (plus && minus)
-                    painter->drawLine(QPointF(xi, y_minus), QPointF(xi, y_plus));
+                    drawBreakAwareLine(QPointF(xi, y_minus), QPointF(xi, y_plus));
                 else if (plus)
-                    painter->drawLine(QPointF(xi, yi), QPointF(xi, y_plus));
+                    drawBreakAwareLine(QPointF(xi, yi), QPointF(xi, y_plus));
                 else if (minus)
-                    painter->drawLine(QPointF(xi, y_minus), QPointF(xi, yi));
+                    drawBreakAwareLine(QPointF(xi, y_minus), QPointF(xi, yi));
             } else if (y_plus <= y_minus) {
                 if (plus && y_plus < yi - halfSym)
-                    painter->drawLine(QPointF(xi, yi - halfSym), QPointF(xi, y_plus));
+                    drawBreakAwareLine(QPointF(xi, yi - halfSym), QPointF(xi, y_plus));
                 if (minus && y_minus > yi + halfSym)
-                    painter->drawLine(QPointF(xi, yi + halfSym), QPointF(xi, y_minus));
+                    drawBreakAwareLine(QPointF(xi, yi + halfSym), QPointF(xi, y_minus));
             } else {
                 if (plus && y_plus > yi + halfSym)
-                    painter->drawLine(QPointF(xi, yi + halfSym), QPointF(xi, y_plus));
+                    drawBreakAwareLine(QPointF(xi, yi + halfSym), QPointF(xi, y_plus));
                 if (minus && y_minus < yi - halfSym)
-                    painter->drawLine(QPointF(xi, yi - halfSym), QPointF(xi, y_minus));
+                    drawBreakAwareLine(QPointF(xi, yi - halfSym), QPointF(xi, y_minus));
             }
         } else if (type == Horizontal) {
-            double x_plus = xMap.xTransform(x(i) + err[i]);
-            double x_minus = xMap.xTransform(x(i) - err[i]);
+            const double xPlusVal = x(i) + err[i];
+            const double xMinusVal = x(i) - err[i];
+            double x_plus = xMap.xTransform(xPlusVal);
+            double x_minus = xMap.xTransform(xMinusVal);
             bool x_minus_is_finite = std::isfinite(x_minus);
 
-            if (xMap.transformation()->type() == QwtScaleTransformation::Log10 && err[i] >= x(i)) {
+            if (xMap.transformation()
+                && xMap.transformation()->type() == QwtScaleTransformation::Log10
+                && err[i] >= x(i)) {
                 x_minus = xMap.xTransform(qMin(xMap.s1(), xMap.s2()));
                 x_minus_is_finite = false;
             }
             if (!std::isfinite(x_plus) || !std::isfinite(x_minus))
                 continue;
 
-            if (plus)
-                painter->drawLine(QPointF(x_plus, yi - halfCap), QPointF(x_plus, yi + halfCap));
-            if (minus && x_minus_is_finite)
-                painter->drawLine(QPointF(x_minus, yi - halfCap), QPointF(x_minus, yi + halfCap));
+            if (plus && !brk.xValueInGap(xPlusVal))
+                drawBreakAwareLine(QPointF(x_plus, yi - halfCap), QPointF(x_plus, yi + halfCap));
+            if (minus && x_minus_is_finite && !brk.xValueInGap(xMinusVal))
+                drawBreakAwareLine(QPointF(x_minus, yi - halfCap), QPointF(x_minus, yi + halfCap));
 
             if (through) {
                 if (plus && minus)
-                    painter->drawLine(QPointF(x_minus, yi), QPointF(x_plus, yi));
+                    drawBreakAwareLine(QPointF(x_minus, yi), QPointF(x_plus, yi));
                 else if (plus)
-                    painter->drawLine(QPointF(xi, yi), QPointF(x_plus, yi));
+                    drawBreakAwareLine(QPointF(xi, yi), QPointF(x_plus, yi));
                 else if (minus)
-                    painter->drawLine(QPointF(x_minus, yi), QPointF(xi, yi));
+                    drawBreakAwareLine(QPointF(x_minus, yi), QPointF(xi, yi));
             } else if (x_plus >= x_minus) {
                 if (plus && x_plus > xi + halfSym)
-                    painter->drawLine(QPointF(xi + halfSym, yi), QPointF(x_plus, yi));
+                    drawBreakAwareLine(QPointF(xi + halfSym, yi), QPointF(x_plus, yi));
                 if (minus && x_minus < xi - halfSym)
-                    painter->drawLine(QPointF(xi - halfSym, yi), QPointF(x_minus, yi));
+                    drawBreakAwareLine(QPointF(xi - halfSym, yi), QPointF(x_minus, yi));
             } else {
                 if (plus && x_plus < xi - halfSym)
-                    painter->drawLine(QPointF(xi - halfSym, yi), QPointF(x_plus, yi));
+                    drawBreakAwareLine(QPointF(xi - halfSym, yi), QPointF(x_plus, yi));
                 if (minus && x_minus > xi + halfSym)
-                    painter->drawLine(QPointF(xi + halfSym, yi), QPointF(x_minus, yi));
+                    drawBreakAwareLine(QPointF(xi + halfSym, yi), QPointF(x_minus, yi));
             }
         }
     }
@@ -313,7 +379,16 @@ void QwtErrorPlotCurve::setXErrors(bool yes)
 void QwtErrorPlotCurve::setWidth(int w)
 {
     QPen p = pen();
-    p.setWidth(w);
+    p.setCosmetic(false);
+    p.setWidthF(double(w));
+    setPen(p);
+}
+
+void QwtErrorPlotCurve::setWidthF(double w)
+{
+    QPen p = pen();
+    p.setCosmetic(false);
+    p.setWidthF(qMax(0.1, w));
     setPen(p);
 }
 

@@ -122,6 +122,7 @@ protected:
     virtual void mouseReleaseEvent(QMouseEvent *event) override;
     virtual void mouseDoubleClickEvent(QMouseEvent *event) override;
     virtual bool eventFilter(QObject *watched, QEvent *event) override;
+    virtual bool viewportEvent(QEvent *event) override;
 
     //! Flag: show/high column comments
     bool d_show_comments;
@@ -133,6 +134,8 @@ protected:
     QPointer<QLineEdit> d_inline_editor;
     int d_inline_col = -1;
     int d_inline_subrow = -1;
+    QString d_inline_initial_text;
+    bool d_inline_had_multiline_comment = false;
     bool d_committing_inline = false;
 };
 

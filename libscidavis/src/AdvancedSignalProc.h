@@ -34,6 +34,11 @@ public:
         FilterSobelGradient2D = 3,
         FilterSubtractPlanarTilt2D = 4
     };
+    enum Fft2DOutputMode {
+        Fft2DMagnitudeOrReal = 0,
+        Fft2DComplexReIm = 1,
+        Fft2DMagnitudeAndPhase = 2
+    };
 
     static QwtPlotCurve *iirFilter(ApplicationWindow *app, Graph *g, const QString &curveTitle,
                                    IirDesign design, PassType pass, int order,
@@ -56,6 +61,11 @@ public:
                                            double thresholdScale = 1.0);
     static Matrix *fft2D(ApplicationWindow *app, Matrix *srcMatrix, bool inverse = false,
                          bool shiftCenter = true);
+    static Matrix *fft2D(ApplicationWindow *app, Matrix *srcMatrix, bool inverse,
+                         bool shiftCenter, Matrix *imagOrPhaseMatrix,
+                         Matrix **outAuxMatrix = nullptr,
+                         Fft2DOutputMode outputMode = Fft2DMagnitudeOrReal,
+                         QString *errorOut = nullptr);
     static Table *welchPSD(ApplicationWindow *app, Graph *g, const QString &curveTitle,
                            int segmentLen = 128, bool plotResult = true);
     static Table *crossCoherence(ApplicationWindow *app, Graph *g, const QString &curveA,

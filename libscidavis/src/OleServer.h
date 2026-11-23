@@ -39,6 +39,9 @@ inline constexpr CLSID graph_clsid = {
     0x8e6b9541, 0x3c74, 0x4d28, { 0xa9, 0x15, 0x7d, 0x84, 0xe5, 0xa1, 0x20, 0x01 }
 };
 
+// Maximum size of a single OLE stream accepted by PowerPoint / compound storage safety check.
+inline constexpr qint64 kMaxOleStreamBytes = 128000000LL;
+
 struct OleGraphPayload
 {
     QByteArray projectBytes;
@@ -81,6 +84,9 @@ struct RegistrationInfo
     bool pointsToSelf = false;
 };
 RegistrationInfo queryRegistration();
+// Returns true when registration is missing/broken or (for ToriGraph.exe) points to a different
+// installation; optionally fills problemTextOut with a translated explanation.
+bool hasRegistrationProblem(const RegistrationInfo &reg, QString *problemTextOut = nullptr);
 
 // Writes the HKCU registration so that it points to this executable (explicit repair).
 bool ensureRegistryRegistered(QString *errMsg = nullptr);

@@ -39,6 +39,8 @@ public:
         OpWaveletDenoise = 11
     };
 
+    //! Per-window manager. app == nullptr (or no argument) returns the legacy default instance.
+    //! A manager created for a window is released automatically when that window is destroyed.
     static RecalcManager *instance(ApplicationWindow *app = nullptr);
 
     void setRecalcMode(RecalcMode mode);
@@ -55,8 +57,27 @@ public:
     int recalculateAll(Graph *filterGraph = nullptr);
     void updateLockBadge(Graph *g);
 
+    //! Error text of the last failed recalculation (empty if the links are healthy).
+    //! g == nullptr looks at every link; otherwise only the links of that graph.
+    QString lastError(Graph *g = nullptr) const;
+    QString lastErrorForLink(int linkId) const;
+
+    //! Serialize the links of one graph (single-line XML fragment, empty if it has none).
+    QString saveLinksXmlForGraph(const Graph *g) const;
+    //! Recreate links from saveLinksXmlForGraph() output. Does not recalculate.
+    void restoreLinkXmlForGraph(ApplicationWindow *app, Graph *g, const QString &xml);
+    //! Reference-only updates after a table / column rename (links are not made dirty).
+    //! notifyColumnRenamed takes short column names (without the "<table>_" prefix).
+    void notifyTableRenamed(const QString &oldName, const QString &newName);
+    void notifyColumnRenamed(const QString &tblName, const QString &oldCol,
+                             const QString &newCol);
+
     static void repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType op,
                                    const QVariantMap &params = QVariantMap());
+
+signals:
+    //! Emitted when a link could not be recalculated. The previous output is left untouched.
+    void linkFailed(Graph *g, const QString &message);
 
 private slots:
     void onTableDataModified(Table *t, const QString &colName);
@@ -79,11 +100,14 @@ private:
         QVariantMap params;
         QPointer<Table> resultTable;
         bool dirty = false;
+        QString lastError;
     };
 
     int findLinkIndexById(int id) const;
     bool executeLinkById(int id);
     bool executeLink(RecalcLink &link);
+    void reportLinkFailure(const RecalcLink &link, const QString &message);
+    void connectLinkSources(Graph *g, Table *srcTable);
     void pruneDeadLinks();
 
     QPointer<ApplicationWindow> d_app;

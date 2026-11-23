@@ -66,6 +66,9 @@
 #include <QRadioButton>
 #include <QToolButton>
 #include <QTextCursor>
+#include <QScrollArea>
+#include <QGuiApplication>
+#include <QScreen>
 
 #include <qwt_plot.h>
 #include <qwt_scale_widget.h>
@@ -102,6 +105,59 @@ void registerAxesDialogTranslations()
     reg("Insert Subscript (<sub>...</sub>)", "下付き文字を挿入 (<sub>...</sub>)");
     reg("Insert Superscript (<sup>...</sup>)", "上付き文字を挿入 (<sup>...</sup>)");
     reg("Insert Materials Science Symbol", "材料科学記号・単位を挿入");
+    reg("Extra border drawn around the plot area. For a normal 4-sided box use the axis lines "
+        "(Draw backbones / Frame Presets) instead, otherwise the frame is drawn twice.",
+        "プロット領域の外側に重ねる追加の外枠です。通常の4辺の枠は軸線 (Draw backbones / "
+        "Frame Presets) で描いてください。併用すると二重線になります。");
+    reg("Fill Opacity", "塗りの不透明度");
+    reg("Add Y=0 Line", "Y=0 の線を追加");
+    reg("Add X=0 Line", "X=0 の線を追加");
+    reg("Zero lines (use Reference Lines)", "ゼロ基準線 (参照線タブを使用)");
+}
+
+// 単位表記のコンボ項目(0 = Name (Unit), 1 = Name / Unit (ISIJ), 2 = Name [Unit])と
+// Column::UnitFormat の相互変換。
+int unitFormatToIndex(Column::UnitFormat fmt)
+{
+    switch (fmt) {
+    case Column::UnitFormat::ISIJSlash:
+        return 1;
+    case Column::UnitFormat::Bracket:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+Column::UnitFormat unitFormatFromIndex(int idx)
+{
+    switch (idx) {
+    case 1:
+        return Column::UnitFormat::ISIJSlash;
+    case 2:
+        return Column::UnitFormat::Bracket;
+    default:
+        return Column::UnitFormat::Paren;
+    }
+}
+
+// 各タブのページを内部 QScrollArea にする(911x472 などの小画面でも使えるように)。
+// 戻り値のスクロール領域がタブのページ本体(currentWidget() との比較に使う)で、
+// innerOut にレイアウトを載せる中身のウィジェットを返す。
+QWidget *createScrollPage(QWidget *&innerOut)
+{
+    QScrollArea *area = new QScrollArea();
+    area->setWidgetResizable(true);
+    area->setFrameShape(QFrame::NoFrame);
+    area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    area->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    area->setAutoFillBackground(false);
+    area->viewport()->setAutoFillBackground(false);
+    QWidget *inner = new QWidget();
+    inner->setAutoFillBackground(false);
+    area->setWidget(inner);
+    innerOut = inner;
+    return area;
 }
 
 QStringList minorTickItemsForScale(bool isLog10)
@@ -177,10 +233,11 @@ AxesDialog::AxesDialog()
     initAxisBreakPage();
     updateSidebarListWidths();
 
+    // 各タブは内部 QScrollArea を持つ(小画面対応)。テスト・外部コードが判別できるよう目印を付ける。
+    setProperty("toriHasInternalScroll", true);
+
+    // buttonApplyAllAxes は Axis タブ内(initAxesPage)で生成する。ここは OK/Apply/Cancel のみ。
     auto bottomButtons = new QHBoxLayout();
-    buttonApplyAllAxes = new QPushButton(tr("Apply Tick && Axis Style to All 4 Axes"));
-    buttonApplyAllAxes->setToolTip(tr("Apply Tick & Axis Style to All 4 Axes"));
-    bottomButtons->addWidget(buttonApplyAllAxes);
     bottomButtons->addStretch();
 
     buttonApply = new QPushButton();
@@ -274,7 +331,8 @@ void AxesDialog::changeEvent(QEvent *event)
 
 void AxesDialog::initScalesPage()
 {
-    scalesPage = new QWidget();
+    QWidget *scalesInner = nullptr;
+    scalesPage = createScrollPage(scalesInner);
 
     QGroupBox *middleBox = new QGroupBox(QString());
     QGridLayout *middleLayout = new QGridLayout(middleBox);
@@ -368,7 +426,7 @@ void AxesDialog::initScalesPage()
     // resize the list to the maximum width
     axesList->resize(axesList->maximumWidth(), axesList->height());
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(scalesPage);
+    QHBoxLayout *mainLayout = new QHBoxLayout(scalesInner);
     mainLayout->addWidget(axesList);
     mainLayout->addWidget(middleBox);
     mainLayout->addWidget(rightBox);
@@ -401,7 +459,8 @@ void AxesDialog::initScalesPage()
 
 void AxesDialog::initGridPage()
 {
-    gridPage = new QWidget();
+    QWidget *gridInner = nullptr;
+    gridPage = createScrollPage(gridInner);
 
     QGroupBox *rightBox = new QGroupBox(QString());
     QGridLayout *rightLayout = new QGridLayout(rightBox);
@@ -471,7 +530,12 @@ void AxesDialog::initGridPage()
     boxGridYAxis->addItem(tr("Right"));
     rightLayout->addWidget(boxGridYAxis, 4, 2);
 
-    rightLayout->addWidget(new QLabel(tr("Additional lines")), 5, 0);
+    // X=0 / Y=0 のゼロ基準線は Reference Lines タブに一本化した。ここのチェックボックスは
+    // 旧ファイルや Zero-Crossed プリセットでグリッドのゼロ線が有効なときだけ(消せるように)表示する。
+    // 読み書き経路(showGridOptions / updateGrid / commitGridState の d_stagedGridX/YZero)は
+    // 互換のためそのまま残す。表示の切り替えは updateLegacyZeroLineVisibility()。
+    labelGridZeroLines = new QLabel(tr("Zero lines (use Reference Lines)"));
+    rightLayout->addWidget(labelGridZeroLines, 5, 0);
 
     boxXLine = new QCheckBox();
     boxXLine->setText(tr("X=0"));
@@ -481,6 +545,10 @@ void AxesDialog::initGridPage()
     boxYLine = new QCheckBox();
     boxYLine->setText(tr("Y=0"));
     rightLayout->addWidget(boxYLine, 5, 2);
+
+    labelGridZeroLines->hide();
+    boxXLine->hide();
+    boxYLine->hide();
 
     rightLayout->setRowStretch(6, 1);
     rightLayout->setColumnStretch(4, 1);
@@ -510,7 +578,7 @@ void AxesDialog::initGridPage()
     // resize the list to the maximum width
     axesGridList->resize(axesGridList->maximumWidth(), axesGridList->height());
 
-    QHBoxLayout *mainLayout2 = new QHBoxLayout(gridPage);
+    QHBoxLayout *mainLayout2 = new QHBoxLayout(gridInner);
     mainLayout2->addWidget(axesGridList);
     mainLayout2->addWidget(rightBox);
 
@@ -568,7 +636,8 @@ void AxesDialog::initAxesPage()
     // axes page
     const QIcon axisItemIcon = IconLoader::duotoneIcon(QStringLiteral("axis-ticks-in"));
 
-    axesPage = new QWidget();
+    QWidget *axesInner = nullptr;
+    axesPage = createScrollPage(axesInner);
 
     boxAxisType = new QComboBox();
     boxAxisType->addItem(tr("Numeric"), (int)Graph::AxisType::Numeric);
@@ -638,6 +707,8 @@ void AxesDialog::initAxesPage()
     hl->addWidget(buttonLabelFont);
 
     boxTitleFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxTitleFontSize->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
+    boxTitleFontSize->setSingleStep(PlotStyleLimits::kFontSizeStep);
     boxTitleFontSize->setValue(12.0);
     boxTitleFontSize->setToolTip(tr("Axis Title Font Size"));
     hl->addWidget(boxTitleFontSize);
@@ -660,6 +731,7 @@ void AxesDialog::initAxesPage()
     boxAxisUnitFormat = new QComboBox();
     boxAxisUnitFormat->addItem(tr("Name (Unit)"));
     boxAxisUnitFormat->addItem(tr("Name / Unit (ISIJ)"));
+    boxAxisUnitFormat->addItem(tr("Name [Unit]"));
     ufLayout->addWidget(boxAxisUnitFormat, 1);
     labelBoxLayout->addLayout(ufLayout);
 
@@ -689,6 +761,8 @@ void AxesDialog::initAxesPage()
     btnAxesFont->setText(tr("Axis &Font"));
     axesFontRowLayout->addWidget(btnAxesFont);
     boxAxesFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxAxesFontSize->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
+    boxAxesFontSize->setSingleStep(PlotStyleLimits::kFontSizeStep);
     boxAxesFontSize->setValue(12.0);
     boxAxesFontSize->setToolTip(tr("Tick Labels Font Size"));
     axesFontRowLayout->addWidget(boxAxesFontSize);
@@ -792,12 +866,20 @@ void AxesDialog::initAxesPage()
 
     rightBoxLayout->setRowStretch(10, 1);
 
+    // 「4辺すべてに適用」は Axis タブ専用の操作なので、全タブ共通のフッターからここへ移した。
+    QHBoxLayout *applyAllRow = new QHBoxLayout();
+    buttonApplyAllAxes = new QPushButton(tr("Apply Tick && Axis Style to All 4 Axes"));
+    buttonApplyAllAxes->setToolTip(tr("Apply Tick & Axis Style to All 4 Axes"));
+    applyAllRow->addWidget(buttonApplyAllAxes);
+    applyAllRow->addStretch();
+
     QVBoxLayout *rightLayout = new QVBoxLayout();
     rightLayout->addLayout(topLayout);
     rightLayout->addLayout(bottomLayout);
+    rightLayout->addLayout(applyAllRow);
     rightLayout->addStretch(1);
 
-    QHBoxLayout *mainLayout3 = new QHBoxLayout(axesPage);
+    QHBoxLayout *mainLayout3 = new QHBoxLayout(axesInner);
     mainLayout3->addWidget(axesTitlesList);
     mainLayout3->addLayout(rightLayout);
 
@@ -845,10 +927,16 @@ void AxesDialog::initAxesPage()
 
 void AxesDialog::initFramePage()
 {
-    frame = new QWidget();
+    QWidget *frameInner = nullptr;
+    frame = createScrollPage(frameInner);
 
     boxFramed = new QGroupBox(tr("Canvas frame"));
     boxFramed->setCheckable(true);
+    // 4辺の枠は軸線(Axis タブの Backbone / Frame Presets)で描くので、キャンバス枠はそれに重ねる
+    // 追加の外枠という位置づけ。重複して二重線にならないよう案内する(保存値・読み書き経路は従来どおり)。
+    boxFramed->setToolTip(tr("Extra border drawn around the plot area. For a normal 4-sided box "
+                             "use the axis lines (Draw backbones / Frame Presets) instead, "
+                             "otherwise the frame is drawn twice."));
 
     QGridLayout *boxFramedLayout = new QGridLayout(boxFramed);
     boxFramedLayout->addWidget(new QLabel(tr("Color")), 0, 0);
@@ -870,8 +958,13 @@ void AxesDialog::initFramePage()
     boxAxesLayout->addWidget(boxBackbones, 0, 0);
 
     boxAxesLayout->addWidget(new QLabel(tr("Line Width")), 1, 0);
+    // 軸線幅: PlotStyleLimits::kAxisLineWidth* に上限を合わせる。ただし Plot::axesLinewidth() /
+    // Graph::setAxesLinewidth() / QwtScaleWidget::penWidth() / .sciprj の "AxesLineWidth" が
+    // いずれも整数のため、このダイアログだけ 0.5 px 刻み(QDoubleSpinBox)にすると丸められて
+    // 表示と適用がずれる。Graph/Plot 側が小数対応するまでは整数 px のまま(下限は 0.5 を切り上げた 1)。
     boxAxesLinewidth = new QSpinBox();
-    boxAxesLinewidth->setRange(1, 100);
+    boxAxesLinewidth->setRange(int(std::ceil(PlotStyleLimits::kAxisLineWidthMin)),
+                               int(PlotStyleLimits::kAxisLineWidthMax));
     boxAxesLinewidth->setSuffix(QStringLiteral(" px"));
     boxAxesLayout->addWidget(boxAxesLinewidth, 1, 1);
 
@@ -901,7 +994,7 @@ void AxesDialog::initFramePage()
     presetsLayout->addWidget(btnPresetZeroCrossed);
     presetsLayout->addStretch(1);
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(frame);
+    QHBoxLayout *mainLayout = new QHBoxLayout(frameInner);
     mainLayout->addWidget(boxFramed);
     mainLayout->addWidget(boxAxes);
     mainLayout->addWidget(boxPresets);
@@ -927,7 +1020,8 @@ void AxesDialog::initFramePage()
 
 void AxesDialog::initReferenceLinesPage()
 {
-    refLinesPage = new QWidget();
+    QWidget *refInner = nullptr;
+    refLinesPage = createScrollPage(refInner);
 
     QGroupBox *listGroup = new QGroupBox(tr("Reference Lines"));
     QVBoxLayout *listLayout = new QVBoxLayout(listGroup);
@@ -944,6 +1038,14 @@ void AxesDialog::initReferenceLinesPage()
     listBtns->addWidget(btnRefRemove);
     listBtns->addWidget(btnRefClear);
     listLayout->addLayout(listBtns);
+
+    // ゼロ基準線(X=0 / Y=0)はここに一本化。Grid タブのチェックボックスの代わりに1回で追加できる。
+    QHBoxLayout *zeroBtns = new QHBoxLayout();
+    btnRefAddZeroY = new QPushButton(tr("Add Y=0 Line"));
+    btnRefAddZeroX = new QPushButton(tr("Add X=0 Line"));
+    zeroBtns->addWidget(btnRefAddZeroY);
+    zeroBtns->addWidget(btnRefAddZeroX);
+    listLayout->addLayout(zeroBtns);
 
     QGroupBox *propsGroup = new QGroupBox(tr("Properties"));
     QGridLayout *gl = new QGridLayout(propsGroup);
@@ -1004,9 +1106,18 @@ void AxesDialog::initReferenceLinesPage()
     refFillColorBtn = new ColorButton();
     refFillColorBtn->setColor(QColor(30, 102, 184, 32));
     gl->addWidget(refFillColorBtn, 7, 1);
-    gl->setRowStretch(8, 1);
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(refLinesPage);
+    // 塗りの不透明度は 0-100 %(PlotStyleLimits::kOpacity*)。色のアルファ値(0-255)へ変換して使う。
+    gl->addWidget(new QLabel(tr("Fill Opacity")), 8, 0);
+    refFillOpacityBox = new QSpinBox();
+    refFillOpacityBox->setRange(PlotStyleLimits::kOpacityMinPercent,
+                                PlotStyleLimits::kOpacityMaxPercent);
+    refFillOpacityBox->setSuffix(QStringLiteral(" %"));
+    refFillOpacityBox->setValue(qRound(32.0 * 100.0 / 255.0)); // 既定の塗り色 alpha 32
+    gl->addWidget(refFillOpacityBox, 8, 1);
+    gl->setRowStretch(9, 1);
+
+    QHBoxLayout *mainLayout = new QHBoxLayout(refInner);
     mainLayout->addWidget(listGroup, 1);
     mainLayout->addWidget(propsGroup, 1);
 
@@ -1018,6 +1129,8 @@ void AxesDialog::initReferenceLinesPage()
     connect(btnRefUpdate, SIGNAL(clicked()), this, SLOT(updateSelectedRefLineFromUi()));
     connect(btnRefRemove, SIGNAL(clicked()), this, SLOT(removeSelectedRefLine()));
     connect(btnRefClear, SIGNAL(clicked()), this, SLOT(clearAllRefLines()));
+    connect(btnRefAddZeroY, &QPushButton::clicked, this, [this]() { addZeroRefLine(0); });
+    connect(btnRefAddZeroX, &QPushButton::clicked, this, [this]() { addZeroRefLine(1); });
 
     auto markRefDirty = [this]() {
         if (!d_loadingUi)
@@ -1038,13 +1151,39 @@ void AxesDialog::initReferenceLinesPage()
     connect(refLabelEdit, &QLineEdit::textChanged, this,
             [markRefDirty](const QString &) { markRefDirty(); });
     connect(refFillBox, &QCheckBox::toggled, this, [markRefDirty](bool) { markRefDirty(); });
-    connect(refFillColorBtn, &ColorButton::changed, this,
-            [markRefDirty](const QColor &) { markRefDirty(); });
+    connect(refFillColorBtn, &ColorButton::changed, this, [this, markRefDirty](const QColor &c) {
+        if (refFillOpacityBox) {
+            const int pct = qBound(PlotStyleLimits::kOpacityMinPercent,
+                                   qRound(c.alpha() * 100.0 / 255.0),
+                                   PlotStyleLimits::kOpacityMaxPercent);
+            if (refFillOpacityBox->value() != pct) {
+                QSignalBlocker blocker(refFillOpacityBox);
+                refFillOpacityBox->setValue(pct);
+            }
+        }
+        markRefDirty();
+    });
+    connect(refFillOpacityBox, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this,
+            [this, markRefDirty](int pct) {
+                if (refFillColorBtn) {
+                    QColor c = refFillColorBtn->color();
+                    const int curPct = qBound(PlotStyleLimits::kOpacityMinPercent,
+                                              qRound(c.alpha() * 100.0 / 255.0),
+                                              PlotStyleLimits::kOpacityMaxPercent);
+                    if (curPct != pct) {
+                        c.setAlpha(qBound(0, qRound(pct * 255.0 / 100.0), 255));
+                        QSignalBlocker blocker(refFillColorBtn);
+                        refFillColorBtn->setColor(c);
+                    }
+                }
+                markRefDirty();
+            });
 }
 
 void AxesDialog::initAxisBreakPage()
 {
-    axisBreakPage = new QWidget();
+    QWidget *breakInner = nullptr;
+    axisBreakPage = createScrollPage(breakInner);
 
     const QIcon scaleIcon = IconLoader::duotoneIcon(QStringLiteral("axis-scale"));
 
@@ -1115,7 +1254,7 @@ void AxesDialog::initAxisBreakPage()
 
     gl->setRowStretch(7, 1);
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(axisBreakPage);
+    QHBoxLayout *mainLayout = new QHBoxLayout(breakInner);
     mainLayout->addWidget(axisBreakAxesList);
     mainLayout->addWidget(breakBox, 1);
 
@@ -1564,8 +1703,10 @@ void AxesDialog::customAxisFont()
 
 void AxesDialog::accept()
 {
+    // exec() のイベントループを Accepted で終えるため QDialog::accept() を使う
+    // (以前の close() は reject 経由になり、exec() の戻り値が常に Rejected になる)。
     if (updatePlot())
-        close();
+        QDialog::accept();
 }
 
 void AxesDialog::majorGridEnabled(bool on)
@@ -1719,7 +1860,20 @@ void AxesDialog::showGridOptions(int axis)
         d_stagedGridYZero = boxYLine->isChecked();
     }
 
+    updateLegacyZeroLineVisibility();
     d_loadingUi = prevLoading;
+}
+
+void AxesDialog::updateLegacyZeroLineVisibility()
+{
+    if (!labelGridZeroLines || !boxXLine || !boxYLine)
+        return;
+    // ゼロ線が有効なときだけ旧チェックボックスを見せる(無効なら Reference Lines タブを使う)。
+    const bool legacyOn = d_stagedGridXZero || d_stagedGridYZero || boxXLine->isChecked()
+            || boxYLine->isChecked();
+    labelGridZeroLines->setVisible(legacyOn);
+    boxXLine->setVisible(legacyOn);
+    boxYLine->setVisible(legacyOn);
 }
 
 void AxesDialog::stepEnabled()
@@ -1982,10 +2136,7 @@ bool AxesDialog::updatePlot()
 
     if (commitAxes) {
         if (d_unitFormatDirty) {
-            const Column::UnitFormat chosenFmt = (d_stagedUnitFormatIdx == 1)
-                    ? Column::UnitFormat::ISIJSlash
-                    : Column::UnitFormat::Paren;
-            d_graph->setAxisUnitFormat(chosenFmt);
+            d_graph->setAxisUnitFormat(unitFormatFromIndex(d_stagedUnitFormatIdx));
         }
         for (int r = 0; r < 4; ++r) {
             if (d_stagedAxes[r].dirty)
@@ -2131,6 +2282,8 @@ void AxesDialog::refreshGraphState()
         QSignalBlocker b6(boxMinorTicksLength);
         QSignalBlocker b7(boxMajorTicksLength);
 
+        // 共通上限(20 px)を超える既存値(旧ファイル由来)を黙って切り詰めないよう、上限だけ広げる。
+        boxAxesLinewidth->setMaximum(qMax(int(PlotStyleLimits::kAxisLineWidthMax), p->axesLinewidth()));
         boxAxesLinewidth->setValue(p->axesLinewidth());
         boxBackbones->setChecked(d_graph->axesBackbones());
 
@@ -2337,11 +2490,9 @@ void AxesDialog::updateTitleBox(int axis)
     QSignalBlocker b1(boxTitle);
     QSignalBlocker b2(boxAutoAxisTitle);
     QSignalBlocker b3(boxAxisUnitFormat);
-    const int fmtIdx = d_unitFormatDirty
-            ? d_stagedUnitFormatIdx
-            : (d_graph->axisUnitFormat() == Column::UnitFormat::ISIJSlash ? 1 : 0);
-    const Column::UnitFormat effFmt =
-            (fmtIdx == 1) ? Column::UnitFormat::ISIJSlash : Column::UnitFormat::Paren;
+    const int fmtIdx = d_unitFormatDirty ? d_stagedUnitFormatIdx
+                                         : unitFormatToIndex(d_graph->axisUnitFormat());
+    const Column::UnitFormat effFmt = unitFormatFromIndex(fmtIdx);
     const bool isAuto = (axis >= 0 && axis < 4 && d_stagedAxes[axis].dirty)
             ? d_stagedAxes[axis].autoTitle
             : d_graph->isAxisTitleAuto(axisId);
@@ -2391,11 +2542,8 @@ void AxesDialog::onAutoAxisTitleToggled(bool checked)
         const int fmtIdx = d_unitFormatDirty
                 ? d_stagedUnitFormatIdx
                 : (boxAxisUnitFormat ? boxAxisUnitFormat->currentIndex()
-                                     : (d_graph->axisUnitFormat() == Column::UnitFormat::ISIJSlash
-                                                ? 1
-                                                : 0));
-        const Column::UnitFormat fmt =
-                (fmtIdx == 1) ? Column::UnitFormat::ISIJSlash : Column::UnitFormat::Paren;
+                                     : unitFormatToIndex(d_graph->axisUnitFormat()));
+        const Column::UnitFormat fmt = unitFormatFromIndex(fmtIdx);
         QString autoTxt = previewAutoAxisTitle(axisId, fmt);
         if (autoTxt.isEmpty())
             autoTxt = d_graph->axisTitle(axisId);
@@ -2416,8 +2564,7 @@ void AxesDialog::onAxisUnitFormatChanged(int index)
     d_unitFormatDirty = true;
     d_stagedUnitFormatIdx = index;
     d_axesTabDirty = true;
-    const Column::UnitFormat fmt =
-            (index == 1) ? Column::UnitFormat::ISIJSlash : Column::UnitFormat::Paren;
+    const Column::UnitFormat fmt = unitFormatFromIndex(index);
 
     const int curRow = axesTitlesList ? axesTitlesList->currentRow() : 0;
     if (curRow >= 0 && curRow < 4) {
@@ -2575,6 +2722,38 @@ void AxesDialog::setCurrentScale(int axisPos)
     }
 }
 
+void AxesDialog::setCurrentQwtAxis(int qwtAxis)
+{
+    // QwtPlot の軸ID(yLeft=0, yRight=1, xBottom=2, xTop=3)を各タブの行番号
+    // (0 = Bottom, 1 = Left, 2 = Top, 3 = Right)に直す。setCurrentScale() は
+    // QwtScaleDraw::Alignment を受け取る別仕様なので、軸IDをそのまま渡してはいけない。
+    int row = -1;
+    switch (qwtAxis) {
+    case QwtPlot::xBottom:
+        row = 0;
+        break;
+    case QwtPlot::yLeft:
+        row = 1;
+        break;
+    case QwtPlot::xTop:
+        row = 2;
+        break;
+    case QwtPlot::yRight:
+        row = 3;
+        break;
+    default:
+        break;
+    }
+    if (row < 0)
+        return;
+    if (axesList)
+        axesList->setCurrentRow(row);
+    if (axesTitlesList)
+        axesTitlesList->setCurrentRow(row);
+    if (axisBreakAxesList)
+        axisBreakAxesList->setCurrentRow(row);
+}
+
 void AxesDialog::showAxesPage()
 {
     if (generalDialog.currentWidget() != (QWidget *)axesPage)
@@ -2709,9 +2888,8 @@ void AxesDialog::ensureAxisRowStaged(int row)
     st.showBackbone = d_graph->isAxisBackboneVisible(axis);
     st.title = d_graph->axisTitle(axis);
     st.autoTitle = d_graph->isAxisTitleAuto(axis);
-    st.unitDisplayMode = d_unitFormatDirty
-            ? d_stagedUnitFormatIdx
-            : (d_graph->axisUnitFormat() == Column::UnitFormat::ISIJSlash ? 1 : 0);
+    st.unitDisplayMode = d_unitFormatDirty ? d_stagedUnitFormatIdx
+                                           : unitFormatToIndex(d_graph->axisUnitFormat());
     st.axisType = axesType.value(axis, Graph::AxisType::Numeric);
     st.axisColor = d_graph->axisColor(axis);
     st.axisNumColor = d_graph->axisNumbersColor(axis);
@@ -2953,6 +3131,7 @@ void AxesDialog::stageFramePreset(Graph::FramePreset preset)
         QSignalBlocker b(boxYLine);
         boxYLine->setChecked(zeroLines);
     }
+    updateLegacyZeroLineVisibility();
 
     const int curRow = (axesTitlesList && axesTitlesList->currentRow() >= 0)
             ? axesTitlesList->currentRow()
@@ -2996,8 +3175,15 @@ Graph::ReferenceLineSpec AxesDialog::buildRefLineSpecFromUi() const
     sp.label = refLabelEdit ? refLabelEdit->text().trimmed() : QString();
     sp.fillToAxis = refFillBox && refFillBox->isChecked();
     sp.fillColor = refFillColorBtn ? refFillColorBtn->color() : QColor(30, 102, 184, 32);
-    if (sp.fillToAxis && sp.fillColor.alpha() == 255)
+    if (refFillOpacityBox) {
+        // 不透明度(%)を色のアルファ値に反映する。ボタンの色の不透明度と同じ%なら元のアルファを
+        // 触らない(32 -> 13 % -> 33 のような丸め誤差で値が動かないように)。
+        const int colorPct = qRound(sp.fillColor.alpha() * 100.0 / 255.0);
+        if (refFillOpacityBox->value() != colorPct)
+            sp.fillColor.setAlpha(qBound(0, qRound(refFillOpacityBox->value() * 255.0 / 100.0), 255));
+    } else if (sp.fillToAxis && sp.fillColor.alpha() == 255) {
         sp.fillColor.setAlpha(36);
+    }
     return sp;
 }
 
@@ -3079,6 +3265,7 @@ void AxesDialog::selectReferenceLine(int row)
     QSignalBlocker b7(refLabelEdit);
     QSignalBlocker b8(refFillBox);
     QSignalBlocker b9(refFillColorBtn);
+    QSignalBlocker b10(refFillOpacityBox);
 
     const Graph::ReferenceLineSpec &sp = d_stagedRefLines[row];
     refOrientBox->setCurrentIndex(sp.orientation == 1 ? 1 : 0);
@@ -3093,6 +3280,9 @@ void AxesDialog::selectReferenceLine(int row)
     refLabelEdit->setText(sp.label);
     refFillBox->setChecked(sp.fillToAxis);
     refFillColorBtn->setColor(sp.fillColor);
+    refFillOpacityBox->setValue(qBound(PlotStyleLimits::kOpacityMinPercent,
+                                       qRound(sp.fillColor.alpha() * 100.0 / 255.0),
+                                       PlotStyleLimits::kOpacityMaxPercent));
     d_loadingUi = prevLoading;
 }
 
@@ -3109,6 +3299,30 @@ void AxesDialog::addRefLineFromUi()
     if (!d_graphGuard || !d_graph)
         return;
     d_stagedRefLines.append(buildRefLineSpecFromUi());
+    d_refLinesTabDirty = true;
+    d_refControlsEdited = false;
+    refreshReferenceLinesList();
+    if (refLinesList && refLinesList->count() > 0) {
+        QSignalBlocker b(refLinesList);
+        const int lastRow = refLinesList->count() - 1;
+        refLinesList->setCurrentRow(lastRow);
+        selectReferenceLine(lastRow);
+    }
+}
+
+void AxesDialog::addZeroRefLine(int orientation)
+{
+    if (!d_graphGuard || !d_graph)
+        return;
+    // 現在の見た目(色・線種・太さ)を引き継ぎ、定数値 0 の水平(Y=0)/垂直(X=0)線として追加する。
+    Graph::ReferenceLineSpec sp = buildRefLineSpecFromUi();
+    sp.orientation = (orientation == 1) ? 1 : 0;
+    sp.statMode = QString();
+    sp.value = 0.0;
+    sp.label = QString();
+    sp.fillToAxis = false;
+    sp.visible = true;
+    d_stagedRefLines.append(sp);
     d_refLinesTabDirty = true;
     d_refControlsEdited = false;
     refreshReferenceLinesList();
@@ -3311,15 +3525,23 @@ void AxesDialog::pageChanged(int page)
 
 int AxesDialog::exec()
 {
-    axesList->setCurrentRow(0);
-    axesGridList->setCurrentRow(0);
-    axesTitlesList->setCurrentRow(0);
-    if (axisBreakAxesList)
-        axisBreakAxesList->setCurrentRow(0);
+    // 事前に選ばれた軸/タブ(setCurrentScale / setCurrentQwtAxis / showAxesPage など)は維持する。
+    // 行が未選択(-1)のリストだけ先頭(Bottom / Horizontal Grid)にそろえる。
+    for (QListWidget *lw : { axesList, axesGridList, axesTitlesList, axisBreakAxesList }) {
+        if (lw && lw->currentRow() < 0 && lw->count() > 0)
+            lw->setCurrentRow(0);
+    }
 
-    setModal(true);
-    show();
-    return 0;
+    // 小さい画面でも初期サイズが画面からはみ出さないようにする(各タブは内部スクロールで補う)。
+    if (!isVisible()) {
+        if (QScreen *scr = QGuiApplication::primaryScreen()) {
+            const QSize maxSize = scr->availableGeometry().size() * 9 / 10;
+            resize(sizeHint().boundedTo(maxSize));
+        }
+    }
+
+    // 標準のモーダル exec()。以前は show() だけ呼んで 0 を返す疑似非ブロッキングだった。
+    return QDialog::exec();
 }
 
 void AxesDialog::updateMinorTicksList(int scaleType)

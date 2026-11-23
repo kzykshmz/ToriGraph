@@ -50,6 +50,9 @@ public:
     void setEditorData(QWidget *editor, const QModelIndex &index) const;
     void setModelData(QWidget *editor, QAbstractItemModel *model, const QModelIndex &index) const;
 
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override;
+
 private:
     //! The color for masked cells
     QColor d_masking_color;

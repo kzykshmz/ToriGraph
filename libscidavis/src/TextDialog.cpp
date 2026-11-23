@@ -29,7 +29,6 @@
 
 #include "TextDialog.h"
 #include "ApplicationWindow.h"
-#include "I18nJapanese.h"
 #include "PlotStyleLimits.h"
 
 #include <QFontDialog>
@@ -49,20 +48,20 @@
 #include <QSpinBox>
 
 namespace {
-void registerTextDialogTranslations()
+//! Clamp a font's point size to the range shared with every other font-size spin box
+//! (PlotStyleLimits::kFontSizeMin..kFontSizeMax), so a value typed or stored elsewhere is never
+//! shown clamped in the spin box while the real font keeps a different size.
+void clampFontPointSize(QFont &f)
 {
-    static bool s_registered = false;
-    if (s_registered)
-        return;
-    s_registered = true;
-    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
-            QStringLiteral("Font Size"), QString::fromUtf8("フォントサイズ"));
+    const double pt = PlotStyleLimits::effectiveFontPointSizeF(f, 12.0);
+    const double clamped = qBound(PlotStyleLimits::kFontSizeMin, pt, PlotStyleLimits::kFontSizeMax);
+    if (f.pointSizeF() <= 0.0 || qAbs(clamped - pt) > 1e-9)
+        f.setPointSizeF(clamped);
 }
 } // namespace
 
 TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
-    registerTextDialogTranslations();
     setWindowTitle(tr("Text options"));
     setSizeGripEnabled(true);
 
@@ -95,8 +94,11 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     buttonFont = new QPushButton(tr("&Font"));
     buttonFont->setAutoDefault(false);
     boxFontSize = new PlotStyleLimits::FractionalPtSpinBox();
+    boxFontSize->setRange(PlotStyleLimits::kFontSizeMin, PlotStyleLimits::kFontSizeMax);
+    boxFontSize->setSingleStep(PlotStyleLimits::kFontSizeStep);
     boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));
-    boxFontSize->setToolTip(tr("Font Size"));
+    // "Font Size (pt)" is the key already present in ja_dictionary.tsv.
+    boxFontSize->setToolTip(tr("Font Size (pt)"));
 
     QHBoxLayout *fontRowLayout = new QHBoxLayout();
     fontRowLayout->setContentsMargins(0, 0, 0, 0);
@@ -167,25 +169,6 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
 
     // align the OK, Apply, and Cancel buttons to the right
     topLayout->setColumnStretch(2, 1);
-
-    /* TODO: Angle feature not implemented, yet
-     * caution: This code is still the old Qt3 code
-       QLabel* rotate=new QLabel(tr( "Rotate (deg.)" ),GroupBox1, "TextLabel1_2",0);
-       rotate->hide();
-
-       rotateBox = new QComboBox( false, GroupBox1, "rotateBox" );
-       rotateBox->insertItem( tr( "0" ) );
-       rotateBox->insertItem( tr( "45" ) );
-       rotateBox->insertItem( tr( "90" ) );
-       rotateBox->insertItem( tr( "135" ) );
-       rotateBox->insertItem( tr( "180" ) );
-       rotateBox->insertItem( tr( "225" ) );
-       rotateBox->insertItem( tr( "270" ) );
-       rotateBox->insertItem( tr( "315" ) );
-       rotateBox->setEditable (true);
-       rotateBox->setCurrentItem(0);
-       rotateBox->hide();
-       */
 
     textEditBox = new QTextEdit();
     textEditBox->setAcceptRichText(false);
@@ -305,6 +288,7 @@ void TextDialog::customFont()
         if (fnt.family().trimmed().isEmpty())
             fnt.setFamily(QStringLiteral("Arial"));
         selectedFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(selectedFont, fnt);
+        clampFontPointSize(selectedFont);
         if (boxFontSize) {
             QSignalBlocker sb(boxFontSize);
             boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));
@@ -316,14 +300,12 @@ void TextDialog::customFont()
 
 void TextDialog::setAngle(int /*angle*/)
 {
-    // TODO: Implement angle feature
-    // X	rotateBox-> ...
+    // Rotation is not editable in this dialog; kept for API compatibility with the callers.
 }
 
 int TextDialog::angle()
 {
-    // TODO: Implement angle feature
-    // X	return rotateBox-> ...
+    // Rotation is not editable in this dialog; always 0.
     return 0;
 }
 
@@ -368,6 +350,8 @@ void TextDialog::setFont(const QFont &fnt)
         selectedFont.setPointSizeF(12.0);
     else if (pt > 0.0)
         selectedFont.setPointSizeF(pt);
+    if (selectedFont.pointSizeF() > 0.0)
+        clampFontPointSize(selectedFont);
     if (boxFontSize) {
         QSignalBlocker sb(boxFontSize);
         boxFontSize->setValue(PlotStyleLimits::effectiveFontPointSizeF(selectedFont, 12.0));

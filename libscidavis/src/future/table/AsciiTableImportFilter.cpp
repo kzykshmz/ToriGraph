@@ -77,7 +77,20 @@ namespace {
 // Encoding chosen by the most recent decodeLabTextAuto() call and the report of the most recent
 // import (both only touched from the GUI thread).
 QString g_lastDecodedEncoding;
+int g_lastDecodeInvalidChars = 0;
+QString g_dialogEncoding;
+int g_dialogUnitsRow = -1;
 AsciiTableImportFilter::ImportReport g_lastImportReport;
+
+void attachStdDisplayFormat(Column *col)
+{
+    if (!col)
+        return;
+    if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
+        d2s->setNumericFormat('g');
+        d2s->setNumDigits(6);
+    }
+}
 
 // Japanese texts of the import report and of the drop / append-import messages in
 // ApplicationWindow (registered here because every import passes through this filter).
@@ -100,6 +113,8 @@ void registerImportJapaneseStrings()
         reg("%n line(s) skipped", "読み飛ばした行 %n");
         reg("%n empty cell(s)", "空欄 %n 個");
         reg("%n column(s) imported as text", "文字列として読んだ列 %n");
+        reg("%n undecodable character(s) - the text encoding may be wrong",
+            "文字コードの不一致により %n 文字が正しく読めませんでした");
         reg("Scan %1", "スキャン %1");
         reg("Imported %1", "読み込みました: %1");
         reg("File Not Imported", "読み込めなかったファイル");
@@ -877,13 +892,6 @@ future::Table *tryParseVaspTextInternal(const QString &decoded, const QString &e
     if (!hasCarTag && !nameIsDoscar && !nameIsEigenval)
         return nullptr;
 
-    auto attachStdDisplayFormat = [](Column *col) {
-        if (auto *d2s = qobject_cast<Double2StringFilter *>(col->outputFilter())) {
-            d2s->setNumericFormat('g');
-            d2s->setNumDigits(6);
-        }
-    };
-
     // 1. VASP DOSCAR: line 5 has 5 tokens <EMAX> <EMIN> <NEDOS> <EFERMI> <WEIGHT>
     if ((v5.size() == 5 && !nameIsEigenval) || nameIsDoscar) {
         if (v5.size() < 5)
@@ -1419,6 +1427,223 @@ bool readNextRecordSpans(const QChar *buf, int len, int &ioPos, const QString &e
     return true;
 }
 
+// Parse synchrotron SPEC scan files (#F / #S / #N / #L) into separate column groups per scan.
+future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &effTableName,
+                                        bool convertToNumeric, const QLocale &numericLocale,
+                                        bool firstRowNamesColumns)
+{
+    if (!decoded.contains(QLatin1String("#S")))
+        return nullptr;
+    if (!decoded.contains(QLatin1String("#L"))
+        && !(decoded.contains(QLatin1String("#F")) && decoded.contains(QLatin1String("#N")))) {
+        return nullptr;
+    }
+
+    const QStringList rawLines = decoded.split(QRegularExpression(QStringLiteral("\\r\\n|\\r|\\n")));
+    int sCount = 0;
+    int lCount = 0;
+    bool hasFOrN = false;
+    for (const QString &ln : rawLines) {
+        const QString t = ln.trimmed();
+        if (t.startsWith(QLatin1String("#S")) && (t.size() == 2 || t.at(2).isSpace()))
+            ++sCount;
+        else if (t.startsWith(QLatin1String("#L")) && (t.size() == 2 || t.at(2).isSpace()))
+            ++lCount;
+        else if ((t.startsWith(QLatin1String("#F")) || t.startsWith(QLatin1String("#N")))
+                 && (t.size() == 2 || t.at(2).isSpace()))
+            hasFOrN = true;
+    }
+    if (sCount == 0 || (lCount == 0 && !hasFOrN))
+        return nullptr;
+
+    struct SpecScan
+    {
+        QString scanTitle;
+        QString labelBody;
+        int declaredCols = 0;
+        QVector<QStringList> rows;
+    };
+
+    QStringList preamble;
+    QVector<SpecScan> scans;
+    bool inScan = false;
+    for (const QString &rawLn : rawLines) {
+        const QString t = rawLn.trimmed();
+        if (t.isEmpty())
+            continue;
+        if (t.startsWith(QLatin1String("#S")) && (t.size() == 2 || t.at(2).isSpace())) {
+            SpecScan sc;
+            sc.scanTitle = t.mid(2).trimmed();
+            scans.append(sc);
+            inScan = true;
+            continue;
+        }
+        if (!inScan) {
+            preamble.append(t);
+            continue;
+        }
+        SpecScan &cur = scans.last();
+        if (t.startsWith(QLatin1String("#L")) && (t.size() == 2 || t.at(2).isSpace())) {
+            cur.labelBody = t.mid(2).trimmed();
+        } else if (t.startsWith(QLatin1String("#N")) && (t.size() == 2 || t.at(2).isSpace())) {
+            bool okN = false;
+            const int n = t.mid(2).trimmed().section(QRegularExpression(QStringLiteral("\\s+")), 0, 0).toInt(&okN);
+            if (okN && n > 0)
+                cur.declaredCols = n;
+        } else if (t.startsWith(QLatin1Char('#'))) {
+            // other SPEC directives (#D, #T, #M, #P0, #C, #@...)
+        } else {
+            static const QRegularExpression kWsSep(QStringLiteral("\\s+"));
+            QStringList fields = t.split(kWsSep, Qt::SkipEmptyParts);
+            if (!fields.isEmpty())
+                cur.rows.append(std::move(fields));
+        }
+    }
+
+    // Keep only scans that actually hold data rows
+    QVector<SpecScan> nonEmptyScans;
+    for (SpecScan &sc : scans) {
+        if (!sc.rows.isEmpty())
+            nonEmptyScans.append(std::move(sc));
+    }
+    if (nonEmptyScans.isEmpty())
+        return nullptr;
+
+    auto splitSpecLabels = [](const QString &body, int expectedCols) -> QStringList {
+        if (body.isEmpty())
+            return {};
+        if (body.contains(QLatin1Char('\t'))) {
+            QStringList p = body.split(QLatin1Char('\t'), Qt::SkipEmptyParts);
+            for (QString &s : p)
+                s = s.trimmed();
+            return p;
+        }
+        static const QRegularExpression kTwoSpace(QStringLiteral("\\s{2,}"));
+        static const QRegularExpression kOneSpace(QStringLiteral("\\s+"));
+        QStringList p2 = body.split(kTwoSpace, Qt::SkipEmptyParts);
+        if (expectedCols > 0 && p2.size() == expectedCols)
+            return p2;
+        QStringList p1 = body.split(kOneSpace, Qt::SkipEmptyParts);
+        if (expectedCols > 0 && p1.size() == expectedCols)
+            return p1;
+        return (p2.size() >= 2) ? p2 : p1;
+    };
+
+    const bool useCustomLoc = (numericLocale.decimalPoint() != QLatin1Char('.'));
+    QSet<QString> usedShortNames;
+    auto makeUniqueShort = [&usedShortNames](const QString &candidate, int idx) -> QString {
+        QString base = sanitizeShortColumnIdentifier(candidate);
+        if (base.isEmpty())
+            base = QStringLiteral("Col%1").arg(idx + 1);
+        QString name = base;
+        int suffix = 2;
+        while (usedShortNames.contains(name.toLower()))
+            name = QStringLiteral("%1_%2").arg(base).arg(suffix++);
+        usedShortNames.insert(name.toLower());
+        return name;
+    };
+
+    QList<Column *> cols;
+    int maxDataRows = 0;
+    int missingCells = 0;
+    int textCols = 0;
+    for (int sIdx = 0; sIdx < nonEmptyScans.size(); ++sIdx) {
+        const SpecScan &sc = nonEmptyScans.at(sIdx);
+        int nCols = sc.declaredCols;
+        for (const QStringList &r : sc.rows)
+            nCols = std::max(nCols, int(r.size()));
+        if (nCols <= 0)
+            continue;
+        const QStringList labels =
+                firstRowNamesColumns ? splitSpecLabels(sc.labelBody, nCols) : QStringList();
+        const int nRows = sc.rows.size();
+        maxDataRows = std::max(maxDataRows, nRows);
+        const QString scanSuffix = (nonEmptyScans.size() > 1)
+                ? QStringLiteral("_S%1").arg(
+                        sc.scanTitle.section(QRegularExpression(QStringLiteral("\\s+")), 0, 0).isEmpty()
+                                ? QString::number(sIdx + 1)
+                                : sc.scanTitle.section(QRegularExpression(QStringLiteral("\\s+")), 0, 0))
+                : QString();
+
+        for (int c = 0; c < nCols; ++c) {
+            bool allNumeric = convertToNumeric;
+            if (allNumeric) {
+                for (int r = 0; r < nRows; ++r) {
+                    const QString cell = (c < sc.rows[r].size()) ? sc.rows[r][c] : QString();
+                    if (cell.isEmpty() || isMissingNumericToken(cell, false))
+                        continue;
+                    double dv = 0.0;
+                    if (!tryParseLabDouble(cell, numericLocale, useCustomLoc, dv)) {
+                        allNumeric = false;
+                        break;
+                    }
+                }
+            }
+
+            QString rawHdr = (c < labels.size()) ? labels.at(c) : QString();
+            QString shortNm, longNm, units;
+            if (!rawHdr.isEmpty())
+                AsciiTableImportFilter::splitHeaderNameAndUnits(rawHdr, shortNm, longNm, units);
+            if (shortNm.isEmpty())
+                shortNm = (c == 0) ? QStringLiteral("X") : QStringLiteral("Y%1").arg(c);
+            const QString uniqueShort = makeUniqueShort(shortNm + scanSuffix, cols.size());
+
+            Column *col = nullptr;
+            if (allNumeric) {
+                std::unique_ptr<QVector<qreal>> vec(new QVector<qreal>(nRows, 0.0));
+                IntervalAttribute<bool> inv;
+                for (int r = 0; r < nRows; ++r) {
+                    const QString cell = (c < sc.rows[r].size()) ? sc.rows[r][c] : QString();
+                    double dv = 0.0;
+                    if (!cell.isEmpty() && !isMissingNumericToken(cell, false)
+                        && tryParseLabDouble(cell, numericLocale, useCustomLoc, dv)
+                        && std::isfinite(dv)) {
+                        (*vec)[r] = dv;
+                    } else {
+                        inv.setValue(r, true);
+                        ++missingCells;
+                    }
+                }
+                col = new Column(uniqueShort, std::move(vec), inv);
+                attachStdDisplayFormat(col);
+            } else {
+                std::unique_ptr<QStringList> vec(new QStringList());
+                vec->reserve(nRows);
+                for (int r = 0; r < nRows; ++r)
+                    vec->append((c < sc.rows[r].size()) ? sc.rows[r][c] : QString());
+                col = new Column(uniqueShort, std::move(vec), IntervalAttribute<bool>());
+                ++textCols;
+            }
+            if (!longNm.isEmpty())
+                col->setLongName(longNm);
+            if (!units.isEmpty())
+                col->setUnits(units);
+            col->setPlotDesignation((c == 0) ? SciDAVis::X : SciDAVis::Y);
+            if (!sc.scanTitle.isEmpty())
+                col->setComment(QObject::tr("Scan %1").arg(sc.scanTitle));
+            cols << col;
+        }
+    }
+
+    if (cols.isEmpty())
+        return nullptr;
+
+    g_lastImportReport.separator = QStringLiteral(" ");
+    g_lastImportReport.rasBlocks = nonEmptyScans.size();
+    g_lastImportReport.dataRows = maxDataRows;
+    g_lastImportReport.columns = cols.size();
+    g_lastImportReport.missingCells = missingCells;
+    g_lastImportReport.textColumns = textCols;
+    g_lastImportReport.headerLines = (lCount > 0 && firstRowNamesColumns) ? 1 : 0;
+    g_lastImportReport.preamble = preamble.mid(0, 200).join(QLatin1Char('\n'));
+
+    future::Table *result = new future::Table(0, 0, effTableName);
+    result->appendColumns(cols);
+    if (!g_lastImportReport.preamble.isEmpty())
+        result->setComment(g_lastImportReport.preamble);
+    return result;
+}
+
 future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QString &tableName,
                                          const QString &filePathHint, const QString &separatorHint,
                                          const QString &encodingHint, int unitsRowHint,
@@ -1429,6 +1654,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 {
     g_lastImportReport = AsciiTableImportFilter::ImportReport();
     g_lastDecodedEncoding.clear();
+    g_lastDecodeInvalidChars = 0;
     const QString effTableName =
             tableName.trimmed().isEmpty() ? QObject::tr("Table") : tableName.trimmed();
     if (rawBytes.isEmpty())
@@ -1482,6 +1708,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     const QString decoded = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
     g_lastImportReport.encoding = g_lastDecodedEncoding;
+    g_lastImportReport.invalidChars = g_lastDecodeInvalidChars;
     if (decoded.isEmpty())
         return new future::Table(0, 0, effTableName);
 
@@ -1623,6 +1850,11 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         if (future::Table *vaspTbl =
                     tryParseVaspTextInternal(decoded, effTableName, filePathHint, nullptr)) {
             return vaspTbl;
+        }
+        // 1c. Synchrotron SPEC (#F / #S / #N / #L) parser
+        if (future::Table *specTbl = tryParseSpecTextInternal(
+                    decoded, effTableName, convertToNumeric, numericLocale, firstRowNamesColumns)) {
+            return specTbl;
         }
     }
 
@@ -2391,10 +2623,30 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
         }
         if (row0AllNumeric) {
+            QString hashHdrBody = lastHashCommentBody;
+            bool strippedSpecL = false;
+            if (!lastHashHadSpaceAfterHash && hashHdrBody.size() >= 2
+                && hashHdrBody.at(0) == QLatin1Char('L') && hashHdrBody.at(1).isSpace()) {
+                hashHdrBody = hashHdrBody.mid(1).trimmed();
+                strippedSpecL = true;
+            }
             QVector<QVector<LabCsvCell>> hashRows;
             int hashCols = 0;
-            parseDelimitedRecordsFast(lastHashCommentBody, 0, normSep, whitespaceDelim, true,
-                                      simplifySpaces, hashRows, hashCols);
+            if (strippedSpecL && whitespaceDelim && hashHdrBody.contains(QLatin1String("  "))) {
+                static const QRegularExpression kTwoSpace(QStringLiteral("\\s{2,}"));
+                const QStringList dblParts = hashHdrBody.split(kTwoSpace, Qt::SkipEmptyParts);
+                if (dblParts.size() == previewRecords[0].size()) {
+                    QVector<LabCsvCell> one;
+                    for (const QString &p : dblParts)
+                        one.append({ p.trimmed(), false });
+                    hashRows.append(one);
+                    hashCols = dblParts.size();
+                }
+            }
+            if (hashRows.isEmpty()) {
+                parseDelimitedRecordsFast(hashHdrBody, 0, normSep, whitespaceDelim, true,
+                                          simplifySpaces, hashRows, hashCols);
+            }
             if (hashRows.size() == 1 && hashRows[0].size() == previewRecords[0].size()) {
                 bool anyNonNumericHdr = false;
                 bool anyPureNumHdr = false;
@@ -2407,7 +2659,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     }
                 }
                 const bool isSpecDirective =
-                        (whitespaceDelim && !lastHashHadSpaceAfterHash && anyPureNumHdr);
+                        (!strippedSpecL && whitespaceDelim && !lastHashHadSpaceAfterHash
+                         && anyPureNumHdr);
                 if (anyNonNumericHdr && !isSpecDirective) {
                     headerRow = hashRows[0];
                     prependedHashHeader = true;
@@ -2422,6 +2675,29 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     if (firstRowNamesColumns && !prependedHashHeader && !previewRecords.isEmpty()) {
         bool treatRow0AsData = false;
+        // Classify a cell of a candidate data row: real number, missing token (empty / NaN /
+        // N/A / "-"), or anything else (=> text, i.e. the row is a header).
+        auto classifyCell = [&](const LabCsvCell &cell, bool &isNumber, bool &isMissingToken,
+                                bool &isFloatMarker) -> bool {
+            const QString t = cell.value.trimmed();
+            isNumber = false;
+            isMissingToken = false;
+            isFloatMarker = false;
+            double dv = 0.0;
+            if (cell.quoted)
+                return false;
+            if (!t.isEmpty() && tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
+                isNumber = true;
+                isFloatMarker = t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
+                        || t.contains(QLatin1Char('E')) || t.startsWith(QLatin1Char('-'));
+                return true;
+            }
+            if (isMissingNumericToken(t, false)) {
+                isMissingToken = !t.isEmpty();
+                return true;
+            }
+            return false;
+        };
         if (previewRecords.size() >= 2 && previewRecords[0].size() >= 2
             && previewRecords[0].size() == previewRecords[1].size()) {
             bool allRow0Num = true;
@@ -2429,38 +2705,46 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             bool anyFloatMarkerInRow0 = false;
             bool anyFloatMarkerInRow1 = false;
             bool row0IsOneBasedSeq = (previewRecords[0].size() >= 3);
+            bool row0AnyNumber = false;
+            bool row0AnyMissingToken = false;
+            bool row1AnyNumber = false;
             for (int c = 0; c < previewRecords[0].size(); ++c) {
-                const LabCsvCell &c0 = previewRecords[0][c];
-                const QString t = c0.value.trimmed();
-                double dv = 0.0;
-                if (c0.quoted || t.isEmpty()
-                    || !tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
+                bool isNum = false, isTok = false, isFloat = false;
+                if (!classifyCell(previewRecords[0][c], isNum, isTok, isFloat)) {
                     allRow0Num = false;
                     row0IsOneBasedSeq = false;
                     break;
                 }
-                if (t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
-                    || t.contains(QLatin1Char('E')) || t.startsWith(QLatin1Char('-'))) {
+                row0AnyNumber = row0AnyNumber || isNum;
+                row0AnyMissingToken = row0AnyMissingToken || isTok;
+                if (!isNum) {
+                    row0IsOneBasedSeq = false;
+                    continue;
+                }
+                const QString t = previewRecords[0][c].value.trimmed();
+                if (isFloat) {
                     anyFloatMarkerInRow0 = true;
                     row0IsOneBasedSeq = false;
                 } else if (t != QString::number(c + 1)) {
                     row0IsOneBasedSeq = false;
                 }
             }
+            // A first row with missing cells (NaN / blank) next to numbers is still data
+            if (allRow0Num && !row0AnyNumber && !row0AnyMissingToken)
+                allRow0Num = false;
             if (allRow0Num) {
                 for (const LabCsvCell &c1 : previewRecords[1]) {
-                    const QString t = c1.value.trimmed();
-                    double dv = 0.0;
-                    if (c1.quoted || t.isEmpty()
-                        || !tryParseLabDouble(t, primaryLoc, useCustomLoc, dv)) {
+                    bool isNum = false, isTok = false, isFloat = false;
+                    if (!classifyCell(c1, isNum, isTok, isFloat)) {
                         allRow1Num = false;
                         break;
                     }
-                    if (t.contains(QLatin1Char('.')) || t.contains(QLatin1Char('e'))
-                        || t.contains(QLatin1Char('E'))) {
+                    row1AnyNumber = row1AnyNumber || isNum;
+                    if (isFloat && isNum)
                         anyFloatMarkerInRow1 = true;
-                    }
                 }
+                if (!row1AnyNumber)
+                    allRow1Num = false;
             }
             if (allRow0Num && allRow1Num) {
                 const bool likelySeqColHeader = (previewRecords[0].size() >= 3
@@ -2470,7 +2754,37 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     treatRow0AsData = true;
             }
         }
-        if (!treatRow0AsData && previewRecords[0].size() >= 2 && !previewRecords[0][0].quoted
+        // One column of numbers, or a file with a single data row: the first line is data, it
+        // must not disappear into the column name.
+        if (!treatRow0AsData && !previewRecords.isEmpty()) {
+            bool uniformWidth = true;
+            const int w = previewRecords[0].size();
+            for (const auto &rec : previewRecords) {
+                if (rec.size() != w) {
+                    uniformWidth = false;
+                    break;
+                }
+            }
+            if (uniformWidth && w >= 1 && (w == 1 || previewRecords.size() == 1)) {
+                bool allDataLike = true;
+                bool anyNumber = false;
+                bool row0Number = false;
+                for (int r = 0; r < previewRecords.size() && allDataLike; ++r) {
+                    for (int c = 0; c < w; ++c) {
+                        bool isNum = false, isTok = false, isFloat = false;
+                        if (!classifyCell(previewRecords[r][c], isNum, isTok, isFloat)) {
+                            allDataLike = false;
+                            break;
+                        }
+                        anyNumber = anyNumber || isNum;
+                        if (r == 0 && isNum)
+                            row0Number = true;
+                    }
+                }
+                if (allDataLike && anyNumber && (row0Number || previewRecords.size() >= 2))
+                    treatRow0AsData = true;
+            }
+        }        if (!treatRow0AsData && previewRecords[0].size() >= 2 && !previewRecords[0][0].quoted
             && previewRecords[0][0].value.trimmed().startsWith(QLatin1Char('#'))) {
             for (int c = 1; c < previewRecords[0].size(); ++c) {
                 const LabCsvCell &cell = previewRecords[0][c];
@@ -2877,30 +3191,63 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
 } // namespace
 
+void AsciiTableImportFilter::setDialogImportDefaults(const QString &encoding, int unitsRow)
+{
+    g_dialogEncoding = encoding;
+    g_dialogUnitsRow = unitsRow;
+}
+
+QString AsciiTableImportFilter::dialogDefaultEncoding()
+{
+    return g_dialogEncoding;
+}
+
+int AsciiTableImportFilter::dialogDefaultUnitsRow()
+{
+    return g_dialogUnitsRow;
+}
+
 QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
                                                   const QString &encodingHint)
 {
+    g_lastDecodeInvalidChars = 0;
     if (rawBytes.isEmpty())
         return QString();
+
+    auto decodeWithCodec = [](QTextCodec *codec, const char *data, int size) -> QString {
+        QTextCodec::ConverterState state;
+        QString s = codec->toUnicode(data, size, &state);
+        if (state.remainingChars > 0) {
+            s.append(QChar::ReplacementCharacter);
+            g_lastDecodeInvalidChars = state.invalidChars + 1;
+        } else {
+            g_lastDecodeInvalidChars = state.invalidChars;
+        }
+        if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
+            s.remove(0, 1);
+        return s;
+    };
 
     // 1. Check explicit BOMs first
     if (rawBytes.size() >= 3 && static_cast<unsigned char>(rawBytes[0]) == 0xEF
         && static_cast<unsigned char>(rawBytes[1]) == 0xBB
         && static_cast<unsigned char>(rawBytes[2]) == 0xBF) {
         g_lastDecodedEncoding = QStringLiteral("UTF-8 (BOM)");
+        if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8"))
+            return decodeWithCodec(utf8, rawBytes.constData() + 3, rawBytes.size() - 3);
         return QString::fromUtf8(rawBytes.constData() + 3, rawBytes.size() - 3);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFF
         && static_cast<unsigned char>(rawBytes[1]) == 0xFE) {
         g_lastDecodedEncoding = QStringLiteral("UTF-16LE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
-            return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
+            return decodeWithCodec(c16, rawBytes.constData() + 2, rawBytes.size() - 2);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFE
         && static_cast<unsigned char>(rawBytes[1]) == 0xFF) {
         g_lastDecodedEncoding = QStringLiteral("UTF-16BE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
-            return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
+            return decodeWithCodec(c16, rawBytes.constData() + 2, rawBytes.size() - 2);
     }
 
     // 2. Honor explicit encodingHint when specified and not "auto"
@@ -2911,6 +3258,8 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         QByteArray codecName = hint.toLatin1();
         if (lo == QLatin1String("utf8") || lo == QLatin1String("utf-8")
             || lo == QLatin1String("utf-8-sig") || lo == QLatin1String("utf_8")) {
+            if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8"))
+                return decodeWithCodec(utf8, rawBytes.constData(), rawBytes.size());
             QString s = QString::fromUtf8(rawBytes);
             if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
                 s.remove(0, 1);
@@ -2919,17 +3268,20 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         if (lo == QLatin1String("sjis") || lo == QLatin1String("shift_jis")
             || lo == QLatin1String("shift-jis") || lo == QLatin1String("cp932")
             || lo == QLatin1String("ms932") || lo == QLatin1String("windows-31j")) {
+            QTextCodec *cp = QTextCodec::codecForName("Windows-31J");
+            if (!cp)
+                cp = QTextCodec::codecForName("CP932");
+            if (!cp)
+                cp = QTextCodec::codecForName("Shift-JIS");
+            if (cp)
+                return decodeWithCodec(cp, rawBytes.constData(), rawBytes.size());
             codecName = QByteArrayLiteral("Shift-JIS");
         } else if (lo == QLatin1String("latin1") || lo == QLatin1String("latin-1")
                    || lo == QLatin1String("iso-8859-1")) {
             return QString::fromLatin1(rawBytes);
         }
-        if (QTextCodec *codec = QTextCodec::codecForName(codecName)) {
-            QString s = codec->toUnicode(rawBytes);
-            if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
-                s.remove(0, 1);
-            return s;
-        }
+        if (QTextCodec *codec = QTextCodec::codecForName(codecName))
+            return decodeWithCodec(codec, rawBytes.constData(), rawBytes.size());
     }
 
     // 3. Fast path for pure 7-bit ASCII
@@ -2964,42 +3316,67 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         if (oddZeros > samplePairs / 2 && evenZeros == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-16LE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
-                return c16->toUnicode(rawBytes);
+                return decodeWithCodec(c16, rawBytes.constData(), rawBytes.size());
         }
         if (evenZeros > samplePairs / 2 && oddZeros == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-16BE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
-                return c16->toUnicode(rawBytes);
+                return decodeWithCodec(c16, rawBytes.constData(), rawBytes.size());
         }
     }
 
-    // 5. Strict UTF-8 validation
+    // 5. UTF-8 / Shift-JIS decision. A single stray byte must neither silently flip a UTF-8
+    //    file into Shift-JIS (mojibake) nor hide damage: compare the invalid-character counts
+    //    of both candidates and report what was decoded with errors.
+    QString utf8Decoded;
+    int utf8Invalid = -1;
     if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8")) {
         QTextCodec::ConverterState state;
-        QString decoded = utf8->toUnicode(rawBytes.constData(), rawBytes.size(), &state);
-        if (state.invalidChars == 0) {
+        utf8Decoded = utf8->toUnicode(rawBytes.constData(), rawBytes.size(), &state);
+        if (state.remainingChars > 0) {
+            utf8Decoded.append(QChar::ReplacementCharacter);
+            utf8Invalid = state.invalidChars + 1;
+        } else {
+            utf8Invalid = state.invalidChars;
+        }
+        if (utf8Invalid == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-8");
-            if (!decoded.isEmpty() && decoded.at(0) == QChar(0xFEFF))
-                decoded.remove(0, 1);
-            return decoded;
+            if (!utf8Decoded.isEmpty() && utf8Decoded.at(0) == QChar(0xFEFF))
+                utf8Decoded.remove(0, 1);
+            return utf8Decoded;
         }
     }
 
     // 6. Shift-JIS / CP932 fallback (Japanese lab instruments: Shimadzu, Rigaku, Keyence, JEOL)
-    QTextCodec *sjis = QTextCodec::codecForName("Shift-JIS");
-    if (!sjis)
-        sjis = QTextCodec::codecForName("Windows-31J");
+    QTextCodec *sjis = QTextCodec::codecForName("Windows-31J");
     if (!sjis)
         sjis = QTextCodec::codecForName("CP932");
+    if (!sjis)
+        sjis = QTextCodec::codecForName("Shift-JIS");
     if (sjis) {
-        g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
         QTextCodec::ConverterState sjisState;
         QString decoded = sjis->toUnicode(rawBytes.constData(), rawBytes.size(), &sjisState);
-        if (sjisState.invalidChars == 0)
+        int sjisInvalid = sjisState.invalidChars;
+        if (sjisState.remainingChars > 0) {
+            decoded.append(QChar::ReplacementCharacter);
+            ++sjisInvalid;
+        }
+        if (sjisInvalid == 0) {
+            g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
             return decoded;
+        }
+        if (utf8Invalid >= 0 && utf8Invalid < sjisInvalid) {
+            // Mostly valid UTF-8 with a few damaged bytes: keep UTF-8 and warn.
+            g_lastDecodedEncoding = QStringLiteral("UTF-8");
+            g_lastDecodeInvalidChars = utf8Invalid;
+            if (!utf8Decoded.isEmpty() && utf8Decoded.at(0) == QChar(0xFEFF))
+                utf8Decoded.remove(0, 1);
+            return utf8Decoded;
+        }
+        g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
+        g_lastDecodeInvalidChars = sjisInvalid;
         return decoded;
     }
-
     g_lastDecodedEncoding = QStringLiteral("Latin-1");
     return QString::fromLatin1(rawBytes);
 }
@@ -3152,6 +3529,8 @@ QString AsciiTableImportFilter::describeImportReport(const ImportReport &r)
     parts << QObject::tr("%1 rows x %2 columns").arg(r.dataRows).arg(r.columns);
     if (!r.encoding.isEmpty())
         parts << QObject::tr("encoding: %1").arg(r.encoding);
+    if (r.invalidChars > 0)
+        parts << QObject::tr("%n undecodable character(s) - the text encoding may be wrong", "", r.invalidChars);
     if (r.rasBlocks == 0) {
         QString sepName;
         if (r.separator == QLatin1String("\t"))
@@ -3200,8 +3579,8 @@ AbstractAspect *AsciiTableImportFilter::importAspect(QIODevice &input)
     const QByteArray rawBytes = input.readAll();
     const bool trimEffective = d_trim_whitespace || d_simplify_whitespace || d_convert_to_numeric;
 
-    return importLabTextDataInternal(rawBytes, tr("Table"), filePathHint, d_separator, QString(),
-                                     -1 /*auto units row*/, d_ignored_lines,
+    return importLabTextDataInternal(rawBytes, tr("Table"), filePathHint, d_separator, d_encoding,
+                                     d_units_row, d_ignored_lines,
                                      d_first_row_names_columns, trimEffective,
                                      d_simplify_whitespace, d_convert_to_numeric, d_numeric_locale,
                                      true /*autoFixTabOnCsv*/,

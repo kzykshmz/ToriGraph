@@ -64,6 +64,19 @@ public:
     bool cancelActiveInteraction();
     static void hidePassiveHoverTooltip();
 
+    //! Open the lightweight inline text editor for a legend / text annotation marker.
+    /**
+     * Shared entry point for double-click, Enter/Return and F2 so every path edits text the
+     * same way. \return false when \a markerKey is not a visible text marker of \a g.
+     */
+    static bool openInlineTextEditorForMarker(Graph *g, long markerKey, int legendRow = -1);
+
+    //! True for the keys that start editing the selected element (Enter, Return, F2).
+    static bool isEditKey(int key)
+    {
+        return key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_F2;
+    }
+
 private:
     void drawTextMarker(const QPoint &);
     void drawLineMarker(const QPoint &, bool endArrow);

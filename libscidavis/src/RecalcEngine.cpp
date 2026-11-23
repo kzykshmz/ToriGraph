@@ -27,14 +27,17 @@
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 
+#include <QApplication>
 #include <QByteArray>
 #include <QComboBox>
 #include <QDataStream>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QIODevice>
 #include <QInputDialog>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QListWidget>
 #include <QMap>
@@ -43,40 +46,112 @@
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QSettings>
+#include <QStatusBar>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QXmlStreamAttributes>
+#include <QXmlStreamReader>
+#include <QXmlStreamWriter>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <numeric>
 #include <vector>
 
 namespace {
 
+// Strict lookup: returns the title of the curve that curveTitle refers to, or an empty string if
+// there is none. It never re-binds to an unrelated curve (selected / first curve), because a link
+// that silently switched its source would overwrite the output with the wrong data.
 QString resolveGraphCurveTitle(Graph *g, const QString &curveTitle)
 {
-    if (!g || g->curves() <= 0)
+    if (!g || curveTitle.isEmpty() || g->curves() <= 0)
+        return QString();
+    if (g->curve(curveTitle))
         return curveTitle;
-    if (!curveTitle.isEmpty()) {
-        if (g->curve(curveTitle))
-            return curveTitle;
-        for (int i = 0; i < g->curves(); ++i) {
-            QwtPlotCurve *c = g->curve(i);
-            if (!c)
-                continue;
-            QString t = c->title().text();
-            if (t.compare(curveTitle, Qt::CaseInsensitive) == 0
-                || t.endsWith("_" + curveTitle, Qt::CaseInsensitive))
-                return t;
-        }
+
+    QStringList caseMatches;
+    QStringList suffixMatches;
+    for (int i = 0; i < g->curves(); ++i) {
+        QwtPlotCurve *c = g->curve(i);
+        if (!c)
+            continue;
+        const QString t = c->title().text();
+        if (t.compare(curveTitle, Qt::CaseInsensitive) == 0)
+            caseMatches.append(t);
+        else if (t.endsWith(QLatin1Char('_') + curveTitle, Qt::CaseInsensitive))
+            suffixMatches.append(t);
     }
-    QString sel = g->selectedCurveTitle();
+    // Ambiguous matches are treated as "not found".
+    if (caseMatches.size() == 1)
+        return caseMatches.first();
+    if (caseMatches.isEmpty() && suffixMatches.size() == 1)
+        return suffixMatches.first();
+    return QString();
+}
+
+// Used only when a link is registered. An empty request means "the curve the user is working
+// on" (selected curve, then the first analysable curve). A non-empty request must resolve
+// strictly.
+QString resolveCurveForRegistration(Graph *g, const QString &curveTitle)
+{
+    if (!g)
+        return QString();
+    if (!curveTitle.isEmpty())
+        return resolveGraphCurveTitle(g, curveTitle);
+    const QString sel = g->selectedCurveTitle();
     if (!sel.isEmpty() && g->curve(sel))
         return sel;
-    QStringList analysable = g->analysableCurvesList();
+    const QStringList analysable = g->analysableCurvesList();
     if (!analysable.isEmpty())
         return analysable.first();
-    return curveTitle;
+    return QString();
+}
+
+int indexOfCurvePtr(Graph *g, const QwtPlotCurve *c)
+{
+    if (!g || !c)
+        return -1;
+    for (int i = 0; i < g->curves(); ++i) {
+        if (g->curve(i) == c)
+            return i;
+    }
+    return -1;
+}
+
+// Rewrites a stored curve title after a table / column rename. The mapper returns the renamed
+// title or an empty string if the title does not follow the renamed pattern. The rewrite is only
+// applied when the curve is backed by one of ownerTableNames (so that "A_B_Y" of table "A_B" is
+// not confused with column "B_Y" of table "A").
+bool rewriteTitleRef(Graph *g, QString &title,
+                     const std::function<QString(const QString &)> &mapper,
+                     const QStringList &ownerTableNames, Table *knownOwner)
+{
+    if (title.isEmpty())
+        return false;
+    const QString cand = mapper(title);
+    if (cand.isEmpty() || cand == title)
+        return false;
+    if (g) {
+        if (QwtPlotCurve *c = g->curve(title)) {
+            auto *dc = dynamic_cast<DataCurve *>(c);
+            if (dc && dc->table() && ownerTableNames.contains(dc->table()->name())) {
+                title = cand;
+                return true;
+            }
+            return false;
+        }
+        if (g->curve(cand)) { // the graph has already renamed the curve
+            title = cand;
+            return true;
+        }
+    }
+    if (knownOwner && ownerTableNames.contains(knownOwner->name())) {
+        title = cand;
+        return true;
+    }
+    return false;
 }
 
 QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
@@ -270,12 +345,31 @@ RecalcManager::RecalcManager(ApplicationWindow *app) : QObject(nullptr), d_app(a
 
 RecalcManager *RecalcManager::instance(ApplicationWindow *app)
 {
-    static RecalcManager *s_instance = nullptr;
-    if (!s_instance)
-        s_instance = new RecalcManager(app);
-    else if (app)
-        s_instance->d_app = app;
-    return s_instance;
+    // Legacy default instance (no window): kept for callers that have no ApplicationWindow.
+    static RecalcManager *s_default = nullptr;
+    // One manager per ApplicationWindow so that modes and links of different windows (and tests
+    // that create several windows) do not leak into each other.
+    static QHash<ApplicationWindow *, RecalcManager *> s_perWindow;
+
+    if (!app) {
+        if (!s_default)
+            s_default = new RecalcManager(nullptr);
+        return s_default;
+    }
+
+    auto it = s_perWindow.constFind(app);
+    if (it != s_perWindow.constEnd())
+        return it.value();
+
+    RecalcManager *mgr = new RecalcManager(app);
+    s_perWindow.insert(app, mgr);
+    // Release the manager together with its window. The links only hold QPointers, so nothing
+    // dangles while the window is being torn down.
+    QObject::connect(static_cast<QObject *>(app), &QObject::destroyed, mgr, [app, mgr]() {
+        s_perWindow.remove(app);
+        mgr->deleteLater();
+    });
+    return mgr;
 }
 
 void RecalcManager::pruneDeadLinks()
@@ -314,20 +408,81 @@ int RecalcManager::findLinkIndexById(int id) const
 
 bool RecalcManager::executeLinkById(int id)
 {
+    if (d_recalculating)
+        return false;
     const int idx = findLinkIndexById(id);
     if (idx < 0)
         return false;
     RecalcLink copy = d_links[idx];
-    if (!executeLink(copy))
-        return false;
+    copy.lastError.clear();
+    const bool ok = executeLink(copy);
     const int postIdx = findLinkIndexById(id);
     if (postIdx >= 0) {
-        d_links[postIdx].srcCurveTitle = copy.srcCurveTitle;
-        d_links[postIdx].outCurveTitle = copy.outCurveTitle;
-        d_links[postIdx].extraCurveTitles = copy.extraCurveTitles;
-        d_links[postIdx].resultTable = copy.resultTable;
+        RecalcLink &dst = d_links[postIdx];
+        dst.lastError = ok ? QString() : copy.lastError;
+        dst.resultTable = copy.resultTable;
+        if (ok) {
+            dst.dirty = false;
+            dst.srcCurveTitle = copy.srcCurveTitle;
+            dst.outCurveTitle = copy.outCurveTitle;
+            dst.extraCurveTitles = copy.extraCurveTitles;
+        } else {
+            // Keep the previous output and the old link state; the link stays pending so that
+            // the next recalculation (or the lock badge) retries it.
+            dst.dirty = true;
+        }
     }
-    return true;
+    if (!ok) {
+        if (copy.lastError.isEmpty())
+            copy.lastError = tr("The recalculation could not be completed.");
+        if (postIdx >= 0)
+            d_links[postIdx].lastError = copy.lastError;
+        reportLinkFailure(copy, copy.lastError);
+        // reportLinkFailure() may run event handlers; refresh the badge of the affected graph.
+        if (Graph *g = copy.graph.data())
+            updateLockBadge(g);
+    }
+    return ok;
+}
+
+void RecalcManager::reportLinkFailure(const RecalcLink &link, const QString &message)
+{
+    const QString text = tr("Recalc failed: %1").arg(message);
+    ApplicationWindow *app = link.app ? link.app.data() : d_app.data();
+    if (app) {
+        if (QStatusBar *sb = app->statusBar())
+            sb->showMessage(text, 10000);
+    }
+    emit linkFailed(link.graph.data(), message);
+}
+
+QString RecalcManager::lastError(Graph *g) const
+{
+    for (const RecalcLink &lnk : d_links) {
+        if (lnk.graph.isNull() || lnk.srcTable.isNull())
+            continue;
+        if (g && lnk.graph.data() != g)
+            continue;
+        if (!lnk.lastError.isEmpty())
+            return lnk.lastError;
+    }
+    return QString();
+}
+
+QString RecalcManager::lastErrorForLink(int linkId) const
+{
+    const int idx = findLinkIndexById(linkId);
+    return idx >= 0 ? d_links[idx].lastError : QString();
+}
+
+void RecalcManager::connectLinkSources(Graph *g, Table *srcTable)
+{
+    if (srcTable)
+        connect(srcTable, &Table::modifiedData, this, &RecalcManager::onTableDataModified,
+                Qt::UniqueConnection);
+    if (g)
+        connect(g, &QObject::destroyed, this, &RecalcManager::onGraphDestroyed,
+                Qt::UniqueConnection);
 }
 
 int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTable,
@@ -342,7 +497,7 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
 
     // Never reallocate or prune d_links re-entrantly while executeLink is running
     if (d_recalculating) {
-        const QString resolvedSrc = resolveGraphCurveTitle(g, srcCurveTitle);
+        const QString resolvedSrc = resolveCurveForRegistration(g, srcCurveTitle);
         for (RecalcLink &existing : d_links) {
             if (existing.graph == g && existing.op == op
                 && (existing.srcCurveTitle == resolvedSrc || existing.srcTable == srcTable)) {
@@ -358,7 +513,10 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
 
     pruneDeadLinks();
 
-    QString resolvedSrc = resolveGraphCurveTitle(g, srcCurveTitle);
+    // A source curve that cannot be found is an error; never fall back to another curve.
+    QString resolvedSrc = resolveCurveForRegistration(g, srcCurveTitle);
+    if (resolvedSrc.isEmpty())
+        return -1;
     Table *effSrcTable = srcTable;
     if (!effSrcTable) {
         if (auto *dc = dynamic_cast<DataCurve *>(g->curve(resolvedSrc)))
@@ -374,9 +532,7 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
             effOut = lastFit->title().text();
     }
 
-    connect(effSrcTable, &Table::modifiedData, this, &RecalcManager::onTableDataModified,
-            Qt::UniqueConnection);
-    connect(g, &QObject::destroyed, this, &RecalcManager::onGraphDestroyed, Qt::UniqueConnection);
+    connectLinkSources(g, effSrcTable);
 
     QPointer<Graph> gGuard(g);
 
@@ -579,8 +735,10 @@ bool RecalcManager::executeLink(RecalcLink &link)
     ApplicationWindow *app = link.app ? link.app.data() : d_app.data();
     Graph *g = link.graph.data();
     Table *srcTbl = link.srcTable.data();
-    if (!app || !g || !srcTbl)
+    if (!app || !g || !srcTbl) {
+        link.lastError = tr("The graph or the source table of the link no longer exists.");
         return false;
+    }
 
     QScopedValueRollback<bool> recalcGuard(d_recalculating, true);
     QScopedValueRollback<bool> logGuard(app->writeFitResultsToLog, false);
@@ -590,64 +748,78 @@ bool RecalcManager::executeLink(RecalcLink &link)
     for (int c = 0; c < srcTbl->numCols(); ++c)
         g->updateCurvesData(srcTbl, srcTbl->colName(c));
 
-    QString srcCurve = resolveGraphCurveTitle(g, link.srcCurveTitle);
-    if (srcCurve.isEmpty() || !g->curve(srcCurve))
+    // Strict lookup: if the source curve is gone (removed or renamed) the link must not be
+    // re-bound to some other curve. Leave the old output alone and report the problem.
+    const QString srcCurve = resolveGraphCurveTitle(g, link.srcCurveTitle);
+    if (srcCurve.isEmpty() || !g->curve(srcCurve)) {
+        link.lastError =
+                tr("Source curve \"%1\" was not found on the graph.").arg(link.srcCurveTitle);
         return false;
+    }
     link.srcCurveTitle = srcCurve;
 
-    // Preserve previous output curve pen/brush and remove old output curve(s) so curves don't pile up
+    // The previous output (curves and hidden tables) stays on the graph until the new
+    // fit/filter result exists. Curves are tracked by pointer because the new output may get the
+    // same title as the old one.
+    QList<QwtPlotCurve *> beforePtrs;
+    for (int i = 0; i < g->curves(); ++i) {
+        if (QwtPlotCurve *c = g->curve(i))
+            beforePtrs.append(c);
+    }
+    QwtPlotCurve *srcCurvePtr = g->curve(srcCurve);
+
+    const QString oldOutTitle = link.outCurveTitle;
+    QwtPlotCurve *oldOutCurve = oldOutTitle.isEmpty() ? nullptr : g->curve(oldOutTitle);
+    if (oldOutCurve == srcCurvePtr)
+        oldOutCurve = nullptr; // never delete the source
     bool hasSavedPen = false;
     QPen savedPen;
-    Table *orphanHiddenTable = nullptr;
-
-    if (!link.outCurveTitle.isEmpty()) {
-        if (QwtPlotCurve *oldOut = g->curve(link.outCurveTitle)) {
-            savedPen = oldOut->pen();
-            hasSavedPen = true;
-            if (auto *oldDc = dynamic_cast<DataCurve *>(oldOut)) {
-                Table *bt = oldDc->table();
-                const bool isAutoSignalTable =
-                        (link.op == OpIIRFilter || link.op == OpSavGolDeriv
-                         || link.op == OpWaveletDenoise);
-                if (bt && bt != srcTbl && bt != link.resultTable
-                    && (app->hidden(bt) || isAutoSignalTable)) {
-                    orphanHiddenTable = bt;
-                }
-            }
-            g->removeCurve(link.outCurveTitle);
-        }
+    if (oldOutCurve) {
+        savedPen = oldOutCurve->pen();
+        hasSavedPen = true;
     }
+    QList<QwtPlotCurve *> oldExtraCurves;
     for (const QString &extraTitle : link.extraCurveTitles) {
-        if (!extraTitle.isEmpty() && g->curve(extraTitle)) {
-            Table *extraOrphan = nullptr;
-            if (auto *edc = dynamic_cast<DataCurve *>(g->curve(extraTitle))) {
-                Table *bt = edc->table();
-                if (bt && bt != srcTbl && bt != link.resultTable && app->hidden(bt))
-                    extraOrphan = bt;
-            }
-            g->removeCurve(extraTitle);
-            if (extraOrphan) {
-                extraOrphan->askOnCloseEvent(false);
-                app->closeWindow(extraOrphan);
-            }
-        }
-    }
-    link.extraCurveTitles.clear();
-
-    if (orphanHiddenTable) {
-        orphanHiddenTable->askOnCloseEvent(false);
-        app->closeWindow(orphanHiddenTable);
+        QwtPlotCurve *ec = extraTitle.isEmpty() ? nullptr : g->curve(extraTitle);
+        if (ec && ec != srcCurvePtr && ec != oldOutCurve && !oldExtraCurves.contains(ec))
+            oldExtraCurves.append(ec);
     }
 
-    const QStringList beforeCurves = g->curvesList();
     QStringList fitParamNames;
     std::vector<double> fitVals;
     std::vector<double> fitErrs;
     double fitR2 = 0.0;
 
+    QString errMsg = tr("The fit/filter could not be computed for curve \"%1\" "
+                        "(not enough valid data or invalid settings).")
+                             .arg(srcCurve);
+
+    auto runOp = [&]() -> bool {
+    struct NonInteractiveScopeGuard
+    {
+        QVariant prev;
+        bool active = false;
+        NonInteractiveScopeGuard()
+        {
+            if (qApp) {
+                prev = qApp->property("torigraph_noninteractive");
+                qApp->setProperty("torigraph_noninteractive", true);
+                active = true;
+            }
+        }
+        ~NonInteractiveScopeGuard()
+        {
+            if (active && qApp)
+                qApp->setProperty("torigraph_noninteractive", prev);
+        }
+        NonInteractiveScopeGuard(const NonInteractiveScopeGuard &) = delete;
+        NonInteractiveScopeGuard &operator=(const NonInteractiveScopeGuard &) = delete;
+    } nonInteractiveGuard;
+
     switch (link.op) {
     case OpLinearFit: {
         LinearFit fitter(app, g, srcCurve);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         int pts = link.params.value(QStringLiteral("points"),
@@ -668,6 +840,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
         int order = std::max(1, link.params.value(QStringLiteral("order"), 2).toInt());
         QString cTitle = srcCurve;
         PolynomialFit fitter(app, g, cTitle, order, false);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         int pts = std::max(2, link.params.value(QStringLiteral("points"), app->fitPoints).toInt());
@@ -684,6 +857,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
     case OpNonLinearBuiltIn: {
         NonLinearFit fitter(app, g, srcCurve);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         QString modelName =
@@ -715,6 +889,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
         int profile = link.params.value(QStringLiteral("profile"), int(MultiPeakFit::Gauss)).toInt();
         int peaks = std::max(1, link.params.value(QStringLiteral("peaks"), 2).toInt());
         MultiPeakFit fitter(app, g, static_cast<MultiPeakFit::PeakProfile>(profile), peaks);
+        fitter.setSilent(true);
         fitter.enablePeakCurves(link.params.value(QStringLiteral("peakCurves"), false).toBool());
         if (!fitter.setDataFromCurve(srcCurve))
             return false;
@@ -736,6 +911,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
                              .value(QStringLiteral("method"), int(SmoothFilter::SavitzkyGolay))
                              .toInt();
         SmoothFilter sf(app, g, srcCurve, method);
+        sf.setSilent(true);
         if (sf.error())
             return false;
         int pts = std::max(3, link.params.value(QStringLiteral("points"), 5).toInt());
@@ -753,6 +929,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
     case OpDifferentiate: {
         Differentiation diff(app, g, srcCurve);
+        diff.setSilent(true);
         if (diff.error())
             return false;
         diff.run();
@@ -861,31 +1038,100 @@ bool RecalcManager::executeLink(RecalcLink &link)
         break;
     }
     }
+    return true;
+    };
 
-    const QStringList afterCurves = g->curvesList();
-    QStringList addedCurves;
-    for (const QString &cn : afterCurves) {
-        if (!beforeCurves.contains(cn))
-            addedCurves.append(cn);
+    const bool opOk = runOp();
+
+    // Curves created by this run (pointer diff, in graph order).
+    QList<QwtPlotCurve *> addedCurves;
+    for (int i = 0; i < g->curves(); ++i) {
+        QwtPlotCurve *c = g->curve(i);
+        if (c && !beforePtrs.contains(c))
+            addedCurves.append(c);
     }
 
-    if (!addedCurves.isEmpty()) {
-        QString primaryTitle = addedCurves.first();
-        QwtPlotCurve *newPrimary = g->curve(primaryTitle);
-        if (newPrimary) {
-            if (!link.desiredOutTitle.isEmpty() && link.desiredOutTitle != primaryTitle
-                && g->curve(link.desiredOutTitle) == nullptr
-                && dynamic_cast<FunctionCurve *>(newPrimary) != nullptr) {
-                newPrimary->setTitle(link.desiredOutTitle);
-                primaryTitle = link.desiredOutTitle;
+    // True if some curve still on the graph (other than the ones in `ignore`) uses table t.
+    auto tableStillUsed = [&](Table *t, const QList<QwtPlotCurve *> &ignore) -> bool {
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            if (!c || ignore.contains(c))
+                continue;
+            if (auto *dc = dynamic_cast<DataCurve *>(c)) {
+                if (dc->table() == t)
+                    return true;
             }
-            if (hasSavedPen)
-                newPrimary->setPen(savedPen);
         }
-        link.outCurveTitle = primaryTitle;
-        for (int k = 1; k < addedCurves.size(); ++k)
-            link.extraCurveTitles.append(addedCurves[k]);
+        return false;
+    };
+
+    // Removes a curve of the graph by pointer and closes its hidden table if nothing else uses
+    // it. protectedTables are never closed (tables of the new output).
+    auto retireCurve = [&](QwtPlotCurve *c, const QList<Table *> &protectedTables,
+                           bool autoSignalTable) {
+        const int idx = indexOfCurvePtr(g, c);
+        if (idx < 0)
+            return; // already gone
+        Table *bt = nullptr;
+        if (auto *dc = dynamic_cast<DataCurve *>(c))
+            bt = dc->table();
+        g->removeCurve(idx);
+        if (bt && bt != srcTbl && bt != link.resultTable.data() && !protectedTables.contains(bt)
+            && (app->hidden(bt) || autoSignalTable) && !tableStillUsed(bt, QList<QwtPlotCurve *>())) {
+            bt->askOnCloseEvent(false);
+            app->closeWindow(bt);
+        }
+    };
+
+    QList<Table *> newTables;
+    for (QwtPlotCurve *c : addedCurves) {
+        if (auto *dc = dynamic_cast<DataCurve *>(c)) {
+            if (dc->table() && !newTables.contains(dc->table()))
+                newTables.append(dc->table());
+        }
     }
+
+    if (!opOk || addedCurves.isEmpty()) {
+        // Failure: discard whatever the failed run left behind and keep the old output intact.
+        for (int k = addedCurves.size() - 1; k >= 0; --k)
+            retireCurve(addedCurves[k], QList<Table *>(), false);
+        link.lastError = opOk ? tr("The operation produced no output curve for \"%1\".")
+                                        .arg(srcCurve)
+                              : errMsg;
+        g->replot();
+        return false;
+    }
+
+    // Success: now (and only now) replace the previous output.
+    const bool isAutoSignalTable = (link.op == OpIIRFilter || link.op == OpSavGolDeriv
+                                    || link.op == OpWaveletDenoise);
+    for (QwtPlotCurve *ec : oldExtraCurves) {
+        if (!addedCurves.contains(ec))
+            retireCurve(ec, newTables, false);
+    }
+    if (oldOutCurve && !addedCurves.contains(oldOutCurve))
+        retireCurve(oldOutCurve, newTables, isAutoSignalTable);
+
+    QwtPlotCurve *newPrimary = addedCurves.first();
+    QString primaryTitle = newPrimary->title().text();
+    // Keep the title stable across recalculations: the requested title first, otherwise the
+    // title of the output being replaced.
+    const QString preferredTitle =
+            !link.desiredOutTitle.isEmpty() ? link.desiredOutTitle : oldOutTitle;
+    if (!preferredTitle.isEmpty() && preferredTitle != primaryTitle
+        && g->curve(preferredTitle) == nullptr
+        && dynamic_cast<FunctionCurve *>(newPrimary) != nullptr) {
+        newPrimary->setTitle(preferredTitle);
+        primaryTitle = preferredTitle;
+    }
+    if (hasSavedPen)
+        newPrimary->setPen(savedPen);
+
+    link.outCurveTitle = primaryTitle;
+    link.extraCurveTitles.clear();
+    for (int k = 1; k < addedCurves.size(); ++k)
+        link.extraCurveTitles.append(addedCurves[k]->title().text());
+    link.lastError.clear();
 
     if (link.resultTable && !fitVals.empty())
         updateFitSummaryTable(link.resultTable.data(), fitParamNames, fitVals, fitErrs, fitR2);
@@ -960,7 +1206,16 @@ void RecalcManager::updateLockBadge(Graph *g)
     QString style;
     QString state;
 
-    if (dirty) {
+    const QString errText = lastError(g);
+
+    if (!errText.isEmpty()) {
+        text = QStringLiteral("[Recalc Error !]");
+        state = QStringLiteral("Error");
+        style = QStringLiteral(
+                "QPushButton { background-color: rgba(190, 40, 40, 235); color: #ffffff; "
+                "font-weight: bold; font-size: 9pt; border: 1px solid #701818; "
+                "border-radius: 4px; padding: 2px 6px; }");
+    } else if (dirty) {
         text = QStringLiteral("[Recalc Pending !]");
         state = QStringLiteral("Pending");
         style = QStringLiteral(
@@ -984,7 +1239,11 @@ void RecalcManager::updateLockBadge(Graph *g)
     }
 
     badge->setText(text);
-    badge->setToolTip(QObject::tr("Dynamic Recalculation (%1 active link(s))").arg(nActive));
+    badge->setToolTip(errText.isEmpty()
+                              ? QObject::tr("Dynamic Recalculation (%1 active link(s))").arg(nActive)
+                              : QObject::tr("Dynamic Recalculation (%1 active link(s))\n%2")
+                                        .arg(nActive)
+                                        .arg(errText));
     badge->setStyleSheet(style);
     badge->adjustSize();
     badge->move(8, 8);
@@ -993,6 +1252,212 @@ void RecalcManager::updateLockBadge(Graph *g)
 
     g->setProperty("recalcLockBadgeText", text);
     g->setProperty("recalcLockState", state);
+}
+
+// ----------------------------------------------------------------------------
+// Persistence (.sciprj) and rename tracking
+// ----------------------------------------------------------------------------
+
+QString RecalcManager::saveLinksXmlForGraph(const Graph *g) const
+{
+    if (!g)
+        return QString();
+
+    QString out;
+    QXmlStreamWriter w(&out);
+    w.setAutoFormatting(false);
+    bool any = false;
+    w.writeStartElement(QStringLiteral("RecalcLinks"));
+    w.writeAttribute(QStringLiteral("version"), QStringLiteral("1"));
+    for (const RecalcLink &lnk : d_links) {
+        if (lnk.graph.data() != g || lnk.srcTable.isNull())
+            continue;
+        any = true;
+        w.writeStartElement(QStringLiteral("Link"));
+        w.writeAttribute(QStringLiteral("op"), QString::number(static_cast<int>(lnk.op)));
+        w.writeAttribute(QStringLiteral("srcTable"), lnk.srcTable->name());
+        w.writeAttribute(QStringLiteral("srcCurve"), lnk.srcCurveTitle);
+        w.writeAttribute(QStringLiteral("outCurve"), lnk.outCurveTitle);
+        w.writeAttribute(QStringLiteral("desiredOut"), lnk.desiredOutTitle);
+        w.writeAttribute(QStringLiteral("resultTable"),
+                         lnk.resultTable ? lnk.resultTable->name() : QString());
+        w.writeAttribute(QStringLiteral("dirty"), lnk.dirty ? QStringLiteral("1")
+                                                            : QStringLiteral("0"));
+        for (const QString &extra : lnk.extraCurveTitles)
+            w.writeTextElement(QStringLiteral("Extra"), extra);
+        const QByteArray json = QJsonDocument::fromVariant(QVariant(lnk.params))
+                                        .toJson(QJsonDocument::Compact);
+        w.writeTextElement(QStringLiteral("Params"), QString::fromUtf8(json));
+        w.writeEndElement(); // Link
+    }
+    w.writeEndElement(); // RecalcLinks
+    return any ? out : QString();
+}
+
+void RecalcManager::restoreLinkXmlForGraph(ApplicationWindow *app, Graph *g, const QString &xml)
+{
+    if (d_recalculating)
+        return;
+    ApplicationWindow *effApp = app ? app : d_app.data();
+    if (effApp && d_app.isNull())
+        d_app = effApp;
+    if (!effApp || !g || xml.trimmed().isEmpty())
+        return;
+
+    pruneDeadLinks();
+
+    QXmlStreamReader r(xml);
+    while (!r.atEnd()) {
+        r.readNext();
+        if (!r.isStartElement() || r.name().toString() != QLatin1String("Link"))
+            continue;
+
+        const QXmlStreamAttributes a = r.attributes();
+        bool opOk = false;
+        const int opInt = a.value(QLatin1String("op")).toString().toInt(&opOk);
+
+        RecalcLink link;
+        link.op = static_cast<OpType>(opInt);
+        link.srcCurveTitle = a.value(QLatin1String("srcCurve")).toString();
+        link.outCurveTitle = a.value(QLatin1String("outCurve")).toString();
+        link.desiredOutTitle = a.value(QLatin1String("desiredOut")).toString();
+        link.dirty = (a.value(QLatin1String("dirty")).toString() == QLatin1String("1"));
+        const QString srcTblName = a.value(QLatin1String("srcTable")).toString();
+        const QString resTblName = a.value(QLatin1String("resultTable")).toString();
+
+        while (!r.atEnd()) {
+            r.readNext();
+            if (r.isEndElement() && r.name().toString() == QLatin1String("Link"))
+                break;
+            if (!r.isStartElement())
+                continue;
+            const QString el = r.name().toString();
+            if (el == QLatin1String("Extra")) {
+                link.extraCurveTitles.append(r.readElementText());
+            } else if (el == QLatin1String("Params")) {
+                QJsonParseError perr;
+                const QJsonDocument doc =
+                        QJsonDocument::fromJson(r.readElementText().toUtf8(), &perr);
+                if (perr.error == QJsonParseError::NoError && doc.isObject())
+                    link.params = doc.toVariant().toMap();
+            }
+        }
+
+        if (!opOk || opInt < int(OpLinearFit) || opInt > int(OpWaveletDenoise))
+            continue;
+
+        Table *src = srcTblName.isEmpty() ? nullptr : effApp->table(srcTblName);
+        if (!src) {
+            if (auto *dc = dynamic_cast<DataCurve *>(g->curve(link.srcCurveTitle)))
+                src = dc->table();
+        }
+        if (!src)
+            continue; // the source table is gone; nothing to link to
+        Table *res = resTblName.isEmpty() ? nullptr : effApp->table(resTblName);
+
+        if (!srcTblName.isEmpty() && src->name() != srcTblName) {
+            const QString oldPrefix = srcTblName + QLatin1Char('_');
+            const QString newPrefix = src->name() + QLatin1Char('_');
+            auto remapPrefix = [&](QString &title) {
+                if (title.startsWith(oldPrefix))
+                    title = newPrefix + title.mid(oldPrefix.size());
+            };
+            remapPrefix(link.srcCurveTitle);
+            remapPrefix(link.outCurveTitle);
+            remapPrefix(link.desiredOutTitle);
+            for (QString &extra : link.extraCurveTitles)
+                remapPrefix(extra);
+        }
+
+        link.app = effApp;
+        link.graph = g;
+        link.srcTable = src;
+        link.resultTable = res;
+
+        int found = -1;
+        for (int i = 0; i < d_links.size(); ++i) {
+            const RecalcLink &ex = d_links[i];
+            const bool sameOut =
+                    (link.outCurveTitle.isEmpty() && link.desiredOutTitle.isEmpty())
+                    || (!link.outCurveTitle.isEmpty() && ex.outCurveTitle == link.outCurveTitle)
+                    || (!link.desiredOutTitle.isEmpty()
+                        && (ex.desiredOutTitle == link.desiredOutTitle
+                            || ex.outCurveTitle == link.desiredOutTitle));
+            if (ex.graph.data() == g && ex.op == link.op && ex.srcTable.data() == src
+                && ex.srcCurveTitle == link.srcCurveTitle && sameOut) {
+                found = i;
+                break;
+            }
+        }
+        if (found >= 0) {
+            link.id = d_links[found].id;
+            d_links[found] = link;
+        } else {
+            link.id = d_next_id++;
+            d_links.append(link);
+        }
+        connectLinkSources(g, src);
+    }
+
+    updateLockBadge(g);
+}
+
+void RecalcManager::notifyTableRenamed(const QString &oldName, const QString &newName)
+{
+    if (oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return;
+
+    const QString oldPrefix = oldName + QLatin1Char('_');
+    const QString newPrefix = newName + QLatin1Char('_');
+    const QStringList owners{ oldName, newName };
+    const std::function<QString(const QString &)> mapper = [&](const QString &t) -> QString {
+        return t.startsWith(oldPrefix) ? newPrefix + t.mid(oldPrefix.size()) : QString();
+    };
+
+    for (RecalcLink &lnk : d_links) {
+        Graph *g = lnk.graph.data();
+        rewriteTitleRef(g, lnk.srcCurveTitle, mapper, owners, lnk.srcTable.data());
+
+        const QString prevOut = lnk.outCurveTitle;
+        if (rewriteTitleRef(g, lnk.outCurveTitle, mapper, owners, nullptr)
+            && lnk.desiredOutTitle == prevOut)
+            lnk.desiredOutTitle = lnk.outCurveTitle;
+        for (QString &extra : lnk.extraCurveTitles)
+            rewriteTitleRef(g, extra, mapper, owners, nullptr);
+        // srcTable / resultTable are tracked by pointer and need no update; dirty is untouched.
+    }
+}
+
+void RecalcManager::notifyColumnRenamed(const QString &tblName, const QString &oldCol,
+                                        const QString &newCol)
+{
+    if (tblName.isEmpty() || oldCol.isEmpty() || newCol.isEmpty() || oldCol == newCol)
+        return;
+
+    const QString tblPrefix = tblName + QLatin1Char('_');
+    auto full = [&](const QString &col) {
+        return col.startsWith(tblPrefix) ? col : tblPrefix + col;
+    };
+    const QString oldTitle = full(oldCol);
+    const QString newTitle = full(newCol);
+    if (oldTitle == newTitle)
+        return;
+    const QStringList owners{ tblName };
+    const std::function<QString(const QString &)> mapper = [&](const QString &t) -> QString {
+        return t == oldTitle ? newTitle : QString();
+    };
+
+    for (RecalcLink &lnk : d_links) {
+        Graph *g = lnk.graph.data();
+        rewriteTitleRef(g, lnk.srcCurveTitle, mapper, owners, lnk.srcTable.data());
+
+        const QString prevOut = lnk.outCurveTitle;
+        if (rewriteTitleRef(g, lnk.outCurveTitle, mapper, owners, nullptr)
+            && lnk.desiredOutTitle == prevOut)
+            lnk.desiredOutTitle = lnk.outCurveTitle;
+        for (QString &extra : lnk.extraCurveTitles)
+            rewriteTitleRef(g, extra, mapper, owners, nullptr);
+    }
 }
 
 void RecalcManager::repeatForAllCurves(ApplicationWindow *app, Graph *g, OpType op,

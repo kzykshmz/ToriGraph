@@ -133,12 +133,41 @@ void registerLayerDialogTranslations()
                                                                   QString::fromUtf8(ja));
     };
     reg("Collapse Inner Gaps (0-gap Stack/Grid)", "パネル間の隙間をゼロにする (0-gap スタック/グリッド)");
-    reg("Delete Non-Empty Layers?", "曲線を含むレイヤを削除しますか？");
+    reg("Delete Non-Empty Layers?", "曲線を含むレイヤーを削除しますか？");
     reg("%1 of the %2 layer(s) to be removed contain %3 plotted item(s).\n"
         "Are you sure you want to delete these layers and their curves?",
-        "削除対象の %2 レイヤのうち %1 レイヤに合計 %3 個のプロットが含まれています。\n"
-        "これらのレイヤと曲線を削除してもよろしいですか？");
+        "削除対象の %2 レイヤーのうち %1 レイヤーに合計 %3 個のプロットが含まれています。\n"
+        "これらのレイヤーと曲線を削除してもよろしいですか？");
     reg("Units", "単位");
+    // B5-2: twin-axis overlay vs. independent grid cell
+    reg("Overlay (Twin Axes) / Axis Link / Layer Geometry",
+        "重ね合わせ (ツイン軸) / 軸リンク / レイヤー位置");
+    reg("Overlay On (Parent Layer)", "重ねる先 (親レイヤー)");
+    reg("None (own grid cell)", "なし (独立したグリッドセル)");
+    reg("X Axis Link to Parent", "X軸の親レイヤーとのリンク");
+    reg("Y Axis Link to Parent", "Y軸の親レイヤーとのリンク");
+    reg("Parent Layer = None: the layer keeps its own cell in the grid above (independent "
+        "layer with its own axes).\n"
+        "Parent Layer = Layer N: this layer is drawn on top of layer N as a twin-axis overlay and "
+        "takes no grid cell; the X/Y link modes then tie its axis scales to layer N.",
+        "親レイヤー = なし: 上のグリッド内に独立したセルを持ちます (軸も独立)。\n"
+        "親レイヤー = レイヤー N: レイヤー N の上にツイン軸として重ねて描画し、グリッドのセルは"
+        "占有しません。X/Y リンクモードで軸の範囲をレイヤー N に連動させます。");
+    reg("Choose the layer on which this layer is overlaid as twin axes. \"None\" keeps it as an "
+        "independent layer in its own grid cell.",
+        "このレイヤーをツイン軸として重ねる先のレイヤーを選びます。「なし」の場合は独立した"
+        "グリッドセルのレイヤーのままです。");
+    reg("Axis scale link to the parent layer (available only when an overlay parent is selected).",
+        "親レイヤーへの軸範囲リンクです (重ねる先を選んだときだけ有効)。");
+    reg("Layers are placed row by row. The grid may have more cells than layers (for example "
+        "2 x 2 for 3 layers); the unused cells stay empty.",
+        "レイヤーは行ごとに順に配置されます。レイヤー数よりセルが多くてもかまいません "
+        "(例: 3 枚を 2 x 2 に配置。空いたセルはそのまま空白になります)。");
+    reg("The grid (%1 x %2 = %3 cells) is too small for the %4 layer(s) that occupy a grid cell!",
+        "グリッド (%1 x %2 = %3 セル) が、セルを占有する %4 枚のレイヤーに対して小さすぎます。");
+    reg("Grid input error", "グリッド入力エラー");
+    reg("Arrange the layers automatically (grid and canvas size are chosen for you).",
+        "レイヤーを自動配置します (グリッドとキャンバスサイズは自動で決まります)。");
 }
 
 } // namespace
@@ -158,6 +187,8 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
 
     fitBox = new QCheckBox(tr("Automatic &layout"));
     fitBox->setChecked(false);
+    fitBox->setToolTip(
+            tr("Arrange the layers automatically (grid and canvas size are chosen for you)."));
     gl1->addWidget(fitBox, 1, 1);
 
     keepAspectBox = new QCheckBox(tr("Keep plot &aspect ratio"));
@@ -202,6 +233,9 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     gl2->setRowStretch(2, 1);
 
     GroupGrid = new QGroupBox(tr("Grid"));
+    GroupGrid->setToolTip(
+            tr("Layers are placed row by row. The grid may have more cells than layers (for "
+               "example 2 x 2 for 3 layers); the unused cells stay empty."));
     QGridLayout *gl3 = new QGridLayout(GroupGrid);
     gl3->addWidget(new QLabel(tr("Columns")), 0, 0);
     boxX = new QSpinBox();
@@ -336,16 +370,26 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     gl6->addLayout(vbox1, 1, 0);
     gl6->addWidget(gb4, 1, 1);
 
-    GroupLinkAxes = new QGroupBox(tr("Link Axes & Layer Geometry"));
+    GroupLinkAxes = new QGroupBox(tr("Overlay (Twin Axes) / Axis Link / Layer Geometry"));
     QGridLayout *glLink = new QGridLayout(GroupLinkAxes);
     glLink->addWidget(new QLabel(tr("Layer")), 0, 0);
     targetLayerBox = new QComboBox();
     glLink->addWidget(targetLayerBox, 0, 1);
-    glLink->addWidget(new QLabel(tr("Parent Layer")), 0, 2);
+    const QString parentTip =
+            tr("Choose the layer on which this layer is overlaid as twin axes. \"None\" keeps it "
+               "as an independent layer in its own grid cell.");
+    QLabel *parentLabel = new QLabel(tr("Overlay On (Parent Layer)"));
+    parentLabel->setToolTip(parentTip);
+    glLink->addWidget(parentLabel, 0, 2);
     parentLayerBox = new QComboBox();
+    parentLayerBox->setToolTip(parentTip);
     glLink->addWidget(parentLayerBox, 0, 3);
 
-    glLink->addWidget(new QLabel(tr("X Link Mode")), 1, 0);
+    const QString linkTip = tr("Axis scale link to the parent layer (available only when an "
+                               "overlay parent is selected).");
+    QLabel *xLinkLabel = new QLabel(tr("X Axis Link to Parent"));
+    xLinkLabel->setToolTip(linkTip);
+    glLink->addWidget(xLinkLabel, 1, 0);
     xLinkModeBox = new QComboBox();
     xLinkModeBox->addItem(tr("None"), 0);
     xLinkModeBox->addItem(tr("Straight (1:1)"), 1);
@@ -356,7 +400,9 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     xFormulaEdit->setPlaceholderText(QString("1000/(x+273.15)"));
     glLink->addWidget(xFormulaEdit, 1, 3);
 
-    glLink->addWidget(new QLabel(tr("Y Link Mode")), 2, 0);
+    QLabel *yLinkLabel = new QLabel(tr("Y Axis Link to Parent"));
+    yLinkLabel->setToolTip(linkTip);
+    glLink->addWidget(yLinkLabel, 2, 0);
     yLinkModeBox = new QComboBox();
     yLinkModeBox->addItem(tr("None"), 0);
     yLinkModeBox->addItem(tr("Straight (1:1)"), 1);
@@ -389,6 +435,24 @@ LayerDialog::LayerDialog(QWidget *parent, Qt::WindowFlags fl)
     layerGeoHBox->setSuffix(QStringLiteral(" px"));
     geoRow->addWidget(layerGeoHBox);
     glLink->addLayout(geoRow, 3, 0, 1, 4);
+
+    // P0/B5-1: remember whether the user really edited the geometry fields.
+    for (QSpinBox *sb : { layerGeoXBox, layerGeoYBox, layerGeoWBox, layerGeoHBox }) {
+        connect(sb, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+            if (!loadingGeo)
+                userEditedGeo = true;
+        });
+    }
+
+    // B5-2: explain overlay (twin axes) vs. independent grid cell.
+    QLabel *overlayHint = new QLabel(
+            tr("Parent Layer = None: the layer keeps its own cell in the grid above (independent "
+               "layer with its own axes).\n"
+               "Parent Layer = Layer N: this layer is drawn on top of layer N as a twin-axis "
+               "overlay and takes no grid cell; the X/Y link modes then tie its axis scales to "
+               "layer N."));
+    overlayHint->setWordWrap(true);
+    glLink->addWidget(overlayHint, 4, 0, 1, 4);
 
     gl6->addWidget(GroupLinkAxes, 2, 0, 1, 2);
     gl6->setRowStretch(3, 1);
@@ -434,6 +498,7 @@ void LayerDialog::enableLayoutOptions(bool ok)
 void LayerDialog::setMultiLayer(MultiLayer *g)
 {
     multi_layer = g;
+    userEditedGeo = false;
 
     layersBox->setValue(g->layers());
     boxX->setValue(g->getCols());
@@ -457,6 +522,15 @@ void LayerDialog::setMultiLayer(MultiLayer *g)
     boxCanvasHeight->setValue(g->layerCanvasSize().height());
     alignHorBox->setCurrentIndex(g->horizontalAlignement());
     alignVertBox->setCurrentIndex(g->verticalAlignement());
+
+    // B1-7: MultiLayer does not persist "Automatic layout" / "Layer Canvas Size" (fixed size)
+    // flags, so the only faithful state when the dialog opens is "off" for both: the grid and
+    // canvas boxes above show MultiLayer's current values and stay editable. Set the check
+    // states explicitly (and sync the enabled state of the groups) so that re-using the
+    // dialog for another MultiLayer never keeps the previous plot's choice.
+    fitBox->setChecked(false);
+    GroupCanvasSize->setChecked(false);
+    enableLayoutOptions(false);
 
     keepAspectBox->setChecked(g->keepAspectRatio());
     const double ratio = g->targetAspectRatio();
@@ -486,7 +560,7 @@ void LayerDialog::refreshLayerSelectors()
     parentLayerBox->blockSignals(true);
     targetLayerBox->clear();
     parentLayerBox->clear();
-    parentLayerBox->addItem(tr("None"), 0);
+    parentLayerBox->addItem(tr("None (own grid cell)"), 0);
 
     int activeIdx = 0;
     for (int i = 1; i <= multi_layer->layers(); ++i) {
@@ -533,12 +607,20 @@ void LayerDialog::onTargetLayerChanged(int index)
     xFormulaEdit->setText(g->xLinkExpr());
     yFormulaEdit->setText(g->yLinkExpr());
 
-    const QRect geo = g->geometry();
+    // Load the layer's current geometry. This is not a user edit (P0/B5-1).
+    loadLayerGeometryFields(g->geometry());
+    onLinkModeChanged();
+}
+
+void LayerDialog::loadLayerGeometryFields(const QRect &geo)
+{
+    loadingGeo = true;
     layerGeoXBox->setValue(geo.x());
     layerGeoYBox->setValue(geo.y());
     layerGeoWBox->setValue(geo.width());
     layerGeoHBox->setValue(geo.height());
-    onLinkModeChanged();
+    loadingGeo = false;
+    userEditedGeo = false;
 }
 
 void LayerDialog::onLinkModeChanged()
@@ -554,6 +636,49 @@ void LayerDialog::onLinkModeChanged()
         yFormulaEdit->setEnabled(hasParent && yLinkModeBox->currentData().toInt() == 2);
 }
 
+int LayerDialog::gridCellLayerCount(int layerCount) const
+{
+    if (!multi_layer || layerCount <= 0)
+        return qMax(0, layerCount);
+    const int existing = multi_layer->layers();
+    const int keepCount = qMin(layerCount, existing);
+    const int targetNum = targetLayerBox ? targetLayerBox->currentData().toInt() : 0;
+    const int parentNum = parentLayerBox ? parentLayerBox->currentData().toInt() : 0;
+    Graph *pendingTarget =
+            (targetNum >= 1 && targetNum <= keepCount) ? multi_layer->layer(targetNum) : nullptr;
+    Graph *pendingParent = (pendingTarget && parentNum >= 1 && parentNum <= keepCount
+                            && parentNum != targetNum)
+            ? multi_layer->layer(parentNum)
+            : nullptr;
+    int n = 0;
+    for (int i = 1; i <= keepCount; ++i) {
+        Graph *lg = multi_layer->layer(i);
+        if (!lg)
+            continue;
+        Graph *effParent = (lg == pendingTarget) ? pendingParent : lg->linkedParentLayer();
+        // If a surviving layer's linked parent is among the layers being removed, it reverts to
+        // its own grid cell once setLayersNumber(layerCount) deletes that parent.
+        if (effParent) {
+            bool parentSurvives = false;
+            for (int j = 1; j <= keepCount; ++j) {
+                if (multi_layer->layer(j) == effParent) {
+                    parentSurvives = true;
+                    break;
+                }
+            }
+            if (!parentSurvives)
+                effParent = nullptr;
+        }
+        if (effParent || multi_layer->isInsetLayer(lg))
+            continue;
+        ++n;
+    }
+    // layers that will be created by this Apply are ordinary grid layers
+    if (layerCount > existing)
+        n += layerCount - existing;
+    return n;
+}
+
 void LayerDialog::update()
 {
     setProperty("lastUpdateAborted", false);
@@ -564,24 +689,44 @@ void LayerDialog::update()
     int cols = boxX->value();
     int rows = boxY->value();
 
-    if (graphs > 0 && cols > graphs && !fitBox->isChecked()) {
-        QMessageBox::about(this, tr("Columns input error"),
-                           tr("The number of columns you've entered is greater than the number of "
-                              "graphs (%1)!")
-                                   .arg(graphs));
-        boxX->setFocus();
-        setProperty("lastUpdateAborted", true);
-        return;
-    }
+    // B5-10: only layers that occupy a grid cell count (overlay/inset layers have none).
+    // A grid is valid when rows * cols >= that number, so e.g. 3 layers may use 2 x 2; the
+    // unused trailing cell(s) simply stay empty (MultiLayer fills cells row by row).
+    const int cellLayers = gridCellLayerCount(graphs);
 
-    if (graphs > 0 && rows > graphs && !fitBox->isChecked()) {
-        QMessageBox::about(
-                this, tr("Rows input error"),
-                tr("The number of rows you've entered is greater than the number of graphs (%1)!")
-                        .arg(graphs));
-        boxY->setFocus();
-        setProperty("lastUpdateAborted", true);
-        return;
+    if (graphs > 0 && cellLayers > 0 && !fitBox->isChecked()) {
+        if (cols > cellLayers) {
+            QMessageBox::about(this, tr("Columns input error"),
+                               tr("The number of columns you've entered is greater than the "
+                                  "number of graphs (%1)!")
+                                       .arg(cellLayers));
+            boxX->setFocus();
+            setProperty("lastUpdateAborted", true);
+            return;
+        }
+
+        if (rows > cellLayers) {
+            QMessageBox::about(this, tr("Rows input error"),
+                               tr("The number of rows you've entered is greater than the number "
+                                  "of graphs (%1)!")
+                                       .arg(cellLayers));
+            boxY->setFocus();
+            setProperty("lastUpdateAborted", true);
+            return;
+        }
+
+        if (rows * cols < cellLayers) {
+            QMessageBox::about(this, tr("Grid input error"),
+                               tr("The grid (%1 x %2 = %3 cells) is too small for the %4 "
+                                  "layer(s) that occupy a grid cell!")
+                                       .arg(cols)
+                                       .arg(rows)
+                                       .arg(rows * cols)
+                                       .arg(cellLayers));
+            boxX->setFocus();
+            setProperty("lastUpdateAborted", true);
+            return;
+        }
     }
 
     int old_graphs = multi_layer->layers();
@@ -659,6 +804,19 @@ void LayerDialog::update()
                             boxBottomSpace->value());
 
     multi_layer->setSpacing(boxRowsGap->value(), boxColsGap->value());
+
+    // Apply the overlay/link settings of the target layer BEFORE arranging: a layer that gets an
+    // overlay parent no longer occupies a grid cell, and arrangeLayers() has to know that.
+    const int targetNum = targetLayerBox->currentData().toInt();
+    if (Graph *targetG = multi_layer->layer(targetNum)) {
+        const int parentNum = parentLayerBox->currentData().toInt();
+        Graph *parentG = (parentNum > 0 && parentNum != targetNum) ? multi_layer->layer(parentNum)
+                                                                   : nullptr;
+        targetG->setLinkedParentLayer(parentG, xLinkModeBox->currentData().toInt(),
+                                      xFormulaEdit->text(), yLinkModeBox->currentData().toInt(),
+                                      yFormulaEdit->text());
+    }
+
     multi_layer->arrangeLayers(fitBox->isChecked(), GroupCanvasSize->isChecked());
 
     if (!GroupCanvasSize->isChecked()) { // show new layer canvas size
@@ -675,25 +833,25 @@ void LayerDialog::update()
         boxY->setValue(multi_layer->getRows());
     }
 
-    const int targetNum = targetLayerBox->currentData().toInt();
-    if (Graph *targetG = multi_layer->layer(targetNum)) {
-        const int parentNum = parentLayerBox->currentData().toInt();
-        Graph *parentG = (parentNum > 0 && parentNum != targetNum) ? multi_layer->layer(parentNum)
-                                                                   : nullptr;
-        targetG->setLinkedParentLayer(parentG, xLinkModeBox->currentData().toInt(),
-                                      xFormulaEdit->text(), yLinkModeBox->currentData().toInt(),
-                                      yFormulaEdit->text());
-        const QRect desiredGeo(layerGeoXBox->value(), layerGeoYBox->value(), layerGeoWBox->value(),
-                               layerGeoHBox->value());
-        if (desiredGeo != targetG->geometry() && desiredGeo.width() >= 40
-            && desiredGeo.height() >= 40) {
-            targetG->setGeometry(desiredGeo);
-            if (targetG->plotWidget()) {
-                targetG->plotWidget()->resize(desiredGeo.size());
-                targetG->plotWidget()->updateLayout();
-                targetG->plotWidget()->replot();
+    // P0/B5-1: the geometry spin boxes were loaded BEFORE arrangeLayers() moved the layers, so
+    // writing them back unconditionally would put the active layer back on its old position.
+    // Apply them only when the user actually edited them; otherwise the arranged geometry wins
+    // and refreshLayerSelectors() below reloads the fields from the layer.
+    if (userEditedGeo) {
+        if (Graph *targetG = multi_layer->layer(targetNum)) {
+            const QRect desiredGeo(layerGeoXBox->value(), layerGeoYBox->value(),
+                                   layerGeoWBox->value(), layerGeoHBox->value());
+            if (desiredGeo != targetG->geometry() && desiredGeo.width() >= 40
+                && desiredGeo.height() >= 40) {
+                targetG->setGeometry(desiredGeo);
+                if (targetG->plotWidget()) {
+                    targetG->plotWidget()->resize(desiredGeo.size());
+                    targetG->plotWidget()->updateLayout();
+                    targetG->plotWidget()->replot();
+                }
             }
         }
+        userEditedGeo = false;
     }
     refreshLayerSelectors();
 

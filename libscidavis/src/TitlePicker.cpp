@@ -33,6 +33,7 @@
 #include "MultiLayer.h"
 
 #include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_text_label.h>
 
 #include <QKeyEvent>
@@ -94,6 +95,30 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Escape) {
+            if (g)
+                g->deselect();
+            else
+                setSelected(false);
+            return true;
+        }
+        if (!d_selected)
+            return QObject::eventFilter(object, e);
+
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter || ke->key() == Qt::Key_F2)
+            && !(ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+            if (g && title) {
+                if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                    bar->cancelScheduledAndHide();
+                QRect trRect = title->textRect();
+                if (!trRect.isValid() || trRect.isEmpty())
+                    trRect = title->rect();
+                const QRect globalRect(title->mapToGlobal(trRect.topLeft()), trRect.size());
+                CanvasInlineTextEditor::openForPlotTitle(g, globalRect);
+                ke->accept();
+                return true;
+            }
+        }
         if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up
             || ke->key() == Qt::Key_Down) {
             const Qt::KeyboardModifiers mods = ke->modifiers();
@@ -116,13 +141,6 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
                 return true;
             }
         }
-        if (ke->key() == Qt::Key_Escape) {
-            if (g)
-                g->deselect();
-            else
-                setSelected(false);
-            return true;
-        }
         if (ke->key() == Qt::Key_Delete) {
             MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
             const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -141,11 +159,18 @@ void TitlePicker::setSelected(bool select)
     if (!title)
         return;
 
+    QwtPlot *plt = qobject_cast<QwtPlot *>(parent());
     if (title->text().backgroundPen().style() != Qt::NoPen) {
         QwtText cleanText = title->text();
         cleanText.setBackgroundPen(QPen(Qt::NoPen));
-        if (QwtPlot *plt = qobject_cast<QwtPlot *>(parent()))
+        if (plt)
             plt->setTitle(cleanText);
+    }
+
+    if (!select && title->hasFocus()) {
+        title->clearFocus();
+        if (plt && plt->canvas())
+            plt->canvas()->setFocus(Qt::OtherFocusReason);
     }
 
     if (d_selected == select)

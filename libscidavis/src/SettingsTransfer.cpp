@@ -7,6 +7,7 @@
 
 #include "ApplicationWindow.h"
 #include "I18nJapanese.h"
+#include "MultiLayer.h"
 
 #include <QAction>
 #include <QApplication>
@@ -17,8 +18,11 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QMessageBox>
 #include <QPointer>
+#include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStringList>
@@ -29,6 +33,8 @@ namespace {
 
 const char *const kLabGroup = "LabDefaults";
 const char *const kLabAppliedPrefix = "LabDefaults/Applied/";
+//! Key under which graph_style_presets.json travels inside an exported INI file.
+const char *const kStylePresetsKey = "GraphStylePresets/JsonBase64";
 
 bool s_saveSuppressed = false;
 
@@ -102,6 +108,16 @@ bool sameSettingValue(const QVariant &a, const QVariant &b)
     if (a.canConvert<QString>() && b.canConvert<QString>())
         return a.toString() == b.toString();
     return a == b;
+}
+
+//! graph_style_presets.json belongs to the application's own settings only. A QSettings object
+//! created elsewhere (tests, tools converting an INI file) must neither read, overwrite nor delete
+//! the real per-user presets file, so it gets an empty path here.
+QString stylePresetsFileFor(const QSettings &s)
+{
+    if (&s != &ApplicationWindow::getSettings())
+        return QString();
+    return MultiLayer::userStylePresetsFilePath();
 }
 
 class SettingsActionHub : public QObject
@@ -244,6 +260,19 @@ int SettingsTransfer::exportToIni(QSettings &src, const QString &path, QString *
             out.setValue(key, src.value(key));
             ++n;
         }
+        // user graph style presets live in a separate JSON file; carry them along (C5-5)
+        {
+            const QString presetsFile = stylePresetsFileFor(src);
+            QFile pf(presetsFile);
+            if (!presetsFile.isEmpty() && pf.exists() && pf.open(QIODevice::ReadOnly)) {
+                const QByteArray json = pf.readAll();
+                pf.close();
+                if (!json.isEmpty()) {
+                    out.setValue(QLatin1String(kStylePresetsKey), QString::fromLatin1(json.toBase64()));
+                    ++n;
+                }
+            }
+        }
         out.sync();
         if (out.status() != QSettings::NoError) {
             QFile::remove(tmpPath);
@@ -286,6 +315,20 @@ int SettingsTransfer::importFromIni(QSettings &dst, const QString &path, QString
     for (const QString &key : keys) {
         if (isBookkeepingKey(key) || isPersonalKey(key))
             continue;
+        if (key == QLatin1String(kStylePresetsKey)) {
+            const QByteArray json = QByteArray::fromBase64(in.value(key).toString().toLatin1());
+            QJsonParseError parseErr;
+            const QJsonDocument doc = QJsonDocument::fromJson(json, &parseErr);
+            const QString presetPath = stylePresetsFileFor(dst);
+            if (!json.isEmpty() && parseErr.error == QJsonParseError::NoError
+                && (doc.isObject() || doc.isArray()) && !presetPath.isEmpty()) {
+                QDir().mkpath(QFileInfo(presetPath).absolutePath());
+                QSaveFile sf(presetPath);
+                if (sf.open(QIODevice::WriteOnly) && sf.write(json) == json.size() && sf.commit())
+                    ++n;
+            }
+            continue;
+        }
         dst.setValue(key, in.value(key));
         ++n;
     }
@@ -302,6 +345,9 @@ void SettingsTransfer::resetAll(QSettings &s)
 {
     s.clear();
     s.sync();
+    const QString presetPath = stylePresetsFileFor(s);
+    if (!presetPath.isEmpty() && QFile::exists(presetPath))
+        QFile::remove(presetPath);
 }
 
 int SettingsTransfer::applyLabDefaults(QSettings &user, const QString &labIniPath)

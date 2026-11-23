@@ -30,12 +30,15 @@
 #include "TableDoubleHeaderView.h"
 #include "TableCommentsHeaderModel.h"
 #include "table/TableView.h"
+#include "table/future_Table.h"
 #include "core/column/Column.h"
 #include "ApplicationWindow.h"
 #include "Table.h"
+#include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QHelpEvent>
 #include <QItemSelection>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -43,8 +46,14 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QRegularExpression>
+#include <QScrollBar>
+#include <QStatusBar>
 #include <QTableView>
+#include <QTextDocument>
+#include <QTextOption>
 #include <QTimer>
+#include <QToolTip>
 
 namespace {
 TableView *findOwnerTableView(QWidget *w)
@@ -54,6 +63,55 @@ TableView *findOwnerTableView(QWidget *w)
             return tv;
     }
     return nullptr;
+}
+
+ApplicationWindow *findOwningAppWindowForHeader(QWidget *w)
+{
+    for (QWidget *cur = w; cur != nullptr; cur = cur->parentWidget()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(cur))
+            return aw;
+        if (ApplicationWindow *winAw = qobject_cast<ApplicationWindow *>(cur->window()))
+            return winAw;
+    }
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw))
+            return aw;
+    }
+    return nullptr;
+}
+
+bool hasSafeHeaderRichTags(const QString &raw)
+{
+    if (!raw.contains(QLatin1Char('<')))
+        return false;
+    static const QRegularExpression kSafeTag(
+            QStringLiteral("</?(?:i|b|sub|sup|u)>"),
+            QRegularExpression::CaseInsensitiveOption);
+    return kSafeTag.match(raw).hasMatch();
+}
+
+// Escape all HTML except the whitelisted inline formatting tags (i, b, sub, sup, u) without attributes.
+QString sanitizeHeaderRichText(const QString &raw)
+{
+    const QString escaped = raw.toHtmlEscaped();
+    static const QRegularExpression kSafeEscapedTag(
+            QStringLiteral("&lt;(/?)(i|b|sub|sup|u)&gt;"),
+            QRegularExpression::CaseInsensitiveOption);
+    QString out;
+    out.reserve(escaped.size());
+    int lastPos = 0;
+    QRegularExpressionMatchIterator it = kSafeEscapedTag.globalMatch(escaped);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out.append(escaped.mid(lastPos, m.capturedStart() - lastPos));
+        out.append(QLatin1Char('<'));
+        out.append(m.captured(1));
+        out.append(m.captured(2).toLower());
+        out.append(QLatin1Char('>'));
+        lastPos = m.capturedEnd();
+    }
+    out.append(escaped.mid(lastPos));
+    return out;
 }
 
 QString extractColumnFormula(const Column *col)
@@ -230,8 +288,38 @@ void TableCommentsHeaderView::paintSection(QPainter *painter, const QRect &rect,
             const QFontMetrics lfm(lineFont);
             const QRect textRect = rowRect.adjusted(6, 0, -5, 0);
             if (textRect.width() > 4) {
-                painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
-                                  lfm.elidedText(cellTxt, Qt::ElideRight, textRect.width()));
+                const bool allowRich = (!isPlaceholder && r < 3 && hasSafeHeaderRichTags(cellTxt));
+                if (allowRich) {
+                    QTextDocument doc;
+                    doc.setDefaultFont(lineFont);
+                    doc.setDocumentMargin(0.0);
+                    QTextOption opt;
+                    opt.setWrapMode(QTextOption::NoWrap);
+                    doc.setDefaultTextOption(opt);
+                    doc.setHtml(sanitizeHeaderRichText(cellTxt));
+                    const QSizeF docSz = doc.size();
+                    const bool overflow = (docSz.width() > textRect.width());
+                    const QString ellipsisStr(QChar(0x2026));
+                    const int ellipsisW = overflow ? lfm.horizontalAdvance(ellipsisStr) : 0;
+                    const QRect clipRect(textRect.left(), rowRect.top(),
+                                         qMax(0, textRect.width() - ellipsisW), rowRect.height());
+                    painter->save();
+                    painter->setClipRect(clipRect, Qt::IntersectClip);
+                    const qreal yOff = rowRect.top() + (rowRect.height() - docSz.height()) * 0.5;
+                    painter->translate(textRect.left(), yOff);
+                    QAbstractTextDocumentLayout::PaintContext ctx;
+                    ctx.palette.setColor(QPalette::Text, lineCol);
+                    doc.documentLayout()->draw(painter, ctx);
+                    painter->restore();
+                    if (overflow && ellipsisW > 0 && textRect.width() > ellipsisW) {
+                        painter->setFont(lineFont);
+                        painter->setPen(lineCol);
+                        painter->drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, ellipsisStr);
+                    }
+                } else {
+                    painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
+                                      lfm.elidedText(cellTxt, Qt::ElideRight, textRect.width()));
+                }
             }
         }
     }
@@ -525,11 +613,60 @@ void TableDoubleHeaderView::beginInlineSubHeaderEdit(int logicalCol, int subRow)
     if (d_inline_editor)
         commitInlineSubHeaderEdit();
 
+    // Auto-scroll horizontally so the target column and its inline editor stay visible
+    {
+        QTableView *qtv = qobject_cast<QTableView *>(parentWidget());
+        const int vpW = viewport() ? viewport()->width() : width();
+        if (vpW > 0) {
+            const int left = sectionViewportPosition(logicalCol);
+            const int secW0 = sectionSize(logicalCol);
+            const int right = left + secW0;
+            if (left < 0 || right > vpW) {
+                if (qtv && qtv->model() && qtv->model()->rowCount() > 0) {
+                    const int row =
+                            qBound(0, qtv->currentIndex().row(), qtv->model()->rowCount() - 1);
+                    qtv->scrollTo(qtv->model()->index(row, logicalCol),
+                                  QAbstractItemView::EnsureVisible);
+                }
+                const int left2 = sectionViewportPosition(logicalCol);
+                const int right2 = left2 + secW0;
+                if (left2 < 0 || right2 > vpW) {
+                    if (QScrollBar *hbar = qtv ? qtv->horizontalScrollBar() : horizontalScrollBar()) {
+                        if (qtv && qtv->horizontalScrollMode() == QAbstractItemView::ScrollPerItem) {
+                            const int vis = visualIndex(logicalCol);
+                            if (vis >= 0)
+                                hbar->setValue(qBound(hbar->minimum(), vis, hbar->maximum()));
+                        } else {
+                            int targetOff = sectionPosition(logicalCol);
+                            if (right2 > vpW && secW0 < vpW)
+                                targetOff = sectionPosition(logicalCol) + secW0 - vpW;
+                            hbar->setValue(qBound(hbar->minimum(), targetOff, hbar->maximum()));
+                        }
+                    } else {
+                        int targetOff = sectionPosition(logicalCol);
+                        if (right2 > vpW && secW0 < vpW)
+                            targetOff = sectionPosition(logicalCol) + secW0 - vpW;
+                        setOffset(qMax(0, targetOff));
+                    }
+                }
+            }
+        }
+    }
+
     const int topH = topHeaderHeight();
     const int lineH = d_slave ? d_slave->subRowLineHeight() : 17;
     const int secX = sectionViewportPosition(logicalCol);
     const int secW = sectionSize(logicalCol);
-    const QRect editRect(secX + 1, topH + 1 + subRow * lineH, qMax(56, secW - 2), lineH + 1);
+    const int vpW = viewport() ? viewport()->width() : width();
+    int editX = secX + 1;
+    int editW = qMax(56, secW - 2);
+    if (vpW > 0) {
+        if (editX < 0)
+            editX = 0;
+        if (editX + editW > vpW)
+            editW = qMax(56, vpW - editX - 1);
+    }
+    const QRect editRect(editX, topH + 1 + subRow * lineH, editW, lineH + 1);
 
     QWidget *parentVp = viewport() ? viewport() : static_cast<QWidget *>(this);
     QLineEdit *ed = new QLineEdit(parentVp);
@@ -545,6 +682,7 @@ void TableDoubleHeaderView::beginInlineSubHeaderEdit(int logicalCol, int subRow)
             "  padding: 0px 4px;"
             "}"));
 
+    d_inline_had_multiline_comment = false;
     if (subRow == 0) {
         ed->setText(col->longName());
         ed->setPlaceholderText(tr("Long Name"));
@@ -553,14 +691,20 @@ void TableDoubleHeaderView::beginInlineSubHeaderEdit(int logicalCol, int subRow)
         ed->setPlaceholderText(tr("Units (e.g. MPa, %)"));
     } else if (subRow == 2) {
         QString cmt = col->comment();
-        cmt.replace(QLatin1String("\r\n"), QLatin1String(" "));
-        cmt.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        if (cmt.contains(QLatin1Char('\n')) || cmt.contains(QLatin1Char('\r'))) {
+            d_inline_had_multiline_comment = true;
+            cmt.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+            cmt.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+            cmt.replace(QLatin1Char('\n'), QChar(0x21B5));
+        }
         ed->setText(cmt);
         ed->setPlaceholderText(tr("Comments"));
     } else {
         ed->setText(extractColumnFormula(col));
         ed->setPlaceholderText(QStringLiteral("F(x)="));
     }
+    d_inline_initial_text = ed->text();
+    ed->setModified(false);
 
     d_inline_editor = ed;
     d_inline_col = logicalCol;
@@ -583,13 +727,26 @@ void TableDoubleHeaderView::commitInlineSubHeaderEdit()
     QPointer<QLineEdit> ed = d_inline_editor;
     const int logicalCol = d_inline_col;
     const int subRow = d_inline_subrow;
-    const QString txt = ed->text().trimmed();
+    const QString rawText = ed->text();
+    const QString initialText = d_inline_initial_text;
+    const bool hadMultilineComment = d_inline_had_multiline_comment;
 
     d_inline_editor = nullptr;
     d_inline_col = -1;
     d_inline_subrow = -1;
+    d_inline_initial_text.clear();
+    d_inline_had_multiline_comment = false;
     ed->hide();
     ed->deleteLater();
+
+    // Merely opening/closing or tabbing through an unchanged cell must not mutate
+    // multi-line comments or push a no-op Undo command.
+    if (rawText == initialText) {
+        d_committing_inline = false;
+        return;
+    }
+
+    const QString txt = rawText.trimmed();
 
     TableModel *tm = qobject_cast<TableModel *>(QHeaderView::model());
     Column *col = (tm && logicalCol >= 0 && logicalCol < tm->columnCount())
@@ -604,19 +761,67 @@ void TableDoubleHeaderView::commitInlineSubHeaderEdit()
             if (col->units() != uClean)
                 col->setUnits(uClean);
         } else if (subRow == 2) {
-            if (col->comment() != txt)
-                col->setComment(txt);
+            QString nextComment = rawText;
+            if (hadMultilineComment || nextComment.contains(QChar(0x21B5)))
+                nextComment.replace(QChar(0x21B5), QLatin1Char('\n'));
+            else
+                nextComment = txt;
+            if (col->comment() != nextComment)
+                col->setComment(nextComment);
         } else if (subRow == 3) {
+            QString fx = txt;
+            if (fx.startsWith(QLatin1Char('=')))
+                fx = fx.mid(1).trimmed();
+
             TableView *tv = findOwnerTableView(this);
-            if (::Table *legacyTbl = qobject_cast<::Table *>(tv)) {
-                legacyTbl->setCommand(logicalCol, txt);
-                if (!txt.isEmpty())
-                    legacyTbl->recalculate(logicalCol, false);
-            } else {
-                if (txt.isEmpty())
-                    col->clearFormulas();
-                else
-                    col->setFormula(Interval<int>(0, qMax(0, tm->rowCount() - 1)), txt);
+            QList<int> targetCols;
+            if (tv) {
+                const QList<int> sel = tv->selectedColumnIndices(false);
+                if (sel.size() > 1 && sel.contains(logicalCol))
+                    targetCols = sel;
+            }
+            if (targetCols.isEmpty())
+                targetCols.append(logicalCol);
+
+            ::Table *legacyTbl = qobject_cast<::Table *>(tv);
+            const bool multiCol = (targetCols.size() > 1);
+            if (multiCol && legacyTbl && legacyTbl->d_future_table) {
+                legacyTbl->d_future_table->beginMacro(
+                        tr("%1: apply formula to column").arg(legacyTbl->name()));
+            }
+            for (int cIdx : targetCols) {
+                if (cIdx < 0 || cIdx >= tm->columnCount())
+                    continue;
+                if (legacyTbl) {
+                    legacyTbl->setCommand(cIdx, fx);
+                } else if (Column *tc = tm->column(cIdx)) {
+                    if (fx.isEmpty())
+                        tc->clearFormulas();
+                    else
+                        tc->setFormula(Interval<int>(0, qMax(0, tm->rowCount() - 1)), fx);
+                }
+            }
+            if (multiCol && legacyTbl && legacyTbl->d_future_table)
+                legacyTbl->d_future_table->endMacro();
+
+            QStringList errorLines;
+            for (int cIdx : targetCols) {
+                if (Column *tc = tm->column(cIdx)) {
+                    const QString err = tc->formulaError().trimmed();
+                    if (!err.isEmpty())
+                        errorLines << QStringLiteral("%1: %2").arg(tc->name(), err);
+                }
+            }
+            if (!errorLines.isEmpty()) {
+                if (ApplicationWindow *app = findOwningAppWindowForHeader(this)) {
+                    if (QStatusBar *sb = app->statusBar())
+                        sb->showMessage(errorLines.join(QStringLiteral(" | ")), 8000);
+                }
+                if (!ApplicationWindow::isNonInteractiveContext(this)) {
+                    const QPoint tipPos = mapToGlobal(
+                            QPoint(qMax(0, sectionViewportPosition(logicalCol)), height()));
+                    QToolTip::showText(tipPos, errorLines.join(QLatin1Char('\n')), this);
+                }
             }
         }
         if (TableView *tv = findOwnerTableView(this))
@@ -637,6 +842,8 @@ void TableDoubleHeaderView::cancelInlineSubHeaderEdit()
     d_inline_editor = nullptr;
     d_inline_col = -1;
     d_inline_subrow = -1;
+    d_inline_initial_text.clear();
+    d_inline_had_multiline_comment = false;
     if (ed) {
         ed->hide();
         ed->deleteLater();
@@ -653,6 +860,10 @@ bool TableDoubleHeaderView::eventFilter(QObject *watched, QEvent *event)
             cancelInlineSubHeaderEdit();
             return true;
         }
+        if ((ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab)
+            && (ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            return false;
+        }
         if (ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab
             || ke->key() == Qt::Key_Down || ke->key() == Qt::Key_Up) {
             const int curCol = d_inline_col;
@@ -662,14 +873,26 @@ bool TableDoubleHeaderView::eventFilter(QObject *watched, QEvent *event)
             commitInlineSubHeaderEdit();
             int nextCol = curCol;
             int nextSub = curSub;
-            if (ke->key() == Qt::Key_Tab && totalCols > 0)
-                nextCol = (curCol + 1) % totalCols;
-            else if (ke->key() == Qt::Key_Backtab && totalCols > 0)
-                nextCol = (curCol - 1 + totalCols) % totalCols;
-            else if (ke->key() == Qt::Key_Down)
+            const bool isBacktab = (ke->key() == Qt::Key_Backtab)
+                    || (ke->key() == Qt::Key_Tab && (ke->modifiers() & Qt::ShiftModifier));
+            if ((ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab) && totalCols > 0) {
+                const int step = isBacktab ? -1 : 1;
+                int vis = visualIndex(curCol);
+                if (vis < 0)
+                    vis = curCol;
+                for (int tries = 0; tries < totalCols; ++tries) {
+                    vis = (vis + step + totalCols) % totalCols;
+                    const int cand = logicalIndex(vis);
+                    if (cand >= 0 && !isSectionHidden(cand)) {
+                        nextCol = cand;
+                        break;
+                    }
+                }
+            } else if (ke->key() == Qt::Key_Down) {
                 nextSub = qMin(maxRows - 1, curSub + 1);
-            else if (ke->key() == Qt::Key_Up)
+            } else if (ke->key() == Qt::Key_Up) {
                 nextSub = qMax(0, curSub - 1);
+            }
             QPointer<TableDoubleHeaderView> self(this);
             QTimer::singleShot(0, this, [self, nextCol, nextSub]() {
                 if (self)
@@ -679,4 +902,23 @@ bool TableDoubleHeaderView::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QHeaderView::eventFilter(watched, event);
+}
+
+bool TableDoubleHeaderView::viewportEvent(QEvent *event)
+{
+    if (event && event->type() == QEvent::ToolTip && d_show_comments && d_slave && d_slave->model()) {
+        QHelpEvent *he = static_cast<QHelpEvent *>(event);
+        if (he->pos().y() >= topHeaderHeight()) {
+            const int col = logicalIndexAt(he->pos());
+            if (col >= 0) {
+                const QString tip =
+                        d_slave->model()->headerData(col, Qt::Horizontal, Qt::ToolTipRole).toString();
+                if (!tip.isEmpty()) {
+                    QToolTip::showText(he->globalPos(), tip, this);
+                    return true;
+                }
+            }
+        }
+    }
+    return QHeaderView::viewportEvent(event);
 }

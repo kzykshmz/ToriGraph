@@ -1423,7 +1423,7 @@ struct GlobalFitContext
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
             double dpdu = sl.dPdU(uk);
-            double h = std::max(1e-7, 1e-6 * std::abs(pk));
+            double h = std::max(1e-12, 1e-6 * std::abs(pk));
 
             int mStart = (sl.curveIdx < 0) ? 0 : sl.curveIdx;
             int mEnd = (sl.curveIdx < 0) ? (ctx->M - 1) : sl.curveIdx;
@@ -1584,7 +1584,7 @@ struct ImplicitODRContext
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
             double dpdu = sl.dPdU(uk);
-            double h = std::max(1e-7, 1e-5 * std::abs(pk));
+            double h = std::max(1e-12, 1e-5 * std::abs(pk));
             const size_t pIdx = size_t(sl.paramIdx);
             ctx->workPPlus[pIdx] = pk + h;
             ctx->workPMinus[pIdx] = pk - h;
@@ -1657,7 +1657,19 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     ctx.rowOffsets.resize(size_t(M), 0);
     ctx.baseParams.assign(size_t(M), std::vector<double>(size_t(P), 1.0));
 
+    d_convergence = Converged;
+    d_last_iterations = 0;
+    d_fit_notes.clear();
+    d_covar_scaled = false;
+    d_has_custom_dof = false;
+    d_has_custom_rss = false;
+    d_has_custom_r2 = false;
+    d_result_errors.clear();
+
     size_t n_total = 0;
+    size_t n_active_total = 0;
+    bool anyAssociatedErrors = false;
+    bool allAssociatedErrors = (M > 0);
     for (int m = 0; m < M; ++m) {
         NonLinearFit loader(app, d_graph);
         loader.d_silent = true;
@@ -1673,6 +1685,14 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
         ctx.curvesSigma[size_t(m)] = loader.d_y_errors.empty()
                 ? std::vector<double>(loader.x().size(), 1.0)
                 : loader.d_y_errors;
+        if (loader.d_y_error_source != UnknownErrors)
+            anyAssociatedErrors = true;
+        else
+            allAssociatedErrors = false;
+        for (double s : ctx.curvesSigma[size_t(m)]) {
+            if (std::isfinite(s) && s > 0.0 && s < 1e140)
+                ++n_active_total;
+        }
         ctx.rowOffsets[size_t(m)] = n_total;
         n_total += loader.x().size();
 
@@ -1751,7 +1771,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     }
 
     const size_t n_free = ctx.freeSlots.size();
-    if (n_total < std::max<size_t>(1, n_free))
+    if (n_active_total < std::max<size_t>(1, n_free))
         return false;
 
     MyParser parser;
@@ -1774,7 +1794,9 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     ctx.var_p = &var_p;
 
     std::vector<std::vector<double>> fittedParams = ctx.baseParams;
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
     std::vector<std::vector<double>> fittedErrors(size_t(M), std::vector<double>(size_t(P), 0.0));
+    std::vector<double> curve0UnscaledCov(size_t(P) * size_t(P), 0.0);
     double rss_total = 0.0;
 
     if (n_free > 0) {
@@ -1801,34 +1823,76 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n_total, n_free);
         int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
         if (status != GSL_SUCCESS) {
+            d_convergence = NoProgress;
+            chi_2 = -1.0;
             gsl_multifit_fdfsolver_free(s);
             gsl_vector_free(u_init);
             return false;
         }
 
-        for (int iter = 0; iter < d_max_iterations; ++iter) {
+        const int maxIter = std::max(1, d_max_iterations);
+        int iter = 0;
+        bool deltaConverged = false;
+        int hardErrorStatus = GSL_SUCCESS;
+        for (iter = 0; iter < maxIter; ++iter) {
             if (ctx.checkTimedOut())
                 break;
             status = gsl_multifit_fdfsolver_iterate(s);
             if (ctx.timedOut)
                 break;
+            if (status) {
+                if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
+                    deltaConverged = true;
+                } else if (status == GSL_ENOPROG) {
+                    if (!lmGradientIsStationary(s))
+                        d_convergence = NoProgress;
+                    deltaConverged = (d_convergence == Converged);
+                } else {
+                    d_convergence = NoProgress;
+                    hardErrorStatus = status;
+                }
+                ++iter;
+                break;
+            }
             int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
-            if (dstat == GSL_SUCCESS)
+            if (dstat == GSL_SUCCESS) {
+                deltaConverged = true;
+                ++iter;
                 break;
-            if (status && status != GSL_CONTINUE)
+            }
+            if (dstat != GSL_CONTINUE) {
+                d_convergence = NoProgress;
+                hardErrorStatus = dstat;
+                ++iter;
                 break;
+            }
         }
+        d_last_iterations = iter;
 
-        if (ctx.timedOut) {
+        if (ctx.timedOut || hardErrorStatus != GSL_SUCCESS) {
+            if (ctx.timedOut)
+                d_convergence = MaxIterationsReached;
+            chi_2 = -1.0;
+            d_results.assign(d_p, nanVal);
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
+        }
+        if (!deltaConverged && d_convergence == Converged)
+            d_convergence = MaxIterationsReached;
+
+        ctx.unpack(s->x, fittedParams);
+        gsl_blas_ddot(s->f, s->f, &rss_total);
+        if (!std::isfinite(rss_total) || rss_total < 0.0) {
+            d_convergence = NoProgress;
+            chi_2 = -1.0;
+            d_results.assign(d_p, nanVal);
             gsl_multifit_fdfsolver_free(s);
             gsl_vector_free(u_init);
             return false;
         }
 
-        ctx.unpack(s->x, fittedParams);
-        gsl_blas_ddot(s->f, s->f, &rss_total);
-
-        // Compute covariance in physical slot space
+        // Compute UNSCALED covariance (J_p^T J_p)^-1 in physical slot space
         gsl_matrix *J_u = gsl_matrix_alloc(n_total, n_free);
         gsl_matrix *cov_p = gsl_matrix_alloc(n_free, n_free);
 #if GSL_MAJOR_VERSION < 2
@@ -1836,20 +1900,32 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
 #else
         gsl_multifit_fdfsolver_jac(s, J_u);
 #endif
+        std::vector<bool> slotPinned(n_free, false);
         for (size_t k = 0; k < n_free; ++k) {
             double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
             if (std::abs(dpdu) > 1e-15) {
                 for (size_t i = 0; i < n_total; ++i)
                     gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            } else {
+                slotPinned[k] = true;
+                for (size_t i = 0; i < n_total; ++i)
+                    gsl_matrix_set(J_u, i, k, 0.0);
             }
         }
         gsl_multifit_covar(J_u, 0.0, cov_p);
-        double dof = (n_total > n_free) ? double(n_total - n_free) : 1.0;
-        double scale = rss_total / dof;
+
+        const int globalDof = int(n_active_total) - int(n_free);
+        const bool scaleByResidual = (!allAssociatedErrors || d_scale_errors);
+        const double scale = scaleByResidual
+                ? ((globalDof > 0) ? (rss_total / double(globalDof)) : nanVal)
+                : 1.0;
 
         for (size_t k = 0; k < n_free; ++k) {
             const auto &sl = ctx.freeSlots[k];
-            double se = std::sqrt(std::max(0.0, scale * gsl_matrix_get(cov_p, k, k)));
+            const double rawVar = gsl_matrix_get(cov_p, k, k);
+            const double se = (!slotPinned[k] && std::isfinite(scale) && std::isfinite(rawVar))
+                    ? std::sqrt(std::max(0.0, scale * rawVar))
+                    : nanVal;
             if (sl.curveIdx < 0) {
                 for (int m = 0; m < M; ++m)
                     fittedErrors[size_t(m)][size_t(sl.paramIdx)] = se;
@@ -1858,31 +1934,86 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             }
         }
 
+        // Store unscaled submatrix for curve 0 (shared + curve 0 local slots) so Fit::parameterStdError /
+        // Fit::errors / Fit::covarianceMatrix apply effectiveCovarScale() exactly once (no double scaling).
+        for (size_t a = 0; a < n_free; ++a) {
+            const auto &sa = ctx.freeSlots[a];
+            if (sa.curveIdx > 0)
+                continue;
+            for (size_t b = 0; b < n_free; ++b) {
+                const auto &sb = ctx.freeSlots[b];
+                if (sb.curveIdx > 0)
+                    continue;
+                curve0UnscaledCov[size_t(sa.paramIdx) * size_t(P) + size_t(sb.paramIdx)] =
+                        (a == b && slotPinned[a]) ? nanVal : gsl_matrix_get(cov_p, a, b);
+            }
+        }
+
         gsl_matrix_free(J_u);
         gsl_matrix_free(cov_p);
         gsl_multifit_fdfsolver_free(s);
         gsl_vector_free(u_init);
+    } else {
+        for (int m = 0; m < M; ++m) {
+            std::vector<double> yhat;
+            if (ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat)) {
+                for (size_t i = 0; i < yhat.size(); ++i) {
+                    const double s = ctx.curvesSigma[size_t(m)][i];
+                    if (std::isfinite(s) && s > 0.0 && s < 1e140) {
+                        const double r = (yhat[i] - ctx.curvesY[size_t(m)][i]) / s;
+                        rss_total += r * r;
+                    }
+                }
+            }
+        }
     }
 
     // Compute per-curve R^2 and global R^2, and plot fitted curves on d_graph
-    std::vector<double> curveR2(size_t(M), 1.0);
+    std::vector<double> curveR2(size_t(M), nanVal);
     double tss_total = 0.0;
     double unwt_rss_total = 0.0;
+    size_t r2ActiveTotal = 0;
+    bool allEvalOk = true;
     for (int m = 0; m < M; ++m) {
         std::vector<double> yhat;
-        ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat);
         const auto &yv = ctx.curvesY[size_t(m)];
-        double meanY = std::accumulate(yv.begin(), yv.end(), 0.0) / double(yv.size());
-        double tss_m = 0.0, rss_m = 0.0;
-        for (size_t i = 0; i < yv.size(); ++i) {
-            double dt = yv[i] - meanY;
-            double dr = yv[i] - yhat[i];
-            tss_m += dt * dt;
-            rss_m += dr * dr;
+        const auto &sv = ctx.curvesSigma[size_t(m)];
+        const bool evalOk = ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat)
+                && yhat.size() == yv.size() && sv.size() == yv.size();
+        if (evalOk) {
+            double sumY = 0.0;
+            size_t nActiveM = 0;
+            for (size_t i = 0; i < yv.size(); ++i) {
+                const double s = sv[i];
+                if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                    continue;
+                sumY += yv[i];
+                ++nActiveM;
+            }
+            if (nActiveM > 0) {
+                const double meanY = sumY / double(nActiveM);
+                double tss_m = 0.0, rss_m = 0.0;
+                for (size_t i = 0; i < yv.size(); ++i) {
+                    const double s = sv[i];
+                    if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                        continue;
+                    double dt = yv[i] - meanY;
+                    double dr = yv[i] - yhat[i];
+                    tss_m += dt * dt;
+                    rss_m += dr * dr;
+                }
+                curveR2[size_t(m)] = (tss_m > 1e-30)
+                        ? (1.0 - rss_m / tss_m)
+                        : ((rss_m <= 1e-30) ? 1.0 : nanVal);
+                tss_total += tss_m;
+                unwt_rss_total += rss_m;
+                r2ActiveTotal += nActiveM;
+            } else {
+                allEvalOk = false;
+            }
+        } else {
+            allEvalOk = false;
         }
-        curveR2[size_t(m)] = (tss_m > 1e-30) ? (1.0 - rss_m / tss_m) : 1.0;
-        tss_total += tss_m;
-        unwt_rss_total += rss_m;
 
         if (!d_suppress_curve_output && d_graph && !ctx.curvesX[size_t(m)].empty()) {
             int nGrid = std::max(2, d_points);
@@ -1894,36 +2025,49 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             double step = (x1 - x0) / double(nGrid - 1);
             for (int i = 0; i < nGrid; ++i)
                 xg[size_t(i)] = x0 + i * step;
-            ctx.evalCurveY(fittedParams[size_t(m)], xg, yg);
-
-            QString fitCurveName = d_graph->generateFunctionName(
-                    QString("GlobalFit_%1").arg(curveTitles[m]));
-            FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, fitCurveName);
-            fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
-            fc->setData(xg.data(), yg.data(), nGrid);
-            fc->setRange(x0, x1);
-            fc->setFormula(exprLine);
-            d_graph->insertPlotItem(fc, Graph::Line);
-            d_graph->addFitCurve(fc);
+            if (ctx.evalCurveY(fittedParams[size_t(m)], xg, yg) && yg.size() == size_t(nGrid)) {
+                QString fitCurveName = d_graph->generateFunctionName(
+                        QString("GlobalFit_%1").arg(curveTitles[m]));
+                FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, fitCurveName);
+                fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
+                fc->setData(xg.data(), yg.data(), nGrid);
+                fc->setRange(x0, x1);
+                fc->setFormula(exprLine);
+                d_graph->insertPlotItem(fc, Graph::Line);
+                d_graph->addFitCurve(fc);
+            }
         }
     }
     if (!d_suppress_curve_output && d_graph)
         d_graph->replot();
 
-    double globalR2 = (tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total) : 1.0;
+    double globalR2 = (allEvalOk && r2ActiveTotal > 0)
+            ? ((tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total)
+                                   : ((unwt_rss_total <= 1e-30) ? 1.0 : nanVal))
+            : nanVal;
 
-    // Store curve 0 state & global diagnostics on this NonLinearFit instance
+    // Store curve 0 state & global diagnostics (total active points, global free parameters,
+    // global weighted chi^2, global unweighted RSS, and UNSCALED covariance) on this instance.
     setDataFromCurve(curveTitles[0], d_graph);
+    d_y_error_source = allAssociatedErrors ? AssociatedErrors : UnknownErrors;
     d_results = fittedParams[0];
-    d_result_errors = fittedErrors[0];
-    ctx.evalCurveY(d_results, d_x, d_y_fit);
-    chi_2 = unwt_rss_total;
+    d_result_errors.clear();
+    if (!ctx.evalCurveY(d_results, d_x, d_y_fit) || d_y_fit.size() != d_x.size())
+        d_y_fit.assign(d_x.size(), nanVal);
+    chi_2 = rss_total;
+    d_has_custom_rss = true;
+    d_custom_rss = unwt_rss_total;
+    d_has_custom_dof = true;
+    d_custom_n_points = int(n_active_total);
+    d_custom_p_free = int(n_free);
     d_has_custom_r2 = true;
     d_custom_r2 = globalR2;
     if (covar) {
         gsl_matrix_set_zero(covar);
-        for (int j = 0; j < P; ++j)
-            gsl_matrix_set(covar, j, j, fittedErrors[0][size_t(j)] * fittedErrors[0][size_t(j)]);
+        for (int a = 0; a < P; ++a) {
+            for (int b = 0; b < P; ++b)
+                gsl_matrix_set(covar, a, b, curve0UnscaledCov[size_t(a) * size_t(P) + size_t(b)]);
+        }
     }
 
     // Create Global Fit Summary Table
@@ -1949,9 +2093,19 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                     tbl->column(1)->setTextAt(rowIdx, d_param_names[j]);
                     tbl->column(2)->setTextAt(rowIdx, isShared ? QString("Yes") : QString("No"));
                     tbl->column(3)->setValueAt(rowIdx, fittedParams[size_t(m)][size_t(j)]);
-                    tbl->column(4)->setValueAt(rowIdx, fittedErrors[size_t(m)][size_t(j)]);
-                    tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
-                    tbl->column(6)->setValueAt(rowIdx, globalR2);
+                    const double errVal = fittedErrors[size_t(m)][size_t(j)];
+                    if (std::isfinite(errVal))
+                        tbl->column(4)->setValueAt(rowIdx, errVal);
+                    else
+                        tbl->column(4)->setInvalid(rowIdx, true);
+                    if (std::isfinite(curveR2[size_t(m)]))
+                        tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
+                    else
+                        tbl->column(5)->setInvalid(rowIdx, true);
+                    if (std::isfinite(globalR2))
+                        tbl->column(6)->setValueAt(rowIdx, globalR2);
+                    else
+                        tbl->column(6)->setInvalid(rowIdx, true);
                     ++rowIdx;
                 }
             }
@@ -1960,6 +2114,9 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 *summaryOut = tbl;
         }
     }
+
+    if (app && app->writeFitResultsToLog && !d_silent && d_graph)
+        app->updateLog(logFitInfo(d_results, d_last_iterations, GSL_SUCCESS, d_graph->parentPlotName()));
 
     return true;
 }
@@ -2093,9 +2250,24 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
     ctx.var_y = &var_y;
     ctx.var_p = &var_p;
 
+    d_convergence = Converged;
+    d_last_iterations = 0;
+    d_fit_notes.clear();
+    d_covar_scaled = false;
+    d_has_custom_dof = false;
+    d_has_custom_rss = false;
+    d_has_custom_r2 = false;
+    d_result_errors.clear();
+    // Implicit ODR minimizes unweighted orthogonal geometric distances.
+    d_y_error_source = UnknownErrors;
+    d_weighting_method = WeightNone;
+
     std::vector<double> pOpt = ctx.baseP;
-    std::vector<double> pErr(size_t(P), 0.0);
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
     double ssr = 0.0;
+
+    if (covar)
+        gsl_matrix_set_zero(covar);
 
     if (n_free > 0) {
         gsl_vector *u_init = gsl_vector_alloc(n_free);
@@ -2121,34 +2293,78 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                 gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, n, n_free);
         int status = gsl_multifit_fdfsolver_set(s, &fdf, u_init);
         if (status != GSL_SUCCESS) {
+            d_convergence = NoProgress;
+            chi_2 = -1.0;
+            d_results.assign(d_p, nanVal);
             gsl_multifit_fdfsolver_free(s);
             gsl_vector_free(u_init);
             return false;
         }
 
-        const int effMaxIter = std::clamp(d_max_iterations, 1, 150);
-        for (int iter = 0; iter < effMaxIter; ++iter) {
+        const int effMaxIter = std::max(1, d_max_iterations);
+        int iter = 0;
+        bool deltaConverged = false;
+        int hardErrorStatus = GSL_SUCCESS;
+        for (iter = 0; iter < effMaxIter; ++iter) {
             if (ctx.checkTimedOut())
                 break;
             status = gsl_multifit_fdfsolver_iterate(s);
             if (ctx.timedOut)
                 break;
+            if (status) {
+                if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
+                    deltaConverged = true;
+                } else if (status == GSL_ENOPROG) {
+                    if (!lmGradientIsStationary(s))
+                        d_convergence = NoProgress;
+                    deltaConverged = (d_convergence == Converged);
+                } else {
+                    d_convergence = NoProgress;
+                    hardErrorStatus = status;
+                }
+                ++iter;
+                break;
+            }
             int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
-            if (dstat == GSL_SUCCESS)
+            if (dstat == GSL_SUCCESS) {
+                deltaConverged = true;
+                ++iter;
                 break;
-            if (status && status != GSL_CONTINUE)
+            }
+            if (dstat != GSL_CONTINUE) {
+                d_convergence = NoProgress;
+                hardErrorStatus = dstat;
+                ++iter;
                 break;
+            }
         }
+        d_last_iterations = iter;
 
-        if (ctx.timedOut) {
+        if (ctx.timedOut || hardErrorStatus != GSL_SUCCESS) {
+            if (ctx.timedOut)
+                d_convergence = MaxIterationsReached;
+            chi_2 = -1.0;
+            d_results.assign(d_p, nanVal);
+            gsl_multifit_fdfsolver_free(s);
+            gsl_vector_free(u_init);
+            return false;
+        }
+        if (!deltaConverged && d_convergence == Converged)
+            d_convergence = MaxIterationsReached;
+
+        ctx.unpack(s->x, pOpt);
+        gsl_blas_ddot(s->f, s->f, &ssr);
+        if (!std::isfinite(ssr) || ssr < 0.0) {
+            d_convergence = NoProgress;
+            chi_2 = -1.0;
+            d_results.assign(d_p, nanVal);
             gsl_multifit_fdfsolver_free(s);
             gsl_vector_free(u_init);
             return false;
         }
 
-        ctx.unpack(s->x, pOpt);
-        gsl_blas_ddot(s->f, s->f, &ssr);
-
+        // Store UNSCALED (J_p^T J_p)^-1 in covar so Fit::parameterStdError / Fit::errors /
+        // Fit::covarianceMatrix apply effectiveCovarScale() = ssr / dof exactly once.
         gsl_matrix *J_u = gsl_matrix_alloc(n, n_free);
         gsl_matrix *cov_free = gsl_matrix_alloc(n_free, n_free);
 #if GSL_MAJOR_VERSION < 2
@@ -2156,24 +2372,30 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
 #else
         gsl_multifit_fdfsolver_jac(s, J_u);
 #endif
+        std::vector<bool> slotPinned(n_free, false);
         for (size_t k = 0; k < n_free; ++k) {
             double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
             if (std::abs(dpdu) > 1e-15) {
                 for (size_t i = 0; i < n; ++i)
                     gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            } else {
+                slotPinned[k] = true;
+                for (size_t i = 0; i < n; ++i)
+                    gsl_matrix_set(J_u, i, k, 0.0);
             }
         }
         gsl_multifit_covar(J_u, 0.0, cov_free);
-        double dof = (n > n_free) ? double(n - n_free) : 1.0;
-        double scale = ssr / dof;
 
-        gsl_matrix_set_zero(covar);
-        for (size_t a = 0; a < n_free; ++a) {
-            int ja = ctx.freeSlots[a].paramIdx;
-            pErr[size_t(ja)] = std::sqrt(std::max(0.0, scale * gsl_matrix_get(cov_free, a, a)));
-            for (size_t b = 0; b < n_free; ++b) {
-                int jb = ctx.freeSlots[b].paramIdx;
-                gsl_matrix_set(covar, ja, jb, scale * gsl_matrix_get(cov_free, a, b));
+        if (covar) {
+            gsl_matrix_set_zero(covar);
+            for (size_t a = 0; a < n_free; ++a) {
+                int ja = ctx.freeSlots[a].paramIdx;
+                for (size_t b = 0; b < n_free; ++b) {
+                    int jb = ctx.freeSlots[b].paramIdx;
+                    gsl_matrix_set(covar, ja, jb,
+                                   (a == b && slotPinned[a]) ? nanVal
+                                                             : gsl_matrix_get(cov_free, a, b));
+                }
             }
         }
 
@@ -2214,8 +2436,13 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
     }
 
     d_results = pOpt;
-    d_result_errors = pErr;
+    d_result_errors.clear();
     chi_2 = ssr;
+    d_has_custom_rss = true;
+    d_custom_rss = ssr;
+    d_has_custom_dof = true;
+    d_custom_n_points = int(n);
+    d_custom_p_free = int(n_free);
 
     // Geometric R^2 relative to radial variance around centroid
     double mx = std::accumulate(d_x.begin(), d_x.end(), 0.0) / double(n);
@@ -2425,7 +2652,7 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
     }
 
     if (app && app->writeFitResultsToLog && !d_silent && d_graph)
-        app->updateLog(logFitInfo(d_results, 0, 0, d_graph->parentPlotName()));
+        app->updateLog(logFitInfo(d_results, d_last_iterations, GSL_SUCCESS, d_graph->parentPlotName()));
 
     return true;
 }
@@ -2540,9 +2767,13 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
     }
 
     Table *summary = nullptr;
-    if (!fitter.fitGlobal(chosenCurves, sharedFlags, &summary) && !isNonInteractiveFit(app)) {
-        QMessageBox::warning(app, tr("Global Curve Fit"),
-                             tr("Global nonlinear curve fit failed to converge."));
+    if (!fitter.fitGlobal(chosenCurves, sharedFlags, &summary)) {
+        if (!isNonInteractiveFit(app)) {
+            QMessageBox::warning(app, tr("Global Curve Fit"),
+                                 tr("Global nonlinear curve fit failed."));
+        }
+    } else if (!fitter.converged() && !isNonInteractiveFit(app)) {
+        QMessageBox::warning(app, tr("Global Curve Fit"), fitter.convergenceMessage());
     }
 }
 
@@ -2598,6 +2829,8 @@ void NonLinearFit::showImplicitFitDialog(ApplicationWindow *app, Graph *g)
     NonLinearFit fitter(app, g, curveBox->currentText());
     if (fitter.fitImplicitODR(exprEdit->text(), pNames, initVals)) {
         fitter.parametersTable(app->generateUniqueName(tr("ImplicitODRParams")));
+        if (!fitter.converged() && !isNonInteractiveFit(app))
+            QMessageBox::warning(app, tr("Implicit / ODR Fit"), fitter.convergenceMessage());
     } else if (!isNonInteractiveFit(app)) {
         QMessageBox::warning(app, tr("Implicit / ODR Fit"),
                              tr("Implicit ODR curve fit failed. Check formula and initial guesses."));

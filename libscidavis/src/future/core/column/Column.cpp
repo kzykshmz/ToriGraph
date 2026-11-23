@@ -154,7 +154,8 @@ QString Column::longName() const
 
 void Column::setLongName(const QString &s)
 {
-    d_column_private->setLongName(s);
+    if (s != longName())
+        exec(new ColumnSetLongNameCmd(d_column_private, s));
 }
 
 QString Column::units() const
@@ -164,7 +165,8 @@ QString Column::units() const
 
 void Column::setUnits(const QString &s)
 {
-    d_column_private->setUnits(s);
+    if (s != units())
+        exec(new ColumnSetUnitsCmd(d_column_private, s));
 }
 
 QString Column::formattedAxisTitle(UnitFormat fmt) const
@@ -197,8 +199,13 @@ QString Column::formattedAxisTitle(UnitFormat fmt) const
                                   || u == QStringLiteral("\u2014") || u == QStringLiteral("\u2212")
                                   || uLower == QLatin1String("none")
                                   || uLower == QLatin1String("dimensionless"));
-    if (isDimensionless)
-        return (fmt == UnitFormat::ISIJSlash) ? base : QString("%1 (-)").arg(base);
+    if (isDimensionless) {
+        if (fmt == UnitFormat::ISIJSlash)
+            return base;
+        if (fmt == UnitFormat::Bracket)
+            return QString("%1 [-]").arg(base);
+        return QString("%1 (-)").arg(base);
+    }
 
     const bool isArbUnits = (uLower == QLatin1String("a.u.") || uLower == QLatin1String("a.u")
                              || uLower == QLatin1String("au")
@@ -219,6 +226,8 @@ QString Column::formattedAxisTitle(UnitFormat fmt) const
 
     if (fmt == UnitFormat::ISIJSlash)
         return QString("%1 / %2").arg(base, u);
+    if (fmt == UnitFormat::Bracket)
+        return QString("%1 [%2]").arg(base, u);
     return QString("%1 (%2)").arg(base, u);
 }
 
@@ -368,6 +377,9 @@ void Column::save(QXmlStreamWriter *writer) const
                            SciDAVis::enumValueToString(plotDesignation(), "PlotDesignation"));
     writer->writeAttribute("long_name", longName());
     writer->writeAttribute("units", units());
+    const QVariant labelRoleProp = property("_tg_label_role");
+    if (labelRoleProp.isValid())
+        writer->writeAttribute("label_role", labelRoleProp.toBool() ? "1" : "0");
     writeCommentElement(writer);
     writer->writeStartElement("input_filter");
     d_column_private->inputFilter()->save(writer);
@@ -498,6 +510,14 @@ bool Column::load(XmlStreamReader *reader)
 
         setLongName(attribs.value(reader->namespaceUri().toString(), "long_name").toString());
         setUnits(attribs.value(reader->namespaceUri().toString(), "units").toString());
+        const QString labelRoleStr =
+                attribs.value(reader->namespaceUri().toString(), "label_role").toString();
+        if (!labelRoleStr.isEmpty())
+            setProperty("_tg_label_role",
+                        (labelRoleStr == QLatin1String("1")
+                         || labelRoleStr.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0));
+        else
+            setProperty("_tg_label_role", QVariant());
         setComment("");
         if (rowCount() > 0)
             removeRows(0, rowCount());

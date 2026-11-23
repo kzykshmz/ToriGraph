@@ -89,9 +89,15 @@ public:
     static QString resolvePythonExecutable();
     static QString resolvePythonExecutable(bool *explicitInvalidOut);
     static QString resolvePythonSdkDir();
+    //! Arguments that must precede the script when launching \a exe (e.g. {"-3"} for the Windows
+    //! "py" launcher, empty for a regular python executable).
+    static QStringList pythonLauncherPrefixArgs(const QString &exe);
+    //! Starts the script in a child process. \a workingDir (if non-empty and existing) is applied
+    //! before QProcess::start(); otherwise the script's own directory is used.
     QProcess *startPythonScriptProcess(const QString &scriptPath,
                                        const QStringList &extraArgs = QStringList(),
-                                       QObject *parent = nullptr);
+                                       QObject *parent = nullptr,
+                                       const QString &workingDir = QString());
 
 signals:
     void rpcRequestHandled(const QString &method, bool ok);
@@ -119,6 +125,7 @@ private:
     QHash<QTcpSocket *, QByteArray> d_tcp_buffers;
     QSet<QTcpSocket *> d_authed_tcp_sockets;
     bool d_caller_noninteractive = true;
+    bool d_rpc_dispatching = false; // re-entrancy guard for dispatchMethod()
 
     QLocalServer *d_local_server = nullptr;
     QString d_local_pipe_name;

@@ -18,9 +18,11 @@
 #include "Graph3D.h"
 #include "GraphInspectorDock.h"
 #include "I18nJapanese.h"
+#include "Matrix.h"
 #include "MultiLayer.h"
 #include "MyWidget.h"
 #include "OleServer.h"
+#include "Table.h"
 #include "ZipReader.h"
 #include "ZipWriter.h"
 
@@ -29,6 +31,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -137,6 +140,12 @@ int normalizedPerSlide(int perSlide)
 qint64 cmToEmu(double cm)
 {
     return static_cast<qint64>(std::llround(cm * double(kEmuPerCm)));
+}
+
+QString fmtNumber(double v)
+{
+    // 83.3, 140, 15.7 (one decimal at most, no trailing zeros)
+    return QString::number(std::round(v * 10.0) / 10.0, 'g', 6);
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,6 +1095,7 @@ void registerTranslations()
     reg("Graphs per slide:", "1 枚に並べる数:");
     reg("1 per slide", "1 個");
     reg("2 per slide (side by side)", "2 個 (横に並べる)");
+    reg("3 per slide (1 x 3)", "3 個 (1 × 3)");
     reg("4 per slide (2 x 2)", "4 個 (2 × 2)");
     reg("6 per slide (2 x 3)", "6 個 (2 × 3)");
     reg("Slide size:", "スライドの大きさ:");
@@ -1131,6 +1141,34 @@ void registerTranslations()
     reg("Open", "開く");
     reg("Close", "閉じる");
     reg("Could not send the graphs to PowerPoint.", "PowerPoint へ送れませんでした。");
+    reg("Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and "
+        "its source data (%2 MB) were embedded.",
+        "プロジェクト全体のデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、"
+        "このグラフと元データのみ (%2 MB) を埋め込みました。");
+    reg("Embedded data (%1 MB) exceeds the 128 MB PowerPoint limit; a static picture was placed "
+        "instead.",
+        "埋め込みデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、静止画像として"
+        "配置しました。");
+    reg("Combined OLE package (%1 MB) exceeds the 256 MB compound-file limit; a static picture "
+        "was placed instead.",
+        "OLE 複合ファイル (%1 MB) が上限 256 MB を超えたため、静止画像として配置しました。");
+    reg("Sending %1 graph(s) will embed approximately %2 MB of data into the PowerPoint file.\n\n"
+        "Continue?",
+        "%1 個のグラフを書き出すと、約 %2 MB のデータが PowerPoint ファイルに埋め込まれます。\n\n"
+        "続行しますか?");
+    reg("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % (~%6 pt tick "
+        "labels instead of %7 pt).",
+        "配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は自動的に約 %5 % へ縮小"
+        "されます(目盛り文字は約 %7 pt ではなく約 %6 pt になります)。");
+    reg("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to ~%5 % to fit.",
+        "配置プレビュー: %1 面付けの枠は %2 × %3 cm のため、%4 % 指定は枠に収まるよう約 %5 % へ"
+        "自動縮小されます。");
+    reg("Layout preview: at %1 %, the graph (%2 x %3 cm) exceeds the %4-up cell (%5 x %6 cm) and "
+        "may overlap or clip.",
+        "配置プレビュー: %1 % ではグラフ (%2 × %3 cm) が %4 面付けの枠 (%5 × %6 cm) を超えるため、"
+        "重なりやはみ出しが生じます。");
+    reg("Note: When adding slides to an existing file, that presentation's slide size is kept.",
+        "※ 既存のファイルへ末尾追加する場合、スライドの大きさは既存ファイルのサイズが優先されます。");
     auto regAny = [](const char *en, const char *ja) {
         ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
                                                                   QString::fromUtf8(ja));
@@ -1299,8 +1337,10 @@ HRESULT writeExtraStream(IStorage *stg, const wchar_t *name, const QByteArray &b
 }
 
 // The OLE2 compound file of one embedded graph (same streams as the Python SDK).
-QByteArray buildOleCompound(const SciDAVisOle::OleGraphPayload &payload)
+QByteArray buildOleCompound(const SciDAVisOle::OleGraphPayload &payload, QString *failReasonOut = nullptr)
 {
+    if (failReasonOut)
+        failReasonOut->clear();
     QByteArray out;
     ILockBytes *lockBytes = nullptr;
     if (FAILED(CreateILockBytesOnHGlobal(nullptr, TRUE, &lockBytes)) || !lockBytes)
@@ -1310,6 +1350,12 @@ QByteArray buildOleCompound(const SciDAVisOle::OleGraphPayload &payload)
             lockBytes, STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0, &stg);
     if (SUCCEEDED(hr) && stg) {
         hr = SciDAVisOle::savePayloadToStorage(stg, payload);
+        if (hr == STG_E_INSUFFICIENTMEMORY && failReasonOut) {
+            const qint64 maxSz = std::max<qint64>(payload.projectBytes.size(), payload.emfBytes.size());
+            *failReasonOut = T("Embedded data (%1 MB) exceeds the 128 MB PowerPoint limit; a "
+                               "static picture was placed instead.")
+                                     .arg(fmtNumber(double(maxSz) / 1.0e6));
+        }
         if (SUCCEEDED(hr)) {
             // \001Ole: OLE 2.0 object header (version 0x02000001, no flags, no link)
             QByteArray ole10(20, '\0');
@@ -1324,14 +1370,20 @@ QByteArray buildOleCompound(const SciDAVisOle::OleGraphPayload &payload)
         stg->Release();
         STATSTG stat{};
         if (SUCCEEDED(hr) && SUCCEEDED(lockBytes->Stat(&stat, STATFLAG_NONAME))
-            && stat.cbSize.QuadPart > 0 && stat.cbSize.QuadPart < 256000000ULL) {
-            HGLOBAL hg = nullptr;
-            if (SUCCEEDED(GetHGlobalFromILockBytes(lockBytes, &hg)) && hg) {
-                if (const void *raw = GlobalLock(hg)) {
-                    out = QByteArray(static_cast<const char *>(raw),
-                                     static_cast<int>(stat.cbSize.QuadPart));
-                    GlobalUnlock(hg);
+            && stat.cbSize.QuadPart > 0) {
+            if (stat.cbSize.QuadPart < 256000000ULL) {
+                HGLOBAL hg = nullptr;
+                if (SUCCEEDED(GetHGlobalFromILockBytes(lockBytes, &hg)) && hg) {
+                    if (const void *raw = GlobalLock(hg)) {
+                        out = QByteArray(static_cast<const char *>(raw),
+                                         static_cast<int>(stat.cbSize.QuadPart));
+                        GlobalUnlock(hg);
+                    }
                 }
+            } else if (failReasonOut) {
+                *failReasonOut = T("Combined OLE package (%1 MB) exceeds the 256 MB compound-file "
+                                   "limit; a static picture was placed instead.")
+                                         .arg(fmtNumber(double(stat.cbSize.QuadPart) / 1.0e6));
             }
         }
     }
@@ -1404,17 +1456,48 @@ bool buildSlideItem(ApplicationWindow *app, MyWidget *window, SlideItem *out, QS
     payload.dibBytes = rg.dibBytes;
     payload.extentHm = rg.extentHm;
     payload.pixelSize = rg.pixelSize;
-    payload.projectBytes = SciDAVisOle::buildEmbeddedProjectBytes(
-            app, window, SciDAVisOle::embedScopeSetting(), nullptr);
+
+    SciDAVisOle::EmbedScope scope = SciDAVisOle::embedScopeSetting();
+    payload.projectBytes = SciDAVisOle::buildEmbeddedProjectBytes(app, window, scope, nullptr);
+    qint64 degradedFromBytes = 0;
+    if (scope == SciDAVisOle::EmbedScope::WholeProject
+        && payload.projectBytes.size() > SciDAVisOle::kMaxOleStreamBytes) {
+        degradedFromBytes = payload.projectBytes.size();
+        payload.projectBytes = SciDAVisOle::buildEmbeddedProjectBytes(
+                app, window, SciDAVisOle::EmbedScope::GraphOnly, nullptr);
+        scope = SciDAVisOle::EmbedScope::GraphOnly;
+    }
 
     out->graphName = window->name();
     out->previewBytes = rg.emfBytes;
     out->previewExtension = QStringLiteral("emf");
     out->widthHm = rg.extentHm.cx;
     out->heightHm = rg.extentHm.cy;
-    out->oleBytes = payload.projectBytes.isEmpty() ? QByteArray() : buildOleCompound(payload);
-    if (out->oleBytes.isEmpty() && outErr)
-        *outErr = T("The editable object could not be created; a picture was placed instead.");
+
+    QString compoundFailReason;
+    if (payload.projectBytes.size() > SciDAVisOle::kMaxOleStreamBytes
+        || payload.emfBytes.size() > SciDAVisOle::kMaxOleStreamBytes) {
+        out->oleBytes.clear();
+        const qint64 maxSz = std::max<qint64>(payload.projectBytes.size(), payload.emfBytes.size());
+        compoundFailReason = T("Embedded data (%1 MB) exceeds the 128 MB PowerPoint limit; a "
+                               "static picture was placed instead.")
+                                     .arg(fmtNumber(double(maxSz) / 1.0e6));
+    } else if (!payload.projectBytes.isEmpty()) {
+        out->oleBytes = buildOleCompound(payload, &compoundFailReason);
+    } else {
+        out->oleBytes.clear();
+    }
+
+    if (out->oleBytes.isEmpty() && outErr) {
+        *outErr = compoundFailReason.isEmpty()
+                ? T("The editable object could not be created; a picture was placed instead.")
+                : compoundFailReason;
+    } else if (degradedFromBytes > 0 && outErr) {
+        *outErr = T("Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this "
+                    "graph and its source data (%2 MB) were embedded.")
+                          .arg(fmtNumber(double(degradedFromBytes) / 1.0e6),
+                               fmtNumber(double(payload.projectBytes.size()) / 1.0e6));
+    }
     return true;
 #else
     Q_UNUSED(app);
@@ -1462,32 +1545,173 @@ DeckResult exportGraphs(ApplicationWindow *app, const QList<MyWidget *> &windows
 namespace {
 
 const char kKeyPath[] = "/PptxExport/LastPath";
+const char kKeyLastProject[] = "/PptxExport/LastProjectId";
+const char kKeyPerProjectPrefix[] = "/PptxExport/ProjectPaths/";
 const char kKeyPerSlide[] = "/PptxExport/PerSlide";
 const char kKeyWide[] = "/PptxExport/Widescreen";
 const char kKeyFit[] = "/PptxExport/FitToSlide";
 const char kKeyShrink[] = "/PptxExport/ShrinkToFit";
 
+QString canonicalProjectId(ApplicationWindow *app)
+{
+    if (!app)
+        return QString();
+    const QString pn = app->projectname.trimmed();
+    if (pn.isEmpty() || pn == QLatin1String("untitled"))
+        return QString();
+    return QDir::cleanPath(QFileInfo(pn).absoluteFilePath()).toLower();
+}
+
+QString perProjectDeckSettingsKey(const QString &projId)
+{
+    if (projId.isEmpty())
+        return QString();
+    const QByteArray digest =
+            QCryptographicHash::hash(projId.toUtf8(), QCryptographicHash::Sha1).toHex();
+    return QLatin1String(kKeyPerProjectPrefix) + QString::fromLatin1(digest);
+}
+
 QString defaultDeckPath(ApplicationWindow *app)
 {
-    const QString last = ApplicationWindow::getSettings().value(QLatin1String(kKeyPath)).toString();
-    if (!last.trimmed().isEmpty())
+    QSettings &st = ApplicationWindow::getSettings();
+    const QString projId = canonicalProjectId(app);
+    if (!projId.isEmpty()) {
+        // Per-project path memory: never carry over another project's .pptx path.
+        const QString remembered = st.value(perProjectDeckSettingsKey(projId)).toString().trimmed();
+        if (!remembered.isEmpty())
+            return remembered;
+        const QString lastProj = st.value(QLatin1String(kKeyLastProject)).toString().trimmed();
+        const QString lastPath = st.value(QLatin1String(kKeyPath)).toString().trimmed();
+        if (!lastPath.isEmpty() && lastProj == projId)
+            return lastPath;
+
+        const QFileInfo pfi(app->projectname);
+        const QString base = pfi.completeBaseName().isEmpty()
+                ? QStringLiteral("ToriGraph_graphs")
+                : pfi.completeBaseName();
+        const QString projDir = pfi.absolutePath();
+        if (!projDir.isEmpty() && QFileInfo(projDir).isDir())
+            return QDir(projDir).filePath(base + QStringLiteral(".pptx"));
+        QString docsDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        if (docsDir.isEmpty())
+            docsDir = QDir::homePath();
+        return QDir(docsDir).filePath(base + QStringLiteral(".pptx"));
+    }
+
+    // Untitled project: reuse LastPath only when it was also saved from an untitled session,
+    // never when LastPath belonged to a named .sciprj file.
+    const QString lastProj = st.value(QLatin1String(kKeyLastProject)).toString().trimmed();
+    const QString last = st.value(QLatin1String(kKeyPath)).toString().trimmed();
+    if (!last.isEmpty() && lastProj.isEmpty())
         return last;
+
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     if (dir.isEmpty())
         dir = QDir::homePath();
-    QString base = QStringLiteral("ToriGraph_graphs");
-    if (app && !app->projectname.isEmpty() && app->projectname != QLatin1String("untitled")) {
-        const QString b = QFileInfo(app->projectname).completeBaseName();
-        if (!b.isEmpty())
-            base = b;
-    }
-    return QDir(dir).filePath(base + QStringLiteral(".pptx"));
+    return QDir(dir).filePath(QStringLiteral("ToriGraph_graphs.pptx"));
 }
 
-QString fmtNumber(double v)
+void saveRememberedDeckPath(ApplicationWindow *app, const QString &path)
 {
-    // 83.3, 140, 15.7 (one decimal at most, no trailing zeros)
-    return QString::number(std::round(v * 10.0) / 10.0, 'g', 6);
+    QSettings &st = ApplicationWindow::getSettings();
+    const QString projId = canonicalProjectId(app);
+    st.setValue(QLatin1String(kKeyPath), path);
+    st.setValue(QLatin1String(kKeyLastProject), projId);
+    if (!projId.isEmpty())
+        st.setValue(perProjectDeckSettingsKey(projId), path);
+}
+
+void graphPageSizeMmForPreview(MyWidget *w, bool applyLabFirst,
+                               const MultiLayer::GraphStylePresetSpec *labSpec,
+                               double *outWmm, double *outHmm, bool *outUsesLabPreset)
+{
+    double wMm = 85.0;
+    double hMm = 85.0;
+    bool usesLab = false;
+    if (w && w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        if (applyLabFirst && labSpec) {
+            wMm = labSpec->pageWidthMm > 0.0 ? labSpec->pageWidthMm : 83.3;
+            hMm = labSpec->pageHeightMm > 0.0 ? labSpec->pageHeightMm : 83.3;
+            usesLab = true;
+        } else {
+            const QString pid = ml->property("toriAppliedStylePreset").toString().trimmed();
+            if (pid == labSlidePresetId())
+                usesLab = true;
+            switch (ml->pageUnit()) {
+            case MultiLayer::UnitMm:
+                wMm = ml->pageWidthPhysical();
+                hMm = ml->pageHeightPhysical();
+                break;
+            case MultiLayer::UnitCm:
+                wMm = ml->pageWidthPhysical() * 10.0;
+                hMm = ml->pageHeightPhysical() * 10.0;
+                break;
+            case MultiLayer::UnitInch:
+                wMm = ml->pageWidthPhysical() * 25.4;
+                hMm = ml->pageHeightPhysical() * 25.4;
+                break;
+            default: {
+                const QWidget *cv = ml->canvasWidget();
+                const int wPx = (cv && cv->width() > 0) ? cv->width() : ml->width();
+                const int hPx = (cv && cv->height() > 0) ? cv->height() : ml->height();
+                wMm = wPx > 0 ? (double(wPx) * 25.4 / 96.0) : 85.0;
+                hMm = hPx > 0 ? (double(hPx) * 25.4 / 96.0) : 85.0;
+                break;
+            }
+            }
+        }
+    } else if (w) {
+        wMm = w->width() > 0 ? (double(w->width()) * 25.4 / 96.0) : 85.0;
+        hMm = w->height() > 0 ? (double(w->height()) * 25.4 / 96.0) : 85.0;
+    }
+    if (wMm <= 1.0)
+        wMm = 85.0;
+    if (hMm <= 1.0)
+        hMm = 85.0;
+    if (outWmm)
+        *outWmm = wMm;
+    if (outHmm)
+        *outHmm = hMm;
+    if (outUsesLabPreset)
+        *outUsesLabPreset = usesLab;
+}
+
+qint64 estimateWindowDataBytes(ApplicationWindow *app, MyWidget *w, bool wholeProject)
+{
+    if (!app)
+        return 0;
+    auto windowBytes = [](MyWidget *mw) -> qint64 {
+        if (!mw)
+            return 0;
+        if (mw->inherits("Table")) {
+            Table *t = static_cast<Table *>(mw);
+            return qint64(t->numRows()) * qint64(t->numCols()) * 14LL + 4096LL;
+        }
+        if (mw->inherits("Matrix")) {
+            Matrix *m = static_cast<Matrix *>(mw);
+            return qint64(m->numRows()) * qint64(m->numCols()) * 14LL + 4096LL;
+        }
+        return 65536LL;
+    };
+    if (wholeProject || !w) {
+        qint64 sum = 0;
+        for (MyWidget *cand : app->windowsList())
+            sum += windowBytes(cand);
+        return sum;
+    }
+    qint64 sum = windowBytes(w);
+#ifdef Q_OS_WIN
+    for (const QString &depName : SciDAVisOle::dataDependenciesForWindow(app, w)) {
+        if (Table *t = app->table(depName)) {
+            if (t->name() == depName)
+                sum += windowBytes(t);
+        } else if (Matrix *m = app->matrix(depName)) {
+            sum += windowBytes(m);
+        }
+    }
+#endif
+    return sum;
 }
 
 } // namespace
@@ -1540,7 +1764,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         auto *item = new QListWidgetItem(w->name(), list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(w == active ? Qt::Checked : Qt::Unchecked);
-        item->setData(Qt::UserRole, QVariant::fromValue(static_cast<QObject *>(w)));
+        item->setData(Qt::UserRole, QVariant::fromValue(QPointer<QObject>(w)));
         item->setData(Qt::UserRole + 1, w->name());
     }
     list->setMaximumHeight(120);
@@ -1578,6 +1802,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     cbPer->setObjectName(QStringLiteral("pptxPerSlide"));
     cbPer->addItem(T("1 per slide"), 1);
     cbPer->addItem(T("2 per slide (side by side)"), 2);
+    cbPer->addItem(T("3 per slide (1 x 3)"), 3);
     cbPer->addItem(T("4 per slide (2 x 2)"), 4);
     cbPer->addItem(T("6 per slide (2 x 3)"), 6);
     const int perIdx = cbPer->findData(st.value(QLatin1String(kKeyPerSlide), 1).toInt());
@@ -1589,16 +1814,22 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     cbSize->addItem(T("Standard 4:3 (25.4 x 19.1 cm)"), false);
     cbSize->setCurrentIndex(st.value(QLatin1String(kKeyWide), true).toBool() ? 0 : 1);
     fl->addRow(T("Slide size:"), cbSize);
+    auto *lblExistingSizeNote = new QLabel(
+            T("Note: When adding slides to an existing file, that presentation's slide size is "
+              "kept."),
+            gbLayout);
+    lblExistingSizeNote->setObjectName(QStringLiteral("pptxExistingSlideSizeNote"));
+    lblExistingSizeNote->setWordWrap(true);
+    lblExistingSizeNote->setStyleSheet(QStringLiteral("color: #64748B; font-size: 8.5pt;"));
+    lblExistingSizeNote->setVisible(false);
+    fl->addRow(QString(), lblExistingSizeNote);
     top->addWidget(gbLayout);
 
     // --- size on the slide (auto-linked to the target graph's preset or lab preset checkbox) ---
     MultiLayer::GraphStylePresetSpec lab;
     const bool haveLab = MultiLayer::findStylePreset(labSlidePresetId(), &lab);
     const double labPct = presetPastePercent(labSlidePresetId());
-    auto computeTargetPastePct = [safeGraphs, safeActive, rbActive, rbSel, list,
-                                  labPct](bool applyLabFirst) -> double {
-        if (applyLabFirst)
-            return labPct;
+    auto collectPreviewTargets = [safeGraphs, safeActive, rbActive, rbSel, list]() {
         QList<MyWidget *> targets;
         if (rbActive && rbActive->isChecked()) {
             if (safeActive)
@@ -1608,7 +1839,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
                 if (list->item(i)->checkState() != Qt::Checked)
                     continue;
                 if (auto *mw = qobject_cast<MyWidget *>(
-                            list->item(i)->data(Qt::UserRole).value<QObject *>())) {
+                            list->item(i)->data(Qt::UserRole).value<QPointer<QObject>>().data())) {
                     targets << mw;
                 }
             }
@@ -1628,6 +1859,12 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
                 }
             }
         }
+        return targets;
+    };
+    auto computeTargetPastePct = [collectPreviewTargets, labPct](bool applyLabFirst) -> double {
+        if (applyLabFirst)
+            return labPct;
+        const QList<MyWidget *> targets = collectPreviewTargets();
         bool anyMl = false;
         bool allSamePreset = true;
         QString commonPreset;
@@ -1697,6 +1934,14 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         chkPreset->setChecked(false); // changes the graphs: never on by default
         vs->addWidget(chkPreset);
     }
+    auto *lblShrinkWarn = new QLabel(gbScale);
+    lblShrinkWarn->setObjectName(QStringLiteral("pptxShrinkPreviewWarning"));
+    lblShrinkWarn->setWordWrap(true);
+    lblShrinkWarn->setStyleSheet(
+            QStringLiteral("background-color: #FFFBEB; color: #92400E; border: 1px solid #F59E0B;"
+                           " border-radius: 4px; padding: 6px;"));
+    lblShrinkWarn->setVisible(false);
+    vs->addWidget(lblShrinkWarn);
     auto syncScaleFromTarget = [spin, chkPreset, computeTargetPastePct](bool forceOverride) {
         if (!forceOverride && spin->property("_tg_user_edited_scale").toBool())
             return;
@@ -1749,6 +1994,110 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
             edPath->setText(QDir::toNativeSeparators(f));
     });
 
+    auto updateLayoutPreview = [cbPer, cbSize, rbScale, spin, chkShrink, chkPreset, edPath,
+                                lblExistingSizeNote, lblShrinkWarn, collectPreviewTargets, haveLab,
+                                lab, labPct]() {
+        QString candPath = QDir::fromNativeSeparators(edPath->text().trimmed());
+        if (!candPath.isEmpty() && !candPath.endsWith(QLatin1String(".pptx"), Qt::CaseInsensitive))
+            candPath += QStringLiteral(".pptx");
+        const bool existsOnDisk = !candPath.isEmpty() && QFileInfo::exists(candPath);
+        lblExistingSizeNote->setVisible(existsOnDisk);
+
+        if (!rbScale->isChecked()) {
+            lblShrinkWarn->setVisible(false);
+            return;
+        }
+        const int perSlide = normalizedPerSlide(cbPer->currentData().toInt());
+        const bool wide = cbSize->currentData().toBool();
+        const qint64 slideW = wide ? kSlideWidth16x9 : kSlideWidth4x3;
+        const qint64 slideH = kSlideHeight;
+        qint64 cl = 0, ct = 0, cw = 0, ch = 0;
+        gridCell(slideW, slideH, perSlide, 0, &cl, &ct, &cw, &ch);
+
+        const double scalePct = spin->value();
+        const bool applyLab = chkPreset && chkPreset->isChecked();
+        const QList<MyWidget *> targets = collectPreviewTargets();
+        double minEffPct = scalePct;
+        double maxReqWcm = 0.0, maxReqHcm = 0.0;
+        bool anyExceeds = false;
+        bool anyUsesLab = false;
+        for (MyWidget *w : targets) {
+            double wMm = 85.0, hMm = 85.0;
+            bool usesLab = false;
+            graphPageSizeMmForPreview(w, applyLab, haveLab ? &lab : nullptr, &wMm, &hMm, &usesLab);
+            const double reqW = wMm * 100.0 * double(kEmuPerHimetric) * (scalePct / 100.0);
+            const double reqH = hMm * 100.0 * double(kEmuPerHimetric) * (scalePct / 100.0);
+            if (reqW > double(cw) + 0.5 || reqH > double(ch) + 0.5) {
+                anyExceeds = true;
+                if (usesLab)
+                    anyUsesLab = true;
+                const double f = std::min(double(cw) / reqW, double(ch) / reqH);
+                minEffPct = std::min(minEffPct, scalePct * f);
+                maxReqWcm = std::max(maxReqWcm, reqW / double(kEmuPerCm));
+                maxReqHcm = std::max(maxReqHcm, reqH / double(kEmuPerCm));
+            }
+        }
+        if (!anyExceeds) {
+            lblShrinkWarn->setVisible(false);
+            return;
+        }
+        const QString cellWStr = fmtNumber(double(cw) / double(kEmuPerCm));
+        const QString cellHStr = fmtNumber(double(ch) / double(kEmuPerCm));
+        if (chkShrink->isChecked()) {
+            if (haveLab && anyUsesLab) {
+                const double effPt = lab.tickLabelPt * minEffPct / 100.0;
+                const double nomPt = lab.tickLabelPt * labPct / 100.0;
+                lblShrinkWarn->setText(
+                        T("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to "
+                          "~%5 % (~%6 pt tick labels instead of %7 pt).")
+                                .arg(perSlide)
+                                .arg(cellWStr, cellHStr, fmtNumber(scalePct), fmtNumber(minEffPct),
+                                     fmtNumber(effPt), fmtNumber(nomPt)));
+            } else {
+                lblShrinkWarn->setText(
+                        T("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to "
+                          "~%5 % to fit.")
+                                .arg(perSlide)
+                                .arg(cellWStr, cellHStr, fmtNumber(scalePct), fmtNumber(minEffPct)));
+            }
+        } else {
+            lblShrinkWarn->setText(
+                    T("Layout preview: at %1 %, the graph (%2 x %3 cm) exceeds the %4-up cell "
+                      "(%5 x %6 cm) and may overlap or clip.")
+                            .arg(fmtNumber(scalePct), fmtNumber(maxReqWcm), fmtNumber(maxReqHcm))
+                            .arg(perSlide)
+                            .arg(cellWStr, cellHStr));
+        }
+        lblShrinkWarn->setVisible(true);
+    };
+    QObject::connect(cbPer, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     [updateLayoutPreview](int) { updateLayoutPreview(); });
+    QObject::connect(cbSize, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     [updateLayoutPreview](int) { updateLayoutPreview(); });
+    QObject::connect(rbScale, &QRadioButton::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    QObject::connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), dlg,
+                     [updateLayoutPreview](double) { updateLayoutPreview(); });
+    QObject::connect(chkShrink, &QCheckBox::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    if (chkPreset) {
+        QObject::connect(chkPreset, &QCheckBox::toggled, dlg,
+                         [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    }
+    QObject::connect(rbActive, &QRadioButton::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    QObject::connect(rbAll, &QRadioButton::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    QObject::connect(rbSel, &QRadioButton::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
+    QObject::connect(list, &QListWidget::itemChanged, dlg,
+                     [updateLayoutPreview](QListWidgetItem *) { updateLayoutPreview(); });
+    QObject::connect(list, &QListWidget::itemSelectionChanged, dlg,
+                     [updateLayoutPreview]() { updateLayoutPreview(); });
+    QObject::connect(edPath, &QLineEdit::textChanged, dlg,
+                     [updateLayoutPreview](const QString &) { updateLayoutPreview(); });
+    updateLayoutPreview();
+
     auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
     bb->setObjectName(QStringLiteral("pptxButtons"));
     bb->button(QDialogButtonBox::Ok)->setText(T("Send Graphs"));
@@ -1789,10 +2138,13 @@ bool readSendDialog(QDialog *dialog, ApplicationWindow *app, QList<MyWidget *> *
         for (int i = 0; i < list->count(); ++i) {
             if (list->item(i)->checkState() != Qt::Checked)
                 continue;
-            if (auto *mw = qobject_cast<MyWidget *>(
-                        list->item(i)->data(Qt::UserRole).value<QObject *>())) {
-                if (graphs.contains(mw) && !chosen.contains(mw))
-                    chosen << mw;
+            const QVariant roleData = list->item(i)->data(Qt::UserRole);
+            if (roleData.userType() == qMetaTypeId<QPointer<QObject>>()) {
+                if (auto *mw = qobject_cast<MyWidget *>(
+                            roleData.value<QPointer<QObject>>().data())) {
+                    if (graphs.contains(mw) && !chosen.contains(mw))
+                        chosen << mw;
+                }
                 continue;
             }
             const QString fallbackName = list->item(i)->data(Qt::UserRole + 1).isValid()
@@ -1907,11 +2259,38 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     }
 
     QSettings &st = ApplicationWindow::getSettings();
-    st.setValue(QLatin1String(kKeyPath), path);
+    saveRememberedDeckPath(app, path);
     st.setValue(QLatin1String(kKeyPerSlide), opt.perSlide);
     st.setValue(QLatin1String(kKeyWide), opt.widescreen);
     st.setValue(QLatin1String(kKeyFit), opt.scalePercent <= 0.0);
     st.setValue(QLatin1String(kKeyShrink), opt.shrinkToFit);
+
+#ifdef Q_OS_WIN
+    {
+        const bool wholeProj =
+                (SciDAVisOle::embedScopeSetting() == SciDAVisOle::EmbedScope::WholeProject);
+        qint64 estTotalBytes = 0;
+        for (MyWidget *w : windows) {
+            qint64 one = estimateWindowDataBytes(app, w, wholeProj);
+            if (wholeProj && one > SciDAVisOle::kMaxOleStreamBytes)
+                one = estimateWindowDataBytes(app, w, false);
+            // Compound file stores SciDAVisProject + ToriGraphProject (~2x project stream)
+            estTotalBytes += one * 2LL;
+        }
+        constexpr qint64 kLargeBatchWarnBytes = 256LL * 1000LL * 1000LL;
+        if (estTotalBytes >= kLargeBatchWarnBytes) {
+            const QMessageBox::StandardButton proceed = QMessageBox::question(
+                    app, title,
+                    T("Sending %1 graph(s) will embed approximately %2 MB of data into the "
+                      "PowerPoint file.\n\nContinue?")
+                            .arg(windows.size())
+                            .arg(fmtNumber(double(estTotalBytes) / 1.0e6)),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            if (proceed != QMessageBox::Yes)
+                return;
+        }
+    }
+#endif
 
     struct PresetRollbackState {
         QPointer<MultiLayer> ml;
@@ -2017,9 +2396,15 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     }
     lines << T("Double-click a graph on the slide to edit it in ToriGraph.");
 #ifdef Q_OS_WIN
-    if (SciDAVisOle::queryRegistration().state != SciDAVisOle::RegistrationInfo::Valid)
-        lines << T("The PowerPoint link of ToriGraph is not registered, so double-clicking will "
-                   "not open ToriGraph. Use Help > Repair PowerPoint Link.");
+    QString regProblemMsg;
+    const bool regProblem =
+            SciDAVisOle::hasRegistrationProblem(SciDAVisOle::queryRegistration(), &regProblemMsg);
+    if (regProblem) {
+        ToriGraphOleUi::registerJapaneseStrings();
+        lines << regProblemMsg;
+        lines << QObject::tr("To fix this, click \"Repair PowerPoint Link\" (also in the Help "
+                             "menu).");
+    }
 #endif
     for (const QString &w : res.warnings)
         lines << w;
@@ -2029,9 +2414,22 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
     QMessageBox done(QMessageBox::Information, title, lines.join(QLatin1Char('\n')),
                      QMessageBox::NoButton, app);
     QPushButton *btnOpen = done.addButton(T("Open"), QMessageBox::AcceptRole);
+#ifdef Q_OS_WIN
+    QPushButton *btnRepair = nullptr;
+    if (regProblem) {
+        ToriGraphOleUi::registerJapaneseStrings();
+        btnRepair = done.addButton(QObject::tr("Repair PowerPoint Link"), QMessageBox::ActionRole);
+    }
+#endif
     done.addButton(T("Close"), QMessageBox::RejectRole);
     done.setDefaultButton(btnOpen);
     done.exec();
+#ifdef Q_OS_WIN
+    if (btnRepair && done.clickedButton() == btnRepair) {
+        SciDAVisOle::repairRegistrationInteractive(app);
+        return;
+    }
+#endif
     if (done.clickedButton() == btnOpen)
         QDesktopServices::openUrl(QUrl::fromLocalFile(res.path));
 }

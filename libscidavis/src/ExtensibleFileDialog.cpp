@@ -29,6 +29,9 @@
 
 #include "ExtensibleFileDialog.h"
 #include <QGridLayout>
+#include "I18nJapanese.h"
+
+#include <mutex>
 
 ExtensibleFileDialog::ExtensibleFileDialog(QWidget *parent, bool extended, Qt::WindowFlags flags)
     : QFileDialog(parent, flags)
@@ -40,7 +43,14 @@ ExtensibleFileDialog::ExtensibleFileDialog(QWidget *parent, bool extended, Qt::W
     setOption(QFileDialog::DontUseNativeDialog, true);
 #endif
 
-    d_extension_toggle = new QPushButton(tr("<< &Advanced"));
+    {
+        static std::once_flag s_once;
+        std::call_once(s_once, []() {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+                    QStringLiteral("Advanced settings"), QString::fromUtf8("詳細設定"));
+        });
+    }
+    d_extension_toggle = new QPushButton(tr("Advanced settings") + QStringLiteral(" >>"));
     d_extension_toggle->setCheckable(true);
     if (extended)
         d_extension_toggle->toggle();
@@ -58,6 +68,14 @@ ExtensibleFileDialog::ExtensibleFileDialog(QWidget *parent, bool extended, Qt::W
         layout()->addWidget(d_extension_toggle);
     }
 
+    // The label follows the state: "Advanced settings >>" while folded (click to open),
+    // "Advanced settings <<" while open (click to fold).
+    auto updateToggleLabel = [this](bool on) {
+        d_extension_toggle->setText(tr("Advanced settings")
+                                    + (on ? QStringLiteral(" <<") : QStringLiteral(" >>")));
+    };
+    updateToggleLabel(d_extension_toggle->isChecked());
+    connect(d_extension_toggle, &QPushButton::toggled, this, updateToggleLabel);
     connect(d_extension_toggle, SIGNAL(toggled(bool)), this, SLOT(resize(bool)));
     connect(this, SIGNAL(accepted()), this, SLOT(close()));
     connect(this, SIGNAL(rejected()), this, SLOT(close()));
@@ -69,7 +87,7 @@ void ExtensibleFileDialog::setExtensionWidget(QWidget *extension)
         return;
     if (d_extension) {
         d_extension->hide();
-        disconnect(d_extension_toggle, SIGNAL(toggled(bool)));
+        disconnect(d_extension_toggle, SIGNAL(toggled(bool)), d_extension, SLOT(setVisible(bool)));
     }
     d_extension = extension;
     if (!d_extension) {
@@ -90,6 +108,8 @@ void ExtensibleFileDialog::setExtensionWidget(QWidget *extension)
 
 void ExtensibleFileDialog::resize(bool extension_on)
 {
+    if (!d_extension)
+        return;
     QSize geo = size();
     geo.setHeight(geo.height() + (extension_on ? 1 : -1) * (d_extension->sizeHint().height() - 44));
     setGeometry(QRect(geometry().topLeft(), geo));

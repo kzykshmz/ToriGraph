@@ -104,14 +104,15 @@ signals:
 protected:
     //! Initialize the widget (called from constructor)
     void init();
-    //! Array containing the 24 predefined colors
+    //! Array containing the predefined colors. Stored colour indices refer to this array, so its
+    //! order and size must never change (the first-row standard palette is kept separately).
     static const QColor colors[];
 
 private slots:
     void pickColor();
 
 private:
-    int btn_size;
+    int btn_size = 28;
 };
 
 #endif

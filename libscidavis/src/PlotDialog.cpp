@@ -75,6 +75,9 @@
 #include <QFrame>
 #include <QTableWidget>
 #include <QLocale>
+#include <QScrollArea>
+#include <QTimer>
+#include <QHideEvent>
 #include <cmath>
 
 namespace {
@@ -86,6 +89,56 @@ void registerPlotDialogTranslations()
     s_registered = true;
     ToriGraphFullJapaneseTranslator::registerExtraTranslation(
             QStringLiteral("Co&lor Palette..."), QString::fromUtf8("カラーパレット(&L)..."));
+    struct Pair
+    {
+        const char *en;
+        const char *ja;
+    };
+    static const Pair extra[] = {
+        { "Log color scale (log10 z)", "対数カラースケール (log10 z)" },
+        { "Cell blocks (no smoothing)", "セルブロック表示 (平滑化なし)" },
+        { "Colours follow log10(z); cells with z <= 0 are transparent.",
+          "色を log10(z) に従って割り当てます。z <= 0 のセルは透明になります。" },
+        { "Draw each matrix cell as a flat block, like histogram bins.",
+          "各セルをヒストグラムのビンのように平坦なブロックとして描きます。" },
+        { "Tukey 1.5*IQR", "Tukey 1.5*IQR (四分位範囲の1.5倍)" },
+        { "Edit the page size, unit, DPI, background, zoom and fitting in Page Setup.",
+          "ページのサイズ・単位・DPI・背景色・ズーム・フィットは「ページ設定」で変更します。" },
+    };
+    for (const Pair &p : extra)
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(p.en),
+                                                                  QString::fromUtf8(p.ja));
+}
+
+//! Opacity spin boxes show 0..100 %, while Qt colours store an 8-bit alpha.
+int percentFromAlpha(int alpha)
+{
+    return qBound(PlotStyleLimits::kOpacityMinPercent,
+                  qRound(alpha * 100.0 / 255.0), PlotStyleLimits::kOpacityMaxPercent);
+}
+
+int alphaFromPercent(int percent)
+{
+    return qBound(0, qRound(percent * 255.0 / 100.0), 255);
+}
+
+//! Alpha to write back: the loaded exact alpha when the percent shown is unchanged.
+int alphaForCommit(int percent, int loadedAlpha)
+{
+    if (loadedAlpha >= 0 && percentFromAlpha(loadedAlpha) == percent)
+        return loadedAlpha;
+    return alphaFromPercent(percent);
+}
+
+constexpr double kTukeyWhiskerCoefficient = 1.5;
+
+QFont clampedFontSize(QFont f)
+{
+    const double pt = PlotStyleLimits::effectiveFontPointSizeF(f);
+    const double bounded = qBound(PlotStyleLimits::kFontSizeMin, pt, PlotStyleLimits::kFontSizeMax);
+    if (std::fabs(bounded - pt) > 1e-6)
+        f.setPointSizeF(bounded);
+    return f;
 }
 } // namespace
 
@@ -101,7 +154,10 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     registerPlotDialogTranslations();
     setWindowTitle(tr("Plot details"));
     setSizeGripEnabled(true);
-    setMinimumSize(680, 420);
+    // The tab area lives in an internal QScrollArea (below), so the dialog may be made smaller than
+    // its content (e.g. 911 x 472 usable screen); ToriUx must not wrap it a second time.
+    setProperty("toriHasInternalScroll", true);
+    setMinimumSize(520, 320);
     resize(780, 520);
 
     d_leftTreePanel = new QWidget(this);
@@ -157,7 +213,16 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(10, 10, 10, 10);
     mainLayout->setSpacing(8);
-    mainLayout->addWidget(d_mainSplitter, 1);
+
+    // Only the tree + tab area scrolls; the OK / Apply / Cancel row below stays visible.
+    QScrollArea *contentScroll = new QScrollArea(this);
+    contentScroll->setObjectName(QStringLiteral("PlotDialogContentScrollArea"));
+    contentScroll->setWidgetResizable(true);
+    contentScroll->setFrameShape(QFrame::NoFrame);
+    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    contentScroll->setWidget(d_mainSplitter);
+    mainLayout->addWidget(contentScroll, 1);
 
     initAxesPage();
     initLinePage();
@@ -170,18 +235,25 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     initPercentilePage();
     initSpectrogramPage();
     initPiePage();
+    initPrintPage(); // embedded in the Page tab, so it must exist before initPageTab()
     initPageTab();
     initLayerPage();
     initFontsPage();
-    initPrintPage();
 
+    // pageTab only summarises the page (no Apply-committed controls); its print options are
+    // tracked through printPage.
     for (QWidget *page : { axesPage, linePage, symbolPage, histogramPage, errorsPage, spacingPage,
-                           vectPage, boxPage, percentilePage, spectrogramPage, piePage, pageTab,
-                           layerPage, fontsPage, printPage }) {
+                           vectPage, boxPage, percentilePage, spectrogramPage, piePage, layerPage,
+                           fontsPage, printPage }) {
         connectTabDirtySignals(page);
     }
 
     clearTabWidget();
+
+    d_externalSyncTimer = new QTimer(this);
+    d_externalSyncTimer->setSingleShot(true);
+    d_externalSyncTimer->setInterval(120);
+    connect(d_externalSyncTimer, &QTimer::timeout, this, &PlotDialog::syncFromMultiLayer);
 
     QFrame *btnSep = new QFrame(this);
     btnSep->setFrameShape(QFrame::HLine);
@@ -341,7 +413,7 @@ void PlotDialog::editCurve()
 #endif
 }
 
-void PlotDialog::changePlotType(int new_curve_type)
+void PlotDialog::changePlotType(int index)
 {
     if (d_loadingUi)
         return;
@@ -353,8 +425,28 @@ void PlotDialog::changePlotType(int new_curve_type)
     if (!graph)
         return;
 
-    int old_curve_type = item->plotItemType();
-    if (boxPlotType->count() == 1 || (old_curve_type == new_curve_type))
+    // The combo only offers what Graph::canConvertTo() accepts (see setPlotType()); a disabled or
+    // single-entry combo (error bars, pie, histogram, box, vector, contour/image, function) never
+    // converts.
+    if (!boxPlotType->isEnabled() || boxPlotType->count() <= 1)
+        return;
+    const QVariant typeData = boxPlotType->itemData(index);
+    if (!typeData.isValid())
+        return;
+    const int new_curve_type = typeData.toInt();
+    const int old_curve_type = item->plotItemType();
+    if (old_curve_type == new_curve_type)
+        return;
+    QwtPlotCurve *convCurve =
+            dynamic_cast<QwtPlotCurve *>(const_cast<QwtPlotItem *>(item->plotItem()));
+    if (!convCurve
+        || !Graph::canConvertTo(convCurve, static_cast<Graph::CurveType>(new_curve_type)))
+        return;
+
+    // Immediate (Undo-able) structural change: first write the edits that are still waiting for
+    // Apply, so they are neither lost nor mixed into this Undo step.
+    flushPendingEdits();
+    if (!item->isCurveAlive())
         return;
 
     MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent();
@@ -365,70 +457,67 @@ void PlotDialog::changePlotType(int new_curve_type)
     if (app && ml)
         app->invalidateModelessGraphDialogs(ml, this);
 
+    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
     {
         QScopedValueRollback<bool> guard(d_loadingUi, true);
-        if (old_curve_type == Graph::ColorMap || old_curve_type == Graph::ContourMap
-            || old_curve_type == Graph::GrayMap)
-            clearTabWidget();
-        else if (old_curve_type == Graph::VectXYAM || old_curve_type == Graph::VectXYXY) {
-            clearTabWidget();
-            insertTabs(old_curve_type);
 
-            graph->setCurveType(item->plotItemIndex(), (Graph::CurveType)new_curve_type);
-            customVectorsPage(new_curve_type);
+        LayerItem *layerIt = dynamic_cast<LayerItem *>(item->parent());
+        const int origIdx = item->plotItemIndex();
+        int ebBefore = 0;
+        if (DataCurve *dc =
+                    dynamic_cast<DataCurve *>(const_cast<QwtPlotItem *>(item->plotItem()))) {
+            const bool barTransition = ((new_curve_type == Graph::VerticalBars
+                                         || new_curve_type == Graph::HorizontalBars)
+                                        != (old_curve_type == Graph::VerticalBars
+                                            || old_curve_type == Graph::HorizontalBars));
+            if (barTransition) {
+                for (DataCurve *eb : dc->errorBarsList()) {
+                    const int ebi = graph->curveIndex(eb);
+                    if (ebi >= 0 && ebi < origIdx)
+                        ++ebBefore;
+                }
+            }
+        }
+
+        graph->setCurveType(origIdx, (Graph::CurveType)new_curve_type);
+        const int resolvedIdx = qBound(0, origIdx - ebBefore, qMax(0, graph->curves() - 1));
+        if (layerIt && (!item->isCurveAlive() || layerIt->childCount() != graph->curves())) {
+            QSignalBlocker blocker(listBox);
+            layerIt->rebuildCurvesList();
+            if (resolvedIdx < layerIt->childCount()) {
+                listBox->setCurrentItem(layerIt->child(resolvedIdx));
+                item = dynamic_cast<CurveTreeItem *>(layerIt->child(resolvedIdx));
+            } else {
+                item = nullptr;
+            }
+        } else if (item && resolvedIdx < graph->curves()) {
+            item->updatePlotItemPointer(graph->plotItem(resolvedIdx));
+        }
+
+        // Rebuild the tab pages and the widget values from the curve as it is now, so a type that
+        // gained or lost symbols / fill shows the right pages (Line, Symbol, Pattern, Spacing...).
+        if (item && item->isCurveAlive()) {
+            int tabType = -1;
+            const int shown = shownPlotType(item, &tabType);
+            const int comboIdx = boxPlotType->findData(shown);
+            if (comboIdx >= 0 && comboIdx != boxPlotType->currentIndex()) {
+                QSignalBlocker typeBlocker(boxPlotType);
+                boxPlotType->setCurrentIndex(comboIdx);
+            }
+            if (tabType >= 0)
+                rebuildCurveTabs(tabType, false);
+            setActiveCurve(item);
         } else {
             clearTabWidget();
-            insertTabs(new_curve_type);
-
-            LayerItem *layerIt = dynamic_cast<LayerItem *>(item->parent());
-            const int origIdx = item->plotItemIndex();
-            int ebBefore = 0;
-            if (DataCurve *dc = dynamic_cast<DataCurve *>(
-                        const_cast<QwtPlotItem *>(item->plotItem()))) {
-                const bool barTransition = ((new_curve_type == Graph::VerticalBars
-                                             || new_curve_type == Graph::HorizontalBars)
-                                            != (old_curve_type == Graph::VerticalBars
-                                                || old_curve_type == Graph::HorizontalBars));
-                if (barTransition) {
-                    for (DataCurve *eb : dc->errorBarsList()) {
-                        const int ebi = graph->curveIndex(eb);
-                        if (ebi >= 0 && ebi < origIdx)
-                            ++ebBefore;
-                    }
-                }
-            }
-
-            graph->setCurveType(origIdx, (Graph::CurveType)new_curve_type);
-            const int resolvedIdx = qBound(0, origIdx - ebBefore, qMax(0, graph->curves() - 1));
-            if (layerIt && (!item->isCurveAlive() || layerIt->childCount() != graph->curves())) {
-                QSignalBlocker blocker(listBox);
-                layerIt->rebuildCurvesList();
-                if (resolvedIdx < layerIt->childCount()) {
-                    listBox->setCurrentItem(layerIt->child(resolvedIdx));
-                    item = dynamic_cast<CurveTreeItem *>(layerIt->child(resolvedIdx));
-                } else {
-                    item = nullptr;
-                }
-            } else if (item && resolvedIdx < graph->curves()) {
-                item->updatePlotItemPointer(graph->plotItem(resolvedIdx));
-            }
-
-            boxConnect->setCurrentIndex(new_curve_type == Graph::Scatter ? 0 : 1);
-
-            if (new_curve_type) {
-                if (boxSymbolStyle->selectedSymbol() == QwtSymbol::NoSymbol)
-                    boxSymbolStyle->setCurrentIndex(1);
-                boxFillSymbol->setChecked(true);
-                boxFillColor->setEnabled(true);
-            }
-            if (item)
-                setActiveCurve(item);
+            d_shownTabType = -1;
         }
+        d_dirtyTabs.clear();
     }
     graph->replot();
     graph->notifyChanges();
     if (ml)
         ml->pushUndoSnapshot(tr("Plot Properties"), beforeSnap);
+    updateCurveMoveButtons();
 }
 
 void PlotDialog::initFontsPage()
@@ -441,12 +530,26 @@ void PlotDialog::initFontsPage()
     btnAxesNumbers = new QPushButton(tr("Axes Numbers"));
     btnLegend = new QPushButton(tr("Legends"));
 
+    // One size box per font: kFontSizeMin..kFontSizeMax pt in 0.5 pt steps, the same range as the
+    // inspector and AxesDialog (QFontDialog only offers whole points).
+    auto newSizeBox = []() -> QDoubleSpinBox * {
+        return new PlotStyleLimits::FractionalPtSpinBox();
+    };
+    boxTitleFontSize = newSizeBox();
+    boxAxesLabelFontSize = newSizeBox();
+    boxAxesNumberFontSize = newSizeBox();
+    boxLegendFontSize = newSizeBox();
+
     fl->addWidget(btnTitle, 0, 0);
-    fl->addWidget(btnAxesLabels, 0, 1);
-    fl->addWidget(btnAxesNumbers, 0, 2);
-    fl->addWidget(btnLegend, 0, 3);
-    fl->setRowStretch(1, 1);
-    fl->setColumnStretch(4, 1);
+    fl->addWidget(boxTitleFontSize, 0, 1);
+    fl->addWidget(btnAxesLabels, 1, 0);
+    fl->addWidget(boxAxesLabelFontSize, 1, 1);
+    fl->addWidget(btnAxesNumbers, 2, 0);
+    fl->addWidget(boxAxesNumberFontSize, 2, 1);
+    fl->addWidget(btnLegend, 3, 0);
+    fl->addWidget(boxLegendFontSize, 3, 1);
+    fl->setRowStretch(4, 1);
+    fl->setColumnStretch(2, 1);
 
     fontsPage = new QWidget();
     QHBoxLayout *hl = new QHBoxLayout(fontsPage);
@@ -457,79 +560,81 @@ void PlotDialog::initFontsPage()
     connect(btnAxesLabels, SIGNAL(clicked()), this, SLOT(setAxesLabelsFont()));
     connect(btnAxesNumbers, SIGNAL(clicked()), this, SLOT(setAxesNumbersFont()));
     connect(btnLegend, SIGNAL(clicked()), this, SLOT(setLegendsFont()));
+
+    auto bindSize = [this](QDoubleSpinBox *box, QFont *font) {
+        connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this, font](double pt) {
+                    if (d_loadingUi)
+                        return;
+                    font->setPointSizeF(qBound(PlotStyleLimits::kFontSizeMin, pt,
+                                               PlotStyleLimits::kFontSizeMax));
+                });
+    };
+    bindSize(boxTitleFontSize, &titleFont);
+    bindSize(boxAxesLabelFontSize, &axesFont);
+    bindSize(boxAxesNumberFontSize, &numbersFont);
+    bindSize(boxLegendFontSize, &legendFont);
+    syncFontSizeBoxes();
+}
+
+void PlotDialog::syncFontSizeBoxes()
+{
+    struct Row
+    {
+        QDoubleSpinBox *box;
+        QFont *font;
+    };
+    const Row rows[] = { { boxTitleFontSize, &titleFont },
+                         { boxAxesLabelFontSize, &axesFont },
+                         { boxAxesNumberFontSize, &numbersFont },
+                         { boxLegendFontSize, &legendFont } };
+    for (const Row &r : rows) {
+        if (!r.box)
+            continue;
+        *r.font = clampedFontSize(*r.font);
+        QSignalBlocker blocker(r.box);
+        r.box->setValue(qBound(PlotStyleLimits::kFontSizeMin,
+                               PlotStyleLimits::effectiveFontPointSizeF(*r.font),
+                               PlotStyleLimits::kFontSizeMax));
+    }
 }
 
 void PlotDialog::initPageTab()
 {
     pageTab = new QWidget();
 
+    // Page size, unit, DPI, background, view mode, zoom and the fit buttons used to be edited here
+    // as well as in Page Setup. Page Setup is the single editor now; this tab shows a summary
+    // and leads to it. The print options (printPage) are embedded below.
     QGroupBox *gbPage = new QGroupBox(tr("Page Setup"));
     QGridLayout *gl = new QGridLayout(gbPage);
 
-    gl->addWidget(new QLabel(tr("Width")), 0, 0);
-    boxPageWidth = new QDoubleSpinBox();
-    boxPageWidth->setRange(1.0, 20000.0);
-    boxPageWidth->setDecimals(2);
-    boxPageWidth->setValue(500.0);
-    gl->addWidget(boxPageWidth, 0, 1);
+    gl->addWidget(new QLabel(tr("Size")), 0, 0);
+    labelPageSize = new QLabel();
+    labelPageSize->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    gl->addWidget(labelPageSize, 0, 1);
 
-    gl->addWidget(new QLabel(tr("Height")), 1, 0);
-    boxPageHeight = new QDoubleSpinBox();
-    boxPageHeight->setRange(1.0, 20000.0);
-    boxPageHeight->setDecimals(2);
-    boxPageHeight->setValue(400.0);
-    gl->addWidget(boxPageHeight, 1, 1);
+    gl->addWidget(new QLabel(tr("Zoom (%)")), 1, 0);
+    labelPageZoom = new QLabel();
+    gl->addWidget(labelPageZoom, 1, 1);
 
-    gl->addWidget(new QLabel(tr("Unit")), 2, 0);
-    boxPageUnit = new QComboBox();
-    boxPageUnit->addItem(QStringLiteral("px"), (int)MultiLayer::UnitPx);
-    boxPageUnit->addItem(QStringLiteral("mm"), (int)MultiLayer::UnitMm);
-    boxPageUnit->addItem(QStringLiteral("cm"), (int)MultiLayer::UnitCm);
-    boxPageUnit->addItem(tr("inch"), (int)MultiLayer::UnitInch);
-    gl->addWidget(boxPageUnit, 2, 1);
+    QLabel *hint = new QLabel(
+            tr("Edit the page size, unit, DPI, background, zoom and fitting in Page Setup."));
+    hint->setWordWrap(true);
+    gl->addWidget(hint, 2, 0, 1, 2);
 
-    gl->addWidget(new QLabel(tr("DPI")), 3, 0);
-    boxPageDpi = new QSpinBox();
-    boxPageDpi->setRange(72, 1200);
-    boxPageDpi->setValue(300);
-    gl->addWidget(boxPageDpi, 3, 1);
-
-    gl->addWidget(new QLabel(tr("Background Color")), 4, 0);
-    boxPageBgColor = new ColorButton();
-    boxPageBgColor->setColor(QColor(Qt::white));
-    gl->addWidget(boxPageBgColor, 4, 1);
-
-    boxPageView = new QCheckBox(tr("Page View Mode"));
-    boxPageView->setChecked(true);
-    gl->addWidget(boxPageView, 5, 0, 1, 2);
-
-    gl->addWidget(new QLabel(tr("Zoom (%)")), 6, 0);
-    boxPageZoom = new QSpinBox();
-    boxPageZoom->setRange(25, 400);
-    boxPageZoom->setSuffix(" %");
-    boxPageZoom->setValue(100);
-    gl->addWidget(boxPageZoom, 6, 1);
-    gl->setRowStretch(7, 1);
-
-    QGroupBox *gbFit = new QGroupBox(tr("Page Size"));
-    QVBoxLayout *fitLayout = new QVBoxLayout(gbFit);
-    btnFitPageToLayers = new QPushButton(tr("Fit Page to Layers"));
-    btnFitLayersToPage = new QPushButton(tr("Fit Layers to Page"));
     btnOpenPageSetup = new QPushButton(tr("Page Setup..."));
-    fitLayout->addWidget(btnFitPageToLayers);
-    fitLayout->addWidget(btnFitLayersToPage);
-    fitLayout->addSpacing(8);
-    fitLayout->addWidget(btnOpenPageSetup);
-    fitLayout->addStretch(1);
+    gl->addWidget(btnOpenPageSetup, 3, 0, 1, 2);
+    gl->setRowStretch(4, 1);
+    gl->setColumnStretch(1, 1);
 
     QHBoxLayout *hl = new QHBoxLayout(pageTab);
     hl->addWidget(gbPage, 1);
-    hl->addWidget(gbFit, 1);
+    if (printPage)
+        hl->addWidget(printPage, 1);
 
     privateTabWidget->addTab(pageTab, tr("Page"));
 
-    connect(btnFitPageToLayers, SIGNAL(clicked()), this, SLOT(fitPageToLayersFromDialog()));
-    connect(btnFitLayersToPage, SIGNAL(clicked()), this, SLOT(fitLayersToPageFromDialog()));
     connect(btnOpenPageSetup, SIGNAL(clicked()), this, SLOT(openPageSetupFromDialog()));
 }
 
@@ -544,10 +649,12 @@ void PlotDialog::initLayerPage()
     boxBackgroundColor = new ColorButton();
     boxBkgLayout->addWidget(boxBackgroundColor, 0, 1);
     boxBkgLayout->addWidget(new QLabel(tr("Opacity")), 0, 2);
+    // Opacity is shown as 0..100 % everywhere (the colour's 8-bit alpha is converted on load/commit).
     boxBackgroundTransparency = new QSpinBox();
-    boxBackgroundTransparency->setRange(0, 255);
+    boxBackgroundTransparency->setRange(PlotStyleLimits::kOpacityMinPercent,
+                                        PlotStyleLimits::kOpacityMaxPercent);
     boxBackgroundTransparency->setSingleStep(5);
-    boxBackgroundTransparency->setWrapping(true);
+    boxBackgroundTransparency->setSuffix(QStringLiteral(" %"));
     boxBackgroundTransparency->setSpecialValueText(tr("Transparent"));
     boxBkgLayout->addWidget(boxBackgroundTransparency, 0, 3);
 
@@ -556,9 +663,10 @@ void PlotDialog::initLayerPage()
     boxBkgLayout->addWidget(boxCanvasColor, 1, 1);
     boxBkgLayout->addWidget(new QLabel(tr("Opacity")), 1, 2);
     boxCanvasTransparency = new QSpinBox();
-    boxCanvasTransparency->setRange(0, 255);
+    boxCanvasTransparency->setRange(PlotStyleLimits::kOpacityMinPercent,
+                                    PlotStyleLimits::kOpacityMaxPercent);
     boxCanvasTransparency->setSingleStep(5);
-    boxCanvasTransparency->setWrapping(true);
+    boxCanvasTransparency->setSuffix(QStringLiteral(" %"));
     boxCanvasTransparency->setSpecialValueText(tr("Transparent"));
     boxBkgLayout->addWidget(boxCanvasTransparency, 1, 3);
 
@@ -734,7 +842,9 @@ void PlotDialog::initPiePage()
 
 void PlotDialog::initPrintPage()
 {
-    QGroupBox *gb = new QGroupBox();
+    // Not a tab of its own any more: initPageTab() embeds this widget in the Page tab, which keeps
+    // the three print/page/font groups of the Page node down to two tabs (Page, Fonts).
+    QGroupBox *gb = new QGroupBox(tr("Print"));
     QVBoxLayout *vl = new QVBoxLayout(gb);
     boxScaleLayers = new QCheckBox(tr("&Scale layers to paper size"));
     vl->addWidget(boxScaleLayers);
@@ -744,8 +854,8 @@ void PlotDialog::initPrintPage()
 
     printPage = new QWidget();
     QHBoxLayout *hlayout = new QHBoxLayout(printPage);
+    hlayout->setContentsMargins(0, 0, 0, 0);
     hlayout->addWidget(gb);
-    privateTabWidget->addTab(printPage, tr("Print"));
 }
 
 void PlotDialog::initAxesPage()
@@ -795,7 +905,8 @@ void PlotDialog::initLinePage()
 
     gl1->addWidget(new QLabel(tr("Opacity (%):")), 2, 0);
     boxLineOpacity = new QSpinBox();
-    boxLineOpacity->setRange(0, 100);
+    boxLineOpacity->setRange(PlotStyleLimits::kOpacityMinPercent,
+                             PlotStyleLimits::kOpacityMaxPercent);
     boxLineOpacity->setSuffix(" %");
     boxLineOpacity->setValue(100);
     gl1->addWidget(boxLineOpacity, 2, 1);
@@ -811,7 +922,8 @@ void PlotDialog::initLinePage()
     gl2->addWidget(boxPattern, 1, 1);
     gl2->addWidget(new QLabel(tr("Opacity (%):")), 2, 0);
     boxAreaOpacity = new QSpinBox();
-    boxAreaOpacity->setRange(0, 100);
+    boxAreaOpacity->setRange(PlotStyleLimits::kOpacityMinPercent,
+                             PlotStyleLimits::kOpacityMaxPercent);
     boxAreaOpacity->setSuffix(" %");
     boxAreaOpacity->setValue(100);
     gl2->addWidget(boxAreaOpacity, 2, 1);
@@ -858,7 +970,8 @@ void PlotDialog::initSymbolsPage()
     gl->addWidget(boxPenWidth, 5, 1);
     gl->addWidget(new QLabel(tr("Opacity (%):")), 6, 0);
     boxSymbolOpacity = new QSpinBox();
-    boxSymbolOpacity->setRange(0, 100);
+    boxSymbolOpacity->setRange(PlotStyleLimits::kOpacityMinPercent,
+                               PlotStyleLimits::kOpacityMaxPercent);
     boxSymbolOpacity->setSuffix(" %");
     boxSymbolOpacity->setValue(100);
     gl->addWidget(boxSymbolOpacity, 6, 1);
@@ -957,6 +1070,8 @@ void PlotDialog::initBoxPage()
     boxWhiskersRange->addItem(tr("99-1"));
     boxWhiskersRange->addItem(tr("Max-Min"));
     boxWhiskersRange->addItem(tr("Constant"));
+    // Item index == BoxCurve::Range value (None = 0 ... UserDef = 8, Tukey15IQR = 9).
+    boxWhiskersRange->addItem(tr("Tukey 1.5*IQR"));
     gl2->addWidget(boxWhiskersRange, 0, 1);
 
     whiskerCoeffLabel = new QLabel(tr("Percentile (%)"));
@@ -1085,17 +1200,18 @@ void PlotDialog::initSpectrogramPage()
     connect(boxReversePalette, SIGNAL(toggled(bool)), this, SLOT(onReversePaletteToggled(bool)));
     vl->addWidget(boxReversePalette);
 
-    // Keep legacy radio buttons hidden off-layout so Palette Preset combo is the single source of
-    // UI truth without visual clutter, while preserving pointer safety for internal sync slots.
-    grayScaleBox = new QRadioButton(tr("&Gray Scale"), spectrogramPage);
-    connect(grayScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    grayScaleBox->hide();
-    defaultScaleBox = new QRadioButton(tr("&Default Color Map"), spectrogramPage);
-    connect(defaultScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    defaultScaleBox->hide();
-    customScaleBox = new QRadioButton(tr("&Custom Color Map"), spectrogramPage);
-    connect(customScaleBox, SIGNAL(clicked(bool)), this, SLOT(showColorMapEditor(bool)));
-    customScaleBox->hide();
+    // The Palette Preset combo is the only colour-map selector (the former hidden radio buttons
+    // are gone). Spectrogram data options (E11b):
+    boxLogColorScale = new QCheckBox(tr("Log color scale (log10 z)"));
+    boxLogColorScale->setObjectName(QStringLiteral("PlotDialogLogColorScale"));
+    boxLogColorScale->setToolTip(
+            tr("Colours follow log10(z); cells with z <= 0 are transparent."));
+    vl->addWidget(boxLogColorScale);
+
+    boxCellBlocks = new QCheckBox(tr("Cell blocks (no smoothing)"));
+    boxCellBlocks->setObjectName(QStringLiteral("PlotDialogCellBlocks"));
+    boxCellBlocks->setToolTip(tr("Draw each matrix cell as a flat block, like histogram bins."));
+    vl->addWidget(boxCellBlocks);
     vl->addStretch();
 
     QHBoxLayout *hl = new QHBoxLayout(imageGroupBox);
@@ -1275,15 +1391,12 @@ void PlotDialog::initErrorsPage()
     gl->addWidget(colorBox, 0, 1);
 
     gl->addWidget(new QLabel(tr("Line Width")), 1, 0);
-    widthBox = new QComboBox();
-    widthBox->addItem(QStringLiteral("0.5"));
-    widthBox->addItem(tr("1"));
-    widthBox->addItem(QStringLiteral("1.5"));
-    widthBox->addItem(tr("2"));
-    widthBox->addItem(tr("3"));
-    widthBox->addItem(tr("4"));
-    widthBox->addItem(tr("5"));
-    widthBox->setEditable(true);
+    widthBox = new QDoubleSpinBox();
+    widthBox->setRange(PlotStyleLimits::kErrorBarWidthMin, PlotStyleLimits::kErrorBarWidthMax);
+    widthBox->setDecimals(1);
+    widthBox->setSingleStep(PlotStyleLimits::kErrorBarWidthStep);
+    widthBox->setSuffix(QStringLiteral(" px"));
+    widthBox->setValue(1.0);
     gl->addWidget(widthBox, 1, 1);
 
     gl->addWidget(new QLabel(tr("Cap Width")), 2, 0);
@@ -1433,14 +1546,35 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
         return;
 
     QScopedValueRollback<bool> guard(d_loadingUi, true);
+    if (d_mlGuard && d_mlGuard.data() != ml)
+        disconnect(d_mlGuard.data(), &MultiLayer::modifiedPlot, this,
+                   &PlotDialog::onMultiLayerModified);
     d_ml = ml;
     d_mlGuard = ml;
     d_dirtyTabs.clear();
+    d_externalSyncDeferred = false;
+    // Edits made elsewhere (right dock, canvas, other dialogs) while this dialog is open.
+    connect(ml, &MultiLayer::modifiedPlot, this, &PlotDialog::onMultiLayerModified,
+            Qt::UniqueConnection);
 
-    listBox->clear();
     boxScaleLayers->setChecked(d_ml->scaleLayersOnPrint());
     boxPrintCrops->setChecked(d_ml->printCropmarksEnabled());
     syncPageTabFromMultiLayer();
+
+    populateTreeFromMultiLayer(true);
+    d_dirtyTabs.clear();
+    updateCurveMoveButtons();
+}
+
+//! Fills the page / layer / curve tree (and the "parent layer" combo) from d_mlGuard.
+//! \a selectActiveLayer: make the MultiLayer's active layer the current item (initial load).
+void PlotDialog::populateTreeFromMultiLayer(bool selectActiveLayer)
+{
+    MultiLayer *ml = d_mlGuard.data();
+    if (!ml)
+        return;
+
+    listBox->clear();
 
     boxLinkParentLayer->clear();
     boxLinkParentLayer->addItem(tr("None"), -1);
@@ -1466,14 +1600,12 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
         LayerItem *layer = new LayerItem(g, item, tr("Layer") + " " + QString::number(i + 1));
         item->addChild(layer);
 
-        if (g == ml->activeGraph()) {
+        if (selectActiveLayer && g == ml->activeGraph()) {
             layer->setExpanded(true);
             layer->setActive(true);
             listBox->setCurrentItem(layer);
         }
     }
-    d_dirtyTabs.clear();
-    updateCurveMoveButtons();
 }
 
 void PlotDialog::selectCurve(int index)
@@ -1601,6 +1733,7 @@ void PlotDialog::removeSelectedCurve()
     Graph *graph = item->graph();
     const int curveIdx = item->plotItemIndex();
     if (graph && curveIdx >= 0) {
+        QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
         MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent();
         const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
         ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentWidget());
@@ -1688,15 +1821,23 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
         setActiveCurve(curveItem);
 
         if (!previousItem || previousItem->type() != CurveTreeItem::PlotCurveTreeItem
-            || ((CurveTreeItem *)previousItem)->plotItemType() != curveItem->plotItemType()) {
+            || ((CurveTreeItem *)previousItem)->plotItemType() != curveItem->plotItemType()
+            || d_shownTabType < 0) {
             clearTabWidget();
             int plot_type = setPlotType(curveItem);
-            if (plot_type >= 0)
+            if (plot_type >= 0) {
                 insertTabs(plot_type);
+                d_shownTabType = plot_type;
+            } else {
+                d_shownTabType = -1;
+            }
             if (!curvePlotTypeBox->isVisible())
                 curvePlotTypeBox->show();
         } else {
-            setPlotType(curveItem);
+            const int plot_type = setPlotType(curveItem);
+            // A Line curve that gained / lost symbols needs different pages.
+            if (plot_type >= 0 && plot_type != d_shownTabType)
+                rebuildCurveTabs(plot_type, true);
             if (!curvePlotTypeBox->isVisible())
                 curvePlotTypeBox->show();
         }
@@ -1706,11 +1847,13 @@ void PlotDialog::updateTabWindow(QTreeWidgetItem *currentItem, QTreeWidgetItem *
             privateTabWidget->addTab(layerPage, tr("Layer"));
             privateTabWidget->setCurrentIndex(privateTabWidget->indexOf(layerPage));
         }
+        d_shownTabType = -1;
         setActiveLayer((LayerItem *)currentItem);
     } else {
         clearTabWidget();
+        d_shownTabType = -1;
+        // Page node: Page (summary + print options) and Fonts.
         privateTabWidget->addTab(pageTab, tr("Page"));
-        privateTabWidget->addTab(printPage, tr("Print"));
         privateTabWidget->addTab(fontsPage, tr("Fonts"));
         privateTabWidget->setCurrentIndex(privateTabWidget->indexOf(pageTab));
         syncPageTabFromMultiLayer();
@@ -1828,53 +1971,160 @@ int PlotDialog::setPlotType(CurveTreeItem *item)
     if (!item || !item->isCurveAlive())
         return -1;
 
-    int curveType = item->plotItemType();
-    if (curveType >= 0) {
-        boxPlotType->clear();
+    const int curveType = item->plotItemType();
+    if (curveType < 0)
+        return curveType;
 
-        if (curveType == Graph::ErrorBars)
-            boxPlotType->addItem(tr("Error Bars"));
-        else if (curveType == Graph::Pie)
-            boxPlotType->addItem(tr("Pie"));
-        else if (curveType == Graph::VerticalBars)
-            boxPlotType->addItem(tr("Vertical Bars"));
-        else if (curveType == Graph::HorizontalBars)
-            boxPlotType->addItem(tr("Horizontal Bars"));
-        else if (curveType == Graph::Histogram)
-            boxPlotType->addItem(tr("Histogram"));
-        else if (curveType == Graph::VectXYXY || curveType == Graph::VectXYAM) {
-            boxPlotType->addItem(tr("Vector XYXY"));
-            boxPlotType->addItem(tr("Vector XYAM"));
-            if (curveType == Graph::VectXYAM)
-                boxPlotType->setCurrentIndex(1);
-        } else if (curveType == Graph::Box)
-            boxPlotType->addItem(tr("Box"));
-        else if (curveType == Graph::ColorMap || curveType == Graph::GrayMap
-                 || curveType == Graph::ContourMap)
-            boxPlotType->addItem(tr("Contour") + " / " + tr("Image"));
-        else {
-            boxPlotType->addItem(tr("Line"));
-            boxPlotType->addItem(tr("Scatter"));
-            boxPlotType->addItem(tr("Line + Symbol"));
-
-            QwtPlotCurve *c = (QwtPlotCurve *)item->plotItem();
-            if (!c)
-                return -1;
-
-            QwtSymbol s = c->symbol();
-            if (s.style() == QwtSymbol::NoSymbol) {
-                boxPlotType->setCurrentIndex(0);
-                return Graph::Line;
-            } else if (c->style() == QwtPlotCurve::NoCurve) {
-                boxPlotType->setCurrentIndex(1);
-                return Graph::Scatter;
-            } else {
-                boxPlotType->setCurrentIndex(2);
-                return Graph::LineSymbols;
-            }
+    auto typeLabel = [this](int t) -> QString {
+        switch (t) {
+        case Graph::Line:
+            return tr("Line");
+        case Graph::Scatter:
+            return tr("Scatter");
+        case Graph::LineSymbols:
+            return tr("Line + Symbol");
+        case Graph::Spline:
+            return tr("Spline");
+        case Graph::HorizontalSteps:
+            return tr("Horizontal Steps");
+        case Graph::VerticalSteps:
+            return tr("Vertical Steps");
+        case Graph::VerticalDropLines:
+            return tr("Vertical Drop Lines");
+        case Graph::VerticalBars:
+            return tr("Vertical Bars");
+        case Graph::HorizontalBars:
+            return tr("Horizontal Bars");
+        case Graph::Area:
+            return tr("Area");
+        default:
+            break;
         }
+        return QString();
+    };
+
+    boxPlotType->clear();
+    boxPlotType->setEnabled(true);
+
+    // Types that Graph::canConvertTo() never converts: a single, disabled entry.
+    QString fixedLabel;
+    if (curveType == Graph::ErrorBars)
+        fixedLabel = tr("Error Bars");
+    else if (curveType == Graph::Pie)
+        fixedLabel = tr("Pie");
+    else if (curveType == Graph::Histogram)
+        fixedLabel = tr("Histogram");
+    else if (curveType == Graph::VectXYXY)
+        fixedLabel = tr("Vector XYXY");
+    else if (curveType == Graph::VectXYAM)
+        fixedLabel = tr("Vector XYAM");
+    else if (curveType == Graph::Box)
+        fixedLabel = tr("Box");
+    else if (curveType == Graph::ColorMap || curveType == Graph::GrayMap
+             || curveType == Graph::ContourMap)
+        fixedLabel = tr("Contour") + " / " + tr("Image");
+    if (!fixedLabel.isEmpty()) {
+        boxPlotType->addItem(fixedLabel, curveType);
+        boxPlotType->setEnabled(false);
+        return curveType;
     }
-    return curveType;
+
+    const QwtPlotItem *pi = item->plotItem();
+    if (!pi || pi->rtti() != QwtPlotItem::Rtti_PlotCurve)
+        return -1;
+    QwtPlotCurve *c = const_cast<QwtPlotCurve *>(static_cast<const QwtPlotCurve *>(pi));
+
+    int tabType = -1;
+    const int shown = shownPlotType(item, &tabType);
+
+    // Offer exactly the types canConvertTo() accepts for this curve (the ten types of a data
+    // curve: Line, Scatter, Line + Symbol, Spline, Horizontal / Vertical Steps, Vertical Drop
+    // Lines, Vertical / Horizontal Bars, Area).
+    static const Graph::CurveType kOffered[] = {
+        Graph::Line,      Graph::Scatter,           Graph::LineSymbols,  Graph::Spline,
+        Graph::HorizontalSteps, Graph::VerticalSteps, Graph::VerticalDropLines,
+        Graph::VerticalBars, Graph::HorizontalBars, Graph::Area
+    };
+    for (Graph::CurveType t : kOffered) {
+        if (Graph::canConvertTo(c, t))
+            boxPlotType->addItem(typeLabel(t), int(t));
+    }
+    if (boxPlotType->count() == 0) {
+        // Not convertible (e.g. a function curve): show what it currently looks like.
+        boxPlotType->addItem(typeLabel(shown), shown);
+        boxPlotType->setEnabled(false);
+    } else {
+        const int idx = boxPlotType->findData(shown);
+        if (idx >= 0)
+            boxPlotType->setCurrentIndex(idx);
+    }
+    return tabType;
+}
+
+int PlotDialog::shownPlotType(const CurveTreeItem *item, int *tabType) const
+{
+    if (tabType)
+        *tabType = -1;
+    if (!item || !item->isCurveAlive())
+        return -1;
+    const int curveType = item->plotItemType();
+    const QwtPlotItem *pi = item->plotItem();
+    if (!pi || pi->rtti() != QwtPlotItem::Rtti_PlotCurve) {
+        if (tabType)
+            *tabType = curveType;
+        return curveType;
+    }
+    const QwtPlotCurve *c = static_cast<const QwtPlotCurve *>(pi);
+
+    // Line / Scatter / Line + Symbol follow the real appearance (symbol and line style).
+    const QwtSymbol s = c->symbol();
+    int appearance;
+    if (s.style() == QwtSymbol::NoSymbol)
+        appearance = Graph::Line;
+    else if (c->style() == QwtPlotCurve::NoCurve)
+        appearance = Graph::Scatter;
+    else
+        appearance = Graph::LineSymbols;
+
+    switch (curveType) {
+    case Graph::VerticalBars:
+    case Graph::HorizontalBars:
+        // Bars have their own page set (Pattern / Spacing).
+        if (tabType)
+            *tabType = curveType;
+        return curveType;
+    case Graph::Spline:
+    case Graph::HorizontalSteps:
+    case Graph::VerticalSteps:
+    case Graph::VerticalDropLines:
+    case Graph::Area:
+        // The combo names the exact type; the pages follow whether symbols are drawn.
+        if (tabType)
+            *tabType = appearance;
+        return curveType;
+    default:
+        break;
+    }
+    if (tabType)
+        *tabType = appearance;
+    return appearance;
+}
+
+void PlotDialog::rebuildCurveTabs(int plotType, bool keepCurrentTab)
+{
+    QWidget *prevPage = keepCurrentTab ? privateTabWidget->currentWidget() : nullptr;
+    clearTabWidget();
+    insertTabs(plotType);
+    d_shownTabType = plotType;
+    if (prevPage && privateTabWidget->indexOf(prevPage) >= 0)
+        privateTabWidget->setCurrentWidget(prevPage);
+}
+
+void PlotDialog::flushPendingEdits()
+{
+    if (d_dirtyTabs.isEmpty() || !listBox)
+        return;
+    commitParamsForItem(listBox->currentItem(), false);
 }
 
 void PlotDialog::setActiveLayer(LayerItem *item)
@@ -1902,12 +2152,14 @@ void PlotDialog::setActiveLayer(LayerItem *item)
     boxBorderColor->setColor(p->frameColor());
 
     QColor c = p->paletteBackgroundColor();
-    boxBackgroundTransparency->setValue(c.alpha());
+    d_bgAlphaLoaded = c.alpha();
+    boxBackgroundTransparency->setValue(percentFromAlpha(c.alpha()));
     boxBackgroundColor->setEnabled(c.alpha());
     boxBackgroundColor->setColor(c);
 
     c = p->canvasBackground();
-    boxCanvasTransparency->setValue(c.alpha());
+    d_canvasAlphaLoaded = c.alpha();
+    boxCanvasTransparency->setValue(percentFromAlpha(c.alpha()));
     boxCanvasColor->setEnabled(c.alpha());
     boxCanvasColor->setColor(c);
 
@@ -1984,19 +2236,13 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         boxColorMapPreset->setCurrentIndex(static_cast<int>(sp->colorMapPreset()));
         boxReversePalette->setChecked(sp->reversePalette());
 
-        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
-            if (rb)
-                rb->setAutoExclusive(false);
+        if (boxLogColorScale) {
+            QSignalBlocker logBlocker(boxLogColorScale);
+            boxLogColorScale->setChecked(sp->logColorScale());
         }
-        if (grayScaleBox)
-            grayScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetGrayScale);
-        if (defaultScaleBox)
-            defaultScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetLegacyDefault);
-        if (customScaleBox)
-            customScaleBox->setChecked(sp->colorMapPreset() == Spectrogram::PresetCustom);
-        for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
-            if (rb)
-                rb->setAutoExclusive(true);
+        if (boxCellBlocks) {
+            QSignalBlocker cellBlocker(boxCellBlocks);
+            boxCellBlocks->setChecked(sp->cellBlocks());
         }
 
         const QwtDoubleInterval rawR = sp->rawDataRange();
@@ -2128,11 +2374,8 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
             xBox->setChecked(err->xErrors());
             const double errW =
                     err->pen().widthF() > 0.0 ? err->pen().widthF() : double(qMax(1, err->width()));
-            const QString errWStr = QString::number(errW, 'g', 4);
-            const int wIdx = widthBox->findText(errWStr);
-            if (wIdx >= 0)
-                widthBox->setCurrentIndex(wIdx);
-            widthBox->setEditText(errWStr);
+            widthBox->setValue(qBound(PlotStyleLimits::kErrorBarWidthMin, errW,
+                                      PlotStyleLimits::kErrorBarWidthMax));
             capBox->setEditText(QString::number(err->capLength()));
             throughBox->setChecked(err->throughSymbol());
             plusBox->setChecked(err->plusSide());
@@ -2174,7 +2417,7 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
             setWhiskersRange(boxWhiskersRange->currentIndex());
             if (b->whiskersRangeType() == BoxCurve::SD || b->whiskersRangeType() == BoxCurve::SE)
                 whiskerCnt->setValue(b->whiskersRange());
-            else
+            else if (b->whiskersRangeType() != BoxCurve::Tukey15IQR)
                 boxWhiskersCoef->setValue((int)b->whiskersRange());
 
             boxViolinMode->setChecked(b->violinMode());
@@ -2327,6 +2570,7 @@ void PlotDialog::onTreeItemChanged(QTreeWidgetItem *item, int column)
     if (g->isCurveVisible(idx) == wantVisible)
         return;
 
+    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
     MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : g->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     g->showCurve(idx, wantVisible);
@@ -2430,6 +2674,7 @@ void PlotDialog::moveSelectedCurveBy(int delta)
     if (toIdx < 0 || toIdx >= nCurves || toIdx == fromIdx)
         return;
 
+    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
     const QwtPlotItem *movedItem = ci->plotItem();
     MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : g->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -2488,6 +2733,9 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     if (tabsToCommit.isEmpty())
         return true;
 
+    // Our own writes raise MultiLayer::modifiedPlot; they must not trigger the external reload.
+    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+
     QwtPlotItem *plotItem = curveItem ? const_cast<QwtPlotItem *>(curveItem->plotItem()) : nullptr;
     Graph *graph = curveItem ? curveItem->graph() : nullptr;
 
@@ -2500,18 +2748,13 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     const QString beforeSnap = d_mlGuard->captureUndoSnapshot();
     bool anyHandled = false;
 
-    if (tabsToCommit.contains(pageTab)) {
-        MultiLayer::PageUnit u =
-                static_cast<MultiLayer::PageUnit>(boxPageUnit->currentData().toInt());
-        d_mlGuard->setPageSizePhysical(boxPageWidth->value(), boxPageHeight->value(), u,
-                                       boxPageDpi->value());
-        d_mlGuard->setPageBackgroundColor(boxPageBgColor->color());
-        d_mlGuard->setPageViewMode(boxPageView->isChecked());
-        d_mlGuard->setPageZoom(boxPageZoom->value() / 100.0);
-        anyHandled = true;
-    }
+    // (The Page tab no longer has Apply-committed controls: Page Setup applies on its own.)
 
     if (tabsToCommit.contains(fontsPage)) {
+        titleFont = clampedFontSize(titleFont);
+        axesFont = clampedFontSize(axesFont);
+        numbersFont = clampedFontSize(numbersFont);
+        legendFont = clampedFontSize(legendFont);
         d_mlGuard->setFonts(titleFont, axesFont, numbersFont, legendFont);
         anyHandled = true;
     }
@@ -2541,11 +2784,11 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
             g->setMargin(boxMargin->value());
 
             QColor c = boxBackgroundColor->color();
-            c.setAlpha(boxBackgroundTransparency->value());
+            c.setAlpha(alphaForCommit(boxBackgroundTransparency->value(), d_bgAlphaLoaded));
             g->setBackgroundColor(c);
 
             c = boxCanvasColor->color();
-            c.setAlpha(boxCanvasTransparency->value());
+            c.setAlpha(alphaForCommit(boxCanvasTransparency->value(), d_canvasAlphaLoaded));
             g->setCanvasBackground(c);
 
             g->setAntialiasing(boxAntialiasing->isChecked());
@@ -2615,6 +2858,12 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
         if (tabsToCommit.contains(spectrogramPage)
             && plotItem->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
             Spectrogram *sp = static_cast<Spectrogram *>(plotItem);
+            // Data flags first: each setter rebuilds the raster data, and the custom Z range below
+            // is given in data units whatever the colour scale is.
+            if (boxLogColorScale)
+                sp->setLogColorScale(boxLogColorScale->isChecked());
+            if (boxCellBlocks)
+                sp->setCellBlocks(boxCellBlocks->isChecked());
             sp->setCustomValueRange(boxCustomZRange->isChecked(), boxZMin->value(),
                                     boxZMax->value());
             sp->setLevelsNumber(levelsBox->value());
@@ -2726,16 +2975,14 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
             anyHandled = true;
         }
 
-        if (lineOrSymbolCommitted && boxPlotType->count() == 3
+        if (lineOrSymbolCommitted && boxPlotType->isEnabled() && boxPlotType->count() > 1
             && plotItem->rtti() == QwtPlotItem::Rtti_PlotCurve) {
-            QwtPlotCurve *curve = static_cast<QwtPlotCurve *>(plotItem);
+            // Line / Scatter / Line + Symbol follow the symbol and line style just committed.
             QSignalBlocker blocker(boxPlotType);
-            if (curve->symbol().style() == QwtSymbol::NoSymbol)
-                boxPlotType->setCurrentIndex(0);
-            else if (curve->style() == QwtPlotCurve::NoCurve)
-                boxPlotType->setCurrentIndex(1);
-            else
-                boxPlotType->setCurrentIndex(2);
+            const int shown = shownPlotType(curveItem);
+            const int comboIdx = boxPlotType->findData(shown);
+            if (comboIdx >= 0)
+                boxPlotType->setCurrentIndex(comboIdx);
         }
 
         if (tabsToCommit.contains(histogramPage) && curveItem->plotItemType() == Graph::Histogram) {
@@ -2819,16 +3066,13 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
 
         if (tabsToCommit.contains(errorsPage) && curveItem->plotItemType() == Graph::ErrorBars) {
             auto *errCurve = static_cast<QwtErrorPlotCurve *>(plotItem);
-            const QString wTxt = widthBox->currentText().trimmed();
-            bool okW = false;
-            double errWidthF = QLocale().toDouble(wTxt, &okW);
-            if (!okW)
-                errWidthF = QLocale::c().toDouble(wTxt, &okW);
-            if (!okW)
-                errWidthF = wTxt.toDouble(&okW);
-            if (!okW || !std::isfinite(errWidthF) || errWidthF <= 0.0)
+            // Fractional widths (0.5 px steps) go straight into the pen; Graph::updateErrorBars()
+            // only takes whole pixels, so the exact width is set on the pen right after it.
+            double errWidthF = widthBox->value();
+            if (!std::isfinite(errWidthF) || errWidthF <= 0.0)
                 errWidthF = errCurve->pen().widthF() > 0.0 ? errCurve->pen().widthF() : 1.0;
-            errWidthF = qBound(0.1, errWidthF, 50.0);
+            errWidthF = qBound(PlotStyleLimits::kErrorBarWidthMin, errWidthF,
+                               PlotStyleLimits::kErrorBarWidthMax);
 
             const QString capTxt = capBox->currentText().trimmed();
             bool okCap = false;
@@ -2901,7 +3145,9 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                 else
                     b->setBoxRange(boxRange->currentIndex() + 1, (double)boxCoef->value());
 
-                if (whiskerCnt->isVisible())
+                if (boxWhiskersRange->currentIndex() == BoxCurve::Tukey15IQR)
+                    b->setWhiskersRange(BoxCurve::Tukey15IQR, kTukeyWhiskerCoefficient);
+                else if (whiskerCnt->isVisible())
                     b->setWhiskersRange(boxWhiskersRange->currentIndex(), whiskerCnt->value());
                 else
                     b->setWhiskersRange(boxWhiskersRange->currentIndex(),
@@ -2923,6 +3169,9 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     d_dirtyTabs.clear();
     if (anyHandled && d_mlGuard && !beforeSnap.isEmpty())
         d_mlGuard->pushUndoSnapshot(tr("Plot Properties"), beforeSnap);
+    // An external edit that arrived while these edits were pending is picked up now.
+    if (d_externalSyncDeferred && d_externalSyncTimer)
+        d_externalSyncTimer->start();
     return anyHandled || !explicitAccept || tabsToCommit.contains(axesPage);
 }
 
@@ -3108,6 +3357,7 @@ void PlotDialog::setWhiskersRange(int index)
     whiskerCntLabel->hide();
     whiskerCnt->hide();
 
+    // Tukey 1.5*IQR has a fixed multiplier, so it shows no coefficient input.
     if (index == BoxCurve::UserDef) {
         whiskerCoeffLabel->show();
         boxWhiskersCoef->show();
@@ -3134,34 +3384,9 @@ void PlotDialog::customVectorsPage(bool angleMag)
     }
 }
 
-void PlotDialog::showColorMapEditor(bool)
-{
-    if (grayScaleBox && grayScaleBox->isChecked())
-        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetGrayScale));
-    else if (defaultScaleBox && defaultScaleBox->isChecked())
-        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetLegacyDefault));
-    else if (customScaleBox && customScaleBox->isChecked())
-        boxColorMapPreset->setCurrentIndex(static_cast<int>(Spectrogram::PresetCustom));
-}
-
 void PlotDialog::onColorMapPresetChanged(int index)
 {
     const auto preset = static_cast<Spectrogram::ColorMapPreset>(index);
-    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
-        if (rb)
-            rb->setAutoExclusive(false);
-    }
-    if (grayScaleBox)
-        grayScaleBox->setChecked(preset == Spectrogram::PresetGrayScale);
-    if (defaultScaleBox)
-        defaultScaleBox->setChecked(preset == Spectrogram::PresetLegacyDefault);
-    if (customScaleBox)
-        customScaleBox->setChecked(preset == Spectrogram::PresetCustom);
-    for (QRadioButton *rb : { grayScaleBox, defaultScaleBox, customScaleBox }) {
-        if (rb)
-            rb->setAutoExclusive(true);
-    }
-
     if (preset == Spectrogram::PresetCustom) {
         colorMapEditor->show();
         colorMapEditor->setFocus();
@@ -3217,9 +3442,11 @@ void PlotDialog::updateTreeWidgetItem(QTreeWidgetItem *item)
         item->setIcon(0, IconLoader::duotoneIcon("folder-closed"));
 }
 
-void PlotDialog::updateBackgroundTransparency(int alpha)
+// The opacity spin boxes hold 0..100 %; \a percent here is that value, the colours keep 8-bit alpha.
+void PlotDialog::updateBackgroundTransparency(int percent)
 {
-    boxBackgroundColor->setEnabled(alpha);
+    boxBackgroundColor->setEnabled(percent > 0);
+    const int alpha = alphaForCommit(percent, d_bgAlphaLoaded);
     if (alpha != boxBackgroundColor->color().alpha()) {
         QSignalBlocker blocker(boxBackgroundColor);
         QColor c = boxBackgroundColor->color();
@@ -3229,9 +3456,10 @@ void PlotDialog::updateBackgroundTransparency(int alpha)
     markTabDirty(layerPage);
 }
 
-void PlotDialog::updateCanvasTransparency(int alpha)
+void PlotDialog::updateCanvasTransparency(int percent)
 {
-    boxCanvasColor->setEnabled(alpha);
+    boxCanvasColor->setEnabled(percent > 0);
+    const int alpha = alphaForCommit(percent, d_canvasAlphaLoaded);
     if (alpha != boxCanvasColor->color().alpha()) {
         QSignalBlocker blocker(boxCanvasColor);
         QColor c = boxCanvasColor->color();
@@ -3243,18 +3471,22 @@ void PlotDialog::updateCanvasTransparency(int alpha)
 
 void PlotDialog::pickCanvasColor(QColor c)
 {
-    if (c.alpha() != boxCanvasTransparency->value()) {
+    const int percent = percentFromAlpha(c.alpha());
+    if (percent != boxCanvasTransparency->value()) {
         QSignalBlocker blocker(boxCanvasTransparency);
-        boxCanvasTransparency->setValue(c.alpha());
+        boxCanvasTransparency->setValue(percent);
+        d_canvasAlphaLoaded = c.alpha();
     }
     markTabDirty(layerPage);
 }
 
 void PlotDialog::pickBackgroundColor(QColor c)
 {
-    if (c.alpha() != boxBackgroundTransparency->value()) {
+    const int percent = percentFromAlpha(c.alpha());
+    if (percent != boxBackgroundTransparency->value()) {
         QSignalBlocker blocker(boxBackgroundTransparency);
-        boxBackgroundTransparency->setValue(c.alpha());
+        boxBackgroundTransparency->setValue(percent);
+        d_bgAlphaLoaded = c.alpha();
     }
     markTabDirty(layerPage);
 }
@@ -3287,6 +3519,7 @@ void PlotDialog::setTitlesFont()
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
         titleFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(titleFont, font);
+        syncFontSizeBoxes();
         markTabDirty(fontsPage);
     }
 }
@@ -3299,6 +3532,7 @@ void PlotDialog::setAxesLabelsFont()
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
         axesFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(axesFont, font);
+        syncFontSizeBoxes();
         markTabDirty(fontsPage);
     }
 }
@@ -3311,6 +3545,7 @@ void PlotDialog::setAxesNumbersFont()
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
         numbersFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(numbersFont, font);
+        syncFontSizeBoxes();
         markTabDirty(fontsPage);
     }
 }
@@ -3323,6 +3558,7 @@ void PlotDialog::setLegendsFont()
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
         legendFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(legendFont, font);
+        syncFontSizeBoxes();
         markTabDirty(fontsPage);
     }
 }
@@ -3342,6 +3578,8 @@ void PlotDialog::initFonts(const QFont &titlefont, const QFont &axesfont, const 
     legendFont = legendfont;
     if (legendFont.family().isEmpty())
         legendFont.setFamily("Arial");
+    // Same size range as every other font-size control (kFontSizeMin..kFontSizeMax pt).
+    syncFontSizeBoxes();
 }
 
 void PlotDialog::syncPageTabFromMultiLayer()
@@ -3349,42 +3587,49 @@ void PlotDialog::syncPageTabFromMultiLayer()
     if (!d_ml || !d_mlGuard)
         return;
 
+    QString unitName;
+    switch (d_mlGuard->pageUnit()) {
+    case MultiLayer::UnitMm:
+        unitName = QStringLiteral("mm");
+        break;
+    case MultiLayer::UnitCm:
+        unitName = QStringLiteral("cm");
+        break;
+    case MultiLayer::UnitInch:
+        unitName = tr("inch");
+        break;
+    default:
+        unitName = QStringLiteral("px");
+        break;
+    }
+    if (labelPageSize)
+        labelPageSize->setText(QStringLiteral("%1 x %2 %3, %4 dpi")
+                                       .arg(d_mlGuard->pageWidthPhysical(), 0, 'f', 2)
+                                       .arg(d_mlGuard->pageHeightPhysical(), 0, 'f', 2)
+                                       .arg(unitName)
+                                       .arg(d_mlGuard->pageDpi()));
+    if (labelPageZoom)
+        labelPageZoom->setText(QStringLiteral("%1 %").arg(qRound(d_mlGuard->pageZoom() * 100.0)));
+
     QScopedValueRollback<bool> guard(d_loadingUi, true);
-    int unitIdx = boxPageUnit->findData((int)d_mlGuard->pageUnit());
-    boxPageUnit->setCurrentIndex(unitIdx >= 0 ? unitIdx : 0);
-    boxPageDpi->setValue(d_mlGuard->pageDpi());
-    boxPageWidth->setValue(d_mlGuard->pageWidthPhysical());
-    boxPageHeight->setValue(d_mlGuard->pageHeightPhysical());
-    boxPageBgColor->setColor(d_mlGuard->pageBackgroundColor());
-    boxPageView->setChecked(d_mlGuard->pageViewMode());
-    boxPageZoom->setValue(qRound(d_mlGuard->pageZoom() * 100.0));
-}
-
-void PlotDialog::fitPageToLayersFromDialog()
-{
-    if (!d_ml || !d_mlGuard)
-        return;
-    const QString beforeSnap = d_mlGuard->captureUndoSnapshot();
-    d_mlGuard->fitPageToLayers();
-    d_mlGuard->pushUndoSnapshot(tr("Fit Page to Layers"), beforeSnap);
-    syncPageTabFromMultiLayer();
-}
-
-void PlotDialog::fitLayersToPageFromDialog()
-{
-    if (!d_ml || !d_mlGuard)
-        return;
-    const QString beforeSnap = d_mlGuard->captureUndoSnapshot();
-    d_mlGuard->fitLayersToPage();
-    d_mlGuard->pushUndoSnapshot(tr("Fit Layers to Page"), beforeSnap);
-    syncPageTabFromMultiLayer();
+    if (boxScaleLayers)
+        boxScaleLayers->setChecked(d_mlGuard->scaleLayersOnPrint());
+    if (boxPrintCrops)
+        boxPrintCrops->setChecked(d_mlGuard->printCropmarksEnabled());
 }
 
 void PlotDialog::openPageSetupFromDialog()
 {
     if (!d_ml || !d_mlGuard)
         return;
-    d_mlGuard->showPageSetupDialog();
+    // Page Setup applies and records its own Undo step; its edits must not reload this dialog
+    // underneath it.
+    {
+        QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+        d_mlGuard->showPageSetupDialog();
+    }
+    if (!d_mlGuard)
+        return;
     syncPageTabFromMultiLayer();
 }
 
@@ -3393,8 +3638,230 @@ void PlotDialog::closeEvent(QCloseEvent *e)
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (app)
         app->d_extended_plot_dialog = btnMore->isChecked();
+    if (d_externalSyncTimer)
+        d_externalSyncTimer->stop();
 
     e->accept();
+}
+
+void PlotDialog::hideEvent(QHideEvent *e)
+{
+    if (d_externalSyncTimer)
+        d_externalSyncTimer->stop();
+    QDialog::hideEvent(e);
+}
+
+void PlotDialog::reject()
+{
+    if (d_externalSyncTimer)
+        d_externalSyncTimer->stop();
+    if (testAttribute(Qt::WA_DeleteOnClose)) {
+        // Call close() while visible so closeEvent() and WA_DeleteOnClose cleanup run,
+        // then QDialog::reject() sets QDialog::Rejected and emits rejected()/finished().
+        QPointer<PlotDialog> self(this);
+        close();
+        if (self)
+            QDialog::reject();
+        return;
+    }
+    QDialog::reject();
+}
+
+/*****************************************************************************
+ *
+ * Synchronisation with edits made outside this dialog
+ *
+ * Policy (the dialog used to mix two models):
+ *  - Property edits (the tab pages) are Apply-deferred and recorded as ONE Undo step by
+ *    commitParamsForItem().
+ *  - Structural operations (plot type, delete, move up/down, visibility check box) are applied
+ *    immediately, each as its own Undo step, but only after flushPendingEdits() wrote the
+ *    pending property edits, so nothing is lost or merged into the wrong Undo step.
+ *  - MultiLayer::modifiedPlot from elsewhere (right dock, canvas, other dialogs, Undo / Redo)
+ *    re-reads the dialog after a short delay. Pending property edits are never overwritten:
+ *    the reload waits until they are applied or the selection changes. The current layer /
+ *    curve selection and the current tab are kept.
+ *
+ *****************************************************************************/
+
+void PlotDialog::onMultiLayerModified()
+{
+    if (!isVisible() || d_loadingUi || d_selfEditDepth > 0 || !d_mlGuard
+        || !d_externalSyncTimer)
+        return;
+    if (!d_externalSyncTimer->isActive())
+        d_externalSyncTimer->start();
+}
+
+void PlotDialog::syncFromMultiLayer()
+{
+    if (!isVisible() || !d_mlGuard || !listBox || !d_externalSyncTimer)
+        return;
+    // Busy (this dialog is itself editing / a nested modal dialog runs the event loop, or an
+    // Undo / Redo is rebuilding the layers): try again shortly.
+    if (d_loadingUi || d_selfEditDepth > 0 || d_mlGuard->isRestoringSnapshot()) {
+        d_externalSyncTimer->start();
+        return;
+    }
+    if (!d_dirtyTabs.isEmpty()) {
+        d_externalSyncDeferred = true;
+        return;
+    }
+    d_externalSyncDeferred = false;
+
+    if (treeMatchesMultiLayer())
+        reloadCurrentSelection();
+    else
+        rebuildTreeFromMultiLayer();
+}
+
+bool PlotDialog::treeMatchesMultiLayer() const
+{
+    MultiLayer *ml = d_mlGuard.data();
+    if (!ml || !listBox)
+        return false;
+    QTreeWidgetItem *pageItem = listBox->topLevelItem(0);
+    if (!pageItem || listBox->topLevelItemCount() != 1)
+        return false;
+
+    const QWidgetList plots = ml->graphPtrs();
+    if (pageItem->childCount() != plots.count())
+        return false;
+    for (int i = 0; i < plots.count(); ++i) {
+        LayerItem *li = dynamic_cast<LayerItem *>(pageItem->child(i));
+        Graph *g = qobject_cast<Graph *>(plots.at(i));
+        if (!li || !g || li->graph() != g)
+            return false;
+        if (li->childCount() != g->curves())
+            return false;
+        for (int k = 0; k < li->childCount(); ++k) {
+            CurveTreeItem *ci = dynamic_cast<CurveTreeItem *>(li->child(k));
+            if (!ci || ci->plotItem() == nullptr || ci->plotItem() != g->plotItem(k))
+                return false;
+        }
+    }
+    return true;
+}
+
+void PlotDialog::rebuildTreeFromMultiLayer()
+{
+    if (!d_mlGuard || !listBox)
+        return;
+
+    // Remember what is selected and expanded: layer index, curve index (and the curve itself, so
+    // a reordered curve keeps the selection), and the tab page that is showing.
+    int selLayer = -1, selCurve = -1;
+    const QwtPlotItem *selPlotItem = nullptr;
+    QVector<bool> layerExpanded;
+    QWidget *prevTab = privateTabWidget ? privateTabWidget->currentWidget() : nullptr;
+    if (QTreeWidgetItem *pageItem = listBox->topLevelItem(0)) {
+        for (int i = 0; i < pageItem->childCount(); ++i)
+            layerExpanded.append(pageItem->child(i)->isExpanded());
+        QTreeWidgetItem *cur = listBox->currentItem();
+        if (cur && cur != pageItem) {
+            if (cur->type() == LayerItem::LayerTreeItem) {
+                selLayer = pageItem->indexOfChild(cur);
+            } else if (cur->type() == CurveTreeItem::PlotCurveTreeItem && cur->parent()) {
+                selLayer = pageItem->indexOfChild(cur->parent());
+                selCurve = cur->parent()->indexOfChild(cur);
+                selPlotItem = static_cast<CurveTreeItem *>(cur)->plotItem();
+            }
+        }
+    }
+
+    QTreeWidgetItem *target = nullptr;
+    {
+        QScopedValueRollback<bool> guard(d_loadingUi, true);
+        QSignalBlocker blocker(listBox);
+        d_dirtyTabs.clear();
+        populateTreeFromMultiLayer(false);
+
+        QTreeWidgetItem *pageItem = listBox->topLevelItem(0);
+        target = pageItem;
+        if (pageItem) {
+            for (int i = 0; i < pageItem->childCount() && i < layerExpanded.size(); ++i)
+                pageItem->child(i)->setExpanded(layerExpanded.at(i));
+            if (selLayer >= 0 && selLayer < pageItem->childCount()) {
+                QTreeWidgetItem *layerIt = pageItem->child(selLayer);
+                target = layerIt;
+                if (selCurve >= 0 && layerIt->childCount() > 0) {
+                    int pick = qBound(0, selCurve, layerIt->childCount() - 1);
+                    for (int k = 0; k < layerIt->childCount(); ++k) {
+                        CurveTreeItem *ci = dynamic_cast<CurveTreeItem *>(layerIt->child(k));
+                        if (selPlotItem && ci && ci->plotItem() == selPlotItem) {
+                            pick = k;
+                            break;
+                        }
+                    }
+                    layerIt->setExpanded(true);
+                    target = layerIt->child(pick);
+                } else if (selCurve >= 0) {
+                    target = layerIt; // its curves are gone: fall back to the layer
+                }
+            }
+        }
+        if (target)
+            listBox->setCurrentItem(target);
+    }
+
+    // The tree signals were blocked, so load the page for the new current item explicitly
+    // (same path as a normal selection change; there is no previous item to commit).
+    if (target) {
+        updateTabWindow(target, nullptr);
+        if (prevTab && privateTabWidget->indexOf(prevTab) >= 0)
+            privateTabWidget->setCurrentWidget(prevTab);
+    }
+}
+
+void PlotDialog::reloadCurrentSelection()
+{
+    if (!listBox)
+        return;
+    QTreeWidgetItem *cur = listBox->currentItem();
+    if (!cur)
+        return;
+
+    QScopedValueRollback<bool> guard(d_loadingUi, true);
+    d_dirtyTabs.clear();
+
+    // Visibility check marks may have been changed by the inspector.
+    if (QTreeWidgetItem *pageItem = listBox->topLevelItem(0)) {
+        for (int i = 0; i < pageItem->childCount(); ++i) {
+            LayerItem *li = dynamic_cast<LayerItem *>(pageItem->child(i));
+            Graph *g = li ? li->graph() : nullptr;
+            if (!g)
+                continue;
+            for (int k = 0; k < li->childCount(); ++k) {
+                CurveTreeItem *ci = dynamic_cast<CurveTreeItem *>(li->child(k));
+                if (!ci || !ci->isCurveAlive())
+                    continue;
+                const int idx = ci->plotItemIndex();
+                if (idx < 0)
+                    continue;
+                const Qt::CheckState want = g->isCurveVisible(idx) ? Qt::Checked : Qt::Unchecked;
+                if (ci->checkState(0) != want)
+                    ci->setCheckState(0, want);
+            }
+        }
+    }
+
+    QSignalBlocker typeBlocker(boxPlotType);
+    if (cur->type() == CurveTreeItem::PlotCurveTreeItem) {
+        CurveTreeItem *ci = static_cast<CurveTreeItem *>(cur);
+        if (!ci->isCurveAlive())
+            return;
+        setActiveCurve(ci);
+        const int plotType = setPlotType(ci);
+        // e.g. the inspector turned a Line into a Line + Symbol curve: other pages are needed.
+        if (plotType >= 0 && plotType != d_shownTabType)
+            rebuildCurveTabs(plotType, true);
+    } else if (cur->type() == LayerItem::LayerTreeItem) {
+        setActiveLayer(static_cast<LayerItem *>(cur));
+    } else {
+        syncPageTabFromMultiLayer();
+    }
+    d_dirtyTabs.clear();
+    updateCurveMoveButtons();
 }
 
 /*****************************************************************************

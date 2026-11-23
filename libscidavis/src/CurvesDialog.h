@@ -33,9 +33,11 @@
 #include <QPointer>
 
 class QComboBox;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QCheckBox;
+class ApplicationWindow;
 class Graph;
 
 //! Add/remove curves dialog
@@ -83,6 +85,8 @@ private:
     void init();
     bool addCurve(const QString &name);
     void moveSelectedCurveBy(int delta);
+    void applyAvailableFilter();
+    ApplicationWindow *appWindow() const;
     QSize sizeHint() const;
     void contextMenuEvent(QContextMenuEvent *);
 
@@ -99,6 +103,7 @@ private:
     QPushButton *btnAssociations;
     QPushButton *btnEditFunction;
     QPushButton *btnRange;
+    QLineEdit *boxFilter = nullptr;
     QListWidget *available;
     QListWidget *contents;
     QComboBox *boxStyle;
