@@ -499,7 +499,7 @@
 (All Tools)	(すべてのツール)
 (Default Table X)	(表の既定X列)
 (Detected: %1)	(検出数: %1)
-(No Active Graph)	(アクティブなグラフなし)
+(No Active Graph)	(グラフ未選択)
 (No Curve Selected)	(曲線未選択)
 (None - Single Cohort)	(なし - 単一コホート)
 (None — Complete Failures)	(なし — 全数破壊データ)
@@ -3640,6 +3640,7 @@ Plot 95% Prediction Band	95%予測帯 (Prediction Band) をプロット
 Plot Associations	プロット列の関連付け
 Plot Baseline Curve on Graph	ベースライン曲線をグラフにプロット
 Plot CWT Scalogram	CWT スカログラムをプロット
+Plot Data	グラフ作成
 Plot Coherence Result	コヒーレンス結果をプロット
 Plot Color Map with Peak Overlay	ピーク重畳カラーマップをプロット
 Plot Cubic Spline Curve	3次スプライン曲線グラフを作成
@@ -4056,6 +4057,7 @@ Sample Count	サンプル点数
 Sample Points:	サンプル点数:
 Sample Quantiles (%1)	標本分位点 (%1)
 Sample Summary (N=%1, SD=%2)	標本要約 (N=%1, 標準偏差=%2)
+Sample X-Y Data	X-Y サンプル
 Samples X	X方向サンプル点数
 Sampling	サンプリング
 Sampling Interval	サンプリング間隔

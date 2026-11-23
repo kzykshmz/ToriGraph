@@ -141,12 +141,14 @@ void registerUxTranslations()
         reg("Paste from Excel here (Ctrl+V)\nor drop an Excel (.xlsx) or CSV file onto this window",
             "ここへ Excel から貼り付け (Ctrl+V)\nまたは Excel (.xlsx) / CSV ファイルをこのウィンドウにドロップ");
         reg("Insert Simple X-Y Sample", "シンプルな X-Y サンプルを挿入");
+        reg("Sample X-Y Data", "X-Y サンプル");
         reg("Load a simple 2-series X-Y sample dataset and plot it right away",
             "シンプルな 2 系列 X-Y サンプルを読み込み、すぐにグラフを作成します");
         reg("Open CSV / Excel...", "CSV / Excel を開く...");
         reg("Open a CSV, TSV, or Excel (.xlsx) data file",
             "CSV・TSV・Excel (.xlsx) データファイルを開きます");
         reg("Plot this data", "このデータをグラフにする");
+        reg("Plot Data", "グラフ作成");
         reg("Line + symbol graph of all Y columns (use the Plot tab for other styles)",
             "すべての Y 列を折れ線+シンボルで描きます (ほかの形は「作図」タブから)");
         reg("Dismiss", "閉じる");
@@ -827,27 +829,29 @@ public:
                 "QWidget#ToriEmptyTableActions { background: transparent; }"
                 "QPushButton {"
                 "  background: #FFFFFF; color: #1E293B; border: 1px solid #CBD5E1;"
-                "  border-radius: 6px; padding: 5px 12px; font-size: 10pt; font-weight: 600;"
+                "  border-radius: 6px; padding: 4px 10px; font-size: 9.5pt; font-weight: 600;"
                 "}"
                 "QPushButton:hover {"
                 "  background: #EFF6FF; color: #0F6CBD; border-color: #2563EB;"
                 "}"));
-        QHBoxLayout *actRow = new QHBoxLayout(d_actions_box);
-        actRow->setContentsMargins(0, 0, 0, 0);
-        actRow->setSpacing(8);
+        d_act_layout = new QBoxLayout(QBoxLayout::LeftToRight, d_actions_box);
+        d_act_layout->setContentsMargins(0, 0, 0, 0);
+        d_act_layout->setSpacing(6);
 
         d_sample_btn = new QPushButton(d_actions_box);
         d_sample_btn->setObjectName(QStringLiteral("ToriEmptyTableSampleBtn"));
-        d_sample_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 16));
+        d_sample_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 15));
+        d_sample_btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
         d_sample_btn->setCursor(Qt::PointingHandCursor);
 
         d_open_btn = new QPushButton(d_actions_box);
         d_open_btn->setObjectName(QStringLiteral("ToriEmptyTableOpenBtn"));
-        d_open_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("file-open"), 16));
+        d_open_btn->setIcon(IconLoader::duotoneIcon(QStringLiteral("file-open"), 15));
+        d_open_btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
         d_open_btn->setCursor(Qt::PointingHandCursor);
 
-        actRow->addWidget(d_sample_btn);
-        actRow->addWidget(d_open_btn);
+        d_act_layout->addWidget(d_sample_btn);
+        d_act_layout->addWidget(d_open_btn);
 
         QPointer<ApplicationWindow> safeApp(app);
         connect(d_sample_btn, &QPushButton::clicked, this, [safeApp]() {
@@ -901,7 +905,7 @@ public:
                     "this window"));
         }
         if (d_sample_btn) {
-            d_sample_btn->setText(ApplicationWindow::tr("Insert Simple X-Y Sample"));
+            d_sample_btn->setText(ApplicationWindow::tr("Sample X-Y Data"));
             d_sample_btn->setToolTip(ApplicationWindow::tr(
                     "Load a simple 2-series X-Y sample dataset and plot it right away"));
         }
@@ -976,16 +980,29 @@ private:
         const QRect r = d_viewport->rect();
         if (r.width() <= 0 || r.height() <= 0)
             return;
-        const int w = qMax(120, qMin(r.width() - 24, 540));
-        const int h = 76;
-        const int labelTop = qMax(8, r.center().y() - h / 2 - 26);
+        const int w = qMax(120, qMin(r.width() - 20, 540));
+        const int h = qMax(48, d_label->heightForWidth(w) + 6);
+        QSize actSz;
+        if (d_actions_box && d_act_layout) {
+            const int maxActW = qMax(80, r.width() - 20);
+            d_act_layout->setDirection(QBoxLayout::LeftToRight);
+            d_actions_box->adjustSize();
+            actSz = d_actions_box->sizeHint();
+            if (actSz.width() > maxActW) {
+                d_act_layout->setDirection(QBoxLayout::TopToBottom);
+                d_actions_box->adjustSize();
+                actSz = d_actions_box->sizeHint();
+            }
+        }
+        const int gap = 10;
+        const int totalH = d_actions_box ? (h + gap + actSz.height()) : h;
+        const int labelTop = qMax(8, r.center().y() - totalH / 2);
         d_label->setGeometry(r.center().x() - w / 2, labelTop, w, h);
         if (d_actions_box) {
-            const QSize actSz = d_actions_box->sizeHint();
-            const int actW = qMin(r.width() - 24, actSz.width());
+            const int actW = qMin(qMax(40, r.width() - 16), actSz.width());
             const int actH = actSz.height();
-            const int actTop = labelTop + h + 6;
-            const bool canFit = (r.width() >= 220 && actTop + actH <= r.bottom() - 6);
+            const int actTop = labelTop + h + gap;
+            const bool canFit = (r.width() >= 140 && actTop + actH <= r.bottom() - 4);
             d_actions_box->setVisible(canFit);
             if (canFit) {
                 d_actions_box->setGeometry(r.center().x() - actW / 2, actTop, actW, actH);
@@ -1000,6 +1017,7 @@ private:
     QPointer<QWidget> d_viewport;
     QPointer<QLabel> d_label;
     QPointer<QWidget> d_actions_box;
+    QBoxLayout *d_act_layout = nullptr;
     QPointer<QPushButton> d_sample_btn;
     QPointer<QPushButton> d_open_btn;
     bool d_hint_hidden = false;
@@ -1059,9 +1077,17 @@ public:
         const QRect vr = d_viewport->rect();
         if (vr.width() <= 0 || vr.height() <= 0)
             return;
-        const int margin = 10;
-        const int availW = qMax(80, vr.width() - 2 * margin);
-        const QSize hint = d_bar->sizeHint();
+        const int margin = 8;
+        const int availW = qMax(64, vr.width() - 2 * margin);
+        if (d_plot_btn)
+            d_plot_btn->setText(ApplicationWindow::tr("Plot this data"));
+        d_bar->adjustSize();
+        QSize hint = d_bar->sizeHint();
+        if (hint.width() > availW && d_plot_btn) {
+            d_plot_btn->setText(ApplicationWindow::tr("Plot Data"));
+            d_bar->adjustSize();
+            hint = d_bar->sizeHint();
+        }
         const int w = qMin(hint.width(), availW);
         const int h = qMin(qMax(28, hint.height()), qMax(28, vr.height() - 2 * margin));
         const int x = qMax(4, vr.right() - w - margin + 1);
@@ -1512,7 +1538,7 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
     bar->setStyleSheet(QStringLiteral(
             "QFrame#ToriPlotThisDataBar { background: #EFF6FF; border: 1px solid #93C5FD;"
             " border-radius: 6px; }"
-            "QPushButton { padding: 3px 12px; }"));
+            "QPushButton { padding: 3px 10px; }"));
     QHBoxLayout *row = new QHBoxLayout(bar);
     row->setContentsMargins(8, 4, 4, 4);
     row->setSpacing(6);

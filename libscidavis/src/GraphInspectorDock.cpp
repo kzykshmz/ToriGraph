@@ -1655,6 +1655,8 @@ void GraphInspectorDock::buildUi()
 
     d_header_target_lbl = new QLabel(d_header_bar);
     d_header_target_lbl->setObjectName(QStringLiteral("InspectorHeaderTarget"));
+    d_header_target_lbl->setMinimumWidth(0);
+    d_header_target_lbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     hdrLayout->addWidget(d_header_target_lbl, 1);
 
     d_btn_pin = new QToolButton(d_header_bar);

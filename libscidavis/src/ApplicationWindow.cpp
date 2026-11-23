@@ -1446,7 +1446,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Edit Annotation Text", "注釈テキストを編集");
         add("Edit Legend Header", "凡例ヘッダーを編集");
         add("Change Legend Font Size", "凡例フォントサイズを変更");
-        add("(No Active Graph)", "(アクティブなグラフなし)");
+        add("(No Active Graph)", "(グラフ未選択)");
         add("Page: %1", "ページ: %1");
         add("[Linked]", "[リンク]");
         add("Curves (%1)", "曲線 (%1)");
