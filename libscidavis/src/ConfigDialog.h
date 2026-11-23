@@ -88,11 +88,7 @@ public slots:
     void enableScaleFonts();
     void showFrameWidth(bool ok);
 
-    // application
-    void pickApplicationFont();
-    void pickPanelsTextColor();
-    void pickPanelsColor();
-    void pickWorkspaceColor();
+    // (application font / workspace / panel colors were removed, C5-3)
 
     // 2D curves
     int curveStyle();
@@ -128,7 +124,7 @@ private:
     void initConfirmationsPage();
     void initFittingPage();
 
-    QFont textFont, headerFont, axesFont, numbersFont, legendFont, titleFont, appFont;
+    QFont textFont, headerFont, axesFont, numbersFont, legendFont, titleFont;
     QFont plot3DTitleFont, plot3DNumbersFont, plot3DAxesFont;
     QStringList plot3DColors;
 
@@ -141,9 +137,9 @@ private:
     QPushButton *buttonOk, *buttonCancel, *buttonApply;
     QPushButton *buttonTextFont, *buttonHeaderFont;
     QStackedWidget *generalDialog;
-    QWidget *appColors, *tables, *plotOptions, *plotTicks, *plotFonts, *confirm, *plotPrint;
+    QWidget *tables, *plotOptions, *plotTicks, *plotFonts, *confirm, *plotPrint;
     QWidget *application, *curves, *plots3D, *fitPage, *numericFormatPage;
-    QPushButton *buttonAxesFont, *buttonNumbersFont, *buttonLegendFont, *buttonTitleFont, *fontsBtn;
+    QPushButton *buttonAxesFont, *buttonNumbersFont, *buttonLegendFont, *buttonTitleFont;
     QCheckBox *boxSearchUpdates, *boxOrthogonal, *logBox, *plotLabelBox, *scaleErrorsBox;
     QCheckBox *boxTitle, *boxFrame, *boxPlots3D, *boxPlots2D, *boxTables, *boxNotes, *boxFolders;
     QCheckBox *boxSave, *boxBackbones, *boxAllAxes, *boxShowLegend, *boxSmoothMesh;
@@ -161,10 +157,9 @@ private:
     QSpinBox *boxCurveLineWidth, *boxSymbolSize, *boxMinTicksLength, *boxMajTicksLength,
             *generatePointsBox;
     QSpinBox *boxUndoLimit;
-    ColorButton *btnWorkspace, *btnPanels, *btnPanelsText;
     QListWidget *itemsList;
-    QLabel *labelFrameWidth, *lblLanguage, *lblWorkspace, *lblPanels, *lblPageHeader;
-    QLabel *lblPanelsText, *lblFonts, *lblDecimalSeparator, *lblAppPrecision;
+    QLabel *labelFrameWidth, *lblLanguage, *lblPageHeader;
+    QLabel *lblDecimalSeparator, *lblAppPrecision;
     QGroupBox *groupBoxConfirm;
     QGroupBox *groupBoxTableFonts, *groupBoxTableCol;
     QLabel *lblSeparator, *lblTableBackground, *lblTextColor, *lblHeaderColor;
@@ -183,6 +178,8 @@ private:
     QGroupBox *groupBoxUpdates = nullptr;
     QCheckBox *boxUpdatePreRelease = nullptr;
     QPushButton *btnCheckUpdatesNow = nullptr;
+    //! Print tab group box of the 2D Plots page (C5-8).
+    QGroupBox *groupBoxPrint = nullptr;
 };
 
 #endif // CONFIGDIALOG_H

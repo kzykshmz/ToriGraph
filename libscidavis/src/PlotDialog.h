@@ -44,6 +44,7 @@ class QPushButton;
 class QSpinBox;
 class QSplitter;
 class QTabWidget;
+class QTimer;
 class QWidget;
 class QStringList;
 class QGroupBox;
@@ -123,7 +124,6 @@ private slots:
 
     // spectrograms
     void showDefaultContourLinesBox(bool show);
-    void showColorMapEditor(bool show);
     void onColorMapPresetChanged(int index);
     void onReversePaletteToggled(bool checked);
     void onCustomZRangeToggled(bool checked);
@@ -145,13 +145,26 @@ protected slots:
     void setLegendsFont();
     void editCurve();
     void openColorPaletteEditor();
-    void fitPageToLayersFromDialog();
-    void fitLayersToPageFromDialog();
     void openPageSetupFromDialog();
     void syncPageTabFromMultiLayer();
 
 private:
     void closeEvent(QCloseEvent *e);
+
+    // ---- external-edit synchronisation (right dock / canvas -> this dialog) -------------------
+    void onMultiLayerModified();
+    void syncFromMultiLayer();
+    bool treeMatchesMultiLayer() const;
+    void rebuildTreeFromMultiLayer();
+    void populateTreeFromMultiLayer(bool selectActiveLayer);
+    void reloadCurrentSelection();
+    //! Commits pending (Apply-deferred) edits before an immediate structural operation.
+    void flushPendingEdits();
+    //! Plot type shown in the "Plot type" combo for \a item; \a tabType receives the plot type
+    //! that decides which tab pages are inserted (see insertTabs()).
+    int shownPlotType(const CurveTreeItem *item, int *tabType = nullptr) const;
+    void rebuildCurveTabs(int plotType, bool keepCurrentTab);
+    void syncFontSizeBoxes();
 
     void clearTabWidget();
     void initPageTab();
@@ -178,10 +191,22 @@ private:
     void updateCurveMoveButtons();
 
     QFont titleFont, legendFont, axesFont, numbersFont;
+    QDoubleSpinBox *boxTitleFontSize = nullptr, *boxAxesLabelFontSize = nullptr,
+                   *boxAxesNumberFontSize = nullptr, *boxLegendFontSize = nullptr;
 
     MultiLayer *d_ml;
     QPointer<MultiLayer> d_mlGuard;
     bool d_loadingUi = false;
+    //! > 0 while this dialog itself edits the MultiLayer (its modifiedPlot signal is ignored).
+    int d_selfEditDepth = 0;
+    //! Plot type whose tab pages are currently inserted for a curve (-1: not a curve page).
+    int d_shownTabType = -1;
+    //! An external edit arrived while Apply-deferred edits were pending; reload after they commit.
+    bool d_externalSyncDeferred = false;
+    QTimer *d_externalSyncTimer = nullptr;
+    //! Exact 8-bit alpha of the layer background / canvas colour as loaded (the spin boxes show
+    //! whole percent only, so an untouched value is written back unchanged).
+    int d_bgAlphaLoaded = -1, d_canvasAlphaLoaded = -1;
     QSet<QWidget *> d_dirtyTabs;
     QWidget *d_leftTreePanel = nullptr;
     QSplitter *d_mainSplitter = nullptr;
@@ -225,7 +250,7 @@ private:
     QCheckBox *xBox;
     ColorButton *colorBox, *levelsColorBox;
     ColorButton *vectColorBox;
-    QComboBox *widthBox;
+    QDoubleSpinBox *widthBox; // error bar line width, kErrorBarWidthMin..Max px in 0.5 px steps
     QComboBox *capBox;
     QCheckBox *throughBox;
     QLabel *labelPosition, *labelXEnd, *labelYEnd;
@@ -251,10 +276,10 @@ private:
     QSpinBox *levelsBox, *contourWidthBox, *colorScaleWidthBox;
     QGroupBox *levelsGroupBox, *axisScaleBox, *imageGroupBox;
     QGroupBox *defaultPenBox;
-    QRadioButton *defaultScaleBox, *grayScaleBox, *customScaleBox, *defaultContourBox,
-            *autoContourBox;
+    QRadioButton *defaultContourBox, *autoContourBox;
     QComboBox *boxColorMapPreset;
     QCheckBox *boxReversePalette, *boxCustomZRange;
+    QCheckBox *boxLogColorScale = nullptr, *boxCellBlocks = nullptr;
     QDoubleSpinBox *boxZMin, *boxZMax;
     QLineEdit *editColorBarTitle;
 
@@ -262,13 +287,11 @@ private:
     QDoubleSpinBox *whiskerCnt, *boxCnt;
 
     // OriginPro Page & Layer hierarchy controls
+    // The Page tab only summarises the page; size / unit / DPI / background / zoom / fit are
+    // edited in Page Setup (MultiLayer::showPageSetupDialog) so there is a single editor.
     QWidget *pageTab;
-    QDoubleSpinBox *boxPageWidth, *boxPageHeight;
-    QComboBox *boxPageUnit;
-    QSpinBox *boxPageDpi, *boxPageZoom;
-    QCheckBox *boxPageView;
-    ColorButton *boxPageBgColor;
-    QPushButton *btnFitPageToLayers, *btnFitLayersToPage, *btnOpenPageSetup;
+    QLabel *labelPageSize, *labelPageZoom;
+    QPushButton *btnOpenPageSetup;
 
     QSpinBox *boxLayerX, *boxLayerY, *boxLayerW, *boxLayerH;
     QCheckBox *boxKeepAspect;

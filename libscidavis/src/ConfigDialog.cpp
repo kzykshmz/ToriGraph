@@ -36,8 +36,10 @@
 #include "ColorButton.h"
 #include "PlotStyleLimits.h"
 #include "future/core/Project.h"
+#include "I18nJapanese.h"
 
 #include <QUndoStack>
+#include <QSignalBlocker>
 #include <QLocale>
 #include <QPushButton>
 #include <QLabel>
@@ -64,8 +66,30 @@
 #include <QListWidget>
 #include <QFontMetrics>
 
+namespace {
+void registerConfigDialogTranslationsOnce()
+{
+    static bool s_done = false;
+    if (s_done)
+        return;
+    s_done = true;
+    auto reg = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                  QString::fromUtf8(ja));
+    };
+    reg("Create a recovery copy every", "回復用コピーを自動作成する間隔");
+    reg("The project file you are working on is not overwritten. A recovery copy is written to "
+        "the application data folder at this interval and offered for restoring the next time "
+        "ToriGraph starts after an unexpected exit.",
+        "作業中のプロジェクトファイルは上書きされません。この間隔で回復用コピーをアプリケーション"
+        "データフォルダに書き出し、異常終了した次の起動時に復元を提案します。");
+    reg("Printing", "印刷");
+}
+} // namespace
+
 ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
 {
+    registerConfigDialogTranslationsOnce();
     // get current values from app window
     ApplicationWindow *app = (ApplicationWindow *)parentWidget();
     auto ensureGraphFont = [](const QFont &f, double defaultPt,
@@ -84,7 +108,6 @@ ConfigDialog::ConfigDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     plot3DAxesFont = ensureGraphFont(app->plot3DAxesFont, 12, QFont::Normal);
     textFont = app->tableTextFont;
     headerFont = app->tableHeaderFont;
-    appFont = app->appFont;
     axesFont = ensureGraphFont(app->plotAxesFont, 14, QFont::Normal);
     numbersFont = ensureGraphFont(app->plotNumbersFont, 12);
     legendFont = ensureGraphFont(app->plotLegendFont, 10);
@@ -234,12 +257,13 @@ void ConfigDialog::initTablesPage()
     lblTableRowHeight->setText(tr("Default Row Height"));
     tableRowHeightLayout->addWidget(lblTableRowHeight);
     boxTableRowHeight = new QSpinBox();
-    boxTableRowHeight->setRange(15, 100);
+    // C5-8: TableView clamps the row height to >= 27 and defaults to 27, so the dialog does too.
+    boxTableRowHeight->setRange(27, 100);
     tableRowHeightLayout->addWidget(boxTableRowHeight);
 
     auto &settings = ApplicationWindow::getSettings();
     settings.beginGroup("[Table]");
-    boxTableRowHeight->setValue(settings.value("DefaultRowHeight", 20).toInt());
+    boxTableRowHeight->setValue(settings.value("DefaultRowHeight", 27).toInt());
     settings.endGroup();
 
     QVBoxLayout *tablesPageLayout = new QVBoxLayout(tables);
@@ -389,7 +413,14 @@ void ConfigDialog::initPlotsPage()
     plotsTabWidget->addTab(plotFonts, QString());
 
     plotPrint = new QWidget();
-    QVBoxLayout *printLayout = new QVBoxLayout(plotPrint);
+    // C5-8: the two print options sit in a titled group box like the other tabs (they used to
+    // float loose at the top of an otherwise empty page).
+    QVBoxLayout *printPageLayout = new QVBoxLayout(plotPrint);
+    groupBoxPrint = new QGroupBox();
+    QVBoxLayout *printLayout = new QVBoxLayout(groupBoxPrint);
+    printLayout->setSpacing(5);
+    printPageLayout->addWidget(groupBoxPrint);
+    printPageLayout->addStretch(1);
 
     boxScaleLayersOnPrint = new QCheckBox();
     boxScaleLayersOnPrint->setChecked(app->d_scale_plots_on_print);
@@ -398,7 +429,6 @@ void ConfigDialog::initPlotsPage()
     boxPrintCropmarks = new QCheckBox();
     boxPrintCropmarks->setChecked(app->d_print_cropmarks);
     printLayout->addWidget(boxPrintCropmarks);
-    printLayout->addStretch();
     plotsTabWidget->addTab(plotPrint, QString());
 
     connect(boxResize, SIGNAL(clicked()), this, SLOT(enableScaleFonts()));
@@ -535,10 +565,8 @@ void ConfigDialog::initAppPage()
     // H6: the "Style" (Qt widget style) choice was removed. ToriGraph always uses its own
     // theme (ModernUiTheme), so the selection was saved but had no visible effect.
 
-    lblFonts = new QLabel();
-    topBoxLayout->addWidget(lblFonts, 2, 0);
-    fontsBtn = new QPushButton();
-    topBoxLayout->addWidget(fontsBtn, 2, 1);
+    // C5-3: the "Main Font" choice was removed. The application font is set by the QSS theme,
+    // so the selection was saved but never took effect.
 
     lblScriptingLanguage = new QLabel();
     topBoxLayout->addWidget(lblScriptingLanguage, 3, 0);
@@ -607,33 +635,8 @@ void ConfigDialog::initAppPage()
 
     appTabWidget->addTab(confirm, QString());
 
-    appColors = new QWidget();
-    QVBoxLayout *appColorsLayout = new QVBoxLayout(appColors);
-    QGroupBox *groupBoxAppCol = new QGroupBox();
-    appColorsLayout->addWidget(groupBoxAppCol);
-    QGridLayout *colorsBoxLayout = new QGridLayout(groupBoxAppCol);
-
-    lblWorkspace = new QLabel();
-    colorsBoxLayout->addWidget(lblWorkspace, 0, 0);
-    btnWorkspace = new ColorButton();
-    btnWorkspace->setColor(app->workspaceColor);
-    colorsBoxLayout->addWidget(btnWorkspace, 0, 1);
-
-    lblPanels = new QLabel();
-    colorsBoxLayout->addWidget(lblPanels, 1, 0);
-    btnPanels = new ColorButton();
-    colorsBoxLayout->addWidget(btnPanels, 1, 1);
-    btnPanels->setColor(app->panelsColor);
-
-    lblPanelsText = new QLabel();
-    colorsBoxLayout->addWidget(lblPanelsText, 2, 0);
-    btnPanelsText = new ColorButton();
-    colorsBoxLayout->addWidget(btnPanelsText, 2, 1);
-    btnPanelsText->setColor(app->panelsTextColor);
-
-    colorsBoxLayout->setRowStretch(3, 1);
-
-    appTabWidget->addTab(appColors, QString());
+    // C5-3: the "Colors" tab (workspace / panels / panels text) was removed. The QSS theme
+    // paints those surfaces, so the saved colors never showed up.
 
     numericFormatPage = new QWidget();
     QVBoxLayout *numLayout = new QVBoxLayout(numericFormatPage);
@@ -669,8 +672,6 @@ void ConfigDialog::initAppPage()
     numericFormatLayout->addWidget(lblDefaultNumericFormat, 3, 0);
     numericFormatLayout->addWidget(boxDefaultNumericFormat, 3, 1);
 
-    numericFormatLayout->setRowStretch(4, 1);
-
     auto &settings = ApplicationWindow::getSettings();
     lblForeignSeparator = new QLabel();
     numericFormatLayout->addWidget(lblForeignSeparator, 4, 0);
@@ -686,14 +687,14 @@ void ConfigDialog::initAppPage()
             settings.value("/General/SetColumnTypeToTextOnInvalidInput", true).toBool());
     numericFormatLayout->addWidget(boxConvertToTextColumn, 5, 1);
 
+    // C5-8: the stretch row sits below the last content row (it used to be row 4, which held
+    // the "foreign separator" option and so stretched that row instead of the empty space).
+    numericFormatLayout->setRowStretch(6, 1);
+
     appTabWidget->addTab(numericFormatPage, QString());
 
     connect(boxLanguage, SIGNAL(activated(int)), this, SLOT(switchToLanguage(int)));
-    connect(fontsBtn, SIGNAL(clicked()), this, SLOT(pickApplicationFont()));
     connect(boxSave, SIGNAL(toggled(bool)), boxMinutes, SLOT(setEnabled(bool)));
-    connect(btnWorkspace, SIGNAL(clicked()), this, SLOT(pickWorkspaceColor()));
-    connect(btnPanels, SIGNAL(clicked()), this, SLOT(pickPanelsColor()));
-    connect(btnPanelsText, SIGNAL(clicked()), this, SLOT(pickPanelsTextColor()));
     connect(boxUseGroupSeparator, SIGNAL(toggled(bool)), this, SLOT(updateDecSepPreview()));
     connect(boxDecimalSeparator, SIGNAL(currentIndexChanged(int)), this,
             SLOT(updateDecSepPreview()));
@@ -851,14 +852,26 @@ void ConfigDialog::languageChange()
     setWindowTitle(tr("Preferences"));
     ApplicationWindow *app = (ApplicationWindow *)parentWidget();
 
-    // pages list
-    itemsList->clear();
-    itemsList->addItem(tr("General"));
-    itemsList->addItem(tr("Tables"));
-    itemsList->addItem(tr("2D Plots"));
-    itemsList->addItem(tr("3D Plots"));
-    itemsList->addItem(tr("Fitting"));
-    itemsList->setCurrentRow(0);
+    // pages list. A5-1: the list is rebuilt on every language switch; remember the selected
+    // row (and keep the signals quiet while rebuilding, so the stacked page does not flicker to
+    // "none" and the selection does not fall back to row 0).
+    const int prevRow = itemsList->currentRow();
+    {
+        const QSignalBlocker blockList(itemsList);
+        itemsList->clear();
+        itemsList->addItem(tr("General"));
+        itemsList->addItem(tr("Tables"));
+        itemsList->addItem(tr("2D Plots"));
+        itemsList->addItem(tr("3D Plots"));
+        itemsList->addItem(tr("Fitting"));
+        itemsList->setCurrentRow((prevRow >= 0 && prevRow < itemsList->count()) ? prevRow : 0);
+    }
+    // C5-8: the 3D Plots page belongs to the "other-field / advanced features" set.
+    const bool showAdvancedDomain = app && app->showsAdvancedDomainFeatures();
+    itemsList->item(3)->setHidden(!showAdvancedDomain);
+    if (itemsList->currentRow() == 3 && !showAdvancedDomain)
+        itemsList->setCurrentRow(0);
+    setCurrentPage(itemsList->currentRow());
     auto pageIcon = [](const QString &semanticId) -> QIcon {
         return IconLoader::duotoneIcon(semanticId, 32);
     };
@@ -929,6 +942,7 @@ void ConfigDialog::languageChange()
     boxMinTicks->setCurrentIndex(app->minTicksStyle);
 
     plotsTabWidget->setTabText(plotsTabWidget->indexOf(plotPrint), tr("Print"));
+    groupBoxPrint->setTitle(tr("Printing"));
     boxPrintCropmarks->setText(tr("Print Crop &Marks"));
     boxScaleLayersOnPrint->setText(tr("&Scale layers to paper size"));
 
@@ -940,6 +954,7 @@ void ConfigDialog::languageChange()
     boxPlots2D->setText(tr("2D Plots"));
     boxMatrices->setText(tr("Matrices"));
     boxNotes->setText(tr("&Notes"));
+    boxPlots3D->setVisible(showAdvancedDomain); // 3D plots are an advanced-feature item (C5-8)
 
     buttonOk->setText(tr("&OK"));
     buttonCancel->setText(tr("&Cancel"));
@@ -954,17 +969,19 @@ void ConfigDialog::languageChange()
     // application page
     appTabWidget->setTabText(appTabWidget->indexOf(application), tr("Application"));
     appTabWidget->setTabText(appTabWidget->indexOf(confirm), tr("Confirmations"));
-    appTabWidget->setTabText(appTabWidget->indexOf(appColors), tr("Colors"));
     appTabWidget->setTabText(appTabWidget->indexOf(numericFormatPage), tr("Numeric Format"));
 
     lblLanguage->setText(tr("Language"));
-    lblFonts->setText(tr("Main Font"));
-    fontsBtn->setText(tr("Choose &font"));
-    lblWorkspace->setText(tr("Workspace"));
-    lblPanelsText->setText(tr("Panels text"));
-    lblPanels->setText(tr("Panels"));
     lblUndoLimit->setText(tr("Undo/Redo History limit"));
-    boxSave->setText(tr("Save every"));
+    // D5-8: this timer writes a recovery copy (ApplicationWindow::timerEvent ->
+    // writeRecoveryFile); it never overwrites the open project file, so "Save every" misled.
+    boxSave->setText(tr("Create a recovery copy every"));
+    const QString recoveryHelp =
+            tr("The project file you are working on is not overwritten. A recovery copy is written "
+               "to the application data folder at this interval and offered for restoring the next "
+               "time ToriGraph starts after an unexpected exit.");
+    boxSave->setToolTip(recoveryHelp);
+    boxMinutes->setToolTip(recoveryHelp);
     if (groupBoxUpdates)
         groupBoxUpdates->setTitle(tr("Software Updates"));
     if (boxSearchUpdates)
@@ -1186,9 +1203,7 @@ void ConfigDialog::apply()
             ((MultiLayer *)w)->printCropmarks(boxPrintCropmarks->isChecked());
         }
     }
-    // general page: application tab
-    app->changeAppFont(appFont);
-    setFont(appFont);
+    // general page: application tab (Main Font removed, C5-3)
     if (boxSearchUpdates) {
 #ifdef SEARCH_FOR_UPDATES
         app->autoSearchUpdates = boxSearchUpdates->isChecked();
@@ -1246,8 +1261,7 @@ void ConfigDialog::apply()
     app->updateConfirmOptions(boxTables->isChecked(), boxMatrices->isChecked(),
                               boxPlots2D->isChecked(), boxPlots3D->isChecked(),
                               boxNotes->isChecked());
-    // general page: colors tab
-    app->setAppColors(btnWorkspace->color(), btnPanels->color(), btnPanelsText->color());
+    // general page: the colors tab was removed (C5-3), so app colors are left untouched.
     // 3D plots page
     app->plot3DColors = plot3DColors;
     app->showPlot3DLegend = boxShowLegend->isChecked();
@@ -1438,44 +1452,6 @@ void ConfigDialog::pickTitleFont()
         titleFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(titleFont, font);
     } else
         return;
-}
-
-void ConfigDialog::pickApplicationFont()
-{
-    bool ok;
-    QFont font = QFontDialog::getFont(&ok, appFont, this);
-    if (ok)
-        appFont = PlotStyleLimits::preserveFractionalPtAfterFontDialog(appFont, font);
-    else
-        return;
-    fontsBtn->setFont(appFont);
-}
-
-void ConfigDialog::pickPanelsTextColor()
-{
-    QColor c = QColorDialog::getColor(btnPanelsText->color(), this);
-    if (!c.isValid() || c == btnPanelsText->color())
-        return;
-
-    btnPanelsText->setColor(c);
-}
-
-void ConfigDialog::pickPanelsColor()
-{
-    QColor c = QColorDialog::getColor(btnPanels->color(), this);
-    if (!c.isValid() || c == btnPanels->color())
-        return;
-
-    btnPanels->setColor(c);
-}
-
-void ConfigDialog::pickWorkspaceColor()
-{
-    QColor c = QColorDialog::getColor(btnWorkspace->color(), this);
-    if (!c.isValid() || c == btnWorkspace->color())
-        return;
-
-    btnWorkspace->setColor(c);
 }
 
 void ConfigDialog::pickDataMaxColor()
