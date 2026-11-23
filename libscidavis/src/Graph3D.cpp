@@ -2276,17 +2276,17 @@ void setGraph3DExportError(QString *errOut, const QString &msg)
 }
 } // namespace
 
-void Graph3D::exportImage(const QString &fileName, int quality, bool transparent)
+void Graph3D::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
 {
     // Never let an exception escape to the Qt event loop; callers that need the result
     // should use exportImageChecked().
     QString err;
-    if (!exportImageChecked(fileName, quality, transparent, &err))
+    if (!exportImageChecked(fileName, quality, transparent, &err, dpi))
         qWarning("Graph3D::exportImage(%s) failed: %s", qPrintable(fileName), qPrintable(err));
 }
 
 bool Graph3D::exportImageChecked(const QString &fileName, int quality, bool transparent,
-                                 QString *errOut)
+                                 QString *errOut, int dpi)
 {
     if (fileName.isEmpty()) {
         setGraph3DExportError(errOut, tr("Please provide a valid file name!"));
@@ -2298,7 +2298,7 @@ bool Graph3D::exportImageChecked(const QString &fileName, int quality, bool tran
     }
     try {
         int effDpi = 300;
-        QImage im = renderExportImage(&effDpi);
+        QImage im = renderExportImage(&effDpi, dpi);
         if (im.isNull()) {
             setGraph3DExportError(errOut, tr("Could not render the 3D plot."));
             return false;
@@ -2333,7 +2333,7 @@ bool Graph3D::exportImageChecked(const QString &fileName, int quality, bool tran
     return false;
 }
 
-QImage Graph3D::renderExportImage(int *effDpiOut)
+QImage Graph3D::renderExportImage(int *effDpiOut, int dpiOverride)
 {
     if (!sp)
         return QImage();
@@ -2342,7 +2342,10 @@ QImage Graph3D::renderExportImage(int *effDpiOut)
 
     const QSize origSize = sp->size();
     const int propDpi = property("export_dpi").toInt();
-    const int effDpi = (propDpi >= 72) ? qMin(propDpi, 600) : 300;
+    const int rawDpi = (dpiOverride > 0) ? dpiOverride : propDpi;
+    const int effDpi = (rawDpi >= 72)
+            ? qMin(rawDpi, 600)
+            : ((dpiOverride > 0) ? qBound(72, dpiOverride, 600) : 300);
     double renderScale = double(effDpi) / 96.0;
     const int maxDim = qMax(origSize.width(), origSize.height());
     if (maxDim * renderScale > 3200.0)
@@ -2553,7 +2556,10 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
     if (format == QLatin1String("PDF") || fileName.endsWith(".pdf", Qt::CaseInsensitive)) {
         const QSize origSize = sp->size();
         constexpr int kPdfRenderDpi = 300;
-        const double renderScale = double(kPdfRenderDpi) / 96.0;
+        double renderScale = double(kPdfRenderDpi) / 96.0;
+        const int maxDim = qMax(origSize.width(), origSize.height());
+        if (maxDim * renderScale > 3200.0)
+            renderScale = qMax(1.0, 3200.0 / double(maxDim));
         const QSize hiSize(qMax(200, qRound(origSize.width() * renderScale)),
                            qMax(200, qRound(origSize.height() * renderScale)));
 
@@ -2599,6 +2605,11 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
         sp->updateData();
         ignoreFonts = prevIgnoreFonts;
 
+        if (hiImg.isNull()) {
+            setGraph3DExportError(errOut, tr("Could not render the 3D plot."));
+            return false;
+        }
+
         const double pageW_pt = double(origSize.width()) * 72.0 / 96.0;
         const double pageH_pt = double(origSize.height()) * 72.0 / 96.0;
         QPdfWriter pdf(fileName);
@@ -2619,8 +2630,7 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
                                   | QPainter::SmoothPixmapTransform);
         const QRect pagePxRect(0, 0, pdf.width(), pdf.height());
         pdfPainter.fillRect(pagePxRect, bgCol.isValid() ? bgCol : QColor(Qt::white));
-        if (!hiImg.isNull())
-            pdfPainter.drawImage(pagePxRect, hiImg);
+        pdfPainter.drawImage(pagePxRect, hiImg);
         if (!savedTitle.trimmed().isEmpty()) {
             QFont vecTitleFont = normalizePlot3DFont(titleFnt, 14);
             pdfPainter.setFont(vecTitleFont);
@@ -2630,7 +2640,14 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
             pdfPainter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextSingleLine,
                                 savedTitle);
         }
-        pdfPainter.end();
+        const bool endOk = pdfPainter.end();
+        const QFileInfo pdfInfo(fileName);
+        if (!endOk || !pdfInfo.exists() || pdfInfo.size() <= 0) {
+            setGraph3DExportError(errOut,
+                                  tr("Could not write file %1.")
+                                          .arg(QDir::toNativeSeparators(fileName)));
+            return false;
+        }
         return true;
     }
 
@@ -2717,11 +2734,18 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
             }
             const QByteArray svgBytes = svg.toUtf8();
             const bool svgWritten = (outFile.write(svgBytes) == svgBytes.size());
+            const bool flushOk = outFile.flush();
+            const QFile::FileError ferr = outFile.error();
+            const QString ferrStr = outFile.errorString();
             outFile.close();
-            if (!svgWritten) {
-                setGraph3DExportError(errOut,
-                                      tr("Could not write file %1.")
-                                              .arg(QDir::toNativeSeparators(fileName)));
+            if (!svgWritten || !flushOk || ferr != QFile::NoError) {
+                setGraph3DExportError(
+                        errOut,
+                        ferrStr.isEmpty()
+                                ? tr("Could not write file %1.")
+                                          .arg(QDir::toNativeSeparators(fileName))
+                                : tr("Could not write file %1: %2")
+                                          .arg(QDir::toNativeSeparators(fileName), ferrStr));
                 return false;
             }
             return true;

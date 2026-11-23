@@ -27,6 +27,7 @@
 #include <qwt_plot_canvas.h>
 #include <qwt_plot_curve.h>
 
+#include <QApplication>
 #include <QByteArray>
 #include <QComboBox>
 #include <QDataStream>
@@ -421,6 +422,7 @@ bool RecalcManager::executeLinkById(int id)
         dst.lastError = ok ? QString() : copy.lastError;
         dst.resultTable = copy.resultTable;
         if (ok) {
+            dst.dirty = false;
             dst.srcCurveTitle = copy.srcCurveTitle;
             dst.outCurveTitle = copy.outCurveTitle;
             dst.extraCurveTitles = copy.extraCurveTitles;
@@ -445,18 +447,20 @@ bool RecalcManager::executeLinkById(int id)
 
 void RecalcManager::reportLinkFailure(const RecalcLink &link, const QString &message)
 {
-    const QString text = tr("Recalculation failed: %1").arg(message);
+    const QString text = tr("Recalc failed: %1").arg(message);
     ApplicationWindow *app = link.app ? link.app.data() : d_app.data();
     if (app) {
         if (QStatusBar *sb = app->statusBar())
             sb->showMessage(text, 10000);
     }
-    emit linkFailed(link.graph.data(), text);
+    emit linkFailed(link.graph.data(), message);
 }
 
 QString RecalcManager::lastError(Graph *g) const
 {
     for (const RecalcLink &lnk : d_links) {
+        if (lnk.graph.isNull() || lnk.srcTable.isNull())
+            continue;
         if (g && lnk.graph.data() != g)
             continue;
         if (!lnk.lastError.isEmpty())
@@ -791,9 +795,31 @@ bool RecalcManager::executeLink(RecalcLink &link)
                              .arg(srcCurve);
 
     auto runOp = [&]() -> bool {
+    struct NonInteractiveScopeGuard
+    {
+        QVariant prev;
+        bool active = false;
+        NonInteractiveScopeGuard()
+        {
+            if (qApp) {
+                prev = qApp->property("torigraph_noninteractive");
+                qApp->setProperty("torigraph_noninteractive", true);
+                active = true;
+            }
+        }
+        ~NonInteractiveScopeGuard()
+        {
+            if (active && qApp)
+                qApp->setProperty("torigraph_noninteractive", prev);
+        }
+        NonInteractiveScopeGuard(const NonInteractiveScopeGuard &) = delete;
+        NonInteractiveScopeGuard &operator=(const NonInteractiveScopeGuard &) = delete;
+    } nonInteractiveGuard;
+
     switch (link.op) {
     case OpLinearFit: {
         LinearFit fitter(app, g, srcCurve);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         int pts = link.params.value(QStringLiteral("points"),
@@ -814,6 +840,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
         int order = std::max(1, link.params.value(QStringLiteral("order"), 2).toInt());
         QString cTitle = srcCurve;
         PolynomialFit fitter(app, g, cTitle, order, false);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         int pts = std::max(2, link.params.value(QStringLiteral("points"), app->fitPoints).toInt());
@@ -830,6 +857,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
     case OpNonLinearBuiltIn: {
         NonLinearFit fitter(app, g, srcCurve);
+        fitter.setSilent(true);
         if (fitter.error())
             return false;
         QString modelName =
@@ -861,6 +889,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
         int profile = link.params.value(QStringLiteral("profile"), int(MultiPeakFit::Gauss)).toInt();
         int peaks = std::max(1, link.params.value(QStringLiteral("peaks"), 2).toInt());
         MultiPeakFit fitter(app, g, static_cast<MultiPeakFit::PeakProfile>(profile), peaks);
+        fitter.setSilent(true);
         fitter.enablePeakCurves(link.params.value(QStringLiteral("peakCurves"), false).toBool());
         if (!fitter.setDataFromCurve(srcCurve))
             return false;
@@ -882,6 +911,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
                              .value(QStringLiteral("method"), int(SmoothFilter::SavitzkyGolay))
                              .toInt();
         SmoothFilter sf(app, g, srcCurve, method);
+        sf.setSilent(true);
         if (sf.error())
             return false;
         int pts = std::max(3, link.params.value(QStringLiteral("points"), 5).toInt());
@@ -899,6 +929,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
     case OpDifferentiate: {
         Differentiation diff(app, g, srcCurve);
+        diff.setSilent(true);
         if (diff.error())
             return false;
         diff.run();
@@ -1324,6 +1355,20 @@ void RecalcManager::restoreLinkXmlForGraph(ApplicationWindow *app, Graph *g, con
             continue; // the source table is gone; nothing to link to
         Table *res = resTblName.isEmpty() ? nullptr : effApp->table(resTblName);
 
+        if (!srcTblName.isEmpty() && src->name() != srcTblName) {
+            const QString oldPrefix = srcTblName + QLatin1Char('_');
+            const QString newPrefix = src->name() + QLatin1Char('_');
+            auto remapPrefix = [&](QString &title) {
+                if (title.startsWith(oldPrefix))
+                    title = newPrefix + title.mid(oldPrefix.size());
+            };
+            remapPrefix(link.srcCurveTitle);
+            remapPrefix(link.outCurveTitle);
+            remapPrefix(link.desiredOutTitle);
+            for (QString &extra : link.extraCurveTitles)
+                remapPrefix(extra);
+        }
+
         link.app = effApp;
         link.graph = g;
         link.srcTable = src;
@@ -1332,8 +1377,14 @@ void RecalcManager::restoreLinkXmlForGraph(ApplicationWindow *app, Graph *g, con
         int found = -1;
         for (int i = 0; i < d_links.size(); ++i) {
             const RecalcLink &ex = d_links[i];
+            const bool sameOut =
+                    (link.outCurveTitle.isEmpty() && link.desiredOutTitle.isEmpty())
+                    || (!link.outCurveTitle.isEmpty() && ex.outCurveTitle == link.outCurveTitle)
+                    || (!link.desiredOutTitle.isEmpty()
+                        && (ex.desiredOutTitle == link.desiredOutTitle
+                            || ex.outCurveTitle == link.desiredOutTitle));
             if (ex.graph.data() == g && ex.op == link.op && ex.srcTable.data() == src
-                && ex.srcCurveTitle == link.srcCurveTitle) {
+                && ex.srcCurveTitle == link.srcCurveTitle && sameOut) {
                 found = i;
                 break;
             }

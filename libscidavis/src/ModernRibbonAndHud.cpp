@@ -2452,6 +2452,36 @@ void FocusTableDrawer::hideEvent(QHideEvent *event)
 // FocusCanvasHudOverlay
 // ============================================================================
 
+static void syncFocusHudOleButton(QToolButton *btnOle, ApplicationWindow *app)
+{
+    if (!btnOle)
+        return;
+    bool hasGraph = false;
+    QString tip;
+    if (app) {
+        if (QAction *aCopyOle = app->findChild<QAction *>(QStringLiteral("actionCopyGraphOle"))) {
+            hasGraph = aCopyOle->isEnabled();
+            tip = aCopyOle->toolTip();
+        } else {
+            QMdiSubWindow *sw = app->d_workspace.activeSubWindow();
+            hasGraph = (qobject_cast<MultiLayer *>(sw) != nullptr
+                        || qobject_cast<Graph3D *>(sw) != nullptr);
+        }
+    }
+    if (!hasGraph) {
+        const QString disabledHint = FocusCanvasHudOverlay::tr(
+                "Create or select a graph window first to copy for PowerPoint.");
+        if (tip.isEmpty() || !tip.contains(disabledHint)) {
+            tip = ToriGraphOleUi::copyForPowerPointToolTip() + QStringLiteral("\n")
+                    + disabledHint;
+        }
+    } else if (tip.isEmpty()) {
+        tip = ToriGraphOleUi::copyForPowerPointToolTip();
+    }
+    btnOle->setEnabled(hasGraph);
+    btnOle->setToolTip(tip);
+}
+
 FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbonBar *ribbon,
                                              QWidget *viewportParent)
     : QFrame(viewportParent), d_app(app), d_ribbon(ribbon), d_viewport(viewportParent)
@@ -2473,10 +2503,13 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  font-size: 11pt;"
             "  font-weight: 600;"
             "}"
-            "QFrame#FocusCanvasDarkPill QToolButton:hover {"
+            "QFrame#FocusCanvasDarkPill QToolButton:hover:enabled {"
             "  background-color: rgba(59, 130, 246, 75);"
             "  border: 1px solid rgba(96, 165, 250, 140);"
             "  color: #FFFFFF;"
+            "}"
+            "QFrame#FocusCanvasDarkPill QToolButton:disabled {"
+            "  color: rgba(248, 250, 252, 110);"
             "}"
             "QFrame#FocusCanvasDarkPill QToolButton::menu-indicator {"
             "  image: none;"
@@ -2822,7 +2855,7 @@ void FocusCanvasHudOverlay::retranslateUi()
     }
     if (d_btn_ole) {
         d_btn_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
-        d_btn_ole->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
+        syncFocusHudOleButton(d_btn_ole, d_app.data());
     }
     if (d_btn_palette) {
         d_btn_palette->setText(tr("Search"));
@@ -2909,6 +2942,8 @@ void FocusCanvasHudOverlay::setOverlayActive(bool active)
     if (d_table_drawer && isTableDrawerVisible())
         d_table_drawer->refreshTableList(true);
 
+    syncFocusHudOleButton(d_btn_ole, d_app.data());
+
     show();
     if (d_btn_worksheet)
         d_btn_worksheet->show();
@@ -2989,6 +3024,7 @@ void FocusCanvasHudOverlay::refreshActiveContext()
 {
     if (d_shutting_down)
         return;
+    syncFocusHudOleButton(d_btn_ole, d_app.data());
     if (d_active) {
         if (isTableDrawerVisible() && d_table_drawer)
             d_table_drawer->refreshTableList(true);
@@ -3759,7 +3795,7 @@ void ModernRibbonBar::updateHeaderResponsiveness()
         d_context_pill->setVisible(chosen.showCtx);
 
     if (d_tab_bar) {
-        const int maxAvailTabW = qMax(360, qMax(w - 260, w - chosenRightW - 18));
+        const int maxAvailTabW = qMax(80, w - chosenRightW - 18);
         const int wantMinTabW = qMin(tabsNeededW + 10, maxAvailTabW);
         if (d_tab_bar->minimumWidth() != wantMinTabW)
             d_tab_bar->setMinimumWidth(wantMinTabW);
@@ -6654,6 +6690,8 @@ void ModernRibbonBar::syncActionBoundButtons()
             QSignalBlocker blocker(btn);
             btn->setChecked(a->isChecked());
         }
+        if (!a->toolTip().isEmpty() && btn->toolTip() != a->toolTip())
+            btn->setToolTip(a->toolTip());
     }
 }
 
@@ -6910,6 +6948,8 @@ void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
         if (bb.button->property("_tg_advanced_domain").toBool())
             bb.button->setVisible(visible);
         if (bb.tooltipFn) {
+            if (bb.button == d_btn_export_copy_ole && !bb.button->isEnabled())
+                continue;
             QString tip = bb.tooltipFn();
             if (!bb.shortcutActionName.isEmpty() && d_app) {
                 if (QAction *a = d_app->findChild<QAction *>(bb.shortcutActionName)) {
@@ -6921,6 +6961,7 @@ void ModernRibbonBar::setAdvancedDomainFeaturesVisible(bool visible)
             bb.button->setToolTip(tip);
         }
     }
+    syncActionBoundButtons();
     updateGroupCollapse();
 }
 

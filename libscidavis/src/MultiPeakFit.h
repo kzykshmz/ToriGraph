@@ -33,6 +33,7 @@
 #include <QPointF>
 #include <QStringList>
 #include <QVector>
+#include <limits>
 #include "Fit.h"
 
 class MultiPeakFit : public Fit
@@ -69,10 +70,10 @@ public:
         double area = 0.0;
         double areaPercent = 0.0;
         double baseline = 0.0;
-        double centerSE = 0.0;
-        double fwhmSE = 0.0;
-        double heightSE = 0.0;
-        double areaSE = 0.0;
+        double centerSE = std::numeric_limits<double>::quiet_NaN();
+        double fwhmSE = std::numeric_limits<double>::quiet_NaN();
+        double heightSE = std::numeric_limits<double>::quiet_NaN();
+        double areaSE = std::numeric_limits<double>::quiet_NaN();
     };
 
     MultiPeakFit(ApplicationWindow *parent, Graph *g = 0, PeakProfile profile = Gauss,

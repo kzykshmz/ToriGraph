@@ -24,6 +24,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
+from .client import BatchReadError
+
 if TYPE_CHECKING:
     from .client import GraphProxy, Session
 
@@ -1175,6 +1177,8 @@ def _parse_scale(scale: Optional[Union[float, int, str]]) -> Optional[float]:
 def _graph_info_safe(session: "Session", graph_name: str) -> Optional[Mapping[str, Any]]:
     try:
         info = session.call("graph.get_info", graph=graph_name)
+    except BatchReadError:
+        raise
     except Exception:  # Graph3D windows and older servers have no 2D axis info
         return None
     return info if isinstance(info, Mapping) else None
@@ -1184,9 +1188,10 @@ def _graph_slide_scale(session: "Session", graph_name: str, info: Optional[Mappi
     """Placement factor (e.g. 1.4) of a graph that already carries the lab slide preset.
 
     Sources, in order: the percentage ToriGraph reports (``slide_paste_percent``), the preset
-    id it reports (``applied_style_preset`` / ``style_preset``), and the presets this SDK
-    session applied itself (``Session._slide_preset_graphs``, filled by
-    ``graph.apply_style_preset``).  ``None`` means "no slide preset known".
+    id it reports (``applied_style_preset`` / ``style_preset``), and — only when ``info``
+    lacks the slide-preset fields (older server) — the presets this SDK session applied itself
+    (``Session._slide_preset_graphs``, filled by ``graph.apply_style_preset``).
+    ``None`` means "no slide preset known".
     """
     if info is not None:
         pct = info.get("slide_paste_percent")
@@ -1195,6 +1200,8 @@ def _graph_slide_scale(session: "Session", graph_name: str, info: Optional[Mappi
         applied = info.get("applied_style_preset") or info.get("style_preset")
         if _is_lab_slide_preset(applied):
             return LAB_SLIDE_PLACEMENT_SCALE
+        if any(k in info for k in ("slide_paste_percent", "applied_style_preset", "style_preset")):
+            return None
     if graph_name in (getattr(session, "_slide_preset_graphs", None) or ()):
         return LAB_SLIDE_PLACEMENT_SCALE
     return None
@@ -1454,6 +1461,8 @@ def export_graphs_to_pptx(
     # Resolve target graph names
     try:
         _windows = list(session.list_windows())
+    except BatchReadError:
+        raise
     except Exception:  # very old servers
         _windows = []
     graph3d_names = {str(w["name"]) for w in _windows if w.get("type") == "Graph3D" and w.get("name")}

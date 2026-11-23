@@ -12,6 +12,7 @@ import pytest
 
 import torigraph as tg
 import torigraph.client as tg_client
+import torigraph.pptx as tg_pptx
 from torigraph.client import (
     BatchReadError,
     GraphProxy,
@@ -324,3 +325,229 @@ def test_timeout_vs_disconnect_and_reconnect(monkeypatch: pytest.MonkeyPatch) ->
     custom = Session(MockTransport([]))
     with pytest.raises(ToriGraphDisconnectedError, match="custom transport"):
         custom.reconnect()
+
+
+def test_batch_read_error_on_new_readonly_rpcs_and_pptx(tmp_path: Path) -> None:
+    """BatchReadError must fire on row_stats, determinant, check_updates, and pptx reads."""
+    t = MockTransport([])
+    s = Session(t)
+    tbl = s.table("Data1")
+    mat = s.matrix("Matrix1")
+
+    with s.batch():
+        with pytest.raises(BatchReadError):
+            tbl.row_stats()
+        with pytest.raises(BatchReadError):
+            mat.determinant()
+        with pytest.raises(BatchReadError):
+            s.check_updates()
+        with pytest.raises(BatchReadError):
+            tg_pptx._graph_info_safe(s, "Graph1")
+        with pytest.raises(BatchReadError):
+            tg_pptx.export_graphs_to_pptx(s, tmp_path / "batch_guard.pptx", ["Graph1"])
+
+    assert s._active_batch is None
+    assert t.sent == []
+
+
+def test_batch_nested_contexts_and_exception_unwinding() -> None:
+    """Nested with app.batch(): restores outer context on exit and on exceptions."""
+    t = MockTransport(
+        [
+            _ok({"ok": True, "completed": 1, "total": 1, "rolled_back": False, "results": [{"ok": True}]}),
+            _ok({"ok": True, "completed": 2, "total": 2, "rolled_back": False, "results": [{"ok": True}, {"ok": True}]}),
+            _ok({"pong": True}),
+        ]
+    )
+    s = Session(t)
+
+    with s.batch() as outer:
+        s.table("T1").set_cell(0, 0, 1.0)
+        with s.batch() as inner:
+            s.table("T1").set_cell(1, 0, 2.0)
+            assert s._active_batch is inner
+        assert s._active_batch is outer
+        s.table("T1").set_cell(2, 0, 3.0)
+
+    assert s._active_batch is None
+    assert len(t.sent) == 2
+    assert len(t.sent[0][0]["params"]["commands"]) == 1
+    assert len(t.sent[1][0]["params"]["commands"]) == 2
+
+    with pytest.raises(BatchReadError):
+        with s.batch() as outer2:
+            s.table("T1").set_cell(0, 0, 10.0)
+            with s.batch():
+                s.table("T1").set_cell(1, 0, 20.0)
+                s.list_windows()
+            assert False, "unreachable"  # pragma: no cover
+
+    assert s._active_batch is None
+    assert s.ping()["pong"] is True
+
+
+def test_late_response_discarded_and_future_id_rejected() -> None:
+    """Stale responses with id < req_id are discarded; higher unmatched ids invalidate."""
+    t = MockTransport(
+        [
+            {"jsonrpc": "2.0", "id": 0, "result": {"stale": True}},
+            _ok({"pong": True}),
+            {"jsonrpc": "2.0", "id": 999, "result": {"wrong_future": True}},
+        ]
+    )
+    s = Session(t)
+
+    res = s.ping()
+    assert res == {"pong": True}
+    assert s.discarded_responses == 1
+    assert s.usable
+
+    with pytest.raises(TransportError, match="while waiting for id"):
+        s.ping()
+    assert not s.usable
+
+
+def test_reconnect_failure_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reconnect() handles failed transport open, dead subprocess, and closed sessions."""
+    t1 = MockTransport([_ok({"pong": True})])
+    calls = 0
+
+    def fake_connect(ep: str, timeout: float = 30.0, token: Optional[str] = None) -> MockTransport:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return t1
+        raise TransportError("connection refused")
+
+    monkeypatch.setattr(tg_client, "_parse_and_connect_transport", fake_connect)
+    s = tg.connect("pipe://test_fail_reconnect", check_version=False)
+
+    with pytest.raises(ToriGraphDisconnectedError, match="Reconnect to pipe://test_fail_reconnect failed"):
+        s.reconnect()
+
+    class DeadProc:
+        returncode = 17
+
+        def poll(self) -> int:
+            return self.returncode
+
+    s._process = DeadProc()  # type: ignore[assignment]
+    with pytest.raises(ToriGraphDisconnectedError, match="exited \\(code 17\\)"):
+        s.reconnect()
+
+    s._process = None
+    s.close()
+    with pytest.raises(ToriGraphDisconnectedError, match="already closed"):
+        s.reconnect()
+
+
+def test_reconnect_reresolves_tcp_auth_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reconnecting a tokenless TCP session re-reads the updated token file instead of reusing stale auth."""
+    monkeypatch.delenv("TORIGRAPH_RPC_TOKEN", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(tg_client.os, "name", "nt")
+    token_dir = tmp_path / "local" / "ToriGraph" / "rpc"
+    token_dir.mkdir(parents=True)
+    token_file = token_dir / "tcp_45123.token"
+    token_file.write_text("old_server_token_aaa", encoding="utf-8")
+
+    observed_tokens: List[Optional[str]] = []
+    t1 = MockTransport([_ok({"pong": True})])
+    t2 = MockTransport([_ok({"pong": True}), _ok({"pong": True})])
+    transports = deque([t1, t2])
+
+    def fake_parse(ep: str, timeout: float = 30.0, token: Optional[str] = None) -> MockTransport:
+        # Simulate _TcpTransport resolving auth fresh via _resolve_tcp_auth_token when token is None
+        host, port_s = ep.replace("tcp://", "").split(":")
+        resolved = _resolve_tcp_auth_token(host, int(port_s), explicit_token=token)
+        observed_tokens.append(resolved)
+        return transports.popleft()
+
+    monkeypatch.setattr(tg_client, "_parse_and_connect_transport", fake_parse)
+    s = tg.connect("tcp://127.0.0.1:45123", check_version=False)
+    assert observed_tokens == ["old_server_token_aaa"]
+    assert s._reconnect_info is not None and s._reconnect_info[2] is None
+
+    # Server restarts and writes a brand new random token file
+    token_file.write_text("new_server_token_bbb", encoding="utf-8")
+    s.reconnect()
+    assert observed_tokens == ["old_server_token_aaa", "new_server_token_bbb"]
+    assert s.ping()["pong"] is True
+
+
+def test_rpc_busy_32003_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """-32003 (re-entrant busy) retries up to 3 times with 0.05*(attempt+1) backoff."""
+    sleeps: List[float] = []
+    monkeypatch.setattr(tg_client.time, "sleep", lambda sec: sleeps.append(float(sec)))
+
+    def busy(req: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": req["id"],
+            "error": {"code": -32003, "message": "Server busy (re-entrant RPC)"},
+        }
+
+    # 1. Succeeds on 4th attempt (after 3 retries)
+    t_ok = MockTransport([busy, busy, busy, _ok({"pong": True})])
+    s_ok = Session(t_ok)
+    assert s_ok.ping() == {"pong": True}
+    assert len(t_ok.sent) == 4
+    assert sleeps == pytest.approx([0.05, 0.10, 0.15])
+
+    # 2. Fails after exhausting 3 retries (4 attempts total)
+    sleeps.clear()
+    t_fail = MockTransport([busy, busy, busy, busy])
+    s_fail = Session(t_fail)
+    with pytest.raises(RpcError) as ei_busy:
+        s_fail.ping()
+    assert ei_busy.value.code == -32003
+    assert len(t_fail.sent) == 4
+    assert sleeps == pytest.approx([0.05, 0.10, 0.15])
+
+    # 3. Non--32003 RPC error raises immediately with zero retries
+    sleeps.clear()
+    t_other = MockTransport(
+        [
+            lambda req: {
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "error": {"code": -32602, "message": "Invalid params"},
+            }
+        ]
+    )
+    s_other = Session(t_other)
+    with pytest.raises(RpcError) as ei_other:
+        s_other.ping()
+    assert ei_other.value.code == -32602
+    assert len(t_other.sent) == 1
+    assert sleeps == []
+
+
+def test_pptx_slide_scale_server_fields_and_close_discard() -> None:
+    """New-server applied_style_preset=='' overrides fallback; old servers still fall back."""
+    t = MockTransport(
+        [
+            _ok({"graph": "Graph1", "preset": "lab_slide_83mm"}),
+            _ok({"closed": True, "name": "Graph1"}),
+        ]
+    )
+    s = Session(t)
+    g = GraphProxy(s, "Graph1")
+    g.lab_slide_style()
+    assert "Graph1" in s._slide_preset_graphs
+
+    # New server recreated Graph1 without preset -> applied_style_preset='' present -> None
+    assert (
+        tg_pptx._graph_slide_scale(
+            s, "Graph1", {"name": "Graph1", "applied_style_preset": "", "style_preset": ""}
+        )
+        is None
+    )
+    # Old server response lacks all slide-preset fields -> session fallback applies
+    assert tg_pptx._graph_slide_scale(s, "Graph1", {"name": "Graph1"}) == pytest.approx(1.4)
+
+    s.close_window("Graph1")
+    assert "Graph1" not in s._slide_preset_graphs
+    assert tg_pptx._graph_slide_scale(s, "Graph1", {"name": "Graph1"}) is None

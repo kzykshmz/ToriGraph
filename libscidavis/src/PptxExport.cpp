@@ -1764,7 +1764,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         auto *item = new QListWidgetItem(w->name(), list);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(w == active ? Qt::Checked : Qt::Unchecked);
-        item->setData(Qt::UserRole, QVariant::fromValue(static_cast<QObject *>(w)));
+        item->setData(Qt::UserRole, QVariant::fromValue(QPointer<QObject>(w)));
         item->setData(Qt::UserRole + 1, w->name());
     }
     list->setMaximumHeight(120);
@@ -1839,7 +1839,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
                 if (list->item(i)->checkState() != Qt::Checked)
                     continue;
                 if (auto *mw = qobject_cast<MyWidget *>(
-                            list->item(i)->data(Qt::UserRole).value<QObject *>())) {
+                            list->item(i)->data(Qt::UserRole).value<QPointer<QObject>>().data())) {
                     targets << mw;
                 }
             }
@@ -2138,10 +2138,13 @@ bool readSendDialog(QDialog *dialog, ApplicationWindow *app, QList<MyWidget *> *
         for (int i = 0; i < list->count(); ++i) {
             if (list->item(i)->checkState() != Qt::Checked)
                 continue;
-            if (auto *mw = qobject_cast<MyWidget *>(
-                        list->item(i)->data(Qt::UserRole).value<QObject *>())) {
-                if (graphs.contains(mw) && !chosen.contains(mw))
-                    chosen << mw;
+            const QVariant roleData = list->item(i)->data(Qt::UserRole);
+            if (roleData.userType() == qMetaTypeId<QPointer<QObject>>()) {
+                if (auto *mw = qobject_cast<MyWidget *>(
+                            roleData.value<QPointer<QObject>>().data())) {
+                    if (graphs.contains(mw) && !chosen.contains(mw))
+                        chosen << mw;
+                }
                 continue;
             }
             const QString fallbackName = list->item(i)->data(Qt::UserRole + 1).isValid()

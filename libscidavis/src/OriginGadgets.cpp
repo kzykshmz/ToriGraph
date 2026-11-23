@@ -537,6 +537,13 @@ static QString quickFitConvergenceMessage(int convState)
             : QObject::tr("Not converged (no further improvement; check the initial values)");
 }
 
+static double clampNonZeroSignPreserving(double v, double floorAbs = 1e-12)
+{
+    if (!std::isfinite(v))
+        return floorAbs;
+    return (std::fabs(v) < floorAbs) ? ((v >= 0.0) ? floorAbs : -floorAbs) : v;
+}
+
 // B4-6 / C4-7: shared Boltzmann ROI fit used by both QuickFit(FitBoltzmann) and QuickSigmoidal.
 struct BoltzmannFitOutput
 {
@@ -567,6 +574,7 @@ static BoltzmannFitOutput fitBoltzmannRoiData(const std::vector<double> &xv,
     const double dxGuess = std::max(1e-9, (xv.back() - xv.front()) / 8.0);
     out.params = { a1Guess, a2Guess, x0Guess, dxGuess };
     runLmSolver(5, xv, yv, xv.front(), out.params, &out.se, &out.convState);
+    out.params[3] = clampNonZeroSignPreserving(out.params[3]);
     std::vector<double> yHat(n);
     for (size_t i = 0; i < n; ++i) {
         const double u = std::clamp((xv[i] - out.params[2]) / out.params[3], -500.0, 500.0);
@@ -2393,8 +2401,9 @@ void RoiGadgetTool::recalculate()
             std::vector<double> p = { yv.back(), yv.front() - yv.back(), span / 3.0 };
             std::vector<double> se;
             runLmSolver(4, xv, yv, xRef, p, &se, &convState);
+            const double t1Safe = clampNonZeroSignPreserving(p[2]);
             for (size_t i = 0; i < n; ++i) {
-                const double u = std::clamp((xv[i] - xRef) / p[2], -500.0, 500.0);
+                const double u = std::clamp((xv[i] - xRef) / t1Safe, -500.0, 500.0);
                 yHat[i] = p[0] + p[1] * std::exp(-u);
             }
             const double r2 = computeR2(yv, yHat);
@@ -2418,7 +2427,7 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("y0_SE"), seY0);
             for (int k = 0; k < nGrid; ++k) {
                 const double gx = gridX(k);
-                const double u = std::clamp((gx - xRef) / p[2], -500.0, 500.0);
+                const double u = std::clamp((gx - xRef) / t1Safe, -500.0, 500.0);
                 appendCurvePt(gx, p[0] + p[1] * std::exp(-u));
             }
         } else if (d_fit_model == FitBoltzmann && n >= 4) {
@@ -2427,6 +2436,7 @@ void RoiGadgetTool::recalculate()
             const auto &se = bf.se;
             convState = bf.convState;
             const double r2 = bf.r2;
+            const double dxSafe = clampNonZeroSignPreserving(p[3]);
             const double seX0 = (se.size() > 2) ? se[2] : 0.0;
             const double seDx = (se.size() > 3) ? se[3] : 0.0;
             const double seA1 = (se.size() > 0) ? se[0] : 0.0;
@@ -2450,7 +2460,7 @@ void RoiGadgetTool::recalculate()
                              << qMakePair(QString("A2_SE"), seA2);
             for (int k = 0; k < nGrid; ++k) {
                 const double gx = gridX(k);
-                const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
+                const double u = std::clamp((gx - p[2]) / dxSafe, -500.0, 500.0);
                 appendCurvePt(gx, p[1] + (p[0] - p[1]) / (1.0 + std::exp(u)));
             }
         } else {
@@ -2590,6 +2600,7 @@ void RoiGadgetTool::recalculate()
             const bool logX = isAxisLog10(plotPtr, curve->xAxis()) && roi.left() > 0.0
                     && roi.right() > roi.left();
             const bool logY = isAxisLog10(plotPtr, curve->yAxis());
+            const double dxSafe = clampNonZeroSignPreserving(p[3]);
             const int nGrid = 120;
             for (int k = 0; k < nGrid; ++k) {
                 const double t = double(k) / double(nGrid - 1);
@@ -2598,11 +2609,12 @@ void RoiGadgetTool::recalculate()
                                    std::log10(roi.left())
                                            + t * (std::log10(roi.right()) - std::log10(roi.left())))
                         : (roi.left() + roi.width() * t);
-                const double u = std::clamp((gx - p[2]) / p[3], -500.0, 500.0);
+                const double u = std::clamp((gx - p[2]) / dxSafe, -500.0, 500.0);
                 double gy = p[1] + (p[0] - p[1]) / (1.0 + std::exp(u));
                 if (logY && gy <= 0.0)
                     gy = std::max(1e-100, minY > 0.0 ? minY * 0.1 : 1e-12);
-                d_overlay_curve_pts.append(QPointF(gx, gy));
+                if (std::isfinite(gx) && std::isfinite(gy))
+                    d_overlay_curve_pts.append(QPointF(gx, gy));
             }
 
             d_output_metrics << qMakePair(QString("EC50"), p[2])
@@ -2838,8 +2850,10 @@ void RoiGadgetTool::recalculate()
                 }
                 midY = yv[bestIdx];
             }
-            for (size_t i = 0; i < n; ++i)
-                d_overlay_curve_pts.append(QPointF(xv[i], yv[i]));
+            for (size_t i = 0; i < n; ++i) {
+                if (std::isfinite(xv[i]) && std::isfinite(yv[i]))
+                    d_overlay_curve_pts.append(QPointF(xv[i], yv[i]));
+            }
         } else {
             // Deduplicate strictly increasing X for spline/linear interpolation
             std::vector<double> ux, uy;
@@ -2867,7 +2881,9 @@ void RoiGadgetTool::recalculate()
                 for (int k = 0; k < nGrid; ++k) {
                     const double gx =
                             ux.front() + (ux.back() - ux.front()) * double(k) / double(nGrid - 1);
-                    d_overlay_curve_pts.append(QPointF(gx, gsl_spline_eval(spline, gx, acc)));
+                    const double gy = gsl_spline_eval(spline, gx, acc);
+                    if (std::isfinite(gx) && std::isfinite(gy))
+                        d_overlay_curve_pts.append(QPointF(gx, gy));
                 }
                 gsl_spline_free(spline);
                 gsl_interp_accel_free(acc);
@@ -2879,8 +2895,10 @@ void RoiGadgetTool::recalculate()
                 const double dx = ux[idx + 1] - ux[idx];
                 slope = (std::fabs(dx) > 1e-15) ? ((uy[idx + 1] - uy[idx]) / dx) : 0.0;
                 midY = uy[idx] + slope * (xMid - ux[idx]);
-                for (size_t i = 0; i < ux.size(); ++i)
-                    d_overlay_curve_pts.append(QPointF(ux[i], uy[i]));
+                for (size_t i = 0; i < ux.size(); ++i) {
+                    if (std::isfinite(ux[i]) && std::isfinite(uy[i]))
+                        d_overlay_curve_pts.append(QPointF(ux[i], uy[i]));
+                }
             }
         }
 

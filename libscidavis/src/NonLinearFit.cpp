@@ -1423,7 +1423,7 @@ struct GlobalFitContext
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
             double dpdu = sl.dPdU(uk);
-            double h = std::max(1e-7, 1e-6 * std::abs(pk));
+            double h = std::max(1e-12, 1e-6 * std::abs(pk));
 
             int mStart = (sl.curveIdx < 0) ? 0 : sl.curveIdx;
             int mEnd = (sl.curveIdx < 0) ? (ctx->M - 1) : sl.curveIdx;
@@ -1584,7 +1584,7 @@ struct ImplicitODRContext
             double uk = gsl_vector_get(u, k);
             double pk = sl.mapUtoP(uk);
             double dpdu = sl.dPdU(uk);
-            double h = std::max(1e-7, 1e-5 * std::abs(pk));
+            double h = std::max(1e-12, 1e-5 * std::abs(pk));
             const size_t pIdx = size_t(sl.paramIdx);
             ctx->workPPlus[pIdx] = pk + h;
             ctx->workPMinus[pIdx] = pk - h;
@@ -1669,6 +1669,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     size_t n_total = 0;
     size_t n_active_total = 0;
     bool anyAssociatedErrors = false;
+    bool allAssociatedErrors = (M > 0);
     for (int m = 0; m < M; ++m) {
         NonLinearFit loader(app, d_graph);
         loader.d_silent = true;
@@ -1686,6 +1687,8 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 : loader.d_y_errors;
         if (loader.d_y_error_source != UnknownErrors)
             anyAssociatedErrors = true;
+        else
+            allAssociatedErrors = false;
         for (double s : ctx.curvesSigma[size_t(m)]) {
             if (std::isfinite(s) && s > 0.0 && s < 1e140)
                 ++n_active_total;
@@ -1897,17 +1900,22 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
 #else
         gsl_multifit_fdfsolver_jac(s, J_u);
 #endif
+        std::vector<bool> slotPinned(n_free, false);
         for (size_t k = 0; k < n_free; ++k) {
             double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
             if (std::abs(dpdu) > 1e-15) {
                 for (size_t i = 0; i < n_total; ++i)
                     gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            } else {
+                slotPinned[k] = true;
+                for (size_t i = 0; i < n_total; ++i)
+                    gsl_matrix_set(J_u, i, k, 0.0);
             }
         }
         gsl_multifit_covar(J_u, 0.0, cov_p);
 
         const int globalDof = int(n_active_total) - int(n_free);
-        const bool scaleByResidual = (!anyAssociatedErrors || d_scale_errors);
+        const bool scaleByResidual = (!allAssociatedErrors || d_scale_errors);
         const double scale = scaleByResidual
                 ? ((globalDof > 0) ? (rss_total / double(globalDof)) : nanVal)
                 : 1.0;
@@ -1915,7 +1923,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
         for (size_t k = 0; k < n_free; ++k) {
             const auto &sl = ctx.freeSlots[k];
             const double rawVar = gsl_matrix_get(cov_p, k, k);
-            const double se = (std::isfinite(scale) && std::isfinite(rawVar))
+            const double se = (!slotPinned[k] && std::isfinite(scale) && std::isfinite(rawVar))
                     ? std::sqrt(std::max(0.0, scale * rawVar))
                     : nanVal;
             if (sl.curveIdx < 0) {
@@ -1937,7 +1945,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 if (sb.curveIdx > 0)
                     continue;
                 curve0UnscaledCov[size_t(sa.paramIdx) * size_t(P) + size_t(sb.paramIdx)] =
-                        gsl_matrix_get(cov_p, a, b);
+                        (a == b && slotPinned[a]) ? nanVal : gsl_matrix_get(cov_p, a, b);
             }
         }
 
@@ -1961,24 +1969,51 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     }
 
     // Compute per-curve R^2 and global R^2, and plot fitted curves on d_graph
-    std::vector<double> curveR2(size_t(M), 1.0);
+    std::vector<double> curveR2(size_t(M), nanVal);
     double tss_total = 0.0;
     double unwt_rss_total = 0.0;
+    size_t r2ActiveTotal = 0;
+    bool allEvalOk = true;
     for (int m = 0; m < M; ++m) {
         std::vector<double> yhat;
-        ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat);
         const auto &yv = ctx.curvesY[size_t(m)];
-        double meanY = std::accumulate(yv.begin(), yv.end(), 0.0) / double(yv.size());
-        double tss_m = 0.0, rss_m = 0.0;
-        for (size_t i = 0; i < yv.size(); ++i) {
-            double dt = yv[i] - meanY;
-            double dr = yv[i] - yhat[i];
-            tss_m += dt * dt;
-            rss_m += dr * dr;
+        const auto &sv = ctx.curvesSigma[size_t(m)];
+        const bool evalOk = ctx.evalCurveY(fittedParams[size_t(m)], ctx.curvesX[size_t(m)], yhat)
+                && yhat.size() == yv.size() && sv.size() == yv.size();
+        if (evalOk) {
+            double sumY = 0.0;
+            size_t nActiveM = 0;
+            for (size_t i = 0; i < yv.size(); ++i) {
+                const double s = sv[i];
+                if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                    continue;
+                sumY += yv[i];
+                ++nActiveM;
+            }
+            if (nActiveM > 0) {
+                const double meanY = sumY / double(nActiveM);
+                double tss_m = 0.0, rss_m = 0.0;
+                for (size_t i = 0; i < yv.size(); ++i) {
+                    const double s = sv[i];
+                    if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                        continue;
+                    double dt = yv[i] - meanY;
+                    double dr = yv[i] - yhat[i];
+                    tss_m += dt * dt;
+                    rss_m += dr * dr;
+                }
+                curveR2[size_t(m)] = (tss_m > 1e-30)
+                        ? (1.0 - rss_m / tss_m)
+                        : ((rss_m <= 1e-30) ? 1.0 : nanVal);
+                tss_total += tss_m;
+                unwt_rss_total += rss_m;
+                r2ActiveTotal += nActiveM;
+            } else {
+                allEvalOk = false;
+            }
+        } else {
+            allEvalOk = false;
         }
-        curveR2[size_t(m)] = (tss_m > 1e-30) ? (1.0 - rss_m / tss_m) : 1.0;
-        tss_total += tss_m;
-        unwt_rss_total += rss_m;
 
         if (!d_suppress_curve_output && d_graph && !ctx.curvesX[size_t(m)].empty()) {
             int nGrid = std::max(2, d_points);
@@ -1990,31 +2025,35 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             double step = (x1 - x0) / double(nGrid - 1);
             for (int i = 0; i < nGrid; ++i)
                 xg[size_t(i)] = x0 + i * step;
-            ctx.evalCurveY(fittedParams[size_t(m)], xg, yg);
-
-            QString fitCurveName = d_graph->generateFunctionName(
-                    QString("GlobalFit_%1").arg(curveTitles[m]));
-            FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, fitCurveName);
-            fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
-            fc->setData(xg.data(), yg.data(), nGrid);
-            fc->setRange(x0, x1);
-            fc->setFormula(exprLine);
-            d_graph->insertPlotItem(fc, Graph::Line);
-            d_graph->addFitCurve(fc);
+            if (ctx.evalCurveY(fittedParams[size_t(m)], xg, yg) && yg.size() == size_t(nGrid)) {
+                QString fitCurveName = d_graph->generateFunctionName(
+                        QString("GlobalFit_%1").arg(curveTitles[m]));
+                FunctionCurve *fc = new FunctionCurve(app, FunctionCurve::Normal, fitCurveName);
+                fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
+                fc->setData(xg.data(), yg.data(), nGrid);
+                fc->setRange(x0, x1);
+                fc->setFormula(exprLine);
+                d_graph->insertPlotItem(fc, Graph::Line);
+                d_graph->addFitCurve(fc);
+            }
         }
     }
     if (!d_suppress_curve_output && d_graph)
         d_graph->replot();
 
-    double globalR2 = (tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total) : 1.0;
+    double globalR2 = (allEvalOk && r2ActiveTotal > 0)
+            ? ((tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total)
+                                   : ((unwt_rss_total <= 1e-30) ? 1.0 : nanVal))
+            : nanVal;
 
     // Store curve 0 state & global diagnostics (total active points, global free parameters,
     // global weighted chi^2, global unweighted RSS, and UNSCALED covariance) on this instance.
     setDataFromCurve(curveTitles[0], d_graph);
-    d_y_error_source = anyAssociatedErrors ? AssociatedErrors : UnknownErrors;
+    d_y_error_source = allAssociatedErrors ? AssociatedErrors : UnknownErrors;
     d_results = fittedParams[0];
     d_result_errors.clear();
-    ctx.evalCurveY(d_results, d_x, d_y_fit);
+    if (!ctx.evalCurveY(d_results, d_x, d_y_fit) || d_y_fit.size() != d_x.size())
+        d_y_fit.assign(d_x.size(), nanVal);
     chi_2 = rss_total;
     d_has_custom_rss = true;
     d_custom_rss = unwt_rss_total;
@@ -2059,8 +2098,14 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                         tbl->column(4)->setValueAt(rowIdx, errVal);
                     else
                         tbl->column(4)->setInvalid(rowIdx, true);
-                    tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
-                    tbl->column(6)->setValueAt(rowIdx, globalR2);
+                    if (std::isfinite(curveR2[size_t(m)]))
+                        tbl->column(5)->setValueAt(rowIdx, curveR2[size_t(m)]);
+                    else
+                        tbl->column(5)->setInvalid(rowIdx, true);
+                    if (std::isfinite(globalR2))
+                        tbl->column(6)->setValueAt(rowIdx, globalR2);
+                    else
+                        tbl->column(6)->setInvalid(rowIdx, true);
                     ++rowIdx;
                 }
             }
@@ -2327,11 +2372,16 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
 #else
         gsl_multifit_fdfsolver_jac(s, J_u);
 #endif
+        std::vector<bool> slotPinned(n_free, false);
         for (size_t k = 0; k < n_free; ++k) {
             double dpdu = ctx.freeSlots[k].dPdU(gsl_vector_get(s->x, k));
             if (std::abs(dpdu) > 1e-15) {
                 for (size_t i = 0; i < n; ++i)
                     gsl_matrix_set(J_u, i, k, gsl_matrix_get(J_u, i, k) / dpdu);
+            } else {
+                slotPinned[k] = true;
+                for (size_t i = 0; i < n; ++i)
+                    gsl_matrix_set(J_u, i, k, 0.0);
             }
         }
         gsl_multifit_covar(J_u, 0.0, cov_free);
@@ -2342,7 +2392,9 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                 int ja = ctx.freeSlots[a].paramIdx;
                 for (size_t b = 0; b < n_free; ++b) {
                     int jb = ctx.freeSlots[b].paramIdx;
-                    gsl_matrix_set(covar, ja, jb, gsl_matrix_get(cov_free, a, b));
+                    gsl_matrix_set(covar, ja, jb,
+                                   (a == b && slotPinned[a]) ? nanVal
+                                                             : gsl_matrix_get(cov_free, a, b));
                 }
             }
         }

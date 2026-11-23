@@ -208,7 +208,10 @@ wheel_meta = (
 
 records = []
 with zipfile.ZipFile(whl_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    for p in sorted(pkg_dir.rglob("*.py")):
+    for p in sorted(
+        p for p in pkg_dir.rglob("*")
+        if p.is_file() and (p.suffix == ".py" or p.name == "py.typed") and "__pycache__" not in p.parts
+    ):
         rel = p.relative_to(src_root).as_posix()
         data = p.read_bytes()
         zf.writestr(rel, data)
@@ -273,6 +276,7 @@ try {
     foreach ($smokeArgs in @("--version", "--headless --help")) {
         $proc = Start-Process -FilePath $stagedExe -ArgumentList $smokeArgs -NoNewWindow -PassThru -ErrorAction SilentlyContinue
         if ($proc) {
+            $null = $proc.Handle
             if ($proc.WaitForExit(15000)) {
                 $rc = $proc.ExitCode
                 Write-Host "    Staged ToriGraph.exe $smokeArgs exited with code $rc"
@@ -283,9 +287,11 @@ try {
                     throw "Staged ToriGraph.exe $smokeArgs exited with non-zero code $rc"
                 }
             } else {
-                Write-Host "    Staged ToriGraph.exe $smokeArgs launched cleanly (stopping smoke-test process)."
                 try { $proc.Kill() } catch {}
+                throw "Staged ToriGraph.exe $smokeArgs timed out after 15000 ms."
             }
+        } else {
+            throw "Failed to launch staged ToriGraph.exe $smokeArgs"
         }
     }
 } finally {

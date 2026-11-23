@@ -892,6 +892,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             "}"));
     QMenu *statusMenu = new QMenu(d_canvas_status_pill);
     auto populateStatusMenu = [this, statusMenu]() {
+        qDeleteAll(statusMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
         statusMenu->clear();
         QAction *actLockAspect = statusMenu->addAction(tr("Lock Aspect Ratio"));
         actLockAspect->setCheckable(true);

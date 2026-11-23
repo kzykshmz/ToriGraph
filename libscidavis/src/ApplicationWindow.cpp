@@ -1212,11 +1212,11 @@ void registerApplicationWindowJapaneseStrings()
         add("ISIJ Journal (85 mm, 600 DPI)", "鉄と鋼 / ISIJ 論文標準 (85 mm, 600 DPI)");
         add("Apply 1-column ISIJ / Metallurgy journal style (85 mm, 600 DPI, inward ticks, Arial)",
             "鉄と鋼 / ISIJ 1段組論文スタイルを適用 (85 mm, 600 DPI, 内向き目盛り, Arial)");
-        add("&Lab Slide (18 pt @ 140%, 83.3 mm)", "発表スライド (18 pt @ 140%, 83.3 mm)(&L)");
-        add("Lab Slide (18 pt @ 140%, 83.3 mm)", "発表スライド (18 pt @ 140%, 83.3 mm)");
+        add("&Lab Slide (18 pt @ 140%, 83.3 mm)", "研究室スライド (18 pt @ 140%, 83.3 mm)(&L)");
+        add("Lab Slide (18 pt @ 140%, 83.3 mm)", "研究室スライド (18 pt @ 140%, 83.3 mm)");
         add("Apply lab presentation slide style (83.3 mm, 12.9 pt Arial -> 18 pt at 140% in PowerPoint)",
             "研究室発表スライド標準を適用 (83.3 mm, 12.9 pt Arial -> PowerPoint 140%貼付で18 pt)");
-        add("Lab Slide (83.3 mm, 18 pt @ 140%)", "発表スライド (83.3 mm, 18 pt @ 140%)");
+        add("Lab Slide (83.3 mm, 18 pt @ 140%)", "研究室スライド (83.3 mm, 18 pt @ 140%)");
         add("&Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)(&P)");
         add("Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)");
         add("Apply high-visibility presentation slide style (185\xC3\x97"
@@ -2840,8 +2840,13 @@ ApplicationWindow::ApplicationWindow()
                     if (msg.isEmpty())
                         return;
                     updateLog(QStringLiteral("[Recalc] ") + msg + QLatin1Char('\n'));
-                    if (statusBar())
-                        statusBar()->showMessage(tr("Recalc failed: %1").arg(msg), 12000);
+                    if (statusBar()) {
+                        const QString prefix = tr("Recalc failed: %1").arg(QString());
+                        const QString shown = (!prefix.isEmpty() && msg.startsWith(prefix))
+                                ? msg
+                                : tr("Recalc failed: %1").arg(msg);
+                        statusBar()->showMessage(shown, 12000);
+                    }
                 });
     }
 
@@ -8563,8 +8568,9 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                     impFi.completeBaseName().isEmpty() ? tr("Table") : impFi.completeBaseName();
             baseTitle.replace(QRegExp(QStringLiteral("\\s+")), QStringLiteral("_"));
             const QString uniqName = generateUniqueName(baseTitle);
+            const QString prevName = w->objectName();
             w->setName(uniqName);
-            renameListViewItem(w->objectName(), uniqName);
+            renameListViewItem(prevName, uniqName);
             w->setWindowLabel(sorted_files[i]);
             w->setCaptionPolicy(MyWidget::Both);
             setListViewLabel(w->name(), sorted_files[i]);
@@ -9297,21 +9303,54 @@ QFile *ApplicationWindow::openCompressedFile(const QString &fn)
     return file;
 }
 
-bool ApplicationWindow::acquireProjectFileLock(const QString &fn, bool interactive)
+QString ApplicationWindow::projectLockFilePath(const QString &fn) const
 {
     const QString norm = normalizedProjectFilePath(fn);
     if (norm.isEmpty() || d_ole_embedded || fn.endsWith(QLatin1Char('~')))
-        return true;
+        return QString();
 
     const QString recDir = normalizedProjectFilePath(recoveryDirPath());
     if (!recDir.isEmpty() && norm.startsWith(recDir))
-        return true;
+        return QString();
 
     const QString lockDir = QDir::tempPath() + QStringLiteral("/torigraph_locks");
-    QDir().mkpath(lockDir);
     const QString hash = QString::fromLatin1(
             QCryptographicHash::hash(norm.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
-    const QString lockPath = lockDir + QStringLiteral("/prj_") + hash + QStringLiteral(".lock");
+    return lockDir + QStringLiteral("/prj_") + hash + QStringLiteral(".lock");
+}
+
+bool ApplicationWindow::isProjectFileLockedByOther(const QString &fn, qint64 *holderPidOut) const
+{
+    if (holderPidOut)
+        *holderPidOut = 0;
+    const QString lockPath = projectLockFilePath(fn);
+    if (lockPath.isEmpty() || !QFileInfo::exists(lockPath))
+        return false;
+
+    QLockFile probe(lockPath);
+    probe.setStaleLockTime(0);
+    if (probe.tryLock(50)) {
+        probe.unlock();
+        return false;
+    }
+
+    qint64 holderPid = 0;
+    QString holderHost, holderApp;
+    probe.getLockInfo(&holderPid, &holderHost, &holderApp);
+    if (holderPid == QCoreApplication::applicationPid())
+        return false;
+    if (holderPidOut)
+        *holderPidOut = holderPid;
+    return true;
+}
+
+bool ApplicationWindow::acquireProjectFileLock(const QString &fn, bool interactive)
+{
+    const QString lockPath = projectLockFilePath(fn);
+    if (lockPath.isEmpty())
+        return true;
+
+    QDir().mkpath(QFileInfo(lockPath).absolutePath());
 
     auto *newLock = new QLockFile(lockPath);
     newLock->setStaleLockTime(0);
@@ -9463,6 +9502,13 @@ bool ApplicationWindow::checkExternalModificationBeforeSave()
 
 bool ApplicationWindow::loadProject(const QString &fn)
 {
+    return loadProjectImpl(fn, nullptr);
+}
+
+bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **outReplacement)
+{
+    if (outReplacement)
+        *outReplacement = nullptr;
     const bool nonInteractive = isNonInteractiveContext(this);
     const bool isBackupTilde = fn.endsWith(QLatin1String("~"));
     renamedTables.clear();
@@ -9507,7 +9553,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
             releaseProjectFileLock();
             bool backupAccepted = false;
             if (offerBackupIfPresent(fn, &backupAccepted))
-                return loadProject(fn + "~");
+                return loadProjectImpl(fn + "~", outReplacement);
             if (!backupAccepted && !nonInteractive
                 && !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~")) {
                 QMessageBox::critical(
@@ -9541,7 +9587,7 @@ bool ApplicationWindow::loadProject(const QString &fn)
         releaseProjectFileLock();
         bool backupAccepted = false;
         if (offerBackupIfPresent(fn, &backupAccepted))
-            return loadProject(fn + "~");
+            return loadProjectImpl(fn + "~", outReplacement);
         if (!backupAccepted && !nonInteractive) {
             QMessageBox::critical(this, tr("File opening error"),
                                   tr("The file <b>%1</b> is not a valid project file.").arg(fn));
@@ -9942,15 +9988,19 @@ bool ApplicationWindow::loadProject(const QString &fn)
         bool backupAccepted = false;
         if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
             ApplicationWindow *bak = openProject(fn + "~");
-            if (bak) {
+            if (bak != nullptr) {
+                if (outReplacement) {
+                    *outReplacement = bak;
+                    return false;
+                }
                 if (!d_headless_mode && !d_ole_embedded && !m_batch && !nonInteractive)
                     bak->show();
                 else
                     delete bak;
-                return true;
+                return false;
             }
         }
-        if (!backupAccepted && !nonInteractive) {
+        if (!nonInteractive) {
             QMessageBox::critical(
                     this, tr("File opening error"),
                     tr("The project file <b>%1</b> is incomplete or corrupted (unexpected end of "
@@ -10002,7 +10052,10 @@ ApplicationWindow *ApplicationWindow::openProject(const QString &fn)
     unique_ptr<ApplicationWindow> app(new ApplicationWindow);
     app->setHeadlessMode(d_headless_mode);
     app->applyUserSettings();
-    return app->loadProject(fn) ? app.release() : nullptr;
+    ApplicationWindow *replacement = nullptr;
+    if (app->loadProjectImpl(fn, &replacement))
+        return app.release();
+    return replacement;
 }
 
 void ApplicationWindow::executeNotes()
@@ -11435,6 +11488,19 @@ static QString sanitizeExportStem(const QString &rawName)
     return s.isEmpty() ? QStringLiteral("Graph") : s;
 }
 
+static bool exportGraph3DImageWithDpi(Graph3D *plot3D, const QString &writePath, int quality,
+                                      bool transparent, int dpi, QString *errMsg)
+{
+    if (!plot3D)
+        return false;
+    const QVariant prevDpi = plot3D->property("export_dpi");
+    if (dpi > 0)
+        plot3D->setProperty("export_dpi", dpi);
+    const bool ok = plot3D->exportImageChecked(writePath, quality, transparent, errMsg);
+    plot3D->setProperty("export_dpi", prevDpi);
+    return ok;
+}
+
 void ApplicationWindow::exportGraph()
 {
     if (isNonInteractiveContext(this))
@@ -11539,8 +11605,8 @@ void ApplicationWindow::exportGraph()
                 return plot2D->exportImageChecked(writePath, ied->quality(), ied->transparency(),
                                                   ied->resolution(), &errMsg);
             if (plot3D)
-                return plot3D->exportImageChecked(writePath, ied->quality(), ied->transparency(),
-                                                  &errMsg);
+                return exportGraph3DImageWithDpi(plot3D, writePath, ied->quality(),
+                                                 ied->transparency(), ied->resolution(), &errMsg);
         }
         return false;
     });
@@ -11783,8 +11849,9 @@ void ApplicationWindow::exportAllGraphs()
                                                               ied->transparency(),
                                                               ied->resolution(), &errMsg);
                         if (plot3D)
-                            return plot3D->exportImageChecked(writePath, ied->quality(),
-                                                              ied->transparency(), &errMsg);
+                            return exportGraph3DImageWithDpi(plot3D, writePath, ied->quality(),
+                                                             ied->transparency(), ied->resolution(),
+                                                             &errMsg);
                     }
                     return false;
                 });
@@ -12041,15 +12108,17 @@ bool ApplicationWindow::saveProject()
         return saveProjectAs();
     }
 
-    if (d_project_read_only_lock && !isNonInteractiveContext(this)) {
-        const int choice = QMessageBox::warning(
-                this, tr("Read-Only Project Lock"),
-                tr("This file was opened read-only because another ToriGraph process held a lock on "
-                   "<b>%1</b>.\n\nSave under a different name?")
-                        .arg(QDir::toNativeSeparators(projectname).toHtmlEscaped()),
-                tr("Save Project As..."), tr("Cancel"), QString(), 0, 1);
-        if (choice == 0)
-            return saveProjectAs();
+    if (d_project_read_only_lock) {
+        if (!isNonInteractiveContext(this)) {
+            const int choice = QMessageBox::warning(
+                    this, tr("Read-Only Project Lock"),
+                    tr("This file was opened read-only because another ToriGraph process held a "
+                       "lock on <b>%1</b>.\n\nSave under a different name?")
+                            .arg(QDir::toNativeSeparators(projectname).toHtmlEscaped()),
+                    tr("Save Project As..."), tr("Cancel"), QString(), 0, 1);
+            if (choice == 0)
+                return saveProjectAs();
+        }
         return false;
     }
 
@@ -12116,6 +12185,28 @@ bool ApplicationWindow::saveProjectAs()
             if (statusBar())
                 statusBar()->showMessage(tr("Saved standalone copy to %1").arg(fn), 8000);
             return true;
+        }
+
+        const QString normTarget = normalizedProjectFilePath(fn);
+        const QString normCurrent = normalizedProjectFilePath(projectname);
+        if (d_project_read_only_lock && !normTarget.isEmpty() && normTarget == normCurrent) {
+            QMessageBox::warning(
+                    this, tr("Read-Only Project Lock"),
+                    tr("This file was opened read-only because another ToriGraph process held a "
+                       "lock on <b>%1</b>.\n\nChoose a different file name to save a copy.")
+                            .arg(QDir::toNativeSeparators(fn).toHtmlEscaped()));
+            return false;
+        }
+
+        qint64 lockHolderPid = 0;
+        if (isProjectFileLockedByOther(fn, &lockHolderPid)) {
+            QMessageBox::warning(
+                    this, tr("Read-Only Project Lock"),
+                    tr("The project <b>%1</b> appears to be open in another ToriGraph process%2 "
+                       "and cannot be overwritten.\n\nChoose a different file name.")
+                            .arg(QDir::toNativeSeparators(fn).toHtmlEscaped(),
+                                 lockHolderPid > 0 ? tr(" (PID %1)").arg(lockHolderPid) : QString()));
+            return false;
         }
 
         const QString previousProjectName = projectname;

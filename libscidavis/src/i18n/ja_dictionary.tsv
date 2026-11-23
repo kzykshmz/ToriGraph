@@ -5180,6 +5180,7 @@ erfc(x):\n Complementary error function erfc(x) = 1 - erf(x).	erfc(x):\n 相補�
 erfq(x):\n The upper tail of the Gaussian probability function Q(x).	erfq(x):\n ガウス分布の上側確率関数 Q(x) を計算します。
 erfz(x):\n The Gaussian probability density function Z(x).	erfz(x):\n 標準正規確率密度関数 Z(x) を計算します。
 execute Python automation script against this ToriGraph instance	このToriGraphインスタンスに対してPython自動化スクリプトを実行
+execute Python automation script against this ToriGraph instance (all following arguments are passed to the script)	このToriGraphインスタンスに対してPython自動化スクリプトを実行 (以降の引数はすべてスクリプトに渡されます)
 execute the script file given as argument	引数で指定されたスクリプトファイルを実行
 exp(x):\n Exponential function: e raised to the power of x.	exp(x):\n 自然指数関数 e^x を計算します。
 file	ファイル
@@ -6426,7 +6427,7 @@ Font Size	フォントサイズ
 &Find and Replace...	検索と置換(&F)...
 &Gumbel (Extreme Value) Probability Plot...	Gumbel(極値)確率プロット(&G)...
 &Import Settings...	設定を読み込む(&I)...
-&Lab Slide (18 pt @ 140%, 83.3 mm)	発表スライド (18 pt @ 140%, 83.3 mm)(&L)
+&Lab Slide (18 pt @ 140%, 83.3 mm)	研究室スライド (18 pt @ 140%, 83.3 mm)(&L)
 &Lognormal Probability Plot...	対数正規確率プロット(&L)...
 &Make Workbook from This Worksheet	このワークシートからブックを作る(&M)
 &More Gadgets	その他のガジェット(&M)
@@ -6825,7 +6826,7 @@ Kα-average	Kα 平均
 Kα2 stripped (Rachinger, %1 anode: λ(Kα1) = %2 Å, λ(Kα2) = %3 Å, I(Kα2)/I(Kα1) = 0.5).	Kα2 を除去しました (Rachinger 法、%1 管球: λ(Kα1) = %2 Å、λ(Kα2) = %3 Å、強度比 I(Kα2)/I(Kα1) = 0.5)。
 Kα2 stripping skipped: λ = %1 Å does not match the Kα1 or Kα-average line of a known anode (Cr, Fe, Co, Cu, Mo).	Kα2 除去を行いませんでした: λ = %1 Å が既知の管球 (Cr, Fe, Co, Cu, Mo) の Kα1 線・Kα 平均線のどれとも一致しません。
 LD / TD (Longitudinal / Transverse)	LD / TD (長手 / 横方向)
-Lab Slide (18 pt @ 140%, 83.3 mm)	発表スライド (18 pt @ 140%, 83.3 mm)
+Lab Slide (18 pt @ 140%, 83.3 mm)	研究室スライド (18 pt @ 140%, 83.3 mm)
 Lab Slide (18 pt on slide, 83.3 mm, paste at 140%)	研究室スライド (スライド上で 18 pt、83.3 mm 角、PowerPoint で 140% に拡大)
 Lab Slide (18 pt, 83.3 mm)	研究室スライド (18 pt, 83.3 mm)
 Label (e.g. (111)):	ラベル(例: (111)):

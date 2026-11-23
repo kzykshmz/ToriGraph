@@ -49,6 +49,7 @@
 
 #include <chrono>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -2806,27 +2807,32 @@ QList<QNetworkProxy> AutoUpdater::proxiesForUrl(const QUrl &url)
         QList<QNetworkProxy> proxies;
         qint64 stampMs = 0;
     };
-    static std::mutex s_cacheMutex;
-    static QHash<QString, CachedProxy> s_cache;
+    struct ProxyCache
+    {
+        std::mutex mutex;
+        QHash<QString, CachedProxy> map;
+    };
+    static const std::shared_ptr<ProxyCache> s_cache = std::make_shared<ProxyCache>();
+    const std::shared_ptr<ProxyCache> cache = s_cache;
     constexpr qint64 kProxyCacheTtlMs = 5 * 60 * 1000;
     const QString key = QStringLiteral("%1://%2:%3")
                                 .arg(url.scheme().toLower(), url.host().toLower())
                                 .arg(url.port(-1));
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     {
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
-        const auto it = s_cache.constFind(key);
-        if (it != s_cache.constEnd() && now - it->stampMs >= 0
+        std::lock_guard<std::mutex> lock(cache->mutex);
+        const auto it = cache->map.constFind(key);
+        if (it != cache->map.constEnd() && now - it->stampMs >= 0
             && now - it->stampMs < kProxyCacheTtlMs)
             return it->proxies;
     }
-    const auto lookupAndCache = [key, url]() {
+    const auto lookupAndCache = [cache, key, url]() {
         QList<QNetworkProxy> found =
                 QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(url));
         if (found.isEmpty())
             found << QNetworkProxy(QNetworkProxy::NoProxy);
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
-        s_cache.insert(key, CachedProxy { found, QDateTime::currentMSecsSinceEpoch() });
+        std::lock_guard<std::mutex> lock(cache->mutex);
+        cache->map.insert(key, CachedProxy { found, QDateTime::currentMSecsSinceEpoch() });
         return found;
     };
     if (QCoreApplication::instance()
@@ -3178,12 +3184,18 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
     d_activeCheckReply = d_nam.get(req);
     d_checkTimeoutTimer->start(kLiveCheckTimeoutMs);
 
-    connect(d_activeCheckReply, &QNetworkReply::redirected, this, [this](const QUrl &newUrl) {
-        if (!AutoUpdater::isAllowedUpdateUrl(newUrl) && d_activeCheckReply)
+    auto blockedRedirect = std::make_shared<bool>(false);
+    QNetworkReply *activeReply = d_activeCheckReply;
+    connect(d_activeCheckReply, &QNetworkReply::redirected, this,
+            [this, activeReply, blockedRedirect](const QUrl &newUrl) {
+        if (!AutoUpdater::isAllowedUpdateUrl(newUrl) && d_activeCheckReply == activeReply) {
+            *blockedRedirect = true;
             d_activeCheckReply->abort();
+        }
     });
 
-    connect(d_activeCheckReply, &QNetworkReply::finished, this, [this, allowPre]() {
+    connect(d_activeCheckReply, &QNetworkReply::finished, this,
+            [this, allowPre, blockedRedirect]() {
         if (d_checkTimeoutTimer)
             d_checkTimeoutTimer->stop();
         QNetworkReply *reply = d_activeCheckReply;
@@ -3200,7 +3212,7 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
-        if (!AutoUpdater::isAllowedUpdateUrl(finalUrl)) {
+        if (*blockedRedirect || !AutoUpdater::isAllowedUpdateUrl(finalUrl)) {
             handleCheckResult(false, ReleaseInfo(),
                               tr("Blocked untrusted update feed URL."), silent);
             return;
@@ -3497,6 +3509,13 @@ bool AutoUpdater::downloadAndVerifyBlocking(const QUrl &assetUrl,
                 *errOut = tr("SHA-256 checksum verification failed for downloaded update package.");
             return false;
         }
+    } else if (!allowUnverifiedInstall()) {
+        QFile::remove(partPath);
+        if (errOut) {
+            *errOut = tr("SHA-256 checksum verification failed: expected SHA-256 checksum is "
+                         "missing and unverified installs are disabled.");
+        }
+        return false;
     }
 
     if (isSignablePackageFile(destFilePath)) {

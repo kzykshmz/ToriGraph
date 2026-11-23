@@ -46,6 +46,7 @@
 #include <QLocale>
 #include <QMdiSubWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -132,80 +133,107 @@ public:
     explicit SignalPreviewGuard(Graph *g) : d_graph(g) {}
     ~SignalPreviewGuard() { clear(); }
 
-    void setSingle(const std::vector<double> &xs, const std::vector<double> &ys, const QPen &pen)
+    void setSingle(const std::vector<double> &xs, const std::vector<double> &ys, const QPen &pen,
+                   const QwtPlotCurve *srcCurve = nullptr)
     {
-        if (!d_graph || !d_graph->plotWidget() || xs.size() < 2 || xs.size() != ys.size()) {
+        Plot *pw = (!d_graph.isNull()) ? d_graph->plotWidget() : nullptr;
+        if (!pw || xs.size() < 2 || xs.size() != ys.size()) {
             clear();
             return;
         }
-        detachCurve(d_curveB);
+        detachCurve(pw, d_curveB);
+        if (d_curveA && !pw->itemList().contains(static_cast<QwtPlotItem *>(d_curveA)))
+            d_curveA = nullptr;
         if (!d_curveA) {
             d_curveA = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewA__"));
             d_curveA->setItemAttribute(QwtPlotItem::Legend, false);
             d_curveA->setRenderHint(QwtPlotItem::RenderAntialiased, true);
-            d_curveA->attach(d_graph->plotWidget());
+            d_curveA->attach(pw);
         }
+        d_curveA->setAxis(srcCurve ? srcCurve->xAxis() : static_cast<int>(QwtPlot::xBottom),
+                          srcCurve ? srcCurve->yAxis() : static_cast<int>(QwtPlot::yLeft));
         d_curveA->setPen(pen);
         d_curveA->setData(xs.data(), ys.data(), static_cast<int>(xs.size()));
-        d_graph->plotWidget()->replot();
+        pw->replot();
     }
 
     void setDual(const std::vector<double> &xs,
                  const std::vector<double> *ysA, const QPen &penA,
-                 const std::vector<double> *ysB, const QPen &penB)
+                 const std::vector<double> *ysB, const QPen &penB,
+                 const QwtPlotCurve *srcCurve = nullptr)
     {
-        if (!d_graph || !d_graph->plotWidget() || xs.size() < 2) {
+        Plot *pw = (!d_graph.isNull()) ? d_graph->plotWidget() : nullptr;
+        if (!pw || xs.size() < 2) {
             clear();
             return;
         }
+        const int xAxis = srcCurve ? srcCurve->xAxis() : static_cast<int>(QwtPlot::xBottom);
+        const int yAxis = srcCurve ? srcCurve->yAxis() : static_cast<int>(QwtPlot::yLeft);
         if (ysA && ysA->size() == xs.size()) {
+            if (d_curveA && !pw->itemList().contains(static_cast<QwtPlotItem *>(d_curveA)))
+                d_curveA = nullptr;
             if (!d_curveA) {
                 d_curveA = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewA__"));
                 d_curveA->setItemAttribute(QwtPlotItem::Legend, false);
                 d_curveA->setRenderHint(QwtPlotItem::RenderAntialiased, true);
-                d_curveA->attach(d_graph->plotWidget());
+                d_curveA->attach(pw);
             }
+            d_curveA->setAxis(xAxis, yAxis);
             d_curveA->setPen(penA);
             d_curveA->setData(xs.data(), ysA->data(), static_cast<int>(xs.size()));
         } else {
-            detachCurve(d_curveA);
+            detachCurve(pw, d_curveA);
         }
 
         if (ysB && ysB->size() == xs.size()) {
+            if (d_curveB && !pw->itemList().contains(static_cast<QwtPlotItem *>(d_curveB)))
+                d_curveB = nullptr;
             if (!d_curveB) {
                 d_curveB = new QwtPlotCurve(QStringLiteral("__SignalLivePreviewB__"));
                 d_curveB->setItemAttribute(QwtPlotItem::Legend, false);
                 d_curveB->setRenderHint(QwtPlotItem::RenderAntialiased, true);
-                d_curveB->attach(d_graph->plotWidget());
+                d_curveB->attach(pw);
             }
+            d_curveB->setAxis(xAxis, yAxis);
             d_curveB->setPen(penB);
             d_curveB->setData(xs.data(), ysB->data(), static_cast<int>(xs.size()));
         } else {
-            detachCurve(d_curveB);
+            detachCurve(pw, d_curveB);
         }
-        d_graph->plotWidget()->replot();
+        pw->replot();
     }
 
     void clear()
     {
-        const bool hadAny = (d_curveA != nullptr || d_curveB != nullptr);
-        detachCurve(d_curveA);
-        detachCurve(d_curveB);
-        if (hadAny && d_graph && d_graph->plotWidget())
-            d_graph->plotWidget()->replot();
+        Plot *pw = (!d_graph.isNull()) ? d_graph->plotWidget() : nullptr;
+        if (!pw) {
+            d_curveA = nullptr;
+            d_curveB = nullptr;
+            return;
+        }
+        const bool hadAny =
+                (d_curveA != nullptr && pw->itemList().contains(static_cast<QwtPlotItem *>(d_curveA)))
+                || (d_curveB != nullptr
+                    && pw->itemList().contains(static_cast<QwtPlotItem *>(d_curveB)));
+        detachCurve(pw, d_curveA);
+        detachCurve(pw, d_curveB);
+        if (hadAny)
+            pw->replot();
     }
 
 private:
-    static void detachCurve(QwtPlotCurve *&c)
+    static void detachCurve(Plot *pw, QwtPlotCurve *&c)
     {
         if (c) {
-            c->detach();
-            delete c;
+            if (pw && pw->itemList().contains(static_cast<QwtPlotItem *>(c))) {
+                c->detach();
+                delete c;
+            }
             c = nullptr;
         }
     }
 
-    Graph *d_graph = nullptr;
+    QPointer<Graph> d_graph;
     QwtPlotCurve *d_curveA = nullptr;
     QwtPlotCurve *d_curveB = nullptr;
 };
@@ -367,7 +395,8 @@ bool extractSortedSignalXY(Graph *g, const QString &curveTitle,
     if (rawSpan <= 0.0)
         return false;
 
-    const double mergeEps = 1e-13 * std::max(1.0, rawSpan);
+    const double scaleX = std::max(std::fabs(pts.front().first), std::fabs(pts.back().first));
+    const double mergeEps = (rawSpan > 0.0) ? (1e-13 * rawSpan) : (1e-13 * std::max(1e-300, scaleX));
     xOut.reserve(pts.size());
     yOut.reserve(pts.size());
     size_t idx = 0;
@@ -449,7 +478,8 @@ bool extractUniformSignal(Graph *g, const QString &curveTitle,
     if (rawSpan <= 0.0)
         return false;
 
-    const double mergeEps = 1e-13 * std::max(1.0, rawSpan);
+    const double scaleX = std::max(std::fabs(pts.front().first), std::fabs(pts.back().first));
+    const double mergeEps = (rawSpan > 0.0) ? (1e-13 * rawSpan) : (1e-13 * std::max(1e-300, scaleX));
     std::vector<double> xs, ys;
     xs.reserve(pts.size());
     ys.reserve(pts.size());
@@ -2025,23 +2055,50 @@ Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
                                   bool inverse, bool shiftCenter,
                                   Matrix *imagOrPhaseMatrix,
                                   Matrix **outAuxMatrix,
-                                  Fft2DOutputMode outputMode)
+                                  Fft2DOutputMode outputMode,
+                                  QString *errorOut)
 {
+    if (errorOut)
+        errorOut->clear();
     if (outAuxMatrix)
         *outAuxMatrix = nullptr;
-    if (!app || !srcMatrix)
+    if (!app || !srcMatrix) {
+        if (errorOut)
+            *errorOut = QObject::tr("2D FFT failed: invalid application or source matrix.");
         return nullptr;
+    }
+    app->setProperty("torigraph_last_fft2d_error", QVariant());
 
     const int rows = srcMatrix->numRows();
     const int cols = srcMatrix->numCols();
-    if (rows <= 0 || cols <= 0)
+    if (rows <= 0 || cols <= 0) {
+        if (errorOut)
+            *errorOut = QObject::tr("2D FFT failed: source matrix must be non-empty.");
         return nullptr;
+    }
+
+    if (imagOrPhaseMatrix != nullptr
+        && (imagOrPhaseMatrix->numRows() != rows || imagOrPhaseMatrix->numCols() != cols)) {
+        const QString errMsg = QObject::tr(
+                "2D %1 failed: auxiliary matrix dimensions (%2\u00D7%3) do not match primary matrix dimensions (%4\u00D7%5).")
+                                       .arg(inverse ? QObject::tr("IFFT") : QObject::tr("FFT"))
+                                       .arg(imagOrPhaseMatrix->numRows())
+                                       .arg(imagOrPhaseMatrix->numCols())
+                                       .arg(rows)
+                                       .arg(cols);
+        if (errorOut)
+            *errorOut = errMsg;
+        app->setProperty("torigraph_last_fft2d_error", errMsg);
+        app->updateLog(QStringLiteral("[%1] %2\n")
+                               .arg(QLocale().toString(QDateTime::currentDateTime()), errMsg));
+        if (!ApplicationWindow::isNonInteractiveContext(app))
+            QMessageBox::warning(app, inverse ? trSig("2D IFFT") : trSig("2D FFT"), errMsg);
+        return nullptr;
+    }
 
     const size_t R = static_cast<size_t>(rows);
     const size_t C = static_cast<size_t>(cols);
-    const bool hasValidAuxInput = (imagOrPhaseMatrix != nullptr
-                                   && imagOrPhaseMatrix->numRows() == rows
-                                   && imagOrPhaseMatrix->numCols() == cols);
+    const bool hasValidAuxInput = (imagOrPhaseMatrix != nullptr);
 
     std::vector<double> grid(2 * R * C, 0.0);
     for (size_t r = 0; r < R; ++r) {
@@ -2546,20 +2603,24 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> px, py;
         double pfs = 1.0;
-        if (computeIirFilteredVector(g, cbCurve->currentText(),
+        if (computeIirFilteredVector(gSafe, curveName,
                                      static_cast<IirDesign>(cbDesign->currentData().toInt()),
                                      static_cast<PassType>(cbPass->currentData().toInt()),
                                      sbOrder->value(), sbLow->value(), sbHigh->value(),
                                      chkZeroPhase->isChecked(), sbRipple->value(), px, py, pfs)) {
-            previewGuard.setSingle(px, py, QPen(QColor(0, 114, 178), 2.0, Qt::DashLine));
+            previewGuard.setSingle(px, py, QPen(QColor(0, 114, 178), 2.0, Qt::DashLine),
+                                   resolveSignalCurve(gSafe, curveName));
         } else {
             previewGuard.clear();
         }
@@ -2567,9 +2628,13 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
 
     QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
                      [&](const QString &curveName) {
+                         if (!gSafe) {
+                             previewGuard.clear();
+                             return;
+                         }
                          std::vector<double> tmpT, tmpY;
                          double newFs = currentFs;
-                         if (extractUniformSignal(g, curveName, tmpT, tmpY, newFs)
+                         if (extractUniformSignal(gSafe, curveName, tmpT, tmpY, newFs)
                              && newFs > 0.0 && std::isfinite(newFs)) {
                              const double ratioLow = (currentFs > 0.0)
                                      ? std::clamp(sbLow->value() / currentFs, 0.001, 0.48)
@@ -2636,10 +2701,12 @@ void AdvancedSignalProc::showIirFilterDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        iirFilter(app, g, cbCurve->currentText(),
-                  static_cast<IirDesign>(cbDesign->currentData().toInt()),
-                  static_cast<PassType>(cbPass->currentData().toInt()), sbOrder->value(),
-                  sbLow->value(), sbHigh->value(), chkZeroPhase->isChecked(), sbRipple->value());
+        if (appSafe && gSafe) {
+            iirFilter(appSafe, gSafe, cbCurve->currentText(),
+                      static_cast<IirDesign>(cbDesign->currentData().toInt()),
+                      static_cast<PassType>(cbPass->currentData().toInt()), sbOrder->value(),
+                      sbLow->value(), sbHigh->value(), chkZeroPhase->isChecked(), sbRipple->value());
+        }
     }
 }
 
@@ -2706,21 +2773,25 @@ void AdvancedSignalProc::showHilbertDialog(ApplicationWindow *app, Graph *g)
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> px, upperEnv, lowerEnv;
         double fs = 1.0;
-        if (!computeHilbertAnalyticVectors(g, cbCurve->currentText(), px, upperEnv, lowerEnv, fs)) {
+        if (!computeHilbertAnalyticVectors(gSafe, curveName, px, upperEnv, lowerEnv, fs)) {
             previewGuard.clear();
             return;
         }
         previewGuard.setDual(px, &upperEnv, QPen(QColor(213, 94, 0), 2.0, Qt::DashLine),
                              chkLower->isChecked() ? &lowerEnv : nullptr,
-                             QPen(QColor(213, 94, 0, 200), 1.6, Qt::DotLine));
+                             QPen(QColor(213, 94, 0, 200), 1.6, Qt::DotLine),
+                             resolveSignalCurve(gSafe, curveName));
     };
 
     QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
@@ -2744,7 +2815,8 @@ void AdvancedSignalProc::showHilbertDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        hilbertEnvelope(app, g, cbCurve->currentText(), chkLower->isChecked(), nullptr);
+        if (appSafe && gSafe)
+            hilbertEnvelope(appSafe, gSafe, cbCurve->currentText(), chkLower->isChecked(), nullptr);
     }
 }
 
@@ -2803,18 +2875,22 @@ void AdvancedSignalProc::showWaveletDialog(ApplicationWindow *app, Graph *g)
     QCheckBox *chkDwtPreview = new QCheckBox(QObject::tr("Live Preview"), tabDwt);
     chkDwtPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (tabs->currentIndex() != 1 || !chkDwtPreview->isChecked()) {
+        if (!gSafe || tabs->currentIndex() != 1 || !chkDwtPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbDwtCurve->currentText();
         std::vector<double> px, py;
         if (computeWaveletDenoiseVector(
-                    g, cbDwtCurve->currentText(),
+                    gSafe, curveName,
                     static_cast<WaveletType>(cbDwtType->currentData().toInt()), sbLevels->value(),
                     chkSoft->isChecked(), sbThreshScale->value(), px, py)) {
-            previewGuard.setSingle(px, py, QPen(QColor(0, 158, 115), 2.0, Qt::DashLine));
+            previewGuard.setSingle(px, py, QPen(QColor(0, 158, 115), 2.0, Qt::DashLine),
+                                   resolveSignalCurve(gSafe, curveName));
         } else {
             previewGuard.clear();
         }
@@ -2851,14 +2927,16 @@ void AdvancedSignalProc::showWaveletDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        if (tabs->currentIndex() == 0) {
-            waveletCWT(app, g, cbCwtCurve->currentText(), sbScales->value(),
-                       static_cast<WaveletType>(cbCwtType->currentData().toInt()),
-                       chkScalogram->isChecked());
-        } else {
-            waveletDenoiseDWT(app, g, cbDwtCurve->currentText(),
-                              static_cast<WaveletType>(cbDwtType->currentData().toInt()),
-                              sbLevels->value(), chkSoft->isChecked(), sbThreshScale->value());
+        if (appSafe && gSafe) {
+            if (tabs->currentIndex() == 0) {
+                waveletCWT(appSafe, gSafe, cbCwtCurve->currentText(), sbScales->value(),
+                           static_cast<WaveletType>(cbCwtType->currentData().toInt()),
+                           chkScalogram->isChecked());
+            } else {
+                waveletDenoiseDWT(appSafe, gSafe, cbDwtCurve->currentText(),
+                                  static_cast<WaveletType>(cbDwtType->currentData().toInt()),
+                                  sbLevels->value(), chkSoft->isChecked(), sbThreshScale->value());
+            }
         }
     }
 }
@@ -3133,16 +3211,20 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> px, pd;
-        if (computeSavGolDerivVector(g, cbCurve->currentText(), cbOrder->currentData().toInt(),
+        if (computeSavGolDerivVector(gSafe, curveName, cbOrder->currentData().toInt(),
                                      sbWin->value(), sbPoly->value(), px, pd)) {
-            previewGuard.setSingle(px, pd, QPen(QColor(180, 35, 110), 2.0, Qt::DashLine));
+            previewGuard.setSingle(px, pd, QPen(QColor(180, 35, 110), 2.0, Qt::DashLine),
+                                   resolveSignalCurve(gSafe, curveName));
         } else {
             previewGuard.clear();
         }
@@ -3187,8 +3269,10 @@ void AdvancedSignalProc::showSavGolDerivativeDialog(ApplicationWindow *app, Grap
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        savitzkyGolayDerivative(app, g, cbCurve->currentText(),
-                                cbOrder->currentData().toInt(), sbWin->value(), sbPoly->value());
+        if (appSafe && gSafe) {
+            savitzkyGolayDerivative(appSafe, gSafe, cbCurve->currentText(),
+                                    cbOrder->currentData().toInt(), sbWin->value(), sbPoly->value());
+        }
     }
 }
 
@@ -3220,14 +3304,17 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> xs, ys;
-        if (!extractSortedSignalXY(g, cbCurve->currentText(), xs, ys) || xs.size() < 2) {
+        if (!extractSortedSignalXY(gSafe, curveName, xs, ys) || xs.size() < 2) {
             previewGuard.clear();
             return;
         }
@@ -3251,7 +3338,8 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
         previewGuard.setDual(xs, wantUpper ? &upperEnv : nullptr,
                              QPen(QColor(213, 62, 20), 2.0, Qt::DashLine),
                              wantLower ? &lowerEnv : nullptr,
-                             QPen(QColor(20, 110, 190), 2.0, Qt::DotLine));
+                             QPen(QColor(20, 110, 190), 2.0, Qt::DotLine),
+                             resolveSignalCurve(gSafe, curveName));
     };
 
     QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg,
@@ -3279,9 +3367,11 @@ void AdvancedSignalProc::showPeakEnvelopeDialog(ApplicationWindow *app, Graph *g
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        computePeakEnvelope(app, g, cbCurve->currentText(),
-                            static_cast<EnvelopeType>(cbType->currentData().toInt()),
-                            sbMinDist->value(), nullptr);
+        if (appSafe && gSafe) {
+            computePeakEnvelope(appSafe, gSafe, cbCurve->currentText(),
+                                static_cast<EnvelopeType>(cbType->currentData().toInt()),
+                                sbMinDist->value(), nullptr);
+        }
     }
 }
 
@@ -3312,16 +3402,20 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(g);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(g);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> px, py;
-        if (computeDecimatedVectors(g, cbCurve->currentText(), sbFactor->value(),
+        if (computeDecimatedVectors(gSafe, curveName, sbFactor->value(),
                                     chkFir->isChecked(), px, py)) {
-            previewGuard.setSingle(px, py, QPen(QColor(15, 135, 95), 2.0, Qt::DashLine));
+            previewGuard.setSingle(px, py, QPen(QColor(15, 135, 95), 2.0, Qt::DashLine),
+                                   resolveSignalCurve(gSafe, curveName));
         } else {
             previewGuard.clear();
         }
@@ -3351,7 +3445,10 @@ void AdvancedSignalProc::showDecimateDialog(ApplicationWindow *app, Graph *g)
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        decimateCurve(app, g, cbCurve->currentText(), sbFactor->value(), chkFir->isChecked());
+        if (appSafe && gSafe) {
+            decimateCurve(appSafe, gSafe, cbCurve->currentText(), sbFactor->value(),
+                          chkFir->isChecked());
+        }
     }
 }
 
@@ -4025,21 +4122,25 @@ void AdvancedSignalProc::showFourierSelfDeconvolveDialog(ApplicationWindow *app,
     QCheckBox *chkPreview = new QCheckBox(QObject::tr("Live Preview"), &dlg);
     chkPreview->setChecked(true);
 
-    SignalPreviewGuard previewGuard(targetGraph);
+    QPointer<ApplicationWindow> appSafe(app);
+    QPointer<Graph> gSafe(targetGraph);
+    SignalPreviewGuard previewGuard(gSafe);
     auto refreshPreview = [&]() {
-        if (!chkPreview->isChecked()) {
+        if (!gSafe || !chkPreview->isChecked()) {
             previewGuard.clear();
             return;
         }
+        const QString curveName = cbCurve->currentText();
         std::vector<double> xs, ys, fsdY;
         double fs = 1.0;
-        if (!extractUniformSignal(targetGraph, cbCurve->currentText(), xs, ys, fs)
+        if (!extractUniformSignal(gSafe, curveName, xs, ys, fs)
             || !computeFsdSpectrum(xs, ys, sbGamma->value(), sbK->value(),
                                    cbApod->currentData().toInt(), fsdY)) {
             previewGuard.clear();
             return;
         }
-        previewGuard.setSingle(xs, fsdY, QPen(QColor(195, 30, 65), 1.9, Qt::DashLine));
+        previewGuard.setSingle(xs, fsdY, QPen(QColor(195, 30, 65), 1.9, Qt::DashLine),
+                               resolveSignalCurve(gSafe, curveName));
     };
 
     QObject::connect(cbCurve, &QComboBox::currentTextChanged, &dlg, [&](const QString &cn) {
@@ -4072,7 +4173,9 @@ void AdvancedSignalProc::showFourierSelfDeconvolveDialog(ApplicationWindow *app,
 
     if (dlg.exec() == QDialog::Accepted) {
         previewGuard.clear();
-        fourierSelfDeconvolve(app, targetGraph, cbCurve->currentText(),
-                              sbGamma->value(), sbK->value(), cbApod->currentData().toInt());
+        if (appSafe && gSafe) {
+            fourierSelfDeconvolve(appSafe, gSafe, cbCurve->currentText(),
+                                  sbGamma->value(), sbK->value(), cbApod->currentData().toInt());
+        }
     }
 }

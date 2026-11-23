@@ -940,9 +940,10 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
         S_tot += W[i] * dyBar * dyBar;
     }
 
-    double var_b = (sumWu2 > 1e-300) ? (1.0 / sumWu2) : 0.0;
-    double var_a = (1.0 / sumW) + x_adj_bar * x_adj_bar * var_b;
-    double cov_ab = -x_adj_bar * var_b;
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
+    double var_b = (sumWu2 > 1e-300) ? (1.0 / sumWu2) : nanVal;
+    double var_a = std::isfinite(var_b) ? ((1.0 / sumW) + x_adj_bar * x_adj_bar * var_b) : nanVal;
+    double cov_ab = std::isfinite(var_b) ? (-x_adj_bar * var_b) : nanVal;
 
     bool usedFallbackUnitErrors = (!hasExplicitX && !hasExplicitY);
     d_y_error_source = usedFallbackUnitErrors ? UnknownErrors : CustomErrors;
@@ -958,8 +959,12 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     d_york_slope = b;
     d_york_intercept = a;
-    d_york_slope_err = std::sqrt(std::max(0.0, covScale * var_b));
-    d_york_intercept_err = std::sqrt(std::max(0.0, covScale * var_a));
+    const double scaledVarB = covScale * var_b;
+    const double scaledVarA = covScale * var_a;
+    d_york_slope_err =
+            (std::isfinite(scaledVarB) && scaledVarB >= 0.0) ? std::sqrt(scaledVarB) : nanVal;
+    d_york_intercept_err =
+            (std::isfinite(scaledVarA) && scaledVarA >= 0.0) ? std::sqrt(scaledVarA) : nanVal;
 
     d_app_log_x = false;
     d_app_log_y = false;
@@ -972,7 +977,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     d_result_errors = { d_york_intercept_err, d_york_slope_err };
 
     d_has_custom_r2 = true;
-    d_custom_r2 = (S_tot > 1e-300) ? (1.0 - S / S_tot) : 1.0;
+    d_custom_r2 = (S_tot > 1e-300) ? (1.0 - S / S_tot) : ((S <= 1e-300) ? 1.0 : nanVal);
 
     d_y_fit.resize(n);
     for (size_t i = 0; i < n; ++i)

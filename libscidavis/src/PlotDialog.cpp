@@ -77,6 +77,7 @@
 #include <QLocale>
 #include <QScrollArea>
 #include <QTimer>
+#include <QHideEvent>
 #include <cmath>
 
 namespace {
@@ -3643,6 +3644,29 @@ void PlotDialog::closeEvent(QCloseEvent *e)
     e->accept();
 }
 
+void PlotDialog::hideEvent(QHideEvent *e)
+{
+    if (d_externalSyncTimer)
+        d_externalSyncTimer->stop();
+    QDialog::hideEvent(e);
+}
+
+void PlotDialog::reject()
+{
+    if (d_externalSyncTimer)
+        d_externalSyncTimer->stop();
+    if (testAttribute(Qt::WA_DeleteOnClose)) {
+        // Call close() while visible so closeEvent() and WA_DeleteOnClose cleanup run,
+        // then QDialog::reject() sets QDialog::Rejected and emits rejected()/finished().
+        QPointer<PlotDialog> self(this);
+        close();
+        if (self)
+            QDialog::reject();
+        return;
+    }
+    QDialog::reject();
+}
+
 /*****************************************************************************
  *
  * Synchronisation with edits made outside this dialog
@@ -3662,7 +3686,8 @@ void PlotDialog::closeEvent(QCloseEvent *e)
 
 void PlotDialog::onMultiLayerModified()
 {
-    if (d_loadingUi || d_selfEditDepth > 0 || !d_mlGuard || !d_externalSyncTimer)
+    if (!isVisible() || d_loadingUi || d_selfEditDepth > 0 || !d_mlGuard
+        || !d_externalSyncTimer)
         return;
     if (!d_externalSyncTimer->isActive())
         d_externalSyncTimer->start();
@@ -3670,7 +3695,7 @@ void PlotDialog::onMultiLayerModified()
 
 void PlotDialog::syncFromMultiLayer()
 {
-    if (!d_mlGuard || !listBox || !d_externalSyncTimer)
+    if (!isVisible() || !d_mlGuard || !listBox || !d_externalSyncTimer)
         return;
     // Busy (this dialog is itself editing / a nested modal dialog runs the event loop, or an
     // Undo / Redo is rebuilding the layers): try again shortly.

@@ -1151,10 +1151,33 @@ void AxesDialog::initReferenceLinesPage()
     connect(refLabelEdit, &QLineEdit::textChanged, this,
             [markRefDirty](const QString &) { markRefDirty(); });
     connect(refFillBox, &QCheckBox::toggled, this, [markRefDirty](bool) { markRefDirty(); });
-    connect(refFillColorBtn, &ColorButton::changed, this,
-            [markRefDirty](const QColor &) { markRefDirty(); });
+    connect(refFillColorBtn, &ColorButton::changed, this, [this, markRefDirty](const QColor &c) {
+        if (refFillOpacityBox) {
+            const int pct = qBound(PlotStyleLimits::kOpacityMinPercent,
+                                   qRound(c.alpha() * 100.0 / 255.0),
+                                   PlotStyleLimits::kOpacityMaxPercent);
+            if (refFillOpacityBox->value() != pct) {
+                QSignalBlocker blocker(refFillOpacityBox);
+                refFillOpacityBox->setValue(pct);
+            }
+        }
+        markRefDirty();
+    });
     connect(refFillOpacityBox, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this,
-            [markRefDirty](int) { markRefDirty(); });
+            [this, markRefDirty](int pct) {
+                if (refFillColorBtn) {
+                    QColor c = refFillColorBtn->color();
+                    const int curPct = qBound(PlotStyleLimits::kOpacityMinPercent,
+                                              qRound(c.alpha() * 100.0 / 255.0),
+                                              PlotStyleLimits::kOpacityMaxPercent);
+                    if (curPct != pct) {
+                        c.setAlpha(qBound(0, qRound(pct * 255.0 / 100.0), 255));
+                        QSignalBlocker blocker(refFillColorBtn);
+                        refFillColorBtn->setColor(c);
+                    }
+                }
+                markRefDirty();
+            });
 }
 
 void AxesDialog::initAxisBreakPage()

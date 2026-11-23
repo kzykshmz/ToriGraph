@@ -78,6 +78,7 @@ public slots:
     void showAll(bool all);
     void togglePage(bool all) { showAll(all); }
     void selectCurve(int index);
+    void reject() override;
 
 private slots:
     void showStatistics();
@@ -149,7 +150,8 @@ protected slots:
     void syncPageTabFromMultiLayer();
 
 private:
-    void closeEvent(QCloseEvent *e);
+    void closeEvent(QCloseEvent *e) override;
+    void hideEvent(QHideEvent *e) override;
 
     // ---- external-edit synchronisation (right dock / canvas -> this dialog) -------------------
     void onMultiLayerModified();

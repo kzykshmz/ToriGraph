@@ -905,11 +905,14 @@ public:
             const int origIdx = item->data(Qt::UserRole).toInt(&okIdx);
             if (okIdx && origIdx >= 0 && origIdx < d_pixelPts.size()) {
                 d_pixelPts.remove(origIdx);
+                if (origIdx < d_pointIsManual.size())
+                    d_pointIsManual.remove(origIdx);
                 refreshCalibrationAndPreview();
             }
         });
         connect(btnClearPts, &QPushButton::clicked, this, [this]() {
             d_pixelPts.clear();
+            d_pointIsManual.clear();
             refreshCalibrationAndPreview();
         });
 
@@ -1028,6 +1031,7 @@ private:
         d_hasY1 = false;
         d_hasY2 = false;
         d_pixelPts.clear();
+        d_pointIsManual.clear();
         if (d_chkSortX)
             d_chkSortX->setChecked(false);
         d_hasRoiFirstCorner = false;
@@ -1046,6 +1050,8 @@ private:
         if (btn == Qt::RightButton) {
             if (!d_pixelPts.isEmpty()) {
                 d_pixelPts.removeLast();
+                if (!d_pointIsManual.isEmpty())
+                    d_pointIsManual.removeLast();
                 refreshCalibrationAndPreview();
             }
             return;
@@ -1076,6 +1082,7 @@ private:
             break;
         case DigitizerToolMode::PickPoints:
             d_pixelPts.append(pix);
+            d_pointIsManual.append(true);
             break;
         case DigitizerToolMode::PickColorAutoTrace: {
             const QImage &im = d_canvas->image();
@@ -1129,13 +1136,30 @@ private:
                 d_canvas->traceRoi());
         const bool append = d_chkTraceAppend && d_chkTraceAppend->isChecked();
         if (!append) {
+            const bool hasManualPts = std::any_of(
+                    d_pointIsManual.cbegin(), d_pointIsManual.cend(),
+                    [](bool isManual) { return isManual; });
+            const QObject *ctxObj = d_app ? static_cast<const QObject *>(d_app)
+                                          : static_cast<const QObject *>(this);
+            if (hasManualPts && !ApplicationWindow::isNonInteractiveContext(ctxObj)) {
+                const auto ans = QMessageBox::question(
+                        this, tr("Graph Image Digitizer"),
+                        tr("Auto-trace with \"Append\" unchecked will replace your existing manually picked points.\nContinue and replace existing points?"),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (ans != QMessageBox::Yes)
+                    return;
+            }
             d_pixelPts.clear();
+            d_pointIsManual.clear();
             if (d_chkSortX)
                 d_chkSortX->setChecked(true);
         }
         d_pixelPts.reserve(d_pixelPts.size() + tracedData.size());
-        for (const QPointF &dp : tracedData)
+        d_pointIsManual.reserve(d_pointIsManual.size() + tracedData.size());
+        for (const QPointF &dp : tracedData) {
             d_pixelPts.append(GraphDigitizer::mapDataToPixel(dp, cal));
+            d_pointIsManual.append(false);
+        }
         refreshCalibrationAndPreview();
     }
 
@@ -1163,7 +1187,8 @@ private:
 
     QString calibrationWarningMessage(const GraphDigitizer::AxisCalibration &cal,
                                       bool *hasLogErrorOut = nullptr,
-                                      bool *hasMissingAnchorsOut = nullptr) const
+                                      bool *hasMissingAnchorsOut = nullptr,
+                                      bool *hasDegenerateOut = nullptr) const
     {
         QStringList missing;
         if (!d_hasX1)
@@ -1183,15 +1208,40 @@ private:
             logBad << tr("Y axis Log10 requires Y1 > 0 and Y2 > 0 (currently linear fallback).");
         const bool logError = !logBad.isEmpty();
 
+        QStringList degenBad;
+        const bool xValsEqual = !std::isfinite(cal.valueX1) || !std::isfinite(cal.valueX2)
+                || std::fabs(cal.valueX2 - cal.valueX1)
+                        <= 1e-12 * std::max(std::fabs(cal.valueX1), std::fabs(cal.valueX2));
+        const bool yValsEqual = !std::isfinite(cal.valueY1) || !std::isfinite(cal.valueY2)
+                || std::fabs(cal.valueY2 - cal.valueY1)
+                        <= 1e-12 * std::max(std::fabs(cal.valueY1), std::fabs(cal.valueY2));
+        if (xValsEqual)
+            degenBad << tr("X axis calibration requires X1 != X2.");
+        if (yValsEqual)
+            degenBad << tr("Y axis calibration requires Y1 != Y2.");
+
+        const double pxDistX = std::hypot(cal.pixelX2.x() - cal.pixelX1.x(),
+                                          cal.pixelX2.y() - cal.pixelX1.y());
+        const double pxDistY = std::hypot(cal.pixelY2.x() - cal.pixelY1.x(),
+                                          cal.pixelY2.y() - cal.pixelY1.y());
+        if (d_hasX1 && d_hasX2 && pxDistX < 1.0)
+            degenBad << tr("X1 and X2 pixel anchors must be distinct (distance >= 1 px).");
+        if (d_hasY1 && d_hasY2 && pxDistY < 1.0)
+            degenBad << tr("Y1 and Y2 pixel anchors must be distinct (distance >= 1 px).");
+        const bool degenerateError = !degenBad.isEmpty();
+
         if (hasMissingAnchorsOut)
             *hasMissingAnchorsOut = missingAnchors;
         if (hasLogErrorOut)
             *hasLogErrorOut = logError;
+        if (hasDegenerateOut)
+            *hasDegenerateOut = degenerateError;
 
         QStringList lines;
         if (missingAnchors)
             lines << tr("Uncalibrated anchors: %1 (using default bounds).").arg(missing.join(QStringLiteral(", ")));
         lines.append(logBad);
+        lines.append(degenBad);
         return lines.join(QStringLiteral("\n"));
     }
 
@@ -1227,8 +1277,10 @@ private:
         const GraphDigitizer::AxisCalibration cal = currentCalibration();
         bool logError = false;
         bool missingAnchors = false;
-        const QString warn = calibrationWarningMessage(cal, &logError, &missingAnchors);
-        if (logError) {
+        bool degenerateError = false;
+        const QString warn =
+                calibrationWarningMessage(cal, &logError, &missingAnchors, &degenerateError);
+        if (logError || degenerateError) {
             QMessageBox::warning(this, tr("Graph Image Digitizer"), warn);
             return;
         }
@@ -1268,6 +1320,7 @@ private:
     DigitizerToolMode d_mode = DigitizerToolMode::SetX1;
     QColor d_targetColor = QColor(220, 30, 30);
     QVector<QPointF> d_pixelPts;
+    QVector<bool> d_pointIsManual;
     bool d_hasRoiFirstCorner = false;
     QPoint d_roiFirstCorner;
 

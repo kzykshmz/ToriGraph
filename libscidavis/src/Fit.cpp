@@ -2758,11 +2758,16 @@ Table *Fit::parametersTable(const QString &tableName)
     // the residual degrees of freedom (same as OriginPro's "LCL/UCL"). Undefined cells (e.g. a
     // standard error with zero degrees of freedom) are left empty rather than filled with 0.
     Table *t = app->newTable(tableName, d_p, 6);
-    t->setHeader(QStringList() << tr("Parameter") << tr("Value") << tr("Error") << tr("LowerCI95")
-                               << tr("UpperCI95") << tr("DOF"));
+    t->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Value")
+                               << QStringLiteral("Error") << QStringLiteral("LowerCI95")
+                               << QStringLiteral("UpperCI95") << QStringLiteral("DOF"));
+    const QStringList paramLongNames = { tr("Parameter"), tr("Value"),     tr("Error"),
+                                         tr("LowerCI95"), tr("UpperCI95"), tr("DOF") };
     t->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     for (int c = 1; c < 6; ++c)
         t->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    for (int c = 0; c < 6; ++c)
+        t->column(c)->setLongName(paramLongNames[c]);
     const int dof = degreesOfFreedom();
     for (unsigned i = 0; i < d_p; i++) {
         t->column(0)->setTextAt(i, d_param_names[i]);
@@ -2902,7 +2907,7 @@ Table *Fit::createResidualsTable(const QString &tableName)
             for (size_t k = 0; k < pFree; ++k) {
                 const int j = freeCols[k];
                 const double pj = d_results[size_t(j)];
-                const double h = std::max(1e-7, 1e-5 * std::abs(pj));
+                const double h = std::max(1e-12, 1e-5 * std::abs(pj));
                 std::vector<double> pPlus = d_results;
                 std::vector<double> pMinus = d_results;
                 pPlus[size_t(j)] = pj + h;
@@ -2978,11 +2983,24 @@ Table *Fit::createResidualsTable(const QString &tableName)
     if (!t)
         return nullptr;
 
-    t->setHeader(QStringList() << tr("X") << tr("Y_Obs") << tr("Y_Fit") << tr("Residual")
-                               << tr("Standardized_Residual") << tr("Leverage_hii")
-                               << tr("Cooks_Distance"));
-    for (int col = 0; col < 7; ++col)
+    t->setHeader(QStringList() << QStringLiteral("X") << QStringLiteral("Y_Obs")
+                               << QStringLiteral("Y_Fit") << QStringLiteral("Residual")
+                               << QStringLiteral("Standardized_Residual")
+                               << QStringLiteral("Leverage_hii")
+                               << QStringLiteral("Cooks_Distance"));
+    const QStringList residLongNames = {
+        tr("X"),
+        tr("Y_Obs"),
+        tr("Y_Fit"),
+        tr("Residual"),
+        tr("Standardized_Residual"),
+        tr("Leverage_hii"),
+        tr("Cooks_Distance")
+    };
+    for (int col = 0; col < 7; ++col) {
         t->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        t->column(col)->setLongName(residLongNames[col]);
+    }
     t->column(0)->setPlotDesignation(SciDAVis::X);
     for (int col = 1; col < 7; ++col)
         t->column(col)->setPlotDesignation(SciDAVis::Y);
@@ -3925,11 +3943,17 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
         QString tblName = app->generateUniqueName(tr("BootstrapCI"));
         Table *tbl = app->newTable(tblName, int(d_p), 6);
         if (tbl) {
-            tbl->setHeader(QStringList() << tr("Parameter") << tr("Estimate") << tr("Boot_Mean")
-                                         << tr("Boot_SE") << tr("CI_Low") << tr("CI_High"));
+            tbl->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Estimate")
+                                         << QStringLiteral("Boot_Mean") << QStringLiteral("Boot_SE")
+                                         << QStringLiteral("CI_Low") << QStringLiteral("CI_High"));
+            const QStringList bootLongNames = { tr("Parameter"), tr("Estimate"),
+                                                tr("Boot_Mean"), tr("Boot_SE"),
+                                                tr("CI_Low"),    tr("CI_High") };
             tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
             for (int c = 1; c < 6; ++c)
                 tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            for (int c = 0; c < 6; ++c)
+                tbl->column(c)->setLongName(bootLongNames[c]);
 
             for (unsigned j = 0; j < d_p; ++j) {
                 QString pName = (int(j) < d_param_names.size()) ? d_param_names[int(j)]
@@ -3993,7 +4017,7 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         if (isParameterFixed(int(j)))
             continue;
         double pj = solverPar[j];
-        double h = std::max(1e-7, 1e-5 * std::abs(pj));
+        double h = std::max(1e-12, 1e-5 * std::abs(pj));
         std::vector<double> p_plus = solverPar;
         std::vector<double> p_minus = solverPar;
         p_plus[j] = pj + h;
@@ -4170,12 +4194,13 @@ double Fit::aic() const
     int n = effectivePointCount();
     if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
-    const double rawRss = rss();
-    if (!std::isfinite(rawRss) || rawRss < 0.0)
+    const bool isWeighted = (d_y_error_source != UnknownErrors || d_weighting_method != WeightNone);
+    const double rawObj = isWeighted ? chi_2 : rss();
+    if (!std::isfinite(rawObj) || rawObj < 0.0)
         return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
-    double rssVal = std::max(1e-300, rawRss);
-    return double(n) * std::log(rssVal / double(n)) + 2.0 * double(k);
+    double objVal = std::max(1e-300, rawObj);
+    return double(n) * std::log(objVal / double(n)) + 2.0 * double(k);
 }
 
 double Fit::aicc() const
@@ -4197,12 +4222,13 @@ double Fit::bic() const
     int n = effectivePointCount();
     if (n <= 0 || !hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
-    const double rawRss = rss();
-    if (!std::isfinite(rawRss) || rawRss < 0.0)
+    const bool isWeighted = (d_y_error_source != UnknownErrors || d_weighting_method != WeightNone);
+    const double rawObj = isWeighted ? chi_2 : rss();
+    if (!std::isfinite(rawObj) || rawObj < 0.0)
         return std::numeric_limits<double>::quiet_NaN();
     int k = std::max(1, effectiveFreeParameters()) + 1;
-    double rssVal = std::max(1e-300, rawRss);
-    return double(n) * std::log(rssVal / double(n)) + double(k) * std::log(std::max(1.0, double(n)));
+    double objVal = std::max(1e-300, rawObj);
+    return double(n) * std::log(objVal / double(n)) + double(k) * std::log(std::max(1.0, double(n)));
 }
 
 double Fit::anovaFValue() const
@@ -4563,14 +4589,23 @@ Table *Fit::compareModels(ApplicationWindow *app, Graph *g, const QString &curve
     if (!tbl)
         return nullptr;
 
-    tbl->setHeader(QStringList() << tr("Model") << tr("NumParams") << tr("RSS") << tr("R2")
-                                 << tr("AdjR2") << tr("AIC") << tr("AICc") << tr("BIC")
-                                 << tr("DeltaAIC") << tr("AkaikeWeight") << tr("Rank")
-                                 << tr("Convergence"));
+    tbl->setHeader(QStringList() << QStringLiteral("Model") << QStringLiteral("NumParams")
+                                 << QStringLiteral("RSS") << QStringLiteral("R2")
+                                 << QStringLiteral("AdjR2") << QStringLiteral("AIC")
+                                 << QStringLiteral("AICc") << QStringLiteral("BIC")
+                                 << QStringLiteral("DeltaAIC") << QStringLiteral("AkaikeWeight")
+                                 << QStringLiteral("Rank") << QStringLiteral("Convergence"));
+    const QStringList cmpLongNames = {
+        tr("Model"),        tr("NumParams"), tr("RSS"),     tr("R2"),
+        tr("AdjR2"),        tr("AIC"),       tr("AICc"),    tr("BIC"),
+        tr("DeltaAIC"),     tr("AkaikeWeight"), tr("Rank"), tr("Convergence")
+    };
     tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     for (int c = 1; c < 11; ++c)
         tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
     tbl->column(11)->setColumnMode(SciDAVis::ColumnMode::Text);
+    for (int c = 0; c < 12; ++c)
+        tbl->column(c)->setLongName(cmpLongNames[c]);
 
     for (int i = 0; i < nRows; ++i) {
         const auto &r = evalRows[size_t(i)];

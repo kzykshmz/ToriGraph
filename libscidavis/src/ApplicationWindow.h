@@ -1805,6 +1805,9 @@ private:
     QWidget *d_empty_graph_pane = nullptr;
     QHash<Folder *, QPointer<MyWidget>> d_folder_active_windows;
 
+    bool loadProjectImpl(const QString &fn, ApplicationWindow **outReplacement = nullptr);
+    QString projectLockFilePath(const QString &fn) const;
+    bool isProjectFileLockedByOther(const QString &fn, qint64 *holderPidOut = nullptr) const;
     bool acquireProjectFileLock(const QString &fn, bool interactive);
     void releaseProjectFileLock();
     void trackOpenedProjectFile(const QString &fn);

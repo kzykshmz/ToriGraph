@@ -200,6 +200,26 @@ int ImportASCIIDialog::unitsRowHint() const
 }
 
 namespace {
+enum class Utf16Kind { None, LittleEndian, BigEndian };
+
+Utf16Kind detectUtf16Kind(const QByteArray &b)
+{
+    const auto u = [&b](int i) { return static_cast<unsigned char>(b.at(i)); };
+    if (b.size() >= 2 && u(0) == 0xFF && u(1) == 0xFE)
+        return Utf16Kind::LittleEndian;
+    if (b.size() >= 2 && u(0) == 0xFE && u(1) == 0xFF)
+        return Utf16Kind::BigEndian;
+    if (b.size() >= 4) {
+        int zeros = 0;
+        const int n = qMin(b.size(), 64);
+        for (int i = 0; i < n; ++i)
+            zeros += (u(i) == 0);
+        if (zeros * 4 >= n) // BOM-less UTF-16 of mostly ASCII text
+            return (u(0) == 0) ? Utf16Kind::BigEndian : Utf16Kind::LittleEndian;
+    }
+    return Utf16Kind::None;
+}
+
 // Drop an incomplete multi-byte sequence at the end of a block that was cut at a fixed size, so
 // the preview does not end in a replacement character (UTF-8) or a broken surrogate (UTF-16).
 void trimIncompleteTail(QByteArray &b, bool truncated)
@@ -207,20 +227,11 @@ void trimIncompleteTail(QByteArray &b, bool truncated)
     if (!truncated || b.isEmpty())
         return;
     const auto u = [&b](int i) { return static_cast<unsigned char>(b.at(i)); };
-    const bool utf16le = b.size() >= 2 && u(0) == 0xFF && u(1) == 0xFE;
-    const bool utf16be = b.size() >= 2 && u(0) == 0xFE && u(1) == 0xFF;
-    bool zeroPattern = false;
-    if (!utf16le && !utf16be && b.size() >= 4) {
-        int zeros = 0;
-        const int n = qMin(b.size(), 64);
-        for (int i = 0; i < n; ++i)
-            zeros += (u(i) == 0);
-        zeroPattern = zeros * 4 >= n; // BOM-less UTF-16 of mostly ASCII text
-    }
-    if (utf16le || utf16be || zeroPattern) {
+    const Utf16Kind utf16 = detectUtf16Kind(b);
+    if (utf16 != Utf16Kind::None) {
         if (b.size() % 2)
             b.chop(1);
-        const bool be = utf16be || (zeroPattern && u(0) == 0);
+        const bool be = (utf16 == Utf16Kind::BigEndian);
         if (b.size() >= 2) {
             const int hi = be ? u(b.size() - 2) : u(b.size() - 1);
             if (hi >= 0xD8 && hi <= 0xDB) // dangling high surrogate
@@ -264,9 +275,27 @@ void ImportASCIIDialog::refreshPreview()
     if (truncated) {
         // cut at the last complete line (LF, CR LF or CR only) so a half-read record never
         // shows up as a bogus last row
-        const int lastBreak = qMax(head.lastIndexOf('\n'), head.lastIndexOf('\r'));
-        if (lastBreak > 0)
-            head.truncate(lastBreak + 1);
+        const Utf16Kind utf16 = detectUtf16Kind(head);
+        if (utf16 == Utf16Kind::LittleEndian) {
+            for (int pos = head.size() - 2; pos >= 2; pos -= 2) {
+                if ((head.at(pos) == '\n' || head.at(pos) == '\r') && head.at(pos + 1) == '\0') {
+                    head.truncate(pos + 2);
+                    break;
+                }
+            }
+        } else if (utf16 == Utf16Kind::BigEndian) {
+            for (int pos = head.size() - 2; pos >= 2; pos -= 2) {
+                if (head.at(pos) == '\0'
+                    && (head.at(pos + 1) == '\n' || head.at(pos + 1) == '\r')) {
+                    head.truncate(pos + 2);
+                    break;
+                }
+            }
+        } else {
+            const int lastBreak = qMax(head.lastIndexOf('\n'), head.lastIndexOf('\r'));
+            if (lastBreak > 0)
+                head.truncate(lastBreak + 1);
+        }
     }
 
     QString text = AsciiTableImportFilter::decodeLabTextAuto(head, encodingHint());

@@ -184,6 +184,14 @@ RULES: List[Rule] = [
          "Presentation Slide → 発表スライド", runtime_safe=True),
     Rule("isij-unit", r"物理量 / 単位 \(ISIJ形式\)", "物理量 / 単位 (ISIJ)",
          "物理量 / 単位 (ISIJ) の表記", runtime_safe=False),
+    Rule("long-name", "ロングネーム", "長い名前",
+         "ロングネーム → 長い名前", runtime_safe=True),
+    Rule("column-role", "プロット属性", "列の役割",
+         "プロット属性 → 列の役割", runtime_safe=True),
+    Rule("band-structure", r"バンド構造\s*\(Band Structure\)", "バンド構造",
+         "バンド構造 (Band Structure) → バンド構造", runtime_safe=True),
+    Rule("lock-aspect-ratio", r"縦横比を固定\s*\(Lock Aspect Ratio\)", "縦横比を固定",
+         "縦横比を固定 (Lock Aspect Ratio) → 縦横比を固定", runtime_safe=True),
 ]
 
 
@@ -221,12 +229,6 @@ def check_entries(entries: List[Entry]) -> List[str]:
         if not e.ja:
             problems.append(f"line {e.line}: 訳が空 {e.en!r}")
         fixed, hits = apply_rules(e.en, e.ja)
-        if "ロングネーム" in fixed:
-            fixed = fixed.replace("ロングネーム", "長い名前")
-            hits.append("long-name")
-        if "プロット属性" in fixed:
-            fixed = fixed.replace("プロット属性", "列の役割")
-            hits.append("column-role")
         if hits:
             problems.append(f"line {e.line}: 用語の揺れ [{', '.join(hits)}] {e.en!r}: "
                             f"{e.ja!r} → {fixed!r}")

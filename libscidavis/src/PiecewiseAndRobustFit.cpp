@@ -65,6 +65,45 @@ public:
         d_tolerance = 1e-10;
         d_max_iterations = 500;
     }
+
+    int activePointCount() const { return effectivePointCount(); }
+
+    double weightedOrUnweightedTss() const
+    {
+        const size_t m = d_y.size();
+        if (m == 0)
+            return 0.0;
+        if (d_y_error_source == Fit::UnknownErrors || d_y_errors.size() != m) {
+            const double meanY = std::accumulate(d_y.begin(), d_y.end(), 0.0) / double(m);
+            double tss = 0.0;
+            for (double yi : d_y) {
+                const double dy = yi - meanY;
+                tss += dy * dy;
+            }
+            return tss;
+        }
+        double wSum = 0.0, wySum = 0.0;
+        for (size_t i = 0; i < m; ++i) {
+            const double s = d_y_errors[i];
+            if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                continue;
+            const double w = 1.0 / (s * s);
+            wSum += w;
+            wySum += w * d_y[i];
+        }
+        if (!(wSum > 0.0))
+            return 0.0;
+        const double meanY = wySum / wSum;
+        double tss = 0.0;
+        for (size_t i = 0; i < m; ++i) {
+            const double s = d_y_errors[i];
+            if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+                continue;
+            const double dy = (d_y[i] - meanY) / s;
+            tss += dy * dy;
+        }
+        return tss;
+    }
 };
 
 static QwtPlotCurve *resolveCurveOnGraph(Graph *g, const QString &curveTitle, QString *outName = nullptr)
@@ -706,21 +745,29 @@ static bool computePiecewiseCore(const std::vector<double> &xv, const std::vecto
         res.breakpointsY[j] = evalModelY(bpX);
     }
 
+    double yAbsMax = 0.0;
+    for (double yi : yv)
+        yAbsMax = std::max(yAbsMax, std::fabs(yi));
+    const double yScale = std::max(yAbsMax, std::numeric_limits<double>::min());
+    const double yScale2 = yScale * yScale;
+
     const double meanY = std::accumulate(yv.begin(), yv.end(), 0.0) / double(n);
     double tss = 0.0;
     for (double yi : yv) {
         const double dy = yi - meanY;
         tss += dy * dy;
     }
-    res.rSquare = (tss > 1e-30) ? std::clamp(1.0 - bestRss / tss, 0.0, 1.0)
-                                : ((bestRss <= 1e-24) ? 1.0 : 0.0);
+    const double tssRef = std::max(tss, yScale2);
+    const double tssTiny = 1e-28 * yScale2;
+    res.rSquare = (tss > tssTiny) ? std::clamp(1.0 - bestRss / tss, 0.0, 1.0)
+                                  : ((bestRss <= 1e-24 * tssRef) ? 1.0 : 0.0);
     const int kFree = 2 * S; // a0 + S slopes + (S-1) breakpoints = 2*S
-    const double effRss = std::max(bestRss, 1e-30 * std::max(1.0, tss));
+    const double effRss = std::max(bestRss, 1e-30 * tssRef);
     res.aic = double(n) * std::log(effRss / double(n)) + 2.0 * double(kFree + 1);
 
     // Compute Breakpoint X Standard Errors (Delta-Method Segmented Fisher Info + Profile-RSS Fallback)
     const int dof = std::max(1, static_cast<int>(n) - kFree);
-    const bool noiseless = (bestRss <= 1e-24 * std::max(1.0, tss));
+    const bool noiseless = (bestRss <= 1e-24 * tssRef);
     if (!noiseless && static_cast<int>(n) > kFree) {
         const double s2 = bestRss / double(dof);
         const size_t dim = static_cast<size_t>(kFree);
@@ -776,7 +823,7 @@ static bool computePiecewiseCore(const std::vector<double> &xv, const std::vecto
                     std::vector<double> prevTrial = bestTau;
                     prevTrial[size_t(knotIdx)] = prevCand;
                     const double rPrev = ctx.evalObjective(prevTrial);
-                    const double frac = (r > rPrev + 1e-30)
+                    const double frac = (r > rPrev + 1e-30 * tssRef)
                             ? std::clamp((critRss - rPrev) / (r - rPrev), 0.0, 1.0)
                             : 0.5;
                     tLeft = prevCand + frac * (cand - prevCand);
@@ -795,7 +842,7 @@ static bool computePiecewiseCore(const std::vector<double> &xv, const std::vecto
                     std::vector<double> prevTrial = bestTau;
                     prevTrial[size_t(knotIdx)] = prevCand;
                     const double rPrev = ctx.evalObjective(prevTrial);
-                    const double frac = (r > rPrev + 1e-30)
+                    const double frac = (r > rPrev + 1e-30 * tssRef)
                             ? std::clamp((critRss - rPrev) / (r - rPrev), 0.0, 1.0)
                             : 0.5;
                     tRight = prevCand + frac * (cand - prevCand);
@@ -809,7 +856,7 @@ static bool computePiecewiseCore(const std::vector<double> &xv, const std::vecto
             const double dGamma = std::fabs(coeffs[size_t(2 + j)]);
             const size_t idxBp = size_t(2 + K + j);
             double seTau = 0.0;
-            if (invOk && dGamma > 1e-8 && invG[idxBp][idxBp] > 0.0) {
+            if (invOk && dGamma > 1e-8 * yScale && invG[idxBp][idxBp] > 0.0) {
                 const double deltaSE = std::sqrt(s2 * invG[idxBp][idxBp]);
                 if (std::isfinite(deltaSE) && deltaSE <= 0.5) {
                     seTau = deltaSE;
@@ -1232,12 +1279,17 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
     Table *tbl = app->newTable(reportRows.size(), 2, tblName,
                                QObject::tr("Piecewise Linear Fit Report"));
     if (tbl) {
-        tbl->setHeader(QStringList() << QObject::tr("Parameter") << QObject::tr("Value"));
+        tbl->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Value"));
+        tbl->column(0)->setLongName(QObject::tr("Parameter"));
+        tbl->column(1)->setLongName(QObject::tr("Value"));
         tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         for (int r = 0; r < reportRows.size(); ++r) {
             tbl->column(0)->setTextAt(r, reportRows[r].first);
-            tbl->column(1)->setValueAt(r, reportRows[r].second);
+            if (std::isfinite(reportRows[r].second))
+                tbl->column(1)->setValueAt(r, reportRows[r].second);
+            else
+                tbl->column(1)->setInvalid(r, true);
         }
         res.reportTable = tbl;
     }
@@ -1325,22 +1377,32 @@ PiecewiseAndRobustFit::fitRobustOrQuantileLinear(ApplicationWindow *app, Graph *
     const QString tblName = app->generateUniqueName(methodTag + QStringLiteral("_Report"), false);
     Table *tbl = app->newTable(6, 3, tblName, QObject::tr("Robust / Quantile Regression Report"));
     if (tbl) {
-        tbl->setHeader(QStringList() << QObject::tr("Parameter") << QObject::tr("Estimate")
-                                     << QObject::tr("Std_Error"));
+        tbl->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Estimate")
+                                     << QStringLiteral("Std_Error"));
+        tbl->column(0)->setLongName(QObject::tr("Parameter"));
+        tbl->column(1)->setLongName(QObject::tr("Estimate"));
+        tbl->column(2)->setLongName(QObject::tr("Std_Error"));
         tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         tbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
 
+        auto setNumOrInvalid = [&](int row, int col, double val) {
+            if (std::isfinite(val))
+                tbl->column(col)->setValueAt(row, val);
+            else
+                tbl->column(col)->setInvalid(row, true);
+        };
+
         tbl->column(0)->setTextAt(0, QStringLiteral("Intercept"));
-        tbl->column(1)->setValueAt(0, res.intercept);
-        tbl->column(2)->setValueAt(0, res.interceptSE);
+        setNumOrInvalid(0, 1, res.intercept);
+        setNumOrInvalid(0, 2, res.interceptSE);
 
         tbl->column(0)->setTextAt(1, QStringLiteral("Slope"));
-        tbl->column(1)->setValueAt(1, res.slope);
-        tbl->column(2)->setValueAt(1, res.slopeSE);
+        setNumOrInvalid(1, 1, res.slope);
+        setNumOrInvalid(1, 2, res.slopeSE);
 
         tbl->column(0)->setTextAt(2, QStringLiteral("MAD_Scale"));
-        tbl->column(1)->setValueAt(2, res.scaleMAD);
+        setNumOrInvalid(2, 1, res.scaleMAD);
         tbl->column(2)->setValueAt(2, 0.0);
 
         tbl->column(0)->setTextAt(3, QStringLiteral("N_Points"));
@@ -1419,6 +1481,7 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
 
     // 2. Fit Separate parameters on each curve independently
     double rssSeparate = 0.0;
+    double tssEffective = 0.0;
     for (int m = 0; m < K; ++m) {
         SilentNonLinearFit sepFitter(app, g);
         if (!configureModelOnFitter(sepFitter, modelName))
@@ -1427,6 +1490,7 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
         if (!sepFitter.fitGlobal(QStringList() << validCurves[m], noneShared, nullptr))
             return res;
         rssSeparate += std::max(0.0, sepFitter.chiSquare());
+        tssEffective += sepFitter.weightedOrUnweightedTss();
     }
 
     // Also evaluate joint unshared global fit in case shared optimizer landed in a slightly worse
@@ -1434,20 +1498,25 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
     if (rssShared < rssSeparate)
         rssShared = rssSeparate;
 
-    const int dfShared = nTotal - p;
-    const int dfSeparate = nTotal - K * p;
+    const int nEff = (globalFitter.activePointCount() > 0)
+            ? globalFitter.activePointCount()
+            : nTotal;
+    const int dfShared = nEff - p;
+    const int dfSeparate = nEff - K * p;
     const int dfDiff = dfShared - dfSeparate; // (K - 1) * p > 0
     if (dfSeparate <= 0 || dfDiff <= 0)
         return res;
 
-    const double noiselessFloor = 1e-18 * std::max(1.0, tssTotal);
+    const double baseTss = (tssEffective > 0.0) ? tssEffective : tssTotal;
+    const double objScale = std::max({ baseTss, rssShared, std::numeric_limits<double>::min() });
+    const double noiselessFloor = 1e-18 * objScale;
     double fStat = 0.0;
     double pVal = 1.0;
 
     if (rssShared <= noiselessFloor && rssSeparate <= noiselessFloor) {
         fStat = 0.0;
         pVal = 1.0;
-    } else if (rssSeparate <= 1e-26 * std::max(1.0, rssShared)) {
+    } else if (rssSeparate <= 1e-26 * std::max(rssShared, objScale)) {
         fStat = 1e12;
         pVal = 0.0;
     } else {
@@ -1465,17 +1534,19 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
     }
 
     auto computeAICc = [&](double rssVal, int kParams) -> double {
-        const double effRss = std::max(rssVal, 1e-24 * std::max(1.0, tssTotal));
+        if (nEff <= kParams + 2)
+            return std::numeric_limits<double>::quiet_NaN();
+        const double effRss = std::max(rssVal, 1e-24 * objScale);
         const double k = double(kParams + 1);
-        const double aic = double(nTotal) * std::log(effRss / double(nTotal)) + 2.0 * k;
-        if (nTotal > kParams + 2)
-            return aic + (2.0 * k * (k + 1.0)) / double(nTotal - kParams - 2);
-        return aic + 2.0 * k * (k + 1.0);
+        const double aic = double(nEff) * std::log(effRss / double(nEff)) + 2.0 * k;
+        return aic + (2.0 * k * (k + 1.0)) / double(nEff - kParams - 2);
     };
 
     const double aiccShared = computeAICc(rssShared, p);
     const double aiccSeparate = computeAICc(rssSeparate, K * p);
-    const double deltaAICc = aiccShared - aiccSeparate;
+    const double deltaAICc = (std::isfinite(aiccShared) && std::isfinite(aiccSeparate))
+            ? (aiccShared - aiccSeparate)
+            : std::numeric_limits<double>::quiet_NaN();
 
     res.valid = true;
     res.rssShared = rssShared;
@@ -1490,14 +1561,22 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
     const QString tblName = app->generateUniqueName(QStringLiteral("DatasetComparison"), false);
     Table *tbl = app->newTable(2, 7, tblName, QObject::tr("Dataset Comparison F-Test"));
     if (tbl) {
-        tbl->setHeader(QStringList() << QObject::tr("Hypothesis_Model") << QObject::tr("RSS")
-                                     << QObject::tr("DF") << QObject::tr("AICc")
-                                     << QObject::tr("F_Statistic") << QObject::tr("p_Value")
-                                     << QObject::tr("Conclusion"));
+        tbl->setHeader(QStringList() << QStringLiteral("Hypothesis_Model") << QStringLiteral("RSS")
+                                     << QStringLiteral("DF") << QStringLiteral("AICc")
+                                     << QStringLiteral("F_Statistic") << QStringLiteral("p_Value")
+                                     << QStringLiteral("Conclusion"));
+        const QStringList cmpLongNames = {
+            QObject::tr("Hypothesis_Model"), QObject::tr("RSS"),
+            QObject::tr("DF"),               QObject::tr("AICc"),
+            QObject::tr("F_Statistic"),      QObject::tr("p_Value"),
+            QObject::tr("Conclusion")
+        };
         tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         for (int c = 1; c <= 5; ++c)
             tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         tbl->column(6)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 0; c < 7; ++c)
+            tbl->column(c)->setLongName(cmpLongNames[c]);
 
         const QString conclusion = res.preferSeparate
                 ? QObject::tr("Reject Shared (Different parameters across datasets)")
@@ -1506,7 +1585,10 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
         tbl->column(0)->setTextAt(0, QStringLiteral("Global_Shared (%1)").arg(modelName));
         tbl->column(1)->setValueAt(0, rssShared);
         tbl->column(2)->setValueAt(0, double(dfShared));
-        tbl->column(3)->setValueAt(0, aiccShared);
+        if (std::isfinite(aiccShared))
+            tbl->column(3)->setValueAt(0, aiccShared);
+        else
+            tbl->column(3)->setInvalid(0, true);
         tbl->column(4)->setValueAt(0, fStat);
         tbl->column(5)->setValueAt(0, pVal);
         tbl->column(6)->setTextAt(0, conclusion);
@@ -1514,7 +1596,10 @@ PiecewiseAndRobustFit::compareDatasets(ApplicationWindow *app, Graph *g,
         tbl->column(0)->setTextAt(1, QStringLiteral("Separate_Per_Dataset (%1)").arg(modelName));
         tbl->column(1)->setValueAt(1, rssSeparate);
         tbl->column(2)->setValueAt(1, double(dfSeparate));
-        tbl->column(3)->setValueAt(1, aiccSeparate);
+        if (std::isfinite(aiccSeparate))
+            tbl->column(3)->setValueAt(1, aiccSeparate);
+        else
+            tbl->column(3)->setInvalid(1, true);
         tbl->column(4)->setValueAt(1, fStat);
         tbl->column(5)->setValueAt(1, pVal);
         tbl->column(6)->setTextAt(1, conclusion);
@@ -1643,14 +1728,24 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
         tss += dy * dy;
     }
 
-    res.rSquare = (tss > 1e-30) ? std::clamp(1.0 - rss / tss, 0.0, 1.0)
-                                : ((rss <= 1e-24) ? 1.0 : 0.0);
-    res.adjRSquare = (n > p && tss > 1e-30)
-            ? (1.0 - (1.0 - res.rSquare) * double(n - 1) / double(n - p))
-            : res.rSquare;
+    double yAbsMax = 0.0;
+    for (double yi : yObs)
+        yAbsMax = std::max(yAbsMax, std::fabs(yi));
+    const double yScale = std::max(yAbsMax, std::numeric_limits<double>::min());
+    const double yScale2 = yScale * yScale;
+    const double tssRef = std::max(tss, yScale2);
+    const double tssTiny = 1e-28 * yScale2;
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    res.rSquare = (tss > tssTiny) ? std::clamp(1.0 - rss / tss, 0.0, 1.0)
+                                  : ((rss <= 1e-24 * tssRef) ? 1.0 : 0.0);
+    res.adjRSquare = (n > p)
+            ? ((tss > tssTiny) ? (1.0 - (1.0 - res.rSquare) * double(n - 1) / double(n - p))
+                               : res.rSquare)
+            : nan;
 
     const int dfErr = std::max(1, n - p);
-    const bool noiseless = (rss <= 1e-22 * std::max(1.0, tss));
+    const bool noiseless = (rss <= 1e-22 * tssRef);
 
     res.stdErrors.resize(p);
     res.tValues.resize(p);
@@ -1661,7 +1756,6 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
     // straight line).  Multiplying by rss/dfErr again would double-scale the
     // SE, so the diagonal is used as-is.  Only gsl_multifit_wlinear() returns
     // the unscaled (X^T W X)^-1.
-    const double nan = std::numeric_limits<double>::quiet_NaN();
     for (int j = 0; j < p; ++j) {
         if (n <= p) {
             // Residual degrees of freedom are zero: SE / t / p are undefined.
@@ -1670,6 +1764,15 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
             res.pValues[j] = nan;
             continue;
         }
+        double xScaleJ = 1.0;
+        if (j > 0) {
+            double xAbsMax = 0.0;
+            for (int i = 0; i < n; ++i)
+                xAbsMax = std::max(xAbsMax, std::fabs(xObs[size_t(i)][size_t(j - 1)]));
+            xScaleJ = std::max(xAbsMax, std::numeric_limits<double>::min());
+        }
+        const double betaScale = (j == 0) ? yScale : (yScale / xScaleJ);
+
         const double cjj = gsl_matrix_get(cov, size_t(j), size_t(j));
         const double se = noiseless ? 0.0
                                     : ((std::isfinite(cjj) && cjj >= 0.0) ? std::sqrt(cjj) : nan);
@@ -1678,13 +1781,13 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
         if (!std::isfinite(se)) {
             res.tValues[j] = nan;
             res.pValues[j] = nan;
-        } else if (se > 1e-30) {
+        } else if (se > 1e-30 * betaScale) {
             const double tv = res.betas[j] / se;
             res.tValues[j] = tv;
             res.pValues[j] = (n > p)
                     ? std::clamp(2.0 * gsl_cdf_tdist_Q(std::fabs(tv), double(dfErr)), 0.0, 1.0)
                     : 1.0;
-        } else if (std::fabs(res.betas[j]) > 1e-12) {
+        } else if (std::fabs(res.betas[j]) > 1e-12 * betaScale) {
             res.tValues[j] = (res.betas[j] > 0.0) ? 1e12 : -1e12;
             res.pValues[j] = 0.0;
         } else {
@@ -1700,7 +1803,7 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
     if (n <= p) {
         res.fStatistic = nan;
         res.fPValue = nan;
-    } else if (noiseless && mss > 1e-24) {
+    } else if (noiseless && mss > 1e-24 * tssRef) {
         res.fStatistic = 1e12;
         res.fPValue = 0.0;
     } else if (msErr > 1e-300 && n > p) {
@@ -1726,9 +1829,11 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
 
         for (int m = 0; m < k; ++m) {
             double meanXm = 0.0;
+            double xAbsMaxM = 0.0;
             for (int i = 0; i < n; ++i) {
                 const double xmVal = xObs[size_t(i)][size_t(m)];
                 meanXm += xmVal;
+                xAbsMaxM = std::max(xAbsMaxM, std::fabs(xmVal));
                 gsl_vector_set(Ysub, size_t(i), xmVal);
                 gsl_matrix_set(Xsub, size_t(i), 0, 1.0);
                 int colPos = 1;
@@ -1740,6 +1845,7 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
                 }
             }
             meanXm /= double(n);
+            const double xScaleM = std::max(xAbsMaxM, std::numeric_limits<double>::min());
 
             double tssM = 0.0;
             for (int i = 0; i < n; ++i) {
@@ -1748,7 +1854,7 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
             }
 
             double chisqSub = 0.0;
-            if (tssM <= 1e-30
+            if (tssM <= 1e-28 * xScaleM * xScaleM
                 || gsl_multifit_linear(Xsub, Ysub, Csub, covSub, &chisqSub, wsSub) != GSL_SUCCESS) {
                 res.vif[m] = 1.0;
             } else {
@@ -1792,28 +1898,44 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
     Table *tbl = app->newTable(reportRows, 8, tblName,
                                QObject::tr("Multiple Linear Regression Summary"));
     if (tbl) {
-        tbl->setHeader(QStringList() << QObject::tr("Term") << QObject::tr("Beta")
-                                     << QObject::tr("Std_Error") << QObject::tr("t_Value")
-                                     << QObject::tr("p_Value") << QObject::tr("VIF")
-                                     << QObject::tr("Model_Metric") << QObject::tr("Metric_Value"));
+        tbl->setHeader(QStringList() << QStringLiteral("Term") << QStringLiteral("Beta")
+                                     << QStringLiteral("Std_Error") << QStringLiteral("t_Value")
+                                     << QStringLiteral("p_Value") << QStringLiteral("VIF")
+                                     << QStringLiteral("Model_Metric")
+                                     << QStringLiteral("Metric_Value"));
+        const QStringList mlrLongNames = {
+            QObject::tr("Term"),         QObject::tr("Beta"),
+            QObject::tr("Std_Error"),    QObject::tr("t_Value"),
+            QObject::tr("p_Value"),      QObject::tr("VIF"),
+            QObject::tr("Model_Metric"), QObject::tr("Metric_Value")
+        };
         tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         for (int c = 1; c <= 5; ++c)
             tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         tbl->column(6)->setColumnMode(SciDAVis::ColumnMode::Text);
         tbl->column(7)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        for (int c = 0; c < 8; ++c)
+            tbl->column(c)->setLongName(mlrLongNames[c]);
+
+        auto setNumOrInvalid = [&](int row, int col, double val) {
+            if (std::isfinite(val))
+                tbl->column(col)->setValueAt(row, val);
+            else
+                tbl->column(col)->setInvalid(row, true);
+        };
 
         for (int r = 0; r < reportRows; ++r) {
             if (r < p) {
                 tbl->column(0)->setTextAt(r, (r == 0) ? QStringLiteral("(Intercept)")
                                                       : xLabels[r - 1]);
-                tbl->column(1)->setValueAt(r, res.betas[r]);
-                tbl->column(2)->setValueAt(r, res.stdErrors[r]);
-                tbl->column(3)->setValueAt(r, res.tValues[r]);
-                tbl->column(4)->setValueAt(r, res.pValues[r]);
+                setNumOrInvalid(r, 1, res.betas[r]);
+                setNumOrInvalid(r, 2, res.stdErrors[r]);
+                setNumOrInvalid(r, 3, res.tValues[r]);
+                setNumOrInvalid(r, 4, res.pValues[r]);
                 if (r == 0)
                     tbl->column(5)->setInvalid(r, true);
                 else
-                    tbl->column(5)->setValueAt(r, res.vif[r - 1]);
+                    setNumOrInvalid(r, 5, res.vif[r - 1]);
             } else {
                 for (int c = 1; c <= 5; ++c)
                     tbl->column(c)->setInvalid(r, true);
@@ -1831,7 +1953,7 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
         for (int r = 0; r < reportRows; ++r) {
             if (r < modelSummary.size()) {
                 tbl->column(6)->setTextAt(r, modelSummary[r].first);
-                tbl->column(7)->setValueAt(r, modelSummary[r].second);
+                setNumOrInvalid(r, 7, modelSummary[r].second);
             } else {
                 tbl->column(7)->setInvalid(r, true);
             }
@@ -1845,8 +1967,12 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
                 app->generateUniqueName(srcTable->name() + QStringLiteral("_MLR_Diag"), false);
         Table *diagTbl = app->newTable(n, 3, diagTblName, QObject::tr("MLR Diagnostics Data"));
         if (diagTbl) {
-            diagTbl->setHeader(QStringList() << QObject::tr("Predicted_Y") << QObject::tr("Actual_Y")
-                                             << QObject::tr("Residual"));
+            diagTbl->setHeader(QStringList() << QStringLiteral("Predicted_Y")
+                                             << QStringLiteral("Actual_Y")
+                                             << QStringLiteral("Residual"));
+            diagTbl->column(0)->setLongName(QObject::tr("Predicted_Y"));
+            diagTbl->column(1)->setLongName(QObject::tr("Actual_Y"));
+            diagTbl->column(2)->setLongName(QObject::tr("Residual"));
             for (int c = 0; c < 3; ++c)
                 diagTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
             diagTbl->column(0)->setPlotDesignation(SciDAVis::X);
@@ -2412,26 +2538,41 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                                QObject::tr("Binary Logistic Regression Summary"));
     if (tbl) {
         tbl->setHeader(QStringList()
-                       << QObject::tr("Term") << QObject::tr("Beta") << QObject::tr("Std_Error")
-                       << QObject::tr("Wald_Z") << QObject::tr("p_Value")
-                       << QObject::tr("Odds_Ratio") << QObject::tr("OR_95CI_Low")
-                       << QObject::tr("OR_95CI_High") << QObject::tr("Model_Metric")
-                       << QObject::tr("Metric_Value"));
+                       << QStringLiteral("Term") << QStringLiteral("Beta")
+                       << QStringLiteral("Std_Error") << QStringLiteral("Wald_Z")
+                       << QStringLiteral("p_Value") << QStringLiteral("Odds_Ratio")
+                       << QStringLiteral("OR_95CI_Low") << QStringLiteral("OR_95CI_High")
+                       << QStringLiteral("Model_Metric") << QStringLiteral("Metric_Value"));
+        const QStringList logLongNames = {
+            QObject::tr("Term"),         QObject::tr("Beta"),        QObject::tr("Std_Error"),
+            QObject::tr("Wald_Z"),       QObject::tr("p_Value"),     QObject::tr("Odds_Ratio"),
+            QObject::tr("OR_95CI_Low"),  QObject::tr("OR_95CI_High"), QObject::tr("Model_Metric"),
+            QObject::tr("Metric_Value")
+        };
         tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         for (int c = 1; c <= 7; ++c)
             tbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         tbl->column(8)->setColumnMode(SciDAVis::ColumnMode::Text);
         tbl->column(9)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        for (int c = 0; c < 10; ++c)
+            tbl->column(c)->setLongName(logLongNames[c]);
+
+        auto setNumOrInvalid = [&](int row, int col, double val) {
+            if (std::isfinite(val))
+                tbl->column(col)->setValueAt(row, val);
+            else
+                tbl->column(col)->setInvalid(row, true);
+        };
 
         const double z95 = 1.959963984540054;
         for (int r = 0; r < reportRows; ++r) {
             if (r < p) {
                 tbl->column(0)->setTextAt(r, (r == 0) ? QStringLiteral("(Intercept)")
                                                       : xLabels[r - 1]);
-                tbl->column(1)->setValueAt(r, res.betas[r]);
-                tbl->column(2)->setValueAt(r, res.stdErrors[r]);
-                tbl->column(3)->setValueAt(r, res.waldZ[r]);
-                tbl->column(4)->setValueAt(r, res.pValues[r]);
+                setNumOrInvalid(r, 1, res.betas[r]);
+                setNumOrInvalid(r, 2, res.stdErrors[r]);
+                setNumOrInvalid(r, 3, res.waldZ[r]);
+                setNumOrInvalid(r, 4, res.pValues[r]);
                 if (r == 0) {
                     tbl->column(5)->setInvalid(r, true);
                     tbl->column(6)->setInvalid(r, true);
@@ -2439,9 +2580,16 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                 } else {
                     const double b = res.betas[r];
                     const double se = res.stdErrors[r];
-                    tbl->column(5)->setValueAt(r, res.oddsRatios[r - 1]);
-                    tbl->column(6)->setValueAt(r, std::exp(std::clamp(b - z95 * se, -500.0, 500.0)));
-                    tbl->column(7)->setValueAt(r, std::exp(std::clamp(b + z95 * se, -500.0, 500.0)));
+                    setNumOrInvalid(r, 5, res.oddsRatios[r - 1]);
+                    if (fisherInvertible && std::isfinite(b) && std::isfinite(se)) {
+                        tbl->column(6)->setValueAt(
+                                r, std::exp(std::clamp(b - z95 * se, -500.0, 500.0)));
+                        tbl->column(7)->setValueAt(
+                                r, std::exp(std::clamp(b + z95 * se, -500.0, 500.0)));
+                    } else {
+                        tbl->column(6)->setInvalid(r, true);
+                        tbl->column(7)->setInvalid(r, true);
+                    }
                 }
             } else {
                 for (int c = 1; c <= 7; ++c)
@@ -2462,7 +2610,7 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
         for (int r = 0; r < reportRows; ++r) {
             if (r < modelMetrics.size()) {
                 tbl->column(8)->setTextAt(r, modelMetrics[r].first);
-                tbl->column(9)->setValueAt(r, modelMetrics[r].second);
+                setNumOrInvalid(r, 9, modelMetrics[r].second);
             } else {
                 tbl->column(9)->setInvalid(r, true);
             }
@@ -2505,9 +2653,12 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                                        QObject::tr("Logistic Regression Probability Data"));
         if (plotTbl) {
             plotTbl->setHeader(QStringList()
-                               << ((k == 1) ? xLabels[0] : QObject::tr("Linear_Score_z"))
-                               << QObject::tr("Observed_Y")
-                               << QObject::tr("Predicted_Prob"));
+                               << ((k == 1) ? xLabels[0] : QStringLiteral("Linear_Score_z"))
+                               << QStringLiteral("Observed_Y")
+                               << QStringLiteral("Predicted_Prob"));
+            plotTbl->column(0)->setLongName((k == 1) ? xLabels[0] : QObject::tr("Linear_Score_z"));
+            plotTbl->column(1)->setLongName(QObject::tr("Observed_Y"));
+            plotTbl->column(2)->setLongName(QObject::tr("Predicted_Prob"));
             for (int c = 0; c < 3; ++c)
                 plotTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
             plotTbl->column(0)->setPlotDesignation(SciDAVis::X);
@@ -2549,6 +2700,7 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                             gyHi(static_cast<size_t>(nGrid));
                     const double z95 = 1.959963984540054;
                     std::vector<double> vStd(size_t(p), 0.0);
+                    bool plotCI = fisherInvertible;
 
                     for (int gi = 0; gi < nGrid; ++gi) {
                         const double tg = tMin + (tMax - tMin) * double(gi) / double(nGrid - 1);
@@ -2558,29 +2710,37 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
                         double varEta = 0.0;
                         if (k == 1) {
                             etaHat = res.betas[0] + res.betas[1] * tg;
-                            varEta = covBeta[0][0] + 2.0 * tg * covBeta[0][1]
-                                    + tg * tg * covBeta[1][1];
+                            if (plotCI) {
+                                varEta = covBeta[0][0] + 2.0 * tg * covBeta[0][1]
+                                        + tg * tg * covBeta[1][1];
+                            }
                         } else {
                             etaHat = tg;
-                            vStd[0] = 1.0;
-                            const double scaleDir = (normGammaSlopeSq > 1e-24)
-                                    ? ((tg - gamma[0]) / normGammaSlopeSq)
-                                    : 0.0;
-                            for (int j = 1; j < p; ++j)
-                                vStd[size_t(j)] = scaleDir * gamma[size_t(j)];
-                            for (int a = 0; a < p; ++a) {
-                                for (int b = 0; b < p; ++b)
-                                    varEta += vStd[size_t(a)] * covGamma[size_t(a)][size_t(b)]
-                                            * vStd[size_t(b)];
+                            if (plotCI) {
+                                vStd[0] = 1.0;
+                                const double scaleDir = (normGammaSlopeSq > 1e-24)
+                                        ? ((tg - gamma[0]) / normGammaSlopeSq)
+                                        : 0.0;
+                                for (int j = 1; j < p; ++j)
+                                    vStd[size_t(j)] = scaleDir * gamma[size_t(j)];
+                                for (int a = 0; a < p; ++a) {
+                                    for (int b = 0; b < p; ++b)
+                                        varEta += vStd[size_t(a)] * covGamma[size_t(a)][size_t(b)]
+                                                * vStd[size_t(b)];
+                                }
                             }
                         }
 
-                        const double seEta = (std::isfinite(varEta) && varEta > 0.0)
-                                ? std::sqrt(varEta)
-                                : 0.0;
                         gyProb[size_t(gi)] = sigmoidStable(etaHat);
-                        gyLo[size_t(gi)] = sigmoidStable(etaHat - z95 * seEta);
-                        gyHi[size_t(gi)] = sigmoidStable(etaHat + z95 * seEta);
+                        if (plotCI) {
+                            if (std::isfinite(varEta) && varEta > 0.0) {
+                                const double seEta = std::sqrt(varEta);
+                                gyLo[size_t(gi)] = sigmoidStable(etaHat - z95 * seEta);
+                                gyHi[size_t(gi)] = sigmoidStable(etaHat + z95 * seEta);
+                            } else {
+                                plotCI = false;
+                            }
+                        }
                     }
 
                     auto attachCurve = [&](const QString &name, const std::vector<double> &yvCurve,
@@ -2596,10 +2756,12 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
 
                     attachCurve(QStringLiteral("Logistic_P"), gyProb,
                                 QPen(QColor(215, 25, 28), 2, Qt::SolidLine));
-                    attachCurve(QStringLiteral("Logistic_95CI_Lower"), gyLo,
-                                QPen(QColor(0, 114, 178), 1, Qt::DashLine));
-                    attachCurve(QStringLiteral("Logistic_95CI_Upper"), gyHi,
-                                QPen(QColor(0, 114, 178), 1, Qt::DashLine));
+                    if (plotCI) {
+                        attachCurve(QStringLiteral("Logistic_95CI_Lower"), gyLo,
+                                    QPen(QColor(0, 114, 178), 1, Qt::DashLine));
+                        attachCurve(QStringLiteral("Logistic_95CI_Upper"), gyHi,
+                                    QPen(QColor(0, 114, 178), 1, Qt::DashLine));
+                    }
 
                     // P = 0.5 decision threshold reference line
                     FunctionCurve *halfLn = new FunctionCurve(

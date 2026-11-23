@@ -26819,6 +26819,8 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
 }
 
 #include "future/matrix/future_Matrix.h"
+#include <qwt_layout_metrics.h>
+#include <qwt_painter.h>
 
 namespace {
 struct Suite78AxesDialogProbe : public AxesDialog
@@ -26982,6 +26984,8 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
     {
         AppWinGuard78 w78Twin(new ApplicationWindow());
         w78Twin->applyUserSettings();
+        w78Twin->switchToLanguage("ja");
+        QCoreApplication::processEvents();
         w78->switchToLanguage("ja");
         QCoreApplication::processEvents();
         w78->switchToLanguage("en");
@@ -26993,7 +26997,7 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
     }
 
     // -------------------------------------------------------------------------
-    // 78c: 300-DPI PNG zero ClearType chromatic leak & Table::clearCell on empty column
+    // 78c: 300-DPI PNG zero ClearType chromatic leak & Table::clearCell on empty/Text columns
     // -------------------------------------------------------------------------
     {
         Table *tClr = w78->newTable(5, 2, "T78ClearEmpty", "Clear");
@@ -27002,6 +27006,15 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         tClr->clearCell(1, 1);
         CHECK_COND(tClr->column(1)->isInvalid(1),
                    "78c: Table::clearCell(1, 1) on empty column (rowCount==0) failed to mark cell invalid!");
+
+        Table *tClrTxt = w78->newTable(4, 1, "T78ClearText", "ClearText");
+        CHECK_COND(tClrTxt != nullptr && tClrTxt->column(0) != nullptr, "78c: T78ClearText creation failed");
+        tClrTxt->setColumnType(0, SciDAVis::ColumnMode::Text);
+        tClrTxt->setText(1, 0, QStringLiteral("SampleNote"));
+        CHECK_COND(tClrTxt->text(1, 0) == QStringLiteral("SampleNote"), "78c: failed to populate text cell");
+        tClrTxt->clearCell(1, 0);
+        CHECK_COND(!tClrTxt->column(0)->isInvalid(1) && tClrTxt->text(1, 0).isEmpty(),
+                   "78c: Table::clearCell(1, 0) on Text column must leave isInvalid==false and blank text!");
 
         for (int r = 0; r < 5; ++r) {
             tClr->setCell(r, 0, double(r));
@@ -27019,19 +27032,32 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         gPng->replot();
         QCoreApplication::processEvents();
 
+        auto countChromaLeaks = [](const QImage &img) -> int {
+            int leaks = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                for (int x = 0; x < img.width(); ++x) {
+                    const QRgb px = img.pixel(x, y);
+                    const int r = qRed(px), g = qGreen(px), b = qBlue(px);
+                    if (std::max({ r, g, b }) - std::min({ r, g, b }) >= 35)
+                        ++leaks;
+                }
+            }
+            return leaks;
+        };
+
+        // Positive control: prove ClearType detector flags synthetic chromatic subpixel fringes.
+        QImage synthFringe(16, 16, QImage::Format_ARGB32);
+        synthFringe.fill(Qt::white);
+        synthFringe.setPixel(4, 4, qRgb(255, 80, 20));
+        synthFringe.setPixel(5, 4, qRgb(20, 120, 255));
+        CHECK_COND(countChromaLeaks(synthFringe) == 2,
+                   "78c: ClearType detector failed positive control on synthetic chromatic fringes!");
+
         const QString png300 = tmp78.filePath("clearType_check_300dpi.png");
         CHECK_COND(mlPng->exportImageChecked(png300, -1, false, 300), "78c: exportImageChecked failed");
         QImage pngImg(png300);
         CHECK_COND(!pngImg.isNull() && pngImg.width() > 300, "78c: exported PNG unreadable");
-        int chromaLeaks = 0;
-        for (int y = 0; y < pngImg.height(); ++y) {
-            for (int x = 0; x < pngImg.width(); ++x) {
-                const QRgb px = pngImg.pixel(x, y);
-                const int r = qRed(px), g = qGreen(px), b = qBlue(px);
-                if (std::max({ r, g, b }) - std::min({ r, g, b }) >= 35)
-                    ++chromaLeaks;
-            }
-        }
+        const int chromaLeaks = countChromaLeaks(pngImg);
         CHECK_COND(chromaLeaks == 0,
                    "78c: 300-DPI PNG still exhibits ClearType RGB chromatic fringes (" << chromaLeaks << ")");
     }
@@ -27233,14 +27259,14 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         QCoreApplication::processEvents();
         const double zf = mlLab->fitPageZoomFactor();
         CHECK_COND(zf >= 0.35 && zf <= 1.6, "78j: fitPageZoomFactor out of bounds");
-        if (QScrollArea *cs = mlLab->widget()
-                    ? mlLab->widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
-                    : nullptr) {
-            if (cs->viewport() && mlLab->canvasWidget()) {
-                CHECK_COND(mlLab->canvasWidget()->width() <= cs->viewport()->width() + 2,
-                           "78j: page canvas clipped horizontally at size " << vpSz.width() << "x" << vpSz.height());
-            }
-        }
+        QScrollArea *cs = mlLab->widget()
+                ? mlLab->widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
+                : nullptr;
+        CHECK_COND(cs != nullptr && cs->viewport() != nullptr && mlLab->canvasWidget() != nullptr,
+                   "78j: MultiLayerCanvasScroll / viewport / canvasWidget missing at size "
+                           << vpSz.width() << "x" << vpSz.height());
+        CHECK_COND(mlLab->canvasWidget()->width() <= cs->viewport()->width() + 2,
+                   "78j: page canvas clipped horizontally at size " << vpSz.width() << "x" << vpSz.height());
     }
     w78->resize(1440, 860);
     QCoreApplication::processEvents();
@@ -27268,11 +27294,12 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         w78->switchToLanguage("en");
         QCoreApplication::processEvents();
 
-        if (w78->modernRibbonBar() && w78->modernRibbonBar()->focusTableDrawer()) {
-            FocusTableDrawer *drawer = w78->modernRibbonBar()->focusTableDrawer();
-            CHECK_COND(drawer->styleSheet().contains(QStringLiteral("#FFFFFF")),
-                       "78k: FocusTableDrawer should use solid opaque #FFFFFF card background");
-        }
+        ModernRibbonBar *ribbon78 = w78->modernRibbonBar();
+        CHECK_COND(ribbon78 != nullptr, "78k: w78->modernRibbonBar() null");
+        FocusTableDrawer *drawer = ribbon78->focusTableDrawer();
+        CHECK_COND(drawer != nullptr, "78k: focusTableDrawer() null");
+        CHECK_COND(drawer->styleSheet().contains(QStringLiteral("#FFFFFF")),
+                   "78k: FocusTableDrawer should use solid opaque #FFFFFF card background");
     }
 
     // -------------------------------------------------------------------------
@@ -27305,20 +27332,22 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         QLineEdit *titleEdit = nullptr;
         QLineEdit *minEdit = nullptr;
         for (QLineEdit *le : axisPage->findChildren<QLineEdit *>()) {
-            if (!le->placeholderText().isEmpty() && !le->property("_syncedText").isValid() && !titleEdit)
+            if (!le->placeholderText().isEmpty() && !titleEdit)
                 titleEdit = le;
-            else if (le->property("_syncedText").isValid() && le->isEnabled() && !minEdit)
+            else if (le->placeholderText().isEmpty() && le->property("_syncedText").isValid()
+                     && le->isEnabled() && !minEdit)
                 minEdit = le;
         }
         CHECK_COND(titleEdit != nullptr && minEdit != nullptr, "78l: failed to locate axis title/min edits");
 
-        // E5-6: no-op editingFinished on minEdit must NOT push onto Undo stack
+        // E5-6: no-op editingFinished on minEdit & titleEdit must NOT push onto Undo stack
         const int undoBeforeMin = ml1->undoStack() ? ml1->undoStack()->count() : 0;
         QMetaObject::invokeMethod(minEdit, "editingFinished", Qt::DirectConnection);
+        QMetaObject::invokeMethod(titleEdit, "editingFinished", Qt::DirectConnection);
         QCoreApplication::processEvents();
         const int undoAfterMin = ml1->undoStack() ? ml1->undoStack()->count() : 0;
         CHECK_COND(undoAfterMin == undoBeforeMin,
-                   "78l: no-op focus-out on Axis Min pushed spurious Undo entry!");
+                   "78l: no-op focus-out on Axis Min/Title pushed spurious Undo entry!");
 
         // E5-2 & E5-5: pending debounced title edit flushes cleanly onto ml1 before rebinding to ml2
         titleEdit->setText(QStringLiteral("FlushedX1"));
@@ -27346,6 +27375,31 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         const QJsonObject badActResp = srv->handleRpcRequest(badActReq);
         CHECK_COND(badActResp.contains("error"),
                    "78m: app.trigger_action allowed non-allowlisted target!");
+
+        for (const char *blockedSlot : { "closeActiveWindow", "deleteSelectedItems" }) {
+            QJsonObject slotReq;
+            slotReq["jsonrpc"] = "2.0";
+            slotReq["id"] = 7802;
+            slotReq["method"] = "app.trigger_action";
+            slotReq["params"] = QJsonObject{ { "name", QString::fromLatin1(blockedSlot) } };
+            const QJsonObject slotResp = srv->handleRpcRequest(slotReq);
+            const QString errMsg = slotResp.value("error").toObject().value("message").toString();
+            CHECK_COND(slotResp.contains("error") && errMsg.contains(QStringLiteral("allow-list"), Qt::CaseInsensitive),
+                       "78m: destructive slot '" << blockedSlot << "' error must reference allow-list (got: "
+                                                 << errMsg.toStdString() << ")");
+        }
+
+        for (const char *allowedTarget : { "actionNextWindow", "actionOpenPythonConsole" }) {
+            QJsonObject okActReq;
+            okActReq["jsonrpc"] = "2.0";
+            okActReq["id"] = 7803;
+            okActReq["method"] = "app.trigger_action";
+            okActReq["params"] = QJsonObject{ { "name", QString::fromLatin1(allowedTarget) } };
+            const QJsonObject okActResp = srv->handleRpcRequest(okActReq);
+            CHECK_COND(!okActResp.contains("error") && okActResp.value("result").toObject().value("ok").toBool(),
+                       "78m: allowed target '" << allowedTarget << "' unexpectedly failed: "
+                                               << QString::fromUtf8(QJsonDocument(okActResp).toJson(QJsonDocument::Compact)).toStdString());
+        }
 
         const QByteArray parseRespRaw = srv->handleRpcLine(QByteArray("{not-valid-json\n"));
         const QJsonObject parseResp = QJsonDocument::fromJson(parseRespRaw).object();
@@ -27377,6 +27431,346 @@ static int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw)
         tNv->d_future_table->setView(nullptr);
         mNv->d_future_matrix->setView(nullptr);
         QCoreApplication::processEvents();
+    }
+
+    // -------------------------------------------------------------------------
+    // 78o: Table::reimportFromSource() preserves Numeric columns & linked Graph curves
+    // -------------------------------------------------------------------------
+    {
+        const QString reimpCsvPath = tmp78.filePath(QStringLiteral("reimport_78o.csv"));
+        {
+            QFile cf(reimpCsvPath);
+            CHECK_COND(cf.open(QIODevice::WriteOnly), "78o: write initial CSV");
+            cf.write("X,Y\n1,10\n2,20\n3,30\n4,40\n");
+            cf.close();
+        }
+        QSet<Table *> beforeTbls;
+        if (QList<MyWidget *> *tl = w78->tableList()) {
+            for (MyWidget *mwItem : *tl) {
+                if (Table *tp = qobject_cast<Table *>(mwItem))
+                    beforeTbls.insert(tp);
+            }
+        }
+        w78->importASCII(QStringList() << reimpCsvPath, ImportASCIIDialog::NewTables,
+                         QStringLiteral(","), 0, true, true, false, true, QLocale::c());
+        Table *tRe = nullptr;
+        if (QList<MyWidget *> *tl = w78->tableList()) {
+            for (MyWidget *mwItem : *tl) {
+                if (Table *tp = qobject_cast<Table *>(mwItem)) {
+                    if (!beforeTbls.contains(tp))
+                        tRe = tp;
+                }
+            }
+        }
+        CHECK_COND(tRe != nullptr && tRe->numCols() >= 2 && tRe->numRows() == 4,
+                   "78o: importASCII failed to create imported table");
+        CHECK_COND(tRe->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && tRe->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric,
+                   "78o: initial imported columns must be Numeric");
+
+        MultiLayer *mlRe = w78->multilayerPlot(tRe, QStringList() << tRe->colName(1), Graph::Line);
+        CHECK_COND(mlRe != nullptr && mlRe->activeGraph() != nullptr, "78o: multilayerPlot failed");
+        Graph *gRe = mlRe->activeGraph();
+        CHECK_COND(gRe->curves() == 1, "78o: expected 1 curve linked to imported table");
+
+        {
+            QFile cf(reimpCsvPath);
+            CHECK_COND(cf.open(QIODevice::WriteOnly | QIODevice::Truncate), "78o: overwrite CSV");
+            cf.write("X,Y\n1,15\n2,25\n3,35\n4,45\n5,55\n");
+            cf.close();
+        }
+        CHECK_COND(tRe->reimportFromSource(), "78o: Table::reimportFromSource() failed");
+        QCoreApplication::processEvents();
+        CHECK_COND(tRe->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                           && tRe->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric,
+                   "78o: reimportFromSource converted Numeric columns to non-Numeric!");
+        CHECK_COND(tRe->numRows() == 5 && std::fabs(tRe->cell(1, 1) - 25.0) < 1e-9,
+                   "78o: reimportFromSource table values not updated");
+        CHECK_COND(gRe->curves() == 1,
+                   "78o: reimportFromSource dropped linked curve on Graph!");
+        DataCurve *dcRe = dynamic_cast<DataCurve *>(gRe->curve(0));
+        CHECK_COND(dcRe != nullptr && dcRe->dataSize() == 5 && std::fabs(dcRe->y(4) - 55.0) < 1e-9,
+                   "78o: linked DataCurve not refreshed after reimportFromSource!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78p: Zero-DOF / degenerate fit standard errors must be NaN (never 0.0)
+    // -------------------------------------------------------------------------
+    {
+        // 1) MultiPeakFit (1 Gauss peak + constant baseline = 4 params, n = 4 points -> dof = 0)
+        Table *tPk = w78->newTable(4, 2, "T78PeakNan", "PeakNan");
+        CHECK_COND(tPk != nullptr, "78p: T78PeakNan failed");
+        const double pkX[4] = { 0.0, 1.0, 2.0, 3.0 };
+        const double pkY[4] = { 1.0, 5.0, 5.0, 1.0 };
+        for (int r = 0; r < 4; ++r) {
+            tPk->setCell(r, 0, pkX[r]);
+            tPk->setCell(r, 1, pkY[r]);
+        }
+        MultiLayer *mlPk = w78->multilayerPlot(
+                tPk, QStringList() << (QString(tPk->name()) + QStringLiteral("_2")), Graph::Scatter);
+        CHECK_COND(mlPk != nullptr && mlPk->activeGraph() != nullptr, "78p: mlPk failed");
+        MultiPeakFit mpf(w78, mlPk->activeGraph(), MultiPeakFit::Gauss, 1);
+        mpf.setSilent(true);
+        mpf.enablePeakCurves(false);
+        CHECK_COND(mpf.setDataFromCurve(QString(tPk->name()) + QStringLiteral("_2")),
+                   "78p: MultiPeakFit::setDataFromCurve failed");
+        mpf.fit();
+        const std::vector<MultiPeakFit::PeakSummaryRow> pkRows = mpf.computePeakSummary(mpf.results());
+        CHECK_COND(pkRows.size() == 1, "78p: expected 1 peak summary row");
+        CHECK_COND(std::isnan(pkRows[0].centerSE) && std::isnan(pkRows[0].fwhmSE)
+                           && std::isnan(pkRows[0].heightSE) && std::isnan(pkRows[0].areaSE),
+                   "78p: MultiPeakFit zero-DOF SE should be NaN, not 0.0");
+
+        // 2) LinearFit::fitWithXYErrors (York) with 2 points (dof = 0)
+        Table *tLin = w78->newTable(2, 2, "T78LinNan", "LinNan");
+        CHECK_COND(tLin != nullptr, "78p: T78LinNan failed");
+        tLin->setCell(0, 0, 1.0);
+        tLin->setCell(0, 1, 2.0);
+        tLin->setCell(1, 0, 3.0);
+        tLin->setCell(1, 1, 6.0);
+        MultiLayer *mlLin = w78->multilayerPlot(
+                tLin, QStringList() << (QString(tLin->name()) + QStringLiteral("_2")), Graph::Scatter);
+        CHECK_COND(mlLin != nullptr && mlLin->activeGraph() != nullptr, "78p: mlLin failed");
+        LinearFit lf(w78, mlLin->activeGraph());
+        lf.setSilent(true);
+        CHECK_COND(lf.setDataFromCurve(QString(tLin->name()) + QStringLiteral("_2")),
+                   "78p: LinearFit::setDataFromCurve failed");
+        CHECK_COND(lf.fitWithXYErrors(), "78p: LinearFit::fitWithXYErrors failed on 2-point dataset");
+        CHECK_COND(std::isnan(lf.yorkSlopeError()) && std::isnan(lf.yorkInterceptError()),
+                   "78p: LinearFit zero-DOF York SE should be NaN, not 0.0");
+
+        // 3) GraphStatsAndSurfaceFit zero-DOF Poly2DQuadratic (6 points, p=6) & degenerate Plane2D
+        Table *tSurf = w78->newTable(6, 3, "T78SurfNan", "SurfNan");
+        CHECK_COND(tSurf != nullptr, "78p: T78SurfNan failed");
+        tSurf->setColName(0, QStringLiteral("X"));
+        tSurf->setColName(1, QStringLiteral("Y"));
+        tSurf->setColName(2, QStringLiteral("Z"));
+        const double sx[6] = { 0.0, 1.0, 0.0, 1.0, 2.0, 0.0 };
+        const double sy[6] = { 0.0, 0.0, 1.0, 1.0, 0.0, 2.0 };
+        const double sz[6] = { 1.0, 2.0, 3.0, 5.0, 4.0, 6.0 };
+        for (int r = 0; r < 6; ++r) {
+            tSurf->setCell(r, 0, sx[r]);
+            tSurf->setCell(r, 1, sy[r]);
+            tSurf->setCell(r, 2, sz[r]);
+        }
+        const GraphStatsAndSurfaceFit::SurfaceFitResult sfZero = GraphStatsAndSurfaceFit::fitSurfaceXYZ(
+                w78, tSurf, QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z"),
+                GraphStatsAndSurfaceFit::Poly2DQuadratic);
+        CHECK_COND(sfZero.errors.size() == 6, "78p: Poly2DQuadratic errors size != 6");
+        for (int j = 0; j < sfZero.errors.size(); ++j) {
+            CHECK_COND(std::isnan(sfZero.errors[j]),
+                       "78p: Poly2DQuadratic zero-DOF error[" << j << "] should be NaN, not "
+                                                              << sfZero.errors[j]);
+        }
+
+        Table *tPlane = w78->newTable(5, 3, "T78PlaneDegen", "PlaneDegen");
+        CHECK_COND(tPlane != nullptr, "78p: T78PlaneDegen failed");
+        tPlane->setColName(0, QStringLiteral("X"));
+        tPlane->setColName(1, QStringLiteral("Y"));
+        tPlane->setColName(2, QStringLiteral("Z"));
+        for (int r = 0; r < 5; ++r) {
+            tPlane->setCell(r, 0, double(r));
+            tPlane->setCell(r, 1, 1.0); // constant Y -> unidentifiable ay slope
+            tPlane->setCell(r, 2, 1.0 + double(r));
+        }
+        const GraphStatsAndSurfaceFit::SurfaceFitResult sfDegen = GraphStatsAndSurfaceFit::fitSurfaceXYZ(
+                w78, tPlane, QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z"),
+                GraphStatsAndSurfaceFit::Plane2D);
+        CHECK_COND(sfDegen.errors.size() == 3 && std::isnan(sfDegen.errors[2]),
+                   "78p: degenerate Plane2D ay error should be NaN, not 0.0");
+    }
+
+    // -------------------------------------------------------------------------
+    // 78q: Updater empty-SHA block, RPC stop/restart token lifecycle, 600-DPI Legend columns
+    // -------------------------------------------------------------------------
+    {
+        // 1) AutoUpdater::downloadAndVerifyBlocking rejects empty SHA-256 unless AllowUnverifiedInstall
+        QSettings &st78 = ApplicationWindow::getSettings();
+        const QString allowKey = QStringLiteral("AutoUpdate/AllowUnverifiedInstall");
+        const QVariant prevAllow = st78.value(allowKey);
+        st78.remove(allowKey);
+        CHECK_COND(!AutoUpdater::allowUnverifiedInstall(),
+                   "78q: allowUnverifiedInstall must default to false");
+
+        QTcpServer mockDl;
+        CHECK_COND(mockDl.listen(QHostAddress::LocalHost, 0), "78q: mockDl.listen failed");
+        QObject::connect(&mockDl, &QTcpServer::newConnection, &mockDl, [&]() {
+            while (QTcpSocket *sock = mockDl.nextPendingConnection()) {
+                QObject::connect(sock, &QTcpSocket::readyRead, sock, [sock]() {
+                    if (!sock->canReadLine())
+                        return;
+                    sock->readAll();
+                    const QByteArray body("DUMMY_UPDATE_ARCHIVE_BYTES");
+                    const QByteArray hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: "
+                            + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n";
+                    sock->write(hdr);
+                    sock->write(body);
+                    sock->flush();
+                    sock->disconnectFromHost();
+                });
+                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            }
+        });
+        const QUrl emptyShaUrl(
+                QStringLiteral("http://127.0.0.1:%1/ToriGraph-empty-sha.zip").arg(mockDl.serverPort()));
+        const QString emptyShaDest = tmp78.filePath(QStringLiteral("empty_sha_78q.zip"));
+        QString dlErr;
+        const bool okEmptySha = AutoUpdater::downloadAndVerifyBlocking(
+                emptyShaUrl, emptyShaDest, QString(), &dlErr, 5000);
+        CHECK_COND(!okEmptySha && !dlErr.isEmpty() && !QFile::exists(emptyShaDest)
+                           && !QFile::exists(emptyShaDest + QStringLiteral(".part")),
+                   "78q: downloadAndVerifyBlocking accepted empty SHA-256 without allowUnverifiedInstall!");
+        if (prevAllow.isValid())
+            st78.setValue(allowKey, prevAllow);
+        else
+            st78.remove(allowKey);
+
+        // 2) PythonAutomationServer::stop() clears tcpAuthToken(); restart generates fresh token; empty/stale rejected
+        PythonAutomationServer srv78(w78);
+        CHECK_COND(srv78.startTcp(0, QHostAddress::LocalHost), "78q: startTcp #1 failed");
+        const QString tok1 = srv78.tcpAuthToken();
+        CHECK_COND(!tok1.isEmpty(), "78q: startTcp #1 returned empty tcpAuthToken");
+        srv78.stop();
+        CHECK_COND(srv78.tcpAuthToken().isEmpty() && !srv78.isTcpListening(),
+                   "78q: stop() failed to clear tcpAuthToken()");
+
+        CHECK_COND(srv78.startTcp(0, QHostAddress::LocalHost), "78q: startTcp #2 failed");
+        const quint16 port2 = srv78.tcpPort();
+        const QString tok2 = srv78.tcpAuthToken();
+        CHECK_COND(!tok2.isEmpty() && tok2 != tok1,
+                   "78q: restarting TCP did not regenerate fresh tcpAuthToken()");
+
+        auto tryTcpAuth = [&](const QString &candidateToken) -> QJsonObject {
+            QTcpSocket sock;
+            sock.connectToHost(QHostAddress::LocalHost, port2);
+            QElapsedTimer tmr;
+            tmr.start();
+            while (sock.state() != QAbstractSocket::ConnectedState && tmr.elapsed() < 3000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 15);
+            if (sock.state() != QAbstractSocket::ConnectedState)
+                return QJsonObject();
+            QJsonObject req;
+            req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            req[QStringLiteral("id")] = 7810;
+            req[QStringLiteral("method")] = QStringLiteral("rpc.auth");
+            req[QStringLiteral("params")] = QJsonObject{ { QStringLiteral("token"), candidateToken } };
+            sock.write(QJsonDocument(req).toJson(QJsonDocument::Compact) + "\n");
+            sock.flush();
+            tmr.restart();
+            while (!sock.canReadLine() && tmr.elapsed() < 3000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 15);
+            if (!sock.canReadLine())
+                return QJsonObject();
+            return QJsonDocument::fromJson(sock.readLine().trimmed()).object();
+        };
+
+        const QJsonObject emptyTokResp = tryTcpAuth(QString());
+        CHECK_COND(emptyTokResp.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt() == -32001,
+                   "78q: empty rpc.auth token was not rejected with -32001");
+        const QJsonObject staleTokResp = tryTcpAuth(tok1);
+        CHECK_COND(staleTokResp.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt() == -32001,
+                   "78q: stale rpc.auth token from before stop() was not rejected with -32001");
+        const QJsonObject freshTokResp = tryTcpAuth(tok2);
+        CHECK_COND(freshTokResp.value(QStringLiteral("result")).toObject().value(QStringLiteral("authenticated")).toBool(),
+                   "78q: fresh rpc.auth token failed after TCP restart");
+        srv78.stop();
+        CHECK_COND(srv78.tcpAuthToken().isEmpty(), "78q: second stop() did not clear tcpAuthToken");
+
+        // 3) Legend::draw / computeCellsLayout under non-identity 600-DPI QwtMetricsMap (2-column layout)
+        Table *tLeg = w78->newTable(3, 3, "T78Legend600", "Legend600");
+        CHECK_COND(tLeg != nullptr, "78q: T78Legend600 creation failed");
+        tLeg->setColName(1, QStringLiteral("AlphaSeries"));
+        tLeg->setColName(2, QStringLiteral("BetaSeries"));
+        for (int r = 0; r < 3; ++r) {
+            tLeg->setCell(r, 0, double(r));
+            tLeg->setCell(r, 1, double(r + 1));
+            tLeg->setCell(r, 2, double(r + 2));
+        }
+        MultiLayer *mlLeg = w78->multilayerPlot(
+                tLeg,
+                QStringList() << (QString(tLeg->name()) + QStringLiteral("_AlphaSeries"))
+                              << (QString(tLeg->name()) + QStringLiteral("_BetaSeries")),
+                Graph::Line);
+        CHECK_COND(mlLeg != nullptr && mlLeg->activeGraph() != nullptr, "78q: mlLeg failed");
+        Graph *gLeg = mlLeg->activeGraph();
+        CHECK_COND(gLeg->curves() == 2, "78q: expected 2 curves for Legend test");
+        gLeg->curve(0)->setPen(QPen(Qt::red, 3.0));
+        gLeg->curve(1)->setPen(QPen(Qt::blue, 3.0));
+        Legend *leg = gLeg->legend() ? gLeg->legend() : gLeg->newLegend();
+        CHECK_COND(leg != nullptr, "78q: Legend creation failed");
+        leg->setText(QStringLiteral("\\c{1}AlphaSeries\n\\c{2}BetaSeries"));
+        leg->setNumColumns(2);
+        leg->setFrameStyle(Legend::None);
+        leg->setTextColor(Qt::black);
+        leg->setBackgroundColor(Qt::white);
+        leg->setOriginCoord(0.5, 8.0);
+
+        QImage dev600(3200, 800, QImage::Format_ARGB32);
+        const int dpm600 = qRound(600.0 / 0.0254);
+        dev600.setDotsPerMeterX(dpm600);
+        dev600.setDotsPerMeterY(dpm600);
+        dev600.fill(Qt::white);
+
+        QwtMetricsMap mm600;
+        mm600.setMetrics(&dev600, &dev600);
+        CHECK_COND(mm600.isIdentity() && mm600.screenToLayoutX(100) > 400,
+                   "78q: 600-DPI equal-device QwtMetricsMap scale check failed");
+
+        QwtScaleMap xMap600, yMap600;
+        xMap600.setScaleInterval(0.0, 10.0);
+        xMap600.setPaintInterval(0.0, double(dev600.width()));
+        yMap600.setScaleInterval(0.0, 10.0);
+        yMap600.setPaintInterval(double(dev600.height()), 0.0);
+        {
+            QPainter p600(&dev600);
+            leg->draw(&p600, xMap600, yMap600, dev600.rect());
+        }
+        CHECK_COND(QwtPainter::metricsMap().isIdentity(),
+                   "78q: Legend::draw leaked non-identity QwtMetricsMap after returning");
+
+        int minRedX = dev600.width(), maxRedX = -1;
+        int minBlueX = dev600.width(), maxBlueX = -1;
+        for (int y = 0; y < dev600.height(); ++y) {
+            for (int x = 0; x < dev600.width(); ++x) {
+                const QRgb px = dev600.pixel(x, y);
+                const int r = qRed(px), g = qGreen(px), b = qBlue(px);
+                if (r > 180 && g < 80 && b < 80) {
+                    minRedX = std::min(minRedX, x);
+                    maxRedX = std::max(maxRedX, x);
+                } else if (b > 180 && r < 80 && g < 80) {
+                    minBlueX = std::min(minBlueX, x);
+                    maxBlueX = std::max(maxBlueX, x);
+                }
+            }
+        }
+        CHECK_COND(maxRedX > minRedX && minBlueX > maxRedX && maxBlueX > minBlueX,
+                   "78q: 600-DPI 2-column Legend symbols overlapped or failed to render (red=["
+                           << minRedX << "," << maxRedX << "] blue=[" << minBlueX << "," << maxBlueX << "])");
+
+        int minDark0X = dev600.width(), maxDark0X = -1;
+        int minDark1X = dev600.width(), maxDark1X = -1;
+        int darkOverlapSwatch = 0;
+        for (int y = 0; y < dev600.height(); ++y) {
+            for (int x = 0; x < dev600.width(); ++x) {
+                const QRgb px = dev600.pixel(x, y);
+                const int r = qRed(px), g = qGreen(px), b = qBlue(px);
+                if (std::max({ r, g, b }) < 110 && (std::max({ r, g, b }) - std::min({ r, g, b })) < 40) {
+                    if ((x >= minRedX && x <= maxRedX) || (x >= minBlueX && x <= maxBlueX))
+                        ++darkOverlapSwatch;
+                    else if (x > maxRedX && x < minBlueX) {
+                        minDark0X = std::min(minDark0X, x);
+                        maxDark0X = std::max(maxDark0X, x);
+                    } else if (x > maxBlueX) {
+                        minDark1X = std::min(minDark1X, x);
+                        maxDark1X = std::max(maxDark1X, x);
+                    }
+                }
+            }
+        }
+        CHECK_COND(darkOverlapSwatch == 0 && maxDark0X > minDark0X && maxDark1X > minDark1X,
+                   "78q: 600-DPI 2-column Legend text overlapped swatches/columns (overlap="
+                           << darkOverlapSwatch << " col0=[" << minDark0X << "," << maxDark0X
+                           << "] col1=[" << minDark1X << "," << maxDark1X << "])");
     }
 
     w78->switchToLanguage("en");

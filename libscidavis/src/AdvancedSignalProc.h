@@ -64,7 +64,8 @@ public:
     static Matrix *fft2D(ApplicationWindow *app, Matrix *srcMatrix, bool inverse,
                          bool shiftCenter, Matrix *imagOrPhaseMatrix,
                          Matrix **outAuxMatrix = nullptr,
-                         Fft2DOutputMode outputMode = Fft2DMagnitudeOrReal);
+                         Fft2DOutputMode outputMode = Fft2DMagnitudeOrReal,
+                         QString *errorOut = nullptr);
     static Table *welchPSD(ApplicationWindow *app, Graph *g, const QString &curveTitle,
                            int segmentLen = 128, bool plotResult = true);
     static Table *crossCoherence(ApplicationWindow *app, Graph *g, const QString &curveA,

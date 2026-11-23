@@ -520,10 +520,14 @@ int MultiPeakFit::custom_multi_peak_f(const gsl_vector *x, void *params, gsl_vec
 
     const double y0 = par[p - 1];
     for (size_t i = 0; i < n; ++i) {
+        const double sig = data->sigma ? data->sigma[i] : 1.0;
+        if (!std::isfinite(sig) || sig <= 0.0 || sig >= 1e140) {
+            gsl_vector_set(f, i, 0.0);
+            continue;
+        }
         double yi = y0;
         for (int k = 0; k < mp->d_peaks; ++k)
             yi += mp->evalPeakAt(par, k, data->X[i], false);
-        double sig = (data->sigma && data->sigma[i] > 0.0) ? data->sigma[i] : 1.0;
         gsl_vector_set(f, i, (yi - data->Y[i]) / sig);
     }
     return GSL_SUCCESS;
@@ -546,7 +550,7 @@ int MultiPeakFit::custom_multi_peak_df(const gsl_vector *x, void *params, gsl_ma
                 gsl_matrix_set(J, i, col, 0.0);
             continue;
         }
-        double h = std::max(1e-7, 1e-6 * std::abs(parBase[col]));
+        double h = std::max(1e-12, 1e-6 * std::abs(parBase[col]));
         std::vector<double> parPlus = parBase;
         std::vector<double> parMinus = parBase;
         parPlus[col] += h;
@@ -558,22 +562,27 @@ int MultiPeakFit::custom_multi_peak_df(const gsl_vector *x, void *params, gsl_ma
         const double y0m = parMinus[p - 1];
         const double inv2h = 0.5 / h;
         for (size_t i = 0; i < n; ++i) {
+            const double sig = data->sigma ? data->sigma[i] : 1.0;
+            if (!std::isfinite(sig) || sig <= 0.0 || sig >= 1e140) {
+                gsl_matrix_set(J, i, col, 0.0);
+                continue;
+            }
             double yp = y0p;
             double ym = y0m;
             for (int k = 0; k < mp->d_peaks; ++k) {
                 yp += mp->evalPeakAt(parPlus, k, data->X[i], false);
                 ym += mp->evalPeakAt(parMinus, k, data->X[i], false);
             }
-            double sig = (data->sigma && data->sigma[i] > 0.0) ? data->sigma[i] : 1.0;
             gsl_matrix_set(J, i, col, ((yp - ym) * inv2h) / sig);
         }
     }
 
     for (size_t i = 0; i < n; ++i) {
-        if (mp->isParameterFixed(int(p - 1))) {
+        const double sig = data->sigma ? data->sigma[i] : 1.0;
+        if (mp->isParameterFixed(int(p - 1)) || !std::isfinite(sig) || sig <= 0.0
+            || sig >= 1e140) {
             gsl_matrix_set(J, i, p - 1, 0.0);
         } else {
-            double sig = (data->sigma && data->sigma[i] > 0.0) ? data->sigma[i] : 1.0;
             gsl_matrix_set(J, i, p - 1, 1.0 / sig);
         }
     }
@@ -2599,23 +2608,24 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
 
     // Propagate parameter covariance (including off-diagonal Cov(A, w) & doublet / linear couplings)
     const size_t nPeakPar = static_cast<size_t>(3 * d_peaks);
-    if (covar && chi_2 >= 0.0 && !d_x.empty() && covar->size1 >= nPeakPar + 1
-        && covar->size2 >= nPeakPar + 1) {
+    const int dof = degreesOfFreedom();
+    if (covar && std::isfinite(chi_2) && chi_2 >= 0.0 && !d_x.empty() && dof > 0
+        && covar->size1 >= nPeakPar + 1 && covar->size2 >= nPeakPar + 1) {
         const double covFactor = effectiveCovarScale();
-
-        std::vector<std::vector<double>> cUser(nPeakPar, std::vector<double>(nPeakPar, 0.0));
-        bool anyPositiveVar = false;
-        for (size_t a = 0; a < nPeakPar; ++a) {
-            for (size_t b = 0; b < nPeakPar; ++b) {
-                const double rawC = gsl_matrix_get(covar, a, b);
-                if (std::isfinite(rawC))
-                    cUser[a][b] = covFactor * rawC;
+        const double nanVal = std::numeric_limits<double>::quiet_NaN();
+        if (std::isfinite(covFactor)) {
+            std::vector<std::vector<double>> cUser(nPeakPar, std::vector<double>(nPeakPar, 0.0));
+            std::vector<bool> singularParam(nPeakPar, false);
+            for (size_t a = 0; a < nPeakPar; ++a) {
+                for (size_t b = 0; b < nPeakPar; ++b) {
+                    const double rawC = gsl_matrix_get(covar, a, b);
+                    cUser[a][b] = std::isfinite(rawC) ? (covFactor * rawC) : nanVal;
+                }
+                const double rawDiag = gsl_matrix_get(covar, a, a);
+                singularParam[a] = !isParameterFixed(int(a))
+                        && !(std::isfinite(rawDiag) && rawDiag > 0.0);
             }
-            if (cUser[a][a] > 0.0)
-                anyPositiveVar = true;
-        }
 
-        if (anyPositiveVar) {
             const size_t nPeaksSz = static_cast<size_t>(d_peaks);
             std::vector<std::vector<double>> dCenter(nPeaksSz, std::vector<double>(nPeakPar, 0.0));
             std::vector<std::vector<double>> dFwhm(nPeaksSz, std::vector<double>(nPeakPar, 0.0));
@@ -2623,9 +2633,9 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
             std::vector<std::vector<double>> dArea(nPeaksSz, std::vector<double>(nPeakPar, 0.0));
 
             for (size_t k = 0; k < nPeakPar; ++k) {
-                if (!(cUser[k][k] > 0.0))
+                if (isParameterFixed(int(k)))
                     continue;
-                const double h = std::max(1e-7, 1e-4 * std::abs(res[k]));
+                const double h = std::max(1e-12, 1e-4 * std::abs(res[k]));
                 std::vector<double> pPlus = res;
                 std::vector<double> pMinus = res;
                 pPlus[k] += h;
@@ -2657,10 +2667,17 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
             }
 
             auto quadSE = [&](const std::vector<double> &grad) -> double {
+                if (dof <= 0)
+                    return nanVal;
+                bool anyFreeGrad = false;
                 double var = 0.0;
                 for (size_t a = 0; a < nPeakPar; ++a) {
                     if (grad[a] == 0.0)
                         continue;
+                    if (singularParam[a])
+                        return nanVal;
+                    if (!isParameterFixed(int(a)))
+                        anyFreeGrad = true;
                     double rowSum = 0.0;
                     for (size_t b = 0; b < nPeakPar; ++b) {
                         if (grad[b] != 0.0)
@@ -2668,7 +2685,11 @@ MultiPeakFit::computePeakSummary(const std::vector<double> &res) const
                     }
                     var += grad[a] * rowSum;
                 }
-                return (std::isfinite(var) && var > 0.0) ? std::sqrt(var) : 0.0;
+                if (!std::isfinite(var) || var < 0.0)
+                    return nanVal;
+                if (var == 0.0 && anyFreeGrad && chi_2 > 0.0)
+                    return nanVal;
+                return std::sqrt(var);
             };
 
             for (int j = 0; j < d_peaks; ++j) {
@@ -2799,17 +2820,34 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
     if (!t)
         return nullptr;
 
-    t->setHeader(QStringList() << tr("Peak") << tr("Center") << tr("FWHM") << tr("Height")
-                               << tr("Area") << tr("AreaPercent") << tr("y0") << tr("COD_R2")
-                               << tr("Center_SE") << tr("FWHM_SE") << tr("Height_SE")
-                               << tr("Area_SE") << tr("Profile") << QStringLiteral("mu")
+    t->setHeader(QStringList() << QStringLiteral("Peak") << QStringLiteral("Center")
+                               << QStringLiteral("FWHM") << QStringLiteral("Height")
+                               << QStringLiteral("Area") << QStringLiteral("AreaPercent")
+                               << QStringLiteral("y0") << QStringLiteral("COD_R2")
+                               << QStringLiteral("Center_SE") << QStringLiteral("FWHM_SE")
+                               << QStringLiteral("Height_SE") << QStringLiteral("Area_SE")
+                               << QStringLiteral("Profile") << QStringLiteral("mu")
                                << QStringLiteral("m") << QStringLiteral("alpha")
                                << QStringLiteral("tau"));
+    const QStringList longNames = {
+        tr("Peak"),      tr("Center"),    tr("FWHM"),      tr("Height"),
+        tr("Area"),      tr("AreaPercent"), tr("y0"),      tr("COD_R2"),
+        tr("Center_SE"), tr("FWHM_SE"),   tr("Height_SE"), tr("Area_SE"),
+        tr("Profile"),   QStringLiteral("mu"), QStringLiteral("m"), QStringLiteral("alpha"),
+        QStringLiteral("tau")
+    };
     for (int col = 0; col < 17; ++col) {
         t->column(col)->setColumnMode(col == 12 ? SciDAVis::ColumnMode::Text
                                                 : SciDAVis::ColumnMode::Numeric);
+        t->column(col)->setLongName(longNames[col]);
     }
 
+    auto setNumOrInvalid = [&](int row, int col, double val) {
+        if (std::isfinite(val))
+            t->column(col)->setValueAt(row, val);
+        else
+            t->column(col)->setInvalid(row, true);
+    };
     double r2 = rSquare();
     for (int i = 0; i < d_peaks && i < int(rows.size()); ++i) {
         const PeakProfile prof = peakProfileAt(i);
@@ -2820,11 +2858,11 @@ Table *MultiPeakFit::createPeakSummaryTable(const QString &tableName)
         t->column(4)->setValueAt(i, rows[i].area);
         t->column(5)->setValueAt(i, rows[i].areaPercent);
         t->column(6)->setValueAt(i, rows[i].baseline);
-        t->column(7)->setValueAt(i, r2);
-        t->column(8)->setValueAt(i, rows[i].centerSE);
-        t->column(9)->setValueAt(i, rows[i].fwhmSE);
-        t->column(10)->setValueAt(i, rows[i].heightSE);
-        t->column(11)->setValueAt(i, rows[i].areaSE);
+        setNumOrInvalid(i, 7, r2);
+        setNumOrInvalid(i, 8, rows[i].centerSE);
+        setNumOrInvalid(i, 9, rows[i].fwhmSE);
+        setNumOrInvalid(i, 10, rows[i].heightSE);
+        setNumOrInvalid(i, 11, rows[i].areaSE);
         t->column(12)->setTextAt(i, profileDisplayName(prof));
         if (prof == PseudoVoigt || prof == Voigt)
             t->column(13)->setValueAt(i, d_voigt_mu);
@@ -3236,10 +3274,18 @@ Table *MultiPeakFit::integratePeaksToTable(const QString &tableName)
     if (!t)
         return nullptr;
 
-    t->setHeader(QStringList() << tr("Peak") << tr("Center") << tr("Height") << tr("FWHM")
-                               << tr("IntegratedArea") << tr("AreaPercent") << tr("Centroid"));
-    for (int col = 0; col < 7; ++col)
+    t->setHeader(QStringList() << QStringLiteral("Peak") << QStringLiteral("Center")
+                               << QStringLiteral("Height") << QStringLiteral("FWHM")
+                               << QStringLiteral("IntegratedArea") << QStringLiteral("AreaPercent")
+                               << QStringLiteral("Centroid"));
+    const QStringList longNames = {
+        tr("Peak"), tr("Center"), tr("Height"), tr("FWHM"),
+        tr("IntegratedArea"), tr("AreaPercent"), tr("Centroid")
+    };
+    for (int col = 0; col < 7; ++col) {
         t->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+        t->column(col)->setLongName(longNames[col]);
+    }
 
     for (int m = 0; m < d_peaks; ++m) {
         t->column(0)->setValueAt(m, rows[m].index);
@@ -3282,10 +3328,10 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
         double area = 0.0;
         double areaPct = 0.0;
         double r2 = 0.0;
-        double centerSE = 0.0;
-        double fwhmSE = 0.0;
-        double heightSE = 0.0;
-        double areaSE = 0.0;
+        double centerSE = std::numeric_limits<double>::quiet_NaN();
+        double fwhmSE = std::numeric_limits<double>::quiet_NaN();
+        double heightSE = std::numeric_limits<double>::quiet_NaN();
+        double areaSE = std::numeric_limits<double>::quiet_NaN();
     };
 
     std::vector<BatchPeakRow> allRows;
@@ -3354,16 +3400,33 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
     if (!tbl)
         return nullptr;
 
-    tbl->setHeader(QStringList() << tr("Curve") << tr("Peak") << tr("Profile") << tr("Center")
-                                 << tr("FWHM") << tr("Height") << tr("Area") << tr("AreaPercent")
-                                 << tr("COD_R2") << tr("Center_SE") << tr("FWHM_SE")
-                                 << tr("Height_SE") << tr("Area_SE"));
+    tbl->setHeader(QStringList() << QStringLiteral("Curve") << QStringLiteral("Peak")
+                                 << QStringLiteral("Profile") << QStringLiteral("Center")
+                                 << QStringLiteral("FWHM") << QStringLiteral("Height")
+                                 << QStringLiteral("Area") << QStringLiteral("AreaPercent")
+                                 << QStringLiteral("COD_R2") << QStringLiteral("Center_SE")
+                                 << QStringLiteral("FWHM_SE") << QStringLiteral("Height_SE")
+                                 << QStringLiteral("Area_SE"));
+    const QStringList batchLongNames = {
+        tr("Curve"),     tr("Peak"),      tr("Profile"),   tr("Center"),
+        tr("FWHM"),      tr("Height"),    tr("Area"),      tr("AreaPercent"),
+        tr("COD_R2"),    tr("Center_SE"), tr("FWHM_SE"),   tr("Height_SE"),
+        tr("Area_SE")
+    };
     tbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     tbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
     tbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Text);
     for (int col = 3; col < 13; ++col)
         tbl->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+    for (int col = 0; col < 13; ++col)
+        tbl->column(col)->setLongName(batchLongNames[col]);
 
+    auto setBatchNumOrInvalid = [&](int row, int col, double val) {
+        if (std::isfinite(val))
+            tbl->column(col)->setValueAt(row, val);
+        else
+            tbl->column(col)->setInvalid(row, true);
+    };
     for (int i = 0; i < nRows; ++i) {
         const auto &r = allRows[size_t(i)];
         tbl->column(0)->setTextAt(i, r.curveName);
@@ -3374,11 +3437,11 @@ Table *MultiPeakFit::batchAnalyzeCurves(ApplicationWindow *app, Graph *g,
         tbl->column(5)->setValueAt(i, r.height);
         tbl->column(6)->setValueAt(i, r.area);
         tbl->column(7)->setValueAt(i, r.areaPct);
-        tbl->column(8)->setValueAt(i, r.r2);
-        tbl->column(9)->setValueAt(i, r.centerSE);
-        tbl->column(10)->setValueAt(i, r.fwhmSE);
-        tbl->column(11)->setValueAt(i, r.heightSE);
-        tbl->column(12)->setValueAt(i, r.areaSE);
+        setBatchNumOrInvalid(i, 8, r.r2);
+        setBatchNumOrInvalid(i, 9, r.centerSE);
+        setBatchNumOrInvalid(i, 10, r.fwhmSE);
+        setBatchNumOrInvalid(i, 11, r.heightSE);
+        setBatchNumOrInvalid(i, 12, r.areaSE);
     }
 
     const QString batchAU = areaUnit(batchXU, batchYU);

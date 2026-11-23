@@ -101,7 +101,7 @@ Graph3D *activeGraph3D(QObject *parentObj)
 }
 
 //! Pixel size Graph3D::exportImage() will render (mirrors its render-scale logic).
-bool graph3DExportPixelSize(Graph3D *g, int *pxW, int *pxH)
+bool graph3DExportPixelSize(Graph3D *g, int requestedDpi, int *pxW, int *pxH)
 {
     if (!g || !g->sp)
         return false;
@@ -109,13 +109,16 @@ bool graph3DExportPixelSize(Graph3D *g, int *pxW, int *pxH)
     if (s.width() <= 0 || s.height() <= 0)
         s = QSize(600, 480);
     const int propDpi = g->property("export_dpi").toInt();
-    const int effDpi = (propDpi >= 72) ? qMin(propDpi, 600) : 300;
+    const int rawDpi = (requestedDpi > 0) ? requestedDpi : propDpi;
+    const int effDpi = (rawDpi >= 72)
+            ? qMin(rawDpi, 600)
+            : ((requestedDpi > 0) ? qBound(72, requestedDpi, 600) : 300);
     double scale = double(effDpi) / 96.0;
     const int maxDim = qMax(s.width(), s.height());
     if (maxDim * scale > 3200.0)
         scale = qMax(1.0, 3200.0 / double(maxDim));
-    *pxW = qMax(100, int(std::lround(s.width() * scale)));
-    *pxH = qMax(100, int(std::lround(s.height() * scale)));
+    *pxW = qMax(100, qRound(s.width() * scale));
+    *pxH = qMax(100, qRound(s.height() * scale));
     return true;
 }
 
@@ -393,7 +396,7 @@ void ImageExportDialog::updateInfoLabel()
         int px3dW = 0, px3dH = 0;
         if (Graph3D *g3d = activeGraph3D(parent())) {
             // D2-1: 3D graphs have no page in mm, only the rendered pixel size.
-            if (raster && graph3DExportPixelSize(g3d, &px3dW, &px3dH))
+            if (raster && graph3DExportPixelSize(g3d, resolution(), &px3dW, &px3dH))
                 text += QStringLiteral("\n")
                         + tr("Size: %1 x %2 px (3D graph)").arg(px3dW).arg(px3dH);
         } else if (graphPageSizeMm(activeGraphWindow(parent()), &wMm, &hMm, &physical)) {
@@ -422,12 +425,12 @@ void ImageExportDialog::updateAdvancedOptions(const QString &filterText)
 {
     // The signal delivers the descriptive name ("PNG 画像 (*.png)"); reduce it to the pattern.
     const QString filter = normalizedFilter(filterText);
-    updateInfoLabel();
     if (filter == QLatin1String("*.svg") || filter == QLatin1String("*.emf")) {
         // D2-4: only disable/hide for display. The toggle's checked state is the user's own
         // preference (saved by saveOptionsToApp()) and must not be overwritten here.
         d_extension_toggle->setEnabled(false);
         d_advanced_options->setVisible(false);
+        updateInfoLabel();
         return;
     }
     d_extension_toggle->setEnabled(true);
@@ -440,6 +443,7 @@ void ImageExportDialog::updateAdvancedOptions(const QString &filterText)
         if (d_transparency)
             d_transparency->setEnabled(true);
     }
+    updateInfoLabel();
 }
 
 void ImageExportDialog::saveOptionsToApp()

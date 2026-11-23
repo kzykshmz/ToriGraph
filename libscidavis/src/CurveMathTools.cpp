@@ -2430,9 +2430,10 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         const double e = p.y - (intercept + slope * p.x);
         rss += e * e;
     }
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     const double r2 = (syy > 1e-30) ? std::clamp(1.0 - rss / syy, 0.0, 1.0) : 1.0;
-    const double sResid = (n > 2) ? std::sqrt(std::max(0.0, rss / static_cast<double>(n - 2))) : 0.0;
-    const double slopeSE = (n > 2) ? (sResid / std::sqrt(sxx)) : 0.0;
+    const double sResid = (n > 2) ? std::sqrt(std::max(0.0, rss / static_cast<double>(n - 2))) : kNaN;
+    const double slopeSE = (n > 2) ? (sResid / std::sqrt(sxx)) : kNaN;
 
     res.valid = true;
     res.activationEnergyKJmol = -slope * kGasR * scaleX / 1000.0;
@@ -2461,13 +2462,13 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
                 ? (tCrit * sResid
                    * std::sqrt(1.0 / static_cast<double>(n)
                                + ((xv - meanX) * (xv - meanX)) / sxx))
-                : 0.0;
+                : kNaN;
         colInvT[static_cast<size_t>(i)] = xv;
         colTempK[static_cast<size_t>(i)] = pts[static_cast<size_t>(i)].tempK;
         colLnK[static_cast<size_t>(i)] = pts[static_cast<size_t>(i)].y;
         colFitY[static_cast<size_t>(i)] = yh;
-        colCiLo[static_cast<size_t>(i)] = yh - halfBand;
-        colCiHi[static_cast<size_t>(i)] = yh + halfBand;
+        colCiLo[static_cast<size_t>(i)] = (n > 2) ? (yh - halfBand) : kNaN;
+        colCiHi[static_cast<size_t>(i)] = (n > 2) ? (yh + halfBand) : kNaN;
     }
 
     const QString invHeader = use1000OverT ? QStringLiteral("Inv1000T") : QStringLiteral("InvT");
@@ -2497,6 +2498,14 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
     }
     if (Column *c3 = tbl->column(3))
         c3->setComment(QObject::tr("Linear fit"));
+    if (n <= 2) {
+        for (int ci : { 4, 5 }) {
+            if (Column *col = tbl->column(ci)) {
+                for (int i = 0; i < n; ++i)
+                    col->setInvalid(i, true);
+            }
+        }
+    }
 
     MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("ArrheniusPlot")));
     res.plot = ml;
@@ -2562,15 +2571,20 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
             const double xSpan = std::max(1e-9, colInvT.back() - colInvT.front());
             const auto yMM = std::minmax_element(colLnK.begin(), colLnK.end());
             const double ySpan = std::max(1e-9, *yMM.second - *yMM.first);
-            QString summary = QStringLiteral(
-                    "<i>E</i><sub>a</sub> = %1 \u00B1 %2 kJ mol<sup>-1</sup>\n"
-                    "(%3 eV), ln <i>A</i> = %4\n"
-                    "<i>R</i><sup>2</sup> = %5")
-                    .arg(res.activationEnergyKJmol, 0, 'f', 2)
-                    .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
-                    .arg(res.activationEnergyEV, 0, 'f', 3)
-                    .arg(res.lnPreExponential, 0, 'f', 2)
-                    .arg(res.rSquare, 0, 'f', 4);
+            QString summary = (n > 2)
+                    ? QStringLiteral("<i>E</i><sub>a</sub> = %1 \u00B1 %2 kJ mol<sup>-1</sup>\n"
+                                     "(%3 eV), ln <i>A</i> = %4\n"
+                                     "<i>R</i><sup>2</sup> = %5")
+                              .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                              .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
+                              .arg(res.activationEnergyEV, 0, 'f', 3)
+                              .arg(res.lnPreExponential, 0, 'f', 2)
+                              .arg(res.rSquare, 0, 'f', 4)
+                    : QStringLiteral("<i>E</i><sub>a</sub> = %1 kJ mol<sup>-1</sup> (%2 eV)\n"
+                                     "ln <i>A</i> = %3")
+                              .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                              .arg(res.activationEnergyEV, 0, 'f', 3)
+                              .arg(res.lnPreExponential, 0, 'f', 2);
             if (res.excludedCount > 0) {
                 summary += QStringLiteral(" (<i>n</i> = %1, %2)")
                                    .arg(n)
@@ -2584,17 +2598,25 @@ CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         }
     }
     if (app) {
-        QString logText = QStringLiteral(
-                "[%1] Arrhenius Analysis (%2): Ea = %3 ± %4 kJ/mol (%5 ± %6 eV), ln A = %7, R² = %8 (n = %9")
-                .arg(QLocale().toString(QDateTime::currentDateTime()),
-                     srcTable ? srcTable->name() : QStringLiteral("Data"))
-                .arg(res.activationEnergyKJmol, 0, 'f', 2)
-                .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
-                .arg(res.activationEnergyEV, 0, 'f', 4)
-                .arg(res.activationEnergyEVSE, 0, 'f', 4)
-                .arg(res.lnPreExponential, 0, 'f', 3)
-                .arg(res.rSquare, 0, 'f', 5)
-                .arg(n);
+        QString logText = (n > 2)
+                ? QStringLiteral(
+                          "[%1] Arrhenius Analysis (%2): Ea = %3 ± %4 kJ/mol (%5 ± %6 eV), ln A = %7, R² = %8 (n = %9")
+                          .arg(QLocale().toString(QDateTime::currentDateTime()),
+                               srcTable ? srcTable->name() : QStringLiteral("Data"))
+                          .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                          .arg(res.activationEnergyKJmolSE, 0, 'f', 2)
+                          .arg(res.activationEnergyEV, 0, 'f', 4)
+                          .arg(res.activationEnergyEVSE, 0, 'f', 4)
+                          .arg(res.lnPreExponential, 0, 'f', 3)
+                          .arg(res.rSquare, 0, 'f', 5)
+                          .arg(n)
+                : QStringLiteral("[%1] Arrhenius Analysis (%2): Ea = %3 kJ/mol (%4 eV), ln A = %5 (n = %6")
+                          .arg(QLocale().toString(QDateTime::currentDateTime()),
+                               srcTable ? srcTable->name() : QStringLiteral("Data"))
+                          .arg(res.activationEnergyKJmol, 0, 'f', 2)
+                          .arg(res.activationEnergyEV, 0, 'f', 4)
+                          .arg(res.lnPreExponential, 0, 'f', 3)
+                          .arg(n);
         if (res.excludedCount > 0)
             logText += QStringLiteral(", %1 excluded").arg(res.excludedCount);
         logText += QStringLiteral(")\n");
@@ -4141,7 +4163,9 @@ double tensileStressUnitToGPa(const QString &unitIn)
         return 1.0e3;
     if (u.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
         return 6.894757e-3;
-    if (u.contains(QLatin1String("psi"), Qt::CaseInsensitive))
+    static const QRegularExpression rePsi(QStringLiteral("\\bpsi\\b"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    if (u.contains(rePsi))
         return 6.894757e-6;
     if (u.compare(QLatin1String("Pa"), Qt::CaseInsensitive) == 0
         || u.compare(QLatin1String("N/m^2"), Qt::CaseInsensitive) == 0
@@ -4417,7 +4441,9 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             return QStringLiteral("N/mm²");
         if (txt.contains(QLatin1String("ksi"), Qt::CaseInsensitive))
             return QStringLiteral("ksi");
-        if (txt.contains(QLatin1String("psi"), Qt::CaseInsensitive))
+        static const QRegularExpression rePsi(QStringLiteral("\\bpsi\\b"),
+                                              QRegularExpression::CaseInsensitiveOption);
+        if (txt.contains(rePsi))
             return QStringLiteral("psi");
         if (txt.contains(QLatin1String("(Pa)")) || txt.contains(QLatin1String("[Pa]"))
             || txt.endsWith(QLatin1String("/ Pa")))
@@ -7600,9 +7626,10 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         const double e = p.kissY - (intercept + slope * p.inv1000T);
         rss += e * e;
     }
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     const double r2 = (syy > 1e-30) ? std::clamp(1.0 - rss / syy, 0.0, 1.0) : 1.0;
-    const double sResid = (n > 2) ? std::sqrt(std::max(0.0, rss / double(n - 2))) : 0.0;
-    const double slopeSE = (n > 2) ? (sResid / std::sqrt(sxx)) : 0.0;
+    const double sResid = (n > 2) ? std::sqrt(std::max(0.0, rss / double(n - 2))) : kNaN;
+    const double slopeSE = (n > 2) ? (sResid / std::sqrt(sxx)) : kNaN;
 
     res.valid = true;
     res.slope = slope;
@@ -7640,15 +7667,15 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         const double hb = (n > 2)
                 ? (tCrit * sResid
                    * std::sqrt(1.0 / double(n) + ((p.inv1000T - meanX) * (p.inv1000T - meanX)) / sxx))
-                : 0.0;
+                : kNaN;
         colInvT[size_t(i)] = p.inv1000T;
         colRate[size_t(i)] = p.rateKmin;
         colTpK[size_t(i)] = p.tempK;
         colTpC[size_t(i)] = p.tempK - 273.15;
         colKissY[size_t(i)] = p.kissY;
         colFitY[size_t(i)] = yh;
-        colCiLo[size_t(i)] = yh - hb;
-        colCiHi[size_t(i)] = yh + hb;
+        colCiLo[size_t(i)] = (n > 2) ? (yh - hb) : kNaN;
+        colCiHi[size_t(i)] = (n > 2) ? (yh + hb) : kNaN;
     }
 
     Table *tbl = createNumericTable(
@@ -7679,6 +7706,14 @@ CurveMathTools::KissingerResult CurveMathTools::analyzeKissinger(
         c5->setLongName(QStringLiteral("ln(<i>\u03B2</i> / <i>T</i><sub>p</sub><sup>2</sup>)"));
         c5->setUnits(QStringLiteral("K<sup>-1</sup> min<sup>-1</sup>"));
         c5->setComment(QObject::tr("Linear fit"));
+    }
+    if (n <= 2) {
+        for (int ci : { 6, 7 }) {
+            if (Column *col = tbl->column(ci)) {
+                for (int i = 0; i < n; ++i)
+                    col->setInvalid(i, true);
+            }
+        }
     }
 
     MultiLayer *ml = app->newGraph(makeUniqueTableName(app, QStringLiteral("KissingerPlot")));
@@ -10451,10 +10486,11 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     for (char f : inWhPool)
         whExcludedCount += f ? 0 : 1;
 
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     double whSlope = 0.0;
     double whIntercept = 0.0;
     bool whFitted = false;
-    double whR2 = 0.0;
+    double whR2 = kNaN;
     double whSResid = 0.0;
     double whMeanX = 0.0;
     double whSxx = 0.0;
@@ -10494,7 +10530,6 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     // Williamson-Hall: beta cos(theta) = K lambda / D + eps * 4 sin(theta). A negative slope or a
     // non-positive intercept has no physical meaning; report N/A instead of silently substituting
     // the Scherrer mean.
-    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     res.whSlopeRaw = whFitted ? whSlope : kNaN;
     res.whInterceptRaw = whFitted ? whIntercept : kNaN;
     res.whRSquare = whR2;
@@ -10729,12 +10764,12 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         const InternalPeak &ipk = pks[size_t(i)];
         const double whX = 4.0 * std::sin(ipk.thetaRad);
         const double whY = ipk.betaRad * std::cos(ipk.thetaRad);
-        const double yh = whIntercept + whSlope * whX;
-        const double hb = (whPool.size() > 2 && whSxx > 1e-24)
+        const double yh = whFitted ? (whIntercept + whSlope * whX) : kNaN;
+        const double hb = (whFitted && whPool.size() > 2 && whSxx > 1e-24)
                 ? (tCrit * whSResid
                    * std::sqrt(1.0 / double(whPool.size())
                                + ((whX - whMeanX) * (whX - whMeanX)) / whSxx))
-                : 0.0;
+                : kNaN;
         col2Th[size_t(i)] = ipk.pub.twoThetaDeg;
         colD[size_t(i)] = ipk.pub.dSpacingAngstrom;
         colQ[size_t(i)] = (2.0 * M_PI) / std::max(1e-9, ipk.pub.dSpacingAngstrom);
@@ -10745,8 +10780,8 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         colWhX[size_t(i)] = whX;
         colWhY[size_t(i)] = whY;
         colWhFit[size_t(i)] = yh;
-        colWhLo[size_t(i)] = yh - hb;
-        colWhHi[size_t(i)] = yh + hb;
+        colWhLo[size_t(i)] = (whFitted && std::isfinite(hb)) ? (yh - hb) : kNaN;
+        colWhHi[size_t(i)] = (whFitted && std::isfinite(hb)) ? (yh + hb) : kNaN;
     }
 
     Table *tbl = createNumericTable(
@@ -10789,6 +10824,18 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             c9->setLongName(QStringLiteral("<i>\u03B2</i> cos <i>\u03B8</i>"));
             c9->setUnits(QStringLiteral("rad"));
             c9->setComment(QObject::tr("Linear fit"));
+            if (!whFitted) {
+                for (int i = 0; i < M; ++i)
+                    c9->setInvalid(i, true);
+            }
+        }
+        if (!whFitted || whPool.size() <= 2) {
+            for (int ci : { 10, 11 }) {
+                if (Column *col = tbl->column(ci)) {
+                    for (int i = 0; i < M; ++i)
+                        col->setInvalid(i, true);
+                }
+            }
         }
 
         // Append text (hkl) column when indexed
@@ -10847,7 +10894,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         res.whPlot = mlWh;
         if (mlWh && mlWh->activeGraph()) {
             Graph *gw = mlWh->activeGraph();
-            if (whPool.size() > 2 && whSResid > 0.0) {
+            if (whFitted && whPool.size() > 2 && whSResid > 0.0) {
                 QVector<double> vx(M), vyLo(M), vyHi(M);
                 for (int i = 0; i < M; ++i) {
                     vx[i] = colWhX[size_t(i)];
@@ -10881,7 +10928,8 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                                    QwtSymbol(QwtSymbol::Ellipse, QBrush(Qt::NoBrush),
                                              QPen(QColor(135, 140, 150), 1.5), QSize(8, 8)));
             }
-            insertStyledCurve(gw, tbl, 7, 9, M, QPen(QColor(205, 35, 45), 2.1, Qt::SolidLine));
+            if (whFitted)
+                insertStyledCurve(gw, tbl, 7, 9, M, QPen(QColor(205, 35, 45), 2.1, Qt::SolidLine));
 
             gw->applyFramePreset(Graph::FrameBoxInwardTicks);
             gw->setXAxisTitle(QStringLiteral("4 sin <i>\u03B8</i>"));
@@ -10903,11 +10951,13 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             const QString epsStr = std::isfinite(res.whMicrostrain)
                     ? QStringLiteral("%1 \u00D7 10<sup>-3</sup>").arg(res.whMicrostrain * 1e3, 0, 'f', 2)
                     : QStringLiteral("N/A (%1)").arg(noPhys);
+            const QString whR2Str = std::isfinite(res.whRSquare)
+                    ? QString::number(res.whRSquare, 'f', 4)
+                    : QStringLiteral("N/A");
             QString summary = QStringLiteral(
                     "<i>D</i><sub>W-H</sub> = %1 (<i>D</i><sub>Sch</sub> = %2)\n"
                     "<i>\u03B5</i> = %3, <i>R</i><sup>2</sup> = %4")
-                    .arg(whStr, schStr, epsStr)
-                    .arg(res.whRSquare, 0, 'f', 4);
+                    .arg(whStr, schStr, epsStr, whR2Str);
             if (res.latticeParamAngstrom > 0.0) {
                 summary += QStringLiteral("\n<i>a</i><sub>0</sub> = %1 \u00C5")
                                    .arg(res.latticeParamAngstrom, 0, 'f', 4);
@@ -11065,6 +11115,15 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     cbLambdaUnit->addItem(QStringLiteral("nm"), 1);
     cbLambdaUnit->addItem(QStringLiteral("keV"), 2);
     constexpr double kHcKeVAngstrom = 12.398419843320026;
+    auto syncLambdaRange = [&]() {
+        const int u = cbLambdaUnit->currentData().toInt();
+        if (u == 2)
+            sbLambda->setRange(0.005, 1000.0);
+        else if (u == 1)
+            sbLambda->setRange(0.0005, 50.0);
+        else
+            sbLambda->setRange(0.005, 50.0);
+    };
     auto lambdaBoxToAngstrom = [&]() -> double {
         const double v = sbLambda->value();
         const int u = cbLambdaUnit->currentData().toInt();
@@ -11075,6 +11134,7 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
         return v;
     };
     auto setLambdaBoxFromAngstrom = [&](double ang) {
+        syncLambdaRange();
         const int u = cbLambdaUnit->currentData().toInt();
         if (u == 1)
             sbLambda->setValue(ang * 0.1);
@@ -11269,14 +11329,22 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
                     ? chosenC
                     : (chosenG ? chosenG->parentPlotName() : QStringLiteral("Specimen"));
             sumTbl->column(0)->setTextAt(rowIdx, specName);
-            sumTbl->column(1)->setValueAt(rowIdx, xr.wavelengthAngstrom);
+            auto setNumOrInvalid = [&](int colIdx, double val) {
+                if (Column *col = sumTbl->column(colIdx)) {
+                    if (std::isfinite(val))
+                        col->setValueAt(rowIdx, val);
+                    else
+                        col->setInvalid(rowIdx, true);
+                }
+            };
+            setNumOrInvalid(1, xr.wavelengthAngstrom);
             sumTbl->column(2)->setValueAt(rowIdx, double(xr.peaks.size()));
-            sumTbl->column(3)->setValueAt(rowIdx, xr.meanScherrerSizeNm);
-            sumTbl->column(4)->setValueAt(rowIdx, xr.whSizeNm);
-            sumTbl->column(5)->setValueAt(rowIdx, xr.whMicrostrain);
-            sumTbl->column(6)->setValueAt(rowIdx, xr.whRSquare);
-            sumTbl->column(7)->setValueAt(rowIdx, xr.latticeParamAngstrom);
-            sumTbl->column(8)->setValueAt(rowIdx, xr.latticeParamCAngstrom);
+            setNumOrInvalid(3, xr.meanScherrerSizeNm);
+            setNumOrInvalid(4, xr.whSizeNm);
+            setNumOrInvalid(5, xr.whMicrostrain);
+            setNumOrInvalid(6, xr.whRSquare);
+            setNumOrInvalid(7, xr.latticeParamAngstrom);
+            setNumOrInvalid(8, xr.latticeParamCAngstrom);
             sumTbl->showNormal();
         }
     }

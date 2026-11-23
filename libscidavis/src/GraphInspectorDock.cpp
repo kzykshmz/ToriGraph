@@ -2813,7 +2813,8 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                     flushPendingAxisTitleEdit();
                 d_active_axis = qBound(0, qwtAxis, 3);
                 if (Graph *g = activeLayer()) {
-                    GraphMiniToolbar::instance()->cancelScheduledAndHide();
+                    if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
+                        mt->cancelScheduledAndHide();
                     Graph::GraphSelection sel;
                     sel.kind = Graph::GraphSelection::Axis;
                     sel.primaryId = d_active_axis;
@@ -2893,6 +2894,10 @@ QWidget *GraphInspectorDock::buildAxisInspector()
             return;
         if (d_axis_title_timer && d_axis_title_timer->isActive()) {
             flushPendingAxisTitleEdit();
+            return;
+        }
+        if (!d_edit_axis_title->isModified()
+            && d_edit_axis_title->text() == d_edit_axis_title->property("_syncedText").toString()) {
             return;
         }
         Graph *g = activeLayer();
@@ -3344,10 +3349,45 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                     const QString before = d_target_ml->captureUndoSnapshot();
                     static const QRegularExpression rxParen(
                             QStringLiteral("^(.*\\S)\\s+\\(([^()\\[\\]]+)\\)\\s*$"));
-                    static const QRegularExpression rxSlash(
-                            QStringLiteral("^(.*\\S)\\s+/\\s+([^/()\\[\\]]+)\\s*$"));
                     static const QRegularExpression rxBracket(
-                            QStringLiteral("^(.*\\S)\\s+\\[([^\\[\\]()]+)\\]\\s*$"));
+                            QStringLiteral("^(.*\\S)\\s+\\[([^\\[\\]]+)\\]\\s*$"));
+                    auto matchSlashOutsideTags = [](const QString &raw, QString &base,
+                                                    QString &unit) -> bool {
+                        int parenDepth = 0;
+                        int bracketDepth = 0;
+                        int bestSlash = -1;
+                        for (int i = 0; i < raw.size(); ++i) {
+                            const QChar c = raw.at(i);
+                            if (c == QLatin1Char('<')) {
+                                const int closeIdx = raw.indexOf(QLatin1Char('>'), i + 1);
+                                if (closeIdx > i + 1) {
+                                    const QChar nextCh = raw.at(i + 1);
+                                    if (nextCh == QLatin1Char('/') || nextCh.isLetter()) {
+                                        i = closeIdx;
+                                        continue;
+                                    }
+                                }
+                            }
+                            if (c == QLatin1Char('('))
+                                ++parenDepth;
+                            else if (c == QLatin1Char(')') && parenDepth > 0)
+                                --parenDepth;
+                            else if (c == QLatin1Char('['))
+                                ++bracketDepth;
+                            else if (c == QLatin1Char(']') && bracketDepth > 0)
+                                --bracketDepth;
+                            else if (c == QLatin1Char('/') && parenDepth == 0 && bracketDepth == 0
+                                     && i > 0 && raw.at(i - 1).isSpace()
+                                     && i + 1 < raw.size() && raw.at(i + 1).isSpace()) {
+                                bestSlash = i;
+                            }
+                        }
+                        if (bestSlash <= 0)
+                            return false;
+                        base = raw.left(bestSlash).trimmed();
+                        unit = raw.mid(bestSlash + 1).trimmed();
+                        return !base.isEmpty() && !unit.isEmpty();
+                    };
                     auto rewriteManualTitle = [&](const QString &raw, int dstMode) -> QString {
                         QString base, unit;
                         QRegularExpressionMatch m = rxParen.match(raw);
@@ -3357,10 +3397,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
                         } else if ((m = rxBracket.match(raw)).hasMatch()) {
                             base = m.captured(1);
                             unit = m.captured(2);
-                        } else if ((m = rxSlash.match(raw)).hasMatch()) {
-                            base = m.captured(1);
-                            unit = m.captured(2);
-                        } else {
+                        } else if (!matchSlashOutsideTags(raw, base, unit)) {
                             return raw;
                         }
                         const QString uTrim = unit.trimmed();
@@ -4469,6 +4506,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_chk_pcm_colorbar = new QCheckBox(d_point_cmap_wrap);
     d_lbl_pcm_cb_title = new QLabel(d_point_cmap_wrap);
     d_edit_pcm_cb_title = new QLineEdit(d_point_cmap_wrap);
+    wirePendingEditCue(d_edit_pcm_cb_title);
     d_chk_pcm_custom_z = new QCheckBox(d_point_cmap_wrap);
     d_lbl_pcm_zmin = new QLabel(d_point_cmap_wrap);
     d_edit_pcm_zmin = new QLineEdit(d_point_cmap_wrap);
@@ -4478,10 +4516,20 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     wirePendingEditCue(d_edit_pcm_zmax);
 
     auto applyPointColorMapFromUi = [this](const QString &undoLabel, int mergeId = -1,
-                                           bool fromZEdits = false) {
+                                           bool fromZEdits = false,
+                                           bool fromCbTitleEdit = false) {
         Graph *g = activeLayer();
         if (d_syncing_props || !d_target_ml || !g)
             return;
+        if (fromCbTitleEdit && d_edit_pcm_cb_title) {
+            const bool isMod = d_edit_pcm_cb_title->isModified();
+            const bool isDiff = (d_edit_pcm_cb_title->text().trimmed()
+                                 != d_edit_pcm_cb_title->property("_syncedText").toString());
+            if (!isMod && !isDiff) {
+                setLineEditPendingCue(d_edit_pcm_cb_title, false);
+                return;
+            }
+        }
         if (fromZEdits && d_edit_pcm_zmin && d_edit_pcm_zmax) {
             const bool anyMod = d_edit_pcm_zmin->isModified() || d_edit_pcm_zmax->isModified();
             const bool anyDiff = (d_edit_pcm_zmin->text().trimmed()
@@ -4511,7 +4559,22 @@ QWidget *GraphInspectorDock::buildCurveInspector()
             pcm.preset = d_combo_pcm_cmap->currentData().toInt();
         pcm.reverse = d_chk_pcm_reverse && d_chk_pcm_reverse->isChecked();
         pcm.showColorBar = !d_chk_pcm_colorbar || d_chk_pcm_colorbar->isChecked();
-        pcm.colorBarTitle = d_edit_pcm_cb_title ? d_edit_pcm_cb_title->text() : pcm.colorBarTitle;
+        if (d_edit_pcm_cb_title) {
+            const QString nextCbTitle = d_edit_pcm_cb_title->text();
+            const QString displayedCbTitle = pcm.colorBarTitle.isEmpty()
+                    ? g->axisTitle(QwtPlot::yRight)
+                    : pcm.colorBarTitle;
+            if (fromCbTitleEdit && nextCbTitle == displayedCbTitle) {
+                d_edit_pcm_cb_title->setModified(false);
+                setLineEditPendingCue(d_edit_pcm_cb_title, false);
+                return;
+            }
+            const bool cbChanged = d_edit_pcm_cb_title->isModified()
+                    || (nextCbTitle.trimmed()
+                        != d_edit_pcm_cb_title->property("_syncedText").toString());
+            if (cbChanged && nextCbTitle != displayedCbTitle)
+                pcm.colorBarTitle = nextCbTitle;
+        }
         const bool customZ = d_chk_pcm_custom_z && d_chk_pcm_custom_z->isChecked();
         pcm.autoRange = !customZ;
         if (customZ && d_edit_pcm_zmin && d_edit_pcm_zmax) {
@@ -4548,7 +4611,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     });
     connect(d_edit_pcm_cb_title, &QLineEdit::editingFinished, this,
             [applyPointColorMapFromUi]() {
-                applyPointColorMapFromUi(tr("Edit Colorbar Title"), kMergePcmCbTitle);
+                applyPointColorMapFromUi(tr("Edit Colorbar Title"), kMergePcmCbTitle, false, true);
             });
     connect(d_chk_pcm_custom_z, &QCheckBox::toggled, this, [applyPointColorMapFromUi](bool) {
         applyPointColorMapFromUi(tr("Change Scatter Z Range"));
@@ -6357,7 +6420,8 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     if (d_axis_title_timer && d_axis_title_timer->isActive())
         flushPendingAxisTitleEdit();
 
-    GraphMiniToolbar::instance()->cancelScheduledAndHide();
+    if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
+        mt->cancelScheduledAndHide();
 
     const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
     if (layerOneBased >= 1) {
@@ -7918,7 +7982,9 @@ void GraphInspectorDock::syncAxisControls()
                 (d_axis_title_timer && d_axis_title_timer->isActive()
                  && d_axis_title_edit_layer.data() == g && d_axis_title_edit_axis == ax);
         if (!editingSameAxisTitle) {
-            d_edit_axis_title->setText(g->axisTitle(ax));
+            const QString axisTitle = g->axisTitle(ax);
+            d_edit_axis_title->setText(axisTitle);
+            d_edit_axis_title->setProperty("_syncedText", axisTitle);
             d_edit_axis_title->setModified(false);
         }
         updateAxisTitlePreview(d_edit_axis_title->text());
@@ -8183,9 +8249,9 @@ void GraphInspectorDock::syncCurveControls()
             const bool cbVisible = pcm.showColorBar;
             d_chk_pcm_colorbar->setChecked(cbVisible);
             d_edit_pcm_cb_title->setEnabled(cbVisible);
-            d_edit_pcm_cb_title->setText(pcm.colorBarTitle.isEmpty()
-                                                 ? g->axisTitle(QwtPlot::yRight)
-                                                 : pcm.colorBarTitle);
+            syncLineEditClean(d_edit_pcm_cb_title,
+                              pcm.colorBarTitle.isEmpty() ? g->axisTitle(QwtPlot::yRight)
+                                                          : pcm.colorBarTitle);
 
             const bool customZ = !pcm.autoRange;
             d_chk_pcm_custom_z->setChecked(customZ);
@@ -9168,6 +9234,7 @@ void GraphInspectorDock::flushPendingAxisTitleEdit()
             break;
         }
     }
+    d_edit_axis_title->setProperty("_syncedText", newTitle);
     d_edit_axis_title->setModified(false);
     if (!anyDiff)
         return;

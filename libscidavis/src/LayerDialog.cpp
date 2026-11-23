@@ -641,12 +641,35 @@ int LayerDialog::gridCellLayerCount(int layerCount) const
     if (!multi_layer || layerCount <= 0)
         return qMax(0, layerCount);
     const int existing = multi_layer->layers();
+    const int keepCount = qMin(layerCount, existing);
+    const int targetNum = targetLayerBox ? targetLayerBox->currentData().toInt() : 0;
+    const int parentNum = parentLayerBox ? parentLayerBox->currentData().toInt() : 0;
+    Graph *pendingTarget =
+            (targetNum >= 1 && targetNum <= keepCount) ? multi_layer->layer(targetNum) : nullptr;
+    Graph *pendingParent = (pendingTarget && parentNum >= 1 && parentNum <= keepCount
+                            && parentNum != targetNum)
+            ? multi_layer->layer(parentNum)
+            : nullptr;
     int n = 0;
-    for (int i = 1; i <= qMin(layerCount, existing); ++i) {
+    for (int i = 1; i <= keepCount; ++i) {
         Graph *lg = multi_layer->layer(i);
         if (!lg)
             continue;
-        if (lg->linkedParentLayer() || multi_layer->isInsetLayer(lg))
+        Graph *effParent = (lg == pendingTarget) ? pendingParent : lg->linkedParentLayer();
+        // If a surviving layer's linked parent is among the layers being removed, it reverts to
+        // its own grid cell once setLayersNumber(layerCount) deletes that parent.
+        if (effParent) {
+            bool parentSurvives = false;
+            for (int j = 1; j <= keepCount; ++j) {
+                if (multi_layer->layer(j) == effParent) {
+                    parentSurvives = true;
+                    break;
+                }
+            }
+            if (!parentSurvives)
+                effParent = nullptr;
+        }
+        if (effParent || multi_layer->isInsetLayer(lg))
             continue;
         ++n;
     }

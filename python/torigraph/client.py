@@ -460,6 +460,7 @@ _READ_ONLY_RPC_SUFFIXES = ("get_", "list_", "describe", "to_python")
 _READ_ONLY_RPC_NAMES = frozenset(
     {
         "ping", "info", "inspect", "query", "supported_methods", "column_stats",
+        "table.row_stats", "matrix.determinant", "app.check_updates",
         "app.info", "app.supported_methods", "app.describe_api", "app.list_windows", "app.window_info",
         "graph.inspect", "gadget.query", "workbook.list",
     }
@@ -3425,26 +3426,32 @@ class Session:
                 )
             return self._active_batch._record_raw(_method, merged)
 
-        req_id = self._next_id
-        self._next_id += 1
-        req_obj = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": str(_method),
-            "params": merged,
-        }
-        raw_req = json.dumps(req_obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        resp = self._exchange(raw_req, req_id, str(_method), rpc_timeout)
+        for attempt in range(4):
+            req_id = self._next_id
+            self._next_id += 1
+            req_obj = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "method": str(_method),
+                "params": merged,
+            }
+            raw_req = json.dumps(req_obj, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            resp = self._exchange(raw_req, req_id, str(_method), rpc_timeout)
 
-        if "error" in resp and resp["error"] is not None:
-            err = resp["error"]
-            if isinstance(err, Mapping):
-                raise RpcError(
-                    int(err.get("code", -32000)),
-                    str(err.get("message", "Unknown RPC error")),
-                    err.get("data"),
-                )
-            raise RpcError(-32000, str(err))
+            if "error" in resp and resp["error"] is not None:
+                err = resp["error"]
+                if isinstance(err, Mapping):
+                    code = int(err.get("code", -32000))
+                    if code == -32003 and attempt < 3:
+                        time.sleep(0.05 * (attempt + 1))
+                        continue
+                    raise RpcError(
+                        code,
+                        str(err.get("message", "Unknown RPC error")),
+                        err.get("data"),
+                    )
+                raise RpcError(-32000, str(err))
+            break
 
         result = resp.get("result")
         if _method == "graph.apply_style_preset":
@@ -3458,6 +3465,13 @@ class Session:
                     self._slide_preset_graphs.add(gname)
                 else:
                     self._slide_preset_graphs.discard(gname)
+        elif _method == "app.close_window":
+            closed_nm = (
+                merged.get("name")
+                or (result.get("name") if isinstance(result, Mapping) else None)
+            )
+            if isinstance(closed_nm, str) and closed_nm:
+                self._slide_preset_graphs.discard(closed_nm)
         elif _method == "app.new_project" or (
             _method == "app.open_project" and not merged.get("append")
         ):

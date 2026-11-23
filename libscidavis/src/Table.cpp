@@ -30,6 +30,9 @@
  ***************************************************************************/
 #include "Table.h"
 #include "ApplicationWindow.h"
+#include "MultiLayer.h"
+#include "Graph.h"
+#include "PlotCurve.h"
 #include "core/column/Column.h"
 #include "lib/Interval.h"
 #include "table/TableModel.h"
@@ -178,6 +181,7 @@ void registerTableWorksheetTranslations()
             "ワークシート間の循環参照: 値が定まらず、古い値の可能性があります。");
         // export / reimport (D4/D6)
         reg("Could not open the file: %1\n%2", "ファイルを開けませんでした: %1\n%2");
+        reg("Could not parse data from file: %1", "ファイルからデータを読み取れませんでした: %1");
         reg("Import failed", "読み込みに失敗しました");
         reg("%1: re-import from source", "%1: 元ファイルから再読込");
         reg("No original source file is recorded for this worksheet.",
@@ -1960,9 +1964,14 @@ void Table::clearCell(int row, int col)
         return;
     if (d_future_table)
         d_future_table->beginMacro(tr("%1: clear selected cell(s)").arg(name()));
-    if (colPtr->columnMode() == SciDAVis::ColumnMode::Text && row < colPtr->rowCount())
-        colPtr->setTextAt(row, QString());
-    colPtr->setInvalid(row, true);
+    if (colPtr->columnMode() == SciDAVis::ColumnMode::Text) {
+        if (row < colPtr->rowCount()) {
+            colPtr->setTextAt(row, QString());
+            colPtr->setInvalid(row, false);
+        }
+    } else {
+        colPtr->setInvalid(row, true);
+    }
     if (d_future_table)
         d_future_table->endMacro();
 }
@@ -2159,22 +2168,21 @@ bool Table::reimportFromSource()
             return false;
         }
         AsciiTableImportFilter filter;
+        filter.set_convert_to_numeric(true);
+        filter.set_trim_whitespace(true);
+        filter.set_separator(sep);
+        filter.set_encoding(enc);
+        filter.set_units_row(unitsRow);
         if (ignoredLines > 0)
             filter.set_ignored_lines(ignoredLines);
-        if (!sep.isEmpty())
-            filter.set_separator(sep);
-        if (!enc.isEmpty())
-            filter.set_encoding(enc);
-        if (unitsRow >= 0)
-            filter.set_units_row(unitsRow);
         std::unique_ptr<future::Table> imported(
                 static_cast<future::Table *>(filter.importAspect(file)));
         if (!imported) {
             if (!ApplicationWindow::isNonInteractiveContext(this)) {
                 QMessageBox::warning(
                         this, tr("Import failed"),
-                        tr("Could not open the file: %1\n%2")
-                                .arg(QDir::toNativeSeparators(path), file.errorString()));
+                        tr("Could not parse data from file: %1")
+                                .arg(QDir::toNativeSeparators(path)));
             }
             return false;
         }
@@ -2192,6 +2200,15 @@ bool Table::reimportFromSource()
                 cp->setProperty("_tg_label_role", src->property("_tg_label_role"));
             newCols.append(cp);
         }
+    }
+
+    if (newCols.isEmpty()) {
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(
+                    this, tr("Import failed"),
+                    tr("Could not parse data from file: %1").arg(QDir::toNativeSeparators(path)));
+        }
+        return false;
     }
 
     QHash<QString, SciDAVis::PlotDesignation> oldPdByName;
@@ -2215,13 +2232,77 @@ bool Table::reimportFromSource()
             nc->setPlotDesignation(oldPdByIndex.at(i));
     }
 
+    int maxRows = 0;
+    for (Column *nc : newCols) {
+        if (nc)
+            maxRows = qMax(maxRows, nc->rowCount());
+    }
+    const int oldCount = d_future_table->columnCount();
+    const int common = qMin(oldCount, newCols.size());
+    const int prevRows = numRows();
+
     QApplication::setOverrideCursor(Qt::WaitCursor);
     d_future_table->beginMacro(tr("%1: re-import from source").arg(name()));
-    d_future_table->removeColumns(0, d_future_table->columnCount());
-    d_future_table->appendColumns(newCols);
+    d_future_table->setRowCount(maxRows);
+    for (int i = 0; i < common; ++i) {
+        Column *dst = d_future_table->column(i);
+        Column *src = newCols.at(i);
+        if (!dst || !src) {
+            delete src;
+            continue;
+        }
+        if (dst->dataType() != src->dataType())
+            dst->setColumnMode(src->columnMode());
+        dst->copy(src);
+        dst->setName(src->name());
+        dst->setPlotDesignation(src->plotDesignation());
+        dst->setLongName(src->longName());
+        dst->setUnits(src->units());
+        dst->setComment(src->comment());
+        dst->setProperty("_tg_label_role", src->property("_tg_label_role"));
+        delete src;
+    }
+    if (oldCount > newCols.size())
+        d_future_table->removeColumns(newCols.size(), oldCount - newCols.size());
+    if (newCols.size() > common) {
+        QList<Column *> extraCols;
+        extraCols.reserve(newCols.size() - common);
+        for (int i = common; i < newCols.size(); ++i) {
+            if (Column *nc = newCols.at(i))
+                extraCols.append(nc);
+        }
+        if (!extraCols.isEmpty())
+            d_future_table->appendColumns(extraCols);
+    }
     d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow);
     d_future_table->endMacro();
     QApplication::restoreOverrideCursor();
+    notifyChanges();
+
+    if (ApplicationWindow *aw = owningApplicationWindowForTable(this)) {
+        for (MyWidget *mw : aw->windowsList()) {
+            MultiLayer *ml = qobject_cast<MultiLayer *>(mw);
+            if (!ml)
+                continue;
+            for (QWidget *gw : ml->graphPtrs()) {
+                Graph *g = qobject_cast<Graph *>(gw);
+                if (!g)
+                    continue;
+                bool graphUpdated = false;
+                for (int ci = 0; ci < g->curves(); ++ci) {
+                    DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(ci));
+                    if (!dc || dc->table() != this)
+                        continue;
+                    if (dc->startRow() == 0 && (prevRows <= 0 || dc->endRow() == prevRows - 1)) {
+                        dc->setFullRange();
+                        graphUpdated = true;
+                    }
+                }
+                if (graphUpdated)
+                    g->updatePlot();
+            }
+        }
+    }
 
     bool anyMeta = false;
     for (int i = 0; i < numCols(); ++i) {
@@ -3182,7 +3263,10 @@ int Table::replaceAllCells(const QString &what, const QString &with, bool matchC
                     box.addButton(tr("Convert to Text"), QMessageBox::AcceptRole);
             box.addButton(QMessageBox::Cancel);
             box.setDefaultButton(convertBtn);
+            QPointer<Table> guard(this);
             box.exec();
+            if (!guard || !d_future_table)
+                return 0;
             if (box.clickedButton() != convertBtn)
                 return 0;
             colsToConvertToText = nonNumericConflictCols;
@@ -3347,7 +3431,13 @@ void Table::showFindReplaceDialog(bool replace)
                                             tr("Convert to Text"), QMessageBox::AcceptRole);
                                     box.addButton(QMessageBox::Cancel);
                                     box.setDefaultButton(convertBtn);
+                                    QPointer<Table> guard(this);
                                     box.exec();
+                                    if (!guard || !d_future_table)
+                                        return;
+                                    col = column(curCol);
+                                    if (!col)
+                                        return;
                                     if (box.clickedButton() != convertBtn)
                                         canApply = false;
                                     else
@@ -3392,9 +3482,12 @@ void Table::showFindReplaceDialog(bool replace)
         connect(replaceAllBtn, &QPushButton::clicked, dlg, [this]() {
             if (!d_fr_find_edit || !d_fr_replace_edit || !d_fr_status_label)
                 return;
+            QPointer<Table> guard(this);
             const int n = replaceAllCells(d_fr_find_edit->text(), d_fr_replace_edit->text(),
                                           d_fr_case_box->isChecked(), d_fr_whole_box->isChecked(),
                                           d_fr_sel_box->isChecked());
+            if (!guard || !d_fr_status_label)
+                return;
             d_fr_status_label->setText(tr("%n cell(s) replaced.", "", n));
         });
     }

@@ -135,9 +135,15 @@ static int effectiveSampleGap(const QwtText *txt, int defaultHspace)
     return defaultHspace;
 }
 
+static bool isNonScreenMetricsMap(const QwtMetricsMap &map)
+{
+    return !map.isIdentity() || map.screenToLayoutX(1000) != 1000
+            || map.screenToLayoutY(1000) != 1000;
+}
+
 static double legendScreenZoomScale(const Plot *plot)
 {
-    if (!QwtPainter::metricsMap().isIdentity() || !plot)
+    if (isNonScreenMetricsMap(QwtPainter::metricsMap()) || !plot)
         return 1.0;
     const double s = plot->displayFontScale();
     if (!std::isfinite(s) || std::abs(s - 1.0) <= 1e-4)
@@ -162,6 +168,53 @@ static int scaledSampleGap(const QwtText *txt, int defaultHspace, double zScale)
 static int scaledLegendPx(int base, double zScale)
 {
     return (zScale != 1.0) ? qMax(1, qRound(double(base) * zScale)) : base;
+}
+
+static int scaledLegendLayoutX(int base, double zScale, const QwtMetricsMap &map)
+{
+    return isNonScreenMetricsMap(map) ? qMax(1, map.screenToLayoutX(base))
+                                      : scaledLegendPx(base, zScale);
+}
+
+static int scaledLegendLayoutY(int base, double zScale, const QwtMetricsMap &map)
+{
+    return isNonScreenMetricsMap(map) ? qMax(1, map.screenToLayoutY(base))
+                                      : scaledLegendPx(base, zScale);
+}
+
+static double legendDevicePenScale(double zScale, const QwtMetricsMap &map)
+{
+    if (isNonScreenMetricsMap(map)) {
+        const double mmScale =
+                (double(qMax(1, map.screenToLayoutX(1000))) / 1000.0)
+                * (double(qMax(1, map.layoutToDeviceX(1000))) / 1000.0);
+        return qMax(Plot::printDeviceScale(), mmScale);
+    }
+    return Plot::printDeviceScale() * zScale;
+}
+
+static void computeLegendSampleGeometry(bool scatterOnly, const QwtText *text, int hspace,
+                                        int symbolLineLength, double zScale,
+                                        const QwtMetricsMap &map, int &outSampleLen,
+                                        int &outSampleOffset)
+{
+    const bool compact = text && isCompactLegendFont(text->font());
+    const int minScatterLen = isNonScreenMetricsMap(map)
+            ? qMax(1, map.screenToLayoutX(scaledMinScatterSampleLen(compact, 1.0)))
+            : scaledMinScatterSampleLen(compact, zScale);
+    const int sampleGap = isNonScreenMetricsMap(map)
+            ? qMax(1, map.screenToLayoutX(scaledSampleGap(text, hspace, 1.0)))
+            : scaledSampleGap(text, hspace, zScale);
+    outSampleLen = scatterOnly ? qMax(symbolLineLength, minScatterLen) : symbolLineLength;
+    outSampleOffset = outSampleLen + sampleGap;
+}
+
+static int legendTextRightPad(int layoutTextWidth, const QwtMetricsMap &map)
+{
+    const bool nonScreen = isNonScreenMetricsMap(map);
+    const int screenW = nonScreen ? map.layoutToScreenX(layoutTextWidth) : layoutTextWidth;
+    const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
+    return nonScreen ? map.screenToLayoutX(padScreen) : padScreen;
 }
 
 //! Temporarily makes the QwtPainter metrics map the identity (screen) map, so geometry queries
@@ -252,12 +305,13 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
                 : ((d_frame == None) ? qMax(2, majLen + 2 - (lm + 4)) : qMax(2, majLen + 3));
         const int reqInT = (d_frame == None) ? qMax(2, majLen + 2 - tm) : qMax(2, majLen + 3);
         const int reqInB = (d_frame == None) ? qMax(2, majLen + 2 - tm) : qMax(2, majLen + 3);
-        const int layInL = map.isIdentity() ? reqInL : map.screenToLayoutX(reqInL);
-        const int layInR = map.isIdentity() ? reqInR : map.screenToLayoutX(reqInR);
-        const int layInT = map.isIdentity() ? reqInT : map.screenToLayoutY(reqInT);
-        const int layInB = map.isIdentity() ? reqInB : map.screenToLayoutY(reqInB);
-        const int layPlainX = map.isIdentity() ? 2 : map.screenToLayoutX(2);
-        const int layPlainY = map.isIdentity() ? 2 : map.screenToLayoutY(2);
+        const bool nonScreen = isNonScreenMetricsMap(map);
+        const int layInL = nonScreen ? map.screenToLayoutX(reqInL) : reqInL;
+        const int layInR = nonScreen ? map.screenToLayoutX(reqInR) : reqInR;
+        const int layInT = nonScreen ? map.screenToLayoutY(reqInT) : reqInT;
+        const int layInB = nonScreen ? map.screenToLayoutY(reqInB) : reqInB;
+        const int layPlainX = nonScreen ? map.screenToLayoutX(2) : 2;
+        const int layPlainY = nonScreen ? map.screenToLayoutY(2) : 2;
 
         const int layClearL =
                 sideHasInwardTicks(QwtPlot::yLeft, QwtPlot::yRight) ? layInL : layPlainX;
@@ -270,8 +324,9 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
 
         int clampWidth = width;
         if (d_frame == None && d_num_columns <= 1) {
-            const int trailLayout = map.isIdentity() ? (lm + 8) : map.screenToLayoutX(lm + 8);
-            clampWidth = qMax(16, width - trailLayout);
+            const int trailLayout = nonScreen ? map.screenToLayoutX(lm + 8) : (lm + 8);
+            const int minClampW = nonScreen ? qMax(1, map.screenToLayoutX(16)) : 16;
+            clampWidth = qMax(minClampW, width - trailLayout);
         }
 
         const QPoint devZero = map.layoutToDevice(QPoint(0, 0));
@@ -495,15 +550,15 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     totalWidth = 0;
     totalHeight = 0;
 
+    const QwtMetricsMap map = QwtPainter::metricsMap();
     const double zScale = legendScreenZoomScale(d_plot);
-    const int lm = scaledLegendPx(left_margin, zScale);
-    const int tm = scaledLegendPx(top_margin, zScale);
+    const int lm = scaledLegendLayoutX(left_margin, zScale, map);
+    const int tm = scaledLegendLayoutY(top_margin, zScale, map);
     const bool scatterOnly = isScatterOnly();
-    const bool compact = d_text && isCompactLegendFont(d_text->font());
-    const int sampleLen = scatterOnly
-            ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
-            : symbolLineLength;
-    const int sampleOffset = sampleLen + scaledSampleGap(d_text, hspace, zScale);
+    int sampleLen = symbolLineLength;
+    int sampleOffset = symbolLineLength;
+    computeLegendSampleGeometry(scatterOnly, d_text, hspace, symbolLineLength, zScale, map,
+                                sampleLen, sampleOffset);
 
     const QString rawText = d_text ? d_text->text() : QString();
     const QStringList titles = filterVisibleLegendLines(d_plot, rawText);
@@ -523,7 +578,6 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     QVector<int> colWidths(cols, 0);
     QVector<int> rowHeights(rows, 0);
 
-    const QwtMetricsMap map = QwtPainter::metricsMap();
     for (int i = 0; i < n; ++i) {
         const QString &str = titles[i];
         int itemW = 0;
@@ -533,9 +587,7 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
         QwtText aux(parse(str));
         aux.setFont(displayFont());
         const QSize size = aux.textSize();
-        const int screenW = map.isIdentity() ? size.width() : map.layoutToScreenX(size.width());
-        const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
-        const int padW = map.isIdentity() ? padScreen : map.screenToLayoutX(padScreen);
+        const int padW = legendTextRightPad(size.width(), map);
         itemW += size.width() + padW;
         const int itemH = size.height();
         const int row = i / cols;
@@ -546,7 +598,7 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
             rowHeights[row] = itemH;
     }
 
-    const int colGap = (cols > 1) ? (2 * lm + scaledLegendPx(6, zScale)) : 0;
+    const int colGap = (cols > 1) ? (2 * lm + scaledLegendLayoutX(6, zScale, map)) : 0;
     QVector<int> colOffsetX(cols, baseX + lm);
     for (int c = 1; c < cols; ++c)
         colOffsetX[c] = colOffsetX[c - 1] + colWidths[c - 1] + colGap;
@@ -569,7 +621,7 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
     for (int r = 0; r < rows; ++r)
         sumH += rowHeights[r];
 
-    const int rightSafety = map.isIdentity() ? scaledLegendPx(4, zScale) : map.screenToLayoutX(4);
+    const int rightSafety = scaledLegendLayoutX(4, zScale, map);
     totalWidth = 2 * lm + sumW + (cols - 1) * colGap + rightSafety;
     totalHeight = 2 * tm + sumH;
 }
@@ -678,13 +730,10 @@ void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const
     QPen framePen(Qt::black, 1, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
     const QwtMetricsMap map = QwtPainter::metricsMap();
     const double zScale = legendScreenZoomScale(d_plot);
-    if (!map.isIdentity()) {
-        const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
-        if (scale > 0.0)
-            framePen.setWidthF(scale);
-    } else if (zScale != 1.0) {
+    const double penScale = legendDevicePenScale(zScale, map);
+    if (penScale != 1.0) {
         framePen.setCosmetic(false);
-        framePen.setWidthF(zScale);
+        framePen.setWidthF(penScale);
     } else {
         framePen.setWidthF(1.0);
     }
@@ -701,8 +750,8 @@ void Legend::drawFrame(QPainter *p, int type, const QRect &rect) const
         QwtPainter::fillRect(p, rect, d_text->backgroundBrush());
         QwtPainter::drawRect(p, rect);
 
-        const int shX = scaledLegendPx(d_shadow_size_x, zScale);
-        const int shY = scaledLegendPx(d_shadow_size_y, zScale);
+        const int shX = scaledLegendLayoutX(d_shadow_size_x, zScale, map);
+        const int shY = scaledLegendLayoutY(d_shadow_size_y, zScale, map);
         QRect shadow_right = QRect(rect.right(), rect.y() + shY, shX, rect.height() - 1);
         QRect shadow_bottom = QRect(rect.x() + shX, rect.bottom(), rect.width() - 1, shY);
         QwtPainter::fillRect(p, shadow_right, QBrush(Qt::black));
@@ -724,9 +773,15 @@ void Legend::drawVector(QPainter *p, int x, int y, int l, int curveIndex) const
     p->save();
     p->setRenderHint(QPainter::Antialiasing, true);
 
+    const QwtMetricsMap map = QwtPainter::metricsMap();
+    const QPoint p1 = map.layoutToDevice(QPoint(x, y), p);
+    const QPoint p2 = map.layoutToDevice(QPoint(x + l, y), p);
+    const double dx = double(p2.x() - p1.x());
+    const double dy = double(p2.y() - p1.y());
+    const double devLen = std::hypot(dx, dy);
+
     const double zScale = legendScreenZoomScale(d_plot);
-    const double sc = (zScale != 1.0) ? (Plot::printDeviceScale() * zScale)
-                                      : Plot::printDeviceScale();
+    const double sc = legendDevicePenScale(zScale, map);
     const double baseW = (v->pen().widthF() > 0.0)
             ? v->pen().widthF()
             : ((v->width() > 0) ? double(v->width()) : 1.0);
@@ -734,13 +789,18 @@ void Legend::drawVector(QPainter *p, int x, int y, int l, int curveIndex) const
     pen.setCosmetic(false);
     p->setPen(pen);
 
-    const double headLen = qMin(double(qMax(5, v->headLength())) * sc, 0.45 * double(qMax(8, l)));
+    const double headLen =
+            qMin(double(qMax(5, v->headLength())) * sc, 0.45 * qMax(8.0 * sc, devLen));
     const double effAngle = qBound(14.0, double(v->headAngle()), 55.0);
     const double d = headLen * std::tan(3.14159265358979323846 * effAngle / 180.0);
     const double retract = v->filledArrowHead() ? (0.65 * headLen) : 0.0;
-    p->drawLine(QPointF(double(x), double(y)), QPointF(double(x + l) - retract, double(y)));
+    const double ux = (devLen > 1e-6) ? (dx / devLen) : 1.0;
+    const double uy = (devLen > 1e-6) ? (dy / devLen) : 0.0;
+    p->drawLine(QPointF(p1), QPointF(double(p2.x()) - retract * ux, double(p2.y()) - retract * uy));
 
-    p->translate(QPointF(double(x + l), double(y)));
+    p->translate(QPointF(p2));
+    if (devLen > 1e-6 && std::abs(dy) > 1e-6)
+        p->rotate(std::atan2(dy, dx) * (180.0 / 3.14159265358979323846));
 
     QPolygonF endArray(3);
     endArray[0] = QPointF(0.0, 0.0);
@@ -759,11 +819,12 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
     const bool scatterOnly = isScatterOnly();
     const QwtMetricsMap map = QwtPainter::metricsMap();
     const double zScale = legendScreenZoomScale(d_plot);
-    const int lm = scaledLegendPx(left_margin, zScale);
+    const int lm = scaledLegendLayoutX(left_margin, zScale, map);
 
-    const bool compact = d_text && isCompactLegendFont(d_text->font());
-    int l = scatterOnly ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
-                        : symbolLineLength;
+    int l = symbolLineLength;
+    int unusedSampleOffset = symbolLineLength;
+    computeLegendSampleGeometry(scatterOnly, d_text, hspace, symbolLineLength, zScale, map, l,
+                                unusedSampleOffset);
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
@@ -814,8 +875,8 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             p->save();
                             p->setPen(Qt::NoPen);
                             p->setBrush(QBrush(er->bandFillColor()));
-                            const int bandTop = (zScale != 1.0) ? qMax(2, qRound(5.0 * zScale)) : 5;
-                            const int bandH = (zScale != 1.0) ? qMax(4, qRound(11.0 * zScale)) : 11;
+                            const int bandTop = scaledLegendLayoutY(5, zScale, map);
+                            const int bandH = scaledLegendLayoutY(11, zScale, map);
                             QwtPainter::drawRect(p, QRect(w, cy - bandTop, l, bandH));
                             p->restore();
                             break;
@@ -826,20 +887,14 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                         qreal pw = pen.widthF();
                         if (pw <= 0.0)
                             pw = qMax(1, pen.width());
-                        if (!map.isIdentity() && !pen.isCosmetic()) {
-                            const qreal scale = qreal(map.screenToLayoutX(1000)) / 1000.0;
-                            if (scale > 0.0)
-                                pw *= scale;
-                        } else if (zScale != 1.0) {
-                            pw *= zScale;
-                        }
+                        pw *= legendDevicePenScale(zScale, map);
                         pen.setWidthF(pw);
                         if (pen.style() != Qt::NoPen && pen.isCosmetic())
                             pen.setCosmetic(false);
                         p->setPen(pen);
                         if (br.style() != Qt::NoBrush || g->curveType(cv) == Graph::Box) {
-                            const int boxTop = (zScale != 1.0) ? qMax(2, qRound(4.0 * zScale)) : 4;
-                            const int boxH = (zScale != 1.0) ? qMax(4, qRound(10.0 * zScale)) : 10;
+                            const int boxTop = scaledLegendLayoutY(4, zScale, map);
+                            const int boxH = scaledLegendLayoutY(10, zScale, map);
                             QRect lr = QRect(w, cy - boxTop, l, boxH);
                             QBrush effBr = br;
                             if (effBr.style() == Qt::NoBrush && g->curveType(cv) == Graph::Box) {
@@ -861,25 +916,19 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                             symb_size = 15;
                         else if (symb_size < 3)
                             symb_size = 3;
-                        if (zScale != 1.0)
-                            symb_size = qMax(2, qRound(double(symb_size) * zScale));
                         QRect symRect;
-                        symRect.setSize(map.screenToLayout(QSize(symb_size, symb_size)));
+                        symRect.setSize(QSize(scaledLegendLayoutX(symb_size, zScale, map),
+                                              scaledLegendLayoutY(symb_size, zScale, map)));
                         symRect.moveCenter(QPoint(w + l / 2, cy));
 
                         p->setBrush(symb.brush());
-                        QPen symPen = QwtPainter::scaledPen(symb.pen());
-                        if (symPen.style() != Qt::NoPen && symPen.isCosmetic()) {
-                            symPen.setCosmetic(false);
-                            if (symPen.widthF() <= 0.0)
-                                symPen.setWidthF(qMax(1.0, double(symb.pen().widthF())));
-                        }
-                        if (zScale != 1.0 && symPen.style() != Qt::NoPen) {
-                            qreal spw = symb.pen().widthF();
+                        QPen symPen = symb.pen();
+                        if (symPen.style() != Qt::NoPen) {
+                            qreal spw = symPen.widthF();
                             if (spw <= 0.0)
-                                spw = qMax(1, symb.pen().width());
+                                spw = qMax(1, symPen.width());
                             symPen.setCosmetic(false);
-                            symPen.setWidthF(spw * zScale);
+                            symPen.setWidthF(spw * legendDevicePenScale(zScale, map));
                         }
                         p->setPen(symPen);
                         symb.draw(p, symRect);
@@ -901,16 +950,14 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
                     curve = dynamic_cast<QwtPieCurve *>(d_plot->curve(1));
                 if (curve) {
                     const QBrush br = QBrush(curve->color(id - 1), curve->pattern());
-                    const double swW = (zScale != 1.0)
-                            ? (qMax(1.0, Plot::printDeviceScale()) * zScale)
-                            : qMax(1.0, Plot::printDeviceScale());
+                    const double swW = qMax(1.0, legendDevicePenScale(zScale, map));
                     QPen swPen(QColor(80, 80, 80), swW, Qt::SolidLine);
                     swPen.setCosmetic(false);
 
                     p->save();
                     p->setPen(swPen);
-                    const int boxTop = (zScale != 1.0) ? qMax(2, qRound(4.0 * zScale)) : 4;
-                    const int boxH = (zScale != 1.0) ? qMax(4, qRound(10.0 * zScale)) : 10;
+                    const int boxTop = scaledLegendLayoutY(4, zScale, map);
+                    const int boxH = scaledLegendLayoutY(10, zScale, map);
                     QRect lr = QRect(w, cy - boxTop, l, boxH);
                     p->setBrush(br);
                     QwtPainter::drawRect(p, lr);
@@ -924,14 +971,14 @@ void Legend::drawSymbols(QPainter *p, const QRect &rect, QwtArray<long> height,
 void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
                          int symbolLineLength) const
 {
+    const QwtMetricsMap map = QwtPainter::metricsMap();
     const double zScale = legendScreenZoomScale(d_plot);
-    const int lm = scaledLegendPx(left_margin, zScale);
+    const int lm = scaledLegendLayoutX(left_margin, zScale, map);
     const bool scatterOnly = isScatterOnly();
-    const bool compact = d_text && isCompactLegendFont(d_text->font());
-    const int sampleLen = scatterOnly
-            ? qMax(symbolLineLength, scaledMinScatterSampleLen(compact, zScale))
-            : symbolLineLength;
-    const int sampleOffset = sampleLen + scaledSampleGap(d_text, hspace, zScale);
+    int sampleLen = symbolLineLength;
+    int sampleOffset = symbolLineLength;
+    computeLegendSampleGeometry(scatterOnly, d_text, hspace, symbolLineLength, zScale, map,
+                                sampleLen, sampleOffset);
 
     QVector<int> cellX;
     QVector<int> cellCenterY;
@@ -953,10 +1000,7 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
         aux.setRenderFlags(Qt::AlignLeft | Qt::AlignVCenter);
 
         const QSize size = aux.textSize();
-        const QwtMetricsMap map = QwtPainter::metricsMap();
-        const int screenW = map.isIdentity() ? size.width() : map.layoutToScreenX(size.width());
-        const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
-        const int padW = map.isIdentity() ? padScreen : map.screenToLayoutX(padScreen);
+        const int padW = legendTextRightPad(size.width(), map);
 
         QRect tr = QRect(QPoint(x, cy - size.height() / 2), QSize(size.width() + padW, size.height()));
         aux.draw(p, tr);
@@ -1031,7 +1075,7 @@ int Legend::symbolsMaxLineLength() const
         baseLen = qBound(16, qMax(maxL + 8, fontProportionalLen), 34);
     }
     const double zScale = legendScreenZoomScale(d_plot);
-    return (zScale != 1.0) ? qMax(4, qRound(double(baseLen) * zScale)) : baseLen;
+    return scaledLegendLayoutX(baseLen, zScale, QwtPainter::metricsMap());
 }
 
 bool Legend::isScatterOnly() const

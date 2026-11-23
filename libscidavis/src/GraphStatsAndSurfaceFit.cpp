@@ -66,6 +66,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -1280,7 +1281,8 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     double jacMaxAbs = 0.0;
     gsl_matrix *covar = gsl_matrix_alloc(p, p);
     gsl_matrix_set_zero(covar);
-    if (status != GSL_EDOM && status != GSL_EINVAL && !ctx.evalFailed) {
+    const bool covarComputed = (status != GSL_EDOM && status != GSL_EINVAL && !ctx.evalFailed);
+    if (covarComputed) {
 #if GSL_MAJOR_VERSION < 2
         for (size_t r = 0; r < n; ++r) {
             for (size_t c = 0; c < p; ++c) {
@@ -1352,10 +1354,15 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     const bool hasDof = (n > p);
     const double dof = hasDof ? static_cast<double>(n - p) : 0.0;
     out.reducedChi2 = hasDof ? (rss / dof) : nanVal;
-    out.rSquare = (tss > 1e-30) ? std::max(0.0, 1.0 - rss / tss) : 1.0;
+    out.rSquare = (tss > 1e-30)
+            ? std::max(0.0, 1.0 - rss / tss)
+            : ((rss <= 1e-30) ? 1.0 : nanVal);
     out.adjRSquare = hasDof
-            ? ((tss > 1e-30) ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
-                             : out.rSquare)
+            ? (std::isfinite(out.rSquare)
+                       ? ((tss > 1e-30)
+                                  ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
+                                  : out.rSquare)
+                       : nanVal)
             : nanVal;
     out.converged = nonTrivialJacobian && status == GSL_SUCCESS && !hitMaxIterations && !noProgress;
     if (hitMaxIterations)
@@ -1372,12 +1379,17 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
 
     for (size_t j = 0; j < p; ++j) {
         out.params[static_cast<int>(j)] = bestP[j];
-        if (!hasDof) {
+        if (!hasDof || !covarComputed) {
             out.errors[static_cast<int>(j)] = nanVal;
         } else {
             double cjj = gsl_matrix_get(covar, j, j);
-            double se = (std::isfinite(cjj) && cjj > 0.0) ? std::sqrt(out.reducedChi2 * cjj) : 0.0;
-            out.errors[static_cast<int>(j)] = std::isfinite(se) ? se : nanVal;
+            if (!std::isfinite(cjj) || cjj <= 0.0 || !std::isfinite(out.reducedChi2)
+                || out.reducedChi2 < 0.0) {
+                out.errors[static_cast<int>(j)] = nanVal;
+            } else {
+                double se = std::sqrt(out.reducedChi2 * cjj);
+                out.errors[static_cast<int>(j)] = std::isfinite(se) ? se : nanVal;
+            }
         }
     }
 
@@ -1443,31 +1455,41 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     QString tblName = app->generateUniqueName(baseName + QStringLiteral("_SurfParams"), false);
     Table *pt = app->newTable(tblRows, 3, tblName, QObject::tr("2D Surface Fit Parameters"));
     if (pt) {
-        pt->setHeader(QStringList() << QObject::tr("Parameter") << QObject::tr("Value")
-                                    << QObject::tr("StdError"));
+        pt->setHeader(QStringList() << QStringLiteral("Parameter") << QStringLiteral("Value")
+                                    << QStringLiteral("StdError"));
+        const QStringList longNames = { QObject::tr("Parameter"), QObject::tr("Value"),
+                                        QObject::tr("StdError") };
         pt->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         pt->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         pt->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         pt->column(2)->setPlotDesignation(SciDAVis::yErr);
+        for (int c = 0; c < 3; ++c)
+            pt->column(c)->setLongName(longNames[c]);
 
+        auto setValOrInvalid = [&](int row, int col, double val) {
+            if (std::isfinite(val))
+                pt->column(col)->setValueAt(row, val);
+            else
+                pt->column(col)->setInvalid(row, true);
+        };
         for (int j = 0; j < static_cast<int>(p); ++j) {
             pt->column(0)->setTextAt(j, out.paramNames[j]);
-            pt->column(1)->setValueAt(j, out.params[j]);
-            pt->column(2)->setValueAt(j, out.errors[j]);
+            setValOrInvalid(j, 1, out.params[j]);
+            setValOrInvalid(j, 2, out.errors[j]);
         }
         int baseRow = static_cast<int>(p);
         if (!out.convergenceNote.isEmpty())
             pt->setWindowLabel(out.convergenceNote);
         pt->column(0)->setTextAt(baseRow, QStringLiteral("R^2"));
-        pt->column(1)->setValueAt(baseRow, out.rSquare);
+        setValOrInvalid(baseRow, 1, out.rSquare);
         pt->column(2)->setValueAt(baseRow, 0.0);
 
         pt->column(0)->setTextAt(baseRow + 1, QStringLiteral("Adj_R^2"));
-        pt->column(1)->setValueAt(baseRow + 1, out.adjRSquare);
+        setValOrInvalid(baseRow + 1, 1, out.adjRSquare);
         pt->column(2)->setValueAt(baseRow + 1, 0.0);
 
         pt->column(0)->setTextAt(baseRow + 2, QStringLiteral("Reduced_Chi^2"));
-        pt->column(1)->setValueAt(baseRow + 2, out.reducedChi2);
+        setValOrInvalid(baseRow + 2, 1, out.reducedChi2);
         pt->column(2)->setValueAt(baseRow + 2, 0.0);
         out.paramTable = pt;
     }
@@ -2144,14 +2166,20 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     if (!pt)
         return nullptr;
 
-    pt->setHeader(QStringList() << QObject::tr("Peak") << QObject::tr("X_Center")
-                                << QObject::tr("Y_Center") << QObject::tr("Amplitude")
-                                << QObject::tr("Sigma_X") << QObject::tr("Sigma_Y")
-                                << QObject::tr("FWHM_X") << QObject::tr("FWHM_Y")
-                                << QObject::tr("Volume"));
+    pt->setHeader(QStringList() << QStringLiteral("Peak") << QStringLiteral("X_Center")
+                                << QStringLiteral("Y_Center") << QStringLiteral("Amplitude")
+                                << QStringLiteral("Sigma_X") << QStringLiteral("Sigma_Y")
+                                << QStringLiteral("FWHM_X") << QStringLiteral("FWHM_Y")
+                                << QStringLiteral("Volume"));
+    const QStringList peakLongNames = {
+        QObject::tr("Peak"),      QObject::tr("X_Center"), QObject::tr("Y_Center"),
+        QObject::tr("Amplitude"), QObject::tr("Sigma_X"),  QObject::tr("Sigma_Y"),
+        QObject::tr("FWHM_X"),    QObject::tr("FWHM_Y"),   QObject::tr("Volume")
+    };
     for (int col = 0; col < 9; ++col) {
         pt->column(col)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         pt->column(col)->setPlotDesignation(col == 1 ? SciDAVis::X : SciDAVis::Y);
+        pt->column(col)->setLongName(peakLongNames[col]);
     }
 
     if (refined.empty()) {
@@ -2811,14 +2839,22 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     if (!resTbl)
         return nullptr;
 
-    resTbl->setHeader(QStringList() << QObject::tr("Comparison") << QObject::tr("Statistic")
-                                    << QObject::tr("df1") << QObject::tr("df2")
-                                    << QObject::tr("p_value") << QObject::tr("p_adj")
-                                    << QObject::tr("MeanDiff_Eta2") << QObject::tr("Significance"));
+    resTbl->setHeader(QStringList() << QStringLiteral("Comparison") << QStringLiteral("Statistic")
+                                    << QStringLiteral("df1") << QStringLiteral("df2")
+                                    << QStringLiteral("p_value") << QStringLiteral("p_adj")
+                                    << QStringLiteral("MeanDiff_Eta2")
+                                    << QStringLiteral("Significance"));
+    const QStringList anovaLongNames = {
+        QObject::tr("Comparison"), QObject::tr("Statistic"),     QObject::tr("df1"),
+        QObject::tr("df2"),        QObject::tr("p_value"),       QObject::tr("p_adj"),
+        QObject::tr("MeanDiff_Eta2"), QObject::tr("Significance")
+    };
     resTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
     for (int c = 1; c <= 6; ++c)
         resTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
     resTbl->column(7)->setColumnMode(SciDAVis::ColumnMode::Text);
+    for (int c = 0; c < 8; ++c)
+        resTbl->column(c)->setLongName(anovaLongNames[c]);
 
     // Row 0: Omnibus One-Way ANOVA
     resTbl->column(0)->setTextAt(0, QStringLiteral("One-Way ANOVA"));
@@ -3086,12 +3122,17 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
     if (!rocTbl)
         return nullptr;
 
-    rocTbl->setHeader(QStringList() << QObject::tr("FPR_1MinusSpec") << QObject::tr("TPR_Sens")
-                                    << QObject::tr("RefDiag") << QObject::tr("Cutoff")
-                                    << QObject::tr("Specificity") << QObject::tr("Youden_J"));
+    rocTbl->setHeader(QStringList() << QStringLiteral("FPR_1MinusSpec") << QStringLiteral("TPR_Sens")
+                                    << QStringLiteral("RefDiag") << QStringLiteral("Cutoff")
+                                    << QStringLiteral("Specificity") << QStringLiteral("Youden_J"));
+    const QStringList rocLongNames = {
+        QObject::tr("FPR_1MinusSpec"), QObject::tr("TPR_Sens"),    QObject::tr("RefDiag"),
+        QObject::tr("Cutoff"),         QObject::tr("Specificity"), QObject::tr("Youden_J")
+    };
     for (int c = 0; c < 6; ++c) {
         rocTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         rocTbl->column(c)->setPlotDesignation(c == 0 ? SciDAVis::X : SciDAVis::Y);
+        rocTbl->column(c)->setLongName(rocLongNames[c]);
     }
     for (int i = 0; i < mRows; ++i) {
         const RocPoint &rp = pts[static_cast<size_t>(i)];
@@ -4083,6 +4124,14 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
     form->addRow(QString(), showNsCheck);
     lay->addLayout(form);
 
+    QLabel *wilcoxonNoteLbl = new QLabel(
+            QObject::tr("Note: Wilcoxon Signed-Rank compares only the first 2 selected columns; extra columns will be ignored."),
+            &dlg);
+    wilcoxonNoteLbl->setWordWrap(true);
+    wilcoxonNoteLbl->setStyleSheet(QStringLiteral("color: #B45309;"));
+    wilcoxonNoteLbl->setVisible(false);
+    lay->addWidget(wilcoxonNoteLbl);
+
     auto refreshControlGroups = [&]() {
         const QString prevCtrl = controlCombo->currentText();
         controlCombo->clear();
@@ -4107,6 +4156,7 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
         const bool brkOn = (targetG != nullptr) && annotCheck->isChecked();
         bracketFmtCombo->setEnabled(brkOn);
         showNsCheck->setEnabled(brkOn);
+        wilcoxonNoteLbl->setVisible(mode == 3 && colList->selectedItems().size() > 2);
     };
 
     auto populateCols = [&]() {
@@ -4126,9 +4176,14 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
     syncControlStates();
 
     QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [&](int) { populateCols(); });
-    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg,
-                     [&]() { refreshControlGroups(); });
+                     [&](int) {
+                         populateCols();
+                         syncControlStates();
+                     });
+    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg, [&]() {
+        refreshControlGroups();
+        syncControlStates();
+    });
     QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { syncControlStates(); });
     QObject::connect(posthocCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
@@ -4456,12 +4511,17 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
             app->generateUniqueName(srcTable->name() + QStringLiteral("_Normality"), false);
     Table *repTbl = app->newTable(4, 4, tblName, QObject::tr("Normality Test Report"));
     if (repTbl) {
-        repTbl->setHeader(QStringList() << QObject::tr("Test") << QObject::tr("Statistic")
-                                        << QObject::tr("p_value") << QObject::tr("Decision_005"));
+        repTbl->setHeader(QStringList() << QStringLiteral("Test") << QStringLiteral("Statistic")
+                                        << QStringLiteral("p_value")
+                                        << QStringLiteral("Decision_005"));
+        const QStringList normLongNames = { QObject::tr("Test"), QObject::tr("Statistic"),
+                                            QObject::tr("p_value"), QObject::tr("Decision_005") };
         repTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         repTbl->column(1)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         repTbl->column(2)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         repTbl->column(3)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 0; c < 4; ++c)
+            repTbl->column(c)->setLongName(normLongNames[c]);
 
         const QString normalYes = QObject::tr("Normal (p >= 0.05)");
         const QString normalNo = QObject::tr("Reject Normality (p < 0.05)");
@@ -4928,14 +4988,21 @@ GraphStatsAndSurfaceFit::runTwoWayANOVA(ApplicationWindow *app, Table *srcTable,
             app->generateUniqueName(srcTable->name() + QStringLiteral("_TwoWayANOVA"), false);
     Table *repTbl = app->newTable(5, 7, repName, QObject::tr("Two-Way ANOVA Summary"));
     if (repTbl) {
-        repTbl->setHeader(QStringList() << QObject::tr("Source") << QObject::tr("SS")
-                                        << QObject::tr("df") << QObject::tr("MS")
-                                        << QObject::tr("F_value") << QObject::tr("p_value")
-                                        << QObject::tr("Significance"));
+        repTbl->setHeader(QStringList() << QStringLiteral("Source") << QStringLiteral("SS")
+                                        << QStringLiteral("df") << QStringLiteral("MS")
+                                        << QStringLiteral("F_value") << QStringLiteral("p_value")
+                                        << QStringLiteral("Significance"));
+        const QStringList twoWayLongNames = {
+            QObject::tr("Source"),  QObject::tr("SS"),      QObject::tr("df"),
+            QObject::tr("MS"),      QObject::tr("F_value"), QObject::tr("p_value"),
+            QObject::tr("Significance")
+        };
         repTbl->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
         for (int c = 1; c <= 5; ++c)
             repTbl->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
         repTbl->column(6)->setColumnMode(SciDAVis::ColumnMode::Text);
+        for (int c = 0; c < 7; ++c)
+            repTbl->column(c)->setLongName(twoWayLongNames[c]);
 
         auto setRow = [&](int r, const QString &src, double ssVal, double dfVal, double msVal,
                           double fVal, double pVal, bool hasF) {
@@ -7147,10 +7214,24 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
         res.statistic = wStat;
         res.pValue = pVal;
 
+        QString multiColNote;
+        if (colNames.size() > 2) {
+            multiColNote = QObject::tr(
+                    "Wilcoxon Signed-Rank compares only the first 2 selected columns (%1 vs %2); %3 additional column(s) ignored.")
+                                   .arg(cA->name(), cB->name())
+                                   .arg(colNames.size() - 2);
+        }
+
         if (app) {
+            if (!multiColNote.isEmpty()) {
+                app->updateLog(QStringLiteral("[Wilcoxon] ") + multiColNote + QLatin1Char('\n'));
+                if (!isNonInteractiveApp(app) && app->statusBar())
+                    app->statusBar()->showMessage(multiColNote, 8000);
+            }
             const QString tblName = app->generateUniqueName(
                     srcTable->name() + QStringLiteral("_Wilcoxon"), false);
-            Table *rep = app->newTable(1, 5, tblName,
+            const int nRep = multiColNote.isEmpty() ? 1 : 2;
+            Table *rep = app->newTable(nRep, 5, tblName,
                                        QObject::tr("Nonparametric Comparison Summary"));
             if (rep) {
                 rep->setHeader(QStringList() << QStringLiteral("Comparison")
@@ -7169,6 +7250,14 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 rep->column(2)->setValueAt(0, wStat);
                 rep->column(3)->setValueAt(0, pVal);
                 rep->column(4)->setTextAt(0, starRatingForP(pVal));
+                if (!multiColNote.isEmpty()) {
+                    rep->setWindowLabel(multiColNote);
+                    rep->column(0)->setTextAt(1, QObject::tr("Note"));
+                    rep->column(1)->setTextAt(1, multiColNote);
+                    rep->column(2)->setInvalid(1, true);
+                    rep->column(3)->setInvalid(1, true);
+                    rep->column(4)->setTextAt(1, QString());
+                }
                 res.reportTable = rep;
             }
         }
@@ -9590,6 +9679,25 @@ void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Gr
     form->addRow(QObject::tr("Bracket Label:"), cbBracketFmt);
     form->addRow(QString(), chkShowNs);
     lay->addLayout(form);
+
+    QLabel *wilcoxonNoteLbl = new QLabel(
+            QObject::tr("Note: Wilcoxon Signed-Rank compares only the first 2 selected columns; extra columns will be ignored."),
+            &dlg);
+    wilcoxonNoteLbl->setWordWrap(true);
+    wilcoxonNoteLbl->setStyleSheet(QStringLiteral("color: #B45309;"));
+    auto syncWilcoxonNote = [&]() {
+        const bool isWilcoxon =
+                (cbMethod->currentData().toInt() == static_cast<int>(TestWilcoxonSignedRank));
+        wilcoxonNoteLbl->setVisible(isWilcoxon && colList->selectedItems().size() > 2);
+    };
+    syncWilcoxonNote();
+    QObject::connect(cbMethod, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWilcoxonNote(); });
+    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg,
+                     [&]() { syncWilcoxonNote(); });
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncWilcoxonNote(); });
+    lay->addWidget(wilcoxonNoteLbl);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);

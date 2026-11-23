@@ -2529,6 +2529,7 @@ void PythonAutomationServer::stop()
         d_tcp_port = 0;
     }
     removeTcpTokenFile();
+    d_tcp_auth_token.clear();
 
     if (d_local_server) {
         for (auto it = d_local_buffers.begin(); it != d_local_buffers.end(); ++it) {
@@ -3080,7 +3081,7 @@ QProcess *startPythonScriptProcessImpl(PythonAutomationServer *server, const QSt
     auto *proc = new QProcess(parent ? parent : static_cast<QObject *>(server));
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("TORIGRAPH_RPC_ENDPOINT"), server->endpointString());
-    if (!server->tcpAuthToken().isEmpty())
+    if (server->isTcpListening() && !server->tcpAuthToken().isEmpty())
         env.insert(QStringLiteral("TORIGRAPH_RPC_TOKEN"), server->tcpAuthToken());
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
@@ -3321,11 +3322,43 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
 
     if (!chosenAsset.isEmpty()) {
         assetName = chosenAsset.value(QStringLiteral("name")).toString();
-        assetUrl = chosenAsset.value(QStringLiteral("browser_download_url")).toString();
+        for (const char *urlKey : { "browser_download_url", "download_url", "downloadUrl",
+                                    "installer_url", "installerUrl", "url" }) {
+            const QString candUrl =
+                    chosenAsset.value(QLatin1String(urlKey)).toString().trimmed();
+            if (!candUrl.isEmpty()) {
+                assetUrl = candUrl;
+                break;
+            }
+        }
         assetSize = static_cast<qint64>(chosenAsset.value(QStringLiteral("size")).toDouble(0));
         const QString digest = chosenAsset.value(QStringLiteral("digest")).toString().trimmed();
-        if (digest.startsWith(QStringLiteral("sha256:"), Qt::CaseInsensitive))
-            sha256Hex = digest.mid(7).trimmed().toLower();
+        if (digest.startsWith(QStringLiteral("sha256:"), Qt::CaseInsensitive)) {
+            static const QRegularExpression kSha256HexRe(QStringLiteral("^[0-9a-fA-F]{64}$"));
+            const QString candHex = digest.mid(7).trimmed().toLower();
+            if (kSha256HexRe.match(candHex).hasMatch())
+                sha256Hex = candHex;
+        }
+    }
+    if (assetUrl.isEmpty()) {
+        for (const char *relUrlKey : { "asset_url", "downloadUrl", "installerUrl" }) {
+            const QString candUrl =
+                    relObj.value(QLatin1String(relUrlKey)).toString().trimmed();
+            if (!candUrl.isEmpty()) {
+                assetUrl = candUrl;
+                break;
+            }
+        }
+    }
+    if (!assetUrl.isEmpty() && !AutoUpdater::isAllowedUpdateUrl(QUrl(assetUrl, QUrl::StrictMode))) {
+        throwRpcRuntime(QStringLiteral("Blocked untrusted download URL: %1").arg(assetUrl));
+    }
+
+    const QString rawHtmlUrl = relObj.value(QStringLiteral("html_url")).toString().trimmed();
+    if (!rawHtmlUrl.isEmpty()
+        && !AutoUpdater::isAllowedUpdateUrl(QUrl(rawHtmlUrl, QUrl::StrictMode))) {
+        throwRpcRuntime(
+                QStringLiteral("Blocked untrusted release page URL in feed: %1").arg(rawHtmlUrl));
     }
 
     const QString body = relObj.value(QStringLiteral("body")).toString();
@@ -3342,7 +3375,7 @@ QJsonObject checkUpdatesBlockingFallback(const QJsonObject &params)
     out[QStringLiteral("is_prerelease")] = isPrerelease;
     out[QStringLiteral("title")] = relObj.value(QStringLiteral("name")).toString();
     out[QStringLiteral("body")] = body;
-    out[QStringLiteral("html_url")] = relObj.value(QStringLiteral("html_url")).toString();
+    out[QStringLiteral("html_url")] = rawHtmlUrl;
     out[QStringLiteral("asset_name")] = assetName;
     out[QStringLiteral("asset_url")] = assetUrl;
     out[QStringLiteral("asset_size")] = assetSize;
@@ -4436,9 +4469,9 @@ QJsonObject serializeGraphInfo(MultiLayer *ml)
     info[QStringLiteral("can_redo")] = ml->undoStack() ? ml->undoStack()->canRedo() : false;
     {
         const QString appliedPreset = ml->property("toriAppliedStylePreset").toString().trimmed();
+        info[QStringLiteral("applied_style_preset")] = appliedPreset;
+        info[QStringLiteral("style_preset")] = appliedPreset;
         if (!appliedPreset.isEmpty()) {
-            info[QStringLiteral("applied_style_preset")] = appliedPreset;
-            info[QStringLiteral("style_preset")] = appliedPreset;
             MultiLayer::GraphStylePresetSpec presetSpec;
             if (MultiLayer::findStylePreset(appliedPreset, &presetSpec)
                 && presetSpec.slidePastePercent > 0.0) {
@@ -7117,7 +7150,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "plot.box", "plot",
       "Session.plot_box(table=None, cols=None, *, notched=False, whisker_mode='1.5iqr', show_points=False, graph_name=None)",
       "Create a statistical box-and-whisker plot across one or more columns.",
-      "table:str=''; cols:list=null; notched:bool=false; whisker_mode:str='1.5iqr'[1.5iqr|sd|se|minmax|p5_95]; show_points:bool=false; graph_name:str=''",
+      "table:str=''; cols:list=null; notched:bool=false; whisker_mode:str='1.5iqr'[1.5iqr|sd|se|minmax|p5_95|p10_90|p1_99]; show_points:bool=false; graph_name:str=''",
       "g = app.plot_box(tbl, ['BatchA', 'BatchB'])" },
     { "plot.violin", "plot",
       "Session.plot_violin(table=None, cols=None, *, show_points=False, graph_name=None)",
@@ -13779,7 +13812,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                                                    const QString &menuText = QString()) -> bool {
             const QString id = ident.trimmed();
             if (id == QStringLiteral("openPythonConsole")
-                || id == QStringLiteral("actionPythonConsole")) {
+                || id == QStringLiteral("actionPythonConsole")
+                || id == QStringLiteral("actionOpenPythonConsole")) {
                 return false;
             }
             if (id.endsWith(QStringLiteral("Dialog")))
@@ -16445,6 +16479,24 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 && optionalJsonBool(params, QStringLiteral("stacked"), false)
                 && cols.size() > 1;
 
+        const QString whiskerStr = (method == QStringLiteral("plot.box"))
+                ? optionalJsonString(params, QStringLiteral("whisker_mode")).trimmed().toLower()
+                : QString();
+        if (method == QStringLiteral("plot.box") && !whiskerStr.isEmpty()
+            && whiskerStr != QStringLiteral("1.5iqr") && whiskerStr != QStringLiteral("iqr")
+            && whiskerStr != QStringLiteral("tukey") && whiskerStr != QStringLiteral("minmax")
+            && whiskerStr != QStringLiteral("min_max") && whiskerStr != QStringLiteral("sd")
+            && whiskerStr != QStringLiteral("se") && whiskerStr != QStringLiteral("5_95")
+            && whiskerStr != QStringLiteral("p5_95") && whiskerStr != QStringLiteral("10_90")
+            && whiskerStr != QStringLiteral("p10_90") && whiskerStr != QStringLiteral("1_99")
+            && whiskerStr != QStringLiteral("p1_99")) {
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("Unknown box plot whisker_mode '%1'.").arg(whiskerStr),
+                    { QStringLiteral("1.5iqr"), QStringLiteral("sd"), QStringLiteral("se"),
+                      QStringLiteral("minmax"), QStringLiteral("p5_95"), QStringLiteral("p10_90"),
+                      QStringLiteral("p1_99") });
+        }
+
         const bool attachToExisting = (method == QStringLiteral("plot.box")
                                        || method == QStringLiteral("plot.violin"))
                 && !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
@@ -16778,21 +16830,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         } else if (Graph *g = targetBoxLayer ? targetBoxLayer : ml->activeGraph()) {
             const bool notched = optionalJsonBool(params, QStringLiteral("notched"), false);
-            const QString whiskerStr =
-                    optionalJsonString(params, QStringLiteral("whisker_mode")).trimmed().toLower();
-            if (!whiskerStr.isEmpty() && whiskerStr != QStringLiteral("1.5iqr")
-                && whiskerStr != QStringLiteral("iqr") && whiskerStr != QStringLiteral("tukey")
-                && whiskerStr != QStringLiteral("minmax")
-                && whiskerStr != QStringLiteral("min_max") && whiskerStr != QStringLiteral("sd")
-                && whiskerStr != QStringLiteral("se") && whiskerStr != QStringLiteral("5_95")
-                && whiskerStr != QStringLiteral("p5_95") && whiskerStr != QStringLiteral("10_90")
-                && whiskerStr != QStringLiteral("p10_90") && whiskerStr != QStringLiteral("1_99")
-                && whiskerStr != QStringLiteral("p1_99")) {
-                throwInvalidParamsWithAvailable(
-                        QStringLiteral("Unknown box plot whisker_mode '%1'.").arg(whiskerStr),
-                        { QStringLiteral("1.5iqr"), QStringLiteral("minmax"), QStringLiteral("sd"),
-                          QStringLiteral("se"), QStringLiteral("5_95"), QStringLiteral("10_90") });
-            }
             for (int i = prevCurveCount; i < g->curves(); ++i) {
                 if (auto *bc = dynamic_cast<BoxCurve *>(g->curve(i))) {
                     if (method == QStringLiteral("plot.violin")) {
@@ -21982,9 +22019,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("graph")] = targetName;
         if (!targetG3D && ml) {
             const QString appliedPreset = ml->property("toriAppliedStylePreset").toString().trimmed();
+            outResult[QStringLiteral("applied_style_preset")] = appliedPreset;
+            outResult[QStringLiteral("style_preset")] = appliedPreset;
             if (!appliedPreset.isEmpty()) {
-                outResult[QStringLiteral("applied_style_preset")] = appliedPreset;
-                outResult[QStringLiteral("style_preset")] = appliedPreset;
                 MultiLayer::GraphStylePresetSpec presetSpec;
                 if (MultiLayer::findStylePreset(appliedPreset, &presetSpec)
                     && presetSpec.slidePastePercent > 0.0) {
@@ -22526,12 +22563,22 @@ bool dispatchAnalysisAndScienceMethod(ApplicationWindow *d_app, const QString &m
 
         const double intercept = res[0];
         const double slope = res[1];
-        const double interceptSE = (err.size() >= 1) ? err[0] : 0.0;
-        const double slopeSE = (err.size() >= 2) ? err[1] : 0.0;
-        const int dof = std::max(1, lf.dataSize() - 2);
-        const double tSlope = (slopeSE > 0.0) ? (std::abs(slope) / slopeSE) : 0.0;
-        const double pValue = (slopeSE > 0.0) ? (2.0 * gsl_cdf_tdist_Q(tSlope, double(dof)))
-                                              : lf.anovaPValue();
+        const double interceptSE =
+                (err.size() >= 1) ? err[0] : std::numeric_limits<double>::quiet_NaN();
+        const double slopeSE =
+                (err.size() >= 2) ? err[1] : std::numeric_limits<double>::quiet_NaN();
+        const int dof = lf.degreesOfFreedom();
+        double tSlope = std::numeric_limits<double>::quiet_NaN();
+        double pValue = std::numeric_limits<double>::quiet_NaN();
+        if (dof > 0 && std::isfinite(slopeSE)) {
+            if (slopeSE > 0.0) {
+                tSlope = std::abs(slope) / slopeSE;
+                pValue = 2.0 * gsl_cdf_tdist_Q(tSlope, double(dof));
+            } else {
+                pValue = lf.anovaPValue();
+            }
+        }
+        (void)tSlope;
 
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("graph")] = ml->name();
@@ -29063,8 +29110,8 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     if (d_rpc_dispatching) {
         throw RpcDispatchException(
                 -32003,
-                QStringLiteral("Server busy: another RPC request is still being processed. "
-                               "Retry after the previous call completes."));
+                QStringLiteral("Server busy (re-entrant RPC): another RPC request is still being "
+                               "processed. Retry after the previous call completes."));
     }
     struct ScopedDispatchFlag
     {

@@ -1622,10 +1622,7 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
         widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
         heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
     } else {
-        const double unitPxDpi = (ownerMl && ownerMl->pageUnit() == MultiLayer::UnitPx
-                                  && ownerMl->pageViewMode() && ownerMl->pageDpi() > 0)
-                ? double(ownerMl->pageDpi())
-                : 96.0;
+        const double unitPxDpi = 96.0;
         logicalBaseDpiX = unitPxDpi;
         logicalBaseDpiY = unitPxDpi;
         const double unzoomedW = double(pxSize.width()) / zoom;

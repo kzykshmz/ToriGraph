@@ -239,7 +239,8 @@ public slots:
 
     void print();
     void copyImage();
-    void exportImage(const QString &fileName, int quality = 100, bool transparent = false);
+    void exportImage(const QString &fileName, int quality = 100, bool transparent = false,
+                     int dpi = 0);
 
     void exportPDF(const QString &fileName);
     void exportVector(const QString &fileName, const QString &fileType = "pdf");
@@ -248,7 +249,7 @@ public slots:
 
     //! Checked export variants: never throw; return false and set *errOut on failure.
     bool exportImageChecked(const QString &fileName, int quality = 100, bool transparent = false,
-                            QString *errOut = nullptr);
+                            QString *errOut = nullptr, int dpi = 0);
     //! Format inferred from the file suffix.
     bool exportVectorChecked(const QString &fileName, QString *errOut = nullptr);
     bool exportVectorChecked(const QString &fileName, const QString &fileType,
@@ -374,7 +375,7 @@ private:
     Qwt3D::Triple **allocateData(int columns, int rows);
     void deleteData(Qwt3D::Triple **data, int columns);
     //! Render the plot offscreen at export DPI (never shown on screen).
-    QImage renderExportImage(int *effDpiOut);
+    QImage renderExportImage(int *effDpiOut, int dpiOverride = 0);
     bool exportVectorImpl(const QString &fileName, const QString &fileType, QString *errOut);
 
     //! Wait this many msecs before redraw 3D plot (used for animations)

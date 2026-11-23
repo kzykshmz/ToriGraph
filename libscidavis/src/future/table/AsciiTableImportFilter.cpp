@@ -3214,24 +3214,35 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
     if (rawBytes.isEmpty())
         return QString();
 
+    auto decodeWithCodec = [](QTextCodec *codec, const char *data, int size) -> QString {
+        QTextCodec::ConverterState state;
+        QString s = codec->toUnicode(data, size, &state);
+        g_lastDecodeInvalidChars = state.invalidChars;
+        if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
+            s.remove(0, 1);
+        return s;
+    };
+
     // 1. Check explicit BOMs first
     if (rawBytes.size() >= 3 && static_cast<unsigned char>(rawBytes[0]) == 0xEF
         && static_cast<unsigned char>(rawBytes[1]) == 0xBB
         && static_cast<unsigned char>(rawBytes[2]) == 0xBF) {
         g_lastDecodedEncoding = QStringLiteral("UTF-8 (BOM)");
+        if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8"))
+            return decodeWithCodec(utf8, rawBytes.constData() + 3, rawBytes.size() - 3);
         return QString::fromUtf8(rawBytes.constData() + 3, rawBytes.size() - 3);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFF
         && static_cast<unsigned char>(rawBytes[1]) == 0xFE) {
         g_lastDecodedEncoding = QStringLiteral("UTF-16LE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
-            return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
+            return decodeWithCodec(c16, rawBytes.constData() + 2, rawBytes.size() - 2);
     }
     if (rawBytes.size() >= 2 && static_cast<unsigned char>(rawBytes[0]) == 0xFE
         && static_cast<unsigned char>(rawBytes[1]) == 0xFF) {
         g_lastDecodedEncoding = QStringLiteral("UTF-16BE (BOM)");
         if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
-            return c16->toUnicode(rawBytes.constData() + 2, rawBytes.size() - 2);
+            return decodeWithCodec(c16, rawBytes.constData() + 2, rawBytes.size() - 2);
     }
 
     // 2. Honor explicit encodingHint when specified and not "auto"
@@ -3242,6 +3253,8 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         QByteArray codecName = hint.toLatin1();
         if (lo == QLatin1String("utf8") || lo == QLatin1String("utf-8")
             || lo == QLatin1String("utf-8-sig") || lo == QLatin1String("utf_8")) {
+            if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8"))
+                return decodeWithCodec(utf8, rawBytes.constData(), rawBytes.size());
             QString s = QString::fromUtf8(rawBytes);
             if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
                 s.remove(0, 1);
@@ -3256,18 +3269,14 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
             if (!cp)
                 cp = QTextCodec::codecForName("Shift-JIS");
             if (cp)
-                return cp->toUnicode(rawBytes);
+                return decodeWithCodec(cp, rawBytes.constData(), rawBytes.size());
             codecName = QByteArrayLiteral("Shift-JIS");
         } else if (lo == QLatin1String("latin1") || lo == QLatin1String("latin-1")
                    || lo == QLatin1String("iso-8859-1")) {
             return QString::fromLatin1(rawBytes);
         }
-        if (QTextCodec *codec = QTextCodec::codecForName(codecName)) {
-            QString s = codec->toUnicode(rawBytes);
-            if (!s.isEmpty() && s.at(0) == QChar(0xFEFF))
-                s.remove(0, 1);
-            return s;
-        }
+        if (QTextCodec *codec = QTextCodec::codecForName(codecName))
+            return decodeWithCodec(codec, rawBytes.constData(), rawBytes.size());
     }
 
     // 3. Fast path for pure 7-bit ASCII
@@ -3302,12 +3311,12 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         if (oddZeros > samplePairs / 2 && evenZeros == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-16LE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16LE"))
-                return c16->toUnicode(rawBytes);
+                return decodeWithCodec(c16, rawBytes.constData(), rawBytes.size());
         }
         if (evenZeros > samplePairs / 2 && oddZeros == 0) {
             g_lastDecodedEncoding = QStringLiteral("UTF-16BE");
             if (QTextCodec *c16 = QTextCodec::codecForName("UTF-16BE"))
-                return c16->toUnicode(rawBytes);
+                return decodeWithCodec(c16, rawBytes.constData(), rawBytes.size());
         }
     }
 
