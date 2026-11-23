@@ -808,7 +808,9 @@ void ScalePicker::mouseRightClicked(const QwtScaleWidget *scale, const QPoint &p
 {
     emit clicked();
 
-    if (scaleRect(scale).contains(pos))
+    if (titleRect(scale).contains(pos))
+        emit axisTitleRightClicked(scale->alignment());
+    else if (scaleRect(scale).contains(pos))
         emit axisRightClicked(scale->alignment());
     else
         emit axisTitleRightClicked(scale->alignment());
@@ -823,6 +825,10 @@ QRect ScalePicker::scaleRect(const QwtScaleWidget *scale) const
                  rect.height() + 2 * margin);
 
     if (scale->title().text().isEmpty())
+        return rect;
+
+    const QPointF shift = scale->property("_toriAxisTitleShift").toPointF();
+    if (std::hypot(shift.x(), shift.y()) > 1e-4)
         return rect;
 
     int dh = scale->title().textSize().height();
@@ -882,7 +888,7 @@ QRect ScalePicker::scaleTicksRect(const QwtScaleWidget *scale) const
 
 QRect ScalePicker::titleRect(const QwtScaleWidget *scale) const
 {
-    if (scale->title().text().isEmpty())
+    if (!scale || scale->title().text().isEmpty())
         return QRect();
 
     QRect rect = scale->rect();
@@ -907,6 +913,13 @@ QRect ScalePicker::titleRect(const QwtScaleWidget *scale) const
         rect.setBottom(rect.top() + dh);
         break;
     }
+    }
+
+    const QPointF shift = scale->property("_toriAxisTitleShift").toPointF();
+    if (std::hypot(shift.x(), shift.y()) > 1e-4) {
+        const Plot *plt = qobject_cast<const Plot *>(parent());
+        const double zoom = plt ? qMax(0.05, plt->displayFontScale()) : 1.0;
+        rect.translate(qRound(shift.x() * zoom), qRound(shift.y() * zoom));
     }
     return rect;
 }

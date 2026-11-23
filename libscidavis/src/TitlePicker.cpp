@@ -78,16 +78,42 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
         const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
         if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
             bar->hide();
+        if (title)
+            title->setFocus();
         setSelected(true);
         emit clicked();
 
         if (me->button() == Qt::RightButton)
             emit showTitleMenu();
-        return !(me->modifiers() & Qt::ShiftModifier);
+        if (me->button() == Qt::LeftButton || me->button() == Qt::RightButton)
+            return true;
+        return false;
     }
 
     if (object->inherits("QwtTextLabel") && e->type() == QEvent::KeyPress) {
-        const QKeyEvent *ke = static_cast<const QKeyEvent *>(e);
+        QKeyEvent *ke = static_cast<QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Up
+            || ke->key() == Qt::Key_Down) {
+            const Qt::KeyboardModifiers mods = ke->modifiers();
+            int step = 2;
+            if (mods & Qt::ShiftModifier)
+                step = 10;
+            else if (mods & (Qt::ControlModifier | Qt::AltModifier))
+                step = 1;
+            int dx = 0, dy = 0;
+            if (ke->key() == Qt::Key_Left)
+                dx = -step;
+            else if (ke->key() == Qt::Key_Right)
+                dx = step;
+            else if (ke->key() == Qt::Key_Up)
+                dy = -step;
+            else if (ke->key() == Qt::Key_Down)
+                dy = step;
+            if (g && g->nudgeSelectedElement(dx, dy)) {
+                ke->accept();
+                return true;
+            }
+        }
         if (ke->key() == Qt::Key_Escape) {
             if (g)
                 g->deselect();

@@ -211,6 +211,7 @@ public:
     void keyPressEvent(QKeyEvent *);
     bool eventFilter(QObject *object, QEvent *);
     void releaseLayer();
+    void clearLayerSelector();
 
     bool focusNextPrevChild(bool next);
     //@}

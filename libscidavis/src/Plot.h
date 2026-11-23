@@ -183,5 +183,6 @@ private:
     ZoomFontSlot d_zoom_axis_font[axisCnt];
     ZoomFontSlot d_zoom_axis_title_font[axisCnt];
     ZoomFontSlot d_zoom_title_font;
+    QWidget *d_axis_title_overlay = nullptr;
 };
 #endif

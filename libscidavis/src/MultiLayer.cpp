@@ -94,6 +94,7 @@
 #include "FunctionCurve.h"
 #include "ColorButton.h"
 #include "ScaleDraw.h"
+#include "ScalePicker.h"
 #include "Spectrogram.h"
 #include "GraphInspectorDock.h"
 #include "GraphMiniToolbar.h"
@@ -1205,8 +1206,23 @@ void MultiLayer::syncCanvasOverlayVisibility()
     }
 }
 
+void MultiLayer::clearLayerSelector()
+{
+    if (!d_layers_selector)
+        return;
+    const bool hadFocus = d_layers_selector->hasFocus();
+    delete d_layers_selector;
+    if (hadFocus && active_graph) {
+        if (active_graph->plotWidget() && active_graph->plotWidget()->canvas())
+            active_graph->plotWidget()->canvas()->setFocus();
+        else
+            active_graph->setFocus();
+    }
+}
+
 void MultiLayer::activateGraph(LayerButton *button)
 {
+    clearLayerSelector();
     for (int i = 0; i < buttonsList.count(); i++) {
         LayerButton *btn = (LayerButton *)buttonsList.at(i);
         if (btn->isChecked())
@@ -1226,6 +1242,7 @@ void MultiLayer::setActiveGraph(Graph *g)
 {
     if (!g)
         return;
+    clearLayerSelector();
     if (active_graph == g) {
         enforceLayerZOrder();
         return;
@@ -1233,9 +1250,6 @@ void MultiLayer::setActiveGraph(Graph *g)
 
     active_graph = g;
     active_graph->setFocus();
-
-    if (d_layers_selector)
-        delete d_layers_selector;
 
     enforceLayerZOrder();
 
@@ -2685,6 +2699,17 @@ bool graphHasInteractiveHitAtGlobal(Graph *g, const QPoint &globalPos,
                 if (hitTargetOut)
                     *hitTargetOut = sw;
                 return true;
+            }
+            if (g->scalePicker) {
+                const QPointF shift = sw->property("_toriAxisTitleShift").toPointF();
+                if (std::hypot(shift.x(), shift.y()) > 1e-4
+                    && g->scalePicker->titleRect(sw).contains(swLocal)) {
+                    if (hitTargetOut) {
+                        *hitTargetOut = pl->canvas() ? static_cast<QWidget *>(pl->canvas())
+                                                     : static_cast<QWidget *>(pl);
+                    }
+                    return true;
+                }
             }
         }
         if (QwtTextLabel *tl = pl->titleLabel()) {

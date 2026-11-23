@@ -70,6 +70,7 @@ public:
 
     //! Return my parent casted to QwtPlot.
     QwtPlot *plot() { return (QwtPlot *)parent(); }
+    const QwtPlot *plot() const { return (const QwtPlot *)parent(); }
     Graph *graph() { return parent() ? (Graph *)(parent()->parent()) : nullptr; }
 
     void deselect();

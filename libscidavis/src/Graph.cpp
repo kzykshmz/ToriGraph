@@ -329,12 +329,16 @@ static void detachAndDeleteMarkerSelector(QPointer<SelectionMoveResizer> &sel)
         return;
     SelectionMoveResizer *old = sel.data();
     sel = nullptr;
+    const bool hadFocus = old->hasFocus();
+    QWidget *pw = old->parentWidget();
     old->blockSignals(true);
     old->disconnect();
-    if (QWidget *pw = old->parentWidget())
+    if (pw)
         pw->removeEventFilter(old);
     old->hide();
     old->setParent(nullptr);
+    if (pw && hadFocus)
+        pw->setFocus();
     old->deleteLater();
 }
 
@@ -1355,7 +1359,7 @@ QString Graph::saveAxesBaseline()
     for (int i = 0; i < QwtPlot::axisCnt; i++) {
         QwtScaleWidget *scale = (QwtScaleWidget *)d_plot->axisWidget(i);
         if (scale)
-            s += QString::number(scale->margin()) + "\t";
+            s += QString::number(readAxisBaselineDist(scale)) + "\t";
         else
             s += "0\t";
     }
@@ -7261,6 +7265,42 @@ QString Graph::saveToString(bool saveAsTemplate)
                      .arg(stackParts.join(";"))
                      .arg(legAnchorAttr);
 
+        if (d_plot) {
+            QStringList shiftAttrs;
+            const QPointF ptShift = d_plot->property("_toriPlotTitleShift").toPointF();
+            if (std::fabs(ptShift.x()) > 1e-6 || std::fabs(ptShift.y()) > 1e-6) {
+                shiftAttrs << QString("titleDx=\"%1\"").arg(QString::number(ptShift.x(), 'g', 8));
+                shiftAttrs << QString("titleDy=\"%1\"").arg(QString::number(ptShift.y(), 'g', 8));
+            }
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                if (const QwtScaleWidget *sw = d_plot->axisWidget(a)) {
+                    const QPointF atShift = sw->property("_toriAxisTitleShift").toPointF();
+                    if (std::fabs(atShift.x()) > 1e-6 || std::fabs(atShift.y()) > 1e-6) {
+                        shiftAttrs << QString("ax%1TitleDx=\"%2\"")
+                                              .arg(a)
+                                              .arg(QString::number(atShift.x(), 'g', 8));
+                        shiftAttrs << QString("ax%1TitleDy=\"%2\"")
+                                              .arg(a)
+                                              .arg(QString::number(atShift.y(), 'g', 8));
+                    }
+                    const double normShift = sw->property("_toriAxisNormalShift").toDouble();
+                    if (std::fabs(normShift) > 1e-6) {
+                        shiftAttrs << QString("ax%1Norm=\"%2\"")
+                                              .arg(a)
+                                              .arg(QString::number(normShift, 'g', 8));
+                    }
+                    const double parShift = sw->property("_toriAxisParallelShift").toDouble();
+                    if (std::fabs(parShift) > 1e-6) {
+                        shiftAttrs << QString("ax%1Par=\"%2\"")
+                                              .arg(a)
+                                              .arg(QString::number(parShift, 'g', 8));
+                    }
+                }
+            }
+            if (!shiftAttrs.isEmpty())
+                s += QString("<ToriLabelShifts %1/>\n").arg(shiftAttrs.join(' '));
+        }
+
         for (int ci = 0; ci < n_curves; ++ci) {
             if (const PlotCurve *pc = dynamic_cast<const PlotCurve *>(curve(ci))) {
                 if (pc->symbolSkip() > 0) {
@@ -8587,6 +8627,23 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         d_plot->setProperty("_outsideRightMargin", g->d_plot->property("_outsideRightMargin"));
     if (g->d_plot && g->d_plot->property("_toriLegendAnchor").isValid())
         d_plot->setProperty("_toriLegendAnchor", g->d_plot->property("_toriLegendAnchor"));
+    if (g->d_plot) {
+        if (g->d_plot->property("_toriPlotTitleShift").isValid())
+            d_plot->setProperty("_toriPlotTitleShift", g->d_plot->property("_toriPlotTitleShift"));
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const QwtScaleWidget *srcSw = g->d_plot->axisWidget(a);
+            QwtScaleWidget *dstSw = d_plot->axisWidget(a);
+            if (!srcSw || !dstSw)
+                continue;
+            if (srcSw->property("_toriAxisTitleShift").isValid())
+                dstSw->setProperty("_toriAxisTitleShift", srcSw->property("_toriAxisTitleShift"));
+            if (srcSw->property("_toriAxisNormalShift").isValid())
+                dstSw->setProperty("_toriAxisNormalShift", srcSw->property("_toriAxisNormalShift"));
+            if (srcSw->property("_toriAxisParallelShift").isValid())
+                dstSw->setProperty("_toriAxisParallelShift",
+                                   srcSw->property("_toriAxisParallelShift"));
+        }
+    }
 
     if (g->d_plot && g->d_plot->property("_toriExtraPlotTags").isValid()) {
         for (const QString &tag : g->d_plot->property("_toriExtraPlotTags").toStringList())
@@ -13105,6 +13162,7 @@ bool Graph::nudgeSelectedElement(int dx, int dy)
 
     MultiLayer *ml = multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+    const double zoom = qMax(0.05, d_plot->displayFontScale());
     bool changed = false;
 
     if (d_selection.kind == GraphSelection::Axis && d_selection.primaryId >= 0
@@ -13127,83 +13185,74 @@ bool Graph::nudgeSelectedElement(int dx, int dy)
                 deltaParallel = dx;
             }
             if (deltaNormal != 0) {
-                QList<int> bl = axesBaseline();
-                if (axis < bl.size()) {
-                    bl[axis] = qBound(-500, bl[axis] + deltaNormal, 1000);
-                    setAxesBaseline(bl);
-                    changed = true;
-                }
-            }
-            if (deltaParallel != 0) {
-                const int curPar = sw->property("_toriAxisParallelShift").toInt();
-                sw->setProperty("_toriAxisParallelShift", qBound(-500, curPar + deltaParallel, 500));
-                d_plot->updateLayout();
+                const double curNorm = sw->property("_toriAxisNormalShift").toDouble();
+                sw->setProperty("_toriAxisNormalShift",
+                                qBound(-500.0, curNorm + double(deltaNormal) / zoom, 500.0));
                 changed = true;
             }
+            if (deltaParallel != 0) {
+                const double curPar = sw->property("_toriAxisParallelShift").toDouble();
+                sw->setProperty("_toriAxisParallelShift",
+                                qBound(-500.0, curPar + double(deltaParallel) / zoom, 500.0));
+                changed = true;
+            }
+            if (changed)
+                d_plot->updateLayout();
         }
     } else if (d_selection.kind == GraphSelection::AxisTitle && d_selection.primaryId >= 0
                && d_selection.primaryId < QwtPlot::axisCnt) {
         const int axis = d_selection.primaryId;
         if (QwtScaleWidget *sw = d_plot->axisWidget(axis)) {
-            int deltaNormal = 0;
-            int deltaParallel = 0;
-            if (axis == QwtPlot::yLeft) {
-                deltaNormal = -dx;
-                deltaParallel = dy;
-            } else if (axis == QwtPlot::yRight) {
-                deltaNormal = dx;
-                deltaParallel = dy;
-            } else if (axis == QwtPlot::xBottom) {
-                deltaNormal = dy;
-                deltaParallel = dx;
-            } else if (axis == QwtPlot::xTop) {
-                deltaNormal = -dy;
-                deltaParallel = dx;
-            }
-            if (deltaNormal != 0) {
-                sw->setSpacing(qBound(0, sw->spacing() + deltaNormal, 200));
-                d_plot->updateLayout();
-                changed = true;
-            }
-            if (deltaParallel != 0) {
-                QwtText t = sw->title();
-                const int curFlags = t.renderFlags();
-                int hAlign = curFlags & (Qt::AlignLeft | Qt::AlignHCenter | Qt::AlignRight);
-                if (hAlign == 0)
-                    hAlign = Qt::AlignHCenter;
-                const bool goPrev = (axis == QwtPlot::yLeft) ? (deltaParallel > 0)
-                                                             : (deltaParallel < 0);
-                int nextAlign = hAlign;
-                if (goPrev) {
-                    if (hAlign == Qt::AlignRight)
-                        nextAlign = Qt::AlignHCenter;
-                    else if (hAlign == Qt::AlignHCenter)
-                        nextAlign = Qt::AlignLeft;
-                } else {
-                    if (hAlign == Qt::AlignLeft)
-                        nextAlign = Qt::AlignHCenter;
-                    else if (hAlign == Qt::AlignHCenter)
-                        nextAlign = Qt::AlignRight;
-                }
-                if (nextAlign != hAlign) {
-                    t.setRenderFlags((curFlags & ~(Qt::AlignLeft | Qt::AlignHCenter | Qt::AlignRight))
-                                     | nextAlign);
-                    sw->setTitle(t);
-                    changed = true;
-                }
-            }
+            const QPointF cur = sw->property("_toriAxisTitleShift").toPointF();
+            const QPointF next(qBound(-500.0, cur.x() + double(dx) / zoom, 500.0),
+                               qBound(-500.0, cur.y() + double(dy) / zoom, 500.0));
+            sw->setProperty("_toriAxisTitleShift", next);
+            d_plot->updateLayout();
+            changed = true;
         }
     } else if (d_selection.kind == GraphSelection::PlotTitle || titleSelected()) {
-        const QPoint cur = d_plot->property("_toriPlotTitleShift").toPoint();
-        const QPoint next(qBound(-500, cur.x() + dx, 500), qBound(-500, cur.y() + dy, 500));
+        const QPointF cur = d_plot->property("_toriPlotTitleShift").toPointF();
+        const QPointF next(qBound(-500.0, cur.x() + double(dx) / zoom, 500.0),
+                           qBound(-500.0, cur.y() + double(dy) / zoom, 500.0));
         d_plot->setProperty("_toriPlotTitleShift", next);
         d_plot->updateLayout();
         changed = true;
-    } else if ((d_selection.kind == GraphSelection::LegendBox
-                || d_selection.kind == GraphSelection::TextAnnotation)
-               && d_selection.primaryId >= 0) {
-        if (Legend *mrk = dynamic_cast<Legend *>(d_plot->marker(d_selection.primaryId))) {
+    } else if (d_selection.kind == GraphSelection::LegendBox
+               || d_selection.kind == GraphSelection::TextAnnotation) {
+        Legend *mrk = nullptr;
+        if (d_selection.primaryId >= 0)
+            mrk = dynamic_cast<Legend *>(d_plot->marker(d_selection.primaryId));
+        if (!mrk && d_selection.kind == GraphSelection::LegendBox)
+            mrk = legend();
+        if (!mrk && selectedMarker >= 0)
+            mrk = dynamic_cast<Legend *>(d_plot->marker(selectedMarker));
+        if (mrk) {
             mrk->setOrigin(mrk->rect().topLeft() + QPoint(dx, dy));
+            if (mrk == legend())
+                d_plot->setProperty("_toriLegendAnchor", QVariant());
+            if (d_markers_selector)
+                d_markers_selector->recalcBoundingRect();
+            changed = true;
+        }
+    } else if (d_selection.kind == GraphSelection::ArrowAnnotation) {
+        ArrowMarker *am = (d_selection.primaryId >= 0)
+                ? arrow(d_selection.primaryId)
+                : ((selectedMarker >= 0) ? arrow(selectedMarker) : nullptr);
+        if (am) {
+            am->setStartPoint(am->startPoint() + QPoint(dx, dy));
+            am->setEndPoint(am->endPoint() + QPoint(dx, dy));
+            if (d_markers_selector)
+                d_markers_selector->recalcBoundingRect();
+            changed = true;
+        }
+    } else if (d_selection.kind == GraphSelection::ImageAnnotation) {
+        ImageMarker *im = (d_selection.primaryId >= 0)
+                ? imageMarker(d_selection.primaryId)
+                : ((selectedMarker >= 0) ? imageMarker(selectedMarker) : nullptr);
+        if (im) {
+            im->setOrigin(im->rect().topLeft() + QPoint(dx, dy));
+            if (d_markers_selector)
+                d_markers_selector->recalcBoundingRect();
             changed = true;
         }
     }
@@ -14280,6 +14329,47 @@ bool Graph::restorePhase5Tag(const QString &line)
     if (s.startsWith("<ToriDensity2D") || s.startsWith("<ToriPoleFigure")) // E11b
         return ExtraPlotTypes::restoreGraphTag(this, s);
 
+    if (s.startsWith("<ToriLabelShifts")) {
+        if (d_plot) {
+            const double titleDx = attrs.value("titleDx").toDouble();
+            const double titleDy = attrs.value("titleDy").toDouble();
+            if (std::fabs(titleDx) > 1e-6 || std::fabs(titleDy) > 1e-6)
+                d_plot->setProperty("_toriPlotTitleShift",
+                                    QPointF(qBound(-500.0, titleDx, 500.0),
+                                            qBound(-500.0, titleDy, 500.0)));
+            else
+                d_plot->setProperty("_toriPlotTitleShift", QVariant());
+
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                QwtScaleWidget *sw = d_plot->axisWidget(a);
+                if (!sw)
+                    continue;
+                const double axTDx = attrs.value(QString("ax%1TitleDx").arg(a)).toDouble();
+                const double axTDy = attrs.value(QString("ax%1TitleDy").arg(a)).toDouble();
+                if (std::fabs(axTDx) > 1e-6 || std::fabs(axTDy) > 1e-6)
+                    sw->setProperty("_toriAxisTitleShift",
+                                    QPointF(qBound(-500.0, axTDx, 500.0),
+                                            qBound(-500.0, axTDy, 500.0)));
+                else
+                    sw->setProperty("_toriAxisTitleShift", QVariant());
+
+                const double axNorm = attrs.value(QString("ax%1Norm").arg(a)).toDouble();
+                if (std::fabs(axNorm) > 1e-6)
+                    sw->setProperty("_toriAxisNormalShift", qBound(-500.0, axNorm, 500.0));
+                else
+                    sw->setProperty("_toriAxisNormalShift", QVariant());
+
+                const double axPar = attrs.value(QString("ax%1Par").arg(a)).toDouble();
+                if (std::fabs(axPar) > 1e-6)
+                    sw->setProperty("_toriAxisParallelShift", qBound(-500.0, axPar, 500.0));
+                else
+                    sw->setProperty("_toriAxisParallelShift", QVariant());
+            }
+            d_plot->updateLayout();
+        }
+        return true;
+    }
+
     if (s.startsWith("<ToriBackbones")) {
         const bool anyDraw = attrs.value("draw", "1").toInt() != 0;
         drawAxesBackbone = anyDraw;
@@ -14813,6 +14903,11 @@ void Graph::setCurrentSelection(const GraphSelection &sel, bool notify)
     const bool changed = (d_selection != sel);
     d_selection = sel;
 
+    if (sel.kind != GraphSelection::None) {
+        if (MultiLayer *ml = multiLayerParent())
+            ml->clearLayerSelector();
+    }
+
     if (sel.kind != GraphSelection::Axis && sel.kind != GraphSelection::AxisTitle) {
         if (scalePicker)
             scalePicker->deselect();
@@ -14842,8 +14937,33 @@ void Graph::setCurrentSelection(const GraphSelection &sel, bool notify)
                || sel.kind == GraphSelection::ImageAnnotation) {
         if (d_plot)
             d_plot->setHighlightedCurveKey(-1);
-        if (sel.primaryId >= 0)
-            selectedMarker = sel.primaryId;
+        if (sel.kind == GraphSelection::LegendBox) {
+            Legend *targetLeg = (sel.primaryId >= 0 && d_plot)
+                    ? dynamic_cast<Legend *>(d_plot->marker(sel.primaryId))
+                    : legend();
+            if (!targetLeg)
+                targetLeg = legend();
+            if (d_markers_selector && (!targetLeg || !d_markers_selector->contains(targetLeg)))
+                detachAndDeleteMarkerSelector(d_markers_selector);
+            if (sel.primaryId >= 0)
+                selectedMarker = sel.primaryId;
+            else if (legendMarkerID >= 0)
+                selectedMarker = legendMarkerID;
+        } else if (sel.kind == GraphSelection::TextAnnotation) {
+            Legend *targetTxt = (sel.primaryId >= 0 && d_plot)
+                    ? dynamic_cast<Legend *>(d_plot->marker(sel.primaryId))
+                    : nullptr;
+            if (d_markers_selector && (!targetTxt || !d_markers_selector->contains(targetTxt)))
+                detachAndDeleteMarkerSelector(d_markers_selector);
+            if (sel.primaryId >= 0)
+                selectedMarker = sel.primaryId;
+        } else {
+            ImageMarker *targetImg = (sel.primaryId >= 0) ? imageMarker(sel.primaryId) : nullptr;
+            if (d_markers_selector && (!targetImg || !d_markers_selector->contains(targetImg)))
+                detachAndDeleteMarkerSelector(d_markers_selector);
+            if (sel.primaryId >= 0)
+                selectedMarker = sel.primaryId;
+        }
     } else {
         if (d_plot)
             d_plot->setHighlightedCurveKey(-1);
@@ -14932,7 +15052,7 @@ void Graph::updateSelectionOverlayGeometry()
             const bool outsideCanvas = (lr.right() > cv->width() || lr.left() < 0
                                         || lr.bottom() > cv->height() || lr.top() < 0);
             if (outsideCanvas) {
-                if (d_markers_selector)
+                if (d_markers_selector && !d_markers_selector->isInKeyNudge())
                     detachAndDeleteMarkerSelector(d_markers_selector);
                 const QPoint topLeft = cv->mapTo(this, lr.topLeft());
                 showOverlayRect(QRect(topLeft, lr.size()).adjusted(-2, -2, 2, 2), true);
