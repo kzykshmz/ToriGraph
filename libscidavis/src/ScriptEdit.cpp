@@ -63,16 +63,30 @@ ScriptEdit::ScriptEdit(ScriptingEnv *env, QWidget *parent, QString name)
 
     printCursor = textCursor();
 
+    const bool ownedByNote = (parent && parent->inherits("Note"));
+
     actionExecute = new QAction(tr("E&xecute"), this);
-    actionExecute->setShortcut(tr("Ctrl+J"));
+    if (!ownedByNote) {
+        actionExecute->setShortcut(tr("Ctrl+J"));
+        actionExecute->setShortcutContext(Qt::WidgetShortcut);
+        addAction(actionExecute);
+    }
     connect(actionExecute, SIGNAL(triggered()), this, SLOT(execute()));
 
     actionExecuteAll = new QAction(tr("Execute &All"), this);
-    actionExecuteAll->setShortcut(tr("Ctrl+Shift+J"));
+    if (!ownedByNote) {
+        actionExecuteAll->setShortcut(tr("Ctrl+Shift+J"));
+        actionExecuteAll->setShortcutContext(Qt::WidgetShortcut);
+        addAction(actionExecuteAll);
+    }
     connect(actionExecuteAll, SIGNAL(triggered()), this, SLOT(executeAll()));
 
     actionEval = new QAction(tr("&Evaluate Expression"), this);
-    actionEval->setShortcut(tr("Ctrl+Return"));
+    if (!ownedByNote) {
+        actionEval->setShortcut(tr("Ctrl+Return"));
+        actionEval->setShortcutContext(Qt::WidgetShortcut);
+        addAction(actionEval);
+    }
     connect(actionEval, SIGNAL(triggered()), this, SLOT(evaluate()));
 
     actionPrint = new QAction(tr("&Print"), this);
@@ -146,7 +160,7 @@ void ScriptEdit::contextMenuEvent(QContextMenuEvent *e)
     menu->addAction(actionExecuteAll);
     menu->addAction(actionEval);
 
-    if (parent()->inherits("Note")) {
+    if (parent() && parent()->inherits("Note")) {
         Note *sp = (Note *)parent();
         QAction *actionAutoexec = new QAction(tr("Auto&exec"), menu);
         actionAutoexec->setCheckable(true);

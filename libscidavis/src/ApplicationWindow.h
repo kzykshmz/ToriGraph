@@ -52,6 +52,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QUrl>
+#include <QDateTime>
 
 #ifdef _MSC_VER
 #define NOMINMAX
@@ -82,6 +83,8 @@ class QMenu;
 class QToolBar;
 class QStatusBar;
 class QSignalMapper;
+class QLockFile;
+class QFileSystemWatcher;
 class IconLoader;
 
 class Matrix;
@@ -857,6 +860,14 @@ public slots:
     void showXRDAnalyzerDialog();
     void showVaspPlotterDialog();
     void exportActiveGraphToPython();
+    void toggleLanguage();
+    void plotStackedBars();
+    void plotPolarData();
+    void showApplyStylePresetToMultipleGraphsDialog();
+    void applyTemplateToActiveTable();
+    void reimportActiveTable();
+    void quickLinearFitSelection();
+    void applyStylePresetById(const QString &presetId);
     //@}
 
     //! \name Event Handlers
@@ -1551,6 +1562,9 @@ private:
     QAction *actionSampleGallery = nullptr, *actionKissingerDialog = nullptr,
             *actionWorkHardeningDialog = nullptr, *actionXRDAnalyzerDialog = nullptr,
             *actionVaspPlotterDialog = nullptr, *actionExportPythonScript = nullptr;
+    QAction *actionReimportData = nullptr, *actionPlotStackedBars = nullptr,
+            *actionPlotPolarData = nullptr, *actionApplyStyleToMultipleGraphs = nullptr,
+            *actionApplyTableTemplate = nullptr, *actionQuickLinearFit = nullptr;
     bool d_in_aspect_about_to_be_removed = false;
     QPointer<QDialog> d_active_peak_analyzer_dlg;
     QToolButton *d_btn_style_presets_popup = nullptr;
@@ -1780,6 +1794,25 @@ private:
     QHash<MyWidget *, QString> d_batch_widget_name;
     QHash<QString, int> d_batch_name_counts;
     QHash<QString, int> d_batch_unique_seq;
+    QLockFile *d_project_lock = nullptr;
+    bool d_project_read_only_lock = false;
+    QFileSystemWatcher *d_project_watcher = nullptr;
+    QString d_watched_project_path;
+    QDateTime d_watched_project_mtime;
+    qint64 d_watched_project_size = -1;
+    bool d_external_change_notified = false;
+    bool d_ignore_watcher_changes = false;
+    QWidget *d_empty_graph_pane = nullptr;
+    QHash<Folder *, QPointer<MyWidget>> d_folder_active_windows;
+
+    bool acquireProjectFileLock(const QString &fn, bool interactive);
+    void releaseProjectFileLock();
+    void trackOpenedProjectFile(const QString &fn);
+    void untrackOpenedProjectFile();
+    bool checkExternalModificationBeforeSave();
+    void updateEmptyGraphPanePlaceholder();
+    void rebuildStylePresetsMenu();
+    MultiLayer *openMultiLayerFromTemplateFile(const QString &fn, QString *errOut = nullptr);
 
 private slots:
     void removeDependentTableStatistics(const AbstractAspect *aspect);
