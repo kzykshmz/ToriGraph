@@ -10,6 +10,7 @@ import queue
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -24,22 +25,62 @@ class ToriGraphError(RuntimeError):
 
 
 class TransportError(ToriGraphError):
-    """Raised when the underlying TCP or Named Pipe connection fails."""
+    """Raised when the underlying TCP or Named Pipe connection fails.
+
+    Two subclasses tell the usual causes apart (both are still ``TransportError``):
+    :class:`ToriGraphTimeoutError` (no answer in time -- ToriGraph may still be busy)
+    and :class:`ToriGraphDisconnectedError` (connection lost, closed or invalidated).
+    """
+
+
+class ToriGraphTimeoutError(TransportError):
+    """No answer arrived within ``rpc_timeout``.
+
+    ToriGraph may still be working on the request (long fit, big import).  The
+    session is invalidated so a late answer cannot be mistaken for the next one;
+    call :meth:`Session.reconnect` to continue, or raise ``rpc_timeout=`` next time.
+    """
+
+
+class ToriGraphDisconnectedError(TransportError):
+    """The connection was lost, closed by the peer, or the session was invalidated.
+
+    Unlike :class:`ToriGraphTimeoutError` there is no pending work to wait for:
+    call :meth:`Session.reconnect` (same endpoint) or connect / launch again.
+    """
+
+
+class BatchReadError(ToriGraphError):
+    """A synchronous read (``get_*`` / ``info`` / ``to_dataframe`` ...) was attempted
+    inside ``with app.batch():``, where calls are only recorded, not executed."""
 
 
 class RpcError(ToriGraphError):
-    """Raised when ToriGraph returns a JSON-RPC 2.0 error object."""
+    """Raised when ToriGraph returns a JSON-RPC 2.0 error object.
+
+    When the server lists valid choices (palette names, sample IDs, ...) they are in
+    ``.available`` and the first 10 are also part of ``str(exc)``.
+    """
+
+    #: How many ``available`` candidates are spelled out in the exception message.
+    MAX_SHOWN_CANDIDATES = 10
 
     def __init__(self, code: int, message: str, data: Any = None) -> None:
-        super().__init__(f"[RPC {code}] {message}")
-        self.code = int(code)
-        self.message = str(message)
-        self.data = data
-        self.available: Optional[List[str]] = (
+        available: Optional[List[str]] = (
             [str(x) for x in data["available"]]
             if isinstance(data, Mapping) and isinstance(data.get("available"), (list, tuple))
             else None
         )
+        text = f"[RPC {code}] {message}"
+        if available:
+            shown = ", ".join(available[: self.MAX_SHOWN_CANDIDATES])
+            more = len(available) - self.MAX_SHOWN_CANDIDATES
+            text += f" (available: {shown}" + (f", ... +{more} more" if more > 0 else "") + ")"
+        super().__init__(text)
+        self.code = int(code)
+        self.message = str(message)
+        self.data = data
+        self.available: Optional[List[str]] = available
 
 
 ToriGraphRpcError = RpcError
@@ -415,6 +456,46 @@ class BatchStepRef:
         return f"BatchStepRef({self.to_token()!r})"
 
 
+_READ_ONLY_RPC_SUFFIXES = ("get_", "list_", "describe", "to_python")
+_READ_ONLY_RPC_NAMES = frozenset(
+    {
+        "ping", "info", "inspect", "query", "supported_methods", "column_stats",
+        "app.info", "app.supported_methods", "app.describe_api", "app.list_windows", "app.window_info",
+        "graph.inspect", "gadget.query", "workbook.list",
+    }
+)
+
+
+def _coerce_designations_mapping(
+    designations: Optional[Union[Sequence[str], Mapping[str, str]]],
+    column_order: Sequence[str],
+    total_cols: Optional[int] = None,
+) -> Dict[str, str]:
+    """Normalize dict or positional list/tuple designations into ``{col_name: role}``."""
+    if designations is None:
+        return {}
+    if isinstance(designations, Mapping):
+        return {str(k): str(v) for k, v in designations.items()}
+    if isinstance(designations, (str, bytes)):
+        raise TypeError("designations must be a mapping or a sequence of role strings, not a single string.")
+    role_list = [str(d) for d in designations]
+    cap = max(len(column_order), int(total_cols) if total_cols is not None else 0)
+    if len(role_list) > cap:
+        raise ValueError(
+            f"designations has {len(role_list)} entries but the table has only {cap} columns."
+        )
+    return dict(zip(column_order, role_list))
+
+
+def _is_read_only_rpc(method: str) -> bool:
+    """True for RPC methods that only *return* data (so they cannot be batch-recorded)."""
+    m = str(method)
+    if m in _READ_ONLY_RPC_NAMES:
+        return True
+    tail = m.rsplit(".", 1)[-1]
+    return tail in _READ_ONLY_RPC_NAMES or tail.startswith(_READ_ONLY_RPC_SUFFIXES)
+
+
 class _BatchRecordedResult(dict):
     """Placeholder result dict returned by ``Session.call`` while recording inside ``with app.batch():``."""
 
@@ -699,13 +780,16 @@ def _resolve_tcp_auth_token(
         return str(explicit_token).strip()
     if query_token is not None and str(query_token).strip():
         return str(query_token).strip()
+    # Resolution order: explicit argument > endpoint query > TORIGRAPH_RPC_TOKEN > token file.
+    # A stale `tcp_<port>.token` left behind by an earlier run must never override
+    # a token the caller supplied on purpose.
+    env_tok = os.environ.get("TORIGRAPH_RPC_TOKEN", "").strip()
+    if env_tok:
+        return env_tok
     if _is_loopback_host(host):
         file_tok = _read_local_tcp_token_file(port)
         if file_tok:
             return file_tok
-    env_tok = os.environ.get("TORIGRAPH_RPC_TOKEN", "").strip()
-    if env_tok:
-        return env_tok
     return ""
 
 
@@ -1155,6 +1239,16 @@ class _MatrixDomain(_NamespaceProxy):
         return MatrixProxy(self._session, name)
 
 
+class _WorkbookDomain(_NamespaceProxy):
+    """Callable `app.workbook(name) -> WorkbookProxy` AND dotted `app.workbook.create(...)`."""
+
+    def __init__(self, session: "Session") -> None:
+        super().__init__(session, "workbook")
+
+    def __call__(self, name: str) -> "WorkbookProxy":
+        return WorkbookProxy(self._session, name)
+
+
 class _GraphDomain(_NamespaceProxy):
     """Callable `app.graph(name) -> GraphProxy` AND dotted `app.graph.export(...)`."""
 
@@ -1277,7 +1371,7 @@ class TableProxy:
         units: Optional[Mapping[str, str]] = None,
         long_names: Optional[Mapping[str, str]] = None,
         comments: Optional[Mapping[str, str]] = None,
-        designations: Optional[Mapping[str, str]] = None,
+        designations: Optional[Union[Sequence[str], Mapping[str, str]]] = None,
         column_order: Optional[Sequence[str]] = None,
         *,
         columns: Optional[Sequence[str]] = None,
@@ -1296,7 +1390,8 @@ class TableProxy:
         merged_units = {**inf_units, **(dict(units) if units is not None else {})} or None
         merged_long_names = {**inf_long_names, **(dict(long_names) if long_names is not None else {})} or None
         merged_comments = {**inf_comments, **(dict(comments) if comments is not None else {})} or None
-        merged_designations = {**inf_designations, **(dict(designations) if designations is not None else {})} or None
+        explicit_desig = _coerce_designations_mapping(designations, ordered)
+        merged_designations = {**inf_designations, **explicit_desig} or None
 
         return self.session.call(
             "table.set_data_dict",
@@ -2060,9 +2155,23 @@ class GraphProxy:
         )
 
     def isij_style(self) -> Dict[str, Any]:
+        """Apply the ISIJ paper preset (``isij_85mm``: 85 mm single-column figure)."""
         return self.apply_style_preset("isij_85mm")
 
+    def lab_slide_style(self) -> Dict[str, Any]:
+        """Apply the lab slide preset (``lab_slide_83mm``): 83.3 mm wide, 12.9 pt text.
+
+        This is the recommended preset for slides.  ``to_pptx()`` / ``export_graphs_to_pptx()``
+        place a graph carrying it at 140 % so the text ends up as 18 pt on the slide.
+        """
+        return self.apply_style_preset("lab_slide_83mm")
+
     def slide_style(self) -> Dict[str, Any]:
+        """Apply the legacy large-slide preset (``slide_28pt``: 185 mm wide, 28 pt text).
+
+        Prefer :meth:`lab_slide_style` (83.3 mm / 12.9 pt, pasted at 140 % -> 18 pt) for the
+        lab's slide template; use this one only when a full-width 28 pt figure is wanted.
+        """
         return self.apply_style_preset("slide_28pt")
 
     def apply_frame_preset(
@@ -2873,6 +2982,7 @@ class GraphProxy:
         widescreen: bool = True,
         scale: Optional[Union[float, int, str]] = None,
         embed_scope: str = "graph",
+        allow_whole_project: bool = False,
     ) -> Dict[str, Any]:
         """Embed this graph into a PowerPoint ``.pptx`` deck as an editable OLE object.
 
@@ -2884,9 +2994,11 @@ class GraphProxy:
             slide: 1-based slide to place on (a new slide when omitted).
             box: ``(left_cm, top_cm, width_cm)`` placement box.
             replace: update an already embedded graph (``True``) or replace a named shape.
-            preset: style preset applied before export (e.g. ``"slide_28pt"``).
+            preset: style preset applied before export (e.g. ``"lab_slide_83mm"``).
             scale: place at natural size x scale (``1.4`` or ``"140%"``).
             embed_scope: ``"graph"`` (graph and its tables) or ``"project"``.
+            allow_whole_project: allow falling back to a whole-project snapshot when
+                per-graph OLE export is unavailable (default ``False``).
 
         Returns:
             dict describing the written deck and each placement.
@@ -2906,6 +3018,7 @@ class GraphProxy:
             widescreen=widescreen,
             scale=scale,
             embed_scope=embed_scope,
+            allow_whole_project=allow_whole_project,
         )
 
     def copy_image(self, dpi: int = 300) -> Dict[str, Any]:
@@ -3146,17 +3259,10 @@ class Session:
         self.discarded_responses = 0
         self._broken_reason: Optional[str] = None
         self._active_batch: Optional[BatchContext] = None
-        self._finalizer: Optional[weakref.finalize] = (
-            weakref.finalize(
-                self,
-                _cleanup_spawned_session,
-                self._process,
-                self._transport,
-                list(self._cleanup_files),
-            )
-            if (self._process is not None or bool(self._cleanup_files))
-            else None
-        )
+        self._slide_preset_graphs: set[str] = set()
+        #: (endpoint, connect timeout, token) used by :meth:`reconnect`; set by connect()/launch().
+        self._reconnect_info: Optional[Tuple[str, float, Optional[str]]] = None
+        self._finalizer: Optional[weakref.finalize] = self._make_finalizer()
 
         # Callable + dotted domain namespaces
         self.app = _NamespaceProxy(self, "app")
@@ -3173,6 +3279,18 @@ class Session:
         self.table_ops = self.table
         self.matrix_ops = self.matrix
         self.graph_ops = self.graph
+        self.workbook = _WorkbookDomain(self)
+
+    def _make_finalizer(self) -> Optional[weakref.finalize]:
+        if self._process is None and not self._cleanup_files:
+            return None
+        return weakref.finalize(
+            self,
+            _cleanup_spawned_session,
+            self._process,
+            self._transport,
+            list(self._cleanup_files),
+        )
 
     def __enter__(self) -> "Session":
         return self
@@ -3205,6 +3323,51 @@ class Session:
         """False once the session was closed or its connection was invalidated."""
         return not self._closed and self._broken_reason is None
 
+    def reconnect(self, timeout: Optional[float] = None) -> "Session":
+        """Open a fresh connection to the same endpoint after a timeout or a lost connection.
+
+        Works for sessions made by :func:`connect` / :func:`connect_or_launch` /
+        :func:`launch` (the launched process must still be running).  Windows, tables
+        and graphs in ToriGraph are untouched -- only the transport is replaced, so
+        existing proxies keep working.  A request that timed out may still be running
+        in ToriGraph; its late answer is dropped.  Raises :class:`ToriGraphDisconnectedError`
+        when the endpoint cannot be reached.  Returns ``self``.
+        """
+        if self._closed:
+            raise ToriGraphDisconnectedError("Session is already closed; connect or launch again.")
+        if self._reconnect_info is None:
+            raise ToriGraphDisconnectedError(
+                "This session was built from a custom transport and cannot reconnect; "
+                "connect or launch again."
+            )
+        proc = self._process
+        if proc is not None and proc.poll() is not None:
+            raise ToriGraphDisconnectedError(
+                f"The launched ToriGraph process has exited (code {proc.returncode}); "
+                "launch a new session."
+            )
+        endpoint, connect_timeout, token = self._reconnect_info
+        if timeout is not None:
+            connect_timeout = float(timeout)
+        try:
+            self._transport.close()
+        except Exception:
+            pass
+        try:
+            transport = _parse_and_connect_transport(endpoint, timeout=connect_timeout, token=token)
+        except TransportError as exc:
+            if isinstance(exc, ToriGraphDisconnectedError):
+                raise
+            raise ToriGraphDisconnectedError(f"Reconnect to {endpoint} failed: {exc}") from exc
+        if self._finalizer is not None:
+            self._finalizer.detach()
+        self._transport = transport
+        self._broken_reason = None
+        self._active_batch = None
+        self._finalizer = self._make_finalizer()
+        self.call("ping", rpc_timeout=max(1.0, connect_timeout))
+        return self
+
     def _invalidate(self, reason: str) -> None:
         """Mark the connection unusable (the request/response stream can no longer be trusted)."""
         if self._broken_reason is None:
@@ -3233,11 +3396,11 @@ class Session:
         :class:`TransportError` -- reconnect (or relaunch) to continue.
         """
         if self._closed:
-            raise TransportError("Session is already closed.")
+            raise ToriGraphDisconnectedError("Session is already closed.")
         if self._broken_reason is not None:
-            raise TransportError(
+            raise ToriGraphDisconnectedError(
                 f"Session is no longer usable ({self._broken_reason}). "
-                "Close it and connect or launch again."
+                "Call session.reconnect() or connect / launch again."
             )
 
         if _method is None:
@@ -3253,6 +3416,13 @@ class Session:
             merged.update(_clean_kwargs(kwargs))
 
         if self._active_batch is not None and _method != "app.batch":
+            if _is_read_only_rpc(_method):
+                raise BatchReadError(
+                    f"'{_method}' reads data from ToriGraph, but inside `with app.batch():` calls are "
+                    "only recorded and run together when the block exits, so there is no value to "
+                    "return yet. Do the read before or after the `with` block (or reference a "
+                    "previous step with BatchStepRef / `$steps[i].field`)."
+                )
             return self._active_batch._record_raw(_method, merged)
 
         req_id = self._next_id
@@ -3277,6 +3447,21 @@ class Session:
             raise RpcError(-32000, str(err))
 
         result = resp.get("result")
+        if _method == "graph.apply_style_preset":
+            gname = (
+                (result.get("graph") if isinstance(result, Mapping) else None)
+                or merged.get("graph")
+            )
+            preset_nm = str(merged.get("preset") or "").strip().lower()
+            if isinstance(gname, str) and gname:
+                if preset_nm in ("lab_slide_83mm", "lab_slide"):
+                    self._slide_preset_graphs.add(gname)
+                else:
+                    self._slide_preset_graphs.discard(gname)
+        elif _method == "app.new_project" or (
+            _method == "app.open_project" and not merged.get("append")
+        ):
+            self._slide_preset_graphs.clear()
         return result if isinstance(result, dict) else {"value": result}
 
     def _exchange(
@@ -3291,14 +3476,19 @@ class Session:
             self._transport.send_line(raw_req, timeout)
         except TransportError as exc:
             self._invalidate(f"sending '{method}' failed: {exc}")
-            raise
+            if isinstance(exc, (ToriGraphTimeoutError, ToriGraphDisconnectedError)):
+                raise
+            if "timed out" in str(exc).lower():
+                raise ToriGraphTimeoutError(str(exc)) from exc
+            raise ToriGraphDisconnectedError(str(exc)) from exc
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._invalidate(f"no answer to '{method}' within {timeout:.1f}s")
-                raise TransportError(
+                raise ToriGraphTimeoutError(
                     f"Timed out after {timeout:.1f}s waiting for the answer to '{method}'. "
-                    "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long operations."
+                    "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long operations; "
+                    "session.reconnect() restores the connection."
                 )
             try:
                 raw_resp = self._transport.recv_line(remaining)
@@ -3306,12 +3496,15 @@ class Session:
                 self._invalidate(f"no answer to '{method}': {exc}")
                 # TCP says "Timed out ...", the named pipe "... timed out after ..."
                 if "timed out" in str(exc).lower():
-                    raise TransportError(
+                    raise ToriGraphTimeoutError(
                         f"Timed out after {timeout:.1f}s waiting for the answer to '{method}'. "
                         "Pass rpc_timeout=... (per call) or set session.rpc_timeout for long "
-                        "operations. This session can no longer be used."
+                        "operations. This session can no longer be used; call "
+                        "session.reconnect() to continue."
                     ) from exc
-                raise
+                if isinstance(exc, (ToriGraphTimeoutError, ToriGraphDisconnectedError)):
+                    raise
+                raise ToriGraphDisconnectedError(str(exc)) from exc
             try:
                 resp = json.loads(raw_resp.decode("utf-8"))
             except Exception as exc:
@@ -3836,6 +4029,18 @@ class Session:
         elif inf_desig:
             eff_designations = dict(inf_desig)
 
+        # list/tuple designations ["X", "Y", "yErr"] apply to the columns in order; they
+        # must reach table.set_data_dict as a {column: role} dict or the server resets
+        # every column to X/Y.  Validated before the table is created.
+        desig_order = (
+            list(eff_col_names)
+            if eff_col_names is not None
+            else (list(coerced_payload.keys()) if coerced_payload is not None else [])
+        )
+        explicit_desig = _coerce_designations_mapping(
+            designations, desig_order, total_cols=resolved_cols
+        )
+
         res = self.call(
             "table.create",
             rows=int(rows),
@@ -3850,11 +4055,7 @@ class Session:
             merged_units = {**inf_units, **(dict(units) if units is not None else {})} or None
             merged_long = {**inf_long_names, **(dict(long_names) if long_names is not None else {})} or None
             merged_comm = {**inf_comments, **(dict(comments) if comments is not None else {})} or None
-            merged_desig = (
-                dict(designations)
-                if isinstance(designations, Mapping)
-                else (dict(inf_desig) if inf_desig else None)
-            )
+            merged_desig = {**inf_desig, **explicit_desig} or None
             self.call(
                 "table.set_data_dict",
                 table=tbl.name,
@@ -4696,13 +4897,17 @@ class Session:
         widescreen: bool = True,
         scale: Optional[Union[float, int, str]] = None,
         embed_scope: str = "graph",
+        allow_whole_project: bool = False,
     ) -> Dict[str, Any]:
         """Export graphs into a PowerPoint ``.pptx`` deck as editable native ``ToriGraph.Graph.1`` OLE objects.
 
         ``scale`` (e.g. ``1.4`` or ``"140%"``) places each graph at its natural size x scale;
         the result reports ``effective_scale`` and the effective axis-title / tick-label pt of
         every placement. ``embed_scope="graph"`` (default) embeds only the graph and the tables
-        it plots; ``"project"`` embeds the whole project.
+        it plots; ``"project"`` embeds the whole project. Unless ``allow_whole_project=True``,
+        failing to obtain a per-graph project raises :class:`ToriGraphError` instead of silently
+        embedding the whole project. An existing ``path`` is never overwritten unless
+        ``overwrite=True``.
 
         Uses OpenXML (``python-pptx``) + Win32 ``ole32.dll`` ``StgCreateDocfile`` with zero COM
         process activation (``POWERPNT.EXE`` is never spawned or touched) and zero clipboard use.
@@ -4725,6 +4930,7 @@ class Session:
             widescreen=widescreen,
             scale=scale,
             embed_scope=embed_scope,
+            allow_whole_project=allow_whole_project,
         )
 
     # ------------------------------------------------------------------
@@ -5880,6 +6086,21 @@ class Session:
         )
         return GraphProxy(self, res["graph"])
 
+    def _graph_or_result(self, res: Dict[str, Any], *, always_graph: bool = False) -> Any:
+        """Wrap a plot reply into a :class:`GraphProxy` (``proxy.result`` keeps the full reply).
+
+        Analysis-only replies (``plot=False``) have no graph window; they stay a ``dict``
+        unless ``always_graph`` is set.
+        """
+        gname = res.get("graph") if hasattr(res, "get") else None
+        if not (isinstance(gname, str) and gname):
+            gname = res.get("name") if (always_graph and hasattr(res, "get")) else None
+        if isinstance(gname, str) and gname:
+            proxy = GraphProxy(self, gname)
+            proxy.result = res  # type: ignore[attr-defined]
+            return proxy
+        return res
+
     def plot_histogram_cumulative(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
@@ -5888,10 +6109,14 @@ class Session:
         bin_width: Optional[float] = None,
         begin: Optional[float] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Histogram with the cumulative percentage on the right axis."""
+    ) -> GraphProxy:
+        """Histogram with the cumulative percentage on the right axis.
+
+        Returns a :class:`GraphProxy` like every other ``plot_*``; the server reply
+        (bin table, ...) is available as ``proxy.result``.
+        """
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
-        return self.call(
+        res = self.call(
             "plot.histogram_cumulative",
             table=tbl_ref,
             col=col,
@@ -5899,6 +6124,7 @@ class Session:
             begin=begin,
             **kwargs,
         )
+        return self._graph_or_result(res, always_graph=True)
 
     def plot_density2d(
         self,
@@ -5914,10 +6140,14 @@ class Session:
         palette: Optional[str] = None,
         plot: Optional[bool] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """2D density (2D histogram) of two columns as a heat map; the count matrix is kept."""
+    ) -> Any:
+        """2D density (2D histogram) of two columns as a heat map; the count matrix is kept.
+
+        Returns a :class:`GraphProxy` when a graph is plotted (``proxy.result`` holds the
+        server reply); with ``plot=False`` only the analysis ``dict`` is returned.
+        """
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
-        return self.call(
+        res = self.call(
             "plot.density2d",
             table=tbl_ref,
             x=x,
@@ -5931,6 +6161,7 @@ class Session:
             plot=plot,
             **kwargs,
         )
+        return self._graph_or_result(res)
 
     def plot_pole_figure(
         self,
@@ -5952,10 +6183,14 @@ class Session:
         label: Optional[str] = None,
         plot: Optional[bool] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """XRD pole figure (Schmidt equal-area or Wulff equal-angle) with contours and MRD."""
+    ) -> Any:
+        """XRD pole figure (Schmidt equal-area or Wulff equal-angle) with contours and MRD.
+
+        Returns a :class:`GraphProxy` when a graph is plotted (``proxy.result`` holds the
+        server reply); with ``plot=False`` only the analysis ``dict`` is returned.
+        """
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
-        return self.call(
+        res = self.call(
             "plot.pole_figure",
             table=tbl_ref,
             alpha=alpha,
@@ -5975,6 +6210,7 @@ class Session:
             plot=plot,
             **kwargs,
         )
+        return self._graph_or_result(res)
 
     def kaplan_meier(
         self,
@@ -6269,10 +6505,13 @@ def connect(
     resolved = (endpoint or os.environ.get("TORIGRAPH_RPC_ENDPOINT", "")).strip()
     if not resolved:
         raise TransportError(
-            "No ToriGraph RPC endpoint specified and TORIGRAPH_RPC_ENDPOINT is not set."
+            "No ToriGraph RPC endpoint specified and TORIGRAPH_RPC_ENDPOINT is not set. "
+            "Pass the pipe://... / tcp://... endpoint shown in ToriGraph's Python console, "
+            "or use tg.connect_or_launch() to start a headless ToriGraph."
         )
     transport = _parse_and_connect_transport(resolved, timeout=timeout, token=token)
     session = Session(transport, rpc_timeout=rpc_timeout)
+    session._reconnect_info = (resolved, float(timeout), token)
     session.call("ping", rpc_timeout=max(1.0, float(timeout)))
     if check_version:
         check_app_version(session)
@@ -6448,6 +6687,7 @@ def launch(
         session = Session(
             transport, process=proc, cleanup_files=[port_file, err_file], rpc_timeout=rpc_timeout
         )
+        session._reconnect_info = (discovered_endpoint, float(timeout), spawned_token)
         session.call("ping", rpc_timeout=max(1.0, float(timeout)))
         if check_version:
             check_app_version(session)

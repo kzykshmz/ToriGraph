@@ -32,19 +32,32 @@ import torigraph as tg
 with tg.launch(headless=True, language="ja") as app:
     print(app.info())
 
-# B. 既存セッションがあれば接続、無ければヘッドレス起動（再現スクリプトに最適）
+# B. エンドポイント (`endpoint` 引数または `TORIGRAPH_RPC_ENDPOINT`) があれば既存セッションへ接続、
+#    どちらも未指定のときだけヘッドレス起動（再現スクリプトに最適）
 with tg.connect_or_launch() as app:
     print(app.supported_methods()[:5])
 
 # C. 起動中の ToriGraph（アプリ内コンソールや --rpc-port 指定プロセス）に接続
+#    (endpoint 未指定時はコンソール表示の pipe://... 等を渡すか connect_or_launch() を使う案内が出ます)
 # app = tg.connect("tcp://127.0.0.1:18900")
 ```
 
-### 待ち時間と版の照合
+### 認証（トークン解決順）
+
+Loopback TCP 接続では `rpc.auth` トークン認証が行われます。トークンは次の優先順で解決されます（上から優先）:
+
+1. `tg.connect(..., token="...")` の明示引数（またはエンドポイント URL の `?token=...` クエリ）
+2. 環境変数 `TORIGRAPH_RPC_TOKEN`
+3. ローカルのトークンファイル `tcp_<port>.token`（Windows: `%LOCALAPPDATA%\ToriGraph\rpc\`、Linux/macOS: `$XDG_DATA_HOME/ToriGraph/rpc/` 等、loopback ホスト時のみ）
+
+以前のセッションが残した古い `tcp_<port>.token` ファイルがあっても、環境変数 `TORIGRAPH_RPC_TOKEN` や明示引数が優先されます。
+
+### 待ち時間・再接続と版の照合
 
 - `launch(timeout=30)` の `timeout` は起動待ち(接続できるまで)の秒数です。各呼び出しの応答待ちは別で、既定は `tg.DEFAULT_RPC_TIMEOUT`(120 秒)です。
 - 重い処理だけ待ち時間を延ばすときは `app.call("analysis.xxx", ..., rpc_timeout=600)`、セッション全体なら `tg.launch(rpc_timeout=600)` または `app.rpc_timeout = 600` とします。
-- 応答は JSON-RPC の `id` で照合します。待ち時間を過ぎた場合、そのセッションは使えなくなり(遅れて届いた応答を次の呼び出しの結果と取り違えないため)、以後の呼び出しは `TransportError` になります。接続し直してください。
+- 応答は JSON-RPC の `id` で照合します。待ち時間を過ぎると `ToriGraphTimeoutError`（`TransportError` のサブクラス）、相手側切断や通信断では `ToriGraphDisconnectedError`（`TransportError` のサブクラス）が発生し、遅れて届いた応答を取り違えないようその接続は無効化されます。
+- `connect` / `connect_or_launch` / `launch` で開いたセッションは `app.reconnect()` で同じエンドポイントへ再接続でき、ToriGraph 側のウィンドウ・テーブル・グラフはそのまま保持されます。
 - 接続時にアプリと SDK の版を照合し、違えば `tg.ToriGraphVersionWarning` を出します(`check_version=False` で省略)。アプリに同梱の SDK(`scripts/install-python-sdk.ps1`)を入れ直すと一致します。
 
 ### テスト
@@ -115,17 +128,22 @@ with tg.launch(headless=True) as app:
     g1, g2 = app.graph(s1["graph"]), app.graph(s2["graph"])
 
     # 1. 新規 16:9 スライドへ自動グリッド配置 (per_slide = 1 | 2 | 3 | 4 | 6)
+    #    推奨プリセット: "lab_slide_83mm" (83.3mm / 12.9pt、自動で 140% = 18pt 配置)
+    #    ※ 既に lab_slide_83mm / g.lab_slide_style() を当てたグラフも自動 140% 配置を維持
+    #    ※ 3D グラフ (Graph3D) はスタイル適用をスキップし、2D グラフの RPC エラーはそのまま送出
     app.to_pptx(
         Path("weekly_report.pptx"),
         [g1, g2],
         per_slide=2,
-        preset="slide_28pt",
+        preset="lab_slide_83mm",
         titles=["Al-Zn-Mg 時効材の引張特性と XRD プロファイル"],
     )
 
     # 2. 既存デッキ内の埋め込み済み OLE 図形 (alt_text="torigraph:<graph_name>") をべき等更新
     #    PowerPoint 側で手動調整した位置・サイズ・重なり順 (Z-order) を維持したまま中身だけ更新！
-    #    (deck == path の場合は安全保護のため overwrite=True が必須)
+    #    ※ 既存の出力ファイルを上書きする場合は (deck == path に限らず) overwrite=True が必須。
+    #       未指定時は FileExistsError (deck == path は ValueError) で保護され、保存は os.replace でアトミック実行されます。
+    #    ※ per-graph OLE 出力が失敗/未対応のときも、既定 (allow_whole_project=False) ではプロジェクト全体埋め込みを行わず ToriGraphError を送出します。
     app.to_pptx("weekly_report.pptx", [g1, g2], deck="weekly_report.pptx", replace=True, overwrite=True)
 
     # 3. テンプレート上の名前付きプレースホルダ図形を置換、または cm 座標ボックス指定
@@ -141,6 +159,7 @@ import torigraph as tg
 with tg.launch(headless=True) as app:
     # with ブロック内の全プロキシ操作を 1 回の JSON-RPC 往復に集約し、再描画と Undo を統合
     # 途中でエラーが発生した場合は atomic=True によりワークスペース全体が自動ロールバックされます
+    # ※ ブロック内の同期読み取り (get_column / info / inspect / to_dataframe 等) は BatchReadError を送出します
     with app.batch(atomic=True, defer_replot=True) as b:
         t = app.create_table(rows=5, cols=2)
         t.set_data_dict({"Condition": ["As-Q", "120°C", "160°C", "RRA", "OA"], "HV": [95, 182, 168, 195, 152]})
@@ -200,7 +219,7 @@ with tg.launch(headless=True) as app:
 
 ### A. 自己発見 API カタログ (`app.describe_api`)
 
-全 RPC メソッドの引数型・デフォルト値・列挙値・Python SDK シグネチャ・呼び出し例を JSON で即時取得できます。不正な列名や選択肢を渡した場合は `tg.RpcError`（`-32602`）の `err.available` に有効な候補一覧が返ります。
+全 RPC メソッドの引数型・デフォルト値・列挙値・Python SDK シグネチャ・呼び出し例を JSON で即時取得できます。不正な列名や選択肢を渡した場合は `tg.RpcError`（`-32602`）の `err.available` に有効な候補一覧が返り、先頭 10 件は例外メッセージ `str(err)` にも表示されます。
 
 ```python
 catalog = app.describe_api()                    # 全ドメイン・全メソッド
@@ -272,9 +291,21 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 
 `tg.launch()` と `tg.connect_or_launch()` の `language` の既定は `None` で、起動した ToriGraph の言語を変えません(利用者の設定のまま。新しく入れた PC では日本語)。以前の既定 `"ja"` は、英語で使っている人の画面をスクリプトが黙って日本語に切り替え、その設定が次の起動にも残ることがありました。グラフの文字列を言語に合わせたいスクリプトは `language="ja"` か `"en"` を明示してください。`tg.connect()` で既存のセッションにつないだときは、言語は変えません。
 
+### スタイルプリセット (`isij_style` / `lab_slide_style` / `slide_style`)
+
+- `g.isij_style()` (`isij_85mm`): ISIJ 論文単欄向け（幅 85 mm・内向き目盛）。
+- `g.lab_slide_style()` (`lab_slide_83mm`, **スライド推奨**): 研究室スライド向け（幅 83.3 mm・文字 12.9 pt）。`to_pptx()` で `scale=` や幅付き `box=` を省略すると自動で 140 %（スライド上 18 pt）で配置されます（事前に `g.lab_slide_style()` / `g.apply_style_preset("lab_slide_83mm")` を適用してから `to_pptx()` を呼んだ場合も同様）。
+- `g.slide_style()` (`slide_28pt`): 従来の大判スライドプリセット（幅 185 mm・文字 28 pt）。全面大判の 28 pt 図が必要な場合のみ使います。
+
+### 戻り値とテーブル作成の補足
+
+- `app.plot_histogram_cumulative()`・`app.plot_density2d(plot=True)`・`app.plot_pole_figure(plot=True)` は他の `plot_*` と同様に `GraphProxy` を返します（詳細結果辞書は `g.result` で参照可能、`plot=False` 時は解析 `dict` を返します）。解析と作図を兼ねる `app.plot_vasp_dos()` / `app.plot_vasp_bands()` / `app.plot_vasp_band_dos()` はメタデータを含む `dict` を返します。
+- `app.create_table(df, designations=["X", "Y", "yErr"])` のように列役割をリストで指定した場合も、列順に従って `{列名: 役割}` へ変換して設定されます（誤差棒や Z 列が X/Y に上書きされません）。
+- `app.workbook("Book1")` で `WorkbookProxy` を取得でき、`app.workbook.create(...)` のようなドット呼び出しや `app.new_workbook()` / `app.list_workbooks()` も利用できます。
+
 ### 全メソッドの対応表
 
-<details><summary>`Session`(`app`): 138 メソッド</summary>
+<details><summary>`Session`(`app`): 145 メソッド</summary>
 
 | RPC 名 | SDK の名前 | 非推奨の別名 |
 |---|---|---|
@@ -365,6 +396,7 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 | `plot.3d_xyz` | `app.plot_3d_xyz()` |  |
 | `plot.box` | `app.plot_box()` |  |
 | `plot.color_scatter` | `app.plot_color_scatter()` |  |
+| `plot.density2d` | `app.plot_density2d()` |  |
 | `plot.double_y` | `app.plot_double_y()` |  |
 | `plot.function` | `app.plot_function()` |  |
 | `plot.histogram` | `app.plot_histogram()` |  |
@@ -373,6 +405,7 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 | `plot.pareto` | `app.plot_pareto()` |  |
 | `plot.pie` | `app.plot_pie()` |  |
 | `plot.polar` | `app.plot_polar()` |  |
+| `plot.pole_figure` | `app.plot_pole_figure()` |  |
 | `plot.qq` | `app.plot_qq()` |  |
 | `plot.stacked_bars` | `app.plot_stacked_bars()` |  |
 | `plot.ternary` | `app.plot_ternary()` |  |
@@ -411,8 +444,12 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 | `stats.weibull` | `app.weibull()` | `weibull_fit` |
 | `table.create`<br>`table.set_data_dict` | `app.create_table()` |  |
 | `table.paste_tsv` | `app.paste_tsv()` |  |
+| `workbook.create` | `app.new_workbook()` |  |
+| `workbook.list` | `app.list_workbooks()` |  |
+| (SDK 内で処理) | `app.close()` |  |
 | (SDK 内で処理) | `app.plot_bars()` |  |
 | (SDK 内で処理) | `app.plot_heatmap()` |  |
+| (SDK 内で処理) | `app.reconnect()` |  |
 | (SDK 内で処理) | `app.set_category_labels()` |  |
 | (SDK 内で処理) | `app.to_pptx()` |  |
 | (SDK 内で処理) | `app.to_python_script()` | `export_python_script` |
@@ -481,7 +518,7 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 
 </details>
 
-<details><summary>`GraphProxy`(`g = app.graph("名前")`): 70 メソッド</summary>
+<details><summary>`GraphProxy`(`g = app.graph("名前")`): 73 メソッド</summary>
 
 | RPC 名 | SDK の名前 | 非推奨の別名 |
 |---|---|---|
@@ -550,11 +587,30 @@ g = app.plot_xy(strain, stress)                        # 位置引数でも可(�
 | (SDK 内で処理) | `g.analyze_work_hardening()` | `kocks_mecking` |
 | (SDK 内で処理) | `g.analyze_xrd()` | `xrd_analyze` |
 | (SDK 内で処理) | `g.bragg_convert()` |  |
+| (任意 RPC) | `g.call()` |  |
 | (SDK 内で処理) | `g.diagnose_layout()` |  |
 | (SDK 内で処理) | `g.isij_style()` |  |
+| (SDK 内で処理) | `g.lab_slide_style()` |  |
+| (SDK 内で処理) | `g.rebuild_density2d()` |  |
 | (SDK 内で処理) | `g.slide_style()` |  |
 | (SDK 内で処理) | `g.to_pptx()` |  |
 | (SDK 内で処理) | `g.to_python_script()` |  |
+
+</details>
+
+<details><summary>`WorkbookProxy`(`wb = app.workbook("名前")`): 9 メソッド</summary>
+
+| RPC 名 | SDK の名前 | 非推奨の別名 |
+|---|---|---|
+| `workbook.add_sheet` | `wb.add_sheet()` |  |
+| `workbook.attach` | `wb.attach()` |  |
+| `workbook.list` | `wb.info()` |  |
+| `workbook.move_sheet` | `wb.move_sheet()` |  |
+| `workbook.rename` | `wb.rename()` |  |
+| `workbook.rename_sheet` | `wb.rename_sheet()` |  |
+| `workbook.set_current` | `wb.set_current()` |  |
+| `workbook.list` | `wb.sheets()` |  |
+| `workbook.ungroup` | `wb.ungroup()` |  |
 
 </details>
 

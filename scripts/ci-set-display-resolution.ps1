@@ -39,8 +39,29 @@ public class DisplayHelper {
         int rc = ChangeDisplaySettings(ref best, 0);
         DEVMODE after = new DEVMODE(); after.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
         EnumDisplaySettings(null, -1, ref after);
+        LastResult = rc;
         return "before=" + before + " -> after=" + after.dmPelsWidth + "x" + after.dmPelsHeight + " (rc=" + rc + ")";
     }
+    public static int LastResult = -1;
+    public static int Width() { DEVMODE d = new DEVMODE(); d.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)); EnumDisplaySettings(null, -1, ref d); return d.dmPelsWidth; }
+    public static int Height() { DEVMODE d = new DEVMODE(); d.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)); EnumDisplaySettings(null, -1, ref d); return d.dmPelsHeight; }
 }
 "@
-Write-Host ([DisplayHelper]::SetBestResolution())
+$ErrorActionPreference = "Stop"
+try {
+    Write-Host ([DisplayHelper]::SetBestResolution())
+} catch {
+    Write-Error "Failed to change the display resolution: $($_.Exception.Message)"
+    exit 1
+}
+# DISP_CHANGE_SUCCESSFUL == 0. Any other code means the GUI layout checks would run on the wrong screen size.
+if ([DisplayHelper]::LastResult -ne 0) {
+    Write-Error "ChangeDisplaySettings failed (rc=$([DisplayHelper]::LastResult))."
+    exit 1
+}
+$w = [DisplayHelper]::Width(); $h = [DisplayHelper]::Height()
+if ($w -lt 1600 -or $h -lt 900) {
+    Write-Error "Display resolution is ${w}x${h}; at least 1600x900 is required by the GUI layout checks."
+    exit 1
+}
+exit 0

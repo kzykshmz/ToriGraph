@@ -93,16 +93,20 @@ $dllPatterns = @(
 $usesMkl = $false
 $cblasCheck = @(
     (Join-Path $binSrcDir "libcblas.dll"),
-    (Join-Path $depsBinDir "libcblas.dll")
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($cblasCheck) {
-    $rawBytes = [System.IO.File]::ReadAllBytes($cblasCheck)
+    (Join-Path $depsBinDir "libcblas.dll"),
+    (Join-Path $binSrcDir "libblas.dll"),
+    (Join-Path $depsBinDir "libblas.dll"),
+    (Join-Path $binSrcDir "liblapack.dll"),
+    (Join-Path $depsBinDir "liblapack.dll")
+) | Where-Object { Test-Path $_ }
+foreach ($blasFile in $cblasCheck) {
+    $rawBytes = [System.IO.File]::ReadAllBytes($blasFile)
     $ascii = [System.Text.Encoding]::ASCII.GetString($rawBytes)
     if ($ascii -match "mkl_rt") {
         $usesMkl = $true
         # Intel MKL must not be redistributed inside this GPL-3.0 package (license and ~100 MB);
         # stop instead of silently bundling it.
-        throw ("libcblas.dll ($cblasCheck) delegates to Intel MKL (mkl_rt). ToriGraph packages must not " +
+        throw ("$(Split-Path -Leaf $blasFile) ($blasFile) delegates to Intel MKL (mkl_rt). ToriGraph packages must not " +
                "redistribute MKL. Build against netlib or OpenBLAS (e.g. micromamba install " +
                "'libblas=*=*netlib' 'libcblas=*=*netlib') and run this script again.")
     }
@@ -264,17 +268,24 @@ $prevQpa = $env:QT_QPA_PLATFORM
 $env:QT_QPA_PLATFORM = "offscreen"
 try {
     $stagedExe = Join-Path $stageDir "ToriGraph.exe"
-    $proc = Start-Process -FilePath $stagedExe -ArgumentList "--version" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
-    if ($proc) {
-        if ($proc.WaitForExit(5000)) {
-            $rc = $proc.ExitCode
-            Write-Host "    Staged ToriGraph.exe --version exited with code $rc"
-            if ($rc -eq -1073741515 -or $rc -eq 3221225781) {
-                throw "Staged ToriGraph.exe failed with STATUS_DLL_NOT_FOUND (0xC0000135)!"
+    # --version returns before any plugin is loaded; "--headless --help" additionally creates the
+    # QApplication (offscreen), so missing Qt DLLs / platform plugins show up here.
+    foreach ($smokeArgs in @("--version", "--headless --help")) {
+        $proc = Start-Process -FilePath $stagedExe -ArgumentList $smokeArgs -NoNewWindow -PassThru -ErrorAction SilentlyContinue
+        if ($proc) {
+            if ($proc.WaitForExit(15000)) {
+                $rc = $proc.ExitCode
+                Write-Host "    Staged ToriGraph.exe $smokeArgs exited with code $rc"
+                if ($rc -eq -1073741515 -or $rc -eq 3221225781) {
+                    throw "Staged ToriGraph.exe failed with STATUS_DLL_NOT_FOUND (0xC0000135)!"
+                }
+                if ($rc -ne 0) {
+                    throw "Staged ToriGraph.exe $smokeArgs exited with non-zero code $rc"
+                }
+            } else {
+                Write-Host "    Staged ToriGraph.exe $smokeArgs launched cleanly (stopping smoke-test process)."
+                try { $proc.Kill() } catch {}
             }
-        } else {
-            Write-Host "    Staged ToriGraph.exe launched cleanly (stopping smoke-test process)."
-            try { $proc.Kill() } catch {}
         }
     }
 } finally {

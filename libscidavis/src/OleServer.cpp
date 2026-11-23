@@ -80,6 +80,30 @@ void registerJapaneseStrings()
     reg("the graph \"%1\" was not found in the embedded project",
         "埋め込まれたプロジェクトにグラフ「%1」がありません");
     reg("Edit Embedded Graph", "埋め込みグラフの編集");
+    reg("The embedded graph window (\"%1\") was closed or deleted.",
+        "埋め込み対象のグラフウィンドウ(「%1」)が閉じられたか削除されています。");
+    reg("The embedded graph window was closed or deleted.",
+        "埋め込み対象のグラフウィンドウが閉じられたか削除されています。");
+    reg("Could not serialize the embedded project data.",
+        "埋め込みプロジェクトのデータを書き出せませんでした。");
+    reg("The embedded project data exceeds the 128 MB PowerPoint limit.",
+        "埋め込みデータが PowerPoint 連携の上限 128 MB を超えています。");
+    reg("PowerPoint could not save the updated graph because the presentation is read-only or "
+        "locked (0x%1).",
+        "プレゼンテーションが読み取り専用またはロックされているため、PowerPoint に更新後のグラフを"
+        "保存できませんでした (0x%1)。");
+    reg("The connection to PowerPoint was lost (the presentation may have been closed) (0x%1).",
+        "PowerPoint との接続が失われました(プレゼンテーションが閉じられた可能性があります)(0x%1)。");
+    reg("PowerPoint could not save the updated graph into the slide (0x%1).",
+        "更新後のグラフを PowerPoint のスライドへ保存できませんでした (0x%1)。");
+    reg("ToriGraph - Embedded Graph Preview Unavailable",
+        "ToriGraph - 埋め込みグラフのプレビューを表示できません");
+    reg("The embedded project data could not be read.",
+        "埋め込まれたプロジェクトデータを読み込めませんでした。");
+    reg("Graph \"%1\" was not found in the embedded project.",
+        "埋め込まれたプロジェクト内にグラフ「%1」が見つかりませんでした。");
+    reg("No graph could be rendered from the embedded project.",
+        "埋め込まれたプロジェクトからグラフを描画できませんでした。");
 }
 
 QString copyForPowerPointLabel()
@@ -142,12 +166,16 @@ QString selectGraphFirstMessage()
 #include <QApplication>
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPen>
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -156,6 +184,7 @@ QString selectGraphFirstMessage()
 #include <QStatusBar>
 #include <QTemporaryFile>
 #include <QTimer>
+#include <QVector>
 
 extern "C" HRESULT STDAPICALLTYPE SHCreateStdEnumFmtEtc(UINT cfmt, const FORMATETC afmt[], IEnumFORMATETC **ppenumFormatEtc);
 #include <wrl/client.h>
@@ -163,8 +192,15 @@ extern "C" HRESULT STDAPICALLTYPE SHCreateStdEnumFmtEtc(UINT cfmt, const FORMATE
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
+
+using std::max;
+using std::min;
+#include <objidl.h>
+#include <gdiplus.h>
 
 using Microsoft::WRL::ComPtr;
 
@@ -172,15 +208,19 @@ namespace SciDAVisOle {
 
 namespace {
 
+class SciDAVisGraphObject;
+
 bool g_oleInitialized = false;
 bool g_embeddedServerMode = false;
 bool g_normalSessionLockHeld = false;
 bool g_everHadServerActivity = false;
+bool g_oleSuppressedQuitOnLastWindow = false;
+bool g_hadVisibleNormalWindowDuringSuppression = false;
 DWORD g_factoryCookie = 0;
 ComPtr<IDataObject> g_clipboardDataObject;
 //! GetClipboardSequenceNumber() right after the last successful OleSetClipboard
 DWORD g_lastOleSetClipboardSeq = 0;
-constexpr qint64 kMaxOleStreamBytes = 128000000LL;
+QVector<SciDAVisGraphObject *> g_liveGraphObjects;
 
 CLIPFORMAT embedFormat()
 {
@@ -547,19 +587,18 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
     if (projectBytes.isEmpty())
         return nullptr;
 
-    static std::atomic<unsigned long long> s_oleTempSeq{ 0 };
-    QString tempPath = QDir::tempPath()
-            + QString("/torigraph_ole_%1_%2.sciprj")
-                      .arg(GetTickCount64())
-                      .arg(++s_oleTempSeq);
-    {
-        QFile f(tempPath);
-        if (!f.open(QIODevice::WriteOnly))
-            return nullptr;
-        f.write(projectBytes);
-        f.flush();
-        f.close();
+    // Unpredictable, exclusively created temp file that is removed automatically (also when
+    // loadProject() throws or the process unwinds), instead of a guessable name in %TEMP%.
+    QTemporaryFile tempProject(QDir::temp().filePath(QStringLiteral("torigraph_ole_XXXXXX.sciprj")));
+    tempProject.setAutoRemove(true);
+    if (!tempProject.open())
+        return nullptr;
+    const QString tempPath = tempProject.fileName();
+    if (tempProject.write(projectBytes) != projectBytes.size() || !tempProject.flush()) {
+        tempProject.close();
+        return nullptr;
     }
+    tempProject.close();
 
     std::unique_ptr<ApplicationWindow> mw(new ApplicationWindow());
     mw->setHeadlessMode(true);
@@ -567,7 +606,7 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
     mw->applyUserSettings();
     const QStringList prevRecent = mw->recentProjects;
     bool ok = mw->loadProject(tempPath);
-    QFile::remove(tempPath);
+    tempProject.remove();
     mw->recentProjects = prevRecent;
     mw->projectname = "untitled";
     mw->updateRecentProjectsList();
@@ -579,6 +618,46 @@ ApplicationWindow *openAppWindowFromBytes(const QByteArray &projectBytes)
     return mw.release();
 }
 
+QImage renderOlePlaceholderImage(const QString &reason)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    if (qApp)
+        qApp->setProperty("torigraph_last_ole_placeholder_reason", reason);
+    qWarning("OLE embedded preview fell back to explicit placeholder: %s", qPrintable(reason));
+
+    constexpr int w = 1000;
+    constexpr int h = 750;
+    QImage img(w, h, QImage::Format_RGB32);
+    img.fill(QColor(248, 250, 252)); // #F8FAFC
+    // 192 dpi -> ~132 x 99 mm physical box on the slide
+    const int dpm = static_cast<int>(std::lround(192.0 / 0.0254));
+    img.setDotsPerMeterX(dpm);
+    img.setDotsPerMeterY(dpm);
+
+    QPainter p(&img);
+    p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing, true);
+
+    QPen borderPen(QColor(148, 163, 184), 4.0, Qt::DashLine);
+    p.setPen(borderPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(24.0, 24.0, w - 48.0, h - 48.0), 16.0, 16.0);
+
+    QFont titleFont(QStringLiteral("Segoe UI"), 18, QFont::Bold);
+    p.setFont(titleFont);
+    p.setPen(QColor(30, 41, 59)); // #1E293B
+    const QString title = QObject::tr("ToriGraph - Embedded Graph Preview Unavailable");
+    p.drawText(QRect(64, h / 2 - 110, w - 128, 80), Qt::AlignHCenter | Qt::AlignBottom | Qt::TextWordWrap,
+               title);
+
+    QFont bodyFont(QStringLiteral("Segoe UI"), 13);
+    p.setFont(bodyFont);
+    p.setPen(QColor(71, 85, 105)); // #475569
+    p.drawText(QRect(80, h / 2 - 12, w - 160, 180), Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap,
+               reason);
+    p.end();
+    return img;
+}
+
 void ensureRenderedPayload(OleGraphPayload *payload)
 {
     if (!payload)
@@ -586,12 +665,16 @@ void ensureRenderedPayload(OleGraphPayload *payload)
     if (!payload->emfBytes.isEmpty() && payload->extentHm.cx > 0 && payload->extentHm.cy > 0)
         return;
 
+    ToriGraphOleUi::registerJapaneseStrings();
+    QString placeholderReason;
     ApplicationWindow *mw = openAppWindowFromBytes(payload->projectBytes);
     // A sample graph is only acceptable for a brand-new object without project data. When the
     // embedded project cannot be read, never render (and later save) a different graph in its
-    // place; the neutral placeholder below is used instead.
+    // place; the explicit placeholder below is used instead.
     if (!mw && payload->projectBytes.isEmpty())
         mw = createSampleAppWindow();
+    else if (!mw)
+        placeholderReason = QObject::tr("The embedded project data could not be read.");
 
     if (mw) {
         if (payload->projectBytes.isEmpty())
@@ -599,7 +682,7 @@ void ensureRenderedPayload(OleGraphPayload *payload)
 
         MultiLayer *ml = findTargetMultiLayer(mw, payload->targetWindow, false);
         Graph3D *g3d = !ml ? findTargetGraph3D(mw, payload->targetWindow, false) : nullptr;
-        if (!ml && !g3d) {
+        if (!ml && !g3d && payload->targetWindow.isEmpty()) {
             ml = findTargetMultiLayer(mw, payload->targetWindow, true);
             if (!ml)
                 g3d = findTargetGraph3D(mw, payload->targetWindow, true);
@@ -631,6 +714,9 @@ void ensureRenderedPayload(OleGraphPayload *payload)
             payload->pixelSize = rg.pixelSize;
             if (payload->extentHm.cx <= 0 || payload->extentHm.cy <= 0)
                 payload->extentHm = rg.extentHm;
+        } else if (!payload->targetWindow.isEmpty()) {
+            placeholderReason = QObject::tr("Graph \"%1\" was not found in the embedded project.")
+                                        .arg(payload->targetWindow);
         }
         mw->setOleEmbeddedMode(true);
         mw->close();
@@ -638,7 +724,9 @@ void ensureRenderedPayload(OleGraphPayload *payload)
     }
 
     if (payload->emfBytes.isEmpty()) {
-        OleRenderedGraph rg = SciDAVisEmf::renderFromImage(QImage());
+        if (placeholderReason.isEmpty())
+            placeholderReason = QObject::tr("No graph could be rendered from the embedded project.");
+        OleRenderedGraph rg = SciDAVisEmf::renderFromImage(renderOlePlaceholderImage(placeholderReason));
         payload->emfBytes = rg.emfBytes;
         payload->dibBytes = rg.dibBytes;
         payload->pixelSize = rg.pixelSize;
@@ -666,6 +754,31 @@ SIZEL naturalPayloadExtentHm(const OleGraphPayload &payload)
     if (payload.extentHm.cx > 0 && payload.extentHm.cy > 0)
         return payload.extentHm;
     return SIZEL{ 0, 0 };
+}
+
+void updateOleQuitGuard();
+
+QString formatOleSaveError(HRESULT hr, const QString &detail)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    if (!detail.isEmpty())
+        return detail;
+    if (hr == STG_E_INSUFFICIENTMEMORY || hr == E_OUTOFMEMORY)
+        return QObject::tr("The embedded project data exceeds the 128 MB PowerPoint limit.");
+    const QString hex = QStringLiteral("%1").arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
+    if (hr == STG_E_ACCESSDENIED || hr == STG_E_SHAREVIOLATION || hr == STG_E_LOCKVIOLATION) {
+        return QObject::tr("PowerPoint could not save the updated graph because the presentation "
+                           "is read-only or locked (0x%1).")
+                .arg(hex);
+    }
+    if (hr == RPC_E_DISCONNECTED || hr == CO_E_OBJNOTCONNECTED
+        || hr == HRESULT_FROM_WIN32(RPC_S_SERVER_UNAVAILABLE)) {
+        return QObject::tr("The connection to PowerPoint was lost (the presentation may have been "
+                           "closed) (0x%1).")
+                .arg(hex);
+    }
+    return QObject::tr("PowerPoint could not save the updated graph into the slide (0x%1).")
+            .arg(hex);
 }
 
 class SciDAVisGraphObject final : public IOleObject,
@@ -702,6 +815,20 @@ class SciDAVisGraphObject final : public IOleObject,
     DWORD m_viewFlags = 0;
     QByteArray m_pngCache;    // PNG rendering of m_pngCacheEmf
     QByteArray m_pngCacheEmf; // EMF the cached PNG was rendered from
+    QMetaObject::Connection m_editorDestroyedConn;
+    std::shared_ptr<std::function<void()>> m_rearmHolder;
+
+    void disconnectEditorDestroyedConn()
+    {
+        if (m_editorDestroyedConn) {
+            QObject::disconnect(m_editorDestroyedConn);
+            m_editorDestroyedConn = QMetaObject::Connection();
+        }
+        if (m_rearmHolder) {
+            *m_rearmHolder = nullptr;
+            m_rearmHolder.reset();
+        }
+    }
 
     const QByteArray &pngBytes()
     {
@@ -735,6 +862,7 @@ class SciDAVisGraphObject final : public IOleObject,
 
         CoDisconnectObject(static_cast<IOleObject *>(this), 0);
         m_closing = false;
+        updateOleQuitGuard();
     }
 
     void notifyViewAndData()
@@ -766,11 +894,14 @@ class SciDAVisGraphObject final : public IOleObject,
         }
     }
 
-    bool syncFromEditor()
+    HRESULT syncFromEditor(QString *errOut = nullptr)
     {
+        if (errOut)
+            errOut->clear();
         if (!m_editor)
-            return false;
+            return S_FALSE;
 
+        ToriGraphOleUi::registerJapaneseStrings();
         MultiLayer *ml = m_targetMl
                 ? m_targetMl.data()
                 : findTargetMultiLayer(m_editor, m_payload.targetWindow, false);
@@ -778,13 +909,22 @@ class SciDAVisGraphObject final : public IOleObject,
                 ? m_targetG3d.data()
                 : (!ml ? findTargetGraph3D(m_editor, m_payload.targetWindow, false) : nullptr);
         if (!ml && !g3d) {
-            if (!m_payload.targetWindow.isEmpty())
-                return false;
+            if (!m_payload.targetWindow.isEmpty()) {
+                if (errOut) {
+                    *errOut = QObject::tr("The embedded graph window (\"%1\") was closed or "
+                                          "deleted.")
+                                      .arg(m_payload.targetWindow);
+                }
+                return OLE_E_BLANK;
+            }
             ml = findTargetMultiLayer(m_editor, m_payload.targetWindow, true);
             if (!ml)
                 g3d = findTargetGraph3D(m_editor, m_payload.targetWindow, true);
-            if (!ml && !g3d)
-                return false;
+            if (!ml && !g3d) {
+                if (errOut)
+                    *errOut = QObject::tr("The embedded graph window was closed or deleted.");
+                return OLE_E_BLANK;
+            }
         }
 
         if (ml) {
@@ -797,9 +937,16 @@ class SciDAVisGraphObject final : public IOleObject,
         }
 
         QByteArray newProj = m_editor->saveProjectToByteArray();
+        if (newProj.isEmpty()) {
+            if (errOut)
+                *errOut = QObject::tr("Could not serialize the embedded project data.");
+            return STG_E_WRITEFAULT;
+        }
         QByteArray newEmf = m_payload.emfBytes;
         QByteArray newDib = m_payload.dibBytes;
         QSize newPx = m_payload.pixelSize;
+        SIZEL nextExtent = m_extent;
+        SIZEL nextInitRender = m_initialRenderExtentHm;
 
         auto updateExtentPreservingSlideBox = [&](SIZEL renderedHm, QSize pxSz) {
             if ((renderedHm.cx <= 0 || renderedHm.cy <= 0) && pxSz.width() > 0 && pxSz.height() > 0) {
@@ -809,32 +956,31 @@ class SciDAVisGraphObject final : public IOleObject,
                         100, static_cast<LONG>(std::lround(pxSz.height() * 2540.0 / 96.0)));
             }
             if (renderedHm.cx > 0 && renderedHm.cy > 0) {
-                if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0) {
-                    m_initialRenderExtentHm = renderedHm;
-                    if (m_extent.cx <= 0 || m_extent.cy <= 0)
-                        m_extent = renderedHm;
-                } else if (renderedHm.cx != m_initialRenderExtentHm.cx
-                           || renderedHm.cy != m_initialRenderExtentHm.cy) {
-                    const double oldAr = double(m_initialRenderExtentHm.cx)
-                            / std::max(1.0, double(m_initialRenderExtentHm.cy));
+                if (nextInitRender.cx <= 0 || nextInitRender.cy <= 0) {
+                    nextInitRender = renderedHm;
+                    if (nextExtent.cx <= 0 || nextExtent.cy <= 0)
+                        nextExtent = renderedHm;
+                } else if (renderedHm.cx != nextInitRender.cx
+                           || renderedHm.cy != nextInitRender.cy) {
+                    const double oldAr = double(nextInitRender.cx)
+                            / std::max(1.0, double(nextInitRender.cy));
                     const double newAr =
                             double(renderedHm.cx) / std::max(1.0, double(renderedHm.cy));
-                    if (m_extent.cx > 0 && m_extent.cy > 0) {
+                    if (nextExtent.cx > 0 && nextExtent.cy > 0) {
                         if (std::fabs(newAr - oldAr) / std::max(1e-6, oldAr) > 0.02) {
-                            m_extent.cx = std::clamp<LONG>(
-                                    static_cast<LONG>(std::lround(double(m_extent.cy) * newAr)),
+                            nextExtent.cx = std::clamp<LONG>(
+                                    static_cast<LONG>(std::lround(double(nextExtent.cy) * newAr)),
                                     100, 1000000);
                         }
                     } else {
-                        m_extent = renderedHm;
+                        nextExtent = renderedHm;
                     }
-                    m_initialRenderExtentHm = renderedHm;
+                    nextInitRender = renderedHm;
                 }
             }
         };
 
         if (ml) {
-            m_payload.targetWindow = ml->name();
             Graph *single = (m_payload.targetLayer >= 1 && m_payload.targetLayer <= ml->layers())
                     ? ml->layer(m_payload.targetLayer)
                     : nullptr;
@@ -846,7 +992,6 @@ class SciDAVisGraphObject final : public IOleObject,
                 updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
             }
         } else if (g3d) {
-            m_payload.targetWindow = g3d->name();
             OleRenderedGraph rg = SciDAVisEmf::renderFromImage(captureGraph3DOleImage(g3d));
             if (!rg.emfBytes.isEmpty()) {
                 newEmf = rg.emfBytes;
@@ -855,6 +1000,28 @@ class SciDAVisGraphObject final : public IOleObject,
                 updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
             }
         }
+
+        if (newEmf.isEmpty()) {
+            if (errOut)
+                *errOut = QObject::tr("The graph could not be drawn as a vector picture (EMF).");
+            return E_FAIL;
+        }
+        if (newProj.size() > kMaxOleStreamBytes || newEmf.size() > kMaxOleStreamBytes) {
+            const qint64 maxSz = std::max<qint64>(newProj.size(), newEmf.size());
+            if (errOut) {
+                *errOut = QObject::tr("The embedded project data exceeds the 128 MB PowerPoint "
+                                      "limit (%1 MB).")
+                                  .arg(double(maxSz) / 1.0e6, 0, 'f', 1);
+            }
+            return STG_E_INSUFFICIENTMEMORY;
+        }
+
+        if (ml)
+            m_payload.targetWindow = ml->name();
+        else if (g3d)
+            m_payload.targetWindow = g3d->name();
+        m_extent = nextExtent;
+        m_initialRenderExtentHm = nextInitRender;
 
         const bool changed = (newProj != m_payload.projectBytes) || (newEmf != m_payload.emfBytes)
                 || (m_extent.cx != m_payload.extentHm.cx) || (m_extent.cy != m_payload.extentHm.cy);
@@ -868,7 +1035,7 @@ class SciDAVisGraphObject final : public IOleObject,
             m_dirty = true;
             ++m_revision;
         }
-        return changed;
+        return S_OK;
     }
 
     HRESULT checkFormatEtc(FORMATETC *f) const
@@ -904,6 +1071,7 @@ public:
         m_initialRenderExtentHm = naturalPayloadExtentHm(m_payload);
         if (m_initialRenderExtentHm.cx <= 0 || m_initialRenderExtentHm.cy <= 0)
             m_initialRenderExtentHm = m_extent;
+        g_liveGraphObjects.push_back(this);
         addRefServerProcess();
         CreateOleAdviseHolder(&m_oleAdvises);
         CreateDataAdviseHolder(&m_dataAdvises);
@@ -911,7 +1079,15 @@ public:
 
     ~SciDAVisGraphObject()
     {
+        disconnectEditorDestroyedConn();
+        g_liveGraphObjects.removeAll(this);
+        updateOleQuitGuard();
         releaseServerProcess();
+    }
+
+    bool hasActiveContainerOrEditor() const
+    {
+        return !m_editor.isNull() || (m_site != nullptr && !m_stopped);
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
@@ -946,6 +1122,7 @@ public:
     HRESULT STDMETHODCALLTYPE SetClientSite(IOleClientSite *site) override
     {
         m_site = site;
+        updateOleQuitGuard();
         return S_OK;
     }
 
@@ -972,21 +1149,56 @@ public:
             }
             auto s = m_site;
             if (m_dirty && s) {
-                s->SaveObject();
+                const HRESULT hrSave = s->SaveObject();
+                if (hrSave == OLE_E_PROMPTSAVECANCELLED) {
+                    m_closing = false;
+                    return hrSave;
+                }
             }
         }
 
         if (m_editor) {
+            disconnectEditorDestroyedConn();
             const size_t closingGen = m_activeEditorRefGen;
             ++m_editorGeneration;
             QPointer<ApplicationWindow> ed = m_editor;
             m_editor = nullptr;
             m_targetMl = nullptr;
             m_targetG3d = nullptr;
-            ed->setOleEmbeddedCallbacks({}, {});
-            ed->setHeadlessMode(true);
-            ed->setOleEmbeddedMode(true);
-            ed->close();
+            if (ed) {
+                ed->setOleEmbeddedCallbacks({}, {});
+                ed->setHeadlessMode(true);
+                ed->setOleEmbeddedMode(true);
+                ed->setAttribute(Qt::WA_DeleteOnClose, false);
+                // Reject any open child/modal dialogs before hiding and deferring deletion so an
+                // incoming COM STA Close() inside a nested QDialog::exec() never destroys the
+                // parent ApplicationWindow while the dialog's stack frame is still unwinding.
+                auto belongsToEditor = [ed](QWidget *w) {
+                    for (QWidget *cur = w; cur; cur = cur->parentWidget()) {
+                        if (cur == ed.data())
+                            return true;
+                    }
+                    return false;
+                };
+                if (QWidget *modal = QApplication::activeModalWidget()) {
+                    if (auto *dlg = qobject_cast<QDialog *>(modal)) {
+                        if (belongsToEditor(dlg))
+                            dlg->reject();
+                    }
+                }
+                const QList<QDialog *> childDlgs = ed->findChildren<QDialog *>();
+                for (QDialog *dlg : childDlgs) {
+                    if (dlg && dlg->isVisible())
+                        dlg->reject();
+                }
+                ed->hide();
+                QTimer::singleShot(0, ed.data(), [ed]() {
+                    if (ed) {
+                        ed->close();
+                        ed->deleteLater();
+                    }
+                });
+            }
             releaseEditorRefOnce(closingGen);
         }
 
@@ -1014,11 +1226,13 @@ public:
             return E_UNEXPECTED;
 
         if (verb == OLEIVERB_HIDE) {
+            updateOleQuitGuard();
             if (m_editor)
                 m_editor->hide();
             m_visible = false;
             if (m_site)
                 m_site->OnShowWindow(FALSE);
+            updateOleQuitGuard();
             return S_OK;
         }
 
@@ -1030,6 +1244,7 @@ public:
 
         if (s)
             m_site = s;
+        updateOleQuitGuard();
 
         if (m_editor) {
             m_editor->showNormal();
@@ -1041,6 +1256,7 @@ public:
                 if (m_site)
                     m_site->OnShowWindow(TRUE);
             }
+            updateOleQuitGuard();
             return S_OK;
         }
 
@@ -1128,37 +1344,115 @@ public:
                     qApp && qApp->property("torigraph_noninteractive").toBool();
             mw->setHeadlessMode(appNonInteractive);
             mw->setOleEmbeddedMode(true);
+            // OLE editor windows are owned by the embedding container, never by the standalone
+            // user GUI session: hiding (OLEIVERB_HIDE) or closing them must not trigger Qt's
+            // lastWindowClosed -> quit() on its own.
+            mw->setAttribute(Qt::WA_QuitOnClose, false);
 
-            mw->setOleEmbeddedCallbacks(
-                [this]() {
+            auto rearmHolder = std::make_shared<std::function<void()>>();
+            m_rearmHolder = rearmHolder;
+            *rearmHolder = [this, mwGuard, generation, rearmHolder]() {
+                if (!mwGuard)
+                    return;
+                auto makeUpdateCb = [this, mwGuard]() {
                     ComPtr<IOleObject> alive(this);
-                    syncFromEditor();
-                    markChanged();
-                    auto site = m_site;
-                    if (site) {
-                        site->SaveObject();
-                        if (!m_stopped)
-                            site->ShowObject();
+                    QString errMsg;
+                    HRESULT hrSync = E_FAIL;
+                    try {
+                        hrSync = syncFromEditor(&errMsg);
+                    } catch (...) {
+                        hrSync = E_FAIL;
                     }
-                },
-                [this, generation]() {
-                    ComPtr<IOleObject> alive(this);
-                    if (generation == m_editorGeneration) {
-                        syncFromEditor();
-                        if (m_dirty) {
-                            notifyViewAndData();
-                            if (m_site)
-                                m_site->SaveObject();
+                    bool ok = SUCCEEDED(hrSync) && (hrSync != S_FALSE);
+                    if (!ok) {
+                        errMsg = formatOleSaveError(hrSync, errMsg);
+                    } else {
+                        markChanged();
+                        auto site = m_site;
+                        if (site) {
+                            const HRESULT hrSave = site->SaveObject();
+                            if (FAILED(hrSave)) {
+                                ok = false;
+                                errMsg = formatOleSaveError(hrSave, QString());
+                            } else if (!m_stopped) {
+                                site->ShowObject();
+                            }
                         }
-                        m_editor = nullptr;
-                        m_targetMl = nullptr;
-                        m_targetG3d = nullptr;
-                        finishClose();
                     }
-                    releaseEditorRefOnce(generation);
-                });
+                    if (ok)
+                        errMsg.clear();
+                    if (mwGuard) {
+                        mwGuard->setProperty("_toriLastOleSaveOk", ok);
+                        mwGuard->setProperty("_toriLastOleSaveError", errMsg);
+                    }
+                };
+                mwGuard->setOleEmbeddedCallbacks(
+                    makeUpdateCb,
+                    [this, mwGuard, generation, rearmHolder]() {
+                        ComPtr<IOleObject> alive(this);
+                        bool ok = true;
+                        QString errMsg;
+                        if (generation == m_editorGeneration) {
+                            HRESULT hrSync = E_FAIL;
+                            try {
+                                hrSync = syncFromEditor(&errMsg);
+                            } catch (...) {
+                                hrSync = E_FAIL;
+                            }
+                            ok = SUCCEEDED(hrSync) && (hrSync != S_FALSE);
+                            if (!ok) {
+                                errMsg = formatOleSaveError(hrSync, errMsg);
+                            } else if (m_dirty) {
+                                notifyViewAndData();
+                                if (m_site) {
+                                    const HRESULT hrSave = m_site->SaveObject();
+                                    if (FAILED(hrSave)) {
+                                        ok = false;
+                                        errMsg = formatOleSaveError(hrSave, QString());
+                                    }
+                                }
+                            }
+                            if (ok) {
+                                errMsg.clear();
+                                disconnectEditorDestroyedConn();
+                                m_editor = nullptr;
+                                m_targetMl = nullptr;
+                                m_targetG3d = nullptr;
+                                finishClose();
+                                releaseEditorRefOnce(generation);
+                            } else if (mwGuard && rearmHolder && *rearmHolder) {
+                                // Re-arm callbacks in case ApplicationWindow::closeEvent moved
+                                // d_ole_on_close out before invoking it and then cancels closing
+                                // (ce->ignore()) so the user can retry or Save As.
+                                (*rearmHolder)();
+                            }
+                        }
+                        if (mwGuard) {
+                            mwGuard->setProperty("_toriLastOleSaveOk", ok);
+                            mwGuard->setProperty("_toriLastOleSaveError", errMsg);
+                        }
+                    });
+            };
+            (*rearmHolder)();
+            // Break the shared_ptr cycle once mw is destroyed, and ensure clean COM teardown if
+            // mwGuard is ultimately destroyed without a successful onClose.
+            disconnectEditorDestroyedConn();
+            m_editorDestroyedConn = QObject::connect(
+                    mw, &QObject::destroyed,
+                    [this, alive = ComPtr<IOleObject>(this), generation, rearmHolder]() {
+                        *rearmHolder = nullptr;
+                        m_editorDestroyedConn = QMetaObject::Connection();
+                        if (generation == m_editorGeneration) {
+                            m_editor = nullptr;
+                            m_targetMl = nullptr;
+                            m_targetG3d = nullptr;
+                            finishClose();
+                        }
+                        releaseEditorRefOnce(generation);
+                    });
 
             m_editor = mw;
+            updateOleQuitGuard();
             mw->show();
             if (ml) {
                 mw->activateSubWindow(ml);
@@ -1334,7 +1628,9 @@ public:
             return E_UNEXPECTED;
 
         try {
-            syncFromEditor();
+            const HRESULT hrSync = syncFromEditor();
+            if (FAILED(hrSync))
+                return hrSync;
             m_payload.extentHm = m_extent;
             HRESULT hr = savePayloadToStorage(s, m_payload);
             if (FAILED(hr))
@@ -1684,6 +1980,54 @@ public:
         return GetExtent(a, s);
     }
 };
+
+bool hasVisibleNormalAppWindow()
+{
+    if (!qApp)
+        return false;
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        auto *aw = qobject_cast<ApplicationWindow *>(tlw);
+        if (aw && aw->isVisible() && !aw->isOleEmbeddedMode() && !aw->isNonInteractive())
+            return true;
+    }
+    return false;
+}
+
+void updateOleQuitGuard()
+{
+    auto *guiApp = qobject_cast<QApplication *>(qApp);
+    if (!guiApp)
+        return;
+
+    bool activeContainer = false;
+    for (const SciDAVisGraphObject *obj : g_liveGraphObjects) {
+        if (obj && obj->hasActiveContainerOrEditor()) {
+            activeContainer = true;
+            break;
+        }
+    }
+
+    const bool normalVisible = hasVisibleNormalAppWindow();
+    if (activeContainer) {
+        if (normalVisible)
+            g_hadVisibleNormalWindowDuringSuppression = true;
+        if (guiApp->quitOnLastWindowClosed()) {
+            guiApp->setQuitOnLastWindowClosed(false);
+            g_oleSuppressedQuitOnLastWindow = true;
+        }
+    } else if (g_oleSuppressedQuitOnLastWindow) {
+        const bool hadNormal = g_hadVisibleNormalWindowDuringSuppression;
+        g_oleSuppressedQuitOnLastWindow = false;
+        g_hadVisibleNormalWindowDuringSuppression = false;
+        guiApp->setQuitOnLastWindowClosed(true);
+        // If a standalone GUI window was visible while an OLE session was active (or hidden via
+        // OLEIVERB_HIDE) and the user closed that standalone window in the meantime, finish
+        // exiting once the last OLE container session has also closed.
+        if (hadNormal && !normalVisible && !ApplicationWindow::isNonInteractiveContext(nullptr)) {
+            QTimer::singleShot(0, guiApp, &QCoreApplication::quit);
+        }
+    }
+}
 
 class SciDAVisClassFactory final : public IClassFactory
 {
@@ -2094,6 +2438,8 @@ bool lastCopyStillOnClipboard()
 
 void shutdownOleServer()
 {
+    g_oleSuppressedQuitOnLastWindow = false;
+    g_hadVisibleNormalWindowDuringSuppression = false;
     if (g_clipboardDataObject) {
         flushOleClipboardWithRetry(g_clipboardDataObject.Get());
         g_clipboardDataObject.Reset();
@@ -2167,42 +2513,78 @@ QByteArray renderEmfToPng(const QByteArray &emfBytes, SIZEL extentHm, int *outDp
     }
     const int w = std::max(16, static_cast<int>(std::lround(extentHm.cx / 2540.0 * dpi)));
     const int h = std::max(16, static_cast<int>(std::lround(extentHm.cy / 2540.0 * dpi)));
+    const int dpm = static_cast<int>(std::lround(dpi / 0.0254));
 
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h; // top-down rows, as QImage expects
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    void *bits = nullptr;
-    HDC screenDc = GetDC(nullptr);
-    HDC memDc = CreateCompatibleDC(screenDc);
-    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (screenDc)
-        ReleaseDC(nullptr, screenDc);
-
+    // Render onto a transparent 32-bit premultiplied ARGB surface via GDI+ so graphs whose page
+    // background has alpha < 255 (e.g. transparent background, alpha == 0) retain transparency in
+    // the PNG instead of being flattened onto opaque white.
     QByteArray png;
-    if (memDc && hBmp && bits) {
-        std::memset(bits, 0xFF, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
-        HGDIOBJ oldObj = SelectObject(memDc, hBmp);
-        RECT rc{ 0, 0, w, h };
-        if (!SciDAVisEmf::drawHemfWithGdiplus(memDc, hemf, rc))
-            PlayEnhMetaFile(memDc, hemf, &rc);
-        GdiFlush();
-        SelectObject(memDc, oldObj);
-        QImage img(static_cast<uchar *>(bits), w, h, w * 4, QImage::Format_RGB32);
-        const int dpm = static_cast<int>(std::lround(dpi / 0.0254));
-        img.setDotsPerMeterX(dpm);
-        img.setDotsPerMeterY(dpm);
-        QBuffer buf(&png);
-        if (buf.open(QIODevice::WriteOnly))
-            img.save(&buf, "PNG");
+    if (SciDAVisEmf::ensureGdiplusInitialized()) {
+        QImage img(w, h, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        bool okGdip = false;
+        {
+            Gdiplus::Bitmap bmp(w, h, img.bytesPerLine(), PixelFormat32bppPARGB, img.bits());
+            Gdiplus::Graphics gfx(&bmp);
+            Gdiplus::Metafile meta(hemf, FALSE);
+            if (bmp.GetLastStatus() == Gdiplus::Ok && gfx.GetLastStatus() == Gdiplus::Ok
+                && meta.GetLastStatus() == Gdiplus::Ok) {
+                gfx.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+                gfx.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                gfx.SetPixelOffsetMode(Gdiplus::PixelOffsetModeDefault);
+                gfx.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+                gfx.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+                gfx.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+                if (gfx.DrawImage(&meta, Gdiplus::Rect(0, 0, w, h)) == Gdiplus::Ok) {
+                    gfx.Flush(Gdiplus::FlushIntentionSync);
+                    okGdip = true;
+                }
+            }
+        }
+        if (okGdip) {
+            img.setDotsPerMeterX(dpm);
+            img.setDotsPerMeterY(dpm);
+            QBuffer buf(&png);
+            if (buf.open(QIODevice::WriteOnly))
+                img.save(&buf, "PNG");
+        }
     }
-    if (hBmp)
-        DeleteObject(hBmp);
-    if (memDc)
-        DeleteDC(memDc);
+
+    if (png.isEmpty()) {
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h; // top-down rows, as QImage expects
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        void *bits = nullptr;
+        HDC screenDc = GetDC(nullptr);
+        HDC memDc = CreateCompatibleDC(screenDc);
+        HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (screenDc)
+            ReleaseDC(nullptr, screenDc);
+
+        if (memDc && hBmp && bits) {
+            std::memset(bits, 0xFF, static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+            HGDIOBJ oldObj = SelectObject(memDc, hBmp);
+            RECT rc{ 0, 0, w, h };
+            if (!SciDAVisEmf::drawHemfWithGdiplus(memDc, hemf, rc))
+                PlayEnhMetaFile(memDc, hemf, &rc);
+            GdiFlush();
+            SelectObject(memDc, oldObj);
+            QImage img(static_cast<uchar *>(bits), w, h, w * 4, QImage::Format_RGB32);
+            img.setDotsPerMeterX(dpm);
+            img.setDotsPerMeterY(dpm);
+            QBuffer buf(&png);
+            if (buf.open(QIODevice::WriteOnly))
+                img.save(&buf, "PNG");
+        }
+        if (hBmp)
+            DeleteObject(hBmp);
+        if (memDc)
+            DeleteDC(memDc);
+    }
     DeleteEnhMetaFile(hemf);
     if (outDpi && !png.isEmpty())
         *outDpi = dpi;
@@ -2483,14 +2865,13 @@ void offerPayloadOnClipboard(OleGraphPayload &payload, OleCopyResult &r)
     }
 
     const RegistrationInfo reg = queryRegistration();
-    const bool mismatchOnProdExe = (reg.state == RegistrationInfo::Valid && !reg.pointsToSelf
-                                    && isProductionToriGraphExe());
-    r.registrationProblem = (reg.state != RegistrationInfo::Valid) || mismatchOnProdExe;
+    QString regProblemMsg;
+    r.registrationProblem = hasRegistrationProblem(reg, &regProblemMsg);
 
     if (r.ok) {
         r.pngDpi = choosePngDpi(naturalPayloadExtentHm(payload));
         if (r.registrationProblem)
-            r.errorReason = registrationProblemText(reg);
+            r.errorReason = regProblemMsg;
         return;
     }
 
@@ -2690,6 +3071,19 @@ void reportCopyResult(ApplicationWindow *app, const OleCopyResult &r, bool showD
     box.exec();
     if (repair && box.clickedButton() == repair)
         repairRegistrationInteractive(app);
+}
+
+bool hasRegistrationProblem(const RegistrationInfo &reg, QString *problemTextOut)
+{
+    ToriGraphOleUi::registerJapaneseStrings();
+    if (problemTextOut)
+        problemTextOut->clear();
+    const bool mismatchOnProdExe =
+            (reg.state == RegistrationInfo::Valid && !reg.pointsToSelf && isProductionToriGraphExe());
+    const bool problem = (reg.state != RegistrationInfo::Valid) || mismatchOnProdExe;
+    if (problem && problemTextOut)
+        *problemTextOut = registrationProblemText(reg);
+    return problem;
 }
 
 bool repairRegistrationInteractive(ApplicationWindow *app)

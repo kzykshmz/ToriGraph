@@ -42,10 +42,15 @@
 #include <QTemporaryFile>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QThread>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QVector>
 
+#include <chrono>
+#include <future>
 #include <mutex>
+#include <thread>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -244,6 +249,15 @@ ParsedSemVer parseSemVerInternal(const QString &input)
     return out;
 }
 
+// A copy of ToriGraph that was unpacked from the portable .zip has no Inno Setup uninstaller
+// next to the executable. Such an install should be updated from the portable .zip again
+// (running a setup.exe would create a second, registered installation).
+bool isPortableInstall()
+{
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    return appDir.entryList(QStringList() << QStringLiteral("unins*.exe"), QDir::Files).isEmpty();
+}
+
 int scoreWindowsAsset(const QString &assetName)
 {
     const QString lower = assetName.trimmed().toLower();
@@ -283,6 +297,12 @@ int scoreWindowsAsset(const QString &assetName)
     if (lower.endsWith(QStringLiteral(".exe"))
         && (lower.contains(QStringLiteral("setup")) || lower.contains(QStringLiteral("install"))))
         score += 12;
+    if (isPortableInstall()) {
+        if (lower.contains(QStringLiteral("portable")))
+            score += 30;
+        else if (lower.endsWith(QStringLiteral(".exe")) || lower.endsWith(QStringLiteral(".msi")))
+            score -= 20;
+    }
     if (lower.contains(QStringLiteral("arm64")) || lower.contains(QStringLiteral("aarch64")))
         score -= 15;
     if (lower.contains(QStringLiteral("pdb")) || lower.contains(QStringLiteral("symbols"))
@@ -354,18 +374,8 @@ QString extractSha256FromRelease(const QJsonObject &chosenAsset,
             return m.captured(1).toLower();
     }
 
-    // Pass 3: Standalone 64-hex digest line (optionally wrapped in backticks or bullet)
-    for (const QString &rawLine : lines) {
-        QString cleaned = rawLine.trimmed();
-        while (cleaned.startsWith(QLatin1Char('-')) || cleaned.startsWith(QLatin1Char('*'))
-               || cleaned.startsWith(QLatin1Char('`')) || cleaned.startsWith(QLatin1Char('>')))
-            cleaned = cleaned.mid(1).trimmed();
-        while (cleaned.endsWith(QLatin1Char('`')))
-            cleaned.chop(1);
-        cleaned = normalizeSha256Token(cleaned);
-        if (!cleaned.isEmpty())
-            return cleaned;
-    }
+    // Pass 3 (a bare 64-hex line anywhere in the release notes) was removed on purpose:
+    // an unrelated hash in the changelog must never be accepted as the installer digest.
 
     return QString();
 }
@@ -508,6 +518,10 @@ void registerAutoUpdaterExtraTranslations()
             "信頼できないダウンロード URL をブロックしました: %1");
         reg("Blocked untrusted update feed URL.",
             "信頼できない更新フィード URL をブロックしました。");
+        reg("The staged update script could not be read, so the update was not started. "
+            "ToriGraph stays open; run \"Check for Updates\" again.",
+            "ステージング済みの更新スクリプトを読み取れなかったため、更新を開始しませんでした。"
+            "ToriGraph は開いたままです。「更新を確認」をもう一度実行してください。");
     });
 }
 
@@ -520,6 +534,24 @@ QString updateStagingDirectory()
     if (base.isEmpty())
         base = QDir::tempPath() + QStringLiteral("/ToriGraph");
     return QDir(base).filePath(QStringLiteral("UpdateStaging"));
+}
+
+// Removes leftover per-run GUID directories (32 hex chars) older than a week, e.g. from an
+// update that failed or was cancelled. Anything else in the staging folder is left alone.
+void purgeStaleStagingSubdirs(const QString &stagingBase)
+{
+    static const QRegularExpression guidDirRe(QStringLiteral("^[0-9a-fA-F]{32}$"));
+    const QDir base(stagingBase);
+    if (!base.exists())
+        return;
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-7);
+    const QFileInfoList subs = base.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo &fi : subs) {
+        if (!guidDirRe.match(fi.fileName()).hasMatch() || fi.isSymLink())
+            continue;
+        if (fi.lastModified() < cutoff)
+            QDir(fi.absoluteFilePath()).removeRecursively();
+    }
 }
 
 QString resolveSystem32Executable(const QString &exeLeaf)
@@ -785,7 +817,23 @@ void UpdateAvailableDialog::initUi()
     rootLayout->addWidget(d_lblNotesHeader);
 
     d_notesBrowser = new QTextBrowser(this);
-    d_notesBrowser->setOpenExternalLinks(true);
+    // Release notes come from the network: never let a link open arbitrary schemes/hosts
+    // (file:, smb:, custom protocol handlers, look-alike domains). Only https links to
+    // GitHub hosts are handed to the system browser.
+    d_notesBrowser->setOpenLinks(false);
+    d_notesBrowser->setOpenExternalLinks(false);
+    connect(d_notesBrowser, &QTextBrowser::anchorClicked, this, [this](const QUrl &link) {
+        if (link.scheme().isEmpty() && !link.fragment().isEmpty()) {
+            d_notesBrowser->scrollToAnchor(link.fragment());
+            return;
+        }
+        if (link.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0
+            && AutoUpdater::isAllowedUpdateUrl(link)) {
+            QDesktopServices::openUrl(link);
+        } else {
+            qWarning("Blocked release-notes link: %s", qPrintable(link.toString()));
+        }
+    });
     d_notesBrowser->setStyleSheet(
             QStringLiteral("QTextBrowser {"
                            "  background-color: #FFFFFF;"
@@ -1073,7 +1121,10 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
         return;
     }
 
-    const QString stagingDir = updateStagingDirectory();
+    const QString stagingBase = updateStagingDirectory();
+    purgeStaleStagingSubdirs(stagingBase);
+    const QString stagingDir =
+            QDir(stagingBase).filePath(QUuid::createUuid().toString(QUuid::Id128));
     QDir().mkpath(stagingDir);
 
     QString safeFileName = QFileInfo(d_info.assetName).fileName();
@@ -1508,6 +1559,8 @@ AutoUpdater::AutoUpdater(ApplicationWindow *app, QObject *parent)
     : QObject(parent), d_app(app)
 {
     registerAutoUpdaterExtraTranslations();
+    static std::once_flag s_purgeOnce;
+    std::call_once(s_purgeOnce, []() { purgeStaleStagingSubdirs(updateStagingDirectory()); });
     d_checkTimeoutTimer = new QTimer(this);
     d_checkTimeoutTimer->setSingleShot(true);
     connect(d_checkTimeoutTimer, &QTimer::timeout, this, [this]() {
@@ -1589,6 +1642,18 @@ void AutoUpdater::setFeedUrl(const QUrl &url)
 
 QUrl AutoUpdater::feedUrl() const
 {
+    // Plaintext http:// feeds (loopback test servers) are only honoured for headless /
+    // non-interactive runs (tests, automation). In the interactive GUI a user could be
+    // tricked into an http feed through an environment variable or a stale setting.
+    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
+            && !ApplicationWindow::isNonInteractiveContext(d_app);
+    const auto httpBlockedHere = [interactiveGui](const QUrl &u) {
+        return interactiveGui
+                && u.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0;
+    };
+
+    // The programmatic override (tests / embedding code, never user-controlled) keeps its
+    // loopback http allowance.
     if (!d_feedUrlOverride.isEmpty()) {
         return isAllowedUpdateUrl(d_feedUrlOverride) ? d_feedUrlOverride : QUrl();
     }
@@ -1596,7 +1661,7 @@ QUrl AutoUpdater::feedUrl() const
     const QString envFeed = qEnvironmentVariable("TORIGRAPH_UPDATE_FEED_URL").trimmed();
     if (!envFeed.isEmpty()) {
         const QUrl envUrl = parseFlexibleUrl(envFeed);
-        if (isAllowedUpdateUrl(envUrl))
+        if (isAllowedUpdateUrl(envUrl) && !httpBlockedHere(envUrl))
             return envUrl;
         return QUrl();
     }
@@ -1607,14 +1672,8 @@ QUrl AutoUpdater::feedUrl() const
                                          .trimmed();
     if (!settingsFeed.isEmpty()) {
         const QUrl cfgUrl = parseFlexibleUrl(settingsFeed);
-        if (isAllowedUpdateUrl(cfgUrl)) {
-            const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
-                    && !ApplicationWindow::isNonInteractiveContext(d_app);
-            if (!(interactiveGui
-                  && cfgUrl.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0)) {
-                return cfgUrl;
-            }
-        }
+        if (isAllowedUpdateUrl(cfgUrl) && !httpBlockedHere(cfgUrl))
+            return cfgUrl;
     }
 
     return QUrl(includePreReleases() ? defaultReleasesFeedUrlString()
@@ -1961,7 +2020,7 @@ bool AutoUpdater::verifyFileSha256(const QString &filePath, const QString &expec
 
     const QString trimmedExpected = expectedHex.trimmed();
     if (trimmedExpected.isEmpty())
-        return true;
+        return false; // never report "verified" when no digest was published
 
     const QString normalizedExpected = normalizeSha256Token(trimmedExpected);
     if (normalizedExpected.size() != 64)
@@ -2276,7 +2335,21 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
         return QString();
     }
 
-    const QString stagingDir = updateStagingDirectory();
+    // Every staged script lives in its own GUID sub-directory of the staging folder so that
+    // a predictable path cannot be pre-created/replaced by another process, and so that the
+    // whole directory can be removed once the update has been applied.
+    const QString stagingBase = updateStagingDirectory();
+    purgeStaleStagingSubdirs(stagingBase);
+    static const QRegularExpression guidDirRe(QStringLiteral("^[0-9a-fA-F]{32}$"));
+    const QFileInfo pkgParentFi(QFileInfo(downloadedFilePath.trimmed()).absolutePath());
+    const bool alreadyInGuidSubdir =
+            guidDirRe.match(pkgParentFi.fileName()).hasMatch()
+            && QDir::cleanPath(pkgParentFi.absolutePath())
+                       .compare(QDir::cleanPath(stagingBase), Qt::CaseInsensitive)
+                    == 0;
+    const QString stagingDir = alreadyInGuidSubdir
+            ? pkgParentFi.absoluteFilePath()
+            : QDir(stagingBase).filePath(QUuid::createUuid().toString(QUuid::Id128));
     if (!QDir().mkpath(stagingDir)) {
         if (errOut)
             *errOut = tr("Could not create staging directory: %1").arg(stagingDir);
@@ -2284,8 +2357,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     }
 
     const QString ps1Path = QDir(stagingDir).filePath(QStringLiteral("apply_torigraph_update.ps1"));
-    const QString cmdPath = QDir(stagingDir).filePath(QStringLiteral("apply_torigraph_update.cmd"));
     const QString nativeStagingDir = QDir::toNativeSeparators(stagingDir);
+    const QString nativeStagingBase = QDir::toNativeSeparators(stagingBase);
     const QString msiExecAbs = resolveSystem32Executable(QStringLiteral("msiexec.exe"));
     const QString explorerExeAbs = resolveWindowsExecutable(QStringLiteral("explorer.exe"));
 
@@ -2300,6 +2373,7 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     psScript += QStringLiteral("$Relaunch = $%1\r\n").arg(relaunch ? QStringLiteral("true")
                                                                    : QStringLiteral("false"));
     psScript += QStringLiteral("$StagingRoot = %1\r\n").arg(psSingleQuote(nativeStagingDir));
+    psScript += QStringLiteral("$StagingBase = %1\r\n").arg(psSingleQuote(nativeStagingBase));
     psScript += QStringLiteral("$ExpectedSha256 = %1\r\n").arg(psSingleQuote(normalizedSha));
     psScript += QStringLiteral("$RequireSignature = $%1\r\n")
                         .arg(requireSignature ? QStringLiteral("true") : QStringLiteral("false"));
@@ -2677,8 +2751,28 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "        Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
             "}\r\n\r\n"
+            "# (4b) Success: delete the downloaded package (only when it sits in ToriGraph's own\r\n"
+            "#      staging folder) so old installers do not pile up\r\n"
+            "$StagingBaseFull = ''\r\n"
+            "$StagingRootFull = ''\r\n"
+            "try {\r\n"
+            "    $StagingBaseFull = [System.IO.Path]::GetFullPath($StagingBase).TrimEnd('\\')\r\n"
+            "    $StagingRootFull = [System.IO.Path]::GetFullPath($StagingRoot).TrimEnd('\\')\r\n"
+            "    $pkgDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($OrigDownloadedFile))\r\n"
+            "    if ($pkgDir -and (($pkgDir.TrimEnd('\\') -ieq $StagingBaseFull) -or ($pkgDir.TrimEnd('\\') -ieq $StagingRootFull))) {\r\n"
+            "        Remove-Item -LiteralPath $OrigDownloadedFile -Force -ErrorAction SilentlyContinue\r\n"
+            "    }\r\n"
+            "} catch { }\r\n\r\n"
             "# (5) Relaunch ToriGraph.exe if requested\r\n"
-            "Invoke-RelaunchTargetExe\r\n");
+            "Invoke-RelaunchTargetExe\r\n\r\n"
+            "# (6) Remove this script's GUID staging directory (never anything but a direct child of\r\n"
+            "#     the staging base)\r\n"
+            "try {\r\n"
+            "    if ($StagingRootFull -and $StagingBaseFull -and ([System.IO.Path]::GetDirectoryName($StagingRootFull) -ieq $StagingBaseFull)) {\r\n"
+            "        Set-Location -LiteralPath $env:TEMP\r\n"
+            "        Remove-Item -LiteralPath $StagingRootFull -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "    }\r\n"
+            "} catch { }\r\n");
 
     QFile psFile(ps1Path);
     if (!psFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -2691,23 +2785,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
     psFile.write(psScript.toUtf8());
     psFile.close();
 
-    // Companion .cmd wrapper using absolute System32 PowerShell path
-    QFile cmdFile(cmdPath);
-    if (cmdFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        QString psAbs = resolvePowerShellExecutable();
-        if (psAbs.isEmpty()) {
-            psAbs = QStringLiteral(
-                    "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-        }
-        const QString cmdText = QStringLiteral(
-                "@chcp 65001 >nul\r\n"
-                "@echo off\r\n"
-                "\"%1\" -NoProfile -ExecutionPolicy Bypass -File \"%2\"\r\n")
-                                        .arg(psAbs, QDir::toNativeSeparators(ps1Path));
-        cmdFile.write(cmdText.toUtf8());
-        cmdFile.close();
-    }
-
+    // (The former companion apply_torigraph_update.cmd wrapper was never executed by the
+    // application and only widened the attack surface of the staging folder; it is gone.)
     return ps1Path;
 }
 
@@ -2741,14 +2820,29 @@ QList<QNetworkProxy> AutoUpdater::proxiesForUrl(const QUrl &url)
             && now - it->stampMs < kProxyCacheTtlMs)
             return it->proxies;
     }
-    proxies = QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(url));
-    if (proxies.isEmpty())
-        proxies << QNetworkProxy(QNetworkProxy::NoProxy);
-    {
+    const auto lookupAndCache = [key, url]() {
+        QList<QNetworkProxy> found =
+                QNetworkProxyFactory::systemProxyForQuery(QNetworkProxyQuery(url));
+        if (found.isEmpty())
+            found << QNetworkProxy(QNetworkProxy::NoProxy);
         std::lock_guard<std::mutex> lock(s_cacheMutex);
-        s_cache.insert(key, CachedProxy { proxies, now });
+        s_cache.insert(key, CachedProxy { found, QDateTime::currentMSecsSinceEpoch() });
+        return found;
+    };
+    if (QCoreApplication::instance()
+        && QThread::currentThread() == QCoreApplication::instance()->thread()) {
+        // GUI thread: WPAD/PAC resolution can hang for many seconds. Resolve on a helper
+        // thread and wait only briefly; on timeout go direct for this request while the
+        // lookup finishes in the background and fills the cache for the next one.
+        auto prom = std::make_shared<std::promise<QList<QNetworkProxy>>>();
+        std::future<QList<QNetworkProxy>> fut = prom->get_future();
+        std::thread([prom, lookupAndCache]() { prom->set_value(lookupAndCache()); }).detach();
+        if (fut.wait_for(std::chrono::milliseconds(1500)) == std::future_status::ready)
+            return fut.get();
+        proxies << QNetworkProxy(QNetworkProxy::NoProxy);
+        return proxies;
     }
-    return proxies;
+    return lookupAndCache();
 }
 
 QString AutoUpdater::resolvePowerShellExecutable()
@@ -2859,15 +2953,29 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     }
 
     // Enforce SHA-256 & Authenticode policy before closing ToriGraph or elevating (UAC).
+    // The exact bytes of the script that were inspected here are pinned (SHA-256) and, when
+    // elevation is needed, the elevated PowerShell re-reads the file, compares it with the
+    // pinned digest and runs those very bytes from memory. The script itself lives in a
+    // user-writable folder, so it must never be executed elevated straight from disk.
+    QByteArray scriptRawBytes;
     {
         QFile sf(scriptPath);
         QString scriptText;
         if (sf.open(QIODevice::ReadOnly)) {
             QByteArray raw = sf.readAll();
+            scriptRawBytes = raw;
             if (raw.startsWith("\xEF\xBB\xBF"))
                 raw.remove(0, 3);
             scriptText = QString::fromUtf8(raw);
             sf.close();
+        }
+        if (scriptRawBytes.isEmpty()) {
+            showFailureWithReleasePage(
+                    app, tr("Installer Launch Failed"),
+                    tr("The staged update script could not be read, so the update was not "
+                       "started. ToriGraph stays open; run \"Check for Updates\" again."),
+                    releasePage);
+            return false;
         }
         static const QRegularExpression shaRe(
                 QStringLiteral("^\\$ExpectedSha256\\s*=\\s*'([^']*)'"),
@@ -2953,8 +3061,30 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     bool started = false;
 #ifdef Q_OS_WIN
     if (elevate) {
-        const QString params = QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File \"%1\"")
-                                       .arg(nativeScript);
+        const QString pinnedHash =
+                QString::fromLatin1(QCryptographicHash::hash(scriptRawBytes,
+                                                             QCryptographicHash::Sha256)
+                                            .toHex())
+                        .toLower();
+        // Bootstrap executed elevated: verify the pinned digest, then run the verified bytes
+        // from memory (no second read of the user-writable file -> no TOCTOU window).
+        const QString bootstrap = QStringLiteral(
+                "$p = %1; $h = %2; "
+                "$b = [System.IO.File]::ReadAllBytes($p); "
+                "$sha = [System.Security.Cryptography.SHA256]::Create(); "
+                "$a = [System.BitConverter]::ToString($sha.ComputeHash($b)).Replace('-', '').ToLowerInvariant(); "
+                "if ($a -ne $h) { "
+                "try { Add-Type -AssemblyName System.Windows.Forms; "
+                "[void][System.Windows.Forms.MessageBox]::Show('The staged update script changed after it was verified. The update was NOT applied.', 'ToriGraph Security Error') } catch { }; "
+                "[Console]::Error.WriteLine('Staged update script digest mismatch.'); exit 5 }; "
+                "$t = [System.Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF); "
+                "& ([scriptblock]::Create($t))")
+                                          .arg(psSingleQuote(nativeScript), psSingleQuote(pinnedHash));
+        const QByteArray bootUtf16(reinterpret_cast<const char *>(bootstrap.utf16()),
+                                   static_cast<int>(bootstrap.size()) * 2);
+        const QString params =
+                QStringLiteral("-NoProfile -ExecutionPolicy Bypass -EncodedCommand %1")
+                        .arg(QString::fromLatin1(bootUtf16.toBase64()));
         const std::wstring file = QDir::toNativeSeparators(psExe).toStdWString();
         const std::wstring args = params.toStdWString();
         SHELLEXECUTEINFOW sei;
