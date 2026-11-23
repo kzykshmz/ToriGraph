@@ -72,8 +72,11 @@ MultiPeakFitTool::MultiPeakFitTool(Graph *graph, ApplicationWindow *app,
 MultiPeakFitTool::~MultiPeakFitTool()
 {
     if (d_graph && d_graph->plotWidget()) {
-        if (d_graph->plotWidget()->canvas())
+        if (d_graph->plotWidget()->canvas()) {
+            if (QWidget::mouseGrabber() == d_graph->plotWidget()->canvas())
+                d_graph->plotWidget()->canvas()->releaseMouse();
             d_graph->plotWidget()->canvas()->removeEventFilter(this);
+        }
         d_graph->plotWidget()->removeEventFilter(this);
     }
     removePeakMarkers();

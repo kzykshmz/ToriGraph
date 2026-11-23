@@ -103,6 +103,18 @@ void registerFitDialogJapaneseStrings()
     });
 }
 
+// C4-4: VoigtApprox has exactly the same formula and parameters as PseudoVoigt1, so the
+// dialog lists only PseudoVoigt1 and maps the duplicate name onto it.
+bool isRedundantBuiltInModel(const QString &name)
+{
+    return name.compare(QStringLiteral("VoigtApprox"), Qt::CaseInsensitive) == 0;
+}
+
+QString canonicalDialogModelName(const QString &name)
+{
+    return isRedundantBuiltInModel(name) ? QStringLiteral("PseudoVoigt1") : name;
+}
+
 class FitPreviewCurveItem : public QwtPlotCurve
 {
 public:
@@ -182,7 +194,9 @@ FitDialog::FitDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, fl)
     setBuiltInFunctionNames();
     setBuiltInFunctions();
 
-    categoryBox->setCurrentRow(2);
+    // C4-4: open on a model category (Peak Functions) instead of the parser function
+    // list ("Basic"), so the first thing a user sees is something that can be fitted.
+    categoryBox->setCurrentRow(4);
     funcBox->setCurrentRow(0);
 
     loadPlugins();
@@ -409,6 +423,8 @@ void FitDialog::initEditPage()
     {
         QStringList entries;
         for (const QString &mName : NonLinearFit::builtInModelNames()) {
+            if (isRedundantBuiltInModel(mName))
+                continue;
             const QString desc = NonLinearFit::builtInModelDescription(mName);
             const QString cat = NonLinearFit::builtInModelCategory(mName);
             QString entry = mName;
@@ -1073,7 +1089,7 @@ void FitDialog::saveUserFunction()
         d_user_functions[index] = f;
         d_user_function_params[index] = boxParam->text();
 
-        if (funcBox->currentItem()->text() == name)
+        if (funcBox->currentItem() && funcBox->currentItem()->text() == name)
             showExpression(index);
     } else {
         d_user_function_names << name;
@@ -1101,14 +1117,16 @@ void FitDialog::removeUserFunction()
     if (d_user_function_names.contains(name)) {
         explainBox->setText(QString());
 
-        int index = d_user_function_names.indexOf(name);
-        d_user_function_names.removeAll(name);
-
-        QString f = d_user_functions[index];
-        d_user_functions.removeAll(f);
-
-        f = d_user_function_params[index];
-        d_user_function_params.removeAll(f);
+        // C4-#9: remove by position. removeAll() removed by value, so a parameter string
+        // shared with another function (the default "a, b") vanished for both and the three
+        // parallel lists went out of step.
+        const int index = d_user_function_names.indexOf(name);
+        if (index >= 0 && index < d_user_function_names.size())
+            d_user_function_names.removeAt(index);
+        if (index >= 0 && index < d_user_functions.size())
+            d_user_functions.removeAt(index);
+        if (index >= 0 && index < d_user_function_params.size())
+            d_user_function_params.removeAt(index);
 
         funcBox->clear();
         funcBox->addItems(d_user_function_names);
@@ -1206,7 +1224,20 @@ void FitDialog::showFitPage()
         NonLinearFit tmpFit(app, d_graph);
         tmpFit.setParametersList(paramList);
         tmpFit.setFormula(editBox->toPlainText().simplified());
-        if (tmpFit.setDataFromCurve(boxCurve->currentText())) {
+        // C4-4: guess from the same X range the fit will use (From/To boxes), not the
+        // whole curve, so a peak picked inside a sub-range gets sensible start values.
+        bool okFrom = false, okTo = false;
+        double xStart = boxFrom ? QLocale().toDouble(boxFrom->text(), &okFrom) : 0.0;
+        if (boxFrom && !okFrom)
+            xStart = boxFrom->text().toDouble(&okFrom);
+        double xEnd = boxTo ? QLocale().toDouble(boxTo->text(), &okTo) : 0.0;
+        if (boxTo && !okTo)
+            xEnd = boxTo->text().toDouble(&okTo);
+        const bool rangeOk = okFrom && okTo && xStart < xEnd;
+        const bool guessDataOk = rangeOk
+                ? tmpFit.setDataFromCurve(boxCurve->currentText(), xStart, xEnd)
+                : tmpFit.setDataFromCurve(boxCurve->currentText());
+        if (guessDataOk) {
             tmpFit.guessBuiltInParameters(fnName);
             for (int i = 0; i < paramList.count() && i < tmpFit.numParameters(); ++i) {
                 QCheckBox *cb = qobject_cast<QCheckBox *>(boxParams->cellWidget(i, 2));
@@ -1256,7 +1287,8 @@ void FitDialog::setFunction(bool ok)
         boxName->setText(funcBox->currentItem()->text());
         editBox->setText(explainBox->toPlainText());
 
-        if (categoryBox->currentRow() == 0 && d_user_function_params.size() > 0)
+        if (categoryBox->currentRow() == 0 && funcBox->currentRow() >= 0
+            && funcBox->currentRow() < d_user_function_params.size())
             boxParam->setText(d_user_function_params[funcBox->currentRow()]);
         else if (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4) {
             QString fn = funcBox->currentItem() ? funcBox->currentItem()->text() : QString();
@@ -1285,6 +1317,7 @@ void FitDialog::clearUserFunctions()
 {
     d_user_functions.clear();
     d_user_function_names.clear();
+    d_user_function_params.clear();
     if (categoryBox->currentRow() == 0) {
         funcBox->clear();
         explainBox->clear();
@@ -1351,10 +1384,16 @@ void FitDialog::showFunctionsList(int category)
         break;
 
     case 1:
+        // C4-4: selecting a model applies it right away (as in the model categories);
+        // unticking the box is still possible to edit the expression by hand.
         boxUseBuiltIn->setText(tr("Fit using &built-in function"));
         boxUseBuiltIn->show();
         boxUseBuiltIn->setEnabled(true);
-        funcBox->addItems(d_built_in_function_names);
+        for (const QString &fn : d_built_in_function_names) {
+            if (!isRedundantBuiltInModel(fn))
+                funcBox->addItem(fn);
+        }
+        boxUseBuiltIn->setChecked(true);
         break;
 
     case 2:
@@ -1384,6 +1423,8 @@ void FitDialog::showFunctionsList(int category)
         if (catIdx >= 0 && catIdx < 6) {
             QString targetCat = QString::fromLatin1(kCats[catIdx]);
             for (const QString &mName : NonLinearFit::builtInModelNames()) {
+                if (isRedundantBuiltInModel(mName))
+                    continue;
                 if (NonLinearFit::builtInModelCategory(mName) == targetCat)
                     funcBox->addItem(mName);
             }
@@ -1415,6 +1456,7 @@ bool FitDialog::jumpToModel(const QString &entry)
     }
     if (canonical.isEmpty())
         return false;
+    canonical = canonicalDialogModelName(canonical);
 
     static const char *const kCats[] = { "Peak Functions",
                                          "Exponential",
@@ -1667,8 +1709,9 @@ void FitDialog::showExpression(int function)
         } else {
             polynomOrderBox->setValue(1);
             QString expr = NonLinearFit::builtInModelFormula(fn);
-            if (expr.isEmpty() && function < d_built_in_functions.size())
-                expr = d_built_in_functions[function];
+            const int fnIdx = d_built_in_function_names.indexOf(fn);
+            if (expr.isEmpty() && fnIdx >= 0 && fnIdx < d_built_in_functions.size())
+                expr = d_built_in_functions[fnIdx];
             explainBox->setText(expr);
             QString desc = NonLinearFit::builtInModelDescription(fn);
             if (!desc.isEmpty())
@@ -1677,8 +1720,9 @@ void FitDialog::showExpression(int function)
         setFunction(boxUseBuiltIn->isChecked());
     } else if (categoryBox->currentRow() == 0) {
         if (d_user_functions.size() > function) {
-            QStringList l = d_user_functions[function].split("=");
-            explainBox->setText(l[1]);
+            const int eqPos = d_user_functions[function].indexOf('=');
+            explainBox->setText(eqPos >= 0 ? d_user_functions[function].mid(eqPos + 1)
+                                           : d_user_functions[function]);
         } else
             explainBox->clear();
         setFunction(boxUseBuiltIn->isChecked());
@@ -2192,6 +2236,17 @@ void FitDialog::closeEvent(QCloseEvent *e)
         d_fitter->showLegend();
 
     e->accept();
+}
+
+void FitDialog::reject()
+{
+    // QDialog::reject() only hides the dialog, so Esc skipped closeEvent(): the preview
+    // curve stayed and "Paste Parameters to Plot" never showed the legend. Route it
+    // through close() like the Close buttons.
+    if (isVisible())
+        close();
+    else
+        QDialog::reject();
 }
 
 void FitDialog::enableApplyChanges(int)

@@ -871,8 +871,11 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
         res.converged = true;
         res.intercept = c0;
         res.slope = c1;
-        res.interceptSE = (n > 2 && cov00 > 0.0) ? std::sqrt(cov00) : 0.0;
-        res.slopeSE = (n > 2 && cov11 > 0.0) ? std::sqrt(cov11) : 0.0;
+        // gsl_fit_linear() already scales cov by the residual variance.  With
+        // n == 2 there are no residual degrees of freedom -> SE undefined.
+        const double nanSE = std::numeric_limits<double>::quiet_NaN();
+        res.interceptSE = (n > 2) ? ((cov00 >= 0.0) ? std::sqrt(cov00) : nanSE) : nanSE;
+        res.slopeSE = (n > 2) ? ((cov11 >= 0.0) ? std::sqrt(cov11) : nanSE) : nanSE;
         res.scaleMAD = computeMADScale(resid);
         return true;
     }
@@ -912,14 +915,32 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
             ? computeVectorQuantile(std::move(candIntercepts), tau)
             : computeVectorMedian(std::move(candIntercepts));
 
-    const double madY = std::max(1.0, computeMADScale(yv));
+    // Data-scale-relative robust scale (no absolute 1.0 floor: strain ~1e-4,
+    // diffusion coefficients ~1e-11 or nA currents must be handled correctly).
+    double yAbsMax = 0.0, yMin = std::numeric_limits<double>::infinity(),
+           yMax = -std::numeric_limits<double>::infinity();
+    for (double yi : yv) {
+        yAbsMax = std::max(yAbsMax, std::fabs(yi));
+        yMin = std::min(yMin, yi);
+        yMax = std::max(yMax, yi);
+    }
+    const double ySpan = (yMax > yMin) ? (yMax - yMin) : 0.0;
+    double yScale = std::max(ySpan, yAbsMax);
+    if (!(yScale > 0.0) || !std::isfinite(yScale))
+        yScale = std::numeric_limits<double>::min();
+    const double madRaw = computeMADScale(yv);
+    const double madY = (madRaw > 1e-12 * yScale && std::isfinite(madRaw)) ? madRaw
+                                                                            : std::max(1e-12 * yScale, std::numeric_limits<double>::min());
     const double minScaleFloor = 1e-7 * madY;
 
     std::vector<double> resid(n, 0.0);
     std::vector<double> weights(n, 1.0);
     double curScaleMAD = 0.0;
     double lastCov00 = 0.0, lastCov11 = 0.0, lastChisq = 0.0;
+    bool haveCov = false;
     bool converged = false;
+    bool degenerateWeights = false;
+    double lastDelta = std::numeric_limits<double>::infinity();
 
     const int maxIter = (method == PiecewiseAndRobustFit::QuantileReg) ? 160 : 100;
     for (int iter = 0; iter < maxIter; ++iter) {
@@ -962,7 +983,7 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
                 }
             }
         } else {
-            const double epsPinball = std::max(1e-6, 1e-6 * madY);
+            const double epsPinball = std::max(1e-12 * yScale, 1e-6 * madY);
             for (size_t i = 0; i < n; ++i) {
                 const double asym = (resid[i] >= 0.0) ? tau : (1.0 - tau);
                 weights[i] = asym / std::max(std::fabs(resid[i]), epsPinball);
@@ -973,7 +994,11 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
         }
 
         if (posWeightCount < 2 || !(maxWeightedX > minWeightedX + 1e-13 * xSpan)) {
-            converged = true;
+            // All (or all but one) points were rejected, or the remaining
+            // points share one X: the line is not identifiable.  This is NOT
+            // convergence - report it as such and leave SE undefined.
+            degenerateWeights = true;
+            converged = false;
             break;
         }
 
@@ -990,16 +1015,27 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
         lastCov00 = cov00;
         lastCov11 = cov11;
         lastChisq = chisq;
+        haveCov = true;
 
         const double delta = std::fabs(nextInt - curIntercept)
                 + std::fabs(nextSlope - curSlope) * xSpan;
+        lastDelta = delta;
         curIntercept = nextInt;
         curSlope = nextSlope;
-        if (delta <= 1e-11 * std::max(1.0, madY)) {
+        if (delta <= 1e-11 * std::max(madY, 1e-15 * yScale)) {
             converged = true;
             break;
         }
-        if (iter + 1 == maxIter)
+        // Reaching maxIter without meeting the tolerance is reported as
+        // "not converged" (the last iterate is still returned to the caller).
+    }
+    if (!converged && !degenerateWeights && haveCov && std::isfinite(lastDelta)) {
+        // The smoothed-pinball IRLS for quantile regression approaches the LP
+        // optimum only asymptotically; accept a looser (still data-scale
+        // relative) step criterion.  M-estimators get a slightly looser
+        // criterion than the strict one as well.
+        const double relaxedTol = (method == PiecewiseAndRobustFit::QuantileReg) ? 1e-6 : 1e-8;
+        if (lastDelta <= relaxedTol * madY)
             converged = true;
     }
 
@@ -1012,9 +1048,16 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
     res.slope = curSlope;
     res.scaleMAD = curScaleMAD;
 
+    const double nanSE = std::numeric_limits<double>::quiet_NaN();
+    // The core returns "usable" (a finite line estimate exists); whether the
+    // iteration actually converged is reported separately in res.converged.
+    const bool usable = std::isfinite(curIntercept) && std::isfinite(curSlope);
+
     if (method == PiecewiseAndRobustFit::QuantileReg) {
-        res.interceptSE = 0.0;
-        res.slopeSE = 0.0;
+        res.interceptSE = nanSE;
+        res.slopeSE = nanSE;
+        // Data-scale-relative "tiny" thresholds (no absolute 1e-14).
+        const double rTiny = std::max(1e-13 * yScale, std::numeric_limits<double>::min());
         if (n > 2) {
             double meanX = 0.0;
             for (double xi : xv)
@@ -1041,14 +1084,19 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
             const double iqrScale = (q75 - q25) / 1.3489795003921634;
 
             double sigmaHat = 0.0;
-            if (sdR > 1e-14 && iqrScale > 1e-14)
+            if (sdR > rTiny && iqrScale > rTiny)
                 sigmaHat = std::min(sdR, iqrScale);
-            else if (curScaleMAD > 1e-14)
+            else if (curScaleMAD > rTiny)
                 sigmaHat = curScaleMAD;
             else
                 sigmaHat = std::max(sdR, iqrScale);
 
-            if (sigmaHat > 1e-14 && sxx > 1e-30) {
+            if (!(sigmaHat > rTiny)) {
+                // Residuals are (numerically) zero: exact fit, SE = 0.
+                res.interceptSE = 0.0;
+                res.slopeSE = 0.0;
+            }
+            if (sigmaHat > rTiny && sxx > 0.0 && std::isfinite(sxx)) {
                 // Hall-Sheather / Bofinger bandwidth + Powell Gaussian kernel sparsity estimator
                 constexpr double kInvSqrt2Pi = 0.39894228040143267794;
                 const double zTau = gsl_cdf_ugaussian_Pinv(tau);
@@ -1070,7 +1118,7 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
                 const double qSpan =
                         std::max(0.05, gsl_cdf_ugaussian_Pinv(pHi) - gsl_cdf_ugaussian_Pinv(pLo));
                 const double bwFloor = 0.35 * sigmaHat * std::pow(double(n), -0.2);
-                const double bw = std::max({ 0.5 * sigmaHat * qSpan, bwFloor, 1e-12 });
+                const double bw = std::max({ 0.5 * sigmaHat * qSpan, bwFloor, rTiny });
 
                 double kSum = 0.0;
                 for (double ri : resid) {
@@ -1085,20 +1133,29 @@ static bool computeRobustOrQuantileCore(const std::vector<double> &xv,
                 res.slopeSE = std::sqrt(std::max(0.0, omega2 * invXtX_11));
             }
         }
-        return res.converged;
+        return usable;
     }
 
+    // gsl_fit_wlinear() returns the UNSCALED (X^T W X)^-1, so the robust
+    // residual variance chisq_w / (nEff - 2) is applied exactly once here.
     int nEff = 0;
     for (double wi : weights) {
         if (wi > 1e-10)
             ++nEff;
     }
-    const double dof = double(std::max(1, nEff - 2));
-    const double varScale = (nEff > 2 && lastChisq > 1e-28) ? (lastChisq / dof) : 0.0;
+    if (degenerateWeights || !haveCov || nEff <= 2 || !std::isfinite(lastChisq)) {
+        // All weights vanished (Tukey), or no residual degrees of freedom:
+        // the standard errors are undefined, never "0".
+        res.interceptSE = nanSE;
+        res.slopeSE = nanSE;
+        return usable;
+    }
+    const double dof = double(nEff - 2);
+    const double varScale = std::max(0.0, lastChisq) / dof;
 
-    res.interceptSE = (varScale > 0.0 && lastCov00 > 0.0) ? std::sqrt(varScale * lastCov00) : 0.0;
-    res.slopeSE = (varScale > 0.0 && lastCov11 > 0.0) ? std::sqrt(varScale * lastCov11) : 0.0;
-    return res.converged;
+    res.interceptSE = (lastCov00 >= 0.0 && std::isfinite(lastCov00)) ? std::sqrt(varScale * lastCov00) : nanSE;
+    res.slopeSE = (lastCov11 >= 0.0 && std::isfinite(lastCov11)) ? std::sqrt(varScale * lastCov11) : nanSE;
+    return usable;
 }
 
 } // anonymous namespace
@@ -1248,20 +1305,25 @@ PiecewiseAndRobustFit::fitRobustOrQuantileLinear(ApplicationWindow *app, Graph *
         QStringList lines;
         lines << methodDisplay;
         lines << QObject::tr("Dataset: %1").arg(resolvedName);
+        auto seText = [](double v) {
+            return std::isfinite(v) ? QString::number(v, 'g', 4) : QObject::tr("n/a");
+        };
         lines << QObject::tr("Slope = %1 ± %2")
                          .arg(res.slope, 0, 'g', 6)
-                         .arg(res.slopeSE, 0, 'g', 4);
+                         .arg(seText(res.slopeSE));
         lines << QObject::tr("Intercept = %1 ± %2")
                          .arg(res.intercept, 0, 'g', 6)
-                         .arg(res.interceptSE, 0, 'g', 4);
+                         .arg(seText(res.interceptSE));
         lines << QObject::tr("MAD Scale = %1").arg(res.scaleMAD, 0, 'g', 5);
+        if (!res.converged)
+            lines << QObject::tr("Warning: iteration did not converge (SE may be unreliable)");
         insertArialSummaryBox(g, lines.join('\n'));
         g->replot();
     }
 
     // Create Report Worksheet
     const QString tblName = app->generateUniqueName(methodTag + QStringLiteral("_Report"), false);
-    Table *tbl = app->newTable(5, 3, tblName, QObject::tr("Robust / Quantile Regression Report"));
+    Table *tbl = app->newTable(6, 3, tblName, QObject::tr("Robust / Quantile Regression Report"));
     if (tbl) {
         tbl->setHeader(QStringList() << QObject::tr("Parameter") << QObject::tr("Estimate")
                                      << QObject::tr("Std_Error"));
@@ -1289,6 +1351,10 @@ PiecewiseAndRobustFit::fitRobustOrQuantileLinear(ApplicationWindow *app, Graph *
         tbl->column(1)->setValueAt(4, (method == QuantileReg) ? std::clamp(quantileTau, 0.01, 0.99)
                                                               : 0.5);
         tbl->column(2)->setValueAt(4, 0.0);
+
+        tbl->column(0)->setTextAt(5, QStringLiteral("Converged"));
+        tbl->column(1)->setValueAt(5, res.converged ? 1.0 : 0.0);
+        tbl->column(2)->setValueAt(5, 0.0);
 
         res.reportTable = tbl;
     }
@@ -1589,12 +1655,30 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
     res.stdErrors.resize(p);
     res.tValues.resize(p);
     res.pValues.resize(p);
+    // NOTE: gsl_multifit_linear() (unweighted) already returns
+    //   cov = s^2 (X^T X)^-1,  s^2 = chisq / (n - rank)
+    // (verified against the bundled GSL 2.8: cov11 == chisq/(n-p)/Sxx for a
+    // straight line).  Multiplying by rss/dfErr again would double-scale the
+    // SE, so the diagonal is used as-is.  Only gsl_multifit_wlinear() returns
+    // the unscaled (X^T W X)^-1.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     for (int j = 0; j < p; ++j) {
-        const double cjj = (n > p) ? gsl_matrix_get(cov, size_t(j), size_t(j)) : 0.0;
-        const double se = (!noiseless && std::isfinite(cjj) && cjj > 0.0) ? std::sqrt(cjj) : 0.0;
+        if (n <= p) {
+            // Residual degrees of freedom are zero: SE / t / p are undefined.
+            res.stdErrors[j] = nan;
+            res.tValues[j] = nan;
+            res.pValues[j] = nan;
+            continue;
+        }
+        const double cjj = gsl_matrix_get(cov, size_t(j), size_t(j));
+        const double se = noiseless ? 0.0
+                                    : ((std::isfinite(cjj) && cjj >= 0.0) ? std::sqrt(cjj) : nan);
         res.stdErrors[j] = se;
 
-        if (se > 1e-30) {
+        if (!std::isfinite(se)) {
+            res.tValues[j] = nan;
+            res.pValues[j] = nan;
+        } else if (se > 1e-30) {
             const double tv = res.betas[j] / se;
             res.tValues[j] = tv;
             res.pValues[j] = (n > p)
@@ -1613,7 +1697,10 @@ PiecewiseAndRobustFit::fitMultipleLinearRegression(ApplicationWindow *app, Table
     const double mss = std::max(0.0, tss - rss);
     const double msReg = mss / double(std::max(1, k));
     const double msErr = rss / double(dfErr);
-    if (noiseless && mss > 1e-24) {
+    if (n <= p) {
+        res.fStatistic = nan;
+        res.fPValue = nan;
+    } else if (noiseless && mss > 1e-24) {
         res.fStatistic = 1e12;
         res.fPValue = 0.0;
     } else if (msErr > 1e-300 && n > p) {
@@ -2221,11 +2308,11 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
             mleConverged = true;
             break;
         }
-        if (iter + 1 == maxIter)
-            mleConverged = std::isfinite(curPenLL);
+        // Reaching maxIter is NOT convergence (complete / quasi-complete
+        // separation typically ends here); reported via res.converged = false.
     }
 
-    if (!mleConverged)
+    if (!std::isfinite(curPenLL))
         return res;
 
     // Final Fisher information & covariance in standardized space
@@ -2250,7 +2337,7 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
     }
 
     std::vector<std::vector<double>> covGamma(size_t(p), std::vector<double>(size_t(p), 0.0));
-    invertMatrixGsl(Hfinal, covGamma);
+    const bool fisherInvertible = invertMatrixGsl(Hfinal, covGamma);
 
     // Unstandardize coefficients beta = M * gamma and covariance covBeta = M * covGamma * M^T
     std::vector<std::vector<double>> M(size_t(p), std::vector<double>(size_t(p), 0.0));
@@ -2291,17 +2378,20 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
         res.oddsRatios[j] = std::exp(std::clamp(bj, -500.0, 500.0));
     }
 
+    const double nanSE = std::numeric_limits<double>::quiet_NaN();
     for (int m = 0; m < p; ++m) {
-        const double vmm = covBeta[size_t(m)][size_t(m)];
-        const double se = (std::isfinite(vmm) && vmm > 0.0) ? std::sqrt(vmm) : 0.0;
+        const double vmm = fisherInvertible ? covBeta[size_t(m)][size_t(m)] : nanSE;
+        // Singular Fisher information or a non-positive variance: SE / z / p
+        // are undefined (never "SE = 0, p = 1").
+        const double se = (std::isfinite(vmm) && vmm > 0.0) ? std::sqrt(vmm) : nanSE;
         res.stdErrors[m] = se;
-        if (se > 1e-30) {
+        if (std::isfinite(se) && se > 0.0) {
             const double zv = res.betas[m] / se;
             res.waldZ[m] = zv;
             res.pValues[m] = std::clamp(2.0 * gsl_cdf_ugaussian_Q(std::fabs(zv)), 0.0, 1.0);
         } else {
-            res.waldZ[m] = 0.0;
-            res.pValues[m] = 1.0;
+            res.waldZ[m] = nanSE;
+            res.pValues[m] = nanSE;
         }
     }
 
@@ -2311,10 +2401,10 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
     res.mcFaddenR2 = (llNull < -1e-15) ? std::clamp(1.0 - (res.logLikelihood / llNull), 0.0, 1.0)
                                        : 0.0;
     res.aic = -2.0 * res.logLikelihood + 2.0 * double(p);
-    res.converged = true;
+    res.converged = mleConverged && fisherInvertible;
 
     // Create Report Worksheet
-    const int nSummaryMetrics = 7;
+    const int nSummaryMetrics = 8;
     const int reportRows = std::max(p, nSummaryMetrics);
     const QString tblName =
             app->generateUniqueName(srcTable->name() + QStringLiteral("_Logistic"), false);
@@ -2366,7 +2456,8 @@ PiecewiseAndRobustFit::runLogisticRegression(ApplicationWindow *app, Table *srcT
             { QStringLiteral("LR_p_Value"), res.lrPValue },
             { QStringLiteral("McFadden_R2"), res.mcFaddenR2 },
             { QStringLiteral("AIC"), res.aic },
-            { QStringLiteral("N_Observations"), double(n) }
+            { QStringLiteral("N_Observations"), double(n) },
+            { QStringLiteral("Converged"), res.converged ? 1.0 : 0.0 }
         };
         for (int r = 0; r < reportRows; ++r) {
             if (r < modelMetrics.size()) {

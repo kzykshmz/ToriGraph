@@ -16,6 +16,7 @@
 
 #include "PlotToolInterface.h"
 
+#include <QFrame>
 #include <QObject>
 #include <QPair>
 #include <QPoint>
@@ -159,7 +160,9 @@ private:
     void initDefaultRoi();
     DragMode hitTestPixelPos(const QPoint &pos) const;
     void updateCursorForPos(const QPoint &pos);
-    void showRoiContextMenu(const QPoint &globalPos);
+    void showRoiContextMenu(const QPoint &globalPos, bool insideRoi = true);
+    void setupFloatingBar();
+    void updateFloatingBar();
 
     QPointer<ApplicationWindow> d_app;
     QPointer<Graph> d_graph_guard;
@@ -178,6 +181,7 @@ private:
     bool d_recalculating;
 
     RoiOverlayItem *d_overlay_item;
+    QPointer<QFrame> d_floating_bar;
 
     // Live overlay data populated by recalculate()
     QVector<QPointF> d_overlay_curve_pts;
@@ -252,6 +256,8 @@ private:
     QVector<QPair<QString, double>> interpolatedValuesForGraph(Graph *g) const;
     void showCursorContextMenu(const QPoint &globalPos);
     Table *createReadoutTable();
+    void setupFloatingBar();
+    void updateFloatingBar();
 
     QPointer<ApplicationWindow> d_app;
     QPointer<Graph> d_graph_guard;
@@ -261,7 +267,8 @@ private:
     bool d_dragging;
 
     QList<QPointer<Graph>> d_filtered_graphs;
-    QList<VerticalCursorOverlayItem *> d_overlay_items;
+    QList<QPointer<VerticalCursorOverlayItem>> d_overlay_items;
+    QPointer<QFrame> d_floating_bar;
 };
 
 class DeltaCursorTool : public QObject, public PlotToolInterface
@@ -322,6 +329,8 @@ private:
     DragTarget hitTestPixelPos(const QPoint &pos) const;
     void updateCursorForPos(const QPoint &pos);
     void showContextMenu(const QPoint &globalPos);
+    void setupFloatingBar();
+    void updateFloatingBar();
 
     QPointer<ApplicationWindow> d_app;
     QPointer<Graph> d_graph_guard;
@@ -339,6 +348,7 @@ private:
     QString d_readout_text;
     QVector<QPointF> d_span_poly_pts;
     DeltaCursorOverlayItem *d_overlay_item = nullptr;
+    QPointer<QFrame> d_floating_bar;
 
     DragTarget d_drag_target = DragNone;
     QPoint d_drag_start_pos;
@@ -395,6 +405,7 @@ private:
     DragTarget hitTestPixelPos(const QPoint &pos) const;
     void updateCursorForPos(const QPoint &pos);
     void showContextMenu(const QPoint &globalPos);
+    void setupFloatingBar();
 
     QPointer<ApplicationWindow> d_app;
     QPointer<Graph> d_graph_guard;
@@ -419,6 +430,7 @@ private:
     QVector<QPointF> d_vert_profile;
     QString d_readout_text;
     ImageProfileOverlayItem *d_overlay_item = nullptr;
+    QPointer<QFrame> d_floating_bar;
     DragTarget d_drag_target = DragNone;
 };
 

@@ -394,12 +394,25 @@ Legend *addTextLabelOnGraph(Graph *g, double x, double y, const QString &text,
     lbl->setFrameStyle(Legend::None);
     lbl->setBackgroundColor(QColor(255, 255, 255, 0));
     lbl->setTextColor(color);
-    int ptSize = g->defaultTextMarkerFont().pointSize();
-    if (ptSize <= 0)
-        ptSize = 10;
-    if (pointSizeDelta != 0 && ptSize + pointSizeDelta >= 6)
+    QFont f = g->defaultTextMarkerFont();
+    double ptSize = (f.pointSizeF() > 0.0)
+            ? f.pointSizeF()
+            : ((f.pointSize() > 0) ? double(f.pointSize()) : 0.0);
+    if (ptSize <= 0.0 && g->plotWidget()) {
+        QFont axF = g->plotWidget()->axisFont(QwtPlot::xBottom);
+        ptSize = (axF.pointSizeF() > 0.0) ? axF.pointSizeF()
+                                          : ((axF.pointSize() > 0) ? double(axF.pointSize()) : 10.0);
+        if (f.family().isEmpty())
+            f.setFamily(axF.family());
+    }
+    if (ptSize <= 0.0)
+        ptSize = 10.0;
+    if (f.family().isEmpty())
+        f.setFamily(QStringLiteral("Arial"));
+    if (pointSizeDelta != 0 && ptSize + pointSizeDelta >= 6.0)
         ptSize += pointSizeDelta;
-    QFont f(QStringLiteral("Arial"), ptSize, QFont::Normal);
+    f.setPointSizeF(ptSize);
+    f.setWeight(QFont::Normal);
     f.setBold(false);
     lbl->setFont(f);
     lbl->setOriginCoord(x, y);
@@ -677,8 +690,28 @@ Legend *addFramedBoxOnGraph(Graph *g, double x, double y, const QString &text,
     return box;
 }
 
+enum class BracketLabelFormat { StarsOnly = 0, StarsAndPValue = 1, PValueOnly = 2 };
+
+BracketLabelFormat parseBracketLabelFormat(const Table *srcTable)
+{
+    if (!srcTable)
+        return BracketLabelFormat::StarsOnly;
+    const QString fmt =
+            srcTable->property("torigraph_anova_bracket_format").toString().trimmed().toLower();
+    if (fmt == QStringLiteral("stars_p") || fmt == QStringLiteral("stars_and_p")
+        || fmt == QStringLiteral("both"))
+        return BracketLabelFormat::StarsAndPValue;
+    if (fmt == QStringLiteral("p") || fmt == QStringLiteral("pvalue")
+        || fmt == QStringLiteral("p_only"))
+        return BracketLabelFormat::PValueOnly;
+    return BracketLabelFormat::StarsOnly;
+}
+
 void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double yMaxAll,
-                             const std::vector<std::tuple<int, int, double>> &sigPairs);
+                             const std::vector<std::tuple<int, int, double>> &sigPairs,
+                             const QStringList &groupNames = QStringList(),
+                             Table *srcTable = nullptr,
+                             BracketLabelFormat labelFormat = BracketLabelFormat::StarsOnly);
 
 // ============================================================================
 // 2D Surface Model Evaluation & Levenberg-Marquardt Solver
@@ -819,10 +852,14 @@ struct SurfaceEvalContext
         }
 
         case GraphStatsAndSurfaceFit::Chebyshev2D: {
-            const double spanX = (xMax > xMin) ? (xMax - xMin) : 1.0;
-            const double spanY = (yMax > yMin) ? (yMax - yMin) : 1.0;
-            const double tx = 2.0 * (px - xMin) / spanX - 1.0;
-            const double ty = 2.0 * (py - yMin) / spanY - 1.0;
+            const double xLo = std::min(xMin, xMax);
+            const double xHi = std::max(xMin, xMax);
+            const double yLo = std::min(yMin, yMax);
+            const double yHi = std::max(yMin, yMax);
+            const double spanX = (xHi > xLo) ? (xHi - xLo) : 1.0;
+            const double spanY = (yHi > yLo) ? (yHi - yLo) : 1.0;
+            const double tx = 2.0 * (px - xLo) / spanX - 1.0;
+            const double ty = 2.0 * (py - yLo) / spanY - 1.0;
             const double T1x = tx;
             const double T2x = 2.0 * tx * tx - 1.0;
             const double T1y = ty;
@@ -993,8 +1030,12 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
     const double zP10 = sortedZ[std::min(n - 1, n / 10)];
     const double zP90 = sortedZ[std::min(n - 1, (n * 9) / 10)];
 
-    const double spanX = std::max(1e-6, ctx.xMax - ctx.xMin);
-    const double spanY = std::max(1e-6, ctx.yMax - ctx.yMin);
+    const double xLo = std::min(ctx.xMin, ctx.xMax);
+    const double xHi = std::max(ctx.xMin, ctx.xMax);
+    const double yLo = std::min(ctx.yMin, ctx.yMax);
+    const double yHi = std::max(ctx.yMin, ctx.yMax);
+    const double spanX = std::max(1e-6, xHi - xLo);
+    const double spanY = std::max(1e-6, yHi - yLo);
 
     switch (ctx.model) {
     case GraphStatsAndSurfaceFit::Plane2D: {
@@ -1129,10 +1170,12 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
         ctx.paramNames = QStringList{ QStringLiteral("c00"), QStringLiteral("c10"),
                                       QStringLiteral("c01"), QStringLiteral("c20"),
                                       QStringLiteral("c11"), QStringLiteral("c02") };
+        const double chebSpanX = (xHi > xLo) ? (xHi - xLo) : 1.0;
+        const double chebSpanY = (yHi > yLo) ? (yHi - yLo) : 1.0;
         std::vector<std::vector<double>> basis(n, std::vector<double>(6));
         for (size_t i = 0; i < n; ++i) {
-            double tx = 2.0 * (ctx.x[i] - ctx.xMin) / spanX - 1.0;
-            double ty = 2.0 * (ctx.y[i] - ctx.yMin) / spanY - 1.0;
+            double tx = 2.0 * (ctx.x[i] - xLo) / chebSpanX - 1.0;
+            double ty = 2.0 * (ctx.y[i] - yLo) / chebSpanY - 1.0;
             basis[i] = { 1.0, tx, ty, 2.0 * tx * tx - 1.0, tx * ty, 2.0 * ty * ty - 1.0 };
         }
         if (!solveLinearLeastSquares(basis, ctx.z, initOut))
@@ -1305,12 +1348,15 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
         status = GSL_ETOLG;
     }
 
-    const double dof = (n > p) ? static_cast<double>(n - p) : 1.0;
-    out.reducedChi2 = rss / dof;
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
+    const bool hasDof = (n > p);
+    const double dof = hasDof ? static_cast<double>(n - p) : 0.0;
+    out.reducedChi2 = hasDof ? (rss / dof) : nanVal;
     out.rSquare = (tss > 1e-30) ? std::max(0.0, 1.0 - rss / tss) : 1.0;
-    out.adjRSquare = (n > p && tss > 1e-30)
-            ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
-            : out.rSquare;
+    out.adjRSquare = hasDof
+            ? ((tss > 1e-30) ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
+                             : out.rSquare)
+            : nanVal;
     out.converged = nonTrivialJacobian && status == GSL_SUCCESS && !hitMaxIterations && !noProgress;
     if (hitMaxIterations)
         out.convergenceNote = QObject::tr(
@@ -1326,9 +1372,13 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
 
     for (size_t j = 0; j < p; ++j) {
         out.params[static_cast<int>(j)] = bestP[j];
-        double cjj = gsl_matrix_get(covar, j, j);
-        double se = (std::isfinite(cjj) && cjj > 0.0) ? std::sqrt(out.reducedChi2 * cjj) : 0.0;
-        out.errors[static_cast<int>(j)] = std::isfinite(se) ? se : 0.0;
+        if (!hasDof) {
+            out.errors[static_cast<int>(j)] = nanVal;
+        } else {
+            double cjj = gsl_matrix_get(covar, j, j);
+            double se = (std::isfinite(cjj) && cjj > 0.0) ? std::sqrt(out.reducedChi2 * cjj) : 0.0;
+            out.errors[static_cast<int>(j)] = std::isfinite(se) ? se : nanVal;
+        }
     }
 
     // Canonicalize positive widths and rotation angle in [-pi/4, pi/4] for Gauss2D / Lorentz2D
@@ -1845,21 +1895,27 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     const double dxStep = (C > 1) ? (x1 - x0) / static_cast<double>(C - 1) : 1.0;
     const double dyStep = (R > 1) ? (y1 - y0) / static_cast<double>(R - 1) : 1.0;
 
-    std::vector<double> rawZ(static_cast<size_t>(R * C), 0.0);
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> rawZ(static_cast<size_t>(R * C), nanVal);
+    std::vector<uint8_t> validMask(static_cast<size_t>(R * C), 0);
     std::vector<double> allValid;
     allValid.reserve(static_cast<size_t>(R * C));
 
     for (int r = 0; r < R; ++r) {
         for (int c = 0; c < C; ++c) {
-            double v = srcMatrix->cell(r, c);
+            const size_t idx = static_cast<size_t>(r * C + c);
+            const double v = srcMatrix->cell(r, c);
             if (!std::isfinite(v))
-                v = 0.0;
-            rawZ[static_cast<size_t>(r * C + c)] = v;
+                continue;
+            rawZ[idx] = v;
+            validMask[idx] = 1;
             allValid.push_back(v);
         }
     }
+    if (allValid.size() < 6)
+        return nullptr;
 
-    // Fit planar background on the lowest 30% of pixels so bright peaks don't bias the plane
+    // Fit planar background on the lowest 30% of valid pixels so bright peaks don't bias the plane
     std::vector<double> sortedValid = allValid;
     std::sort(sortedValid.begin(), sortedValid.end());
     const double bgCutoff =
@@ -1870,7 +1926,10 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     for (int r = 0; r < R; ++r) {
         const double py = y0 + r * dyStep;
         for (int c = 0; c < C; ++c) {
-            const double v = rawZ[static_cast<size_t>(r * C + c)];
+            const size_t idx = static_cast<size_t>(r * C + c);
+            if (!validMask[idx])
+                continue;
+            const double v = rawZ[idx];
             if (v <= bgCutoff || r == 0 || r == R - 1 || c == 0 || c == C - 1) {
                 if (v <= sortedValid[std::min(sortedValid.size() - 1, (sortedValid.size() * 6) / 10)]) {
                     bgBasis.push_back({ 1.0, x0 + c * dxStep, py });
@@ -1883,16 +1942,19 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     if (bgBasis.size() >= 6)
         solveLinearLeastSquares(bgBasis, bgZ, planeC);
 
-    std::vector<double> resid(static_cast<size_t>(R * C), 0.0);
+    std::vector<double> resid(static_cast<size_t>(R * C), nanVal);
     double rMin = std::numeric_limits<double>::max();
     double rMax = -std::numeric_limits<double>::max();
     for (int r = 0; r < R; ++r) {
         const double py = y0 + r * dyStep;
         for (int c = 0; c < C; ++c) {
+            const size_t idx = static_cast<size_t>(r * C + c);
+            if (!validMask[idx])
+                continue;
             const double px = x0 + c * dxStep;
             const double bg = planeC[0] + planeC[1] * px + planeC[2] * py;
-            const double rv = rawZ[static_cast<size_t>(r * C + c)] - bg;
-            resid[static_cast<size_t>(r * C + c)] = rv;
+            const double rv = rawZ[idx] - bg;
+            resid[idx] = rv;
             rMin = std::min(rMin, rv);
             rMax = std::max(rMax, rv);
         }
@@ -1910,7 +1972,10 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     std::vector<CandPeak> cands;
     for (int r = 1; r < R - 1; ++r) {
         for (int c = 1; c < C - 1; ++c) {
-            const double center = resid[static_cast<size_t>(r * C + c)];
+            const size_t cIdx = static_cast<size_t>(r * C + c);
+            if (!validMask[cIdx])
+                continue;
+            const double center = resid[cIdx];
             if (center <= thresh)
                 continue;
             bool isMax = true;
@@ -1919,7 +1984,10 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
                 for (int dc = -1; dc <= 1; ++dc) {
                     if (dr == 0 && dc == 0)
                         continue;
-                    double nb = resid[static_cast<size_t>((r + dr) * C + (c + dc))];
+                    const size_t nIdx = static_cast<size_t>((r + dr) * C + (c + dc));
+                    if (!validMask[nIdx])
+                        continue;
+                    double nb = resid[nIdx];
                     if (nb > center) {
                         isMax = false;
                         break;
@@ -1987,10 +2055,13 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
         for (int rr = rStart; rr <= rEnd; ++rr) {
             double py = y0 + rr * dyStep;
             for (int cc = cStart; cc <= cEnd; ++cc) {
+                const size_t pIdx = static_cast<size_t>(rr * C + cc);
+                if (!validMask[pIdx])
+                    continue;
                 double px = x0 + cc * dxStep;
                 patch.x.push_back(px);
                 patch.y.push_back(py);
-                patch.z.push_back(std::max(0.0, resid[static_cast<size_t>(rr * C + cc)]));
+                patch.z.push_back(std::max(0.0, resid[pIdx]));
             }
         }
 
@@ -2114,7 +2185,6 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             addTextLabelOnGraph(overlayGraph, rec.xc, rec.yc,
                                 QStringLiteral("P%1").arg(i + 1), QColor(220, 30, 30), true, -1);
         }
-        applyArialGraphFonts(overlayGraph);
         overlayGraph->replot();
     }
 
@@ -2237,7 +2307,6 @@ QwtPlotCurve *GraphStatsAndSurfaceFit::addConfidenceEllipse(ApplicationWindow *a
     ellipseCurve->setBrush(QBrush(fillC));
     g->insertPlotItem(ellipseCurve, Graph::Line);
     g->addFitCurve(ellipseCurve);
-    applyArialGraphFonts(g);
     g->updatePlot();
 
     return ellipseCurve;
@@ -2722,8 +2791,23 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     const int nRows = 1 + static_cast<int>(M);
     QString tblName =
             app->generateUniqueName(srcTable->name() + QStringLiteral("_GroupStats"), false);
-    Table *resTbl =
-            app->newTable(nRows, 8, tblName, QObject::tr("ANOVA & Pairwise Comparison Summary"));
+    QString posthocTitle;
+    switch (posthocMode) {
+    case PostHocMode::TukeyHSD:
+        posthocTitle = QObject::tr("One-Way ANOVA & Tukey HSD Post-Hoc Summary");
+        break;
+    case PostHocMode::GamesHowell:
+        posthocTitle = QObject::tr("One-Way ANOVA & Games-Howell Post-Hoc Summary");
+        break;
+    case PostHocMode::Dunnett:
+        posthocTitle = QObject::tr("One-Way ANOVA & Dunnett Post-Hoc Summary");
+        break;
+    case PostHocMode::HolmWelch:
+    default:
+        posthocTitle = QObject::tr("One-Way ANOVA & Holm-Welch Post-Hoc Summary");
+        break;
+    }
+    Table *resTbl = app->newTable(nRows, 8, tblName, posthocTitle);
     if (!resTbl)
         return nullptr;
 
@@ -2764,14 +2848,25 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
     if (annotateGraph && !pairs.empty()) {
         double yMinAll = groups.front().minV;
         double yMaxAll = groups.front().maxV;
+        QStringList groupLabels;
+        groupLabels.reserve(K);
         for (const GroupData &gd : groups) {
             yMinAll = std::min(yMinAll, gd.minV);
             yMaxAll = std::max(yMaxAll, gd.maxV);
+            groupLabels << gd.label;
         }
 
-        // Select pairs to annotate (for 1 pair always annotate; otherwise annotate significant or top pair)
+        const QVariant showNsProp = srcTable->property("torigraph_anova_show_ns");
+        const bool showNsExplicit = showNsProp.isValid() && !showNsProp.isNull();
+        const bool showNs = showNsExplicit ? showNsProp.toBool() : false;
+
         std::vector<std::tuple<int, int, double>> sigToDraw;
-        if (pairs.size() == 1) {
+        if (showNsExplicit) {
+            for (const PairResult &pr : pairs) {
+                if (showNs || pr.pAdj < 0.05)
+                    sigToDraw.emplace_back(pr.i, pr.j, pr.pAdj);
+            }
+        } else if (pairs.size() == 1) {
             sigToDraw.emplace_back(pairs.front().i, pairs.front().j, pairs.front().pAdj);
         } else {
             for (const PairResult &pr : pairs) {
@@ -2781,7 +2876,10 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             if (sigToDraw.empty())
                 sigToDraw.emplace_back(pairs.front().i, pairs.front().j, pairs.front().pAdj);
         }
-        annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw);
+        if (!sigToDraw.empty()) {
+            annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw, groupLabels,
+                                    srcTable, parseBracketLabelFormat(srcTable));
+        }
     }
 
     return resTbl;
@@ -2812,22 +2910,48 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
     if (cState->columnMode() == SciDAVis::ColumnMode::Numeric) {
         std::vector<double> rawStates;
         std::vector<double> rawScores;
+        std::vector<double> distinctStates;
         for (int r = 0; r < nRows; ++r) {
             double st = 0.0, sc = 0.0;
             if (readNumericColumnCell(cState, r, st) && readNumericColumnCell(cScore, r, sc)) {
                 rawStates.push_back(st);
                 rawScores.push_back(sc);
+                bool seen = false;
+                for (double ds : distinctStates) {
+                    if (std::fabs(st - ds) <= 1e-12 * std::max(1.0, std::fabs(ds))) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen)
+                    distinctStates.push_back(st);
             }
         }
         if (rawStates.size() < 2)
             return nullptr;
-        double minSt = *std::min_element(rawStates.begin(), rawStates.end());
-        double maxSt = *std::max_element(rawStates.begin(), rawStates.end());
-        if (maxSt <= minSt)
+        // Reject non-binary / continuous numeric state columns instead of silently thresholding (E4-10)
+        if (distinctStates.size() != 2) {
+            const QString errMsg = QObject::tr(
+                    "ROC state column '%1' must contain exactly 2 distinct numeric classes "
+                    "(e.g. 0 and 1); found %2 distinct value(s).")
+                                           .arg(cState->name())
+                                           .arg(static_cast<int>(distinctStates.size()));
+            app->setProperty("torigraph_last_roc_error", errMsg);
+            if (app->writeFitResultsToLog)
+                app->updateLog(QStringLiteral("[ROC Error] ") + errMsg + QLatin1Char('\n'));
+            if (!isNonInteractiveApp(app))
+                QMessageBox::warning(app, QObject::tr("ROC Curve Analysis"), errMsg);
             return nullptr;
-        double midSt = 0.5 * (minSt + maxSt);
-        for (size_t i = 0; i < rawStates.size(); ++i)
-            obs.push_back({ rawStates[i] > midSt ? 1 : 0, rawScores[i] });
+        }
+        const double negVal = std::min(distinctStates[0], distinctStates[1]);
+        const double posVal = std::max(distinctStates[0], distinctStates[1]);
+        if (posVal <= negVal)
+            return nullptr;
+        for (size_t i = 0; i < rawStates.size(); ++i) {
+            const int lbl =
+                    (std::fabs(rawStates[i] - posVal) < std::fabs(rawStates[i] - negVal)) ? 1 : 0;
+            obs.push_back({ lbl, rawScores[i] });
+        }
     } else {
         struct RawTextObs
         {
@@ -3901,8 +4025,8 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
     Graph *targetG = resolveActiveGraph(app, g);
 
     QDialog dlg(app);
-    dlg.setWindowTitle(QObject::tr("t-Test / One-Way ANOVA & Significance Brackets"));
-    dlg.setMinimumWidth(420);
+    dlg.setWindowTitle(QObject::tr("Group Comparison (ANOVA / Post-Hoc / Nonparametric)"));
+    dlg.setMinimumWidth(460);
     QVBoxLayout *lay = new QVBoxLayout(&dlg);
     QFormLayout *form = new QFormLayout();
 
@@ -3919,12 +4043,71 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
     colList->setSelectionMode(QAbstractItemView::MultiSelection);
     form->addRow(QObject::tr("Group Columns (2+):"), colList);
 
+    // Unified parametric / auto smart-switch / nonparametric selector (B2-10)
+    QComboBox *modeCombo = new QComboBox(&dlg);
+    modeCombo->addItem(QObject::tr("Parametric (One-Way ANOVA / t-Test)"), 0);
+    modeCombo->addItem(QObject::tr("Auto Smart-Switch (Shapiro-Wilk -> Parametric / Nonparametric)"), 1);
+    modeCombo->addItem(QObject::tr("Nonparametric (Kruskal-Wallis + Dunn / Mann-Whitney U)"), 2);
+    modeCombo->addItem(QObject::tr("Nonparametric Paired (Wilcoxon Signed-Rank, 2 Groups)"), 3);
+    form->addRow(QObject::tr("Comparison Mode:"), modeCombo);
+
+    // Post-hoc method selector matching stats.anova_oneway defaults (Tukey HSD default, B2-3)
+    QComboBox *posthocCombo = new QComboBox(&dlg);
+    posthocCombo->addItem(QObject::tr("Tukey HSD (Tukey-Kramer)"), QStringLiteral("tukey"));
+    posthocCombo->addItem(QObject::tr("Holm-Welch (Welch t + Holm)"), QStringLiteral("holm_welch"));
+    posthocCombo->addItem(QObject::tr("Games-Howell (Unequal Variances)"),
+                          QStringLiteral("games_howell"));
+    posthocCombo->addItem(QObject::tr("Dunnett (Treatments vs Control)"),
+                          QStringLiteral("dunnett"));
+    form->addRow(QObject::tr("Post-Hoc Test:"), posthocCombo);
+
+    QComboBox *controlCombo = new QComboBox(&dlg);
+    form->addRow(QObject::tr("Control Group (Dunnett):"), controlCombo);
+
     QCheckBox *annotCheck =
             new QCheckBox(QObject::tr("Add Significance Brackets (*/**/***) to Graph"), &dlg);
     annotCheck->setChecked(targetG != nullptr);
     annotCheck->setEnabled(targetG != nullptr);
     form->addRow(QString(), annotCheck);
+
+    QComboBox *bracketFmtCombo = new QComboBox(&dlg);
+    bracketFmtCombo->addItem(QObject::tr("Asterisks (*, **, ***)"), QStringLiteral("stars"));
+    bracketFmtCombo->addItem(QObject::tr("Asterisks + p-value (* (p = ...))"),
+                             QStringLiteral("stars_p"));
+    bracketFmtCombo->addItem(QObject::tr("p-value only (p = ...)"), QStringLiteral("p"));
+    form->addRow(QObject::tr("Bracket Label:"), bracketFmtCombo);
+
+    QCheckBox *showNsCheck =
+            new QCheckBox(QObject::tr("Show 'ns' Brackets for Non-Significant Pairs"), &dlg);
+    showNsCheck->setChecked(false);
+    form->addRow(QString(), showNsCheck);
     lay->addLayout(form);
+
+    auto refreshControlGroups = [&]() {
+        const QString prevCtrl = controlCombo->currentText();
+        controlCombo->clear();
+        for (QListWidgetItem *it : colList->selectedItems())
+            controlCombo->addItem(it->text());
+        if (controlCombo->count() == 0) {
+            for (int r = 0; r < colList->count(); ++r)
+                controlCombo->addItem(colList->item(r)->text());
+        }
+        const int idx = controlCombo->findText(prevCtrl);
+        if (idx >= 0)
+            controlCombo->setCurrentIndex(idx);
+    };
+
+    auto syncControlStates = [&]() {
+        const int mode = modeCombo->currentData().toInt();
+        const bool isParametric = (mode == 0);
+        const bool isDunnett =
+                isParametric && (posthocCombo->currentData().toString() == QStringLiteral("dunnett"));
+        posthocCombo->setEnabled(isParametric);
+        controlCombo->setEnabled(isDunnett);
+        const bool brkOn = (targetG != nullptr) && annotCheck->isChecked();
+        bracketFmtCombo->setEnabled(brkOn);
+        showNsCheck->setEnabled(brkOn);
+    };
 
     auto populateCols = [&]() {
         colList->clear();
@@ -3937,10 +4120,20 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
             if (t->colPlotDesignation(c) == SciDAVis::Y || t->numCols() <= 3)
                 it->setSelected(true);
         }
+        refreshControlGroups();
     };
     populateCols();
-    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    syncControlStates();
+
+    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) { populateCols(); });
+    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg,
+                     [&]() { refreshControlGroups(); });
+    QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncControlStates(); });
+    QObject::connect(posthocCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { syncControlStates(); });
+    QObject::connect(annotCheck, &QCheckBox::toggled, &dlg, [&](bool) { syncControlStates(); });
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -3957,8 +4150,51 @@ void GraphStatsAndSurfaceFit::showGroupComparisonDialog(ApplicationWindow *app, 
     if (selected.size() < 2)
         return;
 
-    runGroupComparisonAndAnnotate(app, tables[tableCombo->currentIndex()], selected,
-                                  annotCheck->isChecked() ? targetG : nullptr);
+    Table *chosenTbl = tables[tableCombo->currentIndex()];
+    Graph *annTarget = annotCheck->isChecked() ? targetG : nullptr;
+
+    struct ScopedDialogAnovaProps {
+        Table *tbl = nullptr;
+        QVariant oldPosthoc, oldControl, oldShowNs, oldFmt;
+        ScopedDialogAnovaProps(Table *t, const QString &ph, const QString &ctrl, bool showNs,
+                               const QString &fmt)
+            : tbl(t)
+        {
+            if (!tbl)
+                return;
+            oldPosthoc = tbl->property("torigraph_anova_posthoc");
+            oldControl = tbl->property("torigraph_anova_control");
+            oldShowNs = tbl->property("torigraph_anova_show_ns");
+            oldFmt = tbl->property("torigraph_anova_bracket_format");
+            tbl->setProperty("torigraph_anova_posthoc", ph);
+            tbl->setProperty("torigraph_anova_control", ctrl);
+            tbl->setProperty("torigraph_anova_show_ns", showNs);
+            tbl->setProperty("torigraph_anova_bracket_format", fmt);
+        }
+        ~ScopedDialogAnovaProps()
+        {
+            if (!tbl)
+                return;
+            tbl->setProperty("torigraph_anova_posthoc", oldPosthoc);
+            tbl->setProperty("torigraph_anova_control", oldControl);
+            tbl->setProperty("torigraph_anova_show_ns", oldShowNs);
+            tbl->setProperty("torigraph_anova_bracket_format", oldFmt);
+        }
+    } scopedProps(chosenTbl, posthocCombo->currentData().toString(), controlCombo->currentText(),
+                  showNsCheck->isChecked(), bracketFmtCombo->currentData().toString());
+
+    const int mode = modeCombo->currentData().toInt();
+    if (mode == 0) {
+        runGroupComparisonAndAnnotate(app, chosenTbl, selected, annTarget);
+    } else if (mode == 1) {
+        runNonparametricComparison(app, chosenTbl, selected, TestAutoSmartSwitch, annTarget);
+    } else if (mode == 2) {
+        const NonparamMethod nm =
+                (selected.size() == 2) ? TestMannWhitneyU : TestKruskalWallisDunn;
+        runNonparametricComparison(app, chosenTbl, selected, nm, annTarget);
+    } else {
+        runNonparametricComparison(app, chosenTbl, selected, TestWilcoxonSignedRank, annTarget);
+    }
 }
 
 void GraphStatsAndSurfaceFit::showROCDialog(ApplicationWindow *app)
@@ -4342,7 +4578,6 @@ GraphStatsAndSurfaceFit::runNormalityTest(ApplicationWindow *app, Table *srcTabl
         const double boxY = std::max(0.1, 0.88 * peakY);
         Legend *normBox =
                 addFramedBoxOnGraph(histogramGraphToOverlay, boxX, boxY, annot, QColor(20, 30, 50), 9);
-        applyArialGraphFonts(histogramGraphToOverlay);
         if (normBox)
             attachStatsCalloutAutoAvoid(histogramGraphToOverlay, normBox, 14);
         histogramGraphToOverlay->updatePlot();
@@ -5227,7 +5462,9 @@ void computeMidRanksWithTies(const std::vector<double> &vals, std::vector<double
 }
 
 void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double yMaxAll,
-                             const std::vector<std::tuple<int, int, double>> &sigPairs)
+                             const std::vector<std::tuple<int, int, double>> &sigPairs,
+                             const QStringList &groupNames, Table *srcTable,
+                             BracketLabelFormat labelFormat)
 {
     if (!annotateGraph || K < 2 || sigPairs.empty())
         return;
@@ -5236,7 +5473,11 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     if (!pw)
         return;
 
-    applyArialGraphFonts(annotateGraph);
+    // Record Undo snapshot before modifying graph markers/scales (B2-2)
+    MultiLayer *mlParent = annotateGraph->multiLayerParent();
+    const QString beforeUndoSnap = mlParent ? mlParent->captureUndoSnapshot() : QString();
+
+    // Preserve existing graph fonts/styles (no applyArialGraphFonts overwrite, B2-2)
     annotateGraph->replot();
 
     const double ySpan = std::max(1e-6, yMaxAll - yMinAll);
@@ -5244,19 +5485,152 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     for (int k = 0; k < K; ++k)
         groupX[static_cast<size_t>(k)] = static_cast<double>(k + 1);
 
-    if (annotateGraph->curves() >= K) {
+    // Collect candidate plotted data curves, excluding ErrorBars / Function / Spectrogram / Pie curves (B2-2)
+    struct CurveCandidate {
+        double meanX = 0.0;
+        QString fullName;
+        QString shortName;
+        bool fromSrcTable = false;
+    };
+    std::vector<CurveCandidate> dataCurves;
+    const int nCurves = annotateGraph->curves();
+    dataCurves.reserve(static_cast<size_t>(std::max(0, nCurves)));
+    for (int ci = 0; ci < nCurves; ++ci) {
+        const int cType = annotateGraph->curveType(ci);
+        if (cType == Graph::ErrorBars || cType == Graph::Function || cType == Graph::ColorMap
+            || cType == Graph::GrayMap || cType == Graph::ContourMap || cType == Graph::Pie
+            || cType == Graph::VectXYXY || cType == Graph::VectXYAM) {
+            continue;
+        }
+        QwtPlotCurve *cv = annotateGraph->curve(ci);
+        if (!cv || cv->dataSize() <= 0)
+            continue;
+        DataCurve *dc = dynamic_cast<DataCurve *>(cv);
+        if (!dc)
+            continue;
+        double sx = 0.0;
+        int validPts = 0;
+        for (int i = 0; i < cv->dataSize(); ++i) {
+            const double xv = cv->x(i);
+            if (std::isfinite(xv)) {
+                sx += xv;
+                ++validPts;
+            }
+        }
+        if (validPts <= 0)
+            continue;
+        CurveCandidate cand;
+        cand.meanX = sx / static_cast<double>(validPts);
+        cand.fullName = dc->yColumnName().trimmed();
+        cand.shortName = cand.fullName;
+        if (Table *dt = dc->table()) {
+            const QString prefix = dt->name() + QLatin1Char('_');
+            if (cand.fullName.startsWith(prefix))
+                cand.shortName = cand.fullName.mid(prefix.size());
+            cand.fromSrcTable = (srcTable != nullptr && dt == srcTable);
+        }
+        dataCurves.push_back(std::move(cand));
+    }
+
+    bool resolvedByName = false;
+    if (groupNames.size() == K) {
+        // 1) Try matching each group name against DataCurve yColumnName / short column name
+        std::vector<double> matchedX(static_cast<size_t>(K), 0.0);
+        std::vector<bool> matchedFlag(static_cast<size_t>(K), false);
+        int nMatched = 0;
+        for (int k = 0; k < K; ++k) {
+            const QString gn = groupNames[k].trimmed();
+            const QString fullSrc =
+                    srcTable ? (srcTable->name() + QLatin1Char('_') + gn) : QString();
+            int bestIdx = -1;
+            int bestScore = -1;
+            for (size_t ci = 0; ci < dataCurves.size(); ++ci) {
+                const CurveCandidate &cand = dataCurves[ci];
+                int score = -1;
+                if (!fullSrc.isEmpty() && cand.fullName == fullSrc)
+                    score = 100;
+                else if (cand.shortName == gn || cand.fullName == gn)
+                    score = cand.fromSrcTable ? 90 : 80;
+                else if (cand.shortName.compare(gn, Qt::CaseInsensitive) == 0
+                         || cand.fullName.compare(gn, Qt::CaseInsensitive) == 0)
+                    score = cand.fromSrcTable ? 70 : 60;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = static_cast<int>(ci);
+                }
+            }
+            if (bestIdx >= 0) {
+                matchedX[static_cast<size_t>(k)] = dataCurves[static_cast<size_t>(bestIdx)].meanX;
+                matchedFlag[static_cast<size_t>(k)] = true;
+                ++nMatched;
+            }
+        }
+        if (nMatched == K) {
+            bool distinct = true;
+            for (int a = 0; a < K && distinct; ++a) {
+                for (int b = a + 1; b < K; ++b) {
+                    if (std::fabs(matchedX[static_cast<size_t>(a)]
+                                  - matchedX[static_cast<size_t>(b)])
+                        < 1e-6) {
+                        distinct = false;
+                        break;
+                    }
+                }
+            }
+            if (distinct) {
+                groupX = matchedX;
+                resolvedByName = true;
+            }
+        }
+
+        // 2) Try matching group names against text-category X-axis tick labels (QwtTextScaleDraw)
+        if (!resolvedByName) {
+            if (const auto *tsd =
+                        dynamic_cast<const QwtTextScaleDraw *>(pw->axisScaleDraw(QwtPlot::xBottom))) {
+                const QMap<int, QString> lmap = tsd->labelsMap();
+                std::vector<double> axisMatchedX(static_cast<size_t>(K), 0.0);
+                int nAxisMatched = 0;
+                for (int k = 0; k < K; ++k) {
+                    const QString gn = groupNames[k].trimmed();
+                    bool found = false;
+                    for (auto it = lmap.constBegin(); it != lmap.constEnd(); ++it) {
+                        const QString lbl = it.value().trimmed();
+                        if (lbl == gn || lbl.compare(gn, Qt::CaseInsensitive) == 0) {
+                            axisMatchedX[static_cast<size_t>(k)] = static_cast<double>(it.key());
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found)
+                        ++nAxisMatched;
+                }
+                if (nAxisMatched == K) {
+                    bool distinct = true;
+                    for (int a = 0; a < K && distinct; ++a) {
+                        for (int b = a + 1; b < K; ++b) {
+                            if (std::fabs(axisMatchedX[static_cast<size_t>(a)]
+                                          - axisMatchedX[static_cast<size_t>(b)])
+                                < 1e-6) {
+                                distinct = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (distinct) {
+                        groupX = axisMatchedX;
+                        resolvedByName = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3) Fallback only when curve count matches K (or no names provided): use distinct data curve mean X
+    if (!resolvedByName && static_cast<int>(dataCurves.size()) == K) {
         std::vector<double> curveMeans;
         bool distinctMeans = true;
         for (int k = 0; k < K; ++k) {
-            QwtPlotCurve *cv = annotateGraph->curve(k);
-            if (!cv || cv->dataSize() <= 0) {
-                distinctMeans = false;
-                break;
-            }
-            double sx = 0.0;
-            for (int i = 0; i < cv->dataSize(); ++i)
-                sx += cv->x(i);
-            const double mx = sx / static_cast<double>(cv->dataSize());
+            const double mx = dataCurves[static_cast<size_t>(k)].meanX;
             for (double prev : curveMeans) {
                 if (std::fabs(mx - prev) < 1e-6)
                     distinctMeans = false;
@@ -5267,7 +5641,7 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
             groupX = curveMeans;
     }
 
-    // Canonicalize each pair to (minIdx, maxIdx) and sort narrowest span -> widest span, then left -> right
+    // Canonicalize each pair to (minIdx, maxIdx) in X-order and sort narrowest span -> widest span, then left -> right
     std::vector<std::tuple<int, int, double>> orderedPairs;
     orderedPairs.reserve(sigPairs.size());
     for (const auto &tp : sigPairs) {
@@ -5275,7 +5649,7 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
         int b = std::clamp(std::get<1>(tp), 0, K - 1);
         if (a == b)
             continue;
-        if (a > b)
+        if (groupX[static_cast<size_t>(a)] > groupX[static_cast<size_t>(b)])
             std::swap(a, b);
         orderedPairs.emplace_back(a, b, std::get<2>(tp));
     }
@@ -5294,22 +5668,69 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
                                  < groupX[size_t(std::get<0>(rhs))];
                      });
 
-    int basePt = annotateGraph->defaultTextMarkerFont().pointSize();
-    if (basePt <= 0)
-        basePt = 10;
-    QFont starFont(QStringLiteral("Arial"), basePt, QFont::Normal);
+    // Pack horizontally non-overlapping brackets into the same vertical tier (B2-2)
+    const double xMinG = *std::min_element(groupX.begin(), groupX.end());
+    const double xMaxG = *std::max_element(groupX.begin(), groupX.end());
+    const double minGroupGap = (K > 1) ? std::max(1e-6, (xMaxG - xMinG) / double(K - 1)) : 1.0;
+    const double horizPad = 0.08 * minGroupGap;
+
+    std::vector<std::vector<std::pair<double, double>>> laneIntervals;
+    std::vector<int> pairLane(orderedPairs.size(), 0);
+    for (size_t b = 0; b < orderedPairs.size(); ++b) {
+        const double xl = std::min(groupX[static_cast<size_t>(std::get<0>(orderedPairs[b]))],
+                                   groupX[static_cast<size_t>(std::get<1>(orderedPairs[b]))]);
+        const double xr = std::max(groupX[static_cast<size_t>(std::get<0>(orderedPairs[b]))],
+                                   groupX[static_cast<size_t>(std::get<1>(orderedPairs[b]))]);
+        int chosenLane = -1;
+        for (size_t ln = 0; ln < laneIntervals.size(); ++ln) {
+            bool overlaps = false;
+            for (const auto &iv : laneIntervals[ln]) {
+                if (!(xr + horizPad < iv.first || xl - horizPad > iv.second)) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (!overlaps) {
+                chosenLane = static_cast<int>(ln);
+                break;
+            }
+        }
+        if (chosenLane < 0) {
+            chosenLane = static_cast<int>(laneIntervals.size());
+            laneIntervals.emplace_back();
+        }
+        laneIntervals[static_cast<size_t>(chosenLane)].emplace_back(xl, xr);
+        pairLane[b] = chosenLane;
+    }
+    const int numLanes = std::max(1, static_cast<int>(laneIntervals.size()));
+
+    // Inherit existing graph font family & pointSizeF without altering graph fonts
+    QFont starFont = annotateGraph->defaultTextMarkerFont();
+    double basePt = (starFont.pointSizeF() > 0.0)
+            ? starFont.pointSizeF()
+            : ((starFont.pointSize() > 0) ? double(starFont.pointSize()) : 0.0);
+    if (basePt <= 0.0) {
+        QFont axF = pw->axisFont(QwtPlot::xBottom);
+        basePt = (axF.pointSizeF() > 0.0) ? axF.pointSizeF()
+                                          : ((axF.pointSize() > 0) ? double(axF.pointSize()) : 10.0);
+        if (starFont.family().isEmpty())
+            starFont.setFamily(axF.family());
+    }
+    if (starFont.family().isEmpty())
+        starFont.setFamily(QStringLiteral("Arial"));
+    starFont.setPointSizeF(basePt);
+    starFont.setWeight(QFont::Normal);
     starFont.setBold(false);
     const QFontMetricsF starFm(starFont);
 
     const int canvasH = (pw->canvas() && pw->canvas()->height() >= 60) ? pw->canvas()->height() : 220;
     const double minStepPx = starFm.height() + 11.0;
     const double approxStepFrac =
-            minStepPx / std::max(40.0, double(canvasH) - minStepPx * (double(orderedPairs.size()) + 1.3));
+            minStepPx / std::max(40.0, double(canvasH) - minStepPx * (double(numLanes) + 1.3));
     const double stepY = std::max(0.145 * ySpan, std::min(0.46 * ySpan, approxStepFrac * ySpan));
     const double tickH = 0.28 * stepY;
     const double baseTop = yMaxAll + 0.10 * ySpan;
-    const double neededYMax =
-            baseTop + (static_cast<double>(orderedPairs.size()) + 1.05) * stepY;
+    const double neededYMax = baseTop + (static_cast<double>(numLanes) + 1.05) * stepY;
 
     const QwtScaleDiv *xDiv = pw->axisScaleDiv(QwtPlot::xBottom);
     const QwtScaleDiv *yDiv = pw->axisScaleDiv(QwtPlot::yLeft);
@@ -5320,10 +5741,11 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     const double curXLo = xDiv ? std::min(xDiv->lowerBound(), xDiv->upperBound()) : 0.5;
     const double curXHi = xDiv ? std::max(xDiv->lowerBound(), xDiv->upperBound())
                                : (static_cast<double>(K) + 0.5);
-    const double xLo = xIsTextCat ? std::min(curXLo, 0.5)
-                                  : std::min(curXLo, groupX.front() - 0.55);
-    const double xHi = xIsTextCat ? std::max(curXHi, static_cast<double>(K) + 0.5)
-                                  : std::max(curXHi, groupX.back() + 0.55);
+    const double xLo = xIsTextCat ? std::min(curXLo, std::min(0.5, xMinG - 0.5))
+                                  : std::min(curXLo, xMinG - 0.55);
+    const double xHi = xIsTextCat
+            ? std::max(curXHi, std::max(static_cast<double>(K) + 0.5, xMaxG + 0.5))
+            : std::max(curXHi, xMaxG + 0.55);
 
     const double curYLo = yDiv ? std::min(yDiv->lowerBound(), yDiv->upperBound())
                                : (yMinAll - 0.05 * ySpan);
@@ -5334,7 +5756,8 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     double yHi = std::max(curYHi, neededYMax);
 
     if (xIsTextCat) {
-        annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi, 1.0, K + 2, 0);
+        annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi, 1.0,
+                                std::max(K + 2, static_cast<int>(std::ceil(xHi - xLo)) + 1), 0);
         pw->setMinorTicksType(QwtPlot::xBottom, ScaleDraw::None);
     } else {
         annotateGraph->setScale(QwtPlot::xBottom, xLo, xHi);
@@ -5345,8 +5768,7 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
 
     // Ensure topmost bracket label clears top spine (and inward ticks) by at least 12 px
     {
-        const double topBarY =
-                baseTop + static_cast<double>(orderedPairs.size() - 1) * stepY;
+        const double topBarY = baseTop + static_cast<double>(numLanes - 1) * stepY;
         const double topBarPx = pw->transform(QwtPlot::yLeft, topBarY);
         const double estOriginTopPx = topBarPx - 4.0 - starFm.ascent() - 4.0;
         if (estOriginTopPx < 12.0 && canvasH > 50) {
@@ -5359,11 +5781,23 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
         }
     }
 
+    auto formatBracketText = [](double pAdj, BracketLabelFormat fmt) -> QString {
+        const QString stars = starRatingForP(pAdj);
+        if (fmt == BracketLabelFormat::StarsOnly)
+            return stars;
+        const QString pStr = (pAdj < 0.0001)
+                ? QStringLiteral("p < 0.0001")
+                : QStringLiteral("p = %1").arg(pAdj, 0, 'f', (pAdj < 0.01) ? 4 : 3);
+        if (fmt == BracketLabelFormat::PValueOnly)
+            return pStr;
+        return QStringLiteral("%1 (%2)").arg(stars, pStr);
+    };
+
     struct BracketLabelBinding {
         int markerId = -1;
         double xMid = 0.0;
         double yBar = 0.0;
-        QString stars;
+        QString labelText;
     };
     QVector<BracketLabelBinding> bindings;
     bindings.reserve(static_cast<int>(orderedPairs.size()));
@@ -5377,14 +5811,14 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
                 std::min(groupX[static_cast<size_t>(gi)], groupX[static_cast<size_t>(gj)]);
         const double xRight =
                 std::max(groupX[static_cast<size_t>(gi)], groupX[static_cast<size_t>(gj)]);
-        const double yBar = baseTop + static_cast<double>(b) * stepY;
+        const double yBar = baseTop + static_cast<double>(pairLane[b]) * stepY;
 
         addLineSegmentOnGraph(annotateGraph, xLeft, yBar - tickH, xLeft, yBar, bracketColor, 1);
         addLineSegmentOnGraph(annotateGraph, xLeft, yBar, xRight, yBar, bracketColor, 1);
         addLineSegmentOnGraph(annotateGraph, xRight, yBar, xRight, yBar - tickH, bracketColor, 1);
 
-        const QString stars = starRatingForP(pAdj);
-        Legend *lbl = addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar, stars,
+        const QString lblTxt = formatBracketText(pAdj, labelFormat);
+        Legend *lbl = addTextLabelOnGraph(annotateGraph, 0.5 * (xLeft + xRight), yBar, lblTxt,
                                           bracketColor, false, 0);
         if (lbl) {
             int foundId = -1;
@@ -5395,7 +5829,7 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
                 }
             }
             if (foundId >= 0)
-                bindings.append({ foundId, 0.5 * (xLeft + xRight), yBar, stars });
+                bindings.append({ foundId, 0.5 * (xLeft + xRight), yBar, lblTxt });
         }
     }
 
@@ -5405,13 +5839,18 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
         Plot *plotW = gPtr->plotWidget();
         const QwtScaleDiv *yd = plotW->axisScaleDiv(QwtPlot::yLeft);
         if (yd && !bindings.isEmpty() && plotW->canvas() && plotW->canvas()->height() > 50) {
-            const BracketLabelBinding &topB = bindings.last();
+            int topIdx = 0;
+            for (int bi = 1; bi < bindings.size(); ++bi) {
+                if (bindings[bi].yBar > bindings[topIdx].yBar)
+                    topIdx = bi;
+            }
+            const BracketLabelBinding &topB = bindings[topIdx];
             if (Legend *topLbl = gPtr->textMarker(topB.markerId)) {
                 QFont tf = topLbl->font();
                 tf.setBold(false);
                 const QFontMetricsF tfm(tf);
                 const double topBarPx = plotW->transform(QwtPlot::yLeft, topB.yBar);
-                const double lift = (topB.stars == QLatin1String("ns")) ? 4.0 : 2.0;
+                const double lift = (topB.labelText == QLatin1String("ns")) ? 4.0 : 2.0;
                 const double neededTopPx = topBarPx - 4.0 - tfm.ascent() - lift;
                 if (neededTopPx < 10.0) {
                     const double curLo = std::min(yd->lowerBound(), yd->upperBound());
@@ -5435,11 +5874,11 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
                 lbl->setFont(lf);
             }
             const QFontMetricsF fm(lf);
-            const double textW = fm.horizontalAdvance(bb.stars);
+            const double textW = fm.horizontalAdvance(bb.labelText);
             const double xMidPx = plotW->transform(QwtPlot::xBottom, bb.xMid);
             const double yBarPx = plotW->transform(QwtPlot::yLeft, bb.yBar);
             const double originPxX = xMidPx - 6.0 - 0.5 * textW;
-            const double liftPx = (bb.stars == QLatin1String("ns")) ? 4.0 : 2.0;
+            const double liftPx = (bb.labelText == QLatin1String("ns")) ? 4.0 : 2.0;
             const double originPxY = std::max(3.0, yBarPx - 4.0 - fm.ascent() - liftPx);
             const double dataX = plotW->invTransform(QwtPlot::xBottom, qRound(originPxX));
             const double dataY = plotW->invTransform(QwtPlot::yLeft, qRound(originPxY));
@@ -5448,7 +5887,6 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
         }
     };
 
-    applyArialGraphFonts(annotateGraph);
     syncBracketLabels();
 
     if (!bindings.isEmpty()) {
@@ -5466,6 +5904,9 @@ void annotateBracketsOnGraph(Graph *annotateGraph, int K, double yMinAll, double
     if (annotateGraph->isLegendVisible() && annotateGraph->legend())
         annotateGraph->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
     annotateGraph->replot();
+
+    if (mlParent && !beforeUndoSnap.isEmpty())
+        mlParent->pushUndoSnapshot(QObject::tr("Add Significance Brackets"), beforeUndoSnap);
 }
 
 double dixonQ10CritTable(int n, int alphaIdx /*0:0.10, 1:0.05, 2:0.01*/)
@@ -5861,7 +6302,12 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     double bestGamma = 0.0;
     bool usedThreeParam = false;
     if (fitThreeParam && mFail >= 3) {
-        const double gammaMax = 0.999 * failX.front();
+        // Bound threshold gamma below all observations (including early right-censored points)
+        // so shifted lifetimes x_i - gamma remain strictly positive for right-censored MLE (E4-9).
+        double minAllX = failX.front();
+        for (const WeibItem &it : items)
+            minAllX = std::min(minAllX, it.x);
+        const double gammaMax = 0.999 * minAllX;
         if (gammaMax > 0.0) {
             auto objectiveRss = [&](double gCand) -> double {
                 double bTmp = 0.0, aTmp = 0.0, muTmp = 0.0, suuTmp = 0.0, rssTmp = 0.0;
@@ -6727,9 +7173,16 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             }
         }
         if (annotateGraph && !allVals.empty()) {
-            const auto mm = std::minmax_element(allVals.begin(), allVals.end());
-            annotateBracketsOnGraph(annotateGraph, 2, *mm.first, *mm.second,
-                                    { std::make_tuple(0, 1, pVal) });
+            const QVariant showNsProp = srcTable->property("torigraph_anova_show_ns");
+            const bool showNsExplicit = showNsProp.isValid() && !showNsProp.isNull();
+            const bool showNs = showNsExplicit ? showNsProp.toBool() : true;
+            if (showNs || pVal < 0.05) {
+                const auto mm = std::minmax_element(allVals.begin(), allVals.end());
+                annotateBracketsOnGraph(annotateGraph, 2, *mm.first, *mm.second,
+                                        { std::make_tuple(0, 1, pVal) },
+                                        QStringList() << cA->name() << cB->name(), srcTable,
+                                        parseBracketLabelFormat(srcTable));
+            }
         }
         return res;
     }
@@ -6819,11 +7272,11 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 const double v0 = groups[0].var / n0;
                 const double v1 = groups[1].var / n1;
                 const double vSum = v0 + v1;
-                double tStat = 0.0, pWelch = 1.0;
+                double tStat = 0.0, pWelch = 1.0, dfW = n0 + n1 - 2.0;
                 if (vSum > 1e-30) {
                     tStat = (groups[0].mean - groups[1].mean) / std::sqrt(vSum);
                     const double den = (v0 * v0) / (n0 - 1.0) + (v1 * v1) / (n1 - 1.0);
-                    const double dfW = (den > 1e-30) ? ((vSum * vSum) / den) : (n0 + n1 - 2.0);
+                    dfW = (den > 1e-30) ? ((vSum * vSum) / den) : (n0 + n1 - 2.0);
                     pWelch = std::clamp(2.0 * gsl_cdf_tdist_Q(std::fabs(tStat), dfW), 0.0, 1.0);
                 } else if (std::fabs(groups[0].mean - groups[1].mean) > 1e-30) {
                     tStat = (groups[0].mean > groups[1].mean) ? 1e6 : -1e6;
@@ -6833,13 +7286,46 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 res.chosenTestName = QStringLiteral("Welch t-Test (Auto Parametric)");
                 res.statistic = tStat;
                 res.pValue = pWelch;
+                // Emit a consistent Welch t-Test report table (not equal-variance One-Way ANOVA, E4-6)
                 if (app) {
-                    res.reportTable = runGroupComparisonAndAnnotate(
-                            app, srcTable, QStringList() << groups[0].name << groups[1].name,
-                            annotateGraph);
-                } else if (annotateGraph) {
-                    annotateBracketsOnGraph(annotateGraph, 2, yMinAll, yMaxAll,
-                                            { std::make_tuple(0, 1, pWelch) });
+                    const QString tblName = app->generateUniqueName(
+                            srcTable->name() + QStringLiteral("_WelchTTest"), false);
+                    Table *rep = app->newTable(1, 7, tblName,
+                                               QObject::tr("Welch t-Test Summary (Auto Parametric)"));
+                    if (rep) {
+                        rep->setHeader(QStringList() << QStringLiteral("Comparison")
+                                                     << QStringLiteral("Test")
+                                                     << QStringLiteral("Statistic")
+                                                     << QStringLiteral("df")
+                                                     << QStringLiteral("p_value")
+                                                     << QStringLiteral("MeanDiff")
+                                                     << QStringLiteral("Significance"));
+                        rep->column(0)->setColumnMode(SciDAVis::ColumnMode::Text);
+                        rep->column(1)->setColumnMode(SciDAVis::ColumnMode::Text);
+                        for (int c = 2; c <= 5; ++c)
+                            rep->column(c)->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                        rep->column(6)->setColumnMode(SciDAVis::ColumnMode::Text);
+                        rep->column(0)->setTextAt(0, QStringLiteral("%1 vs %2")
+                                                             .arg(groups[0].name, groups[1].name));
+                        rep->column(1)->setTextAt(0, QStringLiteral("Welch t-Test"));
+                        rep->column(2)->setValueAt(0, tStat);
+                        rep->column(3)->setValueAt(0, dfW);
+                        rep->column(4)->setValueAt(0, pWelch);
+                        rep->column(5)->setValueAt(0, groups[0].mean - groups[1].mean);
+                        rep->column(6)->setTextAt(0, starRatingForP(pWelch));
+                        res.reportTable = rep;
+                    }
+                }
+                if (annotateGraph) {
+                    const QVariant showNsProp = srcTable->property("torigraph_anova_show_ns");
+                    const bool showNsExplicit = showNsProp.isValid() && !showNsProp.isNull();
+                    const bool showNs = showNsExplicit ? showNsProp.toBool() : true;
+                    if (showNs || pWelch < 0.05) {
+                        annotateBracketsOnGraph(annotateGraph, 2, yMinAll, yMaxAll,
+                                                { std::make_tuple(0, 1, pWelch) },
+                                                QStringList() << groups[0].name << groups[1].name,
+                                                srcTable, parseBracketLabelFormat(srcTable));
+                    }
                 }
                 return res;
             } else {
@@ -6858,9 +7344,14 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 QStringList validNames;
                 for (const GroupSample &gs : groups)
                     validNames << gs.name;
-                if (app)
+                if (app) {
+                    // Explicitly run Tukey HSD to match the declared chosenTestName (E4-6)
+                    const QVariant prevPosthoc = srcTable->property("torigraph_anova_posthoc");
+                    srcTable->setProperty("torigraph_anova_posthoc", QStringLiteral("tukey"));
                     res.reportTable = runGroupComparisonAndAnnotate(app, srcTable, validNames,
                                                                     annotateGraph);
+                    srcTable->setProperty("torigraph_anova_posthoc", prevPosthoc);
+                }
                 return res;
             }
         }
@@ -6930,9 +7421,15 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             }
         }
         if (annotateGraph) {
-            annotateBracketsOnGraph(
-                    annotateGraph, 2, std::min(g0.minV, g1.minV), std::max(g0.maxV, g1.maxV),
-                    { std::make_tuple(0, 1, pVal) });
+            const QVariant showNsProp = srcTable->property("torigraph_anova_show_ns");
+            const bool showNsExplicit = showNsProp.isValid() && !showNsProp.isNull();
+            const bool showNs = showNsExplicit ? showNsProp.toBool() : true;
+            if (showNs || pVal < 0.05) {
+                annotateBracketsOnGraph(
+                        annotateGraph, 2, std::min(g0.minV, g1.minV), std::max(g0.maxV, g1.maxV),
+                        { std::make_tuple(0, 1, pVal) }, QStringList() << g0.name << g1.name,
+                        srcTable, parseBracketLabelFormat(srcTable));
+            }
         }
         return res;
     }
@@ -7059,8 +7556,22 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
     }
 
     if (annotateGraph && !pairs.empty()) {
+        QStringList groupLabels;
+        groupLabels.reserve(K);
+        for (const GroupSample &gs : groups)
+            groupLabels << gs.name;
+
+        const QVariant showNsProp = srcTable->property("torigraph_anova_show_ns");
+        const bool showNsExplicit = showNsProp.isValid() && !showNsProp.isNull();
+        const bool showNs = showNsExplicit ? showNsProp.toBool() : false;
+
         std::vector<std::tuple<int, int, double>> sigToDraw;
-        if (K == 2) {
+        if (showNsExplicit) {
+            for (const DunnPair &dp : pairs) {
+                if (showNs || dp.pAdj < 0.05)
+                    sigToDraw.emplace_back(dp.i, dp.j, dp.pAdj);
+            }
+        } else if (K == 2) {
             sigToDraw.emplace_back(pairs[0].i, pairs[0].j, pairs[0].pAdj);
         } else {
             for (const DunnPair &dp : pairs) {
@@ -7070,7 +7581,10 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             if (sigToDraw.empty())
                 sigToDraw.emplace_back(pairs[0].i, pairs[0].j, pairs[0].pAdj);
         }
-        annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw);
+        if (!sigToDraw.empty()) {
+            annotateBracketsOnGraph(annotateGraph, K, yMinAll, yMaxAll, sigToDraw, groupLabels,
+                                    srcTable, parseBracketLabelFormat(srcTable));
+        }
     }
 
     return res;
@@ -8228,6 +8742,13 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
     };
 
     // 1. Passing-Bablok (1983) shifted median of pairwise slopes S_ij = (y_j - y_i) / (x_j - x_i)
+    constexpr double kVertSlopeLimit = 1e100;
+    auto isVerticalSlope = [](double b) -> bool {
+        return !std::isfinite(b) || std::fabs(b) >= kVertSlopeLimit;
+    };
+    const double nanVal = std::numeric_limits<double>::quiet_NaN();
+    const double infVal = std::numeric_limits<double>::infinity();
+
     std::vector<double> slopes;
     slopes.reserve(static_cast<size_t>(n) * static_cast<size_t>(n - 1) / 2);
     int kLessMinusOne = 0;
@@ -8240,7 +8761,7 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                 continue; // identical pair omitted per Passing & Bablok (1983)
             double s = 0.0;
             if (std::fabs(dx) <= 1e-15) {
-                s = (dy > 0.0) ? 1e300 : -1e300;
+                s = (dy > 0.0) ? infVal : -infVal;
             } else {
                 s = dy / dx;
                 if (std::fabs(s + 1.0) <= 1e-15)
@@ -8262,13 +8783,14 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         return slopes[static_cast<size_t>(cIdx)];
     };
 
-    double pbSlope = 1.0;
+    double pbSlope = nanVal;
     if (M % 2 == 1) {
-        pbSlope = clampedSlopeAt(static_cast<long long>((M - 1) / 2) + kLessMinusOne);
+        const double rawS = clampedSlopeAt(static_cast<long long>((M - 1) / 2) + kLessMinusOne);
+        pbSlope = isVerticalSlope(rawS) ? nanVal : rawS;
     } else {
         const double s1 = clampedSlopeAt(static_cast<long long>(M / 2 - 1) + kLessMinusOne);
         const double s2 = clampedSlopeAt(static_cast<long long>(M / 2) + kLessMinusOne);
-        pbSlope = 0.5 * (s1 + s2);
+        pbSlope = (isVerticalSlope(s1) || isVerticalSlope(s2)) ? nanVal : (0.5 * (s1 + s2));
     }
 
     const double dn = static_cast<double>(n);
@@ -8279,72 +8801,87 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             std::clamp<long long>(m1Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
     const long long hiSlopeIdx =
             std::clamp<long long>(m2Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
-    const double pbSlopeLo = slopes[static_cast<size_t>(loSlopeIdx)];
-    const double pbSlopeHi = slopes[static_cast<size_t>(hiSlopeIdx)];
+    const double rawSlopeLo = slopes[static_cast<size_t>(loSlopeIdx)];
+    const double rawSlopeHi = slopes[static_cast<size_t>(hiSlopeIdx)];
+    const double pbSlopeLo = isVerticalSlope(rawSlopeLo) ? nanVal : rawSlopeLo;
+    const double pbSlopeHi = isVerticalSlope(rawSlopeHi) ? nanVal : rawSlopeHi;
 
     auto interceptForSlope = [&](double b) -> double {
-        std::vector<double> aVec(static_cast<size_t>(n), 0.0);
-        for (int i = 0; i < n; ++i)
-            aVec[static_cast<size_t>(i)] =
-                    pts[static_cast<size_t>(i)].second - b * pts[static_cast<size_t>(i)].first;
-        return medianOfVec(std::move(aVec));
+        if (isVerticalSlope(b))
+            return nanVal;
+        std::vector<double> aVec;
+        aVec.reserve(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const double ai = pts[static_cast<size_t>(i)].second
+                    - b * pts[static_cast<size_t>(i)].first;
+            if (!std::isfinite(ai))
+                return nanVal;
+            aVec.push_back(ai);
+        }
+        const double med = medianOfVec(std::move(aVec));
+        return std::isfinite(med) ? med : nanVal;
     };
 
     const double pbIntercept = interceptForSlope(pbSlope);
     const double aAtHi = interceptForSlope(pbSlopeHi);
     const double aAtLo = interceptForSlope(pbSlopeLo);
-    const double pbInterceptLo = std::min(aAtHi, aAtLo);
-    const double pbInterceptHi = std::max(aAtHi, aAtLo);
+    const bool hasFiniteIntCI = std::isfinite(aAtHi) && std::isfinite(aAtLo);
+    const double pbInterceptLo = hasFiniteIntCI ? std::min(aAtHi, aAtLo) : nanVal;
+    const double pbInterceptHi = hasFiniteIntCI ? std::max(aAtHi, aAtLo) : nanVal;
 
     // 2. Passing-Bablok Cusum test for linearity
     struct CusumItem {
         double scoreD = 0.0;
         double resid = 0.0;
     };
-    std::vector<CusumItem> cusumItems(static_cast<size_t>(n));
-    int nPos = 0, nNeg = 0;
-    const double bFinite = (std::fabs(pbSlope) < 1e100) ? pbSlope : 1.0;
-    for (int i = 0; i < n; ++i) {
-        const double xi = pts[static_cast<size_t>(i)].first;
-        const double yi = pts[static_cast<size_t>(i)].second;
-        const double ri = yi - (pbIntercept + bFinite * xi);
-        const double di = (bFinite >= 0.0)
-                ? ((yi + xi / std::max(1e-12, bFinite) - pbIntercept) / 2.0)
-                : (xi + bFinite * (yi - pbIntercept));
-        cusumItems[static_cast<size_t>(i)] = { di, ri };
-        if (ri > 1e-14)
-            ++nPos;
-        else if (ri < -1e-14)
-            ++nNeg;
-    }
-    std::stable_sort(cusumItems.begin(), cusumItems.end(),
-                     [](const CusumItem &a, const CusumItem &b) { return a.scoreD < b.scoreD; });
-
-    double cusumH = 0.0;
-    double cusumP = 1.0;
-    if (nPos > 0 && nNeg > 0) {
-        const double wPos = std::sqrt(static_cast<double>(nNeg) / static_cast<double>(nPos));
-        const double wNeg = -std::sqrt(static_cast<double>(nPos) / static_cast<double>(nNeg));
-        double running = 0.0;
-        double maxAbsCum = 0.0;
-        for (const CusumItem &ci : cusumItems) {
-            if (ci.resid > 1e-14)
-                running += wPos;
-            else if (ci.resid < -1e-14)
-                running += wNeg;
-            maxAbsCum = std::max(maxAbsCum, std::fabs(running));
+    const bool pbHasFiniteLine = std::isfinite(pbSlope) && std::isfinite(pbIntercept);
+    double cusumH = pbHasFiniteLine ? 0.0 : nanVal;
+    double cusumP = pbHasFiniteLine ? 1.0 : nanVal;
+    if (pbHasFiniteLine) {
+        std::vector<CusumItem> cusumItems(static_cast<size_t>(n));
+        int nPos = 0, nNeg = 0;
+        for (int i = 0; i < n; ++i) {
+            const double xi = pts[static_cast<size_t>(i)].first;
+            const double yi = pts[static_cast<size_t>(i)].second;
+            const double ri = yi - (pbIntercept + pbSlope * xi);
+            const double di = (pbSlope >= 0.0)
+                    ? ((yi + xi / std::max(1e-12, pbSlope) - pbIntercept) / 2.0)
+                    : (xi + pbSlope * (yi - pbIntercept));
+            cusumItems[static_cast<size_t>(i)] = { di, ri };
+            if (ri > 1e-14)
+                ++nPos;
+            else if (ri < -1e-14)
+                ++nNeg;
         }
-        cusumH = maxAbsCum / std::sqrt(static_cast<double>(nPos + nNeg));
-        if (cusumH > 1e-12) {
-            double ksSum = 0.0;
-            for (int j = 1; j <= 100; ++j) {
-                const double dj = static_cast<double>(j);
-                const double term = std::exp(-2.0 * dj * dj * cusumH * cusumH);
-                ksSum += ((j % 2 == 1) ? 1.0 : -1.0) * term;
-                if (term < 1e-16)
-                    break;
+        std::stable_sort(cusumItems.begin(), cusumItems.end(),
+                         [](const CusumItem &a, const CusumItem &b) {
+                             return a.scoreD < b.scoreD;
+                         });
+
+        if (nPos > 0 && nNeg > 0) {
+            const double wPos = std::sqrt(static_cast<double>(nNeg) / static_cast<double>(nPos));
+            const double wNeg = -std::sqrt(static_cast<double>(nPos) / static_cast<double>(nNeg));
+            double running = 0.0;
+            double maxAbsCum = 0.0;
+            for (const CusumItem &ci : cusumItems) {
+                if (ci.resid > 1e-14)
+                    running += wPos;
+                else if (ci.resid < -1e-14)
+                    running += wNeg;
+                maxAbsCum = std::max(maxAbsCum, std::fabs(running));
             }
-            cusumP = std::clamp(2.0 * ksSum, 0.0, 1.0);
+            cusumH = maxAbsCum / std::sqrt(static_cast<double>(nPos + nNeg));
+            if (cusumH > 1e-12) {
+                double ksSum = 0.0;
+                for (int j = 1; j <= 100; ++j) {
+                    const double dj = static_cast<double>(j);
+                    const double term = std::exp(-2.0 * dj * dj * cusumH * cusumH);
+                    ksSum += ((j % 2 == 1) ? 1.0 : -1.0) * term;
+                    if (term < 1e-16)
+                        break;
+                }
+                cusumP = std::clamp(2.0 * ksSum, 0.0, 1.0);
+            }
         }
     }
 
@@ -8547,8 +9084,13 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         colLineX->setValueAt(1, xLineMax);
         colIdY->setValueAt(0, xLineMin);
         colIdY->setValueAt(1, xLineMax);
-        colPbY->setValueAt(0, pbIntercept + bFinite * xLineMin);
-        colPbY->setValueAt(1, pbIntercept + bFinite * xLineMax);
+        if (pbHasFiniteLine) {
+            colPbY->setValueAt(0, pbIntercept + pbSlope * xLineMin);
+            colPbY->setValueAt(1, pbIntercept + pbSlope * xLineMax);
+        } else {
+            colPbY->setInvalid(0, true);
+            colPbY->setInvalid(1, true);
+        }
         colDemY->setValueAt(0, demIntercept + demSlope * xLineMin);
         colDemY->setValueAt(1, demIntercept + demSlope * xLineMax);
         for (int r = 2; r < n; ++r) {
@@ -8570,18 +9112,21 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             if (Graph *g = ml->activeGraph()) {
                 // Build exact rank-envelope 95% CI band over x in [xLineMin, xLineMax]
                 std::vector<std::pair<double, double>> ciLines;
-                if (std::fabs(pbSlopeLo) < 1e12)
+                if (std::isfinite(pbSlopeLo) && std::isfinite(aAtLo) && std::fabs(pbSlopeLo) < 1e12)
                     ciLines.emplace_back(pbSlopeLo, aAtLo);
-                if (std::fabs(pbSlopeHi) < 1e12)
+                if (std::isfinite(pbSlopeHi) && std::isfinite(aAtHi) && std::fabs(pbSlopeHi) < 1e12)
                     ciLines.emplace_back(pbSlopeHi, aAtHi);
-                if (std::fabs(bFinite) < 1e12)
-                    ciLines.emplace_back(bFinite, pbIntercept);
+                if (pbHasFiniteLine && std::fabs(pbSlope) < 1e12)
+                    ciLines.emplace_back(pbSlope, pbIntercept);
                 const long long idxSpan = std::max<long long>(1, hiSlopeIdx - loSlopeIdx);
                 const long long stepIdx = std::max<long long>(1, idxSpan / 24);
                 for (long long k = loSlopeIdx; k <= hiSlopeIdx; k += stepIdx) {
                     const double bk = slopes[static_cast<size_t>(k)];
-                    if (std::fabs(bk) < 1e12)
-                        ciLines.emplace_back(bk, interceptForSlope(bk));
+                    if (std::isfinite(bk) && std::fabs(bk) < 1e12) {
+                        const double ak = interceptForSlope(bk);
+                        if (std::isfinite(ak))
+                            ciLines.emplace_back(bk, ak);
+                    }
                 }
 
                 if (!ciLines.empty()) {
@@ -8629,13 +9174,19 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                     g->setCurvePen(idx, QPen(QColor(15, 135, 120), 2.0, Qt::DashDotLine));
                 }
 
-                const double allMinY = std::min({ yMin, xLineMin,
-                                                  pbIntercept + bFinite * xLineMin,
-                                                  pbIntercept + bFinite * xLineMax });
-                const double allMaxY = std::max({ yMax, xLineMax,
-                                                  pbIntercept + bFinite * xLineMin,
-                                                  pbIntercept + bFinite * xLineMax });
+                double allMinY = std::min(yMin, xLineMin);
+                double allMaxY = std::max(yMax, xLineMax);
+                if (pbHasFiniteLine) {
+                    allMinY = std::min({ allMinY, pbIntercept + pbSlope * xLineMin,
+                                         pbIntercept + pbSlope * xLineMax });
+                    allMaxY = std::max({ allMaxY, pbIntercept + pbSlope * xLineMin,
+                                         pbIntercept + pbSlope * xLineMax });
+                }
                 const double ySpan = std::max(1e-6, allMaxY - allMinY);
+                auto fmtPb = [](double v, int prec = 4) -> QString {
+                    return std::isfinite(v) ? QString::number(v, 'g', prec)
+                                            : QStringLiteral("undefined (vertical)");
+                };
                 const QString boxText =
                         QStringLiteral("Passing-Bablok (n = %1)\n"
                                        "  Slope = %2 [%3, %4]\n"
@@ -8644,13 +9195,13 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                                        "Deming (λ = %9)\n"
                                        "  Y = %10 + %11 X")
                                 .arg(n)
-                                .arg(pbSlope, 0, 'g', 4)
-                                .arg(pbSlopeLo, 0, 'g', 4)
-                                .arg(pbSlopeHi, 0, 'g', 4)
-                                .arg(pbIntercept, 0, 'g', 4)
-                                .arg(pbInterceptLo, 0, 'g', 4)
-                                .arg(pbInterceptHi, 0, 'g', 4)
-                                .arg(cusumP, 0, 'g', 3)
+                                .arg(fmtPb(pbSlope))
+                                .arg(fmtPb(pbSlopeLo))
+                                .arg(fmtPb(pbSlopeHi))
+                                .arg(fmtPb(pbIntercept))
+                                .arg(fmtPb(pbInterceptLo))
+                                .arg(fmtPb(pbInterceptHi))
+                                .arg(fmtPb(cusumP, 3))
                                 .arg(lambda, 0, 'g', 4)
                                 .arg(demIntercept, 0, 'g', 4)
                                 .arg(demSlope, 0, 'g', 4);
@@ -9014,10 +9565,30 @@ void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Gr
     chkAnnotate->setChecked(targetG != nullptr);
     chkAnnotate->setEnabled(targetG != nullptr);
 
+    QComboBox *cbBracketFmt = new QComboBox(&dlg);
+    cbBracketFmt->addItem(QObject::tr("Asterisks (*, **, ***)"), QStringLiteral("stars"));
+    cbBracketFmt->addItem(QObject::tr("Asterisks + p-value (* (p = ...))"),
+                          QStringLiteral("stars_p"));
+    cbBracketFmt->addItem(QObject::tr("p-value only (p = ...)"), QStringLiteral("p"));
+
+    QCheckBox *chkShowNs =
+            new QCheckBox(QObject::tr("Show 'ns' Brackets for Non-Significant Pairs"), &dlg);
+    chkShowNs->setChecked(false);
+
+    auto syncBrkOpts = [&]() {
+        const bool on = (targetG != nullptr) && chkAnnotate->isChecked();
+        cbBracketFmt->setEnabled(on);
+        chkShowNs->setEnabled(on);
+    };
+    syncBrkOpts();
+    QObject::connect(chkAnnotate, &QCheckBox::toggled, &dlg, [&](bool) { syncBrkOpts(); });
+
     form->addRow(QObject::tr("Source Table:"), cbTable);
     form->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
     form->addRow(QObject::tr("Test Method:"), cbMethod);
     form->addRow(QString(), chkAnnotate);
+    form->addRow(QObject::tr("Bracket Label:"), cbBracketFmt);
+    form->addRow(QString(), chkShowNs);
     lay->addLayout(form);
 
     QDialogButtonBox *btns =
@@ -9035,9 +9606,16 @@ void GraphStatsAndSurfaceFit::showNonparametricDialog(ApplicationWindow *app, Gr
     if (selected.size() < 2)
         return;
 
-    runNonparametricComparison(app, tables[cbTable->currentIndex()], selected,
+    Table *chosenTbl = tables[cbTable->currentIndex()];
+    const QVariant prevShowNs = chosenTbl->property("torigraph_anova_show_ns");
+    const QVariant prevFmt = chosenTbl->property("torigraph_anova_bracket_format");
+    chosenTbl->setProperty("torigraph_anova_show_ns", chkShowNs->isChecked());
+    chosenTbl->setProperty("torigraph_anova_bracket_format", cbBracketFmt->currentData().toString());
+    runNonparametricComparison(app, chosenTbl, selected,
                                static_cast<NonparamMethod>(cbMethod->currentData().toInt()),
                                chkAnnotate->isChecked() ? targetG : nullptr);
+    chosenTbl->setProperty("torigraph_anova_show_ns", prevShowNs);
+    chosenTbl->setProperty("torigraph_anova_bracket_format", prevFmt);
 }
 
 void GraphStatsAndSurfaceFit::showPairedComparisonDialog(ApplicationWindow *app)
