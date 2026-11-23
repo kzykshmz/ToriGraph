@@ -55,6 +55,8 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDragLeaveEvent;
 class QDropEvent;
+class QShowEvent;
+class QTimer;
 
 /**
  * \brief An MDI window (MyWidget) managing one or more Graph objects.
@@ -180,6 +182,19 @@ public:
     bool pageViewMode() const;
     void setPageZoom(double factor);
     double pageZoom() const;
+    Q_INVOKABLE void fitPageZoomToViewport();
+    Q_INVOKABLE double fitPageZoomFactor() const;
+    Q_INVOKABLE QString appliedStylePresetId() const;
+    Q_INVOKABLE void setInsetZoomDataRect(Graph *insetLayer, const QRectF &roi);
+    bool exportToFileChecked(const QString &fileName, QString *errOut = nullptr);
+    bool exportImageChecked(const QString &fileName, int quality = -1, bool transparent = false,
+                            int dpi = 0, QString *errOut = nullptr);
+    bool exportSVGChecked(const QString &fname, QString *errOut = nullptr);
+    bool exportVectorChecked(const QString &fileName, int res = 0, bool color = true,
+                             bool keepAspect = true,
+                             QPageSize pageSize = QPageSize(QPageSize::Custom),
+                             QPageLayout::Orientation orientation = QPageLayout::Portrait,
+                             QString *errOut = nullptr);
     void setPageSizePhysical(double widthVal, double heightVal, PageUnit unit, int dpi = 300);
     int pageDpi() const;
     PageUnit pageUnit() const;
@@ -262,6 +277,7 @@ public:
 
 protected:
     void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 public slots:
     void setKeepAspectRatio(bool keep);
@@ -348,7 +364,7 @@ public slots:
                        QSize size = QSize());
 
     void copyAllLayers();
-    QImage copyPageAsImage(int dpi = 300);
+    QImage copyPageAsImage(int dpi = 0);
     void print();
     void printAllLayers(QPainter *painter);
     void printActiveLayer();
@@ -430,8 +446,15 @@ private:
     double d_page_height_val = 520.0;
     QSize d_base_page_px = QSize(520, 520);
     QColor d_page_bg_color = QColor(Qt::white);
+    QString d_applied_style_preset_id;
     QStringList d_last_preset_warnings;
     QString pageSetupTagsString(bool includeWindowSize) const;
+    struct PendingRecalcLinkSpec
+    {
+        int layerIndex = -1;
+        QString xml;
+    };
+    QVector<PendingRecalcLinkSpec> d_pending_recalc_links;
     struct InsetSpec
     {
         QPointer<Graph> sourceLayer;
@@ -465,8 +488,41 @@ private:
 
     bool d_syncing_inset_geometries = false;
     bool d_forwarding_mouse = false;
+    bool d_user_zoomed = false;
+    bool d_internal_zoom_change = false;
+    bool d_initial_viewport_fit_done = false;
+    bool d_was_tiled_split = false;
     QPointer<QWidget> d_passthrough_source;
     QPointer<QWidget> d_passthrough_target;
+    QPointer<Graph> d_inset_drag_graph;
+    QPoint d_inset_drag_start_global;
+    QRect d_inset_drag_start_geo;
+    QString d_inset_drag_before_snap;
+    bool d_inset_drag_active = false;
+
+    struct CtrlFontGestureBaseline
+    {
+        bool active = false;
+        int baseCanvasH = 0;
+        struct GraphFonts
+        {
+            QPointer<Graph> graph;
+            QFont titleFont;
+            QFont axisFonts[QwtPlot::axisCnt];
+            QFont axisTitleFonts[QwtPlot::axisCnt];
+            QMap<int, QFont> textMarkerFonts;
+        };
+        QVector<GraphFonts> graphs;
+    };
+    CtrlFontGestureBaseline d_ctrl_font_gesture;
+    QTimer *d_ctrl_font_gesture_timer = nullptr;
+
+    void autoFitPageZoomToViewport();
+    void clearCtrlFontGestureBaseline();
+    QImage renderPageToImage(int effectiveDpi, bool transparent, QString *errOut);
+    bool exportVectorImpl(const QString &fileName, int res, bool color, bool keepAspect,
+                          QPageSize pageSize, QPageLayout::Orientation orientation,
+                          bool allowQt5PsFallback, QString *errOut);
 
     QPointer<SelectionMoveResizer> d_layers_selector;
     QUndoStack *d_undo_stack = nullptr;

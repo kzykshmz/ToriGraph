@@ -43,9 +43,11 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QLayout>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QGroupBox>
 #include <QPixmap>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QKeySequence>
 #include <QMenu>
@@ -80,6 +82,7 @@ void registerCurvesDialogTranslations()
     reg("Horizontal Bars", "横棒グラフ");
     reg("Long Name: %1", "ロングネーム: %1");
     reg("Units: %1", "単位: %1");
+    reg("Filter columns...", "列を検索...");
 }
 
 QString formatAvailableColumnDisplay(Table *t, int colIdx, const QString &rawColName,
@@ -151,9 +154,19 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     gl->addWidget(new QLabel(tr("Available data")), 0, 0);
     gl->addWidget(new QLabel(tr("Graph contents")), 0, 2);
 
+    QVBoxLayout *availCol = new QVBoxLayout();
+    availCol->setContentsMargins(0, 0, 0, 0);
+    availCol->setSpacing(4);
+    boxFilter = new QLineEdit(this);
+    boxFilter->setObjectName(QStringLiteral("CurvesDialogFilterEdit"));
+    boxFilter->setClearButtonEnabled(true);
+    boxFilter->setPlaceholderText(tr("Filter columns..."));
+    availCol->addWidget(boxFilter);
+
     available = new QListWidget();
     available->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    gl->addWidget(available, 1, 0);
+    availCol->addWidget(available, 1);
+    gl->addLayout(availCol, 1, 0);
 
     QVBoxLayout *vl1 = new QVBoxLayout();
     btnAdd = new QPushButton();
@@ -240,6 +253,8 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     connect(available, SIGNAL(itemSelectionChanged()), this, SLOT(enableAddBtn()));
     connect(available, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem *) { addCurves(); });
+    connect(boxFilter, &QLineEdit::textChanged, this,
+            [this](const QString &) { applyAvailableFilter(); });
 
     QShortcut *shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
     connect(shortcut, SIGNAL(activated()), this, SLOT(removeCurves()));
@@ -292,13 +307,51 @@ void CurvesDialog::showCurveBtn(int)
     btnRange->setEnabled(range);
 }
 
+ApplicationWindow *CurvesDialog::appWindow() const
+{
+    if (auto *app = qobject_cast<ApplicationWindow *>(this->parent()))
+        return app;
+    return qobject_cast<ApplicationWindow *>(this->window());
+}
+
+void CurvesDialog::applyAvailableFilter()
+{
+    if (!available)
+        return;
+    const QString needle = boxFilter ? boxFilter->text().trimmed() : QString();
+    static const QRegularExpression kWsRx(QStringLiteral("\\s+"));
+    const QStringList tokens =
+            needle.isEmpty() ? QStringList() : needle.split(kWsRx, Qt::SkipEmptyParts);
+    for (int i = 0; i < available->count(); ++i) {
+        QListWidgetItem *item = available->item(i);
+        if (!item)
+            continue;
+        bool visible = true;
+        if (!tokens.isEmpty()) {
+            const QString haystack = item->text() + QLatin1Char('\n')
+                    + item->data(Qt::UserRole).toString() + QLatin1Char('\n')
+                    + item->toolTip();
+            for (const QString &tok : tokens) {
+                if (!haystack.contains(tok, Qt::CaseInsensitive)) {
+                    visible = false;
+                    break;
+                }
+            }
+        }
+        item->setHidden(!visible);
+        if (!visible && item->isSelected())
+            item->setSelected(false);
+    }
+    enableAddBtn();
+}
+
 void CurvesDialog::showCurveRangeDialog()
 {
     int curve = contents->currentRow();
     if (curve < 0)
         curve = 0;
 
-    ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(this->parent());
+    ApplicationWindow *app = appWindow();
     if (app) {
         app->showCurveRangeDialog(d_graph, curve);
         updateCurveRange();
@@ -311,21 +364,22 @@ void CurvesDialog::showPlotAssociations()
     if (curve < 0)
         curve = 0;
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
-#if QT_VERSION >= 0x050000
-    close();
-#endif
-
-    if (app)
+    ApplicationWindow *app = appWindow();
+    if (app) {
         app->showPlotAssociations(curve);
-#if QT_VERSION < 0x050000
-    close();
-#endif
+        if (d_graphGuard) {
+            setGraph(d_graphGuard.data());
+            updateCurveRange();
+            if (contents->count() > 0)
+                contents->setCurrentRow(qBound(0, curve, contents->count() - 1));
+            showCurveBtn(contents->currentRow());
+        }
+    }
 }
 
 void CurvesDialog::showFunctionDialog()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = appWindow();
     int currentRow = contents->currentRow();
     close();
 
@@ -369,7 +423,7 @@ void CurvesDialog::contextMenuEvent(QContextMenuEvent *e)
 
 void CurvesDialog::init()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = appWindow();
     if (app) {
         bool currentFolderOnly = app->d_show_current_folder;
         QSignalBlocker blocker(boxShowCurrentFolder);
@@ -427,6 +481,8 @@ void CurvesDialog::addCurves()
     bool addedAny = false;
     QList<QListWidgetItem *> lst = available->selectedItems();
     for (int i = 0; i < lst.size(); ++i) {
+        if (!lst.at(i) || lst.at(i)->isHidden())
+            continue;
         const QString userCol = lst.at(i)->data(Qt::UserRole).toString();
         const QString text = userCol.isEmpty() ? lst.at(i)->text() : userCol;
         bool alreadyPlotted = !contents->findItems(text, Qt::MatchExactly).isEmpty();
@@ -460,7 +516,7 @@ bool CurvesDialog::addCurve(const QString &name)
     if (!d_graph || !d_graphGuard)
         return false;
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = appWindow();
     if (!app)
         return false;
 
@@ -635,7 +691,15 @@ void CurvesDialog::moveSelectedCurveBy(int delta)
 
 void CurvesDialog::enableAddBtn()
 {
-    btnAdd->setEnabled(available->count() > 0 && !available->selectedItems().isEmpty());
+    bool hasVisibleSelection = false;
+    const QList<QListWidgetItem *> sel = available->selectedItems();
+    for (QListWidgetItem *item : sel) {
+        if (item && !item->isHidden()) {
+            hasVisibleSelection = true;
+            break;
+        }
+    }
+    btnAdd->setEnabled(available->count() > 0 && hasVisibleSelection);
 }
 
 void CurvesDialog::enableRemoveBtn()
@@ -724,7 +788,7 @@ void CurvesDialog::refreshAvailableColumns()
 
 void CurvesDialog::showCurrentFolder(bool currentFolder)
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = appWindow();
     if (!app)
         return;
 
@@ -799,12 +863,12 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
             item->setToolTip(matName);
         }
     }
-    enableAddBtn();
+    applyAvailableFilter();
 }
 
 void CurvesDialog::closeEvent(QCloseEvent *e)
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = appWindow();
     if (app)
         app->d_add_curves_dialog_size = this->size();
 

@@ -60,11 +60,13 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QThread>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <limits>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -139,6 +141,17 @@ bool isPresetManagedValue(double v, const QVector<double> &managed)
     }
     return false;
 }
+
+QString escapeXmlAttr(QString val)
+{
+    val.replace(QLatin1String("&"), QLatin1String("&amp;"));
+    val.replace(QLatin1String("\""), QLatin1String("&quot;"));
+    val.replace(QLatin1String("<"), QLatin1String("&lt;"));
+    val.replace(QLatin1String(">"), QLatin1String("&gt;"));
+    val.replace(QLatin1String("\r"), QLatin1String("&#13;"));
+    val.replace(QLatin1String("\n"), QLatin1String("&#10;"));
+    return val;
+}
 } // namespace
 #include "QwtErrorPlotCurve.h"
 #include "QwtBarCurve.h"
@@ -189,6 +202,40 @@ bool isPresetManagedValue(double v, const QVector<double> &managed)
 
 #include <iostream>
 using namespace std;
+
+namespace {
+int computeOutsidePanelTopExtra(const QList<Graph *> &primaryGraphs, bool panelLabelsEnabled,
+                                MultiLayer::PanelLabelPlacement placement, int panelLabelFontPt)
+{
+    if (!panelLabelsEnabled || placement != MultiLayer::PanelOutsideTopLeft
+        || primaryGraphs.isEmpty()) {
+        return 0;
+    }
+    double maxLabelPt = (panelLabelFontPt > 0) ? double(panelLabelFontPt) : 12.0;
+    if (panelLabelFontPt <= 0) {
+        for (Graph *gr : primaryGraphs) {
+            if (!gr)
+                continue;
+            const QFont tf = gr->axisTitleFont(QwtPlot::yLeft);
+            const double titlePt =
+                    (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
+            const double pt = (titlePt > 0.0)
+                    ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
+                    : 12.0;
+            maxLabelPt = qMax(maxLabelPt, pt);
+        }
+    }
+    QFont lblFont(QStringLiteral("Arial"));
+    lblFont.setPointSizeF(maxLabelPt);
+    lblFont.setWeight(QFont::Normal);
+    lblFont.setItalic(false);
+    lblFont.setHintingPreference(QFont::PreferNoHinting);
+    if (Plot *firstPlot = primaryGraphs.first() ? primaryGraphs.first()->plotWidget() : nullptr)
+        lblFont = firstPlot->displayFont(lblFont);
+    const QFontMetrics lfm(lblFont);
+    return qMax(22, lfm.height() + 12);
+}
+} // namespace
 
 LayerButton::LayerButton(const QString &text, QWidget *parent) : QPushButton(text, parent)
 {
@@ -366,6 +413,13 @@ void resizeMultiLayerSubWindowForCanvas(MultiLayer *ml, QWidget *mainW, QFrame *
 {
     if (!ml || ml->isMaximized() || ml->isMinimized())
         return;
+    ApplicationWindow *app = findMultiLayerApp(ml);
+    const bool isSplit = app && app->modernRibbonBar()
+            && app->modernRibbonBar()->workspaceLayoutMode()
+                    == ModernRibbonBar::LayoutSplitTableGraph;
+    const bool isTabbed = (ml->mdiArea() && ml->mdiArea()->viewMode() == QMdiArea::TabbedView);
+    if (isSplit || isTabbed)
+        return;
     const int hostPad = freePixelMode ? 0 : 16;
     const int topBarH = (pillFrame && !pillFrame->isHidden())
             ? qMax(LayerButton::btnSize() + 4, pillFrame->sizeHint().height() + 6)
@@ -426,7 +480,10 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
         }
         ml->setUpdatesEnabled(false);
         QSignalBlocker sb(ml);
+        const bool prevInternalZoom = ml->d_internal_zoom_change;
+        ml->d_internal_zoom_change = true;
         ml->setPageZoom(1.0);
+        ml->d_internal_zoom_change = prevInternalZoom;
         active = true;
     }
 }
@@ -440,7 +497,10 @@ void ScopedUnzoomForExport::restoreNow()
         return;
     {
         QSignalBlocker sb(ml);
+        const bool prevInternalZoom = ml->d_internal_zoom_change;
+        ml->d_internal_zoom_change = true;
         ml->setPageZoom(prevZoom);
+        ml->d_internal_zoom_change = prevInternalZoom;
         if (!ml->isMaximized() && !ml->isMinimized()) {
             if (prevWinSize.isValid() && ml->size() != prevWinSize)
                 ml->resize(prevWinSize);
@@ -910,20 +970,48 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             pushUndoSnapshot(tr("Fit Page to Layers"), snap);
         });
         statusMenu->addSeparator();
-        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
-                              tr("ISIJ 85mm"), this,
-                              [this]() { applyStylePreset(StyleISIJJournal85mm); });
-        statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
-                              tr("Slide 28pt"), this,
-                              [this]() { applyStylePreset(StylePresentationSlide28pt); });
         const QVector<GraphStylePresetSpec> allPresets = MultiLayer::listStylePresets();
+        auto presetDisplayLabel = [this](const GraphStylePresetSpec &sp) -> QString {
+            if (sp.id == QLatin1String("isij_85mm"))
+                return tr("ISIJ 85mm");
+            if (sp.id == QLatin1String("lab_slide_83mm"))
+                return tr("Lab Slide (18 pt, 83.3 mm)");
+            if (sp.id == QLatin1String("journal_2col_175mm"))
+                return tr("Journal 2-Column (175 mm)");
+            if (sp.id == QLatin1String("slide_28pt"))
+                return tr("Large Slide (28 pt, 185 mm)");
+            return sp.name;
+        };
+        GraphStylePresetSpec legacySlidePreset;
+        bool hasLegacySlide = false;
         for (const GraphStylePresetSpec &sp : allPresets) {
-            if (sp.builtIn)
+            if (sp.id == QLatin1String("slide_28pt")) {
+                legacySlidePreset = sp;
+                hasLegacySlide = true;
                 continue;
+            }
             const QString presetId = sp.id;
-            statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
-                                  sp.name, this,
-                                  [this, presetId]() { applyStylePresetById(presetId); });
+            const QString iconName = (sp.id == QLatin1String("lab_slide_83mm"))
+                    ? QStringLiteral("preset-slide")
+                    : QStringLiteral("preset-isij");
+            QAction *act = statusMenu->addAction(
+                    IconLoader::duotoneIcon(iconName, 18, false), presetDisplayLabel(sp), this,
+                    [this, presetId]() { applyStylePresetById(presetId); });
+            act->setCheckable(true);
+            act->setChecked(d_applied_style_preset_id.compare(presetId, Qt::CaseInsensitive) == 0);
+        }
+        if (hasLegacySlide) {
+            QMenu *moreMenu = statusMenu->addMenu(
+                    IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
+                    tr("More / Legacy Presets"));
+            const QString legacyId = legacySlidePreset.id;
+            QAction *legacyAct = moreMenu->addAction(
+                    IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
+                    presetDisplayLabel(legacySlidePreset), this,
+                    [this, legacyId]() { applyStylePresetById(legacyId); });
+            legacyAct->setCheckable(true);
+            legacyAct->setChecked(
+                    d_applied_style_preset_id.compare(legacyId, Qt::CaseInsensitive) == 0);
         }
         statusMenu->addAction(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 18, false),
                               tr("Manage Style Presets..."), this, [this]() {
@@ -1278,6 +1366,15 @@ void MultiLayer::contextMenuEvent(QContextMenuEvent *e)
     e->accept();
 }
 
+void MultiLayer::clearCtrlFontGestureBaseline()
+{
+    d_ctrl_font_gesture.active = false;
+    d_ctrl_font_gesture.baseCanvasH = 0;
+    d_ctrl_font_gesture.graphs.clear();
+    if (d_ctrl_font_gesture_timer)
+        d_ctrl_font_gesture_timer->stop();
+}
+
 void MultiLayer::resizeLayers(const QResizeEvent *re)
 {
     bool unlockedByShift = false;
@@ -1303,19 +1400,13 @@ void MultiLayer::resizeLayers(const QResizeEvent *re)
 
     const bool scaleFontsWithCtrl = (QApplication::keyboardModifiers() & Qt::ControlModifier) != 0;
     resizeLayers(size, oldSize, scaleFontsWithCtrl);
+    if (unlockedByShift)
+        d_keep_aspect_ratio = true;
     if (unlockedByShift || scaleFontsWithCtrl) {
         if (ApplicationWindow *app = findMultiLayerApp(this)) {
-            if (unlockedByShift) {
-                if (ModernRibbonBar *rb = app->modernRibbonBar())
-                    rb->syncCheckableStates();
-            }
             if (GraphInspectorDock *dock = app->graphInspectorDock()) {
-                if (dock->targetMultiLayer() == this) {
-                    if (unlockedByShift)
-                        dock->setTargetMultiLayer(this, true);
-                    else
-                        dock->refreshAll();
-                }
+                if (dock->targetMultiLayer() == this)
+                    dock->refreshAll();
             }
         }
     }
@@ -1325,6 +1416,7 @@ void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scal
 {
     Q_UNUSED(oldSize);
     if (graphs <= 0) {
+        clearCtrlFontGestureBaseline();
         lastSize = size;
         return;
     }
@@ -1342,15 +1434,77 @@ void MultiLayer::resizeLayers(const QSize &size, const QSize &oldSize, bool scal
 
     if (anyResizable) {
         const int prevCanvasH = qMax(1, l_canvas_height);
-        arrangeLayers(false, false);
-        if (scaleFonts && l_canvas_height > 0 && l_canvas_height != prevCanvasH) {
-            const double ratio = (double)l_canvas_height / (double)prevCanvasH;
-            for (int i = 0; i < graphsList.count(); i++) {
-                Graph *gr = (Graph *)graphsList.at(i);
-                if (gr && !gr->ignoresResizeEvents())
-                    gr->scaleFonts(ratio);
+        if (scaleFonts) {
+            if (!d_ctrl_font_gesture.active) {
+                d_ctrl_font_gesture.active = true;
+                d_ctrl_font_gesture.baseCanvasH = prevCanvasH;
+                d_ctrl_font_gesture.graphs.clear();
+                for (int i = 0; i < graphsList.count(); ++i) {
+                    Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+                    if (!gr || gr->ignoresResizeEvents() || !gr->plotWidget())
+                        continue;
+                    CtrlFontGestureBaseline::GraphFonts gf;
+                    gf.graph = gr;
+                    gf.titleFont = gr->plotWidget()->title().font();
+                    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                        gf.axisFonts[a] = gr->axisFont(a);
+                        gf.axisTitleFonts[a] = gr->axisTitleFont(a);
+                    }
+                    for (int tid : gr->textMarkerKeys()) {
+                        if (Legend *mrk = gr->textMarker(tid))
+                            gf.textMarkerFonts.insert(tid, mrk->font());
+                    }
+                    d_ctrl_font_gesture.graphs.append(gf);
+                }
             }
-            arrangeLayers(false, false);
+            if (!d_ctrl_font_gesture_timer) {
+                d_ctrl_font_gesture_timer = new QTimer(this);
+                d_ctrl_font_gesture_timer->setSingleShot(true);
+                connect(d_ctrl_font_gesture_timer, &QTimer::timeout, this,
+                        [this]() { clearCtrlFontGestureBaseline(); });
+            }
+            d_ctrl_font_gesture_timer->start(450);
+        } else {
+            clearCtrlFontGestureBaseline();
+        }
+
+        arrangeLayers(false, false);
+        if (scaleFonts && l_canvas_height > 0 && d_ctrl_font_gesture.active
+            && d_ctrl_font_gesture.baseCanvasH > 0) {
+            const double ratio =
+                    double(l_canvas_height) / double(d_ctrl_font_gesture.baseCanvasH);
+            if (std::isfinite(ratio) && ratio > 0.0) {
+                auto scaledBaselineFont = [ratio](QFont fnt) -> QFont {
+                    double basePt = fnt.pointSizeF();
+                    if (basePt <= 0.0)
+                        basePt = (fnt.pointSize() > 0) ? double(fnt.pointSize()) : 10.0;
+                    fnt.setPointSizeF(qBound(4.0, basePt * ratio, 144.0));
+                    fnt.setHintingPreference(QFont::PreferNoHinting);
+                    return fnt;
+                };
+                for (const CtrlFontGestureBaseline::GraphFonts &gf : d_ctrl_font_gesture.graphs) {
+                    Graph *gr = gf.graph.data();
+                    if (!gr || gr->ignoresResizeEvents() || !gr->plotWidget())
+                        continue;
+                    Plot *pl = gr->plotWidget();
+                    for (auto it = gf.textMarkerFonts.constBegin();
+                         it != gf.textMarkerFonts.constEnd(); ++it) {
+                        if (Legend *mrk = gr->textMarker(it.key()))
+                            mrk->setFont(scaledBaselineFont(it.value()));
+                    }
+                    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                        pl->setAxisFont(a, scaledBaselineFont(gf.axisFonts[a]));
+                        QwtText axTitle = pl->axisTitle(a);
+                        axTitle.setFont(scaledBaselineFont(gf.axisTitleFonts[a]));
+                        pl->setAxisTitle(a, axTitle);
+                    }
+                    QwtText pltTitle = pl->title();
+                    pltTitle.setFont(scaledBaselineFont(gf.titleFont));
+                    pl->setTitle(pltTitle);
+                    pl->replot();
+                }
+                arrangeLayers(false, false);
+            }
         }
         if (!d_keep_aspect_ratio && l_canvas_width > 0 && l_canvas_height > 0) {
             d_target_aspect_ratio = double(l_canvas_width) / double(l_canvas_height);
@@ -1539,6 +1693,9 @@ QSize MultiLayer::arrangeLayers(bool userSize)
     QVector<int> maxLeftW(nCols, 0);
     QVector<int> maxRightW(nCols, 0);
 
+    const int panelTopExtra = computeOutsidePanelTopExtra(
+            primaryGraphs, d_panel_labels_enabled, d_panel_label_placement, d_panel_label_font_pt);
+
     int i;
     for (i = 0; i < nPrimary; i++) {
         Graph *gr = primaryGraphs.at(i);
@@ -1575,7 +1732,7 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             effRight = qMax(effRight,
                             qMax(0, chPlot->width() - (chRect.left() + chRect.width())));
         }
-        reqTopHeights[i] = effTop;
+        reqTopHeights[i] = effTop + panelTopExtra;
         reqBottomHeights[i] = effBottom;
         reqLeftWidths[i] = effLeft;
         reqRightWidths[i] = effRight;
@@ -1585,8 +1742,8 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             row = nRows - 1;
         int col = i % nCols;
 
-        if (effTop > maxTopH[row])
-            maxTopH[row] = effTop;
+        if (reqTopHeights[i] > maxTopH[row])
+            maxTopH[row] = reqTopHeights[i];
         if (effBottom > maxBottomH[row])
             maxBottomH[row] = effBottom;
         if (effLeft > maxLeftW[col])
@@ -1741,7 +1898,7 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
     if (d_layers_selector)
-        delete d_layers_selector;
+        clearLayerSelector();
 
     if (fit)
         findBestLayout(rows, cols);
@@ -1796,234 +1953,192 @@ void MultiLayer::setRows(int r)
         rows = r;
 }
 
-void MultiLayer::exportToFile(const QString &fileName)
+namespace {
+struct ExportPageMetrics
+{
+    QRect layersRect;
+    QRect baseRect;
+    QRect srcRect;
+    bool hasPhysicalPage = false;
+    bool expandedBeyondBase = false;
+    double physWMm = 0.0;
+    double physHMm = 0.0;
+};
+
+ExportPageMetrics computeExportPageMetrics(MultiLayer *ml)
+{
+    ExportPageMetrics m;
+    const QWidgetList graphs = ml->graphPtrs();
+    for (QWidget *w : graphs) {
+        if (Graph *gr = qobject_cast<Graph *>(w)) {
+            if (gr->plotWidget())
+                m.layersRect = m.layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
+        }
+    }
+    QWidget *cv = ml->canvasWidget();
+    const QRect cvRect = (cv && !cv->rect().isEmpty()) ? cv->rect() : QRect(0, 0, 520, 520);
+    if (!m.layersRect.isEmpty()) {
+        m.layersRect.adjust(-ml->leftMargin(), -ml->topMargin(), ml->rightMargin(),
+                            ml->bottomMargin());
+    } else {
+        m.layersRect = cvRect;
+    }
+    if (ml->panelLabelsEnabled()) {
+        const QRect lblRect = ml->panelLabelsBoundingRect();
+        if (!lblRect.isEmpty())
+            m.layersRect = m.layersRect.united(lblRect);
+    }
+
+    m.hasPhysicalPage = (ml->pageUnit() != MultiLayer::UnitPx);
+    m.baseRect = ((m.hasPhysicalPage || ml->pageViewMode()) && cv && !cv->rect().isEmpty())
+            ? cv->rect()
+            : m.layersRect;
+    m.srcRect = m.baseRect;
+    if (ml->panelLabelsEnabled()) {
+        const QRect lblRect = ml->panelLabelsBoundingRect();
+        if (!lblRect.isEmpty() && !m.srcRect.contains(lblRect)) {
+            m.srcRect = m.srcRect.united(lblRect);
+            m.expandedBeyondBase = true;
+        }
+    }
+    if (m.hasPhysicalPage) {
+        auto toMm = [](double val, MultiLayer::PageUnit u) -> double {
+            switch (u) {
+            case MultiLayer::UnitMm:
+                return val;
+            case MultiLayer::UnitCm:
+                return val * 10.0;
+            case MultiLayer::UnitInch:
+                return val * 25.4;
+            case MultiLayer::UnitPx:
+            default:
+                return (val / 96.0) * 25.4;
+            }
+        };
+        const double baseWMm = qMax(5.0, toMm(ml->pageWidthPhysical(), ml->pageUnit()));
+        const double baseHMm = qMax(5.0, toMm(ml->pageHeightPhysical(), ml->pageUnit()));
+        const double widthFactor = (m.baseRect.width() > 0)
+                ? double(m.srcRect.width()) / double(m.baseRect.width())
+                : 1.0;
+        const double heightFactor = (m.baseRect.height() > 0)
+                ? double(m.srcRect.height()) / double(m.baseRect.height())
+                : 1.0;
+        m.physWMm = baseWMm * widthFactor;
+        m.physHMm = baseHMm * heightFactor;
+    }
+    return m;
+}
+} // namespace
+
+bool MultiLayer::exportToFileChecked(const QString &fileName, QString *errOut)
 {
     if (fileName.isEmpty()) {
-        if (!ApplicationWindow::isNonInteractiveContext(this))
-            QMessageBox::critical(0, tr("Error"), tr("Please provide a valid file name!"));
-        return;
+        if (errOut)
+            *errOut = tr("Please provide a valid file name!");
+        return false;
     }
 
-    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
+    const QString ext = QFileInfo(fileName).suffix().toLower();
+    if (ext == QLatin1String("emf")) {
 #ifdef Q_OS_WIN
         const OleRenderedGraph emf = SciDAVisEmf::renderMultiLayer(this, nullptr, false);
-        if (!emf.emfBytes.isEmpty()) {
-            QFile f(fileName);
-            if (f.open(QIODevice::WriteOnly)) {
-                f.write(emf.emfBytes);
-                f.close();
-                return;
-            }
+        if (emf.emfBytes.isEmpty()) {
+            if (errOut)
+                *errOut = tr("Failed to render EMF graphics.");
+            return false;
         }
+        QFile f(fileName);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (errOut) {
+                *errOut = f.errorString().isEmpty()
+                        ? tr("Could not open file for writing: %1").arg(fileName)
+                        : f.errorString();
+            }
+            return false;
+        }
+        const qint64 written = f.write(emf.emfBytes);
+        const bool flushOk = f.flush();
+        const QFile::FileError ferr = f.error();
+        const QString ferrStr = f.errorString();
+        f.close();
+        if (written != emf.emfBytes.size() || !flushOk || ferr != QFile::NoError) {
+            if (errOut)
+                *errOut = ferrStr.isEmpty() ? tr("Failed to write complete EMF file.") : ferrStr;
+            return false;
+        }
+        return true;
+#else
+        if (errOut)
+            *errOut = tr("File format not handled, operation aborted!");
+        return false;
 #endif
-        if (!ApplicationWindow::isNonInteractiveContext(this))
-            QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
-        return;
     }
 
-    if (fileName.contains(".eps", Qt::CaseInsensitive)
-        || fileName.contains(".pdf", Qt::CaseInsensitive)
-        || fileName.contains(".ps", Qt::CaseInsensitive)) {
-        exportVector(fileName);
-        return;
-    } else if (fileName.contains(".svg", Qt::CaseInsensitive)) {
-        exportSVG(fileName);
-        return;
-    } else {
-        QList<QByteArray> list = QImageWriter::supportedImageFormats();
-        for (int i = 0; i < list.count(); i++) {
-            if (fileName.contains("." + list[i].toLower(), Qt::CaseInsensitive)) {
-                exportImage(fileName);
-                return;
-            }
+    if (ext == QLatin1String("eps") || ext == QLatin1String("pdf") || ext == QLatin1String("ps")) {
+        return exportVectorChecked(fileName, 0, true, true, QPageSize(QPageSize::Custom),
+                                   QPageLayout::Portrait, errOut);
+    }
+    if (ext == QLatin1String("svg"))
+        return exportSVGChecked(fileName, errOut);
+
+    const QList<QByteArray> list = QImageWriter::supportedImageFormats();
+    for (const QByteArray &fmt : list) {
+        if (ext == QString::fromLatin1(fmt).toLower())
+            return exportImageChecked(fileName, -1, false, 0, errOut);
+    }
+    if (errOut)
+        *errOut = tr("File format not handled, operation aborted!");
+    return false;
+}
+
+void MultiLayer::exportToFile(const QString &fileName)
+{
+    QString err;
+    if (!exportToFileChecked(fileName, &err)) {
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::critical(this, tr("Error"),
+                                  err.isEmpty() ? tr("File format not handled, operation aborted!")
+                                                : err);
         }
-        if (!ApplicationWindow::isNonInteractiveContext(this))
-            QMessageBox::critical(this, tr("Error"), tr("File format not handled, operation aborted!"));
     }
 }
 
-QImage MultiLayer::copyPageAsImage(int dpi)
+QImage MultiLayer::renderPageToImage(int effectiveDpi, bool transparent, QString *errOut)
 {
     ScopedUnzoomForExport unzoomGuard(this);
-    const int effectiveDpi = qBound(36, dpi > 0 ? dpi : 300, 4800);
-
-    QRect layersRect;
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        if (gr && gr->plotWidget())
-            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-    }
-    if (!layersRect.isEmpty())
-        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-    else
-        layersRect = (canvas && !canvas->rect().isEmpty()) ? canvas->rect() : QRect(0, 0, 520, 520);
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            layersRect = layersRect.united(lblRect);
-    }
-
-    const bool hasPhysicalPage = (d_page_unit != UnitPx);
-    QRect srcRect = (hasPhysicalPage || d_page_view_mode)
-            ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
-            : layersRect;
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            srcRect = srcRect.united(lblRect);
-    }
+    const ExportPageMetrics m = computeExportPageMetrics(this);
 
     QSize targetSize;
-    if (hasPhysicalPage) {
-        auto toInches = [](double val, PageUnit u) -> double {
-            switch (u) {
-            case UnitMm:
-                return val / 25.4;
-            case UnitCm:
-                return val / 2.54;
-            case UnitInch:
-                return val;
-            case UnitPx:
-            default:
-                return val / 96.0;
-            }
-        };
-        const double wIn = toInches(d_page_width_val, d_page_unit);
-        const double hIn = toInches(d_page_height_val, d_page_unit);
-        targetSize = QSize(qMax(1, qRound(wIn * double(effectiveDpi))),
-                           qMax(1, qRound(hIn * double(effectiveDpi))));
+    if (m.hasPhysicalPage) {
+        targetSize = QSize(qMax(1, qRound((m.physWMm / 25.4) * double(effectiveDpi))),
+                           qMax(1, qRound((m.physHMm / 25.4) * double(effectiveDpi))));
     } else {
         const double scale = double(effectiveDpi) / 96.0;
-        targetSize = QSize(qMax(1, qRound(srcRect.width() * scale)),
-                           qMax(1, qRound(srcRect.height() * scale)));
+        targetSize = QSize(qMax(1, qRound(double(m.srcRect.width()) * scale)),
+                           qMax(1, qRound(double(m.srcRect.height()) * scale)));
     }
 
-    QImage image(targetSize, QImage::Format_RGB32);
-    image.fill(Qt::white);
-
-    {
-        QPainter p(&image);
-        QFont baseFnt(QStringLiteral("Arial"), 10);
-        baseFnt.setHintingPreference(QFont::PreferNoHinting);
-        p.setFont(baseFnt);
-        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
-                         | QPainter::SmoothPixmapTransform);
-        const double sx = double(targetSize.width()) / double(qMax(1, srcRect.width()));
-        const double sy = double(targetSize.height()) / double(qMax(1, srcRect.height()));
-        if (hasPhysicalPage) {
-            const double s = qMin(sx, sy);
-            const double dx = 0.5 * (double(targetSize.width()) - double(srcRect.width()) * s);
-            const double dy = 0.5 * (double(targetSize.height()) - double(srcRect.height()) * s);
-            p.translate(dx, dy);
-            p.scale(s, s);
-        } else {
-            p.scale(sx, sy);
-        }
-        if (d_page_bg_color.isValid() && d_page_bg_color.alpha() > 0)
-            p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(d_page_bg_color));
-        const QList<Graph *> ordered = orderedLayersForRender();
-        for (Graph *gr : ordered) {
-            if (!gr || !gr->plotWidget())
-                continue;
-            Plot *myPlot = (Plot *)gr->plotWidget();
-            const QPoint pos = gr->pos() - srcRect.topLeft();
-            gr->exportPainter(p, false, QRect(pos, myPlot->size()));
-        }
-        p.setClipping(false);
-        drawInsetConnectors(&p, -srcRect.topLeft());
-        drawPanelLabels(&p, -srcRect.topLeft());
-        p.end();
+    const qint64 pxCount = qint64(targetSize.width()) * qint64(targetSize.height());
+    if (targetSize.width() <= 0 || targetSize.height() <= 0 || pxCount > 200000000LL) {
+        if (errOut)
+            *errOut = tr("Image size is too large to allocate for export.");
+        return QImage();
     }
 
-    const int dpm = qRound(double(effectiveDpi) / 0.0254);
-    image.setDotsPerMeterX(dpm);
-    image.setDotsPerMeterY(dpm);
-
-    if (QClipboard *cb = QApplication::clipboard()) {
-        for (int attempt = 0; attempt < 10; ++attempt) {
-            cb->setImage(image);
-            if (cb->image().size() == image.size())
-                break;
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 15);
-            QThread::msleep(20);
-        }
+    const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
+    const bool useAlphaFormat = transparent || (pageBg.alpha() < 255);
+    QImage image(targetSize, useAlphaFormat ? QImage::Format_ARGB32 : QImage::Format_RGB32);
+    if (image.isNull()) {
+        if (errOut)
+            *errOut = tr("Image size is too large to allocate for export.");
+        return QImage();
     }
-
-    return image;
-}
-
-void MultiLayer::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
-{
-    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
-        exportToFile(fileName);
-        return;
-    }
-
-    ScopedUnzoomForExport unzoomGuard(this);
-
-    QRect layersRect;
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        if (gr && gr->plotWidget())
-            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-    }
-    if (!layersRect.isEmpty())
-        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-    else
-        layersRect = canvas ? canvas->rect() : QRect(0, 0, 520, 520);
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            layersRect = layersRect.united(lblRect);
-    }
-
-    const bool hasPhysicalPage = (d_page_unit != UnitPx);
-    QRect srcRect = (hasPhysicalPage || d_page_view_mode)
-            ? ((canvas && !canvas->rect().isEmpty()) ? canvas->rect() : layersRect)
-            : layersRect;
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            srcRect = srcRect.united(lblRect);
-    }
-
-    const int effectiveDpi = (dpi > 0)
-            ? qBound(36, dpi, 4800)
-            : (hasPhysicalPage ? qBound(36, d_page_dpi, 4800) : 96);
-
-    QSize targetSize;
-    if (hasPhysicalPage) {
-        auto toInches = [](double val, PageUnit u) -> double {
-            switch (u) {
-            case UnitMm:
-                return val / 25.4;
-            case UnitCm:
-                return val / 2.54;
-            case UnitInch:
-                return val;
-            case UnitPx:
-            default:
-                return val / 96.0;
-            }
-        };
-        const double wIn = toInches(d_page_width_val, d_page_unit);
-        const double hIn = toInches(d_page_height_val, d_page_unit);
-        targetSize = QSize(qMax(1, qRound(wIn * double(effectiveDpi))),
-                           qMax(1, qRound(hIn * double(effectiveDpi))));
-    } else {
-        const double scale = double(effectiveDpi) / 96.0;
-        targetSize = QSize(qMax(1, qRound(srcRect.width() * scale)),
-                           qMax(1, qRound(srcRect.height() * scale)));
-    }
-
-    QImage image(targetSize, QImage::Format_ARGB32);
-    image.fill(transparent ? QColor(255, 255, 255, 0)
-                           : (d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white)));
+    image.fill(useAlphaFormat ? Qt::transparent : pageBg);
 
     QVector<QColor> savedBg(graphsList.count()), savedCanvasBg(graphsList.count());
     if (transparent) {
         for (int i = 0; i < graphsList.count(); ++i) {
-            Graph *gr = (Graph *)graphsList.at(i);
+            Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
             if (!gr || !gr->plotWidget())
                 continue;
             savedBg[i] = gr->plotWidget()->palette().color(QPalette::Window);
@@ -2039,46 +2154,48 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         }
     }
 
+    bool paintOk = false;
     {
-        QPainter p(&image);
-        QFont baseFnt(QStringLiteral("Arial"), 10);
-        baseFnt.setHintingPreference(QFont::PreferNoHinting);
-        p.setFont(baseFnt);
-        p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
-                         | QPainter::SmoothPixmapTransform);
-        const double sx = double(targetSize.width()) / double(qMax(1, srcRect.width()));
-        const double sy = double(targetSize.height()) / double(qMax(1, srcRect.height()));
-        if (hasPhysicalPage) {
-            const double s = qMin(sx, sy);
-            const double dx = 0.5 * (double(targetSize.width()) - double(srcRect.width()) * s);
-            const double dy = 0.5 * (double(targetSize.height()) - double(srcRect.height()) * s);
-            p.translate(dx, dy);
-            p.scale(s, s);
-        } else {
-            p.scale(sx, sy);
+        QPainter p;
+        if (p.begin(&image)) {
+            QFont baseFnt(QStringLiteral("Arial"), 10);
+            baseFnt.setHintingPreference(QFont::PreferNoHinting);
+            p.setFont(baseFnt);
+            p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing
+                             | QPainter::SmoothPixmapTransform);
+            const double sx = double(targetSize.width()) / double(qMax(1, m.srcRect.width()));
+            const double sy = double(targetSize.height()) / double(qMax(1, m.srcRect.height()));
+            if (m.hasPhysicalPage) {
+                const double s = qMin(sx, sy);
+                const double dx =
+                        0.5 * (double(targetSize.width()) - double(m.srcRect.width()) * s);
+                const double dy =
+                        0.5 * (double(targetSize.height()) - double(m.srcRect.height()) * s);
+                p.translate(dx, dy);
+                p.scale(s, s);
+            } else {
+                p.scale(sx, sy);
+            }
+            if (!transparent && pageBg.alpha() > 0)
+                p.fillRect(QRect(QPoint(0, 0), m.srcRect.size()), QBrush(pageBg));
+            const QList<Graph *> ordered = orderedLayersForRender();
+            for (Graph *gr : ordered) {
+                if (!gr || !gr->plotWidget())
+                    continue;
+                Plot *myPlot = gr->plotWidget();
+                const QPoint pos = gr->pos() - m.srcRect.topLeft();
+                gr->exportPainter(p, false, QRect(pos, myPlot->size()));
+            }
+            p.setClipping(false);
+            drawInsetConnectors(&p, -m.srcRect.topLeft());
+            drawPanelLabels(&p, -m.srcRect.topLeft());
+            paintOk = p.end();
         }
-        if (!transparent) {
-            const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
-            if (pageBg.alpha() > 0)
-                p.fillRect(QRect(QPoint(0, 0), srcRect.size()), QBrush(pageBg));
-        }
-        const QList<Graph *> ordered = orderedLayersForRender();
-        for (Graph *gr : ordered) {
-            if (!gr || !gr->plotWidget())
-                continue;
-            Plot *myPlot = (Plot *)gr->plotWidget();
-            QPoint pos = gr->pos() - srcRect.topLeft();
-            gr->exportPainter(p, false, QRect(pos, myPlot->size()));
-        }
-        p.setClipping(false);
-        drawInsetConnectors(&p, -srcRect.topLeft());
-        drawPanelLabels(&p, -srcRect.topLeft());
-        p.end();
     }
 
     if (transparent) {
         for (int i = 0; i < graphsList.count(); ++i) {
-            Graph *gr = (Graph *)graphsList.at(i);
+            Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
             if (!gr || !gr->plotWidget())
                 continue;
             QPalette pal = gr->plotWidget()->palette();
@@ -2088,23 +2205,98 @@ void MultiLayer::exportImage(const QString &fileName, int quality, bool transpar
         }
     }
 
+    if (!paintOk) {
+        if (errOut)
+            *errOut = tr("Failed to initialize image painter.");
+        return QImage();
+    }
+
     const int dpm = qRound(double(effectiveDpi) / 0.0254);
     image.setDotsPerMeterX(dpm);
     image.setDotsPerMeterY(dpm);
+    return image;
+}
+
+QImage MultiLayer::copyPageAsImage(int dpi)
+{
+    const int effectiveDpi = (dpi > 0)
+            ? qBound(36, dpi, 4800)
+            : ((d_page_unit != UnitPx && d_page_dpi > 0) ? qBound(36, d_page_dpi, 4800) : 300);
+
+    QString err;
+    QImage image = renderPageToImage(effectiveDpi, false, &err);
+    if (image.isNull()) {
+        if (!ApplicationWindow::isNonInteractiveContext(this) && !err.isEmpty())
+            QMessageBox::warning(this, tr("Warning"), err);
+        return image;
+    }
+
+    if (QClipboard *cb = QApplication::clipboard()) {
+        bool clipboardOk = false;
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            cb->setImage(image);
+            if (cb->image().size() == image.size()) {
+                clipboardOk = true;
+                break;
+            }
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 15);
+            QThread::msleep(20);
+        }
+        if (!clipboardOk && !ApplicationWindow::isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Warning"),
+                                 tr("Could not copy image to clipboard."));
+        }
+    }
+
+    return image;
+}
+
+bool MultiLayer::exportImageChecked(const QString &fileName, int quality, bool transparent, int dpi,
+                                    QString *errOut)
+{
+    if (fileName.isEmpty()) {
+        if (errOut)
+            *errOut = tr("Please provide a valid file name!");
+        return false;
+    }
+
+    if (QFileInfo(fileName).suffix().toLower() == QLatin1String("emf"))
+        return exportToFileChecked(fileName, errOut);
+
+    const bool hasPhysicalPage = (d_page_unit != UnitPx);
+    const int effectiveDpi = (dpi > 0)
+            ? qBound(36, dpi, 4800)
+            : (hasPhysicalPage ? qBound(36, d_page_dpi, 4800) : 96);
+
+    QImage image = renderPageToImage(effectiveDpi, transparent, errOut);
+    if (image.isNull())
+        return false;
 
     QImageWriter writer(fileName);
-    if (fileName.endsWith(".tif", Qt::CaseInsensitive)
-        || fileName.endsWith(".tiff", Qt::CaseInsensitive)) {
+    const QString ext = QFileInfo(fileName).suffix().toLower();
+    if (ext == QLatin1String("tif") || ext == QLatin1String("tiff"))
         writer.setCompression(1); // LZW
-    }
-    const bool isPng = fileName.endsWith(".png", Qt::CaseInsensitive);
+    const bool isPng = (ext == QLatin1String("png"));
     if (isPng && quality >= 95
-        && qint64(targetSize.width()) * qint64(targetSize.height()) >= 1500000LL) {
+        && qint64(image.width()) * qint64(image.height()) >= 1500000LL) {
         writer.setQuality(75); // Fast lossless zlib level 2 (~3.5x faster than level 6 on >= 1.5 MP)
     } else if (quality >= 0 && !(isPng && quality >= 95)) {
         writer.setQuality(quality);
     }
-    writer.write(image);
+    if (!writer.write(image)) {
+        if (errOut) {
+            *errOut = writer.errorString().isEmpty()
+                    ? tr("Failed to write image file: %1").arg(fileName)
+                    : writer.errorString();
+        }
+        return false;
+    }
+    return true;
+}
+
+void MultiLayer::exportImage(const QString &fileName, int quality, bool transparent, int dpi)
+{
+    (void)exportImageChecked(fileName, quality, transparent, dpi, nullptr);
 }
 
 void MultiLayer::exportPDF(const QString &fname)
@@ -2112,19 +2304,19 @@ void MultiLayer::exportPDF(const QString &fname)
     exportVector(fname);
 }
 
-void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool keepAspect,
-                              QPageSize pageSize, QPageLayout::Orientation orientation)
+bool MultiLayer::exportVectorImpl(const QString &fileName, int res, bool color, bool keepAspect,
+                                  QPageSize pageSize, QPageLayout::Orientation orientation,
+                                  bool allowQt5PsFallback, QString *errOut)
 {
     if (fileName.isEmpty()) {
-        if (!ApplicationWindow::isNonInteractiveContext(this))
-            QMessageBox::critical(this, tr("Error"), tr("Please provide a valid file name!"));
-        return;
+        if (errOut)
+            *errOut = tr("Please provide a valid file name!");
+        return false;
     }
 
-    if (fileName.endsWith(".emf", Qt::CaseInsensitive)) {
-        exportToFile(fileName);
-        return;
-    }
+    const QString ext = QFileInfo(fileName).suffix().toLower();
+    if (ext == QLatin1String("emf"))
+        return exportToFileChecked(fileName, errOut);
 
     ScopedUnzoomForExport unzoomGuard(this);
 
@@ -2133,16 +2325,24 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
     printer.setCreator("ToriGraph");
     printer.setFullPage(true);
 
-    printer.setOutputFileName(fileName);
-    if (fileName.endsWith(".eps", Qt::CaseInsensitive)
-        || fileName.endsWith(".ps", Qt::CaseInsensitive)) {
+    QString outPath = fileName;
+    printer.setOutputFileName(outPath);
+    if (ext == QLatin1String("eps") || ext == QLatin1String("ps")) {
 #if QT_VERSION >= 0x050000
+        if (!allowQt5PsFallback) {
+            if (errOut) {
+                *errOut = tr("EPS/PostScript export is not supported in Qt5 builds; "
+                             "export as PDF or SVG instead.");
+            }
+            return false;
+        }
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             QMessageBox::warning(this, tr("Warning"),
                                  tr("Output in postscript format is not available for Qt5, using PDF"));
         }
         printer.setOutputFormat(QPrinter::PdfFormat);
-        printer.setOutputFileName(fileName + ".pdf");
+        outPath = fileName + ".pdf";
+        printer.setOutputFileName(outPath);
 #else
         printer.setOutputFormat(QPrinter::PostScriptFormat);
 #endif
@@ -2167,145 +2367,156 @@ void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool
 
     QRect srcRect;
     if (pageSize == QPageSize(QPageSize::Custom)) {
-        if (d_page_unit != UnitPx) {
-            auto toMm = [](double val, PageUnit u) -> double {
-                switch (u) {
-                case UnitMm:
-                    return val;
-                case UnitCm:
-                    return val * 10.0;
-                case UnitInch:
-                    return val * 25.4;
-                case UnitPx:
-                default:
-                    return (val / 96.0) * 25.4;
-                }
-            };
-            const double wMm = qMax(5.0, toMm(d_page_width_val, d_page_unit));
-            const double hMm = qMax(5.0, toMm(d_page_height_val, d_page_unit));
-            printer.setPageSize(QPageSize(QSizeF(wMm, hMm), QPageSize::Millimeter));
-            if (canvas && !canvas->rect().isEmpty()) {
-                srcRect = canvas->rect();
-                if (d_panel_labels_enabled) {
-                    const QRect lblRect = panelLabelsBoundingRect();
-                    if (!lblRect.isEmpty())
-                        srcRect = srcRect.united(lblRect);
-                }
-            }
+        const ExportPageMetrics m = computeExportPageMetrics(this);
+        if (m.hasPhysicalPage) {
+            printer.setPageSize(QPageSize(QSizeF(m.physWMm, m.physHMm), QPageSize::Millimeter));
+            srcRect = m.srcRect;
         } else {
-            QRect layersRect;
-            for (int i = 0; i < (int)graphsList.count(); i++) {
-                Graph *gr = (Graph *)graphsList.at(i);
-                if (gr && gr->plotWidget())
-                    layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-            }
-            if (!layersRect.isEmpty())
-                layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-            else
-                layersRect = canvas->rect();
-            if (d_panel_labels_enabled) {
-                const QRect lblRect = panelLabelsBoundingRect();
-                if (!lblRect.isEmpty())
-                    layersRect = layersRect.united(lblRect);
-            }
-            const QSizeF ptSize(layersRect.width() * 72.0 / 96.0,
-                                layersRect.height() * 72.0 / 96.0);
+            const QSizeF ptSize(m.srcRect.width() * 72.0 / 96.0,
+                                m.srcRect.height() * 72.0 / 96.0);
             printer.setPageSize(QPageSize(ptSize, QPageSize::Point));
-            srcRect = layersRect;
+            srcRect = m.srcRect;
         }
     } else {
         printer.setPageOrientation(orientation);
         printer.setPageSize(pageSize);
     }
 
-    exportPainter(printer, keepAspect, srcRect);
+    QPainter p;
+    if (!p.begin(&printer)) {
+        if (errOut)
+            *errOut = tr("Could not open vector output file for writing: %1").arg(outPath);
+        return false;
+    }
+    exportPainter(p, keepAspect, srcRect, QSize(printer.width(), printer.height()));
+    const bool endOk = p.end();
+    const QFileInfo fi(outPath);
+    if (!endOk || !fi.exists() || fi.size() <= 0) {
+        if (errOut)
+            *errOut = tr("Failed to write vector output file: %1").arg(outPath);
+        return false;
+    }
+    return true;
 }
 
-void MultiLayer::exportSVG(const QString &fname)
+bool MultiLayer::exportVectorChecked(const QString &fileName, int res, bool color, bool keepAspect,
+                                     QPageSize pageSize, QPageLayout::Orientation orientation,
+                                     QString *errOut)
 {
+    return exportVectorImpl(fileName, res, color, keepAspect, pageSize, orientation, false, errOut);
+}
+
+void MultiLayer::exportVector(const QString &fileName, int res, bool color, bool keepAspect,
+                              QPageSize pageSize, QPageLayout::Orientation orientation)
+{
+    QString err;
+    if (!exportVectorImpl(fileName, res, color, keepAspect, pageSize, orientation, true, &err)) {
+        if (!ApplicationWindow::isNonInteractiveContext(this) && fileName.isEmpty() && !err.isEmpty())
+            QMessageBox::critical(this, tr("Error"), err);
+    }
+}
+
+bool MultiLayer::exportSVGChecked(const QString &fname, QString *errOut)
+{
+    if (fname.isEmpty()) {
+        if (errOut)
+            *errOut = tr("Please provide a valid file name!");
+        return false;
+    }
 #if QT_VERSION >= 0x040300
     ScopedUnzoomForExport unzoomGuard(this);
-    QRect layersRect;
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        if (gr && gr->plotWidget())
-            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-    }
-    if (!layersRect.isEmpty())
-        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-    else
-        layersRect = canvas->rect();
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            layersRect = layersRect.united(lblRect);
-    }
-
-    QRect srcRect = (d_page_unit != UnitPx && canvas && !canvas->rect().isEmpty())
-            ? canvas->rect()
-            : layersRect;
-    bool expandedBeyondCanvas = false;
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty() && !srcRect.contains(lblRect)) {
-            srcRect = srcRect.united(lblRect);
-            expandedBeyondCanvas = true;
-        }
-    }
-    QSize svgPxSize = srcRect.size();
-    if (d_page_unit != UnitPx && d_base_page_px.isValid() && !expandedBeyondCanvas)
+    const ExportPageMetrics m = computeExportPageMetrics(this);
+    QSize svgPxSize = m.srcRect.size();
+    if (m.hasPhysicalPage && d_base_page_px.isValid() && !m.expandedBeyondBase)
         svgPxSize = d_base_page_px;
-    // E6: QSvgGenerator writes the document size as integer px / 96 dpi, so 85 mm became
-    // 84.93 mm. Rendering must stay on a 96-dpi device (a higher generator resolution makes
-    // Qwt scale fonts and pens twice, see exportVector), so the exact physical size is written
-    // into the root element afterwards; the viewBox keeps the drawing coordinates.
-    double exactWmm = 0.0, exactHmm = 0.0;
-    if (d_page_unit != UnitPx && !expandedBeyondCanvas) {
-        exactWmm = d_page_width_val;
-        exactHmm = d_page_height_val;
-        if (d_page_unit == UnitCm) {
-            exactWmm *= 10.0;
-            exactHmm *= 10.0;
-        } else if (d_page_unit == UnitInch) {
-            exactWmm *= 25.4;
-            exactHmm *= 25.4;
+
+    QFile outFile(fname);
+    if (!outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errOut) {
+            *errOut = outFile.errorString().isEmpty()
+                    ? tr("Could not open SVG file for writing: %1").arg(fname)
+                    : outFile.errorString();
         }
+        return false;
     }
 
+    bool endOk = false;
     {
         QSvgGenerator generator;
-        generator.setFileName(fname);
+        generator.setOutputDevice(&outFile);
 #if QT_VERSION >= 0x040500
         generator.setSize(svgPxSize);
         generator.setViewBox(QRect(QPoint(0, 0), svgPxSize));
         generator.setResolution(96);
         generator.setTitle(this->name());
 #endif
-        exportPainter(generator, false, srcRect);
+        QPainter p;
+        if (!p.begin(&generator)) {
+            outFile.close();
+            if (errOut)
+                *errOut = tr("Failed to initialize SVG painter.");
+            return false;
+        }
+        exportPainter(p, false, m.srcRect, svgPxSize);
+        endOk = p.end();
+    }
+    const bool flushOk = outFile.flush();
+    const QFile::FileError ferr = outFile.error();
+    const QString ferrStr = outFile.errorString();
+    const qint64 writtenBytes = outFile.size();
+    outFile.close();
+    if (!endOk || !flushOk || ferr != QFile::NoError || writtenBytes <= 0) {
+        if (errOut)
+            *errOut = ferrStr.isEmpty() ? tr("Failed to write SVG file: %1").arg(fname) : ferrStr;
+        return false;
     }
 
-    if (exactWmm > 1.0 && exactHmm > 1.0) {
+    // E6: QSvgGenerator writes integer px / 96 dpi, so rewrite the root <svg> physical size in mm.
+    if (m.hasPhysicalPage && m.physWMm > 1.0 && m.physHMm > 1.0) {
         QFile f(fname);
-        if (f.open(QIODevice::ReadOnly)) {
-            QByteArray svg = f.readAll();
+        if (!f.open(QIODevice::ReadOnly)) {
+            if (errOut)
+                *errOut = tr("Failed to update SVG dimensions in %1").arg(fname);
+            return false;
+        }
+        QByteArray svg = f.readAll();
+        f.close();
+        const int rootPos = svg.indexOf("<svg");
+        const int rootEnd = (rootPos >= 0) ? svg.indexOf('>', rootPos) : -1;
+        if (rootPos >= 0 && rootEnd > rootPos) {
+            QString root = QString::fromUtf8(svg.mid(rootPos, rootEnd - rootPos));
+            static const QRegularExpression kWRx(QStringLiteral("\\swidth=\"[^\"]*\""));
+            static const QRegularExpression kHRx(QStringLiteral("\\sheight=\"[^\"]*\""));
+            root.replace(kWRx, QStringLiteral(" width=\"%1mm\"").arg(m.physWMm, 0, 'f', 3));
+            root.replace(kHRx, QStringLiteral(" height=\"%1mm\"").arg(m.physHMm, 0, 'f', 3));
+            svg.replace(rootPos, rootEnd - rootPos, root.toUtf8());
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                if (errOut)
+                    *errOut = tr("Failed to update SVG dimensions in %1").arg(fname);
+                return false;
+            }
+            const qint64 rw = f.write(svg);
+            const bool rFlush = f.flush();
+            const QFile::FileError rErr = f.error();
             f.close();
-            const int rootPos = svg.indexOf("<svg");
-            const int rootEnd = (rootPos >= 0) ? svg.indexOf('>', rootPos) : -1;
-            if (rootPos >= 0 && rootEnd > rootPos) {
-                QString root = QString::fromUtf8(svg.mid(rootPos, rootEnd - rootPos));
-                static const QRegularExpression kWRx(QStringLiteral("\\swidth=\"[^\"]*\""));
-                static const QRegularExpression kHRx(QStringLiteral("\\sheight=\"[^\"]*\""));
-                root.replace(kWRx, QStringLiteral(" width=\"%1mm\"").arg(exactWmm, 0, 'f', 3));
-                root.replace(kHRx, QStringLiteral(" height=\"%1mm\"").arg(exactHmm, 0, 'f', 3));
-                svg.replace(rootPos, rootEnd - rootPos, root.toUtf8());
-                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    f.write(svg);
-                    f.close();
-                }
+            if (rw != svg.size() || !rFlush || rErr != QFile::NoError) {
+                if (errOut)
+                    *errOut = tr("Failed to update SVG dimensions in %1").arg(fname);
+                return false;
             }
         }
     }
+    return true;
+#else
+    if (errOut)
+        *errOut = tr("SVG export is not supported in this build.");
+    return false;
 #endif
+}
+
+void MultiLayer::exportSVG(const QString &fname)
+{
+    (void)exportSVGChecked(fname, nullptr);
 }
 
 void MultiLayer::exportPainter(QPaintDevice &paintDevice, bool keepAspect, QRect rect)
@@ -2321,24 +2532,8 @@ void MultiLayer::exportPainter(QPainter &painter, bool keepAspect, QRect rect, Q
     baseFnt.setHintingPreference(QFont::PreferNoHinting);
     painter.setFont(baseFnt);
 
-    QRect layersRect;
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        if (gr && gr->plotWidget())
-            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-    }
-    if (!layersRect.isEmpty())
-        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-    else
-        layersRect = canvas->rect();
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            layersRect = layersRect.united(lblRect);
-    }
-
     if (rect == QRect())
-        rect = layersRect;
+        rect = computeExportPageMetrics(this).layersRect;
     if (size == QSize())
         size = rect.size();
     if (keepAspect) {
@@ -2378,23 +2573,10 @@ void MultiLayer::copyAllLayers()
         return;
 #endif
     ScopedUnzoomForExport unzoomGuard(this);
-    QRect layersRect;
-    for (int i = 0; i < (int)graphsList.count(); i++) {
-        Graph *gr = (Graph *)graphsList.at(i);
-        if (gr && gr->plotWidget())
-            layersRect = layersRect.united(QRect(gr->pos(), gr->plotWidget()->size()));
-    }
-    if (!layersRect.isEmpty())
-        layersRect.adjust(-left_margin, -top_margin, right_margin, bottom_margin);
-    else
-        layersRect = canvas->rect();
-    if (d_panel_labels_enabled) {
-        const QRect lblRect = panelLabelsBoundingRect();
-        if (!lblRect.isEmpty())
-            layersRect = layersRect.united(lblRect);
-    }
+    const QRect layersRect = computeExportPageMetrics(this).layersRect;
+    const QColor pageBg = d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white);
     QImage image(layersRect.size(), QImage::Format_ARGB32);
-    image.fill(d_page_bg_color.isValid() ? d_page_bg_color : QColor(Qt::white));
+    image.fill(pageBg.alpha() < 255 ? Qt::transparent : pageBg);
     exportPainter(image, false, layersRect);
     QApplication::clipboard()->setImage(image);
 }
@@ -2856,6 +3038,113 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
         }
     }
 
+    // Direct drag & click-to-select on Zoom Inset layers
+    if (d_inset_drag_graph
+        && (e->type() == QEvent::MouseMove || e->type() == QEvent::MouseButtonRelease)) {
+        Graph *dragGr = d_inset_drag_graph.data();
+        if (!d_inset_specs.contains(dragGr)) {
+            d_inset_drag_graph.clear();
+            d_inset_drag_before_snap.clear();
+            d_inset_drag_active = false;
+        } else {
+            const auto *me = static_cast<const QMouseEvent *>(e);
+            auto finishInsetDrag = [&]() {
+                const bool didMove = d_inset_drag_active && dragGr
+                        && (dragGr->geometry() != d_inset_drag_start_geo);
+                const QString beforeSnap = d_inset_drag_before_snap;
+                d_inset_drag_graph.clear();
+                d_inset_drag_start_geo = QRect();
+                d_inset_drag_start_global = QPoint();
+                d_inset_drag_before_snap.clear();
+                d_inset_drag_active = false;
+                if (dragGr) {
+                    setActiveGraph(dragGr);
+                    if (d_layers_selector && !d_layers_selector->contains(dragGr))
+                        clearLayerSelector();
+                    if (!d_layers_selector) {
+                        d_layers_selector = new SelectionMoveResizer(dragGr);
+                        connect(d_layers_selector, SIGNAL(targetsChanged()), this,
+                                SIGNAL(modifiedPlot()));
+                    }
+                    enforceLayerZOrder();
+                    if (didMove) {
+                        emit modifiedPlot();
+                        pushUndoSnapshot(tr("Move Inset Layer"), beforeSnap);
+                    }
+                }
+            };
+            if (e->type() == QEvent::MouseMove) {
+                if (!(me->buttons() & Qt::LeftButton)) {
+                    finishInsetDrag();
+                    return true;
+                }
+                const QPoint delta = me->globalPos() - d_inset_drag_start_global;
+                if (!d_inset_drag_active
+                    && delta.manhattanLength() >= QApplication::startDragDistance()) {
+                    d_inset_drag_active = true;
+                }
+                if (d_inset_drag_active) {
+                    QRect newGeo = d_inset_drag_start_geo.translated(delta);
+                    if (canvas && canvas->width() >= 40 && canvas->height() >= 40) {
+                        const QRect bounds = canvas->rect().adjusted(2, 2, -2, -2);
+                        const int minX = bounds.left();
+                        const int maxX = qMax(minX, bounds.right() - newGeo.width() + 1);
+                        const int minY = bounds.top();
+                        const int maxY = qMax(minY, bounds.bottom() - newGeo.height() + 1);
+                        newGeo.moveLeft(qBound(minX, newGeo.left(), maxX));
+                        newGeo.moveTop(qBound(minY, newGeo.top(), maxY));
+                    }
+                    const bool prevSync = d_syncing_inset_geometries;
+                    d_syncing_inset_geometries = true;
+                    const bool prevIgnore = dragGr->ignoresResizeEvents();
+                    dragGr->setIgnoreResizeEvents(true);
+                    dragGr->setGeometry(newGeo);
+                    dragGr->setIgnoreResizeEvents(prevIgnore);
+                    d_syncing_inset_geometries = prevSync;
+
+                    Graph *srcLayer = d_inset_specs.value(dragGr).sourceLayer.data();
+                    if (srcLayer && srcLayer->width() >= 20 && srcLayer->height() >= 20) {
+                        const QRect srcGeo = srcLayer->geometry();
+                        d_inset_specs[dragGr].normGeo = QRectF(
+                                double(newGeo.x() - srcGeo.x()) / double(srcGeo.width()),
+                                double(newGeo.y() - srcGeo.y()) / double(srcGeo.height()),
+                                double(newGeo.width()) / double(srcGeo.width()),
+                                double(newGeo.height()) / double(srcGeo.height()));
+                    }
+                    syncCanvasOverlayVisibility();
+                    if (canvas)
+                        canvas->update();
+                }
+                return true;
+            }
+            if (e->type() == QEvent::MouseButtonRelease && me->button() == Qt::LeftButton) {
+                finishInsetDrag();
+                return true;
+            }
+        }
+    }
+
+    if (e->type() == QEvent::MouseButtonPress && !addTextOn) {
+        Graph *ownerLayer = owningLayerOfObject(object, graphsList);
+        if (ownerLayer && d_inset_specs.contains(ownerLayer)) {
+            const auto *me = static_cast<const QMouseEvent *>(e);
+            if (me->button() == Qt::LeftButton
+                && !(me->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier))
+                && !(d_layers_selector && d_layers_selector->contains(ownerLayer))
+                && !ownerLayer->zoomOn() && !ownerLayer->activeTool()
+                && !ownerLayer->drawTextActive() && !ownerLayer->drawLineActive()) {
+                d_inset_drag_graph = ownerLayer;
+                d_inset_drag_start_global = me->globalPos();
+                d_inset_drag_start_geo = ownerLayer->geometry();
+                d_inset_drag_before_snap = captureUndoSnapshot();
+                d_inset_drag_active = false;
+                setActiveGraph(ownerLayer);
+                enforceLayerZOrder();
+                return true;
+            }
+        }
+    }
+
     // Transparent linked twin-axis overlay click-through, hover-through & wheel-through
     if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick
         || e->type() == QEvent::MouseMove || e->type() == QEvent::Wheel) {
@@ -3005,8 +3294,49 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
                    || (object
                        && object->objectName() == QLatin1String("qt_scrollarea_viewport")))) {
         repositionCanvasStatusPill();
+        if (object && object->objectName() == QLatin1String("qt_scrollarea_viewport")) {
+            ApplicationWindow *app = findMultiLayerApp(this);
+            const bool splitMode = app && app->modernRibbonBar()
+                    && app->modernRibbonBar()->workspaceLayoutMode()
+                            == ModernRibbonBar::LayoutSplitTableGraph;
+            if (splitMode && !d_was_tiled_split) {
+                d_was_tiled_split = true;
+                if (!d_user_zoomed && (d_page_unit != UnitPx || d_page_view_mode)) {
+                    QPointer<MultiLayer> safeMl(this);
+                    QTimer::singleShot(0, this, [safeMl]() {
+                        if (safeMl && !safeMl->d_user_zoomed
+                            && (safeMl->d_page_unit != UnitPx || safeMl->d_page_view_mode)) {
+                            safeMl->autoFitPageZoomToViewport();
+                        }
+                    });
+                }
+            } else if (!splitMode) {
+                d_was_tiled_split = false;
+            }
+        }
     }
     return MyWidget::eventFilter(object, e);
+}
+
+void MultiLayer::showEvent(QShowEvent *event)
+{
+    MyWidget::showEvent(event);
+    if (!d_initial_viewport_fit_done) {
+        d_initial_viewport_fit_done = true;
+        if (!d_user_zoomed && (d_page_unit != UnitPx || d_page_view_mode)) {
+            if (widget() && widget()->layout())
+                widget()->layout()->activate();
+            autoFitPageZoomToViewport();
+            QPointer<MultiLayer> safeMl(this);
+            QTimer::singleShot(0, this, [safeMl]() {
+                if (safeMl && safeMl->isVisible() && !safeMl->d_user_zoomed
+                    && (safeMl->d_page_unit != UnitPx || safeMl->d_page_view_mode)) {
+                    safeMl->autoFitPageZoomToViewport();
+                }
+            });
+        }
+    }
+    repositionCanvasStatusPill();
 }
 
 void MultiLayer::changeEvent(QEvent *event)
@@ -3026,27 +3356,31 @@ void MultiLayer::changeEvent(QEvent *event)
 
 void MultiLayer::keyPressEvent(QKeyEvent *e)
 {
-    if (e->key() == Qt::Key_F12) {
-        if (d_layers_selector)
-            delete d_layers_selector;
+    if (e->key() == Qt::Key_F12 && (e->modifiers() & Qt::ControlModifier)) {
+        if (graphsList.isEmpty())
+            return;
+        clearLayerSelector();
         int index = graphsList.indexOf((QWidget *)active_graph) + 1;
         if (index >= graphsList.size())
             index = 0;
         Graph *g = (Graph *)graphsList.at(index);
         if (g)
             setActiveGraph(g);
+        e->accept();
         return;
     }
 
-    if (e->key() == Qt::Key_F10) {
-        if (d_layers_selector)
-            delete d_layers_selector;
+    if (e->key() == Qt::Key_F10 && (e->modifiers() & Qt::ControlModifier)) {
+        if (graphsList.isEmpty())
+            return;
+        clearLayerSelector();
         int index = graphsList.indexOf((QWidget *)active_graph) - 1;
         if (index < 0)
             index = graphsList.size() - 1;
         Graph *g = (Graph *)graphsList.at(index);
         if (g)
             setActiveGraph(g);
+        e->accept();
         return;
     }
 
@@ -3154,6 +3488,18 @@ QString MultiLayer::saveToString(const QString &geometry)
                          .arg(zr.height(), 0, 'g', 12);
         }
     }
+    if (RecalcManager *rm = RecalcManager::instance(findMultiLayerApp(this))) {
+        for (int i = 0; i < graphsList.count(); ++i) {
+            if (const Graph *ag = qobject_cast<const Graph *>(graphsList.at(i))) {
+                const QString linksXml = rm->saveLinksXmlForGraph(ag);
+                if (!linksXml.trimmed().isEmpty()) {
+                    s += QString("<ToriRecalcLinks layer=\"%1\" xml=\"%2\"/>\n")
+                                 .arg(i)
+                                 .arg(escapeXmlAttr(linksXml));
+                }
+            }
+        }
+    }
     if (active_graph) {
         const int activeIdx = graphsList.indexOf(active_graph);
         if (activeIdx >= 0)
@@ -3194,16 +3540,15 @@ QString MultiLayer::pageSetupTagsString(bool includeWindowSize) const
                  .arg(d_target_aspect_ratio, 0, 'g', 12);
     if (d_panel_labels_enabled || d_panel_label_font_pt > 0
         || d_panel_label_pattern != QLatin1String("(%a)")) {
-        QString escPat = d_panel_label_pattern;
-        escPat.replace(QLatin1String("&"), QLatin1String("&amp;"));
-        escPat.replace(QLatin1String("\""), QLatin1String("&quot;"));
-        escPat.replace(QLatin1String("<"), QLatin1String("&lt;"));
-        escPat.replace(QLatin1String(">"), QLatin1String("&gt;"));
         s += QString("<ToriPanelLabels enabled=\"%1\" placement=\"%2\" pattern=\"%3\" fontPt=\"%4\"/>\n")
                      .arg(d_panel_labels_enabled ? 1 : 0)
                      .arg(int(d_panel_label_placement))
-                     .arg(escPat)
+                     .arg(escapeXmlAttr(d_panel_label_pattern))
                      .arg(d_panel_label_font_pt);
+    }
+    if (!d_applied_style_preset_id.trimmed().isEmpty()) {
+        s += QString("<ToriAppliedStylePreset id=\"%1\"/>\n")
+                     .arg(escapeXmlAttr(d_applied_style_preset_id.trimmed()));
     }
     return s;
 }
@@ -3268,7 +3613,6 @@ void MultiLayer::mousePressEvent(QMouseEvent *e)
         }
         return;
     }
-    int margin = 5;
     QPoint pos = canvas->mapFrom(this, e->pos());
     // iterate backwards in Z-stack order, so layers on top are preferred for selection
     const QList<Graph *> ordered = orderedLayersForRender();
@@ -3276,6 +3620,7 @@ void MultiLayer::mousePressEvent(QMouseEvent *e)
         Graph *cand = ordered.at(idx);
         if (!cand || !cand->isVisible())
             continue;
+        const int margin = d_inset_specs.contains(cand) ? 10 : 5;
         QRect igeo = cand->frameGeometry();
         igeo.adjust(-margin, -margin, margin, margin);
         if (igeo.contains(pos)) {
@@ -3301,7 +3646,7 @@ void MultiLayer::mousePressEvent(QMouseEvent *e)
         }
     }
     if (d_layers_selector)
-        delete d_layers_selector;
+        clearLayerSelector();
 }
 
 void MultiLayer::setMargins(int lm, int rm, int tm, int bm)
@@ -3617,6 +3962,10 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     d_panel_label_placement = ml->d_panel_label_placement;
     d_panel_label_pattern = ml->d_panel_label_pattern;
     d_panel_label_font_pt = ml->d_panel_label_font_pt;
+    d_applied_style_preset_id = ml->d_applied_style_preset_id;
+    setProperty("toriAppliedStylePreset",
+                d_applied_style_preset_id.isEmpty() ? QVariant()
+                                                    : QVariant(d_applied_style_preset_id));
     setPageBackgroundColor(ml->d_page_bg_color);
     if (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4) {
         if (ml->canvasWidget() && canvas)
@@ -3789,18 +4138,17 @@ void MultiLayer::syncChildOverlayAndInsetGeometries()
                 int ih = qMax(40, qRound(rel.height() * srcGeo.height()));
                 int ix = srcGeo.x() + qRound(rel.x() * srcGeo.width());
                 int iy = srcGeo.y() + qRound(rel.y() * srcGeo.height());
-                if (Plot *sPlot = srcLayer->plotWidget()) {
-                    sPlot->updateLayout();
-                    const QRect pCanvas =
-                            sPlot->plotLayout()->canvasRect().translated(srcLayer->pos());
-                    if (pCanvas.width() > 60 && pCanvas.height() > 60) {
-                        iw = qMin(iw, qMax(60, pCanvas.width() - 12));
-                        ih = qMin(ih, qMax(50, pCanvas.height() - 12));
-                        ix = qBound(pCanvas.left() + 6, ix,
-                                    qMax(pCanvas.left() + 6, pCanvas.right() - iw - 6));
-                        iy = qBound(pCanvas.top() + 6, iy,
-                                    qMax(pCanvas.top() + 6, pCanvas.bottom() - ih - 6));
-                    }
+                const QRect pageBounds =
+                        (canvas && canvas->width() >= 60 && canvas->height() >= 60)
+                        ? canvas->rect().adjusted(4, 4, -4, -4)
+                        : srcGeo;
+                if (pageBounds.width() > 60 && pageBounds.height() > 60) {
+                    iw = qMin(iw, qMax(60, pageBounds.width() - 8));
+                    ih = qMin(ih, qMax(50, pageBounds.height() - 8));
+                    ix = qBound(pageBounds.left(), ix,
+                                qMax(pageBounds.left(), pageBounds.right() - iw + 1));
+                    iy = qBound(pageBounds.top(), iy,
+                                qMax(pageBounds.top(), pageBounds.bottom() - ih + 1));
                 }
                 const QRect targetGeo(ix, iy, iw, ih);
                 if (gr->geometry() != targetGeo) {
@@ -3830,12 +4178,10 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
                    tr("Layer Properties..."), this, [this]() { emit showPlotDialog(-1); });
     menu.addAction(IconLoader::duotoneIcon(QStringLiteral("layer-linked"), 18, false),
                    tr("Link Axes Scales..."), this, [this]() {
-        const QString snap = captureUndoSnapshot();
         LayerDialog dlg(this);
         dlg.setMultiLayer(this);
         dlg.exec();
         refreshLayerButtonBadges();
-        pushUndoSnapshot(tr("Link Axes Scales"), snap);
     });
     menu.addSeparator();
     menu.addAction(IconLoader::duotoneIcon(QStringLiteral("plot-double-y"), 18, false),
@@ -3900,6 +4246,21 @@ void MultiLayer::openLayerButtonContextMenu(LayerButton *btn, const QPoint &glob
         refreshLayerButtonBadges();
         pushUndoSnapshot(tr("Add Inset Layer"), snap);
     });
+    Graph *actGr = activeGraph();
+    if (actGr && d_inset_specs.contains(actGr)) {
+        menu.addSeparator();
+        QAction *actConn = menu.addAction(tr("Show Zoom Connectors"));
+        actConn->setCheckable(true);
+        actConn->setChecked(insetShowConnectors(actGr));
+        QPointer<Graph> safeAct(actGr);
+        connect(actConn, &QAction::toggled, this, [this, safeAct](bool checked) {
+            if (!safeAct || !d_inset_specs.contains(safeAct.data()))
+                return;
+            const QString snap = captureUndoSnapshot();
+            setInsetShowConnectors(safeAct.data(), checked);
+            pushUndoSnapshot(tr("Toggle Zoom Connectors"), snap);
+        });
+    }
     menu.addSeparator();
     QAction *actRemove = menu.addAction(
             IconLoader::duotoneIcon(QStringLiteral("delete"), 18, false),
@@ -3955,6 +4316,10 @@ const char *const kZoomAppliedGeomProp = "_toriZoomAppliedGeom";
 
 void MultiLayer::setPageZoom(double factor)
 {
+    if (!d_internal_zoom_change)
+        d_user_zoomed = true;
+    clearCtrlFontGestureBaseline();
+
     const double clamped = qBound(0.25, factor, 4.0);
     if (qAbs(clamped - d_page_zoom) < 1e-6)
         return;
@@ -4070,6 +4435,154 @@ void MultiLayer::setPageZoom(double factor)
 double MultiLayer::pageZoom() const
 {
     return d_page_zoom;
+}
+
+double MultiLayer::fitPageZoomFactor() const
+{
+    double basePxW = 0.0;
+    double basePxH = 0.0;
+    if (d_page_unit != UnitPx && d_page_width_val > 0.0 && d_page_height_val > 0.0) {
+        auto toPx96 = [](double val, PageUnit u) -> double {
+            switch (u) {
+            case UnitMm:
+                return (val / 25.4) * 96.0;
+            case UnitCm:
+                return (val / 2.54) * 96.0;
+            case UnitInch:
+                return val * 96.0;
+            case UnitPx:
+            default:
+                return val;
+            }
+        };
+        basePxW = std::max(120.0, toPx96(d_page_width_val, d_page_unit));
+        basePxH = std::max(120.0, toPx96(d_page_height_val, d_page_unit));
+    } else if (d_base_page_px.isValid() && d_base_page_px.width() >= 50
+               && d_base_page_px.height() >= 50) {
+        basePxW = double(d_base_page_px.width());
+        basePxH = double(d_base_page_px.height());
+    } else {
+        const double z = qMax(0.25, d_page_zoom);
+        const int cw = (canvas && canvas->width() >= 50) ? qRound(canvas->width() / z) : graph_width;
+        const int ch = (canvas && canvas->height() >= 50) ? qRound(canvas->height() / z)
+                                                          : graph_height;
+        basePxW = std::max(120.0, double(cw));
+        basePxH = std::max(120.0, double(ch));
+    }
+
+    ApplicationWindow *app = findMultiLayerApp(const_cast<MultiLayer *>(this));
+    QMdiArea *mdi = mdiArea();
+    const bool splitMode = app && app->modernRibbonBar()
+            && app->modernRibbonBar()->workspaceLayoutMode()
+                    == ModernRibbonBar::LayoutSplitTableGraph;
+    const bool tabbedMode = (mdi && mdi->viewMode() == QMdiArea::TabbedView);
+    const bool constrainedPane = isMaximized() || tabbedMode || splitMode || !mdi;
+
+    int availW = 0;
+    int availH = 0;
+    QScrollArea *cs = widget()
+            ? widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
+            : nullptr;
+    QWidget *csVp = cs ? cs->viewport() : nullptr;
+
+    const int topBarH = (d_layer_pill_frame && !d_layer_pill_frame->isHidden())
+            ? qMax(LayerButton::btnSize() + 4, d_layer_pill_frame->sizeHint().height() + 6)
+            : (LayerButton::btnSize() + 4);
+    const int styleFrameW = mdi
+            ? qMax(4, style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, this))
+            : 0;
+    const int styleTitleH = mdi
+            ? qMax(24, style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, this))
+            : 0;
+
+    if (constrainedPane) {
+        if (csVp && csVp->isVisible() && csVp->width() >= 80 && csVp->height() >= 80) {
+            availW = csVp->width() - 28;
+            availH = csVp->height() - 28;
+        } else if (splitMode && mdi && mdi->viewport() && mdi->viewport()->isVisible()
+                   && mdi->viewport()->width() >= 200 && mdi->viewport()->height() >= 120) {
+            const double leftRatio =
+                    qBound(0.15, app->modernRibbonBar()->splitLeftRatio(), 0.85);
+            const int leftPaneW = qMax(120, qRound(mdi->viewport()->width() * leftRatio));
+            const int rightPaneW = qMax(120, mdi->viewport()->width() - leftPaneW);
+            const int paneH = mdi->viewport()->height();
+            availW = rightPaneW - (2 * styleFrameW + 28);
+            availH = paneH - (styleTitleH + 2 * styleFrameW + topBarH + 28);
+        } else if (mdi && mdi->viewport() && mdi->viewport()->isVisible()
+                   && mdi->viewport()->width() >= 160 && mdi->viewport()->height() >= 160) {
+            availW = mdi->viewport()->width() - (tabbedMode ? 28 : (2 * styleFrameW + 28));
+            availH = mdi->viewport()->height()
+                    - (tabbedMode ? (topBarH + 28) : (styleTitleH + 2 * styleFrameW + topBarH + 28));
+        }
+    } else {
+        if (mdi && mdi->viewport() && mdi->viewport()->isVisible()
+            && mdi->viewport()->width() >= 160 && mdi->viewport()->height() >= 160) {
+            const int vpW = mdi->viewport()->width();
+            const int vpH = mdi->viewport()->height();
+            availW = vpW - (2 * styleFrameW + 20);
+            availH = vpH - (styleTitleH + 2 * styleFrameW + topBarH + 20);
+        } else if (csVp && csVp->isVisible() && csVp->width() >= 80 && csVp->height() >= 80) {
+            availW = csVp->width() - 28;
+            availH = csVp->height() - 28;
+        }
+    }
+
+    if (availW >= 60 && availH >= 60 && basePxW > 0.0 && basePxH > 0.0) {
+        const double fitZoom = std::min(double(availW) / basePxW, double(availH) / basePxH);
+        return qBound(0.35, fitZoom, 1.6);
+    }
+
+    if (d_page_unit != UnitPx) {
+        double wMm = d_page_width_val;
+        double hMm = d_page_height_val;
+        if (d_page_unit == UnitCm) {
+            wMm *= 10.0;
+            hMm *= 10.0;
+        } else if (d_page_unit == UnitInch) {
+            wMm *= 25.4;
+            hMm *= 25.4;
+        }
+        return (wMm <= 110.5 && hMm <= 110.5) ? 1.6 : 1.0;
+    }
+    return 1.0;
+}
+
+void MultiLayer::autoFitPageZoomToViewport()
+{
+    if (d_user_zoomed || (d_page_unit == UnitPx && !d_page_view_mode))
+        return;
+    double desiredUpper = 1.0;
+    if (d_page_unit != UnitPx) {
+        double wMm = d_page_width_val;
+        double hMm = d_page_height_val;
+        if (d_page_unit == UnitCm) {
+            wMm *= 10.0;
+            hMm *= 10.0;
+        } else if (d_page_unit == UnitInch) {
+            wMm *= 25.4;
+            hMm *= 25.4;
+        }
+        desiredUpper = (wMm <= 110.5 && hMm <= 110.5) ? 1.6 : 1.0;
+    }
+    const double target = qBound(0.35, std::min(desiredUpper, fitPageZoomFactor()), 1.6);
+    const bool prevInternal = d_internal_zoom_change;
+    d_internal_zoom_change = true;
+    setPageZoom(target);
+    d_internal_zoom_change = prevInternal;
+}
+
+void MultiLayer::fitPageZoomToViewport()
+{
+    const double target = fitPageZoomFactor();
+    const bool prevInternal = d_internal_zoom_change;
+    d_internal_zoom_change = true;
+    setPageZoom(target);
+    d_internal_zoom_change = prevInternal;
+}
+
+QString MultiLayer::appliedStylePresetId() const
+{
+    return d_applied_style_preset_id;
 }
 
 void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit unit, int dpi)
@@ -4601,6 +5114,70 @@ void MultiLayer::setInsetShowConnectors(Graph *insetLayer, bool show)
     emit modifiedPlot();
 }
 
+void MultiLayer::setInsetZoomDataRect(Graph *insetLayer, const QRectF &roi)
+{
+    if (!insetLayer || !d_inset_specs.contains(insetLayer))
+        return;
+    const QRectF norm = roi.normalized();
+    if (norm.width() <= 1e-15 && norm.height() <= 1e-15)
+        return;
+
+    Plot *inPlot = insetLayer->plotWidget();
+    Graph *srcLayer = d_inset_specs[insetLayer].sourceLayer.data();
+    Plot *srcPlot = srcLayer ? srcLayer->plotWidget() : nullptr;
+
+    d_inset_specs[insetLayer].zoomDataRect = norm;
+    insetLayer->enableAutoscaling(false);
+
+    auto scaleTypeForAxis = [&](int axisId) -> int {
+        if (inPlot && Plot::isLog10ScaleEngine(inPlot->axisScaleEngine(axisId)))
+            return 1;
+        if (srcPlot && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(axisId)))
+            return 1;
+        return 0;
+    };
+    auto invertedForAxis = [&](int axisId) -> bool {
+        if (inPlot && inPlot->axisScaleEngine(axisId))
+            return inPlot->axisScaleEngine(axisId)->testAttribute(QwtScaleEngine::Inverted);
+        if (srcPlot && srcPlot->axisScaleEngine(axisId))
+            return srcPlot->axisScaleEngine(axisId)->testAttribute(QwtScaleEngine::Inverted);
+        return false;
+    };
+
+    const int xType = scaleTypeForAxis(QwtPlot::xBottom);
+    const int yType = scaleTypeForAxis(QwtPlot::yLeft);
+    const bool xInv = invertedForAxis(QwtPlot::xBottom);
+    const bool yInv = invertedForAxis(QwtPlot::yLeft);
+
+    if (norm.width() > 1e-15) {
+        const double xLo = qMin(norm.left(), norm.right());
+        const double xHi = qMax(norm.left(), norm.right());
+        if (xType != 1 || (xLo > 0.0 && xHi > xLo)) {
+            const int inXMaj = (insetLayer->width() < 105) ? 2 : 3;
+            insetLayer->setScale(QwtPlot::xBottom, xLo, xHi, 0.0, inXMaj, 1, xType, xInv);
+            insetLayer->setScale(QwtPlot::xTop, xLo, xHi, 0.0, inXMaj, 1, xType, xInv);
+        }
+    }
+    if (norm.height() > 1e-15) {
+        const double yLo = qMin(norm.top(), norm.bottom());
+        const double yHi = qMax(norm.top(), norm.bottom());
+        if (yType != 1 || (yLo > 0.0 && yHi > yLo)) {
+            insetLayer->setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 3, 1, yType, yInv);
+            insetLayer->setScale(QwtPlot::yRight, yLo, yHi, 0.0, 3, 1, yType, yInv);
+        }
+    }
+    if (inPlot) {
+        inPlot->updateAxes();
+        inPlot->updateLayout();
+        inPlot->replot();
+    }
+    syncCanvasOverlayVisibility();
+    if (canvas)
+        canvas->update();
+    update();
+    emit modifiedPlot();
+}
+
 Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, bool showConnectors)
 {
     if (!sourceLayer)
@@ -5048,7 +5625,10 @@ bool MultiLayer::applyStylePresetById(const QString &idOrName)
 void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
 {
     const QString beforeSnap = captureUndoSnapshot();
-    // Remembered for graph.to_python (re-applied by the generated script); session only.
+    clearCtrlFontGestureBaseline();
+    d_user_zoomed = false;
+    d_applied_style_preset_id = spec.id;
+    // Remembered for graph.to_python and .sciprj persistence.
     setProperty("toriAppliedStylePreset", spec.id);
 
     const bool isIsijFormat = spec.formatIsijUnitSlash;
@@ -5124,7 +5704,11 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     const int panelCols = qMax(1, cols);
     const int panelRows = qMax(1, rows);
     if (panelCols > 1 || panelRows > 1) {
-        if (multiPanelSizing() == PanelSizingTwoColumn175) {
+        if (spec.id.compare(QLatin1String("journal_2col_175mm"), Qt::CaseInsensitive) == 0
+            || pageW >= 150.0) {
+            if (pageH < 150.0 && panelRows > 1)
+                pageH = qBound(20.0, pageH * double(panelRows), 1000.0);
+        } else if (multiPanelSizing() == PanelSizingTwoColumn175) {
             const double aspectHW = (pageW > 1e-6) ? (pageH / pageW) : 1.0;
             const double panelW = 175.0 / double(panelCols);
             pageW = 175.0;
@@ -5147,42 +5731,13 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     }
 
     setMargins(marginPx, marginPx, marginPx, marginPx);
-    double initialViewZoom = (pageW <= 110.0 && pageH <= 110.0) ? 1.6 : 1.0;
-    if (pageW <= 110.0 && pageH <= 110.0 && isVisible()) {
-        const double basePxW = std::max(120.0, (pageW / 25.4) * 96.0);
-        const double basePxH = std::max(120.0, (pageH / 25.4) * 96.0);
-        int availW = 0;
-        int availH = 0;
-        QScrollArea *cs = widget()
-                ? widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
-                : nullptr;
-        if (isMaximized() || !mdiArea()) {
-            if (cs && cs->viewport() && cs->viewport()->isVisible()
-                && cs->viewport()->width() >= 100 && cs->viewport()->height() >= 100) {
-                availW = cs->viewport()->width() - 20;
-                availH = cs->viewport()->height() - 20;
-            }
-        } else if (mdiArea() && mdiArea()->viewport() && mdiArea()->viewport()->isVisible()
-                   && mdiArea()->viewport()->width() >= 160
-                   && mdiArea()->viewport()->height() >= 160) {
-            const int vpW = mdiArea()->viewport()->width();
-            const int vpH = mdiArea()->viewport()->height();
-            const int styleFrameW =
-                    qMax(4, style()->pixelMetric(QStyle::PM_MdiSubWindowFrameWidth, nullptr, this));
-            const int styleTitleH =
-                    qMax(24, style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, this));
-            const int topBarH = (d_layer_pill_frame && !d_layer_pill_frame->isHidden())
-                    ? qMax(LayerButton::btnSize() + 4, d_layer_pill_frame->sizeHint().height() + 6)
-                    : (LayerButton::btnSize() + 4);
-            availW = vpW - (2 * styleFrameW + 20);
-            availH = vpH - (styleTitleH + 2 * styleFrameW + topBarH + 20);
-        }
-        if (availW >= 90 && availH >= 90) {
-            const double fitZoom = std::min(double(availW) / basePxW, double(availH) / basePxH);
-            initialViewZoom = qBound(0.75, std::min(initialViewZoom, fitZoom), 1.6);
-        }
+    const double desiredUpperZoom = (pageW <= 110.0 && pageH <= 110.0) ? 1.6 : 1.0;
+    {
+        const bool prevInternalZoom = d_internal_zoom_change;
+        d_internal_zoom_change = true;
+        setPageZoom(1.0);
+        d_internal_zoom_change = prevInternalZoom;
     }
-    setPageZoom(1.0);
     d_zoom_applied_lcanvas = QSize();
     d_zoom_base_lcanvas = QSizeF();
     for (int i = 0; i < graphsList.count(); ++i) {
@@ -6242,8 +6797,26 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         gr->plotWidget()->replot();
     }
     syncChildOverlayAndInsetGeometries();
-    if (std::fabs(initialViewZoom - 1.0) > 1e-4)
+    double initialViewZoom = desiredUpperZoom;
+    {
+        ApplicationWindow *mApp = findMultiLayerApp(this);
+        QMdiArea *mdi = mdiArea();
+        const bool splitMode = mApp && mApp->modernRibbonBar()
+                && mApp->modernRibbonBar()->workspaceLayoutMode()
+                        == ModernRibbonBar::LayoutSplitTableGraph;
+        const bool viewportReady = isVisible()
+                || (mdi && mdi->viewport() && mdi->viewport()->isVisible())
+                || splitMode;
+        if (viewportReady)
+            initialViewZoom = qBound(0.35, std::min(desiredUpperZoom, fitPageZoomFactor()), 1.6);
+    }
+    if (std::fabs(initialViewZoom - 1.0) > 1e-4) {
+        const bool prevInternalZoom = d_internal_zoom_change;
+        d_internal_zoom_change = true;
         setPageZoom(initialViewZoom);
+        d_internal_zoom_change = prevInternalZoom;
+    }
+    d_user_zoomed = false;
     emit modifiedPlot();
     pushUndoSnapshot(undoLabel, beforeSnap);
 }
@@ -6261,6 +6834,8 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         while (it.hasNext()) {
             const QRegularExpressionMatch m = it.next();
             QString val = m.captured(2);
+            val.replace("&#10;", "\n");
+            val.replace("&#13;", "\r");
             val.replace("&quot;", "\"");
             val.replace("&lt;", "<");
             val.replace("&gt;", ">");
@@ -6437,6 +7012,29 @@ bool MultiLayer::restorePhase5Tag(const QString &line)
         return true;
     }
 
+    if (trimmed.startsWith("<ToriAppliedStylePreset")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        d_applied_style_preset_id = a.value(QStringLiteral("id")).trimmed();
+        setProperty("toriAppliedStylePreset",
+                    d_applied_style_preset_id.isEmpty() ? QVariant()
+                                                        : QVariant(d_applied_style_preset_id));
+        return true;
+    }
+
+    if (trimmed.startsWith("<ToriRecalcLinks")) {
+        const QMap<QString, QString> a = parseAttrs(trimmed);
+        bool okLayer = false;
+        const int layerIdx = a.value(QStringLiteral("layer"), QStringLiteral("-1")).toInt(&okLayer);
+        const QString linksXml = a.value(QStringLiteral("xml"));
+        if (okLayer && layerIdx >= 0 && !linksXml.trimmed().isEmpty()) {
+            PendingRecalcLinkSpec spec;
+            spec.layerIndex = layerIdx;
+            spec.xml = linksXml;
+            d_pending_recalc_links.append(spec);
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -6512,6 +7110,18 @@ void MultiLayer::finalizePhase5Restore()
     }
 
     syncChildOverlayAndInsetGeometries();
+    if (!d_pending_recalc_links.isEmpty()) {
+        ApplicationWindow *app = findMultiLayerApp(this);
+        if (RecalcManager *rm = RecalcManager::instance(app)) {
+            for (const PendingRecalcLinkSpec &ls : d_pending_recalc_links) {
+                if (ls.layerIndex >= 0 && ls.layerIndex < graphsList.count()) {
+                    if (Graph *gr = qobject_cast<Graph *>(graphsList.at(ls.layerIndex)))
+                        rm->restoreLinkXmlForGraph(app, gr, ls.xml);
+                }
+            }
+        }
+        d_pending_recalc_links.clear();
+    }
     const QVariant pendingActiveVar = property("_tori_pending_active_layer");
     if (pendingActiveVar.isValid()) {
         const int activeIdx = pendingActiveVar.toInt();
@@ -7647,7 +8257,7 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
     app->invalidateModelessGraphDialogs(this);
 
     if (d_layers_selector)
-        delete d_layers_selector;
+        clearLayerSelector();
 
     if (addTextOn) {
         QApplication::restoreOverrideCursor();
@@ -7659,6 +8269,11 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
 
     d_inset_specs.clear();
     d_pending_inset_specs.clear();
+    d_pending_recalc_links.clear();
+    d_inset_drag_graph.clear();
+    d_inset_drag_active = false;
+    d_inset_drag_before_snap.clear();
+    clearCtrlFontGestureBaseline();
 
     if (RecalcManager *rm = RecalcManager::instance(app)) {
         for (QWidget *gw : graphsList) {
@@ -7732,6 +8347,8 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
     d_panel_label_placement = PanelOutsideTopLeft;
     d_panel_label_pattern = QStringLiteral("(%a)");
     d_panel_label_font_pt = 0;
+    d_applied_style_preset_id.clear();
+    setProperty("toriAppliedStylePreset", QVariant());
 
     const QStringList lines = snapshot.split(QLatin1Char('\n'));
     bool expectHeaderRow = false;
@@ -8763,35 +9380,10 @@ void MultiLayer::applySquareCanvasFrame70Percent()
     const int nRows = qMax(1, rows);
     const int nCols = qMax(1, cols);
     const int outerPad = qMax(4, qMin(left_margin, top_margin));
-    const int gapX = (nCols > 1) ? qMax(6, colsSpace) : 0;
-    const int gapY = (nRows > 1) ? qMax(6, rowsSpace) : 0;
-    int panelTopExtra = 0;
-    if (d_panel_labels_enabled && d_panel_label_placement == PanelOutsideTopLeft) {
-        double maxLabelPt = (d_panel_label_font_pt > 0) ? double(d_panel_label_font_pt) : 12.0;
-        if (d_panel_label_font_pt <= 0) {
-            for (Graph *gr : primaryGraphs) {
-                const QFont tf = gr->axisTitleFont(QwtPlot::yLeft);
-                const double titlePt =
-                        (tf.pointSizeF() > 0.0) ? tf.pointSizeF() : double(tf.pointSize());
-                const double pt = (titlePt > 0.0)
-                        ? qBound(9.0, titlePt >= 24.0 ? titlePt : titlePt + 1.0, 40.0)
-                        : 12.0;
-                maxLabelPt = qMax(maxLabelPt, pt);
-            }
-        }
-        QFont lblFont(QStringLiteral("Arial"));
-        lblFont.setPointSizeF(maxLabelPt);
-        lblFont.setWeight(QFont::Normal);
-        lblFont.setItalic(false);
-        lblFont.setHintingPreference(QFont::PreferNoHinting);
-        if (Plot *firstPlot = (!primaryGraphs.isEmpty() && primaryGraphs.first())
-                    ? primaryGraphs.first()->plotWidget()
-                    : nullptr) {
-            lblFont = firstPlot->displayFont(lblFont);
-        }
-        const QFontMetrics lfm(lblFont);
-        panelTopExtra = qMax(22, lfm.height() + 12);
-    }
+    const int gapX = (nCols > 1) ? qMax(0, colsSpace) : 0;
+    const int gapY = (nRows > 1) ? qMax(0, rowsSpace) : 0;
+    const int panelTopExtra = computeOutsidePanelTopExtra(
+            primaryGraphs, d_panel_labels_enabled, d_panel_label_placement, d_panel_label_font_pt);
 
     const bool prevSync = d_syncing_inset_geometries;
     d_syncing_inset_geometries = true;
@@ -9643,6 +10235,32 @@ void registerStylePresetTranslationsOnce()
     reg("ISIJ 1-Column (85x85 mm, 600 DPI)", "ISIJ 1段幅 (85×85 mm, 600 DPI)");
     reg("Presentation Slide (28 pt Arial)", "発表スライド (28 pt Arial)");
     reg("Large Slide (28 pt, 185 mm)", "大判スライド (28 pt, 185 mm)");
+    reg("Lab Slide (18 pt, 83.3 mm)", "研究室スライド (18 pt, 83.3 mm)");
+    reg("Journal 2-Column (175 mm)", "論文 2 段幅 (175 mm)");
+    reg("More / Legacy Presets", "その他 / 旧プリセット");
+    reg("Show Zoom Connectors", "ズーム接続線を表示");
+    reg("Toggle Zoom Connectors", "ズーム接続線の表示切替");
+    reg("Move Inset Layer", "インセットレイヤーを移動");
+    reg("Failed to render EMF graphics.", "EMF グラフィックスの描画に失敗しました。");
+    reg("Could not open file for writing: %1", "書き込み用にファイルを開けませんでした: %1");
+    reg("Failed to write complete EMF file.", "EMF ファイルの書き込みに失敗しました。");
+    reg("Image size is too large to allocate for export.",
+        "画像サイズが大きすぎるためエクスポートできません。");
+    reg("Failed to initialize image painter.", "画像ペインターの初期化に失敗しました。");
+    reg("Could not copy image to clipboard.", "画像をクリップボードにコピーできませんでした。");
+    reg("Failed to write image file: %1", "画像ファイルの書き込みに失敗しました: %1");
+    reg("EPS/PostScript export is not supported in Qt5 builds; export as PDF or SVG instead.",
+        "Qt5 ビルドでは EPS/PostScript エクスポートは未対応です。PDF または SVG で出力してください。");
+    reg("Could not open vector output file for writing: %1",
+        "ベクター出力ファイルを開けませんでした: %1");
+    reg("Failed to write vector output file: %1",
+        "ベクター出力ファイルの書き込みに失敗しました: %1");
+    reg("Could not open SVG file for writing: %1", "SVG ファイルを開けませんでした: %1");
+    reg("Failed to initialize SVG painter.", "SVG ペインターの初期化に失敗しました。");
+    reg("Failed to write SVG file: %1", "SVG ファイルの書き込みに失敗しました: %1");
+    reg("Failed to update SVG dimensions in %1", "%1 の SVG 寸法を更新できませんでした");
+    reg("SVG export is not supported in this build.",
+        "このビルドでは SVG エクスポートに対応していません。");
     reg("PowerPoint Paste Scale (%):", "PowerPoint 貼付倍率 (%):");
     reg("OK", "OK");
     reg("Cancel", "キャンセル");
@@ -9758,27 +10376,39 @@ MultiLayer::GraphStylePresetSpec stylePresetFromJson(const QJsonObject &o,
     return s;
 }
 
+bool writeStylePresetsToJsonFile(const QString &path,
+                                 const QVector<MultiLayer::GraphStylePresetSpec> &entries,
+                                 QString *errOut)
+{
+    QJsonArray arr;
+    for (const auto &s : entries)
+        arr.append(stylePresetToJson(s));
+    QJsonObject root;
+    root[QStringLiteral("version")] = MultiLayer::stylePresetFormatVersion();
+    root[QStringLiteral("presets")] = arr;
+    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errOut)
+            *errOut = QObject::tr("Could not write file: %1").arg(path);
+        return false;
+    }
+    const qint64 written = f.write(payload);
+    const bool flushed = f.flush();
+    const bool ok = (written == payload.size()) && flushed && (f.error() == QFile::NoError);
+    if (!ok && errOut)
+        *errOut = QObject::tr("Could not write file: %1").arg(path);
+    f.close();
+    return ok;
+}
+
 bool writeUserStylePresetsArray(const QVector<MultiLayer::GraphStylePresetSpec> &userEntries,
                                 QString *errOut)
 {
     const QString path = MultiLayer::userStylePresetsFilePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
-    QJsonArray arr;
-    for (const auto &s : userEntries)
-        arr.append(stylePresetToJson(s));
-    QJsonObject root;
-    root[QStringLiteral("version")] = MultiLayer::stylePresetFormatVersion();
-    root[QStringLiteral("presets")] = arr;
-
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (errOut)
-            *errOut = QObject::tr("Could not write preset file: %1").arg(path);
-        return false;
-    }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    f.close();
-    return true;
+    return writeStylePresetsToJsonFile(path, userEntries, errOut);
 }
 
 //! Reads the "version" field of a preset document. Files without one are version 1.
@@ -9790,14 +10420,19 @@ int presetDocumentVersion(const QJsonDocument &doc)
     return v.isDouble() ? qMax(1, v.toInt(1)) : 1;
 }
 
-QVector<MultiLayer::GraphStylePresetSpec> readPresetArrayFromFile(const QString &path,
-                                                                  bool readOnly,
-                                                                  QString *warnOut = nullptr)
+bool parseStylePresetsFromJsonFile(const QString &path, bool readOnly, bool skipEmptyId,
+                                   QVector<MultiLayer::GraphStylePresetSpec> *out,
+                                   QString *errOut, QString *warnOut = nullptr)
 {
-    QVector<MultiLayer::GraphStylePresetSpec> out;
+    if (!out)
+        return false;
+    out->clear();
     QFile f(path);
-    if (!f.exists() || !f.open(QIODevice::ReadOnly))
-        return out;
+    if (!f.exists() || !f.open(QIODevice::ReadOnly)) {
+        if (errOut)
+            *errOut = QObject::tr("Could not open file: %1").arg(path);
+        return false;
+    }
     const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
     f.close();
     QJsonArray arr;
@@ -9807,6 +10442,11 @@ QVector<MultiLayer::GraphStylePresetSpec> readPresetArrayFromFile(const QString 
         arr = doc.array();
     else if (doc.isObject())
         arr.append(doc.object());
+    else {
+        if (errOut)
+            *errOut = QObject::tr("Invalid JSON preset file.");
+        return false;
+    }
     const int ver = presetDocumentVersion(doc);
     if (ver > MultiLayer::stylePresetFormatVersion() && warnOut) {
         *warnOut = QObject::tr("%1 was written by a newer ToriGraph (preset format %2; this "
@@ -9821,19 +10461,18 @@ QVector<MultiLayer::GraphStylePresetSpec> readPresetArrayFromFile(const QString 
         MultiLayer::GraphStylePresetSpec base;
         base.builtIn = false;
         MultiLayer::GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
-        if (parsed.id.isEmpty())
+        if (skipEmptyId && parsed.id.isEmpty())
             continue;
         parsed.readOnly = readOnly;
         parsed.sourcePath = readOnly ? path : QString();
-        out.append(parsed);
+        out->append(parsed);
     }
-    return out;
+    return true;
 }
 
-QVector<MultiLayer::GraphStylePresetSpec> readSharedPresetEntries()
+QVector<MultiLayer::GraphStylePresetSpec> readSharedPresetEntriesFromDir(const QString &folder)
 {
     QVector<MultiLayer::GraphStylePresetSpec> out;
-    const QString folder = MultiLayer::sharedStylePresetsFolder();
     if (folder.trimmed().isEmpty())
         return out;
     QDir dir(folder);
@@ -9841,32 +10480,46 @@ QVector<MultiLayer::GraphStylePresetSpec> readSharedPresetEntries()
         return out;
     const QStringList files =
             dir.entryList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
-    for (const QString &fn : files)
-        out += readPresetArrayFromFile(dir.filePath(fn), true);
+    for (const QString &fn : files) {
+        QVector<MultiLayer::GraphStylePresetSpec> filePresets;
+        if (parseStylePresetsFromJsonFile(dir.filePath(fn), true, true, &filePresets, nullptr))
+            out += filePresets;
+    }
     return out;
+}
+
+QVector<MultiLayer::GraphStylePresetSpec> readSharedPresetEntries()
+{
+    return readSharedPresetEntriesFromDir(MultiLayer::sharedStylePresetsFolder());
+}
+
+void appendMergedSharedPresets(QVector<MultiLayer::GraphStylePresetSpec> &result,
+                               const QVector<MultiLayer::GraphStylePresetSpec> &sharedEntries)
+{
+    for (const MultiLayer::GraphStylePresetSpec &se : sharedEntries) {
+        bool clash = false;
+        for (const MultiLayer::GraphStylePresetSpec &r : result) {
+            if (r.id.compare(se.id, Qt::CaseInsensitive) == 0) {
+                clash = true;
+                break;
+            }
+        }
+        if (clash)
+            continue;
+        MultiLayer::GraphStylePresetSpec shared = se;
+        shared.builtIn = false;
+        shared.readOnly = true;
+        if (shared.name.trimmed().isEmpty())
+            shared.name = shared.id;
+        result.append(shared);
+    }
 }
 
 QVector<MultiLayer::GraphStylePresetSpec> readRawUserPresetEntries()
 {
     QVector<MultiLayer::GraphStylePresetSpec> out;
-    const QString path = MultiLayer::userStylePresetsFilePath();
-    QFile f(path);
-    if (!f.exists() || !f.open(QIODevice::ReadOnly))
-        return out;
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
-    if (!doc.isObject())
-        return out;
-    const QJsonArray arr = doc.object().value(QStringLiteral("presets")).toArray();
-    for (const QJsonValue &v : arr) {
-        if (!v.isObject())
-            continue;
-        MultiLayer::GraphStylePresetSpec base;
-        base.builtIn = false;
-        MultiLayer::GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
-        if (!parsed.id.isEmpty())
-            out.append(parsed);
-    }
+    parseStylePresetsFromJsonFile(MultiLayer::userStylePresetsFilePath(), false, true, &out,
+                                  nullptr);
     return out;
 }
 
@@ -9887,6 +10540,28 @@ QString canonicalBuiltInAlias(const QString &raw)
         || k == QLatin1String("journal_2col_175mm") || k == QLatin1String("175mm"))
         return QStringLiteral("journal_2col_175mm");
     return raw.trimmed();
+}
+
+void normalizePresetSpecForPersonalSave(MultiLayer::GraphStylePresetSpec &spec,
+                                        const QVector<MultiLayer::GraphStylePresetSpec> &builtIns)
+{
+    spec.id = canonicalBuiltInAlias(spec.id);
+    if (spec.id.isEmpty()) {
+        spec.id = QStringLiteral("custom_")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    }
+    if (spec.name.trimmed().isEmpty())
+        spec.name = spec.id;
+    spec.readOnly = false;
+    spec.sourcePath.clear();
+    spec.builtIn = false;
+    for (const MultiLayer::GraphStylePresetSpec &d : builtIns) {
+        if (d.id.compare(spec.id, Qt::CaseInsensitive) == 0) {
+            spec.id = d.id;
+            spec.builtIn = true;
+            break;
+        }
+    }
 }
 
 } // namespace
@@ -10158,23 +10833,7 @@ QVector<MultiLayer::GraphStylePresetSpec> MultiLayer::listStylePresets()
     }
     // E4: presets from the shared (lab) folder are merged read-only. Built-in and personal
     // presets win on an id clash so a shared file can never silently change them.
-    for (const GraphStylePresetSpec &se : readSharedPresetEntries()) {
-        bool clash = false;
-        for (const GraphStylePresetSpec &r : result) {
-            if (r.id.compare(se.id, Qt::CaseInsensitive) == 0) {
-                clash = true;
-                break;
-            }
-        }
-        if (clash)
-            continue;
-        GraphStylePresetSpec shared = se;
-        shared.builtIn = false;
-        shared.readOnly = true;
-        if (shared.name.trimmed().isEmpty())
-            shared.name = shared.id;
-        result.append(shared);
-    }
+    appendMergedSharedPresets(result, readSharedPresetEntries());
     return result;
 }
 
@@ -10208,23 +10867,7 @@ bool MultiLayer::findStylePreset(const QString &idOrName, GraphStylePresetSpec *
 bool MultiLayer::saveStylePreset(const GraphStylePresetSpec &inSpec, QString *errOut)
 {
     GraphStylePresetSpec spec = inSpec;
-    spec.id = canonicalBuiltInAlias(spec.id);
-    if (spec.id.isEmpty()) {
-        spec.id = QStringLiteral("custom_")
-                + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
-    }
-    if (spec.name.trimmed().isEmpty())
-        spec.name = spec.id;
-
-    // Mark builtIn flag accurately
-    spec.builtIn = false;
-    for (const GraphStylePresetSpec &d : defaultBuiltInStylePresets()) {
-        if (d.id.compare(spec.id, Qt::CaseInsensitive) == 0) {
-            spec.id = d.id;
-            spec.builtIn = true;
-            break;
-        }
-    }
+    normalizePresetSpecForPersonalSave(spec, defaultBuiltInStylePresets());
 
     QVector<GraphStylePresetSpec> userEntries = readRawUserPresetEntries();
     bool replaced = false;
@@ -10292,63 +10935,20 @@ bool MultiLayer::resetBuiltInStylePreset(const QString &id, QString *errOut)
 
 bool MultiLayer::exportStylePresetsToJson(const QString &filePath, QString *errOut)
 {
-    const QVector<GraphStylePresetSpec> all = listStylePresets();
-    QJsonArray arr;
-    for (const GraphStylePresetSpec &s : all)
-        arr.append(stylePresetToJson(s));
-    QJsonObject root;
-    root[QStringLiteral("version")] = stylePresetFormatVersion();
-    root[QStringLiteral("presets")] = arr;
-    QFile f(filePath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (errOut)
-            *errOut = QObject::tr("Could not write file: %1").arg(filePath);
-        return false;
-    }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    f.close();
-    return true;
+    return writeStylePresetsToJsonFile(filePath, listStylePresets(), errOut);
 }
 
 int MultiLayer::importStylePresetsFromJson(const QString &filePath, QString *errOut)
 {
-    QFile f(filePath);
-    if (!f.open(QIODevice::ReadOnly)) {
-        if (errOut)
-            *errOut = QObject::tr("Could not open file: %1").arg(filePath);
+    QVector<GraphStylePresetSpec> parsedSpecs;
+    QString warnMsg;
+    if (!parseStylePresetsFromJsonFile(filePath, false, false, &parsedSpecs, errOut, &warnMsg))
         return -1;
-    }
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    f.close();
-    QJsonArray arr;
-    if (doc.isObject() && doc.object().contains(QStringLiteral("presets")))
-        arr = doc.object().value(QStringLiteral("presets")).toArray();
-    else if (doc.isArray())
-        arr = doc.array();
-    else if (doc.isObject())
-        arr.append(doc.object());
-    else {
-        if (errOut)
-            *errOut = QObject::tr("Invalid JSON preset file.");
-        return -1;
-    }
-    // E4: check the format version. Newer files are still imported (unknown keys are ignored)
-    // but the caller gets a warning in errOut.
-    const int docVersion = presetDocumentVersion(doc);
-    if (docVersion > stylePresetFormatVersion() && errOut) {
-        *errOut = QObject::tr("%1 was written by a newer ToriGraph (preset format %2; this "
-                              "version reads format %3). Unknown settings are ignored.")
-                          .arg(QFileInfo(filePath).fileName())
-                          .arg(docVersion)
-                          .arg(stylePresetFormatVersion());
-    }
+    if (errOut && !warnMsg.isEmpty())
+        *errOut = warnMsg;
 
     int count = 0;
-    for (const QJsonValue &v : arr) {
-        if (!v.isObject())
-            continue;
-        GraphStylePresetSpec base;
-        GraphStylePresetSpec parsed = stylePresetFromJson(v.toObject(), base);
+    for (const GraphStylePresetSpec &parsed : parsedSpecs) {
         QString saveErr;
         if (saveStylePreset(parsed, &saveErr))
             ++count;
@@ -10447,7 +11047,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     const MultiPanelSizing origPanelSizing = multiPanelSizing();
     const QString origSharedFolder = sharedStylePresetsFolder();
     QString pendingNewGraphPresetId = origNewGraphPresetId;
-    bool defaultsCommitted = false;
+    QString stagedSharedFolder = origSharedFolder;
 
     QDialog dlg(app);
     dlg.setWindowTitle(QObject::tr("Graph Style Preset Manager"));
@@ -10499,6 +11099,16 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QVBoxLayout *rightColLay = new QVBoxLayout(rightScrollContent);
     rightColLay->setContentsMargins(4, 0, 4, 0);
     rightColLay->setSpacing(8);
+
+    QLabel *lblReadOnlyHint = new QLabel(
+            QObject::tr("This preset comes from the shared folder and is read-only. "
+                        "Duplicate it to make a personal copy."),
+            rightScrollContent);
+    lblReadOnlyHint->setWordWrap(true);
+    lblReadOnlyHint->setStyleSheet(
+            QStringLiteral("QLabel { color: #64748B; font-style: italic; padding: 2px 6px; }"));
+    lblReadOnlyHint->hide();
+    rightColLay->addWidget(lblReadOnlyHint);
 
     QWidget *editorPane = new QWidget(rightScrollContent);
     QFormLayout *form = new QFormLayout(editorPane);
@@ -10687,11 +11297,18 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     btnRow->addWidget(btnCancel);
     rootLay->addLayout(btnRow);
 
-    QVector<GraphStylePresetSpec> presets;
+    QVector<GraphStylePresetSpec> presets = listStylePresets();
+    int currentEditRow = -1;
     bool loadingUi = false;
 
     auto displayPresetName = [](const GraphStylePresetSpec &s) -> QString {
         return s.builtIn ? QObject::tr(s.name.toUtf8().constData()) : s.name;
+    };
+
+    auto presetListLabel = [&](const GraphStylePresetSpec &s) -> QString {
+        const QString tag = s.builtIn ? QObject::tr("Built-in")
+                : (s.readOnly ? QObject::tr("Shared") : QObject::tr("Custom"));
+        return QStringLiteral("[%1]  %2").arg(tag, displayPresetName(s));
     };
 
     auto readFormIntoSpec = [&](GraphStylePresetSpec &s) {
@@ -10727,10 +11344,33 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         s.largeSlideLayout = chkSlide->isChecked();
     };
 
-    auto populateForm = [&](int row) {
-        if (row < 0 || row >= presets.size())
+    auto flushCurrentRowToModel = [&]() {
+        if (loadingUi || currentEditRow < 0 || currentEditRow >= presets.size())
             return;
+        if (presets[currentEditRow].readOnly)
+            return;
+        readFormIntoSpec(presets[currentEditRow]);
+        if (QListWidgetItem *item = lw->item(currentEditRow))
+            item->setText(presetListLabel(presets[currentEditRow]));
+        const int comboIdx = cbNewGraphPreset->findData(presets[currentEditRow].id);
+        if (comboIdx >= 0) {
+            cbNewGraphPreset->setItemText(comboIdx,
+                                          displayPresetName(presets[currentEditRow]));
+        }
+    };
+
+    auto populateForm = [&](int row) {
         loadingUi = true;
+        if (row < 0 || row >= presets.size()) {
+            lblReadOnlyHint->hide();
+            editorPane->setEnabled(false);
+            btnDup->setEnabled(false);
+            btnDel->setEnabled(false);
+            btnReset->setEnabled(false);
+            btnApply->setEnabled(false);
+            loadingUi = false;
+            return;
+        }
         const GraphStylePresetSpec &s = presets[row];
         leName->setText(displayPresetName(s));
         sbW->setValue(s.pageWidthMm);
@@ -10757,9 +11397,13 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         sbPastePct->setValue((s.slidePastePercent > 0.0) ? s.slidePastePercent : 100.0);
         chkIsij->setChecked(s.formatIsijUnitSlash);
         chkSlide->setChecked(s.largeSlideLayout);
+        lblReadOnlyHint->setVisible(s.readOnly);
+        editorPane->setEnabled(!s.readOnly);
+        btnDup->setEnabled(true);
         btnDel->setEnabled(!s.builtIn && !s.readOnly);
         btnReset->setEnabled(s.builtIn);
-        btnSave->setEnabled(!s.readOnly);
+        btnSave->setEnabled(true);
+        btnApply->setEnabled(targetGraph != nullptr);
         btnApply->setText(s.readOnly ? QObject::tr("Apply to Graph")
                                      : QObject::tr("Save && Apply to Graph"));
         loadingUi = false;
@@ -10775,37 +11419,62 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         cbNewGraphPreset->setCurrentIndex(idx >= 0 ? idx : 0);
     };
 
-    auto reloadList = [&](const QString &selectId) {
-        presets = listStylePresets();
+    auto refreshListUi = [&](const QString &selectId) {
+        loadingUi = true;
+        currentEditRow = -1;
         lw->clear();
         int targetRow = 0;
         for (int i = 0; i < presets.size(); ++i) {
             const GraphStylePresetSpec &s = presets[i];
-            const QString tag = s.builtIn ? QObject::tr("Built-in")
-                    : (s.readOnly ? QObject::tr("Shared") : QObject::tr("Custom"));
-            QListWidgetItem *it = new QListWidgetItem(
-                    QStringLiteral("[%1]  %2").arg(tag, displayPresetName(s)), lw);
+            QListWidgetItem *it = new QListWidgetItem(presetListLabel(s), lw);
             it->setData(Qt::UserRole, s.id);
             if (!selectId.isEmpty() && s.id.compare(selectId, Qt::CaseInsensitive) == 0)
                 targetRow = i;
         }
         if (lw->count() > 0) {
+            targetRow = qBound(0, targetRow, lw->count() - 1);
             lw->setCurrentRow(targetRow);
-            populateForm(targetRow);
+            currentEditRow = targetRow;
         }
+        populateForm(currentEditRow);
         refillNewGraphPresetCombo();
     };
-    reloadList(QString());
+    refreshListUi(QString());
+
+    auto insertPersonalPresetInModel = [&](const GraphStylePresetSpec &spec) {
+        int insertPos = presets.size();
+        for (int i = 0; i < presets.size(); ++i) {
+            if (presets[i].readOnly) {
+                insertPos = i;
+                break;
+            }
+        }
+        presets.insert(insertPos, spec);
+    };
+
+    auto reloadSharedIntoStaged = [&](const QString &newFolder) {
+        flushCurrentRowToModel();
+        const QString curId = (currentEditRow >= 0 && currentEditRow < presets.size())
+                ? presets[currentEditRow].id
+                : QString();
+        stagedSharedFolder = newFolder.trimmed();
+        for (int i = presets.size() - 1; i >= 0; --i) {
+            if (presets[i].readOnly)
+                presets.removeAt(i);
+        }
+        appendMergedSharedPresets(presets, readSharedPresetEntriesFromDir(stagedSharedFolder));
+        refreshListUi(curId);
+    };
 
     QObject::connect(cbNewGraphPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {
                          pendingNewGraphPresetId = cbNewGraphPreset->currentData().toString();
                      });
     QObject::connect(leShared, &QLineEdit::editingFinished, &dlg, [&]() {
-        if (leShared->text().trimmed() == sharedStylePresetsFolder())
+        const QString next = leShared->text().trimmed();
+        if (next == stagedSharedFolder)
             return;
-        setSharedStylePresetsFolder(leShared->text());
-        reloadList(QString());
+        reloadSharedIntoStaged(next);
     });
     QObject::connect(btnSharedBrowse, &QPushButton::clicked, &dlg, [&]() {
         const QString dir = QFileDialog::getExistingDirectory(
@@ -10814,50 +11483,65 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         if (dir.isEmpty())
             return;
         leShared->setText(QDir::toNativeSeparators(dir));
-        setSharedStylePresetsFolder(leShared->text());
-        reloadList(QString());
+        reloadSharedIntoStaged(leShared->text());
     });
 
     QObject::connect(lw, &QListWidget::currentRowChanged, &dlg, [&](int row) {
-        if (!loadingUi)
-            populateForm(row);
+        if (loadingUi)
+            return;
+        if (currentEditRow >= 0 && currentEditRow < presets.size() && currentEditRow != row)
+            flushCurrentRowToModel();
+        currentEditRow = row;
+        populateForm(row);
     });
 
-    auto commitGlobalDefaults = [&]() {
+    auto commitAllChanges = [&]() -> bool {
+        if (leShared->text().trimmed() != stagedSharedFolder)
+            reloadSharedIntoStaged(leShared->text());
+        else
+            flushCurrentRowToModel();
+
+        const QVector<GraphStylePresetSpec> builtInDefs = defaultBuiltInStylePresets();
+        QVector<GraphStylePresetSpec> userEntriesToWrite;
+        for (const GraphStylePresetSpec &s : presets) {
+            if (s.readOnly)
+                continue;
+            if (s.builtIn) {
+                bool matchesDefault = false;
+                for (const GraphStylePresetSpec &def : builtInDefs) {
+                    if (def.id.compare(s.id, Qt::CaseInsensitive) == 0) {
+                        matchesDefault = (stylePresetToJson(s) == stylePresetToJson(def));
+                        break;
+                    }
+                }
+                if (matchesDefault)
+                    continue;
+            }
+            userEntriesToWrite.append(s);
+        }
+        QString err;
+        if (!writeUserStylePresetsArray(userEntriesToWrite, &err)) {
+            QMessageBox::warning(&dlg, dlg.windowTitle(), err);
+            return false;
+        }
         setNewGraphStylePresetId(cbNewGraphPreset->currentData().toString());
         Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
         if (app && app->graphInspectorDock())
             app->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
         setMultiPanelSizing(static_cast<MultiPanelSizing>(cbPanelSizing->currentData().toInt()));
-        setSharedStylePresetsFolder(leShared->text());
-        defaultsCommitted = true;
-    };
-
-    auto saveCurrent = [&]() -> bool {
-        const int row = lw->currentRow();
-        if (row < 0 || row >= presets.size())
-            return false;
-        GraphStylePresetSpec s = presets[row];
-        if (s.readOnly)
-            return true; // shared presets are applied as they are, never written
-        readFormIntoSpec(s);
-        QString err;
-        if (!saveStylePreset(s, &err)) {
-            QMessageBox::warning(&dlg, dlg.windowTitle(), err);
-            return false;
-        }
-        reloadList(s.id);
+        setSharedStylePresetsFolder(stagedSharedFolder);
         return true;
     };
 
     QObject::connect(btnNew, &QPushButton::clicked, &dlg, [&]() {
+        flushCurrentRowToModel();
         GraphStylePresetSpec s;
         s.id = QStringLiteral("custom_")
                 + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         s.name = QObject::tr("New Custom Preset");
         s.builtIn = false;
-        saveStylePreset(s);
-        reloadList(s.id);
+        insertPersonalPresetInModel(s);
+        refreshListUi(s.id);
         leName->setFocus();
         leName->selectAll();
     });
@@ -10865,10 +11549,11 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QObject::connect(btnFromGraph, &QPushButton::clicked, &dlg, [&]() {
         if (!targetGraph)
             return;
-        GraphStylePresetSpec s = targetGraph->captureStylePresetSpec(
-                QObject::tr("New Custom Preset"));
-        saveStylePreset(s);
-        reloadList(s.id);
+        flushCurrentRowToModel();
+        GraphStylePresetSpec s =
+                targetGraph->captureStylePresetSpec(QObject::tr("New Custom Preset"));
+        insertPersonalPresetInModel(s);
+        refreshListUi(s.id);
         leName->setFocus();
         leName->selectAll();
     });
@@ -10877,29 +11562,44 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         const int row = lw->currentRow();
         if (row < 0 || row >= presets.size())
             return;
+        flushCurrentRowToModel();
         GraphStylePresetSpec s = presets[row];
-        readFormIntoSpec(s);
         s.id = QStringLiteral("custom_")
                 + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
         s.builtIn = false;
         s.readOnly = false;
         s.sourcePath.clear();
         s.name = QObject::tr("Copy of %1").arg(displayPresetName(presets[row]));
-        saveStylePreset(s);
-        reloadList(s.id);
+        insertPersonalPresetInModel(s);
+        refreshListUi(s.id);
     });
 
     QObject::connect(btnDel, &QPushButton::clicked, &dlg, [&]() {
         const int row = lw->currentRow();
         if (row < 0 || row >= presets.size())
             return;
-        QString err;
-        if (!deleteStylePreset(presets[row].id, &err)) {
-            if (!err.isEmpty())
-                QMessageBox::information(&dlg, dlg.windowTitle(), err);
+        flushCurrentRowToModel();
+        const GraphStylePresetSpec &target = presets[row];
+        if (target.builtIn) {
+            QMessageBox::information(
+                    &dlg, dlg.windowTitle(),
+                    QObject::tr("Cannot delete a built-in preset. Use 'Reset Default' to "
+                                "restore its original settings."));
             return;
         }
-        reloadList(QString());
+        if (target.readOnly) {
+            QMessageBox::information(
+                    &dlg, dlg.windowTitle(),
+                    QObject::tr("This preset comes from the shared folder and is read-only. "
+                                "Duplicate it to make a personal copy."));
+            return;
+        }
+        if (pendingNewGraphPresetId.compare(target.id, Qt::CaseInsensitive) == 0)
+            pendingNewGraphPresetId.clear();
+        presets.removeAt(row);
+        const QString nextId =
+                (!presets.isEmpty()) ? presets[qMin(row, presets.size() - 1)].id : QString();
+        refreshListUi(nextId);
     });
 
     QObject::connect(btnReset, &QPushButton::clicked, &dlg, [&]() {
@@ -10907,11 +11607,17 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         if (row < 0 || row >= presets.size() || !presets[row].builtIn)
             return;
         const QString id = presets[row].id;
-        resetBuiltInStylePreset(id);
-        reloadList(id);
+        for (const GraphStylePresetSpec &def : defaultBuiltInStylePresets()) {
+            if (def.id.compare(id, Qt::CaseInsensitive) == 0) {
+                presets[row] = def;
+                refreshListUi(id);
+                break;
+            }
+        }
     });
 
     QObject::connect(btnExport, &QPushButton::clicked, &dlg, [&]() {
+        flushCurrentRowToModel();
         const QString path = QFileDialog::getSaveFileName(
                 &dlg, QObject::tr("Export JSON..."),
                 QDir::homePath() + QStringLiteral("/torigraph_presets.json"),
@@ -10919,40 +11625,64 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         if (path.isEmpty())
             return;
         QString err;
-        if (!exportStylePresetsToJson(path, &err))
+        if (!writeStylePresetsToJsonFile(path, presets, &err)) {
             QMessageBox::warning(&dlg, dlg.windowTitle(), err);
-        else
+        } else {
             QMessageBox::information(&dlg, dlg.windowTitle(),
                                      QObject::tr("Saved presets to %1").arg(path));
+        }
     });
 
     QObject::connect(btnImport, &QPushButton::clicked, &dlg, [&]() {
+        flushCurrentRowToModel();
         const QString path = QFileDialog::getOpenFileName(
                 &dlg, QObject::tr("Import JSON..."), QDir::homePath(),
                 QStringLiteral("JSON (*.json)"));
         if (path.isEmpty())
             return;
+        QVector<GraphStylePresetSpec> parsedSpecs;
         QString err;
-        const int n = importStylePresetsFromJson(path, &err);
-        if (n < 0)
+        QString warnMsg;
+        if (!parseStylePresetsFromJsonFile(path, false, false, &parsedSpecs, &err, &warnMsg)) {
             QMessageBox::warning(&dlg, dlg.windowTitle(), err);
-        else {
-            reloadList(QString());
-            QString msg = QObject::tr("Imported %1 preset(s).").arg(n);
-            if (!err.isEmpty())
-                msg += QStringLiteral("\n\n") + err;
-            QMessageBox::information(&dlg, dlg.windowTitle(), msg);
+            return;
         }
+        const QVector<GraphStylePresetSpec> builtInDefs = defaultBuiltInStylePresets();
+        int count = 0;
+        QString lastId;
+        for (GraphStylePresetSpec spec : parsedSpecs) {
+            normalizePresetSpecForPersonalSave(spec, builtInDefs);
+            for (int i = presets.size() - 1; i >= 0; --i) {
+                if (presets[i].readOnly
+                    && presets[i].id.compare(spec.id, Qt::CaseInsensitive) == 0) {
+                    presets.removeAt(i);
+                }
+            }
+            bool replaced = false;
+            for (int i = 0; i < presets.size(); ++i) {
+                if (!presets[i].readOnly
+                    && presets[i].id.compare(spec.id, Qt::CaseInsensitive) == 0) {
+                    presets[i] = spec;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+                insertPersonalPresetInModel(spec);
+            lastId = spec.id;
+            ++count;
+        }
+        refreshListUi(lastId);
+        QString msg = QObject::tr("Imported %1 preset(s).").arg(count);
+        if (!warnMsg.isEmpty())
+            msg += QStringLiteral("\n\n") + warnMsg;
+        QMessageBox::information(&dlg, dlg.windowTitle(), msg);
     });
 
-    QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() {
-        if (saveCurrent())
-            commitGlobalDefaults();
-    });
+    QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() { commitAllChanges(); });
     QObject::connect(btnApply, &QPushButton::clicked, &dlg, [&]() {
-        if (!saveCurrent() || !targetGraph)
+        if (!targetGraph || !commitAllChanges())
             return;
-        commitGlobalDefaults();
         const int row = lw->currentRow();
         if (row >= 0 && row < presets.size()) {
             targetGraph->applyStylePresetSpec(presets[row]);
@@ -10965,18 +11695,13 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         dlg.accept();
     });
     QObject::connect(btnOk, &QPushButton::clicked, &dlg, [&]() {
-        if (!saveCurrent())
+        if (!commitAllChanges())
             return;
-        commitGlobalDefaults();
         dlg.accept();
     });
     QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
-    const int dlgRes = dlg.exec();
-    if (!defaultsCommitted && dlgRes != QDialog::Accepted) {
-        if (sharedStylePresetsFolder() != origSharedFolder)
-            setSharedStylePresetsFolder(origSharedFolder);
-    }
+    dlg.exec();
     if (app) {
         if (GraphInspectorDock *insp = app->graphInspectorDock())
             insp->refreshAll();
