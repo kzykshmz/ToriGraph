@@ -52,12 +52,17 @@ public:
     static QColor disabledTextColor() { return QColor(0x5B, 0x6B, 0x80); }
     static QColor placeholderTextColor() { return QColor(0x64, 0x74, 0x8B); }
     static QColor focusRingColor() { return QColor(0x25, 0x63, 0xEB); }
-    // Font-size steps (pt) used by the UI style sheets: captions, dense controls, standard
-    // text, headings.
-    static constexpr double kFontCaptionPt = 9.0;
+    // Focus ring on a dark surface (the Focus Canvas dark pill): #2563EB is too dark there.
+    static QColor focusRingColorOnDark() { return QColor(0x60, 0xA5, 0xFA); }
+    // Focus ring colour to use around `w` (light chrome or the dark pill).
+    static QColor focusRingColorFor(const QWidget *w);
+    // Font-size steps (pt) used by the UI style sheets and the application base font:
+    // caption/hint text < dense controls < standard text (= the application base font, which
+    // labels, check boxes and inputs follow) < headings.
+    static constexpr double kFontCaptionPt = 9.5;
     static constexpr double kFontDensePt = 10.0;
-    static constexpr double kFontStandardPt = 11.0;
-    static constexpr double kFontHeadingPt = 12.0;
+    static constexpr double kFontStandardPt = 10.5;
+    static constexpr double kFontHeadingPt = 11.5;
     // True while a keyboard-focus ring is shown around `w` (tests / diagnostics).
     static bool keyboardFocusRingTargets(const QWidget *w);
 

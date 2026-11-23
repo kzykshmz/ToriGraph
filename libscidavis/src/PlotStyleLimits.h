@@ -31,6 +31,26 @@ constexpr double kSymbolEdgeWidthMax = 20.0;
 constexpr int kLineWidthMin = 1;
 constexpr int kLineWidthMax = 20;
 
+// Fill / curve opacity in percent (0 = fully transparent, 100 = opaque). The inspector, PlotDialog
+// and AxesDialog all use this range so the same value is never clamped differently (C2-5).
+constexpr int kOpacityMinPercent = 0;
+constexpr int kOpacityMaxPercent = 100;
+
+// Error bar line width in pixels. Fractional widths (0.5 px steps) are allowed in every layer.
+constexpr double kErrorBarWidthMin = 0.5;
+constexpr double kErrorBarWidthMax = 20.0;
+constexpr double kErrorBarWidthStep = 0.5;
+
+// Axis / frame line width in pixels (fractional allowed, e.g. 0.5 px hairlines).
+constexpr double kAxisLineWidthMin = 0.5;
+constexpr double kAxisLineWidthMax = 20.0;
+constexpr double kAxisLineWidthStep = 0.5;
+
+// Font size in pt, shared by every font-size spin box (inspector / PlotDialog / AxesDialog / TextDialog).
+constexpr double kFontSizeMin = 4.0;
+constexpr double kFontSizeMax = 144.0;
+constexpr double kFontSizeStep = 0.5;
+
 // Upper limit for a typed-in number of minor ticks.
 constexpr int kMinorTicksMax = 100;
 
@@ -76,9 +96,9 @@ class FractionalPtSpinBox : public QDoubleSpinBox
 public:
     explicit FractionalPtSpinBox(QWidget *parent = nullptr) : QDoubleSpinBox(parent)
     {
-        setRange(4.0, 144.0);
+        setRange(kFontSizeMin, kFontSizeMax);
         setDecimals(1);
-        setSingleStep(0.5);
+        setSingleStep(kFontSizeStep);
         setSuffix(QStringLiteral(" pt"));
         setMinimumWidth(92);
     }

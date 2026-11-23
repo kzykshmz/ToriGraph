@@ -31,6 +31,7 @@
 #include "ImageExportDialog.h"
 #include "ApplicationWindow.h"
 #include "MultiLayer.h"
+#include "Graph3D.h"
 #include "I18nJapanese.h"
 
 #include <QStackedWidget>
@@ -74,6 +75,11 @@ void registerImageExportDialogTranslationsOnce()
     reg("No physical page size is set (pixel page at 96 dpi). Apply a preset to fix the size in mm.",
         "物理寸法が未設定です (96 dpi のピクセルページ)。mm で寸法を決めるにはプリセットを適用してください。");
     reg("Export DPI:", "出力解像度 (DPI):");
+    reg("Transparent background", "背景を透明にする");
+    reg("PNG image (*.png)", "PNG 画像 (*.png)");
+    reg("TIFF image (*.tif *.tiff)", "TIFF 画像 (*.tif *.tiff)");
+    reg("EMF image (*.emf)", "EMF 画像 (*.emf)");
+    reg("Size: %1 x %2 px (3D graph)", "寸法: 幅 %1 × 高さ %2 px (3D グラフ)");
 }
 
 //! The graph the dialog is about (active MDI window), if it is a 2D graph.
@@ -83,6 +89,34 @@ MultiLayer *activeGraphWindow(QObject *parentObj)
     if (!app)
         return nullptr;
     return qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow());
+}
+
+//! The 3D graph the dialog is about (active MDI window), if it is one (D2-1).
+Graph3D *activeGraph3D(QObject *parentObj)
+{
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentObj);
+    if (!app)
+        return nullptr;
+    return qobject_cast<Graph3D *>(app->d_workspace.activeSubWindow());
+}
+
+//! Pixel size Graph3D::exportImage() will render (mirrors its render-scale logic).
+bool graph3DExportPixelSize(Graph3D *g, int *pxW, int *pxH)
+{
+    if (!g || !g->sp)
+        return false;
+    QSize s = g->sp->size();
+    if (s.width() <= 0 || s.height() <= 0)
+        s = QSize(600, 480);
+    const int propDpi = g->property("export_dpi").toInt();
+    const int effDpi = (propDpi >= 72) ? qMin(propDpi, 600) : 300;
+    double scale = double(effDpi) / 96.0;
+    const int maxDim = qMax(s.width(), s.height());
+    if (maxDim * scale > 3200.0)
+        scale = qMax(1.0, 3200.0 / double(maxDim));
+    *pxW = qMax(100, int(std::lround(s.width() * scale)));
+    *pxH = qMax(100, int(std::lround(s.height() * scale)));
+    return true;
 }
 
 //! Page size of \a ml in millimetres; returns false for an empty graph.
@@ -153,6 +187,35 @@ QString ImageExportDialog::normalizedFilter(const QString &filter)
     return QStringLiteral("*.png");
 }
 
+QString ImageExportDialog::displayFilterFor(const QString &filter)
+{
+    registerImageExportDialogTranslationsOnce();
+    const QString f = normalizedFilter(filter);
+    if (f == QLatin1String("*.tif"))
+        return tr("TIFF image (*.tif *.tiff)");
+    if (f == QLatin1String("*.pdf"))
+        return QStringLiteral("PDF (*.pdf)");
+    if (f == QLatin1String("*.svg"))
+        return QStringLiteral("SVG (*.svg)");
+    if (f == QLatin1String("*.emf"))
+        return tr("EMF image (*.emf)");
+    return tr("PNG image (*.png)");
+}
+
+QStringList ImageExportDialog::displayNameFilters()
+{
+    QStringList out;
+    const QStringList all = supportedFilters();
+    for (const QString &cand : all)
+        out << displayFilterFor(cand);
+    return out;
+}
+
+QString ImageExportDialog::selectedNameFilter() const
+{
+    return normalizedFilter(QFileDialog::selectedNameFilter());
+}
+
 QString ImageExportDialog::formatDescription(const QString &filter)
 {
     registerImageExportDialogTranslationsOnce();
@@ -193,7 +256,7 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool 
     setWindowTitle(tr("Choose a filename to save under"));
     setAcceptMode(QFileDialog::AcceptSave);
 
-    setNameFilters(supportedFilters());
+    setNameFilters(displayNameFilters());
     setFileMode(QFileDialog::AnyFile);
 
     initAdvancedOptions();
@@ -209,8 +272,6 @@ ImageExportDialog::ImageExportDialog(QWidget *parent, bool vector_options, bool 
                               mainLayout->columnCount());
     else if (layout())
         layout()->addWidget(d_info_label);
-    connect(d_resolution, QOverload<int>::of(&QSpinBox::valueChanged), this,
-            [this](int) { updateInfoLabel(); });
 
 #if QT_VERSION >= 0x040300
     connect(this, SIGNAL(filterSelected(const QString &)), this,
@@ -235,8 +296,6 @@ void ImageExportDialog::initAdvancedOptions()
             initDpi = ml->pageDpi();
     }
     const bool initColor = app ? app->d_export_color : true;
-    const int initVecSize = app ? app->d_export_vector_size : int(QPageSize::Custom);
-    const int initOrient = app ? app->d_export_orientation : int(QPageLayout::Portrait);
     const bool initKeepAspect = app ? app->d_keep_plot_aspect : true;
     const int initQuality = app ? app->d_export_quality : 100;
     const bool initTransparency = app ? app->d_export_transparency : false;
@@ -247,102 +306,50 @@ void ImageExportDialog::initAdvancedOptions()
     QGridLayout *vector_layout = new QGridLayout(d_vector_options);
     d_advanced_options->addWidget(d_vector_options);
 
-    vector_layout->addWidget(new QLabel(tr("Resolution (DPI)")), 1, 0);
-    d_resolution = new QSpinBox();
+    // D2-3: a vector PDF has no DPI, so there is no DPI row on this page. d_resolution only
+    // exists as a hidden value holder (it follows the raster DPI one way, never the reverse).
+    d_resolution = new QSpinBox(d_vector_options);
     d_resolution->setRange(72, 2400);
     d_resolution->setSingleStep(50);
     d_resolution->setValue(qBound(72, initDpi, 2400));
-    vector_layout->addWidget(d_resolution, 1, 1);
-    d_resolution->setEnabled(true);
+    d_resolution->hide();
 
     d_color = new QCheckBox();
     d_color->setText(tr("Export in &color"));
     d_color->setChecked(initColor);
-    vector_layout->addWidget(d_color, 2, 0, 1, 2);
+    vector_layout->addWidget(d_color, 0, 0, 1, 2);
 
-    d_standard_page = new QCheckBox();
-    d_standard_page->setText(tr("Export to &standard page size"));
-    vector_layout->addWidget(d_standard_page, 3, 0, 1, 2);
-
-    d_box_page_size = new QComboBox();
-    d_box_page_size->addItem(tr("A0 - 841 x 1189 mm"), QVariant(QPageSize::A0));
-    d_box_page_size->addItem(tr("A1 - 594 x 841 mm"), QVariant(QPageSize::A1));
-    d_box_page_size->addItem(tr("A2 - 420 x 594 mm"), QVariant(QPageSize::A2));
-    d_box_page_size->addItem(tr("A3 - 297 x 420 mm"), QVariant(QPageSize::A3));
-    d_box_page_size->addItem(tr("A4 - 210 x 297 mm"), QVariant(QPageSize::A4));
-    d_box_page_size->addItem(tr("A5 - 148 x 210 mm"), QVariant(QPageSize::A5));
-    d_box_page_size->addItem(tr("A6 - 105 x 148 mm"), QVariant(QPageSize::A6));
-    d_box_page_size->addItem(tr("A7 - 74 x 105 mm"), QVariant(QPageSize::A7));
-    d_box_page_size->addItem(tr("A8 - 52 x 74 mm"), QVariant(QPageSize::A8));
-    d_box_page_size->addItem(tr("A9 - 37 x 52 mm"), QVariant(QPageSize::A9));
-    d_box_page_size->addItem(tr("B0 - 1030 x 1456 mm"), QVariant(QPageSize::B0));
-    d_box_page_size->addItem(tr("B1 - 728 x 1030 mm"), QVariant(QPageSize::B1));
-    d_box_page_size->addItem(tr("B2 - 515 x 728 mm"), QVariant(QPageSize::B2));
-    d_box_page_size->addItem(tr("B3 - 364 x 515 mm"), QVariant(QPageSize::B3));
-    d_box_page_size->addItem(tr("B4 - 257 x 364 mm"), QVariant(QPageSize::B4));
-    d_box_page_size->addItem(tr("B5 - 182 x 257 mm"), QVariant(QPageSize::B5));
-    d_box_page_size->addItem(tr("B6 - 128 x 182 mm"), QVariant(QPageSize::B6));
-    d_box_page_size->addItem(tr("B7 - 91 x 128 mm"), QVariant(QPageSize::B7));
-    d_box_page_size->addItem(tr("B8 - 64 x 91 mm"), QVariant(QPageSize::B8));
-    d_box_page_size->addItem(tr("B9 - 45 x 64 mm"), QVariant(QPageSize::B9));
-    d_box_page_size->addItem(tr("B10 - 32 x 45 mm"), QVariant(QPageSize::B10));
-    d_box_page_size->addItem(tr("C5E - 163 x 226 mm"), QVariant(QPageSize::C5E));
-    d_box_page_size->addItem(tr("Comm10E - 105 x 241 mm"), QVariant(QPageSize::Comm10E));
-    d_box_page_size->addItem(tr("DLE - 110 x 220 mm"), QVariant(QPageSize::DLE));
-    d_box_page_size->addItem(tr("Executive - 191 x 254 mm"), QVariant(QPageSize::Executive));
-    d_box_page_size->addItem(tr("Folio 210 x 330 mm"), QVariant(QPageSize::Folio));
-    d_box_page_size->addItem(tr("Ledger 432 x 279 mm"), QVariant(QPageSize::Ledger));
-    d_box_page_size->addItem(tr("Legal 216 x 356 mm"), QVariant(QPageSize::Legal));
-    d_box_page_size->addItem(tr("Letter 216 x 279 mm"), QVariant(QPageSize::Letter));
-    d_box_page_size->addItem(tr("Tabloid 279 x 432 mm"), QVariant(QPageSize::Tabloid));
-
-    vector_layout->addWidget(new QLabel(tr("Page size")), 4, 0);
-    setPageSize(QPageSize((QPageSize::PageSizeId)initVecSize));
-    d_standard_page->setChecked(initVecSize != QPageSize::Custom);
-    d_box_page_size->setEnabled(initVecSize != QPageSize::Custom);
-    vector_layout->addWidget(d_box_page_size, 4, 1, 1, 2);
-
-    vector_layout->addWidget(new QLabel(tr("Orientation")), 5, 0);
-    d_box_page_orientation = new QComboBox();
-    d_box_page_orientation->addItem(tr("Portrait", "page orientation"),
-                                    QVariant(QPageLayout::Portrait));
-    d_box_page_orientation->addItem(tr("Landscape", "page orientation"),
-                                    QVariant(QPageLayout::Landscape));
-    d_box_page_orientation->setCurrentIndex(initOrient);
-    d_box_page_orientation->setEnabled(initVecSize != QPrinter::Custom);
-    vector_layout->addWidget(d_box_page_orientation, 5, 1, 1, 2);
-
-    connect(d_standard_page, SIGNAL(toggled(bool)), d_box_page_size, SLOT(setEnabled(bool)));
-    connect(d_standard_page, SIGNAL(toggled(bool)), d_box_page_orientation, SLOT(setEnabled(bool)));
+    // D2-5: "Export to standard page size" (30 sizes) and its orientation box were removed;
+    // pageSize()/pageOrientation() now always return Custom/Portrait.
 
     d_keep_aspect = new QCheckBox();
     d_keep_aspect->setText(tr("&Keep aspect ratio"));
     d_keep_aspect->setChecked(initKeepAspect);
-    vector_layout->addWidget(d_keep_aspect, 6, 0, 1, 2);
+    vector_layout->addWidget(d_keep_aspect, 1, 0, 1, 2);
 
     d_raster_options = new QGroupBox();
     QGridLayout *raster_layout = new QGridLayout(d_raster_options);
     d_advanced_options->addWidget(d_raster_options);
 
-    raster_layout->addWidget(new QLabel(tr("Image quality")), 1, 0);
-    d_quality = new QSpinBox();
+    // D2-5: PNG and TIFF (LZW) are lossless, so the quality spin box has no effect and is not
+    // shown. The widget stays as a hidden holder because quality() feeds the export calls.
+    d_quality = new QSpinBox(d_raster_options);
     d_quality->setRange(1, 100);
     d_quality->setValue(qBound(1, initQuality, 100));
-    raster_layout->addWidget(d_quality, 1, 1);
+    d_quality->hide();
 
-    raster_layout->addWidget(new QLabel(tr("Export DPI:")), 2, 0);
+    raster_layout->addWidget(new QLabel(tr("Export DPI:")), 0, 0);
     d_raster_resolution = new QSpinBox();
     d_raster_resolution->setRange(72, 2400);
     d_raster_resolution->setSingleStep(50);
     d_raster_resolution->setValue(qBound(72, initDpi, 2400));
-    raster_layout->addWidget(d_raster_resolution, 2, 1);
+    raster_layout->addWidget(d_raster_resolution, 0, 1);
 
-    d_transparency = new QCheckBox(tr("Transparency"));
+    d_transparency = new QCheckBox(tr("Transparent background"));
     d_transparency->setChecked(initTransparency);
-    raster_layout->addWidget(d_transparency, 3, 0, 1, 2);
+    raster_layout->addWidget(d_transparency, 1, 0, 1, 2);
 
-    connect(d_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
-            d_raster_resolution, &QSpinBox::setValue);
+    // One-way link raster DPI -> hidden PDF holder (D2-3: no PDF -> raster back link).
     connect(d_raster_resolution, QOverload<int>::of(&QSpinBox::valueChanged), this,
             [this](int) { updateInfoLabel(); });
     connect(d_raster_resolution, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -383,7 +390,13 @@ void ImageExportDialog::updateInfoLabel()
     } else {
         double wMm = 0.0, hMm = 0.0;
         bool physical = false;
-        if (graphPageSizeMm(activeGraphWindow(parent()), &wMm, &hMm, &physical)) {
+        int px3dW = 0, px3dH = 0;
+        if (Graph3D *g3d = activeGraph3D(parent())) {
+            // D2-1: 3D graphs have no page in mm, only the rendered pixel size.
+            if (raster && graph3DExportPixelSize(g3d, &px3dW, &px3dH))
+                text += QStringLiteral("\n")
+                        + tr("Size: %1 x %2 px (3D graph)").arg(px3dW).arg(px3dH);
+        } else if (graphPageSizeMm(activeGraphWindow(parent()), &wMm, &hMm, &physical)) {
             text += QStringLiteral("\n") + sizeSummary(wMm, hMm, resolution(), raster);
             if (!physical)
                 text += QStringLiteral("\n")
@@ -405,26 +418,27 @@ void ImageExportDialog::showEvent(QShowEvent *e)
     ExtensibleFileDialog::showEvent(e);
 }
 
-void ImageExportDialog::updateAdvancedOptions(const QString &filter)
+void ImageExportDialog::updateAdvancedOptions(const QString &filterText)
 {
+    // The signal delivers the descriptive name ("PNG 画像 (*.png)"); reduce it to the pattern.
+    const QString filter = normalizedFilter(filterText);
     updateInfoLabel();
-    if (filter.contains("*.svg", Qt::CaseInsensitive)
-        || filter.contains("*.emf", Qt::CaseInsensitive)) {
-        d_extension_toggle->setChecked(false);
+    if (filter == QLatin1String("*.svg") || filter == QLatin1String("*.emf")) {
+        // D2-4: only disable/hide for display. The toggle's checked state is the user's own
+        // preference (saved by saveOptionsToApp()) and must not be overwritten here.
         d_extension_toggle->setEnabled(false);
+        d_advanced_options->setVisible(false);
         return;
     }
     d_extension_toggle->setEnabled(true);
-    if (filter.contains("*.pdf", Qt::CaseInsensitive))
+    d_advanced_options->setVisible(d_extension_toggle->isChecked());
+    if (filter == QLatin1String("*.pdf"))
         d_advanced_options->setCurrentIndex(0);
     else {
         d_advanced_options->setCurrentIndex(1);
-        const bool supportsAlpha = filter.contains("*.png", Qt::CaseInsensitive)
-                || filter.contains("*.tif", Qt::CaseInsensitive)
-                || filter.contains("*.webp", Qt::CaseInsensitive)
-                || filter.contains("*.ico", Qt::CaseInsensitive);
+        // PNG and TIFF (the only raster formats offered) both carry an alpha channel.
         if (d_transparency)
-            d_transparency->setEnabled(supportsAlpha);
+            d_transparency->setEnabled(true);
     }
 }
 
@@ -438,9 +452,8 @@ void ImageExportDialog::saveOptionsToApp()
         app->d_export_resolution = resolution();
         app->d_export_transparency = transparency();
         app->d_export_color = d_color->isChecked();
-        app->d_export_vector_size = (int)pageSize().id();
         app->d_keep_plot_aspect = d_keep_aspect->isChecked();
-        app->d_export_orientation = d_box_page_orientation->currentIndex();
+        // d_export_vector_size / d_export_orientation are left alone (option removed, D2-5).
     }
 }
 
@@ -459,68 +472,30 @@ void ImageExportDialog::closeEvent(QCloseEvent *e)
 
 QPageSize ImageExportDialog::pageSize() const
 {
-    if (!d_standard_page->isChecked())
-        return QPageSize(QPageSize::Custom);
-
-    QPageSize size;
-    switch (d_box_page_size->currentIndex()) {
-    case -1:
-        size = QPageSize(QPageSize::A4);
-        break;
-    default:
-        size = QPageSize(
-                (QPageSize::PageSizeId)d_box_page_size->itemData(d_box_page_size->currentIndex())
-                        .toInt());
-        break;
-    }
-    return size;
+    // D2-5: the standard-page-size option was removed; the page follows the graph.
+    return QPageSize(QPageSize::Custom);
 }
 
 QPageLayout::Orientation ImageExportDialog::pageOrientation() const
 {
-    QPageLayout::Orientation orientation;
-    switch (d_box_page_orientation->currentIndex()) {
-    case -1:
-        orientation = QPageLayout::Portrait;
-        break;
-    default:
-        orientation = (QPageLayout::Orientation)d_box_page_orientation
-                              ->itemData(d_box_page_orientation->currentIndex())
-                              .toInt();
-        break;
-    }
-    return orientation;
+    return QPageLayout::Portrait;
 }
 
 void ImageExportDialog::setPageSize(QPageSize size)
 {
-    if (size == QPageSize(QPageSize::Custom))
-        return;
-
-    int index = d_box_page_size->findData(QVariant(size.id()));
-    if (index != -1)
-        d_box_page_size->setCurrentIndex(index);
-    else {
-        index = d_box_page_size->findData(QVariant(QPageSize::A4));
-        Q_ASSERT(index != -1);
-        d_box_page_size->setCurrentIndex(index);
-    }
+    Q_UNUSED(size);
 }
 
 void ImageExportDialog::setOrientation(QPrinter::Orientation orientation)
 {
-    int index = d_box_page_orientation->findData(QVariant(orientation));
-    if (index != -1)
-        d_box_page_orientation->setCurrentIndex(index);
-    else
-        d_box_page_orientation->setCurrentIndex(0);
+    Q_UNUSED(orientation);
 }
 
 void ImageExportDialog::selectFilter(const QString &filter)
 {
-    // Settings from older builds may hold ".png", "*.jpg" or "*.eps": map them onto the
-    // supported list (PNG when nothing matches).
+    // Settings from older builds may hold ".png", "*.tiff", "*.jpg" or "*.eps": map them onto
+    // the supported list (PNG when nothing matches), then select the descriptive entry.
     const QString f = normalizedFilter(filter);
-    QFileDialog::selectNameFilter(f);
+    QFileDialog::selectNameFilter(displayFilterFor(f));
     updateAdvancedOptions(f);
 }

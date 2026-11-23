@@ -58,6 +58,11 @@ protected slots:
 
 private:
     void refreshLayerSelectors();
+    //! Fill the X/Y/W/H spin boxes from 'geo' without marking them as user-edited.
+    void loadLayerGeometryFields(const QRect &geo);
+    //! Number of layers that occupy a grid cell once 'layerCount' layers exist (linked overlay
+    //! layers and insets do not).
+    int gridCellLayerCount(int layerCount) const;
 
     MultiLayer *multi_layer;
 
@@ -81,6 +86,14 @@ private:
     QComboBox *yLinkModeBox;
     QLineEdit *yFormulaEdit;
     QSpinBox *layerGeoXBox, *layerGeoYBox, *layerGeoWBox, *layerGeoHBox;
+
+    //! True only after the user edited one of the X/Y/W/H geometry spin boxes of the target layer
+    //! since they were last loaded from the layer (P0/B5-1). update() applies the geometry
+    //! spin boxes to the layer only in that case, so that the (stale) values loaded before an
+    //! arrangeLayers() never overwrite the freshly arranged position.
+    bool userEditedGeo = false;
+    //! Set while the geometry spin boxes are filled programmatically (not a user edit).
+    bool loadingGeo = false;
 };
 
 #endif

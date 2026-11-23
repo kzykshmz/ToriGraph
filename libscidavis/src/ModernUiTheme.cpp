@@ -31,6 +31,7 @@
 #include "MyWidget.h"
 
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QAbstractSlider>
 #include <QAbstractSpinBox>
 #include <QFocusEvent>
@@ -206,7 +207,7 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(ModernUiTheme::focusRingColor(), 2.0));
+        p.setPen(QPen(ModernUiTheme::focusRingColorFor(widget()), 2.0));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0), 5.0, 5.0);
     }
@@ -228,6 +229,11 @@ public:
         return (d_ring && d_ring->isVisible()) ? d_ring->widget() : nullptr;
     }
 
+    // True while `w` holds focus that arrived from the keyboard (Tab, Shift+Tab, a shortcut)
+    // and no mouse button has been pressed since. Item views use it to show the current-item
+    // focus frame only for keyboard users.
+    bool hasKeyboardFocus(const QWidget *w) const { return w && d_keyboardFocus.data() == w; }
+
 protected:
     bool eventFilter(QObject *obj, QEvent *ev) override
     {
@@ -236,6 +242,7 @@ protected:
             const Qt::FocusReason reason = static_cast<QFocusEvent *>(ev)->reason();
             const bool keyboard = reason == Qt::TabFocusReason
                     || reason == Qt::BacktabFocusReason || reason == Qt::ShortcutFocusReason;
+            d_keyboardFocus = keyboard ? w : nullptr;
             if (keyboard && isFocusRingCandidate(w) && !w->isWindow()) {
                 if (!d_ring)
                     d_ring = new KeyboardFocusRing();
@@ -246,9 +253,12 @@ protected:
                 d_ring->setWidget(nullptr);
                 d_ring->hide();
             }
-        } else if (ev->type() == QEvent::MouseButtonPress && d_ring && d_ring->isVisible()) {
-            d_ring->setWidget(nullptr);
-            d_ring->hide();
+        } else if (ev->type() == QEvent::MouseButtonPress) {
+            d_keyboardFocus = nullptr;
+            if (d_ring && d_ring->isVisible()) {
+                d_ring->setWidget(nullptr);
+                d_ring->hide();
+            }
         }
         return QObject::eventFilter(obj, ev);
     }
@@ -256,6 +266,7 @@ protected:
 private:
     explicit KeyboardFocusTracker(QObject *parent) : QObject(parent) { }
     QPointer<KeyboardFocusRing> d_ring;
+    QPointer<QWidget> d_keyboardFocus;
 };
 
 class ModernFluentProxyStyle : public QProxyStyle
@@ -327,9 +338,15 @@ public:
             if (!option || !painter || isFocusRingCandidate(widget)
                 || !(option->state & QStyle::State_KeyboardFocusChange))
                 return;
+            // Item views set State_KeyboardFocusChange for their current item even when the
+            // view was focused by the mouse; show the frame only for keyboard focus there.
+            if (const auto *view = qobject_cast<const QAbstractItemView *>(widget)) {
+                if (!KeyboardFocusTracker::instance()->hasKeyboardFocus(view))
+                    return;
+            }
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing, true);
-            painter->setPen(QPen(ModernUiTheme::focusRingColor(), 2.0));
+            painter->setPen(QPen(ModernUiTheme::focusRingColorFor(widget), 2.0));
             painter->setBrush(Qt::NoBrush);
             painter->drawRoundedRect(QRectF(option->rect).adjusted(1.0, 1.0, -1.0, -1.0), 3.0,
                                      3.0);
@@ -602,6 +619,8 @@ static const ExactMapEntry kExactObjectNameMap[] = {
     { "actionsavetemplate", "file-save-as" },
     { "actionload", "import-csv" },
     { "actionimportopj", "import-opj" },
+    { "actionimportexcel", "import-xlsx" },
+    { "actionsendtopowerpoint", "export-pptx" },
     { "actionexportgraph", "export-image" },
     { "actionexportallgraphs", "export-image" },
     { "actionexportpdf", "export-pdf" },
@@ -884,6 +903,19 @@ static QString matchByTextAndToolTip(const QString &rawText, const QString &rawT
     auto tipIs = [&](const char *utf8Exact) -> bool {
         return tip == QString::fromUtf8(utf8Exact);
     };
+
+    // 0. PowerPoint export and Excel import have their own icons. Only the action text is
+    //    checked: other tooltips (the Lab Slide preset, the CSV import) mention both names.
+    auto textHas = [&](const char *utf8Sub) -> bool {
+        return text.contains(QString::fromUtf8(utf8Sub));
+    };
+    if (textHas("send to powerpoint") || textHas("powerpoint へ送る") || textHas("powerpointへ送る")
+        || textHas("send to pptx"))
+        return QStringLiteral("export-pptx");
+    if (textHas("excel")
+        && (textHas("import") || textHas(".xlsx") || textHas("ブック") || textHas("インポート")
+            || textHas("読み込")))
+        return QStringLiteral("import-xlsx");
 
     // 1. High-specificity scientific / ToriGraph Phase 1-6 actions first
     if (has("copy graph as ole") || has("ole object") || has("oleオブジェクト") || has("ole オブジェクト"))
@@ -1478,8 +1510,11 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
             else if (families.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive))
                 uiFont.setFamily(QStringLiteral("Segoe UI"));
         }
-        if (uiFont.pointSize() <= 0 || uiFont.pointSize() < 12)
-            uiFont.setPointSize(12);
+        // Base font: 10.5 pt (the "standard" step). A larger size chosen by the user or the
+        // system is kept; only smaller or unset sizes are raised. The style sheet keeps menus,
+        // views and buttons at the same step, and headings sit above it.
+        if (uiFont.pointSizeF() <= 0.0 || uiFont.pointSizeF() < ModernUiTheme::kFontStandardPt)
+            uiFont.setPointSizeF(ModernUiTheme::kFontStandardPt);
         uiFont.setStyleStrategy(QFont::PreferAntialias);
         app->setFont(uiFont);
     }
@@ -1535,6 +1570,17 @@ bool ModernUiTheme::keyboardFocusRingTargets(const QWidget *w)
     return w && KeyboardFocusTracker::instance()->ringTarget() == w;
 }
 
+QColor ModernUiTheme::focusRingColorFor(const QWidget *w)
+{
+    // The Focus Canvas HUD pill is a dark surface; the standard accent ring (#2563EB) would
+    // not stand out there, so use the lighter #60A5FA.
+    for (const QWidget *p = w; p; p = p->parentWidget()) {
+        if (p->objectName() == QLatin1String("FocusCanvasDarkPill"))
+            return focusRingColorOnDark();
+    }
+    return focusRingColor();
+}
+
 QString ModernUiTheme::modernStyleSheet()
 {
     // Strictly scoped to UI chrome widgets ONLY.
@@ -1565,7 +1611,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
             "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border-bottom: 1px solid #E2E8F0;"
             "  padding: 2px 4px;"
             "}"
@@ -1599,7 +1645,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  color: #0F172A;"
             "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 8px;"
             "  padding: 4px;"
@@ -1659,7 +1705,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QToolButton {"
             "  background-color: transparent;"
             "  color: #1E293B;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid transparent;"
             "  border-radius: 6px;"
             "  padding: 3px 5px;"
@@ -1686,7 +1732,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QPushButton {"
             "  background-color: #FFFFFF;"
             "  color: #1E293B;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 6px;"
             "  padding: 4px 10px;"
@@ -1729,7 +1775,6 @@ QString ModernUiTheme::modernStyleSheet()
             "QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 10pt;"
             "  border: 1px solid #CBD5E1;"
             "  border-radius: 5px;"
             "  padding: 3px 7px;"
@@ -1746,9 +1791,18 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  border: 1px solid #94A3B8;"
             "}"
+            // A 2 px accent border on focus; the padding gives back the extra pixel so the
+            // text and the layout do not move when the field gains or loses focus.
             "QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {"
-            "  border: 1px solid #2563EB;"
+            "  border: 2px solid #2563EB;"
             "  background-color: #FFFFFF;"
+            "  padding: 2px 6px;"
+            "}"
+            "QComboBox:focus {"
+            "  padding-right: 23px;"
+            "}"
+            "QSpinBox:focus, QDoubleSpinBox:focus {"
+            "  padding-right: 21px;"
             "}"
             "QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {"
             "  background-color: #F1F5F9;"
@@ -1822,7 +1876,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QTabBar::tab {"
             "  background-color: #F8FAFC;"
             "  color: #475569;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-bottom: none;"
             "  border-top-left-radius: 6px;"
@@ -1843,14 +1897,14 @@ QString ModernUiTheme::modernStyleSheet()
             "QDockWidget {"
             "  background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #CBD5E1;"
             "  titlebar-close-icon: none;"
             "}"
             "QDockWidget::title {"
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
-            "  font-size: 11pt;"
+            "  font-size: 11.5pt;"
             "  font-weight: 600;"
             "  border-bottom: 1px solid #CBD5E1;"
             "  padding: 6px 10px;"
@@ -1860,12 +1914,11 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  alternate-background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  gridline-color: #E2E8F0;"
             "  border: 1px solid #CBD5E1;"
             "  selection-background-color: #DBEAFE;"
             "  selection-color: #0F172A;"
-            "  outline: 0;"
             "}"
             "QTableView::item:selected, QTreeView::item:selected, QTreeWidget::item:selected {"
             "  background-color: #DBEAFE;"
@@ -1878,11 +1931,10 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #FFFFFF;"
             "  alternate-background-color: #F8FAFC;"
             "  color: #0F172A;"
-            "  font-size: 10pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-radius: 8px;"
             "  padding: 4px;"
-            "  outline: 0;"
             "}"
             "QListWidget::item, QListView::item {"
             "  border-radius: 6px;"
@@ -1909,7 +1961,7 @@ QString ModernUiTheme::modernStyleSheet()
             "  background-color: #F1F5F9;"
             "  color: #1E293B;"
             "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  font-weight: 600;"
             "  border-top: none;"
             "  border-left: none;"
@@ -1967,8 +2019,9 @@ QString ModernUiTheme::modernStyleSheet()
             "  width: 0px;"
             "}"
             "QGroupBox {"
+            // No font-size on the box itself: labels, check boxes and inputs inside follow the
+            // application base font. The title is a heading, one step above it.
             "  background-color: #FFFFFF;"
-            "  font-size: 10pt;"
             "  border: 1px solid #E2E8F0;"
             "  border-radius: 8px;"
             "  margin-top: 12px;"
@@ -1979,14 +2032,25 @@ QString ModernUiTheme::modernStyleSheet()
             "  subcontrol-position: top left;"
             "  left: 10px;"
             "  padding: 0px 6px;"
-            "  font-size: 9pt;"
+            "  font-size: 11.5pt;"
             "  font-weight: 600;"
+            "  color: #334155;"
+            "}"
+            // Opt-in text roles for labels (property tgRole): a heading above the base size and
+            // a caption / hint below it. Plain QLabel, QCheckBox and QRadioButton follow the base.
+            "QLabel[tgRole=\"heading\"] {"
+            "  font-size: 11.5pt;"
+            "  font-weight: 600;"
+            "  color: #0F172A;"
+            "}"
+            "QLabel[tgRole=\"caption\"], QLabel[tgRole=\"hint\"] {"
+            "  font-size: 9.5pt;"
             "  color: #475569;"
             "}"
             "QStatusBar {"
             "  background-color: #F8FAFC;"
             "  color: #334155;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border-top: 1px solid #E2E8F0;"
             "}"
             "QStatusBar::item {"
@@ -2007,7 +2071,7 @@ QString ModernUiTheme::modernStyleSheet()
             "QToolTip {"
             "  background-color: #0F172A;"
             "  color: #F8FAFC;"
-            "  font-size: 11pt;"
+            "  font-size: 10.5pt;"
             "  border: 1px solid #334155;"
             "  border-radius: 5px;"
             "  padding: 4px 8px;"
