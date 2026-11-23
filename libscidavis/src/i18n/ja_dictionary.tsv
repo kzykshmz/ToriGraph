@@ -443,7 +443,7 @@
 &Table	ワークシート(&T)
 &Tauc Plot (Optical Bandgap)...	Taucプロット (光学バンドギャップ)(&T)...
 &Ternary Plot	三角図(&T)
-&Ternary Plot (A-B-C)	三角図 / 三元状態図 (A-B-C)(&T)
+&Ternary Plot (A-B-C)	三角図 (A-B-C)(&T)
 &Text Font	テキストフォント(&T)
 &Third Order ...	三次...(&T)
 &Tile	並べて表示(&T)
@@ -1990,7 +1990,8 @@ Enter row	行番号を入力
 Envelope Mode	包絡線モード
 Envelope Type	包絡線タイプ
 Envelope Type:	包絡線タイプ:
-Equilateral triangle ternary phase diagram from 3 columns (A+B+C=100%)	3列データからの正三角形三元状態図・三角図 (A+B+C=100%)
+Equilateral triangle ternary phase diagram from 3 columns (A+B+C=100%)	3列データからの正三角形プロット・三角図 (A+B+C=100%)
+Equilateral triangle ternary plot from 3 columns (A+B+C=100%)	3列データからの正三角形プロット・三角図 (A+B+C=100%)
 Error	エラー
 Error\s	エラー\s
 Error (Within)	誤差 (群内変動)
@@ -4520,7 +4521,7 @@ Template Graph:	テンプレートグラフ:
 Term	項
 Terminate the currently running Python script	現在実行中の Python スクリプトを強制終了
 Ternary Plot	三角図
-Ternary Plot (A-B-C)	三角図 / 三元状態図 (A-B-C)
+Ternary Plot (A-B-C)	三角図 (A-B-C)
 Test	検定手法
 Test Method Y Column:	比較測定法 Y列:
 Test Method:	検定手法:

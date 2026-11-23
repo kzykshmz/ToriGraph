@@ -6995,7 +6995,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "g = app.plot_vectors(tbl, 'X', 'Y', 'X2', 'Y2', mode='xyxy')" },
     { "plot.ternary", "plot",
       "Session.plot_ternary(table=None, a_col=None, b_col=None, c_col=None, *, graph_name=None)",
-      "Create a ternary phase diagram from three compositional columns (A + B + C).",
+      "Create a ternary composition plot from three columns (A + B + C).",
       "table:str=''; a_col:int|str=null; b_col:int|str=null; c_col:int|str=null; graph_name:str=''",
       "g = app.plot_ternary(tbl, 'Fe', 'Cr', 'Ni')" },
     { "plot.polar", "plot",

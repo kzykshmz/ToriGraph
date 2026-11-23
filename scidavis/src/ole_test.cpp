@@ -50,7 +50,11 @@
 #include <qwt_scale_div.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
+#include <qwt_text_label.h>
 #include <QApplication>
+#include <QJsonDocument>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDialogButtonBox>
@@ -26164,6 +26168,588 @@ static int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw)
         AppWinGuard reTrunc(w77->openProject(gzPath));
         CHECK_COND(reTrunc == nullptr,
                    "77f: P2 truncated .sciprj.gz was silently partially loaded without Z_STREAM_END!");
+    }
+
+    // -------------------------------------------------------------------------
+    // 77g: Wave R7 Regressions:
+    //      (1) Axis Title (xBottom & yLeft) arrow-key nudging at 100% & 160% zoom
+    //          (0 px canvasRect/geometry/MultiLayer::size change, PNG pixel diff,
+    //           160%-vs-100% PNG equality, Undo/Redo & .sciprj round-trip)
+    //      (2) Plot Title arrow-key nudging via titleLabel() inside MultiLayerCanvasScroll
+    //          at 160% zoom (0 px layout change, Undo/Redo & .sciprj round-trip)
+    //      (3) Outside-Right Legend (_outsideRightMargin > 0) + TextAnnotation &
+    //          LegendBox arrow-key nudging without wiping _outsideRightMargin
+    //      (4) Stale MultiLayer::d_layers_selector clearance on Graph selection
+    //      (5) No misleading "状態図" / "phase diagram" wording on Ternary Plot
+    // -------------------------------------------------------------------------
+    {
+        // (5) Verify Ternary Plot UI action & RPC catalog contain no "状態図" / "phase diagram"
+        QAction *actTernary = w77->findChild<QAction *>(QStringLiteral("actionPlotTernary"));
+        CHECK_COND(actTernary != nullptr, "77g: actionPlotTernary not found");
+        const QString prevLang77g = w77->appLanguage;
+        for (const QString &langCode : { QStringLiteral("en"), QStringLiteral("ja") }) {
+            w77->switchToLanguage(langCode);
+            CHECK_COND(!actTernary->text().contains(QString::fromUtf8("状態図"))
+                               && !actTernary->text().contains(QStringLiteral("phase diagram"),
+                                                               Qt::CaseInsensitive),
+                       "77g: actionPlotTernary text contained phase-diagram wording in '"
+                               << langCode.toStdString()
+                               << "': " << actTernary->text().toStdString());
+            CHECK_COND(!actTernary->toolTip().contains(QString::fromUtf8("状態図"))
+                               && !actTernary->toolTip().contains(QStringLiteral("phase diagram"),
+                                                                  Qt::CaseInsensitive),
+                       "77g: actionPlotTernary toolTip contained phase-diagram wording in '"
+                               << langCode.toStdString()
+                               << "': " << actTernary->toolTip().toStdString());
+            if (langCode == QStringLiteral("ja")) {
+                CHECK_COND(actTernary->text().contains(QString::fromUtf8("三角図")),
+                           "77g: JA actionPlotTernary text missing '三角図': "
+                                   << actTernary->text().toStdString());
+            }
+        }
+        w77->switchToLanguage(prevLang77g.isEmpty() ? QStringLiteral("en") : prevLang77g);
+
+        if (PythonAutomationServer *pySrv = w77->pythonAutomationServer()) {
+            QJsonObject descParams;
+            descParams[QStringLiteral("method")] = QStringLiteral("plot.ternary");
+            QJsonObject descReq;
+            descReq[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            descReq[QStringLiteral("id")] = 7707;
+            descReq[QStringLiteral("method")] = QStringLiteral("app.describe_api");
+            descReq[QStringLiteral("params")] = descParams;
+            const QJsonObject descResp = pySrv->handleRpcRequest(descReq);
+            const QString descJson = QString::fromUtf8(
+                    QJsonDocument(descResp).toJson(QJsonDocument::Compact));
+            CHECK_COND(!descResp.contains(QStringLiteral("error"))
+                               && descJson.contains(QStringLiteral("plot.ternary"))
+                               && !descJson.contains(QStringLiteral("phase diagram"),
+                                                     Qt::CaseInsensitive)
+                               && !descJson.contains(QString::fromUtf8("状態図")),
+                       "77g: RPC app.describe_api(plot.ternary) still mentions phase diagram: "
+                               << descJson.toStdString());
+        }
+
+        // Dedicated visible window so focus, MultiLayerCanvasScroll, and MultiLayer margin click
+        // (cand->isVisible()) behave identically to interactive GUI usage
+        AppWinGuard w77g(new ApplicationWindow());
+        w77g->applyUserSettings();
+        Table *tNudge = w77g->newTable(QStringLiteral("NudgeTbl77g"), 8, 2);
+        tNudge->setColName(0, QStringLiteral("Strain"));
+        tNudge->setColName(1, QStringLiteral("Stress"));
+        for (int r = 0; r < 8; ++r) {
+            tNudge->setCell(r, 0, 0.5 * double(r));
+            tNudge->setCell(r, 1, 120.0 + 35.0 * double(r));
+        }
+        MultiLayer *ml = w77g->multilayerPlot(
+                tNudge, QStringList() << (tNudge->name() + QStringLiteral("_Stress")),
+                Graph::LineSymbols);
+        CHECK_COND(ml && ml->activeGraph(), "77g: multilayerPlot failed");
+        w77g->show();
+        ml->show();
+        for (int k = 0; k < 5; ++k)
+            QApplication::processEvents();
+
+        CHECK_COND(ml->applyStylePresetById(QStringLiteral("lab_slide_83mm")),
+                   "77g: applyStylePresetById(lab_slide_83mm) failed");
+        Graph *g = ml->activeGraph();
+        Plot *plt = g ? g->plotWidget() : nullptr;
+        CHECK_COND(g && plt && plt->canvas(), "77g: activeGraph / plotWidget null");
+        g->setXAxisTitle(QStringLiteral("Strain / %"));
+        g->setYAxisTitle(QStringLiteral("Stress / MPa"));
+        g->setTitle(QStringLiteral("Al-Zn-Mg Tensile Curve"));
+        plt->updateLayout();
+        plt->replot();
+        QApplication::processEvents();
+
+        auto sendKey = [](QObject *receiver, Qt::Key key,
+                          Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QKeyEvent kePress(QEvent::KeyPress, key, mods);
+            QApplication::sendEvent(receiver, &kePress);
+            QKeyEvent keRel(QEvent::KeyRelease, key, mods);
+            QApplication::sendEvent(receiver, &keRel);
+        };
+
+        // ---------------------------------------------------------------------
+        // (1a) Axis Title (xBottom & yLeft) + Axis scale nudging at 100% zoom
+        // ---------------------------------------------------------------------
+        ml->setPageZoom(1.0);
+        plt->updateLayout();
+        plt->replot();
+        QApplication::processEvents();
+        CHECK_COND(std::fabs(ml->pageZoom() - 1.0) < 1e-4, "77g: expected 100% pageZoom");
+
+        const QSize origMlSize100 = ml->size();
+        const QRect origGraphGeo100 = g->geometry();
+        const QRect origCanvasRect100 = plt->plotLayout()->canvasRect();
+        auto assertZeroLayoutDelta100 = [&](const char *stepTag) -> bool {
+            return ml->size() == origMlSize100 && g->geometry() == origGraphGeo100
+                    && plt->plotLayout()->canvasRect() == origCanvasRect100 && stepTag != nullptr;
+        };
+
+        QwtScaleWidget *swX = plt->axisWidget(QwtPlot::xBottom);
+        QwtScaleWidget *swY = plt->axisWidget(QwtPlot::yLeft);
+        CHECK_COND(swX && swY, "77g: xBottom / yLeft axisWidget null");
+
+        g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::xBottom, -1 });
+        swX->setFocus();
+        sendKey(swX, Qt::Key_Down, Qt::NoModifier); // +2 Y
+        CHECK_COND(assertZeroLayoutDelta100("xBottom Key_Down 100%"),
+                   "77g: xBottom AxisTitle Key_Down at 100% mutated canvasRect/geometry/ml->size!");
+        sendKey(swX, Qt::Key_Up, Qt::ShiftModifier); // -10 Y -> net -8 Y
+        CHECK_COND(assertZeroLayoutDelta100("xBottom Shift+Key_Up 100%"),
+                   "77g: xBottom AxisTitle Shift+Key_Up at 100% mutated canvasRect/geometry!");
+        plt->canvas()->setFocus();
+        sendKey(plt->canvas(), Qt::Key_Right, Qt::NoModifier); // +2 X (also tests canvas() routing)
+        CHECK_COND(assertZeroLayoutDelta100("xBottom Key_Right 100%"),
+                   "77g: xBottom AxisTitle Key_Right on canvas() mutated canvasRect/geometry!");
+        sendKey(swX, Qt::Key_Left, Qt::ControlModifier); // -1 X -> net +1 X
+        CHECK_COND(assertZeroLayoutDelta100("xBottom Ctrl+Key_Left 100%"),
+                   "77g: xBottom AxisTitle Ctrl+Key_Left at 100% mutated canvasRect/geometry!");
+        const QPointF xShift100 = swX->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::fabs(xShift100.x() - 1.0) < 1e-3
+                           && std::fabs(xShift100.y() - (-8.0)) < 1e-3,
+                   "77g: xBottom _toriAxisTitleShift at 100% expected (1, -8), got ("
+                           << xShift100.x() << ", " << xShift100.y() << ")");
+
+        g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::yLeft, -1 });
+        swY->setFocus();
+        sendKey(swY, Qt::Key_Left, Qt::ShiftModifier); // -10 X
+        CHECK_COND(assertZeroLayoutDelta100("yLeft Shift+Key_Left 100%"),
+                   "77g: yLeft AxisTitle Shift+Key_Left at 100% mutated canvasRect/geometry!");
+        sendKey(swY, Qt::Key_Right, Qt::NoModifier); // +2 X -> net -8 X
+        CHECK_COND(assertZeroLayoutDelta100("yLeft Key_Right 100%"),
+                   "77g: yLeft AxisTitle Key_Right at 100% mutated canvasRect/geometry!");
+        sendKey(swY, Qt::Key_Up, Qt::ShiftModifier); // -10 Y
+        CHECK_COND(assertZeroLayoutDelta100("yLeft Shift+Key_Up 100%"),
+                   "77g: yLeft AxisTitle Shift+Key_Up at 100% mutated canvasRect/geometry!");
+        sendKey(swY, Qt::Key_Down, Qt::ControlModifier); // +1 Y -> net -9 Y
+        CHECK_COND(assertZeroLayoutDelta100("yLeft Ctrl+Key_Down 100%"),
+                   "77g: yLeft AxisTitle Ctrl+Key_Down at 100% mutated canvasRect/geometry!");
+        const QPointF yShift100 = swY->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::fabs(yShift100.x() - (-8.0)) < 1e-3
+                           && std::fabs(yShift100.y() - (-9.0)) < 1e-3,
+                   "77g: yLeft _toriAxisTitleShift at 100% expected (-8, -9), got ("
+                           << yShift100.x() << ", " << yShift100.y() << ")");
+
+        // Also verify Axis scale selection nudging keeps canvasRect() 100% unchanged
+        g->setCurrentSelection({ Graph::GraphSelection::Axis, QwtPlot::xBottom, -1 });
+        swX->setFocus();
+        sendKey(swX, Qt::Key_Down, Qt::ShiftModifier);
+        sendKey(swX, Qt::Key_Right, Qt::NoModifier);
+        CHECK_COND(assertZeroLayoutDelta100("xBottom Axis scale nudge 100%"),
+                   "77g: xBottom Axis scale nudge mutated canvasRect/geometry!");
+
+        // Reset shifts cleanly before 160%-zoom + PNG pixel + Undo/Redo + .sciprj test
+        swX->setProperty("_toriAxisTitleShift", QPointF(0.0, 0.0));
+        swY->setProperty("_toriAxisTitleShift", QPointF(0.0, 0.0));
+        swX->setProperty("_toriAxisNormalShift", 0.0);
+        swX->setProperty("_toriAxisParallelShift", 0.0);
+        plt->setProperty("_toriPlotTitleShift", QPointF(0.0, 0.0));
+
+        // ---------------------------------------------------------------------
+        // (1b) Axis Title nudging at 160% zoom + PNG pixel diff + 160%==100% PNG + Undo/Redo
+        // ---------------------------------------------------------------------
+        ml->setPageZoom(1.6);
+        plt->updateLayout();
+        plt->replot();
+        QApplication::processEvents();
+        CHECK_COND(std::fabs(ml->pageZoom() - 1.6) < 1e-4, "77g: expected 160% pageZoom");
+
+        const QString pngBefore = tmp77.filePath(QStringLiteral("nudge77g_before.png"));
+        const QString pngAfter160 = tmp77.filePath(QStringLiteral("nudge77g_after160.png"));
+        const QString pngAfter100 = tmp77.filePath(QStringLiteral("nudge77g_after100.png"));
+        const QString pngUndo = tmp77.filePath(QStringLiteral("nudge77g_undo.png"));
+        ml->exportImage(pngBefore, 100, false, 300);
+        const QImage imgBefore(pngBefore);
+        CHECK_COND(!imgBefore.isNull() && imgBefore.width() > 200, "77g: imgBefore export failed");
+
+        CHECK_COND(ml->undoStack() != nullptr, "77g: ml->undoStack() null");
+        ml->undoStack()->clear();
+
+        const QSize origMlSize160 = ml->size();
+        const QRect origGraphGeo160 = g->geometry();
+        const QRect origCanvasRect160 = plt->plotLayout()->canvasRect();
+        auto assertZeroLayoutDelta160 = [&]() -> bool {
+            return ml->size() == origMlSize160 && g->geometry() == origGraphGeo160
+                    && plt->plotLayout()->canvasRect() == origCanvasRect160;
+        };
+
+        // At 160% zoom:
+        //   3 * Shift+Right (+30 screen px) + 1 * Right (+2 screen px) = +32 / 1.6 = +20.0 logical px X
+        //   2 * Shift+Up   (-20 screen px) + 2 * Up    (-4 screen px) = -24 / 1.6 = -15.0 logical px Y
+        g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::xBottom, -1 });
+        swX->setFocus();
+        for (int i = 0; i < 3; ++i) {
+            sendKey(swX, Qt::Key_Right, Qt::ShiftModifier);
+            CHECK_COND(assertZeroLayoutDelta160(),
+                       "77g: xBottom Shift+Key_Right at 160% mutated canvasRect/geometry/ml->size!");
+        }
+        sendKey(swX, Qt::Key_Right, Qt::NoModifier);
+        CHECK_COND(assertZeroLayoutDelta160(),
+                   "77g: xBottom Key_Right at 160% mutated canvasRect/geometry/ml->size!");
+        for (int i = 0; i < 2; ++i) {
+            sendKey(swX, Qt::Key_Up, Qt::ShiftModifier);
+            CHECK_COND(assertZeroLayoutDelta160(),
+                       "77g: xBottom Shift+Key_Up at 160% mutated canvasRect/geometry/ml->size!");
+        }
+        for (int i = 0; i < 2; ++i) {
+            sendKey(swX, Qt::Key_Up, Qt::NoModifier);
+            CHECK_COND(assertZeroLayoutDelta160(),
+                       "77g: xBottom Key_Up at 160% mutated canvasRect/geometry/ml->size!");
+        }
+
+        // Also test yLeft at 160% zoom (+0 net after round-trip or record exact shift, then restore yLeft to 0
+        // before checking imgUndo vs imgBefore? No — undoStack->clear() was before xBottom, so let's verify
+        // xBottom (+20, -15) PNG & Undo/Redo first, then also verify yLeft at 160%!)
+        const QPointF xShift160 = swX->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::fabs(xShift160.x() - 20.0) < 1e-3
+                           && std::fabs(xShift160.y() - (-15.0)) < 1e-3,
+                   "77g: xBottom _toriAxisTitleShift at 160% expected (20, -15), got ("
+                           << xShift160.x() << ", " << xShift160.y() << ")");
+
+        ml->exportImage(pngAfter160, 100, false, 300);
+        const QImage img160(pngAfter160);
+        CHECK_COND(!img160.isNull() && img160.size() == imgBefore.size(),
+                   "77g: img160 invalid or size changed");
+        CHECK_COND(imgBefore != img160,
+                   "77g: exported PNG pixels did not change after nudging X-axis title by (+20, -15)!");
+
+        ml->setPageZoom(1.0);
+        ml->exportImage(pngAfter100, 100, false, 300);
+        const QImage img100(pngAfter100);
+        CHECK_COND(img160 == img100,
+                   "77g: 160%-zoom export PNG differed from 100%-zoom export PNG after axis title nudge!");
+
+        // Undo restores _toriAxisTitleShift to (0, 0) and imgUndo == imgBefore
+        CHECK_COND(ml->undoStack()->canUndo(),
+                   "77g: expected undoStack()->canUndo() after axis title nudge");
+        while (ml->undoStack()->canUndo())
+            ml->undoStack()->undo();
+        QApplication::processEvents();
+        g = ml->activeGraph();
+        plt = g ? g->plotWidget() : nullptr;
+        CHECK_COND(g && plt && plt->axisWidget(QwtPlot::xBottom),
+                   "77g: activeGraph null after undo()");
+        const QPointF xShiftAfterUndo =
+                plt->axisWidget(QwtPlot::xBottom)->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::hypot(xShiftAfterUndo.x(), xShiftAfterUndo.y()) < 1e-3,
+                   "77g: undo() did not restore _toriAxisTitleShift to (0, 0), got ("
+                           << xShiftAfterUndo.x() << ", " << xShiftAfterUndo.y() << ")");
+        ml->exportImage(pngUndo, 100, false, 300);
+        const QImage imgUndo(pngUndo);
+        CHECK_COND(imgUndo == imgBefore,
+                   "77g: exported PNG after undo() differed from imgBefore!");
+
+        // Redo restores nudged _toriAxisTitleShift (+20, -15)
+        CHECK_COND(ml->undoStack()->canRedo(), "77g: expected undoStack()->canRedo()");
+        while (ml->undoStack()->canRedo())
+            ml->undoStack()->redo();
+        QApplication::processEvents();
+        g = ml->activeGraph();
+        plt = g ? g->plotWidget() : nullptr;
+        CHECK_COND(g && plt && plt->axisWidget(QwtPlot::xBottom) && plt->axisWidget(QwtPlot::yLeft),
+                   "77g: activeGraph null after redo()");
+        const QPointF xShiftAfterRedo =
+                plt->axisWidget(QwtPlot::xBottom)->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::fabs(xShiftAfterRedo.x() - 20.0) < 1e-3
+                           && std::fabs(xShiftAfterRedo.y() - (-15.0)) < 1e-3,
+                   "77g: redo() did not restore _toriAxisTitleShift (+20, -15), got ("
+                           << xShiftAfterRedo.x() << ", " << xShiftAfterRedo.y() << ")");
+
+        // Also verify yLeft AxisTitle nudging at 160% zoom with 0 px layout delta
+        ml->setPageZoom(1.6);
+        plt->updateLayout();
+        plt->replot();
+        QApplication::processEvents();
+        const QSize origMlSizeY160 = ml->size();
+        const QRect origGraphGeoY160 = g->geometry();
+        const QRect origCanvasRectY160 = plt->plotLayout()->canvasRect();
+        swY = plt->axisWidget(QwtPlot::yLeft);
+        g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::yLeft, -1 });
+        swY->setFocus();
+        sendKey(swY, Qt::Key_Left, Qt::ShiftModifier);   // -10 / 1.6 = -6.25 X
+        sendKey(swY, Qt::Key_Right, Qt::ControlModifier); // +1 / 1.6 = +0.625 X -> -5.625 X
+        sendKey(swY, Qt::Key_Up, Qt::NoModifier);        // -2 / 1.6 = -1.25 Y
+        sendKey(swY, Qt::Key_Down, Qt::ShiftModifier);   // +10 / 1.6 = +6.25 Y -> +5.0 Y
+        CHECK_COND(ml->size() == origMlSizeY160 && g->geometry() == origGraphGeoY160
+                           && plt->plotLayout()->canvasRect() == origCanvasRectY160,
+                   "77g: yLeft AxisTitle arrow nudging at 160% zoom mutated canvasRect/geometry!");
+        const QPointF yShift160 = swY->property("_toriAxisTitleShift").toPointF();
+        CHECK_COND(std::fabs(yShift160.x() - (-5.625)) < 1e-3
+                           && std::fabs(yShift160.y() - 5.0) < 1e-3,
+                   "77g: yLeft _toriAxisTitleShift at 160% expected (-5.625, 5.0), got ("
+                           << yShift160.x() << ", " << yShift160.y() << ")");
+
+        // ---------------------------------------------------------------------
+        // (2) Plot Title arrow-key nudging via titleLabel() inside MultiLayerCanvasScroll at 160% zoom
+        // ---------------------------------------------------------------------
+        // Push a non-703 separator snapshot so PlotTitle undo does not coalesce with yLeft nudge
+        {
+            const QString sepSnap = ml->captureUndoSnapshot();
+            g->setAxisTitleColor(QwtPlot::xBottom, QColor(12, 24, 36));
+            ml->pushUndoSnapshot(QStringLiteral("Color X Axis Title"), sepSnap);
+        }
+        const int undoIdxBeforePlotTitle = ml->undoStack()->index();
+        const QSize origMlSizeTitle = ml->size();
+        const QRect origGraphGeoTitle = g->geometry();
+        const QRect origCanvasRectTitle = plt->plotLayout()->canvasRect();
+        QScrollArea *scrollHost = ml->findChild<QScrollArea *>();
+        const int hScrollBefore = (scrollHost && scrollHost->horizontalScrollBar())
+                ? scrollHost->horizontalScrollBar()->value()
+                : 0;
+        const int vScrollBefore = (scrollHost && scrollHost->verticalScrollBar())
+                ? scrollHost->verticalScrollBar()->value()
+                : 0;
+
+        QwtTextLabel *tl = plt->titleLabel();
+        CHECK_COND(tl != nullptr, "77g: plt->titleLabel() null");
+        g->setCurrentSelection({ Graph::GraphSelection::PlotTitle, 0, -1 });
+        tl->setFocus();
+        sendKey(tl, Qt::Key_Right, Qt::ShiftModifier); // +10 / 1.6 = +6.25 X
+        CHECK_COND(ml->size() == origMlSizeTitle && g->geometry() == origGraphGeoTitle
+                           && plt->plotLayout()->canvasRect() == origCanvasRectTitle,
+                   "77g: PlotTitle Shift+Key_Right via titleLabel() mutated canvasRect/geometry!");
+        sendKey(tl, Qt::Key_Down, Qt::NoModifier); // +2 / 1.6 = +1.25 Y
+        CHECK_COND(ml->size() == origMlSizeTitle && g->geometry() == origGraphGeoTitle
+                           && plt->plotLayout()->canvasRect() == origCanvasRectTitle,
+                   "77g: PlotTitle Key_Down via titleLabel() mutated canvasRect/geometry!");
+        if (scrollHost && scrollHost->horizontalScrollBar() && scrollHost->verticalScrollBar()) {
+            CHECK_COND(scrollHost->horizontalScrollBar()->value() == hScrollBefore
+                               && scrollHost->verticalScrollBar()->value() == vScrollBefore,
+                       "77g: MultiLayerCanvasScroll QScrollArea swallowed arrow keys on titleLabel()!");
+        }
+
+        const QPointF ptShift160 = plt->property("_toriPlotTitleShift").toPointF();
+        CHECK_COND(std::fabs(ptShift160.x() - 6.25) < 1e-3
+                           && std::fabs(ptShift160.y() - 1.25) < 1e-3,
+                   "77g: _toriPlotTitleShift at 160% expected (6.25, 1.25), got ("
+                           << ptShift160.x() << ", " << ptShift160.y() << ")");
+
+        // Undo & Redo PlotTitle shift
+        CHECK_COND(ml->undoStack()->index() > undoIdxBeforePlotTitle,
+                   "77g: PlotTitle nudge did not push onto undoStack");
+        while (ml->undoStack()->index() > undoIdxBeforePlotTitle)
+            ml->undoStack()->undo();
+        QApplication::processEvents();
+        g = ml->activeGraph();
+        plt = g ? g->plotWidget() : nullptr;
+        CHECK_COND(g && plt, "77g: activeGraph null after PlotTitle undo()");
+        const QPointF ptShiftUndo = plt->property("_toriPlotTitleShift").toPointF();
+        CHECK_COND(std::hypot(ptShiftUndo.x(), ptShiftUndo.y()) < 1e-3,
+                   "77g: PlotTitle undo() did not restore _toriPlotTitleShift to (0, 0)!");
+        while (ml->undoStack()->canRedo())
+            ml->undoStack()->redo();
+        QApplication::processEvents();
+        g = ml->activeGraph();
+        plt = g ? g->plotWidget() : nullptr;
+        CHECK_COND(g && plt, "77g: activeGraph null after PlotTitle redo()");
+        const QPointF ptShiftRedo = plt->property("_toriPlotTitleShift").toPointF();
+        CHECK_COND(std::fabs(ptShiftRedo.x() - 6.25) < 1e-3
+                           && std::fabs(ptShiftRedo.y() - 1.25) < 1e-3,
+                   "77g: PlotTitle redo() did not restore _toriPlotTitleShift (6.25, 1.25)!");
+
+        // .sciprj save + w77g->open(...) reload preserves _toriAxisTitleShift & _toriPlotTitleShift
+        const QString mlName77g = ml->name();
+        const QString sciprj77g = tmp77.filePath(QStringLiteral("label_shifts_77g.sciprj"));
+        CHECK_COND(w77g->writeProjectFile(w77g->projectFolder(), sciprj77g),
+                   "77g: writeProjectFile(label_shifts_77g.sciprj) failed");
+        {
+            AppWinGuard re77g(w77g->open(sciprj77g));
+            CHECK_COND(re77g != nullptr, "77g: open(label_shifts_77g.sciprj) returned null");
+            MultiLayer *reMl = nullptr;
+            for (MyWidget *mwItem : re77g->windowsList()) {
+                if (MultiLayer *cand = qobject_cast<MultiLayer *>(mwItem)) {
+                    if (cand->name() == mlName77g) {
+                        reMl = cand;
+                        break;
+                    }
+                }
+            }
+            CHECK_COND(reMl && reMl->activeGraph() && reMl->activeGraph()->plotWidget(),
+                       "77g: reopened MultiLayer missing after .sciprj reload");
+            Plot *rePlt = reMl->activeGraph()->plotWidget();
+            const QPointF reXShift =
+                    rePlt->axisWidget(QwtPlot::xBottom)->property("_toriAxisTitleShift").toPointF();
+            const QPointF reYShift =
+                    rePlt->axisWidget(QwtPlot::yLeft)->property("_toriAxisTitleShift").toPointF();
+            const QPointF reTitleShift = rePlt->property("_toriPlotTitleShift").toPointF();
+            CHECK_COND(std::fabs(reXShift.x() - 20.0) < 1e-2
+                               && std::fabs(reXShift.y() - (-15.0)) < 1e-2,
+                       "77g: .sciprj reload lost xBottom _toriAxisTitleShift: got ("
+                               << reXShift.x() << ", " << reXShift.y() << ")");
+            CHECK_COND(std::fabs(reYShift.x() - (-5.625)) < 1e-2
+                               && std::fabs(reYShift.y() - 5.0) < 1e-2,
+                       "77g: .sciprj reload lost yLeft _toriAxisTitleShift: got ("
+                               << reYShift.x() << ", " << reYShift.y() << ")");
+            CHECK_COND(std::fabs(reTitleShift.x() - 6.25) < 1e-2
+                               && std::fabs(reTitleShift.y() - 1.25) < 1e-2,
+                       "77g: .sciprj reload lost _toriPlotTitleShift: got ("
+                               << reTitleShift.x() << ", " << reTitleShift.y() << ")");
+        }
+
+        // ---------------------------------------------------------------------
+        // (3) Outside-Right Legend (_outsideRightMargin > 0) + TextAnnotation & LegendBox arrow nudging
+        // ---------------------------------------------------------------------
+        ml->setPageZoom(1.0);
+        g->placeLegendAnchor(Graph::LegendOutsideRight);
+        plt->updateLayout();
+        plt->replot();
+        QApplication::processEvents();
+
+        const int origRightMargin = plt->property("_outsideRightMargin").toInt();
+        CHECK_COND(origRightMargin > 0,
+                   "77g: expected _outsideRightMargin > 0 after placeLegendAnchor(LegendOutsideRight)");
+        const QRect origCanvasRectOut = plt->plotLayout()->canvasRect();
+        const QRect origGraphGeoOut = g->geometry();
+        const QSize origMlSizeOut = ml->size();
+
+        // (3a) Add TextAnnotation inside canvas, select via SelectionMoveResizer, nudge Left & Up
+        Legend *txt = g->newLegend(QStringLiteral("Al-Zn-Mg"));
+        CHECK_COND(txt != nullptr, "77g: newLegend('Al-Zn-Mg') failed");
+        const long txtId = g->selectedMarkerKey();
+        txt->setOrigin(QPoint(40, 40));
+        plt->replot();
+        CHECK_COND(txt->rect().right() <= plt->canvas()->width(),
+                   "77g: TextAnnotation expected inside canvas()->width()");
+        g->setSelectedMarker(txtId, false);
+        g->setCurrentSelection({ Graph::GraphSelection::TextAnnotation, int(txtId), -1 });
+        SelectionMoveResizer *txtResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
+        CHECK_COND(txtResizer && txtResizer->contains(txt),
+                   "77g: SelectionMoveResizer not active on TextAnnotation");
+        const QRect txtRectBefore = txt->rect();
+        txtResizer->setFocus();
+        sendKey(txtResizer, Qt::Key_Left, Qt::NoModifier); // -2 X
+        sendKey(txtResizer, Qt::Key_Up, Qt::NoModifier);   // -2 Y
+        CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin,
+                   "77g: arrow-key nudging TextAnnotation wiped _outsideRightMargin!");
+        CHECK_COND(plt->plotLayout()->canvasRect() == origCanvasRectOut
+                           && g->geometry() == origGraphGeoOut && ml->size() == origMlSizeOut,
+                   "77g: arrow-key nudging TextAnnotation changed canvasRect()!");
+        CHECK_COND(txt->rect().topLeft() == txtRectBefore.topLeft() + QPoint(-2, -2),
+                   "77g: TextAnnotation rect did not move by (-2, -2)!");
+
+        // (3b) Select outside-right LegendBox itself and nudge left with Shift+Key_Left until
+        //      leg->rect().right() <= plt->canvas()->width() (test BOTH SelectionMoveResizer & canvas())
+        Legend *leg = g->legend();
+        CHECK_COND(leg != nullptr, "77g: g->legend() null");
+        int legId = -1;
+        for (int id : g->textMarkerKeys()) {
+            if (g->textMarker(id) == leg) {
+                legId = id;
+                break;
+            }
+        }
+        CHECK_COND(legId >= 0, "77g: failed to locate legendMarkerID");
+        CHECK_COND(leg->rect().right() > plt->canvas()->width(),
+                   "77g: outside-right legend expected initially right of canvas()->width()");
+
+        // Path 1: via SelectionMoveResizer on LegendBox
+        g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
+        g->setSelectedMarker(legId, false);
+        SelectionMoveResizer *legResizer = plt->canvas()->findChild<SelectionMoveResizer *>();
+        CHECK_COND(legResizer && legResizer->contains(leg),
+                   "77g: SelectionMoveResizer not active on LegendBox");
+        legResizer->setFocus();
+        int legSteps = 0;
+        while (leg->rect().right() > plt->canvas()->width() && legSteps < 80) {
+            sendKey(legResizer, Qt::Key_Left, Qt::ShiftModifier);
+            ++legSteps;
+            CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin
+                               && plt->plotLayout()->canvasRect() == origCanvasRectOut,
+                       "77g: Shift+Key_Left on LegendBox (SelectionMoveResizer) wiped _outsideRightMargin or changed canvasRect() at step "
+                               << legSteps);
+        }
+        // Two additional Shift+Key_Left presses well inside canvas()->width()
+        for (int extra = 0; extra < 2; ++extra) {
+            sendKey(legResizer, Qt::Key_Left, Qt::ShiftModifier);
+            CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin
+                               && plt->plotLayout()->canvasRect() == origCanvasRectOut,
+                       "77g: Shift+Key_Left on LegendBox inside canvas wiped _outsideRightMargin!");
+        }
+        CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
+                   "77g: LegendBox did not cross <= canvas()->width() after Shift+Key_Left nudges");
+
+        // Path 2: via Graph::nudgeSelectedElement on plt->canvas()
+        g->deselectMarker();
+        g->placeLegendAnchor(Graph::LegendOutsideRight);
+        plt->updateLayout();
+        plt->replot();
+        const int origRightMargin2 = plt->property("_outsideRightMargin").toInt();
+        const QRect origCanvasRectOut2 = plt->plotLayout()->canvasRect();
+        CHECK_COND(origRightMargin2 > 0 && leg->rect().right() > plt->canvas()->width(),
+                   "77g: re-placed outside-right legend setup failed");
+        g->setCurrentSelection({ Graph::GraphSelection::LegendBox, legId, -1 });
+        plt->canvas()->setFocus();
+        int canvasLegSteps = 0;
+        while (leg->rect().right() > plt->canvas()->width() && canvasLegSteps < 80) {
+            sendKey(plt->canvas(), Qt::Key_Left, Qt::ShiftModifier);
+            ++canvasLegSteps;
+            CHECK_COND(plt->property("_outsideRightMargin").toInt() == origRightMargin2
+                               && plt->plotLayout()->canvasRect() == origCanvasRectOut2,
+                       "77g: Shift+Key_Left on LegendBox (canvas) wiped _outsideRightMargin or changed canvasRect()!");
+        }
+        CHECK_COND(leg->rect().right() <= plt->canvas()->width(),
+                   "77g: LegendBox via canvas() did not cross <= canvas()->width()");
+
+        // ---------------------------------------------------------------------
+        // (4) Stale MultiLayer::d_layers_selector clearance on AxisTitle / TextAnnotation selection
+        // ---------------------------------------------------------------------
+        auto findLayerResizerForGraph = [&](Graph *targetG) -> SelectionMoveResizer * {
+            for (SelectionMoveResizer *sr : ml->findChildren<SelectionMoveResizer *>()) {
+                if (sr && sr->contains(static_cast<QWidget *>(targetG)))
+                    return sr;
+            }
+            return nullptr;
+        };
+        auto clickMultiLayerMarginToSelectLayer = [&]() {
+            if (QScrollArea *sa = ml->findChild<QScrollArea *>(
+                        QStringLiteral("MultiLayerCanvasScroll")))
+                sa->ensureVisible(2, 2);
+            QWidget *layerHost = g->parentWidget();
+            const QPoint hostPt = g->frameGeometry().topLeft() + QPoint(2, 2);
+            const QPoint mlPt = layerHost ? layerHost->mapTo(ml, hostPt) : QPoint(10, 35);
+            QMouseEvent mePress(QEvent::MouseButtonPress, mlPt, Qt::LeftButton, Qt::LeftButton,
+                                Qt::NoModifier);
+            QApplication::sendEvent(ml, &mePress);
+            QMouseEvent meRel(QEvent::MouseButtonRelease, mlPt, Qt::LeftButton, Qt::NoButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(ml, &meRel);
+        };
+
+        const QRect origLayerGeo4 = g->geometry();
+        const QRect origCanvasRect4 = plt->plotLayout()->canvasRect();
+
+        // Case A: margin click creates d_layers_selector wrapping g -> selecting AxisTitle deletes it
+        clickMultiLayerMarginToSelectLayer();
+        QPointer<SelectionMoveResizer> staleLayerSelA(findLayerResizerForGraph(g));
+        CHECK_COND(!staleLayerSelA.isNull(),
+                   "77g: simulated MultiLayer margin click did not create d_layers_selector on g");
+        g->setCurrentSelection({ Graph::GraphSelection::AxisTitle, QwtPlot::xBottom, -1 });
+        CHECK_COND(staleLayerSelA.isNull() && findLayerResizerForGraph(g) == nullptr,
+                   "77g: selecting AxisTitle did not delete stale MultiLayer::d_layers_selector!");
+        plt->axisWidget(QwtPlot::xBottom)->setFocus();
+        sendKey(plt->axisWidget(QwtPlot::xBottom), Qt::Key_Down, Qt::ShiftModifier);
+        CHECK_COND(g->geometry() == origLayerGeo4
+                           && plt->plotLayout()->canvasRect() == origCanvasRect4,
+                   "77g: arrow key after clearing d_layers_selector (AxisTitle) changed g->geometry()!");
+
+        // Case B: margin click creates d_layers_selector wrapping g -> selecting TextAnnotation deletes it
+        clickMultiLayerMarginToSelectLayer();
+        QPointer<SelectionMoveResizer> staleLayerSelB(findLayerResizerForGraph(g));
+        CHECK_COND(!staleLayerSelB.isNull(),
+                   "77g: 2nd simulated MultiLayer margin click did not create d_layers_selector on g");
+        g->setSelectedMarker(txtId, false);
+        g->setCurrentSelection({ Graph::GraphSelection::TextAnnotation, int(txtId), -1 });
+        CHECK_COND(staleLayerSelB.isNull() && findLayerResizerForGraph(g) == nullptr,
+                   "77g: selecting TextAnnotation did not delete stale MultiLayer::d_layers_selector!");
+        if (SelectionMoveResizer *tr = plt->canvas()->findChild<SelectionMoveResizer *>()) {
+            const QPoint txtBefore4 = txt->rect().topLeft();
+            sendKey(tr, Qt::Key_Right, Qt::ShiftModifier);
+            CHECK_COND(g->geometry() == origLayerGeo4
+                               && plt->plotLayout()->canvasRect() == origCanvasRect4
+                               && txt->rect().topLeft() == txtBefore4 + QPoint(10, 0),
+                       "77g: arrow key after clearing d_layers_selector (TextAnnotation) changed g->geometry()!");
+        }
     }
 
     w77.reset();

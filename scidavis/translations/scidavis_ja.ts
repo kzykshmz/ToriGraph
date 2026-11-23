@@ -4046,7 +4046,7 @@ Are you sure you want to continue?</source>
     </message>
     <message>
         <source>&amp;Ternary Plot (A-B-C)</source>
-        <translation>三角図 / 三元状態図 (A-B-C)(&amp;T)</translation>
+        <translation>三角図 (A-B-C)(&amp;T)</translation>
     </message>
     <message>
         <source>Color &amp;Palette Editor...</source>

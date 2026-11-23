@@ -20773,7 +20773,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionPlotTernary) {
         actionPlotTernary->setText(tr("&Ternary Plot (A-B-C)"));
         actionPlotTernary->setToolTip(
-                tr("Equilateral triangle ternary phase diagram from 3 columns (A+B+C=100%)"));
+                tr("Equilateral triangle ternary plot from 3 columns (A+B+C=100%)"));
     }
     if (actionColorPaletteEditor) {
         actionColorPaletteEditor->setText(tr("Color &Palette Editor..."));
