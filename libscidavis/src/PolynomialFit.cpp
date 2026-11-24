@@ -180,12 +180,15 @@ static ApparentLogData prepareApparentLogData(const std::vector<double> &dx,
     out.activeIdx.reserve(n);
     const double ln10 = std::log(10.0);
     for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(dx[i]) || !std::isfinite(dy[i])) {
+            if (logX || logY)
+                ++out.excludedLogCount;
+            continue;
+        }
         if ((logX && !(dx[i] > 0.0)) || (logY && !(dy[i] > 0.0))) {
             ++out.excludedLogCount;
             continue;
         }
-        if (!std::isfinite(dx[i]) || !std::isfinite(dy[i]))
-            continue;
         double wi = 1.0;
         if (isWeighted) {
             if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {

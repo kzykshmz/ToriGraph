@@ -2857,16 +2857,19 @@ Table *Fit::createResidualsTable(const QString &tableName)
     const int rows = int(d_x.size());
     const std::vector<double> weightsVec = computeWeightsVector();
     std::vector<double> sqrtW(size_t(rows), 0.0);
+    std::vector<bool> isActiveRow(size_t(rows), false);
     int activeRows = 0;
     for (int i = 0; i < rows; ++i) {
         const double wi = (size_t(i) < weightsVec.size() && std::isfinite(weightsVec[size_t(i)])
                            && weightsVec[size_t(i)] > 0.0)
                                   ? weightsVec[size_t(i)]
                                   : 0.0;
-        if (wi > 0.0) {
+        if (wi > 0.0)
             sqrtW[size_t(i)] = std::sqrt(wi);
+        isActiveRow[size_t(i)] = (sqrtW[size_t(i)] > 0.0 && std::isfinite(d_y[size_t(i)])
+                                  && std::isfinite(d_y_fit[size_t(i)]));
+        if (isActiveRow[size_t(i)])
             ++activeRows;
-        }
     }
 
     // Compute hat-matrix diagonal Leverage h_ii, Standardized Residuals, and Cook's Distance
@@ -2928,6 +2931,10 @@ Table *Fit::createResidualsTable(const QString &tableName)
                 if (calculateFitCurveData(pPlus, X_tmp, Y_plus)
                     && calculateFitCurveData(pMinus, X_tmp, Y_minus)) {
                     for (int i = 0; i < rows; ++i) {
+                        if (!isActiveRow[size_t(i)]) {
+                            gsl_matrix_set(Jw, size_t(i), k, 0.0);
+                            continue;
+                        }
                         double dy_dp = (Y_plus[size_t(i)] - Y_minus[size_t(i)]) / (2.0 * h);
                         const double sw = sqrtW[size_t(i)];
                         gsl_matrix_set(Jw, size_t(i), k,
@@ -2968,7 +2975,7 @@ Table *Fit::createResidualsTable(const QString &tableName)
 
     double weightedSse = 0.0;
     for (int i = 0; i < rows; ++i) {
-        if (!(sqrtW[size_t(i)] > 0.0))
+        if (!isActiveRow[size_t(i)])
             continue;
         double rw = (d_y[size_t(i)] - d_y_fit[size_t(i)]) * sqrtW[size_t(i)];
         weightedSse += rw * rw;
@@ -3006,35 +3013,49 @@ Table *Fit::createResidualsTable(const QString &tableName)
     for (int col = 1; col < 7; ++col)
         t->column(col)->setPlotDesignation(SciDAVis::Y);
 
+    auto setNumericOrInvalid = [](Column *col, int row, double val) {
+        if (std::isfinite(val))
+            col->setValueAt(row, val);
+        else
+            col->setInvalid(row, true);
+    };
     for (int i = 0; i < rows; ++i) {
-        const double rawRes = d_y[size_t(i)] - d_y_fit[size_t(i)];
-        const double sw = sqrtW[size_t(i)];
-        const double hii = leverage[size_t(i)];
-        t->column(0)->setValueAt(i, d_x[size_t(i)]);
-        t->column(1)->setValueAt(i, d_y[size_t(i)]);
-        t->column(2)->setValueAt(i, d_y_fit[size_t(i)]);
-        t->column(3)->setValueAt(i, rawRes);
-        t->column(5)->setValueAt(i, hii);
-        if (!validDof || !(sw > 0.0)) {
+        const size_t idx = size_t(i);
+        const double xVal = d_x[idx];
+        const double yVal = d_y[idx];
+        const double yFitVal = d_y_fit[idx];
+        const double sw = sqrtW[idx];
+        const double hii = leverage[idx];
+        setNumericOrInvalid(t->column(0), i, xVal);
+        setNumericOrInvalid(t->column(1), i, yVal);
+        if (!std::isfinite(yFitVal)) {
+            for (int col : { 2, 3, 4, 5, 6 })
+                t->column(col)->setInvalid(i, true);
+            continue;
+        }
+        const double rawRes = yVal - yFitVal;
+        t->column(2)->setValueAt(i, yFitVal);
+        setNumericOrInvalid(t->column(3), i, rawRes);
+        setNumericOrInvalid(t->column(5), i, hii);
+        if (!validDof || !isActiveRow[idx]) {
             t->column(4)->setInvalid(i, true);
             t->column(6)->setInvalid(i, true);
         } else {
             const double wRes = rawRes * sw;
             const double oneMinusH = std::max(1e-6, 1.0 - hii);
-            double stdRes = 0.0;
-            double cooksD = 0.0;
-            if (std::isfinite(s2_w) && s2_w > 1e-300) {
-                stdRes = wRes / std::sqrt(s2_w * oneMinusH);
-                cooksD = (stdRes * stdRes / double(std::max(1, p_eff))) * (hii / oneMinusH);
+            double stdRes = std::numeric_limits<double>::quiet_NaN();
+            double cooksD = std::numeric_limits<double>::quiet_NaN();
+            if (std::isfinite(s2_w)) {
+                if (s2_w > 1e-300) {
+                    stdRes = wRes / std::sqrt(s2_w * oneMinusH);
+                    cooksD = (stdRes * stdRes / double(std::max(1, p_eff))) * (hii / oneMinusH);
+                } else {
+                    stdRes = 0.0;
+                    cooksD = 0.0;
+                }
             }
-            if (std::isfinite(stdRes))
-                t->column(4)->setValueAt(i, stdRes);
-            else
-                t->column(4)->setInvalid(i, true);
-            if (std::isfinite(cooksD))
-                t->column(6)->setValueAt(i, cooksD);
-            else
-                t->column(6)->setInvalid(i, true);
+            setNumericOrInvalid(t->column(4), i, stdRes);
+            setNumericOrInvalid(t->column(6), i, cooksD);
         }
     }
 
@@ -3744,6 +3765,8 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     const bool savedHasCustomDof = d_has_custom_dof;
     const int savedCustomN = d_custom_n_points;
     const int savedCustomP = d_custom_p_free;
+    const bool savedHasCustomR2 = d_has_custom_r2;
+    const double savedCustomR2 = d_custom_r2;
     const bool savedHasCustomRss = d_has_custom_rss;
     const double savedCustomRss = d_custom_rss;
 
@@ -3764,8 +3787,11 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     std::vector<size_t> activeIdx;
     activeIdx.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        if (i < baseWeights.size() && std::isfinite(baseWeights[i]) && baseWeights[i] > 0.0)
+        if (i < baseWeights.size() && std::isfinite(baseWeights[i]) && baseWeights[i] > 0.0
+            && i < savedY.size() && std::isfinite(savedY[i]) && i < savedYFit.size()
+            && std::isfinite(savedYFit[i])) {
             activeIdx.push_back(i);
+        }
     }
     if (activeIdx.empty())
         return out;
@@ -3883,6 +3909,8 @@ Fit::BootstrapResult Fit::runBootstrapCI(int nSamples, double confLevel, int mod
     d_has_custom_dof = savedHasCustomDof;
     d_custom_n_points = savedCustomN;
     d_custom_p_free = savedCustomP;
+    d_has_custom_r2 = savedHasCustomR2;
+    d_custom_r2 = savedCustomR2;
     d_has_custom_rss = savedHasCustomRss;
     d_custom_rss = savedCustomRss;
     d_in_bootstrap = false;
@@ -4245,10 +4273,14 @@ double Fit::anovaFValue() const
         return std::numeric_limits<double>::quiet_NaN();
 
     const std::vector<double> w = computeWeightsVector();
+    auto skipAnovaRow = [&](size_t i) {
+        return (i < w.size() && !(w[i] > 0.0))
+                || (i < d_y_fit.size() && !std::isfinite(d_y_fit[i])) || !std::isfinite(d_y[i]);
+    };
     double mean = 0.0;
     int activeCnt = 0;
     for (size_t i = 0; i < d_y.size(); ++i) {
-        if (i < w.size() && !(w[i] > 0.0))
+        if (skipAnovaRow(i))
             continue;
         mean += d_y[i];
         ++activeCnt;
@@ -4258,7 +4290,7 @@ double Fit::anovaFValue() const
     mean /= double(activeCnt);
     double tss = 0.0;
     for (size_t i = 0; i < d_y.size(); ++i) {
-        if (i < w.size() && !(w[i] > 0.0))
+        if (skipAnovaRow(i))
             continue;
         double d = d_y[i] - mean;
         tss += d * d;

@@ -688,19 +688,26 @@ public:
             return sb;
         };
 
+        auto addCalAnchorRow = [&](const QString &labelText, QDoubleSpinBox *sb,
+                                   QHBoxLayout *rowLayout) {
+            QLabel *lbl = new QLabel(labelText, grpCal);
+            lbl->setBuddy(sb);
+            calForm->addRow(lbl, rowLayout);
+        };
+
         QPushButton *btnSetX1 = new QPushButton(tr("Set X1"), grpCal);
         d_sbX1 = makeValueSpin(0.0);
         QHBoxLayout *rowX1 = new QHBoxLayout();
         rowX1->addWidget(btnSetX1);
         rowX1->addWidget(d_sbX1, 1);
-        calForm->addRow(tr("X1 Anchor && Value:"), rowX1);
+        addCalAnchorRow(tr("X1 Anchor && Value:"), d_sbX1, rowX1);
 
         QPushButton *btnSetX2 = new QPushButton(tr("Set X2"), grpCal);
         d_sbX2 = makeValueSpin(100.0);
         QHBoxLayout *rowX2 = new QHBoxLayout();
         rowX2->addWidget(btnSetX2);
         rowX2->addWidget(d_sbX2, 1);
-        calForm->addRow(tr("X2 Anchor && Value:"), rowX2);
+        addCalAnchorRow(tr("X2 Anchor && Value:"), d_sbX2, rowX2);
 
         d_cbScaleX = new QComboBox(grpCal);
         d_cbScaleX->addItem(tr("Linear"), false);
@@ -712,14 +719,14 @@ public:
         QHBoxLayout *rowY1 = new QHBoxLayout();
         rowY1->addWidget(btnSetY1);
         rowY1->addWidget(d_sbY1, 1);
-        calForm->addRow(tr("Y1 Anchor && Value:"), rowY1);
+        addCalAnchorRow(tr("Y1 Anchor && Value:"), d_sbY1, rowY1);
 
         QPushButton *btnSetY2 = new QPushButton(tr("Set Y2"), grpCal);
         d_sbY2 = makeValueSpin(100.0);
         QHBoxLayout *rowY2 = new QHBoxLayout();
         rowY2->addWidget(btnSetY2);
         rowY2->addWidget(d_sbY2, 1);
-        calForm->addRow(tr("Y2 Anchor && Value:"), rowY2);
+        addCalAnchorRow(tr("Y2 Anchor && Value:"), d_sbY2, rowY2);
 
         d_cbScaleY = new QComboBox(grpCal);
         d_cbScaleY->addItem(tr("Linear"), false);

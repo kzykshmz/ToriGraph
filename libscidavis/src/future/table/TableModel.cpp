@@ -326,7 +326,7 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
                     if (!promotedToText) {
                         if (hasRowFormula)
                             col_ptr->setFormula(row, QString());
-                        col_ptr->asStringColumn()->setTextAt(row, rawStr);
+                        col_ptr->setInvalid(row, true);
                     }
                 }
             }

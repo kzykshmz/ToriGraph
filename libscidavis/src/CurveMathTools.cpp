@@ -4235,7 +4235,9 @@ void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
 
     form->addRow(QObject::tr("First Curve (Boundary A):"), cbA);
     form->addRow(QObject::tr("Second Curve (Boundary B):"), cbB);
-    form->addRow(QObject::tr("Fill Color && Opacity:"), colorRow);
+    QLabel *lblColor = new QLabel(QObject::tr("Fill Color && Opacity:"), &dlg);
+    lblColor->setBuddy(btnColor);
+    form->addRow(lblColor, colorRow);
     form->addRow(QObject::tr("Fill Opacity (%):"), sbOpacity);
 
     QDialogButtonBox *btns =

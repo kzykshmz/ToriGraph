@@ -134,7 +134,12 @@ private:
 
             tstr.replace(foreignSeparator, decimalSeparator);
         }
-        value = locale.toDouble(tstr, &ok);
+        QLocale parseLoc(locale);
+        if ((parseLoc.numberOptions() & QLocale::OmitGroupSeparator)
+            && !(parseLoc.numberOptions() & QLocale::RejectGroupSeparator)) {
+            parseLoc.setNumberOptions(parseLoc.numberOptions() | QLocale::RejectGroupSeparator);
+        }
+        value = parseLoc.toDouble(tstr, &ok);
 
         return ok;
     }
