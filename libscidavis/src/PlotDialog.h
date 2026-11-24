@@ -198,11 +198,26 @@ private:
     QDoubleSpinBox *boxTitleFontSize = nullptr, *boxAxesLabelFontSize = nullptr,
                    *boxAxesNumberFontSize = nullptr, *boxLegendFontSize = nullptr;
 
-    MultiLayer *d_ml;
-    QPointer<MultiLayer> d_mlGuard;
+    QPointer<MultiLayer> d_ml;
     bool d_loadingUi = false;
     //! > 0 while this dialog itself edits the MultiLayer (its modifiedPlot signal is ignored).
     int d_selfEditDepth = 0;
+    struct SelfEditDepthGuard
+    {
+        QPointer<PlotDialog> dlg;
+        explicit SelfEditDepthGuard(PlotDialog *d) : dlg(d)
+        {
+            if (dlg)
+                ++dlg->d_selfEditDepth;
+        }
+        ~SelfEditDepthGuard()
+        {
+            if (dlg && dlg->d_selfEditDepth > 0)
+                --dlg->d_selfEditDepth;
+        }
+        SelfEditDepthGuard(const SelfEditDepthGuard &) = delete;
+        SelfEditDepthGuard &operator=(const SelfEditDepthGuard &) = delete;
+    };
     //! Plot type whose tab pages are currently inserted for a curve (-1: not a curve page).
     int d_shownTabType = -1;
     //! An external edit arrived while Apply-deferred edits were pending; reload after they commit.

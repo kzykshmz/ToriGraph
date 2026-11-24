@@ -506,15 +506,15 @@ void PlotDialog::editCurve()
 
     int index = item->plotItemIndex();
     int curveType = static_cast<const PlotCurve *>(pi)->type();
-    Graph *itemGraph = item->graph();
+    QPointer<Graph> safeG(item->graph());
 
 #if QT_VERSION >= 0x050000
     close();
 #endif
 
-    if (app) {
+    if (app && safeG) {
         if (curveType == Graph::Function)
-            app->showFunctionDialog(itemGraph, index);
+            app->showFunctionDialog(safeG.data(), index);
         else
             app->showPlotAssociations(index);
     }
@@ -560,7 +560,7 @@ void PlotDialog::changePlotType(int index)
     if (!item->isCurveAlive())
         return;
 
-    MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent();
+    MultiLayer *ml = d_ml ? d_ml.data() : graph->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentWidget());
     if (!app)
@@ -568,7 +568,7 @@ void PlotDialog::changePlotType(int index)
     if (app && ml)
         app->invalidateModelessGraphDialogs(ml, this);
 
-    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+    SelfEditDepthGuard selfEdit(this);
     {
         QScopedValueRollback<bool> guard(d_loadingUi, true);
 
@@ -1657,11 +1657,10 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
         return;
 
     QScopedValueRollback<bool> guard(d_loadingUi, true);
-    if (d_mlGuard && d_mlGuard.data() != ml)
-        disconnect(d_mlGuard.data(), &MultiLayer::modifiedPlot, this,
+    if (d_ml && d_ml.data() != ml)
+        disconnect(d_ml.data(), &MultiLayer::modifiedPlot, this,
                    &PlotDialog::onMultiLayerModified);
     d_ml = ml;
-    d_mlGuard = ml;
     d_dirtyTabs.clear();
     d_externalSyncDeferred = false;
     // Edits made elsewhere (right dock, canvas, other dialogs) while this dialog is open.
@@ -1677,11 +1676,11 @@ void PlotDialog::setMultiLayer(MultiLayer *ml)
     updateCurveMoveButtons();
 }
 
-//! Fills the page / layer / curve tree (and the "parent layer" combo) from d_mlGuard.
+//! Fills the page / layer / curve tree (and the "parent layer" combo) from d_ml.
 //! \a selectActiveLayer: make the MultiLayer's active layer the current item (initial load).
 void PlotDialog::populateTreeFromMultiLayer(bool selectActiveLayer)
 {
-    MultiLayer *ml = d_mlGuard.data();
+    MultiLayer *ml = d_ml.data();
     if (!ml)
         return;
 
@@ -1848,7 +1847,7 @@ void PlotDialog::removeSelectedCurve()
         QPointer<PlotDialog> safeThis(this);
         QPointer<QWidget> msgParent(parentWidget());
         QPointer<Graph> safeG(graph);
-        QPointer<MultiLayer> safeMl(d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent());
+        QPointer<MultiLayer> safeMl(d_ml ? d_ml.data() : graph->multiLayerParent());
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             const QString curveTitle = targetPi ? targetPi->title().text() : item->text(0);
             if (QMessageBox::question(
@@ -1876,7 +1875,7 @@ void PlotDialog::removeSelectedCurve()
         if (liveIdx < 0)
             return;
 
-        QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+        SelfEditDepthGuard selfEdit(this);
         MultiLayer *ml = safeMl ? safeMl.data() : safeG->multiLayerParent();
         QPointer<MultiLayer> mlGuard(ml);
         const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
@@ -2109,7 +2108,8 @@ void PlotDialog::clearTabWidget()
 
 void PlotDialog::quit()
 {
-    if (acceptParams())
+    QPointer<PlotDialog> self(this);
+    if (acceptParams() && self)
         accept();
 }
 
@@ -2735,8 +2735,8 @@ void PlotDialog::onTreeItemChanged(QTreeWidgetItem *item, int column)
     if (g->isCurveVisible(idx) == wantVisible)
         return;
 
-    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
-    MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : g->multiLayerParent();
+    SelfEditDepthGuard selfEdit(this);
+    MultiLayer *ml = d_ml ? d_ml.data() : g->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     g->showCurve(idx, wantVisible);
     g->replot();
@@ -2839,9 +2839,9 @@ void PlotDialog::moveSelectedCurveBy(int delta)
     if (toIdx < 0 || toIdx >= nCurves || toIdx == fromIdx)
         return;
 
-    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+    SelfEditDepthGuard selfEdit(this);
     const QwtPlotItem *movedItem = ci->plotItem();
-    MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : g->multiLayerParent();
+    MultiLayer *ml = d_ml ? d_ml.data() : g->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
     if (!g->moveCurve(fromIdx, toIdx))
         return;
@@ -2883,7 +2883,7 @@ bool PlotDialog::acceptParams()
 
 bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitAccept)
 {
-    if (!d_ml || !d_mlGuard)
+    if (!d_ml)
         return false;
 
     CurveTreeItem *curveItem = (targetItem && targetItem->type() == CurveTreeItem::PlotCurveTreeItem)
@@ -2899,10 +2899,12 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
         return true;
 
     // Our own writes raise MultiLayer::modifiedPlot; they must not trigger the external reload.
-    QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
+    QPointer<PlotDialog> self(this);
+    SelfEditDepthGuard selfEdit(this);
 
     QwtPlotItem *plotItem = curveItem ? const_cast<QwtPlotItem *>(curveItem->plotItem()) : nullptr;
     Graph *graph = curveItem ? curveItem->graph() : nullptr;
+    QPointer<Graph> safeG(graph);
 
     double histBegin = 0.0;
     double histEnd = 0.0;
@@ -2911,11 +2913,15 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     if (curveItem && plotItem && graph && tabsToCommit.contains(histogramPage)
         && curveItem->plotItemType() == Graph::Histogram && !automaticBox->isChecked()) {
         histValsReady = evaluateHistogramInputs(&histBegin, &histEnd, &histBin, explicitAccept);
+        if (!self || !d_ml)
+            return false;
         if (explicitAccept && !histValsReady)
+            return false;
+        if (curveItem && (!safeG || !curveItem->isCurveAlive()))
             return false;
     }
 
-    const QString beforeSnap = d_mlGuard->captureUndoSnapshot();
+    const QString beforeSnap = d_ml->captureUndoSnapshot();
     bool anyHandled = false;
 
     // (The Page tab no longer has Apply-committed controls: Page Setup applies on its own.)
@@ -2925,22 +2931,22 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
         axesFont = clampedFontSize(axesFont);
         numbersFont = clampedFontSize(numbersFont);
         legendFont = clampedFontSize(legendFont);
-        d_mlGuard->setFonts(titleFont, axesFont, numbersFont, legendFont);
+        d_ml->setFonts(titleFont, axesFont, numbersFont, legendFont);
         anyHandled = true;
     }
 
     if (tabsToCommit.contains(printPage)) {
-        d_mlGuard->setScaleLayersOnPrint(boxScaleLayers->isChecked());
-        d_mlGuard->printCropmarks(boxPrintCrops->isChecked());
+        d_ml->setScaleLayersOnPrint(boxScaleLayers->isChecked());
+        d_ml->printCropmarks(boxPrintCrops->isChecked());
         anyHandled = true;
     }
 
     if (tabsToCommit.contains(layerPage)) {
-        d_mlGuard->setTargetAspectRatio(boxAspectRatio->value());
-        d_mlGuard->setKeepAspectRatio(boxKeepAspect->isChecked());
+        d_ml->setTargetAspectRatio(boxAspectRatio->value());
+        d_ml->setKeepAspectRatio(boxKeepAspect->isChecked());
 
         int presetVal = boxFramePreset->currentData().toInt();
-        QWidgetList allPlots = d_mlGuard->graphPtrs();
+        QWidgetList allPlots = d_ml->graphPtrs();
 
         LayerItem *selLayerIt = (targetItem && targetItem->type() == LayerItem::LayerTreeItem)
                 ? static_cast<LayerItem *>(targetItem)
@@ -2997,7 +3003,7 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
             for (int i = 0; i < allPlots.count(); i++)
                 applyLayerVisuals(qobject_cast<Graph *>(allPlots.at(i)));
         }
-        d_mlGuard->notifyChanges();
+        d_ml->notifyChanges();
         anyHandled = true;
     }
 
@@ -3343,8 +3349,8 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     }
 
     d_dirtyTabs.clear();
-    if (anyHandled && d_mlGuard && !beforeSnap.isEmpty())
-        d_mlGuard->pushUndoSnapshot(tr("Plot Properties"), beforeSnap);
+    if (anyHandled && d_ml && !beforeSnap.isEmpty())
+        d_ml->pushUndoSnapshot(tr("Plot Properties"), beforeSnap);
     // An external edit that arrived while these edits were pending is picked up now.
     if (d_externalSyncDeferred && d_externalSyncTimer)
         d_externalSyncTimer->start();
@@ -3353,20 +3359,30 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
 
 void PlotDialog::openColorPaletteEditor()
 {
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
     Graph *g = nullptr;
-    QTreeWidgetItem *it = listBox->currentItem();
+    QTreeWidgetItem *it = listBox ? listBox->currentItem() : nullptr;
     if (it) {
         if (it->type() == CurveTreeItem::PlotCurveTreeItem)
-            g = ((CurveTreeItem *)it)->graph();
+            g = static_cast<CurveTreeItem *>(it)->graph();
         else if (it->type() == LayerItem::LayerTreeItem)
-            g = ((LayerItem *)it)->graph();
+            g = static_cast<LayerItem *>(it)->graph();
     }
     if (!g && d_ml)
         g = d_ml->activeGraph();
 
-    if (Graph::showColorPaletteEditor(this, g)) {
-        if (it && it->type() == CurveTreeItem::PlotCurveTreeItem)
-            setActiveCurve((CurveTreeItem *)it);
+    bool accepted = false;
+    {
+        SelfEditDepthGuard selfEdit(this);
+        accepted = Graph::showColorPaletteEditor(msgParent.data(), g);
+    }
+    if (!self)
+        return;
+    if (accepted && listBox) {
+        QTreeWidgetItem *cur = listBox->currentItem();
+        if (cur && cur->type() == CurveTreeItem::PlotCurveTreeItem)
+            setActiveCurve(static_cast<CurveTreeItem *>(cur));
     }
 }
 
@@ -3840,11 +3856,11 @@ void PlotDialog::initFonts(const QFont &titlefont, const QFont &axesfont, const 
 
 void PlotDialog::syncPageTabFromMultiLayer()
 {
-    if (!d_ml || !d_mlGuard)
+    if (!d_ml)
         return;
 
     QString unitName;
-    switch (d_mlGuard->pageUnit()) {
+    switch (d_ml->pageUnit()) {
     case MultiLayer::UnitMm:
         unitName = QStringLiteral("mm");
         break;
@@ -3860,31 +3876,31 @@ void PlotDialog::syncPageTabFromMultiLayer()
     }
     if (labelPageSize)
         labelPageSize->setText(QStringLiteral("%1 x %2 %3, %4 dpi")
-                                       .arg(d_mlGuard->pageWidthPhysical(), 0, 'f', 2)
-                                       .arg(d_mlGuard->pageHeightPhysical(), 0, 'f', 2)
+                                       .arg(d_ml->pageWidthPhysical(), 0, 'f', 2)
+                                       .arg(d_ml->pageHeightPhysical(), 0, 'f', 2)
                                        .arg(unitName)
-                                       .arg(d_mlGuard->pageDpi()));
+                                       .arg(d_ml->pageDpi()));
     if (labelPageZoom)
-        labelPageZoom->setText(QStringLiteral("%1 %").arg(qRound(d_mlGuard->pageZoom() * 100.0)));
+        labelPageZoom->setText(QStringLiteral("%1 %").arg(qRound(d_ml->pageZoom() * 100.0)));
 
     QScopedValueRollback<bool> guard(d_loadingUi, true);
     if (boxScaleLayers)
-        boxScaleLayers->setChecked(d_mlGuard->scaleLayersOnPrint());
+        boxScaleLayers->setChecked(d_ml->scaleLayersOnPrint());
     if (boxPrintCrops)
-        boxPrintCrops->setChecked(d_mlGuard->printCropmarksEnabled());
+        boxPrintCrops->setChecked(d_ml->printCropmarksEnabled());
 }
 
 void PlotDialog::openPageSetupFromDialog()
 {
-    if (!d_ml || !d_mlGuard)
+    if (!d_ml)
         return;
-    // Page Setup applies and records its own Undo step; its edits must not reload this dialog
-    // underneath it.
+    QPointer<PlotDialog> self(this);
+    QPointer<MultiLayer> safeMl(d_ml);
     {
-        QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
-        d_mlGuard->showPageSetupDialog();
+        SelfEditDepthGuard selfEdit(this);
+        safeMl->showPageSetupDialog();
     }
-    if (!d_mlGuard)
+    if (!self || !d_ml)
         return;
     syncPageTabFromMultiLayer();
 }
@@ -3943,7 +3959,7 @@ void PlotDialog::reject()
 
 void PlotDialog::onMultiLayerModified()
 {
-    if (!isVisible() || d_loadingUi || d_selfEditDepth > 0 || !d_mlGuard
+    if (!isVisible() || d_loadingUi || d_selfEditDepth > 0 || !d_ml
         || !d_externalSyncTimer)
         return;
     if (!d_externalSyncTimer->isActive())
@@ -3952,11 +3968,11 @@ void PlotDialog::onMultiLayerModified()
 
 void PlotDialog::syncFromMultiLayer()
 {
-    if (!isVisible() || !d_mlGuard || !listBox || !d_externalSyncTimer)
+    if (!isVisible() || !d_ml || !listBox || !d_externalSyncTimer)
         return;
     // Busy (this dialog is itself editing / a nested modal dialog runs the event loop, or an
     // Undo / Redo is rebuilding the layers): try again shortly.
-    if (d_loadingUi || d_selfEditDepth > 0 || d_mlGuard->isRestoringSnapshot()) {
+    if (d_loadingUi || d_selfEditDepth > 0 || d_ml->isRestoringSnapshot()) {
         d_externalSyncTimer->start();
         return;
     }
@@ -3974,7 +3990,7 @@ void PlotDialog::syncFromMultiLayer()
 
 bool PlotDialog::treeMatchesMultiLayer() const
 {
-    MultiLayer *ml = d_mlGuard.data();
+    MultiLayer *ml = d_ml.data();
     if (!ml || !listBox)
         return false;
     QTreeWidgetItem *pageItem = listBox->topLevelItem(0);
@@ -4002,7 +4018,7 @@ bool PlotDialog::treeMatchesMultiLayer() const
 
 void PlotDialog::rebuildTreeFromMultiLayer()
 {
-    if (!d_mlGuard || !listBox)
+    if (!d_ml || !listBox)
         return;
 
     // Remember what is selected and expanded: layer index, curve index (and the curve itself, so

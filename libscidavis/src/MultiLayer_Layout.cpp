@@ -1655,10 +1655,12 @@ void MultiLayer::fitLayersToPage()
 
 void MultiLayer::showPageSetupDialog()
 {
+    QPointer<MultiLayer> self(this);
     const QString beforeSnap = captureUndoSnapshot();
     bool anyApplied = false;
 
-    QDialog dlg(this);
+    QWidget *dlgParent = (window() && window() != this) ? window() : nullptr;
+    QDialog dlg(dlgParent);
     dlg.setWindowTitle(tr("Page Setup"));
     dlg.setMinimumWidth(420);
 
@@ -1808,15 +1810,21 @@ void MultiLayer::showPageSetupDialog()
                      });
 
     QObject::connect(btnFitPage, &QPushButton::clicked, &dlg, [&]() {
+        if (!self)
+            return;
         fitPageToLayers(14);
         anyApplied = true;
     });
     QObject::connect(btnFitLayers, &QPushButton::clicked, &dlg, [&]() {
+        if (!self)
+            return;
         fitLayersToPage();
         anyApplied = true;
     });
 
     auto applyNow = [&]() {
+        if (!self)
+            return;
         const PageUnit u = PageUnit(comboUnit->currentData().toInt());
         setPageBackgroundColor(btnBg->color());
         setPageViewMode(chkPageView->isChecked());
@@ -1844,7 +1852,7 @@ void MultiLayer::showPageSetupDialog()
     QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
     dlg.exec();
-    if (anyApplied)
+    if (self && anyApplied)
         pushUndoSnapshot(tr("Page Setup"), beforeSnap);
 }
 
