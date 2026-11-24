@@ -3667,19 +3667,40 @@ int runSuite62BeginnerNavigationMenusAndScreenFit(ApplicationWindow *mw)
     ModernRibbonBar *ribbon = mw->modernRibbonBar();
     CHECK_COND(ribbon != nullptr, "62: ribbon missing");
 
-    // ---- 62a (B1, C8): F1 opens the bundled Japanese guide; shortcuts are unique
+    // ---- 62a (B1, C8): F1 opens bundled JA/EN guide matching appLanguage; shortcuts are unique
     {
-        const QUrl guide = mw->quickGuideUrl();
-        CHECK_COND(guide.isLocalFile() && guide.toLocalFile().endsWith("manual/index.html"),
-                   "62a: F1 guide does not resolve to the bundled manual/index.html");
-        QFile f(guide.toLocalFile());
-        CHECK_COND(f.open(QIODevice::ReadOnly), "62a: guide file cannot be read");
-        const QString html = QString::fromUtf8(f.readAll());
+        const QString prevLang62a = mw->appLanguage;
+        mw->switchToLanguage(QStringLiteral("ja"));
+        QCoreApplication::processEvents();
+        const QUrl guideJa = mw->quickGuideUrl();
+        CHECK_COND(guideJa.isLocalFile() && guideJa.toLocalFile().endsWith("manual/index.html"),
+                   "62a: F1 guide in JA mode does not resolve to the bundled manual/index.html (got '"
+                           << guideJa.toLocalFile().toStdString() << "')");
+        QFile fJa(guideJa.toLocalFile());
+        CHECK_COND(fJa.open(QIODevice::ReadOnly), "62a: JA guide file cannot be read");
+        const QString htmlJa = QString::fromUtf8(fJa.readAll());
         for (const char *needle : { "\xE3\x81\x8B\xE3\x82\x93\xE3\x81\x9F\xE3\x82\x93\xE3\x82\xAC\xE3\x82\xA4\xE3\x83\x89", // かんたんガイド
                                     "PowerPoint", "SmartScreen", "Origin", "register-ole.ps1" }) {
-            CHECK_COND(html.contains(QString::fromUtf8(needle)),
-                       "62a: guide misses a required section: " << needle);
+            CHECK_COND(htmlJa.contains(QString::fromUtf8(needle)),
+                       "62a: JA guide misses a required section: " << needle);
         }
+
+        mw->switchToLanguage(QStringLiteral("en"));
+        QCoreApplication::processEvents();
+        const QUrl guideEn = mw->quickGuideUrl();
+        CHECK_COND(guideEn.isLocalFile() && guideEn.toLocalFile().endsWith("manual/index.en.html"),
+                   "62a: F1 guide in EN mode does not resolve to the bundled manual/index.en.html (got '"
+                           << guideEn.toLocalFile().toStdString() << "')");
+        QFile fEn(guideEn.toLocalFile());
+        CHECK_COND(fEn.open(QIODevice::ReadOnly), "62a: EN guide file cannot be read");
+        const QString htmlEn = QString::fromUtf8(fEn.readAll());
+        for (const char *needle : { "Quick Guide", "PowerPoint" }) {
+            CHECK_COND(htmlEn.contains(QString::fromUtf8(needle)),
+                       "62a: EN guide misses a required section: " << needle);
+        }
+
+        mw->switchToLanguage(prevLang62a.isEmpty() ? QStringLiteral("en") : prevLang62a);
+        QCoreApplication::processEvents();
         auto actionsWithKey = [mw](const QKeySequence &ks) {
             QStringList names;
             for (QAction *a : mw->findChildren<QAction *>()) {
