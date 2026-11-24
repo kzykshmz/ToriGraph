@@ -625,7 +625,7 @@ bool RecalcManager::hasDirtyLinks(Graph *g) const
 
 int RecalcManager::recalculateAll(Graph *filterGraph)
 {
-    if (d_recalculating)
+    if (d_recalculating || Table::isUndoRedoReplaying())
         return 0;
 
     pruneDeadLinks();
@@ -683,6 +683,7 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
         linkIds.append(lnk.id);
     }
 
+    const bool undoReplay = Table::isUndoRedoReplaying();
     QVector<QPointer<Graph>> touchedGraphs;
     for (int id : linkIds) {
         const int idx = findLinkIndexById(id);
@@ -698,7 +699,8 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
         if (curIdx < 0 || !g)
             continue;
 
-        if (d_mode == Manual) {
+        if (undoReplay || d_mode == Manual) {
+            // Never push commands onto d_project->undoStack() while an Undo/Redo replay runs.
             d_links[curIdx].dirty = true;
             if (!touchedGraphs.contains(g))
                 touchedGraphs.append(g);
@@ -729,7 +731,7 @@ void RecalcManager::onGraphDestroyed(QObject *obj)
 
 bool RecalcManager::executeLink(RecalcLink &link)
 {
-    if (d_recalculating)
+    if (d_recalculating || Table::isUndoRedoReplaying())
         return false;
 
     ApplicationWindow *app = link.app ? link.app.data() : d_app.data();

@@ -224,6 +224,7 @@ void TableCommentsHeaderView::paintSection(QPainter *painter, const QRect &rect,
     cmt.replace(QLatin1Char('\r'), QLatin1Char(' '));
     cmt.replace(QLatin1Char('\n'), QLatin1Char(' '));
     const QString fx = extractColumnFormula(col);
+    const QString fxErr = col ? col->formulaError().trimmed() : QString();
 
     const int nRows = subRowCount();
     const int lineH = subRowLineHeight();
@@ -270,9 +271,48 @@ void TableCommentsHeaderView::paintSection(QPainter *painter, const QRect &rect,
                 isPlaceholder = true;
             }
         } else {
-            if (!fx.isEmpty()) {
-                cellTxt = QStringLiteral("F(x)= ") + fx;
-                lineCol = QColor(0x1D, 0x4E, 0xD8);
+            if (!fx.isEmpty() || !fxErr.isEmpty()) {
+                const bool hasErr = !fxErr.isEmpty();
+                painter->fillRect(rowRect,
+                                  hasErr ? QColor(0xFE, 0xF2, 0xF2) : QColor(0xEF, 0xF6, 0xFF));
+                if (hasErr) {
+                    painter->setPen(QColor(0xFC, 0xA5, 0xA5));
+                    painter->drawLine(rowRect.left(), rowRect.bottom(), rowRect.right(),
+                                      rowRect.bottom());
+                }
+                const int badgeW = 20;
+                const int badgeH = qMax(14, lineH - 6);
+                int textLeftPad = 6;
+                if (rowRect.width() > badgeW + 10) {
+                    const QRect badgeRect(rowRect.left() + 4,
+                                          rowRect.top() + (rowRect.height() - badgeH) / 2, badgeW,
+                                          badgeH);
+                    painter->save();
+                    painter->setRenderHint(QPainter::Antialiasing, true);
+                    painter->setPen(Qt::NoPen);
+                    painter->setBrush(hasErr ? QColor(0xDC, 0x26, 0x26)
+                                             : QColor(0x25, 0x63, 0xEB));
+                    painter->drawRoundedRect(badgeRect, 3.0, 3.0);
+                    QFont badgeFont = baseFont;
+                    badgeFont.setPointSizeF(qMax(7.0, baseFont.pointSizeF() * 0.78));
+                    badgeFont.setWeight(QFont::Bold);
+                    painter->setFont(badgeFont);
+                    painter->setPen(Qt::white);
+                    painter->drawText(badgeRect, Qt::AlignCenter, QStringLiteral("fx"));
+                    painter->restore();
+                    textLeftPad = badgeW + 8;
+                }
+                const QString exprTxt = !fx.isEmpty() ? fx : fxErr;
+                lineCol = hasErr ? QColor(0xDC, 0x26, 0x26) : QColor(0x1E, 0x40, 0xAF);
+                const QFontMetrics lfm(lineFont);
+                const QRect exprRect = rowRect.adjusted(textLeftPad, 0, -5, 0);
+                if (exprRect.width() > 4) {
+                    painter->setFont(lineFont);
+                    painter->setPen(lineCol);
+                    painter->drawText(exprRect, Qt::AlignLeft | Qt::AlignVCenter,
+                                      lfm.elidedText(exprTxt, Qt::ElideRight, exprRect.width()));
+                }
+                continue;
             } else if (logicalIndex == 0) {
                 cellTxt = QStringLiteral("F(x)=");
                 isPlaceholder = true;
@@ -365,10 +405,25 @@ QSize TableDoubleHeaderView::sizeHint() const
 void TableDoubleHeaderView::setModel(QAbstractItemModel *model)
 {
     Q_ASSERT(model->inherits("TableModel"));
+    if (d_observed_model && d_observed_model != model)
+        d_observed_model->disconnect(this);
+    d_observed_model = model;
     d_slave->setModel(model);
     QHeaderView::setModel(model);
     connect(model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
             SLOT(headerDataChanged(Qt::Orientation, int, int)));
+    connect(model, &QAbstractItemModel::columnsInserted, this,
+            [this](const QModelIndex &, int, int) { refresh(); });
+    connect(model, &QAbstractItemModel::columnsRemoved, this,
+            [this](const QModelIndex &, int, int) { refresh(); });
+    connect(model, &QAbstractItemModel::modelReset, this, [this]() { refresh(); });
+    connect(model, &QAbstractItemModel::layoutChanged, this, [this]() { refresh(); });
+    connect(model, &QAbstractItemModel::dataChanged, this,
+            [this](const QModelIndex &, const QModelIndex &) {
+                if (d_slave && d_slave->subRowCount() != d_last_subrow_count)
+                    refresh();
+            });
+    d_last_subrow_count = d_slave ? d_slave->subRowCount() : 3;
 }
 
 void TableDoubleHeaderView::paintSection(QPainter *painter, const QRect &rect,
@@ -381,6 +436,38 @@ void TableDoubleHeaderView::paintSection(QPainter *painter, const QRect &rect,
     if (d_show_comments && rect.height() > topH)
         master_rect = QRect(rect.left(), rect.top(), rect.width(), topH);
     QHeaderView::paintSection(painter, master_rect, logicalIndex);
+
+    if (TableModel *tm = qobject_cast<TableModel *>(QHeaderView::model())) {
+        const Column *col = tm->column(logicalIndex);
+        const QString fx = extractColumnFormula(col);
+        const QString fxErr = col ? col->formulaError().trimmed() : QString();
+        const bool hasErr = !fxErr.isEmpty();
+        if (painter && (!fx.isEmpty() || hasErr)) {
+            painter->save();
+            if (hasErr) {
+                painter->setPen(QPen(QColor(0xDC, 0x26, 0x26), 2));
+                painter->drawLine(master_rect.left() + 1, master_rect.bottom(),
+                                  master_rect.right() - 1, master_rect.bottom());
+            }
+            if (master_rect.width() >= 48) {
+                const QRect badgeRect(master_rect.right() - 24,
+                                      master_rect.top() + (master_rect.height() - 15) / 2, 20, 15);
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                painter->setPen(QPen(hasErr ? QColor(0xDC, 0x26, 0x26) : QColor(0x93, 0xC5, 0xFD),
+                                     1));
+                painter->setBrush(hasErr ? QColor(0xFE, 0xE2, 0xE2) : QColor(0xEF, 0xF6, 0xFF));
+                painter->drawRoundedRect(badgeRect, 3.0, 3.0);
+                QFont bf = font();
+                bf.setPointSizeF(qMax(7.0, bf.pointSizeF() * 0.76));
+                bf.setWeight(QFont::Bold);
+                painter->setFont(bf);
+                painter->setPen(hasErr ? QColor(0xB9, 0x1C, 0x1C) : QColor(0x1D, 0x4E, 0xD8));
+                painter->drawText(badgeRect, Qt::AlignCenter, QStringLiteral("fx"));
+            }
+            painter->restore();
+        }
+    }
+
     if (d_show_comments && rect.height() > topH) {
         QRect slave_rect(rect.left(), rect.top() + topH, rect.width(), rect.height() - topH);
         d_slave->paintSection(painter, slave_rect, logicalIndex);
@@ -402,6 +489,7 @@ void TableDoubleHeaderView::showComments(bool on)
 
 void TableDoubleHeaderView::refresh()
 {
+    d_last_subrow_count = d_slave ? d_slave->subRowCount() : 3;
     // adjust geometry and repaint header (still looking for a more elegant solution)
     d_slave->setStretchLastSection(true); // ugly hack (flaw in Qt? Does anyone know a better way?)
     d_slave->updateGeometry();

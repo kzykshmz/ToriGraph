@@ -270,6 +270,9 @@ public slots:
     QList<int> formulaErrorColumns() const;
     //! True when an original ASCII or Excel source file is recorded for re-import.
     Q_INVOKABLE bool hasImportSource() const;
+    //! False when a file-backed Table constructor or importASCII() failed to read/parse data.
+    Q_INVOKABLE bool importSucceeded() const { return !d_import_failed && d_future_table != nullptr; }
+    QString lastImportError() const { return d_last_import_error; }
     void selectAllTable();
     void deselect();
     void clear();
@@ -390,6 +393,8 @@ private:
     int d_pending_recalc_first_col = -1;
     int d_pending_recalc_col_count = 0;
     QString d_last_export_error;
+    bool d_import_failed = false;
+    QString d_last_import_error;
     QPointer<QDialog> d_find_replace_dialog;
     QPointer<QLineEdit> d_fr_find_edit;
     QPointer<QLabel> d_fr_replace_label;

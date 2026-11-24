@@ -478,7 +478,6 @@ void Table::clear()
     RESET_CURSOR;
 }
 
-#ifndef LEGACY_CODE_0_2_x
 void Table::clearMasks()
 {
     WAIT_CURSOR;
@@ -489,7 +488,6 @@ void Table::clearMasks()
     endMacro();
     RESET_CURSOR;
 }
-#endif
 
 void Table::addColumn()
 {
@@ -821,7 +819,6 @@ void Table::pasteIntoSelectionTransposed()
     return pasteIntoSelection(true);
 }
 
-#ifndef LEGACY_CODE_0_2_x
 void Table::maskSelection()
 {
     if (!d_view)
@@ -865,7 +862,6 @@ void Table::unmaskSelection()
     endMacro();
     RESET_CURSOR;
 }
-#endif
 
 void Table::setFormulaForSelection()
 {
@@ -1397,9 +1393,7 @@ bool Table::fillProjectMenu(QMenu *menu)
     menu->addAction(action_type_format);
     menu->addSeparator();
     menu->addAction(action_clear_table);
-#ifndef LEGACY_CODE_0_2_x
     menu->addAction(action_clear_masks);
-#endif
     menu->addAction(action_sort_table);
     menu->addAction(action_reimport_source);
     menu->addSeparator();
@@ -1498,7 +1492,6 @@ void Table::createActions()
     action_find_replace =
             new QAction(IconLoader::duotoneIcon("find"), tr("&Find and Replace..."), this);
     actionManager()->addAction(action_find_replace, "find_replace");
-#ifndef LEGACY_CODE_0_2_x
     action_mask_selection =
             new QAction(IconLoader::duotoneIcon("mask-points"), tr("&Mask", "mask selection"), this);
     actionManager()->addAction(action_mask_selection, "mask_selection");
@@ -1506,7 +1499,6 @@ void Table::createActions()
     action_unmask_selection = new QAction(IconLoader::duotoneIcon("unmask-points"),
                                           tr("&Unmask", "unmask selection"), this);
     actionManager()->addAction(action_unmask_selection, "unmask_selection");
-#endif
 
     action_set_formula =
             new QAction(IconLoader::duotoneIcon("formula"), tr("Assign &Formula"), this);
@@ -1567,11 +1559,9 @@ void Table::createActions()
     action_reimport_source->setEnabled(!d_import_source_path.isEmpty());
     actionManager()->addAction(action_reimport_source, "reimport_source");
 
-#ifndef LEGACY_CODE_0_2_x
     action_clear_masks =
             new QAction(IconLoader::duotoneIcon("unmask-points"), tr("Clear Masks"), this);
     actionManager()->addAction(action_clear_masks, "clear_masks");
-#endif
 
     action_sort_table =
             new QAction(IconLoader::duotoneIcon("sort-table"), tr("&Sort Table"), this);
@@ -1704,10 +1694,8 @@ void Table::connectActions()
     connect(action_paste_into_selection_transposed, SIGNAL(triggered()), this, SLOT(pasteIntoSelectionTransposed()));
     connect(action_fill_down, SIGNAL(triggered()), this, SLOT(fillSelectionDown()));
     connect(action_find_replace, SIGNAL(triggered()), this, SLOT(showFindReplaceDialog()));
-#ifndef LEGACY_CODE_0_2_x
     connect(action_mask_selection, SIGNAL(triggered()), this, SLOT(maskSelection()));
     connect(action_unmask_selection, SIGNAL(triggered()), this, SLOT(unmaskSelection()));
-#endif
     connect(action_set_formula, SIGNAL(triggered()), this, SLOT(setFormulaForSelection()));
     connect(action_clear_selection, SIGNAL(triggered()), this, SLOT(clearSelectedCells()));
     connect(action_recalculate, SIGNAL(triggered()), this, SLOT(recalculateSelectedCells()));
@@ -1723,9 +1711,7 @@ void Table::connectActions()
     connect(action_export_to_TeX, SIGNAL(triggered()), this, SLOT(showTeXTableExportDialog()));
     connect(action_reimport_source, SIGNAL(triggered()), this, SLOT(reimportFromSource()));
 
-#ifndef LEGACY_CODE_0_2_x
     connect(action_clear_masks, SIGNAL(triggered()), this, SLOT(clearMasks()));
-#endif
     connect(action_sort_table, SIGNAL(triggered()), this, SLOT(sortTable()));
     connect(action_go_to_cell, SIGNAL(triggered()), this, SLOT(goToCell()));
     connect(action_dimensions_dialog, SIGNAL(triggered()), this, SLOT(dimensionsDialog()));
@@ -1793,10 +1779,8 @@ void Table::addActionsToView()
     d_view->addAction(action_paste_into_selection_transposed);
     d_view->addAction(action_fill_down);
     d_view->addAction(action_find_replace);
-#ifndef LEGACY_CODE_0_2_x
     d_view->addAction(action_mask_selection);
     d_view->addAction(action_unmask_selection);
-#endif
     d_view->addAction(action_set_formula);
     d_view->addAction(action_clear_selection);
     d_view->addAction(action_recalculate);
@@ -1810,9 +1794,7 @@ void Table::addActionsToView()
     d_view->addAction(action_clear_table);
     d_view->addAction(action_export_to_TeX);
     d_view->addAction(action_reimport_source);
-#ifndef LEGACY_CODE_0_2_x
     d_view->addAction(action_clear_masks);
-#endif
     d_view->addAction(action_sort_table);
     d_view->addAction(action_go_to_cell);
     d_view->addAction(action_dimensions_dialog);
@@ -1849,11 +1831,9 @@ void Table::translateActionsStrings()
     action_paste_into_selection_transposed->setText(tr("Paste transposed"));
     action_fill_down->setText(tr("Fill &Down"));
     action_find_replace->setText(tr("&Find and Replace..."));
-#ifndef LEGACY_CODE_0_2_x
     action_mask_selection->setText(tr("&Mask", "mask selection"));
     action_unmask_selection->setText(tr("&Unmask", "unmask selection"));
     action_clear_masks->setText(tr("Clear Masks"));
-#endif
     action_set_formula->setText(tr("Assign &Formula"));
     action_clear_selection->setText(tr("Clea&r", "clear selection"));
     action_recalculate->setText(tr("Recalculate"));
@@ -2101,11 +2081,9 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
     menu->addSeparator();
     menu->addAction(action_find_replace);
     menu->addSeparator();
-#ifndef LEGACY_CODE_0_2_x
     menu->addAction(action_mask_selection);
     menu->addAction(action_unmask_selection);
     menu->addSeparator();
-#endif
     menu->addAction(action_normalize_selection);
     menu->addSeparator();
     menu->addAction(action_set_formula);
@@ -2269,8 +2247,8 @@ QMenu *Table::createTableMenu(QMenu *append_to)
     menu->addAction(action_select_all);
     menu->addAction(action_clear_table);
     menu->addAction(action_export_to_TeX);
-#ifndef LEGACY_CODE_0_2_x
     menu->addAction(action_clear_masks);
+#ifndef LEGACY_CODE_0_2_x
     menu->addAction(action_sort_table);
 #endif
     menu->addAction(action_reimport_source);
@@ -2381,7 +2359,8 @@ void Table::copy(Table *other)
     appendColumns(columns);
     setImportSource(other->importSourcePath(), other->importSourceSheet(),
                     other->importSourceSeparator(), other->importSourceEncoding(),
-                    other->importSourceIgnoredLines(), other->importSourceUnitsRow());
+                    other->importSourceIgnoredLines(), other->importSourceUnitsRow(),
+                    other->importSourceColumnCount());
     setCaptionSpec(other->captionSpec());
     setComment(other->comment());
     for (int i = 0; i < columnCount(); i++)
@@ -2454,263 +2433,250 @@ void Table::sortDialog(QList<Column *> cols)
     sortd->exec();
 }
 
+namespace {
+
+template <typename T, typename Cmp, typename Getter>
+QVector<int> buildTypedSortPermutation(int rows, Cmp cmp, Getter getter)
+{
+    QVector<QPair<T, int>> pairs;
+    pairs.reserve(rows);
+    for (int r = 0; r < rows; ++r)
+        pairs.append(qMakePair(getter(r), r));
+    std::stable_sort(pairs.begin(), pairs.end(), cmp);
+    QVector<int> perm(rows);
+    for (int k = 0; k < rows; ++k)
+        perm[k] = pairs.at(k).second;
+    return perm;
+}
+
+template <typename Setter>
+void applyContiguousTrueRuns(const QVector<bool> &flags, Setter setter)
+{
+    const int n = flags.size();
+    int i = 0;
+    while (i < n) {
+        if (!flags.at(i)) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        while (i < n && flags.at(i))
+            ++i;
+        setter(Interval<int>(start, i - 1));
+    }
+}
+
+struct SortComparators
+{
+    static bool doubleLess(const QPair<double, int> &a, const QPair<double, int> &b)
+    {
+        const bool na = std::isnan(a.first);
+        const bool nb = std::isnan(b.first);
+        if (na != nb)
+            return !na; // NaN / invalid always goes to the end
+        if (na)
+            return false;
+        return a.first < b.first;
+    }
+    static bool doubleGreater(const QPair<double, int> &a, const QPair<double, int> &b)
+    {
+        const bool na = std::isnan(a.first);
+        const bool nb = std::isnan(b.first);
+        if (na != nb)
+            return !na; // NaN / invalid always goes to the end
+        if (na)
+            return false;
+        return a.first > b.first;
+    }
+    static bool stringLess(const QPair<QString, int> &a, const QPair<QString, int> &b)
+    {
+        const bool ea = a.first.isEmpty();
+        const bool eb = b.first.isEmpty();
+        if (ea != eb)
+            return !ea; // empty / invalid always goes to the end
+        if (ea)
+            return false;
+        return a.first < b.first;
+    }
+    static bool stringGreater(const QPair<QString, int> &a, const QPair<QString, int> &b)
+    {
+        const bool ea = a.first.isEmpty();
+        const bool eb = b.first.isEmpty();
+        if (ea != eb)
+            return !ea; // empty / invalid always goes to the end
+        if (ea)
+            return false;
+        return a.first > b.first;
+    }
+    static bool dateTimeLess(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
+    {
+        const bool ia = !a.first.isValid();
+        const bool ib = !b.first.isValid();
+        if (ia != ib)
+            return !ia; // invalid / empty always goes to the end
+        if (ia)
+            return false;
+        return a.first < b.first;
+    }
+    static bool dateTimeGreater(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
+    {
+        const bool ia = !a.first.isValid();
+        const bool ib = !b.first.isValid();
+        if (ia != ib)
+            return !ia; // invalid / empty always goes to the end
+        if (ia)
+            return false;
+        return a.first > b.first;
+    }
+};
+
+QVector<int> buildSortPermutation(const Column *keyCol, int rows, bool ascending)
+{
+    if (!keyCol || rows <= 0)
+        return QVector<int>();
+    const int keyRows = keyCol->rowCount();
+    switch (keyCol->dataType()) {
+    case SciDAVis::TypeDouble:
+        return buildTypedSortPermutation<double>(
+                rows, ascending ? SortComparators::doubleLess : SortComparators::doubleGreater,
+                [keyCol, keyRows](int r) {
+                    return (r >= keyRows || keyCol->isInvalid(r))
+                            ? std::numeric_limits<double>::quiet_NaN()
+                            : keyCol->valueAt(r);
+                });
+    case SciDAVis::TypeQString:
+        return buildTypedSortPermutation<QString>(
+                rows, ascending ? SortComparators::stringLess : SortComparators::stringGreater,
+                [keyCol, keyRows](int r) {
+                    return (r >= keyRows || keyCol->isInvalid(r)) ? QString() : keyCol->textAt(r);
+                });
+    case SciDAVis::TypeQDateTime:
+        return buildTypedSortPermutation<QDateTime>(
+                rows, ascending ? SortComparators::dateTimeLess : SortComparators::dateTimeGreater,
+                [keyCol, keyRows](int r) {
+                    return (r >= keyRows || keyCol->isInvalid(r)) ? QDateTime()
+                                                                  : keyCol->dateTimeAt(r);
+                });
+    default:
+        return QVector<int>();
+    }
+}
+
+void applySortPermutation(Column *col, const QVector<int> &perm)
+{
+    if (!col || perm.isEmpty())
+        return;
+    const int oldRows = col->rowCount();
+    const int n = perm.size();
+    int outRows = 0;
+    for (int k = n - 1; k >= 0; --k) {
+        if (perm.at(k) < oldRows) {
+            outRows = k + 1;
+            break;
+        }
+    }
+    if (outRows <= 0)
+        return;
+
+    bool changed = (outRows != oldRows);
+    if (!changed) {
+        for (int k = 0; k < outRows; ++k) {
+            if (perm.at(k) != k) {
+                changed = true;
+                break;
+            }
+        }
+    }
+    if (!changed)
+        return;
+
+    QVector<bool> newInvalid(outRows, false);
+    QVector<bool> newMasked(outRows, false);
+    bool anyNewMasked = false;
+    for (int k = 0; k < outRows; ++k) {
+        const int src = perm.at(k);
+        const bool inRange = (src >= 0 && src < oldRows);
+        newInvalid[k] = !inRange || col->isInvalid(src);
+        const bool masked = inRange && col->isMasked(src);
+        newMasked[k] = masked;
+        if (masked)
+            anyNewMasked = true;
+    }
+
+    switch (col->dataType()) {
+    case SciDAVis::TypeDouble: {
+        QVector<qreal> sorted(outRows);
+        for (int k = 0; k < outRows; ++k)
+            sorted[k] = newInvalid.at(k) ? 0.0 : col->valueAt(perm.at(k));
+        col->replaceValues(0, sorted);
+        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
+        break;
+    }
+    case SciDAVis::TypeQString: {
+        QStringList sorted;
+        sorted.reserve(outRows);
+        for (int k = 0; k < outRows; ++k)
+            sorted.append(newInvalid.at(k) ? QString() : col->textAt(perm.at(k)));
+        col->replaceTexts(0, sorted);
+        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
+        break;
+    }
+    case SciDAVis::TypeQDateTime: {
+        QList<QDateTime> sorted;
+        sorted.reserve(outRows);
+        for (int k = 0; k < outRows; ++k) {
+            const QDateTime dt = newInvalid.at(k) ? QDateTime() : col->dateTimeAt(perm.at(k));
+            if (!dt.isValid())
+                newInvalid[k] = true;
+            sorted.append(dt);
+        }
+        col->replaceDateTimes(0, sorted);
+        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
+        break;
+    }
+    default:
+        return;
+    }
+
+    // Remap masks in the same macro instead of passing isMasked() bool as row index.
+    const bool hadMasks = !col->maskedIntervals().isEmpty();
+    if (hadMasks || anyNewMasked) {
+        col->setMasked(Interval<int>(0, qMax(oldRows, outRows) - 1), false);
+        applyContiguousTrueRuns(newMasked, [col](Interval<int> iv) { col->setMasked(iv, true); });
+    }
+}
+
+} // namespace
+
 void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
 {
     if (cols.isEmpty())
         return;
 
-    // the normal QPair comparison does not work properly with descending sorting
-    // thefore we use our own compare functions
-    class CompareFunctions
-    {
-    public:
-        static bool doubleLess(const QPair<double, int> &a, const QPair<double, int> &b)
-        {
-            const bool na = std::isnan(a.first);
-            const bool nb = std::isnan(b.first);
-            if (na != nb)
-                return !na; // NaN / invalid always goes to the end
-            if (na)
-                return false;
-            return a.first < b.first;
-        }
-        static bool doubleGreater(const QPair<double, int> &a, const QPair<double, int> &b)
-        {
-            const bool na = std::isnan(a.first);
-            const bool nb = std::isnan(b.first);
-            if (na != nb)
-                return !na; // NaN / invalid always goes to the end
-            if (na)
-                return false;
-            return a.first > b.first;
-        }
-        static bool QStringLess(const QPair<QString, int> &a, const QPair<QString, int> &b)
-        {
-            const bool ea = a.first.isEmpty();
-            const bool eb = b.first.isEmpty();
-            if (ea != eb)
-                return !ea; // empty / invalid always goes to the end
-            if (ea)
-                return false;
-            return a.first < b.first;
-        }
-        static bool QStringGreater(const QPair<QString, int> &a, const QPair<QString, int> &b)
-        {
-            const bool ea = a.first.isEmpty();
-            const bool eb = b.first.isEmpty();
-            if (ea != eb)
-                return !ea; // empty / invalid always goes to the end
-            if (ea)
-                return false;
-            return a.first > b.first;
-        }
-        static bool QDateTimeLess(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
-        {
-            const bool ia = !a.first.isValid();
-            const bool ib = !b.first.isValid();
-            if (ia != ib)
-                return !ia; // invalid / empty always goes to the end
-            if (ia)
-                return false;
-            return a.first < b.first;
-        }
-        static bool QDateTimeGreater(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
-        {
-            const bool ia = !a.first.isValid();
-            const bool ib = !b.first.isValid();
-            if (ia != ib)
-                return !ia; // invalid / empty always goes to the end
-            if (ia)
-                return false;
-            return a.first > b.first;
-        }
-    };
-
     WAIT_CURSOR;
     beginMacro(tr("%1: sort column(s)").arg(name()));
 
-    if (leading == 0) // sort separately
-    {
-        for (int i = 0; i < cols.size(); i++) {
-            Column *col = cols.at(i);
-
-            if (col->dataType() == SciDAVis::TypeDouble) {
-                int rows = col->rowCount();
-                QList<QPair<double, int>> map;
-
-                for (int j = 0; j < rows; j++) {
-                    const double v = col->isInvalid(j)
-                            ? std::numeric_limits<double>::quiet_NaN()
-                            : col->valueAt(j);
-                    map.append(QPair<double, int>(v, j));
-                }
-
-                if (ascending)
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleLess);
-                else
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleGreater);
-
-                QListIterator<QPair<double, int>> it(map);
-                Column *temp_col = new Column("temp", col->columnMode());
-
-                int k = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(col, it.peekNext().second, k, 1);
-                    temp_col->setMasked(col->isMasked(it.next().second));
-                    k++;
-                }
-                // copy the sorted column
-                col->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            } else if (col->dataType() == SciDAVis::TypeQString) {
-                int rows = col->rowCount();
-                QList<QPair<QString, int>> map;
-
-                for (int j = 0; j < rows; j++) {
-                    const QString s = col->isInvalid(j) ? QString() : col->textAt(j);
-                    map.append(QPair<QString, int>(s, j));
-                }
-
-                if (ascending)
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringLess);
-                else
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringGreater);
-
-                QListIterator<QPair<QString, int>> it(map);
-                Column *temp_col = new Column("temp", col->columnMode());
-
-                int k = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(col, it.peekNext().second, k, 1);
-                    temp_col->setMasked(col->isMasked(it.next().second));
-                    k++;
-                }
-                // copy the sorted column
-                col->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            } else if (col->dataType() == SciDAVis::TypeQDateTime) {
-                int rows = col->rowCount();
-                QList<QPair<QDateTime, int>> map;
-
-                for (int j = 0; j < rows; j++) {
-                    const QDateTime dt = col->isInvalid(j) ? QDateTime() : col->dateTimeAt(j);
-                    map.append(QPair<QDateTime, int>(dt, j));
-                }
-
-                if (ascending)
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeLess);
-                else
-                    std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeGreater);
-
-                QListIterator<QPair<QDateTime, int>> it(map);
-                Column *temp_col = new Column("temp", col->columnMode());
-
-                int k = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(col, it.peekNext().second, k, 1);
-                    temp_col->setMasked(col->isMasked(it.next().second));
-                    k++;
-                }
-                // copy the sorted column
-                col->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            }
+    QSet<Column *> visited;
+    if (leading == nullptr) {
+        for (Column *col : cols) {
+            if (!col || visited.contains(col))
+                continue;
+            visited.insert(col);
+            const QVector<int> perm = buildSortPermutation(col, col->rowCount(), ascending);
+            applySortPermutation(col, perm);
         }
-
-    } else // sort with leading column
-    {
-        if (leading->dataType() == SciDAVis::TypeDouble) {
-            QList<QPair<double, int>> map;
-            int rows = leading->rowCount();
-
-            for (int i = 0; i < rows; i++) {
-                const double v = leading->isInvalid(i)
-                        ? std::numeric_limits<double>::quiet_NaN()
-                        : leading->valueAt(i);
-                map.append(QPair<double, int>(v, i));
-            }
-
-            if (ascending)
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleLess);
-            else
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::doubleGreater);
-            QListIterator<QPair<double, int>> it(map);
-
-            for (int i = 0; i < cols.size(); i++) {
-                Column *temp_col = new Column("temp", cols.at(i)->columnMode());
-                it.toFront();
-                int j = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(cols.at(i), it.peekNext().second, j, 1);
-                    temp_col->setMasked(cols.at(i)->isMasked(it.next().second));
-                    j++;
-                }
-                // copy the sorted column
-                cols.at(i)->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            }
-        } else if (leading->dataType() == SciDAVis::TypeQString) {
-            QList<QPair<QString, int>> map;
-            int rows = leading->rowCount();
-
-            for (int i = 0; i < rows; i++) {
-                const QString s = leading->isInvalid(i) ? QString() : leading->textAt(i);
-                map.append(QPair<QString, int>(s, i));
-            }
-
-            if (ascending)
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringLess);
-            else
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::QStringGreater);
-            QListIterator<QPair<QString, int>> it(map);
-
-            for (int i = 0; i < cols.size(); i++) {
-                Column *temp_col = new Column("temp", cols.at(i)->columnMode());
-                it.toFront();
-                int j = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(cols.at(i), it.peekNext().second, j, 1);
-                    temp_col->setMasked(cols.at(i)->isMasked(it.next().second));
-                    j++;
-                }
-                // copy the sorted column
-                cols.at(i)->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            }
-        } else if (leading->dataType() == SciDAVis::TypeQDateTime) {
-            QList<QPair<QDateTime, int>> map;
-            int rows = leading->rowCount();
-
-            for (int i = 0; i < rows; i++) {
-                const QDateTime dt = leading->isInvalid(i) ? QDateTime() : leading->dateTimeAt(i);
-                map.append(QPair<QDateTime, int>(dt, i));
-            }
-
-            if (ascending)
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeLess);
-            else
-                std::stable_sort(map.begin(), map.end(), CompareFunctions::QDateTimeGreater);
-            QListIterator<QPair<QDateTime, int>> it(map);
-
-            for (int i = 0; i < cols.size(); i++) {
-                Column *temp_col = new Column("temp", cols.at(i)->columnMode());
-                it.toFront();
-                int j = 0;
-                // put the values in the right order into temp_col
-                while (it.hasNext()) {
-                    temp_col->copy(cols.at(i), it.peekNext().second, j, 1);
-                    temp_col->setMasked(cols.at(i)->isMasked(it.next().second));
-                    j++;
-                }
-                // copy the sorted column
-                cols.at(i)->copy(temp_col, 0, 0, rows);
-                delete temp_col;
-            }
+    } else {
+        int maxRows = leading->rowCount();
+        for (Column *col : cols) {
+            if (col)
+                maxRows = qMax(maxRows, col->rowCount());
+        }
+        const QVector<int> perm = buildSortPermutation(leading, maxRows, ascending);
+        for (Column *col : cols) {
+            if (!col || visited.contains(col))
+                continue;
+            visited.insert(col);
+            applySortPermutation(col, perm);
         }
     }
     endMacro();
@@ -2876,7 +2842,8 @@ void Table::setAutoRecalcFormulas(bool on)
 }
 
 void Table::setImportSource(const QString &path, const QString &sheet, const QString &separator,
-                            const QString &encoding, int ignoredLines, int unitsRow)
+                            const QString &encoding, int ignoredLines, int unitsRow,
+                            int importColumnCount)
 {
     d_import_source_path = path;
     d_import_source_sheet = sheet;
@@ -2884,6 +2851,7 @@ void Table::setImportSource(const QString &path, const QString &sheet, const QSt
     d_import_source_encoding = encoding;
     d_import_ignored_lines = ignoredLines;
     d_import_units_row = unitsRow;
+    d_import_column_count = importColumnCount;
     if (action_reimport_source)
         action_reimport_source->setEnabled(!d_import_source_path.isEmpty());
 }
@@ -2910,6 +2878,9 @@ void Table::save(QXmlStreamWriter *writer) const
                                    QString::number(d_import_ignored_lines));
         if (d_import_units_row >= 0)
             writer->writeAttribute("import_source_units", QString::number(d_import_units_row));
+        if (d_import_column_count >= 0)
+            writer->writeAttribute("import_source_columns",
+                                   QString::number(d_import_column_count));
     }
     writeCommentElement(writer);
 
@@ -2946,11 +2917,14 @@ bool Table::load(XmlStreamReader *reader)
         const int loadedUnits = attrs.hasAttribute("import_source_units")
                 ? attrs.value("import_source_units").toInt()
                 : -1;
+        const int loadedCols = attrs.hasAttribute("import_source_columns")
+                ? attrs.value("import_source_columns").toInt()
+                : -1;
         setImportSource(attrs.value("import_source_path").toString(),
                         attrs.value("import_source_sheet").toString(),
                         attrs.value("import_source_separator").toString(),
                         attrs.value("import_source_encoding").toString(), loadedIgnored,
-                        loadedUnits);
+                        loadedUnits, loadedCols);
 
         // read dimensions
         bool ok1, ok2;

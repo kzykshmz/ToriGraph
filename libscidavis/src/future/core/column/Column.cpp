@@ -116,7 +116,22 @@ bool Column::copy(const AbstractColumn *other)
     Q_CHECK_PTR(other);
     if (other->dataType() != dataType())
         return false;
+    const Column *srcCol = qobject_cast<const Column *>(other);
+    if (!srcCol || srcCol == this) {
+        exec(new ColumnFullCopyCmd(d_column_private, other));
+        return true;
+    }
+    const QList<Interval<int>> srcMasks = srcCol->maskedIntervals();
+    if (srcMasks.isEmpty() && maskedIntervals().isEmpty()) {
+        exec(new ColumnFullCopyCmd(d_column_private, other));
+        return true;
+    }
+    beginMacro(tr("%1: copy %2").arg(name(), other->name()));
     exec(new ColumnFullCopyCmd(d_column_private, other));
+    clearMasks();
+    for (const Interval<int> &iv : srcMasks)
+        setMasked(iv, true);
+    endMacro();
     return true;
 }
 
@@ -125,7 +140,44 @@ bool Column::copy(const AbstractColumn *source, int source_start, int dest_start
     Q_CHECK_PTR(source);
     if (source->dataType() != dataType())
         return false;
+    const Column *srcCol = qobject_cast<const Column *>(source);
+    if (!srcCol || num_rows <= 0 || source_start < 0 || dest_start < 0
+        || (srcCol == this && source_start == dest_start)) {
+        exec(new ColumnPartialCopyCmd(d_column_private, source, source_start, dest_start, num_rows));
+        return true;
+    }
+    // Preserve mask flags when copying between Column instances (not filter/StringIO edits).
+    const int srcEnd = source_start + num_rows - 1;
+    const int dstEnd = dest_start + num_rows - 1;
+    QVector<Interval<int>> mappedMasks;
+    const QList<Interval<int>> srcMasks = srcCol->maskedIntervals();
+    for (const Interval<int> &iv : srcMasks) {
+        const int s = qMax(iv.start(), source_start);
+        const int e = qMin(iv.end(), srcEnd);
+        if (s <= e) {
+            mappedMasks.append(Interval<int>(dest_start + (s - source_start),
+                                             dest_start + (e - source_start)));
+        }
+    }
+    bool dstHadMasks = false;
+    const QList<Interval<int>> dstMasks = maskedIntervals();
+    for (const Interval<int> &iv : dstMasks) {
+        if (iv.end() >= dest_start && iv.start() <= dstEnd) {
+            dstHadMasks = true;
+            break;
+        }
+    }
+    if (!dstHadMasks && mappedMasks.isEmpty()) {
+        exec(new ColumnPartialCopyCmd(d_column_private, source, source_start, dest_start, num_rows));
+        return true;
+    }
+    beginMacro(tr("%1: partial copy %2").arg(name(), source->name()));
     exec(new ColumnPartialCopyCmd(d_column_private, source, source_start, dest_start, num_rows));
+    if (dstHadMasks)
+        setMasked(Interval<int>(dest_start, dstEnd), false);
+    for (const Interval<int> &iv : mappedMasks)
+        setMasked(iv, true);
+    endMacro();
     return true;
 }
 

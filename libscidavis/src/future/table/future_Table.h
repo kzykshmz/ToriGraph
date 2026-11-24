@@ -248,10 +248,8 @@ private:
 public slots:
     //! Clear the whole table
     void clear();
-#ifndef LEGACY_CODE_0_2_x
     //! Clear all mask in the table
     void clearMasks();
-#endif
 
     //! Append one column
     void addColumn();
@@ -269,10 +267,8 @@ public slots:
     void reimportFromSource();
     void clearSelectedCells();
     void goToCell();
-#ifndef LEGACY_CODE_0_2_x
     void maskSelection();
     void unmaskSelection();
-#endif
     void setFormulaForSelection();
     void recalculateSelectedCells();
     void fillSelectedCellsWithRowNumbers();
@@ -366,13 +362,14 @@ public:
     void setImportSource(const QString &path, const QString &sheet = QString(),
                          const QString &separator = QString(),
                          const QString &encoding = QString(), int ignoredLines = 0,
-                         int unitsRow = -1);
+                         int unitsRow = -1, int importColumnCount = -1);
     QString importSourcePath() const { return d_import_source_path; }
     QString importSourceSheet() const { return d_import_source_sheet; }
     QString importSourceSeparator() const { return d_import_source_separator; }
     QString importSourceEncoding() const { return d_import_source_encoding; }
     int importSourceIgnoredLines() const { return d_import_ignored_lines; }
     int importSourceUnitsRow() const { return d_import_units_row; }
+    int importSourceColumnCount() const { return d_import_column_count; }
 
 private:
     //! Internal function to connect all column signals
@@ -432,10 +429,8 @@ private:
     QAction *action_paste_into_selection_transposed;
     QAction *action_fill_down;
     QAction *action_find_replace;
-#ifndef LEGACY_CODE_0_2_x
     QAction *action_mask_selection;
     QAction *action_unmask_selection;
-#endif
     QAction *action_set_formula;
     QAction *action_clear_selection;
     QAction *action_recalculate;
@@ -452,9 +447,7 @@ private:
     QAction *action_clear_table;
     QAction *action_export_to_TeX;
     QAction *action_reimport_source;
-#ifndef LEGACY_CODE_0_2_x
     QAction *action_clear_masks;
-#endif
     QAction *action_sort_table;
     QAction *action_go_to_cell;
     QAction *action_dimensions_dialog;
@@ -637,6 +630,7 @@ private:
     QString d_import_source_encoding;
     int d_import_ignored_lines = 0;
     int d_import_units_row = -1;
+    int d_import_column_count = -1;
 };
 
 } // namespace

@@ -199,6 +199,47 @@ void registerTableWorksheetTranslations()
             "書き込みに失敗しました(%1)。ディスクの空きが無いか、ファイルが他のアプリで開かれている可能性があります。");
     });
 }
+
+int computeImportedColumnSpan(future::Table *ft)
+{
+    if (!ft)
+        return 0;
+    const int totalCols = ft->columnCount();
+    int span = ft->importSourceColumnCount();
+    if (span < 0)
+        span = totalCols;
+    span = qBound(0, span, totalCols);
+    // Preserve trailing formula/derived columns even when import_source_columns is unset or stale.
+    while (span > 0) {
+        Column *c = ft->column(span - 1);
+        if (!c || c->formulaIntervals().isEmpty())
+            break;
+        --span;
+    }
+    return span;
+}
+
+QVector<int> collectPreservedFormulaCols(future::Table *ft, int startCol, int prevRows, int newRows)
+{
+    QVector<int> derivedCols;
+    if (!ft)
+        return derivedCols;
+    for (int c = qMax(0, startCol); c < ft->columnCount(); ++c) {
+        Column *uc = ft->column(c);
+        if (!uc)
+            continue;
+        const QList<Interval<int>> fxIntervals = uc->formulaIntervals();
+        if (fxIntervals.isEmpty())
+            continue;
+        if (fxIntervals.size() == 1 && fxIntervals.at(0).start() == 0
+            && (prevRows <= 0 || fxIntervals.at(0).end() >= prevRows - 1) && newRows > 0
+            && fxIntervals.at(0).end() != newRows - 1) {
+            uc->setFormula(Interval<int>(0, newRows - 1), uc->formula(0));
+        }
+        derivedCols.append(c);
+    }
+    return derivedCols;
+}
 } // namespace
 
 
@@ -221,15 +262,25 @@ Table::Table(ScriptingEnv *env, const QString &fname, const QString &sep, int ig
     QFile file(fname);
     if (file.open(QIODevice::ReadOnly)) {
         d_future_table = static_cast<future::Table *>(filter.importAspect(file));
-        if (!d_future_table)
-            d_future_table = new future::Table(0, 0, label);
-        else
+        if (!d_future_table || d_future_table->columnCount() == 0) {
+            delete d_future_table;
+            d_future_table = nullptr;
+            d_import_failed = true;
+            d_last_import_error = tr("Could not parse data from file: %1")
+                                          .arg(QDir::toNativeSeparators(fname));
+            qWarning("%s", qPrintable(d_last_import_error));
+            if (!ApplicationWindow::isNonInteractiveContext(parent))
+                QMessageBox::warning(parent, tr("Import failed"), d_last_import_error);
+        } else {
             d_future_table->setName(label);
+            d_import_failed = false;
+        }
     } else {
-        // Never fail silently: the user would otherwise get an empty worksheet and no hint.
-        d_future_table = new future::Table(0, 0, label);
+        d_future_table = nullptr;
+        d_import_failed = true;
         const QString msg = tr("Could not open the file: %1\n%2")
                                     .arg(QDir::toNativeSeparators(fname), file.errorString());
+        d_last_import_error = msg;
         qWarning("%s", qPrintable(msg));
         if (!ApplicationWindow::isNonInteractiveContext(parent))
             QMessageBox::warning(parent, tr("Import failed"), msg);
@@ -239,7 +290,8 @@ Table::Table(ScriptingEnv *env, const QString &fname, const QString &sep, int ig
         d_future_table->setImportSource(fname, QString(), sep,
                                         AsciiTableImportFilter::dialogDefaultEncoding(),
                                         ignoredLines,
-                                        AsciiTableImportFilter::dialogDefaultUnitsRow());
+                                        AsciiTableImportFilter::dialogDefaultUnitsRow(),
+                                        d_future_table->columnCount());
     }
     init();
 }
@@ -644,6 +696,9 @@ void Table::setCommands(const QStringList &com)
         reportFormulaErrorsToUser();
     }
     d_future_table->endMacro();
+    if (d_future_table->columnCount() > 0)
+        emit d_future_table->headerDataChanged(Qt::Horizontal, 0,
+                                               d_future_table->columnCount() - 1);
 }
 
 void Table::setCommand(int col, const QString &com)
@@ -672,6 +727,7 @@ void Table::setCommand(int col, const QString &com)
         }
     }
     d_future_table->endMacro();
+    emit d_future_table->headerDataChanged(Qt::Horizontal, col, col);
 }
 
 void Table::setCommands(const QString &com)
@@ -2237,15 +2293,15 @@ bool Table::reimportFromSource()
         if (nc)
             maxRows = qMax(maxRows, nc->rowCount());
     }
-    const int oldCount = d_future_table->columnCount();
-    const int common = qMin(oldCount, newCols.size());
+    const int importedSpan = computeImportedColumnSpan(d_future_table);
+    const int common = qMin(importedSpan, newCols.size());
     const int prevRows = numRows();
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     d_future_table->beginMacro(tr("%1: re-import from source").arg(name()));
     d_future_table->setRowCount(maxRows);
-    if (oldCount > newCols.size())
-        d_future_table->removeColumns(newCols.size(), oldCount - newCols.size());
+    if (importedSpan > newCols.size())
+        d_future_table->removeColumns(newCols.size(), importedSpan - newCols.size());
 
     QVector<QString> targetNames(common);
     for (int i = 0; i < common; ++i) {
@@ -2297,9 +2353,16 @@ bool Table::reimportFromSource()
                 extraCols.append(nc);
         }
         if (!extraCols.isEmpty())
-            d_future_table->appendColumns(extraCols);
+            d_future_table->insertColumns(common, extraCols);
     }
-    d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow);
+    d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow,
+                                    newCols.size());
+    const QVector<int> derivedCols =
+            collectPreservedFormulaCols(d_future_table, newCols.size(), prevRows, maxRows);
+    if (!derivedCols.isEmpty() && d_auto_recalc_formulas && !isUndoRedoReplaying()) {
+        evaluateCrossTableDag(derivedCols, true);
+        reportFormulaErrorsToUser(-1);
+    }
     d_future_table->endMacro();
     QApplication::restoreOverrideCursor();
     notifyChanges();
@@ -2810,16 +2873,19 @@ bool Table::pasteText(const QString &rawText, bool transposed)
                             QVector<qreal> vals(span, parsedNum);
                             colPtr->replaceValues(iv.start(), vals);
                         }
+                    } else if (colPtr->columnMode() == SciDAVis::ColumnMode::Text) {
+                        QStringList strs;
+                        strs.reserve(span);
+                        for (int k = 0; k < span; ++k)
+                            strs << scalarVal;
+                        colPtr->replaceTexts(iv.start(), strs);
                     } else {
                         QStringList strs;
                         strs.reserve(span);
                         const QString fillStr = isMissing ? QString() : scalarVal;
                         for (int k = 0; k < span; ++k)
                             strs << fillStr;
-                        if (colPtr->columnMode() == SciDAVis::ColumnMode::Text)
-                            colPtr->replaceTexts(iv.start(), strs);
-                        else
-                            colPtr->asStringColumn()->replaceTexts(iv.start(), strs);
+                        colPtr->asStringColumn()->replaceTexts(iv.start(), strs);
                         if (isMissing)
                             colPtr->setInvalid(iv, true);
                     }
@@ -3069,17 +3135,18 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             invalid.fill(false);
         }
 
-        for (int r = 0; r < dataRowCount; ++r) {
-            if (isMissingToken(cells.at(r))) {
-                invalid[r] = true;
-                cells[r].clear();
-            }
-        }
-        if (colPtr->columnMode() == SciDAVis::ColumnMode::Text)
+        if (colPtr->columnMode() == SciDAVis::ColumnMode::Text) {
             colPtr->replaceTexts(startRow, cells);
-        else
+        } else {
+            for (int r = 0; r < dataRowCount; ++r) {
+                if (isMissingToken(cells.at(r))) {
+                    invalid[r] = true;
+                    cells[r].clear();
+                }
+            }
             colPtr->asStringColumn()->replaceTexts(startRow, cells);
-        markInvalidRuns(colPtr, startRow, invalid);
+            markInvalidRuns(colPtr, startRow, invalid);
+        }
     }
 
     deselectAll();
@@ -3258,7 +3325,8 @@ int Table::replaceAllCells(const QString &what, const QString &with, bool matchC
             pe.row = r;
             pe.nextVal = now;
             pe.isEmptyClear = now.trimmed().isEmpty()
-                    || (!formulaMode && AsciiTableImportFilter::isMissingDataToken(now));
+                    || (!formulaMode && col->columnMode() != SciDAVis::ColumnMode::Text
+                        && AsciiTableImportFilter::isMissingDataToken(now));
             if (!formulaMode && col->columnMode() == SciDAVis::ColumnMode::Numeric
                 && !pe.isEmptyClear) {
                 double dv = 0.0;
@@ -3435,7 +3503,7 @@ void Table::showFindReplaceDialog(bool replace)
                                 ? d_fr_replace_edit->text()
                                 : QString(curRaw).replace(what, d_fr_replace_edit->text(), cs);
                         const bool isEmptyClear = nextStr.trimmed().isEmpty()
-                                || (!formulaMode
+                                || (!formulaMode && col->columnMode() != SciDAVis::ColumnMode::Text
                                     && AsciiTableImportFilter::isMissingDataToken(nextStr));
                         double dv = 0.0;
                         bool convertColToText = false;
@@ -4390,7 +4458,7 @@ void Table::setAutoRecalcFormulas(bool on)
     d_auto_recalc_formulas = on;
     if (d_future_table)
         d_future_table->setAutoRecalcFormulas(on);
-    if (d_auto_recalc_formulas && !d_in_auto_recalc)
+    if (d_auto_recalc_formulas && !d_in_auto_recalc && d_future_table)
         autoRecalculateDependentColumns(-1, 0);
 }
 
@@ -4967,27 +5035,56 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
     QFile file(fname);
     if (file.open(QIODevice::ReadOnly)) {
         future::Table *temp = static_cast<future::Table *>(filter.importAspect(file));
-        if (!temp)
+        if (!temp || temp->columnCount() == 0) {
+            delete temp;
+            d_import_failed = true;
+            d_last_import_error = tr("Could not parse data from file: %1")
+                                          .arg(QDir::toNativeSeparators(fname));
             return;
-        int preexisting_cols = columnCount();
-        int overwritten_cols = qMin(temp->columnCount(), preexisting_cols);
+        }
+        d_import_failed = false;
+        const int prevRows = numRows();
+        const int newRows = temp->rowCount();
+        const int importedSpan = computeImportedColumnSpan(d_future_table);
+        const int overwritten_cols = qMin(temp->columnCount(), importedSpan);
+        if (newRows > prevRows)
+            d_future_table->setRowCount(newRows);
         for (int i = 0; i < overwritten_cols; i++) {
+            column(i)->clearFormulas();
             column(i)->asStringColumn()->copy(temp->column(i));
             if (renameCols)
                 column(i)->setName(temp->column(i)->name());
         }
-        for (int i = overwritten_cols; i < preexisting_cols; i++)
-            column(overwritten_cols)->remove();
-        String2DoubleFilter *filter = new String2DoubleFilter;
+        if (importedSpan > overwritten_cols)
+            d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
+        String2DoubleFilter *numFilter = new String2DoubleFilter;
+        QList<Column *> extraCols;
         for (int i = overwritten_cols; i < temp->columnCount(); i++) {
-            filter->input(0, temp->column(i));
+            numFilter->input(0, temp->column(i));
             Column *new_col = new Column(temp->column(i)->name(), SciDAVis::ColumnMode::Numeric);
             new_col->setPlotDesignation(SciDAVis::Y);
-            new_col->copy(filter->output(0));
-            d_future_table->addChild(new_col);
+            new_col->copy(numFilter->output(0));
+            extraCols.append(new_col);
         }
-        delete filter;
+        if (!extraCols.isEmpty())
+            d_future_table->insertColumns(overwritten_cols, extraCols);
+        delete numFilter;
+        d_future_table->setImportSource(fname, QString(), sep,
+                                        AsciiTableImportFilter::dialogDefaultEncoding(),
+                                        ignoredLines,
+                                        AsciiTableImportFilter::dialogDefaultUnitsRow(),
+                                        temp->columnCount());
+        const QVector<int> derivedCols =
+                collectPreservedFormulaCols(d_future_table, temp->columnCount(), prevRows, newRows);
+        if (!derivedCols.isEmpty() && d_auto_recalc_formulas && !isUndoRedoReplaying()) {
+            evaluateCrossTableDag(derivedCols, true);
+            reportFormulaErrorsToUser(-1);
+        }
         delete temp;
         setWindowLabel(fname);
+    } else {
+        d_import_failed = true;
+        d_last_import_error = tr("Could not open the file: %1\n%2")
+                                      .arg(QDir::toNativeSeparators(fname), file.errorString());
     }
 }

@@ -1161,23 +1161,32 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
                 d_last_geometry[t] = t->geometry();
         }
         Book *b = bookFor(t);
-        if (b && b->sheets.size() >= 2 && t->askOnCloseEvent() && d_app && !nonInteractive(d_app)) {
+        if (b && !b->sheets.isEmpty() && t->askOnCloseEvent() && d_app && !nonInteractive(d_app)) {
             QPointer<Table> safe(t);
             QPointer<ApplicationWindow> safeApp(d_app);
             QPointer<WorkbookManager> safeThis(this);
             const QString bookName = b->name;
+            const bool multiSheet = (b->sheets.size() >= 2);
             QMessageBox msgBox(d_app);
             msgBox.setIcon(QMessageBox::Question);
             msgBox.setWindowTitle(wbTr("Close Workbook"));
-            msgBox.setText(wbTr("Workbook \"%1\" has %2 sheets (active sheet: \"%3\").\n"
-                                "What would you like to do?")
-                                   .arg(b->name)
-                                   .arg(b->sheets.size())
-                                   .arg(t->name()));
+            if (multiSheet) {
+                msgBox.setText(wbTr("Workbook \"%1\" has %2 sheets (active sheet: \"%3\").\n"
+                                    "What would you like to do?")
+                                       .arg(b->name)
+                                       .arg(b->sheets.size())
+                                       .arg(t->name()));
+            } else {
+                msgBox.setText(wbTr("Workbook \"%1\" has 1 sheet (\"%2\").\n"
+                                    "What would you like to do?")
+                                       .arg(b->name)
+                                       .arg(t->name()));
+            }
             QPushButton *btnHideBook =
                     msgBox.addButton(wbTr("Hide Workbook"), QMessageBox::AcceptRole);
-            QPushButton *btnDeleteSheet =
-                    msgBox.addButton(wbTr("Delete This Sheet Only"), QMessageBox::DestructiveRole);
+            QPushButton *btnDeleteSheet = multiSheet
+                    ? msgBox.addButton(wbTr("Delete This Sheet Only"), QMessageBox::DestructiveRole)
+                    : nullptr;
             QPushButton *btnDeleteBook =
                     msgBox.addButton(wbTr("Delete Entire Workbook"), QMessageBox::DestructiveRole);
             QPushButton *btnCancel =
@@ -1210,7 +1219,7 @@ bool WorkbookManager::eventFilter(QObject *watched, QEvent *event)
                     if (safeThis)
                         d_switching = prev;
                 }
-            } else if (clicked == btnDeleteSheet) {
+            } else if (btnDeleteSheet && clicked == btnDeleteSheet) {
                 QTimer::singleShot(0, this, [safeThis, safeApp, safe]() {
                     if (safeThis && safeApp && safe && !safeThis->d_shutdown && safeThis->d_app)
                         safeThis->deleteSheet(safe, false);
@@ -2195,6 +2204,8 @@ void WorkbookManager::registerTranslations()
     reg("Close Workbook", "ブックを閉じる");
     reg("Workbook \"%1\" has %2 sheets (active sheet: \"%3\").\nWhat would you like to do?",
         "ブック \"%1\" には %2 枚のシートがあります (表示中のシート: \"%3\")。\nどの操作を行いますか?");
+    reg("Workbook \"%1\" has 1 sheet (\"%2\").\nWhat would you like to do?",
+        "ブック \"%1\" には 1 枚のシート (\"%2\") があります。\nどの操作を行いますか?");
     reg("Hide Workbook", "ブックを非表示にする");
     reg("Delete This Sheet Only", "このシートだけ削除");
     reg("Delete Entire Workbook", "ブック全体を削除");

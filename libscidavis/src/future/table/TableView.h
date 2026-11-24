@@ -211,6 +211,10 @@ public slots:
     void goToNextColumn();
     void goToPreviousColumn();
 
+signals:
+    //! Emitted for multi-cell numeric selections with N / Mean / SD (empty otherwise).
+    void selectionStatsChanged(const QString &summary);
+
 protected slots:
     //! Advance current cell after [Return] or [Enter] was pressed
     void advanceCell();
@@ -243,6 +247,7 @@ protected:
     void applyQuickFormula();
     void triggerQuickPlot(int curveStyle);
     void triggerQuickAddToGraph();
+    void updateSelectionStats();
 
     bool eventFilter(QObject *watched, QEvent *event);
 
@@ -286,6 +291,7 @@ protected:
     bool d_edge_hover_cursor = false;
     QPoint d_cell_drag_start_pos;
     int d_cell_drag_col = -1;
+    QString d_last_selection_stats;
 
     bool isPointOnSelectionEdge(const QPoint &viewportPos);
 

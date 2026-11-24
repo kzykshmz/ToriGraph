@@ -31,6 +31,7 @@
 #include "table/AsciiTableImportFilter.h"
 #include "table/future_Table.h"
 #include "table/TableModel.h"
+#include "Table.h"
 #include "IconLoader.h"
 #include <QString>
 #include <QBrush>
@@ -186,6 +187,7 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
             d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
             col_ptr->setFormula(row, rawStr);
             d_table->endMacro();
+            emit headerDataChanged(Qt::Horizontal, index.column(), index.column());
             return true;
         }
 
@@ -216,6 +218,44 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
                 if (!col_ptr->isInvalid(row) && col_ptr->textAt(row) == rawStr)
                     return false;
             }
+        }
+
+        if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric
+            && trimmed.startsWith(QLatin1Char('='))) {
+            const QString fx = trimmed.mid(1).trimmed();
+            if (fx.isEmpty()) {
+                if (!hasRowFormula)
+                    return false;
+                d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
+                col_ptr->setFormula(row, QString());
+                d_table->endMacro();
+                emit headerDataChanged(Qt::Horizontal, index.column(), index.column());
+                return true;
+            }
+            bool hasOtherFinite = false;
+            const int nRows = col_ptr->rowCount();
+            for (int r = 0; r < nRows; ++r) {
+                if (r != row && !col_ptr->isInvalid(r) && std::isfinite(col_ptr->valueAt(r))) {
+                    hasOtherFinite = true;
+                    break;
+                }
+            }
+            ::Table *legacyTbl = qobject_cast<::Table *>(d_table->view());
+            d_table->beginMacro(tr("%1: apply formula").arg(d_table->name()));
+            if (col_ptr->formulaIntervals().isEmpty() && !hasOtherFinite) {
+                if (legacyTbl) {
+                    legacyTbl->setCommand(index.column(), fx);
+                } else {
+                    col_ptr->setFormula(Interval<int>(0, qMax(0, d_table->rowCount() - 1)), fx);
+                }
+            } else {
+                col_ptr->setFormula(row, fx);
+                if (legacyTbl)
+                    legacyTbl->recalculate(index.column(), false);
+            }
+            d_table->endMacro();
+            emit headerDataChanged(Qt::Horizontal, index.column(), index.column());
+            return true;
         }
 
         d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
@@ -264,6 +304,7 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
         d_table->beginMacro(tr("%1: apply formula to selection").arg(d_table->name()));
         col_ptr->setFormula(row, value.toString());
         d_table->endMacro();
+        emit headerDataChanged(Qt::Horizontal, index.column(), index.column());
         return true;
     }
     }

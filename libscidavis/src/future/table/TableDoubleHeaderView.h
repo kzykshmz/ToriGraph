@@ -137,6 +137,8 @@ protected:
     QString d_inline_initial_text;
     bool d_inline_had_multiline_comment = false;
     bool d_committing_inline = false;
+    int d_last_subrow_count = 3;
+    QPointer<QAbstractItemModel> d_observed_model;
 };
 
 #endif // #ifndef TABLEDOUBLEHEADERVIEW_H
