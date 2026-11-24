@@ -1163,8 +1163,10 @@ void FitDialog::updateLivePreview()
     ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(this->parent());
     if (!app)
         return;
+    QPointer<FitDialog> self(this);
 
     NonLinearFit previewFit(app, d_graph);
+    previewFit.setSilent(true);
     previewFit.setParametersList(paramNames);
     previewFit.setFormula(formula);
 
@@ -1172,9 +1174,11 @@ void FitDialog::updateLivePreview()
     const bool okFrom = boxFrom && evalScalarExpr(boxFrom->text(), &xStart);
     const bool okTo = boxTo && evalScalarExpr(boxTo->text(), &xEnd);
 
-    bool dataOk = (okFrom && okTo && xStart < xEnd)
-                          ? previewFit.setDataFromCurve(curveName, xStart, xEnd)
-                          : previewFit.setDataFromCurve(curveName);
+    const bool dataOk = (okFrom && okTo && xStart < xEnd)
+                                ? previewFit.setDataFromCurve(curveName, xStart, xEnd)
+                                : previewFit.setDataFromCurve(curveName);
+    if (!self || !d_graph)
+        return;
     if (!dataOk) {
         clearPreviewCurve();
         return;
@@ -1190,7 +1194,10 @@ void FitDialog::updateLivePreview()
         previewFit.setLinearConstraintExpr(boxLinearConstraints->text().trimmed());
 
     std::vector<double> X, Y;
-    if (!previewFit.evaluatePreviewCurve(X, Y, 200) || X.size() < 2) {
+    const bool previewOk = previewFit.evaluatePreviewCurve(X, Y, 200);
+    if (!self || !d_graph)
+        return;
+    if (!previewOk || X.size() < 2) {
         clearPreviewCurve();
         return;
     }
@@ -1438,8 +1445,9 @@ void FitDialog::showFitPage()
         }
     }
 
+    QPointer<FitDialog> self(this);
     // Auto-populate smart initial parameter guesses from the active curve
-    if (d_graph && boxCurve && !boxCurve->currentText().isEmpty()) {
+    if (d_graph && boxCurve && !boxCurve->currentText().isEmpty() && !paramList.isEmpty()) {
         ApplicationWindow *app = (ApplicationWindow *)this->parent();
         QString fnName = boxName->text().trimmed();
         if ((categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4)
@@ -1447,6 +1455,7 @@ void FitDialog::showFitPage()
             fnName = funcBox->currentItem()->text().trimmed();
 
         NonLinearFit tmpFit(app, d_graph);
+        tmpFit.setSilent(true);
         tmpFit.setParametersList(paramList);
         tmpFit.setFormula(editBox->toPlainText().simplified());
         // C4-4: guess from the same X range the fit will use (From/To boxes), not the
@@ -1458,6 +1467,8 @@ void FitDialog::showFitPage()
         const bool guessDataOk = rangeOk
                 ? tmpFit.setDataFromCurve(boxCurve->currentText(), xStart, xEnd)
                 : tmpFit.setDataFromCurve(boxCurve->currentText());
+        if (!self)
+            return;
         if (guessDataOk) {
             tmpFit.guessBuiltInParameters(fnName);
             for (int i = 0; i < paramList.count() && i < tmpFit.numParameters(); ++i) {
@@ -1472,6 +1483,8 @@ void FitDialog::showFitPage()
             }
         }
     }
+    if (!self)
+        return;
 
     boxFunction->setText(editBox->toPlainText().simplified());
     lblFunction->setText(boxName->text() + " (x, " + par + ")");
@@ -1786,7 +1799,8 @@ void FitDialog::choosePluginsFolder()
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     if (!app)
         return;
-    QString dir = QFileDialog::getExistingDirectory(this, tr("Choose the plugins folder"),
+    QPointer<QWidget> dlgParent(parentWidget());
+    QString dir = QFileDialog::getExistingDirectory(dlgParent.data(), tr("Choose the plugins folder"),
                                                     QDir::currentPath(), QFileDialog::ShowDirsOnly);
     if (!self || dir.isEmpty())
         return;
@@ -1987,7 +2001,7 @@ void FitDialog::pasteFunctionName()
 
 void FitDialog::accept()
 {
-    if (!d_graph)
+    if (!d_graph || d_accept_depth > 0)
         return;
     QPointer<FitDialog> self(this);
     struct AcceptDepthGuard {

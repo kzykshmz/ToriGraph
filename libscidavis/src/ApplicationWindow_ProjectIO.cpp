@@ -2032,10 +2032,13 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
 bool ApplicationWindow::saveProject()
 {
     if (d_ole_embedded) {
+        QPointer<ApplicationWindow> self(this);
         setProperty("_toriLastOleSaveOk", QVariant(true));
         setProperty("_toriLastOleSaveError", QVariant());
         if (auto onUpdate = d_ole_on_update)
             onUpdate();
+        if (!self)
+            return false;
         const QVariant okProp = property("_toriLastOleSaveOk");
         const bool oleOk = okProp.isValid() ? okProp.toBool() : true;
         if (!oleOk) {
@@ -2047,6 +2050,8 @@ bool ApplicationWindow::saveProject()
                         tr("Saving back into PowerPoint failed%1.\n\n"
                            "Use File -> Save Project As (.sciprj) to keep a standalone backup copy.")
                                 .arg(err.isEmpty() ? QString() : QStringLiteral(": ") + err));
+                if (!self)
+                    return false;
             }
             if (statusBar())
                 statusBar()->showMessage(tr("Embedded OLE save failed — project not saved."), 10000);

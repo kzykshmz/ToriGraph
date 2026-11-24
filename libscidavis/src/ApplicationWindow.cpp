@@ -2922,10 +2922,13 @@ void ApplicationWindow::dragEnterEvent(QDragEnterEvent *e)
 void ApplicationWindow::closeEvent(QCloseEvent *ce)
 {
     if (d_ole_embedded) {
+        QPointer<ApplicationWindow> self(this);
         setProperty("_toriLastOleSaveOk", QVariant(true));
         setProperty("_toriLastOleSaveError", QVariant());
         if (auto onClose = d_ole_on_close)
             onClose();
+        if (!self)
+            return;
         const QVariant okProp = property("_toriLastOleSaveOk");
         const bool oleOk = okProp.isValid() ? okProp.toBool() : true;
         if (!oleOk) {
@@ -2939,6 +2942,8 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
                            "Project As, or close anyway without updating PowerPoint?")
                                 .arg(err.isEmpty() ? QString() : QStringLiteral(": ") + err),
                         tr("Keep Open"), tr("Close Without Updating"), QString(), 0, 0);
+                if (!self)
+                    return;
                 if (choice == 0) {
                     ce->ignore();
                     return;
@@ -5306,12 +5311,12 @@ void ApplicationWindow::showHistory()
     layout->addWidget(button_box);
 
     dialog->setWindowTitle(tr("Undo/Redo History"));
+    ScopedUndoReplayGuard replayGuard(self.data());
     const int rc = dialog->exec();
     delete dialog.data();
     if (rc == QDialog::Accepted || !self || !stackGuard)
         return;
 
-    ScopedUndoReplayGuard replayGuard(self.data());
     stackGuard->setIndex(index);
 }
 

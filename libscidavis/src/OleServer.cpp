@@ -1212,18 +1212,15 @@ public:
             if (ed) {
                 ed->setOleEmbeddedCallbacks({}, {});
                 ed->savedProject();
-                if (rejectEditorModalDialogs(ed.data())) {
-                    ed->setAttribute(Qt::WA_DeleteOnClose, false);
-                    ed->hide();
-                    QTimer::singleShot(0, ed.data(), [ed]() {
-                        if (ed) {
-                            ed->close();
-                            ed->deleteLater();
-                        }
-                    });
-                } else {
-                    ed->close();
-                }
+                ed->setAttribute(Qt::WA_DeleteOnClose, false);
+                rejectEditorModalDialogs(ed.data());
+                ed->hide();
+                QTimer::singleShot(0, ed.data(), [ed]() {
+                    if (ed) {
+                        ed->close();
+                        ed->deleteLater();
+                    }
+                });
             }
             finishClose();
             m_site.Reset();
@@ -1481,14 +1478,28 @@ public:
             *rearmHolder = [this, mwGuard, generation, rearmHolder]() {
                 if (!mwGuard)
                     return;
-                auto makeUpdateCb = [this, mwGuard]() {
+                auto clearSavedClean = [mwGuard]() {
+                    if (mwGuard) {
+                        mwGuard->setProperty("_toriLastOleSaveOk", true);
+                        mwGuard->setProperty("_toriLastOleSaveError", QString());
+                    }
+                };
+                auto makeUpdateCb = [this, mwGuard, generation, clearSavedClean]() {
                     ComPtr<IOleObject> alive(this);
+                    if (generation != m_editorGeneration || m_stopped || !m_editor) {
+                        clearSavedClean();
+                        return;
+                    }
                     QString errMsg;
                     HRESULT hrSync = E_FAIL;
                     try {
                         hrSync = syncFromEditor(&errMsg);
                     } catch (...) {
                         hrSync = E_FAIL;
+                    }
+                    if (generation != m_editorGeneration || m_stopped) {
+                        clearSavedClean();
+                        return;
                     }
                     bool ok = SUCCEEDED(hrSync) && (hrSync != S_FALSE);
                     if (!ok) {
@@ -1498,6 +1509,10 @@ public:
                         auto site = m_site;
                         if (site) {
                             const HRESULT hrSave = site->SaveObject();
+                            if (generation != m_editorGeneration || m_stopped) {
+                                clearSavedClean();
+                                return;
+                            }
                             if (FAILED(hrSave)) {
                                 ok = false;
                                 errMsg = formatOleSaveError(hrSave, QString());
@@ -1515,24 +1530,33 @@ public:
                 };
                 mwGuard->setOleEmbeddedCallbacks(
                     makeUpdateCb,
-                    [this, mwGuard, generation, rearmHolder]() {
+                    [this, mwGuard, generation, rearmHolder, clearSavedClean]() {
                         ComPtr<IOleObject> alive(this);
                         bool ok = true;
                         QString errMsg;
-                        if (generation == m_editorGeneration) {
+                        if (generation == m_editorGeneration && !m_stopped) {
                             HRESULT hrSync = E_FAIL;
                             try {
                                 hrSync = syncFromEditor(&errMsg);
                             } catch (...) {
                                 hrSync = E_FAIL;
                             }
+                            if (generation != m_editorGeneration || m_stopped) {
+                                clearSavedClean();
+                                return;
+                            }
                             ok = SUCCEEDED(hrSync) && (hrSync != S_FALSE);
                             if (!ok) {
                                 errMsg = formatOleSaveError(hrSync, errMsg);
                             } else if (m_dirty) {
                                 notifyViewAndData();
-                                if (m_site) {
-                                    const HRESULT hrSave = m_site->SaveObject();
+                                auto site = m_site;
+                                if (site) {
+                                    const HRESULT hrSave = site->SaveObject();
+                                    if (generation != m_editorGeneration || m_stopped) {
+                                        clearSavedClean();
+                                        return;
+                                    }
                                     if (FAILED(hrSave)) {
                                         ok = false;
                                         errMsg = formatOleSaveError(hrSave, QString());
@@ -1561,9 +1585,8 @@ public:
                                 (*rearmHolder)();
                                 return;
                             }
-                        } else if (mwGuard) {
-                            mwGuard->setProperty("_toriLastOleSaveOk", ok);
-                            mwGuard->setProperty("_toriLastOleSaveError", errMsg);
+                        } else {
+                            clearSavedClean();
                         }
                     });
             };
