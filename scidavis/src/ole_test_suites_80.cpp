@@ -109,6 +109,7 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
     ULONG refs = 1;
     bool containerDead = false;
     int saveObjectCount = 0;
+    HRESULT saveObjectHr = S_OK;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
     {
@@ -130,7 +131,7 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
     HRESULT STDMETHODCALLTYPE SaveObject() override
     {
         ++saveObjectCount;
-        return S_OK;
+        return saveObjectHr;
     }
     HRESULT STDMETHODCALLTYPE GetMoniker(DWORD, DWORD, IMoniker **m) override
     {
@@ -595,6 +596,49 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             obj2.Reset();
             pumpEventsMs80(25);
         }
+
+        // Subtest 4 (P1 OleServer::onClose rearmHolder closure UAF): closing a dirty embedded
+        // editor when SaveObject() returns E_FAIL must keep the editor open, set
+        // _toriLastOleSaveOk=false, and re-arm d_ole_on_close cleanly so a retry with S_OK closes
+        // with zero ASan UAF.
+        {
+            MockDeadClientSite80 site4;
+            ComPtr<IOleObject> obj4;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj4))) && obj4,
+                       "80a-4: createGraphObject(obj4) failed");
+            CHECK_COND(SUCCEEDED(obj4->SetClientSite(&site4)), "80a-4: SetClientSite failed");
+
+            const QSet<ApplicationWindow *> before4 = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj4->DoVerb(OLEIVERB_OPEN, nullptr, &site4, 0, nullptr, nullptr)),
+                       "80a-4: DoVerb(obj4) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed4 = findNewOleEditor80(before4);
+            CHECK_COND(!ed4.isNull() && ed4->isOleEmbeddedMode(), "80a-4: ed4 open failed");
+
+            ed4->modifiedProject();
+            const int savesBeforeClose = site4.saveObjectCount;
+            site4.saveObjectHr = E_FAIL;
+            ed4->close();
+            pumpEventsMs80(25);
+            CHECK_COND(!ed4.isNull() && !ed4->property("_toriLastOleSaveOk").toBool(),
+                       "80a-4: editor closed or failed to record _toriLastOleSaveOk=false on E_FAIL");
+            CHECK_COND(site4.saveObjectCount == savesBeforeClose + 1,
+                       "80a-4: expected SaveObject count==" << (savesBeforeClose + 1)
+                                                            << " on first failed close (got "
+                                                            << site4.saveObjectCount << ")");
+
+            site4.saveObjectHr = S_OK;
+            ed4->close();
+            pumpEventsMs80(25);
+            CHECK_COND(site4.saveObjectCount >= savesBeforeClose + 2,
+                       "80a-4: re-armed d_ole_on_close did not fire SaveObject on retry (count="
+                               << site4.saveObjectCount << ", expected >= "
+                               << (savesBeforeClose + 2) << ")");
+            CHECK_COND(ed4.isNull(),
+                       "80a-4: embedded editor failed to close after re-armed S_OK retry");
+            obj4.Reset();
+            pumpEventsMs80(25);
+        }
     }
 #endif
 
@@ -796,6 +840,41 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                        "80b-form: subsequent edit stalled after suppressed recalc (got "
                                << tForm->cell(2, 1) << ")");
         }
+
+        // P0 (`Table::closeEvent`): synchronous Table destruction inside d_future_table->remove()
+        // when Project undo is suppressed and undoStack is empty must NOT UAF this->d_future_table.
+        {
+            w80->project()->undoStack()->clear();
+            QPointer<Table> tCloseGuard;
+            {
+                ScopedProjectUndoSuppressor suppressClose(w80->project());
+                Table *tClose = w80->newTable(3, 2, "T80CloseUaf", "CloseUaf");
+                CHECK_COND(tClose != nullptr, "80b-close-uaf: newTable failed");
+                tClose->askOnCloseEvent(false);
+                tCloseGuard = tClose;
+                tClose->close();
+                QCoreApplication::processEvents();
+            }
+            CHECK_COND(tCloseGuard.isNull()
+                               && w80->table(QStringLiteral("T80CloseUaf")) == nullptr,
+                       "80b-close-uaf: suppressed table did not close cleanly");
+
+            // Also verify normal undo-enabled table close still retains for Project Undo
+            Table *tUndoClose = w80->newTable(3, 2, "T80UndoClose", "UndoClose");
+            CHECK_COND(tUndoClose != nullptr, "80b-close-uaf: undo newTable failed");
+            tUndoClose->askOnCloseEvent(false);
+            tUndoClose->setCell(0, 1, 42.5);
+            tUndoClose->close();
+            QCoreApplication::processEvents();
+            CHECK_COND(w80->table(QStringLiteral("T80UndoClose")) == nullptr,
+                       "80b-close-uaf: closed table still listed before Undo");
+            w80->project()->undoStack()->undo();
+            QCoreApplication::processEvents();
+            Table *restoredClose = w80->table(QStringLiteral("T80UndoClose"));
+            CHECK_COND(restoredClose != nullptr
+                               && std::fabs(restoredClose->cell(0, 1) - 42.5) < 1e-9,
+                       "80b-close-uaf: Undo did not restore closed table");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -984,8 +1063,8 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
     // 80e: Locale RejectGroupSeparator, ScaleDraw, Dialogs, P0-3/P1-4 Log-axis Fit
     // -------------------------------------------------------------------------
     {
-        // num_locale_fit P1: en_US TableModel::setData (default OmitGroupSeparator) must reject
-        // "1,250" on Numeric column rather than passing raw string through String2DoubleFilter
+        // num_locale_fit P1: en_US TableModel::setData + String2DoubleFilter (default
+        // OmitGroupSeparator) and MyParser::Eval multi-expression rejection (nRes != 1).
         {
             QLocale enOmit(QLocale::English, QLocale::UnitedStates);
             enOmit.setNumberOptions(enOmit.numberOptions() | QLocale::OmitGroupSeparator);
@@ -999,6 +1078,162 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             CHECK_COND(tEn->column(0)->isInvalid(1),
                        "80e-en: P1 regression! TableModel accepted '1,250' in en_US as "
                                << tEn->cell(1, 0) << " instead of marking invalid");
+
+            // P1: String2DoubleFilter (Text -> Numeric conversion) must reject "1,250" under
+            // OmitGroupSeparator in en_US.
+            Table *tTxtEn = w80->newTable(2, 1, "T80EnFilter", "EnFilter80");
+            Column *txtCol = tTxtEn->column(0);
+            CHECK_COND(txtCol != nullptr, "80e-en: tTxtEn column null");
+            txtCol->setColumnMode(SciDAVis::ColumnMode::Text);
+            txtCol->setTextAt(0, QStringLiteral("10"));
+            txtCol->setTextAt(1, QStringLiteral("1,250"));
+            txtCol->setColumnMode(SciDAVis::ColumnMode::Numeric);
+            CHECK_COND(!txtCol->isInvalid(0) && std::fabs(txtCol->valueAt(0) - 10.0) < 1e-9,
+                       "80e-en: String2DoubleFilter failed on valid '10'");
+            CHECK_COND(txtCol->isInvalid(1),
+                       "80e-en: P1 regression! String2DoubleFilter accepted '1,250' under en_US OmitGroupSeparator as "
+                               << txtCol->valueAt(1));
+
+            // P1 (80e-muparser): reject top-level comma-separated multi-expressions across
+            // ScaleDraw, PlotDialog, AxesDialog, and FitDialog while preserving multi-arg funcs.
+            {
+                ScaleDraw sdCommaRej;
+                sdCommaRej.setFormulaString(QStringLiteral("x,5"));
+                CHECK_COND(std::fabs(sdCommaRej.transformValue(10.0)) < 1e-12,
+                           "80e-muparser: ScaleDraw failed to reject 'x,5' (got "
+                                   << sdCommaRej.transformValue(10.0) << ")");
+                ScaleDraw sdMinOk;
+                sdMinOk.setFormulaString(QStringLiteral("min(x, 5)"));
+                CHECK_COND(std::fabs(sdMinOk.transformValue(10.0) - 5.0) < 1e-9,
+                           "80e-muparser: ScaleDraw multi-arg min(x, 5) failed (got "
+                                   << sdMinOk.transformValue(10.0) << ")");
+
+                PlotDialog pdHistEn(false, w80);
+                QGroupBox *grpHistEn = nullptr;
+                for (QGroupBox *gb : pdHistEn.findChildren<QGroupBox *>()) {
+                    if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
+                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(0, 1)->widget())
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(1, 1)->widget())
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(2, 1)->widget())) {
+                            grpHistEn = gb;
+                            break;
+                        }
+                    }
+                }
+                CHECK_COND(grpHistEn != nullptr,
+                           "80e-muparser: PlotDialog histogram QGroupBox not found");
+                auto *glEn = qobject_cast<QGridLayout *>(grpHistEn->layout());
+                auto *binLeEn = qobject_cast<QLineEdit *>(glEn->itemAtPosition(0, 1)->widget());
+                auto *begLeEn = qobject_cast<QLineEdit *>(glEn->itemAtPosition(1, 1)->widget());
+                auto *endLeEn = qobject_cast<QLineEdit *>(glEn->itemAtPosition(2, 1)->widget());
+                binLeEn->setText(QStringLiteral("1,250"));
+                begLeEn->setText(QStringLiteral("0"));
+                endLeEn->setText(QStringLiteral("10"));
+                double hbEn = 0.0, heEn = 0.0, hbwEn = 0.0;
+                bool histOkEn = true;
+                const bool invEnOk = QMetaObject::invokeMethod(
+                        &pdHistEn, "evaluateHistogramInputs", Qt::DirectConnection,
+                        Q_RETURN_ARG(bool, histOkEn), Q_ARG(double *, &hbEn),
+                        Q_ARG(double *, &heEn), Q_ARG(double *, &hbwEn), Q_ARG(bool, false));
+                CHECK_COND(invEnOk && !histOkEn,
+                           "80e-muparser: PlotDialog::evaluateHistogramInputs accepted '1,250' as "
+                                   << hbwEn);
+
+                Table *tMu = w80->newTable(5, 2, "T80MuEn", "MuEn80");
+                for (int r = 0; r < 5; ++r) {
+                    tMu->setCell(r, 0, double(r));
+                    tMu->setCell(r, 1, double(2 * r + 1));
+                }
+                MultiLayer *mlMu =
+                        w80->multilayerPlot(tMu, QStringList() << tMu->colName(1), Graph::Scatter);
+                Graph *gMu = mlMu ? mlMu->activeGraph() : nullptr;
+                CHECK_COND(gMu && gMu->curve(0), "80e-muparser: gMu setup failed");
+
+                auto installModalBoxAutoAccept = [](QTimer &timer, bool &sawBox) {
+                    sawBox = false;
+                    timer.setInterval(10);
+                    QObject::connect(&timer, &QTimer::timeout, [&sawBox]() {
+                        if (auto *mb = qobject_cast<QMessageBox *>(
+                                    QApplication::activeModalWidget())) {
+                            sawBox = true;
+                            mb->accept();
+                            return;
+                        }
+                        for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                            if (auto *mb = qobject_cast<QMessageBox *>(tlw)) {
+                                if (mb->isVisible()) {
+                                    sawBox = true;
+                                    mb->accept();
+                                    return;
+                                }
+                            }
+                        }
+                    });
+                    timer.start();
+                };
+
+                {
+                    bool sawAxMsgBox = false;
+                    QTimer axBoxTimer;
+                    installModalBoxAutoAccept(axBoxTimer, sawAxMsgBox);
+                    AxesDialogProbe80 axEnDlg;
+                    axEnDlg.setGraph(gMu);
+                    axEnDlg.setScaleBoundsAndUpdate(QStringLiteral("0"), QStringLiteral("1,250"));
+                    axBoxTimer.stop();
+                    const QwtScaleDiv *sdMuX = gMu->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+                    CHECK_COND(sawAxMsgBox && sdMuX && sdMuX->upperBound() < 200.0,
+                               "80e-muparser: AxesDialog failed to reject '1,250' (sawBox="
+                                       << sawAxMsgBox << " upper="
+                                       << (sdMuX ? sdMuX->upperBound() : -1.0) << ")");
+                }
+
+                {
+                    EnvVarGuard80 fitEnIniGuard(
+                            "TORIGRAPH_SETTINGS_INI",
+                            QFile::encodeName(tmp80.filePath(QStringLiteral("fit_en_mu_80.ini"))));
+                    FitDialog fdEn(w80);
+                    fdEn.setGraph(gMu);
+                    CHECK_COND(fdEn.selectRecentModel(QStringLiteral("Polynomial")),
+                               "80e-muparser: selectRecentModel(Polynomial) failed");
+                    fdEn.showFitPage();
+                    QLineEdit *leFromEn = nullptr;
+                    QLineEdit *leToEn = nullptr;
+                    for (QGroupBox *gb : fdEn.findChildren<QGroupBox *>()) {
+                        if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
+                            for (int row = 0; row < gl->rowCount(); ++row) {
+                                auto *lblItem = gl->itemAtPosition(row, 0);
+                                auto *edItem = gl->itemAtPosition(row, 1);
+                                auto *lbl = lblItem ? qobject_cast<QLabel *>(lblItem->widget())
+                                                    : nullptr;
+                                auto *le = edItem ? qobject_cast<QLineEdit *>(edItem->widget())
+                                                  : nullptr;
+                                if (!lbl || !le)
+                                    continue;
+                                if (lbl->text().startsWith(QLatin1String("From x")))
+                                    leFromEn = le;
+                                else if (lbl->text().startsWith(QLatin1String("To x")))
+                                    leToEn = le;
+                            }
+                        }
+                    }
+                    CHECK_COND(leFromEn && leToEn,
+                               "80e-muparser: FitDialog boxFrom/boxTo not found");
+                    leFromEn->setText(QStringLiteral("0"));
+                    leToEn->setText(QStringLiteral("1,250"));
+                    const int preCurvesEn = gMu->curves();
+                    bool sawFitMsgBox = false;
+                    QTimer fitBoxTimer;
+                    installModalBoxAutoAccept(fitBoxTimer, sawFitMsgBox);
+                    fdEn.accept();
+                    fitBoxTimer.stop();
+                    QCoreApplication::processEvents();
+                    CHECK_COND(sawFitMsgBox && gMu->curves() == preCurvesEn,
+                               "80e-muparser: FitDialog failed to reject '1,250' (sawBox="
+                                       << sawFitMsgBox << " curves=" << gMu->curves() << "/"
+                                       << preCurvesEn << ")");
+                }
+            }
         }
 
         {
@@ -1503,6 +1738,15 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                     wDiag->multilayerPlot(tDiag, QStringList() << tDiag->colName(1), Graph::Scatter);
             Graph *gDiag = mlDiag ? mlDiag->activeGraph() : nullptr;
             CHECK_COND(gDiag != nullptr && gDiag->curves() == 1, "80f-diag: mlDiag setup failed");
+            CHECK_COND(mlDiag->applyStylePresetById(QStringLiteral("isij_85mm")),
+                       "80f-diag: applyStylePresetById(isij_85mm) failed");
+            wDiag->resize(1920, 1080);
+            QCoreApplication::processEvents();
+            if (wDiag->modernRibbonBar())
+                wDiag->modernRibbonBar()->setSplitLeftRatio(0.40);
+            mlDiag->fitPageZoomToViewport();
+            QCoreApplication::processEvents();
+            const double zoomBeforeSplitResize = mlDiag->pageZoom();
             const QString splitPng = tmp80.filePath(QStringLiteral("split_80f.png"));
             QJsonObject reqSplit;
             reqSplit["jsonrpc"] = "2.0";
@@ -1510,15 +1754,25 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             reqSplit["method"] = "app.grab_gui_diagnostic";
             reqSplit["params"] = QJsonObject{
                 { "path", splitPng },
-                { "width", 1366 },
-                { "height", 768 },
+                { "width", 900 },
+                { "height", 520 },
                 { "workspace_mode", "split" },
-                { "split_ratio", 0.40 },
             };
             const QJsonObject resSplit =
                     srv80->handleRpcRequest(reqSplit).value("result").toObject();
             CHECK_COND(resSplit.value("ok").toBool() && QFileInfo(splitPng).size() > 1000,
                        "80f-diag: Split grab_gui_diagnostic failed");
+            const double expectedSplitFitZoom = qBound(0.35, mlDiag->fitPageZoomFactor(), 1.6);
+            // Allow up to ~0.10 variance for ~18 px QScrollArea scrollbar hide hysteresis on the
+            // 85 mm (321 px) canvas (within MultiLayer's 24 px autofit viewport deadband), while
+            // proving zoom dropped > 0.50 during grab_gui_diagnostic's 45 ms debounce settle.
+            CHECK_COND(zoomBeforeSplitResize > 1.15 && expectedSplitFitZoom < 0.95
+                               && mlDiag->pageZoom() < 0.90
+                               && (zoomBeforeSplitResize - mlDiag->pageZoom()) > 0.50
+                               && std::fabs(mlDiag->pageZoom() - expectedSplitFitZoom) < 0.10,
+                       "80f-diag: Split resize 45ms settle did not converge pageZoom (before="
+                               << zoomBeforeSplitResize << ", after=" << mlDiag->pageZoom()
+                               << ", expected=" << expectedSplitFitZoom << ")");
 
             // GraphInspectorDock object tree Qt::Key_Delete deletes selected curve
             GraphInspectorDock *dock80 = wDiag->graphInspectorDock();
