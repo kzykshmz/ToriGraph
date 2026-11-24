@@ -1013,6 +1013,16 @@ GraphInspectorDock::~GraphInspectorDock()
         d_menu_link_top_x->close();
         d_menu_link_top_x->deleteLater();
     }
+    for (const RichTextBarEntry &entry : d_rich_bars) {
+        if (entry.menuGreek) {
+            entry.menuGreek->close();
+            entry.menuGreek->deleteLater();
+        }
+        if (entry.menuUnits) {
+            entry.menuUnits->close();
+            entry.menuUnits->deleteLater();
+        }
+    }
 }
 
 Graph *GraphInspectorDock::activeLayer() const
@@ -2167,8 +2177,20 @@ QColor GraphInspectorDock::pickColorInteractive(QWidget *parent, const QColor &i
     if (openCustom) {
         if (!parentGuard)
             return QColor();
+        QWidget *dialogParent = parentGuard.data();
+        if (auto *dock = qobject_cast<GraphInspectorDock *>(dialogParent)) {
+            dialogParent = dock->d_app ? static_cast<QWidget *>(dock->d_app.data()) : nullptr;
+        } else if (QWidget *win = dialogParent->window()) {
+            if (auto *dockWin = qobject_cast<GraphInspectorDock *>(win))
+                dialogParent = dockWin->d_app ? static_cast<QWidget *>(dockWin->d_app.data())
+                                              : nullptr;
+            else if (qobject_cast<QDockWidget *>(win))
+                dialogParent = nullptr;
+            else
+                dialogParent = win;
+        }
         return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black),
-                                      parentGuard.data(), title, QColorDialog::ShowAlphaChannel);
+                                      dialogParent, title, QColorDialog::ShowAlphaChannel);
     }
     return chosen;
 }

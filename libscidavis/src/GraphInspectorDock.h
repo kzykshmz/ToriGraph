@@ -144,9 +144,9 @@ private:
         QToolButton *btnSub = nullptr;
         QToolButton *btnSup = nullptr;
         QToolButton *btnGreek = nullptr;
-        QMenu *menuGreek = nullptr;
+        QPointer<QMenu> menuGreek;
         QToolButton *btnUnit = nullptr;
-        QMenu *menuUnits = nullptr;
+        QPointer<QMenu> menuUnits;
     };
 
     struct LegendCurveRow {

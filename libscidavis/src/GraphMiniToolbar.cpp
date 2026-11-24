@@ -1683,7 +1683,7 @@ QColor GraphMiniToolbar::pickColorWithPalettePopup(QWidget *anchorWidget, const 
         QColor(0x1D, 0x4E, 0xD8), QColor(0x15, 0x80, 0x3D)
     };
 
-    QMenu menu(this);
+    QMenu menu;
     QColor chosen;
 
     QWidget *panel = new QWidget(&menu);
@@ -1743,11 +1743,19 @@ QColor GraphMiniToolbar::pickColorWithPalettePopup(QWidget *anchorWidget, const 
     if (anchorWidget)
         menuPos = anchorWidget->mapToGlobal(QPoint(0, anchorWidget->height() + 2));
 
+    QPointer<GraphMiniToolbar> self(this);
     QPointer<Graph> safeG(d_graph);
     d_in_modal_dialog = true;
     QAction *pickedAct = menu.exec(menuPos);
+    if (!self)
+        return QColor();
     if (!chosen.isValid() && pickedAct == customAct && safeG) {
-        chosen = QColorDialog::getColor(initial, safeG.data(), dialogTitle);
+        QWidget *dlgParent = safeG->window();
+        if (dlgParent == safeG.data())
+            dlgParent = nullptr;
+        chosen = QColorDialog::getColor(initial, dlgParent, dialogTitle);
+        if (!self)
+            return QColor();
     }
     d_in_modal_dialog = false;
     return safeG ? chosen : QColor();
@@ -1838,7 +1846,7 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
         { QwtSymbol::NoSymbol, tr("None (No Symbol)") }
     };
 
-    QMenu menu(this);
+    QMenu menu;
     QAction *currentAct = nullptr;
     for (const auto &ch : choices) {
         QAction *act = menu.addAction(makeSymbolShapeIcon(ch.style, curCol, isHollow), ch.label);
@@ -1856,13 +1864,17 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
     if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
         menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
 
+    QPointer<GraphMiniToolbar> self(this);
+    QPointer<Graph> safeG(d_graph);
     d_in_modal_dialog = true;
     QAction *picked = menu.exec(menuPos);
+    if (!self)
+        return;
     d_in_modal_dialog = false;
-    if (!picked || !d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
+    if (!picked || !safeG || d_curve_index < 0 || d_curve_index >= safeG->curves())
         return;
 
-    c = d_graph->curve(d_curve_index);
+    c = safeG->curve(d_curve_index);
     if (!c)
         return;
 
@@ -1952,7 +1964,7 @@ void GraphMiniToolbar::onCurvePickLineWidth()
     const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
     const double curW = hasLine ? effectivePenWidthF(c->pen(), 1.0) : 0.0;
 
-    QMenu menu(this);
+    QMenu menu;
     if (hasSym) {
         QAction *offAct = menu.addAction(tr("None (Hide Line)"));
         offAct->setData(0.0);
@@ -1973,9 +1985,12 @@ void GraphMiniToolbar::onCurvePickLineWidth()
     if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
         menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
 
+    QPointer<GraphMiniToolbar> self(this);
     QPointer<Graph> safeG(d_graph);
     d_in_modal_dialog = true;
     QAction *picked = menu.exec(menuPos);
+    if (!self)
+        return;
     d_in_modal_dialog = false;
     if (!picked || !safeG || d_curve_index < 0 || d_curve_index >= safeG->curves())
         return;
@@ -2093,7 +2108,7 @@ void GraphMiniToolbar::onCurvePickSymbolSize()
     const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
     const int curSz = hasSym ? qMax(1, c->symbol().size().width()) : 0;
 
-    QMenu menu(this);
+    QMenu menu;
     if (hasLine) {
         QAction *offAct = menu.addAction(tr("None (No Symbol)"));
         offAct->setData(0);
@@ -2114,9 +2129,12 @@ void GraphMiniToolbar::onCurvePickSymbolSize()
     if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
         menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
 
+    QPointer<GraphMiniToolbar> self(this);
     QPointer<Graph> safeG(d_graph);
     d_in_modal_dialog = true;
     QAction *picked = menu.exec(menuPos);
+    if (!self)
+        return;
     d_in_modal_dialog = false;
     if (!picked || !safeG || d_curve_index < 0 || d_curve_index >= safeG->curves())
         return;
@@ -2540,7 +2558,7 @@ void GraphMiniToolbar::onCurveToggleErrorBars()
                     return;
                 }
 
-                QMenu menu(this);
+                QMenu menu;
                 QAction *actBars = menu.addAction(
                         IconLoader::duotoneIcon(QStringLiteral("error-bars"), 16),
                         tr("Add Error Bars..."));
@@ -2552,10 +2570,13 @@ void GraphMiniToolbar::onCurveToggleErrorBars()
                 if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
                     menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
 
+                QPointer<GraphMiniToolbar> self(this);
                 QPointer<Graph> safeG(d_graph);
                 QPointer<ApplicationWindow> safeApp(app);
                 d_in_modal_dialog = true;
                 QAction *picked = menu.exec(menuPos);
+                if (!self)
+                    return;
                 d_in_modal_dialog = false;
 
                 if (picked && safeG && safeApp) {
@@ -3142,7 +3163,7 @@ void GraphMiniToolbar::onLegendEditInline()
 
     int chosenLine = nonEmptyIndices.isEmpty() ? 0 : nonEmptyIndices.first();
     if (nonEmptyIndices.size() > 1 && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
-        QMenu menu(this);
+        QMenu menu;
         for (int idx : nonEmptyIndices) {
             QString preview = readableLegendLinePreview(d_graph.data(), lines.at(idx));
             if (preview.length() > 36)
@@ -3155,9 +3176,12 @@ void GraphMiniToolbar::onLegendEditInline()
         QPoint menuPos = mapToGlobal(QPoint(0, height() + 2));
         if (auto *senderBtn = qobject_cast<QWidget *>(sender()))
             menuPos = senderBtn->mapToGlobal(QPoint(0, senderBtn->height() + 2));
+        QPointer<GraphMiniToolbar> self(this);
         QPointer<Graph> safeG(d_graph);
         d_in_modal_dialog = true;
         QAction *picked = menu.exec(menuPos);
+        if (!self)
+            return;
         d_in_modal_dialog = false;
         if (!picked || !safeG)
             return;
@@ -3213,13 +3237,19 @@ void GraphMiniToolbar::onLegendReconstruct()
     const bool hasCustomEdits = isLegendValid()
             && d_legend->text().trimmed() != d_graph->legendText().trimmed();
     if (hasCustomEdits && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
+        QPointer<GraphMiniToolbar> self(this);
         QPointer<Graph> safeG(d_graph);
+        QWidget *dlgParent = safeG ? safeG->window() : nullptr;
+        if (dlgParent == safeG.data())
+            dlgParent = nullptr;
         d_in_modal_dialog = true;
         const QMessageBox::StandardButton ans = QMessageBox::question(
-                safeG.data(), tr("Reconstruct Legend"),
+                dlgParent, tr("Reconstruct Legend"),
                 tr("Reset the legend to the default curve names? Manual edits to legend labels "
                    "will be overwritten."),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (!self)
+            return;
         d_in_modal_dialog = false;
         if (ans != QMessageBox::Yes || !safeG)
             return;

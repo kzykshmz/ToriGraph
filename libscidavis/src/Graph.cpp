@@ -1048,7 +1048,7 @@ void Graph::showPlotErrorMessage(QWidget *parent, const QStringList &emptyColumn
 
 void Graph::showTitleContextMenu()
 {
-    QMenu titleMenu(this);
+    QMenu titleMenu;
     QAction *actEditInline = titleMenu.addAction(
             IconLoader::duotoneIcon(QStringLiteral("text-label")), tr("&Edit Text Inline"), this,
             [this]() {
@@ -1123,7 +1123,7 @@ void Graph::showAxisTitleMenu(int axis)
     selectedAxis = axis;
     const int qwtAxis = Plot::scaleAlignmentToAxis(axis);
 
-    QMenu titleMenu(this);
+    QMenu titleMenu;
     QAction *actEditInline = titleMenu.addAction(
             IconLoader::duotoneIcon(QStringLiteral("text-label")), tr("&Edit Text Inline"), this,
             [this, qwtAxis]() {
@@ -1182,7 +1182,7 @@ void Graph::showAxisContextMenu(int axis)
             ? d_plot->canvas()->mapFromGlobal(globalClick)
             : QPoint();
 
-    QMenu menu(this);
+    QMenu menu;
     if (qwtAxis >= 0 && qwtAxis < QwtPlot::axisCnt) {
         QAction *rescaleThisAct = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("zoom-auto")), tr("Rescale &This Axis"));
@@ -1276,12 +1276,14 @@ void Graph::showAxisContextMenu(int axis)
     QAction *gridsID = menu.addAction(IconLoader::duotoneIcon(QStringLiteral("axis-grid")),
                                       tr("&Show grids"), this, SLOT(showGrids()));
     gridsID->setCheckable(true);
-    if (axis == QwtScaleDraw::LeftScale || axis == QwtScaleDraw::RightScale) {
-        if (d_plot->grid()->yEnabled())
-            gridsID->setChecked(true);
-    } else {
-        if (d_plot->grid()->xEnabled())
-            gridsID->setChecked(true);
+    if (d_plot && d_plot->grid()) {
+        if (axis == QwtScaleDraw::LeftScale || axis == QwtScaleDraw::RightScale) {
+            if (d_plot->grid()->yEnabled())
+                gridsID->setChecked(true);
+        } else {
+            if (d_plot->grid()->xEnabled())
+                gridsID->setChecked(true);
+        }
     }
 
     menu.addSeparator();

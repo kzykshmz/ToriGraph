@@ -2164,7 +2164,7 @@ QWidget *GraphInspectorDock::buildRichTextBar(QWidget *parent, RichTargetMode mo
     entry.btnGreek = makeFmtBtn(tr("Greek"), false);
     entry.btnGreek->setProperty("_tg_tip_fmt", QStringLiteral("Insert Greek Symbol"));
     entry.btnGreek->setPopupMode(QToolButton::InstantPopup);
-    entry.menuGreek = new QMenu(entry.btnGreek);
+    entry.menuGreek = new QMenu(d_app ? static_cast<QWidget *>(d_app.data()) : nullptr);
     rebuildGreekSymbolMenu(entry.menuGreek, mode);
     entry.btnGreek->setMenu(entry.menuGreek);
 
@@ -2172,7 +2172,7 @@ QWidget *GraphInspectorDock::buildRichTextBar(QWidget *parent, RichTargetMode mo
     entry.btnUnit->setProperty("_tg_tip_fmt",
                               QStringLiteral("Insert Symbol, Unit, or Journal Axis Template"));
     entry.btnUnit->setPopupMode(QToolButton::InstantPopup);
-    entry.menuUnits = new QMenu(entry.btnUnit);
+    entry.menuUnits = new QMenu(d_app ? static_cast<QWidget *>(d_app.data()) : nullptr);
     rebuildUnitsSymbolMenu(entry.menuUnits, mode);
     entry.btnUnit->setMenu(entry.menuUnits);
     vlay->addLayout(fmtRow);
@@ -2253,8 +2253,10 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu(QMenu *menu, RichTargetMode mode
 {
     if (!menu)
         return;
-    for (QMenu *sub : menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly))
-        delete sub;
+    for (QMenu *sub : menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly)) {
+        sub->close();
+        sub->deleteLater();
+    }
     menu->clear();
 
     // 1) Materials-science symbols

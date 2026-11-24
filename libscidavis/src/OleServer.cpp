@@ -1114,10 +1114,11 @@ public:
 
     bool isContainerProcessDead() const
     {
-        if (!m_site || m_stopped)
+        auto site = m_site;
+        if (!site || m_stopped)
             return false;
         ComPtr<IOleContainer> container;
-        const HRESULT hr = m_site->GetContainer(&container);
+        const HRESULT hr = site->GetContainer(&container);
         if (hr == RPC_E_DISCONNECTED || hr == RPC_E_SERVER_DIED || hr == RPC_E_SERVER_DIED_DNE
             || hr == RPC_E_SERVERFAULT || hr == RPC_E_INVALID_OBJREF
             || hr == HRESULT_FROM_WIN32(RPC_S_SERVER_UNAVAILABLE)) {
@@ -1346,6 +1347,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE DoVerb(LONG verb, LPMSG, IOleClientSite *s, LONG, HWND, LPCRECT) override
     {
+        ComPtr<IOleObject> alive(this);
         if (m_handsOff || m_closing)
             return E_UNEXPECTED;
 
@@ -1354,8 +1356,8 @@ public:
             if (m_editor)
                 m_editor->hide();
             m_visible = false;
-            if (m_site)
-                m_site->OnShowWindow(FALSE);
+            if (auto site = m_site)
+                site->OnShowWindow(FALSE);
             updateOleQuitGuard();
             return S_OK;
         }
@@ -1377,8 +1379,8 @@ public:
             SetForegroundWindow(reinterpret_cast<HWND>(m_editor->winId()));
             if (!m_visible) {
                 m_visible = true;
-                if (m_site)
-                    m_site->OnShowWindow(TRUE);
+                if (auto site = m_site)
+                    site->OnShowWindow(TRUE);
             }
             updateOleQuitGuard();
             return S_OK;
@@ -1625,8 +1627,8 @@ public:
             SetForegroundWindow(reinterpret_cast<HWND>(mw->winId()));
 
             m_visible = true;
-            if (m_site)
-                m_site->OnShowWindow(TRUE);
+            if (auto site = m_site)
+                site->OnShowWindow(TRUE);
             return S_OK;
         } catch (...) {
             if (mwGuard) {
@@ -1745,6 +1747,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE InitNew(IStorage *s) override
     {
+        ComPtr<IOleObject> alive(this);
         if (!s)
             return E_POINTER;
         m_storage = s;
@@ -1761,6 +1764,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Load(IStorage *s) override
     {
+        ComPtr<IOleObject> alive(this);
         if (!s)
             return E_POINTER;
         OleGraphPayload loaded;
@@ -1832,6 +1836,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Load(LPCOLESTR path, DWORD) override
     {
+        ComPtr<IOleObject> alive(this);
         if (!path)
             return E_POINTER;
         QString qpath = QString::fromWCharArray(path);
@@ -2080,6 +2085,7 @@ public:
                                    LPCRECTL b, LPCRECTL, BOOL(CALLBACK *cont)(ULONG_PTR),
                                    ULONG_PTR token) override
     {
+        ComPtr<IOleObject> alive(this);
         if (aspect != DVASPECT_CONTENT)
             return DV_E_DVASPECT;
         if (index != -1)
