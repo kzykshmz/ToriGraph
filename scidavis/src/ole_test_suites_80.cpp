@@ -9,6 +9,7 @@
 #include "future/table/TableView.h"
 
 #include <QAbstractItemModel>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
@@ -657,12 +658,14 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             pumpEventsMs80(25);
         }
 
-        // Subtest 5 (Round 8 OLE teardown & re-entrant SaveObject -> Close(OLECLOSE_NOSAVE)):
-        // Re-entrant COM IOleObject::Close() inside SaveObject() during ed5->saveProject() must
-        // neither UAF `ed5` (`ApplicationWindow *this`) nor show a spurious save-failure warning.
+        // Subtest 5 (Round 8 + Round 9 OLE teardown & re-entrant SaveObject -> Close(OLECLOSE_NOSAVE)):
+        // Re-entrant COM IOleObject::Close() inside SaveObject() during ed5->saveProject() (even
+        // with SaveObject() returning E_FAIL afterward) must NOT UAF `ed5`, must NOT show an
+        // interactive save-failure modal warning, and must return `true` before deferred teardown.
         {
             const int baseLive5 = SciDAVisOle::liveGraphObjectCountForTesting();
             MockDeadClientSite80 site5;
+            site5.saveObjectHr = E_FAIL;
             ComPtr<IOleObject> obj5;
             CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj5))) && obj5,
                        "80a-5: createGraphObject(obj5) failed");
@@ -683,20 +686,180 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 closedOnce5 = true;
                 obj5->Close(OLECLOSE_NOSAVE);
             };
-            const bool saved5 = ed5->saveProject();
+            bool sawWarning5 = false;
+            bool saved5 = false;
+            bool propOkBeforePump5 = false;
+            {
+                const QVariant prevProp5 = qApp->property("torigraph_noninteractive");
+                const bool prevHeadless5 = ed5->isHeadlessMode();
+                qApp->setProperty("torigraph_noninteractive", false);
+                ed5->setHeadlessMode(false);
+                QTimer warnTimer5;
+                warnTimer5.setInterval(10);
+                QObject::connect(&warnTimer5, &QTimer::timeout, [&]() {
+                    if (auto *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                        sawWarning5 = true;
+                        mb->accept();
+                    }
+                });
+                warnTimer5.start();
+                saved5 = ed5->saveProject();
+                warnTimer5.stop();
+                propOkBeforePump5 =
+                        !ed5.isNull() && ed5->property("_toriLastOleSaveOk").toBool();
+                if (ed5)
+                    ed5->setHeadlessMode(prevHeadless5);
+                qApp->setProperty("torigraph_noninteractive", prevProp5);
+            }
+            CHECK_COND(closedOnce5 && saved5 && !sawWarning5 && propOkBeforePump5,
+                       "80a-5: saveProject flagged failure or skipped re-entrant Close (closed="
+                               << closedOnce5 << ", saved5=" << saved5 << ", sawWarn="
+                               << sawWarning5 << ", propOk=" << propOkBeforePump5 << ")");
+
             QApplication::setQuitOnLastWindowClosed(false);
             pumpEventsMs80(35);
             obj5.Reset();
             pumpEventsMs80(25);
 
-            CHECK_COND(closedOnce5, "80a-5: onSaveObject did not trigger re-entrant Close()");
-            CHECK_COND(saved5 || ed5.isNull(),
-                       "80a-5: saveProject flagged spurious failure after clean re-entrant Close()");
             CHECK_COND(ed5.isNull(), "80a-5: ed5 was not deferred-destroyed after Close()");
             CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive5,
                        "80a-5: OLE object leaked after re-entrant Close (got "
                                << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
                                << baseLive5 << ")");
+        }
+
+        // Subtest 6 (Round 9): (6a) re-entrant Close during closeEvent()/d_ole_on_close with E_FAIL
+        // must NOT show save-failure warning; (6b/6c) crash-recovery detachment during saveProject/
+        // closeEvent must preserve the detached unsaved standalone window instead of marking saved
+        // or closing it with unsaved edits.
+        {
+            const int baseLive6 = SciDAVisOle::liveGraphObjectCountForTesting();
+            MockDeadClientSite80 site6;
+            site6.saveObjectHr = E_FAIL;
+            ComPtr<IOleObject> obj6;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj6))) && obj6,
+                       "80a-6a: createGraphObject(obj6) failed");
+            CHECK_COND(SUCCEEDED(obj6->SetClientSite(&site6)), "80a-6a: SetClientSite failed");
+            const QSet<ApplicationWindow *> before6 = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj6->DoVerb(OLEIVERB_OPEN, nullptr, &site6, 0, nullptr, nullptr)),
+                       "80a-6a: DoVerb(obj6) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed6 = findNewOleEditor80(before6);
+            CHECK_COND(!ed6.isNull() && ed6->isOleEmbeddedMode(), "80a-6a: ed6 open failed");
+            ed6->modifiedProject();
+            bool closedOnce6 = false;
+            site6.onSaveObject = [&]() {
+                if (closedOnce6)
+                    return;
+                closedOnce6 = true;
+                obj6->Close(OLECLOSE_NOSAVE);
+            };
+            bool sawWarning6 = false;
+            {
+                const QVariant prevProp6 = qApp->property("torigraph_noninteractive");
+                const bool prevHeadless6 = ed6->isHeadlessMode();
+                qApp->setProperty("torigraph_noninteractive", false);
+                ed6->setHeadlessMode(false);
+                QTimer warnTimer6;
+                warnTimer6.setInterval(10);
+                QObject::connect(&warnTimer6, &QTimer::timeout, [&]() {
+                    if (auto *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                        sawWarning6 = true;
+                        mb->accept();
+                    }
+                });
+                warnTimer6.start();
+                ed6->close();
+                warnTimer6.stop();
+                if (ed6)
+                    ed6->setHeadlessMode(prevHeadless6);
+                qApp->setProperty("torigraph_noninteractive", prevProp6);
+            }
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(35);
+            obj6.Reset();
+            pumpEventsMs80(25);
+            CHECK_COND(closedOnce6 && !sawWarning6 && ed6.isNull(),
+                       "80a-6a: re-entrant Close in closeEvent failed (closed="
+                               << closedOnce6 << ", sawWarn=" << sawWarning6
+                               << ", null=" << ed6.isNull() << ")");
+
+            // 6b: Watchdog crash-recovery detachment inside saveProject() must NOT mark saved
+            MockDeadClientSite80 site6b;
+            ComPtr<IOleObject> obj6b;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj6b))) && obj6b,
+                       "80a-6b: createGraphObject(obj6b) failed");
+            CHECK_COND(SUCCEEDED(obj6b->SetClientSite(&site6b)), "80a-6b: SetClientSite failed");
+            const QSet<ApplicationWindow *> before6b = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj6b->DoVerb(OLEIVERB_OPEN, nullptr, &site6b, 0, nullptr, nullptr)),
+                       "80a-6b: DoVerb(obj6b) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed6b = findNewOleEditor80(before6b);
+            CHECK_COND(!ed6b.isNull() && ed6b->isOleEmbeddedMode(), "80a-6b: ed6b open failed");
+            ed6b->modifiedProject();
+            site6b.containerDead = true;
+            bool ticked6b = false;
+            site6b.onSaveObject = [&]() {
+                if (ticked6b)
+                    return;
+                ticked6b = true;
+                SciDAVisOle::runContainerWatchdogTickForTesting();
+            };
+            const bool saved6b = ed6b->saveProject();
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(25);
+            CHECK_COND(ticked6b && !saved6b && !ed6b.isNull() && !ed6b->isOleEmbeddedMode()
+                               && !ed6b->saved,
+                       "80a-6b: detached dirty standalone marked saved or closed (ticked="
+                               << ticked6b << ", saved6b=" << saved6b << ", null=" << ed6b.isNull()
+                               << ", emb=" << (ed6b ? ed6b->isOleEmbeddedMode() : true)
+                               << ", saved=" << (ed6b ? ed6b->saved : true) << ")");
+            ed6b->savedProject();
+            ed6b->setAttribute(Qt::WA_DeleteOnClose, true);
+            ed6b->close();
+            obj6b.Reset();
+            pumpEventsMs80(25);
+
+            // 6c: Watchdog crash-recovery detachment inside closeEvent() must ignore close & keep window
+            MockDeadClientSite80 site6c;
+            ComPtr<IOleObject> obj6c;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj6c))) && obj6c,
+                       "80a-6c: createGraphObject(obj6c) failed");
+            CHECK_COND(SUCCEEDED(obj6c->SetClientSite(&site6c)), "80a-6c: SetClientSite failed");
+            const QSet<ApplicationWindow *> before6c = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj6c->DoVerb(OLEIVERB_OPEN, nullptr, &site6c, 0, nullptr, nullptr)),
+                       "80a-6c: DoVerb(obj6c) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed6c = findNewOleEditor80(before6c);
+            CHECK_COND(!ed6c.isNull() && ed6c->isOleEmbeddedMode(), "80a-6c: ed6c open failed");
+            ed6c->modifiedProject();
+            site6c.containerDead = true;
+            bool ticked6c = false;
+            site6c.onSaveObject = [&]() {
+                if (ticked6c)
+                    return;
+                ticked6c = true;
+                SciDAVisOle::runContainerWatchdogTickForTesting();
+            };
+            ed6c->close();
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(35);
+            CHECK_COND(ticked6c && !ed6c.isNull() && ed6c->isVisible() && !ed6c->isOleEmbeddedMode()
+                               && !ed6c->saved,
+                       "80a-6c: detached dirty standalone closed during closeEvent (ticked="
+                               << ticked6c << ", null=" << ed6c.isNull()
+                               << ", vis=" << (ed6c ? ed6c->isVisible() : false)
+                               << ", emb=" << (ed6c ? ed6c->isOleEmbeddedMode() : true)
+                               << ", saved=" << (ed6c ? ed6c->saved : true) << ")");
+            ed6c->savedProject();
+            ed6c->setAttribute(Qt::WA_DeleteOnClose, true);
+            ed6c->close();
+            obj6c.Reset();
+            pumpEventsMs80(25);
+            CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive6,
+                       "80a-6: OLE object leaked (got "
+                               << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
+                               << baseLive6 << ")");
         }
     }
 #endif
@@ -1522,6 +1685,56 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                                      QStringLiteral("from < end"))
                         != 0)
                         return 1;
+
+                    // 80e-fit-silent (Round 9): Under interactive mode (`torigraph_noninteractive
+                    // == false` and headless == false), calling FitDialog::showFitPage() and
+                    // enabling Live Preview (updateLivePreview()) on a 1-point ExpDecay1 curve must
+                    // suppress Filter error dialogs via setSilent(true) -> zero modal popups.
+                    {
+                        Table *tFitSil = w80->newTable(1, 2, "T80FitSilent", "FitSilent80");
+                        tFitSil->setCell(0, 0, 1.0);
+                        tFitSil->setCell(0, 1, 2.0);
+                        MultiLayer *mlFitSil = w80->multilayerPlot(
+                                tFitSil, QStringList() << tFitSil->colName(1), Graph::Scatter);
+                        Graph *gFitSil = mlFitSil ? mlFitSil->activeGraph() : nullptr;
+                        CHECK_COND(gFitSil && gFitSil->curve(0),
+                                   "80e-fit-silent: gFitSil setup failed");
+
+                        InteractiveGuard80 interactiveSil(w80);
+                        bool sawUnexpectedModal = false;
+                        QTimer silTimer;
+                        silTimer.setInterval(10);
+                        QObject::connect(&silTimer, &QTimer::timeout, [&]() {
+                            if (auto *mb =
+                                        qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                                sawUnexpectedModal = true;
+                                mb->accept();
+                            }
+                        });
+                        silTimer.start();
+
+                        FitDialog fdSil(w80);
+                        fdSil.setGraph(gFitSil);
+                        CHECK_COND(fdSil.selectRecentModel(QStringLiteral("ExpDecay1")),
+                                   "80e-fit-silent: selectRecentModel(ExpDecay1) failed");
+                        fdSil.showFitPage();
+                        QCoreApplication::processEvents();
+
+                        QCheckBox *chkPreview = nullptr;
+                        for (QCheckBox *cb : fdSil.findChildren<QCheckBox *>()) {
+                            if (cb->text().contains(QStringLiteral("Preview"))) {
+                                chkPreview = cb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(chkPreview != nullptr,
+                                   "80e-fit-silent: Live Preview QCheckBox not found");
+                        chkPreview->setChecked(true);
+                        QCoreApplication::processEvents();
+                        silTimer.stop();
+                        CHECK_COND(!sawUnexpectedModal,
+                                   "80e-fit-silent: showFitPage()/updateLivePreview() opened modal popup under interactive mode!");
+                    }
                 }
             }
         }
@@ -2127,6 +2340,49 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                        "80f-page-tab-preserve: modifiedPlot coalesced refresh snapped away from Page tab (index="
                                << dock80->propertyStack()->currentIndex() << ")");
 
+            // Round 9: language switch (changeEvent -> LanguageChange -> refreshAll(false)),
+            // same-target setTargetMultiLayer, and collapsed-rail Page click must preserve Page tab
+            wDiag->switchToLanguage(QStringLiteral("ja"));
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: switchToLanguage(ja) snapped Inspector away from Page tab (index="
+                               << dock80->propertyStack()->currentIndex() << ")");
+            wDiag->switchToLanguage(QStringLiteral("en"));
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: switchToLanguage(en) snapped Inspector away from Page tab (index="
+                               << dock80->propertyStack()->currentIndex() << ")");
+
+            dock80->setTargetMultiLayer(mlDiag, false);
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: setTargetMultiLayer(mlDiag, false) snapped away from Page tab");
+
+            dock80->setTargetMultiLayer(mlDiag, true);
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: setTargetMultiLayer(mlDiag, true) snapped away from Page tab");
+
+            dock80->switchToInspectorPage(GraphInspectorDock::PageTabCurve);
+            dock80->setCollapsedRail(true);
+            QCoreApplication::processEvents();
+            QToolButton *railPageBtn =
+                    dock80->findChild<QToolButton *>(QStringLiteral("InspectorRailPageBtn"));
+            CHECK_COND(railPageBtn != nullptr,
+                       "80f-page-tab-preserve: InspectorRailPageBtn not found");
+            railPageBtn->click();
+            QCoreApplication::processEvents();
+            CHECK_COND(!dock80->isCollapsedRail()
+                               && dock80->propertyStack()->currentIndex()
+                                          == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: collapsed-rail Page click snapped away (collapsed="
+                               << dock80->isCollapsedRail() << ", index="
+                               << dock80->propertyStack()->currentIndex() << ")");
+
             // Positive control: explicit syncInspectorFromSelection(true) still switches to Curve
             dock80->syncInspectorFromSelection(true);
             QCoreApplication::processEvents();
@@ -2312,6 +2568,23 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         CHECK_COND(enGuideStr.contains(QStringLiteral("index.en.html"))
                            || enGuideStr.endsWith(QStringLiteral("README.md")),
                    "80f: EN quickGuideUrl resolved to wrong target: " << enGuideStr.toStdString());
+
+        // 80f-i18n-restore-size (Round 9): QMdiSubWindow "Restore"/"Size" translations must be
+        // context-scoped so global "Restore" -> "復元する" and "Size" -> "サイズ" are preserved.
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("Restore"))
+                           == QString::fromUtf8("復元する"),
+                   "80f-i18n-restore-size: global 'Restore' translation overwritten");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("Size"))
+                           == QString::fromUtf8("サイズ"),
+                   "80f-i18n-restore-size: global 'Size' translation overwritten");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapaneseInContext(
+                           QStringLiteral("QMdiSubWindow"), QStringLiteral("Restore"))
+                           == QString::fromUtf8("元のサイズに戻す"),
+                   "80f-i18n-restore-size: QMdiSubWindow context 'Restore' translation missing");
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapaneseInContext(
+                           QStringLiteral("QMdiSubWindow"), QStringLiteral("Size"))
+                           == QString::fromUtf8("サイズ変更"),
+                   "80f-i18n-restore-size: QMdiSubWindow context 'Size' translation missing");
     }
 
     w80->switchToLanguage(QStringLiteral("en"));
