@@ -1425,16 +1425,28 @@ QString formatPanelLabel(const QString &pattern, int zeroBasedIndex)
 
 } // namespace
 
+void MultiLayer::beginSuppressUndo()
+{
+    ++d_undo_suppress_depth;
+}
+
+void MultiLayer::endSuppressUndo()
+{
+    if (d_undo_suppress_depth > 0)
+        --d_undo_suppress_depth;
+}
+
 QString MultiLayer::captureUndoSnapshot()
 {
-    if (d_is_restoring_snapshot)
+    if (d_is_restoring_snapshot || d_undo_suppress_depth > 0)
         return QString();
     return saveToString(QString());
 }
 
 void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId)
 {
-    if (d_is_restoring_snapshot || beforeSnapshot.isEmpty() || !d_undo_stack)
+    if (d_is_restoring_snapshot || d_undo_suppress_depth > 0 || beforeSnapshot.isEmpty()
+        || !d_undo_stack)
         return;
 
     const QString afterSnapshot = saveToString(QString());

@@ -3423,10 +3423,19 @@ int RoiGadgetTool::applyClusterMask(bool mask)
 
     int totalModified = 0;
     if (!targetCurves.isEmpty()) {
+        auto isLiveCurveOnGraph = [](Graph *g, const QwtPlotCurve *c) {
+            if (!g || !c)
+                return false;
+            for (int i = 0; i < g->curves(); ++i) {
+                if (g->curve(i) == c)
+                    return true;
+            }
+            return false;
+        };
         d_graph_guard->runWithColumnMaskUndo(
                 mask ? tr("Mask Region") : tr("Unmask Region"), targetCurves, [&]() {
                     for (DataCurve *dc : targetCurves) {
-                        if (dc)
+                        if (isLiveCurveOnGraph(d_graph_guard.data(), dc))
                             totalModified += dc->maskRegion(d_roi_rect, mask);
                     }
                 });

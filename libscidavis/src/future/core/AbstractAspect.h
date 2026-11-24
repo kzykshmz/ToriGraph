@@ -196,6 +196,10 @@ public:
     void beginMacro(const QString &text);
     //! End the undo stack macro
     void endMacro();
+    //! Mark this aspect and its ancestor chain as referenced by the project undo stack.
+    void markTouchedByUndoStack();
+    //! Return true if this aspect or any recursive child was touched by the undo stack.
+    bool hasUndoStackReference() const;
     //@}
 
     //! Retrieve a global setting.

@@ -42,6 +42,45 @@ public:
     //! Per-window manager. app == nullptr (or no argument) returns the legacy default instance.
     //! A manager created for a window is released automatically when that window is destroyed.
     static RecalcManager *instance(ApplicationWindow *app = nullptr);
+    //! Lookup existing per-window (or default) manager without creating one.
+    static RecalcManager *existing(ApplicationWindow *app = nullptr);
+
+    void beginDeferAutoRecalc();
+    void endDeferAutoRecalc();
+
+    class ScopedDeferAutoRecalc
+    {
+    public:
+        explicit ScopedDeferAutoRecalc(RecalcManager *mgr = nullptr) : d_mgr(mgr)
+        {
+            if (d_mgr)
+                d_mgr->beginDeferAutoRecalc();
+        }
+        ~ScopedDeferAutoRecalc()
+        {
+            if (d_mgr)
+                d_mgr->endDeferAutoRecalc();
+        }
+        ScopedDeferAutoRecalc(const ScopedDeferAutoRecalc &) = delete;
+        ScopedDeferAutoRecalc &operator=(const ScopedDeferAutoRecalc &) = delete;
+        ScopedDeferAutoRecalc(ScopedDeferAutoRecalc &&other) noexcept : d_mgr(other.d_mgr)
+        {
+            other.d_mgr.clear();
+        }
+        ScopedDeferAutoRecalc &operator=(ScopedDeferAutoRecalc &&other) noexcept
+        {
+            if (this != &other) {
+                if (d_mgr)
+                    d_mgr->endDeferAutoRecalc();
+                d_mgr = other.d_mgr;
+                other.d_mgr.clear();
+            }
+            return *this;
+        }
+
+    private:
+        QPointer<RecalcManager> d_mgr;
+    };
 
     void setRecalcMode(RecalcMode mode);
     RecalcMode recalcMode() const { return d_mode; }
@@ -113,6 +152,8 @@ private:
     QPointer<ApplicationWindow> d_app;
     RecalcMode d_mode = Auto;
     bool d_recalculating = false;
+    int d_defer_auto_depth = 0;
+    bool d_has_deferred_dirty = false;
     int d_next_id = 1;
     QVector<RecalcLink> d_links;
 };

@@ -33,6 +33,7 @@
 #include "MultiLayer.h"
 #include "Graph.h"
 #include "PlotCurve.h"
+#include "core/Project.h"
 #include "core/column/Column.h"
 #include "lib/Interval.h"
 #include "table/TableModel.h"
@@ -1573,7 +1574,8 @@ void Table::scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount)
     }
 
     QUndoStack *us = d_future_table->undoStack();
-    if (!us || isUndoStackInMacro(us)) {
+    const Project *proj = d_future_table->project();
+    if (!us || (proj && proj->isUndoSuppressed()) || isUndoStackInMacro(us)) {
         autoRecalculateDependentColumns(changedFirstCol, changedCount);
         return;
     }
@@ -3910,22 +3912,24 @@ void Table::customEvent(QEvent *e)
 
 void Table::closeEvent(QCloseEvent *e)
 {
+    auto acceptAndRemove = [this, e]() {
+        e->accept();
+        QPointer<Table> self(this);
+        if (d_future_table)
+            d_future_table->remove();
+        const bool ownedByUndo =
+                d_future_table && d_future_table->property("_tg_owned_by_undo_cmd").toBool();
+        if (!ownedByUndo && self)
+            self->deleteLater();
+    };
     if (askOnClose && !ApplicationWindow::isNonInteractiveContext(this)) {
         switch (QMessageBox::information(this, tr("ToriGraph"),
                                          tr("Do you want to hide or delete") + "<p><b>'"
                                                  + objectName() + "'</b> ?",
                                          tr("Delete"), tr("Hide"), tr("Cancel"), 1, 2)) {
-        case 0: {
-            e->accept();
-            QPointer<Table> self(this);
-            const bool retainForUndo = d_future_table && d_future_table->parentAspect()
-                    && d_future_table->undoStack() != nullptr;
-            if (d_future_table)
-                d_future_table->remove();
-            if (!retainForUndo && self)
-                self->deleteLater();
+        case 0:
+            acceptAndRemove();
             return;
-        }
 
         case 1:
             e->ignore();
@@ -3937,14 +3941,7 @@ void Table::closeEvent(QCloseEvent *e)
             break;
         }
     } else {
-        e->accept();
-        QPointer<Table> self(this);
-        const bool retainForUndo = d_future_table && d_future_table->parentAspect()
-                && d_future_table->undoStack() != nullptr;
-        if (d_future_table)
-            d_future_table->remove();
-        if (!retainForUndo && self)
-            self->deleteLater();
+        acceptAndRemove();
         return;
     }
 }

@@ -250,6 +250,9 @@ public:
 
     QUndoStack *undoStack() const { return d_undo_stack; }
     bool isRestoringSnapshot() const { return d_is_restoring_snapshot; }
+    void beginSuppressUndo();
+    void endSuppressUndo();
+    bool isUndoSuppressed() const { return d_undo_suppress_depth > 0; }
     QString captureUndoSnapshot();
     void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
     bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
@@ -531,6 +534,7 @@ private:
     QPointer<SelectionMoveResizer> d_layers_selector;
     QUndoStack *d_undo_stack = nullptr;
     bool d_is_restoring_snapshot = false;
+    int d_undo_suppress_depth = 0;
     bool d_panel_labels_enabled = false;
     PanelLabelPlacement d_panel_label_placement = PanelOutsideTopLeft;
     QString d_panel_label_pattern = QString("(%a)");
@@ -589,6 +593,42 @@ private:
     bool prevMlUpdates = true;
     bool prevWidgetUpdates = true;
     bool active = false;
+};
+
+//! RAII helper that suppresses MultiLayer undo-stack pushes while in scope.
+class ScopedMultiLayerUndoSuppressor
+{
+public:
+    explicit ScopedMultiLayerUndoSuppressor(MultiLayer *ml = nullptr) : d_ml(ml)
+    {
+        if (d_ml)
+            d_ml->beginSuppressUndo();
+    }
+    ~ScopedMultiLayerUndoSuppressor()
+    {
+        if (d_ml)
+            d_ml->endSuppressUndo();
+    }
+    ScopedMultiLayerUndoSuppressor(const ScopedMultiLayerUndoSuppressor &) = delete;
+    ScopedMultiLayerUndoSuppressor &operator=(const ScopedMultiLayerUndoSuppressor &) = delete;
+    ScopedMultiLayerUndoSuppressor(ScopedMultiLayerUndoSuppressor &&other) noexcept
+        : d_ml(other.d_ml)
+    {
+        other.d_ml.clear();
+    }
+    ScopedMultiLayerUndoSuppressor &operator=(ScopedMultiLayerUndoSuppressor &&other) noexcept
+    {
+        if (this != &other) {
+            if (d_ml)
+                d_ml->endSuppressUndo();
+            d_ml = other.d_ml;
+            other.d_ml.clear();
+        }
+        return *this;
+    }
+
+private:
+    QPointer<MultiLayer> d_ml;
 };
 
 #endif

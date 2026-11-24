@@ -764,6 +764,7 @@ SIZEL naturalPayloadExtentHm(const OleGraphPayload &payload)
 }
 
 void updateOleQuitGuard();
+bool hasActiveEmbeddedObjects(const SciDAVisGraphObject *exclude = nullptr);
 
 QString formatOleSaveError(HRESULT hr, const QString &detail)
 {
@@ -1093,6 +1094,8 @@ public:
         releaseServerProcess();
     }
 
+    bool isStopped() const { return m_stopped; }
+
     bool hasActiveContainerOrEditor() const
     {
         return !m_editor.isNull() || (m_site != nullptr && !m_stopped);
@@ -1166,7 +1169,8 @@ public:
                 finishClose();
                 m_site.Reset();
                 releaseEditorRefOnce(activeGen);
-                if (qApp && standaloneEd && standaloneEd->isVisible()) {
+                if (qApp && standaloneEd && standaloneEd->isVisible()
+                    && !hasActiveEmbeddedObjects(this)) {
                     g_embeddedServerMode = false;
                     if (auto *guiApp = qobject_cast<QApplication *>(qApp))
                         guiApp->setQuitOnLastWindowClosed(true);
@@ -1186,8 +1190,6 @@ public:
             }
             return;
         }
-        if (m_editor && m_editor->property("_tg_ole_container_died_handled").toBool())
-            return;
         if (m_editor) {
             disconnectEditorDestroyedConn();
             const size_t closingGen = m_activeEditorRefGen;
@@ -1526,8 +1528,13 @@ public:
                                     }
                                 }
                             }
-                            if (ok) {
+                            if (ok)
                                 errMsg.clear();
+                            if (mwGuard) {
+                                mwGuard->setProperty("_toriLastOleSaveOk", ok);
+                                mwGuard->setProperty("_toriLastOleSaveError", errMsg);
+                            }
+                            if (ok) {
                                 disconnectEditorDestroyedConn();
                                 m_editor = nullptr;
                                 m_targetMl = nullptr;
@@ -1538,10 +1545,12 @@ public:
                                 // Re-arm callbacks in case ApplicationWindow::closeEvent moved
                                 // d_ole_on_close out before invoking it and then cancels closing
                                 // (ce->ignore()) so the user can retry or Save As.
+                                // Invoking (*rearmHolder)() replaces d_ole_on_close and destroys
+                                // this lambda closure, so never touch captured members afterward.
                                 (*rearmHolder)();
+                                return;
                             }
-                        }
-                        if (mwGuard) {
+                        } else if (mwGuard) {
                             mwGuard->setProperty("_toriLastOleSaveOk", ok);
                             mwGuard->setProperty("_toriLastOleSaveError", errMsg);
                         }
@@ -2107,6 +2116,17 @@ bool hasVisibleNormalAppWindow()
     return false;
 }
 
+bool hasActiveEmbeddedObjects(const SciDAVisGraphObject *exclude)
+{
+    for (const SciDAVisGraphObject *obj : g_liveGraphObjects) {
+        if (!obj || obj == exclude)
+            continue;
+        if (!obj->isStopped() || obj->hasActiveContainerOrEditor())
+            return true;
+    }
+    return false;
+}
+
 void updateOleQuitGuard()
 {
     auto *guiApp = qobject_cast<QApplication *>(qApp);
@@ -2452,7 +2472,9 @@ bool initializeOleClipboardOnly()
     return true;
 }
 
-void runContainerWatchdogTickForTesting()
+namespace {
+
+void runContainerWatchdogTick()
 {
     const auto snapshot = g_liveGraphObjects;
     for (SciDAVisGraphObject *obj : snapshot) {
@@ -2462,6 +2484,13 @@ void runContainerWatchdogTickForTesting()
         if (obj->isContainerProcessDead())
             obj->handleContainerAbnormalExit();
     }
+}
+
+} // namespace
+
+void runContainerWatchdogTickForTesting()
+{
+    runContainerWatchdogTick();
 }
 
 int liveGraphObjectCountForTesting()
@@ -2513,7 +2542,7 @@ bool initializeOleServer(bool embeddedMode)
         QObject::connect(watchdog, &QTimer::timeout, qApp, []() {
             if (!g_embeddedServerMode || ApplicationWindow::isNonInteractiveContext(nullptr))
                 return;
-            runContainerWatchdogTickForTesting();
+            runContainerWatchdogTick();
             if (!g_everHadServerActivity || !g_liveGraphObjects.isEmpty()
                 || hasVisibleNormalAppWindow()) {
                 return;

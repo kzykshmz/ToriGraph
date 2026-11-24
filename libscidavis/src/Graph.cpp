@@ -64,10 +64,12 @@
 #include "core/Project.h"
 #include "core/column/Column.h"
 #include "MultiLayer.h"
+#include "RecalcEngine.h"
 #include "EmfPaintDevice.h"
 #include "MyParser.h"
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <mutex>
 
 #include <QApplication>
@@ -3600,52 +3602,15 @@ void Graph::updateSelectionOverlayGeometry()
 
 namespace {
 
-bool maskIntervalListsEqual(const QList<Interval<int>> &a, const QList<Interval<int>> &b)
+bool isLiveCurveOnGraph(Graph *g, const QwtPlotCurve *c)
 {
-    if (a.isEmpty() && b.isEmpty())
-        return true;
-    IntervalAttribute<bool> diffA(a);
-    for (const Interval<int> &iv : b)
-        diffA.setValue(iv, false);
-    if (!diffA.intervals().isEmpty())
+    if (!g || !c)
         return false;
-
-    IntervalAttribute<bool> diffB(b);
-    for (const Interval<int> &iv : a)
-        diffB.setValue(iv, false);
-    return diffB.intervals().isEmpty();
-}
-
-void applyColumnMaskIntervals(Column *col, const QList<Interval<int>> &targetIntervals)
-{
-    if (!col)
-        return;
-    const QList<Interval<int>> curIntervals = col->maskedIntervals();
-    if (maskIntervalListsEqual(curIntervals, targetIntervals))
-        return;
-
-    if (targetIntervals.isEmpty()) {
-        col->clearMasks();
-        return;
+    for (int i = 0; i < g->curves(); ++i) {
+        if (g->curve(i) == c)
+            return true;
     }
-    if (curIntervals.isEmpty()) {
-        for (const Interval<int> &iv : targetIntervals)
-            col->setMasked(iv, true);
-        return;
-    }
-
-    IntervalAttribute<bool> toUnmask(curIntervals);
-    for (const Interval<int> &iv : targetIntervals)
-        toUnmask.setValue(iv, false);
-
-    IntervalAttribute<bool> toMask(targetIntervals);
-    for (const Interval<int> &iv : curIntervals)
-        toMask.setValue(iv, false);
-
-    for (const Interval<int> &iv : toUnmask.intervals())
-        col->setMasked(iv, false);
-    for (const Interval<int> &iv : toMask.intervals())
-        col->setMasked(iv, true);
+    return false;
 }
 
 ApplicationWindow *findGraphAppWindow(const QObject *from)
@@ -3672,9 +3637,43 @@ public:
           d_graph(graph),
           d_ml(ml),
           d_layer_index(layerIndex),
-          d_snapshots(std::move(snapshots)),
           d_initial_push_done(false)
     {
+        d_snapshots.reserve(snapshots.size());
+        for (Graph::ColumnMaskSnapshot &s : snapshots) {
+            auto ptr = std::make_shared<Graph::ColumnMaskSnapshot>(std::move(s));
+            d_snapshots.append(ptr);
+            if (Column *col = ptr->column.data()) {
+                std::weak_ptr<Graph::ColumnMaskSnapshot> weakSnap(ptr);
+                d_connections.append(QObject::connect(
+                        col, &AbstractColumn::rowsAboutToBeInserted,
+                        [weakSnap](const AbstractColumn *, int before, int count) {
+                            if (auto sp = weakSnap.lock()) {
+                                if (count > 0 && before >= 0) {
+                                    sp->addedMasks.insertRows(before, count);
+                                    sp->removedMasks.insertRows(before, count);
+                                }
+                            }
+                        }));
+                d_connections.append(QObject::connect(
+                        col, &AbstractColumn::rowsAboutToBeRemoved,
+                        [weakSnap](const AbstractColumn *, int first, int count) {
+                            if (auto sp = weakSnap.lock()) {
+                                if (count > 0 && first >= 0) {
+                                    sp->addedMasks.removeRows(first, count);
+                                    sp->removedMasks.removeRows(first, count);
+                                }
+                            }
+                        }));
+            }
+        }
+    }
+
+    ~GraphColumnMaskUndoCommand() override
+    {
+        for (const QMetaObject::Connection &conn : d_connections)
+            QObject::disconnect(conn);
+        d_connections.clear();
     }
 
     void undo() override { applyState(true); }
@@ -3695,25 +3694,51 @@ private:
             return;
 
         Project *proj = nullptr;
-        for (const Graph::ColumnMaskSnapshot &snap : d_snapshots) {
-            if (snap.table && snap.table->d_future_table && snap.table->d_future_table->project()) {
-                proj = snap.table->d_future_table->project();
+        for (const std::shared_ptr<Graph::ColumnMaskSnapshot> &snapPtr : d_snapshots) {
+            if (snapPtr && snapPtr->table && snapPtr->table->d_future_table
+                && snapPtr->table->d_future_table->project()) {
+                proj = snapPtr->table->d_future_table->project();
                 break;
             }
         }
         ScopedProjectUndoSuppressor suppressProjUndo(proj);
 
-        for (const Graph::ColumnMaskSnapshot &snap : d_snapshots) {
+        for (const std::shared_ptr<Graph::ColumnMaskSnapshot> &snapPtr : d_snapshots) {
+            if (!snapPtr)
+                continue;
+            const Graph::ColumnMaskSnapshot &snap = *snapPtr;
             if (!snap.table || !snap.table->d_future_table)
                 continue;
             Column *col = snap.column.data();
             if (!col || col->parentAspect() != snap.table->d_future_table.data())
                 continue;
-            const QList<Interval<int>> &target =
-                    isUndo ? snap.beforeIntervals : snap.afterIntervals;
-            applyColumnMaskIntervals(col, target);
-            const QString fullName = snap.table->name() + QLatin1Char('_') + col->name();
-            emit snap.table->modifiedData(snap.table.data(), fullName);
+            const int rowCount = col->rowCount();
+            if (rowCount <= 0)
+                continue;
+            const int maxRow = rowCount - 1;
+            const IntervalAttribute<bool> &toUnmask =
+                    isUndo ? snap.addedMasks : snap.removedMasks;
+            const IntervalAttribute<bool> &toMask =
+                    isUndo ? snap.removedMasks : snap.addedMasks;
+            bool colModified = false;
+            for (const Interval<int> &iv : toUnmask.intervals()) {
+                const Interval<int> clamped(qMax(0, iv.start()), qMin(maxRow, iv.end()));
+                if (clamped.isValid()) {
+                    col->setMasked(clamped, false);
+                    colModified = true;
+                }
+            }
+            for (const Interval<int> &iv : toMask.intervals()) {
+                const Interval<int> clamped(qMax(0, iv.start()), qMin(maxRow, iv.end()));
+                if (clamped.isValid()) {
+                    col->setMasked(clamped, true);
+                    colModified = true;
+                }
+            }
+            if (colModified) {
+                const QString fullName = snap.table->name() + QLatin1Char('_') + col->name();
+                emit snap.table->modifiedData(snap.table.data(), fullName);
+            }
         }
 
         Graph *g = d_graph.data();
@@ -3744,7 +3769,8 @@ private:
     QPointer<Graph> d_graph;
     QPointer<MultiLayer> d_ml;
     int d_layer_index = -1;
-    QVector<Graph::ColumnMaskSnapshot> d_snapshots;
+    QVector<std::shared_ptr<Graph::ColumnMaskSnapshot>> d_snapshots;
+    QVector<QMetaObject::Connection> d_connections;
     bool d_initial_push_done = false;
 };
 
@@ -3753,7 +3779,16 @@ private:
 bool Graph::runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurve *> &curves,
                                   const std::function<void()> &editFn)
 {
-    QVector<ColumnMaskSnapshot> snapshots;
+    RecalcManager::ScopedDeferAutoRecalc deferRecalc(
+            RecalcManager::existing(findGraphAppWindow(this)));
+
+    struct PendingMaskSnapshot {
+        QPointer<Table> table;
+        QPointer<Column> column;
+        QString colName;
+        QList<Interval<int>> beforeIntervals;
+    };
+    QVector<PendingMaskSnapshot> pending;
     QSet<const Column *> seenCols;
     for (DataCurve *dc : curves) {
         if (!dc || !dc->table() || !dc->table()->d_future_table)
@@ -3765,22 +3800,24 @@ bool Graph::runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurv
             if (!col || seenCols.contains(col))
                 continue;
             seenCols.insert(col);
-            ColumnMaskSnapshot snap;
+            PendingMaskSnapshot snap;
             snap.table = dc->table();
             snap.column = col;
             snap.colName = dc->table()->name() + QLatin1Char('_') + col->name();
             snap.beforeIntervals = col->maskedIntervals();
-            snapshots.append(std::move(snap));
+            pending.append(std::move(snap));
         }
     }
 
     MultiLayer *ml = multiLayerParent();
-    QUndoStack *mlStack = (ml && !ml->isRestoringSnapshot()) ? ml->undoStack() : nullptr;
+    QUndoStack *mlStack = (ml && !ml->isRestoringSnapshot() && !ml->isUndoSuppressed())
+            ? ml->undoStack()
+            : nullptr;
 
     if (editFn) {
         if (mlStack) {
             Project *proj = nullptr;
-            for (const ColumnMaskSnapshot &snap : snapshots) {
+            for (const PendingMaskSnapshot &snap : pending) {
                 if (snap.table && snap.table->d_future_table
                     && snap.table->d_future_table->project()) {
                     proj = snap.table->d_future_table->project();
@@ -3795,15 +3832,28 @@ bool Graph::runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurv
     }
 
     QVector<ColumnMaskSnapshot> changed;
-    changed.reserve(snapshots.size());
-    for (ColumnMaskSnapshot &snap : snapshots) {
+    changed.reserve(pending.size());
+    for (PendingMaskSnapshot &snap : pending) {
         if (!snap.table || !snap.table->d_future_table || !snap.column)
             continue;
         if (snap.column->parentAspect() != snap.table->d_future_table.data())
             continue;
-        snap.afterIntervals = snap.column->maskedIntervals();
-        if (!maskIntervalListsEqual(snap.beforeIntervals, snap.afterIntervals))
-            changed.append(std::move(snap));
+        const QList<Interval<int>> afterIntervals = snap.column->maskedIntervals();
+        IntervalAttribute<bool> addedMasks(afterIntervals);
+        for (const Interval<int> &iv : snap.beforeIntervals)
+            addedMasks.setValue(iv, false);
+        IntervalAttribute<bool> removedMasks(snap.beforeIntervals);
+        for (const Interval<int> &iv : afterIntervals)
+            removedMasks.setValue(iv, false);
+        if (addedMasks.intervals().isEmpty() && removedMasks.intervals().isEmpty())
+            continue;
+        ColumnMaskSnapshot delta;
+        delta.table = snap.table;
+        delta.column = snap.column;
+        delta.colName = std::move(snap.colName);
+        delta.addedMasks = std::move(addedMasks);
+        delta.removedMasks = std::move(removedMasks);
+        changed.append(std::move(delta));
     }
 
     if (changed.isEmpty())
@@ -3850,8 +3900,10 @@ int Graph::clearAllCurveMasksWithUndo()
         return 0;
 
     runWithColumnMaskUndo(tr("Clear All Masks on Graph"), targetCurves, [&]() {
-        for (DataCurve *dc : targetCurves)
-            dc->clearMasks();
+        for (DataCurve *dc : targetCurves) {
+            if (isLiveCurveOnGraph(this, dc))
+                dc->clearMasks();
+        }
     });
     updateStatReferenceLines();
     replot();

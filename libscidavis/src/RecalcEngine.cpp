@@ -336,6 +336,18 @@ QMap<QString, QMap<QString, QVariantMap>> &themeMemoryCache()
     return s_cache;
 }
 
+struct RecalcManagerRegistry
+{
+    RecalcManager *defaultMgr = nullptr;
+    QHash<ApplicationWindow *, RecalcManager *> perWindow;
+};
+
+RecalcManagerRegistry &recalcRegistry()
+{
+    static RecalcManagerRegistry s_registry;
+    return s_registry;
+}
+
 } // namespace
 
 // ============================================================================
@@ -344,33 +356,53 @@ QMap<QString, QMap<QString, QVariantMap>> &themeMemoryCache()
 
 RecalcManager::RecalcManager(ApplicationWindow *app) : QObject(nullptr), d_app(app) {}
 
+RecalcManager *RecalcManager::existing(ApplicationWindow *app)
+{
+    RecalcManagerRegistry &reg = recalcRegistry();
+    if (!app)
+        return reg.defaultMgr;
+    return reg.perWindow.value(app, nullptr);
+}
+
 RecalcManager *RecalcManager::instance(ApplicationWindow *app)
 {
-    // Legacy default instance (no window): kept for callers that have no ApplicationWindow.
-    static RecalcManager *s_default = nullptr;
-    // One manager per ApplicationWindow so that modes and links of different windows (and tests
-    // that create several windows) do not leak into each other.
-    static QHash<ApplicationWindow *, RecalcManager *> s_perWindow;
-
+    RecalcManagerRegistry &reg = recalcRegistry();
     if (!app) {
-        if (!s_default)
-            s_default = new RecalcManager(nullptr);
-        return s_default;
+        if (!reg.defaultMgr)
+            reg.defaultMgr = new RecalcManager(nullptr);
+        return reg.defaultMgr;
     }
 
-    auto it = s_perWindow.constFind(app);
-    if (it != s_perWindow.constEnd())
+    auto it = reg.perWindow.constFind(app);
+    if (it != reg.perWindow.constEnd())
         return it.value();
 
     RecalcManager *mgr = new RecalcManager(app);
-    s_perWindow.insert(app, mgr);
+    reg.perWindow.insert(app, mgr);
     // Release the manager together with its window. The links only hold QPointers, so nothing
     // dangles while the window is being torn down.
     QObject::connect(static_cast<QObject *>(app), &QObject::destroyed, mgr, [app, mgr]() {
-        s_perWindow.remove(app);
+        recalcRegistry().perWindow.remove(app);
         mgr->deleteLater();
     });
     return mgr;
+}
+
+void RecalcManager::beginDeferAutoRecalc()
+{
+    ++d_defer_auto_depth;
+}
+
+void RecalcManager::endDeferAutoRecalc()
+{
+    if (d_defer_auto_depth <= 0)
+        return;
+    --d_defer_auto_depth;
+    if (d_defer_auto_depth == 0 && d_has_deferred_dirty) {
+        d_has_deferred_dirty = false;
+        if (d_mode == Auto && !Table::isUndoRedoReplaying())
+            recalculateAll();
+    }
 }
 
 void RecalcManager::pruneDeadLinks()
@@ -704,9 +736,12 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
         if (curIdx < 0 || !g)
             continue;
 
-        if (undoReplay || d_mode == Manual) {
-            // Never push commands onto d_project->undoStack() while an Undo/Redo replay runs.
+        if (undoReplay || d_mode == Manual || d_defer_auto_depth > 0) {
+            // Never push commands onto d_project->undoStack() while an Undo/Redo replay runs,
+            // and coalesce Auto recalculations while deferred.
             d_links[curIdx].dirty = true;
+            if (d_defer_auto_depth > 0)
+                d_has_deferred_dirty = true;
             if (!touchedGraphs.contains(g))
                 touchedGraphs.append(g);
         } else if (d_mode == Auto) {
@@ -749,6 +784,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
 
     QScopedValueRollback<bool> recalcGuard(d_recalculating, true);
     ScopedProjectUndoSuppressor undoSuppress(app->project());
+    ScopedMultiLayerUndoSuppressor mlUndoSuppress(g->multiLayerParent());
     QScopedValueRollback<bool> logGuard(app->writeFitResultsToLog, false);
     QScopedValueRollback<bool> pasteGuard(app->pasteFitResultsToPlot, false);
 

@@ -1091,8 +1091,8 @@ public:
         QPointer<Table> table;
         QPointer<Column> column;
         QString colName;
-        QList<Interval<int>> beforeIntervals;
-        QList<Interval<int>> afterIntervals;
+        IntervalAttribute<bool> addedMasks;
+        IntervalAttribute<bool> removedMasks;
     };
     bool runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurve *> &curves,
                                const std::function<void()> &editFn);

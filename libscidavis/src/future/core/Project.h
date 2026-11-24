@@ -65,6 +65,8 @@ public:
     void beginSuppressUndo();
     void endSuppressUndo();
     bool isUndoSuppressed() const;
+    void retainSuppressedRemovedAspect(AbstractAspect *aspect);
+    void purgeSuppressedRemovedAspects();
     virtual QString path() const { return ""; }
 #ifndef LEGACY_CODE_0_2_x
     virtual ProjectWindow *view();

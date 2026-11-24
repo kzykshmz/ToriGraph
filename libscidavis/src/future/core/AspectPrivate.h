@@ -67,6 +67,7 @@ public:
     QString uniqueNameFor(const QString &current_name) const;
 
     static QHash<QString, QVariant> g_defaults;
+    bool d_touched_by_undo_stack = false;
 
 private:
     static int indexOfMatchingBrace(const QString &str, int start);

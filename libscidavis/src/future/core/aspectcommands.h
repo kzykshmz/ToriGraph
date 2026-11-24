@@ -191,6 +191,9 @@ public:
     {
         if (!d_target_aspect || !d_target || !d_child || d_index < 0)
             return;
+        if (d_child->property("_tg_suppressed_removed").toBool()
+            || d_child->parentAspect() != nullptr)
+            return;
         d_child->setProperty("_tg_owned_by_undo_cmd", QVariant());
         d_target->insertChild(qBound(0, d_index, d_target->childCount()), d_child.data());
         d_removed = false;

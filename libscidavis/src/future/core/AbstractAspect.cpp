@@ -40,6 +40,16 @@
 #include <QApplication>
 #include <QXmlStreamWriter>
 
+namespace {
+
+QUndoStack *activeUndoStack(const AbstractAspect *aspect)
+{
+    const Project *proj = aspect->project();
+    return (proj && proj->isUndoSuppressed()) ? nullptr : aspect->undoStack();
+}
+
+} // namespace
+
 AbstractAspect::AbstractAspect(const QString &name) : d_aspect_private(new Private(this, name)) { }
 
 AbstractAspect::~AbstractAspect()
@@ -117,6 +127,8 @@ void AbstractAspect::addChild(AbstractAspect *child)
                      .arg(new_name));
         child->setName(new_name);
     }
+    if (activeUndoStack(this) != nullptr)
+        child->markTouchedByUndoStack();
     exec(new AspectChildAddCmd(d_aspect_private, child, d_aspect_private->childCount()));
     completeAspectInsertion(child, d_aspect_private->childCount() - 1);
     endMacro();
@@ -133,6 +145,8 @@ void AbstractAspect::insertChild(AbstractAspect *child, int index)
                      .arg(new_name));
         child->setName(new_name);
     }
+    if (activeUndoStack(this) != nullptr)
+        child->markTouchedByUndoStack();
     exec(new AspectChildAddCmd(d_aspect_private, child, index));
     completeAspectInsertion(child, index);
     endMacro();
@@ -141,10 +155,16 @@ void AbstractAspect::insertChild(AbstractAspect *child, int index)
 void AbstractAspect::removeChild(AbstractAspect *child, bool detach)
 {
     Q_ASSERT(indexOfChild(child) != -1);
+    Project *proj = project();
+    const bool retainForSuppressedUndo = !detach && proj && proj->isUndoSuppressed()
+            && proj->undoStack() && proj->undoStack()->count() > 0 && child
+            && child->hasUndoStackReference();
     beginMacro(tr("%1: remove %2.").arg(name()).arg(child->name()));
     prepareAspectRemoval(child);
-    exec(new AspectChildRemoveCmd(d_aspect_private, child, detach));
+    exec(new AspectChildRemoveCmd(d_aspect_private, child, detach || retainForSuppressedUndo));
     endMacro();
+    if (retainForSuppressedUndo)
+        proj->retainSuppressedRemovedAspect(child);
 }
 
 void AbstractAspect::reparentChild(AbstractAspect *new_parent, AbstractAspect *child)
@@ -167,6 +187,10 @@ void AbstractAspect::reparentChild(AbstractAspect *new_parent, AbstractAspect *c
         child->setName(new_name);
     }
     prepareAspectRemoval(child);
+    if (activeUndoStack(this) != nullptr) {
+        child->markTouchedByUndoStack();
+        new_parent->markTouchedByUndoStack();
+    }
     exec(new AspectChildReparentCmd(d_aspect_private, new_parent->d_aspect_private, child,
                                     new_index));
     new_parent->completeAspectInsertion(child, new_index);
@@ -202,23 +226,32 @@ void AbstractAspect::moveChild(int from, int to)
     exec(new AspectChildMoveCmd(d_aspect_private, from, to));
 }
 
-namespace {
-
-QUndoStack *activeUndoStack(const AbstractAspect *aspect)
+void AbstractAspect::markTouchedByUndoStack()
 {
-    const Project *proj = aspect->project();
-    return (proj && proj->isUndoSuppressed()) ? nullptr : aspect->undoStack();
+    for (AbstractAspect *cur = this; cur != nullptr; cur = cur->parentAspect())
+        cur->d_aspect_private->d_touched_by_undo_stack = true;
 }
 
-} // namespace
+bool AbstractAspect::hasUndoStackReference() const
+{
+    if (d_aspect_private->d_touched_by_undo_stack)
+        return true;
+    for (int i = 0; i < d_aspect_private->childCount(); ++i) {
+        AbstractAspect *ch = d_aspect_private->child(i);
+        if (ch && ch->hasUndoStackReference())
+            return true;
+    }
+    return false;
+}
 
 void AbstractAspect::exec(QUndoCommand *cmd)
 {
     Q_CHECK_PTR(cmd);
     QUndoStack *stack = activeUndoStack(this);
-    if (stack)
+    if (stack) {
+        markTouchedByUndoStack();
         stack->push(cmd);
-    else {
+    } else {
         cmd->redo();
         delete cmd;
     }

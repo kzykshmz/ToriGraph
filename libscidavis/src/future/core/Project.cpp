@@ -39,10 +39,12 @@
 #include <QUndoStack>
 #include <QString>
 #include <QKeySequence>
+#include <QList>
 #include <QMenu>
 #include <QPluginLoader>
 #include <QComboBox>
 #include <QFile>
+#include <QVariant>
 #include <QXmlStreamWriter>
 #include <QtDebug>
 
@@ -75,6 +77,7 @@ public:
     AbstractScriptingEngine *scripting_engine;
     QString file_name;
     int undo_suppress_depth;
+    QList<QPointer<AbstractAspect>> suppressed_removed_aspects;
 };
 
 Project::Project() : future::Folder(tr("Unnamed")), d(new Private())
@@ -85,11 +88,23 @@ Project::Project() : future::Folder(tr("Unnamed")), d(new Private())
     QString engine_name = ScriptingEngineManager::instance()->engineNames()[0];
     d->scripting_engine = ScriptingEngineManager::instance()->engine(engine_name);
 #endif
+    auto purgeIfStackEmpty = [this]() {
+        if (d->undo_stack.count() == 0 && !d->suppressed_removed_aspects.isEmpty())
+            purgeSuppressedRemovedAspects();
+    };
+    connect(&d->undo_stack, &QUndoStack::indexChanged, this, purgeIfStackEmpty);
+    connect(&d->undo_stack, &QUndoStack::canRedoChanged, this, purgeIfStackEmpty);
 }
 
 Project::~Project()
 {
+    if (d) {
+        QObject::disconnect(&d->undo_stack, nullptr, this, nullptr);
+        d->undo_stack.clear();
+        purgeSuppressedRemovedAspects();
+    }
     delete d;
+    d = nullptr;
 }
 
 QUndoStack *Project::undoStack() const
@@ -111,6 +126,34 @@ void Project::endSuppressUndo()
 bool Project::isUndoSuppressed() const
 {
     return d->undo_suppress_depth > 0;
+}
+
+void Project::retainSuppressedRemovedAspect(AbstractAspect *aspect)
+{
+    if (!d || !aspect)
+        return;
+    aspect->setProperty("_tg_owned_by_undo_cmd", true);
+    aspect->setProperty("_tg_suppressed_removed", true);
+    for (const QPointer<AbstractAspect> &existing : d->suppressed_removed_aspects) {
+        if (existing.data() == aspect)
+            return;
+    }
+    d->suppressed_removed_aspects.append(QPointer<AbstractAspect>(aspect));
+}
+
+void Project::purgeSuppressedRemovedAspects()
+{
+    if (!d || d->suppressed_removed_aspects.isEmpty())
+        return;
+    QList<QPointer<AbstractAspect>> pending;
+    pending.swap(d->suppressed_removed_aspects);
+    for (const QPointer<AbstractAspect> &asp : pending) {
+        if (asp && asp->parentAspect() == nullptr) {
+            asp->setProperty("_tg_owned_by_undo_cmd", QVariant());
+            asp->setProperty("_tg_suppressed_removed", QVariant());
+            delete asp.data();
+        }
+    }
 }
 
 #ifndef LEGACY_CODE_0_2_x
