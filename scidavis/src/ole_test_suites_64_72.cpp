@@ -2741,6 +2741,9 @@ int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
     // ---------------- 69e: to_python_script coverage ----------------
     {
+        const QString prevLang69e = mw->appLanguage;
+        mw->switchToLanguage(QStringLiteral("ja"));
+        QCoreApplication::processEvents();
         Table *t = mw->newTable("T69", 6, 4);
         CHECK_COND(t != nullptr, "69e: table");
         t->setHeader(QStringList() << "x" << "y" << "err" << "y2");
@@ -2798,6 +2801,8 @@ int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
 
         mw->closeWindow(ml);
         mw->closeWindow(t);
+        mw->switchToLanguage(prevLang69e.isEmpty() ? QStringLiteral("en") : prevLang69e);
+        QCoreApplication::processEvents();
     }
 
     qApp->setProperty("torigraph_noninteractive", QVariant());
