@@ -287,7 +287,14 @@ bool evalScalarExpr(const QString &raw, double *out, QString *errMsg = nullptr)
         try {
             MyParser parser;
             parser.SetExpr(expr);
-            res = parser.Eval();
+            int nRes = 0;
+            const double *vals = parser.Eval(nRes);
+            if (nRes != 1 || !vals) {
+                if (localErr)
+                    *localErr = QObject::tr("Multiple comma-separated expressions are not allowed.");
+                return false;
+            }
+            res = vals[0];
             if (!std::isfinite(res)) {
                 if (localErr)
                     *localErr = QObject::tr("Expression evaluates to a non-finite value.");
@@ -2165,6 +2172,8 @@ void FitDialog::accept()
     else if (usePluginCat) {
         d_fitter = new PluginFit(app, d_graph);
         if (!((PluginFit *)d_fitter)->load(d_plugin_files_list[funcBox->currentRow()])) {
+            if (!self)
+                return;
             delete d_fitter;
             d_fitter = 0;
             return;
@@ -2191,6 +2200,8 @@ void FitDialog::accept()
     }
 
     if (!d_fitter || !d_fitter->setDataFromCurve(curve, start, end)) {
+        if (!self)
+            return;
         delete d_fitter;
         d_fitter = 0;
         return;
@@ -2213,13 +2224,15 @@ void FitDialog::accept()
             QMessageBox::critical(this, tr("Weighting Error"),
                                   tr("Could not read valid weight/variance values from column %1.")
                                           .arg(colFullName));
-            if (!self)
-                return;
         }
+        if (!self)
+            return;
         delete d_fitter;
         d_fitter = 0;
         return;
     }
+    if (!self)
+        return;
 
     if (boxLinearConstraints && !boxLinearConstraints->text().trimmed().isEmpty()) {
         if (!d_fitter->setLinearConstraintExpr(boxLinearConstraints->text().trimmed())) {
@@ -2242,7 +2255,9 @@ void FitDialog::accept()
     }
     clearPreviewCurve();
 
-    if (!self || !d_graph) {
+    if (!self)
+        return;
+    if (!d_graph) {
         delete d_fitter;
         d_fitter = 0;
         return;

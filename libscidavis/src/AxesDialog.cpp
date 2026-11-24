@@ -328,7 +328,14 @@ bool evalAxisScalarExpr(const QString &raw, double *out, QString *errMsg = nullp
         try {
             MyParser parser;
             parser.SetExpr(expr);
-            res = parser.Eval();
+            int nRes = 0;
+            const double *vals = parser.Eval(nRes);
+            if (nRes != 1 || !vals) {
+                if (localErr)
+                    *localErr = QObject::tr("Multiple comma-separated expressions are not allowed.");
+                return false;
+            }
+            res = vals[0];
             if (!std::isfinite(res)) {
                 if (localErr)
                     *localErr = QObject::tr("Expression evaluates to a non-finite value.");
@@ -2358,7 +2365,12 @@ bool AxesDialog::updatePlot()
                     else if (expr.contains(QLatin1Char('y')))
                         parser.DefineVar(_T("y"), &value);
                     parser.SetExpr(expr);
-                    parser.Eval();
+                    int nRes = 0;
+                    const double *vals = parser.Eval(nRes);
+                    if (nRes != 1 || !vals) {
+                        throw mu::ParserError(toString<mu::string_type>(
+                                tr("Multiple comma-separated expressions are not allowed.")));
+                    }
                 };
                 try {
                     try {

@@ -397,7 +397,11 @@ double ScaleDraw::transformValue(double value) const
                     parser.DefineVar(_T("y"), &value);
 
                 parser.SetExpr(expr);
-                outVal = parser.Eval();
+                int nRes = 0;
+                const double *vals = parser.Eval(nRes);
+                if (nRes != 1 || !vals)
+                    return false;
+                outVal = vals[0];
                 return true;
             } catch (mu::ParserError &) {
                 return false;

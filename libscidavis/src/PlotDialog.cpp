@@ -3395,7 +3395,14 @@ bool PlotDialog::evaluateHistogramInputs(double *beginVal, double *endVal, doubl
             try {
                 MyParser parser;
                 parser.SetExpr(expr);
-                res = parser.Eval();
+                int nRes = 0;
+                const double *vals = parser.Eval(nRes);
+                if (nRes != 1 || !vals) {
+                    if (localErr)
+                        *localErr = tr("Multiple comma-separated expressions are not allowed.");
+                    return false;
+                }
+                res = vals[0];
                 if (!std::isfinite(res)) {
                     if (localErr)
                         *localErr = tr("Expression evaluates to a non-finite value.");
