@@ -329,6 +329,13 @@ static void ensureInitializedLocked()
         "All Windows",
         "Notes / Scripts",
         "Fit",
+        "Axis",
+        "Free",
+        "Paste",
+        "Paste (Ctrl+V)",
+        "Line + Symbol",
+        "Add Error Bars...",
+        "Export JSON...",
         "Yes",
         "No",
         "Long Name",
@@ -345,6 +352,12 @@ static void ensureInitializedLocked()
             static_cast<int>(sizeof(kCanonicalKeysUtf8) / sizeof(kCanonicalKeysUtf8[0]));
     for (int i = 0; i < nCanon; ++i)
         s_canonicalMainKeys.insert(QString::fromUtf8(kCanonicalKeysUtf8[i]));
+
+    // TeXTableSettingsWidget.cpp has a historical source literal typo "Table labes";
+    // keep its context translation in code so ja_dictionary.tsv stays typo-free.
+    s_contextDict.insert(contextKey(QStringLiteral("TeXTableSettingsWidget"),
+                                    QStringLiteral("Table labes")),
+                         QString::fromUtf8("テーブルラベル (参照キー)"));
 
     s_initialized = true;
 }

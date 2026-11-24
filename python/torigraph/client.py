@@ -717,8 +717,7 @@ def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
     def _alias(self: Any, *args: Any, **kwargs: Any) -> Any:
         cls_name = type(self).__name__
         warnings.warn(
-            f"{cls_name}.{old}() is a deprecated alias; use {cls_name}.{canonical}() instead "
-            f"({cls_name}.{old}() は非推奨の別名です。{canonical}() を使ってください)",
+            f"{cls_name}.{old}() is a deprecated alias; use {cls_name}.{canonical}() instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -726,7 +725,7 @@ def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
 
     _alias.__name__ = old
     _alias.__qualname__ = old
-    _alias.__doc__ = f"Deprecated alias of :meth:`{canonical}` (非推奨の別名)."
+    _alias.__doc__ = f"Deprecated alias of :meth:`{canonical}`."
     _alias._torigraph_alias_of = canonical  # type: ignore[attr-defined]
     return _alias
 
@@ -736,36 +735,54 @@ def _is_loopback_host(host: str) -> bool:
     return h in ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1") or h.startswith("127.")
 
 
-def _read_local_tcp_token_file(port: int) -> Optional[str]:
+def _local_tcp_token_candidate_paths(port: int) -> List[Path]:
+    """Return candidate local filesystem paths for ToriGraph's ``tcp_<port>.token`` file."""
+    fname = f"tcp_{int(port)}.token"
     candidates: List[Path] = []
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     if local_app_data:
-        candidates.append(Path(local_app_data) / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token")
+        candidates.append(Path(local_app_data) / "ToriGraph" / "rpc" / fname)
     if os.name == "nt":
-        candidates.append(
-            Path.home() / "AppData" / "Local" / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token"
-        )
+        candidates.append(Path.home() / "AppData" / "Local" / "ToriGraph" / "rpc" / fname)
     else:
         xdg = os.environ.get("XDG_DATA_HOME", "").strip()
         if xdg:
-            candidates.append(Path(xdg) / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token")
+            candidates.append(Path(xdg) / "ToriGraph" / "rpc" / fname)
+        candidates.append(Path.home() / ".local" / "share" / "ToriGraph" / "rpc" / fname)
         candidates.append(
-            Path.home() / ".local" / "share" / "ToriGraph" / "rpc" / f"tcp_{int(port)}.token"
+            Path.home() / "Library" / "Application Support" / "ToriGraph" / "rpc" / fname
         )
-        candidates.append(
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "ToriGraph"
-            / "rpc"
-            / f"tcp_{int(port)}.token"
-        )
+    temp_dir = tempfile.gettempdir().strip()
+    if temp_dir:
+        candidates.append(Path(temp_dir) / "ToriGraph" / "rpc" / fname)
+    seen: set[str] = set()
+    unique: List[Path] = []
     for cand in candidates:
+        key = os.path.normcase(os.fspath(cand))
+        if key not in seen:
+            seen.add(key)
+            unique.append(cand)
+    return unique
+
+
+def _find_local_tcp_token_files(port: int) -> List[Path]:
+    """Return existing local ``tcp_<port>.token`` files matching standard ToriGraph RPC dirs."""
+    found: List[Path] = []
+    for cand in _local_tcp_token_candidate_paths(port):
         try:
             if cand.is_file():
-                tok = cand.read_text(encoding="utf-8").strip()
-                if tok:
-                    return tok
+                found.append(cand)
+        except OSError:
+            continue
+    return found
+
+
+def _read_local_tcp_token_file(port: int) -> Optional[str]:
+    for cand in _find_local_tcp_token_files(port):
+        try:
+            tok = cand.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
         except OSError:
             continue
     return None
@@ -841,13 +858,19 @@ class _TcpTransport:
             # Legacy servers predating rpc.auth reply -32601 Method not found and stay open.
             if err_code != -32601:
                 self.close()
-                if isinstance(err, Mapping):
-                    raise RpcError(
-                        err_code,
-                        str(err.get("message", "Unauthorized: rpc.auth required")),
-                        err.get("data"),
+                raw_msg = (
+                    str(err.get("message", "Unauthorized: rpc.auth required"))
+                    if isinstance(err, Mapping)
+                    else str(err)
+                )
+                if err_code == -32001:
+                    raw_msg = (
+                        f"{raw_msg}. Recovery: pass token=..., set TORIGRAPH_RPC_TOKEN, "
+                        f"verify the local tcp_{int(self.port)}.token file is readable, "
+                        "or connect via a tokenless local pipe:// endpoint shown in Tools -> Python Console."
                     )
-                raise RpcError(-32001, str(err))
+                err_data = err.get("data") if isinstance(err, Mapping) else None
+                raise RpcError(err_code, raw_msg, err_data)
 
     @property
     def endpoint(self) -> str:
@@ -1210,6 +1233,8 @@ class _NamespaceProxy:
         self._prefix = prefix
 
     def __getattr__(self, method_suffix: str) -> Any:
+        if not method_suffix or method_suffix.startswith("_"):
+            raise AttributeError(f"{type(self).__name__} has no attribute {method_suffix!r}")
         rpc_method = f"{self._prefix}.{method_suffix}"
 
         def _invoke(
@@ -6688,18 +6713,26 @@ def launch(
             f"Timed out after {timeout:.1f}s waiting for ToriGraph RPC endpoint from '{exe}'."
         )
 
+    spawned_token_files: List[str] = []
     try:
         spawned_token: Optional[str] = None
         ep_clean = discovered_endpoint.split("?", 1)[0].strip()
         if ep_clean.startswith("tcp://") and ":" in ep_clean[6:]:
             port_part = ep_clean.rsplit(":", 1)[-1]
             if port_part.isdigit():
-                spawned_token = _read_local_tcp_token_file(int(port_part))
+                port_num = int(port_part)
+                spawned_token = _read_local_tcp_token_file(port_num)
+                spawned_token_files = [
+                    os.fspath(p) for p in _find_local_tcp_token_files(port_num)
+                ]
         transport = _parse_and_connect_transport(
             discovered_endpoint, timeout=timeout, token=spawned_token
         )
         session = Session(
-            transport, process=proc, cleanup_files=[port_file, err_file], rpc_timeout=rpc_timeout
+            transport,
+            process=proc,
+            cleanup_files=[port_file, err_file, *spawned_token_files],
+            rpc_timeout=rpc_timeout,
         )
         session._reconnect_info = (discovered_endpoint, float(timeout), spawned_token)
         session.call("ping", rpc_timeout=max(1.0, float(timeout)))
@@ -6713,7 +6746,11 @@ def launch(
             proc.kill()
         except Exception:
             pass
-        for f in (port_file, err_file):
+        try:
+            proc.wait(timeout=1.0)
+        except Exception:
+            pass
+        for f in (port_file, err_file, *spawned_token_files):
             try:
                 os.remove(f)
             except OSError:

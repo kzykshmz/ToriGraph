@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ToriGraph Quick Guide</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --surface: #f6f8fa;
+    --kbd-bg: #f3f4f6;
+  }
+  body {
+    font-family: "Segoe UI", Arial, -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.65;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 28px 24px 48px;
+  }
+  h1 {
+    font-size: 1.85rem;
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 8px;
+    margin-top: 0;
+  }
+  h2 {
+    font-size: 1.25rem;
+    margin-top: 2rem;
+    padding-left: 10px;
+    border-left: 4px solid var(--accent);
+  }
+  p, li {
+    font-size: 0.98rem;
+  }
+  ul, ol {
+    padding-left: 1.4rem;
+  }
+  .lead {
+    color: var(--muted);
+    margin-bottom: 1.2rem;
+  }
+  .tabs-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0 20px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .tab-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-size: 0.95rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--surface);
+    font-weight: 600;
+  }
+  kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.85em;
+    background: var(--kbd-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.9em;
+    background: var(--surface);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .note {
+    background: var(--surface);
+    border-left: 4px solid var(--accent);
+    padding: 10px 14px;
+    margin: 12px 0;
+    border-radius: 0 6px 6px 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>ToriGraph Quick Guide</h1>
+<p class="lead">Fast scientific plotting, materials &amp; curve analysis, 600 DPI journal formatting, and editable PowerPoint OLE slides on Windows.</p>
+
+<div class="tabs-bar">
+  <span class="tab-pill">Home</span>
+  <span class="tab-pill">Plot</span>
+  <span class="tab-pill">Materials</span>
+  <span class="tab-pill">Analysis</span>
+  <span class="tab-pill">Worksheet</span>
+  <span class="tab-pill">Format &amp; Export</span>
+  <span class="tab-pill">Tools</span>
+</div>
+
+<h2>1. Import Data or Paste from Excel</h2>
+<ol>
+  <li><b>Drag &amp; drop</b> any <b>Excel (.xlsx / .xlsm), CSV, or TSV</b> file onto the ToriGraph window to open it directly (or use Ribbon <b>Home</b> &rarr; <b>Import</b>, or <b>Import Excel (.xlsx) / CSV...</b> in the center Welcome Hub). To paste numeric cells copied in Excel, click <b>Home</b> &rarr; <b>Paste (Ctrl+V)</b> or press <kbd>Ctrl</kbd>+<kbd>V</kbd>. When an imported CSV or Excel file changes on disk, reload it into the same worksheet via <b>Worksheet</b> &rarr; <b>Re-import</b> (or the worksheet bar <b>Tools &#9662;</b> &rarr; <b>Re-import from Source</b>).</li>
+  <li>After importing or pasting, double-click the <b>Long Name</b>, <b>Units</b>, or <code>F(x)=</code> header rows, or click <b>Col Props</b> above the table (or double-click a column header) to edit column metadata and axis designations. All edits support <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, and the bottom status bar shows live <code>N / Mean / SD</code> statistics for selected cells.</li>
+</ol>
+
+<h2>2. Plot in Two Clicks</h2>
+<ol>
+  <li>Select X/Y columns (or leave default selection to plot all Y columns against X).</li>
+  <li>Click <b>Line+Symbol</b> or <b>Scatter</b> on the worksheet QuickBar, or open the <b>Plot</b> ribbon tab (<b>Line + Symbol</b>, <b>Scatter</b>, stacked/multi-panel plots, etc.).</li>
+</ol>
+
+<h2>3. Journal &amp; Slide Presets + Inspector Styling</h2>
+<ul>
+  <li><b>Journal (ISIJ 85 mm)</b>: Click <b>ISIJ 85mm Fig</b> on the left of the <b>Format &amp; Export</b> tab, or <b>ISIJ 85mm</b> at the top of the right-hand Graph Inspector, to apply 85 &times; 85 mm sizing, Arial typography, inward box ticks, and 600 DPI defaults at once.</li>
+  <li><b>Lab Slide (18pt)</b>: Click <b>Lab Slide (18pt)</b> on <b>Format &amp; Export</b> or in the Inspector to prepare an <b>83.3 mm</b> square graph with 12.9 pt Arial. Sending it with <b>Send to PowerPoint</b> (default <b>140%</b> paste scale) renders cleanly at <b>18 pt</b> on a 16:9 slide.</li>
+  <li><b>Reference Lines &amp; Fine Control</b>: Add <code>y = 0</code> / <code>x = 0</code> or custom <b>Reference Lines</b> from the Inspector <b>Axis</b> tab, the <b>Plot</b> ribbon tab, or the axis mini-toolbar. Adjust axis ranges, label sizes, fractional curve widths (such as <code>0.5 px</code>), colormap scatter palettes, and legends live, or click <b>More Details...</b> for full dialogs. New plots default to the colorblind-safe <b>ToriGraph Default</b> curve palette.</li>
+</ul>
+
+<h2>4. Paste or Send Editable Graphs to PowerPoint (OLE)</h2>
+<ol>
+  <li>Select a graph window and click <b>Home</b> or <b>Format &amp; Export</b> &rarr; <b>Copy for PowerPoint</b> (or press <kbd>Ctrl</kbd>+<kbd>C</kbd>), then paste into PowerPoint with <kbd>Ctrl</kbd>+<kbd>V</kbd>.</li>
+  <li>To build or incrementally update a <code>.pptx</code> deck without opening PowerPoint, click <b>Format &amp; Export</b> &rarr; <b>Send to PowerPoint</b>. Double-click any embedded ToriGraph slide object in PowerPoint later to re-open and edit the live graph.</li>
+</ol>
+
+<h2>5. Export Images, Vector PDF, and Python Scripts</h2>
+<p>Save graphs as raster or vector images (PNG, TIFF, SVG, EMF) via <b>Format &amp; Export</b> &rarr; <b>Export</b> (or <b>Image / PDF Export</b> in the Inspector). Open <b>More Export &#9662;</b> right next to it for <b>Copy High-DPI Image</b>, <b>Export PDF</b>, and <b>Export Python</b> (which generates a standalone Matplotlib script plus comments noting any properties that cannot be reproduced identically).</p>
+
+<h2>6. Text &amp; Canvas Annotations</h2>
+<ul>
+  <li>To place a text label on a graph, click <b>Plot</b> &rarr; <b>Add Text</b>, click the target position on the canvas, and type directly.</li>
+</ul>
+
+<h2>7. Useful Keyboard Shortcuts</h2>
+<table>
+  <tr><th>Shortcut</th><th>Action</th></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy selected cells or Copy for PowerPoint (when a graph is active) / Paste data</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Undo / Redo</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Ctrl</kbd>+<kbd>H</kbd></td><td>Find and replace inside a worksheet (also via <b>Worksheet</b> &rarr; <b>Find &amp; Replace</b>, table bar <b>Tools &#9662;</b> &rarr; <b>Find / Replace...</b>, or context menu)</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Fill Down in a worksheet (copies the top selected row downward via <b>Worksheet</b> &rarr; <b>Fill Down</b> or <b>Tools &#9662;</b> &rarr; <b>Fill Down</b>; activates Data Reader when a graph is active)</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td>New Function Plot (also via <b>File</b> &rarr; <b>New</b> &rarr; <b>New Function Plot</b>)</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>Return from Zoom, Data Reader, or Draw tool to normal Pointer mode</td></tr>
+  <tr><td><kbd>F1</kbd></td><td>Open this Quick Guide</td></tr>
+</table>
+
+<h2>8. Coming from Origin</h2>
+<table>
+  <tr><th>Origin Workflow</th><th>Where to Find It in ToriGraph</th></tr>
+  <tr><td>Set Column Values</td><td>The <code>F(x)=</code> formula bar above the table, double-clicking the <code>F(x)=</code> header row, table bar <b>Col Props</b>, or Ribbon <b>Worksheet</b> &rarr; <b>Formula F(x)=</b>.</td></tr>
+  <tr><td>Import <code>.opju</code> Projects</td><td>Drag &amp; drop a <code>.opju</code> file onto ToriGraph, or open <b>File</b> &rarr; <b>Open</b> / <b>Home</b> &rarr; <b>Import</b> &rarr; <b>Import Origin OPJ...</b> (supports <b>.opju</b> Origin 2018+ XML projects; save legacy binary <code>.opj</code> files as <code>.opju</code> in Origin before importing). Imports worksheets, column metadata (Long Name, Units, Comments), matrices, notes, folder structure, and 2D multi-layer graphs. Inspect imported styling afterward as exact visual parity varies.</td></tr>
+</table>
+
+<h2>9. Troubleshooting</h2>
+<h3>Double-clicking a graph in PowerPoint does not open ToriGraph</h3>
+<ul>
+  <li>Click <b>Help</b> &rarr; <b>Repair PowerPoint Link (OLE Registration)...</b>, or run the Start Menu shortcut <b>ToriGraph</b> &rarr; <b>Repair OLE Server</b>.</li>
+</ul>
+
+<h3>Stuck in Zoom or Data Reader mode</h3>
+<p>Press <kbd>Esc</kbd>, click <b>Mode: ...</b> on the bottom status bar, or click <b>Plot</b> &rarr; <b>Pointer</b>.</p>
+
+<h2>10. Updates, Settings Backup &amp; Python SDK</h2>
+<p><b>Updates</b>: Click <b>Help</b> &rarr; <b>Check for Updates...</b> (or Ribbon <b>Tools</b> &rarr; <b>Check for Updates</b>) to check the latest GitHub release and verify SHA-256 checksums before applying an update.</p>
+<p><b>Settings Export / Import / Reset</b>: On the <b>Tools</b> tab, open <b>Settings File &#9662;</b> and choose <b>Export Settings</b> to save an INI backup, <b>Import Settings</b> to restore it on another PC (takes effect after restart), or <b>Reset Settings</b> to restore defaults without touching project or data files.</p>
+<div class="note">
+  <b>Python Automation SDK</b>: The bundled <code>torigraph</code> Python package (documented in <code>python/README.md</code>) automates headless plotting, curve fitting, diagnostics, and Zero-COM <code>.pptx</code> slide generation via JSON-RPC 2.0.
+</div>
+
+</body>
+</html>

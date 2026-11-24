@@ -21,10 +21,11 @@ import re
 import struct
 import tempfile
 import warnings
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from .client import BatchReadError
+from .client import BatchReadError, ToriGraphError
 
 if TYPE_CHECKING:
     from .client import GraphProxy, Session
@@ -46,6 +47,10 @@ REL_OLE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/o
 REL_IMAGE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 CT_OLE_OBJECT = "application/vnd.openxmlformats-officedocument.oleObject"
 CT_EMF = "image/x-emf"
+
+STRICT_OOXML_NS_PREFIX = "http://purl.oclc.org/ooxml/"
+MAX_OLE_STREAM_BYTES = 128_000_000
+MAX_OLE_CFB_BYTES = 256_000_000
 
 _VALID_PER_SLIDE: Dict[int, Tuple[int, int]] = {
     1: (1, 1),
@@ -364,6 +369,24 @@ def _build_cfb_pure_python(streams: Sequence[Tuple[str, bytes]], root_clsid: byt
     return header + bytes(regular_data)
 
 
+def _validate_ole_payload_sizes(streams: Sequence[Tuple[str, bytes]]) -> None:
+    """Enforce PowerPoint's 128 MB per-stream and <256 MB OLE2 compound container limits."""
+    total_bytes = 0
+    for name, data in streams:
+        size = len(data)
+        if size > MAX_OLE_STREAM_BYTES:
+            raise ValueError(
+                f"OLE stream '{name}' ({size} bytes) exceeds the "
+                f"{MAX_OLE_STREAM_BYTES}-byte (128 MB) limit."
+            )
+        total_bytes += size
+    if total_bytes >= MAX_OLE_CFB_BYTES:
+        raise ValueError(
+            f"OLE compound payload ({total_bytes} bytes) reaches or exceeds the "
+            f"{MAX_OLE_CFB_BYTES}-byte (256 MB) container limit."
+        )
+
+
 def build_ole_compound_file(
     out_bin_path: Union[str, os.PathLike[str]],
     project_bytes: bytes,
@@ -384,9 +407,7 @@ def build_ole_compound_file(
     - ``SciDAVisMeta`` (JSON targetWindow & HIMETRIC/pixel geometry)
     - ``SciDAVisEmf`` (vector Enhanced Metafile preview bytes)
     """
-    dest = Path(os.fspath(out_bin_path))
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
+    comp_obj_stream = _build_comp_obj_stream("ToriGraph Graph", TORIGRAPH_OLE_PROG_ID)
     ole10_stream = struct.pack("<IIIII", 0x02000001, 0, 0, 0, 0)
     meta_bytes = json.dumps(
         {
@@ -401,16 +422,22 @@ def build_ole_compound_file(
         ensure_ascii=False,
     ).encode("utf-8")
 
+    payload_streams = [
+        ("\x01CompObj", comp_obj_stream),
+        ("\x01Ole", ole10_stream),
+        ("ToriGraphProject", project_bytes),
+        ("SciDAVisProject", project_bytes),
+        ("SciDAVisMeta", meta_bytes),
+        ("SciDAVisEmf", emf_bytes),
+    ]
+    _validate_ole_payload_sizes(payload_streams)
+
+    dest = Path(os.fspath(out_bin_path))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
     if os.name != "nt":
         cfb_bytes = _build_cfb_pure_python(
-            [
-                ("\x01CompObj", _build_comp_obj_stream("ToriGraph Graph", TORIGRAPH_OLE_PROG_ID)),
-                ("\x01Ole", ole10_stream),
-                ("ToriGraphProject", project_bytes),
-                ("SciDAVisProject", project_bytes),
-                ("SciDAVisMeta", meta_bytes),
-                ("SciDAVisEmf", emf_bytes),
-            ],
+            payload_streams,
             _CLSID_TORIGRAPH_BYTES,
         )
         dest.write_bytes(cfb_bytes)
@@ -567,6 +594,40 @@ def build_ole_compound_bytes(
         return bin_path.read_bytes()
 
 
+def _ensure_not_strict_ooxml(deck_path: Path) -> None:
+    """Raise :class:`ToriGraphError` if ``deck_path`` uses Strict OOXML namespaces."""
+    if not deck_path.is_file():
+        return
+    strict_bytes = STRICT_OOXML_NS_PREFIX.encode("ascii")
+    try:
+        with zipfile.ZipFile(deck_path, "r") as zf:
+            names = zf.namelist()
+            priority = [
+                n
+                for n in (
+                    "[Content_Types].xml",
+                    "_rels/.rels",
+                    "ppt/presentation.xml",
+                    "ppt/_rels/presentation.xml.rels",
+                )
+                if n in names
+            ]
+            other_xml = [
+                n for n in names if n.endswith((".xml", ".rels")) and n not in priority
+            ]
+            for entry in priority + other_xml:
+                with zf.open(entry, "r") as handle:
+                    head = handle.read(65536)
+                if strict_bytes in head or b'conformance="strict"' in head:
+                    raise ToriGraphError(
+                        f"'{deck_path}' uses Strict OOXML ({STRICT_OOXML_NS_PREFIX}), which is "
+                        "not supported for ToriGraph OLE shapes. In PowerPoint, save a copy as "
+                        "standard 'PowerPoint Presentation (*.pptx)' and try again."
+                    )
+    except zipfile.BadZipFile:
+        return
+
+
 def _extract_shape_xfrm_emu(el: Any) -> Optional[Tuple[int, int, int, int]]:
     """Extract ``(left_emu, top_emu, width_emu, height_emu)`` from any PresentationML shape XML node."""
     # 1. graphicFrame uses <p:xfrm>; 2. pic / sp / cxnSp use <p:spPr>/<a:xfrm>; 3. grpSp uses <p:grpSpPr>/<a:xfrm>
@@ -590,6 +651,12 @@ def _extract_shape_xfrm_emu(el: Any) -> Optional[Tuple[int, int, int, int]]:
     for xf in candidates:
         off = xf.find(f"{{{A_NS}}}off")
         ext = xf.find(f"{{{A_NS}}}ext")
+        if off is None:
+            off_nodes = xf.xpath("./*[local-name()='off']")
+            off = off_nodes[0] if off_nodes else None
+        if ext is None:
+            ext_nodes = xf.xpath("./*[local-name()='ext']")
+            ext = ext_nodes[0] if ext_nodes else None
         if off is not None and ext is not None:
             try:
                 x = int(off.get("x", "0"))
@@ -691,11 +758,11 @@ def _find_shape_element_on_slide(
     return None
 
 
-def embed_ole_shape_on_slide(
+def _embed_shape_impl(
     prs: Any,
     slide: Any,
     *,
-    ole_bytes: bytes,
+    ole_bytes: Optional[bytes],
     emf_bytes: bytes,
     left_emu: int,
     top_emu: int,
@@ -706,7 +773,7 @@ def embed_ole_shape_on_slide(
     prog_id: str = TORIGRAPH_OLE_PROG_ID,
     replace_element: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Insert (or replace in-place at original Z-order) a native OLE ``<p:graphicFrame>`` on ``slide``."""
+    """Insert (or replace in-place at original Z-order) an OLE frame or static EMF picture."""
     _, Part, PackURI, parse_xml = _import_pptx()
     sp_tree = slide.shapes._spTree
 
@@ -720,21 +787,23 @@ def embed_ole_shape_on_slide(
 
     pkg = prs.part.package
     existing_uris = {str(p.partname) for p in pkg.iter_parts()}
-    ole_idx = 1
-    while f"/ppt/embeddings/oleObject{ole_idx}.bin" in existing_uris:
-        ole_idx += 1
     img_idx = 1
     while f"/ppt/media/image{img_idx}.emf" in existing_uris:
         img_idx += 1
 
-    ole_uri = f"/ppt/embeddings/oleObject{ole_idx}.bin"
     emf_uri = f"/ppt/media/image{img_idx}.emf"
-
-    ole_part = Part(PackURI(ole_uri), CT_OLE_OBJECT, pkg, ole_bytes)
     emf_part = Part(PackURI(emf_uri), CT_EMF, pkg, emf_bytes)
-
-    r_id_ole = slide.part.relate_to(ole_part, REL_OLE)
     r_id_img = slide.part.relate_to(emf_part, REL_IMAGE)
+
+    ole_uri: Optional[str] = None
+    r_id_ole: Optional[str] = None
+    if ole_bytes is not None:
+        ole_idx = 1
+        while f"/ppt/embeddings/oleObject{ole_idx}.bin" in existing_uris:
+            ole_idx += 1
+        ole_uri = f"/ppt/embeddings/oleObject{ole_idx}.bin"
+        ole_part = Part(PackURI(ole_uri), CT_OLE_OBJECT, pkg, ole_bytes)
+        r_id_ole = slide.part.relate_to(ole_part, REL_OLE)
 
     max_id = 1
     for cnv in sp_tree.xpath(".//*[local-name()='cNvPr']"):
@@ -756,49 +825,72 @@ def embed_ole_shape_on_slide(
     w_i = max(1, int(round(width_emu)))
     h_i = max(1, int(round(height_emu)))
 
-    gf_xml = (
-        f'<p:graphicFrame xmlns:p="{P_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
-        f"<p:nvGraphicFramePr>"
-        f'<p:cNvPr id="{shape_id}" name="{esc_name}" descr="{esc_alt}"/>'
-        f'<p:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></p:cNvGraphicFramePr>'
-        f"<p:nvPr/>"
-        f"</p:nvGraphicFramePr>"
-        f"<p:xfrm>"
-        f'<a:off x="{x_i}" y="{y_i}"/>'
-        f'<a:ext cx="{w_i}" cy="{h_i}"/>'
-        f"</p:xfrm>"
-        f"<a:graphic>"
-        f'<a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
-        f'<p:oleObj name="ToriGraph Graph" r:id="{r_id_ole}" imgW="{w_i}" imgH="{h_i}" progId="{esc_prog}">'
-        f"<p:embed/>"
-        f"<p:pic>"
-        f"<p:nvPicPr>"
-        f'<p:cNvPr id="{pic_id}" name="{esc_name}_Preview" descr="{esc_alt}"/>'
-        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
-        f"<p:nvPr/>"
-        f"</p:nvPicPr>"
-        f"<p:blipFill>"
-        f'<a:blip r:embed="{r_id_img}"/>'
-        f"<a:stretch><a:fillRect/></a:stretch>"
-        f"</p:blipFill>"
-        f"<p:spPr>"
-        f"<a:xfrm>"
-        f'<a:off x="{x_i}" y="{y_i}"/>'
-        f'<a:ext cx="{w_i}" cy="{h_i}"/>'
-        f"</a:xfrm>"
-        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
-        f"</p:spPr>"
-        f"</p:pic>"
-        f"</p:oleObj>"
-        f"</a:graphicData>"
-        f"</a:graphic>"
-        f"</p:graphicFrame>"
-    )
-    gf_el = parse_xml(gf_xml)
-    if insert_idx is not None:
-        sp_tree.insert(insert_idx, gf_el)
+    if r_id_ole is not None:
+        shape_xml = (
+            f'<p:graphicFrame xmlns:p="{P_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+            f"<p:nvGraphicFramePr>"
+            f'<p:cNvPr id="{shape_id}" name="{esc_name}" descr="{esc_alt}"/>'
+            f'<p:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></p:cNvGraphicFramePr>'
+            f"<p:nvPr/>"
+            f"</p:nvGraphicFramePr>"
+            f"<p:xfrm>"
+            f'<a:off x="{x_i}" y="{y_i}"/>'
+            f'<a:ext cx="{w_i}" cy="{h_i}"/>'
+            f"</p:xfrm>"
+            f"<a:graphic>"
+            f'<a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+            f'<p:oleObj name="ToriGraph Graph" r:id="{r_id_ole}" imgW="{w_i}" imgH="{h_i}" progId="{esc_prog}">'
+            f"<p:embed/>"
+            f"<p:pic>"
+            f"<p:nvPicPr>"
+            f'<p:cNvPr id="{pic_id}" name="{esc_name}_Preview" descr="{esc_alt}"/>'
+            f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
+            f"<p:nvPr/>"
+            f"</p:nvPicPr>"
+            f"<p:blipFill>"
+            f'<a:blip r:embed="{r_id_img}"/>'
+            f"<a:stretch><a:fillRect/></a:stretch>"
+            f"</p:blipFill>"
+            f"<p:spPr>"
+            f"<a:xfrm>"
+            f'<a:off x="{x_i}" y="{y_i}"/>'
+            f'<a:ext cx="{w_i}" cy="{h_i}"/>'
+            f"</a:xfrm>"
+            f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            f"</p:spPr>"
+            f"</p:pic>"
+            f"</p:oleObj>"
+            f"</a:graphicData>"
+            f"</a:graphic>"
+            f"</p:graphicFrame>"
+        )
     else:
-        sp_tree.append(gf_el)
+        shape_xml = (
+            f'<p:pic xmlns:p="{P_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+            f"<p:nvPicPr>"
+            f'<p:cNvPr id="{shape_id}" name="{esc_name}" descr="{esc_alt}"/>'
+            f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>'
+            f"<p:nvPr/>"
+            f"</p:nvPicPr>"
+            f"<p:blipFill>"
+            f'<a:blip r:embed="{r_id_img}"/>'
+            f"<a:stretch><a:fillRect/></a:stretch>"
+            f"</p:blipFill>"
+            f"<p:spPr>"
+            f"<a:xfrm>"
+            f'<a:off x="{x_i}" y="{y_i}"/>'
+            f'<a:ext cx="{w_i}" cy="{h_i}"/>'
+            f"</a:xfrm>"
+            f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            f"</p:spPr>"
+            f"</p:pic>"
+        )
+
+    shape_el = parse_xml(shape_xml)
+    if insert_idx is not None:
+        sp_tree.insert(insert_idx, shape_el)
+    else:
+        sp_tree.append(shape_el)
 
     return {
         "graph": graph_name,
@@ -806,12 +898,45 @@ def embed_ole_shape_on_slide(
         "alt_text": alt_text,
         "ole_part": ole_uri,
         "emf_part": emf_uri,
+        "is_ole": r_id_ole is not None,
         "left_cm": round(x_i / EMU_PER_CM, 4),
         "top_cm": round(y_i / EMU_PER_CM, 4),
         "width_cm": round(w_i / EMU_PER_CM, 4),
         "height_cm": round(h_i / EMU_PER_CM, 4),
         "replaced": replace_element is not None,
     }
+
+
+def embed_ole_shape_on_slide(
+    prs: Any,
+    slide: Any,
+    *,
+    ole_bytes: bytes,
+    emf_bytes: bytes,
+    left_emu: int,
+    top_emu: int,
+    width_emu: int,
+    height_emu: int,
+    graph_name: str,
+    shape_name: Optional[str] = None,
+    prog_id: str = TORIGRAPH_OLE_PROG_ID,
+    replace_element: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Insert (or replace in-place at original Z-order) a native OLE ``<p:graphicFrame>`` on ``slide``."""
+    return _embed_shape_impl(
+        prs,
+        slide,
+        ole_bytes=ole_bytes,
+        emf_bytes=emf_bytes,
+        left_emu=left_emu,
+        top_emu=top_emu,
+        width_emu=width_emu,
+        height_emu=height_emu,
+        graph_name=graph_name,
+        shape_name=shape_name,
+        prog_id=prog_id,
+        replace_element=replace_element,
+    )
 
 
 def _pick_blank_slide_layout(prs: Any) -> Any:
@@ -954,6 +1079,28 @@ def _safe_tmp_component(name: str, max_len: int = 40) -> str:
     return slug
 
 
+def _locked_pptx_permission_error(out_path: Path, cause: PermissionError) -> PermissionError:
+    err = PermissionError(
+        cause.errno,
+        f"Cannot write '{out_path}' because it is open or locked by another application "
+        "(such as PowerPoint). Close the presentation in PowerPoint and try again.",
+        os.fspath(out_path),
+    )
+    err.__cause__ = cause
+    return err
+
+
+def _check_pptx_writable(out_path: Path) -> None:
+    """Fail fast before modifying state if an existing target ``.pptx`` is locked."""
+    if not out_path.is_file():
+        return
+    try:
+        with open(out_path, "r+b"):
+            pass
+    except PermissionError as exc:
+        raise _locked_pptx_permission_error(out_path, exc)
+
+
 def _atomic_save_presentation(prs: Any, out_path: Path) -> None:
     """Save ``prs`` next to ``out_path`` first and ``os.replace`` it over the target.
 
@@ -966,8 +1113,11 @@ def _atomic_save_presentation(prs: Any, out_path: Path) -> None:
     )
     os.close(fd)
     try:
-        prs.save(tmp_name)
-        os.replace(tmp_name, os.fspath(out_path))
+        try:
+            prs.save(tmp_name)
+            os.replace(tmp_name, os.fspath(out_path))
+        except PermissionError as exc:
+            raise _locked_pptx_permission_error(out_path, exc)
     finally:
         try:
             if os.path.exists(tmp_name):
@@ -1108,10 +1258,7 @@ def _fetch_graph_ole_payload(
                     "contains the whole project instead."
                 )
             sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
-            try:
-                session.save_project(sciprj_tmp, compress=False, snapshot=True)
-            except TypeError:
-                session.save_project(sciprj_tmp, compress=False)
+            session.save_project(sciprj_tmp, compress=False, snapshot=True)
             proj_bytes = sciprj_tmp.read_bytes()
             cached_project_bytes = proj_bytes
     elif not per_graph_project:
@@ -1457,6 +1604,8 @@ def export_graphs_to_pptx(
             + (" and would be updated in place" if updates_in_place else " and would be replaced")
             + ". Pass overwrite=True to allow it, or choose a new output path."
         )
+    if out_path.is_file():
+        _check_pptx_writable(out_path)
 
     # Resolve target graph names
     try:
@@ -1549,8 +1698,10 @@ def export_graphs_to_pptx(
 
     # Open existing deck or create new Presentation
     if deck_path is not None:
+        _ensure_not_strict_ooxml(Path(deck_path))
         prs = pptx.Presentation(os.fspath(deck_path))
     elif (auto_replace_alt or named_replace_targets is not None or slide is not None) and out_path.is_file():
+        _ensure_not_strict_ooxml(out_path)
         prs = pptx.Presentation(os.fspath(out_path))
     else:
         prs = pptx.Presentation()
@@ -1575,6 +1726,55 @@ def export_graphs_to_pptx(
     touched_slides: set[int] = set()
     replaced_count = 0
     embedded_count = 0
+    static_fallback_count = 0
+
+    def _ole_exceeds_limits(project_bytes: bytes, preview_emf_bytes: bytes) -> bool:
+        return (
+            len(project_bytes) > MAX_OLE_STREAM_BYTES
+            or len(preview_emf_bytes) > MAX_OLE_STREAM_BYTES
+            or (2 * len(project_bytes) + len(preview_emf_bytes)) >= MAX_OLE_CFB_BYTES
+        )
+
+    def _place_built_item(
+        target_slide: Any,
+        item_data: Dict[str, Any],
+        left_e: int,
+        top_e: int,
+        width_e: int,
+        height_e: int,
+        *,
+        shape_name: Optional[str] = None,
+        replace_element: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        if item_data["ole_bytes"] is not None:
+            return embed_ole_shape_on_slide(
+                prs,
+                target_slide,
+                ole_bytes=item_data["ole_bytes"],
+                emf_bytes=item_data["emf_bytes"],
+                left_emu=left_e,
+                top_emu=top_e,
+                width_emu=width_e,
+                height_emu=height_e,
+                graph_name=item_data["graph_name"],
+                shape_name=shape_name,
+                prog_id=item_data["prog_id"],
+                replace_element=replace_element,
+            )
+        return _embed_shape_impl(
+            prs,
+            target_slide,
+            ole_bytes=None,
+            emf_bytes=item_data["emf_bytes"],
+            left_emu=left_e,
+            top_emu=top_e,
+            width_emu=width_e,
+            height_emu=height_e,
+            graph_name=item_data["graph_name"],
+            shape_name=shape_name,
+            prog_id=item_data["prog_id"],
+            replace_element=replace_element,
+        )
 
     with tempfile.TemporaryDirectory(prefix="torigraph_pptx_") as tmp:
         tmp_dir = Path(tmp)
@@ -1606,28 +1806,82 @@ def export_graphs_to_pptx(
                 allow_whole_project=allow_whole_project,
                 ole_meta=ole_meta,
             )
+            if embed_scope == "project" and _ole_exceeds_limits(proj_b, emf_b):
+                cached_proj = None
+                msg = (
+                    f"Whole-project OLE payload for '{g_nm}' exceeds PowerPoint CFB limits "
+                    "(128 MB/stream, <256 MB total); downgraded to per-graph scope."
+                )
+                warn_list.append(msg)
+                warnings.warn(msg, UserWarning, stacklevel=2)
+                ole_meta = {}
+                (
+                    proj_b,
+                    emf_b,
+                    w_hm,
+                    h_hm,
+                    w_px,
+                    h_px,
+                    prog_id,
+                    canonical_win,
+                    _,
+                ) = _fetch_graph_ole_payload(
+                    session,
+                    g_nm,
+                    dpi=dpi,
+                    tmp_dir=tmp_dir,
+                    seq_idx=idx,
+                    cached_project_bytes=None,
+                    embed_scope="graph",
+                    warn_list=warn_list,
+                    allow_whole_project=allow_whole_project,
+                    ole_meta=ole_meta,
+                )
+
             graph_info = _graph_info_safe(session, canonical_win)
             merged_info: Optional[Dict[str, Any]] = (
                 {**ole_meta, **dict(graph_info)}
                 if graph_info is not None
                 else (ole_meta or None)
             )
-            ole_bin_path = tmp_dir / f"ole_{idx}_{_safe_tmp_component(canonical_win)}.bin"
-            build_ole_compound_file(
-                ole_bin_path,
-                project_bytes=proj_b,
-                emf_bytes=emf_b,
-                target_window=canonical_win,
-                width_hm=w_hm,
-                height_hm=h_hm,
-                width_px=w_px,
-                height_px=h_px,
-            )
+            ole_bytes: Optional[bytes] = None
+            if not _ole_exceeds_limits(proj_b, emf_b):
+                ole_bin_path = tmp_dir / f"ole_{idx}_{_safe_tmp_component(canonical_win)}.bin"
+                try:
+                    build_ole_compound_file(
+                        ole_bin_path,
+                        project_bytes=proj_b,
+                        emf_bytes=emf_b,
+                        target_window=canonical_win,
+                        width_hm=w_hm,
+                        height_hm=h_hm,
+                        width_px=w_px,
+                        height_px=h_px,
+                    )
+                    ole_bytes = ole_bin_path.read_bytes()
+                except ValueError as exc:
+                    msg = (
+                        f"OLE payload for '{g_nm}' exceeds PowerPoint container limits ({exc}); "
+                        "inserted a static EMF image instead (not editable via double-click)."
+                    )
+                    warn_list.append(msg)
+                    warnings.warn(msg, UserWarning, stacklevel=2)
+            else:
+                msg = (
+                    f"OLE payload for '{g_nm}' exceeds the 128 MB stream / <256 MB CFB limit; "
+                    "inserted a static EMF image instead (not editable via double-click)."
+                )
+                warn_list.append(msg)
+                warnings.warn(msg, UserWarning, stacklevel=2)
+
+            if ole_bytes is None:
+                static_fallback_count += 1
+
             built_items.append(
                 {
                     "graph_name": g_nm,
                     "canonical_window": canonical_win,
-                    "ole_bytes": ole_bin_path.read_bytes(),
+                    "ole_bytes": ole_bytes,
                     "emf_bytes": emf_b,
                     "w_hm": w_hm,
                     "h_hm": h_hm,
@@ -1717,18 +1971,14 @@ def export_graphs_to_pptx(
 
                 # Keep target_sname on cNvPr.name AND write descr="torigraph:<graph>" so both
                 # repeated `replace=[(2, "Picture 3")]` AND `replace=True` stay 100% idempotent!
-                pl = embed_ole_shape_on_slide(
-                    prs,
+                pl = _place_built_item(
                     matched_slide,
-                    ole_bytes=item["ole_bytes"],
-                    emf_bytes=item["emf_bytes"],
-                    left_emu=l_e,
-                    top_emu=t_e,
-                    width_emu=w_e,
-                    height_emu=h_e,
-                    graph_name=item["graph_name"],
+                    item,
+                    l_e,
+                    t_e,
+                    w_e,
+                    h_e,
                     shape_name=target_sname,
-                    prog_id=item["prog_id"],
                     replace_element=matched_el,
                 )
                 pl["slide"] = matched_snum
@@ -1811,18 +2061,14 @@ def export_graphs_to_pptx(
                             if cnv_existing and cnv_existing[0].get("name")
                             else None
                         )
-                        pl = embed_ole_shape_on_slide(
-                            prs,
+                        pl = _place_built_item(
                             s_obj,
-                            ole_bytes=item["ole_bytes"],
-                            emf_bytes=item["emf_bytes"],
-                            left_emu=l_e,
-                            top_emu=t_e,
-                            width_emu=w_e,
-                            height_emu=h_e,
-                            graph_name=item["graph_name"],
+                            item,
+                            l_e,
+                            t_e,
+                            w_e,
+                            h_e,
                             shape_name=keep_name,
-                            prog_id=item["prog_id"],
                             replace_element=existing_el,
                         )
                         pl["slide"] = s_num
@@ -1892,17 +2138,13 @@ def export_graphs_to_pptx(
                                 l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
                                     c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
                                 )
-                        pl = embed_ole_shape_on_slide(
-                            prs,
+                        pl = _place_built_item(
                             s_obj,
-                            ole_bytes=item["ole_bytes"],
-                            emf_bytes=item["emf_bytes"],
-                            left_emu=l_e,
-                            top_emu=t_e,
-                            width_emu=w_e,
-                            height_emu=h_e,
-                            graph_name=item["graph_name"],
-                            prog_id=item["prog_id"],
+                            item,
+                            l_e,
+                            t_e,
+                            w_e,
+                            h_e,
                         )
                         pl["slide"] = s_num
                         if clamped_orig_cm is not None:
@@ -1962,17 +2204,13 @@ def export_graphs_to_pptx(
                                     l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
                                         c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
                                     )
-                            pl = embed_ole_shape_on_slide(
-                                prs,
+                            pl = _place_built_item(
                                 s_obj,
-                                ole_bytes=item["ole_bytes"],
-                                emf_bytes=item["emf_bytes"],
-                                left_emu=l_e,
-                                top_emu=t_e,
-                                width_emu=w_e,
-                                height_emu=h_e,
-                                graph_name=item["graph_name"],
-                                prog_id=item["prog_id"],
+                                item,
+                                l_e,
+                                t_e,
+                                w_e,
+                                h_e,
                             )
                             pl["slide"] = s_num
                             if clamped_orig_cm is not None:
@@ -2040,6 +2278,7 @@ def export_graphs_to_pptx(
         "slides_modified": sorted(touched_slides),
         "embedded_count": embedded_count,
         "replaced_count": replaced_count,
+        "static_fallback_count": static_fallback_count,
         "clsid": TORIGRAPH_OLE_CLSID_STR,
         "prog_id": TORIGRAPH_OLE_PROG_ID,
         "placements": placements,

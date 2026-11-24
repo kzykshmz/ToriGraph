@@ -11,7 +11,7 @@
 \sHorizontal Bars	\s横棒グラフ
 \sHorizontal steps	\s水平ステップ線
 \sLine	\s折れ線
-\sLine + Symbol	\s折れ線 + シンボル
+\sLine + Symbol	\s線 + シンボル
 \sScatter	\s散布図
 \sSpline	\sスプライン曲線
 \sVertical Bars	\s縦棒グラフ
@@ -2755,8 +2755,8 @@ Leverage_hii	てこ比 (Leverage h_ii)
 Limits of Agreement	95% 一致限界 (LoA)
 Line	折れ線
 Line + &Symbol	線 + シンボル(&S)
-Line + S&ymbol	折れ線 + シンボル(&Y)
-Line + Symbol	折れ線 + シンボル
+Line + S&ymbol	線 + シンボル(&Y)
+Line + Symbol	線 + シンボル
 Line Appearance	線の外観
 Line Color	線の色
 Line Opacity (%):	線の不透明度 (%):
@@ -2769,7 +2769,7 @@ Line options	直線・矢印のプロパティ
 Line profile %1	ラインプロファイル %1
 Line type	線種
 Line width	線幅
-Line+Symbol	折れ線 + シンボル
+Line+Symbol	線 + シンボル
 Linear	線形
 Linear / Log10	線形 / 対数 (Log10) 切替
 Linear Constraint Error	線形制約エラー
@@ -4490,7 +4490,6 @@ Table &Toolbar	ワークシートツールバー(&T)
 Table Toolbar	ワークシートツールバー
 Table caption	テーブルキャプション (表題)
 Table labels	テーブルラベル (参照キー)
-Table labes	テーブルラベル (参照キー)
 Table1	テーブル1
 Table:	ワークシート:
 Tables	ワークシート
@@ -6703,7 +6702,7 @@ Excluded points: %1 masked, %2 non-numeric (NaN/empty).	除外した点: マス�
 Export Active Layer...	アクティブレイヤーをエクスポート...
 Export Graph...	画像をエクスポート...
 Export Image...	画像をエクスポート...
-Export JSON...	JSON 書出...
+Export JSON...	JSON エクスポート...
 Export Settings	設定を書き出す
 Export stopped at table %1: %2	表 %1 で書き出しを中止しました: %2
 Extra border drawn around the plot area. For a normal 4-sided box use the axis lines (Draw backbones / Frame Presets) instead, otherwise the frame is drawn twice.	プロット領域の外側に重ねる追加の外枠です。通常の4辺の枠は軸線 (Draw backbones / Frame Presets) で描いてください。併用すると二重線になります。
@@ -6947,7 +6946,7 @@ Parametric ANOVA, Nonparametric Tests, Normality & Outlier Tests	一元配置分
 Parent Layer = None: the layer keeps its own cell in the grid above (independent layer with its own axes).\nParent Layer = Layer N: this layer is drawn on top of layer N as a twin-axis overlay and takes no grid cell; the X/Y link modes then tie its axis scales to layer N.	親レイヤー = なし: 上のグリッド内に独立したセルを持ちます (軸も独立)。\n親レイヤー = レイヤー N: レイヤー N の上にツイン軸として重ねて描画し、グリッドのセルは占有しません。X/Y リンクモードで軸の範囲をレイヤー N に連動させます。
 Paste Axis Scale Range	軸スケール範囲を貼り付け
 Paste Axis Scales Only	軸スケールのみ貼り付け
-Paste Colors & Symbols Only	色・記号のみ貼り付け
+Paste Colors & Symbols Only	色・シンボルのみ貼り付け
 Paste Curve Color & Symbol	曲線の色とシンボルを貼り付け
 Paste Curve Style	曲線の色とシンボルを貼り付け
 Paste Fonts Only	フォントのみ貼り付け
@@ -7281,7 +7280,7 @@ Y Min:	Y 最小:
 Y column:	Y列:
 Yield stress σy vs. inverse square-root grain size d^(-1/2) with error bars and linear Hall-Petch regression for low-carbon ferritic steel (ky ≈ 0.62 MPa·m^1/2) and Al-Mg alloy.	結晶粒径の逆平方根 d^(-1/2) に対する降伏応力 σy の Hall-Petch プロット(標準偏差エラーバー・線形回帰直線付き)。低炭素フェライト鋼と Al-Mg 合金の結晶粒微細化強化係数を比較。
 Z column:	Z列:
-Zero lines (use Reference Lines)	ゼロ基準線 (参照線タブを使用)
+Zero lines (use Reference Lines)	ゼロ基準線 (基準線タブを使用)
 [Getting Started] Simple 2-Series X-Y Sample (for practice & formatting)	【入門】シンプルな 2 系列 X-Y サンプル(操作・体裁の練習用)
 [Inset]	[インセット]
 [restored]	[復元]
@@ -7385,7 +7384,7 @@ The presentation part of the existing file could not be read.	既存のファイ
 Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and its source data (%2 MB) were embedded.	プロジェクト全体のデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、このグラフと元データのみ (%2 MB) を埋め込みました。	ToriGraphPptx
 Widescreen 16:9 (33.9 x 19.1 cm)	ワイド画面 16:9 (33.9 × 19.1 cm)	ToriGraphPptx
 Write graphs into a PowerPoint file (.pptx) as editable objects. Double-click a graph on the slide to edit it in ToriGraph.	グラフを PowerPoint のファイル (.pptx) に、編集できるオブジェクトとして書き出します。スライド上のグラフをダブルクリックすると ToriGraph で編集できます。	ToriGraphPptx
-Fit	全体表示	GraphInspectorDock
+Fit	画面に合わせる	GraphInspectorDock
 Fit	画面に合わせる	ModernRibbonBar
 Yes	はい	ApplicationWindow
 No	いいえ	ApplicationWindow
@@ -7455,3 +7454,68 @@ The presentation part of the existing file could not be read.	既存のファイ
 Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and its source data (%2 MB) were embedded.	プロジェクト全体のデータ (%1 MB) が PowerPoint 連携の上限 128 MB を超えたため、このグラフと元データのみ (%2 MB) を埋め込みました。
 Widescreen 16:9 (33.9 x 19.1 cm)	ワイド画面 16:9 (33.9 × 19.1 cm)
 Write graphs into a PowerPoint file (.pptx) as editable objects. Double-click a graph on the slide to edit it in ToriGraph.	グラフを PowerPoint のファイル (.pptx) に、編集できるオブジェクトとして書き出します。スライド上のグラフをダブルクリックすると ToriGraph で編集できます。
+Axis	軸	GraphInspectorDock
+Free	自由	GraphInspectorDock
+Free	フリー	ModernRibbonBar
+Slide (18pt)	スライド (18pt)
+Unlock Aspect Ratio (Free Resize)	縦横比の固定を解除 (自由サイズ変更)
+Open the Add Error Bars dialog to select an error column or percentage	エラーバーの追加ダイアログを開き、誤差列や割合を指定します
+Scientific data files	科学データファイル
+Comma / Tab Separated Values	CSV / TSV ファイル
+Text & ASCII files	テキスト / ASCII ファイル
+Diffraction & Electrochemistry	回折・電気化学データファイル
+\s(preview of first 64 KB)	\s(先頭64 KBのプレビュー)
+%1 graph window(s) were skipped (unsupported binary CPYUA/graph layout)	%1 件のグラフウィンドウは形式上の制約によりスキップされました
+%1 matrix window(s) were skipped	%1 件の行列ウィンドウはスキップされました
+%1 dataset(s) could not be decoded and were skipped	%1 件のデータセットはデコードできずスキップされました
+Origin .opju Import	Origin .opju の読み込み
+Currently unavailable in this view context	現在の表示コンテキストでは実行できません
+Requires an open project window	開いているウィンドウが必要です
+Requires a matrix window	行列ウィンドウが必要です
+Requires a 3D graph window	3Dグラフウィンドウが必要です
+Requires an open worksheet (click or create a worksheet)	ワークシートが必要です(選択または新規作成してください)
+Requires a numeric or selected worksheet column	数値データまたは選択されたワークシート列が必要です
+Requires a graph window (click a graph or plot data first)	グラフウィンドウが必要です(グラフを選択するか先に作図してください)
+Requires a plotted curve on the active graph	アクティブなグラフ上にプロット済み曲線が必要です
+Requires a selected graph object or layer	グラフ上のオブジェクトまたはレイヤーを選択してください
+Paste (Ctrl+V)	貼り付け
+Paste clipboard data or table cells into worksheet (Ctrl+V)	クリップボードやExcelの表データをワークシートに貼り付け (Ctrl+V)
+Clipboard is empty. Copy cells in Excel or TSV/CSV text first, then press Ctrl+V.	クリップボードが空です。ExcelのセルやCSV/TSVテキストをコピーしてからCtrl+Vで貼り付けてください。
+Start Analyzing Data in Seconds	すぐにデータ解析・作図を始めましょう
+Paste from Excel, drop a CSV/XLSX/XRD/OPJU file here, or open a sample project.	Excelからの貼り付け、CSV/XLSX/XRD/OPJUファイルのドロップ、またはサンプルを開いて開始できます。
+Drop CSV / XLSX / XRD / TXT / OPJU files anywhere here	CSV / XLSX / XRD / TXT / OPJU ファイルをここにドロップ
+Paste from Excel (Ctrl+V)	Excelから貼り付け (Ctrl+V)
+Open File...	ファイルを開く...
+Recent	最近使ったファイル
+Show 10+ Sample Templates (XRD / Raman / Tensile / Cyclic / Peak Fit)	10種類以上のサンプルを開く (XRD / ラマン / 引張 / サイクル / ピークフィット)
+New Worksheet	新しいワークシート
+Quick Guide	クイックガイド
+No recent files	最近使ったファイルはありません
+Excel & CSV / Scientific Data	Excel・CSV / 科学データ
+Could not parse data from file: %1	ファイルからデータを読み取れませんでした: %1
+Enter numeric values in a Y column (e.g. %1), or paste both X and Y columns from Excel (Ctrl+V).	Y 列(例: %1)に数値を入力するか、Excel から X と Y の 2 列を貼り付けてください (Ctrl+V)。
+%1: partial copy %2	%1: 一部コピー %2
+%1: apply formula	%1: 数式を適用
+e.g. col("1")*2 (Enter)	例: col("1")*2 (Enter)
+N = 1  |  Mean = %1  |  SD = --	N = 1  |  平均 = %1  |  SD = --
+N = %1  |  Mean = %2  |  SD = %3	N = %1  |  平均 = %2  |  SD = %3
+Auto-generated reproducible ToriGraph script	自動生成された ToriGraph 再現スクリプト
+Reproduces the visual appearance (data, curves, axes, annotations). Analysis and fit computations are not re-run.	グラフの見た目(データ・曲線・軸・注釈)を描き直します。解析やフィットの計算そのものは再現しません。
+Not reproduced: %1	未再現: %1
+Warning: the following elements are not reproduced by this script (adjust their appearance manually).	注意: 次の要素はこのスクリプトでは描き直されません(見た目は手で合わせてください)。
+embed_data='csv' requires an output directory; CSV file (%1) was not written	embed_data='csv' は保存先パス未指定のため CSV ファイル(%1)を書き出していません
+3D graph data source (could not identify Matrix, Table, or formula; 3D graph cannot be reproduced)	3D グラフの元データ(Matrix・Table・数式のいずれも特定できず、3D グラフ本体を再現できない)
+3D graph colors (colormap), axis ranges, zoom, and drawing style (only title, rotation, and projection are reproduced)	3D グラフの色(カラーマップ)・軸範囲・拡大率・描画スタイル(題・回転・正射影だけ再現)
+custom colormap palette (defaults to the standard palette)	カスタムカラーマップの配色(既定パレットになります)
+pole figure stereographic frame (source data not found; reproduced as a matrix heatmap)	極点図のステレオ投影枠(元データが見つからないため行列ヒートマップとして再現)
+base plot of layer 1 could not be reconstructed; emitting an empty graph	第1レイヤーの基底プロットを再構築できないため空のグラフとして出力されます
+style preset '%1' (not found on this PC)	スタイルプリセット '%1'(このPCに見つからない)
+fit curve (reproduced as numeric data, but fit conditions and fitted parameters are not reproduced)	フィット(フィット曲線は数値データとして描き直すが、フィットの条件と結果のパラメータは再現しない)
+value-mapped scatter coloring and colorbar	値で色を変える散布図の色付けとカラーバー
+custom or probability tick labels (probability plots fall back to standard ticks)	確率目盛りなど目盛りの独自ラベル(確率プロットは軸が通常の目盛りになる)
+vector plot arrows (drawn as connected line segments instead)	ベクトル図の矢印(点を結んだ線として描かれる)
+stacked bar stacking (bars overlap; recreate with app.plot_stacked_bars)	積み上げ棒グラフの積み上げ(棒が重なって描かれる。app.plot_stacked_bars で作り直す)
+grouped bar horizontal offset (bar offset amount)	棒グラフの横並び(棒のずらし量 offset)
+first curve assigned to right Y axis (drawn on left Y axis)	1 本目の曲線を右の Y 軸に割り当てる設定(左軸で描かれる)
+stack offset / waterfall curve offsets (re-apply with g.set_stack_offsets)	スタックオフセット・ウォーターフォールの曲線のずらし(g.set_stack_offsets で付け直す)
+shaded band numeric data (skipped because of non-numeric entries)	シェード帯の数値データ(非数値を含むためスキップ)

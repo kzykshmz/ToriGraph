@@ -120,6 +120,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -127,6 +128,7 @@
 #include <QJsonValue>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -152,7 +154,9 @@
 #include <QSet>
 #include <QShortcut>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStandardPaths>
+#include <QTableView>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
@@ -6809,6 +6813,59 @@ void sanitizeAllProjectFunctionCurves(ApplicationWindow *app)
     }
 }
 
+QByteArray readGzipHeaderBytes(const QString &filePath, int maxOutBytes)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    const QByteArray compressed = f.read(std::max(1024, maxOutBytes * 4));
+    f.close();
+    if (compressed.isEmpty())
+        return QByteArray();
+
+    z_stream zs{};
+    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK)
+        return QByteArray();
+
+    QByteArray out(maxOutBytes, '\0');
+    zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.constData()));
+    zs.avail_in = static_cast<uInt>(compressed.size());
+    zs.next_out = reinterpret_cast<Bytef *>(out.data());
+    zs.avail_out = static_cast<uInt>(out.size());
+    const int rc = inflate(&zs, Z_SYNC_FLUSH);
+    const int produced = static_cast<int>(zs.total_out);
+    inflateEnd(&zs);
+    if ((rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) || produced <= 0)
+        return QByteArray();
+    out.resize(produced);
+    return out;
+}
+
+void restoreProjectSnapshotOnError(ApplicationWindow *app, const QByteArray &snap,
+                                   const QString &savedProjName, bool savedWasSaved)
+{
+    if (!app)
+        return;
+    resetProjectInPlaceHeadless(app);
+    if (!snap.isEmpty()) {
+        QTemporaryFile tmpProj(
+                QDir::temp().filePath(QStringLiteral("torigraph_open_rb_XXXXXX.sciprj")));
+        if (tmpProj.open()) {
+            const QString tmpPath = tmpProj.fileName();
+            tmpProj.write(snap);
+            tmpProj.flush();
+            tmpProj.close();
+            (void)app->loadProject(tmpPath);
+            QFile::remove(tmpPath);
+        }
+    }
+    app->projectname = savedProjName.isEmpty() ? QStringLiteral("untitled") : savedProjName;
+    if (savedWasSaved)
+        app->savedProject();
+    else
+        app->modifiedProject();
+}
+
 } // namespace
 
 // ============================================================================
@@ -6923,8 +6980,8 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Trigger a safe view/navigation/toggle QAction or 0-arg slot from a fixed allow-list (destructive commands and modal dialogs are rejected with -32602).",
       "name:str*; checked:bool=null", "app.trigger_action('actionNextWindow')" },
     { "app.grab_gui_diagnostic", "app", "Session.call(method='app.grab_gui_diagnostic', path='')",
-      "Capture main-window screenshot and ribbon/dock geometry diagnostics.",
-      "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0",
+      "Capture main-window screenshot and ribbon/dock/table geometry diagnostics.",
+      "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0; show_explorer:bool=null; expand_inspector:bool=null; inspector_tab:int=null; scroll_inspector:bool|int=null",
       "app.call('app.grab_gui_diagnostic', path='ui.png')" },
 
     // 1b. Workbooks (several worksheets as sheet tabs of one window)
@@ -10150,26 +10207,33 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     }
 
+    const bool useJa = app && app->appLanguage.startsWith(QLatin1String("ja"), Qt::CaseInsensitive);
+    auto pyTr = [useJa](const char *enText) -> QString {
+        if (!useJa)
+            return QString::fromUtf8(enText);
+        return QObject::tr(enText);
+    };
+
     QStringList lines;
-    lines << QStringLiteral("# Auto-generated reproducible ToriGraph script");
-    lines << QStringLiteral(
-            "# グラフの見た目(データ・曲線・軸・注釈)を描き直します。解析やフィットの計算そのものは再現しません。");
+    lines << QStringLiteral("# ") + pyTr("Auto-generated reproducible ToriGraph script");
+    lines << QStringLiteral("# ")
+                    + pyTr("Reproduces the visual appearance (data, curves, axes, annotations). Analysis and fit computations are not re-run.");
     lines << QStringLiteral("import torigraph as tg");
     lines << QString();
-    // Elements this generator cannot (yet) rebuild are listed as "# 未再現: ..." comments
+    // Elements this generator cannot (yet) rebuild are listed as "# Not reproduced: ..." / "# 未再現: ..." comments
     // right after the import line, so the reader sees them before running the script.
     QStringList unreproduced;
-    auto noteUnreproduced = [&unreproduced](const QString &what) {
-        const QString ln = QStringLiteral("# 未再現: ") + what;
+    auto noteUnreproduced = [&unreproduced, &pyTr](const QString &what) {
+        const QString ln = QStringLiteral("# ") + pyTr("Not reproduced: %1").arg(what);
         if (!unreproduced.contains(ln))
             unreproduced << ln;
     };
-    auto finishScript = [&lines, &unreproduced]() -> QString {
+    auto finishScript = [&lines, &unreproduced, &pyTr]() -> QString {
         QStringList out = lines;
         if (!unreproduced.isEmpty()) {
             QStringList block;
-            block << QStringLiteral(
-                    "# 注意: 次の要素はこのスクリプトでは描き直されません(見た目は手で合わせてください)。");
+            block << QStringLiteral("# ")
+                            + pyTr("Warning: the following elements are not reproduced by this script (adjust their appearance manually).");
             block << unreproduced;
             block << QString();
             for (int i = 0; i < block.size(); ++i)
@@ -10207,8 +10271,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 const QString fullCsv = QDir(csvSidecarDir).filePath(csvName);
                 t->exportASCII(fullCsv, QStringLiteral(","), true, false);
             } else {
-                noteUnreproduced(QStringLiteral(
-                        "embed_data='csv' は保存先パス未指定のため CSV ファイル(%1)を書き出していません")
+                noteUnreproduced(pyTr(
+                        "embed_data='csv' requires an output directory; CSV file (%1) was not written")
                                          .arg(csvName));
             }
             lines << QStringLiteral("%1 = app.import_csv(os.path.join(_script_dir, %2), name=%3)")
@@ -10360,8 +10424,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             emittedG3 = true;
         }
         if (!emittedG3) {
-            noteUnreproduced(QStringLiteral(
-                    "3D グラフの元データ(Matrix・Table・数式のいずれも特定できず、3D グラフ本体を再現できない)"));
+            noteUnreproduced(pyTr(
+                    "3D graph data source (could not identify Matrix, Table, or formula; 3D graph cannot be reproduced)"));
             return finishScript();
         }
         lines << QStringLiteral(
@@ -10370,8 +10434,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                               pyFormatNum(g3d->yRotation()), pyFormatNum(g3d->zRotation()),
                               g3d->isOrthogonal() ? QStringLiteral("True")
                                                   : QStringLiteral("False"));
-        noteUnreproduced(QStringLiteral(
-                "3D グラフの色(カラーマップ)・軸範囲・拡大率・描画スタイル(題・回転・正射影だけ再現)"));
+        noteUnreproduced(pyTr(
+                "3D graph colors (colormap), axis ranges, zoom, and drawing style (only title, rotation, and projection are reproduced)"));
         return finishScript();
     }
 
@@ -10493,7 +10557,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         if (!palName.isEmpty())
             cbArgs << QStringLiteral("palette=%1").arg(pyEscapeStr(palName));
         else if (sp->colorMapPreset() == Spectrogram::PresetCustom)
-            noteUnreproduced(QStringLiteral("カスタムカラーマップの配色(既定パレットになります)"));
+            noteUnreproduced(pyTr("custom colormap palette (defaults to the standard palette)"));
         if (sp->reversePalette())
             cbArgs << QStringLiteral("reverse=True");
         const QwtDoubleInterval zInt = sp->colorAxisRange();
@@ -10585,8 +10649,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             }
         }
         if (!hasSrc) {
-            noteUnreproduced(QStringLiteral(
-                    "極点図のステレオ投影枠(元データが見つからないため行列ヒートマップとして再現)"));
+            noteUnreproduced(pyTr(
+                    "pole figure stereographic frame (source data not found; reproduced as a matrix heatmap)"));
             return false;
         }
         const QString projStr =
@@ -11079,8 +11143,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
     }
     if (!emittedBasePlot) {
-        noteUnreproduced(QStringLiteral(
-                "第1レイヤーの基底プロットを再構築できないため空のグラフとして出力されます"));
+        noteUnreproduced(pyTr(
+                "base plot of layer 1 could not be reconstructed; emitting an empty graph"));
         lines << QStringLiteral("g = app.plot_function('0', x_min=0.0, x_max=1.0, graph_name=%1)")
                          .arg(pyEscapeStr(ml->name()));
         lines << QStringLiteral("g.remove_curve(0)");
@@ -11201,7 +11265,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             if (!pageSizeLine.isEmpty())
                 lines << pageSizeLine;
         } else {
-            noteUnreproduced(QStringLiteral("スタイルプリセット '%1'(このPCに見つからない)")
+            noteUnreproduced(pyTr("style preset '%1' (not found on this PC)")
                                      .arg(stylePresetId));
         }
     }
@@ -11212,8 +11276,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         if (!lg)
             continue;
         if (!lg->fitCurvesList().isEmpty())
-            noteUnreproduced(QStringLiteral(
-                    "フィット(フィット曲線は数値データとして描き直すが、フィットの条件と結果のパラメータは再現しない)"));
+            noteUnreproduced(pyTr(
+                    "fit curve (reproduced as numeric data, but fit conditions and fitted parameters are not reproduced)"));
         if (DataCurve *cmDc = lg->pointColorMapCurve()) {
             Table *ct = cmDc->table();
             const DataCurve::PointColorMap &pm = cmDc->pointColorMap();
@@ -11222,12 +11286,12 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                     && ct->colIndex(cmDc->yColumnName()) >= 0
                     && ct->colIndex(pm.zColumn) >= 0;
             if (!canReproduce)
-                noteUnreproduced(QStringLiteral("値で色を変える散布図の色付けとカラーバー"));
+                noteUnreproduced(pyTr("value-mapped scatter coloring and colorbar"));
         }
         for (int ax = 0; ax < QwtPlot::axisCnt; ++ax) {
             if (lg->hasWeibullProbabilityAxis(ax) || lg->hasCustomTickLabels(ax)) {
-                noteUnreproduced(QStringLiteral(
-                        "確率目盛りなど目盛りの独自ラベル(確率プロットは軸が通常の目盛りになる)"));
+                noteUnreproduced(pyTr(
+                        "custom or probability tick labels (probability plots fall back to standard ticks)"));
             }
         }
         bool hasStackOffset = false;
@@ -11237,25 +11301,25 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 continue;
             const int ct = lg->curveType(ci);
             if (ct == Graph::VectXYXY || ct == Graph::VectXYAM)
-                noteUnreproduced(QStringLiteral("ベクトル図の矢印(点を結んだ線として描かれる)"));
+                noteUnreproduced(pyTr("vector plot arrows (drawn as connected line segments instead)"));
             if (auto *bar = dynamic_cast<QwtBarCurve *>(c)) {
                 if (bar->isStacked())
-                    noteUnreproduced(QStringLiteral(
-                            "積み上げ棒グラフの積み上げ(棒が重なって描かれる。app.plot_stacked_bars で作り直す)"));
+                    noteUnreproduced(pyTr(
+                            "stacked bar stacking (bars overlap; recreate with app.plot_stacked_bars)"));
                 else if (bar->offset() != 0)
-                    noteUnreproduced(QStringLiteral("棒グラフの横並び(棒のずらし量 offset)"));
+                    noteUnreproduced(pyTr("grouped bar horizontal offset (bar offset amount)"));
             }
             if (auto *pc = dynamic_cast<PlotCurve *>(c)) {
                 if (pc->stackOffsetX() != 0.0 || pc->stackOffsetY() != 0.0 || pc->stackNormalize01())
                     hasStackOffset = true;
             }
             if (li == 0 && ci == firstEmittedCurveOnL0 && c->yAxis() == QwtPlot::yRight)
-                noteUnreproduced(QStringLiteral(
-                        "1 本目の曲線を右の Y 軸に割り当てる設定(左軸で描かれる)"));
+                noteUnreproduced(pyTr(
+                        "first curve assigned to right Y axis (drawn on left Y axis)"));
         }
         if (hasStackOffset)
-            noteUnreproduced(QStringLiteral(
-                    "スタックオフセット・ウォーターフォールの曲線のずらし(g.set_stack_offsets で付け直す)"));
+            noteUnreproduced(pyTr(
+                    "stack offset / waterfall curve offsets (re-apply with g.set_stack_offsets)"));
     }
 
     // Per-layer curves, styles, error bars, axes, reference lines, shaded bands, annotations
@@ -11729,7 +11793,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                      .arg(bc.isValid() ? bc.alpha() : 55)
                                      .arg(pyEscapeStr(am.value(QStringLiteral("title"))), layerKw);
                 } else if (!xCsv.isEmpty() || !y1Csv.isEmpty() || !y2Csv.isEmpty()) {
-                    noteUnreproduced(QStringLiteral("シェード帯の数値データ(非数値を含むためスキップ)"));
+                    noteUnreproduced(pyTr("shaded band numeric data (skipped because of non-numeric entries)"));
                 }
             }
         }
@@ -12303,20 +12367,70 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwInvalidParams(QStringLiteral("Project file does not exist: %1").arg(path));
         const QString absPath = pfi.absoluteFilePath();
         const bool append = optionalJsonBool(params, QStringLiteral("append"), false);
-        const bool isOpjuExt = absPath.endsWith(QStringLiteral(".opju"), Qt::CaseInsensitive);
+
+        auto hasAnyExt = [&absPath](std::initializer_list<const char *> exts) -> bool {
+            for (const char *ext : exts) {
+                if (absPath.endsWith(QLatin1String(ext), Qt::CaseInsensitive))
+                    return true;
+            }
+            return false;
+        };
+
+        if (hasAnyExt({ ".csv", ".tsv", ".tab", ".txt", ".dat", ".asc", ".ras", ".xy", ".xye",
+                        ".uxd", ".chi", ".mpt", ".dta" })) {
+            throwInvalidParams(QStringLiteral(
+                    "'%1' is a tabular/text data file, not a project; use app.import_csv() instead.")
+                                       .arg(path));
+        }
+        if (hasAnyExt({ ".xlsx", ".xlsm", ".xls", ".ods" })) {
+            throwInvalidParams(QStringLiteral(
+                    "'%1' is a spreadsheet file, not a project; use app.import_xlsx() instead.")
+                                       .arg(path));
+        }
+
+        // Pre-flight readability & non-empty check before touching the active workspace.
+        QFile hdrFile(absPath);
+        if (!hdrFile.open(QIODevice::ReadOnly)) {
+            throwRpcRuntime(QStringLiteral("Failed to open project file '%1': %2")
+                                    .arg(path, hdrFile.errorString()));
+        }
+        const QByteArray rawHead = hdrFile.read(256);
+        hdrFile.close();
+        if (rawHead.isEmpty())
+            throwRpcRuntime(QStringLiteral("Project file is empty: %1").arg(path));
+
+        auto captureRollbackSnapshot = [d_app](QByteArray *outSnap, QString *outName,
+                                              bool *outSaved) {
+            *outName = d_app->projectname;
+            *outSaved = d_app->saved;
+            if (!d_app->windowsList().isEmpty()) {
+                sanitizeAllProjectFunctionCurves(d_app);
+                *outSnap = d_app->saveProjectToByteArray();
+            } else {
+                outSnap->clear();
+            }
+        };
+
+        const bool isOpjuExt = hasAnyExt({ ".opju" });
         if (isOpjuExt || ImportOPJU::isSupportedOpjuFile(absPath)) {
             if (!ImportOPJU::isSupportedOpjuFile(absPath)) {
                 throwRpcRuntime(
                         QStringLiteral("Invalid or corrupt Origin '.opju' file: %1").arg(path));
             }
+            QByteArray rollbackSnap;
+            QString savedProjName;
+            bool savedWasSaved = true;
             if (!append) {
                 confirmUnsavedProjectBeforeReset(server, d_app, params);
+                captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved);
                 resetProjectInPlaceHeadless(d_app);
             }
             const int winBefore = d_app->windowsList().size();
             QString opjuErr;
             ImportOPJU::ImportStats stats;
             if (!ImportOPJU::importFile(d_app, absPath, &opjuErr, &stats)) {
+                if (!append)
+                    restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved);
                 throwRpcRuntime(opjuErr.isEmpty()
                                         ? QStringLiteral("Failed to import OPJU file: %1").arg(path)
                                         : opjuErr);
@@ -12341,34 +12455,47 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             outResult[QStringLiteral("window_count")] = winAfter;
             return true;
         }
-        if (append) {
-            QFile hdrFile(absPath);
-            if (!hdrFile.open(QIODevice::ReadOnly)) {
-                throwRpcRuntime(QStringLiteral("Failed to open project file '%1': %2")
-                                        .arg(path, hdrFile.errorString()));
-            }
-            const QByteArray rawHead = hdrFile.read(128);
-            hdrFile.close();
-            if (rawHead.isEmpty())
-                throwRpcRuntime(QStringLiteral("Project file is empty: %1").arg(path));
-            const bool isOpjExt = absPath.endsWith(QStringLiteral(".opj"), Qt::CaseInsensitive)
-                    || absPath.endsWith(QStringLiteral(".opju"), Qt::CaseInsensitive);
-            const bool hasGzipMagic = rawHead.size() >= 2
-                    && static_cast<unsigned char>(rawHead[0]) == 0x1F
-                    && static_cast<unsigned char>(rawHead[1]) == 0x8B;
-            const bool hasCpyaMagic = rawHead.startsWith("CPYA");
-            QByteArray trimmedHead = rawHead;
-            if (trimmedHead.startsWith("\xEF\xBB\xBF"))
-                trimmedHead.remove(0, 3);
-            trimmedHead = trimmedHead.trimmed();
-            const bool hasSciHeader = trimmedHead.startsWith("SciDAVis")
-                    || trimmedHead.startsWith("QtiPlot") || trimmedHead.startsWith("<?xml")
-                    || trimmedHead.startsWith("<scidavis");
-            if (isOpjExt ? !hasCpyaMagic : !(hasGzipMagic || hasCpyaMagic || hasSciHeader)) {
-                throwRpcRuntime(
-                        QStringLiteral("Invalid or corrupt project header in '%1'.").arg(path));
-            }
 
+        const bool isLegacyOpjExt = hasAnyExt({ ".opj", ".ogm", ".ogw", ".ogg", ".org" });
+        const bool isSciExt = hasAnyExt(
+                { ".sciprj", ".sciprj.gz", ".sciprj~", ".sciprj.gz~", ".qti", ".qti.gz", ".qti~",
+                  ".qti.gz~" });
+#ifndef ORIGIN_IMPORT
+        if (isLegacyOpjExt) {
+            throwRpcRuntime(QStringLiteral(
+                    "Origin '.opj' binary import is not enabled in this build; convert to '.opju' in Origin or export CSV/XLSX."));
+        }
+#endif
+        if (!isSciExt && !isLegacyOpjExt) {
+            throwInvalidParams(QStringLiteral(
+                    "Unsupported project file extension for '%1'. Supported formats: .sciprj, .sciprj.gz, .opju, .qti.")
+                                       .arg(path));
+        }
+
+        const bool hasGzipMagic = rawHead.size() >= 2
+                && static_cast<unsigned char>(rawHead[0]) == 0x1F
+                && static_cast<unsigned char>(rawHead[1]) == 0x8B;
+        const bool hasCpyaMagic = rawHead.startsWith("CPYA");
+        QByteArray headerSample = rawHead;
+        if (hasGzipMagic) {
+            headerSample = readGzipHeaderBytes(absPath, 256);
+            if (headerSample.isEmpty()) {
+                throwRpcRuntime(
+                        QStringLiteral("Invalid or corrupt compressed project file '%1'.").arg(path));
+            }
+        }
+        if (headerSample.startsWith("\xEF\xBB\xBF"))
+            headerSample.remove(0, 3);
+        const QByteArray trimmedHead = headerSample.trimmed();
+        const bool hasSciHeader = trimmedHead.startsWith("SciDAVis")
+                || trimmedHead.startsWith("ToriGraph") || trimmedHead.startsWith("QtiPlot")
+                || trimmedHead.startsWith("<?xml") || trimmedHead.startsWith("<scidavis");
+        if (isLegacyOpjExt ? !hasCpyaMagic : !hasSciHeader) {
+            throwRpcRuntime(
+                    QStringLiteral("Invalid or corrupt project header in '%1'.").arg(path));
+        }
+
+        if (append) {
             Folder *curF = d_app->currentFolder() ? d_app->currentFolder() : d_app->projectFolder();
             const int subBefore = curF ? curF->folders().size() : 0;
             const int winBefore = d_app->windowsList().size();
@@ -12400,10 +12527,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         confirmUnsavedProjectBeforeReset(server, d_app, params);
+        QByteArray rollbackSnap;
+        QString savedProjName;
+        bool savedWasSaved = true;
+        captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved);
         resetProjectInPlaceHeadless(d_app);
         const bool ok = d_app->loadProject(absPath);
-        if (!ok)
+        if (!ok) {
+            restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved);
             throwRpcRuntime(QStringLiteral("Failed to load project: %1").arg(path));
+        }
         d_app->projectname = absPath;
         d_app->savedProject();
         outResult[QStringLiteral("ok")] = true;
@@ -13607,11 +13740,37 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         GraphInspectorDock *insp = d_app->findChild<GraphInspectorDock *>();
-        if (insp && params.contains(QStringLiteral("expand_inspector"))) {
-            const bool exp = optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
-            if (exp)
+        const bool hasExpandInspector = params.contains(QStringLiteral("expand_inspector"))
+                && !params.value(QStringLiteral("expand_inspector")).isNull();
+        const bool wantExpandInspector =
+                hasExpandInspector && optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
+        struct ScopedHeadlessInspectorGuard {
+            ApplicationWindow *app = nullptr;
+            bool wasHeadless = false;
+            ScopedHeadlessInspectorGuard(ApplicationWindow *a, bool reveal)
+                : app(a), wasHeadless(a ? a->isHeadlessMode() : false)
+            {
+                if (app && reveal && wasHeadless)
+                    app->setHeadlessMode(false);
+            }
+            ~ScopedHeadlessInspectorGuard()
+            {
+                if (app && wasHeadless)
+                    app->setHeadlessMode(true);
+            }
+        } headlessInspectorGuard(d_app, wantExpandInspector);
+
+        if (insp && hasExpandInspector) {
+            if (wantExpandInspector) {
+                if (insp->isHidden() || insp->isCollapsedRail())
+                    d_app->toggleGraphInspectorDock();
+                insp->setUserPinned(true);
                 insp->show();
-            insp->setCollapsedRail(!exp);
+                insp->setCollapsedRail(false);
+            } else {
+                insp->setUserPinned(false);
+                insp->setCollapsedRail(true);
+            }
         }
         if (insp && params.contains(QStringLiteral("inspector_tab"))
             && !params.value(QStringLiteral("inspector_tab")).isNull()) {
@@ -13620,7 +13779,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                     static_cast<GraphInspectorDock::InspectorPageIndex>(itab));
         }
 
-        if (d_app->explorerWindow.isVisible() && !d_app->explorerWindow.isFloating()) {
+        if (d_app->explorerWindow.isVisibleTo(d_app) && !d_app->explorerWindow.isFloating()) {
             if (params.contains(QStringLiteral("explorer_width"))
                 && !params.value(QStringLiteral("explorer_width")).isNull()) {
                 const int explicitW = parseBoundedInt(
@@ -13643,7 +13802,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         if (rib)
             rib->setCurrentTabIndex(targetTab);
 
-        auto pumpLayoutEvents = []() {
+        auto pumpLayoutEvents = [d_app]() {
+            d_app->ensurePolished();
+            if (d_app->layout())
+                d_app->layout()->activate();
             for (int pass = 0; pass < 4; ++pass) {
                 QCoreApplication::sendPostedEvents();
                 QApplication::processEvents();
@@ -13653,7 +13815,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         int clippedCaptions = 0;
         QJsonArray clippedDetails;
-        if (rib && rib->isVisible()) {
+        if (rib && rib->isVisibleTo(d_app)) {
             const bool checkAllTabs =
                     optionalJsonBool(params, QStringLiteral("check_all_tabs"), true);
             const int tabStart = checkAllTabs ? 0 : targetTab;
@@ -13663,7 +13825,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 pumpLayoutEvents();
                 const QList<QLabel *> labels = rib->findChildren<QLabel *>();
                 for (QLabel *lbl : labels) {
-                    if (!lbl || !lbl->isVisible()
+                    if (!lbl || !lbl->isVisibleTo(d_app)
                         || lbl->property("class").toString()
                                 != QStringLiteral("RibbonGroupCaption"))
                         continue;
@@ -13709,46 +13871,48 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 pumpLayoutEvents();
             }
         }
-        if (insp && params.contains(QStringLiteral("expand_inspector"))
-            && !params.value(QStringLiteral("expand_inspector")).isNull()) {
-            const bool exp = optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
-            if (exp)
-                insp->show();
-            insp->setCollapsedRail(!exp);
-            if (params.contains(QStringLiteral("inspector_tab"))
-                && !params.value(QStringLiteral("inspector_tab")).isNull()) {
-                const int itab = parseBoundedInt(params, QStringLiteral("inspector_tab"), 0, 0, 3);
-                insp->switchToInspectorPage(
-                        static_cast<GraphInspectorDock::InspectorPageIndex>(itab));
-            }
-            QApplication::processEvents();
+        if (insp && hasExpandInspector && wantExpandInspector
+            && (insp->isHidden() || insp->isCollapsedRail())) {
+            d_app->toggleGraphInspectorDock();
+            insp->setUserPinned(true);
+            insp->show();
+            insp->setCollapsedRail(false);
+            pumpLayoutEvents();
         }
 
-        int ribbonBottomY = 0;
-        if (rib && rib->isVisible()) {
-            if (auto *tb = qobject_cast<QToolBar *>(rib->parentWidget())) {
-                if (tb->isVisible())
-                    ribbonBottomY = tb->mapTo(d_app, QPoint(0, tb->height())).y();
-                else
-                    ribbonBottomY = rib->mapTo(d_app, QPoint(0, rib->height())).y();
-            } else {
-                ribbonBottomY = rib->mapTo(d_app, QPoint(0, rib->height())).y();
+        auto findInspectorPropScroll = [insp, d_app]() -> QScrollArea * {
+            if (!insp)
+                return nullptr;
+            for (QScrollArea *sa : insp->findChildren<QScrollArea *>()) {
+                if (sa && sa->widget() == insp->propertyStack())
+                    return sa;
+            }
+            for (QScrollArea *sa : insp->findChildren<QScrollArea *>()) {
+                if (sa && sa->isVisibleTo(d_app))
+                    return sa;
+            }
+            return nullptr;
+        };
+        if (insp && params.contains(QStringLiteral("scroll_inspector"))
+            && !params.value(QStringLiteral("scroll_inspector")).isNull()) {
+            if (QScrollArea *propScroll = findInspectorPropScroll()) {
+                if (QScrollBar *vsb = propScroll->verticalScrollBar()) {
+                    const QJsonValue sv = params.value(QStringLiteral("scroll_inspector"));
+                    if (sv.isBool())
+                        vsb->setValue(sv.toBool() ? vsb->maximum() : 0);
+                    else if (sv.isDouble())
+                        vsb->setValue(std::clamp(qRound(sv.toDouble()), vsb->minimum(),
+                                                 vsb->maximum()));
+                    pumpLayoutEvents();
+                }
             }
         }
-        const int explorerTopY = d_app->explorerWindow.isVisible()
-                ? d_app->explorerWindow.mapTo(d_app, QPoint(0, 0)).y()
-                : 99999;
-        const int inspectorTopY = (insp && insp->isVisible())
-                ? insp->mapTo(d_app, QPoint(0, 0)).y()
-                : 99999;
-        int explorerSearchW = 0;
-        for (QLineEdit *le : d_app->explorerWindow.findChildren<QLineEdit *>()) {
-            if (le && le->isVisible())
-                explorerSearchW = std::max(explorerSearchW, le->width());
-        }
 
+        // Force full layout & render pass first so headless geometries are finalized before telemetry.
+        pumpLayoutEvents();
         bool savedOk = true;
         QPixmap pm = d_app->grab();
+        pumpLayoutEvents();
         if (!path.isEmpty()) {
             QFileInfo fi(path);
             if (fi.dir().exists() || QDir().mkpath(fi.dir().absolutePath()))
@@ -13757,7 +13921,107 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 savedOk = false;
         }
 
-        outResult[QStringLiteral("ok")] = savedOk;
+        int ribbonBottomY = 0;
+        if (rib && rib->isVisibleTo(d_app)) {
+            if (auto *tb = qobject_cast<QToolBar *>(rib->parentWidget())) {
+                if (tb->isVisibleTo(d_app))
+                    ribbonBottomY = tb->mapTo(d_app, QPoint(0, tb->height())).y();
+                else
+                    ribbonBottomY = rib->mapTo(d_app, QPoint(0, rib->height())).y();
+            } else {
+                ribbonBottomY = rib->mapTo(d_app, QPoint(0, rib->height())).y();
+            }
+        }
+        const bool expVisible = d_app->explorerWindow.isVisibleTo(d_app);
+        const QPoint explorerPos =
+                expVisible ? d_app->explorerWindow.mapTo(d_app, QPoint(0, 0)) : QPoint(0, 99999);
+        const int explorerTopY = expVisible ? explorerPos.y() : 99999;
+
+        const bool inspVisible = (insp && insp->isVisibleTo(d_app));
+        const QPoint inspectorPos =
+                inspVisible ? insp->mapTo(d_app, QPoint(0, 0)) : QPoint(0, 99999);
+        const int inspectorTopY = inspVisible ? inspectorPos.y() : 99999;
+
+        int explorerSearchW = 0;
+        for (QLineEdit *le : d_app->explorerWindow.findChildren<QLineEdit *>()) {
+            if (le && le->isVisibleTo(d_app))
+                explorerSearchW = std::max(explorerSearchW, le->width());
+        }
+
+        bool inspectorClippedBottom = false;
+        int inspectorScrollMax = 0;
+        int inspectorScrollVal = 0;
+        if (inspVisible && insp && !insp->isCollapsedRail()) {
+            if (QScrollArea *propScroll = findInspectorPropScroll()) {
+                if (QScrollBar *vsb = propScroll->verticalScrollBar()) {
+                    inspectorScrollMax = vsb->maximum();
+                    inspectorScrollVal = vsb->value();
+                    if (inspectorScrollMax > inspectorScrollVal)
+                        inspectorClippedBottom = true;
+                }
+            }
+            const int inspBottomY = insp->mapTo(d_app, QPoint(0, insp->height())).y();
+            if (inspBottomY > d_app->height() + 1)
+                inspectorClippedBottom = true;
+        }
+
+        int tableClippedCols = 0;
+        Table *diagTable = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow());
+        if (!diagTable || !diagTable->isVisibleTo(d_app)) {
+            diagTable = nullptr;
+            for (MyWidget *w : d_app->windowsList()) {
+                if (auto *t = qobject_cast<Table *>(w)) {
+                    if (t->isVisibleTo(d_app)) {
+                        diagTable = t;
+                        break;
+                    }
+                }
+            }
+        }
+        if (diagTable) {
+            if (QTableView *tv = diagTable->findChild<QTableView *>()) {
+                if (tv->isVisibleTo(d_app) && tv->viewport()) {
+                    const int vpW = tv->viewport()->width();
+                    for (int c = 0; c < diagTable->numCols(); ++c) {
+                        if (tv->isColumnHidden(c))
+                            continue;
+                        const int cw = tv->columnWidth(c);
+                        if (cw <= 0)
+                            continue;
+                        const int cx = tv->columnViewportPosition(c);
+                        if (cx < 0 || cx + cw > vpW + 1)
+                            ++tableClippedCols;
+                    }
+                }
+            }
+        }
+
+        bool diagOk = true;
+        QStringList diagErrors;
+        const bool wantExplorer = params.contains(QStringLiteral("show_explorer"))
+                && !params.value(QStringLiteral("show_explorer")).isNull()
+                && optionalJsonBool(params, QStringLiteral("show_explorer"), false);
+        const bool wantExpandedInspector = params.contains(QStringLiteral("expand_inspector"))
+                && !params.value(QStringLiteral("expand_inspector")).isNull()
+                && optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
+        if (wantExplorer
+            && (!expVisible || explorerTopY == 99999 || explorerTopY < 0
+                || explorerPos.x() < 0)) {
+            diagOk = false;
+            diagErrors << QStringLiteral(
+                    "Explorer requested visible (show_explorer=true) but reported invalid or offscreen geometry.");
+        }
+        if (wantExpandedInspector
+            && (!inspVisible || !insp || insp->isCollapsedRail() || inspectorTopY == 99999
+                || inspectorTopY < 0 || inspectorPos.x() < 0 || insp->width() <= 64)) {
+            diagOk = false;
+            diagErrors << QStringLiteral(
+                    "Expanded Inspector requested (expand_inspector=true) but reported collapsed, invalid, or offscreen geometry.");
+        }
+
+        outResult[QStringLiteral("ok")] = savedOk && diagOk;
+        if (!diagErrors.isEmpty())
+            outResult[QStringLiteral("diagnostic_error")] = diagErrors.join(QLatin1Char(' '));
         outResult[QStringLiteral("path")] = path;
         outResult[QStringLiteral("width")] = pm.width();
         outResult[QStringLiteral("height")] = pm.height();
@@ -13765,6 +14029,10 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("explorer_top_y")] = explorerTopY;
         outResult[QStringLiteral("inspector_top_y")] = inspectorTopY;
         outResult[QStringLiteral("explorer_search_width")] = explorerSearchW;
+        outResult[QStringLiteral("inspector_clipped_bottom")] = inspectorClippedBottom;
+        outResult[QStringLiteral("inspector_scroll_max")] = inspectorScrollMax;
+        outResult[QStringLiteral("inspector_scroll_value")] = inspectorScrollVal;
+        outResult[QStringLiteral("table_clipped_cols")] = tableClippedCols;
         outResult[QStringLiteral("clipped_ribbon_captions")] = clippedCaptions;
         outResult[QStringLiteral("clipped_details")] = clippedDetails;
         return true;
@@ -18866,11 +19134,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             o[QStringLiteral("bold_title")] = s.boldTitle;
             o[QStringLiteral("bold_tick")] = s.boldTick;
             o[QStringLiteral("bold_legend")] = s.boldLegend;
-            o[QStringLiteral("min_curve_width")] = s.minCurveWidth;
+            const double effCw = (s.curveWidthF > 0.0) ? s.curveWidthF : double(s.minCurveWidth);
+            o[QStringLiteral("curve_width")] = effCw;
+            o[QStringLiteral("min_curve_width")] = qBound(1, qRound(effCw), 20);
+            o[QStringLiteral("symbol_size")] = s.minSymbolSize;
             o[QStringLiteral("min_symbol_size")] = s.minSymbolSize;
             o[QStringLiteral("legend_frame")] = s.legendFrame;
             o[QStringLiteral("format_isij_unit_slash")] = s.formatIsijUnitSlash;
             o[QStringLiteral("large_slide_layout")] = s.largeSlideLayout;
+            if (s.slidePastePercent > 0.0)
+                o[QStringLiteral("slide_paste_percent")] = s.slidePastePercent;
             arr.append(o);
         }
         outResult[QStringLiteral("ok")] = true;
@@ -18922,16 +19195,42 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             spec.boldTick = params.value(QStringLiteral("bold_tick")).toBool(spec.boldTick);
         if (params.contains(QStringLiteral("bold_legend")))
             spec.boldLegend = params.value(QStringLiteral("bold_legend")).toBool(spec.boldLegend);
-        if (params.contains(QStringLiteral("min_curve_width")))
-            spec.minCurveWidth = params.value(QStringLiteral("min_curve_width")).toInt(spec.minCurveWidth);
-        if (params.contains(QStringLiteral("min_symbol_size")))
-            spec.minSymbolSize = params.value(QStringLiteral("min_symbol_size")).toInt(spec.minSymbolSize);
+        if (params.contains(QStringLiteral("curve_width"))) {
+            const double defCw = (spec.curveWidthF > 0.0) ? spec.curveWidthF
+                                                          : double(spec.minCurveWidth);
+            const double cw = qBound(
+                    0.5, params.value(QStringLiteral("curve_width")).toDouble(defCw), 20.0);
+            spec.curveWidthF = cw;
+            spec.minCurveWidth = qBound(1, qRound(cw), 20);
+        } else if (params.contains(QStringLiteral("min_curve_width"))) {
+            const double defCw = (spec.curveWidthF > 0.0) ? spec.curveWidthF
+                                                          : double(spec.minCurveWidth);
+            const double cw = qBound(
+                    0.5, params.value(QStringLiteral("min_curve_width")).toDouble(defCw), 20.0);
+            spec.curveWidthF = cw;
+            spec.minCurveWidth = qBound(1, qRound(cw), 20);
+        }
+        if (params.contains(QStringLiteral("symbol_size"))) {
+            spec.minSymbolSize = qBound(
+                    0, params.value(QStringLiteral("symbol_size")).toInt(spec.minSymbolSize), 100);
+        } else if (params.contains(QStringLiteral("min_symbol_size"))) {
+            spec.minSymbolSize = qBound(
+                    0, params.value(QStringLiteral("min_symbol_size")).toInt(spec.minSymbolSize),
+                    100);
+        }
         if (params.contains(QStringLiteral("legend_frame")))
             spec.legendFrame = params.value(QStringLiteral("legend_frame")).toInt(spec.legendFrame);
         if (params.contains(QStringLiteral("format_isij_unit_slash")))
             spec.formatIsijUnitSlash = params.value(QStringLiteral("format_isij_unit_slash")).toBool(spec.formatIsijUnitSlash);
         if (params.contains(QStringLiteral("large_slide_layout")))
             spec.largeSlideLayout = params.value(QStringLiteral("large_slide_layout")).toBool(spec.largeSlideLayout);
+        if (params.contains(QStringLiteral("slide_paste_percent"))) {
+            spec.slidePastePercent = qBound(
+                    10.0,
+                    params.value(QStringLiteral("slide_paste_percent"))
+                            .toDouble(spec.slidePastePercent > 0.0 ? spec.slidePastePercent : 100.0),
+                    400.0);
+        }
 
         QString err;
         if (!MultiLayer::saveStylePreset(spec, &err))

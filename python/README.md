@@ -2,9 +2,9 @@
 
 `torigraph` は、科学グラフ作成・データ解析ソフトウェア **ToriGraph** の**すべての操作**を Python スクリプトおよび AI エージェントからヘッドレス・非対話・決定論的に自動実行するための公式クライアント SDK です。
 
-- **コア依存ゼロ**: `import torigraph as tg` は Python 3.8+ 標準ライブラリのみで即時ロードされます。
+- **コア依存ゼロ（`to_pptx` 除く）**: `import torigraph as tg` およびすべてのグラフ作成・解析 RPC は Python 3.8+ 標準ライブラリのみで即時ロードされます（PowerPoint `.pptx` 生成機能 `to_pptx()` を呼び出す場合のみ追加で `python-pptx` パッケージが必要です）。
 - **NumPy / Pandas / Polars / `pathlib.Path` ゼロフリクション対応**: `np.ndarray`, `pd.DataFrame`（`df.attrs["units"]` / `"long_names"` 自動保持・往復変換）, `pl.DataFrame` をダックタイピングで直接入出力できます。
-- **Zero-COM PowerPoint ネイティブ OLE デッキ生成 (`to_pptx`)**: `POWERPNT.EXE` や OS クリップボードに一切触れずに、PowerPoint 上でダブルクリック再編集可能な `ToriGraph.Graph.1` ベクター OLE スライド（`.pptx`）を生成・差分更新します。
+- **Zero-COM PowerPoint ネイティブ OLE デッキ生成 (`to_pptx`)**: `POWERPNT.EXE` や OS クリップボードに一切触れずに、PowerPoint 上でダブルクリック再編集可能な `ToriGraph.Graph.1` ベクター OLE スライド（`.pptx`）を生成・差分更新します（要 `python-pptx`）。
 - **AI エージェント自律機能**: 単一往復・失敗時自動ロールバックの `with app.batch():`、自己修復レイアウト `g.auto_layout()`、グラフからの再現スクリプト逆生成 `g.to_python_script()`、および全 RPC 自己発見カタログ `app.describe_api()` を備えています。
 
 ---
@@ -115,7 +115,9 @@ with tg.launch(headless=True) as app:
 
 ### 例 2: Zero-COM PowerPoint ネイティブ編集可能 OLE スライド生成・差分更新 (`to_pptx`)
 
-`POWERPNT.EXE`（開いているプレゼン画面）や OS クリップボードに一切干渉せず、OpenXML + Win32 `StgCreateDocfile`（`ToriGraph.Graph.1`, CLSID `{8E6B9541-3C74-4D28-A915-7D84E5A12001}`）によって、PowerPoint 上でダブルクリックすると ToriGraph で直接再編集できるベクター EMF 付き OLE オブジェクトを埋め込みます。
+> **必須依存パッケージ**: `app.to_pptx()` / `g.to_pptx()` を利用するには事前に `pip install python-pptx` が必要です（`torigraph` 本体インポート時は不要で、`to_pptx()` 呼び出し時に遅延ロードされます）。
+
+`POWERPNT.EXE`（開いているプレゼン画面）や OS クリップボードに一切干渉せず、OpenXML + Win32 `StgCreateDocfile`（`ToriGraph.Graph.1`, CLSID `{8E6B9541-3C74-4D28-A915-7D84E5A12001}`）によって、PowerPoint 上でダブルクリックすると ToriGraph で直接再編集できるベクター EMF 付き OLE オブジェクトを埋め込みます。なお Strict OOXML 形式のテンプレートは対象外（通常 `.pptx` で再保存が必要）で、単一ストリーム 128 MB / CFB 256 MB を超える巨大データは自動的にグラフ単体スコープまたは静的 EMF 画像へフォールバックします。
 
 ```python
 from pathlib import Path
