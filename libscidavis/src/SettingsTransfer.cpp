@@ -48,7 +48,7 @@ void registerSettingsTransferTranslations()
         };
         reg("E&xport Settings...", "設定を書き出す(&X)...");
         reg("&Import Settings...", "設定を読み込む(&I)...");
-        reg("&Reset Settings...", "設定を初期化(&R)...");
+        reg("Reset Settin&gs...", "設定を初期化(&G)...");
         reg("Save all ToriGraph settings to an INI file (to back up or copy to another PC)",
             "ToriGraph のすべての設定を INI ファイルに書き出します(控えや別の PC への移行用)");
         reg("Read settings from an INI file written by Export Settings",
@@ -141,7 +141,7 @@ public:
     void retranslate()
     {
         static const char *const kText[SettingsTransfer::ActCount] = {
-            "E&xport Settings...", "&Import Settings...", "&Reset Settings..."
+            "E&xport Settings...", "&Import Settings...", "Reset Settin&gs..."
         };
         static const char *const kTip[SettingsTransfer::ActCount] = {
             "Save all ToriGraph settings to an INI file (to back up or copy to another PC)",

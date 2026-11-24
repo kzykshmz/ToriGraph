@@ -4008,7 +4008,7 @@ void ApplicationWindow::createActions()
     actionPasteFormatScales->setToolTip(tr("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats"));
     connect(actionPasteFormatScales, SIGNAL(triggered()), this, SLOT(pasteGraphFormatAxisScalesOnly()));
 
-    actionPasteFormatFolder = new QAction(tr("Paste Format to &All Graphs in Folder"), this);
+    actionPasteFormatFolder = new QAction(tr("Paste Format to All &Graphs in Folder"), this);
     actionPasteFormatFolder->setToolTip(tr("Apply copied graph format to every 2D graph window in the current folder"));
     connect(actionPasteFormatFolder, SIGNAL(triggered()), this, SLOT(pasteGraphFormatToFolder()));
 
@@ -4097,7 +4097,7 @@ void ApplicationWindow::createActions()
 
     // Round 2: High-DPI Page Copy, 2D Cross-Section Profile Gadget & Domain Analysis
     actionCopyPageImage =
-            new QAction(IconLoader::load("copy-page-image"), tr("Copy Pa&ge as Image (High-DPI PNG)"), this);
+            new QAction(IconLoader::load("copy-page-image"), tr("Cop&y Page as Image (High-DPI PNG)"), this);
     actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
     actionCopyPageImage->setToolTip(
             tr("Copy active graph page to clipboard as a 300 DPI PNG image"));
@@ -5265,7 +5265,7 @@ void ApplicationWindow::translateActionsStrings()
                 tr("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats"));
     }
     if (actionPasteFormatFolder) {
-        actionPasteFormatFolder->setText(tr("Paste Format to &All Graphs in Folder"));
+        actionPasteFormatFolder->setText(tr("Paste Format to All &Graphs in Folder"));
         actionPasteFormatFolder->setToolTip(
                 tr("Apply copied graph format to every 2D graph window in the current folder"));
     }
@@ -5330,7 +5330,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionClustering)
         actionClustering->setText(tr("&Clustering (K-Means / Dendrogram)..."));
     if (actionCopyPageImage) {
-        actionCopyPageImage->setText(tr("Copy Pa&ge as Image (High-DPI PNG)"));
+        actionCopyPageImage->setText(tr("Cop&y Page as Image (High-DPI PNG)"));
         actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
         actionCopyPageImage->setToolTip(
                 tr("Copy active graph page to clipboard as a 300 DPI PNG image"));

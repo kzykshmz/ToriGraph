@@ -165,7 +165,7 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                 const int sid = part.trimmed().toInt(&ok);
                 if (!ok || !findModularSuite(sid)) {
                     std::cerr << "[FAIL] Unknown modular suite id in " << a.toStdString()
-                              << " (use --list-suites to inspect valid IDs 36..79)\n";
+                              << " (use --list-suites to inspect valid IDs 36..80)\n";
                     mw->savedProject();
                     mw->setOleEmbeddedMode(true);
                     delete mw;

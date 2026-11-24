@@ -414,6 +414,7 @@ if( MSVC )
   # Large ApplicationWindow* TUs and PythonAutomationServer.cpp need >65k COFF sections
   set_source_files_properties(
     "src/ApplicationWindow.cpp"
+    "src/ApplicationWindow_DataAndExport.cpp"
     "src/ApplicationWindow_Menus.cpp"
     "src/ApplicationWindow_SettingsAndStyles.cpp"
     "src/ApplicationWindow_ProjectIO.cpp"

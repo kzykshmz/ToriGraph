@@ -1124,7 +1124,7 @@ void registerApplicationWindowJapaneseStrings()
             "新しいバージョンのToriGraph (%1) が利用可能です。今すぐダウンロードしますか？");
 
         // Round 2: High-DPI Page Copy, Interactive Stack Offsets, On-Canvas Baseline Anchors, Gadgets & Domain Analysis
-        add("Copy Pa&ge as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)(&G)");
+        add("Cop&y Page as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)(&Y)");
         add("Copy Page as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)");
         add("Ctrl+Alt+C", "Ctrl+Alt+C");
         add("Copy active graph page to clipboard as a 300 DPI PNG image",
@@ -1408,7 +1408,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Paste Axis Scales Only", "軸スケールのみ貼り付け");
         add("Paste axis min/max ranges, tick steps, log10 scale, and numeric formats",
             "軸の最小/最大範囲・刻み幅・対数スケール・数値書式のみを貼り付けます");
-        add("Paste Format to &All Graphs in Folder", "フォルダ内の全グラフへ書式貼り付け(&A)");
+        add("Paste Format to All &Graphs in Folder", "フォルダ内の全グラフへ書式貼り付け(&G)");
         add("Paste Format to All Graphs in Folder", "フォルダ内の全グラフへ書式貼り付け");
         add("Apply copied graph format to every 2D graph window in the current folder",
             "現在のフォルダ内のすべての2Dグラフへコピーした書式を一括適用します");

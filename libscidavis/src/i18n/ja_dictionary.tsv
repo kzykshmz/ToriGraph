@@ -1520,7 +1520,7 @@ Copy High-DPI Image	画像コピー
 Copy High-Resolution Bitmap of Graph Page to Clipboard	グラフページの高解像度ビットマップ画像をクリップボードへコピー
 Copy OLE	OLEコピー
 Copy Page	ページをコピー
-Copy Pa&ge as Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)(&G)
+Cop&y Page as Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)(&Y)
 Copy Page as Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)
 Copy Readout to Clipboard	読み取り値をクリップボードにコピー
 Copy Selection	コピー
@@ -5616,7 +5616,7 @@ Paste Format &Special	形式を選択して書式貼り付け(&S)
 Paste &Fonts Only	フォントのみ貼り付け(&F)
 Paste &Colors && Symbols Only	色・シンボルのみ貼り付け(&C)
 Paste &Axis Scales Only	軸スケールのみ貼り付け(&A)
-Paste Format to &All Graphs in Folder	フォルダ内の全グラフへ書式貼り付け(&A)
+Paste Format to All &Graphs in Folder	フォルダ内の全グラフへ書式貼り付け(&G)
 Change Curve Plot Type	曲線のプロット形式を変更
 Add Curves from Worksheet	ワークシートから曲線を追加
 Added %1 column(s) from %2 to %3.	%2 から %1 列を %3 へ追加しました。
@@ -6435,7 +6435,7 @@ Font Size	フォントサイズ
 &Polar Plot...	極座標プロット(&P)...
 &Pole Figure (XRD)...	極点図(XRD)(&P)...
 &Rename Sheet...	シート名の変更(&R)...
-&Reset Settings...	設定を初期化(&R)...
+Reset Settin&gs...	設定を初期化(&G)...
 &Templates (.qpt)	テンプレート (.qpt)(&T)
 &Ungroup Workbook (Separate Worksheets)	ブックを解く (別々のワークシートにする)(&U)
 &Workbook	ブック(&W)

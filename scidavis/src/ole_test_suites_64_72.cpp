@@ -2734,8 +2734,8 @@ int runSuite69SettingsTransferAndScriptCoverage(ApplicationWindow *mw)
         CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("E&xport Settings...")
                            == QString::fromUtf8("設定を書き出す(&X)..."),
                    "69d: Japanese text of Export Settings");
-        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("&Reset Settings...")
-                           == QString::fromUtf8("設定を初期化(&R)..."),
+        CHECK_COND(ToriGraphFullJapaneseTranslator::lookupJapanese("Reset Settin&gs...")
+                           == QString::fromUtf8("設定を初期化(&G)..."),
                    "69d: Japanese text of Reset Settings");
     }
 

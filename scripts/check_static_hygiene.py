@@ -22,6 +22,7 @@ SRC_DIRS = [ROOT / "libscidavis" / "src", ROOT / "scidavis" / "src"]
 
 QSETTINGS_ALLOW_FILES = {
     "ApplicationWindow.cpp",
+    "ApplicationWindow_SettingsAndStyles.cpp",
     "SettingsTransfer.cpp",
     "OleServer.cpp",
 }
@@ -33,6 +34,10 @@ NON_MNEMONIC_CALL_RE = re.compile(
 EXPLICIT_MNEMONIC_RE = re.compile(
     r"(?:addAction\s*\(|new\s+Q(?:Action|PushButton|CheckBox|RadioButton|GroupBox|ToolButton)\s*\(|"
     r"->\s*(?:addRow|setTitle)\s*\()"
+)
+ADDROW_LAYOUT_ARG_RE = re.compile(
+    r"^(?:row\w*|[a-z]\w*Row(?:Lay)?|[A-Za-z0-9_]*Layout\w*|"
+    r"(?:[hv]|btn|box)?[Ll]ay(?:out)?\w*|new\s+Q[A-Za-z]*Layout\b)"
 )
 LABEL_VAR_RE = re.compile(r"(?:lbl|label|hint|cue|badge|pill|preview)", re.IGNORECASE)
 SINGLE_AMP_TR_RE = re.compile(r'\btr(?:Utf8)?\s*\(\s*"([^"\n]*(?<!&) & (?!&)[^"\n]*)"')
@@ -103,6 +108,41 @@ def _extract_stmt(clean_lines: List[str], start_idx: int) -> str:
             break
         begin_idx -= 1
     return " ".join(clean_lines[begin_idx : end_idx + 1])
+
+
+def _parse_addrow_args(stmt: str) -> List[str] | None:
+    m = re.search(r"->\s*addRow\s*\(", stmt)
+    if not m:
+        return None
+    i = m.end()
+    depth = 1
+    in_str = False
+    args: List[str] = []
+    cur: List[str] = []
+    while i < len(stmt) and depth > 0:
+        ch = stmt[i]
+        if ch == '"' and (i == 0 or stmt[i - 1] != "\\"):
+            in_str = not in_str
+            cur.append(ch)
+        elif not in_str:
+            if ch == "(":
+                depth += 1
+                cur.append(ch)
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    args.append("".join(cur).strip())
+                    break
+                cur.append(ch)
+            elif ch == "," and depth == 1:
+                args.append("".join(cur).strip())
+                cur = []
+            else:
+                cur.append(ch)
+        else:
+            cur.append(ch)
+        i += 1
+    return args if len(args) == 2 else None
 
 
 def scan_file(path: pathlib.Path) -> List[Finding]:
@@ -182,6 +222,10 @@ def scan_file(path: pathlib.Path) -> List[Finding]:
             continue
         stmt = _extract_stmt(clean_lines, idx)
         if NON_MNEMONIC_CALL_RE.search(stmt):
+            continue
+        # QFormLayout::addRow(QString, QLayout*) creates a buddy-less QLabel, so '&' is literal
+        addrow_args = _parse_addrow_args(stmt)
+        if addrow_args and ADDROW_LAYOUT_ARG_RE.match(addrow_args[1]):
             continue
         is_explicit = bool(EXPLICIT_MNEMONIC_RE.search(stmt))
         is_btn_settext = bool(

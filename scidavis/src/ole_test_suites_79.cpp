@@ -717,8 +717,8 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
     // -------------------------------------------------------------------------
     {
         // Global shortcuts remain bound on ApplicationWindow when Focus HUD hides menuBar()
-        const QList<QAction *> winActs = w79->actions();
         auto hasShortcutBound = [&](const QKeySequence &seq) -> bool {
+            const QList<QAction *> winActs = w79->actions();
             for (const QAction *act : winActs) {
                 if (!act)
                     continue;
@@ -1181,8 +1181,9 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         CHECK_COND(!rm->hasDirtyLinks(gRec),
                    "79h: RecalcManager still has dirty links after Undo replay!");
         fitEdited = gRec->curve(QStringLiteral("Rec79AutoFit"));
-        CHECK_COND(fitEdited != nullptr && std::fabs(tRec->cell(4, 1) - 8.0) < 1e-9,
-                   "79h: Undo did not revert T79Rec cell(4,1) to 8.0");
+        CHECK_COND(fitEdited != nullptr && fitEdited->dataSize() > 0
+                           && std::fabs(tRec->cell(4, 1) - 8.0) < 1e-9,
+                   "79h: Undo did not revert T79Rec cell(4,1) to 8.0 or Rec79AutoFit empty");
         const double yEndUndone = fitEdited->y(fitEdited->dataSize() - 1);
         CHECK_COND(yEndUndone < yEndEdited - 1.0 && std::fabs(yEndUndone - 8.0) < 1e-5,
                    "79h: RecalcManager Auto did not recalculate fit after Undo (yEndUndone="
@@ -1192,7 +1193,8 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         CHECK_COND(!rm->hasDirtyLinks(gRec),
                    "79h: RecalcManager still has dirty links after Redo replay!");
         fitEdited = gRec->curve(QStringLiteral("Rec79AutoFit"));
-        const double yEndRedone = fitEdited ? fitEdited->y(fitEdited->dataSize() - 1) : 0.0;
+        const double yEndRedone =
+                (fitEdited && fitEdited->dataSize() > 0) ? fitEdited->y(fitEdited->dataSize() - 1) : 0.0;
         CHECK_COND(std::fabs(yEndRedone - yEndEdited) < 1e-5,
                    "79h: RecalcManager Auto did not recalculate fit after Redo (got "
                            << yEndRedone << " expected " << yEndEdited << ")");
