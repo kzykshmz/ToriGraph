@@ -31,6 +31,7 @@
 
 #include "Graph3D.h"
 #include <QCheckBox>
+#include <QPointer>
 
 class QComboBox;
 class QLabel;
@@ -161,7 +162,7 @@ private:
     void initColorsPage();
     void initGeneralPage();
 
-    Graph3D *d_plot;
+    QPointer<Graph3D> d_plot;
     QFont titleFont, xAxisFont, yAxisFont, zAxisFont, numbersFont;
     QStringList labels, scales, tickLengths;
     QColor titleColor, meshColor, bgColor, axesColor, numColor, labelColor, gridColor;

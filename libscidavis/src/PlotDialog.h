@@ -317,14 +317,13 @@ public:
     enum { LayerTreeItem = 1001 };
     LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s);
 
-    Graph *graph() const { return d_graphGuard ? d_graphGuard.data() : nullptr; };
+    Graph *graph() const { return d_graph.data(); };
     void setActive(bool select);
     void rebuildCurvesList();
 
 protected:
     void insertCurvesList();
-    Graph *d_graph;
-    QPointer<Graph> d_graphGuard;
+    QPointer<Graph> d_graph;
 };
 
 /*****************************************************************************

@@ -1808,7 +1808,7 @@ void PlotDialog::contextMenuEvent(QContextMenuEvent *e)
     QPoint pos = listBox->viewport()->mapFromGlobal(QCursor::pos());
     QRect rect = listBox->visualItemRect(listBox->currentItem());
     if (rect.contains(pos)) {
-        QMenu contextMenu(this);
+        QMenu contextMenu;
         contextMenu.addAction(tr("&Delete"), this, SLOT(removeSelectedCurve()));
 
         if (it->rtti() == QwtPlotItem::Rtti_PlotCurve) {
@@ -1846,12 +1846,13 @@ void PlotDialog::removeSelectedCurve()
     const QwtPlotItem *targetPi = item->plotItem();
     if (graph && curveIdx >= 0) {
         QPointer<PlotDialog> safeThis(this);
+        QPointer<QWidget> msgParent(parentWidget());
         QPointer<Graph> safeG(graph);
         QPointer<MultiLayer> safeMl(d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent());
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
             const QString curveTitle = targetPi ? targetPi->title().text() : item->text(0);
             if (QMessageBox::question(
-                        this, tr("Remove Curve"),
+                        msgParent.data(), tr("Remove Curve"),
                         tr("Remove curve \"%1\" from the plot?").arg(curveTitle),
                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
                 != QMessageBox::Yes) {
@@ -3434,27 +3435,35 @@ bool PlotDialog::evaluateHistogramInputs(double *beginVal, double *endVal, doubl
         return false;
     };
 
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+
     if (histogramBeginBox->text().trimmed().isEmpty()) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid start limit!"));
-            histogramBeginBox->setFocus();
+            QMessageBox::critical(msgParent.data(), tr("Input error"),
+                                  tr("Please enter a valid start limit!"));
+            if (self)
+                histogramBeginBox->setFocus();
         }
         return false;
     }
 
     if (histogramEndBox->text().trimmed().isEmpty()) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid end limit!"));
-            histogramEndBox->setFocus();
+            QMessageBox::critical(msgParent.data(), tr("Input error"),
+                                  tr("Please enter a valid end limit!"));
+            if (self)
+                histogramEndBox->setFocus();
         }
         return false;
     }
 
     if (binSizeBox->text().trimmed().isEmpty()) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Input error"),
+            QMessageBox::critical(msgParent.data(), tr("Input error"),
                                   tr("Please enter a valid bin size value!"));
-            binSizeBox->setFocus();
+            if (self)
+                binSizeBox->setFocus();
         }
         return false;
     }
@@ -3463,48 +3472,53 @@ bool PlotDialog::evaluateHistogramInputs(double *beginVal, double *endVal, doubl
     QString errMsg;
     if (!evalExpr(histogramBeginBox->text(), &start, &errMsg)) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Start limit error"),
+            QMessageBox::critical(msgParent.data(), tr("Start limit error"),
                                   errMsg.isEmpty() ? tr("Please enter a valid start limit!")
                                                    : errMsg);
-            histogramBeginBox->setFocus();
+            if (self)
+                histogramBeginBox->setFocus();
         }
         return false;
     }
 
     if (!evalExpr(histogramEndBox->text(), &end, &errMsg)) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("End limit error"),
+            QMessageBox::critical(msgParent.data(), tr("End limit error"),
                                   errMsg.isEmpty() ? tr("Please enter a valid end limit!")
                                                    : errMsg);
-            histogramEndBox->setFocus();
+            if (self)
+                histogramEndBox->setFocus();
         }
         return false;
     }
 
     if (start >= end) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Input error"),
+            QMessageBox::critical(msgParent.data(), tr("Input error"),
                                   tr("Please enter limits that satisfy: begin < end!"));
-            histogramEndBox->setFocus();
+            if (self)
+                histogramEndBox->setFocus();
         }
         return false;
     }
 
     if (!evalExpr(binSizeBox->text(), &stp, &errMsg)) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Bin size input error"),
+            QMessageBox::critical(msgParent.data(), tr("Bin size input error"),
                                   errMsg.isEmpty() ? tr("Please enter a valid bin size value!")
                                                    : errMsg);
-            binSizeBox->setFocus();
+            if (self)
+                binSizeBox->setFocus();
         }
         return false;
     }
 
     if (stp <= 0.0 || !std::isfinite((end - start) / stp)) {
         if (showErrors) {
-            QMessageBox::critical(this, tr("Bin size input error"),
+            QMessageBox::critical(msgParent.data(), tr("Bin size input error"),
                                   tr("Please enter a positive bin size value!"));
-            binSizeBox->setFocus();
+            if (self)
+                binSizeBox->setFocus();
         }
         return false;
     }
@@ -3740,7 +3754,11 @@ void PlotDialog::changeMargin(int)
 void PlotDialog::setTitlesFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, titleFont, this);
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, titleFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
@@ -3753,7 +3771,11 @@ void PlotDialog::setTitlesFont()
 void PlotDialog::setAxesLabelsFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, axesFont, this);
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, axesFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
@@ -3766,7 +3788,11 @@ void PlotDialog::setAxesLabelsFont()
 void PlotDialog::setAxesNumbersFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, numbersFont, this);
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, numbersFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
@@ -3779,7 +3805,11 @@ void PlotDialog::setAxesNumbersFont()
 void PlotDialog::setLegendsFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, legendFont, this);
+    QPointer<PlotDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, legendFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         if (font.family().trimmed().isEmpty())
             font.setFamily("Arial");
@@ -4098,7 +4128,7 @@ void PlotDialog::reloadCurrentSelection()
  *****************************************************************************/
 
 LayerItem::LayerItem(Graph *g, QTreeWidgetItem *parent, const QString &s)
-    : QTreeWidgetItem(parent, QStringList(s), LayerTreeItem), d_graph(g), d_graphGuard(g)
+    : QTreeWidgetItem(parent, QStringList(s), LayerTreeItem), d_graph(g)
 {
     setIcon(0, IconLoader::duotoneIcon("layer-add"));
     setToolTip(0, s);

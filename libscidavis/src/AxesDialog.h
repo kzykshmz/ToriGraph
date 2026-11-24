@@ -365,8 +365,7 @@ protected:
     bool xAxisOn, yAxisOn, topAxisOn, rightAxisOn;
     int xBottomLabelsRotation, xTopLabelsRotation;
 
-    Graph *d_graph;
-    QPointer<Graph> d_graphGuard;
+    QPointer<Graph> d_graph;
     //! Last selected tab
     QWidget *lastPage;
 

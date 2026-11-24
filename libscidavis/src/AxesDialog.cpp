@@ -1514,8 +1514,10 @@ void AxesDialog::updateFrame(int)
 
 void AxesDialog::pickCanvasFrameColor()
 {
-    QColor c = QColorDialog::getColor(boxFrameColor->color(), this);
-    if (!c.isValid() || c == boxFrameColor->color())
+    QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(boxFrameColor->color(), msgParent.data());
+    if (!self || !c.isValid() || c == boxFrameColor->color())
         return;
 
     boxFrameColor->setColor(c);
@@ -1842,7 +1844,7 @@ void AxesDialog::updateShowBox(int axis)
 
 void AxesDialog::customAxisFont()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     bool okF = false;
@@ -1870,7 +1872,11 @@ void AxesDialog::customAxisFont()
     const QFont beforeFont =
             (row >= 0 && row < 4 && d_stagedAxes[row].axisFontDirty) ? d_stagedAxes[row].axisFont
                                                                      : *targetFont;
-    QFont fnt = QFontDialog::getFont(&okF, beforeFont, this);
+    QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont fnt = QFontDialog::getFont(&okF, beforeFont, msgParent.data());
+    if (!self)
+        return;
     if (okF && row >= 0 && row < 4) {
         if (fnt.family().trimmed().isEmpty())
             fnt.setFamily(QStringLiteral("Arial"));
@@ -1890,7 +1896,8 @@ void AxesDialog::accept()
 {
     // exec() のイベントループを Accepted で終えるため QDialog::accept() を使う
     // (以前の close() は reject 経由になり、exec() の戻り値が常に Rejected になる)。
-    if (updatePlot())
+    QPointer<AxesDialog> self(this);
+    if (updatePlot() && self)
         QDialog::accept();
 }
 
@@ -1912,7 +1919,7 @@ void AxesDialog::minorGridEnabled(bool on)
 
 void AxesDialog::updateGrid()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     if (axesGridList && axesGridList->currentRow() >= 0 && axesGridList->currentRow() < 2) {
@@ -1932,7 +1939,7 @@ void AxesDialog::updateGrid()
 
 void AxesDialog::showGridOptions(int axis)
 {
-    if (!d_graphGuard || !d_graph || !d_graph->plotWidget())
+    if (!d_graph || !d_graph->plotWidget())
         return;
     Grid *grd = (Grid *)d_graph->plotWidget()->grid();
     if (!grd)
@@ -2100,9 +2107,10 @@ void AxesDialog::changeBaselineDist(int baseline)
 
 bool AxesDialog::updatePlot()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return false;
     QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
 
     if (d_scalesTabDirty && axesList && axesList->currentRow() >= 0 && axesList->currentRow() < 4
         && d_stagedScales[axesList->currentRow()].dirty) {
@@ -2212,7 +2220,7 @@ bool AxesDialog::updatePlot()
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
-                            this, tr("Start limit error"),
+                            msgParent.data(), tr("Start limit error"),
                             tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
                     if (!self)
                         return false;
@@ -2225,7 +2233,7 @@ bool AxesDialog::updatePlot()
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
-                            this, tr("End limit error"),
+                            msgParent.data(), tr("End limit error"),
                             tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
                     if (!self)
                         return false;
@@ -2239,7 +2247,7 @@ bool AxesDialog::updatePlot()
             if (!evalAxisScalarExpr(from, &startVal, &exprErr)) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("Start limit error"), exprErr);
+                QMessageBox::critical(msgParent.data(), tr("Start limit error"), exprErr);
                 if (!self)
                     return false;
                 boxStart->setFocus();
@@ -2248,7 +2256,7 @@ bool AxesDialog::updatePlot()
             if (!evalAxisScalarExpr(to, &endVal, &exprErr)) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("End limit error"), exprErr);
+                QMessageBox::critical(msgParent.data(), tr("End limit error"), exprErr);
                 if (!self)
                     return false;
                 boxEnd->setFocus();
@@ -2257,7 +2265,7 @@ bool AxesDialog::updatePlot()
             if (startVal >= endVal) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("Input error"),
+                QMessageBox::critical(msgParent.data(), tr("Input error"),
                                       tr("Please enter limits that satisfy: Start < End!"));
                 if (!self)
                     return false;
@@ -2269,7 +2277,7 @@ bool AxesDialog::updatePlot()
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
-                            this, tr("Scale input error"),
+                            msgParent.data(), tr("Scale input error"),
                             tr("Logarithmic scale requires positive limits (> 0)."));
                     if (!self)
                         return false;
@@ -2281,7 +2289,7 @@ bool AxesDialog::updatePlot()
                     bool acceptClamp = ApplicationWindow::isNonInteractiveContext(this);
                     if (!acceptClamp) {
                         acceptClamp = (QMessageBox::question(
-                                               this, tr("Logarithmic Scale"),
+                                               msgParent.data(), tr("Logarithmic Scale"),
                                                tr("Logarithmic scale requires a positive Start limit (> 0).\n"
                                                   "Clamp Start from %1 to the smallest positive value (%2)?")
                                                        .arg(QLocale().toString(startVal, 'g', 8),
@@ -2289,7 +2297,7 @@ bool AxesDialog::updatePlot()
                                                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
                                        == QMessageBox::Yes);
                     }
-                    if (!self || !d_graphGuard || !d_graph)
+                    if (!self || !d_graph)
                         return false;
                     if (!acceptClamp) {
                         generalDialog.setCurrentWidget(scalesPage);
@@ -2311,7 +2319,7 @@ bool AxesDialog::updatePlot()
                 if (!evalAxisScalarExpr(step, &stp, &stepErr)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
-                    QMessageBox::critical(this, tr("Step input error"), stepErr);
+                    QMessageBox::critical(msgParent.data(), tr("Step input error"), stepErr);
                     if (!self)
                         return false;
                     boxStep->setFocus();
@@ -2320,7 +2328,7 @@ bool AxesDialog::updatePlot()
                 if (!std::isfinite(stp) || stp <= 0) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
-                    QMessageBox::critical(this, tr("Step input error"),
+                    QMessageBox::critical(msgParent.data(), tr("Step input error"),
                                           tr("Please enter a positive step value!"));
                     if (!self)
                         return false;
@@ -2345,7 +2353,7 @@ bool AxesDialog::updatePlot()
                     if (axesTitlesList)
                         axesTitlesList->setCurrentRow(r);
                     QMessageBox::critical(
-                            this, tr("Divide factor error"),
+                            msgParent.data(), tr("Divide factor error"),
                             tr("Please enter a valid non-zero numeric value or expression for Divide by Factor."));
                     if (!self)
                         return false;
@@ -2384,7 +2392,7 @@ bool AxesDialog::updatePlot()
                 } catch (mu::ParserError &e) {
                     generalDialog.setCurrentWidget(axesPage);
                     axesTitlesList->setCurrentRow(r);
-                    QMessageBox::critical(this, tr("Formula input error"),
+                    QMessageBox::critical(msgParent.data(), tr("Formula input error"),
                                           QStringFromString(e.GetMsg()) + "\n"
                                                   + tr("Valid variables are 'x' for Top/Bottom "
                                                        "axes and 'y' for Left/Right axes!"));
@@ -2411,7 +2419,7 @@ bool AxesDialog::updatePlot()
                 generalDialog.setCurrentWidget(axisBreakPage);
                 if (axisBreakAxesList)
                     axisBreakAxesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("Error"),
+                QMessageBox::critical(msgParent.data(), tr("Error"),
                                       tr("Break From:") + " < " + tr("Break To:"));
                 if (!self)
                     return false;
@@ -2421,7 +2429,7 @@ bool AxesDialog::updatePlot()
         }
     }
 
-    if (!self || !d_graphGuard || !d_graph)
+    if (!self || !d_graph)
         return false;
 
     MultiLayer *ml = d_graph->multiLayerParent();
@@ -2504,7 +2512,6 @@ void AxesDialog::setGraph(Graph *g)
         return;
 
     d_graph = g;
-    d_graphGuard = g;
     clearAllDirtyState();
     d_stagedRefLines = d_graph->referenceLines();
 
@@ -2529,7 +2536,7 @@ void AxesDialog::setGraph(Graph *g)
 
 void AxesDialog::refreshGraphState()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     Plot *p = d_graph->plotWidget();
@@ -2634,7 +2641,7 @@ int AxesDialog::mapToQwtAxisId()
 
 void AxesDialog::updateScale()
 {
-    if (!d_graphGuard || !d_graph || !d_graph->plotWidget())
+    if (!d_graph || !d_graph->plotWidget())
         return;
 
     int axis = axesList ? axesList->currentRow() : 0;
@@ -2818,7 +2825,7 @@ void AxesDialog::updateTitleBox(int axis)
 
 void AxesDialog::onTitleTextEdited()
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi)
+    if (!d_graph || d_loadingUi)
         return;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
     const int axisId = mapToQwtAxisId();
@@ -2834,7 +2841,7 @@ void AxesDialog::onTitleTextEdited()
 
 void AxesDialog::onAutoAxisTitleToggled(bool checked)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi)
+    if (!d_graph || d_loadingUi)
         return;
     markAxisDirty();
     if (checked) {
@@ -2859,7 +2866,7 @@ void AxesDialog::onAutoAxisTitleToggled(bool checked)
 
 void AxesDialog::onAxisUnitFormatChanged(int index)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi)
+    if (!d_graph || d_loadingUi)
         return;
     d_unitFormatDirty = true;
     d_stagedUnitFormatIdx = index;
@@ -2899,8 +2906,10 @@ void AxesDialog::onAxisUnitFormatChanged(int index)
 
 void AxesDialog::pickAxisColor()
 {
-    QColor c = QColorDialog::getColor(boxAxisColor->color(), this);
-    if (!c.isValid() || c == boxAxisColor->color())
+    QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(boxAxisColor->color(), msgParent.data());
+    if (!self || !c.isValid() || c == boxAxisColor->color())
         return;
 
     boxAxisColor->setColor(c);
@@ -2909,8 +2918,10 @@ void AxesDialog::pickAxisColor()
 
 void AxesDialog::pickAxisNumColor()
 {
-    QColor c = QColorDialog::getColor(boxAxisNumColor->color(), this);
-    if (!c.isValid() || c == boxAxisNumColor->color())
+    QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(boxAxisNumColor->color(), msgParent.data());
+    if (!self || !c.isValid() || c == boxAxisNumColor->color())
         return;
 
     boxAxisNumColor->setColor(c);
@@ -3136,7 +3147,7 @@ void AxesDialog::showFormulaBox()
 
 void AxesDialog::customAxisLabelFont()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
@@ -3147,7 +3158,11 @@ void AxesDialog::customAxisLabelFont()
             : d_graph->axisTitleFont(axis);
     if (oldFont.family().trimmed().isEmpty())
         oldFont.setFamily(QStringLiteral("Arial"));
-    QFont fnt = QFontDialog::getFont(&okF, oldFont, this);
+    QPointer<AxesDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont fnt = QFontDialog::getFont(&okF, oldFont, msgParent.data());
+    if (!self)
+        return;
     if (okF) {
         if (fnt.family().trimmed().isEmpty())
             fnt.setFamily(QStringLiteral("Arial"));
@@ -3166,14 +3181,14 @@ void AxesDialog::customAxisLabelFont()
 
 void AxesDialog::toggleAxisBackbone(bool)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi)
+    if (!d_graph || d_loadingUi)
         return;
     markAxisDirty();
 }
 
 void AxesDialog::ensureAxisRowStaged(int row)
 {
-    if (!d_graphGuard || !d_graph || row < 0 || row >= 4)
+    if (!d_graph || row < 0 || row >= 4)
         return;
     if (d_stagedAxes[row].dirty) {
         if (axesTitlesList && axesTitlesList->currentRow() == row)
@@ -3225,7 +3240,7 @@ void AxesDialog::ensureAxisRowStaged(int row)
 
 QString AxesDialog::previewAutoAxisTitle(int qwtAxis, Column::UnitFormat fmt) const
 {
-    if (!d_graphGuard || !d_graph || qwtAxis < 0 || qwtAxis >= 4 || d_graph->isPiePlot()
+    if (!d_graph || qwtAxis < 0 || qwtAxis >= 4 || d_graph->isPiePlot()
         || d_graph->isTernaryPlot())
         return QString();
 
@@ -3317,7 +3332,7 @@ QString AxesDialog::previewAutoAxisTitle(int qwtAxis, Column::UnitFormat fmt) co
 
 void AxesDialog::stageFramePreset(Graph::FramePreset preset)
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     bool hasRightCurve = false;
@@ -3596,7 +3611,7 @@ void AxesDialog::refStatModeChanged(int index)
 
 void AxesDialog::addRefLineFromUi()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     d_stagedRefLines.append(buildRefLineSpecFromUi());
     d_refLinesTabDirty = true;
@@ -3612,7 +3627,7 @@ void AxesDialog::addRefLineFromUi()
 
 void AxesDialog::addZeroRefLine(int orientation)
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     // 現在の見た目(色・線種・太さ)を引き継ぎ、定数値 0 の水平(Y=0)/垂直(X=0)線として追加する。
     Graph::ReferenceLineSpec sp = buildRefLineSpecFromUi();
@@ -3636,7 +3651,7 @@ void AxesDialog::addZeroRefLine(int orientation)
 
 void AxesDialog::updateSelectedRefLineFromUi()
 {
-    if (!d_graphGuard || !d_graph || !refLinesList)
+    if (!d_graph || !refLinesList)
         return;
     int row = refLinesList->currentRow();
     if (row >= 0 && row < d_stagedRefLines.size()) {
@@ -3661,7 +3676,7 @@ void AxesDialog::updateSelectedRefLineFromUi()
 
 void AxesDialog::removeSelectedRefLine()
 {
-    if (!d_graphGuard || !d_graph || !refLinesList)
+    if (!d_graph || !refLinesList)
         return;
     int row = refLinesList->currentRow();
     if (row < 0 || row >= d_stagedRefLines.size())
@@ -3674,7 +3689,7 @@ void AxesDialog::removeSelectedRefLine()
 
 void AxesDialog::clearAllRefLines()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     d_stagedRefLines.clear();
     d_refLinesTabDirty = true;
@@ -3684,7 +3699,7 @@ void AxesDialog::clearAllRefLines()
 
 void AxesDialog::updateAxisBreakPage(int row)
 {
-    if (!d_graphGuard || !d_graph || !axisBreakAxesList)
+    if (!d_graph || !axisBreakAxesList)
         return;
     if (row < 0)
         row = axisBreakAxesList->currentRow();
@@ -3763,7 +3778,7 @@ void AxesDialog::updateAxisBreakPage(int row)
 
 void AxesDialog::applyTickLabelTransformFromUi()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     const int axis = mapToQwtAxisId();
     if (axis < 0 || axis >= QwtPlot::axisCnt)
@@ -3833,7 +3848,7 @@ int AxesDialog::exec()
 
 void AxesDialog::updateMinorTicksList(int scaleType)
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     const bool prevLoading = d_loadingUi;
@@ -3873,7 +3888,7 @@ void AxesDialog::showAxis(int axis, Graph::AxisType type, const QString &labelsC
                           int format, int prec, int rotation, int baselineDist,
                           const QString &formula, const QColor &labelsColor)
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
@@ -3895,7 +3910,7 @@ Graph::AxisType AxesDialog::currentSelectedAxisType()
 
 void AxesDialog::autoRangeCurrentAxis()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     int row = axesList ? axesList->currentRow() : 0;
     if (row < 0 || row >= 4)
@@ -3928,7 +3943,7 @@ void AxesDialog::autoRangeCurrentAxis()
 
 void AxesDialog::onTitleFontSizeChanged(double pt)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0.0)
+    if (!d_graph || d_loadingUi || pt <= 0.0)
         return;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
     if (row < 0 || row >= 4)
@@ -3946,7 +3961,7 @@ void AxesDialog::onTitleFontSizeChanged(double pt)
 
 void AxesDialog::onAxesFontSizeChanged(double pt)
 {
-    if (!d_graphGuard || !d_graph || d_loadingUi || pt <= 0.0)
+    if (!d_graph || d_loadingUi || pt <= 0.0)
         return;
     const int row = axesTitlesList ? axesTitlesList->currentRow() : 0;
     if (row < 0 || row >= 4)
@@ -3978,7 +3993,7 @@ void AxesDialog::onAxesFontSizeChanged(double pt)
 
 void AxesDialog::onAxesTitlesRowChanged(int row)
 {
-    if (!d_graphGuard || !d_graph || row < 0 || row >= 4)
+    if (!d_graph || row < 0 || row >= 4)
         return;
 
     if (!d_loadingUi && d_prevAxisRow >= 0 && d_prevAxisRow < 4 && d_prevAxisRow != row
@@ -4263,7 +4278,7 @@ void AxesDialog::markBreakDirty()
 
 bool AxesDialog::commitScaleRow(int row)
 {
-    if (!d_graphGuard || !d_graph || row < 0 || row >= 4)
+    if (!d_graph || row < 0 || row >= 4)
         return false;
     const StagedScaleEdit &st = d_stagedScales[row];
     QString from = st.start.toLower();
@@ -4357,7 +4372,7 @@ bool AxesDialog::commitScaleRow(int row)
 
 void AxesDialog::commitGridState()
 {
-    if (!d_graphGuard || !d_graph || !d_graph->plotWidget())
+    if (!d_graph || !d_graph->plotWidget())
         return;
     Grid *grid = (Grid *)d_graph->plotWidget()->grid();
     if (!grid)
@@ -4386,7 +4401,7 @@ void AxesDialog::commitGridState()
 
 bool AxesDialog::commitAxisRow(int row)
 {
-    if (!d_graphGuard || !d_graph || row < 0 || row >= 4)
+    if (!d_graph || row < 0 || row >= 4)
         return false;
     const StagedAxisEdit &st = d_stagedAxes[row];
     const int axis = Graph::mapToQwtAxis(row);
@@ -4503,7 +4518,7 @@ bool AxesDialog::commitAxisRow(int row)
 
 void AxesDialog::commitFrameState()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
     d_graph->setAxesLinewidth(boxAxesLinewidth->value());
     d_graph->changeTicksLength(boxMinorTicksLength->value(), boxMajorTicksLength->value());
@@ -4515,7 +4530,7 @@ void AxesDialog::commitFrameState()
 
 bool AxesDialog::commitBreakRow(int row)
 {
-    if (!d_graphGuard || !d_graph || row < 0 || row >= 4)
+    if (!d_graph || row < 0 || row >= 4)
         return false;
     const StagedBreakEdit &st = d_stagedBreaks[row];
     const int qwtAxis = Graph::mapToQwtAxis(row);
@@ -4542,7 +4557,7 @@ bool AxesDialog::commitBreakRow(int row)
 
 void AxesDialog::applyTickAndAxisStyleToAllAxes()
 {
-    if (!d_graphGuard || !d_graph)
+    if (!d_graph)
         return;
 
     int srcRow = 0;

@@ -568,17 +568,28 @@ void Plot3DDialog::setLabelsDistance(int dist)
 
 void Plot3DDialog::pickDataColorMap()
 {
-    QString fn = QFileDialog::getOpenFileName(this, QString(), d_plot->colorMap(),
+    if (!d_plot)
+        return;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QString fn = QFileDialog::getOpenFileName(msgParent.data(), QString(), d_plot->colorMap(),
                                               tr("Colormap files") + " (*.map *.MAP)");
+    if (!self)
+        return;
     if (!fn.isEmpty())
         emit setDataColorMap(fn);
 }
 
 QColor Plot3DDialog::pickFromColor()
 {
-    QColor c = QColorDialog::getColor(fromColor, this);
+    const QColor prev = fromColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return fromColor;
+        return prev;
 
     fromColor = c;
     return fromColor;
@@ -586,9 +597,14 @@ QColor Plot3DDialog::pickFromColor()
 
 QColor Plot3DDialog::pickToColor()
 {
-    QColor c = QColorDialog::getColor(toColor, this);
+    const QColor prev = toColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return toColor;
+        return prev;
 
     toColor = c;
     return toColor;
@@ -596,9 +612,14 @@ QColor Plot3DDialog::pickToColor()
 
 QColor Plot3DDialog::pickGridColor()
 {
-    QColor c = QColorDialog::getColor(gridColor, this);
+    const QColor prev = gridColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return gridColor;
+        return prev;
 
     gridColor = c;
     return gridColor;
@@ -606,9 +627,14 @@ QColor Plot3DDialog::pickGridColor()
 
 QColor Plot3DDialog::pickAxesColor()
 {
-    QColor c = QColorDialog::getColor(axesColor, this);
+    const QColor prev = axesColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return axesColor;
+        return prev;
 
     axesColor = c;
     return axesColor;
@@ -616,9 +642,14 @@ QColor Plot3DDialog::pickAxesColor()
 
 QColor Plot3DDialog::pickBgColor()
 {
-    QColor c = QColorDialog::getColor(bgColor, this);
+    const QColor prev = bgColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return bgColor;
+        return prev;
 
     bgColor = c;
     return bgColor;
@@ -626,9 +657,14 @@ QColor Plot3DDialog::pickBgColor()
 
 QColor Plot3DDialog::pickNumberColor()
 {
-    QColor c = QColorDialog::getColor(numColor, this);
+    const QColor prev = numColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return numColor;
+        return prev;
 
     numColor = c;
     return numColor;
@@ -636,9 +672,14 @@ QColor Plot3DDialog::pickNumberColor()
 
 QColor Plot3DDialog::pickLabelColor()
 {
-    QColor c = QColorDialog::getColor(labelColor, this);
+    const QColor prev = labelColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return labelColor;
+        return prev;
 
     labelColor = c;
     return labelColor;
@@ -646,9 +687,14 @@ QColor Plot3DDialog::pickLabelColor()
 
 QColor Plot3DDialog::pickTitleColor()
 {
-    QColor c = QColorDialog::getColor(titleColor, this);
+    const QColor prev = titleColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return titleColor;
+        return prev;
 
     titleColor = c;
     return titleColor;
@@ -657,7 +703,11 @@ QColor Plot3DDialog::pickTitleColor()
 void Plot3DDialog::pickTitleFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, titleFont, this);
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, titleFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         titleFont = font;
     } else {
@@ -668,7 +718,11 @@ void Plot3DDialog::pickTitleFont()
 void Plot3DDialog::pickNumbersFont()
 {
     bool ok;
-    QFont font = QFontDialog::getFont(&ok, numbersFont, this);
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QFont font = QFontDialog::getFont(&ok, numbersFont, msgParent.data());
+    if (!self)
+        return;
     if (ok) {
         numbersFont = font;
     } else {
@@ -728,10 +782,14 @@ void Plot3DDialog::setTitleFont(const QFont &font)
 
 QColor Plot3DDialog::pickMeshColor()
 {
-
-    QColor c = QColorDialog::getColor(meshColor, this);
+    const QColor prev = meshColor;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
+    QColor c = QColorDialog::getColor(prev, msgParent.data());
+    if (!self)
+        return QColor();
     if (!c.isValid())
-        return meshColor;
+        return prev;
 
     meshColor = c;
     return meshColor;
@@ -739,7 +797,8 @@ QColor Plot3DDialog::pickMeshColor()
 
 void Plot3DDialog::accept()
 {
-    if (updatePlot())
+    QPointer<Plot3DDialog> self(this);
+    if (updatePlot() && self)
         close();
 }
 
@@ -830,12 +889,15 @@ bool Plot3DDialog::updatePlot()
         QString to = boxTo->text().toLower();
         double start, end;
         bool error = false;
+        QPointer<Plot3DDialog> self(this);
         try {
             MyParser parser;
             parser.SetExpr(from);
             start = parser.Eval();
         } catch (mu::ParserError &e) {
             QMessageBox::critical(0, tr("Start limit error"), QStringFromString(e.GetMsg()));
+            if (!self)
+                return false;
             boxFrom->setFocus();
             error = true;
             return false;
@@ -846,6 +908,8 @@ bool Plot3DDialog::updatePlot()
             end = parser.Eval();
         } catch (mu::ParserError &e) {
             QMessageBox::critical(0, tr("End limit error"), QStringFromString(e.GetMsg()));
+            if (!self)
+                return false;
             boxTo->setFocus();
             error = true;
             return false;
@@ -854,6 +918,8 @@ bool Plot3DDialog::updatePlot()
         if (start >= end) {
             QMessageBox::critical(0, tr("Input error"),
                                   tr("Please enter scale limits that satisfy: from < to!"));
+            if (!self)
+                return false;
             boxTo->setFocus();
             return false;
         }
@@ -907,9 +973,13 @@ void Plot3DDialog::pickAxisLabelFont()
 {
     bool ok;
     QFont font;
+    QPointer<Plot3DDialog> self(this);
+    QPointer<QWidget> msgParent(parentWidget());
     switch (axesList2->currentRow()) {
     case 0:
-        font = QFontDialog::getFont(&ok, xAxisFont, this);
+        font = QFontDialog::getFont(&ok, xAxisFont, msgParent.data());
+        if (!self)
+            return;
         if (ok)
             xAxisFont = font;
         else
@@ -917,7 +987,9 @@ void Plot3DDialog::pickAxisLabelFont()
         break;
 
     case 1:
-        font = QFontDialog::getFont(&ok, yAxisFont, this);
+        font = QFontDialog::getFont(&ok, yAxisFont, msgParent.data());
+        if (!self)
+            return;
         if (ok)
             yAxisFont = font;
         else
@@ -925,7 +997,9 @@ void Plot3DDialog::pickAxisLabelFont()
         break;
 
     case 2:
-        font = QFontDialog::getFont(&ok, zAxisFont, this);
+        font = QFontDialog::getFont(&ok, zAxisFont, msgParent.data());
+        if (!self)
+            return;
         if (ok)
             zAxisFont = font;
         else
