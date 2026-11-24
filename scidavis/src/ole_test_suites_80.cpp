@@ -3991,10 +3991,9 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                 tModal, QStringList() << tModal->colName(1), Graph::Scatter);
                         CHECK_COND(mlPdDead != nullptr, "80f-insp-modal-uaf-J2e: setup failed");
                         mlPdDead->askOnCloseEvent(false);
-                        QPointer<PlotDialog> pd6 = new PlotDialog(true, wDiag);
-                        pd6->setAttribute(Qt::WA_DeleteOnClose, true);
-                        pd6->setMultiLayer(mlPdDead);
-                        QTreeWidget *lb6 = pd6->findChild<QTreeWidget *>();
+                        PlotDialog pd6(true, wDiag);
+                        pd6.setMultiLayer(mlPdDead);
+                        QTreeWidget *lb6 = pd6.findChild<QTreeWidget *>();
                         LayerItem *layerIt6 = nullptr;
                         if (lb6) {
                             for (QTreeWidgetItemIterator it6(lb6); *it6; ++it6) {
@@ -4015,14 +4014,12 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                    "80f-insp-modal-uaf-J2e: LayerItem::graph() did not null after MultiLayer teardown");
 
                         bool acceptResJ2e = false;
-                        QMetaObject::invokeMethod(pd6.data(), "acceptParams", Qt::DirectConnection,
+                        QMetaObject::invokeMethod(&pd6, "acceptParams", Qt::DirectConnection,
                                                   Q_RETURN_ARG(bool, acceptResJ2e));
-                        QMetaObject::invokeMethod(pd6.data(), "openPageSetupFromDialog",
+                        QMetaObject::invokeMethod(&pd6, "openPageSetupFromDialog",
                                                   Qt::DirectConnection);
                         CHECK_COND(!acceptResJ2e,
                                    "80f-insp-modal-uaf-J2e: acceptParams succeeded on destroyed MultiLayer");
-                        if (pd6)
-                            delete pd6.data();
                     }
 
                     // Subtest K (Round 13 ASan): Plot3DDialog QPointer<Graph3D> d_plot and
