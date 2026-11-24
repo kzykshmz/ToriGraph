@@ -1553,10 +1553,18 @@ void registerApplicationWindowJapaneseStrings()
         add("Move", "移動");
         add("Stay on &Top", "常に手前に表示(&T)");
         add("Stay on Top", "常に手前に表示");
-        add("&Restore", "元のサイズに戻す(&R)");
-        add("Restore", "元のサイズに戻す");
-        add("&Size", "サイズ変更(&S)");
-        add("Size", "サイズ変更");
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("QMdiSubWindow"), QStringLiteral("&Restore"),
+                QString::fromUtf8("元のサイズに戻す(&R)"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("QMdiSubWindow"), QStringLiteral("Restore"),
+                QString::fromUtf8("元のサイズに戻す"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("QMdiSubWindow"), QStringLiteral("&Size"),
+                QString::fromUtf8("サイズ変更(&S)"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("QMdiSubWindow"), QStringLiteral("Size"),
+                QString::fromUtf8("サイズ変更"));
         add("Mi&nimize", "最小化(&N)");
         add("Minimize", "最小化");
         add("Ma&ximize", "最大化(&X)");
