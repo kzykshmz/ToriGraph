@@ -1859,42 +1859,48 @@ QWidget *GraphInspectorDock::buildQuickStartEmptyState()
     d_btn_qs_import_csv->setMinimumHeight(32);
     d_btn_qs_import_csv->setCursor(Qt::PointingHandCursor);
     connect(d_btn_qs_import_csv, &QPushButton::clicked, this, [this]() {
-        if (!d_app || ApplicationWindow::isNonInteractiveContext(d_app))
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<ApplicationWindow> appGuard(d_app);
+        if (!appGuard || ApplicationWindow::isNonInteractiveContext(appGuard))
             return;
-        const QString startDir = !d_app->asciiDirPath.isEmpty() ? d_app->asciiDirPath
-                                                                : d_app->workingDir;
+        const QString startDir = !appGuard->asciiDirPath.isEmpty() ? appGuard->asciiDirPath
+                                                                   : appGuard->workingDir;
         const QString filter = tr(
                 "Excel & CSV / Data (*.xlsx *.xlsm *.csv *.tsv *.txt *.dat);;"
                 "Excel Workbooks (*.xlsx *.xlsm);;"
                 "CSV / Text Data (*.csv *.tsv *.txt *.dat);;"
                 "All Files (*)");
         const QStringList files = QFileDialog::getOpenFileNames(
-                d_app, tr("Import Excel (.xlsx) / CSV"), startDir, filter);
-        if (files.isEmpty())
+                appGuard, tr("Import Excel (.xlsx) / CSV"), startDir, filter);
+        if (!self || !appGuard || files.isEmpty())
             return;
-        d_app->asciiDirPath = QFileInfo(files.first()).absolutePath();
+        appGuard->asciiDirPath = QFileInfo(files.first()).absolutePath();
         QStringList summaries;
         for (const QString &fn : files) {
+            if (!appGuard)
+                break;
             if (fn.endsWith(QLatin1String(".xlsx"), Qt::CaseInsensitive)
                 || fn.endsWith(QLatin1String(".xlsm"), Qt::CaseInsensitive)) {
                 QString summary;
-                if (XlsxImport::importDroppedFile(d_app, fn, &summary) && !summary.isEmpty())
+                if (XlsxImport::importDroppedFile(appGuard, fn, &summary) && !summary.isEmpty())
                     summaries << summary;
             } else if (fn.endsWith(QLatin1String(".sciprj"), Qt::CaseInsensitive)
                        || fn.endsWith(QLatin1String(".sciprj.gz"), Qt::CaseInsensitive)
                        || fn.endsWith(QLatin1String(".qti"), Qt::CaseInsensitive)
                        || fn.endsWith(QLatin1String(".opj"), Qt::CaseInsensitive)
                        || fn.endsWith(QLatin1String(".opju"), Qt::CaseInsensitive)) {
-                d_app->open(fn);
+                appGuard->open(fn);
             } else {
-                const QString sep = detectSmartAsciiSeparator(fn, d_app->columnSeparator);
-                d_app->importASCII(QStringList { fn }, ImportASCIIDialog::NewTables, sep, 0, true,
-                                   true, false, true, QLocale::c());
+                const QString sep = detectSmartAsciiSeparator(fn, appGuard->columnSeparator);
+                appGuard->importASCII(QStringList { fn }, ImportASCIIDialog::NewTables, sep, 0,
+                                      true, true, false, true, QLocale::c());
             }
         }
-        if (!summaries.isEmpty() && d_app->statusBar())
-            d_app->statusBar()->showMessage(summaries.join(QStringLiteral(" | ")), 7000);
-        refreshAll();
+        if (!self || !appGuard)
+            return;
+        if (!summaries.isEmpty() && appGuard->statusBar())
+            appGuard->statusBar()->showMessage(summaries.join(QStringLiteral(" | ")), 7000);
+        self->refreshAll();
     });
     lay->addWidget(d_btn_qs_import_csv);
 

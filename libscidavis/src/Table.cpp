@@ -3917,9 +3917,11 @@ void Table::closeEvent(QCloseEvent *e)
         QPointer<Table> self(this);
         if (d_future_table)
             d_future_table->remove();
+        if (!self)
+            return;
         const bool ownedByUndo =
                 d_future_table && d_future_table->property("_tg_owned_by_undo_cmd").toBool();
-        if (!ownedByUndo && self)
+        if (!ownedByUndo)
             self->deleteLater();
     };
     if (askOnClose && !ApplicationWindow::isNonInteractiveContext(this)) {

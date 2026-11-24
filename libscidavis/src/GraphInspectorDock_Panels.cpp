@@ -1688,34 +1688,48 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_btn_line_color = new QPushButton(d_curve_regular_wrap);
     updateColorSwatchButton(d_btn_line_color, QColor(Qt::black));
     connect(d_btn_line_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
-        const int ci = effectiveSelectedCurveIndex(g);
-        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
-        if (!cv)
+        const int ci = effectiveSelectedCurveIndex(gGuard);
+        const QwtPlotCurve *preCv =
+                (ci >= 0 && ci < gGuard->curves()) ? gGuard->curve(ci) : nullptr;
+        if (!preCv)
             return;
+        const long curveKey = gGuard->curveKey(ci);
         const bool hasLine =
-                (cv->style() != QwtPlotCurve::NoCurve && cv->pen().style() != Qt::NoPen);
-        const QColor cur = (hasLine && cv->pen().color().isValid()) ? cv->pen().color()
-                                                                    : cv->symbol().pen().color();
+                (preCv->style() != QwtPlotCurve::NoCurve && preCv->pen().style() != Qt::NoPen);
+        const QColor cur = (hasLine && preCv->pen().color().isValid())
+                ? preCv->pen().color()
+                : preCv->symbol().pen().color();
         QColor chosen = pickColorInteractive(this, cur, tr("Select Series Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
+        const int liveIdx = gGuard->curveIndex(curveKey);
+        QwtPlotCurve *cv =
+                (liveIdx >= 0 && liveIdx < gGuard->curves()) ? gGuard->curve(liveIdx) : nullptr;
+        if (!cv)
+            return;
 
-        if (d_spin_curve_opacity && chosen.alpha() == 255 && d_spin_curve_opacity->value() < 100)
-            chosen.setAlpha(qRound(d_spin_curve_opacity->value() * 2.55));
+        if (self->d_spin_curve_opacity && chosen.alpha() == 255
+            && self->d_spin_curve_opacity->value() < 100)
+            chosen.setAlpha(qRound(self->d_spin_curve_opacity->value() * 2.55));
 
-        const QString before = d_target_ml->captureUndoSnapshot();
+        const QString before = mlGuard->captureUndoSnapshot();
         QPen lp = cv->pen();
         lp.setColor(chosen);
         cv->setPen(lp);
 
-        const bool linkSym = !d_chk_link_sym_color || d_chk_link_sym_color->isChecked();
+        const bool linkSym =
+                !self->d_chk_link_sym_color || self->d_chk_link_sym_color->isChecked();
         if (linkSym) {
             QwtSymbol sym = cv->symbol();
             const bool wasHollow = Graph::isSymbolWhiteHollow(sym)
-                    || (d_chk_sym_hollow && d_chk_sym_hollow->isChecked());
+                    || (self->d_chk_sym_hollow && self->d_chk_sym_hollow->isChecked());
             QPen sp = sym.pen();
             QColor edgeCol = chosen;
             edgeCol.setAlpha(chosen.alpha());
@@ -1734,11 +1748,11 @@ QWidget *GraphInspectorDock::buildCurveInspector()
             areaCol.setAlpha(curAlpha > 0 && curAlpha < 255 ? curAlpha : 65);
             cv->setBrush(QBrush(areaCol));
         }
-        g->updatePlot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Series Color"), before);
-        refreshObjectTree();
-        syncCurveControls();
+        gGuard->updatePlot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Series Color"), before);
+        self->refreshObjectTree();
+        self->syncCurveControls();
     });
 
     d_lbl_line_width = new QLabel(d_curve_regular_wrap);
@@ -2004,57 +2018,82 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_btn_sym_edge_color = new QPushButton(d_sym_custom_colors_wrap);
     updateColorSwatchButton(d_btn_sym_edge_color, QColor(Qt::black));
     connect(d_btn_sym_edge_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
-        const int ci = effectiveSelectedCurveIndex(g);
-        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
-        if (!cv)
+        const int ci = effectiveSelectedCurveIndex(gGuard);
+        const QwtPlotCurve *preCv =
+                (ci >= 0 && ci < gGuard->curves()) ? gGuard->curve(ci) : nullptr;
+        if (!preCv)
             return;
-        QwtSymbol sym = cv->symbol();
-        const QColor cur = sym.pen().color().isValid() ? sym.pen().color() : cv->pen().color();
+        const long curveKey = gGuard->curveKey(ci);
+        const QwtSymbol preSym = preCv->symbol();
+        const QColor cur =
+                preSym.pen().color().isValid() ? preSym.pen().color() : preCv->pen().color();
         const QColor chosen = pickColorInteractive(this, cur, tr("Select Symbol Edge Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
-        const QString before = d_target_ml->captureUndoSnapshot();
+        const int liveIdx = gGuard->curveIndex(curveKey);
+        QwtPlotCurve *cv =
+                (liveIdx >= 0 && liveIdx < gGuard->curves()) ? gGuard->curve(liveIdx) : nullptr;
+        if (!cv)
+            return;
+        const QString before = mlGuard->captureUndoSnapshot();
+        QwtSymbol sym = cv->symbol();
         QPen sp = sym.pen();
         sp.setColor(chosen);
         sym.setPen(sp);
         cv->setSymbol(sym);
-        g->updatePlot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Symbol Edge Color"), before);
-        refreshObjectTree();
-        syncCurveControls();
+        gGuard->updatePlot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Symbol Edge Color"), before);
+        self->refreshObjectTree();
+        self->syncCurveControls();
     });
 
     d_lbl_sym_fill_color = new QLabel(d_sym_custom_colors_wrap);
     d_btn_sym_fill_color = new QPushButton(d_sym_custom_colors_wrap);
     updateColorSwatchButton(d_btn_sym_fill_color, QColor(Qt::white));
     connect(d_btn_sym_fill_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
-        const int ci = effectiveSelectedCurveIndex(g);
-        QwtPlotCurve *cv = (ci >= 0 && ci < g->curves()) ? g->curve(ci) : nullptr;
-        if (!cv)
+        const int ci = effectiveSelectedCurveIndex(gGuard);
+        const QwtPlotCurve *preCv =
+                (ci >= 0 && ci < gGuard->curves()) ? gGuard->curve(ci) : nullptr;
+        if (!preCv)
             return;
-        QwtSymbol sym = cv->symbol();
+        const long curveKey = gGuard->curveKey(ci);
+        const QwtSymbol preSym = preCv->symbol();
         const QColor cur =
-                (sym.brush().style() != Qt::NoBrush && sym.brush().color().isValid())
-                ? sym.brush().color()
+                (preSym.brush().style() != Qt::NoBrush && preSym.brush().color().isValid())
+                ? preSym.brush().color()
                 : QColor(Qt::white);
         const QColor chosen = pickColorInteractive(this, cur, tr("Select Symbol Fill Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
-        const QString before = d_target_ml->captureUndoSnapshot();
+        const int liveIdx = gGuard->curveIndex(curveKey);
+        QwtPlotCurve *cv =
+                (liveIdx >= 0 && liveIdx < gGuard->curves()) ? gGuard->curve(liveIdx) : nullptr;
+        if (!cv)
+            return;
+        const QString before = mlGuard->captureUndoSnapshot();
+        QwtSymbol sym = cv->symbol();
         sym.setBrush(QBrush(chosen));
         cv->setSymbol(sym);
-        g->updatePlot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Symbol Fill Color"), before);
-        refreshObjectTree();
-        syncCurveControls();
+        gGuard->updatePlot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Symbol Fill Color"), before);
+        self->refreshObjectTree();
+        self->syncCurveControls();
     });
 
     d_lbl_sym_edge_width = new QLabel(d_sym_custom_colors_wrap);
@@ -2315,23 +2354,47 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     d_btn_err_color = new QPushButton(d_err_style_wrap);
     updateColorSwatchButton(d_btn_err_color, QColor(Qt::black));
     connect(d_btn_err_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
-        const QVector<QwtErrorPlotCurve *> errs = effectiveSelectedErrorBars(g);
-        if (errs.isEmpty())
+        const QVector<QwtErrorPlotCurve *> preErrs = effectiveSelectedErrorBars(gGuard);
+        if (preErrs.isEmpty())
             return;
-        const QColor cur = errs.first()->color();
+        QVector<long> errKeys;
+        errKeys.reserve(preErrs.size());
+        for (QwtErrorPlotCurve *er : preErrs) {
+            const int idx = gGuard->curveIndex(er);
+            if (idx >= 0)
+                errKeys.append(gGuard->curveKey(idx));
+        }
+        if (errKeys.isEmpty())
+            return;
+        const QColor cur = preErrs.first()->color();
         const QColor chosen = pickColorInteractive(this, cur, tr("Select Error Bar Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        for (QwtErrorPlotCurve *er : errs)
+        QVector<QwtErrorPlotCurve *> liveErrs;
+        liveErrs.reserve(errKeys.size());
+        for (long key : errKeys) {
+            const int idx = gGuard->curveIndex(key);
+            if (idx >= 0 && idx < gGuard->curves()) {
+                if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(gGuard->curve(idx)))
+                    liveErrs.append(er);
+            }
+        }
+        if (liveErrs.isEmpty())
+            return;
+        const QString before = mlGuard->captureUndoSnapshot();
+        for (QwtErrorPlotCurve *er : liveErrs)
             er->setColor(chosen);
-        g->updatePlot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Error Bar Color"), before);
-        syncCurveControls();
+        gGuard->updatePlot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Error Bar Color"), before);
+        self->syncCurveControls();
     });
     d_btn_err_match_curve = new QPushButton(d_err_style_wrap);
     connect(d_btn_err_match_curve, &QPushButton::clicked, this, [this]() {
@@ -3291,25 +3354,33 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_btn_arrow_color = new QPushButton(d_arrow_editor_wrap);
     updateColorSwatchButton(d_btn_arrow_color, QColor(Qt::black));
     connect(d_btn_arrow_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
-        const auto sel = g->currentSelection();
+        const auto sel = gGuard->currentSelection();
         if (sel.kind != Graph::GraphSelection::ArrowAnnotation)
             return;
-        ArrowMarker *am = g->arrow(sel.primaryId);
-        if (!am)
+        const long arrowId = sel.primaryId;
+        ArrowMarker *preAm = gGuard->arrow(arrowId);
+        if (!preAm)
             return;
-        const QColor cur = am->color();
+        const QColor cur = preAm->color();
         const QColor chosen = pickColorInteractive(this, cur, tr("Select Arrow Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
-        const QString before = d_target_ml->captureUndoSnapshot();
+        ArrowMarker *am = gGuard->arrow(arrowId);
+        if (!am)
+            return;
+        const QString before = mlGuard->captureUndoSnapshot();
         am->setColor(chosen);
-        g->replot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Arrow Style"), before);
-        syncLegendControls();
+        gGuard->replot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Arrow Style"), before);
+        self->syncLegendControls();
     });
 
     d_lbl_arrow_width = new QLabel(d_arrow_editor_wrap);
@@ -3544,19 +3615,23 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_btn_plot_title_color = new QPushButton(d_plot_title_wrap);
     updateColorSwatchButton(d_btn_plot_title_color, QColor(Qt::black));
     connect(d_btn_plot_title_color, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g || !g->plotWidget())
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard || !gGuard->plotWidget())
             return;
-        const QColor cur = g->plotWidget()->title().color();
+        const QColor cur = gGuard->plotWidget()->title().color();
         const QColor chosen = pickColorInteractive(this, cur, tr("Select Plot Title Color"));
+        if (!self || !mlGuard || !gGuard || !gGuard->plotWidget())
+            return;
         if (!chosen.isValid() || chosen == cur)
             return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        g->setTitleColor(chosen);
-        g->replot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Change Plot Title Color"), before);
-        syncLegendControls();
+        const QString before = mlGuard->captureUndoSnapshot();
+        gGuard->setTitleColor(chosen);
+        gGuard->replot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Change Plot Title Color"), before);
+        self->syncLegendControls();
     });
 
     ptGrid->addWidget(d_lbl_plot_title_text, 0, 0);
