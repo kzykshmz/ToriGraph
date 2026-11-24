@@ -30,6 +30,7 @@
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QShortcut>
@@ -4119,6 +4120,67 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                    "80f-insp-modal-uaf-K2: Graph3D did not teardown cleanly");
                         p3d3.pickDataColorMap();
                         wDiag->confirmClosePlot3D = prevConfirm3d;
+                    }
+
+                    // Subtest L (Round 14 ASan): ApplicationWindow::showPageSetupDialog()
+                    // and MultiLayer::showPageSetupDialog() when the active MultiLayer is
+                    // closed/destroyed mid-dialog before clicking OK.
+                    {
+                        QPointer<MultiLayer> mlPageDead = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        CHECK_COND(mlPageDead != nullptr, "80f-insp-modal-uaf-L: setup failed");
+                        mlPageDead->askOnCloseEvent(false);
+                        wDiag->activateSubWindow(mlPageDead);
+                        QCoreApplication::processEvents();
+                        CHECK_COND(wDiag->d_workspace.activeSubWindow() == mlPageDead,
+                                   "80f-insp-modal-uaf-L: failed to activate mlPageDead");
+
+                        int ticksL = 0;
+                        bool sawPageSetupL = false;
+                        bool sawOkBtnL = false;
+                        QTimer timerL;
+                        timerL.setInterval(15);
+                        QObject::connect(&timerL, &QTimer::timeout, [&]() {
+                            ++ticksL;
+                            if (ticksL > 80) {
+                                timerL.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            QDialog *dlg = qobject_cast<QDialog *>(
+                                    QApplication::activeModalWidget());
+                            if (!dlg || dlg->parentWidget() != wDiag.win || sawPageSetupL)
+                                return;
+                            sawPageSetupL = true;
+                            if (mlPageDead) {
+                                mlPageDead->close();
+                                if (mlPageDead)
+                                    delete mlPageDead.data();
+                            }
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                            QPushButton *okBtn = nullptr;
+                            for (QPushButton *pb : dlg->findChildren<QPushButton *>()) {
+                                if (pb && pb->isDefault()) {
+                                    okBtn = pb;
+                                    break;
+                                }
+                            }
+                            if (okBtn) {
+                                sawOkBtnL = true;
+                                okBtn->click();
+                            } else {
+                                dlg->accept();
+                            }
+                        });
+                        timerL.start();
+                        wDiag->showPageSetupDialog();
+                        timerL.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawPageSetupL && sawOkBtnL && mlPageDead.isNull(),
+                                   "80f-insp-modal-uaf-L: ApplicationWindow::showPageSetupDialog teardown failed (saw="
+                                           << sawPageSetupL << ", ok=" << sawOkBtnL
+                                           << ", null=" << mlPageDead.isNull() << ")");
                     }
                 }
             }
