@@ -105,6 +105,7 @@
 #include "ModernUiTheme.h"
 #include "I18nJapanese.h"
 #include <cmath>
+#include "ExtraPlotTypes.h"
 #include "OriginGadgets.h"
 
 namespace {
@@ -605,6 +606,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
 
     d_layer_pill_frame = new QFrame();
     d_layer_pill_frame->setObjectName(QStringLiteral("MultiLayerPillContainer"));
+    d_layer_pill_frame->installEventFilter(this);
     d_layer_pill_frame->setStyleSheet(QStringLiteral(
             "QFrame#MultiLayerPillContainer {"
             "  background-color: #F8FAFC;"
@@ -1909,7 +1911,7 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
     int iterations = 0;
     QSize size = arrangeLayers(userSize);
     QSize canvas_size = QSize(1, 1);
-    while ((canvas_size != size || iterations < 3) && iterations < 10) {
+    while ((canvas_size != size || iterations < 1) && iterations < 10) {
         iterations++;
         canvas_size = size;
         size = arrangeLayers(userSize);
@@ -3286,10 +3288,15 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
 
         return false;
     } else if (e->type() == QEvent::Resize && object == (QObject *)canvas) {
-        resizeLayers((const QResizeEvent *)e);
+        if (!d_suppress_canvas_resize_layout)
+            resizeLayers((const QResizeEvent *)e);
         updateCanvasStatusPill();
     } else if (e->type() == QEvent::Show && object == (QObject *)canvas) {
         updateCanvasStatusPill();
+    } else if (d_layer_pill_frame && object == (QObject *)d_layer_pill_frame
+               && (e->type() == QEvent::Resize || e->type() == QEvent::Move
+                   || e->type() == QEvent::Show || e->type() == QEvent::LayoutRequest)) {
+        repositionCanvasStatusPill();
     } else if (e->type() == QEvent::Resize && object
                && object->objectName() == QLatin1String("MultiLayerPageHost")) {
         auto *ph = static_cast<QWidget *>(object);
@@ -3754,8 +3761,12 @@ void clampGraphCalloutMarkersInCanvas(Graph *gr)
         QRect mr = mrk->rect();
         if (mr.isEmpty())
             continue;
-        if (!cRect.adjusted(-30, -30, 30, 30).contains(mr.topLeft())
-            && !mr.intersects(cRect.adjusted(-12, -12, 12, 12))) {
+        const double zoomScale = qMax(1.0, plot->displayFontScale());
+        const int edgeTol = qRound(30.0 * zoomScale);
+        const int intersectTol = qRound(12.0 * zoomScale);
+        if (!cRect.adjusted(-edgeTol, -edgeTol, edgeTol, edgeTol).contains(mr.topLeft())
+            && !mr.intersects(
+                    cRect.adjusted(-intersectTol, -intersectTol, intersectTol, intersectTol))) {
             continue;
         }
 
@@ -3777,12 +3788,16 @@ void clampGraphCalloutMarkersInCanvas(Graph *gr)
             ++guard;
         }
 
-        const int desiredFramePad = qMax(12, plot->majorTickLength() + 5);
+        const double zoomScaleFrame = qMax(1.0, plot->displayFontScale());
+        const int desiredFramePad = qMax(
+                qRound(12.0 * zoomScaleFrame),
+                qRound((double(plot->majorTickLength()) + 5.0) * zoomScaleFrame));
+        const int fallbackPad = qRound(6.0 * zoomScaleFrame);
         const int framePad = (mrk->frameStyle() != Legend::None
                               && mr.width() + 2 * desiredFramePad <= cRect.width()
                               && mr.height() + 2 * desiredFramePad <= cRect.height())
                 ? desiredFramePad
-                : 6;
+                : fallbackPad;
         const QRect safeRect = cRect.adjusted(framePad, framePad, -framePad, -framePad);
         const int minX = safeRect.left();
         const int minY = safeRect.top();
@@ -4403,9 +4418,7 @@ void MultiLayer::setPageZoom(double factor)
         // The text grows with the page like under a magnifier; the stored pt stay as they are.
         gr->plotWidget()->setDisplayFontScale(d_page_zoom);
         gr->plotWidget()->updateAxes();
-        gr->plotWidget()->updateLayout();
         gr->plotWidget()->replot();
-        gr->plotWidget()->updateLayout();
         gr->setIgnoreResizeEvents(savedIgnore[i]);
     }
     {
@@ -4659,12 +4672,16 @@ void MultiLayer::setPageSizePhysical(double widthVal, double heightVal, PageUnit
     }
 
     lastSize = targetCanvasSize;
+    const bool prevSuppressResizeLayout = d_suppress_canvas_resize_layout;
+    if (graphs > 0)
+        d_suppress_canvas_resize_layout = true;
     syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
                            d_page_zoom, d_page_bg_color);
     const bool freePx =
             (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
     resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
                                        targetCanvasSize.width(), targetCanvasSize.height(), freePx);
+    d_suppress_canvas_resize_layout = prevSuppressResizeLayout;
 
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = (Graph *)graphsList.at(i);
@@ -5770,6 +5787,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
     d_keep_aspect_ratio = spec.keepAspectRatio;
     d_target_aspect_ratio = (pageH > 1.0) ? (pageW / pageH) : 1.0;
+    const bool isSquarePagePreset =
+            d_keep_aspect_ratio && (pageH > 1.0) && qAbs((pageW / pageH) - 1.0) <= 0.12;
 
     static const QRegularExpression kBoldTagRx(QStringLiteral("</?b\\s*>"),
                                                QRegularExpression::CaseInsensitiveOption);
@@ -6351,7 +6370,10 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         plot->replot();
     }
 
-    applySquareCanvasFrame70Percent();
+    if (isSquarePagePreset)
+        applySquareCanvasFrame70Percent();
+    else
+        fitLayersToPage();
 
     {
         bool anyPostRotated = false;
@@ -6386,8 +6408,12 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                 }
             }
         }
-        if (anyPostRotated)
-            applySquareCanvasFrame70Percent();
+        if (anyPostRotated) {
+            if (isSquarePagePreset)
+                applySquareCanvasFrame70Percent();
+            else
+                fitLayersToPage();
+        }
     }
 
     {
@@ -7236,36 +7262,38 @@ void MultiLayer::updateCanvasStatusPill()
     const int zoomPct = qRound(d_page_zoom * 100.0);
     const QString sep = QString(QChar(0x00B7));
     const QString times = QString(QChar(0x00D7));
-    const QString fullStatusText =
-            QStringLiteral("%1 %2 %3 %4 %5 %6 %5 %7 DPI %5 %8 %5 %9%")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep, aspectBadge,
-                         QString::number(d_page_dpi), fontFam, QString::number(zoomPct));
+    auto fmtDim = [&](double v) -> QString {
+        QString s = QString::number(v, 'f', decimals);
+        if (decimals > 0) {
+            while (s.endsWith(QLatin1Char('0')))
+                s.chop(1);
+            if (s.endsWith(QLatin1Char('.')))
+                s.chop(1);
+        }
+        return s;
+    };
+    const QString wStr = fmtDim(wDisp);
+    const QString hStr = fmtDim(hDisp);
+    const QString dpiStr = QString::number(d_page_dpi);
+    const QString fullStatusText = (zoomPct == 100)
+            ? QStringLiteral("%1%2%3 %4 %5 %6 DPI %5 %7")
+                      .arg(wStr, times, hStr, unitStr, sep, dpiStr, fontFam)
+            : QStringLiteral("%1%2%3 %4 %5 %6 DPI %5 %7 %5 %8%")
+                      .arg(wStr, times, hStr, unitStr, sep, dpiStr, fontFam,
+                           QString::number(zoomPct));
     const QString compactStatusText =
-            QStringLiteral("%1%2%3 %4 %5 %6 %5 %7 DPI %5 %8")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep, aspectBadge,
-                         QString::number(d_page_dpi), fontFam);
+            QStringLiteral("%1%2%3 %4 %5 %6 %5 %7").arg(wStr, times, hStr, unitStr, sep, dpiStr, fontFam);
     const QString shortStatusText =
-            QStringLiteral("%1%2%3%4 %5 %6 %5 %7 DPI %5 %8")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep, ratioStr,
-                         QString::number(d_page_dpi), fontFam);
-
+            QStringLiteral("%1%2%3 %4 %5 %6 DPI").arg(wStr, times, hStr, unitStr, sep, dpiStr);
     const QString miniStatusText =
-            QStringLiteral("%1%2%3%4 %5 %6 DPI %5 %7")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep,
-                         QString::number(d_page_dpi), fontFam);
-    const QString microStatusText =
-            QStringLiteral("%1%2%3%4 %5 %6 %5 %7")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr, sep,
-                         QString::number(d_page_dpi), fontFam);
-    const QString picoStatusText =
-            QStringLiteral("%1%2%3 %4")
-                    .arg(QString::number(wDisp, 'f', decimals), times,
-                         QString::number(hDisp, 'f', decimals), unitStr);
+            QStringLiteral("%1%2%3%4 %5 %6 %5 %7").arg(wStr, times, hStr, unitStr, sep, dpiStr, fontFam);
+    const QString microStatusText = QStringLiteral("%1%2%3 %4").arg(wStr, times, hStr, unitStr);
+    const QString picoStatusText = QStringLiteral("%1 DPI").arg(dpiStr);
+
+    const QString detailTipText =
+            QStringLiteral("%1%2%3 %4 %5 %6 %5 %7 DPI %5 %8 %5 %9%")
+                    .arg(wStr, times, hStr, unitStr, sep, aspectBadge, dpiStr, fontFam,
+                         QString::number(zoomPct));
 
     d_canvas_status_pill->setProperty("_fullStatusText", fullStatusText);
     d_canvas_status_pill->setProperty("_compactStatusText", compactStatusText);
@@ -7276,7 +7304,7 @@ void MultiLayer::updateCanvasStatusPill()
     d_canvas_status_pill->setText(fullStatusText);
     d_canvas_status_pill->setToolTip(
             tr("Page Size, Aspect Ratio, DPI, Font & Zoom — Click for Quick Presets")
-            + QLatin1Char('\n') + fullStatusText);
+            + QLatin1Char('\n') + detailTipText);
     repositionCanvasStatusPill();
 }
 
@@ -7364,11 +7392,20 @@ void MultiLayer::repositionCanvasStatusPill()
     // Always keep the status pill anchored consistently in the top-right header strip
     // aligned with the layer switcher pill (prevents jumping to bottom-right on compact presets).
     {
-        const int leftReserved = (d_layer_pill_frame && d_layer_pill_frame->isVisible())
-                ? (d_layer_pill_frame->geometry().right() + 10)
-                : 8;
+        int leftReserved = 8;
+        if (d_layer_pill_frame && d_layer_pill_frame->isVisible()) {
+            if (QLayout *pl = d_layer_pill_frame->layout())
+                pl->activate();
+            const int frameW = qMax(d_layer_pill_frame->width(),
+                                    d_layer_pill_frame->sizeHint().width());
+            const QWidget *pillParent = d_canvas_status_pill->parentWidget();
+            const int leftEdge = (pillParent && pillParent->isAncestorOf(d_layer_pill_frame))
+                    ? d_layer_pill_frame->mapTo(pillParent, QPoint(0, 0)).x()
+                    : d_layer_pill_frame->x();
+            leftReserved = qMax(8, leftEdge + frameW + 10);
+        }
         const int availTopW = refSz.width() - leftReserved - 8 - sbRight;
-        if (availTopW < 95) {
+        if (availTopW < 64) {
             d_canvas_status_pill->hide();
             return;
         }
@@ -7388,7 +7425,7 @@ void MultiLayer::repositionCanvasStatusPill()
                 const QString rightElided = fm.elidedText(chosen, Qt::ElideRight, qMax(36, availTopW - 26));
                 chosenW = measurePillWidth(rightElided);
             }
-            pw = qMin(chosenW, qMax(60, availTopW));
+            pw = qMin(chosenW, availTopW);
             pillSz = d_canvas_status_pill->sizeHint().expandedTo(
                     d_canvas_status_pill->minimumSizeHint());
             ph = qMax(20, qMin(LayerButton::btnSize(), pillSz.height()));
@@ -8253,6 +8290,12 @@ void MultiLayer::remapUndoSnapshotsForColRename(const QString &oldColName,
 
 void MultiLayer::remapUndoSnapshotsForMatrixRename(const QString &oldName, const QString &newName)
 {
+    if (!oldName.isEmpty() && !newName.isEmpty() && oldName != newName) {
+        for (int i = 0; i < graphsList.count(); ++i) {
+            if (Graph *gr = qobject_cast<Graph *>(graphsList.at(i)))
+                ExtraPlotTypes::updateGraphTagsForRename(gr, oldName, newName, false, true);
+        }
+    }
     if (!d_undo_stack || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
         return;
     const int cnt = d_undo_stack->count();
@@ -9500,12 +9543,37 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                     }
                 }
             }
-            if (!isMultiPanel && !xLabelsCrowded)
+            bool yLabelsCrowded = false;
+            int safeYCaps = capY;
+            if (!gr->axisBreak(QwtPlot::yLeft).enabled && !gr->hasColorScaleOnAxis(QwtPlot::yLeft)
+                && !gr->hasWeibullProbabilityAxis(QwtPlot::yLeft)
+                && !gr->hasCustomTickLabels(QwtPlot::yLeft)) {
+                const QFont yTickFnt = gr->axisFont(QwtPlot::yLeft);
+                const QFontMetricsF yfm(yTickFnt);
+                const double yPt = (yTickFnt.pointSizeF() > 0.0)
+                        ? yTickFnt.pointSizeF()
+                        : double(qMax(1, yTickFnt.pointSize()));
+                const int yLineH = qMax(10, static_cast<int>(std::ceil(yfm.height())));
+                const QwtScaleDiv *ysd = pl->axisScaleDiv(QwtPlot::yLeft);
+                const int yTickCnt = ysd ? ysd->ticks(QwtScaleDiv::MajorTick).size() : 0;
+                const int reqH = yTickCnt * qMax(16, qRound(double(yLineH) * 1.65));
+                if (yPt >= 16.0 || (yTickCnt >= 7 && reqH > qRound(0.95 * double(baseSide)))) {
+                    yLabelsCrowded = true;
+                    const int minStepPx = qMax(24, qRound(double(yLineH) * 1.95));
+                    safeYCaps = qBound(3, qRound(double(baseSide) / double(minStepPx)), 6);
+                }
+            }
+            if (!isMultiPanel && !xLabelsCrowded && !yLabelsCrowded)
                 continue;
             const int axesToCap[2] = { QwtPlot::xBottom, QwtPlot::yLeft };
-            const int caps[2] = { xLabelsCrowded ? qMin(capX, safeXCaps) : capX, capY };
+            const bool capAxis[2] = { isMultiPanel || xLabelsCrowded,
+                                      isMultiPanel || yLabelsCrowded };
+            const int caps[2] = { xLabelsCrowded ? qMin(capX, safeXCaps) : capX,
+                                  yLabelsCrowded ? qMin(capY, safeYCaps) : capY };
             bool changedAny = false;
             for (int ai = 0; ai < 2; ++ai) {
+                if (!capAxis[ai])
+                    continue;
                 const int a = axesToCap[ai];
                 const int cap = caps[ai];
                 if (gr->hasColorScaleOnAxis(a) || gr->hasWeibullProbabilityAxis(a)
@@ -9520,13 +9588,14 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                     }
                     continue;
                 }
-                const bool forceUnstepX = (a == QwtPlot::xBottom && xLabelsCrowded);
-                if (!gr->axisBreak(a).enabled && (gr->axisStep(a) <= 0.0 || forceUnstepX)) {
+                const bool forceUnstep = (a == QwtPlot::xBottom && xLabelsCrowded)
+                        || (a == QwtPlot::yLeft && yLabelsCrowded);
+                if (!gr->axisBreak(a).enabled && (gr->axisStep(a) <= 0.0 || forceUnstep)) {
                     const QwtScaleEngine *se = pl->axisScaleEngine(a);
                     const QwtScaleDiv *sd = pl->axisScaleDiv(a);
                     if (se && sd && !Plot::isLog10ScaleEngine(se)
                         && (sd->ticks(QwtScaleDiv::MajorTick).size() > cap + 1
-                            || pl->axisMaxMajor(a) > cap || forceUnstepX)) {
+                            || pl->axisMaxMajor(a) > cap || forceUnstep)) {
                         const double lo = qMin(sd->lowerBound(), sd->upperBound());
                         const double hi = qMax(sd->lowerBound(), sd->upperBound());
                         const bool isInv = se->testAttribute(QwtScaleEngine::Inverted);

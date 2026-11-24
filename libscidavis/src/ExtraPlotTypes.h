@@ -205,6 +205,13 @@ public:
     static bool restoreGraphTag(Graph *g, const QString &line);
     //! The recorded tag of a 2D density / pole figure graph (empty if \a g is neither).
     static QString graphTag(Graph *g, const QString &kind);
+    //! Synchronizes recorded <ToriDensity2D> display toggles (blocks/log) with live Spectrogram state.
+    static QStringList syncedGraphTagsForState(const Graph *g);
+    //! Updates <ToriDensity2D> / <ToriPoleFigure> tags on table, column, or matrix rename.
+    static bool updateGraphTagsForRename(Graph *g, const QString &oldName, const QString &newName,
+                                         bool updateTableName, bool updateMatrixName = false);
+    //! Scale limit around unit pole-figure circle, expanding beyond 1.38 for large axis fonts.
+    static double poleFigureScaleLimit(const Graph *g);
 
     // ---- Dialogs (no-ops in headless / non-interactive mode) ------------------------------
     static void showErrorBandDialog(ApplicationWindow *app);

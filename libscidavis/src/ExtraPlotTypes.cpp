@@ -1609,7 +1609,9 @@ public:
         const double ry = std::fabs(yMap.xTransform(1.0) - cy);
         if (!std::isfinite(cx) || !std::isfinite(cy) || rx < 4.0 || ry < 4.0)
             return;
-        const double sc = Plot::printDeviceScale();
+        const double sc = (d_graph && d_graph->plotWidget())
+                ? d_graph->plotWidget()->axisDecorationScale(painter)
+                : Plot::printDeviceScale();
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
 
@@ -1744,7 +1746,7 @@ void setupPoleFigurePage(Graph *g)
     }
     // no box around the circle; the colour bar keeps its own outline (re-enabled by the sync)
     g->drawAxesBackbones(false);
-    const double lim = 1.38;
+    const double lim = ExtraPlotTypes::poleFigureScaleLimit(g);
     g->setScale(QwtPlot::xBottom, -lim, lim);
     g->setScale(QwtPlot::yLeft, -lim, lim);
     if (Spectrogram *sp = firstSpectrogram(g))
@@ -2538,10 +2540,193 @@ QString ExtraPlotTypes::graphTag(Graph *g, const QString &kind)
     if (!g || !g->plotWidget())
         return QString();
     const QString prefix = QStringLiteral("<") + kind;
-    for (const QString &tag : g->plotWidget()->property(kExtraTagsProperty).toStringList())
+    for (const QString &tag : syncedGraphTagsForState(g))
         if (tag.startsWith(prefix))
             return tag;
     return QString();
+}
+
+namespace {
+QString rebuildTagWithUpdates(const QString &tag, const QString &kind,
+                              const QMap<QString, QString> &updates)
+{
+    if (updates.isEmpty())
+        return tag;
+    QMap<QString, QString> attrs = parseTagAttrs(tag);
+    for (auto it = updates.constBegin(); it != updates.constEnd(); ++it)
+        attrs.insert(it.key(), it.value());
+
+    // Preserve existing attribute order while updating modified values, appending any missing keys.
+    static const QRegularExpression rx(QStringLiteral("([A-Za-z_][A-Za-z0-9_]*)=\"([^\"]*)\""));
+    QString out = QStringLiteral("<") + kind;
+    QSet<QString> emitted;
+    auto it = rx.globalMatch(tag);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString key = m.captured(1);
+        const QString val = attrs.contains(key) ? attrs.value(key) : m.captured(2);
+        out += tagAttr(key.toUtf8().constData(), val);
+        emitted.insert(key);
+    }
+    for (auto ui = updates.constBegin(); ui != updates.constEnd(); ++ui) {
+        if (!emitted.contains(ui.key()))
+            out += tagAttr(ui.key().toUtf8().constData(), ui.value());
+    }
+    out += QStringLiteral("/>");
+    return out;
+}
+} // namespace
+
+double ExtraPlotTypes::poleFigureScaleLimit(const Graph *g)
+{
+    double lim = 1.38;
+    if (!g || !g->plotWidget())
+        return lim;
+    const Plot *pl = g->plotWidget();
+    const QFont f = pl->axisFont(QwtPlot::xBottom);
+    const QFont fAxis = pl->axisTitle(QwtPlot::xBottom).font();
+    const QFontMetricsF fm(f);
+    const QFontMetricsF fmAxis(fAxis);
+    const double tickH = fm.height();
+    const double tickW = fm.boundingRect(QStringLiteral("270") + QChar(0x00B0)).width();
+    const double axisH = fmAxis.height();
+    const double axisW = fmAxis.boundingRect(QStringLiteral("TD")).width();
+    const double needPx = qMax(7.0 + 3.0 + tickH + 3.0 + axisH + 4.0,
+                               7.0 + 3.0 + tickW + 6.0 + axisW + 4.0);
+    const double zoom = qMax(0.25, pl->displayFontScale());
+    const int sidePx = qMax(120, qRound(double(qMin(pl->width(), pl->height())) / zoom));
+    const double halfSpanPx = 0.5 * double(sidePx);
+    if (halfSpanPx > needPx + 24.0) {
+        const double reqLim = 1.0 / (1.0 - needPx / halfSpanPx);
+        lim = qBound(1.38, reqLim, 1.75);
+    }
+    return lim;
+}
+
+QStringList ExtraPlotTypes::syncedGraphTagsForState(const Graph *g)
+{
+    if (!g || !g->plotWidget())
+        return QStringList();
+    QStringList tags = g->plotWidget()->property(kExtraTagsProperty).toStringList();
+    Spectrogram *sp = firstSpectrogram(const_cast<Graph *>(g));
+    if (!sp)
+        return tags;
+    for (int i = 0; i < tags.size(); ++i) {
+        const QString trimmed = tags[i].trimmed();
+        if (trimmed.startsWith(QLatin1String("<ToriDensity2D"))) {
+            QMap<QString, QString> updates;
+            updates.insert(QStringLiteral("blocks"), sp->cellBlocks() ? QStringLiteral("1")
+                                                                      : QStringLiteral("0"));
+            updates.insert(QStringLiteral("log"), sp->logColorScale() ? QStringLiteral("1")
+                                                                      : QStringLiteral("0"));
+            tags[i] = rebuildTagWithUpdates(trimmed, QStringLiteral("ToriDensity2D"), updates);
+        }
+    }
+    return tags;
+}
+
+bool ExtraPlotTypes::updateGraphTagsForRename(Graph *g, const QString &oldName,
+                                              const QString &newName, bool updateTableName,
+                                              bool updateMatrixName)
+{
+    if (!g || !g->plotWidget() || oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+        return false;
+    Plot *p = g->plotWidget();
+    QStringList tags = p->property(kExtraTagsProperty).toStringList();
+    if (tags.isEmpty())
+        return false;
+
+    const QString oldPrefix = oldName + QLatin1Char('_');
+    const QString newPrefix = newName + QLatin1Char('_');
+    auto remapPrefixedCol = [&](const QString &val) -> QString {
+        if (val.startsWith(oldPrefix))
+            return newPrefix + val.mid(oldPrefix.size());
+        return val;
+    };
+
+    bool anyChanged = false;
+    for (int i = 0; i < tags.size(); ++i) {
+        const QString trimmed = tags[i].trimmed();
+        if (trimmed.startsWith(QLatin1String("<ToriDensity2D"))) {
+            const QMap<QString, QString> a = parseTagAttrs(trimmed);
+            QMap<QString, QString> updates;
+            if (updateMatrixName) {
+                if (a.value(QStringLiteral("matrix")) == oldName)
+                    updates.insert(QStringLiteral("matrix"), newName);
+            } else if (updateTableName) {
+                if (a.value(QStringLiteral("table")) == oldName)
+                    updates.insert(QStringLiteral("table"), newName);
+                for (const char *k : { "x", "y" }) {
+                    const QString key = QLatin1String(k);
+                    const QString cur = a.value(key);
+                    const QString nxt = remapPrefixedCol(cur);
+                    if (nxt != cur)
+                        updates.insert(key, nxt);
+                }
+            } else {
+                const QString tagTbl = a.value(QStringLiteral("table"));
+                const QString tblPfx = tagTbl + QLatin1Char('_');
+                if (!tagTbl.isEmpty() && oldName.startsWith(tblPfx) && newName.startsWith(tblPfx)) {
+                    const QString oldShort = oldName.mid(tblPfx.size());
+                    const QString newShort = newName.mid(tblPfx.size());
+                    for (const char *k : { "x", "y" }) {
+                        const QString key = QLatin1String(k);
+                        const QString cur = a.value(key);
+                        if (cur == oldName)
+                            updates.insert(key, newName);
+                        else if (cur == oldShort)
+                            updates.insert(key, newShort);
+                    }
+                }
+            }
+            if (!updates.isEmpty()) {
+                tags[i] = rebuildTagWithUpdates(trimmed, QStringLiteral("ToriDensity2D"), updates);
+                anyChanged = true;
+            }
+        } else if (trimmed.startsWith(QLatin1String("<ToriPoleFigure"))) {
+            const QMap<QString, QString> a = parseTagAttrs(trimmed);
+            QMap<QString, QString> updates;
+            if (updateMatrixName) {
+                for (const char *k : { "matrix", "sourceMatrix" }) {
+                    const QString key = QLatin1String(k);
+                    if (a.value(key) == oldName)
+                        updates.insert(key, newName);
+                }
+            } else if (updateTableName) {
+                if (a.value(QStringLiteral("table")) == oldName)
+                    updates.insert(QStringLiteral("table"), newName);
+                for (const char *k : { "a", "b", "i" }) {
+                    const QString key = QLatin1String(k);
+                    const QString cur = a.value(key);
+                    const QString nxt = remapPrefixedCol(cur);
+                    if (nxt != cur)
+                        updates.insert(key, nxt);
+                }
+            } else {
+                const QString tagTbl = a.value(QStringLiteral("table"));
+                const QString tblPfx = tagTbl + QLatin1Char('_');
+                if (!tagTbl.isEmpty() && oldName.startsWith(tblPfx) && newName.startsWith(tblPfx)) {
+                    const QString oldShort = oldName.mid(tblPfx.size());
+                    const QString newShort = newName.mid(tblPfx.size());
+                    for (const char *k : { "a", "b", "i" }) {
+                        const QString key = QLatin1String(k);
+                        const QString cur = a.value(key);
+                        if (cur == oldName)
+                            updates.insert(key, newName);
+                        else if (cur == oldShort)
+                            updates.insert(key, newShort);
+                    }
+                }
+            }
+            if (!updates.isEmpty()) {
+                tags[i] = rebuildTagWithUpdates(trimmed, QStringLiteral("ToriPoleFigure"), updates);
+                anyChanged = true;
+            }
+        }
+    }
+    if (anyChanged)
+        p->setProperty(kExtraTagsProperty, tags);
+    return anyChanged;
 }
 
 bool ExtraPlotTypes::restoreGraphTag(Graph *g, const QString &line)

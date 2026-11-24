@@ -3439,7 +3439,7 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
         updateSecondaryAxis(QwtPlot::yRight);
     }
 
-    d_plot->replot();
+    d_plot->updateAxes();
     if (!ignoreResize && !d_linked_parent && !d_syncing_link) {
         if (MultiLayer *ml = multiLayerParent()) {
             if (ml->keepAspectRatio()) {
@@ -3455,9 +3455,8 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
             }
         }
     }
-    // keep markers on canvas area
+    // keep markers on canvas area (also performs the single d_plot->replot())
     updateMarkersBoundingRect(axesBefore);
-    d_plot->replot();
     syncChildLinkedLayers();
 }
 
@@ -4300,6 +4299,8 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
         updated_curves++;
     }
     if (updated_curves) {
+        if (d_point_colorbar_active)
+            syncPointColorBar();
         updateStatReferenceLines();
         if (isPiePlot())
             updatePlot();
@@ -4913,7 +4914,9 @@ QString Graph::saveCurves()
                     }
                 }
             } else if (c->type() == ErrorBars) {
-                QwtErrorPlotCurve *er = (QwtErrorPlotCurve *)it;
+                QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(it);
+                if (!er || !er->masterCurve())
+                    continue;
                 s += "ErrorBars\t";
                 s += QString::number(er->direction()) + "\t";
                 s += er->masterCurve()->xColumnName() + "\t";
@@ -5081,7 +5084,9 @@ void Graph::addArrow(QStringList list, int fileVersion)
         mrk->setBoundingRect(list[1].toDouble(), list[2].toDouble(), list[3].toDouble(),
                              list[4].toDouble());
 
-    mrk->setWidth(list[5].toInt());
+    bool okW = false;
+    const double lw = list[5].toDouble(&okW);
+    mrk->setWidthF((okW && lw > 0.0) ? lw : double(qMax(1, list[5].toInt())));
     mrk->setColor(QColor(COLORVALUE(list[6])));
     mrk->setStyle(getPenStyle(list[7]));
     mrk->drawEndArrow(list[8] == "1");
@@ -5113,9 +5118,16 @@ void Graph::addArrow(ArrowMarker *mrk)
 
     aux->setBoundingRect(mrk->startPointCoord().x(), mrk->startPointCoord().y(),
                          mrk->endPointCoord().x(), mrk->endPointCoord().y());
-    aux->setWidth(mrk->width());
+    aux->setWidthF(mrk->widthF());
     aux->setColor(mrk->color());
     aux->setStyle(mrk->style());
+    aux->setCapStyle(mrk->capStyle());
+    aux->setJoinStyle(mrk->joinStyle());
+    if (mrk->style() == Qt::CustomDashLine) {
+        QPen pen = aux->linePen();
+        pen.setDashPattern(mrk->linePen().dashPattern());
+        aux->setLinePen(pen);
+    }
     aux->drawEndArrow(mrk->hasEndArrow());
     aux->drawStartArrow(mrk->hasStartArrow());
     aux->setHeadLength(mrk->headLength());
@@ -5185,7 +5197,7 @@ QString Graph::saveMarkers()
         s += (QString::number(ep.x(), 'g', 15)) + "\t";
         s += (QString::number(ep.y(), 'g', 15)) + "\t";
 
-        s += QString::number(mrkL->width()) + "\t";
+        s += QString::number(mrkL->widthF(), 'g', 15) + "\t";
         s += COLORNAME(mrkL->color()) + "\t";
         s += penStyleName(mrkL->style()) + "\t";
         s += QString::number(mrkL->hasEndArrow()) + "\t";
@@ -6316,8 +6328,9 @@ void Graph::updatePlot()
             d_plot->enableAxis(i, false);
         drawAxesBackbones(false);
     } else if (isPoleFigurePlot()) {
-        d_plot->setAxisScale(QwtPlot::xBottom, -1.38, 1.38);
-        d_plot->setAxisScale(QwtPlot::yLeft, -1.38, 1.38);
+        const double lim = ExtraPlotTypes::poleFigureScaleLimit(this);
+        d_plot->setAxisScale(QwtPlot::xBottom, -lim, lim);
+        d_plot->setAxisScale(QwtPlot::yLeft, -lim, lim);
         d_plot->enableAxis(QwtPlot::xBottom, false);
         d_plot->enableAxis(QwtPlot::yLeft, false);
         d_plot->enableAxis(QwtPlot::xTop, false);
@@ -6415,8 +6428,7 @@ void Graph::updatePlot()
         syncCustomAndWeibullAxes();
     }
 
-    d_plot->replot();
-    updateMarkersBoundingRect(axesBefore);
+    d_plot->updateAxes();
     if (!d_is_ternary && !d_is_polar && !isPoleFigurePlot()) {
         updateSecondaryAxis(QwtPlot::xTop);
         updateSecondaryAxis(QwtPlot::yRight);
@@ -6430,9 +6442,9 @@ void Graph::updatePlot()
             c->updateBoundingRect();
     }
 
-    d_plot->replot();
-    d_zoomer[0]->setZoomBase();
-    d_zoomer[1]->setZoomBase();
+    updateMarkersBoundingRect(axesBefore);
+    d_zoomer[0]->setZoomBase(false);
+    d_zoomer[1]->setZoomBase(false);
     updateStatReferenceLines();
     if (d_linked_parent)
         syncLinkedAxesFromParent();
@@ -6470,12 +6482,10 @@ void Graph::updateScale(const MarkerAxisState &axesBefore)
         d_plot->setAxisScale(QwtPlot::yLeft, scDiv->lBound(), scDiv->hBound(), step);
 #endif
 
-    d_plot->replot();
-    updateMarkersBoundingRect(axesBefore);
+    d_plot->updateAxes();
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);
-
-    d_plot->replot(); // TODO: avoid 2nd replot!
+    updateMarkersBoundingRect(axesBefore);
     syncChildLinkedLayers();
 }
 
@@ -6576,8 +6586,10 @@ void Graph::removeCurve(int index)
     if (it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
         PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
         if (pc && pc->type() == ErrorBars) {
-            if (QwtErrorPlotCurve *epc = dynamic_cast<QwtErrorPlotCurve *>(pc))
-                epc->detachFromMasterCurve();
+            if (QwtErrorPlotCurve *epc = dynamic_cast<QwtErrorPlotCurve *>(pc)) {
+                if (epc->masterCurve())
+                    epc->detachFromMasterCurve();
+            }
         } else if (pc && pc->type() != Function) {
             if (DataCurve *dc = dynamic_cast<DataCurve *>(pc))
                 dc->clearErrorBars();
@@ -7799,9 +7811,9 @@ QString Graph::saveToString(bool saveAsTemplate)
         }
     }
 
-    // E11b: 2D density / pole figure specifications (ExtraPlotTypes keeps them on the plot)
+    // E11b: 2D density / pole figure specifications (synced with live Spectrogram state)
     if (!saveAsTemplate) {
-        const QStringList extraTags = d_plot->property("_toriExtraPlotTags").toStringList();
+        const QStringList extraTags = ExtraPlotTypes::syncedGraphTagsForState(this);
         for (const QString &tag : extraTags)
             s += tag + "\n";
     }
@@ -8602,128 +8614,140 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     setAxesLinewidth(plot->axesLinewidth());
     removeLegend();
 
-    for (i = 0; i < g->curves(); i++) {
-        QwtPlotItem *it = (QwtPlotItem *)g->plotItem(i);
-        if (!it)
-            continue;
-        if (it->rtti() == QwtPlotItem::Rtti_PlotCurve) {
-            PlotCurve *srcPc = dynamic_cast<PlotCurve *>(it);
-            if (!srcPc)
+    QVector<int> srcToDstIdx(g->curves(), -1);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (i = 0; i < g->curves(); i++) {
+            QwtPlotItem *it = (QwtPlotItem *)g->plotItem(i);
+            if (!it)
                 continue;
-            DataCurve *cv = dynamic_cast<DataCurve *>(it);
-            int n = srcPc->dataSize();
-            int style = srcPc->type();
-            QVector<double> x(n);
-            QVector<double> y(n);
-            for (int j = 0; j < n; j++) {
-                x[j] = srcPc->x(j);
-                y[j] = srcPc->y(j);
-            }
+            if (it->rtti() == QwtPlotItem::Rtti_PlotCurve) {
+                PlotCurve *srcPc = dynamic_cast<PlotCurve *>(it);
+                if (!srcPc)
+                    continue;
+                DataCurve *cv = dynamic_cast<DataCurve *>(it);
+                int n = srcPc->dataSize();
+                int style = srcPc->type();
+                if ((pass == 0 && style == ErrorBars) || (pass == 1 && style != ErrorBars))
+                    continue;
 
-            PlotCurve *c = nullptr;
-            if (style == Pie && cv) {
-                c = new QwtPieCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
-                ((QwtPieCurve *)c)->setRay(((QwtPieCurve *)cv)->ray());
-                ((QwtPieCurve *)c)->setFirstColor(((QwtPieCurve *)cv)->firstColor());
-            } else if (style == Function || !cv) {
-                if (FunctionCurve *fcSrc = dynamic_cast<FunctionCurve *>(it)) {
-                    c = new FunctionCurve(parent, srcPc->title().text());
-                    static_cast<FunctionCurve *>(c)->copy(fcSrc);
+                QVector<double> x(n);
+                QVector<double> y(n);
+                for (int j = 0; j < n; j++) {
+                    x[j] = srcPc->x(j);
+                    y[j] = srcPc->y(j);
+                }
+
+                PlotCurve *c = nullptr;
+                if (style == Pie && cv) {
+                    c = new QwtPieCurve(cv->table(), cv->title().text(), cv->startRow(),
+                                        cv->endRow());
+                    ((QwtPieCurve *)c)->setRay(((QwtPieCurve *)cv)->ray());
+                    ((QwtPieCurve *)c)->setFirstColor(((QwtPieCurve *)cv)->firstColor());
+                } else if (style == Function || !cv) {
+                    if (FunctionCurve *fcSrc = dynamic_cast<FunctionCurve *>(it)) {
+                        c = new FunctionCurve(parent, srcPc->title().text());
+                        static_cast<FunctionCurve *>(c)->copy(fcSrc);
+                    } else {
+                        c = new PlotCurve(srcPc->title().text());
+                        c->setType(Function);
+                    }
+                } else if (style == VerticalBars || style == HorizontalBars) {
+                    c = new QwtBarCurve(((QwtBarCurve *)cv)->orientation(), cv->table(),
+                                        cv->xColumnName(), cv->title().text(), cv->startRow(),
+                                        cv->endRow());
+                    ((QwtBarCurve *)c)->copy((const QwtBarCurve *)cv);
+                } else if (style == ErrorBars) {
+                    QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(cv);
+                    DataCurve *master_curve = er ? masterCurve(er) : nullptr;
+                    if (master_curve) {
+                        c = new QwtErrorPlotCurve(cv->table(), cv->title().text());
+                        ((QwtErrorPlotCurve *)c)->copy(er);
+                        ((QwtErrorPlotCurve *)c)->setMasterCurve(master_curve);
+                    }
+                } else if (style == Histogram) {
+                    c = new QwtHistogram(cv->table(), cv->title().text(), cv->startRow(),
+                                         cv->endRow());
+                    ((QwtHistogram *)c)->copy((const QwtHistogram *)cv);
+                } else if (style == VectXYXY || style == VectXYAM) {
+                    VectorCurve::VectorStyle vs = VectorCurve::XYXY;
+                    if (style == VectXYAM)
+                        vs = VectorCurve::XYAM;
+                    c = new VectorCurve(vs, cv->table(), cv->xColumnName(), cv->title().text(),
+                                        ((VectorCurve *)cv)->vectorEndXAColName(),
+                                        ((VectorCurve *)cv)->vectorEndYMColName(), cv->startRow(),
+                                        cv->endRow());
+                    ((VectorCurve *)c)->copy((const VectorCurve *)cv);
+                } else if (style == Box) {
+                    c = new BoxCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
+                    ((BoxCurve *)c)->copy((const BoxCurve *)cv);
+                    if (n > 0) {
+                        QwtSingleArrayData dat(x[0], y, n);
+                        c->setData(dat);
+                    }
                 } else {
-                    c = new PlotCurve(srcPc->title().text());
-                    c->setType(Function);
+                    c = new DataCurve(cv->table(), cv->xColumnName(), cv->title().text(),
+                                      cv->startRow(), cv->endRow());
                 }
-            } else if (style == VerticalBars || style == HorizontalBars) {
-                c = new QwtBarCurve(((QwtBarCurve *)cv)->orientation(), cv->table(),
-                                    cv->xColumnName(), cv->title().text(), cv->startRow(),
-                                    cv->endRow());
-                ((QwtBarCurve *)c)->copy((const QwtBarCurve *)cv);
-            } else if (style == ErrorBars) {
-                QwtErrorPlotCurve *er = (QwtErrorPlotCurve *)cv;
-                DataCurve *master_curve = masterCurve(er);
-                if (master_curve) {
-                    c = new QwtErrorPlotCurve(cv->table(), cv->title().text());
-                    ((QwtErrorPlotCurve *)c)->copy(er);
-                    ((QwtErrorPlotCurve *)c)->setMasterCurve(master_curve);
+
+                if (!c)
+                    continue;
+
+                const int dstIdx = n_curves;
+                c_keys.resize(++n_curves);
+                c_keys[dstIdx] = d_plot->insertCurve(c);
+
+                c_type.resize(n_curves);
+                c_type[dstIdx] = (!cv && style != Function) ? int(Function) : g->curveType(i);
+                srcToDstIdx[i] = dstIdx;
+
+                if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars)
+                    c->setData(x.data(), y.data(), n);
+
+                c->setPen(srcPc->pen());
+                c->setBrush(srcPc->brush());
+                c->setStyle(srcPc->style());
+                c->setSymbol(srcPc->symbol());
+
+                if (srcPc->testCurveAttribute(QwtPlotCurve::Fitted))
+                    c->setCurveAttribute(QwtPlotCurve::Fitted, true);
+                else if (srcPc->testCurveAttribute(QwtPlotCurve::Inverted))
+                    c->setCurveAttribute(QwtPlotCurve::Inverted, true);
+
+                c->setSymbolSkip(srcPc->symbolSkip());
+                if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars) {
+                    c->setStackNormalize01(srcPc->stackNormalize01());
+                    c->setStackOffset(srcPc->stackOffsetX(), srcPc->stackOffsetY());
                 }
-            } else if (style == Histogram) {
-                c = new QwtHistogram(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
-                ((QwtHistogram *)c)->copy((const QwtHistogram *)cv);
-            } else if (style == VectXYXY || style == VectXYAM) {
-                VectorCurve::VectorStyle vs = VectorCurve::XYXY;
-                if (style == VectXYAM)
-                    vs = VectorCurve::XYAM;
-                c = new VectorCurve(vs, cv->table(), cv->xColumnName(), cv->title().text(),
-                                    ((VectorCurve *)cv)->vectorEndXAColName(),
-                                    ((VectorCurve *)cv)->vectorEndYMColName(), cv->startRow(),
-                                    cv->endRow());
-                ((VectorCurve *)c)->copy((const VectorCurve *)cv);
-            } else if (style == Box) {
-                c = new BoxCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
-                ((BoxCurve *)c)->copy((const BoxCurve *)cv);
-                if (n > 0) {
-                    QwtSingleArrayData dat(x[0], y, n);
-                    c->setData(dat);
+
+                c->setAxis(srcPc->xAxis(), srcPc->yAxis());
+                c->setVisible(srcPc->isVisible());
+                if (cv && cv->hasPointColorMap()) {
+                    if (DataCurve *dcDst = dynamic_cast<DataCurve *>(c))
+                        dcDst->setPointColorMap(cv->pointColorMap());
                 }
-            } else {
-                c = new DataCurve(cv->table(), cv->xColumnName(), cv->title().text(),
-                                  cv->startRow(), cv->endRow());
+
+                QList<QwtPlotCurve *> lst = g->fitCurvesList();
+                if (lst.contains((QwtPlotCurve *)it))
+                    d_fit_curves << c;
+            } else if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                if (pass != 0)
+                    continue;
+                Spectrogram *sp = ((Spectrogram *)it)->copy();
+                const int dstIdx = n_curves;
+                c_keys.resize(++n_curves);
+                c_keys[dstIdx] = d_plot->insertCurve(sp);
+
+                sp->showColorScale(((Spectrogram *)it)->colorScaleAxis(),
+                                   ((Spectrogram *)it)->hasColorScale());
+                sp->setColorBarWidth(((Spectrogram *)it)->colorBarWidth());
+                if (!((Spectrogram *)it)->colorBarTitle().isEmpty())
+                    sp->setColorBarTitle(((Spectrogram *)it)->colorBarTitle());
+                sp->setVisible(it->isVisible());
+
+                c_type.resize(n_curves);
+                c_type[dstIdx] = g->curveType(i);
+                srcToDstIdx[i] = dstIdx;
             }
-
-            if (!c)
-                continue;
-
-            const int dstIdx = n_curves;
-            c_keys.resize(++n_curves);
-            c_keys[dstIdx] = d_plot->insertCurve(c);
-
-            c_type.resize(n_curves);
-            c_type[dstIdx] = (!cv && style != Function) ? int(Function) : g->curveType(i);
-
-            if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars)
-                c->setData(x.data(), y.data(), n);
-
-            c->setPen(srcPc->pen());
-            c->setBrush(srcPc->brush());
-            c->setStyle(srcPc->style());
-            c->setSymbol(srcPc->symbol());
-
-            if (srcPc->testCurveAttribute(QwtPlotCurve::Fitted))
-                c->setCurveAttribute(QwtPlotCurve::Fitted, true);
-            else if (srcPc->testCurveAttribute(QwtPlotCurve::Inverted))
-                c->setCurveAttribute(QwtPlotCurve::Inverted, true);
-
-            c->setSymbolSkip(srcPc->symbolSkip());
-            if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars) {
-                c->setStackNormalize01(srcPc->stackNormalize01());
-                c->setStackOffset(srcPc->stackOffsetX(), srcPc->stackOffsetY());
-            }
-
-            c->setAxis(srcPc->xAxis(), srcPc->yAxis());
-            c->setVisible(srcPc->isVisible());
-            if (cv && cv->hasPointColorMap()) {
-                if (DataCurve *dcDst = dynamic_cast<DataCurve *>(c))
-                    dcDst->setPointColorMap(cv->pointColorMap());
-            }
-
-            QList<QwtPlotCurve *> lst = g->fitCurvesList();
-            if (lst.contains((QwtPlotCurve *)it))
-                d_fit_curves << c;
-        } else if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
-            Spectrogram *sp = ((Spectrogram *)it)->copy();
-            const int dstIdx = n_curves;
-            c_keys.resize(++n_curves);
-            c_keys[dstIdx] = d_plot->insertCurve(sp);
-
-            sp->showColorScale(((Spectrogram *)it)->colorScaleAxis(),
-                               ((Spectrogram *)it)->hasColorScale());
-            sp->setColorBarWidth(((Spectrogram *)it)->colorBarWidth());
-            if (!((Spectrogram *)it)->colorBarTitle().isEmpty())
-                sp->setColorBarTitle(((Spectrogram *)it)->colorBarTitle());
-            sp->setVisible(it->isVisible());
-
-            c_type.resize(n_curves);
-            c_type[dstIdx] = g->curveType(i);
         }
     }
 
@@ -8886,9 +8910,12 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     if (d_is_ternary)
         setupTernaryPlot(d_ternary_labels[0], d_ternary_labels[1], d_ternary_labels[2]);
 
-    for (int bi = 0; bi < qMin(n_curves, g->curves()); ++bi) {
+    for (int bi = 0; bi < srcToDstIdx.size(); ++bi) {
+        const int dstIdx = srcToDstIdx[bi];
+        if (dstIdx < 0 || dstIdx >= n_curves)
+            continue;
         const QwtBarCurve *srcBc = dynamic_cast<const QwtBarCurve *>(g->curve(bi));
-        QwtBarCurve *dstBc = dynamic_cast<QwtBarCurve *>(curve(bi));
+        QwtBarCurve *dstBc = dynamic_cast<QwtBarCurve *>(curve(dstIdx));
         if (srcBc && dstBc && srcBc->isStacked()) {
             dstBc->setStacked(true);
             dstBc->setGap(srcBc->gap());
@@ -8964,7 +8991,7 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
     }
 
     if (g->d_plot && g->d_plot->property("_toriExtraPlotTags").isValid()) {
-        for (const QString &tag : g->d_plot->property("_toriExtraPlotTags").toStringList())
+        for (const QString &tag : ExtraPlotTypes::syncedGraphTagsForState(g))
             ExtraPlotTypes::restoreGraphTag(this, tag);
     }
 
@@ -9256,10 +9283,11 @@ void Graph::guessUniqueCurveLayout(int &colorIndex, int &symbolIndex)
     const int kPaletteCount = qMax(1, palette.size());
 
     int curve_index = n_curves - 1;
-    if (curve_index >= 0
+    if (curve_index >= 0 && curve_index < c_type.size()
         && c_type[curve_index] == ErrorBars) { // find out the pen color of the master curve
-        QwtErrorPlotCurve *er = (QwtErrorPlotCurve *)d_plot->curve(c_keys[curve_index]);
-        DataCurve *master_curve = er->masterCurve();
+        QwtErrorPlotCurve *er =
+                dynamic_cast<QwtErrorPlotCurve *>(d_plot->curve(c_keys[curve_index]));
+        DataCurve *master_curve = er ? er->masterCurve() : nullptr;
         if (master_curve) {
             colorIndex = ColorButton::colorIndex(master_curve->pen().color());
             symbolIndex = 1;
@@ -9814,6 +9842,9 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
         }
     }
 
+    const bool extraTagsChanged =
+            ExtraPlotTypes::updateGraphTagsForRename(this, oldName, newName, updateTableName, false);
+
     if (Legend *mrk = legend()) {
         auto isIdentChar = [](QChar ch) -> bool {
             return ch.isLetterOrNumber() || ch == QLatin1Char('_');
@@ -9930,9 +9961,9 @@ void Graph::updateCurveNames(const QString &oldName, const QString &newName, boo
                 joined += QLatin1Char('\n');
             mrk->setText(joined);
         }
-        if (anyLegendChanged || !changedList.isEmpty())
+        if (anyLegendChanged || !changedList.isEmpty() || extraTagsChanged)
             d_plot->replot();
-    } else if (!changedList.isEmpty()) {
+    } else if (!changedList.isEmpty() || extraTagsChanged) {
         d_plot->replot();
     }
 }
@@ -9951,7 +9982,7 @@ DataCurve *Graph::masterCurve(QwtErrorPlotCurve *er)
 {
     if (!er || !er->masterCurve())
         return nullptr;
-    for (int i = 0; i < n_curves && i < c_keys.size(); i++) {
+    for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); i++) {
         if (c_type[i] == ErrorBars)
             continue;
         QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
@@ -9970,7 +10001,7 @@ DataCurve *Graph::masterCurve(QwtErrorPlotCurve *er)
 DataCurve *Graph::masterCurve(const QString &xColName, const QString &yColName)
 {
     QString master_curve = xColName + "(X)," + yColName + "(Y)";
-    for (int i = 0; i < n_curves && i < c_keys.size(); i++) {
+    for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); i++) {
         if (c_type[i] == ErrorBars)
             continue;
         QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
@@ -16267,18 +16298,17 @@ void Graph::setAutoScaleAxis(int qwtAxisId)
     d_user_step[targetAxis] = 0.0;
     d_plot->setAxisAutoScale(targetAxis);
     applyZeroSnapOnAutoAxes();
-    d_plot->replot();
+    d_plot->updateAxes();
 
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);
     updateMarkersBoundingRect(axesBefore);
-    d_zoomer[0]->setZoomBase();
-    d_zoomer[1]->setZoomBase();
+    d_zoomer[0]->setZoomBase(false);
+    d_zoomer[1]->setZoomBase(false);
     updateStatReferenceLines();
     if (d_linked_parent)
         syncLinkedAxesFromParent();
     syncChildLinkedLayers();
-    d_plot->replot();
     emit modifiedGraph();
 }
 
@@ -16467,22 +16497,12 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         d_plot->setProperty("_outsideRightMargin", neededMargin);
         d_plot->updateLayout();
 
-        int rightAxisSpan = 0;
-        if (d_plot->axisEnabled(QwtPlot::yRight) && d_plot->axisWidget(QwtPlot::yRight)) {
-            QwtScaleWidget *rw = d_plot->axisWidget(QwtPlot::yRight);
-            const QwtScaleDraw *rsd = d_plot->axisScaleDraw(QwtPlot::yRight);
-            const bool hasRightContent =
-                    (rsd && rsd->hasComponent(QwtAbstractScaleDraw::Labels))
-                    || !d_plot->axisTitle(QwtPlot::yRight).text().trimmed().isEmpty()
-                    || rw->isColorBarEnabled();
-            if (hasRightContent)
-                rightAxisSpan = rw->width();
-        }
-
-        const int cw = d_plot->canvas()->width();
         d_plot->setProperty("_toriOutsideRightGapPx", gapPx);
         d_plot->setProperty("_toriOutsideRightTopPx", m);
-        leg->setOrigin(QPoint(cw + rightAxisSpan + gapPx, m));
+        // Replot first so axes and canvasMap settle at the shrunk _outsideRightMargin width
+        // before converting pixel origin -> data coordinates in setOrigin().
+        d_plot->replot();
+        repositionAnchoredOutsideRightLegend();
         d_plot->replot();
         unzoomGuard.restoreNow();
         updateSelectionOverlayGeometry();

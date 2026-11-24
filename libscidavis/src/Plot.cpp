@@ -257,7 +257,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
             sd->setAxisFontHint(defaultTickFont);
             sd->setTickLength(QwtScaleDiv::MinorTick, minTickLength);
             sd->setTickLength(QwtScaleDiv::MediumTick, minTickLength);
-            sd->setTickLength(QwtScaleDiv::MajorTick, minTickLength);
+            sd->setTickLength(QwtScaleDiv::MajorTick, majTickLength);
             if (i == QwtPlot::yRight || i == QwtPlot::xTop) {
                 sd->enableComponent(QwtAbstractScaleDraw::Labels, false);
                 sd->enableComponent(QwtAbstractScaleDraw::Ticks, false);
@@ -1280,11 +1280,8 @@ void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist,
         }
     }
 
-    const QPointF titleShift = sw ? sw->property("_toriAxisTitleShift").toPointF() : QPointF();
-    if (!sw || std::hypot(titleShift.x(), titleShift.y()) <= 1e-4) {
-        QwtPlot::printScale(painter, axisId, startDist, endDist, baseDist, adjRect);
+    if (!sw)
         return;
-    }
 
     if (sw->isColorBarEnabled() && sw->colorBarWidth() > 0) {
         const QwtMetricsMap map = QwtPainter::metricsMap();
@@ -1334,8 +1331,20 @@ void Plot::printScale(QPainter *painter, int axisId, int startDist, int endDist,
         return;
     }
 
-    sw->drawTitle(painter, align,
-                  adjRect.translated(qRound(titleShift.x()), qRound(titleShift.y())));
+    // Center the printed axis title over the active [startDist, endDist]-inset scale span,
+    // matching QwtScaleWidget::draw() on screen instead of centering across un-inset scaleRect.
+    QRect titleRect = adjRect;
+    if (axisId == xTop || axisId == xBottom) {
+        titleRect.setLeft(adjRect.left() + startDist);
+        titleRect.setWidth(qMax(1, adjRect.width() - startDist - endDist));
+    } else {
+        titleRect.setTop(adjRect.top() + startDist);
+        titleRect.setHeight(qMax(1, adjRect.height() - startDist - endDist));
+    }
+    const QPointF titleShift = sw->property("_toriAxisTitleShift").toPointF();
+    if (std::hypot(titleShift.x(), titleShift.y()) > 1e-4)
+        titleRect.translate(qRound(titleShift.x()), qRound(titleShift.y()));
+    sw->drawTitle(painter, align, titleRect);
 
     painter->save();
     painter->setFont(sw->font());

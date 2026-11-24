@@ -148,6 +148,10 @@ public:
     void setTitle(const QString &t) { QwtPlot::setTitle(t); }
     void setTitle(const QwtText &t);
     QwtText title() const;
+    //! Pen/tick scale for the axis frame & inward ticks drawn by drawItems/drawInwardTicks:
+    //! printDeviceScale() on print/export, times displayFontScale() on on-screen widget paint, so
+    //! a 160 % page-zoom preview is geometrically similar to the 100 % export.
+    double axisDecorationScale(const QPainter *painter) const;
 
 protected:
     void drawItems(QPainter *painter, const QRect &rect, const QwtScaleMap map[axisCnt],
@@ -184,10 +188,6 @@ private:
     };
     QFont zoomFont(ZoomFontSlot &slot, const QFont &stored);
     QFont unzoomFont(const ZoomFontSlot &slot, const QFont &shown) const;
-    //! Pen/tick scale for the axis frame & inward ticks drawn by drawItems/drawInwardTicks:
-    //! printDeviceScale() on print/export, times displayFontScale() on on-screen widget paint, so
-    //! a 160 % page-zoom preview is geometrically similar to the 100 % export.
-    double axisDecorationScale(const QPainter *painter) const;
     //! True when \a painter paints the on-screen widget (not an export / print device).
     bool isScreenWidgetPainter(const QPainter *painter) const;
 

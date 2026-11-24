@@ -492,6 +492,7 @@ private:
     bool d_internal_zoom_change = false;
     bool d_initial_viewport_fit_done = false;
     bool d_was_tiled_split = false;
+    bool d_suppress_canvas_resize_layout = false;
     QPointer<QWidget> d_passthrough_source;
     QPointer<QWidget> d_passthrough_target;
     QPointer<Graph> d_inset_drag_graph;

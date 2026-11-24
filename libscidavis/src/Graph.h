@@ -68,22 +68,22 @@ class MultiLayer;
 //! Structure containing curve layout parameters
 typedef struct CurveLayout_struct
 {
-    unsigned int lCol; //!< line color
-    double lWidth; //!< line width
-    int lStyle; //!< line style
+    unsigned int lCol = 0; //!< line color
+    double lWidth = 1.0; //!< line width
+    int lStyle = 0; //!< line style
     int lCapStyle = 0; //!< line CapStyle
     int lJoinStyle = 0x40; //!< line JoinStyle
     QString lCustomDash;
-    int filledArea; //!< flag: toggles area filling under curve
-    unsigned int aCol; //!< curve area color
-    int aStyle; //!< area filling style
-    unsigned int symCol; //!< symbol outline color
-    bool symbolFill; //!< flag: toggles symbol filling
-    unsigned int fillCol; //!< symbol fill color
-    double penWidth; //!< symbol outline width
-    int sSize; //!< symbol size
-    int sType; //!< symbol type (shape)
-    int connectType; //!< symbol connection type
+    int filledArea = 0; //!< flag: toggles area filling under curve
+    unsigned int aCol = 0; //!< curve area color
+    int aStyle = 0; //!< area filling style
+    unsigned int symCol = 0; //!< symbol outline color
+    bool symbolFill = true; //!< flag: toggles symbol filling
+    unsigned int fillCol = 0; //!< symbol fill color
+    double penWidth = 1.0; //!< symbol outline width
+    int sSize = 7; //!< symbol size
+    int sType = 0; //!< symbol type (shape)
+    int connectType = 1; //!< symbol connection type
 } CurveLayout;
 
 /**

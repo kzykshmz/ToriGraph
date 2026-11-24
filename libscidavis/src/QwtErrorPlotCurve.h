@@ -89,7 +89,11 @@ public:
     void setMasterCurve(DataCurve *c);
 
     //! Causes the master curve to delete this curve from its managed error bars list.
-    void detachFromMasterCurve() { d_master_curve->removeErrorBars(this); };
+    void detachFromMasterCurve()
+    {
+        if (d_master_curve)
+            d_master_curve->removeErrorBars(this);
+    };
 
     QString plotAssociation();
 

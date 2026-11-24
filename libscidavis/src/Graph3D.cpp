@@ -910,8 +910,6 @@ void Graph3D::updateMatrixData(Matrix *m)
     Qwt3D::Axis z_axis = sp->coordinates()->axes[Z1];
     double start, end;
     z_axis.limits(start, end);
-    z_axis.setMajors(z_axis.majors());
-    z_axis.setMajors(z_axis.minors());
 
     sp->legend()->setLimits(start, end);
     sp->legend()->setMajors(legendMajorTicks);
@@ -1916,9 +1914,10 @@ void Graph3D::resizeEvent(QResizeEvent *e)
     sp->makeCurrent();
     sp->resize(e->size());
 
-    if (!ignoreFonts && this->isVisible()) {
+    if (!ignoreFonts && this->isVisible() && e->oldSize().height() > 0 && e->size().height() > 0) {
         double ratio = (double)e->size().height() / (double)e->oldSize().height();
-        scaleFonts(ratio);
+        if (std::isfinite(ratio) && ratio > 0.0)
+            scaleFonts(ratio);
     }
 
     sp->update();

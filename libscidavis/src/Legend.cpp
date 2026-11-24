@@ -209,11 +209,13 @@ static void computeLegendSampleGeometry(bool scatterOnly, const QwtText *text, i
     outSampleOffset = outSampleLen + sampleGap;
 }
 
-static int legendTextRightPad(int layoutTextWidth, const QwtMetricsMap &map)
+static int legendTextRightPad(int layoutTextWidth, double zScale, const QwtMetricsMap &map)
 {
     const bool nonScreen = isNonScreenMetricsMap(map);
     const int screenW = nonScreen ? map.layoutToScreenX(layoutTextWidth) : layoutTextWidth;
-    const int padScreen = qMax(6, qRound(0.03 * screenW) + 4);
+    const int minPad = nonScreen ? 6 : scaledLegendPx(6, zScale);
+    const int baseOff = nonScreen ? 4 : scaledLegendPx(4, zScale);
+    const int padScreen = qMax(minPad, qRound(0.03 * screenW) + baseOff);
     return nonScreen ? map.screenToLayoutX(padScreen) : padScreen;
 }
 
@@ -276,10 +278,8 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
 
     int devX = x;
     int devY = y;
-    if (!geo.intentionallyOutside && d_frame == 0 && canvasRect.isValid()) {
+    if (!geo.intentionallyOutside && canvasRect.isValid()) {
         const double zScale = legendScreenZoomScale(d_plot);
-        const int lm = scaledLegendPx(left_margin, zScale);
-        const int tm = scaledLegendPx(top_margin, zScale);
         Graph *g = d_plot ? qobject_cast<Graph *>(d_plot->parent()) : nullptr;
         auto checkSdInward = [&](int axisId) -> bool {
             if (!d_plot || !d_plot->axisEnabled(axisId))
@@ -299,19 +299,25 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
         };
 
         const int majLen = d_plot ? qMax(0, d_plot->majorTickLength()) : 8;
-        const int reqInL = (d_frame == None) ? qMax(2, majLen + 2 - lm) : qMax(2, majLen + 3);
+        const int shadowPadR = (d_frame == Shadow) ? qMax(0, d_shadow_size_x) : 0;
+        const int shadowPadB = (d_frame == Shadow) ? qMax(0, d_shadow_size_y) : 0;
+        const int reqInL =
+                (d_frame == None) ? qMax(2, majLen + 2 - left_margin) : qMax(2, majLen + 3);
         const int reqInR = (d_frame == None && d_num_columns <= 1)
                 ? qMax(2, majLen + 2)
-                : ((d_frame == None) ? qMax(2, majLen + 2 - (lm + 4)) : qMax(2, majLen + 3));
-        const int reqInT = (d_frame == None) ? qMax(2, majLen + 2 - tm) : qMax(2, majLen + 3);
-        const int reqInB = (d_frame == None) ? qMax(2, majLen + 2 - tm) : qMax(2, majLen + 3);
-        const bool nonScreen = isNonScreenMetricsMap(map);
-        const int layInL = nonScreen ? map.screenToLayoutX(reqInL) : reqInL;
-        const int layInR = nonScreen ? map.screenToLayoutX(reqInR) : reqInR;
-        const int layInT = nonScreen ? map.screenToLayoutY(reqInT) : reqInT;
-        const int layInB = nonScreen ? map.screenToLayoutY(reqInB) : reqInB;
-        const int layPlainX = nonScreen ? map.screenToLayoutX(2) : 2;
-        const int layPlainY = nonScreen ? map.screenToLayoutY(2) : 2;
+                : ((d_frame == None) ? qMax(2, majLen + 2 - (left_margin + 4))
+                                     : qMax(2, majLen + 3) + shadowPadR);
+        const int reqInT =
+                (d_frame == None) ? qMax(2, majLen + 2 - top_margin) : qMax(2, majLen + 3);
+        const int reqInB = (d_frame == None)
+                ? qMax(2, majLen + 2 - top_margin)
+                : qMax(2, majLen + 3) + shadowPadB;
+        const int layInL = scaledLegendLayoutX(reqInL, zScale, map);
+        const int layInR = scaledLegendLayoutX(reqInR, zScale, map);
+        const int layInT = scaledLegendLayoutY(reqInT, zScale, map);
+        const int layInB = scaledLegendLayoutY(reqInB, zScale, map);
+        const int layPlainX = scaledLegendLayoutX(2, zScale, map);
+        const int layPlainY = scaledLegendLayoutY(2, zScale, map);
 
         const int layClearL =
                 sideHasInwardTicks(QwtPlot::yLeft, QwtPlot::yRight) ? layInL : layPlainX;
@@ -324,8 +330,8 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
 
         int clampWidth = width;
         if (d_frame == None && d_num_columns <= 1) {
-            const int trailLayout = nonScreen ? map.screenToLayoutX(lm + 8) : (lm + 8);
-            const int minClampW = nonScreen ? qMax(1, map.screenToLayoutX(16)) : 16;
+            const int trailLayout = scaledLegendLayoutX(left_margin + 8, zScale, map);
+            const int minClampW = qMax(1, scaledLegendLayoutX(16, zScale, map));
             clampWidth = qMax(minClampW, width - trailLayout);
         }
 
@@ -587,7 +593,7 @@ void Legend::computeCellsLayout(int baseX, int baseY, int symbolLineLength, QVec
         QwtText aux(parse(str));
         aux.setFont(displayFont());
         const QSize size = aux.textSize();
-        const int padW = legendTextRightPad(size.width(), map);
+        const int padW = legendTextRightPad(size.width(), zScale, map);
         itemW += size.width() + padW;
         const int itemH = size.height();
         const int row = i / cols;
@@ -667,7 +673,7 @@ int Legend::itemIndexAt(const QPoint &canvasPos) const
         QwtText aux(parse(str));
         aux.setFont(displayFont());
         const QSize size = aux.textSize();
-        const int padW = qMax(6, qRound(0.03 * size.width()) + 4);
+        const int padW = legendTextRightPad(size.width(), zScale, QwtPainter::metricsMap());
         itemW += size.width() + padW;
         const int itemH = qMax(1, size.height());
         const int row = i / cols;
@@ -1000,7 +1006,7 @@ void Legend::drawLegends(QPainter *p, const QRect &rect, QwtArray<long> height,
         aux.setRenderFlags(Qt::AlignLeft | Qt::AlignVCenter);
 
         const QSize size = aux.textSize();
-        const int padW = legendTextRightPad(size.width(), map);
+        const int padW = legendTextRightPad(size.width(), zScale, map);
 
         QRect tr = QRect(QPoint(x, cy - size.height() / 2), QSize(size.width() + padW, size.height()));
         aux.draw(p, tr);

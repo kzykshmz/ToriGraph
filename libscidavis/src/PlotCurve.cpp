@@ -149,13 +149,22 @@ void DataCurve::updateColumnNames(const QString &oldName, const QString &newName
 
         if (d_x_column.startsWith(prefix))
             d_x_column = newName + QLatin1Char('_') + d_x_column.mid(prefix.size());
+
+        if (d_point_cmap.zColumn.startsWith(prefix))
+            d_point_cmap.zColumn = newName + QLatin1Char('_') + d_point_cmap.zColumn.mid(prefix.size());
+        if (d_point_cmap.sizeColumn.startsWith(prefix)) {
+            d_point_cmap.sizeColumn =
+                    newName + QLatin1Char('_') + d_point_cmap.sizeColumn.mid(prefix.size());
+        }
     } else {
+        QString candOld;
+        QString candNew;
         if (d_table) {
             const QString tblPrefix = QString(d_table->name()) + QLatin1Char('_');
             if (!oldName.startsWith(tblPrefix) || !newName.startsWith(tblPrefix))
                 return;
-            const QString candOld = oldName.mid(tblPrefix.size());
-            const QString candNew = newName.mid(tblPrefix.size());
+            candOld = oldName.mid(tblPrefix.size());
+            candNew = newName.mid(tblPrefix.size());
             bool hasOld = false;
             bool hasNew = false;
             for (int i = 0; i < d_table->numCols(); ++i) {
@@ -174,12 +183,38 @@ void DataCurve::updateColumnNames(const QString &oldName, const QString &newName
             setTitle(newName);
         if (d_x_column == oldName)
             d_x_column = newName;
+
+        auto remapPointCol = [&](QString &colRef) {
+            if (colRef.isEmpty())
+                return;
+            if (colRef == oldName)
+                colRef = newName;
+            else if (!candOld.isEmpty() && colRef == candOld)
+                colRef = candNew;
+        };
+        remapPointCol(d_point_cmap.zColumn);
+        remapPointCol(d_point_cmap.sizeColumn);
     }
 }
 
 bool DataCurve::updateData(Table *t, const QString &colName)
 {
-    if (d_table != t || (colName != title().text() && d_x_column != colName))
+    if (d_table != t)
+        return false;
+
+    const bool matchesXY = (colName == title().text() || d_x_column == colName);
+    auto matchesPointCol = [&](const QString &ref) -> bool {
+        if (ref.isEmpty())
+            return false;
+        if (ref == colName)
+            return true;
+        const QString pfx = t->name() + QLatin1Char('_');
+        return (colName.startsWith(pfx) && colName.mid(pfx.size()) == ref)
+                || (ref.startsWith(pfx) && ref.mid(pfx.size()) == colName);
+    };
+    const bool matchesPointMap = hasPointColorMap()
+            && (matchesPointCol(d_point_cmap.zColumn) || matchesPointCol(d_point_cmap.sizeColumn));
+    if (!matchesXY && !matchesPointMap)
         return false;
 
     loadData();
