@@ -333,10 +333,19 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                     const QVector<FormatKind> &styles, bool date1904, Sheet &sheet,
                     QString *outErr)
 {
+    struct SparseCell
+    {
+        int row = 0;
+        int col = 0;
+        int seq = 0;
+        Cell cell;
+    };
+
+    QVector<SparseCell> sparseCells;
     QXmlStreamReader r(xml);
     int curRow = -1;
     int curCol = -1;
-    qint64 allocatedCells = 0;
+    int seqCounter = 0;
     while (!r.atEnd()) {
         const QXmlStreamReader::TokenType tt = r.readNext();
         if (tt != QXmlStreamReader::StartElement)
@@ -346,6 +355,24 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
             const int rr = r.attributes().value(QLatin1String("r")).toInt(&ok);
             curRow = (ok && rr >= 1 && rr <= kMaxRows) ? rr - 1 : curRow + 1;
             curCol = -1;
+            continue;
+        }
+        if (r.name() == QLatin1String("mergeCell")) {
+            const QStringRef ref = r.attributes().value(QLatin1String("ref"));
+            const int colon = ref.indexOf(QLatin1Char(':'));
+            if (colon > 0) {
+                int c1 = 0, r1 = 0, c2 = 0, r2 = 0;
+                if (parseCellRef(ref.left(colon), c1, r1)
+                    && parseCellRef(ref.mid(colon + 1), c2, r2)) {
+                    MergeRange mr;
+                    mr.top = std::min(r1, r2);
+                    mr.bottom = std::max(r1, r2);
+                    mr.left = std::min(c1, c2);
+                    mr.right = std::max(c1, c2);
+                    if (mr.top < mr.bottom || mr.left < mr.right)
+                        sheet.mergedCells.append(mr);
+                }
+            }
             continue;
         }
         if (r.name() != QLatin1String("c"))
@@ -372,6 +399,7 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
         QString inlineText;
         bool hasValue = false;
         bool hasInline = false;
+        bool hasFormula = false;
         while (!r.atEnd()) {
             const QXmlStreamReader::TokenType ct = r.readNext();
             if (ct == QXmlStreamReader::StartElement) {
@@ -382,6 +410,8 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                     inlineText = readRichText(r);
                     hasInline = true;
                 } else {
+                    if (r.name() == QLatin1String("f"))
+                        hasFormula = true;
                     r.skipCurrentElement(); // <f>, <extLst>
                 }
             } else if (ct == QXmlStreamReader::EndElement && r.name() == QLatin1String("c")) {
@@ -449,42 +479,23 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
         }
         // Blank styled cells (e.g. XFD1048576 with only a style, or an empty/whitespace <v/>/<is/>)
         // carry no data: never let them grow rows/columns (E1-9).
-        if (cell.type == Cell::Empty
-            || ((cell.type == Cell::Text || cell.type == Cell::Error)
-                && cell.text.trimmed().isEmpty()))
+        const bool isCellBlank = (cell.type == Cell::Empty
+                                  || ((cell.type == Cell::Text || cell.type == Cell::Error)
+                                      && cell.text.trimmed().isEmpty()));
+        if (hasFormula && isCellBlank)
+            ++sheet.uncachedFormulas;
+        if (isCellBlank)
             continue;
 
-        if (row >= sheet.rows.size()) {
-            // Rows are allocated up to the first row that really holds data; charge the
-            // growth against the same budget as cells so memory stays bounded by real data.
-            const qint64 rowDelta = qint64(row + 1) - qint64(sheet.rows.size());
-            if (allocatedCells + rowDelta > kMaxTotalCells * 2) {
-                if (outErr) {
-                    *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
-                                  "(20,000,000 cells).")
-                                      .arg(sheet.name);
-                }
-                return false;
+        if (sparseCells.size() >= kMaxTotalCells) {
+            if (outErr) {
+                *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
+                              "(20,000,000 cells).")
+                                  .arg(sheet.name);
             }
-            allocatedCells += rowDelta;
-            sheet.rows.resize(row + 1);
+            return false;
         }
-        QVector<Cell> &rowCells = sheet.rows[row];
-        if (col >= rowCells.size()) {
-            const qint64 delta = qint64(col + 1) - qint64(rowCells.size());
-            if (allocatedCells + delta > kMaxTotalCells * 2) {
-                if (outErr) {
-                    *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
-                                  "(20,000,000 cells).")
-                                      .arg(sheet.name);
-                }
-                return false;
-            }
-            allocatedCells += delta;
-            rowCells.resize(col + 1);
-        }
-        rowCells[col] = cell;
-        sheet.columnCount = std::max(sheet.columnCount, col + 1);
+        sparseCells.append({ row, col, seqCounter++, cell });
     }
     if (r.hasError()) {
         if (outErr)
@@ -494,20 +505,132 @@ bool parseWorksheet(const QByteArray &xml, const QStringList &sharedStrings,
                               .arg(r.errorString());
         return false;
     }
-    // Trim any trailing empty cells/rows so sheet bounds strictly reflect real data (E1-9).
-    int maxColCount = 0;
-    for (QVector<Cell> &rowCells : sheet.rows) {
-        while (!rowCells.isEmpty()
-               && (rowCells.last().type == Cell::Empty
-                   || ((rowCells.last().type == Cell::Text || rowCells.last().type == Cell::Error)
-                       && rowCells.last().text.trimmed().isEmpty()))) {
-            rowCells.removeLast();
-        }
-        maxColCount = std::max(maxColCount, rowCells.size());
+
+    if (sparseCells.isEmpty()) {
+        sheet.mergedCells.clear();
+        return true;
     }
-    while (!sheet.rows.isEmpty() && sheet.rows.last().isEmpty())
-        sheet.rows.removeLast();
-    sheet.columnCount = maxColCount;
+
+    std::sort(sparseCells.begin(), sparseCells.end(), [](const SparseCell &a, const SparseCell &b) {
+        if (a.row != b.row)
+            return a.row < b.row;
+        if (a.col != b.col)
+            return a.col < b.col;
+        return a.seq < b.seq;
+    });
+    // Deduplicate same coordinates, keeping the latest cell in XML order.
+    {
+        int outIdx = 0;
+        for (int i = 0; i < sparseCells.size(); ++i) {
+            if (outIdx > 0 && sparseCells[outIdx - 1].row == sparseCells[i].row
+                && sparseCells[outIdx - 1].col == sparseCells[i].col) {
+                sparseCells[outIdx - 1] = sparseCells[i];
+            } else {
+                sparseCells[outIdx++] = sparseCells[i];
+            }
+        }
+        sparseCells.resize(outIdx);
+    }
+
+    // Guard against stray isolated outlier cells at huge row/column coordinates (e.g. XFD1048576)
+    // before dense row/column allocation so a single stray marker cannot trigger OOM or bloat.
+    for (int i = 1; i < sparseCells.size(); ++i) {
+        const int rowGap = sparseCells[i].row - sparseCells[i - 1].row;
+        const int tailCount = sparseCells.size() - i;
+        if ((rowGap > 4096 && tailCount <= 8 && i >= tailCount * 4)
+            || (rowGap > 65536 && tailCount <= 32 && i >= tailCount * 2)) {
+            sheet.trimmedStrayCells += tailCount;
+            sparseCells.resize(i);
+            break;
+        }
+    }
+    {
+        QVector<int> colsSorted;
+        colsSorted.reserve(sparseCells.size());
+        for (const SparseCell &sc : sparseCells)
+            colsSorted.append(sc.col);
+        std::sort(colsSorted.begin(), colsSorted.end());
+        int maxAllowedCol = std::numeric_limits<int>::max();
+        for (int i = 1; i < colsSorted.size(); ++i) {
+            const int colGap = colsSorted[i] - colsSorted[i - 1];
+            const int rightTail = colsSorted.size() - i;
+            if ((colGap > 256 && rightTail <= 4 && i >= rightTail * 4)
+                || (colsSorted[i] >= 1024 && colsSorted[i - 1] < 256 && rightTail <= 4)) {
+                maxAllowedCol = colsSorted[i - 1];
+                break;
+            }
+        }
+        if (maxAllowedCol < std::numeric_limits<int>::max()) {
+            int outIdx = 0;
+            for (int i = 0; i < sparseCells.size(); ++i) {
+                if (sparseCells[i].col > maxAllowedCol)
+                    ++sheet.trimmedStrayCells;
+                else
+                    sparseCells[outIdx++] = sparseCells[i];
+            }
+            sparseCells.resize(outIdx);
+        }
+    }
+
+    if (sparseCells.isEmpty()) {
+        sheet.mergedCells.clear();
+        return true;
+    }
+
+    int maxRow = 0;
+    int maxCol = 0;
+    qint64 denseBudget = 0;
+    {
+        int i = 0;
+        while (i < sparseCells.size()) {
+            const int curR = sparseCells[i].row;
+            int rowMaxCol = 0;
+            while (i < sparseCells.size() && sparseCells[i].row == curR) {
+                rowMaxCol = std::max(rowMaxCol, sparseCells[i].col);
+                ++i;
+            }
+            maxRow = std::max(maxRow, curR);
+            maxCol = std::max(maxCol, rowMaxCol);
+            denseBudget += qint64(rowMaxCol + 1);
+        }
+        denseBudget += qint64(maxRow + 1);
+    }
+    if (denseBudget > kMaxTotalCells * 2 || maxRow >= kMaxRows || maxCol >= kMaxCols) {
+        if (outErr) {
+            *outErr = trX("Worksheet \"%1\" exceeds the maximum import size "
+                          "(20,000,000 cells).")
+                              .arg(sheet.name);
+        }
+        return false;
+    }
+
+    sheet.rows.resize(maxRow + 1);
+    {
+        int i = 0;
+        while (i < sparseCells.size()) {
+            const int curR = sparseCells[i].row;
+            int j = i;
+            int rowMaxCol = 0;
+            while (j < sparseCells.size() && sparseCells[j].row == curR) {
+                rowMaxCol = std::max(rowMaxCol, sparseCells[j].col);
+                ++j;
+            }
+            QVector<Cell> &rowCells = sheet.rows[curR];
+            rowCells.resize(rowMaxCol + 1);
+            for (int k = i; k < j; ++k)
+                rowCells[sparseCells[k].col] = sparseCells[k].cell;
+            i = j;
+        }
+    }
+    sheet.columnCount = maxCol + 1;
+
+    // Drop out-of-range or sheet-wide giant merge formatting spans so header lookup stays O(1)-safe.
+    for (int i = sheet.mergedCells.size() - 1; i >= 0; --i) {
+        const MergeRange &mr = sheet.mergedCells[i];
+        const qint64 area = qint64(mr.bottom - mr.top + 1) * qint64(mr.right - mr.left + 1);
+        if (mr.top > maxRow || mr.left > maxCol || area > 10000)
+            sheet.mergedCells.removeAt(i);
+    }
     return true;
 }
 
@@ -969,6 +1092,42 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             return AsciiTableImportFilter::isMissingDataToken(cellDisplayText(c, date1904));
         return false;
     };
+    const Cell kEmptyCell{};
+    auto findMergeCovering = [&](int r, int c) -> const MergeRange * {
+        for (const MergeRange &mr : sheet.mergedCells) {
+            if (r >= mr.top && r <= mr.bottom && c >= mr.left && c <= mr.right)
+                return &mr;
+        }
+        return nullptr;
+    };
+    auto effectiveCell = [&](int r, int c, bool allowVerticalMerge,
+                             bool allowFullSpanHorizontal) -> const Cell & {
+        const Cell &direct = cellAt(sheet, r, c);
+        if (!isBlank(direct))
+            return direct;
+        const MergeRange *mr = findMergeCovering(r, c);
+        if (!mr)
+            return kEmptyCell;
+        const int colSpan = mr->right - mr->left + 1;
+        if (colSpan == 1 && !allowVerticalMerge)
+            return kEmptyCell;
+        if (!allowFullSpanHorizontal && targetCols.size() >= 2 && mr->left <= targetCols.first()
+            && mr->right >= targetCols.last() && colSpan >= targetCols.size()) {
+            bool anyOutside = false;
+            for (int tc : targetCols) {
+                if (tc < mr->left || tc > mr->right) {
+                    if (!isBlank(cellAt(sheet, mr->top, tc))) {
+                        anyOutside = true;
+                        break;
+                    }
+                }
+            }
+            if (!anyOutside)
+                return kEmptyCell;
+        }
+        return cellAt(sheet, mr->top, mr->left);
+    };
+
     auto rowHasNumeric = [&](int r) {
         for (int c : targetCols)
             if (isNumericCell(cellAt(sheet, r, c)))
@@ -993,6 +1152,13 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         int cnt = 0;
         for (int c : targetCols)
             if (!isBlank(cellAt(sheet, r, c)))
+                ++cnt;
+        return cnt;
+    };
+    auto countRowNonBlankEff = [&](int r, bool allowVerticalMerge) {
+        int cnt = 0;
+        for (int c : targetCols)
+            if (!isBlank(effectiveCell(r, c, allowVerticalMerge, false)))
                 ++cnt;
         return cnt;
     };
@@ -1021,7 +1187,10 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             else
                 ++texts;
         }
-        return nums > 0 && nums >= texts;
+        return nums > 0
+                && (texts == 0
+                    || (nums >= 5 && qint64(nums) * 10 >= qint64(nums + texts) * 9)
+                    || nums >= texts);
     };
 
     auto allColsNumericFrom = [&](int from) {
@@ -1070,16 +1239,27 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 // "Exp | 2026") while a row shortly below starts an all-numeric data block,
                 // keep advancing so the mixed header / preamble row is not swallowed as data.
                 if (rowHasNonMissingText(r)) {
-                    bool pureNumericBelow = false;
-                    const int lookLimit = std::min(lastRow, r + 8);
-                    for (int rNext = r + 1; rNext <= lookLimit; ++rNext) {
-                        if (allColsNumericFrom(rNext)) {
-                            pureNumericBelow = true;
+                    bool pureTextHeaderAbove = false;
+                    for (int rr = firstRow; rr < r; ++rr) {
+                        if (rowHasTextual(rr) && !rowHasNumeric(rr)
+                            && countRowNonBlankEff(rr, true)
+                                    >= std::min<int>(2, targetCols.size())) {
+                            pureTextHeaderAbove = true;
                             break;
                         }
                     }
-                    if (pureNumericBelow)
-                        continue;
+                    if (!pureTextHeaderAbove) {
+                        bool pureNumericBelow = false;
+                        const int lookLimit = std::min(lastRow, r + 8);
+                        for (int rNext = r + 1; rNext <= lookLimit; ++rNext) {
+                            if (allColsNumericFrom(rNext)) {
+                                pureNumericBelow = true;
+                                break;
+                            }
+                        }
+                        if (pureNumericBelow)
+                            continue;
+                    }
                 }
                 detectedDataStart = r;
                 break;
@@ -1127,8 +1307,10 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
 
     bool hasHeader = false;
     bool hasUnits = false;
+    bool hasComments = false;
     int headerRowIdx = firstRow;
     int unitsRowIdx = -1;
+    int commentsRowIdx = -1;
     int dataStart = firstRow;
 
     if (detectedDataStart > firstRow) {
@@ -1136,7 +1318,7 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
         const bool allDataColsNumeric = allColsNumericFrom(dataStart);
         auto isMixedHeaderRow = [&](int r) {
             return allDataColsNumeric && targetCols.size() >= 2 && rowHasNonMissingText(r)
-                    && countRowNonBlank(r) == targetCols.size();
+                    && countRowNonBlankEff(r, true) == targetCols.size();
         };
         auto hasFallbackUnitSyntax = [](const QString &raw) {
             const QString s = raw.trimmed();
@@ -1159,9 +1341,62 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             }
             return false;
         };
+        struct UnitScanResult
+        {
+            int numericCols = 0;
+            int recognized = 0;
+            int nonEmptyUnits = 0;
+            bool isUnits = false;
+            bool strictRecognized = false;
+        };
+        auto scanUnitRowCols = [&](int rUnit, int rName, bool allowMissingMarkers) -> UnitScanResult {
+            UnitScanResult res;
+            bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
+            bool allFallbackUnitLike = true;
+            for (int c : targetCols) {
+                const bool okCol = allowMissingMarkers ? columnMostlyNumericFrom(c, dataStart)
+                                                       : columnNumericFrom(c, dataStart);
+                if (!okCol)
+                    continue;
+                ++res.numericCols;
+                const Cell &uc = effectiveCell(rUnit, c, false /*allowVerticalMerge*/,
+                                               true /*allowFullSpanHorizontal*/);
+                if (isBlank(uc))
+                    continue;
+                if (isNumericCell(uc))
+                    return UnitScanResult{};
+                ++res.nonEmptyUnits;
+                const QString rawTxt = cellDisplayText(uc, date1904).trimmed();
+                QString sn, ln, un;
+                AsciiTableImportFilter::splitHeaderNameAndUnits(rawTxt, sn, ln, un);
+                if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
+                    hasInlineHeaderUnit = true;
+                QString cleaned;
+                if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned)) {
+                    ++res.recognized;
+                } else {
+                    allRecognized = false;
+                    if (!hasFallbackUnitSyntax(rawTxt))
+                        allFallbackUnitLike = false;
+                }
+                if (cleaned.size() > 32)
+                    shortCells = false;
+            }
+            const int nonBlankPrev = countRowNonBlankEff(rName, true);
+            const int nonBlankLast = countRowNonBlankEff(rUnit, false);
+            const bool fallbackUnitsOk = res.nonEmptyUnits >= 1 && shortCells
+                    && allFallbackUnitLike && nonBlankPrev >= nonBlankLast
+                    && !(nonBlankPrev == 1 && targetCols.size() >= 2);
+            res.strictRecognized =
+                    !hasInlineHeaderUnit && res.numericCols >= 1 && allRecognized && res.recognized >= 1;
+            res.isUnits = !hasInlineHeaderUnit && res.numericCols >= 1
+                    && (res.strictRecognized || fallbackUnitsOk);
+            return res;
+        };
+
         QVector<int> candRows;
         for (int r = firstRow; r < dataStart; ++r) {
-            if (countRowNonBlank(r) > 0)
+            if (countRowNonBlankEff(r, true) > 0)
                 candRows.append(r);
         }
         if (candRows.size() == 1) {
@@ -1171,72 +1406,69 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 headerRowIdx = rHdr;
             }
         } else if (candRows.size() >= 2) {
-            const int rLast = candRows.at(candRows.size() - 1);
-            const int rPrev = candRows.at(candRows.size() - 2);
-            const bool lastTextOnly = rowHasTextual(rLast) && !rowHasNumeric(rLast);
-            const bool prevTextOnly = rowHasTextual(rPrev) && !rowHasNumeric(rPrev);
-            const bool lastHeaderCand = lastTextOnly || isMixedHeaderRow(rLast);
-            const bool prevHeaderCand = prevTextOnly || isMixedHeaderRow(rPrev);
-            bool lastIsUnits = false;
-            if (lastTextOnly && prevHeaderCand) {
-                auto scanUnitRowCols = [&](bool allowMissingMarkers) {
-                    int numericCols = 0, nonEmptyUnits = 0, recognized = 0;
-                    bool allRecognized = true, shortCells = true, hasInlineHeaderUnit = false;
-                    bool allFallbackUnitLike = true;
-                    for (int c : targetCols) {
-                        const bool okCol = allowMissingMarkers
-                                ? columnMostlyNumericFrom(c, dataStart)
-                                : columnNumericFrom(c, dataStart);
-                        if (!okCol)
-                            continue;
-                        ++numericCols;
-                        const Cell &uc = cellAt(sheet, rLast, c);
-                        if (isBlank(uc))
-                            continue;
-                        ++nonEmptyUnits;
-                        const QString rawTxt = cellDisplayText(uc, date1904).trimmed();
-                        QString sn, ln, un;
-                        AsciiTableImportFilter::splitHeaderNameAndUnits(rawTxt, sn, ln, un);
-                        if (!ln.isEmpty() && !un.isEmpty() && ln != rawTxt)
-                            hasInlineHeaderUnit = true;
-                        QString cleaned;
-                        if (AsciiTableImportFilter::looksLikeUnitCell(rawTxt, &cleaned)) {
-                            ++recognized;
-                        } else {
-                            allRecognized = false;
-                            if (!hasFallbackUnitSyntax(rawTxt))
-                                allFallbackUnitLike = false;
-                        }
-                        if (cleaned.size() > 32)
-                            shortCells = false;
+            bool matched3RowOrigin = false;
+            if (candRows.size() >= 3) {
+                const int rName = candRows.at(candRows.size() - 3);
+                const int rUnit = candRows.at(candRows.size() - 2);
+                const int rComment = candRows.at(candRows.size() - 1);
+                const bool nameOk = ((rowHasTextual(rName) && !rowHasNumeric(rName))
+                                     || isMixedHeaderRow(rName))
+                        && countRowNonBlankEff(rName, true) >= (targetCols.size() >= 2 ? 2 : 1);
+                const bool unitTextOnly = rowHasTextual(rUnit) && !rowHasNumeric(rUnit);
+                const bool commentTextOnly = rowHasTextual(rComment) && !rowHasNumeric(rComment);
+                if (nameOk && unitTextOnly && commentTextOnly) {
+                    UnitScanResult uRes = scanUnitRowCols(rUnit, rName, false);
+                    if (uRes.numericCols == 0)
+                        uRes = scanUnitRowCols(rUnit, rName, true);
+                    UnitScanResult cRes = scanUnitRowCols(rComment, rUnit, false);
+                    if (cRes.numericCols == 0)
+                        cRes = scanUnitRowCols(rComment, rUnit, true);
+                    if (uRes.isUnits
+                        && (uRes.recognized > cRes.recognized || !cRes.strictRecognized)) {
+                        hasHeader = true;
+                        headerRowIdx = rName;
+                        hasUnits = true;
+                        unitsRowIdx = rUnit;
+                        hasComments = true;
+                        commentsRowIdx = rComment;
+                        matched3RowOrigin = true;
                     }
-                    const int nonBlankPrev = countRowNonBlank(rPrev);
-                    const int nonBlankLast = countRowNonBlank(rLast);
-                    // P1-D3(b): dictionary-miss fallback applies only for pure 2-row headers
-                    // whose cells carry unit-like symbols/brackets (never plain title + column names).
-                    const bool fallbackUnitsOk = (candRows.size() == 2) && nonEmptyUnits >= 1
-                            && shortCells && allFallbackUnitLike && nonBlankPrev >= nonBlankLast
-                            && !(nonBlankPrev == 1 && targetCols.size() >= 2);
-                    const bool isUnits = !hasInlineHeaderUnit && numericCols >= 1
-                            && ((allRecognized && recognized >= 1) || fallbackUnitsOk);
-                    return std::make_pair(numericCols, isUnits);
-                };
-                std::pair<int, bool> unitScan = scanUnitRowCols(false);
-                if (unitScan.first == 0)
-                    unitScan = scanUnitRowCols(true);
-                lastIsUnits = unitScan.second;
+                }
             }
-            if (lastIsUnits) {
-                hasHeader = true;
-                headerRowIdx = rPrev;
-                hasUnits = true;
-                unitsRowIdx = rLast;
-            } else if (lastHeaderCand) {
-                hasHeader = true;
-                headerRowIdx = rLast;
-            } else if (prevHeaderCand) {
-                hasHeader = true;
-                headerRowIdx = rPrev;
+            if (!matched3RowOrigin) {
+                const int rLast = candRows.at(candRows.size() - 1);
+                const int rPrev = candRows.at(candRows.size() - 2);
+                const bool lastTextOnly = rowHasTextual(rLast) && !rowHasNumeric(rLast);
+                const bool prevTextOnly = rowHasTextual(rPrev) && !rowHasNumeric(rPrev);
+                const bool lastHeaderCand = lastTextOnly || isMixedHeaderRow(rLast);
+                const bool prevHeaderCand = prevTextOnly || isMixedHeaderRow(rPrev);
+                bool lastIsUnits = false;
+                if (lastTextOnly && prevHeaderCand) {
+                    UnitScanResult unitScan = scanUnitRowCols(rLast, rPrev, false);
+                    if (unitScan.numericCols == 0)
+                        unitScan = scanUnitRowCols(rLast, rPrev, true);
+                    lastIsUnits = unitScan.isUnits;
+                }
+                if (lastIsUnits) {
+                    hasHeader = true;
+                    headerRowIdx = rPrev;
+                    hasUnits = true;
+                    unitsRowIdx = rLast;
+                } else if (prevTextOnly && lastTextOnly && rLast - rPrev == 2
+                           && countRowNonBlankEff(rPrev, true) >= (targetCols.size() >= 2 ? 2 : 1)) {
+                    // Origin 3-row export where the middle Units row is completely blank:
+                    // keep row 0 as Long Name and row 2 as Comments.
+                    hasHeader = true;
+                    headerRowIdx = rPrev;
+                    hasComments = true;
+                    commentsRowIdx = rLast;
+                } else if (lastHeaderCand) {
+                    hasHeader = true;
+                    headerRowIdx = rLast;
+                } else if (prevHeaderCand) {
+                    hasHeader = true;
+                    headerRowIdx = rPrev;
+                }
             }
         }
     }
@@ -1244,6 +1476,8 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
     const int nRows = std::max(0, lastRow - dataStart + 1);
     layout.headerRow = hasHeader;
     layout.unitsRow = hasUnits;
+    layout.commentsRow = hasComments;
+    layout.trimmedStrayCells = sheet.trimmedStrayCells;
     layout.dataRows = nRows;
 
     if (qint64(nRows) * qint64(targetCols.size()) > kMaxTotalCells) {
@@ -1277,30 +1511,61 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 ++texts;
             }
         }
-        const SciDAVis::ColumnMode mode = (texts > 0 || (nums == 0 && missingTexts > 0))
+        const bool keepNumericDespiteText = (nums >= 5)
+                && (qint64(nums) * 10 >= qint64(nums + texts) * 9);
+        const bool forceText =
+                (nums == 0 && missingTexts > 0) || (texts > 0 && !keepNumericDespiteText);
+        const SciDAVis::ColumnMode mode = forceText
                 ? SciDAVis::ColumnMode::Text
                 : ((nums > 0 && dates == nums) ? SciDAVis::ColumnMode::DateTime
                                                : SciDAVis::ColumnMode::Numeric);
+        if (!forceText && texts > 0)
+            layout.nonNumericCells += texts;
 
-        // Names and units
-        QString shortName, longName, units;
+        // Names, units, comments, and grouped <mergeCells> headers
+        QString shortName, longName, units, commentText;
         if (hasHeader) {
-            const Cell &hc = cellAt(sheet, headerRowIdx, c);
+            const Cell &hc = effectiveCell(headerRowIdx, c, true /*allowVerticalMerge*/,
+                                           false /*allowFullSpanHorizontal*/);
             const QString raw = isBlank(hc) ? QString() : cellDisplayText(hc, date1904).trimmed();
             if (!raw.isEmpty()) {
                 AsciiTableImportFilter::splitHeaderNameAndUnits(raw, shortName, longName, units);
                 if (longName.isEmpty())
                     longName = units.isEmpty() ? raw : shortName;
             }
+            if (headerRowIdx > firstRow) {
+                const int groupRow = headerRowIdx - 1;
+                if (const MergeRange *mr = findMergeCovering(groupRow, c)) {
+                    const int colSpan = mr->right - mr->left + 1;
+                    if (mr->bottom < headerRowIdx && colSpan >= 2
+                        && colSpan < targetCols.size()) {
+                        const Cell &gc = cellAt(sheet, mr->top, mr->left);
+                        if (isTextualCell(gc)) {
+                            const QString groupTxt = cellDisplayText(gc, date1904).trimmed();
+                            if (!groupTxt.isEmpty() && !longName.isEmpty()
+                                && groupTxt != longName) {
+                                longName = groupTxt + QStringLiteral(" - ") + longName;
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (hasUnits && unitsRowIdx >= 0) {
-            const Cell &uc = cellAt(sheet, unitsRowIdx, c);
+            const Cell &uc = effectiveCell(unitsRowIdx, c, false /*allowVerticalMerge*/,
+                                           true /*allowFullSpanHorizontal*/);
             if (!isBlank(uc)) {
                 QString cleaned;
                 AsciiTableImportFilter::looksLikeUnitCell(cellDisplayText(uc, date1904), &cleaned);
                 if (!cleaned.isEmpty())
                     units = cleaned;
             }
+        }
+        if (hasComments && commentsRowIdx >= 0) {
+            const Cell &cmc = effectiveCell(commentsRowIdx, c, false /*allowVerticalMerge*/,
+                                            true /*allowFullSpanHorizontal*/);
+            if (!isBlank(cmc))
+                commentText = cellDisplayText(cmc, date1904).trimmed();
         }
         if (shortName.trimmed().isEmpty())
             shortName = excelColumnLetters(c);
@@ -1381,6 +1646,8 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
             col->setLongName(longName);
         if (!units.isEmpty())
             col->setUnits(units);
+        if (!commentText.isEmpty())
+            col->setComment(commentText);
         colIsNumeric << (mode != SciDAVis::ColumnMode::Text);
         cols << col;
     }
@@ -1427,7 +1694,8 @@ void setImportAsWorkbookSetting(bool on)
 }
 
 bool importIntoProject(ApplicationWindow *app, const QString &path, const QString &sheet,
-                       QString *outError, ImportResult *outResult, bool asWorkbook)
+                       QString *outError, ImportResult *outResult, bool asWorkbook,
+                       bool includeHidden)
 {
     ImportResult result;
     if (!app) {
@@ -1439,11 +1707,26 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
     if (!readWorkbook(path, wb, outError, sheet))
         return false;
 
+    int visibleCount = 0;
+    for (const Sheet &sh : wb.sheets) {
+        const bool isHidden = sh.state.compare(QLatin1String("hidden"), Qt::CaseInsensitive) == 0
+                || sh.state.compare(QLatin1String("veryHidden"), Qt::CaseInsensitive) == 0;
+        if (!isHidden)
+            ++visibleCount;
+    }
+    const bool skipHidden = !includeHidden && sheet.isEmpty() && visibleCount > 0;
+
     const QFileInfo fi(path);
     Table *blankInitial = findBlankInitialTable(app);
     QStringList parts;
     QString oversizedSheetName;
     for (const Sheet &sh : wb.sheets) {
+        const bool isHidden = sh.state.compare(QLatin1String("hidden"), Qt::CaseInsensitive) == 0
+                || sh.state.compare(QLatin1String("veryHidden"), Qt::CaseInsensitive) == 0;
+        if (skipHidden && isHidden) {
+            result.hiddenSheetsSkipped << sh.name;
+            continue;
+        }
         SheetLayout layout;
         QList<Column *> cols = sheetToColumns(sh, wb.date1904, &layout);
         if (cols.isEmpty()) {
@@ -1453,6 +1736,9 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
                 result.emptySheets << sh.name;
             continue;
         }
+        result.uncachedFormulas += sh.uncachedFormulas;
+        result.nonNumericCells += layout.nonNumericCells;
+        result.trimmedStrayCells += sh.trimmedStrayCells;
         if (blankInitial) {
             blankInitial->askOnCloseEvent(false);
             if (blankInitial->d_future_table)
@@ -1479,10 +1765,18 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
                 cols.size());
         if (layout.unitsRow)
             part += trX(", unit row");
+        if (layout.commentsRow)
+            part += trX(", comment row");
         if (layout.dateColumns > 0)
             part += trX(", %1 date column(s)").arg(layout.dateColumns);
         if (layout.textColumns > 0)
             part += trX(", %1 text column(s)").arg(layout.textColumns);
+        if (layout.nonNumericCells > 0)
+            part += trX(", %1 non-numeric cell(s) marked invalid").arg(layout.nonNumericCells);
+        if (sh.uncachedFormulas > 0)
+            part += trX(", %1 uncached formula(s)").arg(sh.uncachedFormulas);
+        if (sh.trimmedStrayCells > 0)
+            part += trX(", %1 stray cell(s) trimmed").arg(sh.trimmedStrayCells);
         part += QLatin1Char(')');
         parts << part;
     }
@@ -1530,6 +1824,9 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
     if (!result.emptySheets.isEmpty())
         result.summary += trX(" / empty sheets skipped: %1")
                                   .arg(result.emptySheets.join(QStringLiteral(", ")));
+    if (!result.hiddenSheetsSkipped.isEmpty())
+        result.summary += trX(" / hidden sheets skipped: %1")
+                                  .arg(result.hiddenSheetsSkipped.join(QStringLiteral(", ")));
     app->modifiedProject();
     if (outResult)
         *outResult = result;
@@ -1663,10 +1960,15 @@ void registerTranslations()
         "ブックにデータがありません (すべてのシートが空です): %1");
     reg("%1 (%2 rows x %3 columns", "%1 (%2 行 x %3 列");
     reg(", unit row", "、単位行あり");
+    reg(", comment row", "、コメント行あり");
     reg(", %1 date column(s)", "、日時 %1 列");
     reg(", %1 text column(s)", "、文字列 %1 列");
+    reg(", %1 non-numeric cell(s) marked invalid", "、非数値セル %1 個を無効値化");
+    reg(", %1 uncached formula(s)", "、未計算の数式 %1 個");
+    reg(", %1 stray cell(s) trimmed", "、離れた孤立セル %1 個を除外");
     reg("%1: %2 sheet(s) imported - %3", "%1: %2 シートを読み込みました - %3");
     reg(" / empty sheets skipped: %1", " / 空のシートは読み込みませんでした: %1");
+    reg(" / hidden sheets skipped: %1", " / 非表示シートはスキップ: %1");
     reg("Excel Import", "Excel の読み込み");
     reg("Import Excel Workbook", "Excel ブックを読み込む");
     reg("Excel workbook (*.xlsx *.xlsm)", "Excel ブック (*.xlsx *.xlsm)");

@@ -112,6 +112,7 @@ void registerImportJapaneseStrings()
         reg("unit row: no", "単位行: なし");
         reg("%n line(s) skipped", "読み飛ばした行 %n");
         reg("%n empty cell(s)", "空欄 %n 個");
+        reg("%n non-numeric cell(s) marked invalid", "数値列内の非数値セル %n 個を無効値にしました");
         reg("%n column(s) imported as text", "文字列として読んだ列 %n");
         reg("%n undecodable character(s) - the text encoding may be wrong",
             "文字コードの不一致により %n 文字が正しく読めませんでした");
@@ -277,10 +278,13 @@ bool isMissingDataTokenSpan(const QChar *ptr, int len)
 
 // Unified '#'-leading row classifier shared across Step 3, detectPreamble, peek, and body streaming.
 // `cellGetter(k, pk, nk, kQuoted)` supplies trimmed view & quote flag for cell k in 0..rawFieldCount-1.
+// When `allowAlphaHashIds` is true (after pre-data header/data), `#<alnum>` specimen IDs like
+// `#A1, 520` or `#S-2, 410` with >=2 fields and trailing numeric values are treated as data rows,
+// while `# comment`, `# pause,`, and `#comment,abc` (no numeric trailing values) remain comments.
 template <typename CellGetter>
 bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tableHasMultipleCols,
-                              const QLocale &primaryLoc, bool useCustomLocale,
-                              CellGetter &&cellGetter)
+                              bool allowAlphaHashIds, const QLocale &primaryLoc,
+                              bool useCustomLocale, CellGetter &&cellGetter)
 {
     if (rawFieldCount <= 0)
         return false;
@@ -298,10 +302,29 @@ bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tabl
     if (n0 == 1 || p0[1].isSpace())
         return true;
     // 4) '#<non-space>' and not a missing token:
-    //    Only '#<digit>...' specimen identifiers (#1, #2, #01, #1-A) can be data rows;
-    //    '#x,y', '#comment,abc', '#S 2 ascan', '#N 2' are comments.
-    if (!p0[1].isDigit())
-        return true;
+    //    - '#<digit>...' specimen identifiers (#1, #2, #01, #1-A) can be data rows.
+    //    - Once past pre-data preamble (`allowAlphaHashIds`), '#<alnum>...' specimen IDs (#A1, #S-2)
+    //      are also routed as data when multi-column and trailing cells hold numeric data.
+    if (!p0[1].isDigit()) {
+        if (!allowAlphaHashIds || rawFieldCount < 2)
+            return true;
+        bool anyTrailingNum = false;
+        for (int k = 1; k < rawFieldCount; ++k) {
+            const QChar *pk = nullptr;
+            int nk = 0;
+            bool kQuoted = false;
+            cellGetter(k, pk, nk, kQuoted);
+            if (nk <= 0 || isMissingNumericSpan(pk, nk, kQuoted))
+                continue;
+            double dummy = 0.0;
+            if (tryParseLabDoubleSpan(pk, nk, primaryLoc, useCustomLocale, dummy)) {
+                anyTrailingNum = true;
+            } else if (whitespaceDelim) {
+                return true;
+            }
+        }
+        return !anyTrailingNum;
+    }
     if (whitespaceDelim) {
         if (rawFieldCount >= 2) {
             for (int k = 1; k < rawFieldCount; ++k) {
@@ -574,6 +597,180 @@ QString cleanPromotedUnitCell(const QString &rawCell)
     return u;
 }
 
+bool hasFallbackUnitSyntaxAscii(const QString &raw)
+{
+    const QString s = raw.trimmed();
+    if (s.isEmpty() || s.size() > 24)
+        return false;
+    if ((s.startsWith(QLatin1Char('(')) && s.endsWith(QLatin1Char(')')))
+        || (s.startsWith(QLatin1Char('[')) && s.endsWith(QLatin1Char(']')))) {
+        return true;
+    }
+    for (const QChar ch : s) {
+        const ushort u = ch.unicode();
+        if (u == '/' || u == '^' || u == '%' || u == '*' || u == '-'
+            || u == 0x2030 /*‰*/ || u == 0x00B0 /*°*/ || u == 0x2103 /*℃*/
+            || u == 0x2109 /*℉*/ || u == 0x03A9 /*Ω*/ || u == 0x03BC /*μ*/
+            || u == 0x00B5 /*µ*/ || u == 0x00C5 /*Å*/ || u == 0x00B7 /*·*/
+            || u == 0x22C5 /*⋅*/ || u == 0x00B2 /*²*/ || u == 0x00B3 /*³*/
+            || u == 0x207B /*⁻*/ || u == 0x2014 /*—*/ || u == 0x2013 /*–*/) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isDimensionlessDashUnit(const QString &raw)
+{
+    const QString s = cleanPromotedUnitCell(raw);
+    return s == QLatin1String("-") || s == QStringLiteral("\u2014")
+            || s == QStringLiteral("\u2013")
+            || s.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
+}
+
+int countUnquotedChar(const QString &line, QChar delim)
+{
+    bool inQuotes = false;
+    int cnt = 0;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line[i];
+        if (c == QLatin1Char('"')) {
+            if (inQuotes && i + 1 < line.size() && line[i + 1] == QLatin1Char('"'))
+                ++i;
+            else
+                inQuotes = !inQuotes;
+        } else if (!inQuotes && c == delim) {
+            ++cnt;
+        }
+    }
+    return cnt;
+}
+
+QStringList splitUnquotedSimple(const QString &line, QChar delim, QVector<bool> *outQuoted = nullptr)
+{
+    QStringList parts;
+    if (outQuoted)
+        outQuoted->clear();
+    QString cur;
+    bool inQuotes = false;
+    bool atFieldStart = true;
+    bool curQuoted = false;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line[i];
+        if (inQuotes) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < line.size() && line[i + 1] == QLatin1Char('"')) {
+                    cur.append(QLatin1Char('"'));
+                    ++i;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                cur.append(c);
+            }
+        } else if (c == delim) {
+            parts.append(cur.trimmed());
+            if (outQuoted)
+                outQuoted->append(curQuoted);
+            cur.clear();
+            curQuoted = false;
+            atFieldStart = true;
+        } else if (c == QLatin1Char('"') && atFieldStart) {
+            inQuotes = true;
+            curQuoted = true;
+            atFieldStart = false;
+        } else {
+            if (c != QLatin1Char(' ') && c != QLatin1Char('\t'))
+                atFieldStart = false;
+            cur.append(c);
+        }
+    }
+    parts.append(cur.trimmed());
+    if (outQuoted)
+        outQuoted->append(curQuoted);
+    return parts;
+}
+
+bool isDigitCommaDecimalToken(const QString &tok)
+{
+    static const QRegularExpression kRe(
+            QStringLiteral("^[+-]?\\d+,\\d+(?:[eE][+-]?\\d+)?$"));
+    return kRe.match(tok.trimmed()).hasMatch();
+}
+
+bool isDotDecimalToken(const QString &tok)
+{
+    static const QRegularExpression kRe(
+            QStringLiteral("^[+-]?\\d+\\.\\d+(?:[eE][+-]?\\d+)?$"));
+    return kRe.match(tok.trimmed()).hasMatch();
+}
+
+bool looksLikeEuropeanSemicolonLines(const QStringList &lines)
+{
+    QVector<int> semiCounts;
+    QStringList semiLines;
+    for (const QString &raw : lines) {
+        const QString ln = raw.trimmed();
+        if (ln.isEmpty() || ln.startsWith(QLatin1Char('#')))
+            continue;
+        if (countUnquotedChar(ln, QLatin1Char('\t')) > 0)
+            return false;
+        const int sc = countUnquotedChar(ln, QLatin1Char(';'));
+        if (sc > 0) {
+            semiCounts.append(sc);
+            semiLines.append(ln);
+        }
+    }
+    if (semiLines.isEmpty())
+        return false;
+
+    // Find modal positive ';' count across lines containing ';'
+    QHash<int, int> freq;
+    int modeSemi = 0;
+    int modeFreq = 0;
+    for (int sc : semiCounts) {
+        const int f = ++freq[sc];
+        if (f > modeFreq) {
+            modeFreq = f;
+            modeSemi = sc;
+        }
+    }
+    if (modeSemi < 1)
+        return false;
+    if (semiLines.size() >= 2 && modeFreq * 4 < semiLines.size() * 3)
+        return false;
+
+    int commaDec = 0;
+    int dotDec = 0;
+    int bareInt = 0;
+    for (int i = 0; i < semiLines.size(); ++i) {
+        if (semiCounts[i] != modeSemi)
+            continue;
+        QVector<bool> quotedFlags;
+        const QStringList parts = splitUnquotedSimple(semiLines[i], QLatin1Char(';'), &quotedFlags);
+        for (int c = 0; c < parts.size(); ++c) {
+            if (quotedFlags.value(c))
+                continue;
+            const QString tok = parts[c].trimmed();
+            if (tok.isEmpty() || isMissingNumericToken(tok, false))
+                continue;
+            if (isDigitCommaDecimalToken(tok))
+                ++commaDec;
+            else if (isDotDecimalToken(tok))
+                ++dotDec;
+            else if (isPureDigitsString(tok.startsWith(QLatin1Char('-')) || tok.startsWith(QLatin1Char('+'))
+                                                ? tok.mid(1)
+                                                : tok))
+                ++bareInt;
+        }
+    }
+    if (commaDec <= 0 || dotDec > 0)
+        return false;
+    if (modeFreq >= 2)
+        return commaDec >= 2 || (commaDec >= 1 && (commaDec + bareInt) >= 2);
+    return commaDec >= 2 || (commaDec >= 1 && (commaDec + bareInt) >= modeSemi + 1);
+}
+
 QString detectDelimiterFromSampleLines(const QStringList &sampleLines, const QString &filePathHint)
 {
     const bool isCsvExt = filePathHint.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive);
@@ -581,23 +778,6 @@ QString detectDelimiterFromSampleLines(const QStringList &sampleLines, const QSt
 
     if (sampleLines.isEmpty())
         return isCsvExt ? QStringLiteral(",") : QStringLiteral("\t");
-
-    auto countUnquoted = [](const QString &line, QChar delim) -> int {
-        bool inQuotes = false;
-        int cnt = 0;
-        for (int i = 0; i < line.size(); ++i) {
-            const QChar c = line[i];
-            if (c == QLatin1Char('"')) {
-                if (inQuotes && i + 1 < line.size() && line[i + 1] == QLatin1Char('"'))
-                    ++i;
-                else
-                    inQuotes = !inQuotes;
-            } else if (!inQuotes && c == delim) {
-                ++cnt;
-            }
-        }
-        return cnt;
-    };
 
     struct DelimStats
     {
@@ -612,7 +792,7 @@ QString detectDelimiterFromSampleLines(const QStringList &sampleLines, const QSt
     const int nSample = sampleLines.size();
     for (const QString &ln : sampleLines) {
         for (DelimStats &ds : cands) {
-            const int c = countUnquoted(ln, ds.ch);
+            const int c = countUnquotedChar(ln, ds.ch);
             if (c > 0)
                 ++ds.linesWithDelim;
             ds.minCnt = std::min(ds.minCnt, c);
@@ -623,8 +803,18 @@ QString detectDelimiterFromSampleLines(const QStringList &sampleLines, const QSt
 
     if (isTsvExt && cands[0].linesWithDelim > 0)
         return QStringLiteral("\t");
-    if (isCsvExt && cands[1].linesWithDelim > 0 && cands[0].linesWithDelim == 0)
+    if (looksLikeEuropeanSemicolonLines(sampleLines))
+        return QStringLiteral(";");
+    const bool consistentSemi =
+            (cands[2].linesWithDelim == nSample && cands[2].minCnt >= 1
+             && cands[2].minCnt == cands[2].maxCnt && nSample >= 2);
+    const bool consistentComma =
+            (cands[1].linesWithDelim == nSample && cands[1].minCnt >= 1
+             && cands[1].minCnt == cands[1].maxCnt);
+    if (isCsvExt && cands[1].linesWithDelim > 0 && cands[0].linesWithDelim == 0
+        && !(consistentSemi && !consistentComma)) {
         return QStringLiteral(",");
+    }
 
     // Prefer delimiter present on all sample lines with consistent positive count
     int bestIdx = -1;
@@ -1876,10 +2066,96 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
     }
 
+    auto scanLogicalLineEnd = [&](int startIdx) -> int {
+        int e = startIdx;
+        bool inQuotes = false;
+        bool atFieldStart = true;
+        while (e < len) {
+            const QChar ch = buf[e];
+            if (inQuotes) {
+                if (ch == QLatin1Char('"')) {
+                    if (e + 1 < len && buf[e + 1] == QLatin1Char('"')) {
+                        e += 2;
+                        continue;
+                    }
+                    inQuotes = false;
+                }
+                ++e;
+            } else {
+                if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
+                    break;
+                if (ch == QLatin1Char('"') && atFieldStart) {
+                    inQuotes = true;
+                    atFieldStart = false;
+                    ++e;
+                } else if (ch == QLatin1Char(',') || ch == QLatin1Char('\t')
+                           || ch == QLatin1Char(';')) {
+                    atFieldStart = true;
+                    ++e;
+                } else if (ch == QLatin1Char(' ')) {
+                    ++e;
+                } else {
+                    atFieldStart = false;
+                    ++e;
+                }
+            }
+        }
+        if (inQuotes) {
+            e = startIdx;
+            while (e < len && buf[e] != QLatin1Char('\r') && buf[e] != QLatin1Char('\n'))
+                ++e;
+        }
+        return e;
+    };
+
+    QLocale effectiveLocale = numericLocale;
+    bool europeanSemicolonDetected = false;
+    {
+        QString normHintSep = separatorHint;
+        if (normHintSep == QLatin1String("\\t"))
+            normHintSep = QStringLiteral("\t");
+        else if (normHintSep == QLatin1String("\\s"))
+            normHintSep = QStringLiteral(" ");
+        const bool sepAllowsSemicolon = normHintSep.isEmpty()
+                || normHintSep.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0
+                || normHintSep == QLatin1String(";")
+                || (autoFixTabOnCsv && normHintSep == QLatin1String("\t"));
+        if (convertToNumeric && sepAllowsSemicolon
+            && effectiveLocale.decimalPoint() == QLatin1Char('.')) {
+            QStringList preLines;
+            QStringList preHashFallback;
+            int pScan = pos;
+            while (pScan < len && preLines.size() < 24) {
+                const int e = scanLogicalLineEnd(pScan);
+                const QString ln = QString(buf + pScan, e - pScan).trimmed();
+                if (!ln.isEmpty()) {
+                    if (!ln.startsWith(QLatin1Char('#')))
+                        preLines.append(ln);
+                    else if (preHashFallback.size() < 8 && ln.contains(QLatin1Char(';')))
+                        preHashFallback.append(ln);
+                }
+                pScan = e;
+                if (pScan < len && buf[pScan] == QLatin1Char('\r')) {
+                    ++pScan;
+                    if (pScan < len && buf[pScan] == QLatin1Char('\n'))
+                        ++pScan;
+                } else if (pScan < len && buf[pScan] == QLatin1Char('\n')) {
+                    ++pScan;
+                }
+            }
+            if (preLines.isEmpty())
+                preLines = preHashFallback;
+            if (looksLikeEuropeanSemicolonLines(preLines)) {
+                effectiveLocale = QLocale(QLocale::German);
+                europeanSemicolonDetected = true;
+            }
+        }
+    }
+
     const bool useCustomLoc =
-            (numericLocale.decimalPoint() != QLatin1Char('.') && numericLocale != QLocale::c());
-    const bool hasDistinctNumericLocale = (numericLocale != QLocale::c());
-    QLocale primaryLoc = numericLocale;
+            (effectiveLocale.decimalPoint() != QLatin1Char('.') && effectiveLocale != QLocale::c());
+    const bool hasDistinctNumericLocale = (effectiveLocale != QLocale::c());
+    QLocale primaryLoc = effectiveLocale;
     primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
 
     // 3. Skip leading blank lines & '#'-prefixed comment preamble lines
@@ -1965,8 +2241,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         readNextRecordSpans(buf, trimEnd, tmpP, QStringLiteral(" "), true, true,
                                             true, wsSpans, tmpSkip);
                         isCommentAtTop = isHashCommentRecordCells(
-                                wsSpans.size(), true /*whitespaceDelim*/, true, primaryLoc,
-                                hasDistinctNumericLocale,
+                                wsSpans.size(), true /*whitespaceDelim*/, true,
+                                false /*allowAlphaHashIds*/, primaryLoc, hasDistinctNumericLocale,
                                 [&](int idx, const QChar *&pk, int &nk, bool &kQuoted) {
                                     wsSpans[idx].trimmedView(pk, nk);
                                     kQuoted = wsSpans[idx].quoted;
@@ -2048,7 +2324,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         const bool multiColForSingle =
                                 (!buf[lineStart + 1].isDigit() || subsequentHasMultiCol);
                         isCommentAtTop = isHashCommentRecordCells(
-                                1, false, multiColForSingle, primaryLoc, hasDistinctNumericLocale,
+                                1, false, multiColForSingle, false /*allowAlphaHashIds*/,
+                                primaryLoc, hasDistinctNumericLocale,
                                 [&](int, const QChar *&pk, int &nk, bool &kQuoted) {
                                     pk = buf + lineStart;
                                     nk = trimEnd - lineStart;
@@ -2073,50 +2350,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // 3b. Drag & drop: find the numeric block below an instrument metadata preamble
     //     (BioLogic .mpt, Gamry .dta, many .asc/.csv exports) and the name/unit rows right
     //     above it. Everything above is kept as the table comment instead of being guessed at.
-    auto scanLogicalLineEnd = [&](int startIdx) -> int {
-        int e = startIdx;
-        bool inQuotes = false;
-        bool atFieldStart = true;
-        while (e < len) {
-            const QChar ch = buf[e];
-            if (inQuotes) {
-                if (ch == QLatin1Char('"')) {
-                    if (e + 1 < len && buf[e + 1] == QLatin1Char('"')) {
-                        e += 2;
-                        continue;
-                    }
-                    inQuotes = false;
-                }
-                ++e;
-            } else {
-                if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
-                    break;
-                if (ch == QLatin1Char('"') && atFieldStart) {
-                    inQuotes = true;
-                    atFieldStart = false;
-                    ++e;
-                } else if (ch == QLatin1Char(',') || ch == QLatin1Char('\t')
-                           || ch == QLatin1Char(';')) {
-                    atFieldStart = true;
-                    ++e;
-                } else if (ch == QLatin1Char(' ')) {
-                    ++e;
-                } else {
-                    atFieldStart = false;
-                    ++e;
-                }
-            }
-        }
-        if (inQuotes) {
-            e = startIdx;
-            while (e < len && buf[e] != QLatin1Char('\r') && buf[e] != QLatin1Char('\n'))
-                ++e;
-        }
-        return e;
-    };
-
     QString preambleSeparator;
     int forcedUnitsRow = -1;
+    int forcedCommentsRow = -1;
     if (detectPreamble && ignoredLines == 0 && pos < len) {
         struct LineSpan
         {
@@ -2256,7 +2492,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     ++outText;
             }
         };
-        auto isCommentLineForSep = [&](int idx, QChar sep) -> bool {
+        auto isCommentLineForSep = [&](int idx, QChar sep, bool allowAlphaHashIds) -> bool {
             if (idx < 0 || idx >= lines.size())
                 return false;
             const QChar *ls = buf + lines[idx].start;
@@ -2270,7 +2506,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             const SplitLineResult sr = splitLineEx(idx, sep);
             return isHashCommentRecordCells(
                     sr.rawFieldCount, sep == QLatin1Char(' '), true /*tableHasMultipleCols*/,
-                    primaryLoc, hasDistinctNumericLocale,
+                    allowAlphaHashIds, primaryLoc, hasDistinctNumericLocale,
                     [&](int k, const QChar *&pk, int &nk, bool &kQuoted) {
                         if (k >= 0 && k < sr.rawParts.size()) {
                             pk = sr.rawParts[k].constData();
@@ -2293,15 +2529,22 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 return 0;
             return -1;
         };
-        const QChar seps[4] = { QLatin1Char('\t'), QLatin1Char(','), QLatin1Char(';'),
-                                QLatin1Char(' ') };
+        const QChar sepsC[4] = { QLatin1Char('\t'), QLatin1Char(','), QLatin1Char(';'),
+                                 QLatin1Char(' ') };
+        const QChar sepsEuro[4] = { QLatin1Char('\t'), QLatin1Char(';'), QLatin1Char(','),
+                                    QLatin1Char(' ') };
+        const QChar(&seps)[4] = (europeanSemicolonDetected || effectiveLocale.decimalPoint() == QLatin1Char(','))
+                ? sepsEuro
+                : sepsC;
         int bestStart = -1, bestFields = 0;
         QChar bestSep;
         for (const QChar sep : seps) {
+            if (europeanSemicolonDetected && sep == QLatin1Char(','))
+                continue;
             for (int i = 0; i < lines.size(); ++i) {
                 if (bestStart >= 0 && i > bestStart)
                     break; // an earlier block was already found with another separator
-                if (isCommentLineForSep(i, sep))
+                if (isCommentLineForSep(i, sep, false))
                     continue;
                 const SplitLineResult sr0 = splitLineEx(i, sep);
                 const QStringList &p0 = sr0.parts;
@@ -2313,10 +2556,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 // P1-D4(b): a mixed text+numeric header row (e.g. "Time (s), 300, 400, 500")
                 // sitting right above pure-numeric data rows is the header, not the first data row.
                 int nextDataIdx = i + 1;
-                while (nextDataIdx < lines.size() && isCommentLineForSep(nextDataIdx, sep))
+                while (nextDataIdx < lines.size() && isCommentLineForSep(nextDataIdx, sep, false))
                     ++nextDataIdx;
                 if (p0Txt > 0 && nextDataIdx < lines.size()
-                    && !isCommentLineForSep(nextDataIdx, sep)) {
+                    && !isCommentLineForSep(nextDataIdx, sep, false)) {
                     const QStringList pNext = splitLine(nextDataIdx, sep);
                     int nextNum = 0, nextTxt = 0;
                     rowStats(pNext, nextNum, nextTxt);
@@ -2326,7 +2569,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 int checkedFollow = 0;
                 bool ok = true;
                 for (int k = i + 1; k < lines.size() && checkedFollow < 2 && ok; ++k) {
-                    if (isCommentLineForSep(k, sep))
+                    if (isCommentLineForSep(k, sep, true))
                         continue;
                     // following rows may lack trailing values ("2\t" -> one field) or be all-missing ("#N/A,#N/A", "#DIV/0!,") or specimen+missing ("#2,")
                     const SplitLineResult srk = splitLineEx(k, sep);
@@ -2356,47 +2599,153 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             rowStats(splitLine(bestStart, bestSep), bsNum, bsTxt);
             const bool bestStartAllNumeric = (bsNum >= 2 && bsTxt == 0);
             int hdrStart = bestStart;
-            auto isPureTextRowWithFields = [&](int idx) -> bool {
-                if (idx < 0 || isCommentLineForSep(idx, bestSep))
+            auto matchesBestWidth = [&](int idx) -> bool {
+                if (idx < 0 || isCommentLineForSep(idx, bestSep, false))
                     return false;
-                const QStringList p = splitLine(idx, bestSep);
-                return p.size() == bestFields && rowKind(p) == 0;
+                const SplitLineResult sr = splitLineEx(idx, bestSep);
+                if (bestSep == QLatin1Char(' '))
+                    return sr.parts.size() == bestFields;
+                return sr.rawFieldCount == bestFields || sr.parts.size() == bestFields;
+            };
+            auto isPureTextRowWithFields = [&](int idx) -> bool {
+                if (!matchesBestWidth(idx))
+                    return false;
+                const SplitLineResult sr = splitLineEx(idx, bestSep);
+                return rowKind(sr.parts) == 0;
             };
             auto isHeaderCandidateWithFields = [&](int idx) -> bool {
-                if (idx < 0 || isCommentLineForSep(idx, bestSep))
+                if (!matchesBestWidth(idx))
                     return false;
-                const QStringList p = splitLine(idx, bestSep);
-                if (p.size() != bestFields)
-                    return false;
+                const SplitLineResult sr = splitLineEx(idx, bestSep);
                 int num = 0, txt = 0;
-                rowStats(p, num, txt);
+                rowStats(sr.parts, num, txt);
                 return txt >= 1 && (num == 0 || bestStartAllNumeric);
             };
             auto prevNonCommentIdx = [&](int fromIdx) -> int {
                 int cur = fromIdx;
-                while (cur >= 0 && isCommentLineForSep(cur, bestSep))
+                while (cur >= 0 && isCommentLineForSep(cur, bestSep, false))
                     --cur;
                 return cur;
             };
-            const int cand1 = prevNonCommentIdx(bestStart - 1);
-            if (cand1 >= 0 && isPureTextRowWithFields(cand1)) {
-                hdrStart = cand1;
-                const int cand2 = prevNonCommentIdx(cand1 - 1);
-                if (cand2 >= 0 && isHeaderCandidateWithFields(cand2)) {
-                    bool shortCells = true;
-                    for (const QString &u : splitLine(cand1, bestSep))
-                        shortCells = shortCells && u.size() <= 24;
-                    if (shortCells) {
-                        hdrStart = cand2;
-                        forcedUnitsRow = 1;
+            auto analyzePreUnitRow = [&](int unitIdx, bool allowAllEmptyUnits, int &outNamedUnits,
+                                         bool &outAllEmpty) -> bool {
+                outNamedUnits = 0;
+                outAllEmpty = false;
+                if (!matchesBestWidth(unitIdx))
+                    return false;
+                const SplitLineResult srU = splitLineEx(unitIdx, bestSep);
+                int nonEmpty = 0;
+                bool allNonNumeric = true;
+                bool allRecognized = true;
+                bool allFallback = true;
+                bool shortCells = true;
+                bool hasInlineHeaderUnit = false;
+                for (const QString &raw : srU.rawParts) {
+                    const QString t = raw.trimmed();
+                    if (t.isEmpty())
+                        continue;
+                    ++nonEmpty;
+                    double dummy = 0.0;
+                    if (tryParseLabDouble(t, primaryLoc, hasDistinctNumericLocale, dummy)) {
+                        allNonNumeric = false;
+                        break;
+                    }
+                    QString sn, ln, un;
+                    AsciiTableImportFilter::splitHeaderNameAndUnits(t, sn, ln, un);
+                    if (!ln.isEmpty() && !un.isEmpty() && ln != t)
+                        hasInlineHeaderUnit = true;
+                    const QString cleaned = cleanPromotedUnitCell(t);
+                    if (cleaned.size() > 32)
+                        shortCells = false;
+                    if (isLikelyScientificUnit(cleaned)) {
+                        if (!isDimensionlessDashUnit(cleaned))
+                            ++outNamedUnits;
+                    } else {
+                        allRecognized = false;
+                        if (!hasFallbackUnitSyntaxAscii(t))
+                            allFallback = false;
                     }
                 }
-            } else if (cand1 >= 0 && isHeaderCandidateWithFields(cand1)) {
-                hdrStart = cand1;
+                if (!allNonNumeric || hasInlineHeaderUnit)
+                    return false;
+                if (nonEmpty == 0) {
+                    outAllEmpty = true;
+                    return allowAllEmptyUnits && bestSep != QLatin1Char(' ');
+                }
+                return shortCells && (allRecognized || allFallback);
+            };
+            auto nonEmptyCellCount = [&](int idx) -> int {
+                const SplitLineResult sr = splitLineEx(idx, bestSep);
+                int n = 0;
+                for (const QString &rp : sr.rawParts) {
+                    if (!rp.trimmed().isEmpty())
+                        ++n;
+                }
+                return n;
+            };
+
+            // If a numeric data row right above bestStart contains a non-numeric outlier
+            // (e.g. "0, <0.01" or "0, OVER") directly below an already width-matched pure-text
+            // header/unit/comment row (e.g. "Idx, Val"), include it in the data block instead of
+            // misclassifying it as a mixed header and discarding the real header into preamble.
+            while (bestStart > 0) {
+                const int prev1 = prevNonCommentIdx(bestStart - 1);
+                const int prev2 = (prev1 >= 0) ? prevNonCommentIdx(prev1 - 1) : -1;
+                if (prev1 >= 0 && prev2 >= 0 && isHeaderCandidateWithFields(prev1)
+                    && isPureTextRowWithFields(prev2) && nonEmptyCellCount(prev2) >= bestFields) {
+                    const SplitLineResult srPrev1 = splitLineEx(prev1, bestSep);
+                    int p1Num = 0, p1Txt = 0;
+                    rowStats(srPrev1.parts, p1Num, p1Txt);
+                    if (p1Num >= 1 && p1Txt >= 1) {
+                        bestStart = prev1;
+                        hdrStart = prev1;
+                        continue;
+                    }
+                }
+                break;
+            }
+
+            const int cand1 = prevNonCommentIdx(bestStart - 1);
+            const int cand2 = (cand1 >= 0) ? prevNonCommentIdx(cand1 - 1) : -1;
+            const int cand3 = (cand2 >= 0) ? prevNonCommentIdx(cand2 - 1) : -1;
+
+            int namedUnits2 = 0, namedUnits1 = 0;
+            bool emptyUnits2 = false, emptyUnits1 = false;
+            const bool cand2IsUnit = (cand2 >= 0 && cand3 >= 0)
+                    && analyzePreUnitRow(cand2, true, namedUnits2, emptyUnits2);
+            const bool cand1IsUnit = (cand1 >= 0 && cand2 >= 0)
+                    && analyzePreUnitRow(cand1, false, namedUnits1, emptyUnits1);
+
+            bool matched3RowOrigin = false;
+            if (cand3 >= 0 && cand2 >= 0 && cand1 >= 0 && isHeaderCandidateWithFields(cand3)
+                && nonEmptyCellCount(cand3) >= (bestFields >= 2 ? 2 : 1)
+                && isPureTextRowWithFields(cand1) && nonEmptyCellCount(cand1) >= 1 && cand2IsUnit
+                && (!cand1IsUnit || namedUnits2 > namedUnits1
+                    || (emptyUnits2 && namedUnits1 == 0))) {
+                hdrStart = cand3;
+                forcedUnitsRow = 1;
+                forcedCommentsRow = 2;
+                matched3RowOrigin = true;
+            }
+            if (!matched3RowOrigin) {
+                if (cand1 >= 0 && isPureTextRowWithFields(cand1)) {
+                    hdrStart = cand1;
+                    if (cand2 >= 0 && isHeaderCandidateWithFields(cand2)) {
+                        bool shortCells = true;
+                        for (const QString &u : splitLine(cand1, bestSep))
+                            shortCells = shortCells && u.size() <= 24;
+                        if (shortCells) {
+                            hdrStart = cand2;
+                            forcedUnitsRow = 1;
+                        }
+                    }
+                } else if (cand1 >= 0 && isHeaderCandidateWithFields(cand1)) {
+                    hdrStart = cand1;
+                }
             }
             int preambleEnd = hdrStart;
             if (hdrStart == bestStart) {
-                while (preambleEnd > 0 && isCommentLineForSep(preambleEnd - 1, bestSep))
+                while (preambleEnd > 0 && isCommentLineForSep(preambleEnd - 1, bestSep, false))
                     --preambleEnd;
             }
             if (hdrStart > 0) {
@@ -2499,7 +2848,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             const bool isCsvExt = filePathHint.endsWith(QLatin1String(".csv"), Qt::CaseInsensitive);
             const QString detected = detectDelimiterFromSampleLines(sampleLines, filePathHint);
             if (detected == QLatin1String(",") || detected == QLatin1String(";")) {
-                if (isCsvExt || sampleLines.size() >= 2)
+                if (isCsvExt || sampleLines.size() >= 2 || europeanSemicolonDetected)
                     effSep = detected;
             } else if (detected == QLatin1String(" ")) {
                 effSep = detected;
@@ -2511,11 +2860,13 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     // Determine whether this table has >= 2 columns so '# ...' comment lines inside a
     // multi-column CSV/TSV/whitespace file (including '# pause,', '# note,,', '# T=300 K, P=1 atm')
-    // are skipped as comments while '#1, 520' / '#2,' specimen rows, '#N/A,#N/A' missing rows,
-    // and 1-column '#1\n#2' tables are kept.
-    auto isSpanHashComment = [&](const QVector<ZeroCopyCellSpan> &spans, bool multiCols) -> bool {
+    // are skipped as comments while '#1, 520' / '#2,' specimen rows, mid-file '#A1, 520' IDs,
+    // '#N/A,#N/A' missing rows, and 1-column '#1\n#2' tables are kept.
+    auto isSpanHashComment = [&](const QVector<ZeroCopyCellSpan> &spans, bool multiCols,
+                                 bool allowAlphaHashIds) -> bool {
         return isHashCommentRecordCells(
-                spans.size(), whitespaceDelim, multiCols, primaryLoc, hasDistinctNumericLocale,
+                spans.size(), whitespaceDelim, multiCols, allowAlphaHashIds, primaryLoc,
+                hasDistinctNumericLocale,
                 [&](int k, const QChar *&pk, int &nk, bool &kQuoted) {
                     if (k >= 0 && k < spans.size()) {
                         spans[k].trimmedView(pk, nk);
@@ -2526,6 +2877,24 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         kQuoted = false;
                     }
                 });
+    };
+
+    auto rowHasRealNumericData = [&](const QVector<ZeroCopyCellSpan> &spans) -> bool {
+        if (spans.isEmpty())
+            return false;
+        if (!convertToNumeric)
+            return true;
+        for (int c = 0; c < spans.size(); ++c) {
+            const QChar *p = nullptr;
+            int n = 0;
+            spans[c].trimmedView(p, n);
+            if (spans[c].quoted || !p || n <= 0 || isMissingNumericSpan(p, n, false))
+                continue;
+            double dv = 0.0;
+            if (tryParseLabDoubleSpan(p, n, primaryLoc, hasDistinctNumericLocale, dv))
+                return true;
+        }
+        return false;
     };
 
     QVector<ZeroCopyCellSpan> rowSpans;
@@ -2553,6 +2922,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         };
         int peekPos = pos;
         int checkedRows = 0;
+        bool peekAlphaHashMulti = false;
         while (peekPos < len && checkedRows < 24) {
             bool skipPeek = false;
             if (!readNextRecordSpans(buf, len, peekPos, normSep, whitespaceDelim, trimSpaces,
@@ -2561,18 +2931,24 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
             if (skipPeek)
                 continue;
-            if (isSpanHashComment(rowSpans, true /*multiCols*/))
+            if (isSpanHashComment(rowSpans, true /*multiCols*/, false /*allowAlphaHashIds*/)) {
+                if (!isSpanHashComment(rowSpans, true, true) && peekEffectiveCols(rowSpans) >= 2)
+                    peekAlphaHashMulti = true;
                 continue;
+            }
             if (peekEffectiveCols(rowSpans) >= 2) {
                 tableHasMultipleCols = true;
                 break;
             }
             ++checkedRows;
         }
+        if (!tableHasMultipleCols && peekAlphaHashMulti)
+            tableHasMultipleCols = true;
     }
 
-    auto isBodyHashCommentRow = [&](const QVector<ZeroCopyCellSpan> &spans) -> bool {
-        return isSpanHashComment(spans, tableHasMultipleCols);
+    auto isBodyHashCommentRow = [&](const QVector<ZeroCopyCellSpan> &spans,
+                                    bool allowAlphaHashIds) -> bool {
+        return isSpanHashComment(spans, tableHasMultipleCols, allowAlphaHashIds);
     };
 
     // 4. Parse up to 16 preview rows (zero spike even on 200,000-row CSVs!) for header/unit discovery
@@ -2583,29 +2959,61 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     QVector<int> previewSkippedCommentOffsets;
     int scanPos = pos;
     int maxCols = 0;
+    bool anyNumericPreviewRow = false;
+    bool sawSkippedAlphaHashWithNum = false;
+    bool step4SeenData = false;
 
-    while (scanPos < len && previewRecords.size() < 16) {
-        const int rowStartOffset = scanPos;
-        bool skipRow = false;
-        if (!readNextRecordSpans(buf, len, scanPos, normSep, whitespaceDelim, trimSpaces,
-                                 simplifySpaces, rowSpans, skipRow)) {
-            break;
+    auto runPreviewScan = [&](bool pass2AllowAlpha, bool pass1HadNonHashRows) {
+        previewRecords.clear();
+        previewLineStartOffsets.clear();
+        previewSkippedCommentOffsets.clear();
+        scanPos = pos;
+        maxCols = 0;
+        anyNumericPreviewRow = false;
+        sawSkippedAlphaHashWithNum = false;
+        step4SeenData = false;
+        bool seenRealData = false;
+
+        while (scanPos < len && previewRecords.size() < 16) {
+            const int rowStartOffset = scanPos;
+            bool skipRow = false;
+            if (!readNextRecordSpans(buf, len, scanPos, normSep, whitespaceDelim, trimSpaces,
+                                     simplifySpaces, rowSpans, skipRow)) {
+                break;
+            }
+            if (skipRow)
+                continue;
+            const bool allowAlphaNow = seenRealData
+                    || (pass2AllowAlpha
+                        && (pass1HadNonHashRows ? !previewRecords.isEmpty() : true));
+            if (isBodyHashCommentRow(rowSpans, allowAlphaNow)) {
+                if (!allowAlphaNow && !isBodyHashCommentRow(rowSpans, true))
+                    sawSkippedAlphaHashWithNum = true;
+                previewSkippedCommentOffsets.append(rowStartOffset);
+                continue;
+            }
+            if (rowHasRealNumericData(rowSpans)) {
+                seenRealData = true;
+                anyNumericPreviewRow = true;
+                step4SeenData = true;
+            }
+            previewLineStartOffsets.append(rowStartOffset);
+            QVector<LabCsvCell> rec;
+            rec.reserve(rowSpans.size());
+            for (const ZeroCopyCellSpan &sp : rowSpans)
+                rec.append({ sp.toQString(trimSpaces, simplifySpaces), sp.quoted });
+            maxCols = std::max(maxCols, rec.size());
+            previewRecords.append(std::move(rec));
         }
-        if (skipRow)
-            continue;
-        if (isBodyHashCommentRow(rowSpans)) {
-            previewSkippedCommentOffsets.append(rowStartOffset);
-            continue;
-        }
-        previewLineStartOffsets.append(rowStartOffset);
-        QVector<LabCsvCell> rec;
-        rec.reserve(rowSpans.size());
-        for (const ZeroCopyCellSpan &sp : rowSpans)
-            rec.append({ sp.toQString(trimSpaces, simplifySpaces), sp.quoted });
-        maxCols = std::max(maxCols, rec.size());
-        previewRecords.append(std::move(rec));
+        previewLineStartOffsets.append(scanPos);
+    };
+
+    runPreviewScan(false, false);
+    bool usedAlphaHashPass2 = false;
+    if ((previewRecords.isEmpty() || !anyNumericPreviewRow) && sawSkippedAlphaHashWithNum) {
+        usedAlphaHashPass2 = true;
+        runPreviewScan(true, !previewRecords.isEmpty());
     }
-    previewLineStartOffsets.append(scanPos);
 
     if (previewRecords.isEmpty())
         return new future::Table(0, 0, effTableName);
@@ -2617,7 +3025,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         && maxCols >= 2) {
         bool row0AllNumeric = true;
         for (const LabCsvCell &c0 : previewRecords[0]) {
-            if (!isPureNumberString(c0.value)) {
+            double dummy = 0.0;
+            if (c0.quoted
+                || !tryParseLabDouble(c0.value, primaryLoc, hasDistinctNumericLocale, dummy)) {
                 row0AllNumeric = false;
                 break;
             }
@@ -2652,7 +3062,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 bool anyPureNumHdr = false;
                 for (const LabCsvCell &hc : hashRows[0]) {
                     if (!hc.value.trimmed().isEmpty()) {
-                        if (isPureNumberString(hc.value))
+                        double dummy = 0.0;
+                        if (tryParseLabDouble(hc.value, primaryLoc, hasDistinctNumericLocale, dummy))
                             anyPureNumHdr = true;
                         else
                             anyNonNumericHdr = true;
@@ -2753,6 +3164,26 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 if (!likelySeqColHeader)
                     treatRow0AsData = true;
             }
+            if (!treatRow0AsData && allRow0Num && !previewRecords[1][0].quoted
+                && previewRecords[1][0].value.trimmed().startsWith(QLatin1Char('#'))) {
+                bool row1TrailingOk = true;
+                bool row1TrailingAnyNum = false;
+                for (int c = 1; c < previewRecords[1].size(); ++c) {
+                    bool isNum = false, isTok = false, isFloat = false;
+                    if (!classifyCell(previewRecords[1][c], isNum, isTok, isFloat)) {
+                        row1TrailingOk = false;
+                        break;
+                    }
+                    row1TrailingAnyNum = row1TrailingAnyNum || isNum;
+                    if (isFloat && isNum)
+                        anyFloatMarkerInRow1 = true;
+                }
+                const bool likelySeqColHeader = (previewRecords[0].size() >= 3
+                                                 && row0IsOneBasedSeq && !anyFloatMarkerInRow0
+                                                 && anyFloatMarkerInRow1);
+                if (row1TrailingOk && row1TrailingAnyNum && !likelySeqColHeader)
+                    treatRow0AsData = true;
+            }
         }
         // One column of numbers, or a file with a single data row: the first line is data, it
         // must not disappear into the column name.
@@ -2821,39 +3252,25 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     }
 
     QVector<LabCsvCell> unitsRow;
-    // 2-Row [Name row + Units row] auto-detection (Instron / Shimadzu / Zwick CSVs)
+    QVector<LabCsvCell> commentsRow;
+    // 2-Row [Name + Units] & 3-Row Origin [Long Name + Units + Comments] auto-detection
     const int effUnitsRowHint = (unitsRowHint < 0 && forcedUnitsRow == 1) ? 1 : unitsRowHint;
-    if (effectiveFirstRowNames && effUnitsRowHint != 0) {
+    if (effectiveFirstRowNames && unitsRowHint < 0 && forcedUnitsRow == 1 && forcedCommentsRow == 2
+        && previewRecords.size() >= 4) {
+        unitsRow = previewRecords[1];
+        commentsRow = previewRecords[2];
+        fileHeaderLinesConsumed = 3;
+    } else if (effectiveFirstRowNames && effUnitsRowHint != 0) {
         const int candUnitIdx = fileHeaderLinesConsumed;
         if (effUnitsRowHint == 1 && previewRecords.size() > candUnitIdx) {
             unitsRow = previewRecords[candUnitIdx];
             ++fileHeaderLinesConsumed;
         } else if (effUnitsRowHint < 0 && previewRecords.size() > candUnitIdx + 1) {
-            const QVector<LabCsvCell> &candUnits = previewRecords[candUnitIdx];
-            const int checkEnd = std::min(previewRecords.size(), 14);
-            int numericDataCols = 0;
-            bool row2HasNumberInNumericCol = false;
-            bool row2AllValidUnitsInNumericCols = true;
-            int recognizedUnitTokens = 0;
-            int nonEmptyUnitCellsInNumericCols = 0;
-            bool row2ShortCells = true;
-            // Is every non-empty cell of the candidate row non-numeric (in all columns)?
-            bool row2AllNonNumeric = true;
-            for (const LabCsvCell &uc : candUnits) {
-                const QString u = uc.value.trimmed();
-                if (u.isEmpty())
-                    continue;
-                double dummy = 0.0;
-                if (tryParseLabDouble(u, primaryLoc, useCustomLoc, dummy)) {
-                    row2AllNonNumeric = false;
-                    break;
-                }
-            }
-
-            for (int c = 0; c < maxCols; ++c) {
-                bool colHasFinite = false;
-                bool colAllNumeric = true;
-                for (int r = candUnitIdx + 1; r < checkEnd; ++r) {
+            const int checkEnd = std::min(previewRecords.size(), 15);
+            auto isNumericColumnFromRow = [&](int c, int dataStartRow) -> bool {
+                int colFinite = 0;
+                int colText = 0;
+                for (int r = dataStartRow; r < checkEnd; ++r) {
                     const QString s = (c < previewRecords[r].size())
                             ? previewRecords[r][c].value.trimmed()
                             : QString();
@@ -2862,46 +3279,152 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     if (isMissingNumericToken(s, q))
                         continue;
                     double dv = 0.0;
-                    if (tryParseLabDouble(s, primaryLoc, useCustomLoc, dv)) {
-                        colHasFinite = true;
-                    } else {
-                        colAllNumeric = false;
+                    if (!q && tryParseLabDouble(s, primaryLoc, useCustomLoc, dv))
+                        ++colFinite;
+                    else
+                        ++colText;
+                }
+                return colFinite >= 1
+                        && (colText == 0
+                            || (colFinite >= 5
+                                && qint64(colFinite) * 10
+                                        >= qint64(colFinite + colText) * 9));
+            };
+            auto inspectUnitCandidate = [&](int unitRowIdx, int dataStartRow,
+                                            bool allowAllEmptyUnits, int &outNamedUnits,
+                                            bool &outAllEmpty) -> bool {
+                outNamedUnits = 0;
+                outAllEmpty = false;
+                if (unitRowIdx < 0 || unitRowIdx >= previewRecords.size()
+                    || dataStartRow >= previewRecords.size()) {
+                    return false;
+                }
+                const QVector<LabCsvCell> &candUnits = previewRecords[unitRowIdx];
+                bool rowAllNonNumeric = true;
+                int nonEmptyAnywhere = 0;
+                for (const LabCsvCell &uc : candUnits) {
+                    const QString u = uc.value.trimmed();
+                    if (u.isEmpty())
+                        continue;
+                    ++nonEmptyAnywhere;
+                    double dummy = 0.0;
+                    if (tryParseLabDouble(u, primaryLoc, useCustomLoc, dummy)) {
+                        rowAllNonNumeric = false;
                         break;
                     }
                 }
-                if (colHasFinite && colAllNumeric) {
+                if (nonEmptyAnywhere == 0) {
+                    int anyNumCols = 0;
+                    for (int c = 0; c < maxCols; ++c) {
+                        if (isNumericColumnFromRow(c, dataStartRow))
+                            ++anyNumCols;
+                    }
+                    outAllEmpty = true;
+                    return allowAllEmptyUnits && !whitespaceDelim && anyNumCols >= 1;
+                }
+
+                int numericDataCols = 0;
+                bool hasNumberInNumericCol = false;
+                bool allValidUnitsInNumericCols = true;
+                bool allFallbackInNumericCols = true;
+                int recognizedUnitTokens = 0;
+                int nonEmptyUnitCellsInNumericCols = 0;
+                bool shortCells = true;
+                bool hasInlineHeaderUnit = false;
+
+                for (int c = 0; c < maxCols; ++c) {
+                    if (!isNumericColumnFromRow(c, dataStartRow))
+                        continue;
                     ++numericDataCols;
                     const QString uRaw =
                             (c < candUnits.size()) ? candUnits[c].value.trimmed() : QString();
                     if (!uRaw.isEmpty()) {
                         double dummy = 0.0;
                         if (tryParseLabDouble(uRaw, primaryLoc, useCustomLoc, dummy)) {
-                            row2HasNumberInNumericCol = true;
+                            hasNumberInNumericCol = true;
                             break;
                         }
+                        QString sn, ln, un;
+                        AsciiTableImportFilter::splitHeaderNameAndUnits(uRaw, sn, ln, un);
+                        if (!ln.isEmpty() && !un.isEmpty() && ln != uRaw)
+                            hasInlineHeaderUnit = true;
                         const QString uClean = cleanPromotedUnitCell(uRaw);
                         ++nonEmptyUnitCellsInNumericCols;
                         if (uClean.size() > 32)
-                            row2ShortCells = false;
-                        if (isLikelyScientificUnit(uClean))
+                            shortCells = false;
+                        if (isLikelyScientificUnit(uClean)) {
+                            if (!isDimensionlessDashUnit(uClean))
+                                ++outNamedUnits;
                             ++recognizedUnitTokens;
-                        else
-                            row2AllValidUnitsInNumericCols = false;
+                        } else {
+                            allValidUnitsInNumericCols = false;
+                            if (!hasFallbackUnitSyntaxAscii(uRaw))
+                                allFallbackInNumericCols = false;
+                        }
+                    }
+                }
+                if (numericDataCols < 1 || hasNumberInNumericCol || hasInlineHeaderUnit)
+                    return false;
+                if (allValidUnitsInNumericCols && recognizedUnitTokens >= 1)
+                    return true;
+                // Units outside the built-in dictionary (N/mm2, kgf/mm^2, 'mm/min', ...): the
+                // rows below are numbers and the unit row has no number at all.
+                return rowAllNonNumeric && nonEmptyUnitCellsInNumericCols >= 1 && shortCells
+                        && allFallbackInNumericCols;
+            };
+
+            bool matched3RowOrigin = false;
+            if (previewRecords.size() > candUnitIdx + 2) {
+                const int candCommentsIdx = candUnitIdx + 1;
+                const int dataStart3 = candUnitIdx + 2;
+                const QVector<LabCsvCell> &candComments = previewRecords[candCommentsIdx];
+                bool row2HasNumInNumericCol = false;
+                bool row2HasTextInNumericCol = false;
+                int numericColsFrom3 = 0;
+                for (int c = 0; c < maxCols; ++c) {
+                    if (!isNumericColumnFromRow(c, dataStart3))
+                        continue;
+                    ++numericColsFrom3;
+                    const QString cm = (c < candComments.size())
+                            ? candComments[c].value.trimmed()
+                            : QString();
+                    const bool q = (c < candComments.size()) ? candComments[c].quoted : false;
+                    if (cm.isEmpty() || isMissingNumericToken(cm, q))
+                        continue;
+                    double dummy = 0.0;
+                    if (!q && tryParseLabDouble(cm, primaryLoc, useCustomLoc, dummy)) {
+                        row2HasNumInNumericCol = true;
+                        break;
+                    }
+                    row2HasTextInNumericCol = true;
+                }
+                if (numericColsFrom3 >= 1 && row2HasTextInNumericCol && !row2HasNumInNumericCol) {
+                    int namedUnits1 = 0, namedUnits2 = 0;
+                    bool emptyUnits1 = false, emptyUnits2 = false;
+                    const bool unit1Matched = inspectUnitCandidate(
+                            candUnitIdx, dataStart3, true /*allowAllEmpty*/, namedUnits1,
+                            emptyUnits1);
+                    const bool unit2Matched = inspectUnitCandidate(
+                            candCommentsIdx, dataStart3, false /*allowAllEmpty*/, namedUnits2,
+                            emptyUnits2);
+                    if (unit1Matched
+                        && (namedUnits1 > namedUnits2 || (emptyUnits1 && namedUnits2 == 0)
+                            || !unit2Matched)) {
+                        unitsRow = previewRecords[candUnitIdx];
+                        commentsRow = previewRecords[candCommentsIdx];
+                        fileHeaderLinesConsumed += 2;
+                        matched3RowOrigin = true;
                     }
                 }
             }
-
-            if (numericDataCols >= 1 && !row2HasNumberInNumericCol
-                && row2AllValidUnitsInNumericCols && recognizedUnitTokens >= 1) {
-                unitsRow = candUnits;
-                ++fileHeaderLinesConsumed;
-            } else if (numericDataCols >= 1 && !row2HasNumberInNumericCol && row2AllNonNumeric
-                       && nonEmptyUnitCellsInNumericCols >= 1 && row2ShortCells) {
-                // Units outside the built-in dictionary (N/mm2, kgf/mm^2, 'mm/min', ...): the
-                // rows below are numbers and the second row has no number at all, so it is
-                // the unit row. Otherwise every column would turn into text.
-                unitsRow = candUnits;
-                ++fileHeaderLinesConsumed;
+            if (!matched3RowOrigin) {
+                int namedUnits2 = 0;
+                bool emptyUnits2 = false;
+                if (inspectUnitCandidate(candUnitIdx, candUnitIdx + 1, false /*allowAllEmpty*/,
+                                         namedUnits2, emptyUnits2)) {
+                    unitsRow = previewRecords[candUnitIdx];
+                    ++fileHeaderLinesConsumed;
+                }
             }
         }
     }
@@ -2909,6 +3432,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     // Determine exact character offset of first data row and count remaining rows without allocating QStrings
     const int dataStartPos = previewLineStartOffsets[std::min(
             fileHeaderLinesConsumed, previewLineStartOffsets.size() - 1)];
+    const bool allowAlphaAtDataStart = usedAlphaHashPass2
+            || (fileHeaderLinesConsumed < previewRecords.size()
+                && !previewRecords[fileHeaderLinesConsumed].isEmpty()
+                && !previewRecords[fileHeaderLinesConsumed][0].quoted
+                && previewRecords[fileHeaderLinesConsumed][0].value.trimmed().startsWith(
+                        QLatin1Char('#')));
     for (int off : previewSkippedCommentOffsets) {
         if (off < dataStartPos)
             ++skippedNonBlankLines;
@@ -2916,14 +3445,17 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     int dataRowCount = std::max(0, previewRecords.size() - fileHeaderLinesConsumed);
     {
         int countPos = scanPos;
+        bool seenCountData = step4SeenData;
         while (countPos < len) {
             bool skipRow = false;
             if (!readNextRecordSpans(buf, len, countPos, normSep, whitespaceDelim, trimSpaces,
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow || isBodyHashCommentRow(rowSpans))
+            if (skipRow || isBodyHashCommentRow(rowSpans, seenCountData))
                 continue;
+            if (!seenCountData && rowHasRealNumericData(rowSpans))
+                seenCountData = true;
             maxCols = std::max(maxCols, rowSpans.size());
             ++dataRowCount;
         }
@@ -2938,6 +3470,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     QVector<bool> needsTextBackfill(maxCols, false);
     QVector<bool> anyQuoted(maxCols, false);
     QVector<bool> anyFiniteNumber(maxCols, false);
+    QVector<int> validNumCount(maxCols, 0);
+    QVector<int> strayNonNumCount(maxCols, 0);
     std::vector<std::unique_ptr<QStringList>> strVecs(static_cast<size_t>(maxCols));
 
     for (int c = 0; c < maxCols; ++c) {
@@ -2953,17 +3487,20 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     {
         int streamPos = dataStartPos;
         int r = 0;
+        bool seenStreamData = allowAlphaAtDataStart;
         while (streamPos < len && r < dataRowCount) {
             bool skipRow = false;
             if (!readNextRecordSpans(buf, len, streamPos, normSep, whitespaceDelim, trimSpaces,
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow || isBodyHashCommentRow(rowSpans)) {
+            if (skipRow || isBodyHashCommentRow(rowSpans, seenStreamData)) {
                 if (!skipRow)
                     ++skippedNonBlankLines;
                 continue;
             }
+            if (!seenStreamData && rowHasRealNumericData(rowSpans))
+                seenStreamData = true;
 
             const int recCols = rowSpans.size();
             for (int c = 0; c < maxCols; ++c) {
@@ -3000,10 +3537,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 if (tryParseLabDoubleSpan(tPtr, tLen, primaryLoc, useCustomLoc, numVal)) {
                     (*numVecs[static_cast<size_t>(c)])[r] = numVal;
                     anyFiniteNumber[c] = true;
+                    ++validNumCount[c];
                 } else {
-                    useText[c] = true;
-                    needsTextBackfill[c] = true;
-                    numVecs[static_cast<size_t>(c)].reset();
+                    ++strayNonNumCount[c];
+                    const int maxRemainingNum = validNumCount[c] + (dataRowCount - r - 1);
+                    if (maxRemainingNum < 5
+                        || qint64(maxRemainingNum) < qint64(strayNonNumCount[c]) * 9) {
+                        useText[c] = true;
+                        needsTextBackfill[c] = true;
+                        numVecs[static_cast<size_t>(c)].reset();
+                    } else if (runInvalidStart[c] < 0) {
+                        runInvalidStart[c] = r;
+                    }
                 }
             }
             ++r;
@@ -3015,7 +3560,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (!skipRow && isBodyHashCommentRow(rowSpans))
+            if (!skipRow && isBodyHashCommentRow(rowSpans, seenStreamData))
                 ++skippedNonBlankLines;
         }
     }
@@ -3023,13 +3568,29 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     bool anyBackfill = false;
     for (int c = 0; c < maxCols; ++c) {
         if (!useText[c]) {
-            if (runInvalidStart[c] >= 0)
-                invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], dataRowCount - 1), true);
-            if (anyQuoted[c] && !anyFiniteNumber[c]) {
+            const bool enoughForNumeric = (strayNonNumCount[c] == 0)
+                    || (validNumCount[c] >= 5
+                        && qint64(validNumCount[c]) * 10
+                                >= qint64(validNumCount[c] + strayNonNumCount[c]) * 9);
+            if (!enoughForNumeric) {
                 useText[c] = true;
                 needsTextBackfill[c] = true;
                 numVecs[static_cast<size_t>(c)].reset();
+                strayNonNumCount[c] = 0;
+            } else {
+                if (runInvalidStart[c] >= 0) {
+                    invalidAttrs[c].setValue(Interval<int>(runInvalidStart[c], dataRowCount - 1),
+                                             true);
+                }
+                if (anyQuoted[c] && !anyFiniteNumber[c]) {
+                    useText[c] = true;
+                    needsTextBackfill[c] = true;
+                    numVecs[static_cast<size_t>(c)].reset();
+                    strayNonNumCount[c] = 0;
+                }
             }
+        } else {
+            strayNonNumCount[c] = 0;
         }
         if (needsTextBackfill[c]) {
             anyBackfill = true;
@@ -3041,14 +3602,17 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     if (anyBackfill) {
         int streamPos = dataStartPos;
         int r = 0;
+        bool seenBackfillData = allowAlphaAtDataStart;
         while (streamPos < len && r < dataRowCount) {
             bool skipRow = false;
             if (!readNextRecordSpans(buf, len, streamPos, normSep, whitespaceDelim, trimSpaces,
                                      simplifySpaces, rowSpans, skipRow)) {
                 break;
             }
-            if (skipRow || isBodyHashCommentRow(rowSpans))
+            if (skipRow || isBodyHashCommentRow(rowSpans, seenBackfillData))
                 continue;
+            if (!seenBackfillData && rowHasRealNumericData(rowSpans))
+                seenBackfillData = true;
             const int recCols = rowSpans.size();
             for (int c = 0; c < maxCols; ++c) {
                 if (!needsTextBackfill[c])
@@ -3088,6 +3652,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         if (effectiveFirstRowNames && !headerRow.isEmpty()) {
             const QString rawHdr = (c < headerRow.size()) ? headerRow[c].value : QString();
             AsciiTableImportFilter::splitHeaderNameAndUnits(rawHdr, shortName, longName, units);
+            if (longName.isEmpty() && !shortName.isEmpty()
+                && (!unitsRow.isEmpty() || !commentsRow.isEmpty())) {
+                longName = shortName;
+            }
         } else if (!effectiveFirstRowNames) {
             if (isXrdAsciiExt) {
                 if (c == 0) {
@@ -3144,6 +3712,11 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             col->setLongName(longName);
         if (!units.isEmpty())
             col->setUnits(units);
+        if (!commentsRow.isEmpty() && c < commentsRow.size()) {
+            const QString cm = commentsRow[c].value.trimmed();
+            if (!cm.isEmpty())
+                col->setComment(cm);
+        }
 
         cols << col;
     }
@@ -3178,8 +3751,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             ++rep.textColumns;
             continue;
         }
+        int invalidCount = 0;
         for (const Interval<int> &iv : invalidAttrs[c].intervals())
-            rep.missingCells += iv.end() - iv.start() + 1;
+            invalidCount += iv.end() - iv.start() + 1;
+        const int stray = strayNonNumCount[c];
+        rep.nonNumericCells += stray;
+        rep.missingCells += std::max(0, invalidCount - stray);
     }
 
     future::Table *result = new future::Table(0, 0, effTableName);
@@ -3545,6 +4122,8 @@ QString AsciiTableImportFilter::describeImportReport(const ImportReport &r)
     }
     if (r.skippedLines > 0)
         parts << QObject::tr("%n line(s) skipped", "", r.skippedLines);
+    if (r.nonNumericCells > 0)
+        parts << QObject::tr("%n non-numeric cell(s) marked invalid", "", r.nonNumericCells);
     if (r.missingCells > 0)
         parts << QObject::tr("%n empty cell(s)", "", r.missingCells);
     if (r.textColumns > 0)
@@ -3572,9 +4151,11 @@ future::Table *AsciiTableImportFilter::importDroppedTextData(const QByteArray &r
 AbstractAspect *AsciiTableImportFilter::importAspect(QIODevice &input)
 {
     registerImportJapaneseStrings();
-    QString filePathHint;
-    if (const QFile *qf = qobject_cast<const QFile *>(&input))
-        filePathHint = qf->fileName();
+    QString filePathHint = d_file_path_hint;
+    if (filePathHint.isEmpty()) {
+        if (const QFile *qf = qobject_cast<const QFile *>(&input))
+            filePathHint = qf->fileName();
+    }
 
     const QByteArray rawBytes = input.readAll();
     const bool trimEffective = d_trim_whitespace || d_simplify_whitespace || d_convert_to_numeric;

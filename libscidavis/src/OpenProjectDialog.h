@@ -45,9 +45,12 @@ public:
     bool setCodec(const QString &codec);
 
 private:
+    static bool isOriginProjectOrWindowFile(const QString &path);
     QComboBox *d_open_mode;
     QComboBox *d_open_codec;
     QWidget *d_advanced_options;
+    QString d_initial_codec;
+    QString d_current_file;
 
 protected slots:
     void closeEvent(QCloseEvent *);

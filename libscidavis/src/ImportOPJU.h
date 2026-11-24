@@ -8,6 +8,7 @@
 #define IMPORTOPJU_H
 
 #include <QString>
+#include <QStringList>
 
 class ApplicationWindow;
 
@@ -22,6 +23,11 @@ public:
         int matricesImported = 0;
         int graphsImported = 0;
         int notesImported = 0;
+        int datasetsSkipped = 0;
+        int graphsSkipped = 0;
+        int matricesSkipped = 0;
+        bool isCpyuaContainer = false;
+        QStringList warnings;
     };
 
     //! Import an .opju file into the given ApplicationWindow.

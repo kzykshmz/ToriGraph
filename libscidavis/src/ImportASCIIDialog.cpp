@@ -43,6 +43,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QBuffer>
 
@@ -74,6 +75,11 @@ void registerImportDialogTranslations()
         reg("Preview could not be built for this file.", "このファイルのプレビューを作成できませんでした。");
         reg("Select a file to see a preview.",
             "ファイルを選ぶと先頭の数行と自動判定の結果を表示します。");
+        reg(" (preview of first 64 KB)", " (先頭64 KBのプレビュー)");
+        reg("Scientific data files", "科学データファイル");
+        reg("Comma / Tab Separated Values", "CSV / TSV ファイル");
+        reg("Text & ASCII files", "テキスト / ASCII ファイル");
+        reg("Diffraction & Electrochemistry", "回折・電気化学データファイル");
     });
 }
 } // namespace
@@ -86,11 +92,16 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
     setWindowTitle(tr("Import Data File(s)"));
 
     QStringList filters;
-    filters << tr("All files") + " (*)";
-    filters << tr("Comma Separated Values") + " (*.CSV *.csv *.TSV *.tsv)";
-    filters << tr("Text files") + " (*.TXT *.txt)";
-    filters << tr("Data files")
-                    + " (*.DAT *.dat *.RAS *.ras *.xy *.xye *.asc *.chi *.uxd *.mpt *.dta *.tab)";
+    filters << tr("Scientific data files")
+                    + QStringLiteral(" (*.csv *.CSV *.tsv *.TSV *.txt *.TXT *.dat *.DAT *.asc *.ASC "
+                                     "*.ras *.RAS *.xy *.XY *.xye *.XYE *.uxd *.UXD *.chi *.CHI "
+                                     "*.mpt *.MPT *.dta *.DTA *.tab *.TAB)");
+    filters << tr("All files") + QStringLiteral(" (*)");
+    filters << tr("Comma / Tab Separated Values") + QStringLiteral(" (*.csv *.CSV *.tsv *.TSV)");
+    filters << tr("Text & ASCII files") + QStringLiteral(" (*.txt *.TXT *.dat *.DAT *.asc *.ASC)");
+    filters << tr("Diffraction & Electrochemistry")
+                    + QStringLiteral(" (*.ras *.RAS *.xy *.XY *.xye *.XYE *.uxd *.UXD *.chi *.CHI "
+                                     "*.mpt *.MPT *.dta *.DTA *.tab *.TAB)");
     setNameFilters(filters);
 
     setFileMode(QFileDialog::ExistingFiles);
@@ -159,6 +170,20 @@ ImportASCIIDialog::ImportASCIIDialog(bool import_mode_enabled, QWidget *parent, 
         d_preview_path = path;
         refreshPreview();
     });
+    if (QLineEdit *fnEdit = findChild<QLineEdit *>(QStringLiteral("fileNameEdit"))) {
+        connect(fnEdit, &QLineEdit::textChanged, this, [this](const QString &txt) {
+            const QString trimmed = txt.trimmed();
+            if (trimmed.isEmpty())
+                return;
+            const QString cand = QFileInfo(trimmed).isAbsolute()
+                    ? trimmed
+                    : directory().filePath(trimmed);
+            if (QFileInfo(cand).isFile() && cand != d_preview_path) {
+                d_preview_path = cand;
+                refreshPreview();
+            }
+        });
+    }
     // Any option change refreshes the preview (so it is never out of sync with the dialog)
     auto refresh = [this]() { refreshPreview(); };
     connect(d_column_separator, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -260,7 +285,9 @@ void ImportASCIIDialog::refreshPreview()
     QPlainTextEdit *preview = findChild<QPlainTextEdit *>(QStringLiteral("ImportPreview"));
     if (!summary || !preview)
         return;
-    const QString path = d_preview_path;
+    QString path = d_preview_path;
+    if (path.isEmpty() && !selectedFiles().isEmpty())
+        path = selectedFiles().first();
     QFile f(path);
     if (path.isEmpty() || !QFileInfo(path).isFile() || !f.open(QIODevice::ReadOnly)) {
         summary->setText(tr("Select a file to see a preview."));
@@ -304,6 +331,7 @@ void ImportASCIIDialog::refreshPreview()
     preview->setPlainText(text.section(QLatin1Char('\n'), 0, 7));
 
     AsciiTableImportFilter filter;
+    filter.set_file_path_hint(path);
     filter.set_ignored_lines(ignoredLines());
     filter.set_separator(columnSeparator());
     filter.set_first_row_names_columns(renameColumns());
@@ -316,10 +344,16 @@ void ImportASCIIDialog::refreshPreview()
     QBuffer buf(&head);
     buf.open(QIODevice::ReadOnly);
     std::unique_ptr<AbstractAspect> probe(filter.importAspect(buf));
-    summary->setText(probe ? tr("Detected: %1")
-                                     .arg(AsciiTableImportFilter::describeImportReport(
-                                             AsciiTableImportFilter::lastImportReport()))
-                           : tr("Preview could not be built for this file."));
+    if (probe) {
+        QString msg = tr("Detected: %1")
+                              .arg(AsciiTableImportFilter::describeImportReport(
+                                      AsciiTableImportFilter::lastImportReport()));
+        if (truncated)
+            msg += tr(" (preview of first 64 KB)");
+        summary->setText(msg);
+    } else {
+        summary->setText(tr("Preview could not be built for this file."));
+    }
 }
 void ImportASCIIDialog::initAdvancedOptions()
 {

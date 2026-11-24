@@ -35,12 +35,23 @@ struct Cell
     bool hasTimePart = false;
 };
 
+struct MergeRange
+{
+    int top = 0;
+    int left = 0;
+    int bottom = 0;
+    int right = 0;
+};
+
 struct Sheet
 {
     QString name;
     QString state; //!< "" (visible), "hidden" or "veryHidden"
     QVector<QVector<Cell>> rows; //!< rows[r][c], A1 = rows[0][0]
+    QVector<MergeRange> mergedCells; //!< parsed <mergeCells> ranges (0-based)
     int columnCount = 0;
+    int uncachedFormulas = 0; //!< formula cells (<f>) without a cached <v>/<is> value
+    int trimmedStrayCells = 0; //!< distant isolated outlier cells trimmed to prevent OOM
 };
 
 struct Workbook
@@ -66,10 +77,13 @@ struct SheetLayout
 {
     bool headerRow = false; //!< first used row became column names (Long Name)
     bool unitsRow = false; //!< second used row became Units
+    bool commentsRow = false; //!< third header row became Comments (Origin 3-row layout)
     int dataRows = 0;
     int numericColumns = 0;
     int textColumns = 0;
     int dateColumns = 0;
+    int nonNumericCells = 0; //!< stray non-numeric cells marked invalid in >=90% numeric columns
+    int trimmedStrayCells = 0; //!< distant isolated outlier cells omitted before dense allocation
 };
 
 //! Converts a worksheet to table columns (caller owns them). Leading empty rows/columns and
@@ -83,6 +97,10 @@ struct ImportResult
 {
     QStringList tables; //!< names of the created tables
     QStringList emptySheets; //!< sheets without any cell value (not imported)
+    QStringList hiddenSheetsSkipped; //!< hidden/veryHidden sheets omitted when visible sheets exist
+    int uncachedFormulas = 0; //!< formula cells lacking cached values across imported sheets
+    int nonNumericCells = 0; //!< stray non-numeric cells marked invalid across numeric columns
+    int trimmedStrayCells = 0; //!< distant isolated outlier cells omitted before dense allocation
     QString summary; //!< one-line translated summary for the status bar
     QString workbook; //!< workbook holding the sheets (empty: separate worksheets)
 };
@@ -93,7 +111,7 @@ struct ImportResult
 //! workbook named after the file (D8); otherwise they stay separate worksheets.
 bool importIntoProject(ApplicationWindow *app, const QString &path, const QString &sheet,
                        QString *outError, ImportResult *outResult = nullptr,
-                       bool asWorkbook = true);
+                       bool asWorkbook = true, bool includeHidden = false);
 
 //! Saved choice of the import dialog: put the sheets of a file into one workbook (default true).
 bool importAsWorkbookSetting();

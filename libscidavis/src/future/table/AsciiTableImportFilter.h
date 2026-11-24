@@ -86,6 +86,7 @@ public:
         int dataRows = 0;
         int columns = 0;
         int missingCells = 0; //!< empty / missing cells in numeric columns
+        int nonNumericCells = 0; //!< stray non-numeric cells marked invalid in >=90% numeric columns
         int textColumns = 0; //!< columns that had to be imported as text
         int rasBlocks = 0; //!< number of *RAS_INT_START blocks (Rigaku .ras)
         int invalidChars = 0; //!< characters that could not be decoded with the chosen encoding
@@ -162,6 +163,8 @@ public:
 
     ACCESSOR(QString, encoding);
     ACCESSOR(int, units_row);
+    ACCESSOR(QString, file_path_hint);
+    Q_PROPERTY(QString file_path_hint READ file_path_hint WRITE set_file_path_hint)
 
     ACCESSOR(QLocale, numeric_locale);
     Q_PROPERTY(QLocale numeric_locale READ numeric_locale WRITE set_numeric_locale)
@@ -176,6 +179,7 @@ private:
     QLocale d_numeric_locale;
     QString d_encoding;
     int d_units_row;
+    QString d_file_path_hint;
 };
 
 #endif // ifndef ASCII_TABLE_IMPORT_FILTER_H

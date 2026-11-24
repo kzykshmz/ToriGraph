@@ -11,6 +11,7 @@
 #include "Folder.h"
 #include "Graph.h"
 #include "Grid.h"
+#include "I18nJapanese.h"
 #include "Matrix.h"
 #include "MultiLayer.h"
 #include "Note.h"
@@ -29,13 +30,16 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QLocale>
+#include <QMessageBox>
 #include <QPen>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStatusBar>
 #include <QString>
 #include <QStringList>
 #include <QTextCodec>
@@ -47,8 +51,27 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
 
 namespace {
+
+void registerOpjuTranslations()
+{
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        auto reg = [](const char *en, const char *ja) {
+            ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
+                                                                      QString::fromUtf8(ja));
+        };
+        reg("Origin .opju Import", "Origin .opju の読み込み");
+        reg("%1 graph window(s) were skipped (unsupported binary CPYUA/graph layout)",
+            "%1 件のグラフウィンドウは形式上の制約によりスキップされました");
+        reg("%1 matrix window(s) were skipped",
+            "%1 件の行列ウィンドウはスキップされました");
+        reg("%1 dataset(s) could not be decoded and were skipped",
+            "%1 件のデータセットはデコードできずスキップされました");
+    });
+}
 
 using torizip::inflateBuffer;
 using torizip::kMaxArchiveBytes;
@@ -349,6 +372,7 @@ struct OpjuCurve
     double lineWidth = 1.5;
     int lineStyle = 0; // 0=Solid, 1=Dash, 2=Dot, 3=DashDot, 4=DashDotDot
     int connectType = QwtPlotCurve::Lines;
+    bool hasExplicitConnect = false;
     int symbolShape = 0; // SciDAVis SymbolBox index (0=NoSymbol, 1=Ellipse, 2=Rect, ...)
     double symbolSize = 7.0;
     QColor symbolColor;
@@ -414,6 +438,10 @@ struct OpjuProject
     QVector<OpjuMatrix> matrices;
     QVector<OpjuNote> notes;
     QVector<OpjuGraph> graphs;
+    int skippedDatasets = 0;
+    int skippedGraphs = 0;
+    int skippedMatrices = 0;
+    bool isCpyuaContainer = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -694,7 +722,12 @@ void splitDatasetSpec(const QString &spec, QString &outTable, QString &outSheet,
         return;
     }
 
-    // Table_Col (only split if outTable is currently empty and there is an underscore)
+    // Table_Col (strip known table prefix or split on '_' when table is not yet set)
+    if (!outTable.isEmpty() && s.size() > outTable.size() + 1
+        && s.startsWith(outTable + QLatin1Char('_'), Qt::CaseInsensitive)) {
+        outCol = s.mid(outTable.size() + 1);
+        return;
+    }
     if (outTable.isEmpty() && s.contains(QLatin1Char('_'))) {
         const int idx = s.lastIndexOf(QLatin1Char('_'));
         if (idx > 0 && idx + 1 < s.size()) {
@@ -1419,6 +1452,11 @@ private:
                 attrCI(attrs, { "designation", "plotDesignation", "type", "role" }), colIndex);
         col.dataType = parseDataType(
                 attrCI(attrs, { "dataType", "valueType", "binaryType", "storageType", "format" }));
+        if (col.dataType == OpjuDataType::Auto) {
+            const OpjuDataType typeAttrAsData = parseDataType(attrCI(attrs, { "type" }));
+            if (typeAttrAsData != OpjuDataType::Auto)
+                col.dataType = typeAttrAsData;
+        }
         col.dataRef = attrCI(attrs, { "dataFile", "dataRef", "stream", "src", "file", "binary" })
                               .trimmed();
         col.encoding = attrCI(attrs, { "encoding", "charset" }).trimmed();
@@ -1960,7 +1998,7 @@ private:
         cv.lineColor = parseColor(attrCI(attrs, { "lineColor", "color" }));
         const QString lwStr = attrCI(attrs, { "lineWidth", "width" });
         if (!lwStr.isEmpty())
-            cv.lineWidth = std::max(0.5, lwStr.toDouble());
+            cv.lineWidth = std::max(0.1, lwStr.toDouble());
         cv.lineStyle = parseLineStyle(attrCI(attrs, { "lineStyle", "dash" }));
 
         const QString symStr = attrCI(attrs, { "symbol", "symbolShape", "marker" });
@@ -1981,15 +2019,25 @@ private:
         cv.legendText = attrCI(attrs, { "legend", "title", "label" }).trimmed();
 
         const QString connStr = attrCI(attrs, { "connect", "lineConnect" }).trimmed().toLower();
-        if (connStr == QLatin1String("none") || connStr == QLatin1String("noline"))
+        if (!connStr.isEmpty()) {
+            cv.hasExplicitConnect = true;
+            if (connStr == QLatin1String("none") || connStr == QLatin1String("noline"))
+                cv.connectType = QwtPlotCurve::NoCurve;
+            else if (connStr == QLatin1String("line") || connStr == QLatin1String("lines")
+                     || connStr == QLatin1String("straight"))
+                cv.connectType = QwtPlotCurve::Lines;
+            else if (connStr == QLatin1String("spline") || connStr == QLatin1String("bspline")
+                     || connStr == QLatin1String("bezier"))
+                cv.connectType = 5;
+            else if (connStr == QLatin1String("steph") || connStr == QLatin1String("steps"))
+                cv.connectType = QwtPlotCurve::Steps;
+            else if (connStr == QLatin1String("stepv"))
+                cv.connectType = 6;
+            else
+                cv.hasExplicitConnect = false;
+        }
+        if (!cv.hasExplicitConnect && cv.plotStyle == Graph::Scatter)
             cv.connectType = QwtPlotCurve::NoCurve;
-        else if (connStr == QLatin1String("spline") || connStr == QLatin1String("bspline")
-                 || connStr == QLatin1String("bezier"))
-            cv.connectType = 5;
-        else if (connStr == QLatin1String("steph") || connStr == QLatin1String("steps"))
-            cv.connectType = QwtPlotCurve::Steps;
-        else if (connStr == QLatin1String("stepv"))
-            cv.connectType = 6;
 
         while (!xr.atEnd()) {
             const auto tok = xr.readNext();
@@ -2005,7 +2053,7 @@ private:
                     cv.lineColor = lc;
                 const QString lw = attrCI(cattrs, { "width" });
                 if (!lw.isEmpty())
-                    cv.lineWidth = std::max(0.5, lw.toDouble());
+                    cv.lineWidth = std::max(0.1, lw.toDouble());
                 const QString ls = attrCI(cattrs, { "style" });
                 if (!ls.isEmpty())
                     cv.lineStyle = parseLineStyle(ls);
@@ -2396,6 +2444,11 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
     if (!mw)
         return false;
 
+    stats.datasetsSkipped += proj.skippedDatasets;
+    stats.graphsSkipped += proj.skippedGraphs;
+    stats.matricesSkipped += proj.skippedMatrices;
+    stats.isCpyuaContainer = stats.isCpyuaContainer || proj.isCpyuaContainer;
+
     int xoffset = 0;
     QHash<QString, Table *> tableMap;
     QVector<QPair<MyWidget *, QString>> windowFolderAssignments;
@@ -2444,16 +2497,15 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
 
             table->setColPlotDesignation(j, src.designation);
 
-            const bool useText = (src.dataType == OpjuDataType::Text)
-                    || (src.hasText && !src.hasNumeric);
-            if (useText) {
-                col->setColumnMode(SciDAVis::ColumnMode::Text);
-                const int nRows = std::min(src.textValues.size(), maxRows);
-                for (int r = 0; r < nRows; ++r) {
-                    if (!src.textValues[r].isEmpty())
-                        col->setTextAt(r, src.textValues[r]);
-                }
-            } else {
+            const bool isDateLike = (src.dataType == OpjuDataType::Date
+                                     || src.dataType == OpjuDataType::Time
+                                     || src.dataType == OpjuDataType::DateTime);
+            const QString dateFmt = (src.dataType == OpjuDataType::Date)
+                    ? QStringLiteral("yyyy-MM-dd")
+                    : ((src.dataType == OpjuDataType::Time) ? QStringLiteral("hh:mm:ss")
+                                                            : QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+            bool populatedDate = false;
+            if (isDateLike && src.hasNumeric && !src.numericValues.isEmpty()) {
                 col->setColumnMode(SciDAVis::ColumnMode::Numeric);
                 const int nRows = std::min(src.numericValues.size(), maxRows);
                 for (int r = 0; r < nRows; ++r) {
@@ -2461,11 +2513,79 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
                     if (!isOriginMissingDouble(v))
                         col->setValueAt(r, v);
                 }
-                if (src.decimalPlaces >= 0 || src.numericFormat != 0) {
-                    if (auto *flt = dynamic_cast<Double2StringFilter *>(col->outputFilter())) {
-                        flt->setNumericFormat(src.numericFormat);
-                        if (src.decimalPlaces >= 0)
-                            flt->setNumDigits(src.decimalPlaces);
+                col->setColumnMode(SciDAVis::ColumnMode::DateTime);
+                if (auto *dt2s = qobject_cast<DateTime2StringFilter *>(col->outputFilter()))
+                    dt2s->setFormat(dateFmt);
+                populatedDate = true;
+            } else if (isDateLike && src.hasText && !src.textValues.isEmpty()) {
+                const int nRows = std::min(src.textValues.size(), maxRows);
+                QVector<QDateTime> parsedDates(nRows);
+                bool anyValidDate = false;
+                for (int r = 0; r < nRows; ++r) {
+                    const QString txt = src.textValues[r].trimmed();
+                    if (txt.isEmpty())
+                        continue;
+                    QDateTime dt = QDateTime::fromString(txt, Qt::ISODateWithMs);
+                    if (!dt.isValid())
+                        dt = QDateTime::fromString(txt, Qt::ISODate);
+                    if (!dt.isValid() && src.dataType == OpjuDataType::Time) {
+                        QTime tm = QTime::fromString(txt, QStringLiteral("hh:mm:ss.zzz"));
+                        if (!tm.isValid())
+                            tm = QTime::fromString(txt, QStringLiteral("hh:mm:ss"));
+                        if (!tm.isValid())
+                            tm = QTime::fromString(txt, QStringLiteral("hh:mm"));
+                        if (tm.isValid())
+                            dt = QDateTime(QDate(1970, 1, 1), tm);
+                    }
+                    if (!dt.isValid()) {
+                        dt = QDateTime::fromString(txt, QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+                        if (!dt.isValid()) {
+                            const QDate d = QDate::fromString(txt, QStringLiteral("yyyy/MM/dd"));
+                            if (d.isValid())
+                                dt = QDateTime(d, QTime(0, 0));
+                        }
+                    }
+                    if (dt.isValid()) {
+                        parsedDates[r] = dt;
+                        anyValidDate = true;
+                    }
+                }
+                if (anyValidDate) {
+                    col->setColumnMode(SciDAVis::ColumnMode::DateTime);
+                    if (auto *dt2s = qobject_cast<DateTime2StringFilter *>(col->outputFilter()))
+                        dt2s->setFormat(dateFmt);
+                    for (int r = 0; r < nRows; ++r) {
+                        if (parsedDates[r].isValid())
+                            col->setDateTimeAt(r, parsedDates[r]);
+                    }
+                    populatedDate = true;
+                }
+            }
+
+            if (!populatedDate) {
+                const bool useText =
+                        (src.dataType == OpjuDataType::Text) || (src.hasText && !src.hasNumeric);
+                if (useText) {
+                    col->setColumnMode(SciDAVis::ColumnMode::Text);
+                    const int nRows = std::min(src.textValues.size(), maxRows);
+                    for (int r = 0; r < nRows; ++r) {
+                        if (!src.textValues[r].isEmpty())
+                            col->setTextAt(r, src.textValues[r]);
+                    }
+                } else {
+                    col->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                    const int nRows = std::min(src.numericValues.size(), maxRows);
+                    for (int r = 0; r < nRows; ++r) {
+                        const double v = src.numericValues[r];
+                        if (!isOriginMissingDouble(v))
+                            col->setValueAt(r, v);
+                    }
+                    if (src.decimalPlaces >= 0 || src.numericFormat != 0) {
+                        if (auto *flt = dynamic_cast<Double2StringFilter *>(col->outputFilter())) {
+                            flt->setNumericFormat(src.numericFormat);
+                            if (src.decimalPlaces >= 0)
+                                flt->setNumDigits(src.decimalPlaces);
+                        }
                     }
                 }
             }
@@ -2496,11 +2616,15 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
     // 2. Import Matrices
     int matVisCount = 0;
     for (const OpjuMatrix &m : proj.matrices) {
-        if (m.rows <= 0 || m.cols <= 0)
+        if (m.rows <= 0 || m.cols <= 0) {
+            ++stats.matricesSkipped;
             continue;
+        }
         Matrix *mat = mw->newMatrix(m.name, m.rows, m.cols);
-        if (!mat)
+        if (!mat) {
+            ++stats.matricesSkipped;
             continue;
+        }
         if (!m.label.isEmpty())
             mat->setWindowLabel(m.label);
         if (!m.formula.isEmpty())
@@ -2554,12 +2678,16 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
     int graphVisCount = 0;
     for (const OpjuGraph &g : proj.graphs) {
         MultiLayer *ml = mw->multilayerPlot(g.name);
-        if (!ml)
+        if (!ml) {
+            ++stats.graphsSkipped;
             continue;
+        }
         ml->hide();
         if (!g.label.isEmpty())
             ml->setWindowLabel(g.label);
 
+        int requestedCurves = 0;
+        int addedCurves = 0;
         for (const OpjuLayer &layer : g.layers) {
             Graph *graph = ml->addLayer();
             if (!graph)
@@ -2570,6 +2698,7 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
             Column *firstYCol = nullptr;
 
             for (const OpjuCurve &cv : layer.curves) {
+                ++requestedCurves;
                 Table *table = resolveTable(mw, tableMap, cv.tableName, cv.sheetName);
                 if (!table)
                     continue;
@@ -2611,6 +2740,7 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
 
                 if (graph->curves() <= prevCurves)
                     continue;
+                ++addedCurves;
                 const int curveIdx = graph->curves() - 1;
                 if (cv.plotStyle == Graph::ErrorBars)
                     continue;
@@ -2620,7 +2750,7 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
                         autoColor++ % static_cast<int>(ColorButton::colors_count));
                 cl.lCol = cv.lineColor.isValid() ? ColorButton::colorIndex(cv.lineColor)
                                                  : fallbackIdx;
-                cl.lWidth = std::max(1, static_cast<int>(std::lround(cv.lineWidth)));
+                cl.lWidth = std::max(0.1, cv.lineWidth);
                 cl.lStyle = cv.lineStyle;
                 cl.sType = cv.symbolShape;
                 cl.sSize = std::max(2, static_cast<int>(std::lround(cv.symbolSize)));
@@ -2643,16 +2773,16 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
                 }
 
                 graph->updateCurveLayout(curveIdx, &cl);
-                graph->setCurveStyle(curveIdx, cv.connectType);
+                if (cv.hasExplicitConnect || cv.plotStyle != Graph::Scatter)
+                    graph->setCurveStyle(curveIdx, cv.connectType);
 
-                // Preserve exact 24-bit RGB colors when not in the 24-color palette
+                // Preserve exact 24-bit RGB colors and fractional line widths on the curve pen
                 if (QwtPlotCurve *qwtCurve = graph->curve(curveIdx)) {
-                    if (cv.lineColor.isValid()) {
-                        QPen pen = qwtCurve->pen();
+                    QPen pen = qwtCurve->pen();
+                    if (cv.lineColor.isValid())
                         pen.setColor(cv.lineColor);
-                        pen.setWidthF(cv.lineWidth);
-                        qwtCurve->setPen(pen);
-                    }
+                    pen.setWidthF(cl.lWidth);
+                    qwtCurve->setPen(pen);
                     if (cv.symbolShape > 0
                         && (cv.symbolColor.isValid() || cv.symbolFillColor.isValid())) {
                         QwtSymbol sym = qwtCurve->symbol();
@@ -2755,6 +2885,8 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
         }
         if (!g.folderPath.isEmpty())
             windowFolderAssignments.append(qMakePair(static_cast<MyWidget *>(ml), g.folderPath));
+        if (requestedCurves > 0 && addedCurves == 0)
+            ++stats.graphsSkipped;
         ++stats.graphsImported;
     }
 
@@ -3122,6 +3254,7 @@ QString cpyuaCodecHint(int codePage)
 bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *outErr,
                           int codePage = 0)
 {
+    proj.isCpyuaContainer = true;
     const QString textHint = cpyuaCodecHint(codePage);
     if (data.size() < 64 || !data.startsWith("CPYU")) {
         if (outErr)
@@ -3375,17 +3508,75 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         idToIndex.insert(datasets[i].oneBasedId, i);
 
     const qint64 metaStart = pos;
+    QSet<QString> seenCpyuaGraphNames;
+    QSet<QString> seenCpyuaMatrixNames;
     for (qint64 p = metaStart; p + 4 < data.size(); ++p) {
         if (static_cast<unsigned char>(data[static_cast<int>(p)]) != 0x80U)
             continue;
         const int ln = static_cast<unsigned char>(data[static_cast<int>(p + 1)]);
-        if (ln < 16 || ln > 200 || p + 2 + ln > data.size())
+        if (ln < 16 || ln > 240 || p + 2 + ln > data.size())
             continue;
-        // Quick filter: first literal byte inside zero-RLE column header is 0x01 0x10
+
+        // Check non-column window header blocks (~538B Workbook, ~729B Graph, Matrix) so CPYUA
+        // imports report skipped graph/matrix windows instead of silently dropping them.
         if (static_cast<unsigned char>(data[static_cast<int>(p + 2)]) != 0x01U
             || static_cast<unsigned char>(data[static_cast<int>(p + 3)]) != 0x10U) {
+            if (ln >= 64) {
+                QByteArray winDec;
+                if (decodeCpyuaZeroRle(data, p + 2, ln, winDec) && winDec.size() >= 500
+                    && winDec.size() <= 920 && winDec[0] == '\0' && winDec[1] == '\0'
+                    && static_cast<unsigned char>(winDec[2]) >= 0x20U && winDec.size() > 60
+                    && winDec[56] == '\0') {
+                    int nameEnd = 2;
+                    bool nameCtrlClean = true;
+                    while (nameEnd < std::min(winDec.size(), 56) && winDec[nameEnd] != '\0') {
+                        const unsigned char ch = static_cast<unsigned char>(winDec[nameEnd]);
+                        if (ch < 0x20U || ch == 0x7FU) {
+                            nameCtrlClean = false;
+                            break;
+                        }
+                        ++nameEnd;
+                    }
+                    int tplEnd = 57;
+                    bool tplAscii = true;
+                    while (tplEnd < std::min(winDec.size(), 96) && winDec[tplEnd] != '\0') {
+                        const unsigned char ch = static_cast<unsigned char>(winDec[tplEnd]);
+                        if (ch < 0x20U || ch >= 0x7FU) {
+                            tplAscii = false;
+                            break;
+                        }
+                        ++tplEnd;
+                    }
+                    if (nameCtrlClean && nameEnd > 2 && nameEnd < 56 && tplAscii
+                        && tplEnd > 57 && tplEnd < 96) {
+                        const QString winName =
+                                decodeTextBytes(winDec.mid(2, nameEnd - 2), textHint).trimmed();
+                        const QString tplName =
+                                QString::fromLatin1(winDec.constData() + 57, tplEnd - 57).trimmed();
+                        const QByteArray tailSlice = data.mid(
+                                static_cast<int>(p + 2 + ln),
+                                static_cast<int>(std::min<qint64>(1024, data.size() - (p + 2 + ln))));
+                        if (!winName.isEmpty()
+                            && (tplName.contains(QLatin1String("MATRIX"), Qt::CaseInsensitive)
+                                || tplName.compare(QLatin1String("ORIGINM"), Qt::CaseInsensitive)
+                                        == 0)) {
+                            seenCpyuaMatrixNames.insert(winName.toLower());
+                        } else if (!winName.isEmpty()
+                                   && tplName.compare(QLatin1String("ORIGIN"), Qt::CaseInsensitive)
+                                           != 0
+                                   && (winDec.size() >= 640
+                                       || tailSlice.contains("AxesDlgSettings")
+                                       || tailSlice.contains("Page>"))) {
+                            seenCpyuaGraphNames.insert(winName.toLower());
+                        }
+                    }
+                }
+            }
             continue;
         }
+
+        if (ln > 200)
+            continue;
 
         QByteArray colDec;
         if (!decodeCpyuaZeroRle(data, p + 2, ln, colDec))
@@ -3462,12 +3653,16 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             }
         }
     }
+    proj.skippedGraphs += seenCpyuaGraphNames.size();
+    proj.skippedMatrices += seenCpyuaMatrixNames.size();
 
     // 3. Group datasets into Worksheets preserving appearance order
     QHash<QString, int> wsIdxByName;
     for (const RawCpyuaDataset &ds : datasets) {
-        if (ds.skipped)
+        if (ds.skipped) {
+            ++proj.skippedDatasets;
             continue;
+        }
         const QString key = ds.tableName.toLower();
         int wsIdx = wsIdxByName.value(key, -1);
         if (wsIdx < 0) {
@@ -3567,6 +3762,7 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
 bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QString *outError,
                             ImportStats *outStats, int codePage)
 {
+    registerOpjuTranslations();
     if (!app) {
         if (outError)
             *outError = QStringLiteral("ApplicationWindow is null.");
@@ -3628,7 +3824,29 @@ bool ImportOPJU::importFile(ApplicationWindow *app, const QString &fileName, QSt
 
     ImportStats stats;
     const bool ok = materializeProject(app, project, stats);
-    app->setStatusBarText(QString());
+    if (stats.graphsSkipped > 0)
+        stats.warnings << QObject::tr(
+                                  "%1 graph window(s) were skipped (unsupported binary "
+                                  "CPYUA/graph layout)")
+                                  .arg(stats.graphsSkipped);
+    if (stats.matricesSkipped > 0)
+        stats.warnings << QObject::tr("%1 matrix window(s) were skipped").arg(stats.matricesSkipped);
+    if (stats.datasetsSkipped > 0)
+        stats.warnings << QObject::tr("%1 dataset(s) could not be decoded and were skipped")
+                                  .arg(stats.datasetsSkipped);
+
+    const QString joinedWarn = stats.warnings.join(QLatin1Char('\n'));
+    app->setProperty("torigraph_last_opju_warnings", joinedWarn);
+    if (ok && !stats.warnings.isEmpty()) {
+        app->showResults(QStringLiteral("[.opju] %1\n%2\n")
+                                 .arg(QFileInfo(fileName).fileName(), joinedWarn),
+                         app->logWindow.isVisible());
+        app->setStatusBarText(stats.warnings.join(QStringLiteral("; ")));
+        if (!ApplicationWindow::isNonInteractiveContext(app))
+            QMessageBox::information(app, QObject::tr("Origin .opju Import"), joinedWarn);
+    } else {
+        app->setStatusBarText(QString());
+    }
     if (outStats)
         *outStats = stats;
     if (!ok && outError && outError->isEmpty())
