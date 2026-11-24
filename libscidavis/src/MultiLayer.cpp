@@ -3327,23 +3327,55 @@ bool MultiLayer::eventFilter(QObject *object, QEvent *e)
                        && object->objectName() == QLatin1String("qt_scrollarea_viewport")))) {
         repositionCanvasStatusPill();
         if (object && object->objectName() == QLatin1String("qt_scrollarea_viewport")) {
-            ApplicationWindow *app = findMultiLayerApp(this);
-            const bool splitMode = app && app->modernRibbonBar()
-                    && app->modernRibbonBar()->workspaceLayoutMode()
-                            == ModernRibbonBar::LayoutSplitTableGraph;
-            if (splitMode && !d_was_tiled_split) {
+            auto isConstrainedPane = [this]() -> bool {
+                ApplicationWindow *app = findMultiLayerApp(this);
+                const bool splitMode = app && app->modernRibbonBar()
+                        && app->modernRibbonBar()->workspaceLayoutMode()
+                                == ModernRibbonBar::LayoutSplitTableGraph;
+                QMdiArea *mdi = mdiArea();
+                const bool tabbedMode = (mdi && mdi->viewMode() == QMdiArea::TabbedView);
+                return splitMode || tabbedMode || isMaximized();
+            };
+            if (isConstrainedPane()) {
+                QWidget *vp = qobject_cast<QWidget *>(object);
+                const bool sizeChanged = vp
+                        && (!d_last_autofit_vp_size.isValid()
+                            || qAbs(vp->width() - d_last_autofit_vp_size.width()) > 24
+                            || qAbs(vp->height() - d_last_autofit_vp_size.height()) > 24);
+                const bool shouldSchedule = (!d_was_tiled_split || sizeChanged)
+                        && !d_user_zoomed && (d_page_unit != UnitPx || d_page_view_mode)
+                        && !d_is_restoring_snapshot;
                 d_was_tiled_split = true;
-                if (!d_user_zoomed && (d_page_unit != UnitPx || d_page_view_mode)) {
-                    QPointer<MultiLayer> safeMl(this);
-                    QTimer::singleShot(0, this, [safeMl]() {
-                        if (safeMl && !safeMl->d_user_zoomed
-                            && (safeMl->d_page_unit != UnitPx || safeMl->d_page_view_mode)) {
-                            safeMl->autoFitPageZoomToViewport();
-                        }
-                    });
+                if (shouldSchedule) {
+                    if (!d_viewport_autofit_timer) {
+                        d_viewport_autofit_timer = new QTimer(this);
+                        d_viewport_autofit_timer->setSingleShot(true);
+                        connect(d_viewport_autofit_timer, &QTimer::timeout, this,
+                                [this, isConstrainedPane]() {
+                                    if (!isConstrainedPane() || d_user_zoomed
+                                        || (d_page_unit == UnitPx && !d_page_view_mode)
+                                        || d_is_restoring_snapshot) {
+                                        return;
+                                    }
+                                    QScrollArea *cs = widget()
+                                            ? widget()->findChild<QScrollArea *>(
+                                                      QStringLiteral("MultiLayerCanvasScroll"))
+                                            : nullptr;
+                                    QWidget *vpNow = cs ? cs->viewport() : nullptr;
+                                    const double target = autoFitTargetZoom();
+                                    if (qAbs(target - d_page_zoom) > 0.015)
+                                        autoFitPageZoomToViewport();
+                                    if (vpNow && vpNow->width() >= 60 && vpNow->height() >= 60)
+                                        d_last_autofit_vp_size = vpNow->size();
+                                });
+                    }
+                    d_viewport_autofit_timer->start(20);
                 }
-            } else if (!splitMode) {
+            } else {
                 d_was_tiled_split = false;
+                d_last_autofit_vp_size = QSize();
+                if (d_viewport_autofit_timer)
+                    d_viewport_autofit_timer->stop();
             }
         }
     }
@@ -4586,10 +4618,8 @@ double MultiLayer::fitPageZoomFactor() const
     return 1.0;
 }
 
-void MultiLayer::autoFitPageZoomToViewport()
+double MultiLayer::autoFitTargetZoom() const
 {
-    if (d_user_zoomed || (d_page_unit == UnitPx && !d_page_view_mode))
-        return;
     double desiredUpper = 1.0;
     if (d_page_unit != UnitPx) {
         double wMm = d_page_width_val;
@@ -4603,7 +4633,14 @@ void MultiLayer::autoFitPageZoomToViewport()
         }
         desiredUpper = (wMm <= 110.5 && hMm <= 110.5) ? 1.6 : 1.0;
     }
-    const double target = qBound(0.35, std::min(desiredUpper, fitPageZoomFactor()), 1.6);
+    return qBound(0.35, std::min(desiredUpper, fitPageZoomFactor()), 1.6);
+}
+
+void MultiLayer::autoFitPageZoomToViewport()
+{
+    if (d_user_zoomed || (d_page_unit == UnitPx && !d_page_view_mode))
+        return;
+    const double target = autoFitTargetZoom();
     ApplicationWindow *app = findMultiLayerApp(this);
     const bool splitMode = app && app->modernRibbonBar()
             && app->modernRibbonBar()->workspaceLayoutMode()
@@ -11306,7 +11343,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
                      static_cast<int>(Graph::FrameOpenL));
     cbFrame->addItem(QObject::tr("Zero-Crossed Axes"),
                      static_cast<int>(Graph::FrameZeroCrossed));
-    form->addRow(QObject::tr("Frame & Ticks:"), cbFrame);
+    form->addRow(QObject::tr("Frame && Ticks:"), cbFrame);
 
     QHBoxLayout *tickRow = new QHBoxLayout();
     QSpinBox *sbAxisLw = new QSpinBox(editorPane);

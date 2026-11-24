@@ -72,6 +72,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QResizeEvent>
+#include <QScopedValueRollback>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -2492,22 +2493,19 @@ void hideBackgroundMdiWindowsForFocus(ApplicationWindow *app)
     s_busy = false;
 }
 
-void restoreBackgroundMdiWindowsAfterFocus(ApplicationWindow *app)
+void restoreMdiWindowsWithFlag(ApplicationWindow *app, const char *flagProp, bool &busyFlag)
 {
-    if (!app)
+    if (!app || busyFlag)
         return;
-    static bool s_busy = false;
-    if (s_busy)
-        return;
-    s_busy = true;
+    QScopedValueRollback<bool> busyGuard(busyFlag, true);
 
-    QMdiSubWindow *keepActive = app->d_workspace.activeSubWindow();
+    QPointer<QMdiSubWindow> keepActive = app->d_workspace.activeSubWindow();
     const QList<QMdiSubWindow *> subs = app->d_workspace.subWindowList(QMdiArea::CreationOrder);
     for (QMdiSubWindow *sw : subs) {
         MyWidget *mw = qobject_cast<MyWidget *>(sw);
-        if (!mw || !mw->property("_tg_hidden_for_focus_mdi").toBool())
+        if (!mw || !mw->property(flagProp).toBool())
             continue;
-        mw->setProperty("_tg_hidden_for_focus_mdi", QVariant());
+        mw->setProperty(flagProp, QVariant());
         if (mw->status() == MyWidget::Hidden || app->hiddenWindows.contains(mw)
             || app->outWindows.contains(mw)) {
             continue;
@@ -2516,58 +2514,37 @@ void restoreBackgroundMdiWindowsAfterFocus(ApplicationWindow *app)
             if (!cur->windowsList().contains(mw))
                 continue;
         }
+        const bool suppressActivate =
+                (keepActive && mw != keepActive.data()
+                 && !mw->testAttribute(Qt::WA_ShowWithoutActivating));
+        if (suppressActivate)
+            mw->setAttribute(Qt::WA_ShowWithoutActivating, true);
         if (mw->status() == MyWidget::Minimized)
             mw->showMinimized();
         else if (mw->status() == MyWidget::Maximized)
             mw->showMaximized();
         else
             mw->show();
+        if (suppressActivate)
+            mw->setAttribute(Qt::WA_ShowWithoutActivating, false);
     }
     if (keepActive && !keepActive->isHidden()) {
-        app->d_workspace.setActiveSubWindow(keepActive);
+        if (app->d_workspace.activeSubWindow() != keepActive.data())
+            app->d_workspace.setActiveSubWindow(keepActive.data());
         keepActive->raise();
     }
+}
 
-    s_busy = false;
+void restoreBackgroundMdiWindowsAfterFocus(ApplicationWindow *app)
+{
+    static bool s_busy = false;
+    restoreMdiWindowsWithFlag(app, "_tg_hidden_for_focus_mdi", s_busy);
 }
 
 void restoreSplitTablesHiddenForDrawer(ApplicationWindow *app)
 {
-    if (!app)
-        return;
     static bool s_busy = false;
-    if (s_busy)
-        return;
-    s_busy = true;
-
-    QMdiSubWindow *keepActive = app->d_workspace.activeSubWindow();
-    const QList<QMdiSubWindow *> subs = app->d_workspace.subWindowList(QMdiArea::CreationOrder);
-    for (QMdiSubWindow *sw : subs) {
-        MyWidget *mw = qobject_cast<MyWidget *>(sw);
-        if (!mw || !mw->property("_tg_hidden_for_focus_drawer").toBool())
-            continue;
-        mw->setProperty("_tg_hidden_for_focus_drawer", QVariant());
-        if (mw->status() == MyWidget::Hidden || app->hiddenWindows.contains(mw)
-            || app->outWindows.contains(mw)) {
-            continue;
-        }
-        if (Folder *cur = app->currentFolder()) {
-            if (!cur->windowsList().contains(mw))
-                continue;
-        }
-        if (mw->status() == MyWidget::Minimized)
-            mw->showMinimized();
-        else if (mw->status() == MyWidget::Maximized)
-            mw->showMaximized();
-        else
-            mw->show();
-    }
-    if (keepActive && !keepActive->isHidden()) {
-        app->d_workspace.setActiveSubWindow(keepActive);
-        keepActive->raise();
-    }
-
-    s_busy = false;
+    restoreMdiWindowsWithFlag(app, "_tg_hidden_for_focus_drawer", s_busy);
 }
 } // namespace
 
@@ -7583,6 +7560,10 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
 
     d_focus_hud_mode = enabled;
 
+    QPointer<QMdiSubWindow> keepActive;
+    if (!enabled && d_app)
+        keepActive = d_app->d_workspace.activeSubWindow();
+
     if (enabled) {
         d_saved_focus_visibility.clear();
 
@@ -7658,8 +7639,15 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
     }
 
     if (!enabled && d_app) {
+        if (!keepActive)
+            keepActive = d_app->d_workspace.activeSubWindow();
+        QScopedValueRollback<bool> splitGuard(d_applying_split_geometry, true);
         restoreSplitTablesHiddenForDrawer(d_app);
         restoreBackgroundMdiWindowsAfterFocus(d_app);
+        if (keepActive && !keepActive->isHidden()
+            && d_app->d_workspace.activeSubWindow() != keepActive.data()) {
+            d_app->d_workspace.setActiveSubWindow(keepActive);
+        }
     }
 
     if (d_layout_mode == LayoutSplitTableGraph) {
@@ -7679,6 +7667,11 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         }
         if (d_focus_hud_overlay)
             d_focus_hud_overlay->repositionOverlayWidgets();
+    }
+
+    if (!enabled && d_app && keepActive && !keepActive->isHidden()) {
+        d_app->d_workspace.setActiveSubWindow(keepActive);
+        keepActive->raise();
     }
 
     updateEmptyWelcomeHub();
@@ -8914,6 +8907,7 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
         }
     }
     if (d_app && event && d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry
+        && (QApplication::mouseButtons() & Qt::LeftButton) != 0
         && d_split_table && d_split_plot && !d_split_table->isHidden()
         && !d_split_plot->isHidden() && !d_split_table->isMaximized()
         && !d_split_plot->isMaximized()
@@ -8942,15 +8936,16 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
                     }
                 }
                 if (newSplitX >= minPaneW && newSplitX <= maxLeftW) {
-                    d_applying_split_geometry = true;
+                    QScopedValueRollback<bool> splitGuard(d_applying_split_geometry, true);
                     d_split_left_ratio =
                             qBound(0.15, double(newSplitX) / double(vpRect.width()), 0.85);
                     if (d_split_table->minimumWidth() > newSplitX)
                         d_split_table->setMinimumWidth(newSplitX);
+                    const int newRightW = qMax(minPaneW, vpRect.width() - newSplitX);
+                    if (d_split_plot->minimumWidth() > newRightW)
+                        d_split_plot->setMinimumWidth(newRightW);
                     d_split_table->setGeometry(0, tileTopY, newSplitX, fullH);
-                    d_split_plot->setGeometry(newSplitX, tileTopY,
-                                              qMax(minPaneW, vpRect.width() - newSplitX), fullH);
-                    d_applying_split_geometry = false;
+                    d_split_plot->setGeometry(newSplitX, tileTopY, newRightW, fullH);
                 }
             }
         }

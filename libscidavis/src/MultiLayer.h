@@ -517,7 +517,10 @@ private:
     };
     CtrlFontGestureBaseline d_ctrl_font_gesture;
     QTimer *d_ctrl_font_gesture_timer = nullptr;
+    QTimer *d_viewport_autofit_timer = nullptr;
+    QSize d_last_autofit_vp_size;
 
+    double autoFitTargetZoom() const;
     void autoFitPageZoomToViewport();
     void clearCtrlFontGestureBaseline();
     QImage renderPageToImage(int effectiveDpi, bool transparent, QString *errOut);

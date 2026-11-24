@@ -74,6 +74,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -90,7 +91,6 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QShortcut>
 #include <QStyle>
 #include <QTextCursor>
 #include <QSignalBlocker>
@@ -644,7 +644,7 @@ static void registerInspectorExtraTranslations()
         reg("Unit Format:", "単位表記:");
         reg("Unit Format", "単位表記");
         reg("Name (Unit)", "量名 (単位)");
-        reg("Name / Unit (ISIJ)", "量名 / 単位 (ISIJ)");
+        reg("Name / Unit (ISIJ)", "物理量 / 単位 (ISIJ)");
         reg("Name [Unit]", "量名 [単位]");
         reg("Change Unit Format", "単位表記の変更");
         reg("Symbol Skip:", "シンボルの間引き:");
@@ -1324,6 +1324,19 @@ bool GraphInspectorDock::eventFilter(QObject *obj, QEvent *event)
                    && (event->type() == QEvent::Resize || event->type() == QEvent::Show
                        || event->type() == QEvent::LayoutRequest)) {
             updatePropScrollCue();
+        } else if (obj == d_object_tree
+                   && (event->type() == QEvent::ShortcutOverride
+                       || event->type() == QEvent::KeyPress)) {
+            if (d_object_tree && d_object_tree->hasFocus()) {
+                auto *ke = static_cast<QKeyEvent *>(event);
+                const Qt::KeyboardModifiers mods = ke->modifiers() & ~Qt::KeypadModifier;
+                if (ke->key() == Qt::Key_Delete && mods == Qt::NoModifier) {
+                    if (event->type() == QEvent::KeyPress)
+                        removeSelectedObject();
+                    ke->accept();
+                    return true;
+                }
+            }
         } else if (event->type() == QEvent::FocusIn) {
             if (auto *le = qobject_cast<QLineEdit *>(obj)) {
                 if (le == d_edit_leg_header) {
@@ -1430,18 +1443,23 @@ void GraphInspectorDock::openAxesDialogForQwtAxis(Graph *g, int qwtAxis, bool sh
         ml = d_target_ml.data();
     if (!ml || ml->isEmpty())
         return;
+    QPointer<GraphInspectorDock> self(this);
+    QPointer<MultiLayer> mlGuard(ml);
+    QPointer<Graph> gGuard(g);
     // C2-1: always use AxesDialog::setCurrentQwtAxis(qwtAxis) when passing a QwtPlot::Axis,
     // never setCurrentScale() which expects QwtScaleDraw::Alignment.
-    auto &ad = d_app->addChild<AxesDialog>();
-    ad.setAttribute(Qt::WA_DeleteOnClose, true);
-    connect(&ad, &QDialog::finished, &ad, &QObject::deleteLater);
-    ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
-    ad.setGraph(g);
+    QPointer<AxesDialog> ad(&d_app->addChild<AxesDialog>());
+    ad->setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+    ad->setGraph(g);
     if (showAxesTab)
-        ad.showAxesPage();
-    ad.setCurrentQwtAxis(qBound(0, qwtAxis, 3));
-    ad.exec();
-    refreshAll();
+        ad->showAxesPage();
+    ad->setCurrentQwtAxis(qBound(0, qwtAxis, 3));
+    ad->exec();
+    if (ad)
+        ad->deleteLater();
+    if (!self || !mlGuard || !gGuard)
+        return;
+    self->refreshAll();
 }
 
 void GraphInspectorDock::switchToInspectorPage(InspectorPageIndex pageIdx)
@@ -1783,11 +1801,7 @@ void GraphInspectorDock::buildUi()
             &GraphInspectorDock::onObjectTreeContextMenu);
     connect(d_object_tree, &QTreeWidget::itemChanged, this,
             &GraphInspectorDock::onTreeItemChanged);
-    {
-        QShortcut *delSc = new QShortcut(QKeySequence::Delete, d_object_tree);
-        delSc->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(delSc, &QShortcut::activated, this, &GraphInspectorDock::removeSelectedObject);
-    }
+    d_object_tree->installEventFilter(this);
     topLayout->addWidget(d_object_tree, 1);
 
     d_empty_hint_lbl = new QLabel(topPane);
@@ -4935,31 +4949,37 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_btn_leg_rebuild->setObjectName(QStringLiteral("InspectorRebuildLegendBtn"));
     d_btn_leg_rebuild->setIcon(IconLoader::duotoneIcon(QStringLiteral("recalc-now"), 15));
     connect(d_btn_leg_rebuild, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g)
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard)
             return;
         // A3-4: confirm before overwriting custom legend text (auto-confirmed in non-interactive mode)
-        if (g->hasLegend() && g->legend() && !ApplicationWindow::isNonInteractiveContext(d_app)) {
-            const QString curTxt = g->legend()->text().trimmed();
+        if (gGuard->hasLegend() && gGuard->legend()
+            && !ApplicationWindow::isNonInteractiveContext(d_app)) {
+            const QString curTxt = gGuard->legend()->text().trimmed();
             const QString autoTxt =
-                    (g->isPiePlot() ? g->pieLegendText() : g->legendText()).trimmed();
+                    (gGuard->isPiePlot() ? gGuard->pieLegendText() : gGuard->legendText())
+                            .trimmed();
             if (!curTxt.isEmpty() && curTxt != autoTxt) {
                 const auto ans = QMessageBox::question(
                         this, tr("Rebuild Legend"),
                         tr("Rebuilding the legend will overwrite your custom legend labels and "
                            "header. Continue?"),
                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-                if (ans != QMessageBox::Yes)
+                if (ans != QMessageBox::Yes || !self || !mlGuard || !gGuard)
                     return;
             }
         }
-        const QString before = d_target_ml->captureUndoSnapshot();
-        g->reconstructLegend();
-        g->setLegendVisible(true);
-        g->replot();
-        d_target_ml->pushUndoSnapshot(tr("Reconstruct Legend"), before);
-        refreshObjectTree();
-        syncLegendControls();
+        if (!self || !mlGuard || !gGuard)
+            return;
+        const QString before = mlGuard->captureUndoSnapshot();
+        gGuard->reconstructLegend();
+        gGuard->setLegendVisible(true);
+        gGuard->replot();
+        mlGuard->pushUndoSnapshot(tr("Reconstruct Legend"), before);
+        self->refreshObjectTree();
+        self->syncLegendControls();
     });
     legWrapLay->addWidget(d_btn_leg_rebuild);
 
@@ -5375,14 +5395,16 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_btn_img_replace = new QPushButton(d_image_editor_wrap);
     d_btn_img_replace->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-image"), 14));
     connect(d_btn_img_replace, &QPushButton::clicked, this, [this]() {
-        Graph *g = activeLayer();
-        if (!d_target_ml || !g || ApplicationWindow::isNonInteractiveContext(d_app))
+        QPointer<GraphInspectorDock> self(this);
+        QPointer<MultiLayer> mlGuard(d_target_ml);
+        QPointer<Graph> gGuard(activeLayer());
+        if (!mlGuard || !gGuard || ApplicationWindow::isNonInteractiveContext(d_app))
             return;
-        const auto sel = g->currentSelection();
+        const auto sel = gGuard->currentSelection();
         if (sel.kind != Graph::GraphSelection::ImageAnnotation)
             return;
         const int oldId = sel.primaryId;
-        ImageMarker *oldIm = g->imageMarker(oldId);
+        ImageMarker *oldIm = gGuard->imageMarker(oldId);
         if (!oldIm)
             return;
         const QString startDir = !oldIm->fileName().isEmpty()
@@ -5391,7 +5413,11 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         const QString fn = QFileDialog::getOpenFileName(
                 this, tr("Select Replacement Image"), startDir,
                 tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;All Files (*)"));
-        if (fn.isEmpty() || !QFile::exists(fn))
+        if (!self || !mlGuard || !gGuard || fn.isEmpty() || !QFile::exists(fn))
+            return;
+
+        oldIm = gGuard->imageMarker(oldId);
+        if (!oldIm)
             return;
 
         const double oldLeft = oldIm->xValue();
@@ -5400,8 +5426,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         const double oldBottom = oldIm->bottom();
         const QRect oldPx = oldIm->plot() ? oldIm->rect() : QRect();
 
-        const QString before = d_target_ml->captureUndoSnapshot();
-        ImageMarker *newIm = g->addImage(fn);
+        const QString before = mlGuard->captureUndoSnapshot();
+        ImageMarker *newIm = gGuard->addImage(fn);
         if (!newIm)
             return;
         if (qAbs(oldRight - oldLeft) > 1e-12 && qAbs(oldBottom - oldTop) > 1e-12)
@@ -5409,21 +5435,21 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         else if (oldPx.isValid() && !oldPx.isEmpty())
             newIm->setRect(oldPx.x(), oldPx.y(), oldPx.width(), oldPx.height());
 
-        const QVector<int> keys = g->imageMarkerKeys();
+        const QVector<int> keys = gGuard->imageMarkerKeys();
         const int newId = keys.isEmpty() ? -1 : keys.last();
 
-        g->setSelectedMarker(oldId, false);
-        g->removeMarker();
+        gGuard->setSelectedMarker(oldId, false);
+        gGuard->removeMarker();
         if (newId >= 0) {
             Graph::GraphSelection nextSel;
             nextSel.kind = Graph::GraphSelection::ImageAnnotation;
             nextSel.primaryId = newId;
-            g->setCurrentSelection(nextSel, false);
+            gGuard->setCurrentSelection(nextSel, false);
         }
-        g->replot();
-        emit g->modifiedGraph();
-        d_target_ml->pushUndoSnapshot(tr("Replace Image"), before);
-        refreshAll();
+        gGuard->replot();
+        emit gGuard->modifiedGraph();
+        mlGuard->pushUndoSnapshot(tr("Replace Image"), before);
+        self->refreshAll();
     });
     imgLay->addWidget(d_btn_img_replace);
     d_image_editor_wrap->hide();
@@ -6802,7 +6828,7 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
             menu.addSeparator();
             QAction *actCopyStyle = menu.addAction(
                     IconLoader::duotoneIcon(QStringLiteral("copy"), 14),
-                    tr("Copy Curve Color & Symbol"));
+                    tr("Copy Curve Color && Symbol"));
             connect(actCopyStyle, &QAction::triggered, this, [resolveLayer, primaryId]() {
                 Graph *lg = resolveLayer();
                 if (!lg || primaryId < 0 || primaryId >= lg->curves())
@@ -6823,7 +6849,7 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
 
             QAction *actPasteStyle = menu.addAction(
                     IconLoader::duotoneIcon(QStringLiteral("paste"), 14),
-                    tr("Paste Curve Color & Symbol"));
+                    tr("Paste Curve Color && Symbol"));
             actPasteStyle->setEnabled(s_copiedCurveStyle.valid);
             connect(actPasteStyle, &QAction::triggered, this,
                     [this, safeMl, resolveLayer, primaryId]() {

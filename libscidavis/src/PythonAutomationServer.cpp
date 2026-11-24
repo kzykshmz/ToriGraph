@@ -13973,7 +13973,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (!insp)
                 return nullptr;
             for (QScrollArea *sa : insp->findChildren<QScrollArea *>()) {
-                if (sa && sa->widget() == insp->propertyStack())
+                if (sa && sa->isVisibleTo(d_app) && sa->widget() == insp->propertyStack())
                     return sa;
             }
             for (QScrollArea *sa : insp->findChildren<QScrollArea *>()) {
