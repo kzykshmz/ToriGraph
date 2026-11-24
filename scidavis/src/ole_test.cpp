@@ -110,6 +110,8 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                                                               : qint64(GetCurrentProcessId()));
     QFile::remove(testIniPath);
     qputenv("TORIGRAPH_SETTINGS_INI", testIniPath.toLocal8Bit());
+    if (qEnvironmentVariableIsEmpty("QT_FONT_DPI"))
+        qputenv("QT_FONT_DPI", "96");
     if (qEnvironmentVariable("QT_OPENGL").compare(QStringLiteral("software"), Qt::CaseInsensitive) == 0)
         QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL, true);
     else
@@ -202,6 +204,16 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                 requestedSuites.append(sid);
             }
         }
+    }
+
+    const bool legacyOnly = args.contains("--legacy-only");
+    if (legacyOnly && !requestedSuites.isEmpty()) {
+        std::cerr << "[FAIL] --legacy-only cannot be combined with --suite\n";
+        mw->savedProject();
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        SciDAVisOle::shutdownOleServer();
+        return 2;
     }
 
     if (!requestedSuites.isEmpty()) {
@@ -5360,6 +5372,15 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                    "Spectrogram / Colorbar created in Japanese mode violated Arial font invariant!");
 
         mw->switchToLanguage("en");
+    }
+
+    if (legacyOnly) {
+        mw->savedProject();
+        std::cout << "[PASS] Legacy Suites 1..35 passed.\n";
+        mw->setOleEmbeddedMode(true);
+        delete mw;
+        SciDAVisOle::shutdownOleServer();
+        return 0;
     }
 
     if (runSuite36Round3SurgicalZero(mw) != 0)

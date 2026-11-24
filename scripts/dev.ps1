@@ -16,13 +16,17 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("configure", "build", "test", "asan", "py-test", "lint", "format", "cppcheck", "tidy", "sccache-stats", "gate")]
+    [ValidateSet("configure", "build", "test", "asan", "py-test", "lint", "format", "cppcheck", "tidy", "sccache-stats", "gate", "gate-parallel")]
     [string]$Action = "build",
 
     [string]$BuildDir = "",
     [string]$Preset = "release",
     [string]$Suite = "",
     [string[]]$Files = @(),
+    [switch]$Parallel,
+    [int]$Jobs = 8,
+    [switch]$TestOnly,
+    [switch]$NoBuild,
     [switch]$Notify
 )
 
@@ -135,13 +139,22 @@ switch ($Action) {
         if (-not (Test-Path (Join-Path $resolvedBuildDir "build.ninja"))) {
             & $PSCommandPath configure -Preset $Preset -BuildDir $resolvedBuildDir
         }
-        Invoke-Checked "CMake Build ($resolvedBuildDir)" {
-            cmd.exe /c "chcp 932 >nul && cmake --build `"$resolvedBuildDir`" --target scidavis scidavis_ole_test explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel"
+        if ($TestOnly) {
+            Invoke-Checked "CMake Build Test Target Only ($resolvedBuildDir)" {
+                cmd.exe /c "chcp 932 >nul && cmake --build `"$resolvedBuildDir`" --target scidavis_ole_test --parallel"
+            }
+        } else {
+            Invoke-Checked "CMake Build ($resolvedBuildDir)" {
+                cmd.exe /c "chcp 932 >nul && cmake --build `"$resolvedBuildDir`" --target scidavis scidavis_ole_test explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel"
+            }
         }
     }
     "test" {
         Initialize-VsBuildEnv
         Set-QtRuntimeEnv
+        if (-not $env:QT_FONT_DPI) {
+            $env:QT_FONT_DPI = "96"
+        }
         $testExe = Join-Path $resolvedBuildDir "scidavis\scidavis_ole_test.exe"
         if (-not (Test-Path $testExe)) {
             & $PSCommandPath build -Preset $Preset -BuildDir $resolvedBuildDir
@@ -149,6 +162,97 @@ switch ($Action) {
         if ($Suite) {
             Invoke-Checked "Run C++ Suite $Suite ($testExe)" {
                 & $testExe "--suite=$Suite"
+            }
+        } elseif ($Parallel) {
+            $swAll = [System.Diagnostics.Stopwatch]::StartNew()
+            Write-Host "==> Discovering C++ Suites for Parallel Run ($testExe)" -ForegroundColor Cyan
+            $listLines = & $testExe "--list-suites"
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to enumerate suites with --list-suites (exit code $LASTEXITCODE)"
+            }
+            $allModularIds = @()
+            foreach ($ln in $listLines) {
+                if ($ln -match "^Suite\s+(\d+):") {
+                    $allModularIds += [int]$matches[1]
+                }
+            }
+            $serialClipboardSet = @(47, 48, 51, 56, 59, 60, 61, 68, 71, 73, 75)
+            $bucket0Suites = @($allModularIds | Where-Object { $serialClipboardSet -contains $_ })
+            $parallelIds = @($allModularIds | Where-Object { $serialClipboardSet -notcontains $_ })
+
+            $numParallelBuckets = [Math]::Max(1, [Math]::Min([Math]::Max(1, $Jobs - 1), [Math]::Max(1, $parallelIds.Count)))
+            $bucketLists = @()
+            for ($b = 0; $b -lt $numParallelBuckets; $b++) {
+                $bucketLists += ,(@())
+            }
+            for ($i = 0; $i -lt $parallelIds.Count; $i++) {
+                $idx = $i % $numParallelBuckets
+                $bucketLists[$idx] += $parallelIds[$i]
+            }
+
+            $runId = [System.Diagnostics.Process]::GetCurrentProcess().Id
+            $logDir = Join-Path $env:TEMP ("torigraph_ctest_par_" + $runId)
+            New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+            $jobsMeta = @()
+            try {
+                # Bucket 0 runs legacy inline suites (1..35) + all clipboard-using modular suites serially
+                $b0Out = Join-Path $logDir "bucket0.out.log"
+                $b0Err = Join-Path $logDir "bucket0.err.log"
+                $b0Cmd = "& `"$testExe`" --legacy-only"
+                if ($bucket0Suites.Count -gt 0) {
+                    $b0Csv = ($bucket0Suites -join ",")
+                    $b0Cmd += "; if (`$LASTEXITCODE -eq 0) { & `"$testExe`" --suite=$b0Csv }"
+                }
+                $b0Cmd += "; exit `$LASTEXITCODE"
+                $b0Proc = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $b0Cmd) -NoNewWindow -PassThru -RedirectStandardOutput $b0Out -RedirectStandardError $b0Err
+                $null = $b0Proc.Handle
+                $jobsMeta += [PSCustomObject]@{
+                    Name = "bucket-0 (legacy+clipboard: $($bucket0Suites -join ','))"
+                    Proc = $b0Proc
+                    OutLog = $b0Out
+                    ErrLog = $b0Err
+                    Timer = [System.Diagnostics.Stopwatch]::StartNew()
+                }
+
+                for ($b = 0; $b -lt $numParallelBuckets; $b++) {
+                    $ids = @($bucketLists[$b])
+                    if ($ids.Count -eq 0) { continue }
+                    $csv = ($ids -join ",")
+                    $outLog = Join-Path $logDir ("bucket" + ($b + 1) + ".out.log")
+                    $errLog = Join-Path $logDir ("bucket" + ($b + 1) + ".err.log")
+                    $p = Start-Process -FilePath $testExe -ArgumentList @("--suite=$csv") -NoNewWindow -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+                    $null = $p.Handle
+                    $jobsMeta += [PSCustomObject]@{
+                        Name = "bucket-$($b + 1) ($csv)"
+                        Proc = $p
+                        OutLog = $outLog
+                        ErrLog = $errLog
+                        Timer = [System.Diagnostics.Stopwatch]::StartNew()
+                    }
+                }
+
+                $failed = $false
+                foreach ($jm in $jobsMeta) {
+                    $jm.Proc.WaitForExit()
+                    $jm.Timer.Stop()
+                    $rc = $jm.Proc.ExitCode
+                    $sec = [Math]::Round($jm.Timer.Elapsed.TotalSeconds, 1)
+                    if ($rc -ne 0) {
+                        $failed = $true
+                        Write-Host "[FAIL] $($jm.Name) rc=$rc (${sec}s)" -ForegroundColor Red
+                        if (Test-Path $jm.OutLog) { Get-Content -Path $jm.OutLog -Encoding UTF8 | Write-Host }
+                        if (Test-Path $jm.ErrLog) { Get-Content -Path $jm.ErrLog -Encoding UTF8 | Write-Host }
+                    } else {
+                        Write-Host "[PASS] $($jm.Name) (${sec}s)" -ForegroundColor Green
+                    }
+                }
+                $swAll.Stop()
+                Write-Host ("==> Parallel C++ Suites Finished in {0:F1}s" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Cyan
+                if ($failed) {
+                    throw "One or more parallel C++ test buckets failed."
+                }
+            } finally {
+                Remove-Item -Path $logDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         } else {
             Invoke-Checked "Run Full C++ Suite ($testExe)" {
@@ -159,14 +263,19 @@ switch ($Action) {
     "asan" {
         Initialize-VsBuildEnv
         Set-QtRuntimeEnv
+        if (-not $env:QT_FONT_DPI) {
+            $env:QT_FONT_DPI = "96"
+        }
         $asanDir = if ($BuildDir) { $BuildDir } else { Join-Path $repoRoot "build-asan" }
         if (-not (Test-Path (Join-Path $asanDir "build.ninja"))) {
             & $PSCommandPath configure -Preset asan -BuildDir $asanDir
         }
-        Invoke-Checked "Build ASan targets ($asanDir)" {
-            cmd.exe /c "chcp 932 >nul && cmake --build `"$asanDir`" --target scidavis scidavis_ole_test --parallel"
-        }
         $asanTestExe = Join-Path $asanDir "scidavis\scidavis_ole_test.exe"
+        if (-not $NoBuild -or -not (Test-Path $asanTestExe)) {
+            Invoke-Checked "Build ASan targets ($asanDir)" {
+                cmd.exe /c "chcp 932 >nul && cmake --build `"$asanDir`" --target scidavis scidavis_ole_test --parallel"
+            }
+        }
         $env:ASAN_OPTIONS = "detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
         if ($Suite) {
             Invoke-Checked "Run ASan Suite $Suite" {
@@ -195,8 +304,11 @@ switch ($Action) {
         Invoke-Checked "Check Japanese Glossary" {
             python scripts/check_ja_glossary.py
         }
+        Invoke-Checked "Check Static Hygiene Rules" {
+            python scripts/check_static_hygiene.py --warn-only
+        }
         Invoke-Checked "Run Ruff Linter on Python SDK & Scripts" {
-            python -m ruff check --config python/pyproject.toml python scripts/check_version.py scripts/check_ja_glossary.py
+            python -m ruff check --config python/pyproject.toml python scripts/check_version.py scripts/check_ja_glossary.py scripts/check_static_hygiene.py
         }
     }
     "format" {
@@ -252,6 +364,105 @@ switch ($Action) {
             & $PSCommandPath test -BuildDir $resolvedBuildDir
         }
         & $PSCommandPath py-test -BuildDir $resolvedBuildDir
+    }
+    "gate-parallel" {
+        $swGate = [System.Diagnostics.Stopwatch]::StartNew()
+        & $PSCommandPath lint
+
+        Initialize-VsBuildEnv
+        $asanDir = Join-Path $repoRoot "build-asan"
+        if (-not (Test-Path (Join-Path $resolvedBuildDir "build.ninja"))) {
+            & $PSCommandPath configure -Preset release -BuildDir $resolvedBuildDir
+        }
+        if (-not (Test-Path (Join-Path $asanDir "build.ninja"))) {
+            & $PSCommandPath configure -Preset asan -BuildDir $asanDir
+        }
+
+        $runId = [System.Diagnostics.Process]::GetCurrentProcess().Id
+        $logDir = Join-Path $env:TEMP ("torigraph_gate_par_" + $runId)
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        try {
+            Write-Host "==> Parallel Build: Release ($resolvedBuildDir) + ASan ($asanDir)" -ForegroundColor Cyan
+            $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
+            $relOut = Join-Path $logDir "build_rel.out.log"
+            $relErr = Join-Path $logDir "build_rel.err.log"
+            $asanOut = Join-Path $logDir "build_asan.out.log"
+            $asanErr = Join-Path $logDir "build_asan.err.log"
+            $pRel = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "chcp 932 >nul && cmake --build `"$resolvedBuildDir`" --target scidavis scidavis_ole_test explin exp_saturation fitRational0 fitRational1 planck_wavelength --parallel") -NoNewWindow -PassThru -RedirectStandardOutput $relOut -RedirectStandardError $relErr
+            $null = $pRel.Handle
+            $pAsan = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "chcp 932 >nul && cmake --build `"$asanDir`" --target scidavis scidavis_ole_test --parallel") -NoNewWindow -PassThru -RedirectStandardOutput $asanOut -RedirectStandardError $asanErr
+            $null = $pAsan.Handle
+            $pRel.WaitForExit()
+            $pAsan.WaitForExit()
+            $swBuild.Stop()
+            if ($pRel.ExitCode -ne 0) {
+                Get-Content -Path $relOut -Encoding UTF8 | Write-Host
+                Get-Content -Path $relErr -Encoding UTF8 | Write-Host
+                throw "Release build failed with exit code $($pRel.ExitCode)"
+            }
+            if ($pAsan.ExitCode -ne 0) {
+                Get-Content -Path $asanOut -Encoding UTF8 | Write-Host
+                Get-Content -Path $asanErr -Encoding UTF8 | Write-Host
+                throw "ASan build failed with exit code $($pAsan.ExitCode)"
+            }
+            Write-Host ("[PASS] Parallel Release + ASan build ({0:F1}s)" -f $swBuild.Elapsed.TotalSeconds) -ForegroundColor Green
+
+            $testExe = Join-Path $resolvedBuildDir "scidavis\scidavis_ole_test.exe"
+            $asanSuites = $Suite
+            if (-not $asanSuites) {
+                $listOut = & $testExe "--list-suites"
+                if ($listOut -match "^Suite\s+80:") {
+                    $asanSuites = "53,59,66,77,78,79,80"
+                } else {
+                    $asanSuites = "53,59,66,77,78,79"
+                }
+            }
+
+            Write-Host "==> Parallel Test Wave: C++ Parallel Test + pytest (then ASan overlap)" -ForegroundColor Cyan
+            $swTests = [System.Diagnostics.Stopwatch]::StartNew()
+            $cppOut = Join-Path $logDir "cpp_par.out.log"
+            $cppErr = Join-Path $logDir "cpp_par.err.log"
+            $pyOut = Join-Path $logDir "py_test.out.log"
+            $pyErr = Join-Path $logDir "py_test.err.log"
+            $pCpp = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "test", "-Parallel", "-Jobs", "$Jobs", "-BuildDir", $resolvedBuildDir) -NoNewWindow -PassThru -RedirectStandardOutput $cppOut -RedirectStandardError $cppErr
+            $null = $pCpp.Handle
+            $pPy = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "py-test", "-BuildDir", $resolvedBuildDir) -NoNewWindow -PassThru -RedirectStandardOutput $pyOut -RedirectStandardError $pyErr
+            $null = $pPy.Handle
+
+            # Wait for C++ test wave first so clipboard is completely free before ASan Suite 59 runs
+            $pCpp.WaitForExit()
+            if ($pCpp.ExitCode -ne 0) {
+                Get-Content -Path $cppOut -Encoding UTF8 | Write-Host
+                Get-Content -Path $cppErr -Encoding UTF8 | Write-Host
+                throw "Parallel C++ test wave failed with exit code $($pCpp.ExitCode)"
+            }
+            Write-Host "[PASS] Parallel C++ test wave" -ForegroundColor Green
+
+            # Now run ASan suites while py-test continues in parallel
+            $asanRunOut = Join-Path $logDir "asan_run.out.log"
+            $asanRunErr = Join-Path $logDir "asan_run.err.log"
+            $pAsanRun = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "asan", "-NoBuild", "-BuildDir", $asanDir, "-Suite", $asanSuites) -NoNewWindow -PassThru -RedirectStandardOutput $asanRunOut -RedirectStandardError $asanRunErr
+            $null = $pAsanRun.Handle
+
+            $pAsanRun.WaitForExit()
+            $pPy.WaitForExit()
+            $swTests.Stop()
+            if ($pAsanRun.ExitCode -ne 0) {
+                Get-Content -Path $asanRunOut -Encoding UTF8 | Write-Host
+                Get-Content -Path $asanRunErr -Encoding UTF8 | Write-Host
+                throw "ASan verification ($asanSuites) failed with exit code $($pAsanRun.ExitCode)"
+            }
+            if ($pPy.ExitCode -ne 0) {
+                Get-Content -Path $pyOut -Encoding UTF8 | Write-Host
+                Get-Content -Path $pyErr -Encoding UTF8 | Write-Host
+                throw "py-test failed with exit code $($pPy.ExitCode)"
+            }
+            Write-Host ("[PASS] Parallel Test+ASan+Pytest finished in {0:F1}s" -f $swTests.Elapsed.TotalSeconds) -ForegroundColor Green
+        } finally {
+            Remove-Item -Path $logDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $swGate.Stop()
+        Write-Host ("==> gate-parallel ALL PASSED in {0:F1}s" -f $swGate.Elapsed.TotalSeconds) -ForegroundColor Green
     }
 }
 
