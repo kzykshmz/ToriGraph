@@ -3702,6 +3702,8 @@ private:
             }
         }
         ScopedProjectUndoSuppressor suppressProjUndo(proj);
+        RecalcManager::ScopedDeferAutoRecalc deferRecalc(RecalcManager::existing(findGraphAppWindow(
+                d_ml ? static_cast<QObject *>(d_ml.data()) : static_cast<QObject *>(d_graph.data()))));
 
         for (const std::shared_ptr<Graph::ColumnMaskSnapshot> &snapPtr : d_snapshots) {
             if (!snapPtr)

@@ -1,24 +1,42 @@
 #include "ole_test_common.h"
 #include "Graph3D.h"
+#include "GraphInspectorDock.h"
+#include "ImportOPJU.h"
+#include "PythonAutomationServer.h"
 #include "ScaleDraw.h"
+#include "core/Project.h"
 #include "future/table/TableModel.h"
 #include "future/table/TableView.h"
 
 #include <QAbstractItemModel>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QJsonObject>
+#include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
+#include <QLineEdit>
 #include <QLocale>
 #include <QMdiArea>
+#include <QMenu>
+#include <QMenuBar>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QTableView>
 #include <QThread>
 #include <QTimer>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QUndoStack>
+
+#include <cstring>
 
 namespace {
 
@@ -167,7 +185,171 @@ static QPointer<ApplicationWindow> findNewOleEditor80(const QSet<ApplicationWind
     }
     return QPointer<ApplicationWindow>();
 }
+
+struct EmbeddedModeGuard80
+{
+    bool prev = SciDAVisOle::isEmbeddedServerModeForTesting();
+    explicit EmbeddedModeGuard80(bool on) { SciDAVisOle::setEmbeddedServerModeForTesting(on); }
+    ~EmbeddedModeGuard80() { SciDAVisOle::setEmbeddedServerModeForTesting(prev); }
+    EmbeddedModeGuard80(const EmbeddedModeGuard80 &) = delete;
+    EmbeddedModeGuard80 &operator=(const EmbeddedModeGuard80 &) = delete;
+};
 #endif
+
+struct AxesDialogProbe80 : public AxesDialog
+{
+    void setScaleBoundsAndUpdate(const QString &startTxt, const QString &endTxt)
+    {
+        generalDialog.setCurrentWidget(scalesPage);
+        axesList->setCurrentRow(0);
+        boxStart->setText(startTxt);
+        boxEnd->setText(endTxt);
+        accept();
+    }
+};
+
+static QByteArray encodeCpyuaZeroRle80(const QByteArray &raw)
+{
+    QByteArray out;
+    int i = 0;
+    while (i < raw.size()) {
+        if (raw[i] == '\0') {
+            int run = 0;
+            while (i + run < raw.size() && raw[i + run] == '\0' && run < 127)
+                ++run;
+            out.append(static_cast<char>(0x80U | static_cast<unsigned char>(run)));
+            i += run;
+        } else {
+            int run = 0;
+            while (i + run < raw.size() && raw[i + run] != '\0' && run < 127)
+                ++run;
+            out.append(static_cast<char>(static_cast<unsigned char>(run)));
+            out.append(raw.constData() + i, run);
+            i += run;
+        }
+    }
+    return out;
+}
+
+static void appendU16LE80(QByteArray &buf, quint16 v)
+{
+    buf.append(static_cast<char>(v & 0xFFU));
+    buf.append(static_cast<char>((v >> 8) & 0xFFU));
+}
+
+static void appendU32LE80(QByteArray &buf, quint32 v)
+{
+    for (int b = 0; b < 4; ++b)
+        buf.append(static_cast<char>((v >> (8 * b)) & 0xFFU));
+}
+
+static void appendU64LE80(QByteArray &buf, quint64 v)
+{
+    for (int b = 0; b < 8; ++b)
+        buf.append(static_cast<char>((v >> (8 * b)) & 0xFFU));
+}
+
+static QByteArray buildSyntheticCpyuaSkippedBuffer80()
+{
+    // Minimal CPYUA container:
+    //   Dataset 1: Book80_A ([1,2,3], oneBasedId=1)
+    //   Dataset 2: Book80_Skip (non-0x05 skipped payload, oneBasedId=2)
+    //   Dataset 3: Book80_B ([10,20,30], oneBasedId=3)
+    //   Workbook:  Book80 (rleLen >= 64, winDec == 540B)
+    //   Column 1:  dsId=2, name="A", desig=0x00(Y) -> hits skipped ds 2 -> resyncs to ds 1 (seqShift=1)
+    //   Column 2:  dsId=3, name="B", desig=0x03(X) -> 3-seqShift=2 hits skipped ds 2 -> resyncs to ds 3
+    QByteArray buf("CPYUA  2024\0", 12);
+    buf.append(QByteArray(52, '\0'));
+    buf.append("\x7c\x00\x00\x00\x0a", 5);
+    buf.append(QByteArray(0x7C + 1 + 5, '\0'));
+
+    auto makeNumPay = [](std::initializer_list<double> vals) {
+        QByteArray numPay;
+        numPay.append('\x05');
+        numPay.append(static_cast<char>(vals.size())); // LEB128 totalRows
+        for (double val : vals) {
+            numPay.append('\x00');
+            numPay.append('\x00');
+            numPay.append('\x50'); // full 8-byte IEEE754 literal
+            quint64 bits = 0;
+            std::memcpy(&bits, &val, sizeof(double));
+            appendU64LE80(numPay, bits);
+        }
+        numPay.append('\xCE');
+        numPay.append('\xFA');
+        return numPay;
+    };
+
+    auto appendDatasetBlock = [&](const QByteArray &fullName, const QByteArray &payload) {
+        QByteArray hdr(114, '\0');
+        hdr[2] = '\x01';
+        hdr[3] = '\xFA';
+        const int nameOff = hdr.size() - 53;
+        const int copyLen = std::min(fullName.size(), 21);
+        for (int i = 0; i < copyLen; ++i)
+            hdr[nameOff + i] = fullName[i];
+        const QByteArray rleHdr = encodeCpyuaZeroRle80(hdr);
+        buf.append('\x80');
+        buf.append(static_cast<char>(rleHdr.size()));
+        buf.append(rleHdr);
+        buf.append('\x18');
+        appendU64LE80(buf, static_cast<quint64>(payload.size()));
+        appendU64LE80(buf, static_cast<quint64>(payload.size()));
+        buf.append(QByteArray(8, '\0'));
+        buf.append('\x0A');
+        buf.append(payload);
+        appendU32LE80(buf, 0U);
+    };
+
+    appendDatasetBlock(QByteArrayLiteral("Book80_A"), makeNumPay({ 1.0, 2.0, 3.0 }));
+    appendDatasetBlock(QByteArrayLiteral("Book80_Skip"),
+                       QByteArray("\x09\x01\x02\x03\x04\x05\x06\x07", 8));
+    appendDatasetBlock(QByteArrayLiteral("Book80_B"), makeNumPay({ 10.0, 20.0, 30.0 }));
+
+    buf.append("\x00\x00\x00\x00\x00\x0A", 6);
+
+    // Workbook header (winDec=540B, rleLen >= 64)
+    QByteArray winRaw(540, '\0');
+    winRaw[2] = 'B';
+    winRaw[3] = 'o';
+    winRaw[4] = 'o';
+    winRaw[5] = 'k';
+    winRaw[6] = '8';
+    winRaw[7] = '0';
+    winRaw[57] = 'O';
+    winRaw[58] = 'r';
+    winRaw[59] = 'i';
+    winRaw[60] = 'g';
+    winRaw[61] = 'i';
+    winRaw[62] = 'n';
+    for (int k = 120; k < 210; ++k)
+        winRaw[k] = static_cast<char>('A' + (k % 26));
+    const QByteArray rleWin = encodeCpyuaZeroRle80(winRaw);
+    buf.append('\x80');
+    buf.append(static_cast<char>(rleWin.size()));
+    buf.append(rleWin);
+
+    auto appendColMeta = [&](quint16 dsId, unsigned char desigByte, char colCh) {
+        QByteArray colRaw(468, '\0');
+        colRaw[0] = '\x10';
+        colRaw[1] = static_cast<char>(dsId & 0xFFU);
+        colRaw[2] = static_cast<char>((dsId >> 8) & 0xFFU);
+        colRaw[8] = static_cast<char>(desigByte);
+        colRaw[9] = colCh;
+        for (int k = 300; k < 325; ++k)
+            colRaw[k] = 'P'; // ensure 16 <= rleCol.size() <= 200 (ImportOPJU.cpp:3548, 3611)
+        QByteArray rleCol;
+        rleCol.append('\x01'); // 1-byte literal header required by ImportOPJU.cpp:3553-3554
+        rleCol.append('\x10');
+        rleCol.append(encodeCpyuaZeroRle80(colRaw.mid(1)));
+        buf.append('\x80');
+        buf.append(static_cast<char>(rleCol.size()));
+        buf.append(rleCol);
+    };
+    appendColMeta(2U, 0x00U, 'A'); // SciDAVis::Y, conflicts with skipped Dataset 2 -> resyncs to A
+    appendColMeta(3U, 0x03U, 'B'); // SciDAVis::X, 3-seqShift=2 conflicts with skipped -> resyncs to B
+    return buf;
+}
 
 } // namespace
 
@@ -345,11 +527,79 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
                                << baseLive << ")");
         }
+
+        // Subtest 3 (P1-3 + rejectEditorModalDialogs): Detaching one dirty OLE object to
+        // standalone must NOT disable g_embeddedServerMode while another live embedded object
+        // exists, and closing an embedded object with an active child modal QDialog must reject
+        // the dialog and tear down cleanly under ASan.
+        {
+            EmbeddedModeGuard80 embGuard(true);
+            MockDeadClientSite80 site1;
+            MockDeadClientSite80 site2;
+            ComPtr<IOleObject> obj1;
+            ComPtr<IOleObject> obj2;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj1))) && obj1,
+                       "80a-3: createGraphObject(obj1) failed");
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj2))) && obj2,
+                       "80a-3: createGraphObject(obj2) failed");
+            CHECK_COND(SUCCEEDED(obj1->SetClientSite(&site1))
+                               && SUCCEEDED(obj2->SetClientSite(&site2)),
+                       "80a-3: SetClientSite failed");
+
+            const QSet<ApplicationWindow *> before1 = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj1->DoVerb(OLEIVERB_OPEN, nullptr, &site1, 0, nullptr, nullptr)),
+                       "80a-3: DoVerb(obj1) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed1 = findNewOleEditor80(before1);
+            CHECK_COND(!ed1.isNull() && ed1->isOleEmbeddedMode(), "80a-3: ed1 open failed");
+
+            const QSet<ApplicationWindow *> before2 = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj2->DoVerb(OLEIVERB_OPEN, nullptr, &site2, 0, nullptr, nullptr)),
+                       "80a-3: DoVerb(obj2) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed2 = findNewOleEditor80(before2);
+            CHECK_COND(!ed2.isNull() && ed2->isOleEmbeddedMode(), "80a-3: ed2 open failed");
+
+            QPointer<QDialog> childDlg = new QDialog(ed2.data());
+            childDlg->setModal(true);
+            childDlg->open();
+            QApplication::processEvents();
+            CHECK_COND(!childDlg.isNull() && childDlg->isVisible(),
+                       "80a-3: child modal QDialog failed to open");
+
+            // Container 1 dies while ed1 is dirty -> ed1 converts to standalone, but obj2 keeps
+            // embedded server mode alive!
+            ed1->saved = false;
+            site1.containerDead = true;
+            SciDAVisOle::runContainerWatchdogTickForTesting();
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(25);
+            CHECK_COND(!ed1.isNull() && !ed1->isOleEmbeddedMode(),
+                       "80a-3: ed1 did not convert to standalone");
+            CHECK_COND(SciDAVisOle::isEmbeddedServerModeForTesting(),
+                       "80a-3: P1-3 regression! g_embeddedServerMode disabled globally while obj2 active");
+
+            // Container 2 dies -> rejects child modal dialog and destroys clean ed2 safely
+            site2.containerDead = true;
+            SciDAVisOle::runContainerWatchdogTickForTesting();
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(35);
+            CHECK_COND(childDlg.isNull() || !childDlg->isVisible(),
+                       "80a-3: rejectEditorModalDialogs did not reject/close child dialog");
+            CHECK_COND(ed2.isNull(), "80a-3: clean ed2 not destroyed after container exit");
+
+            ed1->savedProject();
+            ed1->setAttribute(Qt::WA_DeleteOnClose, true);
+            ed1->close();
+            obj1.Reset();
+            obj2.Reset();
+            pumpEventsMs80(25);
+        }
     }
 #endif
 
     // -------------------------------------------------------------------------
-    // 80b: RecalcManager::Auto preserves Project Undo/Redo stack
+    // 80b: RecalcManager::Auto undo, MultiLayer redo isolation, P0-1/P0-2/P1-1
     // -------------------------------------------------------------------------
     {
         Table *tRec = w80->newTable(5, 2, "T80Rec", "Rec80");
@@ -386,8 +636,8 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         CHECK_COND(ustack->canRedo(),
                    "80b: RecalcManager destroyed Project Redo stack during Undo replay!");
         fitEdited = gRec->curve(QStringLiteral("Rec80Fit"));
-        CHECK_COND(fitEdited != nullptr && !rm->hasDirtyLinks(gRec),
-                   "80b: dirty link remained after Undo");
+        CHECK_COND(fitEdited != nullptr && fitEdited->dataSize() > 0 && !rm->hasDirtyLinks(gRec),
+                   "80b: dirty link or empty curve after Undo");
         const double yEndUndone = fitEdited->y(fitEdited->dataSize() - 1);
         CHECK_COND(std::fabs(yEndUndone - 8.0) < 1e-5,
                    "80b: fit curve did not revert on Undo (got " << yEndUndone << ")");
@@ -395,13 +645,157 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         ustack->redo();
         QCoreApplication::processEvents();
         fitEdited = gRec->curve(QStringLiteral("Rec80Fit"));
-        CHECK_COND(fitEdited != nullptr && !rm->hasDirtyLinks(gRec),
-                   "80b: dirty link remained after Redo");
+        CHECK_COND(fitEdited != nullptr && fitEdited->dataSize() > 0 && !rm->hasDirtyLinks(gRec),
+                   "80b: dirty link or empty curve after Redo");
         const double yEndRedone = fitEdited->y(fitEdited->dataSize() - 1);
         CHECK_COND(std::fabs(yEndRedone - yEndEdited) < 1e-5,
                    "80b: fit curve did not replay on Redo (got " << yEndRedone << " expected "
                                                                  << yEndEdited << ")");
         rm->removeLinksForGraph(gRec);
+
+        // mem_ole_recalc P1: Auto recalc fit must suppress MultiLayer undo stack so table edits
+        // and graph-mask Undo do not push spurious "Fit Curve" entries or wipe ml->canRedo().
+        {
+            Table *tFitMl = w80->newTable(5, 2, "T80FitML", "FitML80");
+            for (int r = 0; r < 5; ++r) {
+                tFitMl->setCell(r, 0, double(r));
+                tFitMl->setCell(r, 1, double(3 * r + 1));
+            }
+            MultiLayer *mlFit =
+                    w80->multilayerPlot(tFitMl, QStringList() << tFitMl->colName(1), Graph::Scatter);
+            Graph *gFit = mlFit ? mlFit->activeGraph() : nullptr;
+            DataCurve *dcFitSrc = gFit ? dynamic_cast<DataCurve *>(gFit->curve(0)) : nullptr;
+            CHECK_COND(gFit && dcFitSrc && mlFit->undoStack(), "80b-ml: setup failed");
+            CHECK_COND(rm->registerLink(w80, gFit, tFitMl, tFitMl->colName(1),
+                                        QStringLiteral("Rec80MLFit"), RecalcManager::OpLinearFit)
+                               > 0,
+                       "80b-ml: registerLink failed");
+            mlFit->undoStack()->clear();
+            gFit->runWithColumnMaskUndo(QStringLiteral("Mask Pt 1"),
+                                        QList<DataCurve *>{ dcFitSrc },
+                                        [&]() { dcFitSrc->maskPoint(1, true); });
+            CHECK_COND(mlFit->undoStack()->count() == 1,
+                       "80b-ml: expected 1 mask undo entry (got "
+                               << mlFit->undoStack()->count() << ")");
+            tFitMl->column(1)->setValueAt(4, 35.0);
+            QCoreApplication::processEvents();
+            CHECK_COND(mlFit->undoStack()->count() == 1,
+                       "80b-ml: Auto recalc pushed spurious Fit Curve onto MultiLayer undoStack!");
+
+            w80->d_workspace.setActiveSubWindow(mlFit);
+            w80->undo();
+            QCoreApplication::processEvents();
+            CHECK_COND(mlFit->undoStack()->canRedo(),
+                       "80b-ml: Auto recalc during graph mask Undo wiped MultiLayer Redo!");
+            rm->removeLinksForGraph(gFit);
+        }
+
+        // P0-1 + P0-2 ASan regression: Auto-recalc OpIIRFilter alongside ROI Mask Region & Clear
+        // All Masks + Project Undo after IIR output table cell edit & Auto recalc retirement.
+        {
+            Table *tIir = w80->newTable(24, 2, "T80IIR", "IIR80");
+            for (int r = 0; r < 24; ++r) {
+                tIir->setCell(r, 0, double(r) * 0.01);
+                tIir->setCell(r, 1, double(r % 5) + 1.0);
+            }
+            MultiLayer *mlIir =
+                    w80->multilayerPlot(tIir, QStringList() << tIir->colName(1), Graph::Line);
+            Graph *gIir = mlIir ? mlIir->activeGraph() : nullptr;
+            CHECK_COND(gIir && gIir->curve(0), "80b-iir: graph setup failed");
+            rm->setRecalcMode(RecalcManager::Auto);
+            QwtPlotCurve *iirCurve = AdvancedSignalProc::iirFilter(
+                    w80, gIir, gIir->curve(0)->title().text(), AdvancedSignalProc::Butterworth,
+                    AdvancedSignalProc::LowPass, 4, 10.0, 25.0, true, 1.0);
+            CHECK_COND(iirCurve != nullptr && rm->activeLinkCount(gIir) == 1,
+                       "80b-iir: iirFilter or link registration failed");
+
+            // P0-1 ASan: ROI Mask Region over all visible curves [source S + Auto-linked IIR F]
+            // triggers recalc retiring F; must NOT UAF F on next iteration!
+            RoiGadgetTool *roi = RoiGadgetTool::attachGadget(w80, gIir, RoiGadgetTool::MaskRegion);
+            CHECK_COND(roi != nullptr, "80b-iir: attachGadget failed");
+            roi->setRoiRect(QRectF(-0.05, -2.0, 0.30, 10.0));
+            const int maskedCnt = roi->applyClusterMask(true);
+            QCoreApplication::processEvents();
+            CHECK_COND(maskedCnt > 0 && tIir->column(1)->isMasked(0),
+                       "80b-iir: ROI applyClusterMask failed (count=" << maskedCnt << ")");
+            RoiGadgetTool::clearGadget(gIir);
+
+            // P0-1 ASan: Clear All Masks on Graph while source & Auto-linked IIR curve share graph
+            w80->d_workspace.setActiveSubWindow(mlIir);
+            w80->clearAllMasksOnGraph();
+            QCoreApplication::processEvents();
+            CHECK_COND(!tIir->column(1)->isMasked(0), "80b-iir: clearAllMasksOnGraph failed");
+
+            // P0-2 ASan: Edit a cell in retired IIR output table -> edit source (Auto recalc
+            // suppresses undo and retires output table) -> press Undo twice (touches column on
+            // retired table) -> Redo + undoStack->clear() without UAF!
+            DataCurve *iirDc = nullptr;
+            for (int i = 0; i < gIir->curves(); ++i) {
+                auto *dc = dynamic_cast<DataCurve *>(gIir->curve(i));
+                if (dc && dc->table() && dc->table() != tIir) {
+                    iirDc = dc;
+                    break;
+                }
+            }
+            CHECK_COND(iirDc && iirDc->table(), "80b-iir: could not find current IIR output table");
+            QPointer<Table> retiredOutTbl(iirDc->table());
+            QTableView *tvOut = retiredOutTbl->findChild<QTableView *>();
+            CHECK_COND(tvOut && tvOut->model(), "80b-iir: IIR output table view/model null");
+            w80->project()->undoStack()->clear();
+            CHECK_COND(tvOut->model()->setData(tvOut->model()->index(2, 1),
+                                               QStringLiteral("77.5"), Qt::EditRole),
+                       "80b-iir: failed to edit cell in IIR output table");
+
+            QTableView *tvSrc = tIir->findChild<QTableView *>();
+            CHECK_COND(tvSrc && tvSrc->model(), "80b-iir: source table view/model null");
+            CHECK_COND(tvSrc->model()->setData(tvSrc->model()->index(3, 1),
+                                               QStringLiteral("12.3"), Qt::EditRole),
+                       "80b-iir: failed to edit cell in source table");
+            QCoreApplication::processEvents();
+
+            w80->d_workspace.setActiveSubWindow(tIir);
+            w80->undo(); // undoes source edit
+            QCoreApplication::processEvents();
+            CHECK_COND(std::fabs(tIir->cell(3, 1) - 4.0) < 1e-6,
+                       "80b-iir: first Undo did not restore source cell");
+            w80->undo(); // P0-2 critical step: undoes cell edit in retired IIR output table!
+            QCoreApplication::processEvents();
+            w80->redo();
+            QCoreApplication::processEvents();
+            w80->project()->undoStack()->clear();
+            QCoreApplication::processEvents();
+            CHECK_COND(retiredOutTbl.isNull(),
+                       "80b-iir: retired output table leaked after Project::undoStack()->clear()");
+            rm->removeLinksForGraph(gIir);
+        }
+
+        // P1-1: Table::scheduleOrRunDependentRecalc runs immediately when Project undo is suppressed
+        {
+            Table *tForm = w80->newTable(3, 2, "T80FormSupp", "FormSupp80");
+            tForm->setColName(0, QStringLiteral("X"));
+            tForm->setColName(1, QStringLiteral("Y"));
+            tForm->setCell(0, 0, 2.0);
+            tForm->setCell(1, 0, 5.0);
+            tForm->setCell(2, 0, 7.0);
+            tForm->setCommand(1, QStringLiteral("col(\"X\") * 3.0"));
+            tForm->recalculate(1, false);
+            CHECK_COND(std::fabs(tForm->cell(1, 1) - 15.0) < 1e-9, "80b-form: initial formula failed");
+
+            {
+                ScopedProjectUndoSuppressor suppress(w80->project());
+                tForm->column(0)->setValueAt(1, 10.0);
+                QCoreApplication::processEvents();
+                CHECK_COND(std::fabs(tForm->cell(1, 1) - 30.0) < 1e-9,
+                           "80b-form: P1-1! formula column stalled while Project undo suppressed (got "
+                                   << tForm->cell(1, 1) << ")");
+            }
+            // Subsequent edit after suppressor exits must still recalculate (flag not stuck!)
+            tForm->column(0)->setValueAt(2, 11.0);
+            QCoreApplication::processEvents();
+            CHECK_COND(std::fabs(tForm->cell(2, 1) - 33.0) < 1e-9,
+                       "80b-form: subsequent edit stalled after suppressed recalc (got "
+                               << tForm->cell(2, 1) << ")");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -459,7 +853,9 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         mlSp->setPageZoom(1.35);
         pumpEventsMs80(20);
         wVis->resize(900, 480);
-        pumpEventsMs80(120);
+        // Poll across 120ms so any accidental auto-fit overwrite fails immediately while
+        // confirming user zoom 1.35 holds after the coalesced 20ms viewport auto-fit window.
+        waitUntilMs80(120, [&]() { return std::fabs(mlSp->pageZoom() - 1.35) > 1e-4; });
         CHECK_COND(std::fabs(mlSp->pageZoom() - 1.35) < 1e-4,
                    "80c: Split viewport resize overwrote explicit user zoom 1.35 with "
                            << mlSp->pageZoom());
@@ -539,9 +935,9 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             }
         }
         CHECK_COND(legId >= 0, "80d: could not locate legend marker ID in textMarkerKeys");
-        Legend *note = new Legend(gMask->plotWidget());
-        note->setText(QStringLiteral("Note80"));
-        const long noteId = gMask->insertTextMarker(note);
+        Legend note(gMask->plotWidget());
+        note.setText(QStringLiteral("Note80"));
+        const long noteId = gMask->insertTextMarker(&note);
         CHECK_COND(noteId >= 0, "80d: insertTextMarker failed");
         gMask->setSelectedMarker(legId, false);
         gMask->setSelectedMarker(noteId, true);
@@ -550,27 +946,83 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         pumpEventsMs80(10);
         gMask->deselectMarker();
         CHECK_COND(!gMask->hasLegend(), "80d: removeLegend() did not remove legend safely");
+
+        // P1-2: Delta-only Graph mask Undo/Redo preserves concurrent Table masks AND tracks row deletion
+        dc->clearMasks();
+        if (mlMask->undoStack())
+            mlMask->undoStack()->clear();
+        gMask->runWithColumnMaskUndo(QStringLiteral("Mask Row 1"), QList<DataCurve *>{ dc },
+                                     [&]() { dc->maskPoint(1, true); });
+        CHECK_COND(tMask->column(1)->isMasked(1) && mlMask->undoStack()->count() == 1,
+                   "80d-delta: failed to mask row 1 via graph mask undo");
+        // Unrelated mask added directly on row 4 from the Table view
+        tMask->column(1)->setMasked(4, true);
+        CHECK_COND(tMask->column(1)->isMasked(4), "80d-delta: failed to mask row 4 on Table");
+
+        mlMask->undoStack()->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(!tMask->column(1)->isMasked(1) && tMask->column(1)->isMasked(4),
+                   "80d-delta: P1-2! Graph mask Undo wiped unrelated Table mask on row 4!");
+
+        mlMask->undoStack()->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(tMask->column(1)->isMasked(1) && tMask->column(1)->isMasked(4),
+                   "80d-delta: Graph mask Redo did not restore row 1 while keeping row 4");
+
+        // Deleting row 0 shifts old row 1 -> row 0 and old row 4 -> row 3; Graph Undo must track index shift!
+        tMask->d_future_table->removeRows(0, 1);
+        QCoreApplication::processEvents();
+        CHECK_COND(tMask->column(1)->isMasked(0) && tMask->column(1)->isMasked(3),
+                   "80d-delta: expected masks at shifted rows 0 and 3 before Undo");
+        mlMask->undoStack()->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(!tMask->column(1)->isMasked(0) && tMask->column(1)->isMasked(3),
+                   "80d-delta: P1-2! Graph mask Undo after row deletion unmasked wrong row!");
     }
 
     // -------------------------------------------------------------------------
-    // 80e: Locale RejectGroupSeparator, ScaleDraw comma ticks, log-axis Fit RSS/X
+    // 80e: Locale RejectGroupSeparator, ScaleDraw, Dialogs, P0-3/P1-4 Log-axis Fit
     // -------------------------------------------------------------------------
     {
+        // num_locale_fit P1: en_US TableModel::setData (default OmitGroupSeparator) must reject
+        // "1,250" on Numeric column rather than passing raw string through String2DoubleFilter
         {
-            LocaleGuard80 deLocale(QLocale(QLocale::German, QLocale::Germany));
-            Table *tDe = w80->newTable(2, 1, "T80De", "De80");
-            tDe->setCell(0, 0, 10.0);
+            QLocale enOmit(QLocale::English, QLocale::UnitedStates);
+            enOmit.setNumberOptions(enOmit.numberOptions() | QLocale::OmitGroupSeparator);
+            LocaleGuard80 enUsLocale(enOmit);
+            Table *tEn = w80->newTable(2, 1, "T80EnGroup", "EnGroup80");
+            tEn->setCell(0, 0, 10.0);
+            QTableView *tvEn = tEn->findChild<QTableView *>();
+            CHECK_COND(tvEn != nullptr && tvEn->model() != nullptr, "80e-en: TableView/model null");
+            QAbstractItemModel *tmEn = tvEn->model();
+            tmEn->setData(tmEn->index(1, 0), QStringLiteral("1,250"), Qt::EditRole);
+            CHECK_COND(tEn->column(0)->isInvalid(1),
+                       "80e-en: P1 regression! TableModel accepted '1,250' in en_US as "
+                               << tEn->cell(1, 0) << " instead of marking invalid");
+        }
+
+        {
+            QLocale deOmit(QLocale::German, QLocale::Germany);
+            deOmit.setNumberOptions(deOmit.numberOptions() | QLocale::OmitGroupSeparator);
+            LocaleGuard80 deLocale(deOmit);
+            Table *tDe = w80->newTable(6, 2, "T80De", "De80");
+            const double xDe[6] = { 1.0, 1.3, 1.6, 1.9, 2.2, 3.0 };
+            for (int r = 0; r < 6; ++r) {
+                tDe->setCell(r, 0, xDe[r]);
+                tDe->setCell(r, 1, 2.0 * xDe[r] * xDe[r] + 1.0);
+            }
             QTableView *tvDe = tDe->findChild<QTableView *>();
             CHECK_COND(tvDe != nullptr && tvDe->model() != nullptr, "80e: TableView/model null");
             QAbstractItemModel *tm = tvDe->model();
-            tm->setData(tm->index(1, 0), QStringLiteral("1.250"), Qt::EditRole);
-            CHECK_COND(!tDe->column(0)->isInvalid(1) && std::fabs(tDe->cell(1, 0) - 1.25) < 1e-9,
+            tm->setData(tm->index(0, 1), QStringLiteral("1.250"), Qt::EditRole);
+            CHECK_COND(!tDe->column(1)->isInvalid(0) && std::fabs(tDe->cell(0, 1) - 1.25) < 1e-9,
                        "80e: de_DE RejectGroupSeparator failed — '1.250' parsed as "
-                               << tDe->cell(1, 0) << " instead of C-decimal 1.25");
-            tm->setData(tm->index(1, 0), QStringLiteral("1,250"), Qt::EditRole);
-            CHECK_COND(!tDe->column(0)->isInvalid(1) && std::fabs(tDe->cell(1, 0) - 1.25) < 1e-9,
+                               << tDe->cell(0, 1) << " instead of C-decimal 1.25");
+            tm->setData(tm->index(0, 1), QStringLiteral("1,250"), Qt::EditRole);
+            CHECK_COND(!tDe->column(1)->isInvalid(0) && std::fabs(tDe->cell(0, 1) - 1.25) < 1e-9,
                        "80e: de_DE decimal comma '1,250' did not parse as 1.25 (got "
-                               << tDe->cell(1, 0) << ")");
+                               << tDe->cell(0, 1) << ")");
+            tDe->setCell(0, 1, 3.0);
 
             ScaleDraw sdComma;
             sdComma.setFormulaString(QStringLiteral("x*1,5"));
@@ -583,41 +1035,220 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             CHECK_COND(std::fabs(sdAvg.transformValue(10.0) - 15.0) < 1e-9,
                        "80e: ScaleDraw multi-arg avg(x,20) corrupted commas (got "
                                << sdAvg.transformValue(10.0) << ")");
+
+            // Dialog locale checks under de_DE: AxesDialog, PlotDialog histogram, FitDialog
+            MultiLayer *mlDe =
+                    w80->multilayerPlot(tDe, QStringList() << tDe->colName(1), Graph::Scatter);
+            Graph *gDe = mlDe ? mlDe->activeGraph() : nullptr;
+            CHECK_COND(gDe != nullptr && gDe->curve(0) != nullptr, "80e-dlg: gDe null");
+
+            {
+                AxesDialogProbe80 axDlg;
+                axDlg.setGraph(gDe);
+                axDlg.setScaleBoundsAndUpdate(QStringLiteral("1,250"), QStringLiteral("2.500"));
+                const QwtScaleDiv *sdX = gDe->plotWidget()->axisScaleDiv(QwtPlot::xBottom);
+                CHECK_COND(sdX && std::fabs(sdX->lowerBound() - 1.25) < 1e-6
+                                   && std::fabs(sdX->upperBound() - 2.5) < 1e-6,
+                           "80e-dlg: AxesDialog de_DE scale parsing wrong ("
+                                   << (sdX ? sdX->lowerBound() : 0.0) << ", "
+                                   << (sdX ? sdX->upperBound() : 0.0) << ")");
+            }
+
+            {
+                PlotDialog pdHist(false, w80);
+                QGroupBox *grpHist = nullptr;
+                for (QGroupBox *gb : pdHist.findChildren<QGroupBox *>()) {
+                    if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
+                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(0, 1)->widget())
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(1, 1)->widget())
+                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(2, 1)->widget())) {
+                            grpHist = gb;
+                            break;
+                        }
+                    }
+                }
+                CHECK_COND(grpHist != nullptr, "80e-dlg: PlotDialog histogram QGroupBox not found");
+                auto *gl = qobject_cast<QGridLayout *>(grpHist->layout());
+                auto *binLe = qobject_cast<QLineEdit *>(gl->itemAtPosition(0, 1)->widget());
+                auto *begLe = qobject_cast<QLineEdit *>(gl->itemAtPosition(1, 1)->widget());
+                auto *endLe = qobject_cast<QLineEdit *>(gl->itemAtPosition(2, 1)->widget());
+                binLe->setText(QStringLiteral("0,5"));
+                begLe->setText(QStringLiteral("1,250"));
+                endLe->setText(QStringLiteral("2.500"));
+                double hb = 0.0, he = 0.0, hbw = 0.0;
+                bool histOk = false;
+                const bool invOk = QMetaObject::invokeMethod(
+                        &pdHist, "evaluateHistogramInputs", Qt::DirectConnection,
+                        Q_RETURN_ARG(bool, histOk), Q_ARG(double *, &hb), Q_ARG(double *, &he),
+                        Q_ARG(double *, &hbw), Q_ARG(bool, false));
+                CHECK_COND(invOk && histOk && std::fabs(hb - 1.25) < 1e-9
+                                   && std::fabs(he - 2.5) < 1e-9
+                                   && std::fabs(hbw - 0.5) < 1e-9,
+                           "80e-dlg: PlotDialog::evaluateHistogramInputs de_DE parsing failed ("
+                                   << hb << ", " << he << ", " << hbw << ")");
+            }
+
+            {
+                EnvVarGuard80 fitIniGuard(
+                        "TORIGRAPH_SETTINGS_INI",
+                        QFile::encodeName(tmp80.filePath(QStringLiteral("fit_de_80.ini"))));
+                FitDialog fdDe(w80);
+                fdDe.setGraph(gDe);
+                CHECK_COND(fdDe.selectRecentModel(QStringLiteral("Polynomial")),
+                           "80e-dlg: selectRecentModel(Polynomial) failed");
+                fdDe.showFitPage();
+                QLineEdit *leFrom = nullptr;
+                QLineEdit *leTo = nullptr;
+                for (QGroupBox *gb : fdDe.findChildren<QGroupBox *>()) {
+                    if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
+                        for (int row = 0; row < gl->rowCount(); ++row) {
+                            auto *lblItem = gl->itemAtPosition(row, 0);
+                            auto *edItem = gl->itemAtPosition(row, 1);
+                            auto *lbl = lblItem ? qobject_cast<QLabel *>(lblItem->widget()) : nullptr;
+                            auto *le = edItem ? qobject_cast<QLineEdit *>(edItem->widget()) : nullptr;
+                            if (!lbl || !le)
+                                continue;
+                            if (lbl->text().startsWith(QLatin1String("From x")))
+                                leFrom = le;
+                            else if (lbl->text().startsWith(QLatin1String("To x")))
+                                leTo = le;
+                        }
+                    }
+                }
+                CHECK_COND(leFrom && leTo, "80e-dlg: FitDialog boxFrom/boxTo not found");
+                leFrom->setText(QStringLiteral("1,250"));
+                leTo->setText(QStringLiteral("2.500"));
+                const int preCurves = gDe->curves();
+                fdDe.accept();
+                QCoreApplication::processEvents();
+                CHECK_COND(gDe->curves() > preCurves,
+                           "80e-dlg: FitDialog::accept under de_DE ('1,250'..'2.500') failed to fit");
+            }
         }
 
-        // Log-axis PolynomialFit / LinearFit finite rss() & positive X curve
-        Table *tLog = w80->newTable(4, 2, "T80LogFit", "LogFit80");
-        for (int r = 0; r < 4; ++r) {
-            tLog->setCell(r, 0, std::pow(2.0, double(r)));
-            tLog->setCell(r, 1, std::pow(10.0, double(r + 1)));
+        // P0-3 + P1-4 + sdk_tests_hygiene 80e: Apparent log-Y LinearFit with excluded y = -5
+        {
+            Table *tLogY = w80->newTable(5, 2, "T80LogYExcl", "LogYExcl80");
+            const double xsY[5] = { 1.0, 2.0, 3.0, 3.5, 4.0 };
+            const double ysY[5] = { 1.1, 9.5, 105.0, -5.0, 980.0 };
+            for (int r = 0; r < 5; ++r) {
+                tLogY->setCell(r, 0, xsY[r]);
+                tLogY->setCell(r, 1, ysY[r]);
+            }
+            MultiLayer *mlLogY =
+                    w80->multilayerPlot(tLogY, QStringList() << tLogY->colName(1), Graph::Scatter);
+            Graph *gLogY = mlLogY ? mlLogY->activeGraph() : nullptr;
+            CHECK_COND(gLogY && gLogY->curve(0), "80e-logy: setup failed");
+            gLogY->setScale(QwtPlot::xBottom, 0.5, 5.0, 0.0, 5, 5, 0);
+            gLogY->setScale(QwtPlot::yLeft, 0.5, 5000.0, 0.0, 5, 5, 1);
+
+            LinearFit lfEx(w80, gLogY, gLogY->curve(0)->title().text());
+            lfEx.setApparentFit(true);
+            lfEx.setSilent(true);
+            lfEx.fit();
+            CHECK_COND(std::isfinite(lfEx.rss()) && lfEx.rss() >= 0.0 && lfEx.rss() < 10000.0,
+                       "80e-logy: LinearFit::rss() invalid for excluded negative Y: " << lfEx.rss());
+            QwtPlotCurve *lfCurve = gLogY->curve(gLogY->curves() - 1);
+            CHECK_COND(lfCurve && lfCurve->dataSize() >= 2, "80e-logy: LinearFit curve missing");
+            for (int i = 0; i < lfCurve->dataSize(); ++i) {
+                CHECK_COND(lfCurve->x(i) > 0.0 && std::isfinite(lfCurve->y(i)),
+                           "80e-logy: LinearFit curve non-positive X or non-finite Y at " << i);
+            }
+
+            // P0-3: createResidualsTable must mark excluded row 3 invalid and compute finite
+            // non-zero Standardized_Residual & Cooks_Distance on active rows {0,1,2,4}.
+            Table *resTbl = lfEx.createResidualsTable();
+            CHECK_COND(resTbl && resTbl->numRows() == 5 && resTbl->numCols() >= 7,
+                       "80e-logy: createResidualsTable failed");
+            for (int col : { 2, 3, 4, 5, 6 }) {
+                CHECK_COND(resTbl->column(col)->isInvalid(3),
+                           "80e-logy: P0-3! excluded row 3 col " << col << " not marked invalid");
+            }
+            bool anyNonZeroStdRes = false;
+            double manualActiveRss = 0.0;
+            for (int r : { 0, 1, 2, 4 }) {
+                CHECK_COND(!resTbl->column(2)->isInvalid(r) && !resTbl->column(4)->isInvalid(r)
+                                   && !resTbl->column(6)->isInvalid(r),
+                           "80e-logy: active row " << r << " unexpectedly marked invalid");
+                CHECK_COND(std::isfinite(resTbl->cell(r, 4)) && std::isfinite(resTbl->cell(r, 6)),
+                           "80e-logy: active row " << r << " has non-finite residual/Cook metric");
+                if (std::fabs(resTbl->cell(r, 4)) > 1e-6)
+                    anyNonZeroStdRes = true;
+                const double diff = resTbl->cell(r, 1) - resTbl->cell(r, 2);
+                manualActiveRss += diff * diff;
+            }
+            CHECK_COND(anyNonZeroStdRes,
+                       "80e-logy: P0-3! Standardized_Residual was identically 0.0 on all active rows");
+            CHECK_COND(std::fabs(lfEx.rss() - manualActiveRss) < 1e-6,
+                       "80e-logy: rss()=" << lfEx.rss() << " != manualActiveRss=" << manualActiveRss);
+
+            // P0-3: anovaFValue must match active-only TSS/RSS (not polluted by y=-5)
+            double activeMean = 0.0;
+            for (int r : { 0, 1, 2, 4 })
+                activeMean += ysY[r];
+            activeMean /= 4.0;
+            double activeTss = 0.0;
+            for (int r : { 0, 1, 2, 4 })
+                activeTss += (ysY[r] - activeMean) * (ysY[r] - activeMean);
+            const double expectedF =
+                    std::max(0.0, activeTss - lfEx.rss()) / (lfEx.rss() / 2.0);
+            const double gotF = lfEx.anovaFValue();
+            CHECK_COND(std::isfinite(gotF) && std::fabs(gotF - expectedF) <= 1e-4 * (1.0 + expectedF),
+                       "80e-logy: P0-3! anovaFValue mismatch (got " << gotF << " expected "
+                                                                     << expectedF << ")");
+
+            // P1-4: Residual Bootstrap (mode == 0) must succeed and preserve rSquare()
+            const double r2BeforeBoot = lfEx.rSquare();
+            const Fit::BootstrapResult bootRes = lfEx.runBootstrapCI(25, 0.95, 0);
+            CHECK_COND(bootRes.valid && bootRes.nSuccess > 0,
+                       "80e-logy: P1-4! residual bootstrap failed on apparent log fit with exclusion");
+            CHECK_COND(std::fabs(lfEx.rSquare() - r2BeforeBoot) < 1e-12,
+                       "80e-logy: runBootstrapCI mutated custom rSquare() from "
+                               << r2BeforeBoot << " to " << lfEx.rSquare());
         }
-        MultiLayer *mlLog =
-                w80->multilayerPlot(tLog, QStringList() << tLog->colName(1), Graph::Scatter);
-        Graph *gLog = mlLog ? mlLog->activeGraph() : nullptr;
-        CHECK_COND(gLog != nullptr && gLog->curve(0) != nullptr, "80e: gLog null");
-        gLog->setScale(QwtPlot::xBottom, 0.5, 16.0, 0.0, 5, 5, 1);
-        gLog->setScale(QwtPlot::yLeft, 1.0, 100000.0, 0.0, 5, 5, 1);
 
-        LinearFit lf(w80, gLog, gLog->curve(0)->title().text());
-        lf.setApparentFit(true);
-        lf.setSilent(true);
-        lf.fit();
-        CHECK_COND(std::isfinite(lf.rss()) && lf.rss() >= 0.0,
-                   "80e: apparent log LinearFit::rss() not finite: " << lf.rss());
+        // Log-X PolynomialFit with unsorted X + non-positive leading/trailing X
+        {
+            Table *tLogX = w80->newTable(5, 2, "T80LogXUnsort", "LogXUnsort80");
+            const double xsX[5] = { -2.0, 10.0, 1.0, 100.0, 0.0 };
+            const double ysX[5] = { 5.0, 10.0, 2.0, 100.0, 3.0 };
+            for (int r = 0; r < 5; ++r) {
+                tLogX->setCell(r, 0, xsX[r]);
+                tLogX->setCell(r, 1, ysX[r]);
+            }
+            MultiLayer *mlLogX =
+                    w80->multilayerPlot(tLogX, QStringList() << tLogX->colName(1), Graph::Scatter);
+            Graph *gLogX = mlLogX ? mlLogX->activeGraph() : nullptr;
+            CHECK_COND(gLogX && gLogX->curve(0), "80e-logx: setup failed");
+            gLogX->setScale(QwtPlot::xBottom, 0.5, 200.0, 0.0, 5, 5, 1);
+            gLogX->setScale(QwtPlot::yLeft, 0.5, 200.0, 0.0, 5, 5, 0);
 
-        QString curveName = gLog->curve(0)->title().text();
-        PolynomialFit pf(w80, gLog, curveName, 2, false);
-        pf.setApparentFit(true);
-        pf.setSilent(true);
-        pf.fit();
-        CHECK_COND(std::isfinite(pf.rss()) && pf.rss() >= 0.0,
-                   "80e: apparent log PolynomialFit::rss() not finite: " << pf.rss());
-        CHECK_COND(gLog->curves() >= 2, "80e: fit curve not added to gLog");
-        QwtPlotCurve *fitC = gLog->curve(gLog->curves() - 1);
-        CHECK_COND(fitC != nullptr && fitC->dataSize() >= 2, "80e: fit curve empty");
-        for (int i = 0; i < fitC->dataSize(); ++i) {
-            CHECK_COND(fitC->x(i) > 0.0 && std::isfinite(fitC->y(i)),
-                       "80e: log-axis fit curve produced non-positive X or non-finite Y at " << i);
+            QString unsortCurve = gLogX->curve(0)->title().text();
+            PolynomialFit pfUnsort(w80, gLogX, unsortCurve, 1, false);
+            pfUnsort.setApparentFit(true);
+            pfUnsort.setSilent(true);
+            pfUnsort.fit();
+            CHECK_COND(std::isfinite(pfUnsort.rss()) && pfUnsort.rss() >= 0.0,
+                       "80e-logx: PolynomialFit::rss() not finite: " << pfUnsort.rss());
+            CHECK_COND(std::isfinite(pfUnsort.anovaFValue()),
+                       "80e-logx: PolynomialFit::anovaFValue() not finite");
+            const Fit::BootstrapResult bootPoly = pfUnsort.runBootstrapCI(20, 0.95, 0);
+            CHECK_COND(bootPoly.valid && bootPoly.nSuccess > 0,
+                       "80e-logx: PolynomialFit residual bootstrap failed");
+            QwtPlotCurve *fitC = gLogX->curve(gLogX->curves() - 1);
+            CHECK_COND(fitC != nullptr && fitC->dataSize() >= 2, "80e-logx: fit curve empty");
+            double minCx = std::numeric_limits<double>::infinity();
+            double maxCx = -std::numeric_limits<double>::infinity();
+            for (int i = 0; i < fitC->dataSize(); ++i) {
+                CHECK_COND(fitC->x(i) > 0.0 && std::isfinite(fitC->y(i)),
+                           "80e-logx: PolynomialFit curve non-positive X at " << i);
+                minCx = std::min(minCx, fitC->x(i));
+                maxCx = std::max(maxCx, fitC->x(i));
+            }
+            CHECK_COND(minCx >= 0.99 && maxCx <= 100.01 && maxCx > 50.0,
+                       "80e-logx: curve X range [" << minCx << ", " << maxCx
+                                                   << "] did not match positive data [1, 100]");
         }
     }
 
@@ -684,7 +1315,7 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                    "80f: Graph3D::getTable() dangled non-null after Table close");
         g3d->updateScales(0.0, 5.0, 0.0, 10.0, 0.0, 15.0);
 
-        // I18n canonical Export PDF + Paste Colors & Symbols Only + EN quickGuideUrl
+        // I18n canonical Export PDF + exact Paste Colors & Symbols Only + EN quickGuideUrl
         const QString jaExportPdf =
                 ToriGraphFullJapaneseTranslator::lookupJapanese(QStringLiteral("Export PDF"));
         CHECK_COND(jaExportPdf
@@ -693,8 +1324,246 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                    "80f: Export PDF JA translation mismatch");
         const QString jaPasteStyle = ToriGraphFullJapaneseTranslator::lookupJapanese(
                 QStringLiteral("Paste Colors & Symbols Only"));
-        CHECK_COND(!jaPasteStyle.isEmpty(),
-                   "80f: missing JA translation for Paste Colors & Symbols Only");
+        CHECK_COND(jaPasteStyle
+                           == QString::fromUtf8(
+                                   "\xE8\x89\xB2\xE3\x83\xBB\xE3\x82\xB7\xE3\x83\xB3\xE3\x83\x9C"
+                                   "\xE3\x83\xAB\xE3\x81\xAE\xE3\x81\xBF\xE8\xB2\xBC\xE3\x82\x8A"
+                                   "\xE4\xBB\x98\xE3\x81\x91"),
+                   "80f: Paste Colors & Symbols Only exact JA mismatch (got "
+                           << jaPasteStyle.toUtf8().constData() << ")");
+
+        // Edit menu + Edit -> Paste Format Special submenu Alt mnemonic uniqueness in EN & JA
+        auto checkMenuNoDupMnemonics = [](const QMenu *menu, const QString &label) {
+            if (!menu)
+                return std::make_pair(false, QStringLiteral("null menu: ") + label);
+            QMap<QChar, QString> seen;
+            static const QRegularExpression reEn(QStringLiteral("(?:^|[^&])&([A-Za-z])"));
+            static const QRegularExpression reJa(QStringLiteral("\\(&([A-Za-z])\\)"));
+            for (const QAction *act : menu->actions()) {
+                if (!act || act->isSeparator())
+                    continue;
+                const QString txt = act->text();
+                QStringList letters;
+                auto itJa = reJa.globalMatch(txt);
+                while (itJa.hasNext())
+                    letters << itJa.next().captured(1).toUpper();
+                if (letters.isEmpty()) {
+                    auto itEn = reEn.globalMatch(txt);
+                    while (itEn.hasNext())
+                        letters << itEn.next().captured(1).toUpper();
+                }
+                for (const QString &l : letters) {
+                    const QChar ch = l.at(0);
+                    if (seen.contains(ch)) {
+                        return std::make_pair(
+                                false,
+                                QStringLiteral("%1: duplicate Alt+%2 between '%3' and '%4'")
+                                        .arg(label, ch, seen.value(ch), txt));
+                    }
+                    seen.insert(ch, txt);
+                }
+            }
+            return std::make_pair(true, QString());
+        };
+        for (const QString &lang : QStringList{ QStringLiteral("en"), QStringLiteral("ja") }) {
+            w80->switchToLanguage(lang);
+            QCoreApplication::processEvents();
+            QMenu *editMenu = nullptr;
+            if (w80->menuBar()) {
+                for (QAction *topAct : w80->menuBar()->actions()) {
+                    if (topAct && topAct->menu()
+                        && (topAct->text().contains(QLatin1String("Edit"), Qt::CaseInsensitive)
+                            || topAct->text().contains(QStringLiteral("\xE7\xB7\xA8\xE9\x9B\x86")))) {
+                        editMenu = topAct->menu();
+                        break;
+                    }
+                }
+            }
+            CHECK_COND(editMenu != nullptr, "80f: could not locate Edit menu for lang=" << lang.toStdString());
+            const auto editRes = checkMenuNoDupMnemonics(editMenu, QStringLiteral("Edit/") + lang);
+            CHECK_COND(editRes.first, "80f-mnem: " << editRes.second.toUtf8().constData());
+            QMenu *pasteSpecial = nullptr;
+            for (QAction *ea : editMenu->actions()) {
+                if (ea && ea->menu()) {
+                    pasteSpecial = ea->menu();
+                    break;
+                }
+            }
+            CHECK_COND(pasteSpecial != nullptr,
+                       "80f: could not locate Paste Format Special submenu for lang=" << lang.toStdString());
+            const auto subRes =
+                    checkMenuNoDupMnemonics(pasteSpecial, QStringLiteral("PasteSpecial/") + lang);
+            CHECK_COND(subRes.first, "80f-mnem: " << subRes.second.toUtf8().constData());
+        }
+
+        // GraphDigitizer calibration labels must have buddies so '&&' renders as single '&'
+        w80->switchToLanguage(QStringLiteral("en"));
+        QCoreApplication::processEvents();
+        {
+            int anchorChecked = 0;
+            bool buddyOk = true;
+            QTimer probeTimer(w80);
+            probeTimer.setInterval(20);
+            int ticks = 0;
+            QObject::connect(&probeTimer, &QTimer::timeout, w80, [&]() {
+                ++ticks;
+                if (auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget())) {
+                    const QList<QLabel *> lbls = dlg->findChildren<QLabel *>();
+                    for (QLabel *lbl : lbls) {
+                        if (lbl && lbl->text().contains(QLatin1String("Anchor"))) {
+                            ++anchorChecked;
+                            if (!lbl->buddy() || !lbl->text().contains(QLatin1String("&&")))
+                                buddyOk = false;
+                        }
+                    }
+                    probeTimer.stop();
+                    dlg->reject();
+                } else if (ticks > 60) {
+                    probeTimer.stop();
+                }
+            });
+            probeTimer.start();
+            GraphDigitizer::showDigitizerDialog(w80);
+            probeTimer.stop();
+            CHECK_COND(anchorChecked == 4 && buddyOk,
+                       "80f-dig: GraphDigitizer calibration Anchor labels missing buddies (checked="
+                               << anchorChecked << " buddyOk=" << buddyOk << ")");
+        }
+
+        // Parse CPYUA skipped dataset resync regression (ImportOPJU D4-8 + cand.skipped)
+        {
+            const QByteArray cpyuaBytes = buildSyntheticCpyuaSkippedBuffer80();
+            const QString cpyuaPath = tmp80.filePath(QStringLiteral("skipped_resync_80.opju"));
+            {
+                QFile cf(cpyuaPath);
+                CHECK_COND(cf.open(QIODevice::WriteOnly), "80f-opju: write failed");
+                cf.write(cpyuaBytes);
+            }
+            CHECK_COND(ImportOPJU::isCpyuaOpjuFile(cpyuaPath),
+                       "80f-opju: synthetic buffer not recognized as CPYUA");
+            AppWinGuard80 wOpju(new ApplicationWindow());
+            wOpju->applyUserSettings();
+            wOpju->setHeadlessMode(true);
+            QString opjuErr;
+            ImportOPJU::ImportStats opjuStats;
+            CHECK_COND(ImportOPJU::importFile(wOpju.get(), cpyuaPath, &opjuErr, &opjuStats),
+                       "80f-opju: importFile failed: " << opjuErr.toStdString());
+            Table *impTbl = wOpju->table(QStringLiteral("Book80"));
+            CHECK_COND(impTbl != nullptr && impTbl->numCols() == 2 && impTbl->numRows() == 3,
+                       "80f-opju: Book80 table missing or wrong dimensions");
+            CHECK_COND(impTbl->column(0)->name() == QStringLiteral("A")
+                               && impTbl->column(0)->plotDesignation() == SciDAVis::Y,
+                       "80f-opju: Book80_A did not get Y designation via cand.skipped resync!");
+            CHECK_COND(impTbl->column(1)->name() == QStringLiteral("B")
+                               && impTbl->column(1)->plotDesignation() == SciDAVis::X,
+                       "80f-opju: skipped Dataset 2 broke X designation resync onto Dataset 3 'B'!");
+            CHECK_COND(std::fabs(impTbl->cell(0, 1) - 10.0) < 1e-6
+                               && std::fabs(impTbl->cell(2, 1) - 30.0) < 1e-6,
+                       "80f-opju: wrong numeric values decoded after skipped dataset");
+        }
+
+        // Visible window tests: QuickStart & Split grab_gui_diagnostic + Inspector Tree Key_Delete
+        {
+            AppWinGuard80 wDiag(new ApplicationWindow());
+            wDiag->applyUserSettings();
+            wDiag->confirmCloseTable = false;
+            wDiag->confirmClosePlot2D = false;
+            wDiag->confirmClosePlot3D = false;
+            wDiag->confirmCloseFolder = false;
+            wDiag->resize(1366, 768);
+            wDiag->show();
+            QCoreApplication::processEvents();
+            PythonAutomationServer *srv80 = wDiag->pythonAutomationServer();
+            CHECK_COND(srv80 != nullptr, "80f-diag: pythonAutomationServer null");
+
+            // (1) QuickStart + expand_inspector (NO scroll_inspector) -> inspector_clipped_bottom == false
+            const QString qsPng = tmp80.filePath(QStringLiteral("qs_80f.png"));
+            QJsonObject reqQs;
+            reqQs["jsonrpc"] = "2.0";
+            reqQs["id"] = 8001;
+            reqQs["method"] = "app.grab_gui_diagnostic";
+            reqQs["params"] = QJsonObject{
+                { "path", qsPng },
+                { "width", 1366 },
+                { "height", 768 },
+                { "expand_inspector", true },
+            };
+            const QJsonObject resQs = srv80->handleRpcRequest(reqQs).value("result").toObject();
+            CHECK_COND(resQs.value("ok").toBool()
+                               && !resQs.value("inspector_clipped_bottom").toBool(),
+                       "80f-diag: QuickStart expand_inspector misreported inspector_clipped_bottom!");
+
+            // (2) Split mode resize + 45ms settle + GraphInspectorDock d_object_tree Key_Delete
+            Table *tDiag = wDiag->newTable(5, 2, "T80Diag", "Diag80");
+            for (int r = 0; r < 5; ++r) {
+                tDiag->setCell(r, 0, double(r));
+                tDiag->setCell(r, 1, double(r * 2 + 1));
+            }
+            MultiLayer *mlDiag =
+                    wDiag->multilayerPlot(tDiag, QStringList() << tDiag->colName(1), Graph::Scatter);
+            Graph *gDiag = mlDiag ? mlDiag->activeGraph() : nullptr;
+            CHECK_COND(gDiag != nullptr && gDiag->curves() == 1, "80f-diag: mlDiag setup failed");
+            const QString splitPng = tmp80.filePath(QStringLiteral("split_80f.png"));
+            QJsonObject reqSplit;
+            reqSplit["jsonrpc"] = "2.0";
+            reqSplit["id"] = 8002;
+            reqSplit["method"] = "app.grab_gui_diagnostic";
+            reqSplit["params"] = QJsonObject{
+                { "path", splitPng },
+                { "width", 1366 },
+                { "height", 768 },
+                { "workspace_mode", "split" },
+                { "split_ratio", 0.40 },
+            };
+            const QJsonObject resSplit =
+                    srv80->handleRpcRequest(reqSplit).value("result").toObject();
+            CHECK_COND(resSplit.value("ok").toBool() && QFileInfo(splitPng).size() > 1000,
+                       "80f-diag: Split grab_gui_diagnostic failed");
+
+            // GraphInspectorDock object tree Qt::Key_Delete deletes selected curve
+            GraphInspectorDock *dock80 = wDiag->graphInspectorDock();
+            CHECK_COND(dock80 != nullptr && dock80->objectTree() != nullptr,
+                       "80f-insp: dock/objectTree null");
+            dock80->show();
+            dock80->setCollapsedRail(false);
+            dock80->setTargetMultiLayer(mlDiag, true);
+            QCoreApplication::processEvents();
+            QTreeWidget *tree = dock80->objectTree();
+            QTreeWidgetItem *curveItem = nullptr;
+            const int curveKind = static_cast<int>(Graph::GraphSelection::Curve);
+            for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+                QTreeWidgetItem *item = *it;
+                const int itemKind = item->data(0, Qt::UserRole + 1).toInt();
+                const int itemPid = item->data(0, Qt::UserRole + 2).toInt();
+                if (item->childCount() == 0 && itemKind == curveKind && itemPid == 0) {
+                    curveItem = item;
+                    break;
+                }
+                if (!curveItem && item->childCount() == 0
+                    && item->text(0).contains(gDiag->curve(0)->title().text())) {
+                    curveItem = item;
+                }
+            }
+            if (!curveItem) {
+                for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+                    if ((*it)->childCount() == 0
+                        && (*it)->text(0).contains(QLatin1String("Diag80"))) {
+                        curveItem = *it;
+                        break;
+                    }
+                }
+            }
+            CHECK_COND(curveItem != nullptr, "80f-insp: curve tree item not found");
+            tree->setCurrentItem(curveItem);
+            tree->setFocus(Qt::ShortcutFocusReason);
+            QCoreApplication::processEvents();
+            QKeyEvent delEv(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+            QCoreApplication::sendEvent(tree, &delEv);
+            QCoreApplication::processEvents();
+            CHECK_COND(gDiag->curves() == 0,
+                       "80f-insp: Key_Delete on GraphInspectorDock objectTree did not delete curve (curves="
+                               << gDiag->curves() << ")");
+        }
 
         w80->switchToLanguage(QStringLiteral("en"));
         QCoreApplication::processEvents();

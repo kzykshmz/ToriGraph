@@ -2498,6 +2498,16 @@ int liveGraphObjectCountForTesting()
     return g_liveGraphObjects.size();
 }
 
+bool isEmbeddedServerModeForTesting()
+{
+    return g_embeddedServerMode;
+}
+
+void setEmbeddedServerModeForTesting(bool on)
+{
+    g_embeddedServerMode = on;
+}
+
 bool initializeOleServer(bool embeddedMode)
 {
     if (!g_oleInitialized) {
