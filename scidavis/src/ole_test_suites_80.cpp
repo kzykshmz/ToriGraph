@@ -2,6 +2,7 @@
 #include "Graph3D.h"
 #include "GraphInspectorDock.h"
 #include "ImportOPJU.h"
+#include "Plot3DDialog.h"
 #include "PythonAutomationServer.h"
 #include "ScaleDraw.h"
 #include "core/Project.h"
@@ -11,6 +12,7 @@
 #include <QAbstractItemModel>
 #include <QCheckBox>
 #include <QColorDialog>
+#include <QContextMenuEvent>
 #include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
@@ -3365,8 +3367,10 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                            << ", gNull=" << gAxisTitleG.isNull() << ")");
                     }
 
-                    // Subtest F2 (Round 12 ASan): RichTextBarEntry::menuUnits LanguageChange
-                    // menu-count stability when closed, and safe teardown when popped visible.
+                    // Subtest F2 (Round 12 + 13 ASan): RichTextBarEntry::menuUnits synchronous
+                    // submenu deletion on LanguageChange when closed, and safe deferred close
+                    // + rebuild when LanguageChange fires while popped visible, plus direct
+                    // dock destruction mid-open menuUnits.
                     {
                         wDiag->switchToLanguage(QStringLiteral("en"));
                         QCoreApplication::processEvents();
@@ -3378,15 +3382,6 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                         tmpDockF2->setTargetMultiLayer(mlModal, true);
                         tmpDockF2->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
                         QCoreApplication::processEvents();
-
-                        const int menusBeforeF2 = wDiag->findChildren<QMenu *>().size();
-                        wDiag->switchToLanguage(QStringLiteral("ja"));
-                        wDiag->switchToLanguage(QStringLiteral("en"));
-                        QCoreApplication::processEvents();
-                        const int menusAfterClosedF2 = wDiag->findChildren<QMenu *>().size();
-                        CHECK_COND(menusAfterClosedF2 == menusBeforeF2,
-                                   "80f-insp-modal-uaf-F2: closed Units submenu LanguageChange leaked menus ("
-                                           << menusBeforeF2 << " -> " << menusAfterClosedF2 << ")");
 
                         QToolButton *btnUnitF2 = nullptr;
                         for (QToolButton *tb : tmpDockF2->findChildren<QToolButton *>()) {
@@ -3400,11 +3395,42 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                 break;
                             }
                         }
-                        CHECK_COND(btnUnitF2 != nullptr,
+                        CHECK_COND(btnUnitF2 != nullptr && btnUnitF2->menu() != nullptr,
                                    "80f-insp-modal-uaf-F2: visible Units InstantPopup button not found");
+
+                        // Closed check: send ONLY LanguageChange (do NOT flush DeferredDelete).
+                        // Synchronous `delete sub` must immediately null oldSubBeforeF2 and keep count == 2.
+                        const QList<QMenu *> subsBeforeF2 = btnUnitF2->menu()->findChildren<QMenu *>(
+                                QString(), Qt::FindDirectChildrenOnly);
+                        CHECK_COND(subsBeforeF2.size() == 2,
+                                   "80f-insp-modal-uaf-F2: expected 2 Units submenus before LanguageChange (got "
+                                           << subsBeforeF2.size() << ")");
+                        QPointer<QMenu> oldSubBeforeF2(subsBeforeF2.first());
+
+                        wDiag->switchToLanguage(QStringLiteral("ja"));
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::LanguageChange);
+                        const QList<QMenu *> subsAfterJaF2 = btnUnitF2->menu()->findChildren<QMenu *>(
+                                QString(), Qt::FindDirectChildrenOnly);
+                        CHECK_COND(oldSubBeforeF2.isNull() && subsAfterJaF2.size() == 2,
+                                   "80f-insp-modal-uaf-F2: closed Units submenu did not synchronously delete old submenu (null="
+                                           << oldSubBeforeF2.isNull()
+                                           << ", count=" << subsAfterJaF2.size() << ")");
+
+                        wDiag->switchToLanguage(QStringLiteral("en"));
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::LanguageChange);
+                        QCoreApplication::processEvents();
+
+                        // Visible popup check: deliver LanguageChange WHILE menuUnits is popped visible.
+                        const QList<QMenu *> subsVisiblePreF2 = btnUnitF2->menu()->findChildren<QMenu *>(
+                                QString(), Qt::FindDirectChildrenOnly);
+                        CHECK_COND(subsVisiblePreF2.size() == 2,
+                                   "80f-insp-modal-uaf-F2: expected 2 Units submenus before visible popup test");
+                        QPointer<QMenu> oldSubVisibleF2(subsVisiblePreF2.first());
 
                         int ticksF2 = 0;
                         bool sawUnitsPopupF2 = false;
+                        bool rebuiltWhileVisibleF2 = false;
+                        bool oldSubDeferredF2 = false;
                         QTimer timerF2;
                         timerF2.setInterval(15);
                         QObject::connect(&timerF2, &QTimer::timeout, [&]() {
@@ -3421,6 +3447,11 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                 return;
                             sawUnitsPopupF2 = true;
                             wDiag->switchToLanguage(QStringLiteral("ja"));
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::LanguageChange);
+                            const QList<QMenu *> subsNow = popup->findChildren<QMenu *>(
+                                    QString(), Qt::FindDirectChildrenOnly);
+                            oldSubDeferredF2 = !oldSubVisibleF2.isNull();
+                            rebuiltWhileVisibleF2 = (!popup->isVisible() && subsNow.size() >= 2);
                             if (tmpDockF2)
                                 delete tmpDockF2.data();
                             if (auto *ap = QApplication::activePopupWidget())
@@ -3432,9 +3463,66 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                         wDiag->switchToLanguage(QStringLiteral("en"));
                         QCoreApplication::processEvents();
                         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-                        CHECK_COND(sawUnitsPopupF2 && tmpDockF2.isNull(),
+                        CHECK_COND(sawUnitsPopupF2 && rebuiltWhileVisibleF2 && oldSubDeferredF2
+                                           && oldSubVisibleF2.isNull() && tmpDockF2.isNull(),
                                    "80f-insp-modal-uaf-F2: active menuUnits LanguageChange + dock teardown failed (saw="
-                                           << sawUnitsPopupF2 << ", null=" << tmpDockF2.isNull()
+                                           << sawUnitsPopupF2 << ", rebuilt=" << rebuiltWhileVisibleF2
+                                           << ", deferred=" << oldSubDeferredF2
+                                           << ", subNullAfter=" << oldSubVisibleF2.isNull()
+                                           << ", dockNull=" << tmpDockF2.isNull() << ")");
+
+                        // Direct dock destruction mid-open menuUnits (without prior LanguageChange)
+                        QPointer<GraphInspectorDock> tmpDockF2b = new GraphInspectorDock(wDiag);
+                        tmpDockF2b->setFloating(true);
+                        tmpDockF2b->show();
+                        tmpDockF2b->setCollapsedRail(false);
+                        tmpDockF2b->setTargetMultiLayer(mlModal, true);
+                        tmpDockF2b->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
+                        QCoreApplication::processEvents();
+                        QToolButton *btnUnitF2b = nullptr;
+                        for (QToolButton *tb : tmpDockF2b->findChildren<QToolButton *>()) {
+                            if (tb && tb->isVisible()
+                                && tb->popupMode() == QToolButton::InstantPopup
+                                && tb->menu() != nullptr
+                                && tb->property("_tg_tip_fmt").toString()
+                                        == QLatin1String(
+                                                "Insert Symbol, Unit, or Journal Axis Template")) {
+                                btnUnitF2b = tb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnUnitF2b != nullptr,
+                                   "80f-insp-modal-uaf-F2b: visible Units button not found");
+                        int ticksF2b = 0;
+                        bool sawUnitsPopupF2b = false;
+                        QTimer timerF2b;
+                        timerF2b.setInterval(15);
+                        QObject::connect(&timerF2b, &QTimer::timeout, [&]() {
+                            ++ticksF2b;
+                            if (ticksF2b > 80) {
+                                timerF2b.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawUnitsPopupF2b)
+                                return;
+                            sawUnitsPopupF2b = true;
+                            if (tmpDockF2b)
+                                delete tmpDockF2b.data();
+                            if (auto *ap = QApplication::activePopupWidget())
+                                ap->close();
+                        });
+                        timerF2b.start();
+                        btnUnitF2b->showMenu();
+                        timerF2b.stop();
+                        QCoreApplication::processEvents();
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                        CHECK_COND(sawUnitsPopupF2b && tmpDockF2b.isNull(),
+                                   "80f-insp-modal-uaf-F2b: direct menuUnits dock destruction failed (saw="
+                                           << sawUnitsPopupF2b << ", null=" << tmpDockF2b.isNull()
                                            << ")");
                     }
 
@@ -3655,6 +3743,385 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                         const bool updI2 = ad2.updatePlot();
                         CHECK_COND(!updI2,
                                    "80f-insp-modal-uaf-I2: updatePlot succeeded on destroyed Graph");
+                    }
+
+                    // Subtest J (Round 13 ASan): PlotDialog SelfEditDepthGuard + non-self modal
+                    // QMessageBox/QDialog/parentless QMenu + unified QPointer<MultiLayer>/<Graph>.
+                    {
+                        Table *tHistJ = wDiag->newTable(6, 2, "T80PlotHistJ", "HistJ80");
+                        for (int r = 0; r < 6; ++r) {
+                            tHistJ->setCell(r, 0, double(r));
+                            tHistJ->setCell(r, 1, double(r % 3 + 1));
+                        }
+                        MultiLayer *mlHistJ = wDiag->multilayerPlot(
+                                tHistJ, QStringList() << tHistJ->colName(1), Graph::Histogram);
+                        CHECK_COND(mlHistJ && mlHistJ->activeGraph(),
+                                   "80f-insp-modal-uaf-J1: mlHistJ setup failed");
+                        mlHistJ->askOnCloseEvent(false);
+
+                        // J1: commitParamsForItem + evaluateHistogramInputs + quit() mid-QMessageBox
+                        QPointer<PlotDialog> pd1 = new PlotDialog(true, wDiag);
+                        pd1->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd1->setMultiLayer(mlHistJ);
+                        pd1->show();
+                        pd1->selectCurve(0);
+                        QCoreApplication::processEvents();
+
+                        QCheckBox *chkAutoJ = nullptr;
+                        for (QCheckBox *cb : pd1->findChildren<QCheckBox *>()) {
+                            if (cb && cb->text().contains(QStringLiteral("Automatic Binning"))) {
+                                chkAutoJ = cb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(chkAutoJ != nullptr,
+                                   "80f-insp-modal-uaf-J1: Automatic Binning checkbox not found");
+                        QWidget *histPageJ = chkAutoJ->parentWidget();
+                        if (QTabWidget *twJ = pd1->findChild<QTabWidget *>())
+                            twJ->setCurrentWidget(histPageJ);
+                        chkAutoJ->setChecked(false);
+                        if (QGroupBox *grpHJ = histPageJ ? histPageJ->findChild<QGroupBox *>() : nullptr) {
+                            for (QLineEdit *le : grpHJ->findChildren<QLineEdit *>()) {
+                                if (le)
+                                    le->setText(QString());
+                            }
+                        }
+                        QCoreApplication::processEvents();
+
+                        int ticksJ1 = 0;
+                        bool sawPdHistMsg = false;
+                        QTimer timerJ1;
+                        timerJ1.setInterval(15);
+                        QObject::connect(&timerJ1, &QTimer::timeout, [&]() {
+                            ++ticksJ1;
+                            if (ticksJ1 > 80) {
+                                timerJ1.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *mb = qobject_cast<QMessageBox *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawPdHistMsg) {
+                                    sawPdHistMsg = true;
+                                    if (pd1)
+                                        delete pd1.data();
+                                    mb->reject();
+                                }
+                            }
+                        });
+                        timerJ1.start();
+                        QMetaObject::invokeMethod(pd1.data(), "quit", Qt::DirectConnection);
+                        timerJ1.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawPdHistMsg && pd1.isNull(),
+                                   "80f-insp-modal-uaf-J1: PlotDialog commitParamsForItem mid-QMessageBox UAF guard failed (saw="
+                                           << sawPdHistMsg << ", null=" << pd1.isNull() << ")");
+
+                        // J2a: openColorPaletteEditor with pd2 destroyed mid-QDialog
+                        MultiLayer *mlPdJ = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        CHECK_COND(mlPdJ && mlPdJ->activeGraph(),
+                                   "80f-insp-modal-uaf-J2: mlPdJ setup failed");
+                        mlPdJ->askOnCloseEvent(false);
+
+                        QPointer<PlotDialog> pd2 = new PlotDialog(true, wDiag);
+                        pd2->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd2->setMultiLayer(mlPdJ);
+                        pd2->selectCurve(0);
+                        int ticksJ2a = 0;
+                        bool sawPalDlg = false;
+                        QTimer timerJ2a;
+                        timerJ2a.setInterval(15);
+                        QObject::connect(&timerJ2a, &QTimer::timeout, [&]() {
+                            ++ticksJ2a;
+                            if (ticksJ2a > 80) {
+                                timerJ2a.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *dlg = qobject_cast<QDialog *>(
+                                        QApplication::activeModalWidget())) {
+                                if (dlg != pd2.data() && !sawPalDlg) {
+                                    sawPalDlg = true;
+                                    if (pd2)
+                                        delete pd2.data();
+                                    dlg->reject();
+                                }
+                            }
+                        });
+                        timerJ2a.start();
+                        QMetaObject::invokeMethod(pd2.data(), "openColorPaletteEditor",
+                                                  Qt::DirectConnection);
+                        timerJ2a.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawPalDlg && pd2.isNull(),
+                                   "80f-insp-modal-uaf-J2a: openColorPaletteEditor teardown failed (saw="
+                                           << sawPalDlg << ", null=" << pd2.isNull() << ")");
+
+                        // J2b: openPageSetupFromDialog with pd3 destroyed mid-QDialog
+                        QPointer<PlotDialog> pd3 = new PlotDialog(true, wDiag);
+                        pd3->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd3->setMultiLayer(mlPdJ);
+                        int ticksJ2b = 0;
+                        bool sawPsDlg = false;
+                        QTimer timerJ2b;
+                        timerJ2b.setInterval(15);
+                        QObject::connect(&timerJ2b, &QTimer::timeout, [&]() {
+                            ++ticksJ2b;
+                            if (ticksJ2b > 80) {
+                                timerJ2b.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *dlg = qobject_cast<QDialog *>(
+                                        QApplication::activeModalWidget())) {
+                                if (dlg != pd3.data() && !sawPsDlg) {
+                                    sawPsDlg = true;
+                                    if (pd3)
+                                        delete pd3.data();
+                                    dlg->reject();
+                                }
+                            }
+                        });
+                        timerJ2b.start();
+                        QMetaObject::invokeMethod(pd3.data(), "openPageSetupFromDialog",
+                                                  Qt::DirectConnection);
+                        timerJ2b.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawPsDlg && pd3.isNull(),
+                                   "80f-insp-modal-uaf-J2b: openPageSetupFromDialog teardown failed (saw="
+                                           << sawPsDlg << ", null=" << pd3.isNull() << ")");
+
+                        // J2c: removeSelectedCurve with pd4 destroyed mid-QMessageBox
+                        QPointer<PlotDialog> pd4 = new PlotDialog(true, wDiag);
+                        pd4->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd4->setMultiLayer(mlPdJ);
+                        pd4->show();
+                        pd4->selectCurve(0);
+                        QCoreApplication::processEvents();
+                        int ticksJ2c = 0;
+                        bool sawRemMsg = false;
+                        QTimer timerJ2c;
+                        timerJ2c.setInterval(15);
+                        QObject::connect(&timerJ2c, &QTimer::timeout, [&]() {
+                            ++ticksJ2c;
+                            if (ticksJ2c > 80) {
+                                timerJ2c.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *mb = qobject_cast<QMessageBox *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawRemMsg) {
+                                    sawRemMsg = true;
+                                    if (pd4)
+                                        delete pd4.data();
+                                    mb->reject();
+                                }
+                            }
+                        });
+                        timerJ2c.start();
+                        QMetaObject::invokeMethod(pd4.data(), "removeSelectedCurve",
+                                                  Qt::DirectConnection);
+                        timerJ2c.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawRemMsg && pd4.isNull(),
+                                   "80f-insp-modal-uaf-J2c: removeSelectedCurve teardown failed (saw="
+                                           << sawRemMsg << ", null=" << pd4.isNull() << ")");
+
+                        // J2d: contextMenuEvent parentless QMenu with pd5 destroyed mid-exec()
+                        QPointer<PlotDialog> pd5 = new PlotDialog(true, wDiag);
+                        pd5->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd5->setMultiLayer(mlPdJ);
+                        pd5->showAll(true);
+                        pd5->move(80, 80);
+                        pd5->resize(760, 500);
+                        pd5->show();
+                        pd5->selectCurve(0);
+                        QCoreApplication::processEvents();
+                        QTreeWidget *lb5 = pd5->findChild<QTreeWidget *>();
+                        CHECK_COND(lb5 && lb5->currentItem(),
+                                   "80f-insp-modal-uaf-J2d: listBox/currentItem not found");
+                        lb5->expandAll();
+                        lb5->scrollToItem(lb5->currentItem());
+                        QCoreApplication::processEvents();
+                        const QRect r5 = lb5->visualItemRect(lb5->currentItem());
+                        CHECK_COND(r5.isValid() && !r5.isEmpty(),
+                                   "80f-insp-modal-uaf-J2d: curve item rect not visible");
+                        const QPoint gPos5 = lb5->viewport()->mapToGlobal(r5.center());
+                        int ticksJ2d = 0;
+                        bool sawCtxMenu5 = false;
+                        QTimer timerJ2d;
+                        timerJ2d.setInterval(15);
+                        QObject::connect(&timerJ2d, &QTimer::timeout, [&]() {
+                            ++ticksJ2d;
+                            if (ticksJ2d > 80) {
+                                timerJ2d.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            if (auto *popup = qobject_cast<QMenu *>(
+                                        QApplication::activePopupWidget())) {
+                                if (!sawCtxMenu5) {
+                                    sawCtxMenu5 = true;
+                                    if (pd5)
+                                        delete pd5.data();
+                                    popup->close();
+                                }
+                            }
+                        });
+                        timerJ2d.start();
+                        QContextMenuEvent ctxEv5(QContextMenuEvent::Mouse,
+                                                 pd5->mapFromGlobal(gPos5), gPos5);
+                        QApplication::sendEvent(pd5.data(), &ctxEv5);
+                        timerJ2d.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawCtxMenu5 && pd5.isNull(),
+                                   "80f-insp-modal-uaf-J2d: contextMenuEvent parentless QMenu teardown failed (saw="
+                                           << sawCtxMenu5 << ", null=" << pd5.isNull() << ")");
+
+                        // J2e: LayerItem::graph() and PlotDialog::d_ml nulling after MultiLayer teardown
+                        QPointer<MultiLayer> mlPdDead = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        CHECK_COND(mlPdDead != nullptr, "80f-insp-modal-uaf-J2e: setup failed");
+                        mlPdDead->askOnCloseEvent(false);
+                        QPointer<PlotDialog> pd6 = new PlotDialog(true, wDiag);
+                        pd6->setAttribute(Qt::WA_DeleteOnClose, true);
+                        pd6->setMultiLayer(mlPdDead);
+                        QTreeWidget *lb6 = pd6->findChild<QTreeWidget *>();
+                        LayerItem *layerIt6 = nullptr;
+                        if (lb6) {
+                            for (QTreeWidgetItemIterator it6(lb6); *it6; ++it6) {
+                                if (auto *li = dynamic_cast<LayerItem *>(*it6)) {
+                                    layerIt6 = li;
+                                    break;
+                                }
+                            }
+                        }
+                        CHECK_COND(layerIt6 != nullptr && layerIt6->graph() != nullptr,
+                                   "80f-insp-modal-uaf-J2e: LayerItem not found");
+
+                        mlPdDead->close();
+                        if (mlPdDead)
+                            delete mlPdDead.data();
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                        CHECK_COND(mlPdDead.isNull() && layerIt6->graph() == nullptr,
+                                   "80f-insp-modal-uaf-J2e: LayerItem::graph() did not null after MultiLayer teardown");
+
+                        bool acceptResJ2e = false;
+                        QMetaObject::invokeMethod(pd6.data(), "acceptParams", Qt::DirectConnection,
+                                                  Q_RETURN_ARG(bool, acceptResJ2e));
+                        QMetaObject::invokeMethod(pd6.data(), "openPageSetupFromDialog",
+                                                  Qt::DirectConnection);
+                        CHECK_COND(!acceptResJ2e,
+                                   "80f-insp-modal-uaf-J2e: acceptParams succeeded on destroyed MultiLayer");
+                        if (pd6)
+                            delete pd6.data();
+                    }
+
+                    // Subtest K (Round 13 ASan): Plot3DDialog QPointer<Graph3D> d_plot and
+                    // non-self modal QColorDialog/QMessageBox with mid-exec Plot3DDialog deletion.
+                    {
+                        const bool prevConfirm3d = wDiag->confirmClosePlot3D;
+                        wDiag->confirmClosePlot3D = false;
+                        QPointer<Graph3D> g3dK = wDiag->newPlot3D();
+                        CHECK_COND(g3dK != nullptr, "80f-insp-modal-uaf-K: newPlot3D failed");
+                        g3dK->addFunction("cos(x)*cos(y)", -2.0, 2.0, -2.0, 2.0, -1.0, 1.0);
+                        QCoreApplication::processEvents();
+
+                        // K1a: pickFromColor mid-QColorDialog destruction of Plot3DDialog
+                        QPointer<Plot3DDialog> p3d1 = new Plot3DDialog(wDiag);
+                        p3d1->setAttribute(Qt::WA_DeleteOnClose, true);
+                        p3d1->setPlot(g3dK);
+                        int ticksK1a = 0;
+                        bool sawP3dColor = false;
+                        QTimer timerK1a;
+                        timerK1a.setInterval(15);
+                        QObject::connect(&timerK1a, &QTimer::timeout, [&]() {
+                            ++ticksK1a;
+                            if (ticksK1a > 80) {
+                                timerK1a.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *cdlg = qobject_cast<QColorDialog *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawP3dColor) {
+                                    sawP3dColor = true;
+                                    if (p3d1)
+                                        delete p3d1.data();
+                                    cdlg->reject();
+                                }
+                            }
+                        });
+                        timerK1a.start();
+                        p3d1->pickFromColor();
+                        timerK1a.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawP3dColor && p3d1.isNull(),
+                                   "80f-insp-modal-uaf-K1a: Plot3DDialog pickFromColor teardown failed (saw="
+                                           << sawP3dColor << ", null=" << p3d1.isNull() << ")");
+
+                        // K1b: accept() / updatePlot() mid-QMessageBox destruction of Plot3DDialog
+                        QPointer<Plot3DDialog> p3d2 = new Plot3DDialog(wDiag);
+                        p3d2->setAttribute(Qt::WA_DeleteOnClose, true);
+                        p3d2->setPlot(g3dK);
+                        p3d2->setScales(QStringList{ QStringLiteral("10"), QStringLiteral("1"),
+                                                     QStringLiteral("5"), QStringLiteral("5"),
+                                                     QStringLiteral("0"), QStringLiteral("0"),
+                                                     QStringLiteral("10"), QStringLiteral("5"),
+                                                     QStringLiteral("5"), QStringLiteral("0"),
+                                                     QStringLiteral("0"), QStringLiteral("10"),
+                                                     QStringLiteral("5"), QStringLiteral("5"),
+                                                     QStringLiteral("0") });
+                        int ticksK1b = 0;
+                        bool sawP3dMsg = false;
+                        QTimer timerK1b;
+                        timerK1b.setInterval(15);
+                        QObject::connect(&timerK1b, &QTimer::timeout, [&]() {
+                            ++ticksK1b;
+                            if (ticksK1b > 80) {
+                                timerK1b.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *mb = qobject_cast<QMessageBox *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawP3dMsg) {
+                                    sawP3dMsg = true;
+                                    if (p3d2)
+                                        delete p3d2.data();
+                                    mb->reject();
+                                }
+                            }
+                        });
+                        timerK1b.start();
+                        p3d2->accept();
+                        timerK1b.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawP3dMsg && p3d2.isNull(),
+                                   "80f-insp-modal-uaf-K1b: Plot3DDialog accept/updatePlot teardown failed (saw="
+                                           << sawP3dMsg << ", null=" << p3d2.isNull() << ")");
+
+                        // K2: QPointer<Graph3D> d_plot safety after Graph3D teardown
+                        Plot3DDialog p3d3(wDiag);
+                        p3d3.setPlot(g3dK);
+                        g3dK->close();
+                        if (g3dK)
+                            delete g3dK.data();
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                        CHECK_COND(g3dK.isNull(),
+                                   "80f-insp-modal-uaf-K2: Graph3D did not teardown cleanly");
+                        p3d3.pickDataColorMap();
+                        wDiag->confirmClosePlot3D = prevConfirm3d;
                     }
                 }
             }

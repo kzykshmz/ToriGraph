@@ -1804,7 +1804,9 @@ void PlotDialog::contextMenuEvent(QContextMenuEvent *e)
     if (!it)
         return;
 
-    QPoint pos = listBox->viewport()->mapFromGlobal(QCursor::pos());
+    const QPoint globalPos =
+            (e && e->reason() == QContextMenuEvent::Mouse) ? e->globalPos() : QCursor::pos();
+    QPoint pos = listBox->viewport()->mapFromGlobal(globalPos);
     QRect rect = listBox->visualItemRect(listBox->currentItem());
     if (rect.contains(pos)) {
         QMenu contextMenu;
@@ -1816,7 +1818,7 @@ void PlotDialog::contextMenuEvent(QContextMenuEvent *e)
             else
                 contextMenu.addAction(tr("&Plot Associations..."), this, SLOT(editCurve()));
         }
-        contextMenu.exec(QCursor::pos());
+        contextMenu.exec(globalPos);
     }
     e->accept();
 }
