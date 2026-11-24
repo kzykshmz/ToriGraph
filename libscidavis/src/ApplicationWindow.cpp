@@ -29611,15 +29611,7 @@ void ApplicationWindow::clearAllMasksOnGraph()
     if (!g)
         return;
 
-    int clearedCurves = 0;
-    for (int i = 0; i < g->curves(); ++i) {
-        DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(i));
-        if (dc) {
-            dc->clearMasks();
-            ++clearedCurves;
-        }
-    }
-    g->replot();
+    const int clearedCurves = g->clearAllCurveMasksWithUndo();
     if (d_status_info && clearedCurves > 0)
         d_status_info->setText(
                 tr("Cleared all masked points across %1 curve(s).").arg(clearedCurves));

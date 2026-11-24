@@ -650,5 +650,6 @@ int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw);
 int runSuite77Nov22NightReviewRegressions(ApplicationWindow *mw);
 int runSuite78ZeroBaseUxAndQualityGate(ApplicationWindow *mw);
 int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw);
+int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

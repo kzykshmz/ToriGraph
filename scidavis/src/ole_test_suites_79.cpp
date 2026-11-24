@@ -579,8 +579,22 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
             CHECK_COND(f.open(QIODevice::WriteOnly), "79f: failed to write corruptBodyPath");
             f.write("SciDAVis\ncorrupt_body_no_version\n");
         }
-        for (const QString &badPath : QStringList{
-                     tmp79.filePath(QStringLiteral("nonexistent_79.sciprj")), fakeCsv, corruptBodyPath }) {
+        const QString midTruncPath = tmp79.filePath(QStringLiteral("mid_trunc_79.sciprj"));
+        {
+            QFile f(midTruncPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "79f: failed to write midTruncPath");
+            f.write("SciDAVis 0.1.3 project file\n"
+                    "<scripting-lang>\tPython\n"
+                    "<windows>\t1\n"
+                    "<table>\n"
+                    "T79MidTrunc\t2\t2\t19/08/2026 00:00:00\n"
+                    "<header>\tA[X]\tB[Y]\n");
+        }
+        const bool prevSavedState79 = w79->saved;
+        w79->saved = false;
+        for (const QString &badPath :
+             QStringList{ tmp79.filePath(QStringLiteral("nonexistent_79.sciprj")), fakeCsv,
+                          corruptBodyPath, midTruncPath }) {
             QJsonObject req;
             req["jsonrpc"] = "2.0";
             req["id"] = 7901;
@@ -591,6 +605,8 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                        "79f: app.open_project did not fail on invalid path: " << badPath.toStdString());
             CHECK_COND(w79->table("T79Keep") != nullptr,
                        "79f: invalid app.open_project wiped current project!");
+            CHECK_COND(!w79->saved,
+                       "79f: invalid app.open_project cleared dirty saved==false flag!");
             CHECK_COND(w79->projectname == keepProjPath,
                        "79f: rollback altered projectname to '"
                                << w79->projectname.toStdString() << "'");
@@ -601,6 +617,7 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
             CHECK_COND(w79->recentProjects == recentsBefore,
                        "79f: rollback mutated recentProjects");
         }
+        w79->saved = prevSavedState79;
 
         // Export Python localization EN vs JA + multiline injection sanitization
         mlExp = qobject_cast<MultiLayer *>(w79->window(mlExpName));
@@ -660,9 +677,13 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         CHECK_COND(QFileInfo::exists(diagPng) && QFileInfo(diagPng).size() > 1000,
                    "79f: grab_gui_diagnostic did not write PNG");
         CHECK_COND(diagRes.value("ok").toBool() && diagRes.value("ribbon_bottom_y").toInt() > 0
+                           && diagRes.value("width").toInt() == 1366
+                           && diagRes.value("height").toInt() == 768
                            && diagRes.contains("clipped_ribbon_captions")
                            && diagRes.contains("inspector_clipped_bottom"),
-                   "79f: grab_gui_diagnostic missing expected geometry/clip keys");
+                   "79f: grab_gui_diagnostic missing expected geometry/clip keys (w="
+                           << diagRes.value("width").toInt() << " h="
+                           << diagRes.value("height").toInt() << ")");
         CHECK_COND(diagRes.value("clipped_ribbon_captions").toInt() == 0,
                    "79f: grab_gui_diagnostic reported clipped ribbon captions: "
                            << diagRes.value("clipped_ribbon_captions").toInt());
@@ -918,6 +939,7 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
 
         QPointer<SelectionMoveResizer> smrRm = selectLayerViaClick(layer2);
         CHECK_COND(!smrRm.isNull(), "79g: second click did not create SelectionMoveResizer on layer2");
+        QPointer<Graph> layer2Guard(layer2);
         mlSmr->setActiveGraph(layer2);
         mlSmr->removeLayer();
         for (int pass = 0; pass < 2; ++pass) {
@@ -926,6 +948,8 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         }
         CHECK_COND(smrRm.isNull(),
                    "79g: SelectionMoveResizer leaked or dangled after MultiLayer::removeLayer()");
+        CHECK_COND(layer2Guard.isNull() && mlSmr->activeGraph() != layer2,
+                   "79g: removed layer2 still alive or still active after MultiLayer::removeLayer()");
 
         // CSV open() followed by overwrite + reimportFromSource()
         const QString csvPath = tmp79.filePath(QStringLiteral("reimport79.csv"));
@@ -1061,11 +1085,12 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         Graph *gSrc = mlSrc->activeGraph();
         CHECK_COND(gSrc != nullptr, "79h: G79CopySrc activeGraph null");
         gSrc->insertCurve(tLeg, tLeg->colName(1), Graph::Line);
-        gSrc->addErrorBars(tLeg->colName(0), tLeg->colName(1), tLeg, tLeg->colName(2));
+        CHECK_COND(gSrc->addErrorBars(tLeg->colName(0), tLeg->colName(1), tLeg, tLeg->colName(2)),
+                   "79h: addErrorBars returned false");
         gSrc->insertCurve(tLeg, tLeg->colName(3), Graph::Line);
         const int idxY1Src = gSrc->curveIndex(tLeg->colName(1));
         const int idxY2Src = gSrc->curveIndex(tLeg->colName(3));
-        CHECK_COND(idxY1Src == 0 && idxY2Src >= 1,
+        CHECK_COND(idxY1Src == 0 && idxY2Src == 2,
                    "79h: unexpected source curve indices y1=" << idxY1Src << " y2=" << idxY2Src);
         Legend *srcLeg = gSrc->legend();
         CHECK_COND(srcLeg != nullptr, "79h: source Legend null");
@@ -1089,8 +1114,9 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         const QString expectedDst = QStringLiteral("\\l(%1) %(%1)\n\\l(%2) %(%2)")
                                             .arg(idxY1Dst + 1)
                                             .arg(idxY2Dst + 1);
-        CHECK_COND(dstLeg->text() == expectedDst,
-                   "79h: Graph::copy did not remap Legend tokens (got '"
+        CHECK_COND(expectedDst != srcText && dstLeg->text() == expectedDst,
+                   "79h: Graph::copy did not remap Legend tokens (src='"
+                           << srcText.toStdString() << "', got '"
                            << dstLeg->text().toStdString() << "', expected '"
                            << expectedDst.toStdString() << "')");
 
@@ -1116,16 +1142,16 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         CHECK_COND(std::fabs(gp1->axisStep(QwtPlot::yLeft) - 50.0) < 1e-6,
                    "79h: 1x2 isij_85mm overwrote explicit Y-axis step 50.0 (got "
                            << gp1->axisStep(QwtPlot::yLeft) << ")");
-        if (gp1->plotWidget() && gp1->plotWidget()->canvas() && gp2->plotWidget()
-            && gp2->plotWidget()->canvas()) {
-            const QSize sz1 = gp1->plotWidget()->canvas()->size();
-            const QSize sz2 = gp2->plotWidget()->canvas()->size();
-            const double ar1 = (sz1.height() > 0) ? double(sz1.width()) / double(sz1.height()) : 0.0;
-            const double ar2 = (sz2.height() > 0) ? double(sz2.width()) / double(sz2.height()) : 0.0;
-            CHECK_COND(ar1 > 0.85 && ar1 < 1.15 && ar2 > 0.85 && ar2 < 1.15,
-                       "79h: 1x2 isij_85mm canvas aspect drifted from square: ar1="
-                               << ar1 << " ar2=" << ar2);
-        }
+        CHECK_COND(gp1->plotWidget() && gp1->plotWidget()->canvas() && gp2->plotWidget()
+                           && gp2->plotWidget()->canvas(),
+                   "79h: G79IsijTwo plot canvas null");
+        const QSize sz1 = gp1->plotWidget()->canvas()->size();
+        const QSize sz2 = gp2->plotWidget()->canvas()->size();
+        const double ar1 = (sz1.height() > 0) ? double(sz1.width()) / double(sz1.height()) : 0.0;
+        const double ar2 = (sz2.height() > 0) ? double(sz2.width()) / double(sz2.height()) : 0.0;
+        CHECK_COND(ar1 > 0.85 && ar1 < 1.15 && ar2 > 0.85 && ar2 < 1.15,
+                   "79h: 1x2 isij_85mm canvas aspect drifted from square: ar1="
+                           << ar1 << " ar2=" << ar2);
 
         // RecalcManager Auto mode recalculates dirty links after Undo/Redo replay
         Table *tRec = w79->newTable(5, 2, "T79Rec", "Rec");
@@ -1203,7 +1229,8 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
         CHECK_COND(rootF->findSubfolder(QStringLiteral("MoveParentA79")) == nullptr,
                    "79h: original MoveParentA79 still present under root after moveFolder");
 
-        // Aborted appendProject leaves no orphan folder/table even across Undo/Redo
+        // Aborted appendProject (both preflight-rejected and mid-load truncated) leaves no
+        // orphan folder/table even across Undo/Redo
         w79->changeFolder(rootF, true);
         const QString truncProjPath = tmp79.filePath(QStringLiteral("trunc_append_79.sciprj"));
         {
@@ -1216,25 +1243,52 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                     "T79TruncZombie\t2\t2\t19/08/2026 00:00:00\n"
                     "<header>\tA[X]\tB[Y]\n");
         }
+        const QString midAbortProjPath = tmp79.filePath(QStringLiteral("mid_abort_append_79.sciprj"));
+        {
+            QFile f(midAbortProjPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly),
+                       "79h: failed to write mid_abort_append_79.sciprj");
+            f.write("SciDAVis 0.1.3 project file\n"
+                    "<scripting-lang>\tPython\n"
+                    "<windows>\t2\n"
+                    "<table>\n"
+                    "T79ValidPreAbort\t1\t2\t19/08/2026 00:00:00\n"
+                    "geometry\t0\t0\t200\t200\tactive\n"
+                    "header\tX[X]\tY[Y]\n"
+                    "<data>\n"
+                    "0\t1\t2\n"
+                    "</data>\n"
+                    "</table>\n"
+                    "<table>\n"
+                    "BadHeaderOnlyOneField\n"
+                    "</table>\n");
+        }
         const int foldersBeforeAppend = rootF->folders().size();
-        w79->appendProject(truncProjPath);
-        QCoreApplication::processEvents();
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        CHECK_COND(rootF->folders().size() == foldersBeforeAppend,
-                   "79h: aborted appendProject left an orphan subfolder");
-        CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
-                   "79h: aborted appendProject left zombie table behind");
+        for (const QString &badAppendPath : QStringList{ truncProjPath, midAbortProjPath }) {
+            w79->appendProject(badAppendPath);
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            CHECK_COND(rootF->folders().size() == foldersBeforeAppend,
+                       "79h: aborted appendProject left an orphan subfolder for "
+                               << badAppendPath.toStdString());
+            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr
+                               && w79->table(QStringLiteral("T79ValidPreAbort")) == nullptr,
+                       "79h: aborted appendProject left zombie table behind for "
+                               << badAppendPath.toStdString());
+        }
         w79->d_workspace.setActiveSubWindow(tRec);
         for (int step = 0; step < 3; ++step) {
             w79->undo();
             QCoreApplication::processEvents();
-            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
+            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr
+                               && w79->table(QStringLiteral("T79ValidPreAbort")) == nullptr,
                        "79h: Undo after aborted appendProject resurrected zombie table!");
         }
         for (int step = 0; step < 3; ++step) {
             w79->redo();
             QCoreApplication::processEvents();
-            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
+            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr
+                               && w79->table(QStringLiteral("T79ValidPreAbort")) == nullptr,
                        "79h: Redo after aborted appendProject resurrected zombie table!");
         }
     }

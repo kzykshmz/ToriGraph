@@ -305,7 +305,7 @@ switch ($Action) {
             python scripts/check_ja_glossary.py
         }
         Invoke-Checked "Check Static Hygiene Rules" {
-            python scripts/check_static_hygiene.py --warn-only
+            python scripts/check_static_hygiene.py
         }
         Invoke-Checked "Run Ruff Linter on Python SDK & Scripts" {
             python -m ruff check --config python/pyproject.toml python scripts/check_version.py scripts/check_ja_glossary.py scripts/check_static_hygiene.py

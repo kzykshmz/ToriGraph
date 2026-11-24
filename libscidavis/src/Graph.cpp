@@ -61,6 +61,7 @@
 #include "I18nJapanese.h"
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
+#include "core/Project.h"
 #include "core/column/Column.h"
 #include "MultiLayer.h"
 #include "EmfPaintDevice.h"
@@ -17846,9 +17847,15 @@ private:
         if (d_snapshots.isEmpty())
             return;
 
-        // TODO(Stage-B2): ScopedProjectUndoSuppressor(proj) — obtain Project* from first valid
-        // snap.column->project() (or snap.table->d_future_table->project()) so applying
-        // before/after intervals on Undo/Redo does not push onto d_project->undoStack().
+        Project *proj = nullptr;
+        for (const Graph::ColumnMaskSnapshot &snap : d_snapshots) {
+            if (snap.table && snap.table->d_future_table && snap.table->d_future_table->project()) {
+                proj = snap.table->d_future_table->project();
+                break;
+            }
+        }
+        ScopedProjectUndoSuppressor suppressProjUndo(proj);
+
         for (const Graph::ColumnMaskSnapshot &snap : d_snapshots) {
             if (!snap.table || !snap.table->d_future_table)
                 continue;
@@ -17925,8 +17932,15 @@ bool Graph::runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurv
 
     if (editFn) {
         if (mlStack) {
-            // TODO(Stage-B2): ScopedProjectUndoSuppressor(proj) — obtain Project* from first valid
-            // snapshot column/table so graph-level mask edits do not pollute d_project->undoStack().
+            Project *proj = nullptr;
+            for (const ColumnMaskSnapshot &snap : snapshots) {
+                if (snap.table && snap.table->d_future_table
+                    && snap.table->d_future_table->project()) {
+                    proj = snap.table->d_future_table->project();
+                    break;
+                }
+            }
+            ScopedProjectUndoSuppressor suppressProjUndo(proj);
             editFn();
         } else {
             editFn();

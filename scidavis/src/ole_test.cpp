@@ -50,6 +50,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 77, "runSuite77Nov22NightReviewRegressions", &runSuite77Nov22NightReviewRegressions },
     { 78, "runSuite78ZeroBaseUxAndQualityGate", &runSuite78ZeroBaseUxAndQualityGate },
     { 79, "runSuite79ZeroBaseOverhaulV2Gate", &runSuite79ZeroBaseOverhaulV2Gate },
+    { 80, "runSuite80Round4P0P1RegressionGate", &runSuite80Round4P0P1RegressionGate },
 };
 
 static const ModularSuiteEntry *findModularSuite(int id)
@@ -5506,6 +5507,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite79ZeroBaseOverhaulV2Gate(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite80Round4P0P1RegressionGate(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";
