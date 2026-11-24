@@ -2226,6 +2226,8 @@ void GraphInspectorDock::rebuildGreekSymbolMenu(QMenu *menu, RichTargetMode mode
 {
     if (!menu)
         return;
+    if (menu->isVisible())
+        menu->close();
     menu->clear();
     const QList<QPair<QString, QString>> greekList = {
         { tr("\xCE\xB1 (alpha)"), QString::fromUtf8("\xCE\xB1") },
@@ -2253,10 +2255,17 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu(QMenu *menu, RichTargetMode mode
 {
     if (!menu)
         return;
+    const bool menuWasVisible = menu->isVisible();
     for (QMenu *sub : menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly)) {
-        sub->close();
-        sub->deleteLater();
+        if (menuWasVisible || sub->isVisible()) {
+            sub->close();
+            sub->deleteLater();
+        } else {
+            delete sub;
+        }
     }
+    if (menuWasVisible)
+        menu->close();
     menu->clear();
 
     // 1) Materials-science symbols
