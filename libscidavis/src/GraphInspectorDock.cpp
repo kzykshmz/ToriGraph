@@ -44,14 +44,12 @@
 #include "Plot.h"
 #include "CanvasInlineTextEditor.h"
 #include "PlotCurve.h"
-#include "PptxExport.h"
 #include "QwtErrorPlotCurve.h"
 #include "ScaleDraw.h"
 #include "Spectrogram.h"
 #include "PlotStyleLimits.h"
 #include "SymbolBox.h"
 #include "Table.h"
-#include "OleServer.h"
 #include "ImportASCIIDialog.h"
 #include "Workbook.h"
 #include "XlsxImport.h"
@@ -89,7 +87,9 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QPlainTextEdit>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QStyle>
 #include <QTextCursor>
@@ -327,13 +327,23 @@ QString stripHtmlToCleanUnicode(const QString &raw)
 }
 
 //! Escape arbitrary user text while preserving safe scientific markup tags for Qt::RichText preview.
+static bool hasRichTextMarkup(const QString &raw)
+{
+    static const QRegularExpression rxHtml(
+            QStringLiteral("</?(?:i|b|u|sub|sup)>"),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression rxOrigin(QStringLiteral("\\\\[ib\\-\\+]\\("));
+    return raw.contains(rxHtml) || raw.contains(rxOrigin);
+}
+
 QString renderSafeScientificPreviewHtml(const QString &raw)
 {
-    QString esc = raw.toHtmlEscaped();
+    QString esc = CanvasInlineTextEditor::normalizeOriginRichText(raw).toHtmlEscaped();
     static const QRegularExpression rxAllowed(
             QStringLiteral("&lt;(/?(?:i|b|u|sub|sup))&gt;"),
             QRegularExpression::CaseInsensitiveOption);
     esc.replace(rxAllowed, QStringLiteral("<\\1>"));
+    esc.replace(QLatin1Char('\n'), QStringLiteral("<br/>"));
     return esc;
 }
 
@@ -356,7 +366,8 @@ void syncLineEditClean(QLineEdit *ed, const QString &text)
     if (!ed)
         return;
     QSignalBlocker blk(ed);
-    ed->setText(text);
+    if (ed->text() != text)
+        ed->setText(text);
     ed->setProperty("_syncedText", text.trimmed());
     ed->setModified(false);
     setLineEditPendingCue(ed, false);
@@ -474,160 +485,6 @@ public:
     }
 };
 
-static QWidget *createMatSciRichTextBar(QWidget *parent, QLineEdit *targetEdit,
-                                        QPlainTextEdit *multiLineEdit = nullptr)
-{
-    QWidget *wrap = new QWidget(parent);
-    QVBoxLayout *vlay = new QVBoxLayout(wrap);
-    vlay->setContentsMargins(0, 1, 0, 1);
-    vlay->setSpacing(2);
-
-    // When the multi-line editor (text annotations, C16) is the one on screen, the chips act on
-    // it; its own debounced textChanged handler commits the change.
-    auto multiActive = [multiLineEdit]() {
-        return multiLineEdit && !multiLineEdit->isHidden() && multiLineEdit->isEnabled();
-    };
-
-    auto insertToken = [targetEdit, multiLineEdit, multiActive](const QString &tok) {
-        if (multiActive()) {
-            QTextCursor c = multiLineEdit->textCursor();
-            c.insertText(tok);
-            multiLineEdit->setTextCursor(c);
-            multiLineEdit->setFocus();
-            return;
-        }
-        if (!targetEdit || !targetEdit->isEnabled())
-            return;
-        if (targetEdit->hasSelectedText()) {
-            const int start = targetEdit->selectionStart();
-            const int len = targetEdit->selectedText().length();
-            QString txt = targetEdit->text();
-            txt.replace(start, len, tok);
-            targetEdit->setText(txt);
-            targetEdit->setCursorPosition(start + tok.length());
-        } else {
-            const int pos = targetEdit->cursorPosition();
-            QString txt = targetEdit->text();
-            txt.insert(pos, tok);
-            targetEdit->setText(txt);
-            targetEdit->setCursorPosition(pos + tok.length());
-        }
-        targetEdit->setModified(true);
-        targetEdit->setFocus();
-        emit targetEdit->editingFinished();
-    };
-
-    auto wrapMarkup = [targetEdit, multiLineEdit, multiActive](const QString &openTag,
-                                                               const QString &closeTag) {
-        if (multiActive()) {
-            QTextCursor c = multiLineEdit->textCursor();
-            // QTextCursor uses U+2029 between paragraphs inside a selection.
-            const QString sel = c.selectedText().replace(QChar(0x2029), QLatin1Char('\n'));
-            c.insertText(openTag + sel + closeTag);
-            if (sel.isEmpty())
-                c.movePosition(QTextCursor::Left, QTextCursor::MoveAnchor, closeTag.length());
-            multiLineEdit->setTextCursor(c);
-            multiLineEdit->setFocus();
-            return;
-        }
-        if (!targetEdit || !targetEdit->isEnabled())
-            return;
-        QString txt = targetEdit->text();
-        if (targetEdit->hasSelectedText()) {
-            const int start = targetEdit->selectionStart();
-            const QString sel = targetEdit->selectedText();
-            const QString rep = openTag + sel + closeTag;
-            txt.replace(start, sel.length(), rep);
-            targetEdit->setText(txt);
-            targetEdit->setSelection(start + openTag.length(), sel.length());
-        } else {
-            const int pos = targetEdit->cursorPosition();
-            txt.insert(pos, openTag + closeTag);
-            targetEdit->setText(txt);
-            targetEdit->setCursorPosition(pos + openTag.length());
-        }
-        targetEdit->setModified(true);
-        targetEdit->setFocus();
-        emit targetEdit->editingFinished();
-    };
-
-    auto makeBtn = [&](QHBoxLayout *row, const QString &label, const QString &tip) -> QToolButton * {
-        QToolButton *b = new QToolButton(wrap);
-        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
-        b->setText(label);
-        b->setToolTip(tip);
-        b->setFixedHeight(24);
-        b->setMinimumWidth(26);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        row->addWidget(b);
-        return b;
-    };
-
-    QHBoxLayout *row1 = new QHBoxLayout();
-    row1->setContentsMargins(0, 0, 0, 0);
-    row1->setSpacing(3);
-    const QList<QPair<QString, QString>> row1Toks = {
-        { QString::fromUtf8("\xCF\x83"), QString::fromUtf8("\xCF\x83") },
-        { QString::fromUtf8("\xCE\xB5"), QString::fromUtf8("\xCE\xB5") },
-        { QString::fromUtf8("2\xCE\xB8"), QString::fromUtf8("2\xCE\xB8") },
-        { QString::fromUtf8("\xCE\xBC" "m"), QString::fromUtf8("\xCE\xBC" "m") },
-        { QString::fromUtf8("\xC2\xB0" "C"), QString::fromUtf8("\xC2\xB0" "C") },
-        { QString::fromUtf8("\xC3\x85"), QString::fromUtf8("\xC3\x85") },
-    };
-    for (const auto &pr : row1Toks) {
-        QToolButton *b = makeBtn(row1, pr.first, QObject::tr("Insert %1").arg(pr.first));
-        b->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
-        b->setProperty("_tg_tip_arg", pr.first);
-        const QString tok = pr.second;
-        QObject::connect(b, &QToolButton::clicked, wrap, [insertToken, tok]() { insertToken(tok); });
-    }
-    vlay->addLayout(row1);
-
-    QHBoxLayout *row2 = new QHBoxLayout();
-    row2->setContentsMargins(0, 0, 0, 0);
-    row2->setSpacing(2);
-    {
-        const QString symPm = QString::fromUtf8("\xC2\xB1");
-        QToolButton *bPm = makeBtn(row2, symPm, QObject::tr("Insert %1").arg(symPm));
-        bPm->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
-        bPm->setProperty("_tg_tip_arg", symPm);
-        QObject::connect(bPm, &QToolButton::clicked, wrap,
-                         [insertToken, symPm]() { insertToken(symPm); });
-        const QString symDeg = QString::fromUtf8("\xC2\xB0");
-        QToolButton *bDeg = makeBtn(row2, symDeg, QObject::tr("Insert %1").arg(symDeg));
-        bDeg->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
-        bDeg->setProperty("_tg_tip_arg", symDeg);
-        QObject::connect(bDeg, &QToolButton::clicked, wrap,
-                         [insertToken, symDeg]() { insertToken(symDeg); });
-        const QString symCm = QString::fromUtf8("cm\xE2\x81\xBB\xC2\xB9");
-        QToolButton *bCm = makeBtn(row2, symCm, QObject::tr("Insert %1").arg(symCm));
-        bCm->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
-        bCm->setProperty("_tg_tip_arg", symCm);
-        QObject::connect(bCm, &QToolButton::clicked, wrap,
-                         [insertToken]() { insertToken(QStringLiteral("cm<sup>-1</sup>")); });
-        QToolButton *bSub = makeBtn(row2, QString::fromUtf8("x\xE2\x82\x82"),
-                                    QObject::tr("Subscript (X\xE2\x82\x82)"));
-        bSub->setProperty("_tg_tip_fmt", QString::fromUtf8("Subscript (X\xE2\x82\x82)"));
-        QObject::connect(bSub, &QToolButton::clicked, wrap,
-                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>")); });
-        QToolButton *bSup = makeBtn(row2, QString::fromUtf8("x\xC2\xB2"),
-                                    QObject::tr("Superscript (X\xC2\xB2)"));
-        bSup->setProperty("_tg_tip_fmt", QString::fromUtf8("Superscript (X\xC2\xB2)"));
-        QObject::connect(bSup, &QToolButton::clicked, wrap,
-                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>")); });
-        QToolButton *bIt = makeBtn(row2, QStringLiteral("I"), QObject::tr("Italic (slanted)"));
-        bIt->setProperty("_tg_tip_fmt", QStringLiteral("Italic (slanted)"));
-        QFont itF = bIt->font();
-        itF.setItalic(true);
-        bIt->setFont(itF);
-        QObject::connect(bIt, &QToolButton::clicked, wrap,
-                         [wrapMarkup]() { wrapMarkup(QStringLiteral("<i>"), QStringLiteral("</i>")); });
-    }
-    vlay->addLayout(row2);
-    return wrap;
-}
-
 static void registerInspectorExtraTranslations()
 {
     static std::once_flag s_once;
@@ -637,7 +494,16 @@ static void registerInspectorExtraTranslations()
                                                                       QString::fromUtf8(ja));
         };
         reg("Overall", "全体");
-        reg("X/Y", "軸");
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("Axis"),
+                QString::fromUtf8("軸"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("Free"),
+                QString::fromUtf8("自由"));
+        reg("Slide (18pt)", "スライド (18pt)");
+        reg("Unlock Aspect Ratio (Free Resize)", "縦横比の固定を解除 (自由サイズ変更)");
+        reg("Open the Add Error Bars dialog to select an error column or percentage",
+            "エラーバーの追加ダイアログを開き、誤差列や割合を指定します");
         reg("Scope:", "対象:");
         reg("Active Layer", "現在のレイヤー");
         reg("All Panels", "全パネル一括");
@@ -1356,6 +1222,51 @@ void GraphInspectorDock::closeEvent(QCloseEvent *event)
     QDockWidget::closeEvent(event);
 }
 
+void GraphInspectorDock::resizeEvent(QResizeEvent *event)
+{
+    QDockWidget::resizeEvent(event);
+    adjustDefaultSplitterSizes();
+    updatePropScrollCue();
+}
+
+void GraphInspectorDock::adjustDefaultSplitterSizes()
+{
+    if (d_user_resized_splitter || !d_splitter || d_collapsed_rail)
+        return;
+    const int availH = d_splitter->height();
+    if (availH < 200)
+        return;
+    const double ratio = (availH <= 560) ? 0.19 : 0.21;
+    const int topH = qBound(84, qRound(availH * ratio), 165);
+    const int botH = qMax(140, availH - topH);
+    const QList<int> curSizes = d_splitter->sizes();
+    if (curSizes.size() == 2 && qAbs(curSizes[0] - topH) <= 2 && qAbs(curSizes[1] - botH) <= 2)
+        return;
+    QSignalBlocker sb(d_splitter);
+    d_splitter->setSizes({ topH, botH });
+}
+
+void GraphInspectorDock::updatePropScrollCue()
+{
+    if (!d_prop_scroll || !d_scroll_more_cue)
+        return;
+    QWidget *vp = d_prop_scroll->viewport();
+    QScrollBar *sb = d_prop_scroll->verticalScrollBar();
+    if (!vp || !sb) {
+        d_scroll_more_cue->hide();
+        return;
+    }
+    const bool hasMore = sb->maximum() > sb->minimum() && sb->value() < sb->maximum() - 2;
+    if (!hasMore || vp->height() < 36) {
+        d_scroll_more_cue->hide();
+        return;
+    }
+    const int cueH = 20;
+    d_scroll_more_cue->setGeometry(0, vp->height() - cueH, vp->width(), cueH);
+    d_scroll_more_cue->show();
+    d_scroll_more_cue->raise();
+}
+
 bool GraphInspectorDock::eventFilter(QObject *obj, QEvent *event)
 {
     if (event) {
@@ -1364,6 +1275,23 @@ bool GraphInspectorDock::eventFilter(QObject *obj, QEvent *event)
                 flushPendingAnnotationEdit();
         } else if (obj == d_empty_quickstart_panel && event->type() == QEvent::Show) {
             updateQuickStartPlotButtonState();
+        } else if (d_prop_scroll && obj == d_prop_scroll->viewport()
+                   && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+                       || event->type() == QEvent::LayoutRequest)) {
+            updatePropScrollCue();
+        } else if (event->type() == QEvent::FocusIn) {
+            if (auto *le = qobject_cast<QLineEdit *>(obj)) {
+                if (le == d_edit_leg_header) {
+                    d_last_legend_focus_edit = le;
+                } else {
+                    for (const LegendCurveRow &row : d_leg_curve_rows) {
+                        if (row.edit == le) {
+                            d_last_legend_focus_edit = le;
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
     return QDockWidget::eventFilter(obj, event);
@@ -1391,12 +1319,8 @@ void GraphInspectorDock::applyCollapsedGeometry()
     }
 
     if (d_collapsed_rail) {
-        // A4-1: when collapsed with no active graph (and not pinned / not OLE embedded),
-        // shrink width to 0px so no empty 48px rail steals width on 911x512 startup,
-        // while keeping isVisible() == true and isCollapsedRail() == true.
-        const bool collapseToZero = !d_target_ml && !d_user_pinned
-                && !(d_app && d_app->isOleEmbeddedMode());
-        const int targetW = collapseToZero ? 0 : 48;
+        // Always keep a visible clickable 48px vertical rail when collapsed.
+        const int targetW = 48;
         setMinimumWidth(targetW);
         setMaximumWidth(targetW);
         resize(targetW, height());
@@ -1409,6 +1333,10 @@ void GraphInspectorDock::applyCollapsedGeometry()
             resize(288, height());
         if (d_app)
             d_app->resizeDocks({ this }, { 288 }, Qt::Horizontal);
+        QTimer::singleShot(0, this, [this]() {
+            adjustDefaultSplitterSizes();
+            updatePropScrollCue();
+        });
     }
 }
 
@@ -1484,6 +1412,9 @@ void GraphInspectorDock::switchToInspectorPage(InspectorPageIndex pageIdx)
             btn->setChecked(true);
         }
     }
+    if (d_tab_dirty[idx] && d_target_ml)
+        syncTabPage(static_cast<InspectorPageIndex>(idx));
+    QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
 }
 
 GraphInspectorDock::InspectorPageIndex GraphInspectorDock::currentInspectorPage() const
@@ -1534,12 +1465,19 @@ void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
     d_bound_layers.clear();
 
     d_target_ml = ml;
+    d_last_legend_focus_edit = nullptr;
     if (ml)
         connectMultiLayerSignals(ml);
 
     refreshAll();
-    if (d_collapsed_rail)
+    if (d_collapsed_rail) {
         applyCollapsedGeometry();
+    } else {
+        QTimer::singleShot(0, this, [this]() {
+            adjustDefaultSplitterSizes();
+            updatePropScrollCue();
+        });
+    }
 }
 
 void GraphInspectorDock::connectMultiLayerSignals(MultiLayer *ml)
@@ -1732,7 +1670,7 @@ void GraphInspectorDock::buildUi()
 
     // --- Top Pane: Object Manager ---
     QWidget *topPane = new QWidget(d_splitter);
-    topPane->setMinimumHeight(90);
+    topPane->setMinimumHeight(76);
     QVBoxLayout *topLayout = new QVBoxLayout(topPane);
     topLayout->setContentsMargins(6, 4, 6, 4);
     topLayout->setSpacing(4);
@@ -1817,7 +1755,7 @@ void GraphInspectorDock::buildUi()
 
     // --- Bottom Pane: Context Tabs + Scrollable Property Stack ---
     QWidget *bottomPane = new QWidget(d_splitter);
-    bottomPane->setMinimumHeight(110);
+    bottomPane->setMinimumHeight(140);
     QVBoxLayout *botLayout = new QVBoxLayout(bottomPane);
     botLayout->setContentsMargins(0, 0, 0, 0);
     botLayout->setSpacing(0);
@@ -1859,14 +1797,6 @@ void GraphInspectorDock::buildUi()
     connect(d_page_tab_group, QOverload<int>::of(&QButtonGroup::buttonClicked), this,
             [this](int idx) {
                 switchToInspectorPage(static_cast<InspectorPageIndex>(idx));
-                if (idx == PageTabPageLayer)
-                    syncPageLayerControls();
-                else if (idx == PageTabAxis)
-                    syncAxisControls();
-                else if (idx == PageTabCurve)
-                    syncCurveControls();
-                else if (idx == PageTabLegend)
-                    syncLegendControls();
             });
 
     botLayout->addWidget(d_tab_strip);
@@ -1883,6 +1813,30 @@ void GraphInspectorDock::buildUi()
     d_prop_stack->addWidget(buildCurveInspector());
     d_prop_stack->addWidget(buildLegendInspector());
     d_prop_scroll->setWidget(d_prop_stack);
+
+    d_scroll_more_cue = new QFrame(d_prop_scroll->viewport());
+    d_scroll_more_cue->setObjectName(QStringLiteral("InspectorScrollMoreCue"));
+    d_scroll_more_cue->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    d_scroll_more_cue->setAttribute(Qt::WA_StyledBackground, true);
+    {
+        QHBoxLayout *cueLay = new QHBoxLayout(d_scroll_more_cue);
+        cueLay->setContentsMargins(0, 2, 0, 2);
+        cueLay->setSpacing(0);
+        QLabel *cueArrow = new QLabel(QString::fromUtf8("\xE2\x96\xBC"), d_scroll_more_cue);
+        cueArrow->setAlignment(Qt::AlignCenter);
+        cueArrow->setStyleSheet(
+                QStringLiteral("font-size: 8pt; color: #475569; background: transparent;"));
+        cueLay->addWidget(cueArrow);
+    }
+    d_scroll_more_cue->hide();
+    d_prop_scroll->viewport()->installEventFilter(this);
+    connect(d_prop_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this](int) { updatePropScrollCue(); });
+    connect(d_prop_scroll->verticalScrollBar(), &QScrollBar::rangeChanged, this,
+            [this](int, int) { updatePropScrollCue(); });
+    connect(d_prop_stack, &QStackedWidget::currentChanged, this, [this](int) {
+        QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
+    });
 
     botLayout->addWidget(d_prop_scroll, 1);
 
@@ -1907,9 +1861,11 @@ void GraphInspectorDock::buildUi()
         connect(detailsBtn, &QPushButton::clicked, this, [this]() { openDetailsDialogForPage(); });
     }
     d_splitter->addWidget(bottomPane);
-    d_splitter->setStretchFactor(0, 28);
-    d_splitter->setStretchFactor(1, 72);
-    d_splitter->setSizes({ 125, 320 });
+    d_splitter->setStretchFactor(0, 18);
+    d_splitter->setStretchFactor(1, 82);
+    d_splitter->setSizes({ 105, 360 });
+    connect(d_splitter, &QSplitter::splitterMoved, this,
+            [this](int, int) { d_user_resized_splitter = true; });
 
     activeLayout->addWidget(d_splitter, 1);
     d_content_stack->addWidget(d_inspector_active_panel);
@@ -2149,8 +2105,12 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_sec_presets_lbl = makeSectionHeaderLabel(page);
     lay->addWidget(d_sec_presets_lbl);
 
+    QHBoxLayout *presetQuickRow = new QHBoxLayout();
+    presetQuickRow->setContentsMargins(0, 0, 0, 0);
+    presetQuickRow->setSpacing(4);
     d_btn_preset_isij = new QPushButton(page);
-    d_btn_preset_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 15));
+    d_btn_preset_isij->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 14));
+    d_btn_preset_isij->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(d_btn_preset_isij, &QPushButton::clicked, this, [this]() {
         if (!d_target_ml)
             return;
@@ -2159,10 +2119,11 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
             emit d_app->modified();
         refreshAll();
     });
-    lay->addWidget(d_btn_preset_isij);
+    presetQuickRow->addWidget(d_btn_preset_isij, 1);
 
     d_btn_preset_slide28 = new QPushButton(page);
-    d_btn_preset_slide28->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 15));
+    d_btn_preset_slide28->setIcon(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 14));
+    d_btn_preset_slide28->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(d_btn_preset_slide28, &QPushButton::clicked, this, [this]() {
         if (!d_target_ml)
             return;
@@ -2171,7 +2132,8 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
             emit d_app->modified();
         refreshAll();
     });
-    lay->addWidget(d_btn_preset_slide28);
+    presetQuickRow->addWidget(d_btn_preset_slide28, 1);
+    lay->addLayout(presetQuickRow);
 
     QHBoxLayout *customPresetRow = new QHBoxLayout();
     customPresetRow->setSpacing(3);
@@ -2200,17 +2162,19 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
             refreshAll();
         }
     });
-    customPresetRow->addWidget(d_cb_user_presets, 1);
-    customPresetRow->addWidget(d_btn_apply_user_preset, 0);
-    lay->addLayout(customPresetRow);
-
-    d_btn_manage_presets = new QPushButton(page);
-    d_btn_manage_presets->setIcon(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 15));
-    connect(d_btn_manage_presets, &QPushButton::clicked, this, [this]() {
+    d_btn_manage_presets = new QToolButton(page);
+    d_btn_manage_presets->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
+    d_btn_manage_presets->setIcon(IconLoader::duotoneIcon(QStringLiteral("page-setup"), 14));
+    d_btn_manage_presets->setFixedSize(26, 26);
+    d_btn_manage_presets->setCursor(Qt::PointingHandCursor);
+    connect(d_btn_manage_presets, &QToolButton::clicked, this, [this]() {
         MultiLayer::showStylePresetManagerDialog(d_app, d_target_ml);
         refreshAll();
     });
-    lay->addWidget(d_btn_manage_presets);
+    customPresetRow->addWidget(d_cb_user_presets, 1);
+    customPresetRow->addWidget(d_btn_apply_user_preset, 0);
+    customPresetRow->addWidget(d_btn_manage_presets, 0);
+    lay->addLayout(customPresetRow);
 
     d_btn_square_frame70 = new QPushButton(page);
     d_btn_square_frame70->setIcon(IconLoader::duotoneIcon(QStringLiteral("aspect-square"), 15));
@@ -2242,13 +2206,14 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     });
     lay->addWidget(d_chk_keep_aspect);
 
-    QGridLayout *ratioGrid = new QGridLayout();
-    ratioGrid->setContentsMargins(0, 0, 0, 0);
-    ratioGrid->setHorizontalSpacing(4);
-    ratioGrid->setVerticalSpacing(4);
+    QHBoxLayout *ratioRow = new QHBoxLayout();
+    ratioRow->setContentsMargins(0, 0, 0, 0);
+    ratioRow->setSpacing(3);
 
     auto makeRatioBtn = [&](double ratio, bool lock) -> QPushButton * {
         QPushButton *b = new QPushButton(page);
+        b->setObjectName(QStringLiteral("InspectorCompactRatioBtn"));
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         b->setCursor(Qt::PointingHandCursor);
         connect(b, &QPushButton::clicked, this, [this, ratio, lock]() {
             if (!d_target_ml)
@@ -2274,12 +2239,12 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_btn_ratio_3_4 = makeRatioBtn(3.0 / 4.0, true);
     d_btn_ratio_free = makeRatioBtn(0.0, false);
 
-    ratioGrid->addWidget(d_btn_ratio_1_1, 0, 0);
-    ratioGrid->addWidget(d_btn_ratio_4_3, 0, 1);
-    ratioGrid->addWidget(d_btn_ratio_16_9, 1, 0);
-    ratioGrid->addWidget(d_btn_ratio_3_4, 1, 1);
-    ratioGrid->addWidget(d_btn_ratio_free, 2, 0, 1, 2);
-    lay->addLayout(ratioGrid);
+    ratioRow->addWidget(d_btn_ratio_1_1, 1);
+    ratioRow->addWidget(d_btn_ratio_4_3, 1);
+    ratioRow->addWidget(d_btn_ratio_16_9, 1);
+    ratioRow->addWidget(d_btn_ratio_3_4, 1);
+    ratioRow->addWidget(d_btn_ratio_free, 1);
+    lay->addLayout(ratioRow);
 
     // 2) Physical Page Size & Zoom
     d_sec_page_size_lbl = makeSectionHeaderLabel(page);
@@ -2377,51 +2342,6 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
             d_app->syncGraphPageAndToolbarMenuState();
     });
     sizeGrid->addWidget(d_chk_page_view, 4, 0, 1, 2);
-
-    d_lbl_page_zoom = new QLabel(page);
-    QHBoxLayout *zoomRow = new QHBoxLayout();
-    zoomRow->setContentsMargins(0, 0, 0, 0);
-    zoomRow->setSpacing(4);
-    d_combo_page_zoom = new QComboBox(page);
-    const QList<int> zoomPcts = { 50, 75, 100, 125, 150, 200 };
-    for (int pct : zoomPcts)
-        d_combo_page_zoom->addItem(QStringLiteral("%1%").arg(pct), pct);
-    d_combo_page_zoom->setCurrentIndex(2); // 100%
-    connect(d_combo_page_zoom, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int idx) {
-                if (d_syncing_props || !d_target_ml || idx < 0)
-                    return;
-                const int pct = d_combo_page_zoom->itemData(idx).toInt();
-                if (pct > 0) {
-                    const QString before = d_target_ml->captureUndoSnapshot();
-                    d_target_ml->setPageZoom(double(pct) / 100.0);
-                    d_target_ml->pushUndoSnapshot(tr("Page Zoom"), before, kMergePageDims);
-                }
-            });
-    d_btn_page_zoom_fit = new QToolButton(page);
-    d_btn_page_zoom_fit->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
-    d_btn_page_zoom_fit->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    d_btn_page_zoom_fit->setIcon(IconLoader::duotoneIcon(QStringLiteral("fit-page"), 14));
-    d_btn_page_zoom_fit->setCursor(Qt::PointingHandCursor);
-    connect(d_btn_page_zoom_fit, &QToolButton::clicked, this, [this]() {
-        if (!d_target_ml)
-            return;
-        const QString before = d_target_ml->captureUndoSnapshot();
-        const bool fitted = QMetaObject::invokeMethod(
-                d_target_ml.data(), "fitPageZoomToViewport", Qt::DirectConnection);
-        if (!fitted) {
-            if (!QMetaObject::invokeMethod(d_target_ml.data(), "setPageZoomFactor",
-                                           Qt::DirectConnection, Q_ARG(double, 1.0))) {
-                d_target_ml->setPageZoom(1.0);
-            }
-        }
-        d_target_ml->pushUndoSnapshot(tr("Page Zoom"), before, kMergePageDims);
-        syncPageLayerControls();
-    });
-    zoomRow->addWidget(d_combo_page_zoom, 1);
-    zoomRow->addWidget(d_btn_page_zoom_fit, 0);
-    sizeGrid->addWidget(d_lbl_page_zoom, 5, 0);
-    sizeGrid->addLayout(zoomRow, 5, 1);
     lay->addLayout(sizeGrid);
 
     // 2b) Inset Layer Controls (B5-8: visible only when active layer is an inset)
@@ -2747,39 +2667,6 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     connect(d_combo_panel_pos, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [applyPanelLabelsFromUi](int) { applyPanelLabelsFromUi(); });
 
-    // 4) Export & PowerPoint
-    d_sec_export_lbl = makeSectionHeaderLabel(page);
-    lay->addWidget(d_sec_export_lbl);
-
-    d_btn_copy_ole = new QPushButton(page);
-    d_btn_copy_ole->setIcon(IconLoader::duotoneIcon(QStringLiteral("copy-ole"), 15));
-    connect(d_btn_copy_ole, &QPushButton::clicked, this, [this]() {
-        if (d_app)
-            d_app->copyGraphAsOleObject();
-    });
-    lay->addWidget(d_btn_copy_ole);
-
-    // A3-7: Send to PowerPoint (.pptx) button directly in Page 0 Export section
-    d_btn_send_pptx = new QPushButton(page);
-    d_btn_send_pptx->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-pptx"), 15));
-    connect(d_btn_send_pptx, &QPushButton::clicked, this, [this]() {
-        if (!d_app)
-            return;
-        if (QAction *aPptx = d_app->findChild<QAction *>(QStringLiteral("actionSendToPowerPoint")))
-            aPptx->trigger();
-        else
-            ToriGraphPptx::sendGraphsToPowerPoint(d_app);
-    });
-    lay->addWidget(d_btn_send_pptx);
-
-    d_btn_export_img_pdf = new QPushButton(page);
-    d_btn_export_img_pdf->setIcon(IconLoader::duotoneIcon(QStringLiteral("export-image"), 15));
-    connect(d_btn_export_img_pdf, &QPushButton::clicked, this, [this]() {
-        if (d_app)
-            d_app->exportGraph();
-    });
-    lay->addWidget(d_btn_export_img_pdf);
-
     lay->addStretch(1);
     return page;
 }
@@ -2928,85 +2815,8 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     d_lbl_axis_title_preview->setWordWrap(true);
     lay->addWidget(d_lbl_axis_title_preview);
 
-    QHBoxLayout *fmtRow = new QHBoxLayout();
-    fmtRow->setSpacing(2);
-    auto makeFmtBtn = [&](const QString &label, bool compact) -> QToolButton * {
-        QToolButton *b = new QToolButton(page);
-        b->setObjectName(compact ? QStringLiteral("InspectorSymbolChipBtn")
-                                 : QStringLiteral("InspectorMenuChipBtn"));
-        b->setText(label);
-        b->setFixedHeight(24);
-        if (compact) {
-            b->setFixedWidth(25);
-            b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-            fmtRow->addWidget(b, 0);
-        } else {
-            b->setMinimumWidth(58);
-            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            fmtRow->addWidget(b, 1);
-        }
-        b->setCursor(Qt::PointingHandCursor);
-        return b;
-    };
-
-    d_btn_fmt_italic = makeFmtBtn(QStringLiteral("I"), true);
-    QFont itFont = d_btn_fmt_italic->font();
-    itFont.setItalic(true);
-    itFont.setBold(true);
-    d_btn_fmt_italic->setFont(itFont);
-    connect(d_btn_fmt_italic, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<i>"), QStringLiteral("</i>"));
-    });
-
-    d_btn_fmt_sub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82"), true); // X₂
-    connect(d_btn_fmt_sub, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<sub>"), QStringLiteral("</sub>"));
-    });
-
-    d_btn_fmt_sup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2"), true); // X²
-    connect(d_btn_fmt_sup, &QToolButton::clicked, this, [this]() {
-        applyAxisTitleMarkup(QStringLiteral("<sup>"), QStringLiteral("</sup>"));
-    });
-
-    d_btn_fmt_greek = makeFmtBtn(QString(), false);
-    d_btn_fmt_greek->setPopupMode(QToolButton::InstantPopup);
-    d_menu_greek = new QMenu(d_btn_fmt_greek);
-    rebuildGreekSymbolMenu();
-    d_btn_fmt_greek->setMenu(d_menu_greek);
-
-    d_btn_fmt_unit = makeFmtBtn(QString(), false);
-    d_btn_fmt_unit->setPopupMode(QToolButton::InstantPopup);
-    d_menu_units = new QMenu(d_btn_fmt_unit);
-    rebuildUnitsSymbolMenu();
-    d_btn_fmt_unit->setMenu(d_menu_units);
-    lay->addLayout(fmtRow);
-
-    QHBoxLayout *matSymRow = new QHBoxLayout();
-    matSymRow->setContentsMargins(0, 0, 0, 0);
-    matSymRow->setSpacing(3);
-    const QList<QString> quickSyms = {
-        QString::fromUtf8("\xCF\x83"),     // σ
-        QString::fromUtf8("\xCE\xB5"),     // ε
-        QString::fromUtf8("2\xCE\xB8"),    // 2θ
-        QString::fromUtf8("\xCE\xBC" "m"), // μm
-        QString::fromUtf8("\xC2\xB0" "C"), // °C
-        QString::fromUtf8("\xC3\x85"),     // Å
-    };
-    for (const QString &sym : quickSyms) {
-        QToolButton *b = new QToolButton(page);
-        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
-        b->setText(sym);
-        b->setToolTip(QCoreApplication::translate("QObject", "Insert %1").arg(sym));
-        b->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
-        b->setProperty("_tg_tip_arg", sym);
-        b->setFixedHeight(22);
-        b->setMinimumWidth(24);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        connect(b, &QToolButton::clicked, this, [this, sym]() { insertAxisTitleToken(sym); });
-        matSymRow->addWidget(b);
-    }
-    lay->addLayout(matSymRow);
+    d_axis_sym_bar = buildRichTextBar(page, RichTargetMode::AxisTitle);
+    lay->addWidget(d_axis_sym_bar);
 
     // Range & Scale
     d_sec_axis_range_lbl = makeSectionHeaderLabel(page);
@@ -3042,6 +2852,7 @@ QWidget *GraphInspectorDock::buildAxisInspector()
             [this]() { applyAxisScaleFromUi(kMergeAxisScale, true); });
 
     d_btn_axis_autoscale = new QPushButton(page);
+    d_btn_axis_autoscale->setMinimumHeight(28);
     d_btn_axis_autoscale->setIcon(IconLoader::duotoneIcon(QStringLiteral("zoom-auto"), 14));
     connect(d_btn_axis_autoscale, &QPushButton::clicked, this, [this]() {
         const QVector<Graph *> targets = targetLayersForScope();
@@ -4276,26 +4087,24 @@ QWidget *GraphInspectorDock::buildCurveInspector()
     regLay->addWidget(d_chk_curve_right_y);
     regLay->addWidget(d_btn_match_right_y_color);
 
-    // Quick Error Bars + Live Error Bar Styling
+    // Error Bars + Live Error Bar Styling
     d_sec_err_bars_lbl = makeSectionHeaderLabel(d_curve_regular_wrap);
     regLay->addWidget(d_sec_err_bars_lbl);
 
-    // A4-5: 2-row grid so Adjacent Col / 5% / Std Dev (SD) never clip at 252px dock width
-    QGridLayout *errBtnGrid = new QGridLayout();
-    errBtnGrid->setContentsMargins(0, 0, 0, 0);
-    errBtnGrid->setHorizontalSpacing(4);
-    errBtnGrid->setVerticalSpacing(4);
+    QHBoxLayout *errBtnRow = new QHBoxLayout();
+    errBtnRow->setContentsMargins(0, 0, 0, 0);
+    errBtnRow->setSpacing(4);
     d_btn_err_adjacent = new QPushButton(d_curve_regular_wrap);
-    d_btn_err_sd = new QPushButton(d_curve_regular_wrap);
-    d_btn_err_5pct = new QPushButton(d_curve_regular_wrap);
+    d_btn_err_dialog = new QPushButton(d_curve_regular_wrap);
+    d_btn_err_adjacent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d_btn_err_dialog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(d_btn_err_adjacent, &QPushButton::clicked, this,
-            [this]() { applyQuickErrorBars(0); });
-    connect(d_btn_err_sd, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(1); });
-    connect(d_btn_err_5pct, &QPushButton::clicked, this, [this]() { applyQuickErrorBars(2); });
-    errBtnGrid->addWidget(d_btn_err_adjacent, 0, 0);
-    errBtnGrid->addWidget(d_btn_err_5pct, 0, 1);
-    errBtnGrid->addWidget(d_btn_err_sd, 1, 0, 1, 2);
-    regLay->addLayout(errBtnGrid);
+            &GraphInspectorDock::applyAdjacentErrorBars);
+    connect(d_btn_err_dialog, &QPushButton::clicked, this,
+            &GraphInspectorDock::openErrorBarsDialog);
+    errBtnRow->addWidget(d_btn_err_adjacent, 1);
+    errBtnRow->addWidget(d_btn_err_dialog, 1);
+    regLay->addLayout(errBtnRow);
 
     d_err_style_wrap = new QWidget(d_curve_regular_wrap);
     QVBoxLayout *errStyleLay = new QVBoxLayout(d_err_style_wrap);
@@ -4845,7 +4654,7 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         emit g->modifiedGraph();
         d_target_ml->pushUndoSnapshot(tr("Edit Colorbar Title"), before, kMergeSpecCbTitle);
     });
-    d_spec_cb_sym_bar = createMatSciRichTextBar(d_spectrogram_wrap, d_edit_spec_cb_title);
+    d_spec_cb_sym_bar = buildRichTextBar(d_spectrogram_wrap, RichTargetMode::SpectrogramCbTitle);
     specGrid->addWidget(d_lbl_spec_cb_title, 5, 0);
     specGrid->addWidget(d_edit_spec_cb_title, 5, 1);
     specGrid->addWidget(d_spec_cb_sym_bar, 6, 0, 1, 2);
@@ -5129,6 +4938,7 @@ QWidget *GraphInspectorDock::buildLegendInspector()
 
     d_lbl_leg_header = new QLabel(d_leg_text_wrap);
     d_edit_leg_header = new QLineEdit(d_leg_text_wrap);
+    d_edit_leg_header->installEventFilter(this);
     wirePendingEditCue(d_edit_leg_header);
     connect(d_edit_leg_header, &QLineEdit::editingFinished, this, [this]() {
         if (d_syncing_props || !d_edit_leg_header)
@@ -5275,6 +5085,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     d_annot_commit_timer->setSingleShot(true);
     d_annot_commit_timer->setInterval(450);
     connect(d_edit_annot_text, &QPlainTextEdit::textChanged, this, [this]() {
+        if (d_edit_annot_text && !d_edit_annot_text->isHidden())
+            updateRichPreviewLabel(d_lbl_leg_preview, d_edit_annot_text->toPlainText(), false);
         if (d_syncing_props)
             return;
         Graph *g = activeLayer();
@@ -5289,18 +5101,29 @@ QWidget *GraphInspectorDock::buildLegendInspector()
     connect(d_annot_commit_timer, &QTimer::timeout, this,
             &GraphInspectorDock::flushPendingAnnotationEdit);
 
-    d_leg_sym_bar = createMatSciRichTextBar(d_leg_text_wrap, d_edit_leg_header, d_edit_annot_text);
+    d_lbl_leg_preview = new QLabel(d_leg_text_wrap);
+    d_lbl_leg_preview->setObjectName(QStringLiteral("InspectorRichPreviewLabel"));
+    d_lbl_leg_preview->setTextFormat(Qt::RichText);
+    d_lbl_leg_preview->setWordWrap(true);
+    d_lbl_leg_preview->hide();
+    connect(d_edit_leg_header, &QLineEdit::textChanged, this, [this](const QString &txt) {
+        if (d_edit_leg_header && !d_edit_leg_header->isHidden())
+            updateRichPreviewLabel(d_lbl_leg_preview, txt, false);
+    });
+
+    d_leg_sym_bar = buildRichTextBar(d_leg_text_wrap, RichTargetMode::LegendOrAnnot);
 
     legGrid->addWidget(d_lbl_leg_frame, 0, 0);
     legGrid->addWidget(d_combo_leg_frame, 0, 1);
     legGrid->addWidget(d_lbl_leg_header, 1, 0);
     legGrid->addWidget(d_edit_leg_header, 1, 1);
     legGrid->addWidget(d_edit_annot_text, 1, 1);
-    legGrid->addWidget(d_leg_sym_bar, 2, 0, 1, 2);
-    legGrid->addWidget(d_lbl_leg_cols, 3, 0);
-    legGrid->addWidget(d_spin_leg_cols, 3, 1);
-    legGrid->addWidget(d_lbl_leg_font_pt, 4, 0);
-    legGrid->addWidget(d_spin_leg_font_pt, 4, 1);
+    legGrid->addWidget(d_lbl_leg_preview, 2, 0, 1, 2);
+    legGrid->addWidget(d_leg_sym_bar, 3, 0, 1, 2);
+    legGrid->addWidget(d_lbl_leg_cols, 4, 0);
+    legGrid->addWidget(d_spin_leg_cols, 4, 1);
+    legGrid->addWidget(d_lbl_leg_font_pt, 5, 0);
+    legGrid->addWidget(d_spin_leg_font_pt, 5, 1);
     legWrapLay->addLayout(legGrid);
 
     // A3-4: Per-curve legend label editor (compact swatch + QLineEdit per curve, primary legend only)
@@ -5556,7 +5379,15 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         }
         applyPlotTitleFromUi(tr("Edit Plot Title"), kMergePlotTitle);
     });
-    d_plot_title_sym_bar = createMatSciRichTextBar(d_plot_title_wrap, d_edit_plot_title);
+    d_lbl_plot_title_preview = new QLabel(d_plot_title_wrap);
+    d_lbl_plot_title_preview->setObjectName(QStringLiteral("InspectorRichPreviewLabel"));
+    d_lbl_plot_title_preview->setTextFormat(Qt::RichText);
+    d_lbl_plot_title_preview->setWordWrap(true);
+    d_lbl_plot_title_preview->hide();
+    connect(d_edit_plot_title, &QLineEdit::textChanged, this, [this](const QString &txt) {
+        updateRichPreviewLabel(d_lbl_plot_title_preview, txt, false);
+    });
+    d_plot_title_sym_bar = buildRichTextBar(d_plot_title_wrap, RichTargetMode::PlotTitle);
 
     d_lbl_plot_title_pt = new QLabel(d_plot_title_wrap);
     d_spin_plot_title_pt = new InspectorPtSpinBox(d_plot_title_wrap);
@@ -5593,12 +5424,13 @@ QWidget *GraphInspectorDock::buildLegendInspector()
 
     ptGrid->addWidget(d_lbl_plot_title_text, 0, 0);
     ptGrid->addWidget(d_edit_plot_title, 0, 1);
-    ptGrid->addWidget(d_plot_title_sym_bar, 1, 0, 1, 2);
-    ptGrid->addWidget(d_lbl_plot_title_pt, 2, 0);
-    ptGrid->addWidget(d_spin_plot_title_pt, 2, 1);
-    ptGrid->addWidget(d_chk_plot_title_bold, 3, 0, 1, 2);
-    ptGrid->addWidget(d_lbl_plot_title_color, 4, 0);
-    ptGrid->addWidget(d_btn_plot_title_color, 4, 1);
+    ptGrid->addWidget(d_lbl_plot_title_preview, 1, 0, 1, 2);
+    ptGrid->addWidget(d_plot_title_sym_bar, 2, 0, 1, 2);
+    ptGrid->addWidget(d_lbl_plot_title_pt, 3, 0);
+    ptGrid->addWidget(d_spin_plot_title_pt, 3, 1);
+    ptGrid->addWidget(d_chk_plot_title_bold, 4, 0, 1, 2);
+    ptGrid->addWidget(d_lbl_plot_title_color, 5, 0);
+    ptGrid->addWidget(d_btn_plot_title_color, 5, 1);
     ptLay->addLayout(ptGrid);
     d_plot_title_wrap->hide();
     lay->addWidget(d_plot_title_wrap);
@@ -7192,10 +7024,34 @@ void GraphInspectorDock::onGraphSelectionChanged(MultiLayer *page, Graph *layer,
     syncInspectorFromSelection();
 }
 
+void GraphInspectorDock::syncTabPage(InspectorPageIndex pageIdx)
+{
+    const int idx = qBound(0, int(pageIdx), 3);
+    d_tab_dirty[idx] = false;
+    switch (pageIdx) {
+    case PageTabPageLayer:
+        syncPageLayerControls();
+        break;
+    case PageTabAxis:
+        syncAxisControls();
+        break;
+    case PageTabCurve:
+        syncCurveControls();
+        break;
+    case PageTabLegend:
+        syncLegendControls();
+        break;
+    }
+    QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
+}
+
 void GraphInspectorDock::syncInspectorFromSelection()
 {
     if (!d_target_ml)
         return;
+
+    for (bool &dirty : d_tab_dirty)
+        dirty = true;
 
     Graph *g = activeLayer();
     const Graph::GraphSelection sel = g ? g->currentSelection() : Graph::GraphSelection();
@@ -7229,10 +7085,9 @@ void GraphInspectorDock::syncInspectorFromSelection()
         break;
     }
 
-    syncPageLayerControls();
-    syncAxisControls();
-    syncCurveControls();
-    syncLegendControls();
+    const InspectorPageIndex curPage = currentInspectorPage();
+    if (d_tab_dirty[int(curPage)])
+        syncTabPage(curPage);
 }
 
 void GraphInspectorDock::openAddCurvePopover()
@@ -7656,7 +7511,6 @@ void GraphInspectorDock::syncPageLayerControls()
         QSignalBlocker b2(d_spin_page_h_mm);
         QSignalBlocker b3(d_spin_page_dpi);
         QSignalBlocker b4(d_chk_page_view);
-        QSignalBlocker b5(d_combo_page_zoom);
         QSignalBlocker b6(d_chk_panel_labels);
         QSignalBlocker b7(d_combo_panel_pos);
         QSignalBlocker b8(d_chk_keep_aspect);
@@ -7674,25 +7528,6 @@ void GraphInspectorDock::syncPageLayerControls()
         configurePageSizeSpins(int(shownUnit), wMm, hMm);
         d_spin_page_dpi->setValue(d_target_ml->pageDpi());
         d_chk_page_view->setChecked(d_target_ml->pageViewMode());
-
-        // claude_review_1 #6: display exact zoom % when Fit-to-Window or wheel zoom sets a
-        // non-preset percentage (presets occupy indices 0..5).
-        while (d_combo_page_zoom->count() > 6)
-            d_combo_page_zoom->removeItem(6);
-        const int curPct = qBound(10, qRound(d_target_ml->pageZoom() * 100.0), 800);
-        int exactIdx = -1;
-        for (int i = 0; i < d_combo_page_zoom->count(); ++i) {
-            if (qAbs(d_combo_page_zoom->itemData(i).toInt() - curPct) <= 1) {
-                exactIdx = i;
-                break;
-            }
-        }
-        if (exactIdx >= 0) {
-            d_combo_page_zoom->setCurrentIndex(exactIdx);
-        } else {
-            d_combo_page_zoom->addItem(QStringLiteral("%1%").arg(curPct), curPct);
-            d_combo_page_zoom->setCurrentIndex(d_combo_page_zoom->count() - 1);
-        }
 
         d_chk_panel_labels->setChecked(d_target_ml->hasPanelLabels());
         const int pIdx = d_combo_panel_pos->findData(int(d_target_ml->panelLabelPlacement()));
@@ -7995,7 +7830,8 @@ void GraphInspectorDock::syncAxisControls()
                  && d_axis_title_edit_layer.data() == g && d_axis_title_edit_axis == ax);
         if (!editingSameAxisTitle) {
             const QString axisTitle = g->axisTitle(ax);
-            d_edit_axis_title->setText(axisTitle);
+            if (d_edit_axis_title->text() != axisTitle)
+                d_edit_axis_title->setText(axisTitle);
             d_edit_axis_title->setProperty("_syncedText", axisTitle);
             d_edit_axis_title->setModified(false);
         }
@@ -8110,8 +7946,8 @@ void GraphInspectorDock::syncCurveControls()
     if (d_btn_match_right_y_color)
         d_btn_match_right_y_color->setEnabled(hasCurve);
     d_btn_err_adjacent->setEnabled(hasCurve);
-    d_btn_err_sd->setEnabled(hasCurve);
-    d_btn_err_5pct->setEnabled(hasCurve);
+    if (d_btn_err_dialog)
+        d_btn_err_dialog->setEnabled(hasCurve);
 
     if (!cv) {
         if (d_err_style_wrap)
@@ -8358,25 +8194,44 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
     if (!d_leg_entries_wrap || !d_leg_entries_layout)
         return;
 
-    while (QLayoutItem *it = d_leg_entries_layout->takeAt(0)) {
-        if (QWidget *w = it->widget()) {
-            w->hide();
-            w->setParent(nullptr);
-            w->deleteLater();
-        }
-        delete it;
-    }
+    static const QRegularExpression rxLegendEntry(
+            QStringLiteral("^\\\\(?:c\\{(\\d+)\\}|l\\((\\d+)\\))\\s?(.*)$"));
 
     if (!g || g->isPiePlot()) {
+        while (QLayoutItem *it = d_leg_entries_layout->takeAt(0)) {
+            if (QWidget *w = it->widget()) {
+                w->hide();
+                w->setParent(nullptr);
+                w->deleteLater();
+            }
+            delete it;
+        }
+        d_leg_curve_rows.clear();
+        d_leg_rows_graph = nullptr;
         d_leg_entries_wrap->hide();
         return;
     }
 
     const QStringList existingLines = leg ? leg->text().split(QLatin1Char('\n')) : QStringList();
-    int rowCount = 0;
-    const int maxRows = 24;
+    QHash<int, QString> parsedByNum;
+    for (const QString &ln : existingLines) {
+        const QRegularExpressionMatch m = rxLegendEntry.match(ln.trimmed());
+        if (!m.hasMatch())
+            continue;
+        bool ok = false;
+        const int n = !m.captured(1).isEmpty() ? m.captured(1).toInt(&ok)
+                                               : m.captured(2).toInt(&ok);
+        if (ok && !parsedByNum.contains(n))
+            parsedByNum.insert(n, m.captured(3));
+    }
 
-    for (int ci = 0; ci < g->curves() && rowCount < maxRows; ++ci) {
+    struct CurveEntrySpec {
+        int ci = -1;
+        QString label;
+    };
+    QVector<CurveEntrySpec> specs;
+    const int maxRows = 24;
+    for (int ci = 0; ci < g->curves() && specs.size() < maxRows; ++ci) {
         QwtPlotCurve *cv = g->curve(ci);
         if (!cv || cv->rtti() == QwtPlotItem::Rtti_PlotSpectrogram
             || g->curveType(ci) == Graph::ErrorBars
@@ -8385,27 +8240,61 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
         }
 
         const int num = ci + 1;
-        const QRegularExpression rxEntry(
-                QStringLiteral("^\\\\(?:c\\{%1\\}|l\\(%1\\))\\s?(.*)$").arg(num));
         const QString autoMacro = QStringLiteral("%(%1)").arg(num);
-
         QString autoLbl = g->resolvedAutoCurveLabel(ci).trimmed();
         if (autoLbl.isEmpty())
             autoLbl = cv->title().text().trimmed();
 
         QString currentLbl = autoLbl;
-        for (const QString &ln : existingLines) {
-            const QRegularExpressionMatch m = rxEntry.match(ln.trimmed());
-            if (m.hasMatch()) {
-                const QString tail = m.captured(1);
-                if (!tail.isEmpty() && tail.trimmed() != autoMacro)
-                    currentLbl = tail;
-                break;
-            }
+        const auto itParsed = parsedByNum.constFind(num);
+        if (itParsed != parsedByNum.constEnd()) {
+            const QString &tail = itParsed.value();
+            if (!tail.isEmpty() && tail.trimmed() != autoMacro)
+                currentLbl = tail;
         }
+        specs.append({ ci, currentLbl });
+    }
 
+    bool canReuse = (d_leg_rows_graph == g && d_leg_curve_rows.size() == specs.size());
+    for (int i = 0; canReuse && i < specs.size(); ++i) {
+        if (d_leg_curve_rows[i].curveIndex != specs[i].ci || !d_leg_curve_rows[i].edit
+            || !d_leg_curve_rows[i].swatchLabel || !d_leg_curve_rows[i].previewLabel) {
+            canReuse = false;
+        }
+    }
+    if (canReuse) {
+        for (int i = 0; i < specs.size(); ++i) {
+            LegendCurveRow &row = d_leg_curve_rows[i];
+            row.swatchLabel->setPixmap(buildCurveSwatchIcon(g, specs[i].ci).pixmap(22, 14));
+            if (!row.edit->hasFocus() && !row.edit->isModified())
+                syncLineEditClean(row.edit, specs[i].label);
+            updateRichPreviewLabel(row.previewLabel, row.edit->text(), false);
+            if (row.resetBtn)
+                row.resetBtn->setToolTip(tr("Reset to automatic curve name"));
+        }
+        d_leg_entries_wrap->setVisible(!specs.isEmpty());
+        return;
+    }
+
+    while (QLayoutItem *it = d_leg_entries_layout->takeAt(0)) {
+        if (QWidget *w = it->widget()) {
+            w->hide();
+            w->setParent(nullptr);
+            w->deleteLater();
+        }
+        delete it;
+    }
+    d_leg_curve_rows.clear();
+    d_leg_rows_graph = g;
+
+    for (const CurveEntrySpec &spec : specs) {
+        const int ci = spec.ci;
         QWidget *rowW = new QWidget(d_leg_entries_wrap);
-        QHBoxLayout *rowL = new QHBoxLayout(rowW);
+        QVBoxLayout *rowWrapLay = new QVBoxLayout(rowW);
+        rowWrapLay->setContentsMargins(0, 0, 0, 0);
+        rowWrapLay->setSpacing(2);
+
+        QHBoxLayout *rowL = new QHBoxLayout();
         rowL->setContentsMargins(0, 0, 0, 0);
         rowL->setSpacing(4);
 
@@ -8414,13 +8303,21 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
         swLbl->setFixedSize(24, 16);
 
         QLineEdit *edit = new QLineEdit(rowW);
-        syncLineEditClean(edit, currentLbl);
+        edit->installEventFilter(this);
+        syncLineEditClean(edit, spec.label);
         wirePendingEditCue(edit);
+
+        QLabel *previewLbl = new QLabel(rowW);
+        previewLbl->setObjectName(QStringLiteral("InspectorRichPreviewLabel"));
+        previewLbl->setTextFormat(Qt::RichText);
+        previewLbl->setWordWrap(true);
+        updateRichPreviewLabel(previewLbl, spec.label, false);
 
         QToolButton *resetBtn = new QToolButton(rowW);
         resetBtn->setIcon(IconLoader::duotoneIcon(QStringLiteral("undo"), 12));
         resetBtn->setFixedSize(22, 22);
         resetBtn->setAutoRaise(true);
+        resetBtn->setFocusPolicy(Qt::NoFocus);
         resetBtn->setCursor(Qt::PointingHandCursor);
         resetBtn->setToolTip(tr("Reset to automatic curve name"));
 
@@ -8435,8 +8332,6 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
                 return;
 
             const int curveNum = ci + 1;
-            const QRegularExpression rxLine(
-                    QStringLiteral("^\\\\(?:c\\{%1\\}|l\\(%1\\))\\s?(.*)$").arg(curveNum));
             QStringList lines = curLeg->text().split(QLatin1Char('\n'));
             while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
                 lines.removeLast();
@@ -8444,7 +8339,13 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
             const QString newLine = QStringLiteral("\\c{%1}%2").arg(curveNum).arg(newLbl);
             bool replaced = false;
             for (int li = 0; li < lines.size(); ++li) {
-                if (rxLine.match(lines[li].trimmed()).hasMatch()) {
+                const QRegularExpressionMatch m = rxLegendEntry.match(lines[li].trimmed());
+                if (!m.hasMatch())
+                    continue;
+                bool ok = false;
+                const int parsedNum = !m.captured(1).isEmpty() ? m.captured(1).toInt(&ok)
+                                                               : m.captured(2).toInt(&ok);
+                if (ok && parsedNum == curveNum) {
                     lines[li] = newLine;
                     replaced = true;
                     break;
@@ -8464,6 +8365,9 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
             d_target_ml->pushUndoSnapshot(tr("Edit Legend Label"), before, kMergeLegendHeader);
         };
 
+        connect(edit, &QLineEdit::textChanged, this, [this, previewLbl](const QString &txt) {
+            updateRichPreviewLabel(previewLbl, txt, false);
+        });
         connect(edit, &QLineEdit::editingFinished, this, [edit, commitCurveLabel]() {
             const QString trimmed = edit->text().trimmed();
             const bool isDiff = (trimmed != edit->property("_syncedText").toString());
@@ -8493,11 +8397,13 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
         rowL->addWidget(swLbl, 0);
         rowL->addWidget(edit, 1);
         rowL->addWidget(resetBtn, 0);
+        rowWrapLay->addLayout(rowL);
+        rowWrapLay->addWidget(previewLbl);
         d_leg_entries_layout->addWidget(rowW);
-        ++rowCount;
+        d_leg_curve_rows.append({ ci, rowW, swLbl, edit, previewLbl, resetBtn });
     }
 
-    d_leg_entries_wrap->setVisible(rowCount > 0);
+    d_leg_entries_wrap->setVisible(!specs.isEmpty());
 }
 
 void GraphInspectorDock::applyArrowControlsFromUi(const QString &undoLabel, int mergeId)
@@ -8735,6 +8641,7 @@ void GraphInspectorDock::syncLegendControls()
             QSignalBlocker bp(d_spin_plot_title_pt);
             QSignalBlocker bb(d_chk_plot_title_bold);
             syncLineEditClean(d_edit_plot_title, t.text());
+            updateRichPreviewLabel(d_lbl_plot_title_preview, t.text(), false);
             const QFont tf = t.font();
             d_spin_plot_title_pt->setValue(
                     qBound(PlotStyleLimits::kFontSizeMin,
@@ -8829,6 +8736,13 @@ void GraphInspectorDock::syncLegendControls()
         }
     }
 
+    updateRichPreviewLabel(
+            d_lbl_leg_preview,
+            (isTextAnn && d_edit_annot_text) ? d_edit_annot_text->toPlainText()
+                                             : (d_edit_leg_header ? d_edit_leg_header->text()
+                                                                  : QString()),
+            false);
+
     if (isPrimaryLegend)
         rebuildLegendCurveEntryRows(g, leg);
     else if (d_leg_entries_wrap)
@@ -8839,6 +8753,9 @@ void GraphInspectorDock::syncLegendControls()
 
 void GraphInspectorDock::applyAxisScaleFromUi(int mergeId, bool fromRangeEdits)
 {
+    if (!d_edit_axis_min || !d_edit_axis_max || !d_edit_axis_step || !d_combo_axis_scale)
+        return;
+
     Graph *g = activeLayer();
     const QVector<Graph *> targets = targetLayersForScope();
     if (d_syncing_props || !d_target_ml || !g || !g->plotWidget() || targets.isEmpty())
@@ -8846,7 +8763,7 @@ void GraphInspectorDock::applyAxisScaleFromUi(int mergeId, bool fromRangeEdits)
 
     // E5-6: ignore no-op focus-out on Min/Max/Step so simply clicking or tabbing through the
     // line edits never disables AutoScale, locks the axis, or pushes a phantom Undo entry.
-    if (fromRangeEdits && d_edit_axis_min && d_edit_axis_max && d_edit_axis_step) {
+    if (fromRangeEdits) {
         const bool anyDiff = (d_edit_axis_min->text().trimmed()
                               != d_edit_axis_min->property("_syncedText").toString())
                 || (d_edit_axis_max->text().trimmed()
@@ -9208,16 +9125,36 @@ void GraphInspectorDock::applyCategoryColumnFromUi()
     d_target_ml->pushUndoSnapshot(tr("Change Category Labels"), before);
 }
 
-void GraphInspectorDock::updateAxisTitlePreview(const QString &raw)
+void GraphInspectorDock::updateRichPreviewLabel(QLabel *lbl, const QString &raw, bool showWhenPlain)
 {
-    if (!d_lbl_axis_title_preview)
+    if (!lbl)
         return;
     if (raw.trimmed().isEmpty()) {
-        d_lbl_axis_title_preview->setText(tr("Preview: (empty)"));
-    } else {
-        d_lbl_axis_title_preview->setText(
-                tr("Preview: %1").arg(renderSafeScientificPreviewHtml(raw)));
+        if (showWhenPlain) {
+            lbl->setText(tr("Preview: (empty)"));
+            lbl->show();
+        } else {
+            lbl->clear();
+            lbl->hide();
+        }
+        QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
+        return;
     }
+    if (!showWhenPlain && !hasRichTextMarkup(raw)) {
+        lbl->clear();
+        lbl->hide();
+        QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
+        return;
+    }
+    const QString rendered = renderSafeScientificPreviewHtml(raw);
+    lbl->setText(showWhenPlain ? tr("Preview: %1").arg(rendered) : rendered);
+    lbl->show();
+    QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
+}
+
+void GraphInspectorDock::updateAxisTitlePreview(const QString &raw)
+{
+    updateRichPreviewLabel(d_lbl_axis_title_preview, raw, true);
 }
 
 void GraphInspectorDock::flushPendingAxisTitleEdit()
@@ -9263,46 +9200,258 @@ void GraphInspectorDock::flushPendingAxisTitleEdit()
         ml->pushUndoSnapshot(tr("Edit Axis Title"), before, kMergeAxisTitle);
 }
 
-void GraphInspectorDock::applyAxisTitleMarkup(const QString &openTag, const QString &closeTag)
+void GraphInspectorDock::resolveRichTarget(RichTargetMode mode, QLineEdit *&outLine,
+                                           QPlainTextEdit *&outPlain) const
 {
-    if (!d_edit_axis_title)
+    outLine = nullptr;
+    outPlain = nullptr;
+    if (mode == RichTargetMode::AxisTitle) {
+        outLine = d_edit_axis_title;
         return;
-    QString txt = d_edit_axis_title->text();
-    if (d_edit_axis_title->hasSelectedText()) {
-        const int start = d_edit_axis_title->selectionStart();
-        const QString sel = d_edit_axis_title->selectedText();
-        txt.replace(start, sel.length(), openTag + sel + closeTag);
-        d_edit_axis_title->setText(txt);
-    } else {
-        const int pos = d_edit_axis_title->cursorPosition();
-        txt.insert(pos, openTag + closeTag);
-        d_edit_axis_title->setText(txt);
-        d_edit_axis_title->setCursorPosition(pos + openTag.length());
     }
-    d_edit_axis_title->setModified(true);
-    updateAxisTitlePreview(d_edit_axis_title->text());
-    emit d_edit_axis_title->editingFinished();
+    if (mode == RichTargetMode::PlotTitle) {
+        outLine = d_edit_plot_title;
+        return;
+    }
+    if (mode == RichTargetMode::SpectrogramCbTitle) {
+        outLine = d_edit_spec_cb_title;
+        return;
+    }
+    if (d_edit_annot_text && !d_edit_annot_text->isHidden() && d_edit_annot_text->isEnabled()) {
+        outPlain = d_edit_annot_text;
+        return;
+    }
+    QWidget *scopeRoot = d_leg_text_wrap ? d_leg_text_wrap
+                                         : const_cast<GraphInspectorDock *>(this);
+    if (d_last_legend_focus_edit && d_last_legend_focus_edit->isEnabled()
+        && d_last_legend_focus_edit->isVisibleTo(scopeRoot)) {
+        outLine = d_last_legend_focus_edit.data();
+        return;
+    }
+    outLine = d_edit_leg_header;
 }
 
-void GraphInspectorDock::insertAxisTitleToken(const QString &token)
+void GraphInspectorDock::applyRichMarkupToTarget(RichTargetMode mode, const QString &openTag,
+                                                 const QString &closeTag)
 {
-    if (!d_edit_axis_title || token.isEmpty())
+    QLineEdit *le = nullptr;
+    QPlainTextEdit *pe = nullptr;
+    resolveRichTarget(mode, le, pe);
+    if (pe && pe->isEnabled()) {
+        QTextCursor c = pe->textCursor();
+        // QTextCursor uses U+2029 between paragraphs inside a selection.
+        const QString sel = c.selectedText().replace(QChar(0x2029), QLatin1Char('\n'));
+        c.insertText(openTag + sel + closeTag);
+        if (sel.isEmpty())
+            c.movePosition(QTextCursor::Left, QTextCursor::MoveAnchor, closeTag.length());
+        pe->setTextCursor(c);
+        pe->setFocus();
         return;
-    QString txt = d_edit_axis_title->text();
-    const int pos = d_edit_axis_title->cursorPosition();
-    txt.insert(pos, token);
-    d_edit_axis_title->setText(txt);
-    d_edit_axis_title->setCursorPosition(pos + token.length());
-    d_edit_axis_title->setModified(true);
-    updateAxisTitlePreview(d_edit_axis_title->text());
-    emit d_edit_axis_title->editingFinished();
+    }
+    if (!le || !le->isEnabled())
+        return;
+    QString txt = le->text();
+    if (le->hasSelectedText()) {
+        const int start = le->selectionStart();
+        const QString sel = le->selectedText();
+        txt.replace(start, sel.length(), openTag + sel + closeTag);
+        le->setText(txt);
+        le->setSelection(start + openTag.length(), sel.length());
+    } else {
+        const int pos = le->cursorPosition();
+        txt.insert(pos, openTag + closeTag);
+        le->setText(txt);
+        le->setCursorPosition(pos + openTag.length());
+    }
+    le->setModified(true);
+    if (le == d_edit_axis_title)
+        updateAxisTitlePreview(le->text());
+    le->setFocus();
+    emit le->editingFinished();
 }
 
-void GraphInspectorDock::rebuildGreekSymbolMenu()
+void GraphInspectorDock::insertRichTokenToTarget(RichTargetMode mode, const QString &token,
+                                                 bool isJournalTemplate, bool isUnitOnly)
 {
-    if (!d_menu_greek)
+    if (token.isEmpty())
         return;
-    d_menu_greek->clear();
+    QLineEdit *le = nullptr;
+    QPlainTextEdit *pe = nullptr;
+    resolveRichTarget(mode, le, pe);
+    if (pe && pe->isEnabled()) {
+        QTextCursor c = pe->textCursor();
+        if (isJournalTemplate && isUnitOnly && !pe->toPlainText().trimmed().isEmpty())
+            c.insertText(QStringLiteral(" (") + token + QStringLiteral(")"));
+        else
+            c.insertText(token);
+        pe->setTextCursor(c);
+        pe->setFocus();
+        return;
+    }
+    if (!le || !le->isEnabled())
+        return;
+    if (isJournalTemplate) {
+        if (le->hasSelectedText()) {
+            const int start = le->selectionStart();
+            const int len = le->selectedText().length();
+            QString txt = le->text();
+            txt.replace(start, len, token);
+            le->setText(txt);
+            le->setCursorPosition(start + token.length());
+        } else if (isUnitOnly && !le->text().trimmed().isEmpty()) {
+            const int pos = le->cursorPosition();
+            const QString wrapped = QStringLiteral(" (") + token + QStringLiteral(")");
+            QString txt = le->text();
+            txt.insert(pos, wrapped);
+            le->setText(txt);
+            le->setCursorPosition(pos + wrapped.length());
+        } else {
+            le->setText(token);
+            le->setCursorPosition(token.length());
+        }
+    } else if (le->hasSelectedText()) {
+        const int start = le->selectionStart();
+        const int len = le->selectedText().length();
+        QString txt = le->text();
+        txt.replace(start, len, token);
+        le->setText(txt);
+        le->setCursorPosition(start + token.length());
+    } else {
+        const int pos = le->cursorPosition();
+        QString txt = le->text();
+        txt.insert(pos, token);
+        le->setText(txt);
+        le->setCursorPosition(pos + token.length());
+    }
+    le->setModified(true);
+    if (le == d_edit_axis_title)
+        updateAxisTitlePreview(le->text());
+    le->setFocus();
+    emit le->editingFinished();
+}
+
+QWidget *GraphInspectorDock::buildRichTextBar(QWidget *parent, RichTargetMode mode)
+{
+    QWidget *wrap = new QWidget(parent);
+    QVBoxLayout *vlay = new QVBoxLayout(wrap);
+    vlay->setContentsMargins(0, 1, 0, 1);
+    vlay->setSpacing(2);
+
+    QHBoxLayout *fmtRow = new QHBoxLayout();
+    fmtRow->setContentsMargins(0, 0, 0, 0);
+    fmtRow->setSpacing(2);
+
+    auto makeFmtBtn = [&](const QString &label, bool compact) -> QToolButton * {
+        QToolButton *b = new QToolButton(wrap);
+        b->setObjectName(compact ? QStringLiteral("InspectorSymbolChipBtn")
+                                 : QStringLiteral("InspectorMenuChipBtn"));
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setText(label);
+        b->setFixedHeight(24);
+        if (compact) {
+            b->setFixedWidth(25);
+            b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+            fmtRow->addWidget(b, 0);
+        } else {
+            b->setMinimumWidth(56);
+            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            fmtRow->addWidget(b, 1);
+        }
+        b->setCursor(Qt::PointingHandCursor);
+        return b;
+    };
+
+    RichTextBarEntry entry;
+    entry.targetMode = mode;
+
+    entry.btnItalic = makeFmtBtn(QStringLiteral("I"), true);
+    entry.btnItalic->setProperty("_tg_tip_fmt", QStringLiteral("Italic (slanted)"));
+    QFont itFont = entry.btnItalic->font();
+    itFont.setItalic(true);
+    itFont.setBold(true);
+    entry.btnItalic->setFont(itFont);
+    connect(entry.btnItalic, &QToolButton::clicked, this, [this, mode]() {
+        applyRichMarkupToTarget(mode, QStringLiteral("<i>"), QStringLiteral("</i>"));
+    });
+
+    entry.btnSub = makeFmtBtn(QString::fromUtf8("X\xE2\x82\x82"), true);
+    entry.btnSub->setProperty("_tg_tip_fmt", QString::fromUtf8("Subscript (X\xE2\x82\x82)"));
+    connect(entry.btnSub, &QToolButton::clicked, this, [this, mode]() {
+        applyRichMarkupToTarget(mode, QStringLiteral("<sub>"), QStringLiteral("</sub>"));
+    });
+
+    entry.btnSup = makeFmtBtn(QString::fromUtf8("X\xC2\xB2"), true);
+    entry.btnSup->setProperty("_tg_tip_fmt", QString::fromUtf8("Superscript (X\xC2\xB2)"));
+    connect(entry.btnSup, &QToolButton::clicked, this, [this, mode]() {
+        applyRichMarkupToTarget(mode, QStringLiteral("<sup>"), QStringLiteral("</sup>"));
+    });
+
+    entry.btnGreek = makeFmtBtn(tr("Greek"), false);
+    entry.btnGreek->setProperty("_tg_tip_fmt", QStringLiteral("Insert Greek Symbol"));
+    entry.btnGreek->setPopupMode(QToolButton::InstantPopup);
+    entry.menuGreek = new QMenu(entry.btnGreek);
+    rebuildGreekSymbolMenu(entry.menuGreek, mode);
+    entry.btnGreek->setMenu(entry.menuGreek);
+
+    entry.btnUnit = makeFmtBtn(tr("Units"), false);
+    entry.btnUnit->setProperty("_tg_tip_fmt",
+                              QStringLiteral("Insert Symbol, Unit, or Journal Axis Template"));
+    entry.btnUnit->setPopupMode(QToolButton::InstantPopup);
+    entry.menuUnits = new QMenu(entry.btnUnit);
+    rebuildUnitsSymbolMenu(entry.menuUnits, mode);
+    entry.btnUnit->setMenu(entry.menuUnits);
+    vlay->addLayout(fmtRow);
+
+    QHBoxLayout *matSymRow = new QHBoxLayout();
+    matSymRow->setContentsMargins(0, 0, 0, 0);
+    matSymRow->setSpacing(3);
+    const QList<QString> quickSyms = {
+        QString::fromUtf8("\xCF\x83"),     // σ
+        QString::fromUtf8("\xCE\xB5"),     // ε
+        QString::fromUtf8("2\xCE\xB8"),    // 2θ
+        QString::fromUtf8("\xCE\xBC" "m"), // μm
+        QString::fromUtf8("\xC2\xB0" "C"), // °C
+        QString::fromUtf8("\xC3\x85"),     // Å
+    };
+    for (const QString &sym : quickSyms) {
+        QToolButton *b = new QToolButton(wrap);
+        b->setObjectName(QStringLiteral("InspectorSymbolChipBtn"));
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setText(sym);
+        b->setToolTip(QCoreApplication::translate("QObject", "Insert %1").arg(sym));
+        b->setProperty("_tg_tip_fmt", QStringLiteral("Insert %1"));
+        b->setProperty("_tg_tip_arg", sym);
+        b->setFixedHeight(22);
+        b->setMinimumWidth(24);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(b, &QToolButton::clicked, this,
+                [this, mode, sym]() { insertRichTokenToTarget(mode, sym); });
+        matSymRow->addWidget(b);
+    }
+    vlay->addLayout(matSymRow);
+
+    d_rich_bars.append(entry);
+    return wrap;
+}
+
+void GraphInspectorDock::rebuildRichTextBarMenus()
+{
+    for (const RichTextBarEntry &entry : d_rich_bars) {
+        if (entry.btnGreek)
+            entry.btnGreek->setText(tr("Greek"));
+        if (entry.btnUnit)
+            entry.btnUnit->setText(tr("Units"));
+        rebuildGreekSymbolMenu(entry.menuGreek, entry.targetMode);
+        rebuildUnitsSymbolMenu(entry.menuUnits, entry.targetMode);
+    }
+}
+
+void GraphInspectorDock::rebuildGreekSymbolMenu(QMenu *menu, RichTargetMode mode)
+{
+    if (!menu)
+        return;
+    menu->clear();
     const QList<QPair<QString, QString>> greekList = {
         { tr("\xCE\xB1 (alpha)"), QString::fromUtf8("\xCE\xB1") },
         { tr("\xCE\xB2 (beta)"), QString::fromUtf8("\xCE\xB2") },
@@ -9321,20 +9470,20 @@ void GraphInspectorDock::rebuildGreekSymbolMenu()
     };
     for (const auto &pr : greekList) {
         const QString sym = pr.second;
-        d_menu_greek->addAction(pr.first, this, [this, sym]() { insertAxisTitleToken(sym); });
+        menu->addAction(pr.first, this, [this, mode, sym]() { insertRichTokenToTarget(mode, sym); });
     }
 }
 
-void GraphInspectorDock::rebuildUnitsSymbolMenu()
+void GraphInspectorDock::rebuildUnitsSymbolMenu(QMenu *menu, RichTargetMode mode)
 {
-    if (!d_menu_units)
+    if (!menu)
         return;
-    for (QMenu *sub : d_menu_units->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly))
+    for (QMenu *sub : menu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly))
         delete sub;
-    d_menu_units->clear();
+    menu->clear();
 
     // 1) Materials-science symbols
-    QMenu *symSub = d_menu_units->addMenu(tr("Symbols"));
+    QMenu *symSub = menu->addMenu(tr("Symbols"));
     const QList<QPair<QString, QString>> matSymbols = {
         { tr("\xCF\x83 (sigma)"), QString::fromUtf8("\xCF\x83") },
         { tr("\xCE\xB5 (epsilon)"), QString::fromUtf8("\xCE\xB5") },
@@ -9349,11 +9498,11 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
     };
     for (const auto &pr : matSymbols) {
         const QString tok = pr.second;
-        symSub->addAction(pr.first, this, [this, tok]() { insertAxisTitleToken(tok); });
+        symSub->addAction(pr.first, this, [this, mode, tok]() { insertRichTokenToTarget(mode, tok); });
     }
 
     // 2) 1-click Journal Axis Templates
-    d_menu_units->addSeparator();
+    menu->addSeparator();
     const QList<QPair<QString, QString>> journalTemplates = {
         { QString::fromUtf8("\xCF\x83 (MPa)"), QString::fromUtf8("\xCF\x83 (MPa)") },
         { QString::fromUtf8("\xCF\x83\xE2\x82\x80.\xE2\x82\x82 (MPa)"),
@@ -9375,30 +9524,14 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
         const QString disp = journalTemplates[i].first;
         const QString tmpl = journalTemplates[i].second;
         const bool isUnitOnly = (i == 6 || i == 7);
-        d_menu_units->addAction(disp, this, [this, tmpl, isUnitOnly]() {
-            if (!d_edit_axis_title)
-                return;
-            if (d_edit_axis_title->hasSelectedText()) {
-                const int start = d_edit_axis_title->selectionStart();
-                const int len = d_edit_axis_title->selectedText().length();
-                QString txt = d_edit_axis_title->text();
-                txt.replace(start, len, tmpl);
-                d_edit_axis_title->setText(txt);
-            } else if (isUnitOnly && !d_edit_axis_title->text().trimmed().isEmpty()) {
-                insertAxisTitleToken(QStringLiteral(" (") + tmpl + QStringLiteral(")"));
-                return;
-            } else {
-                d_edit_axis_title->setText(tmpl);
-            }
-            d_edit_axis_title->setModified(true);
-            updateAxisTitlePreview(d_edit_axis_title->text());
-            emit d_edit_axis_title->editingFinished();
+        menu->addAction(disp, this, [this, mode, tmpl, isUnitOnly]() {
+            insertRichTokenToTarget(mode, tmpl, true, isUnitOnly);
         });
     }
 
     // 3) Common Units submenu
-    d_menu_units->addSeparator();
-    QMenu *unitSub = d_menu_units->addMenu(tr("Common Units"));
+    menu->addSeparator();
+    QMenu *unitSub = menu->addMenu(tr("Common Units"));
     const QList<QPair<QString, QString>> unitList = {
         { QStringLiteral("MPa"), QStringLiteral(" (MPa)") },
         { QStringLiteral("GPa"), QStringLiteral(" (GPa)") },
@@ -9419,7 +9552,8 @@ void GraphInspectorDock::rebuildUnitsSymbolMenu()
     };
     for (const auto &pr : unitList) {
         const QString tok = pr.second;
-        unitSub->addAction(pr.first, this, [this, tok]() { insertAxisTitleToken(tok); });
+        unitSub->addAction(pr.first, this,
+                           [this, mode, tok]() { insertRichTokenToTarget(mode, tok); });
     }
 }
 
@@ -9612,7 +9746,7 @@ void GraphInspectorDock::applyGroupAutoStyleFromUi()
     syncCurveControls();
 }
 
-void GraphInspectorDock::applyQuickErrorBars(int mode)
+void GraphInspectorDock::applyAdjacentErrorBars()
 {
     Graph *g = activeLayer();
     if (!d_app || !d_target_ml || !g)
@@ -9621,7 +9755,7 @@ void GraphInspectorDock::applyQuickErrorBars(int mode)
     DataCurve *dc = (ci >= 0 && ci < g->curves()) ? dynamic_cast<DataCurve *>(g->curve(ci))
                                                  : nullptr;
     if (!dc || !dc->table() || !dc->table()->d_future_table) {
-        if (d_app && d_app->statusBar()) {
+        if (d_app->statusBar()) {
             d_app->statusBar()->showMessage(
                     tr("This feature is not available for user defined function curves!"), 4000);
         }
@@ -9655,180 +9789,49 @@ void GraphInspectorDock::applyQuickErrorBars(int mode)
         return removed;
     };
 
-    if (mode == 0) {
-        const int colIdx = tbl->colIndex(dc->yColumnName());
-        const int errColIdx = findSmartAdjacentYErrColumn(tbl, colIdx);
-        if (errColIdx < 0) {
-            if (d_app && d_app->statusBar()) {
-                d_app->statusBar()->showMessage(
-                        tr("No adjacent column exists to the right of the selected curve column."),
-                        4000);
-            }
-            syncCurveControls();
-            return;
+    const int colIdx = tbl->colIndex(dc->yColumnName());
+    const int errColIdx = findSmartAdjacentYErrColumn(tbl, colIdx);
+    if (errColIdx < 0) {
+        if (d_app->statusBar()) {
+            d_app->statusBar()->showMessage(
+                    tr("No adjacent column exists to the right of the selected curve column."),
+                    4000);
         }
+        syncCurveControls();
+        return;
+    }
 
-        const QString errFull =
-                QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(errColIdx);
-        const QString before = ml ? ml->captureUndoSnapshot() : QString();
-        bool changed = false;
+    const QString errFull =
+            QString(tbl->name()) + QStringLiteral("_") + tbl->colLabel(errColIdx);
+    const QString before = ml ? ml->captureUndoSnapshot() : QString();
+    bool changed = false;
 
-        if (removeVerticalErrorBarsOnCurve(dc, errFull) > 0) {
-            changed = true;
-        } else {
-            removeVerticalErrorBarsOnCurve(dc, QString());
-            if (g->addErrorBars(dc->xColumnName(), curveName, tbl, errFull,
-                                QwtErrorPlotCurve::Vertical)) {
-                changed = true;
-            }
-        }
-        if (changed) {
-            g->updatePlot();
-            if (ml)
-                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
-            refreshAll();
-        } else {
-            syncCurveControls();
-        }
-    } else if (mode == 1 || mode == 2) {
-        const QString xColName = dc->xColumnName();
-        const int srcColIdx = tbl->colIndex(dc->yColumnName());
-        Column *data = (srcColIdx >= 0) ? tbl->column(srcColIdx) : nullptr;
-        if (xColName.isEmpty() || !data || !tbl->d_future_table) {
-            syncCurveControls();
-            return;
-        }
-
-        const QString detColName = tbl->colLabel(srcColIdx)
-                + (mode == 2 ? QStringLiteral("_5pct_yErr") : QStringLiteral("_SD_yErr"));
-        const QString detFullName = QString(tbl->name()) + QStringLiteral("_") + detColName;
-
-        // Repeat click on the active quick error-bar mode toggles it OFF cleanly!
-        const QString before = ml ? ml->captureUndoSnapshot() : QString();
-        if (removeVerticalErrorBarsOnCurve(dc, detFullName) > 0) {
-            g->updatePlot();
-            if (ml)
-                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
-            if (d_app)
-                emit d_app->modified();
-            refreshAll();
-            return;
-        }
-
-        const int rows = data->rowCount();
-        QVector<qreal> errVals(qMax(0, rows), 0.0);
-        QVector<bool> errValid(qMax(0, rows), false);
-        if (rows > 0) {
-            const int r0 = qMax(0, dc->startRow());
-            const int r1 = (dc->endRow() >= 0) ? qMin(rows - 1, dc->endRow()) : (rows - 1);
-            const int xColIdx = tbl->colIndex(xColName);
-            Column *xCol = (xColIdx >= 0) ? tbl->column(xColIdx) : nullptr;
-            QVector<bool> pointMaskedAtRow(rows, false);
-            for (int p = 0; p < dc->dataSize(); ++p) {
-                if (dc->isPointMasked(p)) {
-                    const int tr = dc->tableRow(p);
-                    if (tr >= 0 && tr < rows)
-                        pointMaskedAtRow[tr] = true;
-                }
-            }
-
-            if (mode == 2) {
-                for (int i = r0; i <= r1; ++i) {
-                    if (data->isInvalid(i) || data->isMasked(i)
-                        || (xCol && xCol->isMasked(i)) || pointMaskedAtRow[i]) {
-                        continue;
-                    }
-                    const double v = data->valueAt(i);
-                    if (std::isfinite(v)) {
-                        errVals[i] = std::abs(v * 0.05);
-                        errValid[i] = true;
-                    }
-                }
-            } else {
-                QVector<int> validRows;
-                validRows.reserve(qMax(0, r1 - r0 + 1));
-                double sum = 0.0;
-                for (int i = r0; i <= r1; ++i) {
-                    if (data->isInvalid(i) || data->isMasked(i)
-                        || (xCol && xCol->isMasked(i)) || pointMaskedAtRow[i]) {
-                        continue;
-                    }
-                    const double v = data->valueAt(i);
-                    if (!std::isfinite(v))
-                        continue;
-                    validRows.append(i);
-                    sum += v;
-                }
-
-                const int validCount = validRows.size();
-                double sdVal = 0.0;
-                if (validCount >= 2) {
-                    const double mean = sum / double(validCount);
-                    double sqSum = 0.0;
-                    for (int idx : validRows) {
-                        const double diff = data->valueAt(idx) - mean;
-                        sqSum += diff * diff;
-                    }
-                    sdVal = std::sqrt(sqSum / double(validCount - 1));
-                }
-                for (int idx : validRows) {
-                    errVals[idx] = sdVal;
-                    errValid[idx] = true;
-                }
-            }
-        }
-
+    if (removeVerticalErrorBarsOnCurve(dc, errFull) > 0) {
+        changed = true;
+    } else {
         removeVerticalErrorBarsOnCurve(dc, QString());
-
-        int existingErrIdx = tbl->colIndex(detFullName);
-        if (existingErrIdx < 0)
-            existingErrIdx = tbl->colIndex(detColName);
-        Column *errCol = (existingErrIdx >= 0) ? tbl->column(existingErrIdx) : nullptr;
-        if (errCol && errCol->columnMode() == SciDAVis::ColumnMode::Numeric) {
-            tbl->d_future_table->beginMacro(tr("%1: change cell value(s)").arg(tbl->name()));
-            errCol->setPlotDesignation(SciDAVis::yErr);
-            if (!errVals.isEmpty()) {
-                errCol->replaceValues(0, errVals);
-                for (int r = 0; r < rows; ++r) {
-                    if (!errValid[r])
-                        errCol->setInvalid(r, true);
-                }
-            }
-            tbl->d_future_table->endMacro();
-        } else {
-            QString uniqueColName = detColName;
-            int suffix = 2;
-            const QStringList existingCols = tbl->colNames();
-            while (existingCols.contains(uniqueColName)
-                   || tbl->colIndex(QString(tbl->name()) + QStringLiteral("_") + uniqueColName) >= 0) {
-                uniqueColName = detColName + QStringLiteral("_") + QString::number(suffix++);
-            }
-            errCol = new Column(uniqueColName, SciDAVis::ColumnMode::Numeric);
-            errCol->setPlotDesignation(SciDAVis::yErr);
-            if (!errVals.isEmpty()) {
-                errCol->replaceValues(0, errVals);
-                for (int r = 0; r < rows; ++r) {
-                    if (!errValid[r])
-                        errCol->setInvalid(r, true);
-                }
-            }
-            tbl->d_future_table->addChild(errCol);
-        }
-
-        const QString fullErrColName = QString(tbl->name()) + QStringLiteral("_") + errCol->name();
-        const bool changed = g->addErrorBars(xColName, curveName, tbl, fullErrColName,
-                                             QwtErrorPlotCurve::Vertical);
-        if (changed) {
-            g->updatePlot();
-            if (ml)
-                ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
-            if (d_app)
-                emit d_app->modified();
-            refreshAll();
-        } else {
-            syncCurveControls();
+        if (g->addErrorBars(dc->xColumnName(), curveName, tbl, errFull,
+                            QwtErrorPlotCurve::Vertical)) {
+            changed = true;
         }
     }
+    if (changed) {
+        g->updatePlot();
+        if (ml)
+            ml->pushUndoSnapshot(tr("Toggle Error Bars"), before);
+        refreshAll();
+    } else {
+        syncCurveControls();
+    }
+}
+
+void GraphInspectorDock::openErrorBarsDialog()
+{
+    Graph *g = activeLayer();
+    if (!d_app || !d_target_ml || !g)
+        return;
+    d_target_ml->setActiveGraph(g);
+    d_app->addErrorBars();
 }
 
 void GraphInspectorDock::applyTheme()
@@ -9897,6 +9900,10 @@ void GraphInspectorDock::applyTheme()
                           "QFrame#InspectorDetailsRow {"
                           "  background-color: #F8FAFC; border-top: 1px solid #CBD5E1;"
                           "}"
+                          "QFrame#InspectorScrollMoreCue {"
+                          "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+                          "    stop:0 rgba(248, 250, 252, 0), stop:1 rgba(226, 232, 240, 235));"
+                          "}"
                           "QToolButton#InspectorRailTabBtn {"
                           "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
                           "}"
@@ -9904,7 +9911,7 @@ void GraphInspectorDock::applyTheme()
                           "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-size: 10pt; padding: 2px; outline: 0;"
                           "}"
                           "QTreeWidget#GraphObjectManagerTree::item {"
-                          "  height: 22px; padding: 1px 4px; border-radius: 4px;"
+                          "  height: 26px; padding: 2px 4px; border-radius: 4px;"
                           "}"
                           "QTreeWidget#GraphObjectManagerTree::item:hover {"
                           "  background: @TRACK_BG@;"
@@ -9926,14 +9933,17 @@ void GraphInspectorDock::applyTheme()
                           "  background: %3; color: %5; border: 1px solid %4; border-radius: 6px; font-weight: 600; font-size: 10pt; padding: 5px 10px;"
                           "}"
                           "QCheckBox#InspectorKeepAspectCheck { font-weight: 600; color: %5; }"
-                          "QLabel#InspectorAxisTitlePreview {"
+                          "QLabel#InspectorAxisTitlePreview, QLabel#InspectorRichPreviewLabel {"
                           "  font-size: 9.5pt; color: #334155; background: #F1F5F9;"
                           "  border: 1px solid %4; border-radius: 4px; padding: 3px 6px;"
                           "}"
                           "QLineEdit[pendingEdit=\"true\"] {"
                           "  border: 1.5px solid #D97706; background-color: #FFFBEB;"
                           "}"
-                          "QPushButton { font-size: 10pt; padding: 4px 6px; }"
+                          "QPushButton { font-size: 10pt; padding: 5px 8px; min-height: 26px; }"
+                          "QPushButton#InspectorCompactRatioBtn {"
+                          "  font-size: 9pt; padding: 3px 2px; min-height: 24px; min-width: 0px;"
+                          "}"
                           "QLabel, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { font-size: 10pt; }")
                           .arg(bg, hdrBg, cardBg, border, fg, subFg, accent, accentSoft, railFg);
     qss.replace(QStringLiteral("@TRACK_BG@"), trackBg);
@@ -9977,7 +9987,7 @@ void GraphInspectorDock::retranslateUi()
         d_rail_page_btn->setToolTip(tr("Page & Layer Properties"));
     }
     if (d_rail_axis_btn) {
-        d_rail_axis_btn->setText(tr("X/Y"));
+        d_rail_axis_btn->setText(tr("Axis"));
         d_rail_axis_btn->setToolTip(tr("Axis Scale & Title Properties"));
     }
     if (d_rail_curve_btn) {
@@ -10042,7 +10052,7 @@ void GraphInspectorDock::retranslateUi()
         d_tab_btn_page->setAccessibleName(tr("Page & Layer Properties"));
     }
     if (d_tab_btn_axis) {
-        d_tab_btn_axis->setText(tr("X/Y"));
+        d_tab_btn_axis->setText(tr("Axis"));
         d_tab_btn_axis->setToolTip(tr("Axis Scale & Title Properties"));
         d_tab_btn_axis->setAccessibleName(tr("Axis Scale & Title Properties"));
     }
@@ -10061,12 +10071,12 @@ void GraphInspectorDock::retranslateUi()
     if (d_sec_presets_lbl)
         d_sec_presets_lbl->setText(tr("1-Click Publication & Slide Presets"));
     if (d_btn_preset_isij) {
-        d_btn_preset_isij->setText(tr("ISIJ Journal (85mm)"));
+        d_btn_preset_isij->setText(tr("ISIJ 85mm"));
         d_btn_preset_isij->setToolTip(
                 tr("85 mm single-column journal preset with Arial fonts and inward ticks"));
     }
     if (d_btn_preset_slide28) {
-        d_btn_preset_slide28->setText(tr("Lab Slide (18pt)"));
+        d_btn_preset_slide28->setText(tr("Slide (18pt)"));
         d_btn_preset_slide28->setToolTip(
                 tr("83.3 mm square, 12.9 pt Arial. Becomes 18 pt on the slide with 'Send to PowerPoint' (140% paste)."));
     }
@@ -10079,7 +10089,7 @@ void GraphInspectorDock::retranslateUi()
         d_btn_apply_user_preset->setFixedWidth(w);
     }
     if (d_btn_manage_presets)
-        d_btn_manage_presets->setText(tr("Manage Style Presets..."));
+        d_btn_manage_presets->setToolTip(tr("Manage Style Presets..."));
     if (d_cb_user_presets) {
         const QString prevId = d_cb_user_presets->currentData().toString();
         d_cb_user_presets->blockSignals(true);
@@ -10106,16 +10116,26 @@ void GraphInspectorDock::retranslateUi()
         d_sec_aspect_lbl->setText(tr("Aspect Ratio & Resizing"));
     if (d_chk_keep_aspect)
         d_chk_keep_aspect->setText(tr("Lock Aspect Ratio"));
-    if (d_btn_ratio_1_1)
-        d_btn_ratio_1_1->setText(tr("1:1 Square"));
-    if (d_btn_ratio_4_3)
-        d_btn_ratio_4_3->setText(tr("4:3 Landscape"));
-    if (d_btn_ratio_16_9)
-        d_btn_ratio_16_9->setText(tr("16:9 Wide"));
-    if (d_btn_ratio_3_4)
-        d_btn_ratio_3_4->setText(tr("3:4 Portrait"));
-    if (d_btn_ratio_free)
-        d_btn_ratio_free->setText(tr("Free Resize (Unlock Aspect Ratio)"));
+    if (d_btn_ratio_1_1) {
+        d_btn_ratio_1_1->setText(QStringLiteral("1:1"));
+        d_btn_ratio_1_1->setToolTip(tr("1:1 Square"));
+    }
+    if (d_btn_ratio_4_3) {
+        d_btn_ratio_4_3->setText(QStringLiteral("4:3"));
+        d_btn_ratio_4_3->setToolTip(tr("4:3 Landscape"));
+    }
+    if (d_btn_ratio_16_9) {
+        d_btn_ratio_16_9->setText(QStringLiteral("16:9"));
+        d_btn_ratio_16_9->setToolTip(tr("16:9 Wide"));
+    }
+    if (d_btn_ratio_3_4) {
+        d_btn_ratio_3_4->setText(QStringLiteral("3:4"));
+        d_btn_ratio_3_4->setToolTip(tr("3:4 Portrait"));
+    }
+    if (d_btn_ratio_free) {
+        d_btn_ratio_free->setText(tr("Free"));
+        d_btn_ratio_free->setToolTip(tr("Unlock Aspect Ratio (Free Resize)"));
+    }
 
     if (d_sec_page_size_lbl)
         d_sec_page_size_lbl->setText(tr("Page Size & View"));
@@ -10129,12 +10149,6 @@ void GraphInspectorDock::retranslateUi()
         d_lbl_page_dpi->setText(tr("DPI:"));
     if (d_chk_page_view)
         d_chk_page_view->setText(tr("Print Page View"));
-    if (d_lbl_page_zoom)
-        d_lbl_page_zoom->setText(tr("Page Zoom:"));
-    if (d_btn_page_zoom_fit) {
-        d_btn_page_zoom_fit->setText(tr("Fit"));
-        d_btn_page_zoom_fit->setToolTip(tr("Fit graph page to the current window viewport"));
-    }
 
     const QString pendingEditTip =
             tr("Enter values and press Enter to apply (amber highlight = unsaved edit)");
@@ -10170,20 +10184,6 @@ void GraphInspectorDock::retranslateUi()
         d_combo_panel_pos->setItemText(0, tr("Outside Top-Left"));
         d_combo_panel_pos->setItemText(1, tr("Inside Top-Left"));
     }
-
-    if (d_sec_export_lbl)
-        d_sec_export_lbl->setText(tr("Clipboard & Export"));
-    if (d_btn_copy_ole) {
-        d_btn_copy_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
-        d_btn_copy_ole->setToolTip(ToriGraphOleUi::copyForPowerPointToolTip());
-    }
-    if (d_btn_send_pptx) {
-        ToriGraphPptx::registerTranslations();
-        d_btn_send_pptx->setText(ToriGraphPptx::sendToPowerPointLabel());
-        d_btn_send_pptx->setToolTip(ToriGraphPptx::sendToPowerPointToolTip());
-    }
-    if (d_btn_export_img_pdf)
-        d_btn_export_img_pdf->setText(tr("Export Image / PDF"));
 
     // Page 1: Axis
     if (d_btn_axis_bottom)
@@ -10311,22 +10311,7 @@ void GraphInspectorDock::retranslateUi()
     if (d_edit_axis_title)
         d_edit_axis_title->setPlaceholderText(tr("Enter axis label..."));
     updateAxisTitlePreview(d_edit_axis_title ? d_edit_axis_title->text() : QString());
-    if (d_btn_fmt_italic)
-        d_btn_fmt_italic->setToolTip(tr("Italic (slanted)"));
-    if (d_btn_fmt_sub)
-        d_btn_fmt_sub->setToolTip(tr("Subscript (X\xE2\x82\x82)"));
-    if (d_btn_fmt_sup)
-        d_btn_fmt_sup->setToolTip(tr("Superscript (X\xC2\xB2)"));
-    if (d_btn_fmt_greek) {
-        d_btn_fmt_greek->setText(tr("Greek"));
-        d_btn_fmt_greek->setToolTip(tr("Insert Greek Symbol"));
-    }
-    rebuildGreekSymbolMenu();
-    if (d_btn_fmt_unit) {
-        d_btn_fmt_unit->setText(tr("Units"));
-        d_btn_fmt_unit->setToolTip(tr("Insert Symbol, Unit, or Journal Axis Template"));
-    }
-    rebuildUnitsSymbolMenu();
+    rebuildRichTextBarMenus();
     if (d_chk_lock_all_axes_font) {
         d_chk_lock_all_axes_font->setText(tr("Apply Font Size to All 4 Axes"));
         d_chk_lock_all_axes_font->setToolTip(
@@ -10420,23 +10405,17 @@ void GraphInspectorDock::retranslateUi()
     }
 
     if (d_sec_err_bars_lbl)
-        d_sec_err_bars_lbl->setText(tr("Quick Error Bars"));
+        d_sec_err_bars_lbl->setText(tr("Error Bars"));
     if (d_btn_err_adjacent) {
         d_btn_err_adjacent->setText(tr("Adjacent Col"));
         d_btn_err_adjacent->setToolTip(
                 tr("Use the column to the right of the Y column as ± error bars "
                    "(click again to remove)"));
     }
-    if (d_btn_err_sd) {
-        d_btn_err_sd->setText(tr("Std Dev (SD)"));
-        d_btn_err_sd->setToolTip(
-                tr("Add the standard deviation of all Y values as the same ± error bar on "
-                   "every point (click again to remove)"));
-    }
-    if (d_btn_err_5pct) {
-        d_btn_err_5pct->setText(tr("5%"));
-        d_btn_err_5pct->setToolTip(
-                tr("Add ± 5% of each Y value as error bars (click again to remove)"));
+    if (d_btn_err_dialog) {
+        d_btn_err_dialog->setText(tr("Add Error Bars..."));
+        d_btn_err_dialog->setToolTip(
+                tr("Open the Add Error Bars dialog to select an error column or percentage"));
     }
     if (d_sec_err_style_lbl)
         d_sec_err_style_lbl->setText(tr("Error Bar Style"));
@@ -10657,6 +10636,11 @@ void GraphInspectorDock::retranslateUi()
         if (d_lbl_active_curve_name)
             d_lbl_active_curve_name->setText(tr("(No Curve Selected)"));
         if (d_lbl_legend_target)
+            d_lbl_legend_target->setText(tr("Graph Legend"));
+    } else {
+        if (currentInspectorPage() != PageTabCurve && d_lbl_active_curve_name)
+            d_lbl_active_curve_name->setText(tr("(No Curve Selected)"));
+        if (currentInspectorPage() != PageTabLegend && d_lbl_legend_target)
             d_lbl_legend_target->setText(tr("Graph Legend"));
     }
     if (d_lbl_img_x)

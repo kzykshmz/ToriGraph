@@ -30,7 +30,6 @@
 #include "CanvasInlineTextEditor.h"
 #include "Graph.h"
 #include "GraphMiniToolbar.h"
-#include "MultiLayer.h"
 
 #include <qwt_plot.h>
 #include <qwt_plot_canvas.h>
@@ -142,11 +141,7 @@ bool TitlePicker::eventFilter(QObject *object, QEvent *e)
             }
         }
         if (ke->key() == Qt::Key_Delete) {
-            MultiLayer *ml = g ? g->multiLayerParent() : nullptr;
-            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
             emit removeTitle();
-            if (ml && !beforeSnap.isEmpty())
-                ml->pushUndoSnapshot(tr("Remove Plot Title"), beforeSnap);
             return true;
         }
     }

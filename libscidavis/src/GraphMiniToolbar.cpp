@@ -28,6 +28,7 @@
 #include <QApplication>
 #include <QColorDialog>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QElapsedTimer>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -782,10 +783,19 @@ QRect GraphMiniToolbar::computeAvailableBounds(const QPoint &anchorGlobal) const
                 if (innerMl.width() >= width() && innerMl.height() >= height()) {
                     avail = innerMl;
                 } else if (!innerMl.isEmpty()) {
-                    if (innerMl.right() >= avail.left())
-                        avail.setRight(std::min(avail.right(), innerMl.right()));
-                    if (innerMl.left() <= avail.right())
+                    // When a split pane is narrower than the toolbar, clamping both horizontal
+                    // edges to innerMl would push maxX=avail.left() into GraphInspectorDock.
+                    if (innerMl.width() >= width()) {
                         avail.setLeft(std::max(avail.left(), innerMl.left()));
+                        avail.setRight(std::min(avail.right(), innerMl.right()));
+                    } else if (innerMl.right() < avail.right()
+                               && innerMl.right() - width() >= avail.left()) {
+                        avail.setRight(innerMl.right());
+                    }
+                    if (innerMl.height() >= height()) {
+                        avail.setTop(std::max(avail.top(), innerMl.top()));
+                        avail.setBottom(std::min(avail.bottom(), innerMl.bottom()));
+                    }
                 }
             }
         }
@@ -800,7 +810,15 @@ QRect GraphMiniToolbar::computeAvailableBounds(const QPoint &anchorGlobal) const
 
 void GraphMiniToolbar::reclampToAvailableBounds()
 {
-    const QPoint refGlobal = !d_last_anchor_global.isNull() ? d_last_anchor_global : pos();
+    QPoint refGlobal = d_last_anchor_global;
+    if (refGlobal.isNull()) {
+        if (d_graph && d_graph->isVisible())
+            refGlobal = d_graph->mapToGlobal(d_graph->rect().center());
+        else if (!pos().isNull())
+            refGlobal = pos();
+        else
+            refGlobal = QCursor::pos();
+    }
     const QRect avail = computeAvailableBounds(refGlobal);
     const int maxX = std::max(avail.left(), avail.right() - width());
     const int maxY = std::max(avail.top(), avail.bottom() - height());

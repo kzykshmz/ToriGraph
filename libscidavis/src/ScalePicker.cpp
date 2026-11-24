@@ -41,6 +41,7 @@
 #include <qwt_text_label.h>
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QLocale>
@@ -351,22 +352,21 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         }
     }
 
+    if (e->type() == QEvent::ContextMenu) {
+        const QContextMenuEvent *ce = static_cast<const QContextMenuEvent *>(e);
+        if (ce->reason() == QContextMenuEvent::Keyboard) {
+            if (d_title_selected && d_selected_axis == scale)
+                emit axisTitleRightClicked(scale->alignment());
+            else
+                emit axisRightClicked(scale->alignment());
+            return true;
+        }
+    }
+
     if (e->type() == QEvent::MouseMove) {
         const QMouseEvent *me = static_cast<const QMouseEvent *>(e);
         if (me->buttons() == Qt::NoButton) {
-            const QPoint pos = me->pos();
-            if (titleRect(scale).contains(pos)) {
-                scale->setCursor(Qt::ArrowCursor);
-            } else if (hitTestNumericEndZone(scale, pos) != ScaleEndZone::None
-                       && scale->scaleDraw()
-                       && scale->scaleDraw()->hasComponent(QwtAbstractScaleDraw::Labels)
-                       && !scaleTicksRect(scale).contains(pos)) {
-                scale->setCursor(Qt::IBeamCursor);
-            } else {
-                const bool isHoriz = (scale->alignment() == QwtScaleDraw::BottomScale
-                                      || scale->alignment() == QwtScaleDraw::TopScale);
-                scale->setCursor(isHoriz ? Qt::SizeHorCursor : Qt::SizeVerCursor);
-            }
+            updateScaleHoverCursor(scale, me->pos());
             return false;
         }
 
@@ -437,7 +437,7 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
             d_axis_panning = false;
             d_left_click_pending = false;
             d_press_on_title = false;
-            scale->unsetCursor();
+            updateScaleHoverCursor(scale, me->pos());
             if (Graph *g = graph()) {
                 if (MultiLayer *ml = g->multiLayerParent()) {
                     if (!d_pan_undo_snapshot.isEmpty())
@@ -463,6 +463,22 @@ bool ScalePicker::eventFilter(QObject *object, QEvent *e)
         }
     }
     return QObject::eventFilter(object, e);
+}
+
+void ScalePicker::updateScaleHoverCursor(QwtScaleWidget *scale, const QPoint &pos) const
+{
+    if (!scale)
+        return;
+    if (titleRect(scale).contains(pos)) {
+        scale->setCursor(Qt::ArrowCursor);
+    } else if (hitTestNumericEndZone(scale, pos) != ScaleEndZone::None
+               && scale->scaleDraw()
+               && scale->scaleDraw()->hasComponent(QwtAbstractScaleDraw::Labels)
+               && !scaleTicksRect(scale).contains(pos)) {
+        scale->setCursor(Qt::IBeamCursor);
+    } else {
+        scale->setCursor(Qt::OpenHandCursor);
+    }
 }
 
 ScalePicker::ScaleEndZone ScalePicker::hitTestNumericEndZone(const QwtScaleWidget *scale,
@@ -882,6 +898,34 @@ QRect ScalePicker::scaleRect(const QwtScaleWidget *scale) const
 
     if (scale->title().text().isEmpty())
         return rect;
+
+    const QPointF shift = scale->property("_toriAxisTitleShift").toPointF();
+    if (std::hypot(shift.x(), shift.y()) > 1e-4) {
+        // When arrow-nudged, exclude only the actual shifted title overlap (never the
+        // empty unshifted title strip).
+        const QRect inter = rect.intersected(titleRect(scale));
+        if (!inter.isEmpty()) {
+            switch (scale->alignment()) {
+            case QwtScaleDraw::LeftScale:
+                if (inter.left() <= rect.left() + 4 && inter.right() < rect.right())
+                    rect.setLeft(qMax(rect.left(), inter.right() + 1));
+                break;
+            case QwtScaleDraw::RightScale:
+                if (inter.right() >= rect.right() - 4 && inter.left() > rect.left())
+                    rect.setRight(qMin(rect.right(), inter.left() - 1));
+                break;
+            case QwtScaleDraw::BottomScale:
+                if (inter.bottom() >= rect.bottom() - 4 && inter.top() > rect.top())
+                    rect.setBottom(qMin(rect.bottom(), inter.top() - 1));
+                break;
+            case QwtScaleDraw::TopScale:
+                if (inter.top() <= rect.top() + 4 && inter.bottom() < rect.bottom())
+                    rect.setTop(qMax(rect.top(), inter.bottom() + 1));
+                break;
+            }
+        }
+        return rect;
+    }
 
     int dh = scale->title().textSize().height();
     switch (scale->alignment()) {

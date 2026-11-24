@@ -99,10 +99,10 @@ QPoint constrainAxisPoint(const QPoint &origin, const QPoint &target)
     return QPoint(origin.x(), target.y());
 }
 
-bool hitShiftedAxisTitleOnCanvas(Plot *pl, Graph *g, const QPoint &canvasPos)
+int hitShiftedAxisTitleAxisOnCanvas(Plot *pl, Graph *g, const QPoint &canvasPos)
 {
     if (!pl || !pl->canvas() || !g || !g->scalePicker)
-        return false;
+        return -1;
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         if (!pl->axisEnabled(a))
             continue;
@@ -145,9 +145,9 @@ bool hitShiftedAxisTitleOnCanvas(Plot *pl, Graph *g, const QPoint &canvasPos)
         }
         const QPoint topLeftInCv = pl->canvas()->mapFromGlobal(sw->mapToGlobal(tightSw.topLeft()));
         if (QRect(topLeftInCv, tightSw.size()).contains(canvasPos))
-            return true;
+            return a;
     }
-    return false;
+    return -1;
 }
 
 QPoint snapLineEndpoint45(const QPoint &startPt, const QPoint &endPt)
@@ -469,7 +469,7 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                                 ml->pushUndoSnapshot(tr("Move Object"), beforeSnap);
                         }
                     }
-                } else if (leg && g->legend() == leg && GraphMiniToolbar::isMiniToolbarEnabled()) {
+                } else if (leg && GraphMiniToolbar::isMiniToolbarEnabled()) {
                     if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                         bar->popupForLegend(g, leg, me->globalPos());
                 }
@@ -740,6 +740,22 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             }
         }
 
+        const int hitAxis = (me->button() == Qt::LeftButton || me->button() == Qt::RightButton)
+                ? hitShiftedAxisTitleAxisOnCanvas(plotWidget, g, me->pos())
+                : -1;
+        if (hitAxis >= 0 && g->scalePicker) {
+            d_left_click_pending = false;
+            if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
+                bar->cancelScheduledAndHide();
+            if (QwtScaleWidget *sw = plotWidget->axisWidget(hitAxis)) {
+                g->deselect();
+                g->scalePicker->selectTitle(sw, true);
+                if (me->button() == Qt::RightButton)
+                    g->showAxisTitleMenu(sw->alignment());
+                return true;
+            }
+        }
+
         int dist = 999;
         int point = -1;
         int curveKey = g->isPiePlot()
@@ -785,10 +801,6 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             d_left_click_pending = false;
             if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                 bar->cancelScheduledAndHide();
-            if ((me->button() == Qt::LeftButton || me->button() == Qt::RightButton)
-                && hitShiftedAxisTitleOnCanvas(plotWidget, g, me->pos())) {
-                return false;
-            }
             if (me->button() == Qt::LeftButton || me->button() == Qt::RightButton) {
                 if (!additiveClick) {
                     g->deselect();
@@ -867,6 +879,20 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             }
         }
 
+        if (dblMe->button() == Qt::LeftButton) {
+            const int hitAxis = hitShiftedAxisTitleAxisOnCanvas(plotWidget, g, dblMe->pos());
+            if (hitAxis >= 0) {
+                if (QwtScaleWidget *sw = plotWidget->axisWidget(hitAxis)) {
+                    QRect trRect = g->scalePicker ? g->scalePicker->titleRect(sw) : QRect();
+                    if (!trRect.isValid() || trRect.isEmpty())
+                        trRect = sw->rect();
+                    const QRect globalRect(sw->mapToGlobal(trRect.topLeft()), trRect.size());
+                    CanvasInlineTextEditor::openForAxisTitle(g, hitAxis, globalRect);
+                    return true;
+                }
+            }
+        }
+
         if (g->isPiePlot()) {
             emit showPlotDialog(g->curveKey(0));
             return true;
@@ -883,10 +909,6 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 }
                 emit showPlotDialog(curveKey);
             } else {
-                if (dblMe->button() == Qt::LeftButton
-                    && hitShiftedAxisTitleOnCanvas(plotWidget, g, dblMe->pos())) {
-                    return false;
-                }
                 emit showPlotDialog(-1);
             }
             return true;
@@ -1202,13 +1224,11 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 return true;
             }
             if (g->markerSelected() || d_editing_marker) {
-                MultiLayer *ml = g->multiLayerParent();
-                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
                 disableEditing();
-                g->removeMarker();
-                g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
-                if (ml && !beforeSnap.isEmpty())
-                    ml->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
+                SelectionMoveResizer *smr =
+                        plotWidget->canvas()->findChild<SelectionMoveResizer *>();
+                if (!SelectionMoveResizer::deleteAllSelectedMarkers(g, smr))
+                    g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
                 return true;
             }
             if ((curSel.kind == Graph::GraphSelection::Curve
@@ -1419,6 +1439,11 @@ void CanvasPicker::updateHoverCursor(const QPoint &canvasPos)
             cv->setCursor(Qt::SizeAllCursor);
             return;
         }
+    }
+
+    if (hitShiftedAxisTitleAxisOnCanvas(plotWidget, g, canvasPos) >= 0) {
+        cv->setCursor(Qt::ArrowCursor);
+        return;
     }
 
     // Reference lines vs curves

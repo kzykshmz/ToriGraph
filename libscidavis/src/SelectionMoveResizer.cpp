@@ -161,45 +161,42 @@ QRect SelectionMoveResizer::boundingRectOf(QwtPlotMarker *target) const
     return ((PlotEnrichement *)target)->rect();
 }
 
+void SelectionMoveResizer::cleanupIfEmpty()
+{
+    if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
+        && d_widgets.isEmpty()) {
+        if (d_defer_self_delete)
+            hide();
+        else
+            delete this;
+    } else {
+        recalcBoundingRect();
+    }
+}
+
 int SelectionMoveResizer::removeAll(Legend *target)
 {
     int result = d_legend_markers.removeAll(target);
-    if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
-        && d_widgets.isEmpty())
-        delete this;
-    else
-        recalcBoundingRect();
+    cleanupIfEmpty();
     return result;
 }
 int SelectionMoveResizer::removeAll(ArrowMarker *target)
 {
     int result = d_line_markers.removeAll(target);
-    if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
-        && d_widgets.isEmpty())
-        delete this;
-    else
-        recalcBoundingRect();
+    cleanupIfEmpty();
     return result;
 }
 int SelectionMoveResizer::removeAll(ImageMarker *target)
 {
     int result = d_image_markers.removeAll(target);
-    if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
-        && d_widgets.isEmpty())
-        delete this;
-    else
-        recalcBoundingRect();
+    cleanupIfEmpty();
     return result;
 }
 
 int SelectionMoveResizer::removeAll(QWidget *target)
 {
     int result = d_widgets.removeAll(target);
-    if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
-        && d_widgets.isEmpty())
-        delete this;
-    else
-        recalcBoundingRect();
+    cleanupIfEmpty();
     return result;
 }
 
@@ -712,10 +709,11 @@ void SelectionMoveResizer::mouseReleaseEvent(QMouseEvent *me)
         d_op_dp = QPoint(0, 0);
         d_op_start = QPoint(0, 0);
         d_undo_before_snapshot.clear();
-        if (d_legend_markers.size() == 1 && GraphMiniToolbar::isMiniToolbarEnabled()) {
+        if (d_legend_markers.size() == 1 && d_line_markers.isEmpty() && d_image_markers.isEmpty()
+            && d_widgets.isEmpty() && GraphMiniToolbar::isMiniToolbarEnabled()) {
             if (Graph *g = owningGraph()) {
                 Legend *leg = d_legend_markers.first();
-                if (leg && g->legend() == leg) {
+                if (leg) {
                     if (GraphMiniToolbar *bar = GraphMiniToolbar::instance())
                         bar->popupForLegend(g, leg, me->globalPos());
                 }
@@ -797,17 +795,9 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
         return;
     }
     case Qt::Key_Delete: {
-        if (Graph *g = owningGraph()) {
-            if (g->markerSelected()) {
-                MultiLayer *ml = g->multiLayerParent();
-                const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
-                g->removeMarker();
-                g->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
-                if (ml && !beforeSnap.isEmpty())
-                    ml->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
-                ke->accept();
-                return;
-            }
+        if (deleteAllSelectedMarkers(owningGraph(), this)) {
+            ke->accept();
+            return;
         }
         ke->ignore();
         break;
@@ -866,4 +856,81 @@ bool SelectionMoveResizer::eventFilter(QObject *o, QEvent *e)
     default:
         return false;
     }
+}
+
+QList<long> SelectionMoveResizer::selectedMarkerKeysForGraph(Graph *g) const
+{
+    QList<long> keys;
+    if (!g)
+        return keys;
+    for (Legend *leg : d_legend_markers) {
+        if (!leg)
+            continue;
+        for (int k : g->textMarkerKeys()) {
+            if (g->textMarker(k) == leg) {
+                keys << k;
+                break;
+            }
+        }
+    }
+    for (ArrowMarker *arr : d_line_markers) {
+        if (!arr)
+            continue;
+        for (int k : g->lineMarkerKeys()) {
+            if (g->arrow(k) == arr) {
+                keys << k;
+                break;
+            }
+        }
+    }
+    for (ImageMarker *img : d_image_markers) {
+        if (!img)
+            continue;
+        for (int k : g->imageMarkerKeys()) {
+            if (g->imageMarker(k) == img) {
+                keys << k;
+                break;
+            }
+        }
+    }
+    return keys;
+}
+
+bool SelectionMoveResizer::deleteAllSelectedMarkers(Graph *g, SelectionMoveResizer *resizer)
+{
+    if (!g)
+        return false;
+    QPointer<SelectionMoveResizer> smr(resizer);
+    if (!smr && g->plotWidget() && g->plotWidget()->canvas())
+        smr = g->plotWidget()->canvas()->findChild<SelectionMoveResizer *>();
+    QList<long> keys;
+    if (smr)
+        keys = smr->selectedMarkerKeysForGraph(g);
+    if (keys.isEmpty()) {
+        const long k = g->selectedMarkerKey();
+        if (k < 0)
+            return false;
+        keys << k;
+    }
+
+    QPointer<Graph> gGuard(g);
+    MultiLayer *ml = g->multiLayerParent();
+    QPointer<MultiLayer> mlGuard(ml);
+    const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+
+    if (smr)
+        smr->d_defer_self_delete = true;
+    for (long mk : keys) {
+        if (!gGuard)
+            return true;
+        gGuard->setSelectedMarker(mk, false);
+        gGuard->removeMarker();
+    }
+    if (!gGuard)
+        return true;
+    gGuard->deselectMarker();
+    gGuard->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+    if (mlGuard && !beforeSnap.isEmpty())
+        mlGuard->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
+    return true;
 }

@@ -17,6 +17,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
@@ -259,7 +260,7 @@ CanvasInlineTextEditor *CanvasInlineTextEditor::openForLegendOrText(Graph *graph
     } else {
         ed->d_legend_line_index = -1;
         ed->d_initial_clean_text = leg->text();
-        const bool multiLine = ed->d_initial_clean_text.contains('\n') || true;
+        const bool multiLine = true;
         ed->buildUi(multiLine, ed->d_initial_clean_text);
     }
 
@@ -368,6 +369,8 @@ void CanvasInlineTextEditor::buildUi(bool multiLine, const QString &initialText)
         d_text_edit->setMinimumWidth(340);
         d_text_edit->selectAll();
         d_text_edit->installEventFilter(this);
+        connect(d_text_edit, &QPlainTextEdit::textChanged, this,
+                &CanvasInlineTextEditor::updateRichPreview);
         root->addWidget(d_text_edit);
     } else {
         d_line_edit = new QLineEdit(this);
@@ -376,12 +379,26 @@ void CanvasInlineTextEditor::buildUi(bool multiLine, const QString &initialText)
         d_line_edit->setMinimumWidth(340);
         d_line_edit->selectAll();
         d_line_edit->installEventFilter(this);
+        connect(d_line_edit, &QLineEdit::textChanged, this,
+                &CanvasInlineTextEditor::updateRichPreview);
         connect(d_line_edit, &QLineEdit::returnPressed, this, [this]() {
             commitIfNeeded();
             close();
         });
         root->addWidget(d_line_edit);
     }
+
+    d_preview_label = new QLabel(this);
+    d_preview_label->setTextFormat(Qt::RichText);
+    d_preview_label->setWordWrap(true);
+    d_preview_label->setMinimumWidth(340);
+    d_preview_label->setStyleSheet(QStringLiteral(
+            "QLabel { font-family: 'Arial'; font-size: 9pt; color: #374151;"
+            " background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 3px;"
+            " padding: 3px 6px; }"));
+    d_preview_label->hide();
+    root->addWidget(d_preview_label);
+    updateRichPreview();
 }
 
 void CanvasInlineTextEditor::popupNearRect(const QRect &anchorGlobalRect)
@@ -414,6 +431,40 @@ void CanvasInlineTextEditor::popupNearRect(const QRect &anchorGlobalRect)
         d_line_edit->setFocus(Qt::PopupFocusReason);
     else if (d_text_edit)
         d_text_edit->setFocus(Qt::PopupFocusReason);
+}
+
+static bool hasRichTextMarkupInline(const QString &raw)
+{
+    static const QRegularExpression rxHtml(
+            QStringLiteral("</?(?:i|b|u|sub|sup)>"),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression rxOrigin(QStringLiteral("\\\\[ib\\-\\+]\\("));
+    return raw.contains(rxHtml) || raw.contains(rxOrigin);
+}
+
+void CanvasInlineTextEditor::updateRichPreview()
+{
+    if (!d_preview_label)
+        return;
+    const QString raw = currentEditorText();
+    if (raw.trimmed().isEmpty() || !hasRichTextMarkupInline(raw)) {
+        if (!d_preview_label->isHidden()) {
+            d_preview_label->hide();
+            adjustSize();
+        }
+        return;
+    }
+    QString esc = normalizeOriginRichText(raw).toHtmlEscaped();
+    static const QRegularExpression rxAllowed(
+            QStringLiteral("&lt;(/?(?:i|b|u|sub|sup))&gt;"),
+            QRegularExpression::CaseInsensitiveOption);
+    esc.replace(rxAllowed, QStringLiteral("<\\1>"));
+    esc.replace(QLatin1Char('\n'), QStringLiteral("<br/>"));
+    d_preview_label->setText(esc);
+    if (d_preview_label->isHidden()) {
+        d_preview_label->show();
+        adjustSize();
+    }
 }
 
 QString CanvasInlineTextEditor::currentEditorText() const

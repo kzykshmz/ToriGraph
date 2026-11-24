@@ -116,6 +116,8 @@ public:
     //! Returns true if m is one of targets, false else.
     bool contains(ImageMarker *m) const { return d_image_markers.contains(m); };
     bool isInKeyNudge() const { return d_in_key_nudge; }
+    QList<long> selectedMarkerKeysForGraph(Graph *g) const;
+    static bool deleteAllSelectedMarkers(Graph *g, SelectionMoveResizer *resizer = nullptr);
 
 public slots:
     //! Add target to the list of items to be moved/resized together.
@@ -225,10 +227,12 @@ private:
     QPoint d_op_dp;
     bool d_drag_threshold_passed = false;
     bool d_in_key_nudge = false;
+    bool d_defer_self_delete = false;
     QString d_undo_before_snapshot;
     QPointer<QWidget> d_target_parent;
     QPointer<Graph> d_owning_graph;
 
+    void cleanupIfEmpty();
     bool isLegendOnlySelection() const;
     Graph *owningGraph() const;
     class MultiLayer *owningMultiLayer() const;

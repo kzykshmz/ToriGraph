@@ -14,6 +14,7 @@
 
 class Graph;
 class MultiLayer;
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 
@@ -54,6 +55,7 @@ private:
     QString currentEditorText() const;
     void wrapSelection(const QString &openTag, const QString &closeTag);
     void insertSnippet(const QString &snippet);
+    void updateRichPreview();
 
     void commitIfNeeded();
     void cancelAndClose();
@@ -74,6 +76,7 @@ private:
 
     QLineEdit *d_line_edit = nullptr;
     QPlainTextEdit *d_text_edit = nullptr;
+    QLabel *d_preview_label = nullptr;
 
     bool d_finished = false;
 };

@@ -138,6 +138,7 @@ private:
     ScaleEndZone hitTestNumericEndZone(const QwtScaleWidget *scale, const QPoint &pos,
                                        int *outAxisId = nullptr,
                                        bool *outIsMaxEnd = nullptr) const;
+    void updateScaleHoverCursor(QwtScaleWidget *scale, const QPoint &pos) const;
     void openInlineScaleEditor(QwtScaleWidget *scale, int axisId, bool editMaxEnd);
     bool commitInlineScaleEditor(bool openOppositeEnd);
     void finishInlineScaleEditorOnDefocus();

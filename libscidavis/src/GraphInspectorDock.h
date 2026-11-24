@@ -51,6 +51,7 @@ class QLineEdit;
 class QMenu;
 class QPlainTextEdit;
 class QPushButton;
+class QResizeEvent;
 class QScrollArea;
 class QSpinBox;
 class QSplitter;
@@ -131,17 +132,43 @@ signals:
 protected:
     void changeEvent(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
+    enum class RichTargetMode { AxisTitle, LegendOrAnnot, PlotTitle, SpectrogramCbTitle };
+
+    struct RichTextBarEntry {
+        RichTargetMode targetMode = RichTargetMode::AxisTitle;
+        QToolButton *btnItalic = nullptr;
+        QToolButton *btnSub = nullptr;
+        QToolButton *btnSup = nullptr;
+        QToolButton *btnGreek = nullptr;
+        QMenu *menuGreek = nullptr;
+        QToolButton *btnUnit = nullptr;
+        QMenu *menuUnits = nullptr;
+    };
+
+    struct LegendCurveRow {
+        int curveIndex = -1;
+        QWidget *rowWidget = nullptr;
+        QLabel *swatchLabel = nullptr;
+        QLineEdit *edit = nullptr;
+        QLabel *previewLabel = nullptr;
+        QToolButton *resetBtn = nullptr;
+    };
+
     void buildUi();
     QWidget *buildQuickStartEmptyState();
     QWidget *buildPageLayerInspector();
     QWidget *buildAxisInspector();
     QWidget *buildCurveInspector();
     QWidget *buildLegendInspector();
+    QWidget *buildRichTextBar(QWidget *parent, RichTargetMode mode);
 
     void applyCollapsedGeometry();
+    void adjustDefaultSplitterSizes();
+    void updatePropScrollCue();
     void updateQuickStartPlotButtonState();
     void openAxesDialogForQwtAxis(Graph *g, int qwtAxis, bool showAxesTab = true);
 
@@ -160,6 +187,7 @@ private:
     void moveSelectedCurve(int delta);
     void removeSelectedObject();
 
+    void syncTabPage(InspectorPageIndex pageIdx);
     void syncPageLayerControls();
     void syncInsetControls();
     void syncAxisControls();
@@ -173,13 +201,19 @@ private:
     void applyTickDivideFromUi(bool fromLineEdit = false);
     void refreshCategoryColumnCombo();
     void applyCategoryColumnFromUi();
-    void applyAxisTitleMarkup(const QString &openTag, const QString &closeTag);
-    void insertAxisTitleToken(const QString &token);
+    void resolveRichTarget(RichTargetMode mode, QLineEdit *&outLine, QPlainTextEdit *&outPlain) const;
+    void applyRichMarkupToTarget(RichTargetMode mode, const QString &openTag,
+                                 const QString &closeTag);
+    void insertRichTokenToTarget(RichTargetMode mode, const QString &token,
+                                 bool isJournalTemplate = false, bool isUnitOnly = false);
+    void updateRichPreviewLabel(QLabel *lbl, const QString &raw, bool showWhenPlain = false);
     void updateAxisTitlePreview(const QString &raw);
     void flushPendingAxisTitleEdit();
-    void rebuildGreekSymbolMenu();
-    void rebuildUnitsSymbolMenu();
-    void applyQuickErrorBars(int mode /*0=Adjacent, 1=SD, 2=5pct*/);
+    void rebuildRichTextBarMenus();
+    void rebuildGreekSymbolMenu(QMenu *menu, RichTargetMode mode);
+    void rebuildUnitsSymbolMenu(QMenu *menu, RichTargetMode mode);
+    void applyAdjacentErrorBars();
+    void openErrorBarsDialog();
     void matchRightYAxisColorToCurve();
     void refreshPaletteSchemeCombo();
     void applyGroupAutoStyleFromUi();
@@ -199,9 +233,11 @@ private:
 
     bool d_collapsed_rail = false;
     bool d_user_pinned = false;
+    bool d_user_resized_splitter = false;
     bool d_syncing_tree = false;
     bool d_syncing_props = false;
     bool d_scope_all_panels = false;
+    bool d_tab_dirty[4] = { true, true, true, true };
     int d_active_axis = QwtPlot::xBottom;
 
     // Root containers (Expanded vs 40 px Rail)
@@ -267,7 +303,9 @@ private:
     QToolButton *d_tab_btn_curve = nullptr;
     QToolButton *d_tab_btn_legend = nullptr;
     QScrollArea *d_prop_scroll = nullptr;
+    QFrame *d_scroll_more_cue = nullptr;
     QStackedWidget *d_prop_stack = nullptr;
+    QVector<RichTextBarEntry> d_rich_bars;
 
     // --- Page 0: Page / Layer Controls ---
     QLabel *d_sec_presets_lbl = nullptr;
@@ -275,7 +313,7 @@ private:
     QPushButton *d_btn_preset_slide28 = nullptr;
     QComboBox *d_cb_user_presets = nullptr;
     QPushButton *d_btn_apply_user_preset = nullptr;
-    QPushButton *d_btn_manage_presets = nullptr;
+    QToolButton *d_btn_manage_presets = nullptr;
     QPushButton *d_btn_square_frame70 = nullptr;
 
     QLabel *d_sec_aspect_lbl = nullptr;
@@ -298,9 +336,6 @@ private:
     int inspectorPageUnit() const; // MultiLayer::PageUnit
     void configurePageSizeSpins(int unit, double wMm, double hMm);
     QCheckBox *d_chk_page_view = nullptr;
-    QLabel *d_lbl_page_zoom = nullptr;
-    QComboBox *d_combo_page_zoom = nullptr;
-    QToolButton *d_btn_page_zoom_fit = nullptr;
 
     // Inset Layer ROI & Connector Controls (visible when active layer is an inset)
     QWidget *d_inset_wrap = nullptr;
@@ -322,11 +357,6 @@ private:
     QMenu *d_menu_link_top_x = nullptr;
     QCheckBox *d_chk_panel_labels = nullptr;
     QComboBox *d_combo_panel_pos = nullptr;
-
-    QLabel *d_sec_export_lbl = nullptr;
-    QPushButton *d_btn_copy_ole = nullptr;
-    QPushButton *d_btn_send_pptx = nullptr;
-    QPushButton *d_btn_export_img_pdf = nullptr;
 
     // --- Page 1: Axis Controls ---
     QButtonGroup *d_axis_sel_group = nullptr;
@@ -388,13 +418,7 @@ private:
     QTimer *d_axis_title_timer = nullptr;
     QPointer<Graph> d_axis_title_edit_layer;
     int d_axis_title_edit_axis = -1;
-    QToolButton *d_btn_fmt_italic = nullptr;
-    QToolButton *d_btn_fmt_sub = nullptr;
-    QToolButton *d_btn_fmt_sup = nullptr;
-    QToolButton *d_btn_fmt_greek = nullptr;
-    QMenu *d_menu_greek = nullptr;
-    QToolButton *d_btn_fmt_unit = nullptr;
-    QMenu *d_menu_units = nullptr;
+    QWidget *d_axis_sym_bar = nullptr;
     QCheckBox *d_chk_lock_all_axes_font = nullptr;
     QLabel *d_lbl_title_pt = nullptr;
     QDoubleSpinBox *d_spin_axis_title_pt = nullptr; // pt, 0.1 steps shown (12.9)
@@ -438,8 +462,7 @@ private:
 
     QLabel *d_sec_err_bars_lbl = nullptr;
     QPushButton *d_btn_err_adjacent = nullptr;
-    QPushButton *d_btn_err_sd = nullptr;
-    QPushButton *d_btn_err_5pct = nullptr;
+    QPushButton *d_btn_err_dialog = nullptr;
     QWidget *d_err_style_wrap = nullptr;
     QLabel *d_sec_err_style_lbl = nullptr;
     QLabel *d_lbl_err_width = nullptr;
@@ -526,11 +549,13 @@ private:
     QLineEdit *d_edit_leg_header = nullptr;
     // C16: text annotations can have several lines, so they get a multi-line editor.
     QPlainTextEdit *d_edit_annot_text = nullptr;
+    QLabel *d_lbl_leg_preview = nullptr;
     QTimer *d_annot_commit_timer = nullptr;
     QPointer<Graph> d_annot_edit_layer;
     int d_annot_edit_id = -1;
     void flushPendingAnnotationEdit();
     QWidget *d_leg_sym_bar = nullptr;
+    QPointer<QLineEdit> d_last_legend_focus_edit;
     QLabel *d_lbl_leg_cols = nullptr;
     QSpinBox *d_spin_leg_cols = nullptr;
     QLabel *d_lbl_leg_font_pt = nullptr;
@@ -540,6 +565,8 @@ private:
     QWidget *d_leg_entries_wrap = nullptr;
     QLabel *d_sec_leg_entries_lbl = nullptr;
     QVBoxLayout *d_leg_entries_layout = nullptr;
+    QPointer<Graph> d_leg_rows_graph;
+    QVector<LegendCurveRow> d_leg_curve_rows;
 
     // Arrow / Line Annotation editor
     QWidget *d_arrow_editor_wrap = nullptr;
@@ -577,6 +604,7 @@ private:
     QLabel *d_sec_plot_title_lbl = nullptr;
     QLabel *d_lbl_plot_title_text = nullptr;
     QLineEdit *d_edit_plot_title = nullptr;
+    QLabel *d_lbl_plot_title_preview = nullptr;
     QWidget *d_plot_title_sym_bar = nullptr;
     QLabel *d_lbl_plot_title_pt = nullptr;
     QDoubleSpinBox *d_spin_plot_title_pt = nullptr;
