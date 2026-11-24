@@ -160,7 +160,7 @@ static const QVector<GlossaryRule> &glossaryRules()
             "TeX|ASCII|caption|Table labe?l?s|^Table1$|element");
         add("(?<!特殊)記号", "シンボル",
             "Symbol (Shape|Size|Edge|Fill|Skip|Color|Opacity|&)|Symbol Shapes|"
-            "Line ?\\+ ?Sym|No Symbol|Colors && Symbols|symbols, frame|symbol styles|"
+            "Line ?\\+ ?Sym|No Symbol|Colors &+& Symbols|symbols, frame|symbol styles|"
             "Style Scheme");
         add("\\s*&&\\s*", "・");
         add("(?<!不)透明度", "不透明度", "Opacity");
@@ -346,7 +346,11 @@ static void ensureInitializedLocked()
         "Export Active Graph to Python Script...",
         "Export Reproducible &Python Script...",
         "Export Reproducible Python Script...",
-        "Export Reproducible Python Script \342\200\224 %1"
+        "Export Reproducible Python Script \342\200\224 %1",
+        "Export PDF",
+        "ToriGraph currently does not support Origin import.",
+        "Name / Unit (ISIJ)",
+        "Paste Colors & Symbols Only"
     };
     const int nCanon =
             static_cast<int>(sizeof(kCanonicalKeysUtf8) / sizeof(kCanonicalKeysUtf8[0]));

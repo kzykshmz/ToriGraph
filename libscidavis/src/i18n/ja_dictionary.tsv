@@ -308,7 +308,6 @@
 &Layer Geometry	レイヤー配置・サイズ(&L)
 &Legend	凡例(&L)
 &Line	折れ線(&L)
-&Lock Toolbars	ツールバーを固定(&L)
 &Lorentzian...	ローレンツ関数 (Lorentzian)(&L)...
 &Low Pass...	ローパスフィルタ(&L)...
 &Make	生成(&M)
@@ -325,6 +324,7 @@
 &Name (single word)	名前 (空白なしの1語)(&N)
 &Nature / Science Compact (89 mm)	Nature / Science コンパクト (89 mm)(&N)
 &New	新規作成(&N)
+&New / Reconstruct Legend	凡例の新規作成・再構築(&N)
 &New curve	新規曲線(&N)
 &Next	次のウィンドウ(&N)
 &No	いいえ(&N)
@@ -354,7 +354,6 @@
 &Paste Layer	レイヤーを貼り付け(&P)
 &Paste Line/Arrow	直線/矢印を貼り付け(&P)
 &Paste Parameters to Plot	プロット上にパラメータ表を貼り付け(&P)
-&Paste Selection	貼り付け(&P)
 &Paste Text	テキストを貼り付け(&P)
 &Peak / Multi-Peak Fit...	ピーク / マルチピークフィット(&P)...
 &Peaks and Baseline	ピークとベースライン(&P)
@@ -367,7 +366,6 @@
 &Plot Selection	選択項目をプロット(&P)
 &Plot Toolbar	プロットツールバー(&P)
 &Plot details...	プロット詳細(&P)...
-&Preferences...	環境設定(&P)...
 &Presentation Slide (28 pt Arial)	発表スライド (28 pt Arial)(&P)
 &Previous	前のウィンドウ(&P)
 &Principal Component Analysis (PCA Biplot)...	主成分分析 (PCAバイプロット)(&P)...
@@ -396,11 +394,11 @@
 &Rescale to Show All	全範囲に自動スケール(&R)
 &Rescale to show all	全体表示可能にリサイズ(&R)
 &Reset	リセット(&R)
-&Reset Stack Offsets	スタックオフセットをリセット(&R)
 &Reset to Full Range	全データ範囲にリセット(&R)
 &Residual Plot	残差プロット(&R)
 &Restart Scripting	スクリプト環境を再起動(&R)
 &Restore	元のサイズに戻す(&R)
+&Results Log	結果ログ(&R)
 &Retry	再試行(&R)
 &Ribbon	リボン(&R)
 &Robust && Quantile Linear Fit...	ロバスト・分位点線形フィット(&R)...
@@ -439,7 +437,6 @@
 &Style Presets	スタイルプリセット(&S)
 &Surface...	曲面設定(&S)...
 &Tabbed Workspace	タブ表示ワークスペース(&T)
-&Tabbed Workspace View	タブ表示モード (Origin風)(&T)
 &Table	ワークシート(&T)
 &Tauc Plot (Optical Bandgap)...	Taucプロット (光学バンドギャップ)(&T)...
 &Ternary Plot	三角図(&T)
@@ -804,7 +801,7 @@ Add La&yer	レイヤーの追加(&Y)
 Add Layer	レイヤーの追加
 Add Legend	凡例の追加
 Add Line	基準線を追加
-Add Linked &Top-X / Right-Y Layer	上X・右Y連動レイヤーを追加(&T)
+Add Linked Top-&X / Right-Y Layer	上X・右Y連動レイヤーを追加(&X)
 Add Linked Layer	リンクレイヤーを追加
 Add Linked Right-Y	連動する右Y軸を追加
 Add Linked Right-Y Layer	連動する右Y軸レイヤーを追加
@@ -1511,7 +1508,7 @@ Copied %1 as 300 DPI PNG (%2 x %3 px) to clipboard.	%1 を 300 DPI PNG 画像 (%
 Copied graph format from %1.	%1 からグラフ書式をコピーしました。
 Copied page image (300 DPI PNG) to clipboard.	ページ画像 (300 DPI PNG) をクリップボードにコピーしました。
 Copy	コピー
-Copy &Format	書式をコピー(&F)
+Copy For&mat	書式をコピー(&M)
 Copy Editable OLE Graph Object for PowerPoint	PowerPoint 用の編集可能な OLE グラフオブジェクトをコピー
 Copy Editable OLE Graph Object for PowerPoint / Word	PowerPoint / Word 用の編集可能な OLE グラフオブジェクトをコピー
 Copy Format	書式のコピー
@@ -1523,7 +1520,7 @@ Copy High-DPI Image	画像コピー
 Copy High-Resolution Bitmap of Graph Page to Clipboard	グラフページの高解像度ビットマップ画像をクリップボードへコピー
 Copy OLE	OLEコピー
 Copy Page	ページをコピー
-Copy Page as &Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)(&I)
+Copy Pa&ge as Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)(&G)
 Copy Page as Image (High-DPI PNG)	ページを高解像度画像としてコピー (300 DPI PNG)
 Copy Readout to Clipboard	読み取り値をクリップボードにコピー
 Copy Selection	コピー
@@ -1907,8 +1904,9 @@ Dual Crosshair	デュアルクロスヘア
 Dual Crosshair / Delta Cursor	デュアルクロスヘア / デルタカーソル
 Dual-Cursor Delta X / Delta Y / Slope Gadget	2点カーソル ΔX・ΔY・傾き計測ガジェット
 Dual-crosshair Delta Cursor (dx, dy, slope, ratio, area, RMS)	2点クロスヘア・デルタカーソル (dx, dy, 傾き, 比, 面積, RMS)
+Duplicat&e	複製(&E)
 Duplicate	複製
-Duplicate (&Batch Plotting)...	一括複製プロット (バッチプロット)(&B)...
+Duplicate (Batc&h Plotting)...	一括複製プロット (バッチプロット)(&H)...
 Duplicate (Batch Plotting)	複製・一括プロット (バッチ作図)
 Duplicate (Batch Plotting)...	複製・一括プロット (バッチ作図)...
 Duplicate / Rename	複製 / 名前変更
@@ -2816,6 +2814,7 @@ Load Theme	テーマ読込
 Load Theme...	テーマ読込...
 Load image from file	ファイルから画像を読み込む
 Locally Weighted Scatterplot Smoothing (LOWESS)	局所重み付き散布図平滑化 (LOWESS)
+Loc&k Toolbars	ツールバーを固定(&K)
 Lock Aspect Ratio	縦横比を固定
 Lock Toolbars	ツールバーを固定
 Log Scale	対数スケール
@@ -3112,7 +3111,6 @@ New &Note / Script	新規ノート / スクリプト(&N)
 New &Project	新規プロジェクト(&P)
 New &Table	新規ワークシート(&T)
 New &Window	新規ウィンドウ(&W)
-New / Reconstruct &Legend	凡例の新規作成・再構築(&L)
 New / Reconstruct Legend	凡例の新規作成・再構築
 New 2D Graph	新規 2D グラフ
 New 3D &Surface Plot	新規3D曲面プロット(&S)
@@ -3431,9 +3429,10 @@ Passing-Bablok & Deming Regression	パッシング・バブロック／デミン
 Passing-Bablok & Deming Regression (%1 vs %2)	パッシング・バブロック／デミング回帰 (%1 vs %2)
 Passing-Bablok & Deming Regression...	パッシング・バブロック／デミング回帰...
 Passing-Bablok Fit	パッシング・バブロック回帰
+P&aste Selection	貼り付け(&A)
 Past&e	貼り付け(&E)
 Paste	貼り付け
-Paste &Format	書式を貼り付け(&F)
+Paste F&ormat	書式を貼り付け(&O)
 Paste Annotation	注釈の貼り付け
 Paste Clipboard	クリップボードから貼り付け
 Paste Copied Visual Style onto Active Graph	コピーした視覚スタイルをアクティブグラフに貼り付け
@@ -3735,6 +3734,7 @@ Prediction Ellipse (for new observation)	予測楕円 (新規観測値に対す�
 Predictor Variables (X)	説明変数 (X)
 Predictor Variables (X1, X2, ...)	説明変数 (X1, X2, ...)
 Predictors (X)	説明変数 (X)
+Prefere&nces...	環境設定(&N)...
 Preferences	環境設定
 Preferences...	環境設定...
 Prefix	接頭辞
@@ -3953,6 +3953,7 @@ Reset	リセット
 Reset (0%, 0%)	リセット (0%, 0%)
 Reset Offset	オフセットをリセット
 Reset Offsets	オフセットをリセット
+Reset Stac&k Offsets	スタックオフセットをリセット(&K)
 Reset Stack Offsets	スタックオフセットをリセット
 Reset rotation	回転をリセット
 Reset to Full Range	全範囲にリセット
@@ -3984,7 +3985,6 @@ Response Variable (Y)	応答変数 (Y)
 Restart Scripting	スクリプトエンジンの再起動
 Restore	元のサイズに戻す
 Restore Defaults	既定値に戻す
-Results &Log	結果ログ(&L)
 Results Log	結果ログ
 Retry	再試行
 Reverse Color Map	カラーマップを反転
@@ -4485,6 +4485,7 @@ TODO	未設定
 TPR_Sens	真陽性率_感度
 Tabbed	タブ表示
 Tabbed View	タブ表示
+Tabbed Workspace &View	タブ表示モード (Origin風)(&V)
 Tabbed Workspace View	タブ表示モード (Origin風)
 Table	ワークシート
 Table &Toolbar	ワークシートツールバー(&T)
@@ -4664,7 +4665,7 @@ Toggle Box Frame	四辺ボックス枠の切替
 Toggle Curve Visibility	曲線の表示切替
 Toggle Error Bars	エラーバーの切替
 Toggle Focus HUD Mode (F11)	フォーカスHUDモードの切り替え (F11)
-Toggle Graph &Mini-Toolbar	グラフミニツールバー表示(&M)
+Toggle Graph Mini-Tool&bar	グラフミニツールバー表示(&B)
 Toggle Graph Inspector	グラフインスペクタの表示切替
 Toggle Graph Inspector Dock (Ctrl+Shift+I)	グラフインスペクタの表示/折りたたみ切替 (Ctrl+Shift+I)
 Toggle Graph Mini-Toolbar	グラフ・ミニツールバー表示切替
@@ -7559,3 +7560,47 @@ No valid strain-stress points found on selection.	選択範囲に有効なひず
 Auto-detect failed and was switched to manual bounds. %1 Adjust Elastic Strain Min/Max above.	自動検出に失敗したため手動範囲に切り替えました。%1 上の「弾性域の最小ひずみ」「弾性域の最大ひずみ」を調整してください。
 Manual elastic fit interval: [%1, %2] %3.	手動設定の弾性フィット区間: [%1, %2] %3。
 Instrumental FWHM (%1 deg) deconvolved using fitted Pseudo-Voigt shape factor η (mean η = %2).	装置広がり半値幅 (%1 deg) をフィットした擬フォークト形状因子 η (平均 η = %2) を用いてデコンボリューションしました。
+Warning: This release does not publish a SHA-256 checksum (enabled via AutoUpdate/AllowUnverifiedInstall). You will still be asked to confirm explicitly before installing.	警告: このリリースには SHA-256 チェックサムが公開されていません (AutoUpdate/AllowUnverifiedInstall により有効化)。インストール前にもう一度確認を求めます。
+SHA-256 checksum verification failed: expected SHA-256 checksum is missing and unverified installs are disabled.	SHA-256 チェックサムの検証に失敗しました: 期待される SHA-256 チェックサムがなく、未検証のインストールは無効化されています。
+Expression is empty.	式が空です。
+Expression evaluates to a non-finite value.	式の計算結果が有限値ではありません。
+Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format.	yyyy-MM-dd hh:mm:ss 形式で有効な日時を入力してください。
+Divide factor error	除算係数のエラー
+Please enter a valid non-zero numeric value or expression for Divide by Factor.	「係数で除算」には 0 以外の有効な数値または数式を入力してください。
+Add selected column(s) to graph (>>)	選択した列をグラフに追加 (>>)
+Add selected column(s) to graph	選択した列をグラフに追加
+Remove selected curve(s) from graph (<<)	選択した曲線をグラフから削除 (<<)
+Remove selected curve(s) from graph	選択した曲線をグラフから削除
+Remove curve "%1" from the plot?	曲線 "%1" をグラフから削除しますか?
+Rotation	回転
+Auto-trace with "Append" unchecked will replace your existing manually picked points.\nContinue and replace existing points?	「追加」をオフにして自動トレースすると、手動で指定した既存の点は置き換えられます。\n続行して既存の点を置き換えますか?
+X axis calibration requires X1 != X2.	X 軸の較正には X1 != X2 が必要です。
+Y axis calibration requires Y1 != Y2.	Y 軸の較正には Y1 != Y2 が必要です。
+X1 and X2 pixel anchors must be distinct (distance >= 1 px).	X1 と X2 のピクセル基準点は異なる位置にする必要があります (距離 >= 1 px)。
+Y1 and Y2 pixel anchors must be distinct (distance >= 1 px).	Y1 と Y2 のピクセル基準点は異なる位置にする必要があります (距離 >= 1 px)。
+Switch Gadget...	ガジェットを切り替え...
+This file was opened read-only because another ToriGraph process held a lock on <b>%1</b>.\n\nChoose a different file name to save a copy.	別の ToriGraph プロセスが <b>%1</b> のロックを保持しているため、このファイルは読み取り専用で開かれました。\n\nコピーを保存するには別のファイル名を選んでください。
+The project <b>%1</b> appears to be open in another ToriGraph process%2 and cannot be overwritten.\n\nChoose a different file name.	プロジェクト <b>%1</b> は別の ToriGraph プロセス%2 で開かれているため上書きできません。\n\n別のファイル名を選んでください。
+The project file <b>%1</b> is incomplete or corrupted (unexpected end of file) and could not be appended safely.	プロジェクトファイル <b>%1</b> が不完全または破損しているため (予期しないファイル終端)、安全に追加読み込みできませんでした。
+Click or activate a 2D graph window first.	先に 2D グラフウィンドウをクリックするかアクティブにしてください。
+This graph has no plottable curve data yet.	このグラフにはプロット可能な曲線データがまだありません。
+3D graphs do not record Undo/Redo history.	3D グラフは元に戻す/やり直し履歴を記録しません。
+Could not find at least 2 rising points in 10–55% of UTS for automatic elastic preview.	自動弾性域プレビューに必要な UTS 10〜55% 区間の単調増加点が 2 点以上見つかりませんでした。
+Note: Wilcoxon Signed-Rank compares only the first 2 selected columns; extra columns will be ignored.	注記: Wilcoxon 符号付順位検定は選択された先頭 2 列のみを比較し、3 列目以降は無視されます。
+Select at least 2 numeric columns (X columns are excluded by default).	2 列以上の数値列を選択してください (X 列は既定で除外されます)。
+Wilcoxon Signed-Rank compares only the first 2 selected columns (%1 vs %2); %3 additional column(s) ignored.	Wilcoxon 符号付順位検定は先頭 2 列 (%1 vs %2) のみを比較しました (%3 列を無視)。
+Curve: %1 | Successful replicates: %2 | Confidence level: %3%	曲線: %1 | 成功した反復数: %2 | 信頼水準: %3%
+CI Low	信頼区間 下限
+CI High	信頼区間 上限
+Please select a plugin fit function.	プラグインフィット関数を選択してください。
+%1 of %2 points with non-positive or invalid weights were excluded from the log-space fit.	%2 点中 %1 点 (重みが 0 以下または無効) を対数空間フィットから除外しました。
+2D FFT failed: invalid application or source matrix.	2D FFT に失敗しました: アプリケーションまたは入力行列が無効です。
+2D FFT failed: source matrix must be non-empty.	2D FFT に失敗しました: 入力行列が空ではない必要があります。
+2D %1 failed: auxiliary matrix dimensions (%2×%3) do not match primary matrix dimensions (%4×%5).	2D %1 に失敗しました: 補助行列のサイズ (%2×%3) が主行列のサイズ (%4×%5) と一致しません。
+IFFT	逆FFT (IFFT)
+ToriGraph - Python Script Error	ToriGraph - Python スクリプトエラー
+Failed to start Python interpreter for:\n%1	Python インタープリタを起動できませんでした:\n%1
+Python script exited with code %1:\n%2	Python スクリプトが終了コード %1 で終了しました:\n%2
+Python script not found or could not be started:\n%1	Python スクリプトが見つからないか起動できませんでした:\n%1
+Import ASCII (Overwrite)	ASCII インポート (上書き)
+The built-in guide (manual/index.en.html) was not found; opening the English README on GitHub instead.	同梱のガイド (manual/index.en.html) が見つからないため、GitHub の英語 README を開きます。

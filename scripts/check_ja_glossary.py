@@ -128,7 +128,7 @@ class Rule:
 
 
 SYMBOL_PLOT_EN = (r"Symbol (Shape|Size|Edge|Fill|Skip|Color|Opacity|&)|Symbol Shapes|"
-                  r"Line ?\+ ?Sym|No Symbol|Colors && Symbols|symbols, frame|symbol styles|"
+                  r"Line ?\+ ?Sym|No Symbol|Colors &+& Symbols|symbols, frame|symbol styles|"
                   r"Style Scheme")
 
 # 短いラベルで英語をそのまま括弧で繰り返しているもの。手法名・関数名 (Gaussian,

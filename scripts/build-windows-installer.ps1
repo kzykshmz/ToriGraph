@@ -259,7 +259,8 @@ $requiredRel = @(
     "LICENSE",
     "LICENSE-GPL-3.0.txt",
     "THIRD_PARTY_LICENSES.md",
-    "manual\index.html"
+    "manual\index.html",
+    "manual\index.en.html"
 )
 foreach ($rel in $requiredRel) {
     $full = Join-Path $stageDir $rel

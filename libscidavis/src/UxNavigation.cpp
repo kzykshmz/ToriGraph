@@ -83,6 +83,7 @@
 #include <mutex>
 
 #define MANUAL_URI_JA "https://github.com/kzykshmz/ToriGraph/blob/main/README.ja.md"
+#define MANUAL_URI_EN "https://github.com/kzykshmz/ToriGraph/blob/main/README.md"
 
 namespace ToriUx {
 
@@ -101,6 +102,8 @@ void registerUxTranslations()
         // B1 help
         reg("The built-in guide (manual/index.html) was not found; opening the Japanese README on GitHub instead.",
             "同梱のガイド (manual/index.html) が見つからないため、GitHub の日本語 README を開きます。");
+        reg("The built-in guide (manual/index.en.html) was not found; opening the English README on GitHub instead.",
+            "同梱のガイド (manual/index.en.html) が見つからないため、GitHub の英語 README を開きます。");
         reg("The guide could not be opened automatically. Open this address in a web browser:",
             "ガイドを自動で開けませんでした。次のアドレスをブラウザで開いてください:");
         // A11 close prompt
@@ -1182,15 +1185,28 @@ private:
 
 QUrl ApplicationWindow::quickGuideUrl() const
 {
+    const bool isEn =
+            appLanguage.trimmed().startsWith(QLatin1String("en"), Qt::CaseInsensitive);
     const QString local = ToriUx::quickGuideFilePath(appLanguage);
     if (!local.isEmpty())
         return QUrl::fromLocalFile(local);
     if (!helpFilePath.isEmpty()) {
         const QFileInfo fi(helpFilePath);
+        if (isEn && fi.fileName().compare(QLatin1String("index.html"), Qt::CaseInsensitive) == 0) {
+            const QFileInfo enSibling(fi.dir().filePath(QStringLiteral("index.en.html")));
+            if (enSibling.isFile() && enSibling.size() > 256)
+                return QUrl::fromLocalFile(enSibling.absoluteFilePath());
+        } else if (!isEn
+                   && fi.fileName().compare(QLatin1String("index.en.html"), Qt::CaseInsensitive)
+                           == 0) {
+            const QFileInfo jaSibling(fi.dir().filePath(QStringLiteral("index.html")));
+            if (jaSibling.isFile() && jaSibling.size() > 256)
+                return QUrl::fromLocalFile(jaSibling.absoluteFilePath());
+        }
         if (fi.isFile() && fi.size() > 256)
             return QUrl::fromLocalFile(fi.absoluteFilePath());
     }
-    return QUrl(QStringLiteral(MANUAL_URI_JA));
+    return QUrl(isEn ? QStringLiteral(MANUAL_URI_EN) : QStringLiteral(MANUAL_URI_JA));
 }
 
 QString ApplicationWindow::currentToolModeName() const

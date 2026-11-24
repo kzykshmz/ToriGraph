@@ -621,7 +621,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Project Explorer", "プロジェクトエクスプローラ");
         add("Project &Explorer", "プロジェクトエクスプローラ(&E)");
         add("Results Log", "結果ログ");
-        add("Results &Log", "結果ログ(&L)");
+        add("&Results Log", "結果ログ(&R)");
         add("Scripting Console", "スクリプトコンソール");
         add("ToriGraph - untitled", "ToriGraph - 無題");
 
@@ -648,7 +648,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Subfolders Only", "サブフォルダ");
         add("Subfolders", "サブフォルダ");
         add("Tabbed View", "タブ表示");
-        add("&Tabbed Workspace View", "タブ表示モード (Origin風)(&T)");
+        add("Tabbed Workspace &View", "タブ表示モード (Origin風)(&V)");
 
         // File & Edit actions
         add("New &Project", "新規プロジェクト(&P)");
@@ -677,14 +677,15 @@ void registerApplicationWindowJapaneseStrings()
         add("&Undo", "元に戻す(&U)");
         add("&Redo", "やり直し(&R)");
         add("&Duplicate", "複製(&D)");
+        add("Duplicat&e", "複製(&E)");
         add("Cu&t Selection", "切り取り(&T)");
         add("&Copy Selection", "コピー(&C)");
-        add("&Paste Selection", "貼り付け(&P)");
+        add("P&aste Selection", "貼り付け(&A)");
         add("&Delete Selection", "選択範囲を削除(&D)");
         add("Delete &Fit Tables", "フィット結果ワークシートを削除(&F)");
         add("Clear &Log Information", "結果ログを消去(&L)");
-        add("&Preferences...", "環境設定(&P)...");
-        add("&Lock Toolbars", "ツールバーを固定(&L)");
+        add("Prefere&nces...", "環境設定(&N)...");
+        add("Loc&k Toolbars", "ツールバーを固定(&K)");
         add("Undo/Redo &History", "元に戻す/やり直し履歴(&H)");
         add("Plot &Wizard", "プロットウィザード(&W)");
 
@@ -1155,7 +1156,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Fit Layers to Page", "レイヤーをページに合わせる");
         add("Toggle Page &View", "ページ印刷ビュー切替(&V)");
         add("Toggle Page View", "ページ印刷ビュー切替");
-        add("Add Linked &Top-X / Right-Y Layer", "上X・右Y連動レイヤーを追加(&T)");
+        add("Add Linked Top-&X / Right-Y Layer", "上X・右Y連動レイヤーを追加(&X)");
         add("Add Linked Top-X / Right-Y Layer", "上X・右Y連動レイヤーを追加");
         add("Add &Zoom Inset Layer", "拡大インセットレイヤーを追加(&Z)");
         add("Add Zoom Inset Layer", "拡大インセットレイヤーを追加");
@@ -1169,7 +1170,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Open L-Frame", "オープンL字枠 (上右軸なし)");
         add("&Zero-Crossed Axes", "原点交差軸 (X=0, Y=0)(&Z)");
         add("Zero-Crossed Axes", "原点交差軸 (X=0, Y=0)");
-        add("Toggle Graph &Mini-Toolbar", "グラフミニツールバー表示(&M)");
+        add("Toggle Graph Mini-Tool&bar", "グラフミニツールバー表示(&B)");
         add("Toggle Graph Mini-Toolbar", "グラフミニツールバー表示");
 
         // Phase 4: Additional Gadgets
@@ -1256,17 +1257,17 @@ void registerApplicationWindowJapaneseStrings()
         add("Open Image as &Graph...", "画像をグラフとして開く(&G)...");
         add("Import Image to &Matrix...", "画像を行列へインポート(&M)...");
 
-        add("Copy &Format", "書式をコピー(&F)");
+        add("Copy For&mat", "書式をコピー(&M)");
         add("Copy Format", "書式コピー");
         add("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)",
             "グラフ書式をコピー (フォント・軸・目盛り・ページ寸法・線幅・基準線)");
-        add("Paste &Format", "書式を貼り付け(&F)");
+        add("Paste F&ormat", "書式を貼り付け(&O)");
         add("Paste Format", "書式貼付");
         add("Paste copied graph format onto active graph", "コピーしたグラフ書式をアクティブグラフへ適用");
         add("Copied graph format from %1.", "%1 からグラフ書式をコピーしました。");
         add("Applied copied graph format to %1.", "%1 にグラフ書式を適用しました。");
 
-        add("Duplicate (&Batch Plotting)...", "一括複製プロット (バッチプロット)(&B)...");
+        add("Duplicate (Batc&h Plotting)...", "一括複製プロット (バッチプロット)(&H)...");
         add("Duplicate (Batch Plotting)...", "一括複製プロット (バッチプロット)...");
         add("Duplicate (Batch Plotting)", "一括複製プロット (バッチプロット)");
         add("Batch-clone graph across multiple worksheets or Y columns",
@@ -1285,7 +1286,7 @@ void registerApplicationWindowJapaneseStrings()
             "チェックした各Y列ごとに書式付きグラフを作成:");
 
         // Phase 5: Legend, Curve & Context Menu Additions
-        add("New / Reconstruct &Legend", "凡例の新規作成・再構築(&L)");
+        add("&New / Reconstruct Legend", "凡例の新規作成・再構築(&N)");
         add("New / Reconstruct Legend", "凡例の新規作成・再構築");
         add("Add or reconstruct legend", "凡例の追加または再構築");
         add("&Reconstruct Legend (Ctrl+L)", "凡例を再構築(&R) (Ctrl+L)");
@@ -1319,7 +1320,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Waterfall / Stack Offset...", "ウォーターフォール / スタックオフセット(&W)...");
         add("Waterfall / Stack Offset...", "ウォーターフォール / スタックオフセット...");
         add("Waterfall / Stack Offset", "ウォーターフォール / スタックオフセット");
-        add("&Reset Stack Offsets", "スタックオフセットをリセット(&R)");
+        add("Reset Stac&k Offsets", "スタックオフセットをリセット(&K)");
         add("Reset Stack Offsets", "スタックオフセットをリセット");
         add("Reset Offsets", "オフセットをリセット");
         add("Offset Mode:", "オフセット方式:");
@@ -1351,7 +1352,7 @@ void registerApplicationWindowJapaneseStrings()
         add("ToriGraph Matrix Template", "ToriGraph 行列テンプレート");
         add("ToriGraph Table Template", "ToriGraph ワークシートテンプレート");
         add("ToriGraph currently does not support Origin import.",
-            "現在のビルドではOriginインポートはサポートされていません。");
+            "この形式の古い Origin プロジェクト (.opj) は読み込めません。Origin 2018 以降の .opju はそのまま読み込めます (古い .opj は Origin で .opju または CSV / Excel に保存し直してください)。");
         add("ToriGraph does not support QtiPlot project files from versions later than 0.9.0.",
             "ToriGraphはバージョン0.9.0以降のQtiPlotプロジェクトファイルには対応していません。");
         add("ToriGraph does not support QtiPlot template files from versions later than 0.9.0.",
@@ -1370,7 +1371,7 @@ void registerApplicationWindowJapaneseStrings()
             "新しいバージョンのToriGraph (%1) が利用可能です。今すぐダウンロードしますか？");
 
         // Round 2: High-DPI Page Copy, Interactive Stack Offsets, On-Canvas Baseline Anchors, Gadgets & Domain Analysis
-        add("Copy Page as &Image (High-DPI PNG)", "ページを高解像度画像としてコピー(&I) (300 DPI PNG)");
+        add("Copy Pa&ge as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)(&G)");
         add("Copy Page as Image (High-DPI PNG)", "ページを高解像度画像としてコピー (300 DPI PNG)");
         add("Ctrl+Alt+C", "Ctrl+Alt+C");
         add("Copy active graph page to clipboard as a 300 DPI PNG image",
@@ -1647,7 +1648,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Paste only font family, sizes, weights, and alignments onto active graph",
             "フォント種類・サイズ・太さ・配置のみを現在のグラフへ貼り付けます");
         add("Paste &Colors && Symbols Only", "色・シンボルのみ貼り付け(&C)");
-        add("Paste Colors & Symbols Only", "色・記号のみ貼り付け");
+        add("Paste Colors & Symbols Only", "色・シンボルのみ貼り付け");
         add("Paste only curve pens, symbol styles/sizes, and colors onto active graph",
             "曲線の線種・色・シンボルスタイルとサイズのみを現在のグラフへ貼り付けます");
         add("Paste &Axis Scales Only", "軸スケールのみ貼り付け(&A)");
@@ -1776,7 +1777,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Palette", "パレット");
         add("Batch Plot", "一括作図");
         add("Copy High-DPI Image", "画像コピー");
-        add("Export PDF", "PDF出力");
+        add("Export PDF", "PDFエクスポート");
         add("ISIJ 85mm Fig", "ISIJ 85mm図");
         add("Size & DPI", "寸法・DPI");
 
@@ -1826,7 +1827,7 @@ void registerApplicationWindowJapaneseStrings()
         add("Unit Format", "単位表記");
         add("Unit Format:", "単位表記:");
         add("Name (Unit)", "物理量名 (単位)");
-        add("Name / Unit (ISIJ)", "物理量名 / 単位 (ISIJ)");
+        add("Name / Unit (ISIJ)", "物理量 / 単位 (ISIJ)");
         add("Name [Unit]", "物理量名 [単位]");
         add("Change Axis Unit Format", "軸の単位表記を変更");
         add("Symbol Skip", "シンボルの間引き");
@@ -15818,6 +15819,17 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
             QString name = m->colName(i);
             removeCurves(name);
         }
+        QList<MyWidget *> windows = windowsList();
+        for (QMdiSubWindow *sw : d_workspace.subWindowList()) {
+            if (MyWidget *mw = qobject_cast<MyWidget *>(sw)) {
+                if (!windows.contains(mw))
+                    windows.append(mw);
+            }
+        }
+        for (MyWidget *win : windows) {
+            if (win && win->inherits("Graph3D") && static_cast<Graph3D *>(win)->getTable() == m)
+                static_cast<Graph3D *>(win)->clearData();
+        }
         if (w == lastModified) {
             actionUndo->setEnabled(false);
             actionRedo->setEnabled(false);
@@ -17373,15 +17385,30 @@ void ApplicationWindow::chooseHelpFolder()
 {
     if (isNonInteractiveContext(this))
         return;
+    const bool preferEn =
+            appLanguage.trimmed().startsWith(QLatin1String("en"), Qt::CaseInsensitive);
+    auto pickGuideInDir = [preferEn](const QString &dir) -> QString {
+        if (preferEn) {
+            const QString enPath =
+                    dir + QDir::toNativeSeparators(QStringLiteral("/index.en.html"));
+            if (QFileInfo::exists(enPath))
+                return enPath;
+        }
+        const QString jaPath = dir + QDir::toNativeSeparators(QStringLiteral("/index.html"));
+        if (QFileInfo::exists(jaPath))
+            return jaPath;
+        return QString();
+    };
 // TODO: move all paths & location handling to anothor class
 #if defined(Q_OS_WIN)
-    const QString locateDefaultHelp =
-            qApp->applicationDirPath() + QDir::toNativeSeparators("/manual/index.html");
+    const QString defaultManualDir =
+            qApp->applicationDirPath() + QDir::toNativeSeparators(QStringLiteral("/manual"));
 #else
-    const QString locateDefaultHelp =
-            QDir::toNativeSeparators("/usr/share/doc/scidavis/manual/index.html");
+    const QString defaultManualDir =
+            QDir::toNativeSeparators(QStringLiteral("/usr/share/doc/scidavis/manual"));
 #endif
-    if (QFile(locateDefaultHelp).exists()) {
+    const QString locateDefaultHelp = pickGuideInDir(defaultManualDir);
+    if (!locateDefaultHelp.isEmpty()) {
         helpFilePath = locateDefaultHelp;
     } else {
         const QString dir = QFileDialog::getExistingDirectory(
@@ -17389,16 +17416,16 @@ void ApplicationWindow::chooseHelpFolder()
                 qApp->applicationDirPath());
 
         if (!dir.isEmpty()) {
-            const QFile helpFile(dir + QDir::toNativeSeparators("/index.html"));
+            const QString picked = pickGuideInDir(dir);
             // TODO: Probably some kind of validity check to make sure that the
             // index.html file belongs to sciDavis
-            if (!helpFile.exists()) {
+            if (picked.isEmpty()) {
                 QMessageBox::information(
                         this, tr("index.html File Not Found!"),
                         tr("There is no file called <b>index.html</b> in this folder."
                            "<br>Please choose another folder!"));
             } else {
-                helpFilePath = dir + QDir::toNativeSeparators("/index.html");
+                helpFilePath = picked;
             }
         }
     }
@@ -17410,9 +17437,13 @@ void ApplicationWindow::showHelp()
         return;
     const QUrl url = quickGuideUrl();
     if (!url.isLocalFile()) {
+        const bool isEn =
+                appLanguage.trimmed().startsWith(QLatin1String("en"), Qt::CaseInsensitive);
         statusBar()->showMessage(
-                tr("The built-in guide (manual/index.html) was not found; opening the Japanese "
-                   "README on GitHub instead."),
+                isEn ? tr("The built-in guide (manual/index.en.html) was not found; opening the "
+                          "English README on GitHub instead.")
+                     : tr("The built-in guide (manual/index.html) was not found; opening the "
+                          "Japanese README on GitHub instead."),
                 10000);
     }
     if (!QDesktopServices::openUrl(url)) {
@@ -20194,7 +20225,7 @@ void ApplicationWindow::createActions()
     connect(actionRedo, SIGNAL(triggered()), this, SLOT(redo()));
     actionRedo->setEnabled(false);
 
-    actionCopyWindow = new QAction(IconLoader::load("duplicate"), tr("&Duplicate"), this);
+    actionCopyWindow = new QAction(IconLoader::load("duplicate"), tr("Duplicat&e"), this);
     connect(actionCopyWindow, SIGNAL(triggered()), this, SLOT(clone()));
 
     actionCutSelection = new QAction(IconLoader::load("cut"), tr("Cu&t Selection"), this);
@@ -20206,7 +20237,7 @@ void ApplicationWindow::createActions()
     connect(actionCopySelection, SIGNAL(triggered()), this, SLOT(copySelection()));
 
     actionPasteSelection =
-            new QAction(IconLoader::load("paste"), tr("&Paste Selection"), this);
+            new QAction(IconLoader::load("paste"), tr("P&aste Selection"), this);
     actionPasteSelection->setShortcut(tr("Ctrl+V"));
     connect(actionPasteSelection, SIGNAL(triggered()), this, SLOT(pasteSelection()));
 
@@ -20215,7 +20246,7 @@ void ApplicationWindow::createActions()
     actionClearSelection->setShortcut(tr("Del", "delete key"));
     connect(actionClearSelection, SIGNAL(triggered()), this, SLOT(clearSelection()));
 
-    locktoolbar = new QAction(IconLoader::load("unlock"), tr("&Lock Toolbars"), this);
+    locktoolbar = new QAction(IconLoader::load("unlock"), tr("Loc&k Toolbars"), this);
     locktoolbar->setCheckable(true);
     connect(locktoolbar, SIGNAL(toggled(bool)), this, SLOT(lockToolbar(bool)));
 
@@ -20291,7 +20322,7 @@ void ApplicationWindow::createActions()
     actionShowPlotWizard->setShortcut(tr("Ctrl+Alt+W"));
     connect(actionShowPlotWizard, SIGNAL(triggered()), this, SLOT(showPlotWizard()));
 
-    actionShowConfigureDialog = new QAction(tr("&Preferences..."), this);
+    actionShowConfigureDialog = new QAction(tr("Prefere&nces..."), this);
     connect(actionShowConfigureDialog, SIGNAL(triggered()), this, SLOT(showPreferencesDialog()));
 
     actionShowCurvesDialog =
@@ -20312,7 +20343,7 @@ void ApplicationWindow::createActions()
     actionUnzoom->setShortcut(tr("Ctrl+R"));
     connect(actionUnzoom, SIGNAL(triggered()), this, SLOT(setAutoScale()));
 
-    actionNewLegend = new QAction(IconLoader::load("legend"), tr("New / Reconstruct &Legend"), this);
+    actionNewLegend = new QAction(IconLoader::load("legend"), tr("&New / Reconstruct Legend"), this);
     actionNewLegend->setShortcut(tr("Ctrl+L"));
     connect(actionNewLegend, SIGNAL(triggered()), this, SLOT(newLegend()));
 
@@ -20742,7 +20773,7 @@ void ApplicationWindow::createActions()
     actionKeepAspectRatio->setChecked(true);
     connect(actionKeepAspectRatio, SIGNAL(toggled(bool)), this, SLOT(setGraphKeepAspectRatio(bool)));
 
-    actionTabbedWorkspaceView = new QAction(tr("&Tabbed Workspace View"), this);
+    actionTabbedWorkspaceView = new QAction(tr("Tabbed Workspace &View"), this);
     actionTabbedWorkspaceView->setCheckable(true);
     actionTabbedWorkspaceView->setChecked(false);
     connect(actionTabbedWorkspaceView, SIGNAL(toggled(bool)), this,
@@ -21042,7 +21073,7 @@ void ApplicationWindow::createActions()
     actionTogglePageView->setChecked(false);
     connect(actionTogglePageView, SIGNAL(triggered()), this, SLOT(togglePageViewMode()));
 
-    actionAddLinkedLayer = new QAction(tr("Add Linked &Top-X / Right-Y Layer"), this);
+    actionAddLinkedLayer = new QAction(tr("Add Linked Top-&X / Right-Y Layer"), this);
     connect(actionAddLinkedLayer, SIGNAL(triggered()), this, SLOT(addLinkedTopRightLayer()));
 
     actionAddInsetLayer = new QAction(tr("Add &Zoom Inset Layer"), this);
@@ -21060,7 +21091,7 @@ void ApplicationWindow::createActions()
     actionFrameZeroCrossed = new QAction(tr("&Zero-Crossed Axes"), this);
     connect(actionFrameZeroCrossed, SIGNAL(triggered()), this, SLOT(applyFrameZeroCrossed()));
 
-    actionToggleMiniToolbar = new QAction(tr("Toggle Graph &Mini-Toolbar"), this);
+    actionToggleMiniToolbar = new QAction(tr("Toggle Graph Mini-Tool&bar"), this);
     actionToggleMiniToolbar->setCheckable(true);
     actionToggleMiniToolbar->setChecked(GraphMiniToolbar::isMiniToolbarEnabled());
     connect(actionToggleMiniToolbar, SIGNAL(toggled(bool)), this,
@@ -21131,12 +21162,12 @@ void ApplicationWindow::createActions()
     connect(actionGraphDigitizer, SIGNAL(triggered()), this, SLOT(showGraphDigitizerDialog()));
 
     // Phase 5: OriginPro Format Copy/Paste, Batch Plotting, Style Presets, Delta Cursor, Waterfall & Analysis
-    actionCopyGraphFormat = new QAction(IconLoader::load("format-copy"), tr("Copy &Format"), this);
+    actionCopyGraphFormat = new QAction(IconLoader::load("format-copy"), tr("Copy For&mat"), this);
     actionCopyGraphFormat->setShortcut(tr("Ctrl+Shift+C"));
     actionCopyGraphFormat->setToolTip(tr("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)"));
     connect(actionCopyGraphFormat, SIGNAL(triggered()), this, SLOT(copyGraphFormat()));
 
-    actionPasteGraphFormat = new QAction(IconLoader::load("format-paste"), tr("Paste &Format"), this);
+    actionPasteGraphFormat = new QAction(IconLoader::load("format-paste"), tr("Paste F&ormat"), this);
     actionPasteGraphFormat->setShortcut(tr("Ctrl+Shift+V"));
     actionPasteGraphFormat->setToolTip(tr("Paste copied graph style (fonts, colors, symbols, frame & ticks) onto active graph"));
     connect(actionPasteGraphFormat, SIGNAL(triggered()), this, SLOT(pasteGraphFormat()));
@@ -21163,7 +21194,7 @@ void ApplicationWindow::createActions()
     actionMergeGraphs->setToolTip(tr("Merge 2 or more open graph windows into a publication multi-panel figure (a)(b)(c)(d)"));
     connect(actionMergeGraphs, SIGNAL(triggered()), this, SLOT(mergeOpenGraphsDialog()));
 
-    actionBatchPlot = new QAction(IconLoader::load("duplicate"), tr("Duplicate (&Batch Plotting)..."), this);
+    actionBatchPlot = new QAction(IconLoader::load("duplicate"), tr("Duplicate (Batc&h Plotting)..."), this);
     actionBatchPlot->setToolTip(tr("Batch-clone graph across multiple worksheets or Y columns"));
     connect(actionBatchPlot, SIGNAL(triggered()), this, SLOT(showBatchPlotDialog()));
 
@@ -21219,7 +21250,7 @@ void ApplicationWindow::createActions()
     actionWaterfallStackOffset = new QAction(tr("&Waterfall / Stack Offset..."), this);
     connect(actionWaterfallStackOffset, SIGNAL(triggered()), this, SLOT(showStackOffsetsDialog()));
 
-    actionResetStackOffsets = new QAction(tr("&Reset Stack Offsets"), this);
+    actionResetStackOffsets = new QAction(tr("Reset Stac&k Offsets"), this);
     connect(actionResetStackOffsets, SIGNAL(triggered()), this, SLOT(resetActiveGraphStackOffsets()));
 
     actionWeibullPlot = new QAction(tr("&Weibull Probability Plot..."), this);
@@ -21242,7 +21273,7 @@ void ApplicationWindow::createActions()
 
     // Round 2: High-DPI Page Copy, 2D Cross-Section Profile Gadget & Domain Analysis
     actionCopyPageImage =
-            new QAction(IconLoader::load("copy-page-image"), tr("Copy Page as &Image (High-DPI PNG)"), this);
+            new QAction(IconLoader::load("copy-page-image"), tr("Copy Pa&ge as Image (High-DPI PNG)"), this);
     actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
     actionCopyPageImage->setToolTip(
             tr("Copy active graph page to clipboard as a 300 DPI PNG image"));
@@ -21787,7 +21818,7 @@ void ApplicationWindow::translateActionsStrings()
                              << QKeySequence(tr("Ctrl+Shift+Z")));
     updateUndoRedoActionsForActiveWindow();
 
-    actionCopyWindow->setText(tr("&Duplicate"));
+    actionCopyWindow->setText(tr("Duplicat&e"));
     actionCopyWindow->setToolTip(tr("Duplicate window"));
 
     actionCutSelection->setText(tr("Cu&t Selection"));
@@ -21798,7 +21829,7 @@ void ApplicationWindow::translateActionsStrings()
     actionCopySelection->setToolTip(tr("Copy selection"));
     actionCopySelection->setShortcut(tr("Ctrl+C"));
 
-    actionPasteSelection->setText(tr("&Paste Selection"));
+    actionPasteSelection->setText(tr("P&aste Selection"));
     actionPasteSelection->setToolTip(tr("Paste selection"));
     actionPasteSelection->setShortcut(tr("Ctrl+V"));
 
@@ -21810,7 +21841,7 @@ void ApplicationWindow::translateActionsStrings()
     actionShowExplorer->setShortcut(tr("Ctrl+E"));
     actionShowExplorer->setToolTip(tr("Show project explorer"));
 
-    actionShowLog->setText(tr("Results &Log"));
+    actionShowLog->setText(tr("&Results Log"));
     actionShowLog->setToolTip(tr("Show analysis results"));
 
 #ifdef SCRIPTING_CONSOLE
@@ -21865,7 +21896,7 @@ void ApplicationWindow::translateActionsStrings()
     actionShowPlotWizard->setShortcut(tr("Ctrl+Alt+W"));
     toolbarsMenu->setTitle(tr("Toolbars"));
 
-    actionShowConfigureDialog->setText(tr("&Preferences..."));
+    actionShowConfigureDialog->setText(tr("Prefere&nces..."));
 
     actionShowCurvesDialog->setText(tr("Add/Remove &Curve..."));
     actionShowCurvesDialog->setShortcut(tr("Ctrl+Shift+D"));
@@ -21883,7 +21914,7 @@ void ApplicationWindow::translateActionsStrings()
     actionUnzoom->setShortcut(tr("Ctrl+R"));
     actionUnzoom->setToolTip(tr("Best fit"));
 
-    actionNewLegend->setText(tr("New / Reconstruct &Legend"));
+    actionNewLegend->setText(tr("&New / Reconstruct Legend"));
     actionNewLegend->setShortcut(tr("Ctrl+L"));
     actionNewLegend->setToolTip(tr("Add or reconstruct legend"));
 
@@ -22121,7 +22152,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionKeepAspectRatio)
         actionKeepAspectRatio->setText(tr("&Keep Aspect Ratio on Resize"));
     if (actionTabbedWorkspaceView) {
-        actionTabbedWorkspaceView->setText(tr("&Tabbed Workspace View"));
+        actionTabbedWorkspaceView->setText(tr("Tabbed Workspace &View"));
         actionTabbedWorkspaceView->setToolTip(
                 tr("Switch workspace between Origin-style Tabbed View and SubWindows"));
     }
@@ -22317,7 +22348,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionManageDialogThemes)
         actionManageDialogThemes->setText(tr("Manage Dialog &Themes..."));
     if (locktoolbar)
-        locktoolbar->setText(tr("&Lock Toolbars"));
+        locktoolbar->setText(tr("Loc&k Toolbars"));
     if (actionShowHistory)
         actionShowHistory->setText(tr("Undo/Redo &History"));
     if (actionSaveNote)
@@ -22332,7 +22363,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionTogglePageView)
         actionTogglePageView->setText(tr("Toggle Page &View"));
     if (actionAddLinkedLayer)
-        actionAddLinkedLayer->setText(tr("Add Linked &Top-X / Right-Y Layer"));
+        actionAddLinkedLayer->setText(tr("Add Linked Top-&X / Right-Y Layer"));
     if (actionAddInsetLayer)
         actionAddInsetLayer->setText(tr("Add &Zoom Inset Layer"));
     if (actionFrameBoxInward)
@@ -22344,7 +22375,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionFrameZeroCrossed)
         actionFrameZeroCrossed->setText(tr("&Zero-Crossed Axes"));
     if (actionToggleMiniToolbar)
-        actionToggleMiniToolbar->setText(tr("Toggle Graph &Mini-Toolbar"));
+        actionToggleMiniToolbar->setText(tr("Toggle Graph Mini-Tool&bar"));
 
     if (actionGadgetDifferentiate)
         actionGadgetDifferentiate->setText(tr("&Differentiate Gadget..."));
@@ -22379,18 +22410,18 @@ void ApplicationWindow::translateActionsStrings()
         actionGraphDigitizer->setText(tr("&Digitizer (Extract Data from Image)..."));
 
     if (actionCopyGraphFormat) {
-        actionCopyGraphFormat->setText(tr("Copy &Format"));
+        actionCopyGraphFormat->setText(tr("Copy For&mat"));
         actionCopyGraphFormat->setShortcut(tr("Ctrl+Shift+C"));
         actionCopyGraphFormat->setToolTip(
                 tr("Copy graph format (fonts, axes, ticks, page size, curve widths, reference lines)"));
     }
     if (actionPasteGraphFormat) {
-        actionPasteGraphFormat->setText(tr("Paste &Format"));
+        actionPasteGraphFormat->setText(tr("Paste F&ormat"));
         actionPasteGraphFormat->setShortcut(tr("Ctrl+Shift+V"));
         actionPasteGraphFormat->setToolTip(tr("Paste copied graph format onto active graph"));
     }
     if (actionBatchPlot) {
-        actionBatchPlot->setText(tr("Duplicate (&Batch Plotting)..."));
+        actionBatchPlot->setText(tr("Duplicate (Batc&h Plotting)..."));
         actionBatchPlot->setToolTip(
                 tr("Batch-clone graph across multiple worksheets or Y columns"));
     }
@@ -22460,7 +22491,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionWaterfallStackOffset)
         actionWaterfallStackOffset->setText(tr("&Waterfall / Stack Offset..."));
     if (actionResetStackOffsets)
-        actionResetStackOffsets->setText(tr("&Reset Stack Offsets"));
+        actionResetStackOffsets->setText(tr("Reset Stac&k Offsets"));
     if (actionWeibullPlot)
         actionWeibullPlot->setText(tr("&Weibull Probability Plot..."));
     if (actionOutlierTest)
@@ -22475,7 +22506,7 @@ void ApplicationWindow::translateActionsStrings()
     if (actionClustering)
         actionClustering->setText(tr("&Clustering (K-Means / Dendrogram)..."));
     if (actionCopyPageImage) {
-        actionCopyPageImage->setText(tr("Copy Page as &Image (High-DPI PNG)"));
+        actionCopyPageImage->setText(tr("Copy Pa&ge as Image (High-DPI PNG)"));
         actionCopyPageImage->setShortcut(tr("Ctrl+Alt+C"));
         actionCopyPageImage->setToolTip(
                 tr("Copy active graph page to clipboard as a 300 DPI PNG image"));
@@ -22588,8 +22619,8 @@ void ApplicationWindow::translateActionsStrings()
     polygon->setIconText(tr("Polygon Only"));
     polygon->setToolTip(tr("Polygon only"));
     polygon->setStatusTip(tr("Polygon only"));
-    filledmesh->setText(tr("Mesh & Filled Polygons"));
-    filledmesh->setIconText(tr("Mesh & Filled Polygons"));
+    filledmesh->setText(tr("Mesh && Filled Polygons"));
+    filledmesh->setIconText(tr("Mesh && Filled Polygons"));
     filledmesh->setToolTip(tr("Mesh & filled Polygons"));
     filledmesh->setStatusTip(tr("Mesh & filled Polygons"));
     pointstyle->setText(tr("Dots"));
@@ -24265,7 +24296,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
 
     QHBoxLayout *pickRow = new QHBoxLayout();
     QRadioButton *autoModeRadio =
-            new QRadioButton(tr("Use Peak List Below (Auto / Editable Centers & Widths)"), detectGroup);
+            new QRadioButton(tr("Use Peak List Below (Auto / Editable Centers && Widths)"), detectGroup);
     QRadioButton *manualModeRadio =
             new QRadioButton(tr("Interactive Peak Picking on Graph (Preserves All Settings)"),
                              detectGroup);
@@ -29369,28 +29400,31 @@ void ApplicationWindow::showHistory()
     }
     if (!targetStack)
         return;
-    QDialog dialog;
-    QVBoxLayout layout(&dialog);
+    QPointer<ApplicationWindow> self(this);
+    QPointer<QUndoStack> stackGuard(targetStack);
+    QPointer<QDialog> dialog(new QDialog(this));
+    QVBoxLayout *layout = new QVBoxLayout(dialog);
 
-    QDialogButtonBox button_box;
-    button_box.setOrientation(Qt::Horizontal);
-    button_box.setStandardButtons(QDialogButtonBox::Cancel | QDialogButtonBox::NoButton
-                                  | QDialogButtonBox::Ok);
-    QObject::connect(&button_box, SIGNAL(accepted()), &dialog, SLOT(accept()));
-    QObject::connect(&button_box, SIGNAL(rejected()), &dialog, SLOT(reject()));
+    QDialogButtonBox *button_box = new QDialogButtonBox(
+            QDialogButtonBox::Cancel | QDialogButtonBox::Ok, Qt::Horizontal, dialog);
+    QObject::connect(button_box, &QDialogButtonBox::accepted, dialog.data(), &QDialog::accept);
+    QObject::connect(button_box, &QDialogButtonBox::rejected, dialog.data(), &QDialog::reject);
+    QObject::connect(targetStack, &QObject::destroyed, dialog.data(), &QDialog::reject);
 
-    int index = targetStack->index();
-    QUndoView undo_view(targetStack);
+    const int index = targetStack->index();
+    QUndoView *undo_view = new QUndoView(targetStack, dialog);
 
-    layout.addWidget(&undo_view);
-    layout.addWidget(&button_box);
+    layout->addWidget(undo_view);
+    layout->addWidget(button_box);
 
-    dialog.setWindowTitle(tr("Undo/Redo History"));
-    if (dialog.exec() == QDialog::Accepted)
+    dialog->setWindowTitle(tr("Undo/Redo History"));
+    const int rc = dialog->exec();
+    delete dialog.data();
+    if (rc == QDialog::Accepted || !self || !stackGuard)
         return;
 
-    ScopedUndoReplayGuard replayGuard(this);
-    targetStack->setIndex(index);
+    ScopedUndoReplayGuard replayGuard(self.data());
+    stackGuard->setIndex(index);
 }
 
 QStringList ApplicationWindow::tableWindows()
