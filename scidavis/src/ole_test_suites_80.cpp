@@ -117,6 +117,7 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
     int saveObjectCount = 0;
     HRESULT saveObjectHr = S_OK;
     std::function<void()> onSaveObject;
+    std::function<void(BOOL)> onShowWindow;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
     {
@@ -155,7 +156,12 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
         return containerDead ? RPC_E_SERVER_DIED : E_NOINTERFACE;
     }
     HRESULT STDMETHODCALLTYPE ShowObject() override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE OnShowWindow(BOOL) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnShowWindow(BOOL fShow) override
+    {
+        if (auto cb = onShowWindow)
+            cb(fShow);
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE RequestNewObjectLayout() override { return S_OK; }
 
     void STDMETHODCALLTYPE OnDataChange(FORMATETC *, STGMEDIUM *) override {}
@@ -976,12 +982,13 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 });
                 const std::wstring wLoadPath = QDir::toNativeSeparators(loadPath).toStdWString();
                 const HRESULT hrLoadFile = ipFileLoad->Load(wLoadPath.c_str(), STGM_READ);
+                const bool firedDuringLoadFile = firedLoadFile;
+                CHECK_COND(SUCCEEDED(hrLoadFile) && firedDuringLoadFile,
+                           "80a-7: IPersistFile::Load alive(this) guard failed mid-Load (hr=0x"
+                                   << std::hex << hrLoadFile << std::dec
+                                   << ", firedDuring=" << firedDuringLoadFile << ")");
                 QApplication::setQuitOnLastWindowClosed(false);
                 pumpEventsMs80(35);
-                CHECK_COND(SUCCEEDED(hrLoadFile) && firedLoadFile,
-                           "80a-7: IPersistFile::Load alive(this) guard failed (hr=0x"
-                                   << std::hex << hrLoadFile << std::dec
-                                   << ", fired=" << firedLoadFile << ")");
             }
 
             // Op 5 (Round 11 ASan): IPersistStorage::Load on Graph3D storage with SciDAVisEmf
@@ -1031,12 +1038,86 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                     objStgLoad.Reset();
                 });
                 const HRESULT hrLoadStg = ipStgLoad->Load(stgLoad.Get());
+                const bool firedDuringLoadStg = firedLoadStg;
+                CHECK_COND(SUCCEEDED(hrLoadStg) && firedDuringLoadStg,
+                           "80a-7: IPersistStorage::Load alive(this) guard failed mid-Load (hr=0x"
+                                   << std::hex << hrLoadStg << std::dec
+                                   << ", firedDuring=" << firedDuringLoadStg << ")");
                 QApplication::setQuitOnLastWindowClosed(false);
                 pumpEventsMs80(35);
-                CHECK_COND(SUCCEEDED(hrLoadStg) && firedLoadStg,
-                           "80a-7: IPersistStorage::Load alive(this) guard failed (hr=0x"
-                                   << std::hex << hrLoadStg << std::dec
-                                   << ", fired=" << firedLoadStg << ")");
+            }
+
+            // Op 6 (Round 12 ASan): IOleObject::DoVerb(OLEIVERB_HIDE) must hold alive(this)
+            // and copy m_site locally if OnShowWindow clears site & drops last COM ref.
+            {
+                MockDeadClientSite80 siteVerb;
+                ComPtr<IOleObject> objVerb;
+                CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&objVerb)))
+                                   && objVerb,
+                           "80a-7: createGraphObject failed on op 6 (DoVerb)");
+                CHECK_COND(SUCCEEDED(objVerb->SetClientSite(&siteVerb)),
+                           "80a-7: SetClientSite failed on op 6");
+                bool firedOnShowVerb = false;
+                siteVerb.onShowWindow = [&](BOOL) {
+                    firedOnShowVerb = true;
+                    if (objVerb)
+                        objVerb->SetClientSite(nullptr);
+                    objVerb.Reset();
+                };
+                const HRESULT hrVerb =
+                        objVerb->DoVerb(OLEIVERB_HIDE, nullptr, &siteVerb, 0, nullptr, nullptr);
+                CHECK_COND(SUCCEEDED(hrVerb) && firedOnShowVerb && !objVerb,
+                           "80a-7: DoVerb(OLEIVERB_HIDE) alive/site guard failed (hr=0x"
+                                   << std::hex << hrVerb << std::dec
+                                   << ", fired=" << firedOnShowVerb << ")");
+                QApplication::setQuitOnLastWindowClosed(false);
+                pumpEventsMs80(25);
+            }
+
+            // Op 7 (Round 12 ASan): IViewObject2::Draw must hold alive(this) if cont() drops
+            // the last external COM reference mid-Draw().
+            {
+                struct DrawContCtx80
+                {
+                    bool fired = false;
+                    ComPtr<IViewObject2> iView;
+                    ComPtr<IOleObject> obj;
+                    static BOOL CALLBACK onCont(ULONG_PTR token)
+                    {
+                        auto *ctx = reinterpret_cast<DrawContCtx80 *>(token);
+                        if (ctx) {
+                            ctx->fired = true;
+                            ctx->iView.Reset();
+                            ctx->obj.Reset();
+                        }
+                        return TRUE;
+                    }
+                } drawCtx;
+                CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&drawCtx.obj)))
+                                   && drawCtx.obj,
+                           "80a-7: createGraphObject failed on op 7 (Draw)");
+                CHECK_COND(SUCCEEDED(drawCtx.obj.As(&drawCtx.iView)) && drawCtx.iView,
+                           "80a-7: IViewObject2 QI failed on op 7");
+
+                HDC hdcDraw = CreateCompatibleDC(nullptr);
+                HBITMAP hbmDraw = hdcDraw ? CreateCompatibleBitmap(hdcDraw, 64, 64) : nullptr;
+                HGDIOBJ oldBmDraw = (hdcDraw && hbmDraw) ? SelectObject(hdcDraw, hbmDraw) : nullptr;
+                RECTL boundsDraw{ 0, 0, 64, 64 };
+                const HRESULT hrDraw = drawCtx.iView->Draw(
+                        DVASPECT_CONTENT, -1, nullptr, nullptr, nullptr, hdcDraw, &boundsDraw,
+                        nullptr, &DrawContCtx80::onCont, reinterpret_cast<ULONG_PTR>(&drawCtx));
+                if (hdcDraw && oldBmDraw)
+                    SelectObject(hdcDraw, oldBmDraw);
+                if (hbmDraw)
+                    DeleteObject(hbmDraw);
+                if (hdcDraw)
+                    DeleteDC(hdcDraw);
+                CHECK_COND(SUCCEEDED(hrDraw) && drawCtx.fired && !drawCtx.obj && !drawCtx.iView,
+                           "80a-7: IViewObject2::Draw alive(this) guard failed (hr=0x"
+                                   << std::hex << hrDraw << std::dec << ", fired=" << drawCtx.fired
+                                   << ")");
+                QApplication::setQuitOnLastWindowClosed(false);
+                pumpEventsMs80(25);
             }
 
             CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive7,
@@ -3238,6 +3319,342 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                    "80f-insp-modal-uaf-G2: showTitleContextMenu parentless teardown failed (saw="
                                            << sawTitlePopupG2 << ", mlNull=" << mlTitleG.isNull()
                                            << ", gNull=" << gTitleG.isNull() << ")");
+
+                        // Subtest G3 (Round 12 ASan): Graph::showAxisTitleMenu parentless QMenu
+                        QPointer<MultiLayer> mlAxisTitleG = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        QPointer<Graph> gAxisTitleG =
+                                mlAxisTitleG ? mlAxisTitleG->activeGraph() : nullptr;
+                        CHECK_COND(mlAxisTitleG && gAxisTitleG, "80f-insp-modal-uaf-G3: setup failed");
+                        mlAxisTitleG->askOnCloseEvent(false);
+
+                        int ticksG3 = 0;
+                        bool sawAxisTitlePopupG3 = false;
+                        QTimer timerG3;
+                        timerG3.setInterval(15);
+                        QObject::connect(&timerG3, &QTimer::timeout, [&]() {
+                            ++ticksG3;
+                            if (ticksG3 > 80) {
+                                timerG3.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawAxisTitlePopupG3)
+                                return;
+                            sawAxisTitlePopupG3 = true;
+                            if (mlAxisTitleG) {
+                                mlAxisTitleG->close();
+                                if (mlAxisTitleG)
+                                    delete mlAxisTitleG.data();
+                            }
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                            popup->close();
+                        });
+                        timerG3.start();
+                        gAxisTitleG->showAxisTitleMenu(QwtScaleDraw::BottomScale);
+                        timerG3.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawAxisTitlePopupG3 && mlAxisTitleG.isNull()
+                                           && gAxisTitleG.isNull(),
+                                   "80f-insp-modal-uaf-G3: showAxisTitleMenu parentless teardown failed (saw="
+                                           << sawAxisTitlePopupG3
+                                           << ", mlNull=" << mlAxisTitleG.isNull()
+                                           << ", gNull=" << gAxisTitleG.isNull() << ")");
+                    }
+
+                    // Subtest F2 (Round 12 ASan): RichTextBarEntry::menuUnits LanguageChange
+                    // menu-count stability when closed, and safe teardown when popped visible.
+                    {
+                        wDiag->switchToLanguage(QStringLiteral("en"));
+                        QCoreApplication::processEvents();
+
+                        QPointer<GraphInspectorDock> tmpDockF2 = new GraphInspectorDock(wDiag);
+                        tmpDockF2->setFloating(true);
+                        tmpDockF2->show();
+                        tmpDockF2->setCollapsedRail(false);
+                        tmpDockF2->setTargetMultiLayer(mlModal, true);
+                        tmpDockF2->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
+                        QCoreApplication::processEvents();
+
+                        const int menusBeforeF2 = wDiag->findChildren<QMenu *>().size();
+                        wDiag->switchToLanguage(QStringLiteral("ja"));
+                        wDiag->switchToLanguage(QStringLiteral("en"));
+                        QCoreApplication::processEvents();
+                        const int menusAfterClosedF2 = wDiag->findChildren<QMenu *>().size();
+                        CHECK_COND(menusAfterClosedF2 == menusBeforeF2,
+                                   "80f-insp-modal-uaf-F2: closed Units submenu LanguageChange leaked menus ("
+                                           << menusBeforeF2 << " -> " << menusAfterClosedF2 << ")");
+
+                        QToolButton *btnUnitF2 = nullptr;
+                        for (QToolButton *tb : tmpDockF2->findChildren<QToolButton *>()) {
+                            if (tb && tb->isVisible()
+                                && tb->popupMode() == QToolButton::InstantPopup
+                                && tb->menu() != nullptr
+                                && tb->property("_tg_tip_fmt").toString()
+                                        == QLatin1String(
+                                                "Insert Symbol, Unit, or Journal Axis Template")) {
+                                btnUnitF2 = tb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnUnitF2 != nullptr,
+                                   "80f-insp-modal-uaf-F2: visible Units InstantPopup button not found");
+
+                        int ticksF2 = 0;
+                        bool sawUnitsPopupF2 = false;
+                        QTimer timerF2;
+                        timerF2.setInterval(15);
+                        QObject::connect(&timerF2, &QTimer::timeout, [&]() {
+                            ++ticksF2;
+                            if (ticksF2 > 80) {
+                                timerF2.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawUnitsPopupF2)
+                                return;
+                            sawUnitsPopupF2 = true;
+                            wDiag->switchToLanguage(QStringLiteral("ja"));
+                            if (tmpDockF2)
+                                delete tmpDockF2.data();
+                            if (auto *ap = QApplication::activePopupWidget())
+                                ap->close();
+                        });
+                        timerF2.start();
+                        btnUnitF2->showMenu();
+                        timerF2.stop();
+                        wDiag->switchToLanguage(QStringLiteral("en"));
+                        QCoreApplication::processEvents();
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                        CHECK_COND(sawUnitsPopupF2 && tmpDockF2.isNull(),
+                                   "80f-insp-modal-uaf-F2: active menuUnits LanguageChange + dock teardown failed (saw="
+                                           << sawUnitsPopupF2 << ", null=" << tmpDockF2.isNull()
+                                           << ")");
+                    }
+
+                    // Subtest H (Round 12 ASan): GraphMiniToolbar parentless QMenu & non-self
+                    // QColorDialog/QMessageBox with mid-exec GraphMiniToolbar destruction.
+                    {
+                        struct MiniToolbarEnableGuard80
+                        {
+                            bool prev = GraphMiniToolbar::isMiniToolbarEnabled();
+                            explicit MiniToolbarEnableGuard80(bool on)
+                            {
+                                GraphMiniToolbar::setMiniToolbarEnabled(on);
+                            }
+                            ~MiniToolbarEnableGuard80()
+                            {
+                                GraphMiniToolbar::setMiniToolbarEnabled(prev);
+                            }
+                        } miniEn80(true);
+
+                        MultiLayer *mlMt = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        Graph *gMt = mlMt ? mlMt->activeGraph() : nullptr;
+                        CHECK_COND(mlMt && gMt && gMt->curve(0), "80f-insp-modal-uaf-H: setup failed");
+                        mlMt->askOnCloseEvent(false);
+                        if (!gMt->legend())
+                            gMt->newLegend();
+                        CHECK_COND(gMt->legend() != nullptr,
+                                   "80f-insp-modal-uaf-H: legend setup failed");
+                        gMt->legend()->setText(QStringLiteral("Custom Legend Text 80H3"));
+
+                        // H1: onCurvePickLineWidth parentless QMenu + mid-exec destruction
+                        QPointer<GraphMiniToolbar> mt1 = new GraphMiniToolbar(wDiag);
+                        mt1->popupForCurve(gMt, 0, QPoint(200, 200));
+                        int ticksH1 = 0;
+                        bool sawMtMenu1 = false;
+                        QTimer timerH1;
+                        timerH1.setInterval(15);
+                        QObject::connect(&timerH1, &QTimer::timeout, [&]() {
+                            ++ticksH1;
+                            if (ticksH1 > 80) {
+                                timerH1.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawMtMenu1)
+                                return;
+                            sawMtMenu1 = true;
+                            if (mt1)
+                                delete mt1.data();
+                            popup->close();
+                        });
+                        timerH1.start();
+                        QMetaObject::invokeMethod(mt1.data(), "onCurvePickLineWidth",
+                                                  Qt::DirectConnection);
+                        timerH1.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawMtMenu1 && mt1.isNull(),
+                                   "80f-insp-modal-uaf-H1: MiniToolbar onCurvePickLineWidth teardown failed (saw="
+                                           << sawMtMenu1 << ", null=" << mt1.isNull() << ")");
+
+                        // H2: onCurvePickColor -> Custom Color QColorDialog with mt2 destroyed
+                        QPointer<GraphMiniToolbar> mt2 = new GraphMiniToolbar(wDiag);
+                        mt2->popupForCurve(gMt, 0, QPoint(200, 200));
+                        int ticksH2 = 0;
+                        bool sawMtPopup2 = false;
+                        bool sawMtColorDlg2 = false;
+                        QTimer timerH2;
+                        timerH2.setInterval(15);
+                        QObject::connect(&timerH2, &QTimer::timeout, [&]() {
+                            ++ticksH2;
+                            if (ticksH2 > 80) {
+                                timerH2.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (!sawMtPopup2) {
+                                if (auto *popup = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget())) {
+                                    sawMtPopup2 = true;
+                                    const QList<QAction *> acts = popup->actions();
+                                    if (!acts.isEmpty()) {
+                                        QAction *customAct = acts.last();
+                                        popup->setActiveAction(customAct);
+                                        QKeyEvent kp(QEvent::KeyPress, Qt::Key_Return,
+                                                     Qt::NoModifier);
+                                        QApplication::sendEvent(popup, &kp);
+                                        QKeyEvent kr(QEvent::KeyRelease, Qt::Key_Return,
+                                                     Qt::NoModifier);
+                                        QApplication::sendEvent(popup, &kr);
+                                        return;
+                                    }
+                                    popup->close();
+                                }
+                            } else if (!sawMtColorDlg2) {
+                                if (auto *cdlg = qobject_cast<QColorDialog *>(
+                                            QApplication::activeModalWidget())) {
+                                    sawMtColorDlg2 = true;
+                                    if (mt2)
+                                        delete mt2.data();
+                                    cdlg->reject();
+                                }
+                            }
+                        });
+                        timerH2.start();
+                        QMetaObject::invokeMethod(mt2.data(), "onCurvePickColor",
+                                                  Qt::DirectConnection);
+                        timerH2.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawMtPopup2 && sawMtColorDlg2 && mt2.isNull(),
+                                   "80f-insp-modal-uaf-H2: MiniToolbar Custom Color teardown failed (popup="
+                                           << sawMtPopup2 << ", dlg=" << sawMtColorDlg2
+                                           << ", null=" << mt2.isNull() << ")");
+
+                        // H3: onLegendReconstruct QMessageBox::question with mt3 destroyed
+                        QPointer<GraphMiniToolbar> mt3 = new GraphMiniToolbar(wDiag);
+                        mt3->popupForLegend(gMt, gMt->legend(), QPoint(200, 200));
+                        int ticksH3 = 0;
+                        bool sawMtMsg3 = false;
+                        QTimer timerH3;
+                        timerH3.setInterval(15);
+                        QObject::connect(&timerH3, &QTimer::timeout, [&]() {
+                            ++ticksH3;
+                            if (ticksH3 > 80) {
+                                timerH3.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *mb = qobject_cast<QMessageBox *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawMtMsg3) {
+                                    sawMtMsg3 = true;
+                                    if (mt3)
+                                        delete mt3.data();
+                                    mb->reject();
+                                }
+                            }
+                        });
+                        timerH3.start();
+                        QMetaObject::invokeMethod(mt3.data(), "onLegendReconstruct",
+                                                  Qt::DirectConnection);
+                        timerH3.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawMtMsg3 && mt3.isNull(),
+                                   "80f-insp-modal-uaf-H3: MiniToolbar onLegendReconstruct teardown failed (saw="
+                                           << sawMtMsg3 << ", null=" << mt3.isNull() << ")");
+                    }
+
+                    // Subtest I (Round 12 ASan): AxesDialog non-self modal QMessageBox parent
+                    // and unified QPointer<Graph> d_graph safety after Graph teardown.
+                    {
+                        // I1: destroy heap AxesDialog while QMessageBox::critical is open
+                        QPointer<AxesDialogProbe80> ad1 = new AxesDialogProbe80();
+                        ad1->setParent(wDiag, Qt::Dialog);
+                        ad1->setAttribute(Qt::WA_DeleteOnClose, true);
+                        ad1->setGraph(gModal);
+
+                        int ticksI1 = 0;
+                        bool sawAxesMsg1 = false;
+                        QTimer timerI1;
+                        timerI1.setInterval(15);
+                        QObject::connect(&timerI1, &QTimer::timeout, [&]() {
+                            ++ticksI1;
+                            if (ticksI1 > 80) {
+                                timerI1.stop();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (auto *mb = qobject_cast<QMessageBox *>(
+                                        QApplication::activeModalWidget())) {
+                                if (!sawAxesMsg1) {
+                                    sawAxesMsg1 = true;
+                                    if (ad1)
+                                        delete ad1.data();
+                                    mb->reject();
+                                }
+                            }
+                        });
+                        timerI1.start();
+                        ad1->setScaleBoundsAndUpdate(QStringLiteral("10"), QStringLiteral("1"));
+                        timerI1.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawAxesMsg1 && ad1.isNull(),
+                                   "80f-insp-modal-uaf-I1: AxesDialog mid-QMessageBox destruction failed (saw="
+                                           << sawAxesMsg1 << ", null=" << ad1.isNull() << ")");
+
+                        // I2: QPointer<Graph> d_graph nulls cleanly across slots after Graph teardown
+                        QPointer<MultiLayer> mlAxesDead = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        QPointer<Graph> gAxesDead =
+                                mlAxesDead ? mlAxesDead->activeGraph() : nullptr;
+                        CHECK_COND(mlAxesDead && gAxesDead, "80f-insp-modal-uaf-I2: setup failed");
+                        mlAxesDead->askOnCloseEvent(false);
+
+                        AxesDialogProbe80 ad2;
+                        ad2.setParent(wDiag, Qt::Dialog);
+                        ad2.setGraph(gAxesDead);
+
+                        mlAxesDead->close();
+                        if (mlAxesDead)
+                            delete mlAxesDead.data();
+                        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                        CHECK_COND(gAxesDead.isNull(),
+                                   "80f-insp-modal-uaf-I2: Graph did not teardown cleanly");
+
+                        ad2.showAxisFormatOptions(0);
+                        ad2.showAxisFormula(0);
+                        ad2.setAxisType(0);
+                        ad2.updateLabelsFormat(0);
+                        const bool updI2 = ad2.updatePlot();
+                        CHECK_COND(!updI2,
+                                   "80f-insp-modal-uaf-I2: updatePlot succeeded on destroyed Graph");
                     }
                 }
             }
