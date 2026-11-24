@@ -1549,6 +1549,7 @@ void MultiLayer::removeLayer()
     if (!active_graph)
         return;
 
+    clearLayerSelector();
     if (ApplicationWindow *app = findMultiLayerApp(this))
         app->invalidateModelessGraphDialogs(this);
     CanvasInlineTextEditor::cancelActiveForGraph(active_graph);
@@ -5662,7 +5663,8 @@ bool MultiLayer::applyStylePresetById(const QString &idOrName)
 
 void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
 {
-    const QString beforeSnap = captureUndoSnapshot();
+    const bool suppressUndo = property("torigraph_suppress_preset_undo").toBool();
+    const QString beforeSnap = suppressUndo ? QString() : captureUndoSnapshot();
     clearCtrlFontGestureBaseline();
     d_user_zoomed = false;
     d_applied_style_preset_id = spec.id;
@@ -5785,10 +5787,16 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
         }
     }
     setPageSizePhysical(pageW, pageH, UnitMm, targetDpi);
+    const double panelW = pageW / double(qMax(1, panelCols));
+    const double panelH = pageH / double(qMax(1, panelRows));
+    const double specAspect =
+            (spec.pageHeightMm > 1e-6) ? (spec.pageWidthMm / spec.pageHeightMm) : 1.0;
+    const double cellAspect = (panelH > 1.0) ? (panelW / panelH) : 1.0;
     d_keep_aspect_ratio = spec.keepAspectRatio;
-    d_target_aspect_ratio = (pageH > 1.0) ? (pageW / pageH) : 1.0;
-    const bool isSquarePagePreset =
-            d_keep_aspect_ratio && (pageH > 1.0) && qAbs((pageW / pageH) - 1.0) <= 0.12;
+    const bool isSquarePagePreset = d_keep_aspect_ratio
+            && ((panelH > 1.0 && qAbs(cellAspect - 1.0) <= 0.12)
+                || (panelCols == 1 && panelRows == 1 && qAbs(specAspect - 1.0) <= 0.12));
+    d_target_aspect_ratio = isSquarePagePreset ? 1.0 : cellAspect;
 
     static const QRegularExpression kBoldTagRx(QStringLiteral("</?b\\s*>"),
                                                QRegularExpression::CaseInsensitiveOption);
@@ -6865,7 +6873,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
     }
     d_user_zoomed = false;
     emit modifiedPlot();
-    pushUndoSnapshot(undoLabel, beforeSnap);
+    if (!suppressUndo && !beforeSnap.isEmpty())
+        pushUndoSnapshot(undoLabel, beforeSnap);
 }
 
 bool MultiLayer::restorePhase5Tag(const QString &line)
@@ -9557,10 +9566,12 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                 const QwtScaleDiv *ysd = pl->axisScaleDiv(QwtPlot::yLeft);
                 const int yTickCnt = ysd ? ysd->ticks(QwtScaleDiv::MajorTick).size() : 0;
                 const int reqH = yTickCnt * qMax(16, qRound(double(yLineH) * 1.65));
-                if (yPt >= 16.0 || (yTickCnt >= 7 && reqH > qRound(0.95 * double(baseSide)))) {
+                const int minStepPx = qMax(24, qRound(double(yLineH) * 1.95));
+                const int estYCap = qBound(3, qRound(double(baseSide) / double(minStepPx)), 6);
+                if ((yPt >= 16.0 && yTickCnt > estYCap + 1)
+                    || (yTickCnt >= 7 && reqH > qRound(0.95 * double(baseSide)))) {
                     yLabelsCrowded = true;
-                    const int minStepPx = qMax(24, qRound(double(yLineH) * 1.95));
-                    safeYCaps = qBound(3, qRound(double(baseSide) / double(minStepPx)), 6);
+                    safeYCaps = estYCap;
                 }
             }
             if (!isMultiPanel && !xLabelsCrowded && !yLabelsCrowded)
@@ -9588,14 +9599,15 @@ void MultiLayer::applySquareCanvasFrame70Percent()
                     }
                     continue;
                 }
-                const bool forceUnstep = (a == QwtPlot::xBottom && xLabelsCrowded)
-                        || (a == QwtPlot::yLeft && yLabelsCrowded);
-                if (!gr->axisBreak(a).enabled && (gr->axisStep(a) <= 0.0 || forceUnstep)) {
+                const bool forceUnstepX = (a == QwtPlot::xBottom && xLabelsCrowded);
+                if (!gr->axisBreak(a).enabled && (gr->axisStep(a) <= 0.0 || forceUnstepX)) {
                     const QwtScaleEngine *se = pl->axisScaleEngine(a);
                     const QwtScaleDiv *sd = pl->axisScaleDiv(a);
+                    const bool tooManyTicks =
+                            sd && sd->ticks(QwtScaleDiv::MajorTick).size() > cap + 1;
                     if (se && sd && !Plot::isLog10ScaleEngine(se)
-                        && (sd->ticks(QwtScaleDiv::MajorTick).size() > cap + 1
-                            || pl->axisMaxMajor(a) > cap || forceUnstep)) {
+                        && (tooManyTicks || forceUnstepX
+                            || (a == QwtPlot::xBottom && pl->axisMaxMajor(a) > cap))) {
                         const double lo = qMin(sd->lowerBound(), sd->upperBound());
                         const double hi = qMax(sd->lowerBound(), sd->upperBound());
                         const bool isInv = se->testAttribute(QwtScaleEngine::Inverted);

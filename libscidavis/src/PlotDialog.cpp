@@ -1736,10 +1736,13 @@ void PlotDialog::removeSelectedCurve()
 
     Graph *graph = item->graph();
     const int curveIdx = item->plotItemIndex();
+    const QwtPlotItem *targetPi = item->plotItem();
     if (graph && curveIdx >= 0) {
+        QPointer<PlotDialog> safeThis(this);
+        QPointer<Graph> safeG(graph);
+        QPointer<MultiLayer> safeMl(d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent());
         if (!ApplicationWindow::isNonInteractiveContext(this)) {
-            const QwtPlotItem *pi = item->plotItem();
-            const QString curveTitle = pi ? pi->title().text() : item->text(0);
+            const QString curveTitle = targetPi ? targetPi->title().text() : item->text(0);
             if (QMessageBox::question(
                         this, tr("Remove Curve"),
                         tr("Remove curve \"%1\" from the plot?").arg(curveTitle),
@@ -1748,32 +1751,71 @@ void PlotDialog::removeSelectedCurve()
                 return;
             }
         }
+        if (!safeThis || !safeG)
+            return;
+
+        int liveIdx = -1;
+        if (targetPi) {
+            for (int ci = 0; ci < safeG->curves(); ++ci) {
+                if (safeG->plotItem(ci) == targetPi) {
+                    liveIdx = ci;
+                    break;
+                }
+            }
+        } else if (curveIdx >= 0 && curveIdx < safeG->curves()) {
+            liveIdx = curveIdx;
+        }
+        if (liveIdx < 0)
+            return;
+
         QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
-        MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent();
-        const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+        MultiLayer *ml = safeMl ? safeMl.data() : safeG->multiLayerParent();
+        QPointer<MultiLayer> mlGuard(ml);
+        const QString beforeSnap = mlGuard ? mlGuard->captureUndoSnapshot() : QString();
         ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parentWidget());
         if (!app)
             app = qobject_cast<ApplicationWindow *>(window());
-        if (app && ml)
-            app->invalidateModelessGraphDialogs(ml, this);
+        if (app && mlGuard)
+            app->invalidateModelessGraphDialogs(mlGuard.data(), this);
+        if (!safeThis || !safeG)
+            return;
         d_dirtyTabs.clear();
-        graph->removeCurve(curveIdx);
-        graph->updatePlot();
+        safeG->removeCurve(liveIdx);
+        safeG->updatePlot();
 
-        if (layerIt) {
+        LayerItem *liveLayerIt = nullptr;
+        if (listBox) {
+            for (int ti = 0; ti < listBox->topLevelItemCount() && !liveLayerIt; ++ti) {
+                QTreeWidgetItem *topIt = listBox->topLevelItem(ti);
+                if (topIt && topIt->type() == LayerItem::LayerTreeItem
+                    && static_cast<LayerItem *>(topIt)->graph() == safeG.data()) {
+                    liveLayerIt = static_cast<LayerItem *>(topIt);
+                    break;
+                }
+                for (int ci = 0; topIt && ci < topIt->childCount(); ++ci) {
+                    QTreeWidgetItem *chIt = topIt->child(ci);
+                    if (chIt && chIt->type() == LayerItem::LayerTreeItem
+                        && static_cast<LayerItem *>(chIt)->graph() == safeG.data()) {
+                        liveLayerIt = static_cast<LayerItem *>(chIt);
+                        break;
+                    }
+                }
+            }
+        }
+        if (liveLayerIt) {
             QScopedValueRollback<bool> guard(d_loadingUi, true);
             {
                 QSignalBlocker blocker(listBox);
-                layerIt->rebuildCurvesList();
+                liveLayerIt->rebuildCurvesList();
             }
-            const int newCount = layerIt->childCount();
+            const int newCount = liveLayerIt->childCount();
             if (newCount > 0)
-                listBox->setCurrentItem(layerIt->child(qBound(0, curveIdx, newCount - 1)));
+                listBox->setCurrentItem(liveLayerIt->child(qBound(0, liveIdx, newCount - 1)));
             else
-                listBox->setCurrentItem(layerIt);
+                listBox->setCurrentItem(liveLayerIt);
         }
-        if (ml && !beforeSnap.isEmpty())
-            ml->pushUndoSnapshot(tr("Remove Curve"), beforeSnap);
+        if (mlGuard && !beforeSnap.isEmpty())
+            mlGuard->pushUndoSnapshot(tr("Remove Curve"), beforeSnap);
         updateCurveMoveButtons();
     }
 }

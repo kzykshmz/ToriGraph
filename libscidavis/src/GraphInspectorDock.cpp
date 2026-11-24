@@ -98,6 +98,8 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyleOptionComboBox>
+#include <QStylePainter>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -485,6 +487,38 @@ public:
     }
 };
 
+class ElidedPresetComboBox : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        painter.setPen(palette().color(QPalette::Text));
+
+        QStyleOptionComboBox opt;
+        initStyleOption(&opt);
+        painter.drawComplexControl(QStyle::CC_ComboBox, opt);
+
+        const QRect textRect = style()->subControlRect(QStyle::CC_ComboBox, &opt,
+                                                      QStyle::SC_ComboBoxEditField, this);
+        if (textRect.isValid()) {
+            const int idx = currentIndex();
+            const int availW = qMax(12, textRect.width() - 2);
+            QString label = opt.currentText;
+            if (idx >= 0 && fontMetrics().horizontalAdvance(label) > availW) {
+                const QString compact = itemData(idx, Qt::UserRole + 1).toString();
+                if (!compact.isEmpty())
+                    label = compact;
+            }
+            opt.currentText = fontMetrics().elidedText(label, Qt::ElideRight, availW);
+        }
+        painter.drawControl(QStyle::CE_ComboBoxLabel, opt);
+    }
+};
+
 static void registerInspectorExtraTranslations()
 {
     static std::once_flag s_once;
@@ -725,7 +759,18 @@ static void registerInspectorExtraTranslations()
         reg("Change Plot Title Font", "グラフタイトルフォントの変更");
         reg("Change Plot Title Color", "グラフタイトル色の変更");
         // Color swatch popup (A3-6)
-        reg("ToriGraph Standard", "ToriGraph 標準");
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("ToriGraph Standard"),
+                QString::fromUtf8("ToriGraph 標準"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("ISIJ 1-Col (85 mm)"),
+                QString::fromUtf8("ISIJ 1段 (85 mm)"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("Large Slide (185 mm)"),
+                QString::fromUtf8("大判スライド (185 mm)"));
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("GraphInspectorDock"), QStringLiteral("Journal 2-Col (175 mm)"),
+                QString::fromUtf8("論文 2 段幅 (175 mm)"));
         reg("Okabe-Ito", "Okabe-Ito (色覚バリアフリー)");
         reg("Basic & Grayscale", "基本色・グレースケール");
         reg("Custom Color...", "カスタム色...");
@@ -2133,7 +2178,7 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
 
     QHBoxLayout *customPresetRow = new QHBoxLayout();
     customPresetRow->setSpacing(3);
-    d_cb_user_presets = new QComboBox(page);
+    d_cb_user_presets = new ElidedPresetComboBox(page);
     d_cb_user_presets->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     d_cb_user_presets->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     d_cb_user_presets->setMinimumContentsLength(10);
@@ -2142,9 +2187,14 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     if (QAbstractItemView *pv = d_cb_user_presets->view())
         pv->setTextElideMode(Qt::ElideNone);
     connect(d_cb_user_presets, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int) {
-                if (d_cb_user_presets)
-                    d_cb_user_presets->setToolTip(d_cb_user_presets->currentText());
+            [this](int idx) {
+                if (!d_cb_user_presets)
+                    return;
+                const QString fullTip = (idx >= 0)
+                        ? d_cb_user_presets->itemData(idx, Qt::ToolTipRole).toString()
+                        : QString();
+                d_cb_user_presets->setToolTip(
+                        fullTip.isEmpty() ? d_cb_user_presets->currentText() : fullTip);
             });
     d_btn_apply_user_preset = new QPushButton(page);
     d_btn_apply_user_preset->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -2593,7 +2643,30 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
                 child->setTopAxisTitle(QString());
             }
             child->syncLinkedAxesFromParent();
-            d_target_ml->applySquareCanvasFrame70Percent();
+            double targetAspect = d_target_ml->targetAspectRatio();
+            if (!d_target_ml->keepAspectRatio() || targetAspect <= 0.05) {
+                const QSize cSz = (parentLayer->plotWidget() && parentLayer->plotWidget()->canvas())
+                        ? parentLayer->plotWidget()->canvas()->size()
+                        : QSize();
+                if (cSz.width() > 20 && cSz.height() > 20) {
+                    targetAspect = double(cSz.width()) / double(cSz.height());
+                } else {
+                    const double cellW =
+                            d_target_ml->pageWidthPhysical() / qMax(1, d_target_ml->getCols());
+                    const double cellH =
+                            d_target_ml->pageHeightPhysical() / qMax(1, d_target_ml->getRows());
+                    if (cellH > 1e-6)
+                        targetAspect = cellW / cellH;
+                }
+            }
+            if (d_target_ml->keepAspectRatio() && qAbs(targetAspect - 1.0) < 0.05) {
+                d_target_ml->applySquareCanvasFrame70Percent();
+            } else if (d_target_ml->keepAspectRatio()) {
+                d_target_ml->fitLayersToPage();
+            } else {
+                cp->updateLayout();
+                d_target_ml->syncChildOverlayAndInsetGeometries();
+            }
         }
         d_target_ml->pushUndoSnapshot(tr("Link Top-X Axis"), before);
         refreshAll();
@@ -4377,7 +4450,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         pcm.reverse = d_chk_pcm_reverse && d_chk_pcm_reverse->isChecked();
         pcm.showColorBar = !d_chk_pcm_colorbar || d_chk_pcm_colorbar->isChecked();
         if (d_edit_pcm_cb_title) {
-            const QString nextCbTitle = d_edit_pcm_cb_title->text();
+            const QString nextCbTitle =
+                    CanvasInlineTextEditor::normalizeOriginRichText(d_edit_pcm_cb_title->text());
             const QString displayedCbTitle = pcm.colorBarTitle.isEmpty()
                     ? g->axisTitle(QwtPlot::yRight)
                     : pcm.colorBarTitle;
@@ -4640,7 +4714,8 @@ QWidget *GraphInspectorDock::buildCurveInspector()
         Spectrogram *sp = effectiveSelectedSpectrogram(g);
         if (d_syncing_props || !d_target_ml || !g || !sp)
             return;
-        const QString nextTitle = d_edit_spec_cb_title->text();
+        const QString nextTitle =
+                CanvasInlineTextEditor::normalizeOriginRichText(d_edit_spec_cb_title->text());
         if (sp->colorBarTitle() == nextTitle)
             return;
         const QString before = d_target_ml->captureUndoSnapshot();
@@ -4965,13 +5040,15 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         if (!isPrimaryLegend) {
             if (!leg)
                 return;
+            const QString nextHdr =
+                    CanvasInlineTextEditor::normalizeOriginRichText(d_edit_leg_header->text());
             QStringList lines = leg->text().split('\n');
             if (lines.isEmpty())
-                lines.append(d_edit_leg_header->text());
+                lines.append(nextHdr);
             else
-                lines[0] = d_edit_leg_header->text();
+                lines[0] = nextHdr;
             const QString nextTxt = lines.join('\n');
-            d_edit_leg_header->setProperty("_syncedText", d_edit_leg_header->text().trimmed());
+            d_edit_leg_header->setProperty("_syncedText", nextHdr.trimmed());
             d_edit_leg_header->setModified(false);
             setLineEditPendingCue(d_edit_leg_header, false);
             if (leg->text() == nextTxt)
@@ -4995,7 +5072,8 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
             lines.removeLast();
 
-        const QString hdr = d_edit_leg_header->text().trimmed();
+        const QString hdr =
+                CanvasInlineTextEditor::normalizeOriginRichText(d_edit_leg_header->text().trimmed());
         if (!lines.isEmpty() && !isLegendEntryLine(lines.first())) {
             if (hdr.isEmpty())
                 lines.removeFirst();
@@ -5758,20 +5836,21 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
 {
     if (!g)
         return;
-    MultiLayer *ml = g->multiLayerParent();
+    QPointer<Graph> safeG(g);
+    QPointer<MultiLayer> safeMl(g->multiLayerParent());
     const int defOrient = (defaultOrientation == 1) ? 1 : 0;
 
     if (ApplicationWindow::isNonInteractiveContext(g)) {
-        const QString before = ml ? ml->captureUndoSnapshot() : QString();
+        const QString before = safeMl ? safeMl->captureUndoSnapshot() : QString();
         Graph::ReferenceLineSpec spec;
         spec.orientation = defOrient;
         spec.value = 0.0;
         spec.color = QColor(0x33, 0x41, 0x55);
         spec.style = Qt::DashLine;
         spec.width = 1.2;
-        g->addReferenceLine(spec);
-        if (ml && !before.isEmpty())
-            ml->pushUndoSnapshot(tr("Add Reference Line"), before);
+        safeG->addReferenceLine(spec);
+        if (safeMl && !before.isEmpty())
+            safeMl->pushUndoSnapshot(tr("Add Reference Line"), before);
         return;
     }
 
@@ -5867,7 +5946,7 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
     connect(bbox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     mainLay->addWidget(bbox);
 
-    if (dlg.exec() != QDialog::Accepted)
+    if (dlg.exec() != QDialog::Accepted || !safeG)
         return;
 
     const QString statMode = modeBox->currentData().toString();
@@ -5881,7 +5960,9 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
             return;
     }
 
-    const QString before = ml ? ml->captureUndoSnapshot() : QString();
+    if (!safeMl)
+        safeMl = safeG->multiLayerParent();
+    const QString before = safeMl ? safeMl->captureUndoSnapshot() : QString();
     Graph::ReferenceLineSpec spec;
     spec.orientation = orientBox->currentData().toInt();
     spec.value = val;
@@ -5894,13 +5975,13 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
     QColor fillCol = chosenColor;
     fillCol.setAlpha(32);
     spec.fillColor = fillCol;
-    g->addReferenceLine(spec);
-    const int addedIdx = g->referenceLines().size() - 1;
+    safeG->addReferenceLine(spec);
+    const int addedIdx = safeG->referenceLines().size() - 1;
     if (addedIdx >= 0)
-        g->setCurrentSelection({ Graph::GraphSelection::ReferenceLine, addedIdx, -1 });
-    if (ml && !before.isEmpty())
-        ml->pushUndoSnapshot(tr("Add Reference Line"), before);
-    if (ApplicationWindow *app = qobject_cast<ApplicationWindow *>(g->window())) {
+        safeG->setCurrentSelection({ Graph::GraphSelection::ReferenceLine, addedIdx, -1 });
+    if (safeMl && !before.isEmpty())
+        safeMl->pushUndoSnapshot(tr("Add Reference Line"), before);
+    if (ApplicationWindow *app = qobject_cast<ApplicationWindow *>(safeG->window())) {
         if (GraphInspectorDock *dock = app->graphInspectorDock())
             dock->refreshAll();
     }
@@ -6324,6 +6405,17 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     }
 }
 
+bool GraphInspectorDock::ensureTargetMultiLayerActive(QPointer<MultiLayer> &safeMl)
+{
+    if (!d_app || !safeMl)
+        return false;
+    if (d_app->d_workspace.activeSubWindow() != safeMl.data()) {
+        d_app->d_workspace.setActiveSubWindow(safeMl.data());
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
+    return !safeMl.isNull() && d_app && d_app->d_workspace.activeSubWindow() == safeMl.data();
+}
+
 void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int column)
 {
     if (d_syncing_tree || !item || !d_target_ml || !d_app
@@ -6336,7 +6428,11 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
             static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
     const int primaryId = item->data(0, RolePrimaryId).toInt();
     const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
-    Graph *g = activeLayer();
+    QPointer<MultiLayer> safeMl(d_target_ml);
+    QPointer<Graph> safeG(activeLayer());
+    if (!ensureTargetMultiLayerActive(safeMl))
+        return;
+    Graph *g = safeG ? safeG.data() : activeLayer();
 
     // Same rules as a double-click on the canvas (CanvasPicker): text-like elements (axis
     // title, legend, text) are edited in place; curves, axes and the layer open their dialog.
@@ -6427,9 +6523,13 @@ void GraphInspectorDock::openDetailsDialogForPage()
 {
     if (!d_app || !d_target_ml || ApplicationWindow::isNonInteractiveContext(d_app))
         return;
-    Graph *g = activeLayer();
-    const Graph::GraphSelection sel = g ? g->currentSelection() : Graph::GraphSelection();
+    QPointer<MultiLayer> safeMl(d_target_ml);
+    QPointer<Graph> safeG(activeLayer());
     const int page = d_prop_stack ? d_prop_stack->currentIndex() : int(PageTabPageLayer);
+    if (!ensureTargetMultiLayerActive(safeMl))
+        return;
+    Graph *g = safeG ? safeG.data() : activeLayer();
+    const Graph::GraphSelection sel = g ? g->currentSelection() : Graph::GraphSelection();
     switch (page) {
     case PageTabAxis:
         if (g && sel.kind == Graph::GraphSelection::ReferenceLine && sel.primaryId >= 0
@@ -6475,10 +6575,10 @@ void GraphInspectorDock::openDetailsDialogForPage()
             }
             d_app->showTextDialog();
         } else if (g) {
-            const QString before = d_target_ml->captureUndoSnapshot();
+            const QString before = safeMl->captureUndoSnapshot();
             g->newLegend();
             if (g->legend()) {
-                d_target_ml->pushUndoSnapshot(tr("Add Legend"), before);
+                safeMl->pushUndoSnapshot(tr("Add Legend"), before);
                 for (int k : g->textMarkerKeys()) {
                     if (g->textMarker(k) == g->legend()) {
                         g->setSelectedMarker(k);
@@ -6645,10 +6745,11 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
                 tr("Edit Curve Style..."));
         connect(actEdit, &QAction::triggered, this, [this, safeMl, resolveLayer, primaryId]() {
-            Graph *lg = resolveLayer();
-            if (!d_app || !safeMl || !lg)
+            QPointer<MultiLayer> ml = safeMl;
+            QPointer<Graph> lg(resolveLayer());
+            if (!ensureTargetMultiLayerActive(ml) || !lg)
                 return;
-            safeMl->setActiveGraph(lg);
+            ml->setActiveGraph(lg.data());
             d_app->showPlotDialog((primaryId >= 0 && primaryId < lg->curves())
                                           ? int(lg->curveKey(primaryId))
                                           : primaryId);
@@ -6791,24 +6892,27 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
         QAction *actTitle = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("text-label"), 14),
                 tr("Plot Title"));
-        connect(actTitle, &QAction::triggered, this, [this]() {
-            if (d_app)
+        connect(actTitle, &QAction::triggered, this, [this, safeMl]() {
+            QPointer<MultiLayer> ml = safeMl;
+            if (ensureTargetMultiLayerActive(ml))
                 d_app->showTitleDialog();
         });
     } else if (kind == Graph::GraphSelection::Page) {
         QAction *actPage = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("page-setup"), 14),
                 tr("Page Setup..."));
-        connect(actPage, &QAction::triggered, this, [this]() {
-            if (d_app)
+        connect(actPage, &QAction::triggered, this, [this, safeMl]() {
+            QPointer<MultiLayer> ml = safeMl;
+            if (ensureTargetMultiLayerActive(ml))
                 d_app->showPageSetupDialog();
         });
     } else if (kind == Graph::GraphSelection::Layer) {
         QAction *actProp = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
                 tr("Layer / Plot Properties..."));
-        connect(actProp, &QAction::triggered, this, [this]() {
-            if (d_app)
+        connect(actProp, &QAction::triggered, this, [this, safeMl]() {
+            QPointer<MultiLayer> ml = safeMl;
+            if (ensureTargetMultiLayerActive(ml))
                 d_app->showGeneralPlotDialog();
         });
     }
@@ -7840,7 +7944,10 @@ void GraphInspectorDock::syncAxisControls()
                  && d_axis_title_edit_layer.data() == g && d_axis_title_edit_axis == ax);
         if (!editingSameAxisTitle) {
             const QString axisTitle = g->axisTitle(ax);
-            if (d_edit_axis_title->text() != axisTitle)
+            const bool keepFocusedRaw = d_edit_axis_title->hasFocus()
+                    && CanvasInlineTextEditor::normalizeOriginRichText(d_edit_axis_title->text())
+                            == axisTitle;
+            if (!keepFocusedRaw && d_edit_axis_title->text() != axisTitle)
                 d_edit_axis_title->setText(axisTitle);
             d_edit_axis_title->setProperty("_syncedText", axisTitle);
             d_edit_axis_title->setModified(false);
@@ -8186,7 +8293,8 @@ void GraphInspectorDock::flushPendingAnnotationEdit()
     Legend *leg = g->textMarker(id);
     if (!leg)
         return;
-    const QString nextTxt = d_edit_annot_text->toPlainText();
+    const QString nextTxt =
+            CanvasInlineTextEditor::normalizeOriginRichText(d_edit_annot_text->toPlainText());
     if (leg->text() == nextTxt)
         return;
     const QString before = ml ? ml->captureUndoSnapshot() : QString();
@@ -8346,7 +8454,8 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
             while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
                 lines.removeLast();
 
-            const QString newLine = QStringLiteral("\\c{%1}%2").arg(curveNum).arg(newLbl);
+            const QString normLbl = CanvasInlineTextEditor::normalizeOriginRichText(newLbl);
+            const QString newLine = QStringLiteral("\\c{%1}%2").arg(curveNum).arg(normLbl);
             bool replaced = false;
             for (int li = 0; li < lines.size(); ++li) {
                 const QRegularExpressionMatch m = rxLegendEntry.match(lines[li].trimmed());
@@ -8379,13 +8488,16 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
             updateRichPreviewLabel(previewLbl, txt, false);
         });
         connect(edit, &QLineEdit::editingFinished, this, [edit, commitCurveLabel]() {
-            const QString trimmed = edit->text().trimmed();
-            const bool isDiff = (trimmed != edit->property("_syncedText").toString());
+            const QString rawTrimmed = edit->text().trimmed();
+            const QString normTrimmed =
+                    CanvasInlineTextEditor::normalizeOriginRichText(rawTrimmed).trimmed();
+            const QString synced = edit->property("_syncedText").toString();
+            const bool isDiff = (normTrimmed != synced);
             if (!edit->isModified() && !isDiff) {
                 setLineEditPendingCue(edit, false);
                 return;
             }
-            edit->setProperty("_syncedText", trimmed);
+            edit->setProperty("_syncedText", normTrimmed);
             edit->setModified(false);
             setLineEditPendingCue(edit, false);
             if (!isDiff)
@@ -8491,7 +8603,9 @@ void GraphInspectorDock::applyPlotTitleFromUi(const QString &undoLabel, int merg
         return;
 
     const QwtText curTitle = g->plotWidget()->title();
-    const QString nextTxt = d_edit_plot_title ? d_edit_plot_title->text() : curTitle.text();
+    const QString nextTxt = d_edit_plot_title
+            ? CanvasInlineTextEditor::normalizeOriginRichText(d_edit_plot_title->text())
+            : curTitle.text();
     QFont nextFont = curTitle.font();
     if (nextFont.family().trimmed().isEmpty())
         nextFont.setFamily(QStringLiteral("Arial"));
@@ -8721,8 +8835,14 @@ void GraphInspectorDock::syncLegendControls()
             syncLineEditClean(d_edit_leg_header, lines.isEmpty() ? QString() : lines.first());
             // Refill only when the text differs, so the cursor stays put while typing.
             if (d_edit_annot_text && d_edit_annot_text->toPlainText() != leg->text()) {
-                QSignalBlocker bAnn(d_edit_annot_text);
-                d_edit_annot_text->setPlainText(leg->text());
+                const bool keepFocusedRaw = d_edit_annot_text->hasFocus()
+                        && CanvasInlineTextEditor::normalizeOriginRichText(
+                                   d_edit_annot_text->toPlainText())
+                                == leg->text();
+                if (!keepFocusedRaw) {
+                    QSignalBlocker bAnn(d_edit_annot_text);
+                    d_edit_annot_text->setPlainText(leg->text());
+                }
             }
         } else {
             const QStringList lines = leg->text().split('\n');
@@ -9185,7 +9305,8 @@ void GraphInspectorDock::flushPendingAxisTitleEdit()
     if (targets.isEmpty())
         targets.append(g);
 
-    const QString newTitle = d_edit_axis_title->text();
+    const QString newTitle =
+            CanvasInlineTextEditor::normalizeOriginRichText(d_edit_axis_title->text());
     bool anyDiff = false;
     for (Graph *lg : targets) {
         if (lg && lg->axisTitle(ax) != newTitle) {
@@ -9837,10 +9958,13 @@ void GraphInspectorDock::applyAdjacentErrorBars()
 
 void GraphInspectorDock::openErrorBarsDialog()
 {
-    Graph *g = activeLayer();
-    if (!d_app || !d_target_ml || !g)
+    QPointer<MultiLayer> safeMl(d_target_ml);
+    QPointer<Graph> safeG(activeLayer());
+    if (!d_app || !safeMl || !safeG)
         return;
-    d_target_ml->setActiveGraph(g);
+    if (!ensureTargetMultiLayerActive(safeMl) || !safeG)
+        return;
+    safeMl->setActiveGraph(safeG.data());
     d_app->addErrorBars();
 }
 
@@ -10105,17 +10229,41 @@ void GraphInspectorDock::retranslateUi()
         d_cb_user_presets->clear();
         const QVector<MultiLayer::GraphStylePresetSpec> presets = MultiLayer::listStylePresets();
         int selIdx = 0;
+        int maxPopupW = qMax(180, d_cb_user_presets->width());
+        QAbstractItemView *pv = d_cb_user_presets->view();
+        const QFontMetrics pfm = pv ? pv->fontMetrics() : d_cb_user_presets->fontMetrics();
         for (int i = 0; i < presets.size(); ++i) {
             const QString dispName = presets[i].builtIn
-                    ? QCoreApplication::translate("GraphInspectorDock", presets[i].name.toUtf8().constData())
+                    ? QCoreApplication::translate("GraphInspectorDock",
+                                                  presets[i].name.toUtf8().constData())
                     : presets[i].name;
+            QString compactName;
+            if (presets[i].id == QLatin1String("isij_85mm"))
+                compactName = tr("ISIJ 1-Col (85 mm)");
+            else if (presets[i].id == QLatin1String("slide_28pt"))
+                compactName = tr("Large Slide (185 mm)");
+            else if (presets[i].id == QLatin1String("lab_slide_83mm"))
+                compactName = tr("Lab Slide (18 pt, 83.3 mm)");
+            else if (presets[i].id == QLatin1String("journal_2col_175mm"))
+                compactName = tr("Journal 2-Col (175 mm)");
             d_cb_user_presets->addItem(dispName, presets[i].id);
+            d_cb_user_presets->setItemData(i, dispName, Qt::ToolTipRole);
+            if (!compactName.isEmpty())
+                d_cb_user_presets->setItemData(i, compactName, Qt::UserRole + 1);
+            maxPopupW = qMax(maxPopupW, pfm.horizontalAdvance(dispName) + 36);
             if (!prevId.isEmpty() && presets[i].id == prevId)
                 selIdx = i;
         }
+        if (pv)
+            pv->setMinimumWidth(qBound(180, maxPopupW, 520));
         if (d_cb_user_presets->count() > 0)
             d_cb_user_presets->setCurrentIndex(selIdx);
-        d_cb_user_presets->setToolTip(d_cb_user_presets->currentText());
+        const int curIdx = d_cb_user_presets->currentIndex();
+        const QString fullTip = (curIdx >= 0)
+                ? d_cb_user_presets->itemData(curIdx, Qt::ToolTipRole).toString()
+                : QString();
+        d_cb_user_presets->setToolTip(
+                fullTip.isEmpty() ? d_cb_user_presets->currentText() : fullTip);
         d_cb_user_presets->blockSignals(false);
     }
     if (d_btn_square_frame70)

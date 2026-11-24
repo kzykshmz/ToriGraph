@@ -170,6 +170,7 @@ private:
     void adjustDefaultSplitterSizes();
     void updatePropScrollCue();
     void updateQuickStartPlotButtonState();
+    bool ensureTargetMultiLayerActive(QPointer<MultiLayer> &safeMl);
     void openAxesDialogForQwtAxis(Graph *g, int qwtAxis, bool showAxesTab = true);
 
     void connectMultiLayerSignals(MultiLayer *ml);

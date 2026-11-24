@@ -2038,7 +2038,8 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
     QRect cRect = pw->canvas()->rect();
     QRect bRect = box->rect();
     const int majTickLen = std::max(0, g->majorTickLength());
-    const int pad = std::max({ 14, marginPx, majTickLen + 6 });
+    const double zScale = std::max(1.0, pw->displayFontScale());
+    const int pad = qRound(double(std::max({ 14, marginPx, majTickLen + 6 })) * zScale);
     QFont calloutFnt = box->font();
     if (calloutFnt.bold()) {
         calloutFnt.setBold(false);
@@ -2073,7 +2074,7 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
             double pref = 0.0;
         };
         QVector<AnchorCand> cands;
-        cands.reserve(80);
+        cands.reserve(140);
         if (preferUpperRight) {
             cands.append({ maxL, minT, 0.0 });
             cands.append({ maxL, minT + (maxT - minT) / 6, 0.15 });
@@ -2092,25 +2093,38 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
             cands.append({ (minL + maxL) / 2, minT, 0.65 });
             cands.append({ (minL + maxL) / 2, maxT, 0.75 });
         }
-        for (int gy = 0; gy < 8; ++gy) {
-            for (int gx = 0; gx < 8; ++gx) {
-                const int lx = minL + qRound((maxL - minL) * (double(gx) / 7.0));
-                const int ty = minT + qRound((maxT - minT) * (double(gy) / 7.0));
+        constexpr int kGridN = 11;
+        for (int gy = 0; gy < kGridN; ++gy) {
+            for (int gx = 0; gx < kGridN; ++gx) {
+                const int lx = minL + qRound((maxL - minL) * (double(gx) / double(kGridN - 1)));
+                const int ty = minT + qRound((maxT - minT) * (double(gy) / double(kGridN - 1)));
                 const double pBias = preferUpperRight
-                        ? (0.4 + 1.8 * (double(7 - gx) / 7.0) + 0.9 * (double(gy) / 7.0))
-                        : (0.9 + 0.06 * std::min(gx, 7 - gx) + 0.06 * std::min(gy, 7 - gy));
+                        ? (0.4 + 1.8 * (double(kGridN - 1 - gx) / double(kGridN - 1))
+                           + 0.9 * (double(gy) / double(kGridN - 1)))
+                        : (0.9 + 0.06 * std::min(gx, kGridN - 1 - gx)
+                           + 0.06 * std::min(gy, kGridN - 1 - gy));
                 cands.append({ lx, ty, pBias });
             }
         }
 
         const Legend *mainLeg = (g->isLegendVisible() ? g->legend() : nullptr);
-        const QRectF legRect = (mainLeg && mainLeg != box)
+        const QRectF legRect = (mainLeg && mainLeg != box
+                                && pw->property("_outsideRightMargin").toInt() <= 0)
                 ? QRectF(mainLeg->rect()).adjusted(-5, -5, 5, 5)
                 : QRectF();
 
+        const double clearPad = std::max(7.0, 6.0 * zScale);
+        // Reserve ~12% width / ~6% height headroom for unzoomed 600-DPI rich-text rendering;
+        // Legend::drawGeometry clamps against canvas right/bottom so growth shifts left/up.
+        const double expW = std::max(double(bw), 1.12 * double(bw));
+        const double expH = std::max(double(bh), 1.06 * double(bh));
         auto evalCost = [&](int lx, int ty) -> double {
             double cost = 0.0;
-            const QRectF testBox(lx - 4.0, ty - 4.0, bw + 8.0, bh + 8.0);
+            const double effLeft = std::min(double(lx), double(cw - pad) - expW) - clearPad;
+            const double effTop = std::min(double(ty), double(ch - pad) - expH) - clearPad;
+            const double effRight = std::max(double(lx + bw), double(lx) + expW) + clearPad;
+            const double effBottom = std::max(double(ty + bh), double(ty) + expH) + clearPad;
+            const QRectF testBox(effLeft, effTop, effRight - effLeft, effBottom - effTop);
             if (legRect.isValid()) {
                 const QRectF inter = testBox.intersected(legRect);
                 if (!inter.isEmpty())
@@ -2120,13 +2134,14 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
                 Legend *tm = g->textMarker(tid);
                 if (!tm || tm == box || tm == mainLeg || !tm->isVisible())
                     continue;
-                const QRectF inter = testBox.intersected(QRectF(tm->rect()).adjusted(-3, -3, 3, 3));
+                const QRectF inter =
+                        testBox.intersected(QRectF(tm->rect()).adjusted(-3, -3, 3, 3));
                 if (!inter.isEmpty())
                     cost += 80000.0 + inter.width() * inter.height() * 30.0;
             }
             for (int aid : g->lineMarkerKeys()) {
                 ArrowMarker *am = g->arrow(aid);
-                if (!am)
+                if (!am || !am->isVisible())
                     continue;
                 const QwtScaleMap xMap = pw->canvasMap(am->xAxis());
                 const QwtScaleMap yMap = pw->canvasMap(am->yAxis());
@@ -2154,7 +2169,8 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
             }
             for (int i = 0; i < g->curves(); ++i) {
                 QwtPlotCurve *c = g->curve(i);
-                if (!c || !c->isVisible() || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
+                if (!c || !g->isCurveVisible(i) || !c->isVisible()
+                    || c->rtti() != QwtPlotItem::Rtti_PlotCurve)
                     continue;
                 const int nPts = c->dataSize();
                 if (nPts <= 0)
@@ -2162,9 +2178,42 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
                 const auto *dc = dynamic_cast<const DataCurve *>(c);
                 const QwtScaleMap xMap = pw->canvasMap(c->xAxis());
                 const QwtScaleMap yMap = pw->canvasMap(c->yAxis());
+                const int stride = (nPts > 4000) ? std::max(1, nPts / 2000) : 1;
+                const int ct = g->curveType(i);
+                if (ct == Graph::VerticalBars || ct == Graph::HorizontalBars
+                    || ct == Graph::Histogram) {
+                    const double basePx = (ct == Graph::HorizontalBars)
+                            ? xMap.xTransform(c->baseline())
+                            : yMap.xTransform(c->baseline());
+                    for (int p = 0; p < nPts; p += stride) {
+                        if (dc && dc->isPointMasked(p))
+                            continue;
+                        const double vx = c->x(p), vy = c->y(p);
+                        if (!std::isfinite(vx) || !std::isfinite(vy))
+                            continue;
+                        const double px = xMap.xTransform(vx);
+                        const double py = yMap.xTransform(vy);
+                        if (!std::isfinite(px) || !std::isfinite(py))
+                            continue;
+                        bool hit = false;
+                        const double len = (ct == Graph::HorizontalBars)
+                                ? matSciClipSegmentLengthInRect(basePx, py, px, py, testBox, &hit)
+                                : matSciClipSegmentLengthInRect(px, basePx, px, py, testBox, &hit);
+                        if (hit)
+                            cost += (25.0 + len * 4.5) * stride;
+                    }
+                    continue;
+                }
+
                 const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
                 const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
-                const int stride = (nPts > 4000) ? std::max(1, nPts / 2000) : 1;
+                const double symR = hasSym
+                        ? std::max(3.0, 0.5
+                                                * std::max(c->symbol().size().width(),
+                                                           c->symbol().size().height()))
+                        : 0.0;
+                const QRectF symBox =
+                        hasSym ? testBox.adjusted(-symR, -symR, symR, symR) : testBox;
                 bool hasPrev = false;
                 double ppx = 0.0, ppy = 0.0;
                 for (int p = 0; p < nPts; p += stride) {
@@ -2183,7 +2232,7 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
                         hasPrev = false;
                         continue;
                     }
-                    if (hasSym && testBox.contains(QPointF(px, py)))
+                    if (hasSym && symBox.contains(QPointF(px, py)))
                         cost += 90.0 * stride;
                     if (hasLine && hasPrev) {
                         bool hit = false;
@@ -2228,17 +2277,224 @@ void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
             break;
     }
 
-    // If still obstructed and scale expansion is allowed on a linear Y axis, add top headroom
+    Legend *mainLeg = (g->isLegendVisible() ? g->legend() : nullptr);
+    const QVariant origLegAnchorVar = pw->property("_toriLegendAnchor");
+    const bool canMoveLegend = allowScaleExpand && mainLeg && mainLeg != box
+            && pw->property("_outsideRightMargin").toInt() <= 0
+            && (!origLegAnchorVar.isValid()
+                || origLegAnchorVar.toInt() == int(Graph::LegendAutoAvoidData));
+
+    auto tryJointLegendAndCallout = [&](int &ioL, int &ioT, double &ioScore) -> bool {
+        if (!solvePlacement(ioL, ioT, ioScore))
+            return false;
+        if (ioScore < 25.0)
+            return true;
+        if (!canMoveLegend)
+            return false;
+
+        const QVariant prevAnc = pw->property("_toriLegendAnchor");
+        const double prevLegX = mainLeg->xValue();
+        const double prevLegY = mainLeg->yValue();
+
+        static const Graph::LegendAnchor kLegCorners[] = {
+            Graph::LegendTopRight, Graph::LegendBottomRight, Graph::LegendBottomLeft,
+            Graph::LegendTopLeft
+        };
+        int bestJointL = ioL;
+        int bestJointT = ioT;
+        double bestJointScore = ioScore;
+        double bestCombinedScore = std::numeric_limits<double>::infinity();
+        Graph::LegendAnchor bestJointCorner = Graph::LegendAutoAvoidData;
+        bool foundClean = false;
+
+        for (int ci = 0; ci < 4; ++ci) {
+            const Graph::LegendAnchor candAnc = kLegCorners[ci];
+            const bool wasBoxVis = box->isVisible();
+            box->setVisible(false);
+            double legScore = 0.0;
+            g->placeLegendAnchor(candAnc, &legScore, 12);
+            box->setVisible(wasBoxVis);
+            g->replot();
+
+            int candL = ioL, candT = ioT;
+            double candBoxScore = 0.0;
+            if (solvePlacement(candL, candT, candBoxScore) && legScore < 25.0
+                && candBoxScore < 25.0) {
+                const double combined = legScore + candBoxScore + 0.05 * double(ci);
+                if (!foundClean || combined < bestCombinedScore) {
+                    bestCombinedScore = combined;
+                    bestJointL = candL;
+                    bestJointT = candT;
+                    bestJointScore = candBoxScore;
+                    bestJointCorner = candAnc;
+                    foundClean = true;
+                }
+            }
+        }
+
+        if (foundClean) {
+            if (pw->property("_toriLegendAnchor").toInt() != int(bestJointCorner)) {
+                const bool wasBoxVis = box->isVisible();
+                box->setVisible(false);
+                g->placeLegendAnchor(bestJointCorner, nullptr, 12);
+                box->setVisible(wasBoxVis);
+                g->replot();
+            }
+            pw->setProperty("_toriLegendAnchor",
+                            origLegAnchorVar.isValid()
+                                    ? origLegAnchorVar
+                                    : QVariant(int(Graph::LegendAutoAvoidData)));
+            ioL = bestJointL;
+            ioT = bestJointT;
+            ioScore = bestJointScore;
+            return true;
+        }
+
+        mainLeg->setOriginCoord(prevLegX, prevLegY);
+        pw->setProperty("_toriLegendAnchor", prevAnc);
+        g->replot();
+        return false;
+    };
+
+    if (bestScore >= 25.0 && canMoveLegend)
+        tryJointLegendAndCallout(bestL, bestT, bestScore);
+
+    // If still obstructed and scale expansion is allowed on a linear Y axis, try progressive
+    // clean upper Y-range expansions rounded to a nice major tick step (never arbitrary values).
     if (allowScaleExpand && bestScore >= 25.0 && !g->isAxisUserLocked(QwtPlot::yLeft)
         && pw->axisScaleEngine(QwtPlot::yLeft)
         && dynamic_cast<QwtLinearScaleEngine *>(pw->axisScaleEngine(QwtPlot::yLeft))) {
         if (const QwtScaleDiv *yd = pw->axisScaleDiv(QwtPlot::yLeft)) {
-            const double yLo = yd->lowerBound();
-            const double yHi = yd->upperBound();
-            if (yHi > yLo && std::isfinite(yHi - yLo)) {
-                g->setScale(QwtPlot::yLeft, yLo, yHi + 0.22 * (yHi - yLo));
-                g->replot();
-                solvePlacement(bestL, bestT, bestScore);
+            const double rawLo = yd->lowerBound();
+            const double rawHi = yd->upperBound();
+            const bool isInverted =
+                    pw->axisScaleEngine(QwtPlot::yLeft)->testAttribute(QwtScaleEngine::Inverted);
+            const double yLo = std::min(rawLo, rawHi);
+            const double yHi = std::max(rawLo, rawHi);
+            const double ySpan = yHi - yLo;
+            if (!isInverted && ySpan > 0.0 && std::isfinite(ySpan)) {
+                const int origMaj = pw->axisMaxMajor(QwtPlot::yLeft);
+                const int origMin = pw->axisMaxMinor(QwtPlot::yLeft);
+                const double origStep = g->axisStep(QwtPlot::yLeft);
+                const bool wasLocked = g->isAxisUserLocked(QwtPlot::yLeft);
+                const QVariant savedLegAnc = pw->property("_toriLegendAnchor");
+                const double savedLegX = mainLeg ? mainLeg->xValue() : 0.0;
+                const double savedLegY = mainLeg ? mainLeg->yValue() : 0.0;
+
+                auto niceStep = [](double rawStep) -> double {
+                    if (!(rawStep > 0.0) || !std::isfinite(rawStep))
+                        return 1.0;
+                    const double exp10 = std::pow(10.0, std::floor(std::log10(rawStep)));
+                    const double frac = rawStep / exp10;
+                    double niceFrac = 1.0;
+                    if (frac <= 1.05)
+                        niceFrac = 1.0;
+                    else if (frac <= 2.05)
+                        niceFrac = 2.0;
+                    else if (frac <= 2.55)
+                        niceFrac = 2.5;
+                    else if (frac <= 5.05)
+                        niceFrac = 5.0;
+                    else
+                        niceFrac = 10.0;
+                    return niceFrac * exp10;
+                };
+
+                const QwtValueList mTicks0 = yd->ticks(QwtScaleDiv::MajorTick);
+                const double curStep = (mTicks0.size() >= 2)
+                        ? std::fabs(mTicks0[1] - mTicks0[0])
+                        : niceStep(ySpan / 5.0);
+
+                QVector<double> rawCands;
+                auto appendSnapped = [&](double rawTarget, double step) {
+                    if (!(step > 0.0) || !std::isfinite(step))
+                        return;
+                    const bool loAligned = (std::fabs(yLo) <= 1e-9 * ySpan)
+                            || (std::fmod(std::fabs(yLo), step) <= 1e-6 * step);
+                    const double snapped = loAligned
+                            ? std::ceil((rawTarget - 1e-9 * ySpan) / step) * step
+                            : yLo + std::ceil((rawTarget - yLo - 1e-9 * ySpan) / step) * step;
+                    if (snapped > yHi + 1e-4 * ySpan && snapped <= yLo + 2.25 * ySpan) {
+                        bool dup = false;
+                        for (double existing : rawCands) {
+                            if (std::fabs(existing - snapped) <= 1e-6 * step) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup)
+                            rawCands.append(snapped);
+                    }
+                };
+                for (double factor : { 1.15, 1.30, 1.48, 1.65, 1.85, 2.10 }) {
+                    const double targetHi = yLo + factor * ySpan;
+                    appendSnapped(targetHi, curStep);
+                    appendSnapped(targetHi, 2.0 * curStep);
+                    appendSnapped(targetHi, niceStep((targetHi - yLo) / 5.0));
+                }
+                std::sort(rawCands.begin(), rawCands.end());
+
+                QVector<double> exactCands;
+                QVector<double> fallbackCands;
+                for (double candHi : rawCands) {
+                    QwtLinearScaleEngine eng;
+                    const QwtScaleDiv d = eng.divideScale(
+                            yLo, candHi, origMaj, (origMin >= 1) ? (origMin + 1) : 0, 0.0);
+                    const QwtValueList mt = d.ticks(QwtScaleDiv::MajorTick);
+                    if (mt.size() >= 2
+                        && std::fabs(mt.last() - candHi) <= 1e-4 * (candHi - yLo)) {
+                        exactCands.append(candHi);
+                    } else {
+                        fallbackCands.append(candHi);
+                    }
+                }
+                const QVector<double> &orderedCands =
+                        exactCands.isEmpty() ? fallbackCands : exactCands;
+
+                bool expandedOk = false;
+                double bestFbHi = yHi;
+                int bestFbL = bestL, bestFbT = bestT;
+                double bestFbScore = bestScore;
+                for (double candHi : orderedCands) {
+                    g->setScale(QwtPlot::yLeft, yLo, candHi, 0.0, origMaj, origMin, 0, false);
+                    g->replot();
+                    int candL = bestL, candT = bestT;
+                    double candScore = bestScore;
+                    if (tryJointLegendAndCallout(candL, candT, candScore)) {
+                        bestL = candL;
+                        bestT = candT;
+                        bestScore = candScore;
+                        expandedOk = true;
+                        break;
+                    }
+                    if (candScore < bestFbScore) {
+                        bestFbScore = candScore;
+                        bestFbHi = candHi;
+                        bestFbL = candL;
+                        bestFbT = candT;
+                    }
+                }
+                if (!expandedOk) {
+                    if (bestFbScore < bestScore - 50.0) {
+                        g->setScale(QwtPlot::yLeft, yLo, bestFbHi, 0.0, origMaj, origMin, 0, false);
+                        g->replot();
+                        bestL = bestFbL;
+                        bestT = bestFbT;
+                        bestScore = bestFbScore;
+                    } else {
+                        g->setScale(QwtPlot::yLeft, rawLo, rawHi, origStep, origMaj, origMin, 0,
+                                    isInverted);
+                        if (mainLeg) {
+                            mainLeg->setOriginCoord(savedLegX, savedLegY);
+                            pw->setProperty("_toriLegendAnchor", savedLegAnc);
+                        }
+                        g->replot();
+                    }
+                }
+                g->setAxisUserLocked(QwtPlot::yLeft, wasLocked);
+                if (pw->axisEnabled(QwtPlot::yRight))
+                    g->updateSecondaryAxis(QwtPlot::yRight);
+                g->syncChildLinkedLayers();
             }
         }
     }
@@ -2266,7 +2522,7 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text,
     QFont calloutFnt(QStringLiteral("Arial"), std::clamp(basePt, 8, 22), QFont::Normal);
     calloutFnt.setBold(false);
     box->setFrameStyle(Legend::Line);
-    box->setBackgroundColor(QColor(255, 255, 255, 232));
+    box->setBackgroundColor(QColor(255, 255, 255, 212));
     box->setTextColor(QColor(20, 30, 50));
     box->setFont(calloutFnt);
     box->setOriginCoord(x, y);

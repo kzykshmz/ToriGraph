@@ -204,6 +204,7 @@ public:
     void setPageBackgroundColor(const QColor &color);
     void fitPageToLayers(int marginPx = 14);
     void fitLayersToPage();
+    void syncChildOverlayAndInsetGeometries();
     void showPageSetupDialog();
 
     Graph *addLinkedLayer(Graph *parentLayer = nullptr, bool linkX = true, bool linkY = false,
@@ -473,7 +474,6 @@ private:
     };
     QVector<PendingInsetSpec> d_pending_inset_specs;
 
-    void syncChildOverlayAndInsetGeometries();
     void openLayerButtonContextMenu(LayerButton *btn, const QPoint &globalPos);
     void repositionCanvasStatusPill();
     void openCanvasStatusQuickMenu();

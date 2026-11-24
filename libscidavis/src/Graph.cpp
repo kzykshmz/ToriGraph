@@ -147,6 +147,50 @@ struct ScopedExportFlag
     ~ScopedExportFlag() { target = prev; }
 };
 
+//! Single-pass remap of 1-based \c{k}, \l(k), %(k) curve references using oldToNew index map.
+QString remapLegendCurveTokens(const QString &src, const QVector<int> &oldToNew)
+{
+    static const QRegularExpression tokenRx(
+            QStringLiteral(R"((\\c\{(\d+)\})|(\\l\((\d+)\))|(%\((\d+)\)))"));
+    QRegularExpressionMatchIterator mit = tokenRx.globalMatch(src);
+    if (!mit.hasNext())
+        return src;
+
+    const int nCurves = oldToNew.size();
+    QString dst;
+    dst.reserve(src.size() + 8);
+    int lastPos = 0;
+    bool textChanged = false;
+    while (mit.hasNext()) {
+        const QRegularExpressionMatch m = mit.next();
+        dst.append(src.mid(lastPos, m.capturedStart() - lastPos));
+        lastPos = m.capturedEnd();
+
+        QString replacement = m.captured(0);
+        auto remapIdx = [&](const QString &numStr, const QString &fmt) {
+            bool ok = false;
+            const int oldOneBased = numStr.toInt(&ok);
+            if (ok && oldOneBased >= 1 && oldOneBased <= nCurves) {
+                const int mappedZeroBased = oldToNew[oldOneBased - 1];
+                if (mappedZeroBased >= 0)
+                    replacement = fmt.arg(mappedZeroBased + 1);
+            }
+        };
+        if (!m.captured(2).isEmpty())
+            remapIdx(m.captured(2), QStringLiteral("\\c{%1}"));
+        else if (!m.captured(4).isEmpty())
+            remapIdx(m.captured(4), QStringLiteral("\\l(%1)"));
+        else if (!m.captured(6).isEmpty())
+            remapIdx(m.captured(6), QStringLiteral("%(%1)"));
+
+        if (replacement != m.captured(0))
+            textChanged = true;
+        dst.append(replacement);
+    }
+    dst.append(src.mid(lastPos));
+    return textChanged ? dst : src;
+}
+
 class GraphSelectionOverlayWidget : public QWidget
 {
 public:
@@ -8406,7 +8450,7 @@ void Graph::showAxisContextMenu(int axis)
     }
     QAction *rescaleAllAct = menu.addAction(IconLoader::duotoneIcon(QStringLiteral("zoom-auto")),
                                             tr("&Rescale to show all"));
-    rescaleAllAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+R")));
+    rescaleAllAct->setShortcut(QKeySequence(QStringLiteral("Ctrl+R")));
     connect(rescaleAllAct, &QAction::triggered, this, [this]() {
         MultiLayer *ml = multiLayerParent();
         const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -8874,10 +8918,14 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         if (!mrk)
             continue;
 
+        const long dstKey = insertTextMarker(mrk);
         if (txtMrkKeys[i] == g->legendMarkerID)
-            legendMarkerID = insertTextMarker(mrk);
-        else
-            insertTextMarker(mrk);
+            legendMarkerID = dstKey;
+        if (Legend *dstMrk = textMarker(dstKey)) {
+            const QString remapped = remapLegendCurveTokens(dstMrk->text(), srcToDstIdx);
+            if (remapped != dstMrk->text())
+                dstMrk->setText(remapped);
+        }
     }
 
     QVector<int> l = g->lineMarkerKeys();
@@ -15903,55 +15951,13 @@ bool Graph::moveCurve(int fromIndex, int toIndex)
     }
 
     // Single-pass regex remap of 1-based \c{k}, \l(k), %(k) tokens across all Legend/text markers
-    static const QRegularExpression tokenRx(
-            QStringLiteral(R"((\\c\{(\d+)\})|(\\l\((\d+)\))|(%\((\d+)\)))"));
     for (int tid : d_texts) {
         Legend *tm = dynamic_cast<Legend *>(d_plot->marker(tid));
         if (!tm)
             continue;
         const QString src = tm->text();
-        QRegularExpressionMatchIterator mit = tokenRx.globalMatch(src);
-        if (!mit.hasNext())
-            continue;
-
-        QString dst;
-        dst.reserve(src.size() + 8);
-        int lastPos = 0;
-        bool textChanged = false;
-        while (mit.hasNext()) {
-            const QRegularExpressionMatch m = mit.next();
-            dst.append(src.mid(lastPos, m.capturedStart() - lastPos));
-            lastPos = m.capturedEnd();
-
-            QString replacement = m.captured(0);
-            if (!m.captured(2).isEmpty()) {
-                bool ok = false;
-                const int oldOneBased = m.captured(2).toInt(&ok);
-                if (ok && oldOneBased >= 1 && oldOneBased <= n_curves) {
-                    const int newOneBased = oldToNew[oldOneBased - 1] + 1;
-                    replacement = QStringLiteral("\\c{%1}").arg(newOneBased);
-                }
-            } else if (!m.captured(4).isEmpty()) {
-                bool ok = false;
-                const int oldOneBased = m.captured(4).toInt(&ok);
-                if (ok && oldOneBased >= 1 && oldOneBased <= n_curves) {
-                    const int newOneBased = oldToNew[oldOneBased - 1] + 1;
-                    replacement = QStringLiteral("\\l(%1)").arg(newOneBased);
-                }
-            } else if (!m.captured(6).isEmpty()) {
-                bool ok = false;
-                const int oldOneBased = m.captured(6).toInt(&ok);
-                if (ok && oldOneBased >= 1 && oldOneBased <= n_curves) {
-                    const int newOneBased = oldToNew[oldOneBased - 1] + 1;
-                    replacement = QStringLiteral("%(%1)").arg(newOneBased);
-                }
-            }
-            if (replacement != m.captured(0))
-                textChanged = true;
-            dst.append(replacement);
-        }
-        dst.append(src.mid(lastPos));
-        if (textChanged)
+        const QString dst = remapLegendCurveTokens(src, oldToNew);
+        if (dst != src)
             tm->setText(dst);
     }
 
