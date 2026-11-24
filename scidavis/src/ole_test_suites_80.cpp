@@ -10,6 +10,7 @@
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
@@ -949,6 +950,95 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                                                      << ", edNull=" << ed7.isNull()
                                                                      << ")");
             }
+
+            // Op 4 (Round 11 ASan): IPersistFile::Load on Graph3D payload must hold alive(this)
+            {
+                const QString loadPath = tmp80.filePath(QStringLiteral("ole3d_load_7.sciprj"));
+                QFile lf(loadPath);
+                CHECK_COND(lf.open(QIODevice::WriteOnly)
+                                   && lf.write(pay3d.projectBytes) == pay3d.projectBytes.size(),
+                           "80a-7: failed to write ole3d_load_7.sciprj");
+                lf.close();
+
+                ComPtr<IOleObject> objLoad;
+                CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&objLoad)))
+                                   && objLoad,
+                           "80a-7: createGraphObject failed on op 4 (IPersistFile::Load)");
+                ComPtr<IPersistFile> ipFileLoad;
+                CHECK_COND(SUCCEEDED(objLoad.As(&ipFileLoad)) && ipFileLoad,
+                           "80a-7: IPersistFile QI failed on op 4");
+
+                bool firedLoadFile = false;
+                QTimer::singleShot(0, qApp, [&]() {
+                    firedLoadFile = true;
+                    ipFileLoad.Reset();
+                    objLoad.Reset();
+                });
+                const std::wstring wLoadPath = QDir::toNativeSeparators(loadPath).toStdWString();
+                const HRESULT hrLoadFile = ipFileLoad->Load(wLoadPath.c_str(), STGM_READ);
+                QApplication::setQuitOnLastWindowClosed(false);
+                pumpEventsMs80(35);
+                CHECK_COND(SUCCEEDED(hrLoadFile) && firedLoadFile,
+                           "80a-7: IPersistFile::Load alive(this) guard failed (hr=0x"
+                                   << std::hex << hrLoadFile << std::dec
+                                   << ", fired=" << firedLoadFile << ")");
+            }
+
+            // Op 5 (Round 11 ASan): IPersistStorage::Load on Graph3D storage with SciDAVisEmf
+            // omitted must hold alive(this) across ensureRenderedPayload processEvents() pump.
+            {
+                ComPtr<ILockBytes> lbLoad;
+                ComPtr<IStorage> stgLoad;
+                CHECK_COND(SUCCEEDED(CreateILockBytesOnHGlobal(nullptr, TRUE, &lbLoad))
+                                   && SUCCEEDED(StgCreateDocfileOnILockBytes(
+                                           lbLoad.Get(),
+                                           STGM_CREATE | STGM_READWRITE | STGM_SHARE_EXCLUSIVE, 0,
+                                           &stgLoad))
+                                   && stgLoad,
+                           "80a-7: StgCreateDocfileOnILockBytes failed on op 5");
+                {
+                    ComPtr<IStream> strmProj;
+                    CHECK_COND(SUCCEEDED(stgLoad->CreateStream(
+                                       L"SciDAVisProject",
+                                       STGM_CREATE | STGM_WRITE | STGM_SHARE_EXCLUSIVE, 0, 0,
+                                       &strmProj))
+                                       && strmProj,
+                               "80a-7: CreateStream(SciDAVisProject) failed on op 5");
+                    ULONG written = 0;
+                    const HRESULT hrWr = strmProj->Write(
+                            pay3d.projectBytes.constData(),
+                            static_cast<ULONG>(pay3d.projectBytes.size()), &written);
+                    CHECK_COND(SUCCEEDED(hrWr)
+                                       && written == static_cast<ULONG>(pay3d.projectBytes.size()),
+                               "80a-7: IStream::Write failed on op 5");
+                }
+                CHECK_COND(SUCCEEDED(stgLoad->Commit(STGC_DEFAULT)),
+                           "80a-7: IStorage::Commit failed on op 5");
+
+                ComPtr<IOleObject> objStgLoad;
+                CHECK_COND(
+                        SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&objStgLoad)))
+                                && objStgLoad,
+                        "80a-7: createGraphObject failed on op 5 (IPersistStorage::Load)");
+                ComPtr<IPersistStorage> ipStgLoad;
+                CHECK_COND(SUCCEEDED(objStgLoad.As(&ipStgLoad)) && ipStgLoad,
+                           "80a-7: IPersistStorage QI failed on op 5");
+
+                bool firedLoadStg = false;
+                QTimer::singleShot(0, qApp, [&]() {
+                    firedLoadStg = true;
+                    ipStgLoad.Reset();
+                    objStgLoad.Reset();
+                });
+                const HRESULT hrLoadStg = ipStgLoad->Load(stgLoad.Get());
+                QApplication::setQuitOnLastWindowClosed(false);
+                pumpEventsMs80(35);
+                CHECK_COND(SUCCEEDED(hrLoadStg) && firedLoadStg,
+                           "80a-7: IPersistStorage::Load alive(this) guard failed (hr=0x"
+                                   << std::hex << hrLoadStg << std::dec
+                                   << ", fired=" << firedLoadStg << ")");
+            }
+
             CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive7,
                        "80a-7: COM object leaked after alive(this) teardown (got "
                                << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
@@ -2936,6 +3026,218 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                    "80f-insp-modal-uaf-D: d_btn_ref_add_custom self guard failed (saw="
                                            << sawAddRefDlgD << ", null=" << tmpDockD.isNull()
                                            << ")");
+                    }
+
+                    // Subtest E (Round 11 ASan): pickColorInteractive -> Custom Color...
+                    // QColorDialog must NOT be parented to GraphInspectorDock.
+                    {
+                        QPointer<GraphInspectorDock> tmpDockE = new GraphInspectorDock(wDiag);
+                        tmpDockE->setFloating(true);
+                        tmpDockE->show();
+                        tmpDockE->setCollapsedRail(false);
+                        tmpDockE->setTargetMultiLayer(mlModal, true);
+                        tmpDockE->switchToInspectorPage(GraphInspectorDock::PageTabCurve);
+                        QCoreApplication::processEvents();
+
+                        QPushButton *btnSwatchE = nullptr;
+                        for (QPushButton *cand : tmpDockE->findChildren<QPushButton *>(
+                                     QStringLiteral("InspectorColorSwatchBtn"))) {
+                            if (cand && cand->isVisible()) {
+                                btnSwatchE = cand;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnSwatchE != nullptr,
+                                   "80f-insp-modal-uaf-E: visible InspectorColorSwatchBtn not found");
+
+                        int ticksE = 0;
+                        bool sawPopupE = false;
+                        bool sawColorDlgE = false;
+                        QTimer timerE;
+                        timerE.setInterval(15);
+                        QObject::connect(&timerE, &QTimer::timeout, [&]() {
+                            ++ticksE;
+                            if (ticksE > 80) {
+                                timerE.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                if (auto *w = QApplication::activeModalWidget())
+                                    w->close();
+                                return;
+                            }
+                            if (!sawPopupE) {
+                                if (auto *popup = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget())) {
+                                    sawPopupE = true;
+                                    for (QPushButton *pb : popup->findChildren<QPushButton *>()) {
+                                        if (pb && pb->isVisible()) {
+                                            pb->click();
+                                            return;
+                                        }
+                                    }
+                                    popup->close();
+                                    return;
+                                }
+                            } else if (!sawColorDlgE) {
+                                if (auto *cdlg = qobject_cast<QColorDialog *>(
+                                            QApplication::activeModalWidget())) {
+                                    sawColorDlgE = true;
+                                    if (tmpDockE)
+                                        delete tmpDockE.data();
+                                    cdlg->reject();
+                                }
+                            }
+                        });
+                        timerE.start();
+                        btnSwatchE->click();
+                        timerE.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawPopupE && sawColorDlgE && tmpDockE.isNull(),
+                                   "80f-insp-modal-uaf-E: Custom Color QColorDialog dock teardown failed (popup="
+                                           << sawPopupE << ", dlg=" << sawColorDlgE
+                                           << ", null=" << tmpDockE.isNull() << ")");
+                    }
+
+                    // Subtest F (Round 11 ASan): RichTextBarEntry::menuGreek InstantPopup must
+                    // survive deleting the owning floating GraphInspectorDock mid-QMenu::exec().
+                    {
+                        QPointer<GraphInspectorDock> tmpDockF = new GraphInspectorDock(wDiag);
+                        tmpDockF->setFloating(true);
+                        tmpDockF->show();
+                        tmpDockF->setCollapsedRail(false);
+                        tmpDockF->setTargetMultiLayer(mlModal, true);
+                        tmpDockF->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
+                        QCoreApplication::processEvents();
+
+                        QToolButton *btnGreekF = nullptr;
+                        for (QToolButton *tb : tmpDockF->findChildren<QToolButton *>()) {
+                            if (tb && tb->isVisible()
+                                && tb->popupMode() == QToolButton::InstantPopup
+                                && tb->menu() != nullptr
+                                && tb->property("_tg_tip_fmt").toString()
+                                        == QLatin1String("Insert Greek Symbol")) {
+                                btnGreekF = tb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnGreekF != nullptr,
+                                   "80f-insp-modal-uaf-F: visible Greek InstantPopup button not found");
+
+                        int ticksF = 0;
+                        bool sawGreekPopupF = false;
+                        QTimer timerF;
+                        timerF.setInterval(15);
+                        QObject::connect(&timerF, &QTimer::timeout, [&]() {
+                            ++ticksF;
+                            if (ticksF > 80) {
+                                timerF.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawGreekPopupF)
+                                return;
+                            sawGreekPopupF = true;
+                            if (tmpDockF)
+                                delete tmpDockF.data();
+                            if (auto *ap = QApplication::activePopupWidget())
+                                ap->close();
+                        });
+                        timerF.start();
+                        btnGreekF->showMenu();
+                        timerF.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawGreekPopupF && tmpDockF.isNull(),
+                                   "80f-insp-modal-uaf-F: RichTextBar menuGreek teardown failed (saw="
+                                           << sawGreekPopupF << ", null=" << tmpDockF.isNull()
+                                           << ")");
+                    }
+
+                    // Subtest G (Round 11 ASan): Graph::showAxisContextMenu and
+                    // Graph::showTitleContextMenu must use parentless QMenu across .exec().
+                    {
+                        QPointer<MultiLayer> mlCtxG = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        QPointer<Graph> gCtxG = mlCtxG ? mlCtxG->activeGraph() : nullptr;
+                        CHECK_COND(mlCtxG && gCtxG, "80f-insp-modal-uaf-G1: setup failed");
+                        mlCtxG->askOnCloseEvent(false);
+
+                        int ticksG1 = 0;
+                        bool sawCtxPopupG1 = false;
+                        QTimer timerG1;
+                        timerG1.setInterval(15);
+                        QObject::connect(&timerG1, &QTimer::timeout, [&]() {
+                            ++ticksG1;
+                            if (ticksG1 > 80) {
+                                timerG1.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawCtxPopupG1)
+                                return;
+                            sawCtxPopupG1 = true;
+                            if (mlCtxG) {
+                                mlCtxG->close();
+                                if (mlCtxG)
+                                    delete mlCtxG.data();
+                            }
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                            popup->close();
+                        });
+                        timerG1.start();
+                        gCtxG->showAxisContextMenu(QwtScaleDraw::BottomScale);
+                        timerG1.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawCtxPopupG1 && mlCtxG.isNull() && gCtxG.isNull(),
+                                   "80f-insp-modal-uaf-G1: showAxisContextMenu parentless teardown failed (saw="
+                                           << sawCtxPopupG1 << ", mlNull=" << mlCtxG.isNull()
+                                           << ", gNull=" << gCtxG.isNull() << ")");
+
+                        QPointer<MultiLayer> mlTitleG = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        QPointer<Graph> gTitleG = mlTitleG ? mlTitleG->activeGraph() : nullptr;
+                        CHECK_COND(mlTitleG && gTitleG, "80f-insp-modal-uaf-G2: setup failed");
+                        mlTitleG->askOnCloseEvent(false);
+
+                        int ticksG2 = 0;
+                        bool sawTitlePopupG2 = false;
+                        QTimer timerG2;
+                        timerG2.setInterval(15);
+                        QObject::connect(&timerG2, &QTimer::timeout, [&]() {
+                            ++ticksG2;
+                            if (ticksG2 > 80) {
+                                timerG2.stop();
+                                if (auto *p = qobject_cast<QMenu *>(
+                                            QApplication::activePopupWidget()))
+                                    p->close();
+                                return;
+                            }
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawTitlePopupG2)
+                                return;
+                            sawTitlePopupG2 = true;
+                            if (mlTitleG) {
+                                mlTitleG->close();
+                                if (mlTitleG)
+                                    delete mlTitleG.data();
+                            }
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                            popup->close();
+                        });
+                        timerG2.start();
+                        gTitleG->showTitleContextMenu();
+                        timerG2.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawTitlePopupG2 && mlTitleG.isNull() && gTitleG.isNull(),
+                                   "80f-insp-modal-uaf-G2: showTitleContextMenu parentless teardown failed (saw="
+                                           << sawTitlePopupG2 << ", mlNull=" << mlTitleG.isNull()
+                                           << ", gNull=" << gTitleG.isNull() << ")");
                     }
                 }
             }
