@@ -241,6 +241,7 @@ using namespace std;
 #include <QCryptographicHash>
 #include <QScreen>
 #include <QFrame>
+#include <QScopedValueRollback>
 
 #ifdef Q_OS_WIN
 #include <io.h> // for _commit()
@@ -2284,6 +2285,56 @@ bool isBeingDestroyed(const ApplicationWindow *app)
     const QSet<const ApplicationWindow *> &s = applicationWindowsBeingDestroyed();
     return !s.isEmpty() && s.contains(app);
 }
+
+void syncExplorerSelectionToWindow(FolderListView &lv, MyWidget *target)
+{
+    QSignalBlocker sbLv(&lv);
+    if (target) {
+        for (QTreeWidgetItemIterator it(&lv); *it; ++it) {
+            QTreeWidgetItem *item = *it;
+            if (!item || item->type() != WindowListItem::WindowType)
+                continue;
+            if (static_cast<WindowListItem *>(item)->window() == target && !item->isHidden()) {
+                if (lv.currentItem() != item || !item->isSelected()) {
+                    lv.setCurrentItem(
+                            item, 0,
+                            QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                }
+                return;
+            }
+        }
+    }
+    lv.clearSelection();
+    lv.setCurrentItem(nullptr);
+}
+
+struct ScopedUndoReplayGuard
+{
+    QPointer<ApplicationWindow> app;
+    explicit ScopedUndoReplayGuard(ApplicationWindow *a) : app(a)
+    {
+        Table::beginUndoRedoReplay();
+    }
+    ~ScopedUndoReplayGuard()
+    {
+        Table::endUndoRedoReplay();
+        if (!Table::isUndoRedoReplaying() && app && !isBeingDestroyed(app.data())) {
+            RecalcManager *rm = RecalcManager::instance(app.data());
+            if (rm && rm->recalcMode() == RecalcManager::Auto && rm->hasDirtyLinks()) {
+                rm->recalculateAll();
+                app->updateUndoRedoActionsForActiveWindow();
+            }
+        }
+    }
+    ScopedUndoReplayGuard(const ScopedUndoReplayGuard &) = delete;
+    ScopedUndoReplayGuard &operator=(const ScopedUndoReplayGuard &) = delete;
+};
+
+class ObsoletePurgeCmd final : public QUndoCommand
+{
+public:
+    void redo() override { setObsolete(true); }
+};
 } // namespace
 
 ApplicationWindow::ApplicationWindow()
@@ -2794,6 +2845,35 @@ ApplicationWindow::ApplicationWindow()
 
     actionPrevWindow->setShortcut(tr("F6", "previous window shortcut"));
     connect(actionPrevWindow, SIGNAL(triggered()), &d_workspace, SLOT(activatePreviousSubWindow()));
+
+    // Attach core shortcut actions directly to ApplicationWindow so shortcuts continue working
+    // in Focus HUD (F11) when menuBar() and toolbars are hidden.
+    QAction *const coreShortcutActions[] = {
+        actionNewProject,      actionNewGraph,        actionNewNote,
+        actionNewTable,        actionNewMatrix,       actionNewFunctionPlot,
+        actionNewSurfacePlot,  actionOpen,            actionLoadImage,
+        actionSaveProject,     actionSaveProjectAs,   actionLoad,
+        actionUndo,            actionRedo,            actionCutSelection,
+        actionCopySelection,   actionPasteSelection,  actionClearSelection,
+        actionCopyGraphOle,    actionCopyPageImage,   actionCopyGraphFormat,
+        actionPasteGraphFormat, actionShowExplorer,   actionAddLayer,
+        actionShowLayerDialog, actionExportGraph,     actionExportAllGraphs,
+        actionExportPDF,       actionPrint,           actionCloseAllWindows,
+        actionShowCurvesDialog, actionAddErrorBars,   actionAddFunctionCurve,
+        actionUnzoom,          actionNewLegend,       actionAddImage,
+        actionShowFitDialog,   actionShowHelp,        actionCloseWindow,
+        actionDeleteLayer,     actionPeakAnalyzerDialog, actionRecalculateNow,
+        actionAddText,         btnArrow,              btnLine,
+        btnZoomIn,             btnZoomOut,            btnCursor,
+        btnSelect,             btnMovePoints,         btnRemovePoints,
+        btnMaskPoints,         btnUnmaskPoints,       actionNextWindow,
+        actionPrevWindow,      actionNoteExecute,     actionNoteExecuteAll,
+        actionNoteEvaluate
+    };
+    for (QAction *act : coreShortcutActions) {
+        if (act && !this->actions().contains(act))
+            this->addAction(act);
+    }
 
     connect(this, SIGNAL(modified()), this, SLOT(modifiedProject()));
     connect(&d_workspace, SIGNAL(subWindowActivated(QMdiSubWindow *)), this,
@@ -4571,7 +4651,7 @@ void ApplicationWindow::disableActions()
     actionCopySelection->setEnabled(false);
     if (actionCopyPageImage)
         actionCopyPageImage->setEnabled(false);
-    actionPasteSelection->setEnabled(false);
+    actionPasteSelection->setEnabled(d_workspace.subWindowList().isEmpty());
     actionClearSelection->setEnabled(false);
 }
 
@@ -8035,6 +8115,11 @@ void ApplicationWindow::windowActivated(QMdiSubWindow *w)
     updateStatusBarForWindow(d_status_info, w);
 
     if (!w || !w->inherits("MyWidget")) {
+        if (!w) {
+            customToolBars(nullptr);
+            customMenu(nullptr);
+            syncExplorerSelectionToWindow(lv, nullptr);
+        }
         syncGraphPageAndToolbarMenuState();
         return;
     }
@@ -8046,6 +8131,7 @@ void ApplicationWindow::windowActivated(QMdiSubWindow *w)
     if (f)
         f->setActiveWindow((MyWidget *)w);
 
+    syncExplorerSelectionToWindow(lv, static_cast<MyWidget *>(w));
     syncGraphPageAndToolbarMenuState();
 }
 
@@ -8726,12 +8812,32 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             continue;
         }
 
+        auto computeTableImportedSpan = [](Table *t) -> int {
+            if (!t || !t->d_future_table)
+                return t ? t->columnCount() : 0;
+            const int totalCols = t->columnCount();
+            int span = t->d_future_table->importSourceColumnCount();
+            if (span < 0)
+                span = totalCols;
+            span = qBound(0, span, totalCols);
+            while (span > 0) {
+                Column *c = t->column(span - 1);
+                if (!c || c->formulaIntervals().isEmpty())
+                    break;
+                --span;
+            }
+            return span;
+        };
+
         // Check per-column data type compatibility for append/overwrite (allowing Text columns in
         // numeric-converting imports so "Sample Name (Text) + Value (Numeric)" tables work cleanly).
         if (import_mode == ImportASCIIDialog::NewRows
             || import_mode == ImportASCIIDialog::Overwrite) {
+            const int checkColSpan = (import_mode == ImportASCIIDialog::Overwrite)
+                    ? qMin(temp->columnCount(), computeTableImportedSpan(table))
+                    : qMin(temp->columnCount(), table->columnCount());
             if (import_mode == ImportASCIIDialog::Overwrite) {
-                for (int col = 0; col < qMin(temp->columnCount(), table->columnCount()); col++) {
+                for (int col = 0; col < checkColSpan; col++) {
                     Column *src_col = temp->column(col);
                     Column *dst_col = table->column(col);
                     if (!src_col || !dst_col || src_col->dataType() == dst_col->dataType())
@@ -8753,7 +8859,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             }
 
             // Column::copy() refuses to copy between types: check before touching the table.
-            for (int col = 0; col < qMin(temp->columnCount(), table->columnCount()); col++) {
+            for (int col = 0; col < checkColSpan; col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
                 if (src_col && dst_col && src_col->dataType() != dst_col->dataType()) {
@@ -8836,12 +8942,18 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
             } overwriteMacro(table->d_future_table, tr("Import ASCII (Overwrite)"));
 
-            if (table->rowCount() != temp->rowCount())
-                table->d_future_table->setRowCount(temp->rowCount());
-            for (int col = 0; col < table->columnCount() && col < temp->columnCount(); col++) {
+            const int prevRows = table->rowCount();
+            const int newRows = temp->rowCount();
+            const int importedSpan = computeTableImportedSpan(table);
+            const int common = qMin(importedSpan, temp->columnCount());
+
+            if (prevRows != newRows)
+                table->d_future_table->setRowCount(newRows);
+            for (int col = 0; col < common; col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
-                if (!dst_col->copy(src_col, 0, 0, temp->rowCount())) {
+                dst_col->clearFormulas();
+                if (!dst_col->copy(src_col, 0, 0, newRows)) {
                     failedColumns << dst_col->name();
                     continue;
                 }
@@ -8849,14 +8961,53 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (local_rename_columns)
                     dst_col->setName(src_col->name());
             }
-            if (temp->columnCount() > table->columnCount()) {
-                temp->removeColumns(0, table->columnCount());
-                while (temp->childCount() > 0)
-                    temp->reparentChild(table->d_future_table,
-                                                        temp->child(0));
-            } else if (temp->columnCount() < table->columnCount()) {
-                table->d_future_table->removeColumns(
-                        temp->columnCount(), table->columnCount() - temp->columnCount());
+            if (temp->columnCount() > common) {
+                QList<Column *> extraCols;
+                extraCols.reserve(temp->columnCount() - common);
+                for (int col = common; col < temp->columnCount(); ++col) {
+                    Column *src = temp->column(col);
+                    if (!src)
+                        continue;
+                    Column *cp = new Column(src->name(), src->columnMode());
+                    cp->copy(src);
+                    cp->setPlotDesignation(src->plotDesignation());
+                    cp->setLongName(src->longName());
+                    cp->setUnits(src->units());
+                    cp->setComment(src->comment());
+                    if (auto *srcOut = dynamic_cast<Double2StringFilter *>(src->outputFilter())) {
+                        if (auto *dstOut = dynamic_cast<Double2StringFilter *>(cp->outputFilter())) {
+                            dstOut->setNumericFormat(srcOut->numericFormat());
+                            dstOut->setNumDigits(srcOut->numDigits());
+                        }
+                    }
+                    extraCols.append(cp);
+                }
+                if (!extraCols.isEmpty())
+                    table->d_future_table->insertColumns(common, extraCols);
+            } else if (importedSpan > temp->columnCount()) {
+                table->d_future_table->removeColumns(temp->columnCount(),
+                                                     importedSpan - temp->columnCount());
+            }
+            if (table->d_future_table) {
+                table->d_future_table->setImportSource(
+                        file, QString(), local_column_separator,
+                        AsciiTableImportFilter::dialogDefaultEncoding(), local_ignored_lines,
+                        AsciiTableImportFilter::dialogDefaultUnitsRow(), temp->columnCount());
+            }
+            for (int c = temp->columnCount(); c < table->columnCount(); ++c) {
+                Column *uc = table->column(c);
+                if (!uc)
+                    continue;
+                const QList<Interval<int>> fxIntervals = uc->formulaIntervals();
+                if (fxIntervals.isEmpty())
+                    continue;
+                if (fxIntervals.size() == 1 && fxIntervals.at(0).start() == 0
+                    && (prevRows <= 0 || fxIntervals.at(0).end() >= prevRows - 1) && newRows > 0
+                    && fxIntervals.at(0).end() != newRows - 1) {
+                    uc->setFormula(Interval<int>(0, newRows - 1), uc->formula(0));
+                }
+                if (table->autoRecalcFormulas())
+                    table->recalculate(c, false);
             }
             break;
         }
@@ -9212,8 +9363,7 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
         }
         if (t->d_future_table) {
             t->d_future_table->setImportSource(fn, QString(), report.separator, report.encoding,
-                                               report.headerLines,
-                                               report.unitsRowDetected ? 1 : 0, t->numCols());
+                                               0, -1, t->numCols());
         }
         offerPlotAfterImport(t);
         modifiedProject();
@@ -11476,9 +11626,6 @@ bool probeWritableNoTruncate(const QString &filePath)
     const QFileInfo fi(filePath);
     if (fi.filePath().trimmed().isEmpty() || fi.isDir())
         return false;
-    const QDir dir = fi.dir();
-    if (!dir.exists())
-        return false;
     if (fi.exists()) {
         QFile existing(filePath);
         if (!existing.open(QIODevice::ReadWrite))
@@ -11486,7 +11633,24 @@ bool probeWritableNoTruncate(const QString &filePath)
         existing.close();
         return true;
     }
-    QTemporaryFile probe(dir.filePath(QStringLiteral(".torigraph_export_probe_XXXXXX")));
+    QString cur = QDir::cleanPath(fi.absolutePath());
+    QString probeDirPath;
+    for (int guard = 0; guard < 256 && !cur.isEmpty(); ++guard) {
+        const QFileInfo curFi(cur);
+        if (curFi.exists()) {
+            if (!curFi.isDir())
+                return false;
+            probeDirPath = cur;
+            break;
+        }
+        const QString next = QDir::cleanPath(QFileInfo(cur).path());
+        if (next == cur || next.isEmpty())
+            return false;
+        cur = next;
+    }
+    if (probeDirPath.isEmpty())
+        return false;
+    QTemporaryFile probe(QDir(probeDirPath).filePath(QStringLiteral(".torigraph_export_probe_XXXXXX")));
     probe.setAutoRemove(true);
     if (!probe.open())
         return false;
@@ -15081,8 +15245,25 @@ void ApplicationWindow::copyMarker()
 void ApplicationWindow::pasteSelection()
 {
     QWidget *m = (QWidget *)d_workspace.activeSubWindow();
-    if (!m)
+    if (!m) {
+        static bool s_inSmartPaste = false;
+        if (!s_inSmartPaste && d_modern_ribbon) {
+            QScopedValueRollback<bool> guard(s_inSmartPaste, true);
+            if (QToolButton *pasteBtn =
+                        d_modern_ribbon->findChild<QToolButton *>(QStringLiteral("RibbonHomePasteBtn"));
+                pasteBtn && pasteBtn->isEnabled()) {
+                pasteBtn->click();
+                return;
+            }
+            if (QPushButton *welcomePasteBtn =
+                        findChild<QPushButton *>(QStringLiteral("WelcomeHubPasteBtn"));
+                welcomePasteBtn && welcomePasteBtn->isEnabled()) {
+                welcomePasteBtn->click();
+                return;
+            }
+        }
         return;
+    }
 
     if (m->inherits("Table"))
         ((Table *)m)->pasteSelection();
@@ -15306,10 +15487,7 @@ void ApplicationWindow::undo()
 
     MyWidget *aw = activeWindow();
     const bool nonInteractive = isNonInteractiveContext(this);
-    struct ScopedUndoReplayGuard {
-        ScopedUndoReplayGuard() { Table::beginUndoRedoReplay(); }
-        ~ScopedUndoReplayGuard() { Table::endUndoRedoReplay(); }
-    } replayGuard;
+    ScopedUndoReplayGuard replayGuard(this);
     if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canUndo()) {
             if (!nonInteractive)
@@ -15382,10 +15560,7 @@ void ApplicationWindow::redo()
 
     MyWidget *aw = activeWindow();
     const bool nonInteractive = isNonInteractiveContext(this);
-    struct ScopedUndoReplayGuard {
-        ScopedUndoReplayGuard() { Table::beginUndoRedoReplay(); }
-        ~ScopedUndoReplayGuard() { Table::endUndoRedoReplay(); }
-    } replayGuard;
+    ScopedUndoReplayGuard replayGuard(this);
     if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (ml->undoStack() && ml->undoStack()->canRedo()) {
             if (!nonInteractive)
@@ -15516,6 +15691,20 @@ void ApplicationWindow::hideWindow(MyWidget *w)
     emit modified();
 }
 
+static void runWindowGeometryDialog(ApplicationWindow *app, MyWidget *w)
+{
+    if (!app || !w)
+        return;
+    QPointer<ImageDialog> id(new ImageDialog(app));
+    app->connect(id.data(), SIGNAL(setGeometry(int, int, int, int)), app,
+                 SLOT(setWindowGeometry(int, int, int, int)));
+    id->setWindowTitle(ApplicationWindow::tr("Window Geometry"));
+    id->setOrigin(w->pos());
+    id->setSize(w->size());
+    id->exec();
+    delete id.data();
+}
+
 void ApplicationWindow::resizeActiveWindow()
 {
     if (isNonInteractiveContext(this))
@@ -15524,15 +15713,7 @@ void ApplicationWindow::resizeActiveWindow()
     if (!w)
         return;
 
-    ImageDialog *id = new ImageDialog(this);
-    id->setAttribute(Qt::WA_DeleteOnClose);
-    connect(id, SIGNAL(setGeometry(int, int, int, int)), this,
-            SLOT(setWindowGeometry(int, int, int, int)));
-
-    id->setWindowTitle(tr("Window Geometry"));
-    id->setOrigin(w->pos());
-    id->setSize(w->size());
-    id->exec();
+    runWindowGeometryDialog(this, w);
 }
 
 void ApplicationWindow::resizeWindow()
@@ -15544,21 +15725,13 @@ void ApplicationWindow::resizeWindow()
         return;
 
     d_workspace.setActiveSubWindow(w);
-
-    ImageDialog *id = new ImageDialog(this);
-    id->setAttribute(Qt::WA_DeleteOnClose);
-    connect(id, SIGNAL(setGeometry(int, int, int, int)), this,
-            SLOT(setWindowGeometry(int, int, int, int)));
-
-    id->setWindowTitle(tr("Window Geometry"));
-    id->setOrigin(w->pos());
-    id->setSize(w->size());
-    id->exec();
+    runWindowGeometryDialog(this, w);
 }
 
 void ApplicationWindow::setWindowGeometry(int x, int y, int w, int h)
 {
-    d_workspace.activeSubWindow()->setGeometry(x, y, w, h);
+    if (QMdiSubWindow *sw = d_workspace.activeSubWindow())
+        sw->setGeometry(x, y, w, h);
 }
 
 void ApplicationWindow::activateSubWindow()
@@ -15754,6 +15927,8 @@ void ApplicationWindow::closeWindow(MyWidget *window)
     } else {
         window->deleteLater();
     }
+    if (d_workspace.subWindowList().isEmpty() && actionPasteSelection)
+        actionPasteSelection->setEnabled(true);
     emit modified();
 }
 
@@ -16411,8 +16586,7 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
         }
         if (t->d_future_table) {
             t->d_future_table->setImportSource(path, QString(), report.separator, report.encoding,
-                                               report.headerLines,
-                                               report.unitsRowDetected ? 1 : 0, t->numCols());
+                                               0, -1, t->numCols());
         }
 
         if (autoPlotLine && anyNumeric && t->numCols() >= 2) {
@@ -25990,36 +26164,97 @@ void ApplicationWindow::appendProject(const QString &fn)
         baseName += QString::number(n);
     }
 
+    QUndoStack *projUndo = d_project ? d_project->undoStack() : nullptr;
+    const int prevUndoIndex = projUndo ? projUndo->index() : 0;
+    const QUndoCommand *prevTopCmd =
+            (projUndo && prevUndoIndex > 0) ? projUndo->command(prevUndoIndex - 1) : nullptr;
+    struct ScopedAppendMacro
+    {
+        QUndoStack *stack = nullptr;
+        bool active = false;
+        explicit ScopedAppendMacro(QUndoStack *s, const QString &text) : stack(s)
+        {
+            if (stack) {
+                stack->beginMacro(text);
+                active = true;
+            }
+        }
+        void close()
+        {
+            if (active && stack) {
+                active = false;
+                stack->endMacro();
+            }
+        }
+        ~ScopedAppendMacro() { close(); }
+    } appendMacro(projUndo, tr("Append project"));
+
     Folder *appendedRoot = &current_folder->addChild<Folder>(baseName);
     current_folder = appendedRoot;
     FolderListItem *fli = new FolderListItem(item, current_folder);
     current_folder->setFolderListItem(fli);
+
+    auto abortAppendCleanup = [&]() {
+        // Close non-aspect views first, roll back and purge partial undo commands before
+        // removing leftover folders so prior user undo history remains intact.
+        QVector<Folder *> pending;
+        pending.append(appendedRoot);
+        while (!pending.isEmpty()) {
+            Folder *node = pending.takeLast();
+            if (!node)
+                continue;
+            const QList<MyWidget *> wins = node->windowsList();
+            for (MyWidget *mw : wins) {
+                if (!mw)
+                    continue;
+                mw->askOnCloseEvent(false);
+                if (!qobject_cast<Table *>(mw) && !qobject_cast<Matrix *>(mw))
+                    closeWindow(mw);
+            }
+            for (QObject *obj : node->children()) {
+                if (Folder *sub = qobject_cast<Folder *>(obj))
+                    pending.append(sub);
+            }
+        }
+
+        appendMacro.close();
+        if (projUndo) {
+            const bool pushedMacro = (projUndo->index() > prevUndoIndex)
+                    || (projUndo->index() > 0
+                        && projUndo->command(projUndo->index() - 1) != prevTopCmd);
+            if (pushedMacro) {
+                ScopedUndoReplayGuard replayGuard(this);
+                projUndo->undo();
+                projUndo->push(new ObsoletePurgeCmd());
+            }
+        }
+
+        const bool prevConfirm = confirmCloseFolder;
+        const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
+        confirmCloseFolder = false;
+        d_suppress_delete_folder_undo_clear = true;
+        deleteFolder(appendedRoot);
+        d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
+        confirmCloseFolder = prevConfirm;
+
+        current_folder = cf;
+        if (cf && cf->folderListItem())
+            folders.setCurrentItem(cf->folderListItem());
+        folders.blockSignals(false);
+        changeFolder(cf, true);
+        blockSignals(false);
+        renamedTables.clear();
+        if (!nonInteractive)
+            QApplication::restoreOverrideCursor();
+    };
 
     if (fn.endsWith(".opju", Qt::CaseInsensitive)) {
         file->close();
         delete file;
         QString opjuErr;
         if (!ImportOPJU::importFile(this, fn, &opjuErr)) {
-            for (MyWidget *mw : appendedRoot->windowsList()) {
-                if (mw)
-                    mw->askOnCloseEvent(false);
-            }
-            const bool prevConfirm = confirmCloseFolder;
-            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
-            confirmCloseFolder = false;
-            d_suppress_delete_folder_undo_clear = true;
-            deleteFolder(appendedRoot);
-            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
-            confirmCloseFolder = prevConfirm;
-            current_folder = cf;
-            if (cf && cf->folderListItem())
-                folders.setCurrentItem(cf->folderListItem());
-            folders.blockSignals(false);
-            changeFolder(cf, true);
-            blockSignals(false);
-            renamedTables.clear();
+            abortAppendCleanup();
             if (!nonInteractive) {
-                QApplication::restoreOverrideCursor();
                 QMessageBox::warning(
                         this, tr("Origin OPJU Import Error"),
                         tr("Failed to import Origin Unicode project (.opju):\n%1")
@@ -26036,26 +26271,7 @@ void ApplicationWindow::appendProject(const QString &fn)
         file->close();
         delete file;
         if (importer.error() != 0) {
-            for (MyWidget *mw : appendedRoot->windowsList()) {
-                if (mw)
-                    mw->askOnCloseEvent(false);
-            }
-            const bool prevConfirm = confirmCloseFolder;
-            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
-            confirmCloseFolder = false;
-            d_suppress_delete_folder_undo_clear = true;
-            deleteFolder(appendedRoot);
-            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
-            confirmCloseFolder = prevConfirm;
-            current_folder = cf;
-            if (cf && cf->folderListItem())
-                folders.setCurrentItem(cf->folderListItem());
-            folders.blockSignals(false);
-            changeFolder(cf, true);
-            blockSignals(false);
-            renamedTables.clear();
-            if (!nonInteractive)
-                QApplication::restoreOverrideCursor();
+            abortAppendCleanup();
             return;
         }
     }
@@ -26068,22 +26284,7 @@ void ApplicationWindow::appendProject(const QString &fn)
         }
         file->close();
         delete file;
-        const bool prevConfirm = confirmCloseFolder;
-        const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
-        confirmCloseFolder = false;
-        d_suppress_delete_folder_undo_clear = true;
-        deleteFolder(appendedRoot);
-        d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
-        confirmCloseFolder = prevConfirm;
-        current_folder = cf;
-        if (cf && cf->folderListItem())
-            folders.setCurrentItem(cf->folderListItem());
-        folders.blockSignals(false);
-        changeFolder(cf, true);
-        blockSignals(false);
-        renamedTables.clear();
-        if (!nonInteractive)
-            QApplication::restoreOverrideCursor();
+        abortAppendCleanup();
         return;
     }
 #endif
@@ -26332,22 +26533,7 @@ void ApplicationWindow::appendProject(const QString &fn)
         delete file;
 
         if (truncatedProject || property("_tg_load_truncated").toBool()) {
-            const bool prevConfirm = confirmCloseFolder;
-            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
-            confirmCloseFolder = false;
-            d_suppress_delete_folder_undo_clear = true;
-            deleteFolder(appendedRoot);
-            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
-            confirmCloseFolder = prevConfirm;
-            current_folder = cf;
-            if (cf && cf->folderListItem())
-                folders.setCurrentItem(cf->folderListItem());
-            folders.blockSignals(false);
-            changeFolder(cf, true);
-            blockSignals(false);
-            renamedTables.clear();
-            if (!nonInteractive)
-                QApplication::restoreOverrideCursor();
+            abortAppendCleanup();
             bool backupAccepted = false;
             if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
                 appendProject(fn + QStringLiteral("~"));
@@ -26364,6 +26550,7 @@ void ApplicationWindow::appendProject(const QString &fn)
         }
     }
 
+    appendMacro.close();
     if (cf && cf->folderListItem())
         folders.setCurrentItem(cf->folderListItem());
     folders.blockSignals(false);
@@ -27330,6 +27517,7 @@ bool ApplicationWindow::changeFolder(Folder *newFolder, bool force)
     scheduleSyncWorkspaceHiddenTabs(this);
 
     filterExplorerWindows();
+    syncExplorerSelectionToWindow(lv, active_window);
     return true;
 }
 
@@ -27396,9 +27584,10 @@ void ApplicationWindow::windowProperties()
     if (isNonInteractiveContext(this))
         return;
 
-    WindowListItem *it = (WindowListItem *)lv.currentItem();
-    if (!it)
+    QTreeWidgetItem *cur = lv.currentItem();
+    if (!cur || cur->type() != WindowListItem::WindowType)
         return;
+    WindowListItem *it = static_cast<WindowListItem *>(cur);
     MyWidget *w = it->window();
     if (!w)
         return;
@@ -27577,57 +27766,79 @@ void ApplicationWindow::dropFolderItems(QTreeWidgetItem *dest)
 
 void ApplicationWindow::moveFolder(FolderListItem *src, FolderListItem *dest)
 {
-    folders.blockSignals(true);
+    if (!src || !dest || src == dest)
+        return;
 
-    Folder *dest_f = dest->folder();
-    Folder *src_f = src->folder();
+    Folder *destRoot = dest->folder();
+    Folder *srcRoot = src->folder();
+    if (!destRoot || !srcRoot || destRoot == srcRoot)
+        return;
 
-    dest_f = &dest_f->addChild<Folder>(src_f->name());
-    dest_f->setBirthDate(src_f->birthDate());
-    dest_f->setModificationDate(src_f->modificationDate());
-
-    FolderListItem *copy_item = new FolderListItem(dest, dest_f);
-    copy_item->setText(0, src_f->name());
-    dest_f->setFolderListItem(copy_item);
-
-    QList<MyWidget *> lst = src_f->windowsList();
-    foreach (MyWidget *w, lst) {
-        src_f->removeWindow(w);
-        w->hide();
-        dest_f->addWindow(w);
+    // Guard against moving a folder into itself or one of its descendants.
+    for (QObject *p = destRoot; p; p = p->parent()) {
+        if (p == srcRoot)
+            return;
     }
 
-    if (!(src_f->children()).isEmpty()) {
-        FolderListItem *item = (FolderListItem *)src->child(0);
-        int initial_depth = item->depth();
-        QTreeWidgetItemIterator it(item);
-        while (item && item->depth() >= initial_depth) {
-            src_f = (Folder *)item->folder();
+    QSignalBlocker sbFolders(&folders);
+    QSet<Folder *> movedOldFolders;
 
-            dest_f = &dest_f->addChild<Folder>(src_f->name());
-            dest_f->setBirthDate(src_f->birthDate());
-            dest_f->setModificationDate(src_f->modificationDate());
+    std::function<void(Folder *, Folder *, FolderListItem *)> cloneSubtree =
+            [&](Folder *oldFolder, Folder *destParentFolder, FolderListItem *destParentItem) {
+                if (!oldFolder || !destParentFolder || !destParentItem)
+                    return;
 
-            copy_item = new FolderListItem(copy_item, dest_f);
-            copy_item->setText(0, src_f->name());
-            dest_f->setFolderListItem(copy_item);
+                movedOldFolders.insert(oldFolder);
 
-            lst = QList<MyWidget *>(src_f->windowsList());
-            foreach (MyWidget *w, lst) {
-                src_f->removeWindow(w);
-                w->hide();
-                dest_f->addWindow(w);
-            }
+                Folder *newFolder = &destParentFolder->addChild<Folder>(oldFolder->name());
+                newFolder->setBirthDate(oldFolder->birthDate());
+                newFolder->setModificationDate(oldFolder->modificationDate());
 
-            it++;
-            item = (FolderListItem *)(*it);
+                FolderListItem *newItem = new FolderListItem(destParentItem, newFolder);
+                newItem->setText(0, oldFolder->name());
+                newFolder->setFolderListItem(newItem);
+
+                MyWidget *oldActive = oldFolder->activeWindow();
+                const QList<MyWidget *> wins = oldFolder->windowsList();
+                for (MyWidget *w : wins) {
+                    if (!w)
+                        continue;
+                    oldFolder->removeWindow(w);
+                    w->hide();
+                    newFolder->addWindow(w);
+                }
+                if (oldActive)
+                    newFolder->setActiveWindow(oldActive);
+                if (d_folder_active_windows.contains(oldFolder))
+                    d_folder_active_windows.insert(newFolder,
+                                                   d_folder_active_windows.take(oldFolder));
+                if (current_folder == oldFolder)
+                    current_folder = newFolder;
+
+                QList<Folder *> subFolders;
+                for (QObject *obj : oldFolder->children()) {
+                    if (Folder *sub = qobject_cast<Folder *>(obj))
+                        subFolders.append(sub);
+                }
+                for (Folder *sub : subFolders)
+                    cloneSubtree(sub, newFolder, newItem);
+
+                oldFolder->setFolderListItem(nullptr);
+            };
+
+    cloneSubtree(srcRoot, destRoot, dest);
+
+    for (int i = lv.topLevelItemCount() - 1; i >= 0; --i) {
+        QTreeWidgetItem *it = lv.topLevelItem(i);
+        if (it && it->type() == FolderListItem::FolderType) {
+            Folder *lf = static_cast<FolderListItem *>(it)->folder();
+            if (movedOldFolders.contains(lf))
+                delete lv.takeTopLevelItem(i);
         }
     }
 
-    src_f = src->folder();
-    delete src_f;
     delete src;
-    folders.blockSignals(false);
+    delete srcRoot;
 }
 
 #ifdef SEARCH_FOR_UPDATES
@@ -27910,8 +28121,12 @@ ApplicationWindow::~ApplicationWindow()
     // entry stays until a new ApplicationWindow is constructed at the same address: QWidget and
     // QObject still delete children after the members are gone.
     applicationWindowsBeingDestroyed().insert(this);
-    if (d_project && d_project->undoStack())
-        disconnect(d_project->undoStack(), nullptr, this, nullptr);
+    if (d_project) {
+        d_project->blockSignals(true);
+        disconnect(d_project, nullptr, this, nullptr);
+        if (d_project->undoStack())
+            disconnect(d_project->undoStack(), nullptr, this, nullptr);
+    }
     {
         QSet<MultiLayer *> allMls;
         for (MultiLayer *ml : findChildren<MultiLayer *>()) {
@@ -27974,6 +28189,64 @@ ApplicationWindow::~ApplicationWindow()
 
     d_workspace.blockSignals(true);
     disconnect(&d_workspace, nullptr, this, nullptr);
+    folders.blockSignals(true);
+    disconnect(&folders, nullptr, this, nullptr);
+    lv.blockSignals(true);
+    disconnect(&lv, nullptr, this, nullptr);
+    lv.clear();
+
+    // Destroy workspace / hidden / detached subwindows (non-data views before Table/Matrix)
+    // while d_project is still alive so views detach cleanly without double-freeing
+    // undo-retained aspects, then delete d_project to reclaim all project & undo memory.
+    {
+        QList<QPointer<MyWidget>> nonDataWins;
+        QList<QPointer<MyWidget>> dataWins;
+        QSet<MyWidget *> seenWins;
+        auto collectWin = [&](MyWidget *w) {
+            if (!w || seenWins.contains(w))
+                return;
+            seenWins.insert(w);
+            if (qobject_cast<Table *>(w) || qobject_cast<Matrix *>(w))
+                dataWins.append(QPointer<MyWidget>(w));
+            else
+                nonDataWins.append(QPointer<MyWidget>(w));
+        };
+        for (QMdiSubWindow *sw : d_workspace.subWindowList())
+            collectWin(qobject_cast<MyWidget *>(sw));
+        for (MyWidget *hw : hiddenWindows)
+            collectWin(hw);
+        for (MyWidget *ow : outWindows)
+            collectWin(ow);
+        for (MyWidget *cw : findChildren<MyWidget *>())
+            collectWin(cw);
+
+        hiddenWindows.clear();
+        outWindows.clear();
+        d_folder_active_windows.clear();
+
+        auto destroyWin = [&](const QPointer<MyWidget> &gp) {
+            MyWidget *w = gp.data();
+            if (!w)
+                return;
+            w->askOnCloseEvent(false);
+            w->hide();
+            if (Folder *wf = w->folder())
+                wf->removeWindow(w);
+            d_workspace.removeSubWindow(w);
+            w->setAttribute(Qt::WA_DeleteOnClose, false);
+            w->setParent(nullptr);
+            delete w;
+        };
+        for (const QPointer<MyWidget> &gp : nonDataWins)
+            destroyWin(gp);
+        if (lastCopiedLayer) {
+            delete lastCopiedLayer;
+            lastCopiedLayer = nullptr;
+        }
+        for (const QPointer<MyWidget> &gp : dataWins)
+            destroyWin(gp);
+    }
+
     if (d_central_container) {
         if (QLayout *lay = d_central_container->layout())
             lay->removeWidget(&d_workspace);
@@ -27984,8 +28257,10 @@ ApplicationWindow::~ApplicationWindow()
         d_central_container = nullptr;
     }
 
-    if (lastCopiedLayer)
-        delete lastCopiedLayer;
+    if (d_project) {
+        delete d_project;
+        d_project = nullptr;
+    }
 
     releaseProjectFileLock();
     untrackOpenedProjectFile();
@@ -29103,9 +29378,8 @@ void ApplicationWindow::showHistory()
     if (dialog.exec() == QDialog::Accepted)
         return;
 
-    Table::beginUndoRedoReplay();
+    ScopedUndoReplayGuard replayGuard(this);
     targetStack->setIndex(index);
-    Table::endUndoRedoReplay();
 }
 
 QStringList ApplicationWindow::tableWindows()
@@ -33108,9 +33382,21 @@ void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *
         }
     }
 
+    QWidget *activeModal = QApplication::activeModalWidget();
     const QList<QDialog *> childDialogs = findChildren<QDialog *>();
     for (QDialog *dlg : childDialogs) {
         if (!dlg || dlg == excludeDlg || dlg->isModal())
+            continue;
+        if (activeModal && (activeModal == dlg || dlg->isAncestorOf(activeModal)))
+            continue;
+        bool hasActiveModalChild = false;
+        for (QDialog *sub : dlg->findChildren<QDialog *>()) {
+            if (sub && sub != dlg && sub->isVisible() && sub->isModal()) {
+                hasActiveModalChild = true;
+                break;
+            }
+        }
+        if (hasActiveModalChild)
             continue;
         const QVariant targetVar = dlg->property("targetMultiLayerPtr");
         bool shouldInvalidate = false;
@@ -33735,8 +34021,10 @@ void ApplicationWindow::plotPolarData()
     }
 
     if (radiusCols.isEmpty()) {
-        QMessageBox::warning(this, tr("Polar Plot"),
-                             tr("Please select at least one radius column."));
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Polar Plot"),
+                                 tr("Please select at least one radius column."));
+        }
         return;
     }
 
@@ -33779,8 +34067,10 @@ void ApplicationWindow::plotPolarData()
     if (plottedSeries == 0) {
         ml->askOnCloseEvent(false);
         closeWindow(ml);
-        QMessageBox::warning(this, tr("Polar Plot"),
-                             tr("No valid finite (theta, r) numeric pairs were found."));
+        if (!isNonInteractiveContext(this)) {
+            QMessageBox::warning(this, tr("Polar Plot"),
+                                 tr("No valid finite (theta, r) numeric pairs were found."));
+        }
         return;
     }
     ToriUx::dismissPlotThisDataBar(t);

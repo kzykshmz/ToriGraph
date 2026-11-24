@@ -375,8 +375,10 @@ RecalcManager *RecalcManager::instance(ApplicationWindow *app)
 void RecalcManager::pruneDeadLinks()
 {
     for (int i = d_links.size() - 1; i >= 0; --i) {
-        if (d_links[i].graph.isNull() || d_links[i].srcTable.isNull())
+        if (d_links[i].graph.isNull() || d_links[i].srcTable.isNull()
+            || (d_links[i].app.isNull() && d_app.isNull())) {
             d_links.removeAt(i);
+        }
     }
 }
 
@@ -615,7 +617,7 @@ int RecalcManager::activeLinkCount(Graph *g) const
 bool RecalcManager::hasDirtyLinks(Graph *g) const
 {
     for (const RecalcLink &lnk : d_links) {
-        if (lnk.graph.isNull() || lnk.srcTable.isNull())
+        if (lnk.graph.isNull() || lnk.srcTable.isNull() || (lnk.app.isNull() && d_app.isNull()))
             continue;
         if ((!g || lnk.graph == g) && lnk.dirty)
             return true;
@@ -636,7 +638,7 @@ int RecalcManager::recalculateAll(Graph *filterGraph)
     QVector<int> linkIds;
     linkIds.reserve(d_links.size());
     for (const RecalcLink &lnk : d_links) {
-        if (!lnk.graph || !lnk.srcTable)
+        if (!lnk.graph || !lnk.srcTable || (!lnk.app && !d_app))
             continue;
         if (filterGraph && lnk.graph != filterGraph)
             continue;
@@ -645,8 +647,10 @@ int RecalcManager::recalculateAll(Graph *filterGraph)
 
     for (int id : linkIds) {
         const int idx = findLinkIndexById(id);
-        if (idx < 0 || !d_links[idx].graph || !d_links[idx].srcTable)
+        if (idx < 0 || !d_links[idx].graph || !d_links[idx].srcTable
+            || (!d_links[idx].app && !d_app)) {
             continue;
+        }
         QPointer<Graph> gPtr = d_links[idx].graph;
         if (executeLinkById(id)) {
             const int postIdx = findLinkIndexById(id);

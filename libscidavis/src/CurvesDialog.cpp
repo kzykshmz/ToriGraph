@@ -52,6 +52,7 @@
 #include <QShortcut>
 #include <QKeySequence>
 #include <QMenu>
+#include <QPointer>
 #include <QSignalBlocker>
 
 #include <QMessageBox>
@@ -348,7 +349,10 @@ void CurvesDialog::showCurveRangeDialog()
 
     ApplicationWindow *app = appWindow();
     if (app) {
+        QPointer<CurvesDialog> self(this);
         app->showCurveRangeDialog(d_graphGuard.data(), curve);
+        if (!self)
+            return;
         if (d_graphGuard)
             updateCurveRange();
     }
@@ -364,12 +368,15 @@ void CurvesDialog::showPlotAssociations()
 
     ApplicationWindow *app = appWindow();
     if (app) {
-        AssociationsDialog ad(this, Qt::WindowStaysOnTopHint);
+        QPointer<CurvesDialog> self(this);
+        AssociationsDialog ad(app, Qt::WindowStaysOnTopHint);
         if (MultiLayer *ml = d_graphGuard->multiLayerParent())
             ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
         ad.setGraph(d_graphGuard.data());
         ad.initTablesList(app->tableList(), curve);
         ad.exec();
+        if (!self)
+            return;
         if (d_graphGuard) {
             setGraph(d_graphGuard.data());
             updateCurveRange();
