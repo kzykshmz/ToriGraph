@@ -1479,7 +1479,7 @@ public:
                 if (!mwGuard)
                     return;
                 auto clearSavedClean = [mwGuard]() {
-                    if (mwGuard) {
+                    if (mwGuard && mwGuard->isOleEmbeddedMode()) {
                         mwGuard->setProperty("_toriLastOleSaveOk", true);
                         mwGuard->setProperty("_toriLastOleSaveError", QString());
                     }
@@ -1654,6 +1654,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Update() override
     {
+        ComPtr<IOleObject> alive(this);
         syncFromEditor();
         return S_OK;
     }
@@ -1733,6 +1734,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE IsDirty() override
     {
+        ComPtr<IOleObject> alive(this);
         try {
             syncFromEditor();
         } catch (...) {
@@ -1857,6 +1859,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Save(LPCOLESTR path, BOOL remember) override
     {
+        ComPtr<IOleObject> alive(this);
         syncFromEditor();
         std::wstring target = path ? path : m_filename;
         if (target.empty())
@@ -1891,6 +1894,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetData(FORMATETC *f, STGMEDIUM *m) override
     {
+        ComPtr<IOleObject> alive(this);
         if (!m)
             return E_POINTER;
         *m = {};

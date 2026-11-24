@@ -2929,6 +2929,11 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
             onClose();
         if (!self)
             return;
+        if (!d_ole_embedded) {
+            d_ole_on_close = nullptr;
+            ce->ignore();
+            return;
+        }
         const QVariant okProp = property("_toriLastOleSaveOk");
         const bool oleOk = okProp.isValid() ? okProp.toBool() : true;
         if (!oleOk) {

@@ -2039,6 +2039,8 @@ bool ApplicationWindow::saveProject()
             onUpdate();
         if (!self)
             return false;
+        if (!d_ole_embedded)
+            return false;
         const QVariant okProp = property("_toriLastOleSaveOk");
         const bool oleOk = okProp.isValid() ? okProp.toBool() : true;
         if (!oleOk) {
