@@ -32,11 +32,14 @@
 #include <QTableView>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUndoStack>
+#include <QUndoView>
 
 #include <cstring>
+#include <functional>
 
 namespace {
 
@@ -110,6 +113,7 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
     bool containerDead = false;
     int saveObjectCount = 0;
     HRESULT saveObjectHr = S_OK;
+    std::function<void()> onSaveObject;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
     {
@@ -131,6 +135,8 @@ struct MockDeadClientSite80 final : public IOleClientSite, public IAdviseSink
     HRESULT STDMETHODCALLTYPE SaveObject() override
     {
         ++saveObjectCount;
+        if (auto cb = onSaveObject)
+            cb();
         return saveObjectHr;
     }
     HRESULT STDMETHODCALLTYPE GetMoniker(DWORD, DWORD, IMoniker **m) override
@@ -650,6 +656,48 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             obj4.Reset();
             pumpEventsMs80(25);
         }
+
+        // Subtest 5 (Round 8 OLE teardown & re-entrant SaveObject -> Close(OLECLOSE_NOSAVE)):
+        // Re-entrant COM IOleObject::Close() inside SaveObject() during ed5->saveProject() must
+        // neither UAF `ed5` (`ApplicationWindow *this`) nor show a spurious save-failure warning.
+        {
+            const int baseLive5 = SciDAVisOle::liveGraphObjectCountForTesting();
+            MockDeadClientSite80 site5;
+            ComPtr<IOleObject> obj5;
+            CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay, IID_PPV_ARGS(&obj5))) && obj5,
+                       "80a-5: createGraphObject(obj5) failed");
+            CHECK_COND(SUCCEEDED(obj5->SetClientSite(&site5)), "80a-5: SetClientSite failed");
+
+            const QSet<ApplicationWindow *> before5 = snapshotTopApps();
+            CHECK_COND(SUCCEEDED(obj5->DoVerb(OLEIVERB_OPEN, nullptr, &site5, 0, nullptr, nullptr)),
+                       "80a-5: DoVerb(obj5) failed");
+            QApplication::processEvents();
+            QPointer<ApplicationWindow> ed5 = findNewOleEditor80(before5);
+            CHECK_COND(!ed5.isNull() && ed5->isOleEmbeddedMode(), "80a-5: ed5 open failed");
+
+            ed5->modifiedProject();
+            bool closedOnce5 = false;
+            site5.onSaveObject = [&]() {
+                if (closedOnce5)
+                    return;
+                closedOnce5 = true;
+                obj5->Close(OLECLOSE_NOSAVE);
+            };
+            const bool saved5 = ed5->saveProject();
+            QApplication::setQuitOnLastWindowClosed(false);
+            pumpEventsMs80(35);
+            obj5.Reset();
+            pumpEventsMs80(25);
+
+            CHECK_COND(closedOnce5, "80a-5: onSaveObject did not trigger re-entrant Close()");
+            CHECK_COND(saved5 || ed5.isNull(),
+                       "80a-5: saveProject flagged spurious failure after clean re-entrant Close()");
+            CHECK_COND(ed5.isNull(), "80a-5: ed5 was not deferred-destroyed after Close()");
+            CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive5,
+                       "80a-5: OLE object leaked after re-entrant Close (got "
+                               << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
+                               << baseLive5 << ")");
+        }
     }
 #endif
 
@@ -885,6 +933,93 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             CHECK_COND(restoredClose != nullptr
                                && std::fabs(restoredClose->cell(0, 1) - 42.5) < 1e-9,
                        "80b-close-uaf: Undo did not restore closed table");
+        }
+
+        // Round 8 P0 (`ApplicationWindow::showHistory`): stepping forward inside QUndoView modal
+        // exec() over insertRows() must run under ScopedUndoReplayGuard so handleRowsAboutToBeInserted
+        // does not push a competing command onto d_project->undoStack() mid-setIndex().
+        {
+            Table *tHist = w80->newTable(3, 2, "T80Hist", "Hist80");
+            CHECK_COND(tHist != nullptr && tHist->d_future_table != nullptr,
+                       "80b-history: newTable failed");
+            w80->d_workspace.setActiveSubWindow(tHist);
+            QCoreApplication::processEvents();
+
+            w80->project()->undoStack()->clear();
+            tHist->d_future_table->insertRows(0, 2);
+            QCoreApplication::processEvents();
+            CHECK_COND(tHist->numRows() == 5 && w80->project()->undoStack()->count() == 1,
+                       "80b-history: insertRows setup failed (rows=" << tHist->numRows() << ")");
+
+            w80->project()->undoStack()->undo();
+            QCoreApplication::processEvents();
+            CHECK_COND(tHist->numRows() == 3 && w80->project()->undoStack()->canRedo(),
+                       "80b-history: pre-showHistory undo failed (rows=" << tHist->numRows() << ")");
+
+            struct HistInteractiveGuard
+            {
+                ApplicationWindow *app = nullptr;
+                QVariant prevProp;
+                bool prevHeadless = true;
+                explicit HistInteractiveGuard(ApplicationWindow *w)
+                    : app(w)
+                    , prevProp(qApp->property("torigraph_noninteractive"))
+                    , prevHeadless(w ? w->isHeadlessMode() : true)
+                {
+                    qApp->setProperty("torigraph_noninteractive", false);
+                    if (app)
+                        app->setHeadlessMode(false);
+                }
+                ~HistInteractiveGuard()
+                {
+                    qApp->setProperty("torigraph_noninteractive", prevProp);
+                    if (app)
+                        app->setHeadlessMode(prevHeadless);
+                }
+            } histInteractive(w80);
+
+            bool sawHistDialog = false;
+            bool replayingInsideDialog = false;
+            int rowsAfterRedoInsideDialog = -1;
+            int countAfterRedoInsideDialog = -1;
+            QTimer histTimer;
+            histTimer.setInterval(15);
+            QObject::connect(&histTimer, &QTimer::timeout, [&]() {
+                if (sawHistDialog)
+                    return;
+                QDialog *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!dlg)
+                    return;
+                if (dlg->windowTitle().contains(QStringLiteral("History"))
+                    || dlg->findChild<QUndoView *>() != nullptr) {
+                    sawHistDialog = true;
+                    replayingInsideDialog = Table::isUndoRedoReplaying();
+                    QUndoStack *stk = w80->project()->undoStack();
+                    stk->setIndex(stk->count());
+                    rowsAfterRedoInsideDialog = tHist->numRows();
+                    countAfterRedoInsideDialog = stk->count();
+                    dlg->reject();
+                }
+            });
+            histTimer.start();
+            w80->showHistory();
+            histTimer.stop();
+            QCoreApplication::processEvents();
+
+            CHECK_COND(sawHistDialog && replayingInsideDialog,
+                       "80b-history: showHistory dialog/replay guard inactive (saw="
+                               << sawHistDialog << ", replaying=" << replayingInsideDialog << ")");
+            CHECK_COND(rowsAfterRedoInsideDialog == 5 && countAfterRedoInsideDialog == 1,
+                       "80b-history: mid-redo inside showHistory pushed extra command or wrong rows (rows="
+                               << rowsAfterRedoInsideDialog << ", count=" << countAfterRedoInsideDialog
+                               << ")");
+            CHECK_COND(!Table::isUndoRedoReplaying(),
+                       "80b-history: ScopedUndoReplayGuard leaked replaying flag after showHistory");
+            CHECK_COND(tHist->numRows() == 3 && w80->project()->undoStack()->canRedo()
+                               && w80->project()->undoStack()->count() == 1,
+                       "80b-history: Cancel did not cleanly restore row count & redo history (rows="
+                               << tHist->numRows()
+                               << ", canRedo=" << w80->project()->undoStack()->canRedo() << ")");
         }
     }
 
@@ -1315,6 +1450,7 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                 fdDead->showFitPage();
 
                                 bool sawFitDeadBox = false;
+                                bool reenteredAccept = false;
                                 QString capturedBoxText;
                                 QTimer fitDeadTimer;
                                 fitDeadTimer.setInterval(10);
@@ -1335,6 +1471,10 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                         return;
                                     sawFitDeadBox = true;
                                     capturedBoxText = mb->text();
+                                    if (!reenteredAccept && fdDead) {
+                                        reenteredAccept = true;
+                                        fdDead->accept();
+                                    }
                                     if (fdDead) {
                                         QPointer<FitDialog> target = fdDead;
                                         target->close();
@@ -1936,17 +2076,62 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             dock80->setTargetMultiLayer(mlDiag, true);
             QCoreApplication::processEvents();
 
-            // Round 7 P1 (07_inspector_page_ja): switching to Overall/Page tab before viewport
-            // auto-fit resize must NOT snap back to Curve tab via modifiedPlot coalesced refresh.
+            // Round 7 + Round 8 P1: with a Curve actively selected (would otherwise snap to
+            // PageTabCurve), resizing/auto-fitting page zoom emits pageZoomChanged (syncing
+            // StatusBarPageZoomBtn) WITHOUT emitting spurious modifiedPlot(), AND explicit
+            // modifiedPlot() coalesced refresh preserves the user's chosen PageTabPageLayer.
+            gDiag->setCurrentSelection({ Graph::GraphSelection::Curve, 0, -1 });
+            QCoreApplication::processEvents();
+            CHECK_COND(gDiag->currentSelection().kind == Graph::GraphSelection::Curve
+                               && dock80->propertyStack()
+                               && dock80->propertyStack()->currentIndex()
+                                          == GraphInspectorDock::PageTabCurve,
+                       "80f-page-tab-preserve: failed initial Curve selection setup");
+
             dock80->switchToInspectorPage(GraphInspectorDock::PageTabPageLayer);
             QCoreApplication::processEvents();
-            CHECK_COND(dock80->propertyStack() && dock80->propertyStack()->currentIndex() == 0,
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
                        "80f-page-tab-preserve: failed to switch to PageTabPageLayer");
+
+            int modCount = 0;
+            int zoomSigCount = 0;
+            QObject::connect(mlDiag, &MultiLayer::modifiedPlot, mlDiag, [&]() { ++modCount; });
+            QObject::connect(mlDiag, &MultiLayer::pageZoomChanged, mlDiag,
+                             [&](double) { ++zoomSigCount; });
+
             wDiag->resize(1366, 768);
             pumpEventsMs80(90);
-            CHECK_COND(dock80->propertyStack()->currentIndex() == 0,
+
+            QToolButton *statusZoomBtn =
+                    wDiag->findChild<QToolButton *>(QStringLiteral("StatusBarPageZoomBtn"));
+            const QString expectedZoomText =
+                    QStringLiteral("%1%").arg(qMax(10, qRound(mlDiag->pageZoom() * 100.0)));
+            CHECK_COND(zoomSigCount >= 1 && modCount == 0,
+                       "80f-page-tab-preserve: expected pageZoomChanged>=1 & modCount==0 on resize (zoomSig="
+                               << zoomSigCount << ", modCount=" << modCount << ")");
+            CHECK_COND(statusZoomBtn != nullptr && statusZoomBtn->text() == expectedZoomText,
+                       "80f-page-tab-preserve: StatusBarPageZoomBtn out of sync with pageZoom (btn='"
+                               << (statusZoomBtn ? statusZoomBtn->text().toStdString() : "<null>")
+                               << "', expected='" << expectedZoomText.toStdString() << "')");
+            CHECK_COND(dock80->propertyStack()->currentIndex()
+                               == GraphInspectorDock::PageTabPageLayer,
                        "80f-page-tab-preserve: P1 regression! resize snapped Inspector away from Page tab to index "
                                << dock80->propertyStack()->currentIndex());
+
+            QMetaObject::invokeMethod(mlDiag, "modifiedPlot", Qt::DirectConnection);
+            pumpEventsMs80(60);
+            CHECK_COND(modCount >= 1
+                               && dock80->propertyStack()->currentIndex()
+                                          == GraphInspectorDock::PageTabPageLayer,
+                       "80f-page-tab-preserve: modifiedPlot coalesced refresh snapped away from Page tab (index="
+                               << dock80->propertyStack()->currentIndex() << ")");
+
+            // Positive control: explicit syncInspectorFromSelection(true) still switches to Curve
+            dock80->syncInspectorFromSelection(true);
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack()->currentIndex() == GraphInspectorDock::PageTabCurve,
+                       "80f-page-tab-preserve: positive control syncInspectorFromSelection(true) did not switch to Curve");
 
             QTreeWidget *tree = dock80->objectTree();
             QTreeWidgetItem *curveItem = nullptr;
@@ -2057,6 +2242,66 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                            "80f-insp-color-uaf: modal color popup curve-deletion test failed (sawPopup="
                                    << sawColorPopup << ", clicked=" << clickedColorSwatch
                                    << ", curves=" << gColTest->curves() << ")");
+
+                // Subtest 2 (Round 8): destroying the parent GraphInspectorDock mid-modal
+                // pickColorInteractive QMenu::exec() must NOT destroy stack-allocated popup QMenu.
+                {
+                    Table *tCol2 = wDiag->newTable(4, 2, "T80ColDockDead", "ColDockDead80");
+                    for (int r = 0; r < 4; ++r) {
+                        tCol2->setCell(r, 0, double(r));
+                        tCol2->setCell(r, 1, double(r * 2 + 1));
+                    }
+                    MultiLayer *mlColDead = wDiag->multilayerPlot(
+                            tCol2, QStringList() << tCol2->colName(1), Graph::Scatter);
+                    Graph *gColDead = mlColDead ? mlColDead->activeGraph() : nullptr;
+                    CHECK_COND(gColDead && gColDead->curve(0),
+                               "80f-insp-color-uaf-parent: mlColDead setup failed");
+
+                    QPointer<GraphInspectorDock> tmpDock = new GraphInspectorDock(wDiag);
+                    tmpDock->setFloating(true);
+                    tmpDock->show();
+                    tmpDock->setCollapsedRail(false);
+                    tmpDock->setTargetMultiLayer(mlColDead, true);
+                    tmpDock->switchToInspectorPage(GraphInspectorDock::PageTabCurve);
+                    QCoreApplication::processEvents();
+
+                    QPushButton *btnTmp = nullptr;
+                    for (QPushButton *cand : tmpDock->findChildren<QPushButton *>(
+                                 QStringLiteral("InspectorColorSwatchBtn"))) {
+                        if (cand && cand->isVisible()) {
+                            btnTmp = cand;
+                            break;
+                        }
+                    }
+                    CHECK_COND(btnTmp != nullptr,
+                               "80f-insp-color-uaf-parent: visible InspectorColorSwatchBtn not found");
+
+                    bool sawParentDeadPopup = false;
+                    QTimer parentDeadTimer;
+                    parentDeadTimer.setInterval(15);
+                    QObject::connect(&parentDeadTimer, &QTimer::timeout, [&]() {
+                        auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                        if (!popup || sawParentDeadPopup)
+                            return;
+                        sawParentDeadPopup = true;
+                        if (tmpDock)
+                            delete tmpDock.data();
+                        for (QToolButton *sw : popup->findChildren<QToolButton *>()) {
+                            if (sw->toolTip().startsWith(QLatin1Char('#'))) {
+                                sw->click();
+                                return;
+                            }
+                        }
+                        popup->close();
+                    });
+                    parentDeadTimer.start();
+                    btnTmp->click();
+                    parentDeadTimer.stop();
+                    QCoreApplication::processEvents();
+                    CHECK_COND(sawParentDeadPopup && tmpDock.isNull(),
+                               "80f-insp-color-uaf-parent: destroying parent dock mid-QMenu::exec failed (saw="
+                                       << sawParentDeadPopup << ", null=" << tmpDock.isNull() << ")");
+                }
             }
         }
 
