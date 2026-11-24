@@ -61,7 +61,8 @@ public:
 
     int closestCurve(int xpos, int ypos, int &dist, int &point);
     int closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestVertexOut) const;
-    int closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) const;
+    int closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut,
+                         bool includeMasked = false, bool maskedOnly = false) const;
     QwtPlotCurve *curve(int index);
     QwtPlotItem *plotItem(int index) { return d_curves.value(index); };
     QMap<int, QwtPlotItem *> curves() { return d_curves; };

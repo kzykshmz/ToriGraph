@@ -115,8 +115,10 @@ DataPickerTool::~DataPickerTool()
 
 void DataPickerTool::append(const QPoint &pos)
 {
-    int dist, point_index;
-    const int curve = d_graph->plotWidget()->closestCurve(pos.x(), pos.y(), dist, point_index);
+    int dist = 99999, point_index = -1;
+    const int curve = (d_mode == Unmask)
+            ? d_graph->plotWidget()->closestDataPoint(pos, dist, point_index, true, true)
+            : d_graph->plotWidget()->closestCurve(pos.x(), pos.y(), dist, point_index);
     const int pixelTol = 10;
     if (curve < 0 || dist >= pixelTol) {
         setSelection(NULL, 0);

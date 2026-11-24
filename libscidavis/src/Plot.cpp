@@ -1583,7 +1583,8 @@ void Plot::clearHoverPoint()
     setHoverPoint(-1, -1);
 }
 
-int Plot::closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) const
+int Plot::closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut, bool includeMasked,
+                           bool maskedOnly) const
 {
     QwtScaleMap map[QwtPlot::axisCnt];
     for (int axis = 0; axis < QwtPlot::axisCnt; axis++)
@@ -1616,8 +1617,13 @@ int Plot::closestDataPoint(const QPoint &pos, int &distOut, int &vertexOut) cons
         const QwtScaleMap &yMap = map[qc->yAxis()];
         const int n = qc->dataSize();
         for (int i = 0; i < n; ++i) {
-            if (hasMasks && dc->isPointMaskedFast(i, xCol, yCol))
+            const bool isMasked = hasMasks && dc->isPointMaskedFast(i, xCol, yCol);
+            if (maskedOnly) {
+                if (!isMasked)
+                    continue;
+            } else if (!includeMasked && isMasked) {
                 continue;
+            }
             const double cx = xMap.xTransform(qc->x(i)) - pxClick;
             if (!std::isfinite(cx) || cx * cx >= bestD2)
                 continue;
