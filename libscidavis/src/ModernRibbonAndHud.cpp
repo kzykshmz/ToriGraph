@@ -117,8 +117,11 @@
 #include "future/table/TableModel.h"
 #include "future/table/future_Table.h"
 
+#include <QAbstractSpinBox>
 #include <QDateTime>
+#include <QPlainTextEdit>
 #include <QShortcut>
+#include <QTextEdit>
 #include <mutex>
 
 namespace {
@@ -146,6 +149,19 @@ static QString cleanMnemonicText(const QString &raw)
         out.append(raw.at(i));
     }
     return out.trimmed();
+}
+
+static MultiLayer *resolveTargetMultiLayer(ApplicationWindow *app, ModernRibbonBar *ribbon)
+{
+    if (!app)
+        return nullptr;
+    if (MultiLayer *ml = qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow()))
+        return ml;
+    if (ribbon && ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(ribbon->splitPlotTarget()))
+            return ml;
+    }
+    return nullptr;
 }
 
 static Table *sourceTableFromMultiLayer(MultiLayer *ml,
@@ -567,7 +583,9 @@ void registerRibbonCollapseTranslations()
             "列の数式、長い名前、単位、数値書式を編集");
         reg("Sort...", "並べ替え...");
         reg("Sort worksheet columns or rows", "ワークシートの列や行を並べ替え");
-        reg("Fill Down", "下方向へフィル");
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("ModernRibbonBar"), QStringLiteral("Fill Down"),
+                QString::fromUtf8("下方向へフィル"));
         reg("Copy the top row of the selection down to the remaining selected cells (Ctrl+D)",
             "選択範囲の先頭行の値を下の選択セルへコピーします (Ctrl+D)");
         reg("Find & Replace", "検索と置換");
@@ -1125,8 +1143,16 @@ void CommandPalettePopup::refreshCommands()
             QStringLiteral("isij 85mm journal style preset 600dpi"),
             QStringLiteral("preset-isij"),
             [this]() {
-                if (d_app)
+                if (!d_app)
+                    return;
+                if (MultiLayer *ml = resolveTargetMultiLayer(d_app.data(), d_ribbon.data())) {
+                    if (d_app->d_workspace.activeSubWindow() != ml)
+                        d_app->d_workspace.setActiveSubWindow(ml);
                     d_app->applyStyleISIJJournal();
+                } else {
+                    d_app->showUxHint(
+                            ModernRibbonBar::tr("Click or create a graph window first."));
+                }
             },
             100);
 
@@ -1139,9 +1165,10 @@ void CommandPalettePopup::refreshCommands()
             [this]() {
                 if (!d_app)
                     return;
-                if (MultiLayer *ml =
-                            qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow())) {
+                if (MultiLayer *ml = resolveTargetMultiLayer(d_app.data(), d_ribbon.data())) {
                     ml->applyStylePresetById(QStringLiteral("lab_slide_83mm"));
+                    if (ml->pageViewMode())
+                        ml->fitPageZoomToViewport();
                     d_app->modifiedProject();
                     if (GraphInspectorDock *insp = d_app->graphInspectorDock())
                         insp->refreshAll();
@@ -1388,11 +1415,7 @@ void CommandPalettePopup::refreshCommands()
     // B4-10: Index canvas context actions so Ctrl+K can invoke them directly.
     if (d_app) {
         const QString catCanvas = tr("Graph Canvas");
-        MultiLayer *activeMl = qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow());
-        if (!activeMl && d_ribbon
-            && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
-            activeMl = qobject_cast<MultiLayer *>(d_ribbon->splitPlotTarget());
-        }
+        MultiLayer *activeMl = resolveTargetMultiLayer(d_app.data(), d_ribbon.data());
         auto addCanvasEntry = [&](const QString &id, const QString &title, const QString &keywords,
                                   const QString &iconId, std::function<void(MultiLayer *, Graph *)> fn,
                                   int boost = 72) {
@@ -1409,11 +1432,12 @@ void CommandPalettePopup::refreshCommands()
                 e.disabledReason = tr("Requires a graph window (click a graph or plot data first)");
             } else {
                 QPointer<ApplicationWindow> appPtr(d_app);
-                e.callback = [appPtr, fn = std::move(fn)]() {
+                QPointer<ModernRibbonBar> ribbonPtr(d_ribbon);
+                e.callback = [appPtr, ribbonPtr, fn = std::move(fn)]() {
                     if (!appPtr)
                         return;
                     if (MultiLayer *ml =
-                                qobject_cast<MultiLayer *>(appPtr->d_workspace.activeSubWindow())) {
+                                resolveTargetMultiLayer(appPtr.data(), ribbonPtr.data())) {
                         Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->layer(1);
                         if (g)
                             fn(ml, g);
@@ -1523,9 +1547,12 @@ void CommandPalettePopup::refreshCommands()
                 QString::fromUtf8("title edit plot graph heading "
                                   "\xE3\x82\xBF\xE3\x82\xA4\xE3\x83\x88\xE3\x83\xAB\xE7\xB7\xA8\xE9\x9B\x86"),
                 QStringLiteral("text-label"),
-                [this](MultiLayer *, Graph *) {
-                    if (d_app)
+                [this](MultiLayer *ml, Graph *) {
+                    if (d_app && ml) {
+                        if (d_app->d_workspace.activeSubWindow() != ml)
+                            d_app->d_workspace.setActiveSubWindow(ml);
                         d_app->showTitleDialog();
+                    }
                 },
                 74);
     }
@@ -2381,7 +2408,7 @@ MultiLayer *activeMultiLayerOrUxHint(ApplicationWindow *app)
 {
     if (!app)
         return nullptr;
-    if (MultiLayer *ml = qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow()))
+    if (MultiLayer *ml = resolveTargetMultiLayer(app, app->modernRibbonBar()))
         return ml;
     app->showUxHint(ModernRibbonBar::tr("Click or create a graph window first."));
     return nullptr;
@@ -2481,6 +2508,45 @@ void restoreBackgroundMdiWindowsAfterFocus(ApplicationWindow *app)
         if (!mw || !mw->property("_tg_hidden_for_focus_mdi").toBool())
             continue;
         mw->setProperty("_tg_hidden_for_focus_mdi", QVariant());
+        if (mw->status() == MyWidget::Hidden || app->hiddenWindows.contains(mw)
+            || app->outWindows.contains(mw)) {
+            continue;
+        }
+        if (Folder *cur = app->currentFolder()) {
+            if (!cur->windowsList().contains(mw))
+                continue;
+        }
+        if (mw->status() == MyWidget::Minimized)
+            mw->showMinimized();
+        else if (mw->status() == MyWidget::Maximized)
+            mw->showMaximized();
+        else
+            mw->show();
+    }
+    if (keepActive && !keepActive->isHidden()) {
+        app->d_workspace.setActiveSubWindow(keepActive);
+        keepActive->raise();
+    }
+
+    s_busy = false;
+}
+
+void restoreSplitTablesHiddenForDrawer(ApplicationWindow *app)
+{
+    if (!app)
+        return;
+    static bool s_busy = false;
+    if (s_busy)
+        return;
+    s_busy = true;
+
+    QMdiSubWindow *keepActive = app->d_workspace.activeSubWindow();
+    const QList<QMdiSubWindow *> subs = app->d_workspace.subWindowList(QMdiArea::CreationOrder);
+    for (QMdiSubWindow *sw : subs) {
+        MyWidget *mw = qobject_cast<MyWidget *>(sw);
+        if (!mw || !mw->property("_tg_hidden_for_focus_drawer").toBool())
+            continue;
+        mw->setProperty("_tg_hidden_for_focus_drawer", QVariant());
         if (mw->status() == MyWidget::Hidden || app->hiddenWindows.contains(mw)
             || app->outWindows.contains(mw)) {
             continue;
@@ -3336,8 +3402,13 @@ void FocusCanvasHudOverlay::populatePresetsMenu()
     d_presets_menu->clear();
     d_presets_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-isij"), 18, false),
                               tr("ISIJ 85mm Preset"), this, [this]() {
-                                  if (!d_shutting_down && d_app && activeMultiLayerOrUxHint(d_app))
-                                      d_app->applyStyleISIJJournal();
+                                  if (!d_shutting_down && d_app) {
+                                      if (MultiLayer *ml = activeMultiLayerOrUxHint(d_app)) {
+                                          if (d_app->d_workspace.activeSubWindow() != ml)
+                                              d_app->d_workspace.setActiveSubWindow(ml);
+                                          d_app->applyStyleISIJJournal();
+                                      }
+                                  }
                               });
     d_presets_menu->addAction(IconLoader::duotoneIcon(QStringLiteral("preset-slide"), 18, false),
                               tr("Lab Slide (18pt)"), this, [this]() {
@@ -3510,14 +3581,20 @@ void FocusCanvasHudOverlay::setTableDrawerVisible(bool visible)
         d_table_drawer->show();
         d_table_drawer->raise();
         repositionOverlayWidgets();
+        if (d_ribbon && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph)
+            d_ribbon->applySplitWorkspaceGeometry();
+        syncFocusHudOleButton(d_btn_ole, d_app.data(), d_ribbon.data());
     } else {
         const bool hadDrawerFocus = d_table_drawer->isAncestorOf(QApplication::focusWidget())
                 || QApplication::focusWidget() == d_table_drawer;
         d_table_drawer->hide();
+        if (d_ribbon && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph)
+            d_ribbon->applySplitWorkspaceGeometry();
         if (hadDrawerFocus && d_app && d_ribbon) {
             if (MyWidget *splitPlot = d_ribbon->splitPlotTarget())
                 splitPlot->setFocus();
         }
+        syncFocusHudOleButton(d_btn_ole, d_app.data(), d_ribbon.data());
     }
 }
 
@@ -3658,6 +3735,11 @@ bool FocusCanvasHudOverlay::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::Resize || event->type() == QEvent::Show
             || event->type() == QEvent::ChildAdded) {
             repositionOverlayWidgets();
+            if (event->type() == QEvent::Resize && d_ribbon
+                && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph
+                && !d_ribbon->isApplyingSplitGeometry() && isTableDrawerVisible()) {
+                d_ribbon->applySplitWorkspaceGeometry();
+            }
         }
     }
     return QFrame::eventFilter(watched, event);
@@ -4047,8 +4129,9 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
                     if (d_focus_hud_mode && d_layout_mode == LayoutFreeMdi && mw && !mw->isHidden()
                         && (qobject_cast<MultiLayer *>(mw) || qobject_cast<Graph3D *>(mw))) {
                         hideBackgroundMdiWindowsForFocus(d_app);
-                        if (!mw->isMaximized() && mw->y() < 48)
-                            mw->move(mw->x(), 48);
+                        const int minTop = focusHudTileTopY(d_app->d_workspace.viewport());
+                        if (!mw->isMaximized() && mw->y() < minTop)
+                            mw->move(mw->x(), minTop);
                     }
                 });
     }
@@ -5914,8 +5997,11 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() { return tr("ISIJ 85mm Fig"); },
                 [this]() { return tr("Apply ISIJ 1-Column 85x85 mm Journal Preset (600 DPI)"); },
                 [this]() {
-                    if (activeMultiLayerOrUxHint(d_app))
+                    if (MultiLayer *ml = activeMultiLayerOrUxHint(d_app)) {
+                        if (d_app->d_workspace.activeSubWindow() != ml)
+                            d_app->d_workspace.setActiveSubWindow(ml);
                         d_app->applyStyleISIJJournal();
+                    }
                 },
                 false, true);
         addRibbonButton(
@@ -6507,7 +6593,9 @@ Table *ModernRibbonBar::resolvedWorksheetTarget() const
 
     if (d_layout_mode == LayoutSplitTableGraph) {
         auto isEligibleTable = [this](Table *tbl) -> bool {
-            if (!tbl || tbl->status() == MyWidget::Hidden || tbl->isHidden())
+            if (!tbl || tbl->status() == MyWidget::Hidden)
+                return false;
+            if (tbl->isHidden() && !tbl->property("_tg_hidden_for_focus_drawer").toBool())
                 return false;
             if (d_app->hiddenWindows.contains(tbl) || d_app->outWindows.contains(tbl))
                 return false;
@@ -6753,12 +6841,13 @@ void ModernRibbonBar::updateEmptyWelcomeHub()
         QGridLayout *grid = new QGridLayout();
         grid->setSpacing(8);
 
-        auto makeBtn = [card](const QString &iconId, bool primary) -> QPushButton * {
+        auto makeBtn = [this, card](const QString &iconId, bool primary) -> QPushButton * {
             QPushButton *btn = new QPushButton(card);
             btn->setIcon(IconLoader::duotoneIcon(iconId, 18, primary));
             btn->setIconSize(QSize(18, 18));
             btn->setMinimumHeight(36);
             btn->setCursor(Qt::PointingHandCursor);
+            btn->installEventFilter(this);
             if (!primary)
                 btn->setProperty("class", QStringLiteral("WelcomeHubSecondaryBtn"));
             return btn;
@@ -6849,9 +6938,27 @@ void ModernRibbonBar::updateEmptyWelcomeHub()
     const QRect wantRect(x, y, cardW, cardH);
     if (d_welcome_hub_card->geometry() != wantRect)
         d_welcome_hub_card->setGeometry(wantRect);
-    if (d_welcome_hub_card->isHidden()) {
+    const bool becomingVisible = d_welcome_hub_card->isHidden();
+    if (becomingVisible) {
         d_welcome_hub_card->show();
         d_welcome_hub_card->raise();
+    }
+    const bool popupOrModalOpen = (QApplication::activePopupWidget() != nullptr)
+            || (QApplication::activeModalWidget() != nullptr)
+            || (d_command_palette && d_command_palette->isVisible());
+    if (!popupOrModalOpen) {
+        QWidget *fw = QApplication::focusWidget();
+        const bool focusInsideCard =
+                fw && (fw == d_welcome_hub_card || d_welcome_hub_card->isAncestorOf(fw));
+        const bool focusInOtherInput = fw && !focusInsideCard && fw != vp
+                && fw != d_app.data() && fw != &d_app->d_workspace
+                && (qobject_cast<QLineEdit *>(fw) || qobject_cast<QTextEdit *>(fw)
+                    || qobject_cast<QPlainTextEdit *>(fw) || qobject_cast<QAbstractSpinBox *>(fw)
+                    || qobject_cast<QComboBox *>(fw));
+        if ((becomingVisible && !focusInsideCard && !focusInOtherInput)
+            || (!focusInsideCard && (!fw || fw == vp || fw == &d_app->d_workspace || fw == d_app.data()))) {
+            d_welcome_hub_card->setFocus(Qt::OtherFocusReason);
+        }
     }
 }
 
@@ -6993,6 +7100,7 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
 
         switch (mode) {
         case LayoutTabbed: {
+            restoreSplitTablesHiddenForDrawer(d_app);
             restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(true);
             d_app->d_workspace.setTabsClosable(true);
@@ -7024,6 +7132,7 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
         }
 
         case LayoutSplitTableGraph:
+            restoreSplitTablesHiddenForDrawer(d_app);
             restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(false);
             unmaximizeCurrentFolderWindows();
@@ -7031,6 +7140,7 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
             break;
 
         case LayoutFreeMdi:
+            restoreSplitTablesHiddenForDrawer(d_app);
             restoreBackgroundMdiWindowsAfterFocus(d_app);
             d_app->setTabbedWorkspaceView(false);
             unmaximizeCurrentFolderWindows();
@@ -7041,7 +7151,9 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
             if (Folder *curFolder = d_app->currentFolder()) {
                 const bool focusActive = d_focus_hud_mode
                         || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
-                const int minTopY = focusActive ? 44 : 8;
+                const int minTopY = focusActive
+                        ? focusHudTileTopY(d_app->d_workspace.viewport())
+                        : 8;
                 int cascadeIdx = 0;
                 for (MyWidget *mw : curFolder->windowsList()) {
                     if (!mw || mw->status() == MyWidget::Hidden || mw->isHidden())
@@ -7145,12 +7257,42 @@ void ModernRibbonBar::setSplitLeftRatio(double ratio)
         applySplitWorkspaceGeometry();
 }
 
+int ModernRibbonBar::focusHudTileTopY(QWidget *workspaceViewport) const
+{
+    const bool focusHudActive =
+            d_focus_hud_mode || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
+    if (!focusHudActive)
+        return 0;
+    int hudPillBottom = 0;
+    if (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive()) {
+        QWidget *hudHost = d_focus_hud_overlay->parentWidget();
+        int hostBottom = d_focus_hud_overlay->y() + d_focus_hud_overlay->height();
+        if (QToolButton *wsBtn = d_focus_hud_overlay->worksheetToggleButton())
+            hostBottom = qMax(hostBottom, wsBtn->y() + wsBtn->height());
+        if (QToolButton *exitBtn = d_focus_hud_overlay->exitFocusButton())
+            hostBottom = qMax(hostBottom, exitBtn->y() + exitBtn->height());
+        if (hudHost && workspaceViewport && hostBottom > 0)
+            hudPillBottom = workspaceViewport->mapFrom(hudHost, QPoint(0, hostBottom)).y();
+        else
+            hudPillBottom = hostBottom;
+    }
+    return qMax(58, hudPillBottom + 8);
+}
+
 void ModernRibbonBar::applySplitWorkspaceGeometry()
 {
     if (d_shutting_down || !d_app || d_applying_split_geometry)
         return;
 
     d_applying_split_geometry = true;
+
+    const bool focusHudActive =
+            d_focus_hud_mode || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
+    const bool drawerOpen = focusHudActive && d_focus_hud_overlay
+            && d_focus_hud_overlay->isTableDrawerVisible()
+            && d_focus_hud_overlay->tableDrawer();
+    if (!drawerOpen)
+        restoreSplitTablesHiddenForDrawer(d_app);
 
     if (d_app->d_workspace.viewMode() != QMdiArea::SubWindowView)
         d_app->setTabbedWorkspaceView(false);
@@ -7173,8 +7315,10 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
                 continue;
             if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
                 continue;
-            if (mw->isHidden())
+            if (mw->isHidden()
+                && !(drawerOpen && mw->property("_tg_hidden_for_focus_drawer").toBool())) {
                 continue;
+            }
             eligibleWins.insert(mw);
         }
     }
@@ -7264,9 +7408,6 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
         }
     };
 
-    const bool focusHudActive =
-            d_focus_hud_mode || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
-
     for (MyWidget *mw : eligibleWins) {
         if (mw && mw != targetTable && mw != targetPlot) {
             if (mw->isMaximized())
@@ -7280,7 +7421,7 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
         }
     }
 
-    const int tileTopY = focusHudActive ? 48 : 0;
+    const int tileTopY = focusHudTileTopY(vp);
     const double splitRatio = qBound(0.15, d_split_left_ratio, 0.85);
     const int minPaneW = (vpRect.width() < 1000) ? qMax(80, qMin(120, vpRect.width() / 4)) : 120;
     const int leftW = qBound(minPaneW, qRound(vpRect.width() * splitRatio),
@@ -7308,7 +7449,40 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
     if (QScrollBar *vsb = d_app->d_workspace.verticalScrollBar())
         vsb->setValue(0);
 
-    if (targetTable && targetPlot) {
+    if (drawerOpen) {
+        if (targetTable) {
+            targetTable->setProperty("_tg_hidden_for_focus_drawer", true);
+            if (!targetTable->isHidden())
+                targetTable->hide();
+        }
+        if (targetPlot) {
+            FocusTableDrawer *drawer = d_focus_hud_overlay->tableDrawer();
+            QWidget *hudHost = d_focus_hud_overlay->parentWidget();
+            int drawerRight = 0;
+            if (drawer) {
+                const int hostRight = drawer->x() + drawer->width();
+                drawerRight = (hudHost && vp)
+                        ? vp->mapFrom(hudHost, QPoint(hostRight, 0)).x()
+                        : hostRight;
+            }
+            const int gap = 10;
+            const int plotX = qBound(0, drawerRight + gap, qMax(0, vpRect.width() - minPaneW));
+            const int plotW = qMax(minPaneW, vpRect.width() - plotX);
+            prepareTileWindow(targetPlot);
+            if (targetPlot->minimumWidth() > plotW)
+                targetPlot->setMinimumWidth(plotW);
+            targetPlot->setGeometry(plotX, tileTopY, plotW, fullH);
+            targetPlot->raise();
+            if (!d_app->d_workspace.activeSubWindow()
+                || d_app->d_workspace.activeSubWindow() == targetTable) {
+                d_app->d_workspace.setActiveSubWindow(targetPlot);
+            }
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(targetPlot)) {
+                if (targetTable && multiLayerUsesTable(ml, targetTable))
+                    ToriUx::dismissPlotThisDataBar(targetTable);
+            }
+        }
+    } else if (targetTable && targetPlot) {
         prepareTileWindow(targetTable);
         prepareTileWindow(targetPlot);
         if (targetTable->minimumWidth() > leftW)
@@ -7469,21 +7643,24 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
         syncCheckableStates();
     }
 
-    if (!enabled && d_app)
+    if (!enabled && d_app) {
+        restoreSplitTablesHiddenForDrawer(d_app);
         restoreBackgroundMdiWindowsAfterFocus(d_app);
+    }
 
     if (d_layout_mode == LayoutSplitTableGraph) {
         applySplitWorkspaceGeometry();
     } else if (enabled && d_layout_mode == LayoutFreeMdi && d_app) {
         hideBackgroundMdiWindowsForFocus(d_app);
+        const int minTop = focusHudTileTopY(d_app->d_workspace.viewport());
         if (Folder *curFolder = d_app->currentFolder()) {
             for (MyWidget *mw : curFolder->windowsList()) {
                 if (!mw || mw->status() == MyWidget::Hidden || mw->isHidden())
                     continue;
                 if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
                     continue;
-                if (!mw->isMaximized() && mw->y() < 48)
-                    mw->move(mw->x(), 48);
+                if (!mw->isMaximized() && mw->y() < minTop)
+                    mw->move(mw->x(), minTop);
             }
         }
         if (d_focus_hud_overlay)
@@ -8690,16 +8867,19 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
             return true;
         }
     }
-    if (d_welcome_hub_card && watched == d_welcome_hub_card && event) {
+    if (d_welcome_hub_card
+        && (watched == d_welcome_hub_card
+            || d_welcome_hub_card->isAncestorOf(qobject_cast<QWidget *>(watched)))
+        && event) {
         const QEvent::Type et = event->type();
-        if (et == QEvent::DragEnter || et == QEvent::Drop) {
+        if (watched == d_welcome_hub_card && (et == QEvent::DragEnter || et == QEvent::Drop)) {
             if (d_app)
                 QApplication::sendEvent(d_app.data(), event);
             if (et == QEvent::Drop)
                 updateEmptyWelcomeHub();
             return true;
         }
-        if (et == QEvent::DragMove) {
+        if (watched == d_welcome_hub_card && et == QEvent::DragMove) {
             QDragMoveEvent *dme = static_cast<QDragMoveEvent *>(event);
             if (dme->mimeData()
                 && (dme->mimeData()->hasUrls()
@@ -8710,7 +8890,8 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
         }
         if (et == QEvent::ShortcutOverride || et == QEvent::KeyPress) {
             QKeyEvent *ke = static_cast<QKeyEvent *>(event);
-            if (ke->key() == Qt::Key_V && (ke->modifiers() & Qt::ControlModifier)) {
+            if (ke->key() == Qt::Key_V && (ke->modifiers() & Qt::ControlModifier)
+                && !(ke->modifiers() & (Qt::ShiftModifier | Qt::AltModifier))) {
                 if (et == QEvent::KeyPress)
                     pasteFromClipboardSmart();
                 ke->accept();
@@ -8719,7 +8900,8 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
         }
     }
     if (d_app && event && d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry
-        && d_split_table && d_split_plot && !d_split_table->isMaximized()
+        && d_split_table && d_split_plot && !d_split_table->isHidden()
+        && !d_split_plot->isHidden() && !d_split_table->isMaximized()
         && !d_split_plot->isMaximized()
         && (watched == d_split_table || watched == d_split_plot)) {
         const QEvent::Type et = event->type();
@@ -8727,9 +8909,7 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
             QWidget *vp = d_app->d_workspace.viewport();
             const QRect vpRect = vp ? vp->rect() : d_app->d_workspace.rect();
             if (vpRect.width() >= 280 && vpRect.height() >= 120) {
-                const bool focusHudActive = d_focus_hud_mode
-                        || (d_focus_hud_overlay && d_focus_hud_overlay->isOverlayActive());
-                const int tileTopY = focusHudActive ? 48 : 0;
+                const int tileTopY = focusHudTileTopY(vp);
                 const int fullH = qMax(100, vpRect.height() - tileTopY);
                 const int minPaneW = 120;
                 const int maxLeftW = qMax(minPaneW, vpRect.width() - minPaneW);

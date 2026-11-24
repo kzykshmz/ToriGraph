@@ -150,6 +150,9 @@ void registerUxTranslations()
             "CSV・TSV・Excel (.xlsx) データファイルを開きます");
         reg("Plot this data", "このデータをグラフにする");
         reg("Plot Data", "グラフ作成");
+        reg("Set X Column", "X 列の設定");
+        reg("No X column is assigned in \"%1\". Set column \"%2\" as X and plot now?",
+            "「%1」に X 列が設定されていません。列「%2」を X に設定して作図しますか?");
         reg("Line + symbol graph of all Y columns (use the Plot tab for other styles)",
             "すべての Y 列を折れ線+シンボルで描きます (ほかの形は「作図」タブから)");
         reg("Dismiss", "閉じる");
@@ -829,6 +832,12 @@ bool tableHasPlottableYData(Table *t, int curveType = Graph::LineSymbols)
     return false;
 }
 
+bool tableCanOfferPlotThisDataBar(Table *t)
+{
+    return t && t->numCols() >= 2 && !t->noXColumn()
+            && tableHasPlottableYData(t, Graph::LineSymbols);
+}
+
 QTableView *mainTableView(Table *t)
 {
     if (!t)
@@ -914,6 +923,7 @@ public:
             connect(m, &QAbstractItemModel::modelReset, this, &EmptyTableHint::recheck);
             connect(m, &QAbstractItemModel::rowsInserted, this, &EmptyTableHint::recheck);
             connect(m, &QAbstractItemModel::columnsInserted, this, &EmptyTableHint::recheck);
+            connect(m, &QAbstractItemModel::headerDataChanged, this, &EmptyTableHint::recheck);
         }
         retranslateUi();
         d_label->show();
@@ -980,7 +990,7 @@ public:
                 if (d_actions_box)
                     d_actions_box->hide();
             }
-            if (tableHasPlottableYData(d_table)) {
+            if (tableCanOfferPlotThisDataBar(d_table)) {
                 d_done = true;
                 if (d_label) {
                     d_label->hide();
@@ -1603,7 +1613,7 @@ static bool tableAlreadyHasMultiLayer(const ApplicationWindow *app, const Table 
 
 void ApplicationWindow::offerPlotAfterImport(Table *table)
 {
-    if (!table || d_headless_mode || m_batch || !tableHasPlottableYData(table))
+    if (!table || d_headless_mode || m_batch || !tableCanOfferPlotThisDataBar(table))
         return;
     if (tableAlreadyHasMultiLayer(this, table)) {
         ToriUx::dismissPlotThisDataBar(table);
@@ -1641,11 +1651,38 @@ void ApplicationWindow::offerPlotAfterImport(Table *table)
     QPointer<Table> safeTable(table);
     QPointer<QFrame> safeBar(bar);
     connect(plotBtn, &QPushButton::clicked, this, [this, safeTable, safeBar]() {
-        if (safeBar)
-            safeBar->deleteLater();
-        if (!safeTable)
+        if (!safeTable) {
+            if (safeBar)
+                safeBar->deleteLater();
             return;
-        plotColumnsFromTable(safeTable, Graph::LineSymbols);
+        }
+        if (safeTable->noXColumn() && safeTable->numCols() >= 2 && !isNonInteractiveContext(this)) {
+            int candX = -1;
+            const QStringList yCols = safeTable->YColumns();
+            for (int c = 0; c < safeTable->numCols(); ++c) {
+                if (safeTable->colPlotDesignation(c) != SciDAVis::Y) {
+                    candX = c;
+                    break;
+                }
+            }
+            if (candX < 0 && yCols.size() >= 2)
+                candX = 0;
+            if (candX >= 0 && !yCols.isEmpty()) {
+                Table *rawTable = safeTable.data();
+                const QString tblName = rawTable ? rawTable->name() : QString();
+                const QString colName = rawTable ? rawTable->colName(candX) : QString();
+                const QMessageBox::StandardButton ans = QMessageBox::question(
+                        this, tr("Set X Column"),
+                        tr("No X column is assigned in \"%1\". Set column \"%2\" as X and plot now?")
+                                .arg(tblName, colName),
+                        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Yes);
+                if (ans != QMessageBox::Yes || !safeTable)
+                    return;
+                safeTable->setColPlotDesignation(candX, SciDAVis::X);
+            }
+        }
+        if (plotColumnsFromTable(safeTable, Graph::LineSymbols))
+            ToriUx::dismissPlotThisDataBar(safeTable);
     });
     connect(close, &QToolButton::clicked, bar, &QObject::deleteLater);
 }

@@ -228,11 +228,13 @@ private:
     bool d_drag_threshold_passed = false;
     bool d_in_key_nudge = false;
     bool d_defer_self_delete = false;
+    bool d_scheduled_delete = false;
     QString d_undo_before_snapshot;
     QPointer<QWidget> d_target_parent;
     QPointer<Graph> d_owning_graph;
 
     void cleanupIfEmpty();
+    void detachAndDelete();
     bool isLegendOnlySelection() const;
     Graph *owningGraph() const;
     class MultiLayer *owningMultiLayer() const;

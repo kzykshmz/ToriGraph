@@ -102,7 +102,7 @@ SelectionMoveResizer::~SelectionMoveResizer()
 
 void SelectionMoveResizer::add(Legend *target)
 {
-    if ((QWidget *)target->plot()->canvas() != parent())
+    if (d_scheduled_delete || !target || (QWidget *)target->plot()->canvas() != parent())
         return;
     d_legend_markers << target;
 
@@ -115,7 +115,7 @@ void SelectionMoveResizer::add(Legend *target)
 }
 void SelectionMoveResizer::add(ArrowMarker *target)
 {
-    if ((QWidget *)target->plot()->canvas() != parent())
+    if (d_scheduled_delete || !target || (QWidget *)target->plot()->canvas() != parent())
         return;
     d_line_markers << target;
 
@@ -128,7 +128,7 @@ void SelectionMoveResizer::add(ArrowMarker *target)
 }
 void SelectionMoveResizer::add(ImageMarker *target)
 {
-    if ((QWidget *)target->plot()->canvas() != parent())
+    if (d_scheduled_delete || !target || (QWidget *)target->plot()->canvas() != parent())
         return;
     d_image_markers << target;
 
@@ -142,7 +142,7 @@ void SelectionMoveResizer::add(ImageMarker *target)
 
 void SelectionMoveResizer::add(QWidget *target)
 {
-    if (target->parentWidget() != parent())
+    if (d_scheduled_delete || !target || target->parentWidget() != parent())
         return;
     d_widgets << target;
     target->installEventFilter(this);
@@ -161,14 +161,69 @@ QRect SelectionMoveResizer::boundingRectOf(QwtPlotMarker *target) const
     return ((PlotEnrichement *)target)->rect();
 }
 
+void SelectionMoveResizer::detachAndDelete()
+{
+    if (d_scheduled_delete)
+        return;
+    d_scheduled_delete = true;
+    const bool hadFocus = hasFocus();
+    QPointer<QWidget> pw(parentWidget());
+    QPointer<QWidget> focusRestoreTarget = pw;
+    if (MultiLayer *ml = owningMultiLayer()) {
+        if (Graph *ag = ml->activeGraph()) {
+            if (ag->plotWidget() && ag->plotWidget()->canvas())
+                focusRestoreTarget = ag->plotWidget()->canvas();
+            else
+                focusRestoreTarget = ag;
+        }
+    }
+    blockSignals(true);
+    disconnect();
+    if (pw)
+        pw->removeEventFilter(this);
+    if (d_target_parent && d_target_parent != pw)
+        d_target_parent->removeEventFilter(this);
+    for (QWidget *w : d_widgets) {
+        if (w)
+            w->removeEventFilter(this);
+    }
+    d_legend_markers.clear();
+    d_line_markers.clear();
+    d_image_markers.clear();
+    d_widgets.clear();
+    hide();
+    setParent(nullptr);
+    if (hadFocus && focusRestoreTarget)
+        focusRestoreTarget->setFocus();
+    deleteLater();
+}
+
 void SelectionMoveResizer::cleanupIfEmpty()
 {
+    if (d_scheduled_delete)
+        return;
     if (d_legend_markers.isEmpty() && d_line_markers.isEmpty() && d_image_markers.isEmpty()
         && d_widgets.isEmpty()) {
-        if (d_defer_self_delete)
+        if (d_defer_self_delete) {
             hide();
-        else
-            delete this;
+            return;
+        }
+        const bool hadParent = (parentWidget() != nullptr);
+        if (!owningGraph()) {
+            if (MultiLayer *ml = owningMultiLayer())
+                ml->clearLayerSelector();
+        }
+        if (!hadParent || parentWidget() != nullptr) {
+            detachAndDelete();
+        } else {
+            if (d_target_parent)
+                d_target_parent->removeEventFilter(this);
+            d_scheduled_delete = true;
+            d_legend_markers.clear();
+            d_line_markers.clear();
+            d_image_markers.clear();
+            d_widgets.clear();
+        }
     } else {
         recalcBoundingRect();
     }
@@ -202,6 +257,8 @@ int SelectionMoveResizer::removeAll(QWidget *target)
 
 void SelectionMoveResizer::recalcBoundingRect()
 {
+    if (d_scheduled_delete)
+        return;
     d_bounding_rect = QRect(0, 0, -1, -1);
 
     foreach (Legend *i, d_legend_markers) {
@@ -412,6 +469,8 @@ MultiLayer *SelectionMoveResizer::owningMultiLayer() const
 
 void SelectionMoveResizer::operateOnTargets()
 {
+    if (d_scheduled_delete)
+        return;
     QSet<QwtPlot *> plotsToReplot;
     Graph *ownerGraph = owningGraph();
     foreach (Legend *i, d_legend_markers) {
@@ -525,6 +584,8 @@ void SelectionMoveResizer::operateOnTargets()
 
 void SelectionMoveResizer::paintEvent(QPaintEvent *e)
 {
+    if (d_scheduled_delete)
+        return;
     if (Graph *g = owningGraph()) {
         if (g->isExporting() || g->property("isExporting").toBool())
             return;
@@ -577,6 +638,10 @@ SelectionMoveResizer::Operation SelectionMoveResizer::operateModeFor(const QPoin
 
 void SelectionMoveResizer::mousePressEvent(QMouseEvent *me)
 {
+    if (d_scheduled_delete) {
+        me->ignore();
+        return;
+    }
     if (me->button() == Qt::RightButton) {
         const Operation hitOp = operateModeFor(me->pos());
         if (hitOp != None) {
@@ -620,6 +685,10 @@ void SelectionMoveResizer::mousePressEvent(QMouseEvent *me)
 
 void SelectionMoveResizer::contextMenuEvent(QContextMenuEvent *e)
 {
+    if (d_scheduled_delete) {
+        e->ignore();
+        return;
+    }
     if (!isVisible() || !parentWidget()) {
         if (d_owning_graph && d_owning_graph->selectedMarkerKey() < 0 && d_target_parent) {
             QContextMenuEvent fwd(e->reason(), e->pos(), e->globalPos(), e->modifiers());
@@ -643,6 +712,10 @@ void SelectionMoveResizer::contextMenuEvent(QContextMenuEvent *e)
 
 void SelectionMoveResizer::mouseMoveEvent(QMouseEvent *me)
 {
+    if (d_scheduled_delete) {
+        me->ignore();
+        return;
+    }
     if (d_op == None && d_bounding_rect.contains(me->pos()) && (me->buttons() & Qt::LeftButton)) {
         d_op = Move;
         d_op_start = me->pos();
@@ -701,6 +774,10 @@ void SelectionMoveResizer::mouseDoubleClickEvent(QMouseEvent *e)
 
 void SelectionMoveResizer::mouseReleaseEvent(QMouseEvent *me)
 {
+    if (d_scheduled_delete) {
+        me->ignore();
+        return;
+    }
     if (me->button() != Qt::LeftButton || d_op == None || d_op_start == QPoint(-1, -1))
         return QWidget::mouseReleaseEvent(me);
 
@@ -739,6 +816,10 @@ void SelectionMoveResizer::mouseReleaseEvent(QMouseEvent *me)
 
 void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
 {
+    if (d_scheduled_delete) {
+        ke->ignore();
+        return;
+    }
     switch (ke->key()) {
     case Qt::Key_Enter:
     case Qt::Key_Return:
@@ -787,10 +868,30 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
             ke->accept();
             return;
         }
-        if (Graph *g = owningGraph())
-            g->handleEscapeKey();
-        else
-            delete this;
+        if (Graph *g = owningGraph()) {
+            QPointer<SelectionMoveResizer> self(this);
+            if (!g->handleEscapeKey() && self && !d_scheduled_delete)
+                detachAndDelete();
+        } else {
+            const bool hadParent = (parentWidget() != nullptr);
+            if (MultiLayer *ml = owningMultiLayer())
+                ml->clearLayerSelector();
+            if (!hadParent || parentWidget() != nullptr) {
+                detachAndDelete();
+            } else {
+                for (QWidget *w : d_widgets) {
+                    if (w)
+                        w->removeEventFilter(this);
+                }
+                if (d_target_parent)
+                    d_target_parent->removeEventFilter(this);
+                d_scheduled_delete = true;
+                d_legend_markers.clear();
+                d_line_markers.clear();
+                d_image_markers.clear();
+                d_widgets.clear();
+            }
+        }
         ke->accept();
         return;
     }
@@ -843,6 +944,8 @@ void SelectionMoveResizer::keyPressEvent(QKeyEvent *ke)
 
 bool SelectionMoveResizer::eventFilter(QObject *o, QEvent *e)
 {
+    if (d_scheduled_delete)
+        return false;
     switch (e->type()) {
     case QEvent::Resize:
         if ((QWidget *)o == parentWidget())
@@ -930,6 +1033,11 @@ bool SelectionMoveResizer::deleteAllSelectedMarkers(Graph *g, SelectionMoveResiz
         return true;
     gGuard->deselectMarker();
     gGuard->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
+    if (smr && !smr->d_scheduled_delete && smr->parentWidget()
+        && smr->d_legend_markers.isEmpty() && smr->d_line_markers.isEmpty()
+        && smr->d_image_markers.isEmpty() && smr->d_widgets.isEmpty()) {
+        smr->detachAndDelete();
+    }
     if (mlGuard && !beforeSnap.isEmpty())
         mlGuard->pushUndoSnapshot(tr("Delete Annotation"), beforeSnap);
     return true;

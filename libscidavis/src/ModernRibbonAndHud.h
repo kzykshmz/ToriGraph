@@ -419,6 +419,7 @@ private:
     void retranslateWelcomeHub();
     void initStatusBarZoomControls();
     void updateStatusBarZoomIndicator(MultiLayer *ml);
+    int focusHudTileTopY(QWidget *workspaceViewport) const;
 
     QPointer<ApplicationWindow> d_app;
     QPointer<MyWidget> d_last_active_window;
