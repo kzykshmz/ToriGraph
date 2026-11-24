@@ -561,6 +561,7 @@ static void registerInspectorExtraTranslations()
         reg("Cycle Symbol Shapes (● ■ ▲ ▼ ◆)", "シンボル形状を順に切替 (● ■ ▲ ▼ ◆)");
         reg("Paired Filled / Hollow (● ○ ■ □)", "塗り・白抜きペア切替 (● ○ ■ □)");
         reg("Error Bar Style", "エラーバー外観");
+        reg("More below", "下に続きあり");
         reg("Bar Width:", "線の太さ:");
         reg("Cap Length:", "キャップ長:");
         reg("Direction:", "方向:");
@@ -1257,14 +1258,7 @@ void GraphInspectorDock::updatePropScrollCue()
         return;
     }
     const bool hasMore = sb->maximum() > sb->minimum() && sb->value() < sb->maximum() - 2;
-    if (!hasMore || vp->height() < 36) {
-        d_scroll_more_cue->hide();
-        return;
-    }
-    const int cueH = 20;
-    d_scroll_more_cue->setGeometry(0, vp->height() - cueH, vp->width(), cueH);
-    d_scroll_more_cue->show();
-    d_scroll_more_cue->raise();
+    d_scroll_more_cue->setVisible(hasMore && vp->height() >= 36);
 }
 
 bool GraphInspectorDock::eventFilter(QObject *obj, QEvent *event)
@@ -1814,21 +1808,6 @@ void GraphInspectorDock::buildUi()
     d_prop_stack->addWidget(buildLegendInspector());
     d_prop_scroll->setWidget(d_prop_stack);
 
-    d_scroll_more_cue = new QFrame(d_prop_scroll->viewport());
-    d_scroll_more_cue->setObjectName(QStringLiteral("InspectorScrollMoreCue"));
-    d_scroll_more_cue->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-    d_scroll_more_cue->setAttribute(Qt::WA_StyledBackground, true);
-    {
-        QHBoxLayout *cueLay = new QHBoxLayout(d_scroll_more_cue);
-        cueLay->setContentsMargins(0, 2, 0, 2);
-        cueLay->setSpacing(0);
-        QLabel *cueArrow = new QLabel(QString::fromUtf8("\xE2\x96\xBC"), d_scroll_more_cue);
-        cueArrow->setAlignment(Qt::AlignCenter);
-        cueArrow->setStyleSheet(
-                QStringLiteral("font-size: 8pt; color: #475569; background: transparent;"));
-        cueLay->addWidget(cueArrow);
-    }
-    d_scroll_more_cue->hide();
     d_prop_scroll->viewport()->installEventFilter(this);
     connect(d_prop_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this](int) { updatePropScrollCue(); });
@@ -1851,6 +1830,23 @@ void GraphInspectorDock::buildUi()
         QHBoxLayout *detailsLay = new QHBoxLayout(detailsRow);
         detailsLay->setContentsMargins(8, 4, 8, 4);
         detailsLay->setSpacing(4);
+
+        d_scroll_more_cue = new QFrame(detailsRow);
+        d_scroll_more_cue->setObjectName(QStringLiteral("InspectorScrollMoreCue"));
+        d_scroll_more_cue->setAttribute(Qt::WA_StyledBackground, true);
+        {
+            QHBoxLayout *cueLay = new QHBoxLayout(d_scroll_more_cue);
+            cueLay->setContentsMargins(6, 2, 6, 2);
+            cueLay->setSpacing(4);
+            QLabel *cueLbl = new QLabel(
+                    QString::fromUtf8("\xE2\x96\xBE ") + tr("More below"), d_scroll_more_cue);
+            cueLbl->setStyleSheet(
+                    QStringLiteral("font-size: 8.5pt; color: #475569; background: transparent;"));
+            cueLay->addWidget(cueLbl);
+        }
+        d_scroll_more_cue->hide();
+        detailsLay->addWidget(d_scroll_more_cue);
+
         detailsLay->addStretch(1);
         QPushButton *detailsBtn = new QPushButton(tr("Details..."), detailsRow);
         detailsBtn->setObjectName(QStringLiteral("InspectorDetailsButton"));
@@ -9915,8 +9911,7 @@ void GraphInspectorDock::applyTheme()
                           "  background-color: #F8FAFC; border-top: 1px solid #CBD5E1;"
                           "}"
                           "QFrame#InspectorScrollMoreCue {"
-                          "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-                          "    stop:0 rgba(248, 250, 252, 0), stop:1 rgba(226, 232, 240, 235));"
+                          "  background: #E2E8F0; border: 1px solid #CBD5E1; border-radius: 4px;"
                           "}"
                           "QToolButton#InspectorRailTabBtn {"
                           "  color: %9; font-size: 9pt; border-radius: 4px; padding: 1px 0px;"
@@ -10493,6 +10488,10 @@ void GraphInspectorDock::retranslateUi()
         d_chk_paired_hollow->setText(tr("Paired Filled / Hollow (● ○ ■ □)"));
     if (d_btn_apply_scheme_all)
         d_btn_apply_scheme_all->setText(tr("Apply to All Curves"));
+    if (d_scroll_more_cue) {
+        if (QLabel *cueLbl = d_scroll_more_cue->findChild<QLabel *>())
+            cueLbl->setText(QString::fromUtf8("\xE2\x96\xBE ") + tr("More below"));
+    }
 
     // Spectrogram / Heatmap
     if (d_sec_spec_lbl)

@@ -58,6 +58,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QRegularExpression>
 #include <QListWidgetItem>
 #include <QLocale>
 #include <QMdiArea>
@@ -1907,6 +1908,18 @@ void CommandPalettePopup::showEvent(QShowEvent *event)
 
 namespace {
 
+static QString stripDrawerInlineRichTags(const QString &raw)
+{
+    if (!raw.contains(QLatin1Char('<')))
+        return raw;
+    static const QRegularExpression kInlineTags(
+            QStringLiteral("</?(?:i|b|sub|sup|u|em|strong)>"),
+            QRegularExpression::CaseInsensitiveOption);
+    QString out = raw;
+    out.remove(kInlineTags);
+    return out.trimmed();
+}
+
 static QString formatDrawerColumnHeader(Table *tbl, int c, QString *outFormula = nullptr)
 {
     if (!tbl || c < 0 || c >= tbl->numCols())
@@ -1942,16 +1955,24 @@ static QString formatDrawerColumnHeader(Table *tbl, int c, QString *outFormula =
     if (outFormula)
         *outFormula = colFormula;
 
-    const QString longName = tbl->colLongName(c).trimmed();
-    const QString units = tbl->colUnits(c).trimmed();
-    QString h = longName.isEmpty() ? tbl->colLabel(c) : longName;
+    const QString longName = stripDrawerInlineRichTags(tbl->colLongName(c).trimmed());
+    QString units = stripDrawerInlineRichTags(tbl->colUnits(c).trimmed());
+    if (units.size() >= 2
+        && ((units.startsWith(QLatin1Char('(')) && units.endsWith(QLatin1Char(')')))
+            || (units.startsWith(QLatin1Char('[')) && units.endsWith(QLatin1Char(']'))))) {
+        units = units.mid(1, units.size() - 2).trimmed();
+    }
+
+    const QString titleLine = longName.isEmpty() ? tbl->colLabel(c) : longName;
+    QStringList metaParts;
     if (!roleTag.isEmpty())
-        h += QLatin1Char(' ') + roleTag;
+        metaParts << roleTag;
     if (!colFormula.isEmpty())
-        h += QLatin1Char(' ') + FocusTableDrawer::tr("[fx]");
+        metaParts << FocusTableDrawer::tr("[fx]");
     if (!units.isEmpty())
-        h += QStringLiteral("\n(%1)").arg(units);
-    return h;
+        metaParts << QStringLiteral("(%1)").arg(units);
+    return metaParts.isEmpty() ? titleLine
+                               : (titleLine + QLatin1Char('\n') + metaParts.join(QLatin1Char(' ')));
 }
 
 static void adjustDrawerColumnWidths(QTableView *view, Table *tbl)
@@ -1979,7 +2000,7 @@ static void adjustDrawerColumnWidths(QTableView *view, Table *tbl)
                     headerTextWidth,
                     qMax(fmBase.horizontalAdvance(line), fmSec.horizontalAdvance(line)));
         }
-        hh->resizeSection(c, qBound(108, headerTextWidth + 28, 190));
+        hh->resizeSection(c, qBound(108, headerTextWidth + 28, 220));
     }
 }
 
