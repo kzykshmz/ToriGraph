@@ -36,6 +36,7 @@
 #include <QVector>
 #include <QEvent>
 #include <QPoint>
+#include <QPointer>
 
 #include "Table.h"
 #include "Matrix.h"
@@ -79,7 +80,7 @@ public slots:
                         double zr);
     void insertNewData(Table *table, const QString &colName);
 
-    Matrix *matrix() { return d_matrix; };
+    Matrix *matrix() { return d_matrix.data(); };
     void addMatrixData(Matrix *m); // used to plot matrixes
     void addMatrixData(Matrix *m, double xl, double xr, double yl, double yr, double zl, double zr);
     void updateMatrixData(Matrix *m);
@@ -350,7 +351,7 @@ public slots:
     void setPointOptions(double size, bool s);
     //@}
 
-    Table *getTable() { return worksheet; };
+    Table *getTable() { return worksheet.data(); };
     void showWorksheet();
     void setPlotAssociation(const QString &s) { plotAssociation = s; };
     void setSmoothMesh(bool smooth);
@@ -401,8 +402,8 @@ private:
     bool crossHairSmooth, crossHairBoxed;
     int conesQuality;
     PointStyle pointStyle;
-    Table *worksheet;
-    Matrix *d_matrix;
+    QPointer<Table> worksheet;
+    QPointer<Matrix> d_matrix;
     Qwt3D::PLOTSTYLE style_;
     double d_base_zoom = 1.0;
     bool d_right_dragging = false;

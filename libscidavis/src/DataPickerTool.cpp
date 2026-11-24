@@ -170,15 +170,24 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
 
         if (dc && (d_mode == Mask || d_mode == Unmask)) {
             const bool doMask = (d_mode == Mask);
-            // DataCurve::maskPoint() mutates the underlying table Column(s) (and records
-            // ColumnSetMaskedCmd on the project undo stack). Wrap in a single project undo
-            // macro instead of pushing a no-op MultiLayer graph snapshot.
-            QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
-            if (undoStack)
-                undoStack->beginMacro(doMask ? tr("Mask Data Point") : tr("Unmask Data Point"));
-            dc->maskPoint(d_selected_point, doMask);
-            if (undoStack)
-                undoStack->endMacro();
+            MultiLayer *ml = d_graph ? d_graph->multiLayerParent() : nullptr;
+            if (ml && ml->undoStack()) {
+                if (d_graph->runWithColumnMaskUndo(
+                            doMask ? tr("Mask Data Point") : tr("Unmask Data Point"),
+                            QList<DataCurve *>() << dc,
+                            [&]() { dc->maskPoint(d_selected_point, doMask); })) {
+                    d_graph->updateStatReferenceLines();
+                    d_graph->notifyChanges();
+                }
+            } else {
+                // Fallback when Graph has no MultiLayer undo stack.
+                QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
+                if (undoStack)
+                    undoStack->beginMacro(doMask ? tr("Mask Data Point") : tr("Unmask Data Point"));
+                dc->maskPoint(d_selected_point, doMask);
+                if (undoStack)
+                    undoStack->endMacro();
+            }
             const int xCol = t ? t->colIndex(dc->xColumnName()) : -1;
             const int yCol = t ? t->colIndex(d_selected_curve->title().text()) : -1;
             const QString xStr = (t && row >= 0 && xCol >= 0)

@@ -219,7 +219,8 @@ void MatrixView::init()
 #ifndef LEGACY_CODE_0_2_x
     // keyboard shortcuts
     QShortcut *sel_all =
-            new QShortcut(QKeySequence(tr("Ctrl+A", "Matrix: select all")), d_view_widget);
+            new QShortcut(QKeySequence(tr("Ctrl+A", "Matrix: select all")), d_view_widget,
+                          nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
     connect(sel_all, SIGNAL(activated()), d_view_widget, SLOT(selectAll()));
 #endif
 

@@ -3409,21 +3409,35 @@ int RoiGadgetTool::applyClusterMask(bool mask)
     if (!d_graph_guard)
         return 0;
 
-    int totalModified = 0;
+    QList<DataCurve *> targetCurves;
     if ((d_mode == MaskRegion || d_mode == UnmaskRegion) && !d_explicit_curve) {
         for (int i = 0; i < d_graph_guard->curves(); ++i) {
             if (auto *dc = dynamic_cast<DataCurve *>(d_graph_guard->curve(i))) {
                 if (dc->isVisible())
-                    totalModified += dc->maskRegion(d_roi_rect, mask);
+                    targetCurves.append(dc);
             }
         }
     } else if (DataCurve *dc = resolveTargetDataCurve()) {
-        totalModified = dc->maskRegion(d_roi_rect, mask);
+        targetCurves.append(dc);
+    }
+
+    int totalModified = 0;
+    if (!targetCurves.isEmpty()) {
+        d_graph_guard->runWithColumnMaskUndo(
+                mask ? tr("Mask Region") : tr("Unmask Region"), targetCurves, [&]() {
+                    for (DataCurve *dc : targetCurves) {
+                        if (dc)
+                            totalModified += dc->maskRegion(d_roi_rect, mask);
+                    }
+                });
     }
 
     recalculate();
-    if (d_graph_guard)
+    if (d_graph_guard) {
+        if (totalModified > 0)
+            d_graph_guard->notifyChanges();
         d_graph_guard->replot();
+    }
     if (d_app && totalModified > 0)
         d_app->modifiedProject();
     return totalModified;

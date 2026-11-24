@@ -2594,12 +2594,13 @@ void GraphMiniToolbar::onCurveClearMask()
     if (!d_graph || d_curve_index < 0 || d_curve_index >= d_graph->curves())
         return;
     if (DataCurve *dc = dynamic_cast<DataCurve *>(d_graph->curve(d_curve_index))) {
-        const QString beforeSnap = beginGraphUndo();
-        dc->clearMasks();
-        d_graph->updateStatReferenceLines();
-        d_graph->replot();
-        d_graph->notifyChanges();
-        commitGraphUndo(tr("Clear Curve Masks"), beforeSnap);
+        if (d_graph->runWithColumnMaskUndo(tr("Clear Curve Masks"),
+                                           QList<DataCurve *>() << dc,
+                                           [&]() { dc->clearMasks(); })) {
+            d_graph->updateStatReferenceLines();
+            d_graph->replot();
+            d_graph->notifyChanges();
+        }
         rebuildCurrentButtons();
         adjustSize();
         reclampToAvailableBounds();

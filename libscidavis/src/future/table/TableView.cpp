@@ -856,7 +856,8 @@ void TableView::init()
 
     // keyboard shortcuts
     QShortcut *sel_all =
-            new QShortcut(QKeySequence(tr("Ctrl+A", "Table: select all")), d_view_widget);
+            new QShortcut(QKeySequence(tr("Ctrl+A", "Table: select all")), d_view_widget,
+                          nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
     connect(sel_all, SIGNAL(activated()), d_view_widget, SLOT(selectAll()));
 
     connect(ui.type_box, SIGNAL(currentIndexChanged(int)), this, SLOT(updateFormatBox()));

@@ -35,6 +35,7 @@
 #include <QVector>
 #include <QEvent>
 #include <QMap>
+#include <functional>
 
 #include <qwt_plot.h>
 #include <qwt_plot_marker.h>
@@ -1086,6 +1087,16 @@ public:
     DataCurve *pointColorMapCurve() const;
     //! E11: number of error-bar curves drawn as translucent bands.
     int errorBandCount() const;
+    struct ColumnMaskSnapshot {
+        QPointer<Table> table;
+        QPointer<Column> column;
+        QString colName;
+        QList<Interval<int>> beforeIntervals;
+        QList<Interval<int>> afterIntervals;
+    };
+    bool runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurve *> &curves,
+                               const std::function<void()> &editFn);
+    int clearAllCurveMasksWithUndo();
     QString autoPlaceLegend() { return placeLegendAnchor(LegendAutoAvoidData); }
     void setAxisTitleColor(int axis, const QColor &c)
     {

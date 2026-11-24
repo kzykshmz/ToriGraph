@@ -496,18 +496,29 @@ void DataCurve::maskPoint(int point, bool mask)
     const int row = tableRow(point);
     if (row < 0)
         return;
-    Column *yCol = resolveDataCurveColumn(d_table, title().text());
-    if (!yCol)
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+    if (!yCol && (mask || !xCol))
         return;
 
-    yCol->setMasked(row, mask);
-    if (!mask) {
-        Column *xCol = resolveDataCurveColumn(d_table, d_x_column);
-        if (xCol && xCol->isMasked(row))
-            xCol->setMasked(row, false);
+    bool changedY = false;
+    if (yCol && yCol->isMasked(row) != mask) {
+        yCol->setMasked(row, mask);
+        changedY = true;
     }
+    bool changedX = false;
+    if (!mask && xCol && xCol != yCol && xCol->isMasked(row)) {
+        xCol->setMasked(row, false);
+        changedX = true;
+    }
+    if (!changedY && !changedX)
+        return;
 
-    emit d_table->modifiedData(d_table, title().text());
+    if (changedY)
+        emit d_table->modifiedData(d_table, title().text());
+    if (changedX && !d_x_column.isEmpty() && d_x_column != title().text())
+        emit d_table->modifiedData(d_table, d_x_column);
     if (plot()) {
         Graph *g = qobject_cast<Graph *>(plot()->parent());
         if (g)
@@ -575,12 +586,55 @@ void DataCurve::clearMasks()
 {
     if (!d_table)
         return;
-    Column *yCol = resolveDataCurveColumn(d_table, title().text());
-    if (!yCol)
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    resolveColumns(xCol, yCol);
+
+    const bool hasYMasks = (yCol && !yCol->maskedIntervals().isEmpty());
+    QVector<int> xRowsToUnmask;
+    if (xCol && xCol != yCol && !xCol->maskedIntervals().isEmpty()) {
+        const int n = dataSize();
+        xRowsToUnmask.reserve(n);
+        for (int i = 0; i < n; ++i) {
+            const int row = tableRow(i);
+            if (row >= 0 && xCol->isMasked(row))
+                xRowsToUnmask.append(row);
+        }
+        std::sort(xRowsToUnmask.begin(), xRowsToUnmask.end());
+        xRowsToUnmask.erase(std::unique(xRowsToUnmask.begin(), xRowsToUnmask.end()),
+                            xRowsToUnmask.end());
+    }
+
+    if (!hasYMasks && xRowsToUnmask.isEmpty())
         return;
 
-    yCol->clearMasks();
-    emit d_table->modifiedData(d_table, title().text());
+    future::Table *ft = d_table->d_future_table;
+    if (ft)
+        ft->beginMacro(QObject::tr("Clear Curve Masks"));
+    if (hasYMasks)
+        yCol->clearMasks();
+    if (!xRowsToUnmask.isEmpty()) {
+        int runStart = xRowsToUnmask.first();
+        int runEnd = runStart;
+        for (int idx = 1; idx < xRowsToUnmask.size(); ++idx) {
+            const int r = xRowsToUnmask.at(idx);
+            if (r == runEnd + 1) {
+                runEnd = r;
+            } else {
+                xCol->setMasked(Interval<int>(runStart, runEnd), false);
+                runStart = r;
+                runEnd = r;
+            }
+        }
+        xCol->setMasked(Interval<int>(runStart, runEnd), false);
+    }
+    if (ft)
+        ft->endMacro();
+
+    if (hasYMasks)
+        emit d_table->modifiedData(d_table, title().text());
+    if (!xRowsToUnmask.isEmpty() && !d_x_column.isEmpty() && d_x_column != title().text())
+        emit d_table->modifiedData(d_table, d_x_column);
     if (plot()) {
         Graph *g = qobject_cast<Graph *>(plot()->parent());
         if (g)

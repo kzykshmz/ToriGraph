@@ -112,6 +112,9 @@
 #include <QMainWindow>
 #include <QStatusBar>
 #include <QTextDocument>
+#include <QUndoCommand>
+#include <QUndoStack>
+#include <utility>
 
 #if QT_VERSION >= 0x040300
 #include <QSvgGenerator>
@@ -4196,13 +4199,18 @@ void Graph::initTitle(bool on, const QFont &fnt)
 void Graph::removeLegend()
 {
     if (legendMarkerID >= 0) {
+        Legend *leg = legend();
+        if (d_markers_selector && leg)
+            d_markers_selector->removeAll(leg);
         if (selectedMarker == legendMarkerID)
             deselectMarker();
-        int index = d_texts.indexOf(legendMarkerID);
-        int texts = d_texts.size();
-        for (int i = index; i < texts - 1; i++)
-            d_texts[i] = d_texts[i + 1];
-        d_texts.resize(--texts);
+        const int index = d_texts.indexOf(legendMarkerID);
+        if (index >= 0) {
+            int texts = d_texts.size();
+            for (int i = index; i < texts - 1; i++)
+                d_texts[i] = d_texts[i + 1];
+            d_texts.resize(--texts);
+        }
 
         d_plot->removeMarker(legendMarkerID);
         legendMarkerID = -1;
@@ -10487,7 +10495,7 @@ QStringList Graph::builtInPaletteNames()
 QStringList Graph::customPaletteNames()
 {
     QStringList names = customPaletteMemoryStore().keys();
-    QSettings settings;
+    QSettings &settings = ApplicationWindow::getSettings();
     settings.beginGroup("CustomColorPalettes");
     for (const QString &k : settings.childKeys()) {
         if (!names.contains(k))
@@ -10556,7 +10564,7 @@ QList<QColor> Graph::paletteColors(const QString &paletteName)
     if (memStore.contains(key))
         return memStore.value(key);
 
-    QSettings settings;
+    QSettings &settings = ApplicationWindow::getSettings();
     settings.beginGroup("CustomColorPalettes");
     if (settings.contains(key)) {
         const QStringList hexList = settings.value(key).toStringList();
@@ -10627,7 +10635,7 @@ bool Graph::saveCustomPalette(const QString &name, const QList<QColor> &colors, 
         if (c.isValid())
             hexList.append(c.name());
     }
-    QSettings settings;
+    QSettings &settings = ApplicationWindow::getSettings();
     settings.beginGroup("CustomColorPalettes");
     settings.setValue(key, hexList);
     settings.endGroup();
@@ -10641,7 +10649,7 @@ void Graph::removeCustomPalette(const QString &name)
         return;
 
     customPaletteMemoryStore().remove(key);
-    QSettings settings;
+    QSettings &settings = ApplicationWindow::getSettings();
     settings.beginGroup("CustomColorPalettes");
     settings.remove(key);
     settings.endGroup();
@@ -10801,7 +10809,7 @@ bool Graph::showColorPaletteEditor(QWidget *parent, Graph *targetGraph)
     mainLayout->addWidget(presetGroup);
 
     // 2. Color List & Swatch Editor
-    QGroupBox *colorsGroup = new QGroupBox(tr("Palette Colors (Swatches & Hex Codes)"), &dlg);
+    QGroupBox *colorsGroup = new QGroupBox(tr("Palette Colors (Swatches && Hex Codes)"), &dlg);
     QHBoxLayout *colorsLayout = new QHBoxLayout(colorsGroup);
     QListWidget *colorListWidget = new QListWidget(colorsGroup);
     colorListWidget->setIconSize(QSize(36, 18));
@@ -17740,6 +17748,254 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
     updateSelectionOverlayGeometry();
     emit modifiedGraph();
     return anchorName(chosenAnchor);
+}
+
+namespace {
+
+bool maskIntervalListsEqual(const QList<Interval<int>> &a, const QList<Interval<int>> &b)
+{
+    if (a.isEmpty() && b.isEmpty())
+        return true;
+    IntervalAttribute<bool> diffA(a);
+    for (const Interval<int> &iv : b)
+        diffA.setValue(iv, false);
+    if (!diffA.intervals().isEmpty())
+        return false;
+
+    IntervalAttribute<bool> diffB(b);
+    for (const Interval<int> &iv : a)
+        diffB.setValue(iv, false);
+    return diffB.intervals().isEmpty();
+}
+
+void applyColumnMaskIntervals(Column *col, const QList<Interval<int>> &targetIntervals)
+{
+    if (!col)
+        return;
+    const QList<Interval<int>> curIntervals = col->maskedIntervals();
+    if (maskIntervalListsEqual(curIntervals, targetIntervals))
+        return;
+
+    if (targetIntervals.isEmpty()) {
+        col->clearMasks();
+        return;
+    }
+    if (curIntervals.isEmpty()) {
+        for (const Interval<int> &iv : targetIntervals)
+            col->setMasked(iv, true);
+        return;
+    }
+
+    IntervalAttribute<bool> toUnmask(curIntervals);
+    for (const Interval<int> &iv : targetIntervals)
+        toUnmask.setValue(iv, false);
+
+    IntervalAttribute<bool> toMask(targetIntervals);
+    for (const Interval<int> &iv : curIntervals)
+        toMask.setValue(iv, false);
+
+    for (const Interval<int> &iv : toUnmask.intervals())
+        col->setMasked(iv, false);
+    for (const Interval<int> &iv : toMask.intervals())
+        col->setMasked(iv, true);
+}
+
+ApplicationWindow *findGraphAppWindow(const QObject *from)
+{
+    for (const QObject *p = from; p != nullptr; p = p->parent()) {
+        if (auto *aw = qobject_cast<ApplicationWindow *>(const_cast<QObject *>(p)))
+            return aw;
+    }
+    if (qApp) {
+        for (QWidget *tlw : QApplication::topLevelWidgets()) {
+            if (auto *aw = qobject_cast<ApplicationWindow *>(tlw))
+                return aw;
+        }
+    }
+    return nullptr;
+}
+
+class GraphColumnMaskUndoCommand final : public QUndoCommand
+{
+public:
+    GraphColumnMaskUndoCommand(Graph *graph, MultiLayer *ml, int layerIndex, const QString &label,
+                               QVector<Graph::ColumnMaskSnapshot> snapshots)
+        : QUndoCommand(label),
+          d_graph(graph),
+          d_ml(ml),
+          d_layer_index(layerIndex),
+          d_snapshots(std::move(snapshots)),
+          d_initial_push_done(false)
+    {
+    }
+
+    void undo() override { applyState(true); }
+
+    void redo() override
+    {
+        if (!d_initial_push_done) {
+            d_initial_push_done = true;
+            return;
+        }
+        applyState(false);
+    }
+
+private:
+    void applyState(bool isUndo)
+    {
+        if (d_snapshots.isEmpty())
+            return;
+
+        // TODO(Stage-B2): ScopedProjectUndoSuppressor(proj) — obtain Project* from first valid
+        // snap.column->project() (or snap.table->d_future_table->project()) so applying
+        // before/after intervals on Undo/Redo does not push onto d_project->undoStack().
+        for (const Graph::ColumnMaskSnapshot &snap : d_snapshots) {
+            if (!snap.table || !snap.table->d_future_table)
+                continue;
+            Column *col = snap.column.data();
+            if (!col || col->parentAspect() != snap.table->d_future_table.data())
+                continue;
+            const QList<Interval<int>> &target =
+                    isUndo ? snap.beforeIntervals : snap.afterIntervals;
+            applyColumnMaskIntervals(col, target);
+            const QString fullName = snap.table->name() + QLatin1Char('_') + col->name();
+            emit snap.table->modifiedData(snap.table.data(), fullName);
+        }
+
+        Graph *g = d_graph.data();
+        if ((!g || !g->parent()) && d_ml) {
+            const QList<Graph *> layers = d_ml->layersList();
+            if (d_layer_index >= 0 && d_layer_index < layers.size())
+                g = layers.at(d_layer_index);
+            else
+                g = d_ml->activeGraph();
+        }
+        if (g) {
+            g->updateStatReferenceLines();
+            g->syncChildLinkedLayers();
+            g->replot();
+            emit g->modifiedGraph();
+        } else if (d_ml) {
+            for (Graph *lg : d_ml->layersList()) {
+                if (lg) {
+                    lg->updateStatReferenceLines();
+                    lg->syncChildLinkedLayers();
+                    lg->replot();
+                }
+            }
+            emit d_ml->modifiedPlot();
+        }
+    }
+
+    QPointer<Graph> d_graph;
+    QPointer<MultiLayer> d_ml;
+    int d_layer_index = -1;
+    QVector<Graph::ColumnMaskSnapshot> d_snapshots;
+    bool d_initial_push_done = false;
+};
+
+} // namespace
+
+bool Graph::runWithColumnMaskUndo(const QString &undoLabel, const QList<DataCurve *> &curves,
+                                  const std::function<void()> &editFn)
+{
+    QVector<ColumnMaskSnapshot> snapshots;
+    QSet<const Column *> seenCols;
+    for (DataCurve *dc : curves) {
+        if (!dc || !dc->table() || !dc->table()->d_future_table)
+            continue;
+        Column *xCol = nullptr;
+        Column *yCol = nullptr;
+        dc->resolveColumns(xCol, yCol);
+        for (Column *col : { xCol, yCol }) {
+            if (!col || seenCols.contains(col))
+                continue;
+            seenCols.insert(col);
+            ColumnMaskSnapshot snap;
+            snap.table = dc->table();
+            snap.column = col;
+            snap.colName = dc->table()->name() + QLatin1Char('_') + col->name();
+            snap.beforeIntervals = col->maskedIntervals();
+            snapshots.append(std::move(snap));
+        }
+    }
+
+    MultiLayer *ml = multiLayerParent();
+    QUndoStack *mlStack = (ml && !ml->isRestoringSnapshot()) ? ml->undoStack() : nullptr;
+
+    if (editFn) {
+        if (mlStack) {
+            // TODO(Stage-B2): ScopedProjectUndoSuppressor(proj) — obtain Project* from first valid
+            // snapshot column/table so graph-level mask edits do not pollute d_project->undoStack().
+            editFn();
+        } else {
+            editFn();
+        }
+    }
+
+    QVector<ColumnMaskSnapshot> changed;
+    changed.reserve(snapshots.size());
+    for (ColumnMaskSnapshot &snap : snapshots) {
+        if (!snap.table || !snap.table->d_future_table || !snap.column)
+            continue;
+        if (snap.column->parentAspect() != snap.table->d_future_table.data())
+            continue;
+        snap.afterIntervals = snap.column->maskedIntervals();
+        if (!maskIntervalListsEqual(snap.beforeIntervals, snap.afterIntervals))
+            changed.append(std::move(snap));
+    }
+
+    if (changed.isEmpty())
+        return false;
+
+    if (mlStack) {
+        const int layerIdx = ml->layersList().indexOf(this);
+        mlStack->push(new GraphColumnMaskUndoCommand(
+                this, ml, layerIdx, undoLabel, std::move(changed)));
+        if (ApplicationWindow *aw = findGraphAppWindow(this))
+            aw->updateUndoRedoActionsForActiveWindow();
+    }
+    return true;
+}
+
+int Graph::clearAllCurveMasksWithUndo()
+{
+    QList<DataCurve *> targetCurves;
+    int clearedCurves = 0;
+    for (int i = 0; i < n_curves; ++i) {
+        if (DataCurve *dc = dynamic_cast<DataCurve *>(curve(i))) {
+            Column *xCol = nullptr;
+            Column *yCol = nullptr;
+            dc->resolveColumns(xCol, yCol);
+            const bool hasY = (yCol && !yCol->maskedIntervals().isEmpty());
+            bool hasXInCurve = false;
+            if (xCol && xCol != yCol && !xCol->maskedIntervals().isEmpty()) {
+                const int n = dc->dataSize();
+                for (int pt = 0; pt < n; ++pt) {
+                    const int row = dc->tableRow(pt);
+                    if (row >= 0 && xCol->isMasked(row)) {
+                        hasXInCurve = true;
+                        break;
+                    }
+                }
+            }
+            if (hasY || hasXInCurve) {
+                targetCurves.append(dc);
+                ++clearedCurves;
+            }
+        }
+    }
+    if (targetCurves.isEmpty())
+        return 0;
+
+    runWithColumnMaskUndo(tr("Clear All Masks on Graph"), targetCurves, [&]() {
+        for (DataCurve *dc : targetCurves)
+            dc->clearMasks();
+    });
+    updateStatReferenceLines();
+    replot();
+    notifyChanges();
+    return clearedCurves;
 }
 
 

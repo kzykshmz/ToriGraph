@@ -212,8 +212,8 @@ Graph3D::Graph3D(const QString &label, QWidget *parent, const char *name, Qt::Wi
 
 void Graph3D::initPlot()
 {
-    worksheet = 0;
-    d_matrix = 0;
+    worksheet = nullptr;
+    d_matrix = nullptr;
     plotAssociation = QString();
 
     QDateTime dt = QDateTime::currentDateTime();
@@ -1491,7 +1491,7 @@ void Graph3D::updateScales(double xl, double xr, double yl, double yr, double zl
     } else if (worksheet) {
         int xCol = -1, yCol = -1, zCol = -1;
         bool isXYZ = false;
-        if (parsePlotAssociationColumns(worksheet, plotAssociation, xCol, yCol, zCol, isXYZ)) {
+        if (parsePlotAssociationColumns(worksheet.data(), plotAssociation, xCol, yCol, zCol, isXYZ)) {
             if (isXYZ) {
                 updateScales(xl, xr, yl, yr, zl, zr, xCol, yCol, zCol);
                 sp->legend()->setLimits(zl, zr);
@@ -2079,13 +2079,11 @@ void Graph3D::setCrossMesh()
 
 void Graph3D::clearData()
 {
-    if (d_matrix)
-        d_matrix = 0;
-    else if (worksheet)
-        worksheet = 0;
-    else if (func) {
+    d_matrix.clear();
+    worksheet.clear();
+    if (func) {
         delete func;
-        func = 0;
+        func = nullptr;
     }
     plotAssociation = QString();
 
