@@ -257,6 +257,26 @@ def scan_file(path: pathlib.Path) -> List[Finding]:
                 )
             )
 
+    # Rule 6: Literal '&&' in buddy-less QFormLayout::addRow(QString, QLayout*)
+    for idx in range(n_lines):
+        if "addRow(" not in clean_lines[idx]:
+            continue
+        stmt = _extract_stmt(clean_lines, idx)
+        addrow_args = _parse_addrow_args(stmt)
+        if (
+            addrow_args
+            and ADDROW_LAYOUT_ARG_RE.match(addrow_args[1])
+            and re.search(r'"[^"\n]*&&[^"\n]*"', addrow_args[0])
+        ):
+            findings.append(
+                Finding(
+                    "addrow-layout-double-amp",
+                    rel,
+                    idx + 1,
+                    f"Use single '&' (no buddy set) in addRow(label, layout): {addrow_args[0][:60]!r}",
+                )
+            )
+
     return findings
 
 
