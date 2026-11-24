@@ -68,7 +68,12 @@
 #include <QTextCursor>
 #include <QScrollArea>
 #include <QGuiApplication>
+#include <QLocale>
+#include <QPair>
 #include <QScreen>
+#include <QSet>
+#include <cmath>
+#include <limits>
 
 #include <qwt_plot.h>
 #include <qwt_scale_widget.h>
@@ -196,6 +201,178 @@ void selectOrSetMinorTickCombo(QComboBox *combo, int count)
         }
     }
     combo->setEditText(QString::number(safeCount));
+}
+
+QString formatLocaleScalar(double val, int prec = 12)
+{
+    QLocale loc = QLocale();
+    loc.setNumberOptions(loc.numberOptions() | QLocale::OmitGroupSeparator);
+    return loc.toString(val, 'g', prec);
+}
+
+bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
+{
+    if (trimmed.isEmpty())
+        return false;
+    const QLocale curLoc = QLocale();
+    QLocale locNoGroup = curLoc;
+    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    bool ok = false;
+    double val = locNoGroup.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    val = cLoc.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+        val = curLoc.toDouble(trimmed, &ok);
+        if (ok && std::isfinite(val)) {
+            if (outVal)
+                *outVal = val;
+            return true;
+        }
+    }
+    return false;
+}
+
+QString normalizeExprDecimalCommas(const QString &expr)
+{
+    if (QLocale().decimalPoint() != QLatin1Char(','))
+        return expr;
+    static const QSet<QString> kMultiArgFns = {
+        QStringLiteral("avg"),  QStringLiteral("min"),       QStringLiteral("max"),
+        QStringLiteral("sum"),  QStringLiteral("beta"),      QStringLiteral("bessel_jn"),
+        QStringLiteral("bessel_yn")
+    };
+    QVector<QPair<int, int>> skipRanges;
+    const int n = expr.size();
+    for (int i = 0; i < n; ++i) {
+        if (!expr[i].isLetter() && expr[i] != QLatin1Char('_'))
+            continue;
+        const int idStart = i;
+        while (i < n && (expr[i].isLetterOrNumber() || expr[i] == QLatin1Char('_')))
+            ++i;
+        const QString fnName = expr.mid(idStart, i - idStart).toLower();
+        int j = i;
+        while (j < n && expr[j].isSpace())
+            ++j;
+        if (j < n && expr[j] == QLatin1Char('(') && kMultiArgFns.contains(fnName)) {
+            int depth = 1;
+            int k = j + 1;
+            bool hasCommaSpace = false;
+            bool hasTightComma = false;
+            while (k < n && depth > 0) {
+                if (expr[k] == QLatin1Char('('))
+                    ++depth;
+                else if (expr[k] == QLatin1Char(')'))
+                    --depth;
+                else if (depth == 1 && expr[k] == QLatin1Char(',')) {
+                    if ((k + 1 < n && expr[k + 1].isSpace())
+                        || (k > 0 && expr[k - 1].isSpace()))
+                        hasCommaSpace = true;
+                    else
+                        hasTightComma = true;
+                }
+                ++k;
+            }
+            if (depth == 0 && hasTightComma && !hasCommaSpace)
+                skipRanges.append(qMakePair(j, k));
+        }
+        --i;
+    }
+
+    QString out = expr;
+    for (int i = 1; i + 1 < n; ++i) {
+        if (out[i] != QLatin1Char(',') || !out[i - 1].isDigit() || !out[i + 1].isDigit())
+            continue;
+        bool inSkip = false;
+        for (const auto &rng : skipRanges) {
+            if (i > rng.first && i < rng.second) {
+                inSkip = true;
+                break;
+            }
+        }
+        if (!inSkip)
+            out[i] = QLatin1Char('.');
+    }
+    return out;
+}
+
+bool evalAxisScalarExpr(const QString &raw, double *out, QString *errMsg = nullptr)
+{
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty()) {
+        if (errMsg)
+            *errMsg = QObject::tr("Expression is empty.");
+        return false;
+    }
+
+    double val = 0.0;
+    if (parseLocaleOrCScalar(trimmed, &val)) {
+        if (out)
+            *out = val;
+        return true;
+    }
+
+    const QString normalized = normalizeExprDecimalCommas(trimmed);
+    auto tryEval = [&](const QString &expr, double &res, QString *localErr) -> bool {
+        try {
+            MyParser parser;
+            parser.SetExpr(expr);
+            res = parser.Eval();
+            if (!std::isfinite(res)) {
+                if (localErr)
+                    *localErr = QObject::tr("Expression evaluates to a non-finite value.");
+                return false;
+            }
+            return true;
+        } catch (mu::ParserError &e) {
+            if (localErr)
+                *localErr = QStringFromString(e.GetMsg());
+            return false;
+        }
+    };
+
+    QString primaryErr;
+    if (tryEval(normalized, val, &primaryErr)) {
+        if (out)
+            *out = val;
+        return true;
+    }
+    if (normalized != trimmed) {
+        double rawVal = 0.0;
+        if (tryEval(trimmed, rawVal, nullptr)) {
+            if (out)
+                *out = rawVal;
+            return true;
+        }
+    }
+    if (errMsg)
+        *errMsg = primaryErr;
+    return false;
+}
+
+double evalAxisScalarOrEmptyFallback(const QString &raw, double fallback, bool *okOut)
+{
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty()) {
+        if (okOut)
+            *okOut = true;
+        return fallback;
+    }
+    double val = fallback;
+    const bool ok = evalAxisScalarExpr(trimmed, &val);
+    if (okOut)
+        *okOut = ok;
+    return ok ? val : fallback;
 }
 
 } // namespace
@@ -1631,7 +1808,7 @@ void AxesDialog::updateShowBox(int axis)
     if (d_graph && axis >= 0 && axis < 4) {
         const int qwtAxis = Graph::mapToQwtAxis(axis);
         boxAxisBackbone->setChecked(d_graph->isAxisBackboneVisible(qwtAxis));
-        boxDivideFactor->setText(QString::number(d_graph->tickDivideFactor(qwtAxis), 'g', 12));
+        boxDivideFactor->setText(formatLocaleScalar(d_graph->tickDivideFactor(qwtAxis), 12));
         boxTickPrefix->setText(d_graph->tickPrefix(qwtAxis));
         boxTickSuffix->setText(d_graph->tickSuffix(qwtAxis));
     }
@@ -2045,29 +2222,18 @@ bool AxesDialog::updatePlot()
                 to = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
             }
             double startVal = 0.0, endVal = 0.0;
-            try {
-                MyParser parser;
-                parser.SetExpr(from);
-                startVal = parser.Eval();
-                if (!std::isfinite(startVal))
-                    throw mu::ParserError("Non-finite limit");
-            } catch (mu::ParserError &e) {
+            QString exprErr;
+            if (!evalAxisScalarExpr(from, &startVal, &exprErr)) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("Start limit error"), QStringFromString(e.GetMsg()));
+                QMessageBox::critical(this, tr("Start limit error"), exprErr);
                 boxStart->setFocus();
                 return false;
             }
-            try {
-                MyParser parser;
-                parser.SetExpr(to);
-                endVal = parser.Eval();
-                if (!std::isfinite(endVal))
-                    throw mu::ParserError("Non-finite limit");
-            } catch (mu::ParserError &e) {
+            if (!evalAxisScalarExpr(to, &endVal, &exprErr)) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
-                QMessageBox::critical(this, tr("End limit error"), QStringFromString(e.GetMsg()));
+                QMessageBox::critical(this, tr("End limit error"), exprErr);
                 boxEnd->setFocus();
                 return false;
             }
@@ -2108,7 +2274,7 @@ bool AxesDialog::updatePlot()
                         boxStart->setFocus();
                         return false;
                     }
-                    const QString clampedStr = QString::number(clampedStart, 'g', 12);
+                    const QString clampedStr = formatLocaleScalar(clampedStart, 12);
                     d_stagedScales[r].start = clampedStr;
                     if (axesList && axesList->currentRow() == r && boxStart) {
                         QSignalBlocker bStart(boxStart);
@@ -2118,15 +2284,11 @@ bool AxesDialog::updatePlot()
             }
             if (st.useStep) {
                 double stp = 0.0;
-                try {
-                    MyParser parser;
-                    parser.SetExpr(step.toUtf8().constData());
-                    stp = parser.Eval();
-                } catch (mu::ParserError &e) {
+                QString stepErr;
+                if (!evalAxisScalarExpr(step, &stp, &stepErr)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
-                    QMessageBox::critical(this, tr("Step input error"),
-                                          QStringFromString(e.GetMsg()));
+                    QMessageBox::critical(this, tr("Step input error"), stepErr);
                     boxStep->setFocus();
                     return false;
                 }
@@ -2149,20 +2311,8 @@ bool AxesDialog::updatePlot()
             const StagedAxisEdit &st = d_stagedAxes[r];
             const QString factorTxt = st.divideFactor.trimmed();
             if (!factorTxt.isEmpty()) {
-                bool ok = false;
-                double v = QLocale::c().toDouble(factorTxt, &ok);
-                if (!ok)
-                    v = factorTxt.toDouble(&ok);
-                if (!ok) {
-                    try {
-                        MyParser parser;
-                        parser.SetExpr(factorTxt.toUtf8().constData());
-                        v = parser.Eval();
-                        ok = std::isfinite(v);
-                    } catch (...) {
-                        ok = false;
-                    }
-                }
+                double v = 0.0;
+                const bool ok = evalAxisScalarExpr(factorTxt, &v);
                 if (!ok || !std::isfinite(v) || std::fabs(v) <= 1e-300) {
                     generalDialog.setCurrentWidget(axesPage);
                     if (axesTitlesList)
@@ -2201,45 +2351,15 @@ bool AxesDialog::updatePlot()
     }
 
     if (commitBreak) {
-        auto parseExpr = [](const QString &txt, double fallback, bool *okOut) -> double {
-            const QString trimmed = txt.trimmed();
-            if (trimmed.isEmpty()) {
-                if (okOut)
-                    *okOut = true;
-                return fallback;
-            }
-            bool numOk = false;
-            double v = QLocale::c().toDouble(trimmed, &numOk);
-            if (!numOk)
-                v = trimmed.toDouble(&numOk);
-            if (numOk) {
-                if (okOut)
-                    *okOut = true;
-                return v;
-            }
-            try {
-                MyParser parser;
-                parser.SetExpr(trimmed.toUtf8().constData());
-                v = parser.Eval();
-                if (okOut)
-                    *okOut = std::isfinite(v);
-                return v;
-            } catch (...) {
-                if (okOut)
-                    *okOut = false;
-                return fallback;
-            }
-        };
-
         for (int r = 0; r < 4; ++r) {
             if (!d_stagedBreaks[r].dirty || !d_stagedBreaks[r].enabled)
                 continue;
             const StagedBreakEdit &st = d_stagedBreaks[r];
             bool okFrom = false, okTo = false, okStepB = false, okStepA = false;
-            const double bf = parseExpr(st.breakFrom, 0.0, &okFrom);
-            const double bt = parseExpr(st.breakTo, 0.0, &okTo);
-            parseExpr(st.stepBefore, 0.0, &okStepB);
-            parseExpr(st.stepAfter, 0.0, &okStepA);
+            const double bf = evalAxisScalarOrEmptyFallback(st.breakFrom, 0.0, &okFrom);
+            const double bt = evalAxisScalarOrEmptyFallback(st.breakTo, 0.0, &okTo);
+            evalAxisScalarOrEmptyFallback(st.stepBefore, 0.0, &okStepB);
+            evalAxisScalarOrEmptyFallback(st.stepAfter, 0.0, &okStepA);
             if (!okFrom || !okTo || !(bf < bt) || !okStepB || !okStepA) {
                 generalDialog.setCurrentWidget(axisBreakPage);
                 if (axisBreakAxesList)
@@ -2560,13 +2680,13 @@ void AxesDialog::updateScale()
         break;
     }
     default: {
-        boxStart->setText(QString::number(astart));
-        boxEnd->setText(QString::number(aend));
+        boxStart->setText(formatLocaleScalar(astart, 12));
+        boxEnd->setText(formatLocaleScalar(aend, 12));
     }
     }
 
     QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
-    boxStep->setText(QString::number(d_graph->axisStep(a)));
+    boxStep->setText(formatLocaleScalar(d_graph->axisStep(a), 12));
     boxMajorValue->setValue(lst.count());
 
     if (d_graph->axisStep(a) != 0.0) {
@@ -2584,7 +2704,7 @@ void AxesDialog::updateScale()
                 astep *= 86400.;
                 boxUnit->setCurrentIndex(1); // seconds
             }
-            boxStep->setText(QString::number(astep));
+            boxStep->setText(formatLocaleScalar(astep, 12));
         }
 
         btnMajor->setChecked(false);
@@ -2930,7 +3050,7 @@ void AxesDialog::updateLabelsFormat(int)
         QSignalBlocker b1(boxDivideFactor);
         QSignalBlocker b2(boxTickPrefix);
         QSignalBlocker b3(boxTickSuffix);
-        boxDivideFactor->setText(QString::number(d_graph->tickDivideFactor(a), 'g', 12));
+        boxDivideFactor->setText(formatLocaleScalar(d_graph->tickDivideFactor(a), 12));
         boxTickPrefix->setText(d_graph->tickPrefix(a));
         boxTickSuffix->setText(d_graph->tickSuffix(a));
     }
@@ -3045,7 +3165,7 @@ void AxesDialog::ensureAxisRowStaged(int row)
     const QString formula = d_graph->getAxesFormulas().value(axis);
     st.showFormula = !formula.isEmpty();
     st.formula = formula;
-    st.divideFactor = QString::number(d_graph->tickDivideFactor(axis), 'g', 12);
+    st.divideFactor = formatLocaleScalar(d_graph->tickDivideFactor(axis), 12);
     st.tickPrefix = d_graph->tickPrefix(axis);
     st.tickSuffix = d_graph->tickSuffix(axis);
     st.dirty = true;
@@ -3570,11 +3690,11 @@ void AxesDialog::updateAxisBreakPage(int row)
     }
 
     boxEnableAxisBreak->setChecked(spec.enabled);
-    boxBreakFrom->setText(QString::number(spec.enabled ? spec.breakFrom : defFrom, 'g', 10));
-    boxBreakTo->setText(QString::number(spec.enabled ? spec.breakTo : defTo, 'g', 10));
+    boxBreakFrom->setText(formatLocaleScalar(spec.enabled ? spec.breakFrom : defFrom, 10));
+    boxBreakTo->setText(formatLocaleScalar(spec.enabled ? spec.breakTo : defTo, 10));
     boxBreakPositionPct->setValue(qBound(10.0, spec.positionPct * 100.0, 90.0));
-    boxBreakStepBefore->setText(QString::number(spec.stepBefore, 'g', 10));
-    boxBreakStepAfter->setText(QString::number(spec.stepAfter, 'g', 10));
+    boxBreakStepBefore->setText(formatLocaleScalar(spec.stepBefore, 10));
+    boxBreakStepAfter->setText(formatLocaleScalar(spec.stepAfter, 10));
     boxBreakTypeBefore->setCurrentIndex(spec.log10Before ? 1 : 0);
     boxBreakTypeAfter->setCurrentIndex(spec.log10After ? 1 : 0);
 
@@ -3600,21 +3720,8 @@ void AxesDialog::applyTickLabelTransformFromUi()
     double factor = 1.0;
     const QString factorTxt = boxDivideFactor ? boxDivideFactor->text().trimmed() : QString();
     if (!factorTxt.isEmpty()) {
-        bool ok = false;
-        double v = QLocale::c().toDouble(factorTxt, &ok);
-        if (!ok)
-            v = factorTxt.toDouble(&ok);
-        if (!ok) {
-            try {
-                MyParser parser;
-                parser.SetExpr(factorTxt.toUtf8().constData());
-                v = parser.Eval();
-                ok = std::isfinite(v);
-            } catch (...) {
-                ok = false;
-            }
-        }
-        if (ok && std::isfinite(v) && std::fabs(v) > 1e-300)
+        double v = 0.0;
+        if (evalAxisScalarExpr(factorTxt, &v) && std::isfinite(v) && std::fabs(v) > 1e-300)
             factor = v;
     }
 
@@ -4131,19 +4238,10 @@ bool AxesDialog::commitScaleRow(int row)
     }
 
     double start = 0.0, end = 0.0, stp = 0.0;
-    try {
-        MyParser parser;
-        parser.SetExpr(from);
-        start = parser.Eval();
-        parser.SetExpr(to);
-        end = parser.Eval();
-        if (st.useStep) {
-            parser.SetExpr(step.toUtf8().constData());
-            stp = parser.Eval();
-        }
-    } catch (...) {
+    if (!evalAxisScalarExpr(from, &start) || !evalAxisScalarExpr(to, &end))
         return false;
-    }
+    if (st.useStep && !evalAxisScalarExpr(step, &stp))
+        return false;
     if (!std::isfinite(start) || !std::isfinite(end) || start >= end)
         return false;
     if (st.scaleType == 1 && (start <= 0.0 || end <= 0.0))
@@ -4339,21 +4437,8 @@ bool AxesDialog::commitAxisRow(int row)
     double factor = 1.0;
     const QString factorTxt = st.divideFactor.trimmed();
     if (!factorTxt.isEmpty()) {
-        bool ok = false;
-        double v = QLocale::c().toDouble(factorTxt, &ok);
-        if (!ok)
-            v = factorTxt.toDouble(&ok);
-        if (!ok) {
-            try {
-                MyParser parser;
-                parser.SetExpr(factorTxt.toUtf8().constData());
-                v = parser.Eval();
-                ok = std::isfinite(v);
-            } catch (...) {
-                ok = false;
-            }
-        }
-        if (ok && std::isfinite(v) && std::fabs(v) > 1e-300)
+        double v = 0.0;
+        if (evalAxisScalarExpr(factorTxt, &v) && std::isfinite(v) && std::fabs(v) > 1e-300)
             factor = v;
     }
     if (std::fabs(d_graph->tickDivideFactor(axis) - factor) > 1e-15
@@ -4387,44 +4472,14 @@ bool AxesDialog::commitBreakRow(int row)
         return true;
     }
 
-    auto parseExpr = [](const QString &txt, double fallback, bool *okOut) -> double {
-        const QString trimmed = txt.trimmed();
-        if (trimmed.isEmpty()) {
-            if (okOut)
-                *okOut = true;
-            return fallback;
-        }
-        bool numOk = false;
-        double v = QLocale::c().toDouble(trimmed, &numOk);
-        if (!numOk)
-            v = trimmed.toDouble(&numOk);
-        if (numOk) {
-            if (okOut)
-                *okOut = true;
-            return v;
-        }
-        try {
-            MyParser parser;
-            parser.SetExpr(trimmed.toUtf8().constData());
-            v = parser.Eval();
-            if (okOut)
-                *okOut = std::isfinite(v);
-            return v;
-        } catch (...) {
-            if (okOut)
-                *okOut = false;
-            return fallback;
-        }
-    };
-
     bool okFrom = false, okTo = false, okStepB = false, okStepA = false;
     Graph::AxisBreakSpec spec;
     spec.enabled = true;
-    spec.breakFrom = parseExpr(st.breakFrom, 0.0, &okFrom);
-    spec.breakTo = parseExpr(st.breakTo, 0.0, &okTo);
+    spec.breakFrom = evalAxisScalarOrEmptyFallback(st.breakFrom, 0.0, &okFrom);
+    spec.breakTo = evalAxisScalarOrEmptyFallback(st.breakTo, 0.0, &okTo);
     spec.positionPct = qBound(0.10, st.positionPct / 100.0, 0.90);
-    spec.stepBefore = qMax(0.0, parseExpr(st.stepBefore, 0.0, &okStepB));
-    spec.stepAfter = qMax(0.0, parseExpr(st.stepAfter, 0.0, &okStepA));
+    spec.stepBefore = qMax(0.0, evalAxisScalarOrEmptyFallback(st.stepBefore, 0.0, &okStepB));
+    spec.stepAfter = qMax(0.0, evalAxisScalarOrEmptyFallback(st.stepAfter, 0.0, &okStepA));
     spec.log10Before = (st.typeBefore == 1);
     spec.log10After = (st.typeAfter == 1);
     if (!okFrom || !okTo || !(spec.breakFrom < spec.breakTo) || !okStepB || !okStepA)

@@ -110,7 +110,9 @@ static void registerTableViewTranslations()
         "ワークシートツール (検索/置換・下方向へコピー・元ファイルから再読込)");
     reg("Find / Replace...", "検索と置換...");
     reg("Find...", "検索...");
-    reg("Fill Down", "下方向へコピー");
+    ToriGraphFullJapaneseTranslator::registerContextTranslation(
+            QStringLiteral("TableView"), QStringLiteral("Fill Down"),
+            QString::fromUtf8("下方向へコピー"));
     reg("Re-import from Source", "元ファイルから再読込");
     reg("Toggle Column Type & Format Side Panel", "列の型・書式サイドパネルを切り替え");
     reg("Enter formula for selected column(s) and press Enter to recalculate",

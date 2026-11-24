@@ -5047,23 +5047,69 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
         const int newRows = temp->rowCount();
         const int importedSpan = computeImportedColumnSpan(d_future_table);
         const int overwritten_cols = qMin(temp->columnCount(), importedSpan);
-        if (newRows > prevRows)
+        if (newRows != prevRows)
             d_future_table->setRowCount(newRows);
+        QVector<QString> targetNames(overwritten_cols);
         for (int i = 0; i < overwritten_cols; i++) {
-            column(i)->clearFormulas();
-            column(i)->asStringColumn()->copy(temp->column(i));
+            Column *dst = column(i);
+            Column *src = temp->column(i);
+            if (!dst || !src)
+                continue;
+            dst->clearFormulas();
+            dst->clearMasks();
+            if (src->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                if (dst->columnMode() != SciDAVis::ColumnMode::Numeric)
+                    dst->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                dst->copy(src);
+            } else if (src->columnMode() == dst->columnMode()) {
+                dst->copy(src);
+            } else {
+                dst->asStringColumn()->copy(src);
+            }
             if (renameCols)
-                column(i)->setName(temp->column(i)->name());
+                targetNames[i] = src->name();
+        }
+        if (renameCols) {
+            int tmpIdx = 0;
+            for (int i = 0; i < overwritten_cols; i++) {
+                Column *dst = column(i);
+                if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+                    continue;
+                QString tmpName;
+                do {
+                    tmpName = QStringLiteral("__tg_ascii_tmp_%1").arg(tmpIdx++);
+                } while (d_future_table->column(tmpName, false) != nullptr
+                         || targetNames.contains(tmpName));
+                dst->setName(tmpName);
+            }
+            for (int i = 0; i < overwritten_cols; i++) {
+                Column *dst = column(i);
+                if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+                    continue;
+                dst->setName(targetNames[i]);
+            }
         }
         if (importedSpan > overwritten_cols)
             d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
-        String2DoubleFilter *numFilter = new String2DoubleFilter;
+        String2DoubleFilter *numFilter = nullptr;
         QList<Column *> extraCols;
         for (int i = overwritten_cols; i < temp->columnCount(); i++) {
-            numFilter->input(0, temp->column(i));
-            Column *new_col = new Column(temp->column(i)->name(), SciDAVis::ColumnMode::Numeric);
+            Column *src = temp->column(i);
+            if (!src)
+                continue;
+            Column *new_col = new Column(src->name(), SciDAVis::ColumnMode::Numeric);
             new_col->setPlotDesignation(SciDAVis::Y);
-            new_col->copy(numFilter->output(0));
+            if (src->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                new_col->copy(src);
+            } else if (src->columnMode() == SciDAVis::ColumnMode::Text) {
+                if (!numFilter)
+                    numFilter = new String2DoubleFilter;
+                numFilter->input(0, src);
+                new_col->copy(numFilter->output(0));
+            } else {
+                new_col->setColumnMode(src->columnMode());
+                new_col->copy(src);
+            }
             extraCols.append(new_col);
         }
         if (!extraCols.isEmpty())

@@ -309,13 +309,19 @@ bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tabl
         if (!allowAlphaHashIds || rawFieldCount < 2)
             return true;
         bool anyTrailingNum = false;
+        bool anyTrailingMissing = false;
         for (int k = 1; k < rawFieldCount; ++k) {
             const QChar *pk = nullptr;
             int nk = 0;
             bool kQuoted = false;
             cellGetter(k, pk, nk, kQuoted);
-            if (nk <= 0 || isMissingNumericSpan(pk, nk, kQuoted))
+            if (nk <= 0)
                 continue;
+            if (isMissingNumericSpan(pk, nk, kQuoted)) {
+                if (isMissingDataTokenSpan(pk, nk))
+                    anyTrailingMissing = true;
+                continue;
+            }
             double dummy = 0.0;
             if (tryParseLabDoubleSpan(pk, nk, primaryLoc, useCustomLocale, dummy)) {
                 anyTrailingNum = true;
@@ -323,7 +329,7 @@ bool isHashCommentRecordCells(int rawFieldCount, bool whitespaceDelim, bool tabl
                 return true;
             }
         }
-        return !anyTrailingNum;
+        return !(anyTrailingNum || anyTrailingMissing);
     }
     if (whitespaceDelim) {
         if (rawFieldCount >= 2) {
@@ -2961,6 +2967,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     int maxCols = 0;
     bool anyNumericPreviewRow = false;
     bool sawSkippedAlphaHashWithNum = false;
+    QSet<int> skippedAlphaHashColCounts;
     bool step4SeenData = false;
 
     auto runPreviewScan = [&](bool pass2AllowAlpha, bool pass1HadNonHashRows) {
@@ -2971,6 +2978,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         maxCols = 0;
         anyNumericPreviewRow = false;
         sawSkippedAlphaHashWithNum = false;
+        skippedAlphaHashColCounts.clear();
         step4SeenData = false;
         bool seenRealData = false;
 
@@ -2987,8 +2995,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     || (pass2AllowAlpha
                         && (pass1HadNonHashRows ? !previewRecords.isEmpty() : true));
             if (isBodyHashCommentRow(rowSpans, allowAlphaNow)) {
-                if (!allowAlphaNow && !isBodyHashCommentRow(rowSpans, true))
+                if (!allowAlphaNow && !isBodyHashCommentRow(rowSpans, true)) {
                     sawSkippedAlphaHashWithNum = true;
+                    skippedAlphaHashColCounts.insert(rowSpans.size());
+                }
                 previewSkippedCommentOffsets.append(rowStartOffset);
                 continue;
             }
@@ -3010,7 +3020,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     runPreviewScan(false, false);
     bool usedAlphaHashPass2 = false;
-    if ((previewRecords.isEmpty() || !anyNumericPreviewRow) && sawSkippedAlphaHashWithNum) {
+    if (sawSkippedAlphaHashWithNum
+        && (previewRecords.isEmpty() || !anyNumericPreviewRow
+            || skippedAlphaHashColCounts.contains(maxCols))) {
         usedAlphaHashPass2 = true;
         runPreviewScan(true, !previewRecords.isEmpty());
     }
@@ -3300,6 +3312,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     return false;
                 }
                 const QVector<LabCsvCell> &candUnits = previewRecords[unitRowIdx];
+                if (!candUnits.isEmpty() && !candUnits[0].quoted
+                    && candUnits[0].value.trimmed().startsWith(QLatin1Char('#'))) {
+                    return false;
+                }
                 bool rowAllNonNumeric = true;
                 int nonEmptyAnywhere = 0;
                 for (const LabCsvCell &uc : candUnits) {
@@ -3445,7 +3461,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     int dataRowCount = std::max(0, previewRecords.size() - fileHeaderLinesConsumed);
     {
         int countPos = scanPos;
-        bool seenCountData = step4SeenData;
+        bool seenCountData = step4SeenData || allowAlphaAtDataStart;
         while (countPos < len) {
             bool skipRow = false;
             if (!readNextRecordSpans(buf, len, countPos, normSep, whitespaceDelim, trimSpaces,

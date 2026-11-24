@@ -1453,9 +1453,12 @@ private:
         col.dataType = parseDataType(
                 attrCI(attrs, { "dataType", "valueType", "binaryType", "storageType", "format" }));
         if (col.dataType == OpjuDataType::Auto) {
-            const OpjuDataType typeAttrAsData = parseDataType(attrCI(attrs, { "type" }));
-            if (typeAttrAsData != OpjuDataType::Auto)
-                col.dataType = typeAttrAsData;
+            const QString typeAttr = attrCI(attrs, { "type" }).trimmed().toLower();
+            if (typeAttr == QLatin1String("date") || typeAttr == QLatin1String("time")
+                || typeAttr == QLatin1String("datetime") || typeAttr == QLatin1String("text")
+                || typeAttr == QLatin1String("string") || typeAttr == QLatin1String("str")) {
+                col.dataType = parseDataType(typeAttr);
+            }
         }
         col.dataRef = attrCI(attrs, { "dataFile", "dataRef", "stream", "src", "file", "binary" })
                               .trimmed();
@@ -3289,6 +3292,7 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         bool hasNumeric = false;
         bool isText = false;
         bool skipped = false;
+        bool hasHeaderName = false;
         bool hasMetadata = false;
         SciDAVis::PlotDesignation designation = SciDAVis::Y;
         QString longName;
@@ -3459,15 +3463,19 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             if (nul > fixedOff) {
                 const QString cand =
                         decodeTextBytes(hdrDec.mid(fixedOff, nul - fixedOff), textHint).trimmed();
-                if (cand.contains(QLatin1Char('_')))
+                if (cand.contains(QLatin1Char('_'))) {
                     ds.fullName = cand;
+                    ds.hasHeaderName = true;
+                }
             }
         }
         if (ds.fullName.isEmpty() && hdrDec.size() > 0x30) {
             const QString hdrText = decodeTextBytes(hdrDec.mid(0x30), textHint);
             const QRegularExpressionMatch m = kDsNameRe.match(hdrText);
-            if (m.hasMatch())
+            if (m.hasMatch()) {
                 ds.fullName = m.captured(0);
+                ds.hasHeaderName = true;
+            }
         }
         if (ds.fullName.isEmpty())
             ds.fullName = QStringLiteral("Book1_Col%1").arg(dsSeq);
@@ -3510,6 +3518,29 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
     const qint64 metaStart = pos;
     QSet<QString> seenCpyuaGraphNames;
     QSet<QString> seenCpyuaMatrixNames;
+    QString curWorkbookName;
+    int seqShift = 0;
+
+    auto datasetMatchesColumnName = [](const RawCpyuaDataset &cand, const QString &winName,
+                                       const QString &sn) -> bool {
+        if (cand.skipped || !cand.hasHeaderName || sn.isEmpty())
+            return false;
+        if (!winName.isEmpty()) {
+            const QString expectedFull = winName + QLatin1Char('_') + sn;
+            if (cand.fullName.compare(expectedFull, Qt::CaseInsensitive) == 0)
+                return true;
+            if (cand.fullName.size() >= 20
+                && expectedFull.startsWith(cand.fullName, Qt::CaseInsensitive))
+                return true;
+        }
+        if (cand.colName.compare(sn, Qt::CaseInsensitive) == 0)
+            return true;
+        if (cand.fullName.endsWith(QLatin1Char('_') + sn, Qt::CaseInsensitive))
+            return true;
+        return cand.fullName.size() >= 20
+                && sn.startsWith(cand.colName, Qt::CaseInsensitive);
+    };
+
     for (qint64 p = metaStart; p + 4 < data.size(); ++p) {
         if (static_cast<unsigned char>(data[static_cast<int>(p)]) != 0x80U)
             continue;
@@ -3568,6 +3599,8 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
                                        || tailSlice.contains("AxesDlgSettings")
                                        || tailSlice.contains("Page>"))) {
                             seenCpyuaGraphNames.insert(winName.toLower());
+                        } else if (!winName.isEmpty()) {
+                            curWorkbookName = winName;
                         }
                     }
                 }
@@ -3589,11 +3622,52 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         quint16 dsId = 0;
         if (!readU16LE(colDec, 1, dsId))
             continue;
-        auto it = idToIndex.constFind(static_cast<int>(dsId));
-        if (it == idToIndex.constEnd())
+
+        // Extract short name at offset 9..24 before lookup so resync skips >1 dataset cannot
+        // shift 0x1D4 metadata onto a later column.
+        int nameEnd = 9;
+        while (nameEnd < std::min(colDec.size(), 24) && colDec[nameEnd] != '\0')
+            ++nameEnd;
+        const QString sn = (nameEnd > 9)
+                ? decodeTextBytes(colDec.mid(9, nameEnd - 9), textHint).trimmed()
+                : QString();
+
+        int targetIdx = idToIndex.value(static_cast<int>(dsId) - seqShift, -1);
+        if (targetIdx >= 0) {
+            const RawCpyuaDataset &cand = datasets[targetIdx];
+            if (cand.skipped)
+                continue;
+            if (cand.hasMetadata
+                || (!sn.isEmpty() && cand.hasHeaderName
+                    && !datasetMatchesColumnName(cand, curWorkbookName, sn))) {
+                targetIdx = -1;
+            }
+        }
+        if (targetIdx < 0 && !sn.isEmpty()) {
+            const QString expectedFull =
+                    curWorkbookName.isEmpty() ? QString() : (curWorkbookName + QLatin1Char('_') + sn);
+            int fallbackIdx = -1;
+            for (int j = 0; j < datasets.size(); ++j) {
+                const RawCpyuaDataset &cand = datasets[j];
+                if (cand.skipped || cand.hasMetadata || cand.oneBasedId > static_cast<int>(dsId))
+                    continue;
+                if (!expectedFull.isEmpty()
+                    && cand.fullName.compare(expectedFull, Qt::CaseInsensitive) == 0) {
+                    targetIdx = j;
+                    break;
+                }
+                if (fallbackIdx < 0 && datasetMatchesColumnName(cand, curWorkbookName, sn))
+                    fallbackIdx = j;
+            }
+            if (targetIdx < 0)
+                targetIdx = fallbackIdx;
+            if (targetIdx >= 0)
+                seqShift = static_cast<int>(dsId) - datasets[targetIdx].oneBasedId;
+        }
+        if (targetIdx < 0)
             continue;
 
-        RawCpyuaDataset &ds = datasets[it.value()];
+        RawCpyuaDataset &ds = datasets[targetIdx];
         if (ds.hasMetadata)
             continue;
         ds.hasMetadata = true;
@@ -3624,15 +3698,8 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
             break;
         }
 
-        // Short name at offset 9..17
-        int nameEnd = 9;
-        while (nameEnd < std::min(colDec.size(), 24) && colDec[nameEnd] != '\0')
-            ++nameEnd;
-        if (nameEnd > 9) {
-            const QString sn = decodeTextBytes(colDec.mid(9, nameEnd - 9), textHint).trimmed();
-            if (!sn.isEmpty())
-                ds.colName = sn;
-        }
+        if (!sn.isEmpty())
+            ds.colName = sn;
 
         // Trailing LongName\r\nUnits\r\nComments string immediately after zero-RLE block
         const qint64 tail = p + 2 + ln;

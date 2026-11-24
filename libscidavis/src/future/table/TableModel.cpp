@@ -40,6 +40,43 @@
 #include <QPixmap>
 #include <cmath>
 
+namespace {
+
+bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
+{
+    if (trimmed.isEmpty())
+        return false;
+    const QLocale curLoc = QLocale();
+    QLocale locNoGroup = curLoc;
+    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    bool ok = false;
+    double val = locNoGroup.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    val = cLoc.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+        val = curLoc.toDouble(trimmed, &ok);
+        if (ok && std::isfinite(val)) {
+            if (outVal)
+                *outVal = val;
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 TableModel::TableModel(future::Table *table)
     : QAbstractItemModel(0),
       d_table(table),
@@ -204,11 +241,8 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
                     if (col_ptr->isInvalid(row))
                         return false;
                 } else {
-                    bool numOk = false;
-                    double parsed = QLocale().toDouble(trimmed, &numOk);
-                    if (!numOk)
-                        parsed = QLocale::c().toDouble(trimmed, &numOk);
-                    if (numOk && std::isfinite(parsed) && !col_ptr->isInvalid(row)) {
+                    double parsed = 0.0;
+                    if (parseLocaleOrCScalar(trimmed, &parsed) && !col_ptr->isInvalid(row)) {
                         const QString curEditStr = data(index, Qt::EditRole).toString();
                         if (rawStr == curEditStr || parsed == col_ptr->valueAt(row))
                             return false;
@@ -259,37 +293,44 @@ bool TableModel::setData(const QModelIndex &index, const QVariant &value, int ro
         }
 
         d_table->beginMacro(tr("%1: change cell value(s)").arg(d_table->name()));
-        bool promotedToText = false;
-        if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric
-            && col_ptr->formulaIntervals().isEmpty()) {
-            if (!isMissingSentinel) {
-                bool numOk = false;
-                double parsed = QLocale().toDouble(trimmed, &numOk);
-                if (!numOk)
-                    parsed = QLocale::c().toDouble(trimmed, &numOk);
-                if (!numOk || !std::isfinite(parsed)) {
-                    bool hasAnyFinite = false;
-                    const int nRows = col_ptr->rowCount();
-                    for (int r = 0; r < nRows; ++r) {
-                        if (r != row && !col_ptr->isInvalid(r)
-                            && std::isfinite(col_ptr->valueAt(r))) {
-                            hasAnyFinite = true;
-                            break;
+        if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (isMissingSentinel) {
+                if (hasRowFormula)
+                    col_ptr->setFormula(row, QString());
+                col_ptr->asStringColumn()->setTextAt(row, QString());
+            } else {
+                double parsed = 0.0;
+                if (parseLocaleOrCScalar(trimmed, &parsed)) {
+                    if (hasRowFormula)
+                        col_ptr->setFormula(row, QString());
+                    col_ptr->setValueAt(row, parsed);
+                } else {
+                    bool promotedToText = false;
+                    if (col_ptr->formulaIntervals().isEmpty()) {
+                        bool hasAnyFinite = false;
+                        const int nRows = col_ptr->rowCount();
+                        for (int r = 0; r < nRows; ++r) {
+                            if (r != row && !col_ptr->isInvalid(r)
+                                && std::isfinite(col_ptr->valueAt(r))) {
+                                hasAnyFinite = true;
+                                break;
+                            }
+                        }
+                        if (!hasAnyFinite) {
+                            col_ptr->setColumnMode(SciDAVis::ColumnMode::Text);
+                            col_ptr->setTextAt(row, rawStr);
+                            promotedToText = true;
                         }
                     }
-                    if (!hasAnyFinite) {
-                        col_ptr->setColumnMode(SciDAVis::ColumnMode::Text);
-                        col_ptr->setTextAt(row, rawStr);
-                        promotedToText = true;
+                    if (!promotedToText) {
+                        if (hasRowFormula)
+                            col_ptr->setFormula(row, QString());
+                        col_ptr->asStringColumn()->setTextAt(row, rawStr);
                     }
                 }
             }
-        }
-        if (!promotedToText) {
-            if (col_ptr->columnMode() == SciDAVis::ColumnMode::Numeric && isMissingSentinel)
-                col_ptr->asStringColumn()->setTextAt(row, QString());
-            else
-                col_ptr->asStringColumn()->setTextAt(row, rawStr);
+        } else {
+            col_ptr->asStringColumn()->setTextAt(row, rawStr);
         }
         d_table->endMacro();
         return true;

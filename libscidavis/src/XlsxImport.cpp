@@ -1720,13 +1720,9 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
     Table *blankInitial = findBlankInitialTable(app);
     QStringList parts;
     QString oversizedSheetName;
-    for (const Sheet &sh : wb.sheets) {
-        const bool isHidden = sh.state.compare(QLatin1String("hidden"), Qt::CaseInsensitive) == 0
-                || sh.state.compare(QLatin1String("veryHidden"), Qt::CaseInsensitive) == 0;
-        if (skipHidden && isHidden) {
-            result.hiddenSheetsSkipped << sh.name;
-            continue;
-        }
+    auto processSheet = [&](const Sheet &sh) {
+        result.uncachedFormulas += sh.uncachedFormulas;
+        result.trimmedStrayCells += sh.trimmedStrayCells;
         SheetLayout layout;
         QList<Column *> cols = sheetToColumns(sh, wb.date1904, &layout);
         if (cols.isEmpty()) {
@@ -1734,11 +1730,9 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
                 oversizedSheetName = sh.name;
             else
                 result.emptySheets << sh.name;
-            continue;
+            return;
         }
-        result.uncachedFormulas += sh.uncachedFormulas;
         result.nonNumericCells += layout.nonNumericCells;
-        result.trimmedStrayCells += sh.trimmedStrayCells;
         if (blankInitial) {
             blankInitial->askOnCloseEvent(false);
             if (blankInitial->d_future_table)
@@ -1755,11 +1749,12 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
                 cols);
         if (!t) {
             qDeleteAll(cols);
-            continue;
+            return;
         }
-        if (t->d_future_table)
+        if (t->d_future_table) {
             t->d_future_table->setImportSource(QDir::toNativeSeparators(fi.absoluteFilePath()),
-                                            sh.name);
+                                               sh.name, QString(), QString(), 0, -1, cols.size());
+        }
         result.tables << t->name();
         QString part = trX("%1 (%2 rows x %3 columns").arg(sh.name).arg(layout.dataRows).arg(
                 cols.size());
@@ -1779,6 +1774,27 @@ bool importIntoProject(ApplicationWindow *app, const QString &path, const QStrin
             part += trX(", %1 stray cell(s) trimmed").arg(sh.trimmedStrayCells);
         part += QLatin1Char(')');
         parts << part;
+    };
+
+    for (const Sheet &sh : wb.sheets) {
+        const bool isHidden = sh.state.compare(QLatin1String("hidden"), Qt::CaseInsensitive) == 0
+                || sh.state.compare(QLatin1String("veryHidden"), Qt::CaseInsensitive) == 0;
+        if (skipHidden && isHidden) {
+            result.hiddenSheetsSkipped << sh.name;
+            continue;
+        }
+        processSheet(sh);
+    }
+
+    if (result.tables.isEmpty() && skipHidden && !result.hiddenSheetsSkipped.isEmpty()) {
+        result.hiddenSheetsSkipped.clear();
+        for (const Sheet &sh : wb.sheets) {
+            const bool isHidden =
+                    sh.state.compare(QLatin1String("hidden"), Qt::CaseInsensitive) == 0
+                    || sh.state.compare(QLatin1String("veryHidden"), Qt::CaseInsensitive) == 0;
+            if (isHidden)
+                processSheet(sh);
+        }
     }
 
     if (asWorkbook

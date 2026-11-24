@@ -1949,7 +1949,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     (st.value(QLatin1String(kKeyFit), false).toBool() ? rbFit : rbScale)->setChecked(true);
     auto updateScaleControlsEnabled = [rbScale, spin, chkPerGraphScale]() {
         const bool fixedOn = rbScale->isChecked();
-        const bool mixedOn = chkPerGraphScale->isVisible() && chkPerGraphScale->isChecked();
+        const bool mixedOn = !chkPerGraphScale->isHidden() && chkPerGraphScale->isChecked();
         spin->setEnabled(fixedOn && !mixedOn);
         chkPerGraphScale->setEnabled(fixedOn);
     };
@@ -2075,7 +2075,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
 
         const double fallbackScalePct = spin->value();
         const bool applyLab = chkPreset && chkPreset->isChecked();
-        const bool perGraph = !applyLab && chkPerGraphScale->isVisible()
+        const bool perGraph = !applyLab && !chkPerGraphScale->isHidden()
                 && chkPerGraphScale->isChecked();
         const QList<MyWidget *> targets = collectPreviewTargets();
         double minEffPct = fallbackScalePct;
@@ -2250,7 +2250,7 @@ bool readSendDialog(QDialog *dialog, ApplicationWindow *app, QList<MyWidget *> *
     if (auto *chk = dialog->findChild<QCheckBox *>(QStringLiteral("pptxApplyPreset")))
         preset = chk->isChecked();
     o.perGraphPresetScale = !preset && !(rbFit && rbFit->isChecked()) && chkPerGraph
-            && chkPerGraph->isVisible() && chkPerGraph->isChecked();
+            && !chkPerGraph->isHidden() && chkPerGraph->isChecked();
 
     QString p;
     if (auto *ed = dialog->findChild<QLineEdit *>(QStringLiteral("pptxPath")))
@@ -2401,18 +2401,10 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
                 rb.ml = ml;
                 rb.snapshot = ml->captureUndoSnapshot();
                 rb.prevPresetProp = ml->property("toriAppliedStylePreset");
-                const int prevUndoIdx = ml->undoStack() ? ml->undoStack()->index() : 0;
                 rollbackStates.append(rb);
+                ml->setProperty("torigraph_suppress_preset_undo", true);
                 ml->applyStylePresetSpec(spec);
-                // Defer committing the Undo snapshot until the .pptx file write succeeds so a
-                // failed write never leaves commands on or unwinds the existing Undo/Redo stack.
-                if (QUndoStack *us = ml->undoStack()) {
-                    while (us->index() > prevUndoIdx) {
-                        if (const QUndoCommand *cmd = us->command(us->index() - 1))
-                            const_cast<QUndoCommand *>(cmd)->setObsolete(true);
-                        us->undo();
-                    }
-                }
+                ml->setProperty("torigraph_suppress_preset_undo", QVariant());
             }
             if (GraphInspectorDock *insp = app->graphInspectorDock())
                 insp->refreshAll();

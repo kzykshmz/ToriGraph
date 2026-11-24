@@ -67,6 +67,8 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSet>
+#include <QPair>
+#include <QVector>
 #include <QAbstractItemView>
 #include <QCompleter>
 #include <QKeyEvent>
@@ -160,6 +162,109 @@ private:
     QLineEdit *d_edit = nullptr;
 };
 
+QString formatLocaleScalar(double val, char fmt = 'g', int prec = 15)
+{
+    QLocale loc = QLocale();
+    loc.setNumberOptions(loc.numberOptions() | QLocale::OmitGroupSeparator);
+    return loc.toString(val, fmt, prec);
+}
+
+bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
+{
+    if (trimmed.isEmpty())
+        return false;
+    const QLocale curLoc = QLocale();
+    QLocale locNoGroup = curLoc;
+    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    bool ok = false;
+    double val = locNoGroup.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    val = cLoc.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+        val = curLoc.toDouble(trimmed, &ok);
+        if (ok && std::isfinite(val)) {
+            if (outVal)
+                *outVal = val;
+            return true;
+        }
+    }
+    return false;
+}
+
+QString normalizeExprDecimalCommas(const QString &expr)
+{
+    if (QLocale().decimalPoint() != QLatin1Char(','))
+        return expr;
+    static const QSet<QString> kMultiArgFns = {
+        QStringLiteral("avg"),  QStringLiteral("min"),       QStringLiteral("max"),
+        QStringLiteral("sum"),  QStringLiteral("beta"),      QStringLiteral("bessel_jn"),
+        QStringLiteral("bessel_yn")
+    };
+    QVector<QPair<int, int>> skipRanges;
+    const int n = expr.size();
+    for (int i = 0; i < n; ++i) {
+        if (!expr[i].isLetter() && expr[i] != QLatin1Char('_'))
+            continue;
+        const int idStart = i;
+        while (i < n && (expr[i].isLetterOrNumber() || expr[i] == QLatin1Char('_')))
+            ++i;
+        const QString fnName = expr.mid(idStart, i - idStart).toLower();
+        int j = i;
+        while (j < n && expr[j].isSpace())
+            ++j;
+        if (j < n && expr[j] == QLatin1Char('(') && kMultiArgFns.contains(fnName)) {
+            int depth = 1;
+            int k = j + 1;
+            bool hasCommaSpace = false;
+            bool hasTightComma = false;
+            while (k < n && depth > 0) {
+                if (expr[k] == QLatin1Char('('))
+                    ++depth;
+                else if (expr[k] == QLatin1Char(')'))
+                    --depth;
+                else if (depth == 1 && expr[k] == QLatin1Char(',')) {
+                    if ((k + 1 < n && expr[k + 1].isSpace())
+                        || (k > 0 && expr[k - 1].isSpace()))
+                        hasCommaSpace = true;
+                    else
+                        hasTightComma = true;
+                }
+                ++k;
+            }
+            if (depth == 0 && hasTightComma && !hasCommaSpace)
+                skipRanges.append(qMakePair(j, k));
+        }
+        --i;
+    }
+
+    QString out = expr;
+    for (int i = 1; i + 1 < n; ++i) {
+        if (out[i] != QLatin1Char(',') || !out[i - 1].isDigit() || !out[i + 1].isDigit())
+            continue;
+        bool inSkip = false;
+        for (const auto &rng : skipRanges) {
+            if (i > rng.first && i < rng.second) {
+                inSkip = true;
+                break;
+            }
+        }
+        if (!inSkip)
+            out[i] = QLatin1Char('.');
+    }
+    return out;
+}
+
 bool evalScalarExpr(const QString &raw, double *out, QString *errMsg = nullptr)
 {
     const QString trimmed = raw.trimmed();
@@ -169,33 +274,49 @@ bool evalScalarExpr(const QString &raw, double *out, QString *errMsg = nullptr)
         return false;
     }
 
-    bool ok = false;
-    double val = QLocale().toDouble(trimmed, &ok);
-    if (!ok)
-        val = QLocale::c().toDouble(trimmed, &ok);
-    if (ok && std::isfinite(val)) {
+    double val = 0.0;
+    if (parseLocaleOrCScalar(trimmed, &val)) {
         if (out)
             *out = val;
         return true;
     }
 
-    try {
-        MyParser parser;
-        parser.SetExpr(trimmed);
-        val = parser.Eval();
-        if (!std::isfinite(val)) {
-            if (errMsg)
-                *errMsg = QObject::tr("Expression evaluates to a non-finite value.");
+    const QString normalized = normalizeExprDecimalCommas(trimmed);
+    auto tryEval = [&](const QString &expr, double &res, QString *localErr) -> bool {
+        try {
+            MyParser parser;
+            parser.SetExpr(expr);
+            res = parser.Eval();
+            if (!std::isfinite(res)) {
+                if (localErr)
+                    *localErr = QObject::tr("Expression evaluates to a non-finite value.");
+                return false;
+            }
+            return true;
+        } catch (mu::ParserError &e) {
+            if (localErr)
+                *localErr = QStringFromString(e.GetMsg());
             return false;
         }
+    };
+
+    QString primaryErr;
+    if (tryEval(normalized, val, &primaryErr)) {
         if (out)
             *out = val;
         return true;
-    } catch (mu::ParserError &e) {
-        if (errMsg)
-            *errMsg = QStringFromString(e.GetMsg());
-        return false;
     }
+    if (normalized != trimmed) {
+        double rawVal = 0.0;
+        if (tryEval(trimmed, rawVal, nullptr)) {
+            if (out)
+                *out = rawVal;
+            return true;
+        }
+    }
+    if (errMsg)
+        *errMsg = primaryErr;
+    return false;
 }
 
 } // namespace
@@ -1017,13 +1138,9 @@ void FitDialog::updateLivePreview()
     previewFit.setParametersList(paramNames);
     previewFit.setFormula(formula);
 
-    bool okFrom = false, okTo = false;
-    double xStart = QLocale().toDouble(boxFrom->text(), &okFrom);
-    if (!okFrom)
-        xStart = boxFrom->text().toDouble(&okFrom);
-    double xEnd = QLocale().toDouble(boxTo->text(), &okTo);
-    if (!okTo)
-        xEnd = boxTo->text().toDouble(&okTo);
+    double xStart = 0.0, xEnd = 0.0;
+    const bool okFrom = boxFrom && evalScalarExpr(boxFrom->text(), &xStart);
+    const bool okTo = boxTo && evalScalarExpr(boxTo->text(), &xEnd);
 
     bool dataOk = (okFrom && okTo && xStart < xEnd)
                           ? previewFit.setDataFromCurve(curveName, xStart, xEnd)
@@ -1099,8 +1216,8 @@ void FitDialog::activateCurve(const QString &curveName)
 
     double start, end;
     d_graph->range(d_graph->curveIndex(curveName), start, end);
-    boxFrom->setText(QLocale().toString(qMin(start, end), 'g', 15));
-    boxTo->setText(QLocale().toString(qMax(start, end), 'g', 15));
+    boxFrom->setText(formatLocaleScalar(qMin(start, end), 'g', 15));
+    boxTo->setText(formatLocaleScalar(qMax(start, end), 'g', 15));
     updateLivePreview();
 }
 
@@ -1231,7 +1348,7 @@ void FitDialog::showFitPage()
         it->setFont(font);
         boxParams->setItem(i, 0, it);
 
-        it = new QTableWidgetItem(QLocale().toString(1.0, 'f', boxPrecision->value()));
+        it = new QTableWidgetItem(formatLocaleScalar(1.0, 'f', boxPrecision->value()));
         it->setTextAlignment(Qt::AlignRight);
         boxParams->setItem(i, 1, it);
 
@@ -1285,13 +1402,9 @@ void FitDialog::showFitPage()
         tmpFit.setFormula(editBox->toPlainText().simplified());
         // C4-4: guess from the same X range the fit will use (From/To boxes), not the
         // whole curve, so a peak picked inside a sub-range gets sensible start values.
-        bool okFrom = false, okTo = false;
-        double xStart = boxFrom ? QLocale().toDouble(boxFrom->text(), &okFrom) : 0.0;
-        if (boxFrom && !okFrom)
-            xStart = boxFrom->text().toDouble(&okFrom);
-        double xEnd = boxTo ? QLocale().toDouble(boxTo->text(), &okTo) : 0.0;
-        if (boxTo && !okTo)
-            xEnd = boxTo->text().toDouble(&okTo);
+        double xStart = 0.0, xEnd = 0.0;
+        const bool okFrom = boxFrom && evalScalarExpr(boxFrom->text(), &xStart);
+        const bool okTo = boxTo && evalScalarExpr(boxTo->text(), &xEnd);
         const bool rangeOk = okFrom && okTo && xStart < xEnd;
         const bool guessDataOk = rangeOk
                 ? tmpFit.setDataFromCurve(boxCurve->currentText(), xStart, xEnd)
@@ -1305,7 +1418,7 @@ void FitDialog::showFitPage()
                 double val = tmpFit.initialGuess(i);
                 if (std::isfinite(val)) {
                     boxParams->item(i, 1)->setText(
-                            QLocale().toString(val, 'g', boxPrecision->value()));
+                            formatLocaleScalar(val, 'g', boxPrecision->value()));
                 }
             }
         }
@@ -2105,7 +2218,7 @@ void FitDialog::accept()
     for (int i = 0; i < rows && size_t(i) < res.size(); i++) {
         if (boxParams->item(i, 1))
             boxParams->item(i, 1)->setText(
-                    QLocale().toString(res[size_t(i)], 'g', boxPrecision->value()));
+                    formatLocaleScalar(res[size_t(i)], 'g', boxPrecision->value()));
     }
     boxParams->blockSignals(false);
 }
@@ -2292,8 +2405,8 @@ void FitDialog::changeDataRange()
         return;
     double start = d_graph->selectedXStartValue();
     double end = d_graph->selectedXEndValue();
-    boxFrom->setText(QString::number(qMin(start, end), 'g', 15));
-    boxTo->setText(QString::number(qMax(start, end), 'g', 15));
+    boxFrom->setText(formatLocaleScalar(qMin(start, end), 'g', 15));
+    boxTo->setText(formatLocaleScalar(qMax(start, end), 'g', 15));
 }
 
 void FitDialog::setSrcTables(QList<MyWidget *> *tables)
