@@ -25,6 +25,7 @@
 #include <QMdiArea>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSettings>
@@ -771,9 +772,13 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 warnTimer6.start();
                 ed6->close();
                 warnTimer6.stop();
+                const bool okProp6a =
+                        !ed6.isNull() && ed6->property("_toriLastOleSaveOk").toBool();
                 if (ed6)
                     ed6->setHeadlessMode(prevHeadless6);
                 qApp->setProperty("torigraph_noninteractive", prevProp6);
+                CHECK_COND(okProp6a,
+                           "80a-6a: _toriLastOleSaveOk was false after re-entrant Close during closeEvent");
             }
             QApplication::setQuitOnLastWindowClosed(false);
             pumpEventsMs80(35);
@@ -860,6 +865,94 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                        "80a-6: OLE object leaked (got "
                                << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
                                << baseLive6 << ")");
+        }
+
+        // Subtest 7 (Round 9 + 10 ASan): COM Update(), IsDirty(), IPersistFile::Save(), and
+        // IDataObject::GetData() must hold `ComPtr<IOleObject> alive(this)` across Graph3D's
+        // captureGraph3DOleImage processEvents() pump even when all external COM refs & editor drop.
+        {
+            AppWinGuard80 oleSrc3d(new ApplicationWindow());
+            oleSrc3d->setHeadlessMode(true);
+            oleSrc3d->setOleEmbeddedMode(true);
+            oleSrc3d->applyUserSettings();
+            oleSrc3d->confirmClosePlot3D = false;
+            Graph3D *srcG3d = oleSrc3d->newPlot3D();
+            CHECK_COND(srcG3d != nullptr, "80a-7: failed to create Graph3D source");
+            srcG3d->addFunction("cos(x)*cos(y)", -3.0, 3.0, -3.0, 3.0, -1.2, 1.2);
+            QCoreApplication::processEvents();
+            SciDAVisOle::OleGraphPayload pay3d;
+            pay3d.projectBytes = SciDAVisOle::buildEmbeddedProjectBytes(
+                    oleSrc3d.get(), srcG3d, SciDAVisOle::EmbedScope::GraphOnly);
+            pay3d.targetWindow = srcG3d->name();
+            pay3d.emfBytes = pay.emfBytes;
+            pay3d.extentHm = pay.extentHm;
+            pay3d.pixelSize = pay.pixelSize;
+            CHECK_COND(!pay3d.projectBytes.isEmpty(), "80a-7: failed to build 3D OLE payload");
+
+            const int baseLive7 = SciDAVisOle::liveGraphObjectCountForTesting();
+            for (int op = 0; op < 4; ++op) {
+                MockDeadClientSite80 site7;
+                ComPtr<IOleObject> obj7;
+                CHECK_COND(SUCCEEDED(SciDAVisOle::createGraphObject(pay3d, IID_PPV_ARGS(&obj7)))
+                                   && obj7,
+                           "80a-7: createGraphObject failed on op " << op);
+                CHECK_COND(SUCCEEDED(obj7->SetClientSite(&site7)),
+                           "80a-7: SetClientSite failed on op " << op);
+
+                const QSet<ApplicationWindow *> before7 = snapshotTopApps();
+                CHECK_COND(SUCCEEDED(obj7->DoVerb(OLEIVERB_OPEN, nullptr, &site7, 0, nullptr,
+                                                  nullptr)),
+                           "80a-7: DoVerb failed on op " << op);
+                QApplication::processEvents();
+                QPointer<ApplicationWindow> ed7 = findNewOleEditor80(before7);
+                CHECK_COND(!ed7.isNull() && ed7->isOleEmbeddedMode(),
+                           "80a-7: embedded 3D editor failed to open on op " << op);
+
+                ComPtr<IPersistStorage> ipStg7;
+                ComPtr<IPersistFile> ipFile7;
+                ComPtr<IDataObject> iData7;
+                CHECK_COND(SUCCEEDED(obj7.As(&ipStg7)) && SUCCEEDED(obj7.As(&ipFile7))
+                                   && SUCCEEDED(obj7.As(&iData7)),
+                           "80a-7: COM QI failed on op " << op);
+
+                bool fired7 = false;
+                QTimer::singleShot(0, qApp, [&]() {
+                    fired7 = true;
+                    if (obj7)
+                        obj7->Close(OLECLOSE_NOSAVE);
+                    ipStg7.Reset();
+                    ipFile7.Reset();
+                    iData7.Reset();
+                    obj7.Reset();
+                });
+
+                if (op == 0) {
+                    obj7->Update();
+                } else if (op == 1) {
+                    ipStg7->IsDirty();
+                } else if (op == 2) {
+                    const std::wstring wPath = QDir::toNativeSeparators(
+                                                       tmp80.filePath(QStringLiteral("ole3d_7.sciprj")))
+                                                       .toStdWString();
+                    ipFile7->Save(wPath.c_str(), FALSE);
+                } else {
+                    FORMATETC fmt7{ CF_ENHMETAFILE, nullptr, DVASPECT_CONTENT, -1, TYMED_ENHMF };
+                    STGMEDIUM med7{};
+                    if (SUCCEEDED(iData7->GetData(&fmt7, &med7)))
+                        ReleaseStgMedium(&med7);
+                }
+
+                QApplication::setQuitOnLastWindowClosed(false);
+                pumpEventsMs80(35);
+                CHECK_COND(fired7 && ed7.isNull(),
+                           "80a-7: re-entrant release failed on op " << op << " (fired=" << fired7
+                                                                     << ", edNull=" << ed7.isNull()
+                                                                     << ")");
+            }
+            CHECK_COND(SciDAVisOle::liveGraphObjectCountForTesting() == baseLive7,
+                       "80a-7: COM object leaked after alive(this) teardown (got "
+                               << SciDAVisOle::liveGraphObjectCountForTesting() << ", expected "
+                               << baseLive7 << ")");
         }
     }
 #endif
@@ -1366,6 +1459,77 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         QCoreApplication::processEvents();
         CHECK_COND(!tMask->column(1)->isMasked(0) && tMask->column(1)->isMasked(3),
                    "80d-delta: P1-2! Graph mask Undo after row deletion unmasked wrong row!");
+
+        // 80d-unmask-click (Round 10): DataPickerTool::Unmask click directly on a masked point
+        // must hit it via Plot::closestDataPoint(..., includeMasked=true, maskedOnly=true),
+        // unmask it cleanly, and push a MultiLayer Undo command.
+        {
+            Table *tUnmask = w80->newTable(5, 2, "T80UnmaskClk", "UnmaskClk80");
+            for (int r = 0; r < 5; ++r) {
+                tUnmask->setCell(r, 0, double(r + 1));
+                tUnmask->setCell(r, 1, double((r + 1) * 5));
+            }
+            MultiLayer *mlUnmask = w80->multilayerPlot(
+                    tUnmask, QStringList() << tUnmask->colName(1), Graph::Scatter);
+            Graph *gUnmask = mlUnmask ? mlUnmask->activeGraph() : nullptr;
+            DataCurve *dcUnmask = gUnmask ? dynamic_cast<DataCurve *>(gUnmask->curve(0)) : nullptr;
+            CHECK_COND(gUnmask && gUnmask->plotWidget() && gUnmask->plotWidget()->canvas()
+                               && dcUnmask && dcUnmask->dataSize() == 5,
+                       "80d-unmask-click: setup failed");
+
+            const bool wasVisible = w80->isVisible();
+            w80->show();
+            w80->resize(1024, 768);
+            w80->d_workspace.setActiveSubWindow(mlUnmask);
+            mlUnmask->show();
+            mlUnmask->resize(440, 340);
+            gUnmask->updatePlot();
+            pumpEventsMs80(30);
+
+            dcUnmask->maskPoint(2, true);
+            CHECK_COND(dcUnmask->isPointMasked(2), "80d-unmask-click: pre-mask point 2 failed");
+
+            const QPoint pt2(gUnmask->plotWidget()->transform(dcUnmask->xAxis(), dcUnmask->x(2)),
+                             gUnmask->plotWidget()->transform(dcUnmask->yAxis(), dcUnmask->y(2)));
+            int dDef = 99999, vDef = -1;
+            const int cDef = gUnmask->plotWidget()->closestDataPoint(pt2, dDef, vDef);
+            CHECK_COND(!(cDef >= 0 && vDef == 2),
+                       "80d-unmask-click: default closestDataPoint unexpectedly hit masked point 2");
+
+            int dUmk = 99999, vUmk = -1;
+            const int cUmk =
+                    gUnmask->plotWidget()->closestDataPoint(pt2, dUmk, vUmk, true, true);
+            CHECK_COND(cUmk >= 0 && vUmk == 2 && dUmk < 10,
+                       "80d-unmask-click: maskedOnly closestDataPoint missed point 2 (c="
+                               << cUmk << ", v=" << vUmk << ", d=" << dUmk << ")");
+
+            DataPickerTool *unmaskTool =
+                    new DataPickerTool(gUnmask, w80, DataPickerTool::Unmask);
+            gUnmask->setActiveTool(unmaskTool);
+            if (mlUnmask->undoStack())
+                mlUnmask->undoStack()->clear();
+
+            QWidget *cv = gUnmask->plotWidget()->canvas();
+            QMouseEvent pressEv(QEvent::MouseButtonPress, pt2, Qt::LeftButton, Qt::LeftButton,
+                                Qt::NoModifier);
+            QMouseEvent releaseEv(QEvent::MouseButtonRelease, pt2, Qt::LeftButton, Qt::NoButton,
+                                  Qt::NoModifier);
+            QApplication::sendEvent(cv, &pressEv);
+            QApplication::sendEvent(cv, &releaseEv);
+            QCoreApplication::processEvents();
+
+            CHECK_COND(!dcUnmask->isPointMasked(2),
+                       "80d-unmask-click: clicking masked point in DataPickerTool::Unmask did not unmask point 2");
+            CHECK_COND(mlUnmask->undoStack() && mlUnmask->undoStack()->canUndo(),
+                       "80d-unmask-click: DataPickerTool::Unmask did not push MultiLayer Undo");
+            mlUnmask->undoStack()->undo();
+            QCoreApplication::processEvents();
+            CHECK_COND(dcUnmask->isPointMasked(2),
+                       "80d-unmask-click: Undo did not restore mask on point 2");
+            gUnmask->setActiveTool(nullptr);
+            if (!wasVisible)
+                w80->hide();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -2557,6 +2721,222 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                     CHECK_COND(sawParentDeadPopup && tmpDock.isNull(),
                                "80f-insp-color-uaf-parent: destroying parent dock mid-QMenu::exec failed (saw="
                                        << sawParentDeadPopup << ", null=" << tmpDock.isNull() << ")");
+                }
+
+                // 80f-insp-modal-uaf (Round 9 + 10 ASan): parentless QMenu & QPointer modal
+                // destruction checks for onObjectTreeContextMenu, openAddCurvePopover,
+                // Graph::editReferenceLineDialog, and d_btn_ref_add_custom.
+                {
+                    struct HeadlessScope80f
+                    {
+                        ApplicationWindow *app = nullptr;
+                        bool prev = true;
+                        explicit HeadlessScope80f(ApplicationWindow *w, bool on)
+                            : app(w), prev(w ? w->isHeadlessMode() : true)
+                        {
+                            if (app)
+                                app->setHeadlessMode(on);
+                        }
+                        ~HeadlessScope80f()
+                        {
+                            if (app)
+                                app->setHeadlessMode(prev);
+                        }
+                    } nonHeadless80f(wDiag, false);
+
+                    Table *tModal = wDiag->newTable(4, 2, "T80InspModal", "InspModal80");
+                    for (int r = 0; r < 4; ++r) {
+                        tModal->setCell(r, 0, double(r));
+                        tModal->setCell(r, 1, double(r * 2 + 1));
+                    }
+                    MultiLayer *mlModal = wDiag->multilayerPlot(
+                            tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                    Graph *gModal = mlModal ? mlModal->activeGraph() : nullptr;
+                    CHECK_COND(gModal && gModal->curve(0),
+                               "80f-insp-modal-uaf: mlModal setup failed");
+
+                    // Subtest A: destroy floating GraphInspectorDock during onObjectTreeContextMenu
+                    {
+                        QPointer<GraphInspectorDock> tmpDockA = new GraphInspectorDock(wDiag);
+                        tmpDockA->setFloating(true);
+                        tmpDockA->show();
+                        tmpDockA->setCollapsedRail(false);
+                        tmpDockA->setTargetMultiLayer(mlModal, true);
+                        QCoreApplication::processEvents();
+
+                        QTreeWidget *trA = tmpDockA->objectTree();
+                        QTreeWidgetItem *cvItemA = nullptr;
+                        const int curveKindA = static_cast<int>(Graph::GraphSelection::Curve);
+                        if (trA) {
+                            for (QTreeWidgetItemIterator it(trA); *it; ++it) {
+                                QTreeWidgetItem *cand = *it;
+                                if (cand->childCount() == 0
+                                    && cand->data(0, Qt::UserRole + 1).toInt() == curveKindA
+                                    && cand->data(0, Qt::UserRole + 2).toInt() == 0) {
+                                    cvItemA = cand;
+                                    break;
+                                }
+                            }
+                        }
+                        CHECK_COND(trA != nullptr && cvItemA != nullptr,
+                                   "80f-insp-modal-uaf-A: curve item not found");
+                        trA->expandAll();
+                        trA->scrollToItem(cvItemA);
+                        QCoreApplication::processEvents();
+                        const QPoint posA = trA->visualItemRect(cvItemA).center();
+
+                        bool sawTreePopupA = false;
+                        QTimer timerA;
+                        timerA.setInterval(15);
+                        QObject::connect(&timerA, &QTimer::timeout, [&]() {
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawTreePopupA)
+                                return;
+                            sawTreePopupA = true;
+                            if (tmpDockA)
+                                delete tmpDockA.data();
+                            popup->close();
+                        });
+                        timerA.start();
+                        QMetaObject::invokeMethod(trA, "customContextMenuRequested",
+                                                  Qt::DirectConnection, Q_ARG(QPoint, posA));
+                        timerA.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawTreePopupA && tmpDockA.isNull(),
+                                   "80f-insp-modal-uaf-A: parentless objectTree QMenu teardown failed (saw="
+                                           << sawTreePopupA << ", null=" << tmpDockA.isNull()
+                                           << ")");
+                    }
+
+                    // Subtest B: destroy floating dock during openAddCurvePopover and click btnAddNow
+                    {
+                        QPointer<GraphInspectorDock> tmpDockB = new GraphInspectorDock(wDiag);
+                        tmpDockB->setFloating(true);
+                        tmpDockB->show();
+                        tmpDockB->setCollapsedRail(false);
+                        tmpDockB->setTargetMultiLayer(mlModal, true);
+                        QCoreApplication::processEvents();
+
+                        QToolButton *btnAddB = nullptr;
+                        for (QToolButton *tb : tmpDockB->findChildren<QToolButton *>()) {
+                            if (tb && tb->isVisible() && tb->text().contains(QStringLiteral("+ Add"))) {
+                                btnAddB = tb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnAddB != nullptr,
+                                   "80f-insp-modal-uaf-B: '+ Add' tool button not found");
+
+                        bool sawAddPopupB = false;
+                        bool clickedAddNowB = false;
+                        QTimer timerB;
+                        timerB.setInterval(15);
+                        QObject::connect(&timerB, &QTimer::timeout, [&]() {
+                            auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                            if (!popup || sawAddPopupB)
+                                return;
+                            sawAddPopupB = true;
+                            if (tmpDockB)
+                                delete tmpDockB.data();
+                            for (QPushButton *pb : popup->findChildren<QPushButton *>()) {
+                                if (pb->text().contains(QStringLiteral("Add Selected Curve"))) {
+                                    clickedAddNowB = true;
+                                    pb->click();
+                                    return;
+                                }
+                            }
+                            popup->close();
+                        });
+                        timerB.start();
+                        btnAddB->click();
+                        timerB.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawAddPopupB && clickedAddNowB && tmpDockB.isNull(),
+                                   "80f-insp-modal-uaf-B: openAddCurvePopover self-destruction guard failed (saw="
+                                           << sawAddPopupB << ", clk=" << clickedAddNowB
+                                           << ", null=" << tmpDockB.isNull() << ")");
+                    }
+
+                    // Subtest C: destroy owning MultiLayer/Graph mid-modal Graph::editReferenceLineDialog
+                    {
+                        QPointer<MultiLayer> mlRefDead = wDiag->multilayerPlot(
+                                tModal, QStringList() << tModal->colName(1), Graph::Scatter);
+                        QPointer<Graph> gRefDead = mlRefDead ? mlRefDead->activeGraph() : nullptr;
+                        CHECK_COND(mlRefDead && gRefDead,
+                                   "80f-insp-modal-uaf-C: mlRefDead setup failed");
+                        mlRefDead->askOnCloseEvent(false);
+                        Graph::ReferenceLineSpec refSpec;
+                        refSpec.orientation = 0;
+                        refSpec.value = 3.0;
+                        gRefDead->addReferenceLine(refSpec);
+
+                        bool sawRefDlgC = false;
+                        QTimer timerC;
+                        timerC.setInterval(15);
+                        QObject::connect(&timerC, &QTimer::timeout, [&]() {
+                            QDialog *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                            if (!dlg || sawRefDlgC)
+                                return;
+                            sawRefDlgC = true;
+                            if (mlRefDead) {
+                                mlRefDead->close();
+                                if (mlRefDead)
+                                    delete mlRefDead.data();
+                            }
+                            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                            dlg->accept();
+                        });
+                        timerC.start();
+                        const bool editResC = gRefDead->editReferenceLineDialog(0);
+                        timerC.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawRefDlgC && !editResC && gRefDead.isNull(),
+                                   "80f-insp-modal-uaf-C: Graph::editReferenceLineDialog mid-modal destruction failed (saw="
+                                           << sawRefDlgC << ", res=" << editResC
+                                           << ", null=" << gRefDead.isNull() << ")");
+                    }
+
+                    // Subtest D: destroy floating dock during d_btn_ref_add_custom -> addReferenceLineInteractive
+                    {
+                        QPointer<GraphInspectorDock> tmpDockD = new GraphInspectorDock(wDiag);
+                        tmpDockD->setFloating(true);
+                        tmpDockD->show();
+                        tmpDockD->setCollapsedRail(false);
+                        tmpDockD->setTargetMultiLayer(mlModal, true);
+                        tmpDockD->switchToInspectorPage(GraphInspectorDock::PageTabAxis);
+                        QCoreApplication::processEvents();
+
+                        QPushButton *btnRefD = nullptr;
+                        for (QPushButton *pb : tmpDockD->findChildren<QPushButton *>()) {
+                            if (pb && pb->isVisible() && pb->text().contains(QStringLiteral("+ Add..."))) {
+                                btnRefD = pb;
+                                break;
+                            }
+                        }
+                        CHECK_COND(btnRefD != nullptr,
+                                   "80f-insp-modal-uaf-D: '+ Add...' reference line button not found");
+
+                        bool sawAddRefDlgD = false;
+                        QTimer timerD;
+                        timerD.setInterval(15);
+                        QObject::connect(&timerD, &QTimer::timeout, [&]() {
+                            QDialog *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                            if (!dlg || sawAddRefDlgD)
+                                return;
+                            sawAddRefDlgD = true;
+                            if (tmpDockD)
+                                delete tmpDockD.data();
+                            dlg->reject();
+                        });
+                        timerD.start();
+                        btnRefD->click();
+                        timerD.stop();
+                        QCoreApplication::processEvents();
+                        CHECK_COND(sawAddRefDlgD && tmpDockD.isNull(),
+                                   "80f-insp-modal-uaf-D: d_btn_ref_add_custom self guard failed (saw="
+                                           << sawAddRefDlgD << ", null=" << tmpDockD.isNull()
+                                           << ")");
+                    }
                 }
             }
         }
