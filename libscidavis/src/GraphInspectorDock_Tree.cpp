@@ -447,7 +447,7 @@ void GraphInspectorDock::addReferenceLineInteractive(Graph *g, int defaultOrient
     }
 }
 
-void GraphInspectorDock::refreshAll()
+void GraphInspectorDock::refreshAll(bool allowTabSwitch)
 {
     if (d_coalesce_refresh_timer && d_coalesce_refresh_timer->isActive())
         d_coalesce_refresh_timer->stop();
@@ -491,7 +491,7 @@ void GraphInspectorDock::refreshAll()
 
     refreshPaletteSchemeCombo();
     refreshObjectTree();
-    syncInspectorFromSelection();
+    syncInspectorFromSelection(allowTabSwitch);
 }
 
 void GraphInspectorDock::refreshObjectTree()
@@ -915,8 +915,9 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
         break;
     case Graph::GraphSelection::ReferenceLine:
         if (!isGroupHeader && g && primaryId >= 0 && primaryId < g->referenceLines().size()) {
-            if (g->editReferenceLineDialog(primaryId))
-                refreshAll();
+            QPointer<GraphInspectorDock> self(this);
+            if (g->editReferenceLineDialog(primaryId) && self)
+                self->refreshAll();
         }
         break;
     case Graph::GraphSelection::AxisTitle:
@@ -994,8 +995,9 @@ void GraphInspectorDock::openDetailsDialogForPage()
     case PageTabAxis:
         if (g && sel.kind == Graph::GraphSelection::ReferenceLine && sel.primaryId >= 0
             && sel.primaryId < g->referenceLines().size()) {
-            if (g->editReferenceLineDialog(sel.primaryId))
-                refreshAll();
+            QPointer<GraphInspectorDock> self(this);
+            if (g->editReferenceLineDialog(sel.primaryId) && self)
+                self->refreshAll();
         } else {
             openAxesDialogForQwtAxis(g, qBound(0, d_active_axis, 3), true);
         }
@@ -1138,7 +1140,7 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
             syncLinkedChildrenOf(ml, lg);
     };
 
-    QMenu menu(this);
+    QMenu menu;
     if (isCheckable) {
         QAction *actVis = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("visibility"), 14),
@@ -1220,21 +1222,23 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
             QAction *actEditCols = menu.addAction(
                     IconLoader::duotoneIcon(QStringLiteral("plot-line-symbol"), 14),
                     tr("Edit X/Y Data Columns..."));
+            QPointer<GraphInspectorDock> self(this);
             connect(actEditCols, &QAction::triggered, this,
-                    [this, safeMl, resolveLayer, primaryId]() {
+                    [self, safeMl, resolveLayer, primaryId]() {
                         Graph *lg = resolveLayer();
-                        if (!d_app || !safeMl || !lg)
+                        if (!self || !self->d_app || !safeMl || !lg)
                             return;
                         safeMl->setActiveGraph(lg);
-                        if (d_app->activeWindow() != safeMl.data())
-                            d_app->activateSubWindow(safeMl.data());
+                        if (self->d_app->activeWindow() != safeMl.data())
+                            self->d_app->activateSubWindow(safeMl.data());
                         if (primaryId >= 0 && primaryId < lg->curves()
                             && dynamic_cast<DataCurve *>(lg->curve(primaryId)) != nullptr) {
-                            d_app->showPlotAssociations(primaryId);
+                            self->d_app->showPlotAssociations(primaryId);
                         } else {
-                            d_app->showCurvesDialog();
+                            self->d_app->showCurvesDialog();
                         }
-                        refreshAll();
+                        if (self)
+                            self->refreshAll();
                     });
 
             if (safeG && primaryId >= 0 && primaryId < safeG->curves()
@@ -1331,11 +1335,12 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
         QAction *actEditRef = menu.addAction(
                 IconLoader::duotoneIcon(QStringLiteral("settings"), 14),
                 tr("Edit Reference Line..."));
-        connect(actEditRef, &QAction::triggered, this, [this, resolveLayer, primaryId]() {
+        QPointer<GraphInspectorDock> self(this);
+        connect(actEditRef, &QAction::triggered, this, [self, resolveLayer, primaryId]() {
             Graph *lg = resolveLayer();
             if (lg && primaryId >= 0 && primaryId < lg->referenceLines().size()) {
-                if (lg->editReferenceLineDialog(primaryId))
-                    refreshAll();
+                if (lg->editReferenceLineDialog(primaryId) && self)
+                    self->refreshAll();
             }
         });
     } else if (!isGroupHeader
@@ -1687,7 +1692,7 @@ void GraphInspectorDock::openAddCurvePopover()
     if (tables.isEmpty())
         return;
 
-    QMenu menu(this);
+    QMenu menu;
     QWidget *panel = new QWidget(&menu);
     panel->setMinimumWidth(292);
     QVBoxLayout *v = new QVBoxLayout(panel);
@@ -1791,10 +1796,11 @@ void GraphInspectorDock::openAddCurvePopover()
     QObject::connect(comboTable, QOverload<int>::of(&QComboBox::currentIndexChanged), panel,
                      populateColumnsForTable);
 
+    QPointer<GraphInspectorDock> self(this);
     QPointer<MultiLayer> safeMl(d_target_ml);
     QPointer<Graph> safeG(g);
     QObject::connect(btnAddNow, &QPushButton::clicked, &menu, [&]() {
-        if (!safeMl || !safeG) {
+        if (!self || !safeMl || !safeG) {
             menu.close();
             return;
         }
@@ -1838,9 +1844,9 @@ void GraphInspectorDock::openAddCurvePopover()
                 const int newIdx = safeG->curves() - 1;
                 CurveLayout cl = safeG->initCurveLayout(
                         static_cast<Graph::CurveType>(plotStyle), dataCurveOrder);
-                if (d_app) {
-                    cl.sSize = d_app->defaultSymbolSize;
-                    cl.lWidth = d_app->defaultCurveLineWidth;
+                if (self->d_app) {
+                    cl.sSize = self->d_app->defaultSymbolSize;
+                    cl.lWidth = self->d_app->defaultCurveLineWidth;
                 }
                 safeG->updateCurveLayout(newIdx, &cl);
                 if (toRightY) {
@@ -1873,7 +1879,8 @@ void GraphInspectorDock::openAddCurvePopover()
             safeMl->pushUndoSnapshot(tr("Add Curve(s)"), before);
         }
         menu.close();
-        refreshAll();
+        if (self)
+            self->refreshAll();
     });
 
     QWidgetAction *wa = new QWidgetAction(&menu);

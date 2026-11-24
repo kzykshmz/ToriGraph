@@ -1044,7 +1044,7 @@ void GraphInspectorDock::changeEvent(QEvent *event)
         return;
     if (event->type() == QEvent::LanguageChange) {
         retranslateUi();
-        refreshAll();
+        refreshAll(false);
     } else if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         applyTheme();
         refreshObjectTree();
@@ -1316,12 +1316,13 @@ void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
     }
     d_bound_layers.clear();
 
+    MultiLayer *prevTarget = d_target_ml;
     d_target_ml = ml;
     d_last_legend_focus_edit = nullptr;
     if (ml)
         connectMultiLayerSignals(ml);
 
-    refreshAll();
+    refreshAll(prevTarget != ml);
     if (d_collapsed_rail) {
         applyCollapsedGeometry();
     } else {
@@ -1768,6 +1769,7 @@ void GraphInspectorDock::buildUi()
     };
 
     d_rail_page_btn = makeRailBtn(QStringLiteral("page-setup"), QString());
+    d_rail_page_btn->setObjectName(QStringLiteral("InspectorRailPageBtn"));
     connect(d_rail_page_btn, &QToolButton::clicked, this,
             [expandToTab]() { expandToTab(PageTabPageLayer); });
 

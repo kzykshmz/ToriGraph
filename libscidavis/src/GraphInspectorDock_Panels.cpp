@@ -265,8 +265,10 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_btn_manage_presets->setFixedSize(26, 26);
     d_btn_manage_presets->setCursor(Qt::PointingHandCursor);
     connect(d_btn_manage_presets, &QToolButton::clicked, this, [this]() {
+        QPointer<GraphInspectorDock> self(this);
         MultiLayer::showStylePresetManagerDialog(d_app, d_target_ml);
-        refreshAll();
+        if (self)
+            self->refreshAll();
     });
     customPresetRow->addWidget(d_cb_user_presets, 1);
     customPresetRow->addWidget(d_btn_apply_user_preset, 0);

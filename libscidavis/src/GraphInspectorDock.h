@@ -108,7 +108,7 @@ public:
     void switchToInspectorPage(InspectorPageIndex pageIdx);
     InspectorPageIndex currentInspectorPage() const;
 
-    void refreshAll();
+    void refreshAll(bool allowTabSwitch = true);
     void refreshObjectTree();
     void syncInspectorFromSelection(bool allowTabSwitch = true);
 
