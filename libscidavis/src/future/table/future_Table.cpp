@@ -1642,7 +1642,7 @@ void Table::createActions()
     actionManager()->addAction(action_edit_description, "edit_description");
     action_edit_column_labels_formula = new QAction(
             IconLoader::duotoneIcon("text-label"),
-            tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."), this);
+            tr("Edit Column Labels && Formula (Long Name / Units / F(x))..."), this);
     actionManager()->addAction(action_edit_column_labels_formula, "edit_column_labels_formula");
 
     // row related actions
@@ -1865,7 +1865,7 @@ void Table::translateActionsStrings()
     action_type_format->setText(tr("Change &Type && Format"));
     action_edit_description->setText(tr("Edit Column &Description"));
     action_edit_column_labels_formula->setText(
-            tr("Edit Column Labels & Formula (Long Name / Units / F(x))..."));
+            tr("Edit Column Labels && Formula (Long Name / Units / F(x))..."));
     action_insert_rows->setText(tr("&Insert Empty Rows"));
     action_remove_rows->setText(tr("Remo&ve Rows"));
     action_clear_rows->setText(tr("Clea&r Rows"));

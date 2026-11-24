@@ -30,6 +30,7 @@
 #define FITDIALOG_H
 
 #include "Graph.h"
+#include <QPointer>
 
 class QPushButton;
 class QLineEdit;
@@ -181,7 +182,7 @@ private:
     QComboBox *recentModelBox = nullptr;
 
     Fit *d_fitter;
-    Graph *d_graph;
+    QPointer<Graph> d_graph;
     QwtPlotCurve *d_preview_curve = nullptr;
     QStringList d_user_functions, d_user_function_names, d_user_function_params;
     QStringList d_built_in_function_names, d_built_in_functions;

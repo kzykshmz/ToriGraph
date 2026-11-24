@@ -3166,7 +3166,7 @@ void PiecewiseAndRobustFit::showMLRDialog(ApplicationWindow *app)
     xLay->addWidget(xList);
     mainLay->addWidget(xGrp);
 
-    auto *diagChk = new QCheckBox(QObject::tr("Create Predicted vs. Actual & Residual Diagnostic Graph"), &dlg);
+    auto *diagChk = new QCheckBox(QObject::tr("Create Predicted vs. Actual && Residual Diagnostic Graph"), &dlg);
     diagChk->setChecked(true);
     mainLay->addWidget(diagChk);
 
@@ -3271,7 +3271,7 @@ void PiecewiseAndRobustFit::showLogisticRegressionDialog(ApplicationWindow *app)
     mainLay->addWidget(xGrp);
 
     auto *probChk = new QCheckBox(
-            QObject::tr("Plot Logistic Probability & 95% CI Curve"), &dlg);
+            QObject::tr("Plot Logistic Probability && 95% CI Curve"), &dlg);
     probChk->setChecked(true);
     mainLay->addWidget(probChk);
 

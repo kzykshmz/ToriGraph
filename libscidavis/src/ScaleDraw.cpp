@@ -32,8 +32,11 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QFontMetricsF>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPair>
+#include <QSet>
 #include <QVector>
 #include <algorithm>
 #include <cmath>
@@ -269,6 +272,69 @@ QVector<int> selectNonCollidingLogTickIndices(const QVector<LogTickCandidate> &i
     return fallback;
 }
 
+QString normalizeExprDecimalCommas(const QString &expr)
+{
+    if (QLocale().decimalPoint() != QLatin1Char(','))
+        return expr;
+    static const QSet<QString> kMultiArgFns = {
+        QStringLiteral("avg"),  QStringLiteral("min"),       QStringLiteral("max"),
+        QStringLiteral("sum"),  QStringLiteral("beta"),      QStringLiteral("bessel_jn"),
+        QStringLiteral("bessel_yn")
+    };
+    QVector<QPair<int, int>> skipRanges;
+    const int n = expr.size();
+    for (int i = 0; i < n; ++i) {
+        if (!expr[i].isLetter() && expr[i] != QLatin1Char('_'))
+            continue;
+        const int idStart = i;
+        while (i < n && (expr[i].isLetterOrNumber() || expr[i] == QLatin1Char('_')))
+            ++i;
+        const QString fnName = expr.mid(idStart, i - idStart).toLower();
+        int j = i;
+        while (j < n && expr[j].isSpace())
+            ++j;
+        if (j < n && expr[j] == QLatin1Char('(') && kMultiArgFns.contains(fnName)) {
+            int depth = 1;
+            int k = j + 1;
+            bool hasCommaSpace = false;
+            bool hasTightComma = false;
+            while (k < n && depth > 0) {
+                if (expr[k] == QLatin1Char('('))
+                    ++depth;
+                else if (expr[k] == QLatin1Char(')'))
+                    --depth;
+                else if (depth == 1 && expr[k] == QLatin1Char(',')) {
+                    if ((k + 1 < n && expr[k + 1].isSpace())
+                        || (k > 0 && expr[k - 1].isSpace()))
+                        hasCommaSpace = true;
+                    else
+                        hasTightComma = true;
+                }
+                ++k;
+            }
+            if (depth == 0 && hasTightComma && !hasCommaSpace)
+                skipRanges.append(qMakePair(j, k));
+        }
+        --i;
+    }
+
+    QString out = expr;
+    for (int i = 1; i + 1 < n; ++i) {
+        if (out[i] != QLatin1Char(',') || !out[i - 1].isDigit() || !out[i + 1].isDigit())
+            continue;
+        bool inSkip = false;
+        for (const auto &rng : skipRanges) {
+            if (i > rng.first && i < rng.second) {
+                inSkip = true;
+                break;
+            }
+        }
+        if (!inSkip)
+            out[i] = QLatin1Char('.');
+    }
+    return out;
+}
+
 } // namespace
 
 ScaleDraw::ScaleDraw(const QString &s)
@@ -321,16 +387,27 @@ double ScaleDraw::transformValue(double value) const
 {
     double res = value;
     if (!formula_string.isEmpty()) {
-        try {
-            MyParser parser;
-            if (formula_string.contains("x"))
-                parser.DefineVar(_T("x"), &value);
-            else if (formula_string.contains("y"))
-                parser.DefineVar(_T("y"), &value);
+        const QString normalized = normalizeExprDecimalCommas(formula_string);
+        auto tryEval = [&](const QString &expr, double &outVal) -> bool {
+            try {
+                MyParser parser;
+                if (expr.contains(QLatin1Char('x')))
+                    parser.DefineVar(_T("x"), &value);
+                else if (expr.contains(QLatin1Char('y')))
+                    parser.DefineVar(_T("y"), &value);
 
-            parser.SetExpr(formula_string.toUtf8().constData());
-            res = parser.Eval();
-        } catch (mu::ParserError &) {
+                parser.SetExpr(expr);
+                outVal = parser.Eval();
+                return true;
+            } catch (mu::ParserError &) {
+                return false;
+            }
+        };
+        double evalRes = 0.0;
+        if (tryEval(normalized, evalRes)
+            || (normalized != formula_string && tryEval(formula_string, evalRes))) {
+            res = evalRes;
+        } else {
             return 0;
         }
     }

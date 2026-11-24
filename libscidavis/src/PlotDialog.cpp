@@ -78,6 +78,9 @@
 #include <QScrollArea>
 #include <QTimer>
 #include <QHideEvent>
+#include <QPair>
+#include <QSet>
+#include <QVector>
 #include <cmath>
 
 namespace {
@@ -139,6 +142,110 @@ QFont clampedFontSize(QFont f)
     if (std::fabs(bounded - pt) > 1e-6)
         f.setPointSizeF(bounded);
     return f;
+}
+
+QString formatLocaleScalar(double val, int prec = 12)
+{
+    QLocale loc = QLocale();
+    loc.setNumberOptions(loc.numberOptions() | QLocale::OmitGroupSeparator);
+    return loc.toString(val, 'g', prec);
+}
+
+bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
+{
+    if (trimmed.isEmpty())
+        return false;
+    const QLocale curLoc = QLocale();
+    QLocale locNoGroup = curLoc;
+    locNoGroup.setNumberOptions((curLoc.numberOptions() & ~QLocale::OmitGroupSeparator)
+                                | QLocale::RejectGroupSeparator);
+    bool ok = false;
+    double val = locNoGroup.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    QLocale cLoc = QLocale::c();
+    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    val = cLoc.toDouble(trimmed, &ok);
+    if (ok && std::isfinite(val)) {
+        if (outVal)
+            *outVal = val;
+        return true;
+    }
+    if (!(curLoc.numberOptions() & (QLocale::OmitGroupSeparator | QLocale::RejectGroupSeparator))) {
+        val = curLoc.toDouble(trimmed, &ok);
+        if (ok && std::isfinite(val)) {
+            if (outVal)
+                *outVal = val;
+            return true;
+        }
+    }
+    return false;
+}
+
+QString normalizeExprDecimalCommas(const QString &expr)
+{
+    if (QLocale().decimalPoint() != QLatin1Char(','))
+        return expr;
+    static const QSet<QString> kMultiArgFns = {
+        QStringLiteral("avg"),  QStringLiteral("min"),       QStringLiteral("max"),
+        QStringLiteral("sum"),  QStringLiteral("beta"),      QStringLiteral("bessel_jn"),
+        QStringLiteral("bessel_yn")
+    };
+    QVector<QPair<int, int>> skipRanges;
+    const int n = expr.size();
+    for (int i = 0; i < n; ++i) {
+        if (!expr[i].isLetter() && expr[i] != QLatin1Char('_'))
+            continue;
+        const int idStart = i;
+        while (i < n && (expr[i].isLetterOrNumber() || expr[i] == QLatin1Char('_')))
+            ++i;
+        const QString fnName = expr.mid(idStart, i - idStart).toLower();
+        int j = i;
+        while (j < n && expr[j].isSpace())
+            ++j;
+        if (j < n && expr[j] == QLatin1Char('(') && kMultiArgFns.contains(fnName)) {
+            int depth = 1;
+            int k = j + 1;
+            bool hasCommaSpace = false;
+            bool hasTightComma = false;
+            while (k < n && depth > 0) {
+                if (expr[k] == QLatin1Char('('))
+                    ++depth;
+                else if (expr[k] == QLatin1Char(')'))
+                    --depth;
+                else if (depth == 1 && expr[k] == QLatin1Char(',')) {
+                    if ((k + 1 < n && expr[k + 1].isSpace())
+                        || (k > 0 && expr[k - 1].isSpace()))
+                        hasCommaSpace = true;
+                    else
+                        hasTightComma = true;
+                }
+                ++k;
+            }
+            if (depth == 0 && hasTightComma && !hasCommaSpace)
+                skipRanges.append(qMakePair(j, k));
+        }
+        --i;
+    }
+
+    QString out = expr;
+    for (int i = 1; i + 1 < n; ++i) {
+        if (out[i] != QLatin1Char(',') || !out[i - 1].isDigit() || !out[i + 1].isDigit())
+            continue;
+        bool inSkip = false;
+        for (const auto &rng : skipRanges) {
+            if (i > rng.first && i < rng.second) {
+                inSkip = true;
+                break;
+            }
+        }
+        if (!inSkip)
+            out[i] = QLatin1Char('.');
+    }
+    return out;
 }
 } // namespace
 
@@ -2405,9 +2512,9 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         QwtHistogram *h = (QwtHistogram *)i;
         if (h) {
             automaticBox->setChecked(h->autoBinning());
-            binSizeBox->setText(QString::number(h->binSize()));
-            histogramBeginBox->setText(QString::number(h->begin()));
-            histogramEndBox->setText(QString::number(h->end()));
+            binSizeBox->setText(formatLocaleScalar(h->binSize()));
+            histogramBeginBox->setText(formatLocaleScalar(h->begin()));
+            histogramEndBox->setText(formatLocaleScalar(h->end()));
             setAutomaticBinning();
         }
     }
@@ -3277,32 +3384,47 @@ bool PlotDialog::evaluateHistogramInputs(double *beginVal, double *endVal, doubl
                 *errMsg = QString();
             return false;
         }
-        bool ok = false;
-        double val = QLocale::c().toDouble(trimmed, &ok);
-        if (!ok)
-            val = QLocale().toDouble(trimmed, &ok);
-        if (ok && std::isfinite(val)) {
+        double val = 0.0;
+        if (parseLocaleOrCScalar(trimmed, &val)) {
             if (out)
                 *out = val;
             return true;
         }
-        try {
-            MyParser parser;
-            parser.SetExpr(trimmed);
-            val = parser.Eval();
-            if (!std::isfinite(val)) {
-                if (errMsg)
-                    *errMsg = tr("Expression evaluates to a non-finite value.");
+        const QString normalized = normalizeExprDecimalCommas(trimmed);
+        auto tryEval = [&](const QString &expr, double &res, QString *localErr) -> bool {
+            try {
+                MyParser parser;
+                parser.SetExpr(expr);
+                res = parser.Eval();
+                if (!std::isfinite(res)) {
+                    if (localErr)
+                        *localErr = tr("Expression evaluates to a non-finite value.");
+                    return false;
+                }
+                return true;
+            } catch (mu::ParserError &e) {
+                if (localErr)
+                    *localErr = QStringFromString(e.GetMsg());
                 return false;
             }
+        };
+        QString primaryErr;
+        if (tryEval(normalized, val, &primaryErr)) {
             if (out)
                 *out = val;
             return true;
-        } catch (mu::ParserError &e) {
-            if (errMsg)
-                *errMsg = QStringFromString(e.GetMsg());
-            return false;
         }
+        if (normalized != trimmed) {
+            double rawVal = 0.0;
+            if (tryEval(trimmed, rawVal, nullptr)) {
+                if (out)
+                    *out = rawVal;
+                return true;
+            }
+        }
+        if (errMsg)
+            *errMsg = primaryErr;
+        return false;
     };
 
     if (histogramBeginBox->text().trimmed().isEmpty()) {

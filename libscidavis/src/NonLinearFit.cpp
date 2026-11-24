@@ -2685,7 +2685,7 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
     cl->addWidget(curveList);
     mainLayout->addWidget(gbCurves);
 
-    QGroupBox *gbModel = new QGroupBox(tr("2. Model & Shared Parameter Flags"));
+    QGroupBox *gbModel = new QGroupBox(tr("2. Model && Shared Parameter Flags"));
     QFormLayout *fl = new QFormLayout(gbModel);
     QComboBox *modelBox = new QComboBox();
     modelBox->addItem(tr("<Custom Formula>"), QString());

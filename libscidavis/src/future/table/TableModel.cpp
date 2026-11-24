@@ -48,7 +48,8 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
         return false;
     const QLocale curLoc = QLocale();
     QLocale locNoGroup = curLoc;
-    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    locNoGroup.setNumberOptions((curLoc.numberOptions() & ~QLocale::OmitGroupSeparator)
+                                | QLocale::RejectGroupSeparator);
     bool ok = false;
     double val = locNoGroup.toDouble(trimmed, &ok);
     if (ok && std::isfinite(val)) {
@@ -64,7 +65,7 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
             *outVal = val;
         return true;
     }
-    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+    if (!(curLoc.numberOptions() & (QLocale::OmitGroupSeparator | QLocale::RejectGroupSeparator))) {
         val = curLoc.toDouble(trimmed, &ok);
         if (ok && std::isfinite(val)) {
             if (outVal)

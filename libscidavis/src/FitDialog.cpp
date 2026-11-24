@@ -175,7 +175,8 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
         return false;
     const QLocale curLoc = QLocale();
     QLocale locNoGroup = curLoc;
-    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    locNoGroup.setNumberOptions((curLoc.numberOptions() & ~QLocale::OmitGroupSeparator)
+                                | QLocale::RejectGroupSeparator);
     bool ok = false;
     double val = locNoGroup.toDouble(trimmed, &ok);
     if (ok && std::isfinite(val)) {
@@ -191,7 +192,7 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
             *outVal = val;
         return true;
     }
-    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+    if (!(curLoc.numberOptions() & (QLocale::OmitGroupSeparator | QLocale::RejectGroupSeparator))) {
         val = curLoc.toDouble(trimmed, &ok);
         if (ok && std::isfinite(val)) {
             if (outVal)
@@ -513,7 +514,7 @@ void FitDialog::initFitPage()
     hboxBands->addWidget(predBandBox);
     hboxBands->addWidget(summaryOnGraphBox);
     hboxBands->addStretch();
-    QGroupBox *gbBands = new QGroupBox(tr("Bands & Diagnostics"));
+    QGroupBox *gbBands = new QGroupBox(tr("Bands && Diagnostics"));
     gbBands->setLayout(hboxBands);
 
     QWidget *fitBody = new QWidget();
@@ -918,7 +919,9 @@ void FitDialog::showParametersTable()
         return;
     }
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+    if (!app)
+        return;
     tableName = app->generateUniqueName(tableName, false);
     d_fitter->parametersTable(tableName);
 }
@@ -937,7 +940,9 @@ void FitDialog::showCovarianceMatrix()
         return;
     }
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+    if (!app)
+        return;
     matrixName = app->generateUniqueName(matrixName, false);
     d_fitter->covarianceMatrix(matrixName);
 }
@@ -953,12 +958,14 @@ void FitDialog::showResidualPlot()
 
 void FitDialog::showBootstrapDialog()
 {
+    QPointer<FitDialog> self(this);
     if (!d_fitter) {
         accept();
-        if (!d_fitter)
+        if (!self || !d_fitter)
             return;
     }
 
+    QPointer<Fit> fitterGuard(d_fitter);
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Bootstrap / Monte Carlo Confidence Intervals"));
     dlg.setMinimumWidth(380);
@@ -990,7 +997,7 @@ void FitDialog::showBootstrapDialog()
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     fl->addRow(btns);
 
-    if (dlg.exec() != QDialog::Accepted || !d_fitter)
+    if (dlg.exec() != QDialog::Accepted || !self || !fitterGuard || !d_fitter)
         return;
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -998,13 +1005,16 @@ void FitDialog::showBootstrapDialog()
             samplesSpin->value(), confSpin->value() / 100.0, modeCombo->currentIndex());
     QApplication::restoreOverrideCursor();
 
+    if (!self)
+        return;
+
     if (!boot.valid) {
         QMessageBox::warning(this, tr("Bootstrap Confidence Intervals"),
                              tr("Bootstrap resampling failed to converge on enough replicates."));
         return;
     }
 
-    ApplicationWindow *app = dynamic_cast<ApplicationWindow *>(this->parent());
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
     const int prec = qMax(1, boxPrecision ? boxPrecision->value() : 6);
     if (app && app->writeFitResultsToLog) {
         QString msg = QString("[%1 - %2 (%3 %4, %5% CI)]\n")
@@ -1057,6 +1067,8 @@ void FitDialog::showBootstrapDialog()
         connect(okBox, &QDialogButtonBox::accepted, &resDlg, &QDialog::accept);
         rvl->addWidget(okBox);
         resDlg.exec();
+        if (!self)
+            return;
     }
 }
 
@@ -1193,6 +1205,9 @@ void FitDialog::setGraph(Graph *g)
     if (!g)
         return;
 
+    if (d_graph)
+        disconnect(d_graph, nullptr, this, nullptr);
+
     d_graph = g;
     boxCurve->clear();
     boxCurve->addItems(d_graph->analysableCurvesList());
@@ -1204,12 +1219,16 @@ void FitDialog::setGraph(Graph *g)
     }
     activateCurve(boxCurve->currentText());
 
+    if (!d_graph)
+        return;
     connect(d_graph, SIGNAL(closedGraph()), this, SLOT(close()));
     connect(d_graph, SIGNAL(dataRangeChanged()), this, SLOT(changeDataRange()));
 }
 
 void FitDialog::activateCurve(const QString &curveName)
 {
+    if (!d_graph)
+        return;
     QwtPlotCurve *c = d_graph->curve(curveName);
     if (!c)
         return;
@@ -1223,19 +1242,26 @@ void FitDialog::activateCurve(const QString &curveName)
 
 void FitDialog::saveUserFunction()
 {
+    QPointer<FitDialog> self(this);
     if (editBox->toPlainText().isEmpty()) {
         QMessageBox::critical(this, tr("Input function error"),
                               tr("Please enter a valid function!"));
+        if (!self)
+            return;
         editBox->setFocus();
         return;
     } else if (boxName->text().isEmpty()) {
         QMessageBox::critical(this, tr("Input function error"),
                               tr("Please enter a function name!"));
+        if (!self)
+            return;
         boxName->setFocus();
         return;
     } else if (boxParam->text().remove(QRegExp("[,;\\s]")).isEmpty()) {
         QMessageBox::critical(this, tr("Input function error"),
                               tr("Please enter at least one parameter name!"));
+        if (!self)
+            return;
         boxParam->setFocus();
         return;
     }
@@ -1245,6 +1271,8 @@ void FitDialog::saveUserFunction()
                               "<p><b>" + boxName->text() + "</b>"
                                       + tr(" is a built-in function name"
                                            "<p>You must choose another name for your function!"));
+        if (!self)
+            return;
         editBox->setFocus();
         return;
     }
@@ -1253,6 +1281,8 @@ void FitDialog::saveUserFunction()
     if (selfRe.match(editBox->toPlainText()).hasMatch()) {
         QMessageBox::critical(this, tr("Input function error"),
                               tr("You can't define functions recursively!"));
+        if (!self)
+            return;
         editBox->setFocus();
         return;
     }
@@ -1733,10 +1763,15 @@ bool FitDialog::selectRecentModel(const QString &modelName)
 
 void FitDialog::choosePluginsFolder()
 {
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    QPointer<FitDialog> self(this);
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+    if (!app)
+        return;
     QString dir = QFileDialog::getExistingDirectory(this, tr("Choose the plugins folder"),
                                                     QDir::currentPath(), QFileDialog::ShowDirsOnly);
-    if (!dir.isEmpty()) {
+    if (!self || dir.isEmpty())
+        return;
+    {
         d_plugin_files_list.clear();
         d_plugin_function_names.clear();
         d_plugin_functions.clear();
@@ -1935,6 +1970,7 @@ void FitDialog::accept()
 {
     if (!d_graph)
         return;
+    QPointer<FitDialog> self(this);
 
     QString curve = boxCurve->currentText();
     QStringList curvesList = d_graph->analysableCurvesList();
@@ -1942,24 +1978,30 @@ void FitDialog::accept()
         QMessageBox::critical(
                 this, tr("Warning"),
                 tr("The curve <b> %1 </b> doesn't exist anymore! Operation aborted!").arg(curve));
+        if (!self)
+            return;
         boxCurve->clear();
         boxCurve->addItems(curvesList);
         return;
     }
 
-    if (!validInitialValues())
+    if (!validInitialValues() || !self || !d_graph)
         return;
 
     double start = 0.0, end = 0.0, eps = 0.0;
     QString errMsg;
     if (!evalScalarExpr(boxFrom->text().toLower(), &start, &errMsg)) {
         QMessageBox::critical(this, tr("Start limit error"), errMsg);
+        if (!self)
+            return;
         boxFrom->setFocus();
         return;
     }
 
     if (!evalScalarExpr(boxTo->text().toLower(), &end, &errMsg)) {
         QMessageBox::critical(this, tr("End limit error"), errMsg);
+        if (!self)
+            return;
         boxTo->setFocus();
         return;
     }
@@ -1967,12 +2009,16 @@ void FitDialog::accept()
     if (start >= end) {
         QMessageBox::critical(this, tr("Input error"),
                               tr("Please enter x limits that satisfy: from < end!"));
+        if (!self)
+            return;
         boxTo->setFocus();
         return;
     }
 
     if (!evalScalarExpr(boxTolerance->text().toLower(), &eps, &errMsg)) {
         QMessageBox::critical(this, tr("Tolerance input error"), errMsg);
+        if (!self)
+            return;
         boxTolerance->setFocus();
         return;
     }
@@ -1980,6 +2026,8 @@ void FitDialog::accept()
     if (eps <= 0.0 || eps >= 1.0) {
         QMessageBox::critical(this, tr("Tolerance input error"),
                               tr("The tolerance value must be positive and less than 1!"));
+        if (!self)
+            return;
         boxTolerance->setFocus();
         return;
     }
@@ -2017,6 +2065,8 @@ void FitDialog::accept()
         double v = 0.0;
         if (!evalScalarExpr(valItem->text(), &v, &errMsg)) {
             QMessageBox::critical(this, tr("Initial guess error"), errMsg);
+            if (!self)
+                return;
             boxParams->setCurrentCell(i, 1);
             return;
         }
@@ -2032,6 +2082,8 @@ void FitDialog::accept()
                 QMessageBox::critical(
                         this, tr("Bound input error"),
                         tr("Invalid lower bound for parameter '%1': %2").arg(nameItem->text(), errMsg));
+                if (!self)
+                    return;
                 boxParams->setCurrentCell(i, 3);
                 return;
             }
@@ -2039,6 +2091,8 @@ void FitDialog::accept()
                 QMessageBox::critical(
                         this, tr("Bound input error"),
                         tr("Invalid upper bound for parameter '%1': %2").arg(nameItem->text(), errMsg));
+                if (!self)
+                    return;
                 boxParams->setCurrentCell(i, 4);
                 return;
             }
@@ -2047,6 +2101,8 @@ void FitDialog::accept()
                         this, tr("Bound input error"),
                         tr("Lower bound must be <= upper bound for parameter '%1'.")
                                 .arg(nameItem->text()));
+                if (!self)
+                    return;
                 boxParams->setCurrentCell(i, 3);
                 return;
             }
@@ -2072,7 +2128,8 @@ void FitDialog::accept()
                         this, tr("Initial guess error"),
                         tr("Initial time constant '%1' cannot be zero.")
                                 .arg(parameters.value(idx)));
-                boxParams->setCurrentCell(idx, 1);
+                if (self)
+                    boxParams->setCurrentCell(idx, 1);
                 return false;
             }
             return true;
@@ -2093,7 +2150,10 @@ void FitDialog::accept()
         }
     }
 
-    ApplicationWindow *app = (ApplicationWindow *)this->parent();
+    if (!self || !d_graph)
+        return;
+
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
 
     if (d_fitter) {
         delete d_fitter;
@@ -2153,6 +2213,8 @@ void FitDialog::accept()
             QMessageBox::critical(this, tr("Weighting Error"),
                                   tr("Could not read valid weight/variance values from column %1.")
                                           .arg(colFullName));
+            if (!self)
+                return;
         }
         delete d_fitter;
         d_fitter = 0;
@@ -2165,6 +2227,8 @@ void FitDialog::accept()
                     this, tr("Linear Constraint Error"),
                     tr("Invalid or inconsistent linear parameter constraint expression:\n%1")
                             .arg(boxLinearConstraints->text().trimmed()));
+            if (!self)
+                return;
             delete d_fitter;
             d_fitter = 0;
             return;
@@ -2178,6 +2242,12 @@ void FitDialog::accept()
     }
     clearPreviewCurve();
 
+    if (!self || !d_graph) {
+        delete d_fitter;
+        d_fitter = 0;
+        return;
+    }
+
     d_fitter->setTolerance(eps);
     d_fitter->setAlgorithm((Fit::Algorithm)boxAlgorithm->currentIndex());
     d_fitter->setColor(btnColor->color());
@@ -2188,11 +2258,14 @@ void FitDialog::accept()
     d_fitter->enablePredictionBand(predBandBox && predBandBox->isChecked(), 0.95);
 
     if (d_fitter->objectName() == tr("MultiPeak") && ((MultiPeakFit *)d_fitter)->peaks() > 1) {
-        ((MultiPeakFit *)d_fitter)->enablePeakCurves(app->generatePeakCurves);
-        ((MultiPeakFit *)d_fitter)->setPeakCurvesColor(app->peakCurvesColor);
+        ((MultiPeakFit *)d_fitter)->enablePeakCurves(app ? app->generatePeakCurves : false);
+        if (app)
+            ((MultiPeakFit *)d_fitter)->setPeakCurvesColor(app->peakCurvesColor);
     }
 
     d_fitter->fit();
+    if (!self || !d_fitter)
+        return;
     // F11: remember the built-in model for the "Recently used" list
     if (boxUseBuiltIn->isChecked()
         && (categoryBox->currentRow() == 1 || categoryBox->currentRow() >= 4)
@@ -2200,9 +2273,9 @@ void FitDialog::accept()
         recordRecentModel(funcBox->currentItem()->text());
         refreshRecentModelsBox();
     }
-    if (summaryOnGraphBox && summaryOnGraphBox->isChecked())
+    if (summaryOnGraphBox && summaryOnGraphBox->isChecked() && d_graph)
         d_fitter->insertFitSummaryBoxOnGraph();
-    if (!d_fitter->converged() && !app->isHeadlessMode()
+    if (!d_fitter->converged() && (!app || !app->isHeadlessMode())
         && !(qApp && qApp->property("torigraph_noninteractive").toBool())) {
         registerFitDialogJapaneseStrings();
         QMessageBox::warning(this, tr("Fit Warning"),
@@ -2211,6 +2284,8 @@ void FitDialog::accept()
                                      + tr("The curve and parameters shown are the last iterate. "
                                           "Check the initial values, increase the number of "
                                           "iterations, or fix some parameters, and fit again."));
+        if (!self || !d_fitter)
+            return;
     }
 
     auto res = d_fitter->results();
@@ -2379,12 +2454,14 @@ bool FitDialog::containsUserFunctionName(const QString &function)
 
 bool FitDialog::validInitialValues()
 {
+    QPointer<FitDialog> self(this);
     for (int i = 0; i < boxParams->rowCount(); i++) {
         QTableWidgetItem *valItem = boxParams->item(i, 1);
         if (!valItem || valItem->text().trimmed().isEmpty()) {
             QMessageBox::critical(this, tr("Input error"),
                                   tr("Please enter initial guesses for your parameters!"));
-            boxParams->setCurrentCell(i, 1);
+            if (self)
+                boxParams->setCurrentCell(i, 1);
             return false;
         }
 
@@ -2392,7 +2469,8 @@ bool FitDialog::validInitialValues()
         QString errMsg;
         if (!evalScalarExpr(valItem->text(), &val, &errMsg)) {
             QMessageBox::critical(this, tr("Initial guess error"), errMsg);
-            boxParams->setCurrentCell(i, 1);
+            if (self)
+                boxParams->setCurrentCell(i, 1);
             return false;
         }
     }
@@ -2460,7 +2538,7 @@ void FitDialog::yErrorSourceChanged(int index)
 void FitDialog::closeEvent(QCloseEvent *e)
 {
     clearPreviewCurve();
-    if (d_fitter && plotLabelBox->isChecked())
+    if (d_fitter && plotLabelBox && plotLabelBox->isChecked() && d_graph)
         d_fitter->showLegend();
 
     e->accept();

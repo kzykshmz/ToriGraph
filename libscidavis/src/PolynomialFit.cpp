@@ -158,6 +158,119 @@ static double computeTransformedR2(const std::vector<double> &yt,
     return (tss > 1e-30) ? (1.0 - rss / tss) : 1.0;
 }
 
+struct ApparentLogData
+{
+    std::vector<double> xt;
+    std::vector<double> yt;
+    std::vector<double> wt;
+    std::vector<size_t> activeIdx;
+    int excludedLogCount = 0;
+    int excludedWeightCount = 0;
+};
+
+static ApparentLogData prepareApparentLogData(const std::vector<double> &dx,
+                                              const std::vector<double> &dy, bool logX, bool logY,
+                                              bool isWeighted, const std::vector<double> &baseW)
+{
+    ApparentLogData out;
+    const size_t n = std::min(dx.size(), dy.size());
+    out.xt.reserve(n);
+    out.yt.reserve(n);
+    out.wt.reserve(n);
+    out.activeIdx.reserve(n);
+    const double ln10 = std::log(10.0);
+    for (size_t i = 0; i < n; ++i) {
+        if ((logX && !(dx[i] > 0.0)) || (logY && !(dy[i] > 0.0))) {
+            ++out.excludedLogCount;
+            continue;
+        }
+        if (!std::isfinite(dx[i]) || !std::isfinite(dy[i]))
+            continue;
+        double wi = 1.0;
+        if (isWeighted) {
+            if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {
+                ++out.excludedWeightCount;
+                continue;
+            }
+            wi = baseW[i];
+        }
+        out.xt.push_back(logX ? std::log10(dx[i]) : dx[i]);
+        out.yt.push_back(logY ? std::log10(dy[i]) : dy[i]);
+        if (!isWeighted) {
+            out.wt.push_back(1.0);
+        } else {
+            const double w_trans = logY ? (wi * (dy[i] * ln10) * (dy[i] * ln10)) : wi;
+            out.wt.push_back(std::max(1e-30, w_trans));
+        }
+        out.activeIdx.push_back(i);
+    }
+    return out;
+}
+
+static void populateApparentLogFitOutputs(const ApparentLogData &data,
+                                          const std::vector<double> &dy, bool logY,
+                                          const std::vector<double> &yfit_t,
+                                          std::vector<double> &yFitOut, bool &hasCustomRss,
+                                          double &customRss)
+{
+    yFitOut.assign(dy.size(), std::numeric_limits<double>::quiet_NaN());
+    double rssActive = 0.0;
+    for (size_t k = 0; k < data.activeIdx.size(); ++k) {
+        const size_t origIdx = data.activeIdx[k];
+        const double yHat = logY ? std::pow(10.0, yfit_t[k]) : yfit_t[k];
+        yFitOut[origIdx] = yHat;
+        const double r = dy[origIdx] - yHat;
+        rssActive += r * r;
+    }
+    hasCustomRss = true;
+    customRss = rssActive;
+}
+
+static bool tryGenerateApparentLogX(const std::vector<double> &dx, bool genFunction, bool logX,
+                                    int nPoints, std::vector<double> &X)
+{
+    if (!genFunction || !logX || dx.empty())
+        return false;
+    double minPos = std::numeric_limits<double>::infinity();
+    double maxPos = -std::numeric_limits<double>::infinity();
+    bool foundPos = false;
+    for (double xv : dx) {
+        if (std::isfinite(xv) && xv > 0.0) {
+            minPos = std::min(minPos, xv);
+            maxPos = std::max(maxPos, xv);
+            foundPos = true;
+        }
+    }
+    if (!foundPos)
+        return false;
+    const double lx0 = std::log10(minPos);
+    const double lx1 = std::log10(maxPos);
+    const double lstep = (nPoints > 1) ? ((lx1 - lx0) / (nPoints - 1)) : 0.0;
+    for (int i = 0; i < nPoints; ++i)
+        X[size_t(i)] = std::pow(10.0, lx0 + i * lstep);
+    return true;
+}
+
+static void evaluateApparentPolyY(bool logX, bool logY, int nPoints, unsigned nParams,
+                                  const std::vector<double> &par, const std::vector<double> &X,
+                                  std::vector<double> &Y)
+{
+    for (int i = 0; i < nPoints; ++i) {
+        if (logX && !(X[size_t(i)] > 0.0)) {
+            Y[size_t(i)] = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        const double xt = logX ? std::log10(X[size_t(i)]) : X[size_t(i)];
+        double yt = 0.0;
+        double xpow = 1.0;
+        for (unsigned j = 0; j < nParams && j < par.size(); ++j) {
+            yt += par[j] * xpow;
+            xpow *= xt;
+        }
+        Y[size_t(i)] = logY ? std::pow(10.0, yt) : yt;
+    }
+}
+
 } // namespace
 
 PolynomialFit::PolynomialFit(ApplicationWindow *parent, Graph *g, int order, bool legend)
@@ -242,24 +355,9 @@ bool PolynomialFit::calculateFitCurveData(const vector<double> &par, std::vector
                                           std::vector<double> &Y)
 {
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
-        if (d_gen_function && d_app_log_x && !d_x.empty() && d_x.front() > 0.0 && d_x.back() > 0.0) {
-            double lx0 = std::log10(d_x.front());
-            double lstep = (d_points > 1) ? ((std::log10(d_x.back()) - lx0) / (d_points - 1)) : 0.0;
-            for (int i = 0; i < d_points; ++i)
-                X[i] = std::pow(10.0, lx0 + i * lstep);
-        } else {
+        if (!tryGenerateApparentLogX(d_x, d_gen_function, d_app_log_x, d_points, X))
             generateX(X);
-        }
-        for (int i = 0; i < d_points; ++i) {
-            double xt = d_app_log_x ? std::log10(std::max(1e-300, X[i])) : X[i];
-            double yt = 0.0;
-            double xpow = 1.0;
-            for (unsigned j = 0; j < d_p && j < par.size(); ++j) {
-                yt += par[j] * xpow;
-                xpow *= xt;
-            }
-            Y[i] = d_app_log_y ? std::pow(10.0, yt) : yt;
-        }
+        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, d_p, par, X, Y);
         return true;
     }
 
@@ -293,6 +391,8 @@ void PolynomialFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_has_custom_rss = false;
+    d_custom_rss = 0.0;
     d_has_custom_dof = false;
     d_custom_n_points = 0;
     d_custom_p_free = 0;
@@ -311,72 +411,44 @@ void PolynomialFit::fit()
         const bool isWeighted =
                 !(d_y_error_source == UnknownErrors && d_weighting_method == WeightNone);
         const std::vector<double> baseW = isWeighted ? computeWeightsVector() : std::vector<double>();
-        std::vector<double> xt, yt, wt;
-        xt.reserve(d_x.size());
-        yt.reserve(d_y.size());
-        wt.reserve(d_y.size());
-        const double ln10 = std::log(10.0);
-        int excludedLogCount = 0;
-        int excludedWeightCount = 0;
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0)) {
-                ++excludedLogCount;
-                continue;
-            }
-            double wi = 1.0;
-            if (isWeighted) {
-                if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {
-                    ++excludedWeightCount;
-                    continue;
-                }
-                wi = baseW[i];
-            }
-            xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
-            yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (!isWeighted) {
-                wt.push_back(1.0);
-            } else {
-                const double w_trans =
-                        d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
-                wt.push_back(std::max(1e-30, w_trans));
-            }
-        }
-        if (excludedLogCount > 0)
+        const ApparentLogData logData =
+                prepareApparentLogData(d_x, d_y, d_app_log_x, d_app_log_y, isWeighted, baseW);
+        if (logData.excludedLogCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
                               "log-space fit.")
-                                   .arg(excludedLogCount)
+                                   .arg(logData.excludedLogCount)
                                    .arg(int(d_x.size()));
-        if (excludedWeightCount > 0)
+        if (logData.excludedWeightCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive or invalid weights were excluded "
                               "from the log-space fit.")
-                                   .arg(excludedWeightCount)
+                                   .arg(logData.excludedWeightCount)
                                    .arg(int(d_x.size()));
-        if (xt.size() < size_t(d_p)) {
+        if (logData.xt.size() < size_t(d_p)) {
             chi_2 = -1.0;
             d_y_fit.clear();
             d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
             reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, int(d_p),
-                                      int(xt.size()));
+                                      int(logData.xt.size()));
             return;
         }
         d_has_custom_dof = true;
-        d_custom_n_points = int(xt.size());
+        d_custom_n_points = int(logData.xt.size());
         d_custom_p_free = int(d_p);
         if (d_p == 2)
-            setStraightLinePearson(xt, yt);
+            setStraightLinePearson(logData.xt, logData.yt);
 
-        gsl_matrix *X = gsl_matrix_alloc(xt.size(), d_p);
+        gsl_matrix *X = gsl_matrix_alloc(logData.xt.size(), d_p);
         gsl_vector *c = gsl_vector_alloc(d_p);
-        for (size_t i = 0; i < xt.size(); ++i) {
+        for (size_t i = 0; i < logData.xt.size(); ++i) {
             double xpow = 1.0;
             for (unsigned j = 0; j < d_p; ++j) {
                 gsl_matrix_set(X, i, j, xpow);
-                xpow *= xt[i];
+                xpow *= logData.xt[i];
             }
         }
-        gsl_vector_view yv = gsl_vector_view_array(yt.data(), yt.size());
-        gsl_vector_view wv = gsl_vector_view_array(wt.data(), wt.size());
-        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(xt.size(), d_p);
+        gsl_vector_const_view yv = gsl_vector_const_view_array(logData.yt.data(), logData.yt.size());
+        gsl_vector_const_view wv = gsl_vector_const_view_array(logData.wt.data(), logData.wt.size());
+        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(logData.xt.size(), d_p);
         gsl_multifit_wlinear(X, &wv.vector, &yv.vector, c, covar, &chi_2, work);
 
         for (unsigned i = 0; i < d_p; ++i)
@@ -386,28 +458,18 @@ void PolynomialFit::fit()
         gsl_matrix_free(X);
         gsl_vector_free(c);
 
-        std::vector<double> yfit_t(xt.size(), 0.0);
-        for (size_t i = 0; i < xt.size(); ++i) {
+        std::vector<double> yfit_t(logData.xt.size(), 0.0);
+        for (size_t i = 0; i < logData.xt.size(); ++i) {
             double xpow = 1.0;
             for (unsigned j = 0; j < d_p; ++j) {
                 yfit_t[i] += d_results[j] * xpow;
-                xpow *= xt[i];
+                xpow *= logData.xt[i];
             }
         }
         d_has_custom_r2 = true;
-        d_custom_r2 = computeTransformedR2(yt, yfit_t);
-
-        d_y_fit.resize(d_x.size());
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            double xti = d_app_log_x ? std::log10(std::max(1e-300, d_x[i])) : d_x[i];
-            double yti = 0.0;
-            double xpow = 1.0;
-            for (unsigned j = 0; j < d_p; ++j) {
-                yti += d_results[j] * xpow;
-                xpow *= xti;
-            }
-            d_y_fit[i] = d_app_log_y ? std::pow(10.0, yti) : yti;
-        }
+        d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+        populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit, d_has_custom_rss,
+                                      d_custom_rss);
     } else if (hasActiveConstraints()) {
         // Seed unconstrained OLS estimates into non-explicit parameters first
         if (d_x.size() >= size_t(d_p)) {
@@ -602,6 +664,8 @@ void LinearFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_has_custom_rss = false;
+    d_custom_rss = 0.0;
     d_has_custom_dof = false;
     d_custom_n_points = 0;
     d_custom_p_free = 0;
@@ -620,62 +684,34 @@ void LinearFit::fit()
         const bool isWeighted =
                 !(d_y_error_source == UnknownErrors && d_weighting_method == WeightNone);
         const std::vector<double> baseW = isWeighted ? computeWeightsVector() : std::vector<double>();
-        std::vector<double> xt, yt, wt;
-        xt.reserve(d_x.size());
-        yt.reserve(d_y.size());
-        wt.reserve(d_y.size());
-        const double ln10 = std::log(10.0);
-        int excludedLogCount = 0;
-        int excludedWeightCount = 0;
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0)) {
-                ++excludedLogCount;
-                continue;
-            }
-            double wi = 1.0;
-            if (isWeighted) {
-                if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {
-                    ++excludedWeightCount;
-                    continue;
-                }
-                wi = baseW[i];
-            }
-            xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
-            yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (!isWeighted) {
-                wt.push_back(1.0);
-            } else {
-                const double w_trans =
-                        d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
-                wt.push_back(std::max(1e-30, w_trans));
-            }
-        }
-        if (excludedLogCount > 0)
+        const ApparentLogData logData =
+                prepareApparentLogData(d_x, d_y, d_app_log_x, d_app_log_y, isWeighted, baseW);
+        if (logData.excludedLogCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
                               "log-space fit.")
-                                   .arg(excludedLogCount)
+                                   .arg(logData.excludedLogCount)
                                    .arg(int(d_x.size()));
-        if (excludedWeightCount > 0)
+        if (logData.excludedWeightCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive or invalid weights were excluded "
                               "from the log-space fit.")
-                                   .arg(excludedWeightCount)
+                                   .arg(logData.excludedWeightCount)
                                    .arg(int(d_x.size()));
-        if (xt.size() < 2) {
+        if (logData.xt.size() < 2) {
             chi_2 = -1.0;
             d_y_fit.clear();
             d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
             reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, 2,
-                                      int(xt.size()));
+                                      int(logData.xt.size()));
             return;
         }
         d_has_custom_dof = true;
-        d_custom_n_points = int(xt.size());
+        d_custom_n_points = int(logData.xt.size());
         d_custom_p_free = 2;
-        setStraightLinePearson(xt, yt);
+        setStraightLinePearson(logData.xt, logData.yt);
 
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
-        gsl_fit_wlinear(xt.data(), 1, wt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00,
-                        &cov01, &cov11, &chi_2);
+        gsl_fit_wlinear(logData.xt.data(), 1, logData.wt.data(), 1, logData.yt.data(), 1,
+                        logData.xt.size(), &c0, &c1, &cov00, &cov01, &cov11, &chi_2);
 
         d_results[0] = c0;
         d_results[1] = c1;
@@ -684,18 +720,13 @@ void LinearFit::fit()
         gsl_matrix_set(covar, 1, 1, cov11);
         gsl_matrix_set(covar, 1, 0, cov01);
 
-        std::vector<double> yfit_t(xt.size());
-        for (size_t i = 0; i < xt.size(); ++i)
-            yfit_t[i] = c0 + c1 * xt[i];
+        std::vector<double> yfit_t(logData.xt.size());
+        for (size_t i = 0; i < logData.xt.size(); ++i)
+            yfit_t[i] = c0 + c1 * logData.xt[i];
         d_has_custom_r2 = true;
-        d_custom_r2 = computeTransformedR2(yt, yfit_t);
-
-        d_y_fit.resize(d_x.size());
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            double xti = d_app_log_x ? std::log10(std::max(1e-300, d_x[i])) : d_x[i];
-            double yti = c0 + c1 * xti;
-            d_y_fit[i] = d_app_log_y ? std::pow(10.0, yti) : yti;
-        }
+        d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+        populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit, d_has_custom_rss,
+                                      d_custom_rss);
     } else if (hasActiveConstraints()) {
         if (d_x.size() >= 2) {
             double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, tmpChi2 = 0.0;
@@ -994,6 +1025,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     d_app_log_x = false;
     d_app_log_y = false;
+    d_has_custom_rss = false;
+    d_custom_rss = 0.0;
     d_convergence = Converged;
     d_fit_notes.clear();
     setStraightLinePearson(d_x, d_y);
@@ -1028,19 +1061,9 @@ bool LinearFit::calculateFitCurveData(const vector<double> &par, std::vector<dou
         return false;
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
-        if (d_gen_function && d_app_log_x && !d_x.empty() && d_x.front() > 0.0 && d_x.back() > 0.0) {
-            double lx0 = std::log10(d_x.front());
-            double lstep = (d_points > 1) ? ((std::log10(d_x.back()) - lx0) / (d_points - 1)) : 0.0;
-            for (int i = 0; i < d_points; ++i)
-                X[i] = std::pow(10.0, lx0 + i * lstep);
-        } else {
+        if (!tryGenerateApparentLogX(d_x, d_gen_function, d_app_log_x, d_points, X))
             generateX(X);
-        }
-        for (int i = 0; i < d_points; ++i) {
-            double xt = d_app_log_x ? std::log10(std::max(1e-300, X[i])) : X[i];
-            double yt = par[0] + par[1] * xt;
-            Y[i] = d_app_log_y ? std::pow(10.0, yt) : yt;
-        }
+        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, 2, par, X, Y);
         return true;
     }
 

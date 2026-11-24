@@ -216,7 +216,8 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
         return false;
     const QLocale curLoc = QLocale();
     QLocale locNoGroup = curLoc;
-    locNoGroup.setNumberOptions(locNoGroup.numberOptions() | QLocale::OmitGroupSeparator);
+    locNoGroup.setNumberOptions((curLoc.numberOptions() & ~QLocale::OmitGroupSeparator)
+                                | QLocale::RejectGroupSeparator);
     bool ok = false;
     double val = locNoGroup.toDouble(trimmed, &ok);
     if (ok && std::isfinite(val)) {
@@ -232,7 +233,7 @@ bool parseLocaleOrCScalar(const QString &trimmed, double *outVal)
             *outVal = val;
         return true;
     }
-    if (!(curLoc.numberOptions() & QLocale::OmitGroupSeparator)) {
+    if (!(curLoc.numberOptions() & (QLocale::OmitGroupSeparator | QLocale::RejectGroupSeparator))) {
         val = curLoc.toDouble(trimmed, &ok);
         if (ok && std::isfinite(val)) {
             if (outVal)
@@ -2094,6 +2095,7 @@ bool AxesDialog::updatePlot()
 {
     if (!d_graphGuard || !d_graph)
         return false;
+    QPointer<AxesDialog> self(this);
 
     if (d_scalesTabDirty && axesList && axesList->currentRow() >= 0 && axesList->currentRow() < 4
         && d_stagedScales[axesList->currentRow()].dirty) {
@@ -2205,6 +2207,8 @@ bool AxesDialog::updatePlot()
                     QMessageBox::critical(
                             this, tr("Start limit error"),
                             tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
+                    if (!self)
+                        return false;
                     boxStart->setFocus();
                     return false;
                 }
@@ -2216,6 +2220,8 @@ bool AxesDialog::updatePlot()
                     QMessageBox::critical(
                             this, tr("End limit error"),
                             tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
+                    if (!self)
+                        return false;
                     boxEnd->setFocus();
                     return false;
                 }
@@ -2227,6 +2233,8 @@ bool AxesDialog::updatePlot()
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
                 QMessageBox::critical(this, tr("Start limit error"), exprErr);
+                if (!self)
+                    return false;
                 boxStart->setFocus();
                 return false;
             }
@@ -2234,6 +2242,8 @@ bool AxesDialog::updatePlot()
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
                 QMessageBox::critical(this, tr("End limit error"), exprErr);
+                if (!self)
+                    return false;
                 boxEnd->setFocus();
                 return false;
             }
@@ -2242,6 +2252,8 @@ bool AxesDialog::updatePlot()
                 axesList->setCurrentRow(r);
                 QMessageBox::critical(this, tr("Input error"),
                                       tr("Please enter limits that satisfy: Start < End!"));
+                if (!self)
+                    return false;
                 boxEnd->setFocus();
                 return false;
             }
@@ -2252,6 +2264,8 @@ bool AxesDialog::updatePlot()
                     QMessageBox::critical(
                             this, tr("Scale input error"),
                             tr("Logarithmic scale requires positive limits (> 0)."));
+                    if (!self)
+                        return false;
                     boxEnd->setFocus();
                     return false;
                 }
@@ -2268,6 +2282,8 @@ bool AxesDialog::updatePlot()
                                                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
                                        == QMessageBox::Yes);
                     }
+                    if (!self || !d_graphGuard || !d_graph)
+                        return false;
                     if (!acceptClamp) {
                         generalDialog.setCurrentWidget(scalesPage);
                         axesList->setCurrentRow(r);
@@ -2289,6 +2305,8 @@ bool AxesDialog::updatePlot()
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(this, tr("Step input error"), stepErr);
+                    if (!self)
+                        return false;
                     boxStep->setFocus();
                     return false;
                 }
@@ -2297,6 +2315,8 @@ bool AxesDialog::updatePlot()
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(this, tr("Step input error"),
                                           tr("Please enter a positive step value!"));
+                    if (!self)
+                        return false;
                     boxStep->setFocus();
                     return false;
                 }
@@ -2320,6 +2340,8 @@ bool AxesDialog::updatePlot()
                     QMessageBox::critical(
                             this, tr("Divide factor error"),
                             tr("Please enter a valid non-zero numeric value or expression for Divide by Factor."));
+                    if (!self)
+                        return false;
                     if (boxDivideFactor)
                         boxDivideFactor->setFocus();
                     return false;
@@ -2327,15 +2349,26 @@ bool AxesDialog::updatePlot()
             }
             if (st.axisType == Graph::AxisType::Numeric && st.showFormula) {
                 QString formula = st.formula.toLower();
-                try {
+                const QString normalizedFormula = normalizeExprDecimalCommas(formula);
+                auto tryEvalTickFormula = [&](const QString &expr) {
                     double value = 1.0;
                     MyParser parser;
-                    if (formula.contains("x"))
+                    if (expr.contains(QLatin1Char('x')))
                         parser.DefineVar(_T("x"), &value);
-                    else if (formula.contains("y"))
+                    else if (expr.contains(QLatin1Char('y')))
                         parser.DefineVar(_T("y"), &value);
-                    parser.SetExpr(formula.toUtf8().constData());
+                    parser.SetExpr(expr);
                     parser.Eval();
+                };
+                try {
+                    try {
+                        tryEvalTickFormula(normalizedFormula);
+                    } catch (mu::ParserError &) {
+                        if (normalizedFormula != formula)
+                            tryEvalTickFormula(formula);
+                        else
+                            throw;
+                    }
                 } catch (mu::ParserError &e) {
                     generalDialog.setCurrentWidget(axesPage);
                     axesTitlesList->setCurrentRow(r);
@@ -2343,6 +2376,8 @@ bool AxesDialog::updatePlot()
                                           QStringFromString(e.GetMsg()) + "\n"
                                                   + tr("Valid variables are 'x' for Top/Bottom "
                                                        "axes and 'y' for Left/Right axes!"));
+                    if (!self)
+                        return false;
                     boxFormula->setFocus();
                     return false;
                 }
@@ -2366,11 +2401,16 @@ bool AxesDialog::updatePlot()
                     axisBreakAxesList->setCurrentRow(r);
                 QMessageBox::critical(this, tr("Error"),
                                       tr("Break From:") + " < " + tr("Break To:"));
+                if (!self)
+                    return false;
                 boxBreakFrom->setFocus();
                 return false;
             }
         }
     }
+
+    if (!self || !d_graphGuard || !d_graph)
+        return false;
 
     MultiLayer *ml = d_graph->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();

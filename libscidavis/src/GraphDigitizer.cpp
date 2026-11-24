@@ -693,14 +693,14 @@ public:
         QHBoxLayout *rowX1 = new QHBoxLayout();
         rowX1->addWidget(btnSetX1);
         rowX1->addWidget(d_sbX1, 1);
-        calForm->addRow(tr("X1 Anchor & Value:"), rowX1);
+        calForm->addRow(tr("X1 Anchor && Value:"), rowX1);
 
         QPushButton *btnSetX2 = new QPushButton(tr("Set X2"), grpCal);
         d_sbX2 = makeValueSpin(100.0);
         QHBoxLayout *rowX2 = new QHBoxLayout();
         rowX2->addWidget(btnSetX2);
         rowX2->addWidget(d_sbX2, 1);
-        calForm->addRow(tr("X2 Anchor & Value:"), rowX2);
+        calForm->addRow(tr("X2 Anchor && Value:"), rowX2);
 
         d_cbScaleX = new QComboBox(grpCal);
         d_cbScaleX->addItem(tr("Linear"), false);
@@ -712,14 +712,14 @@ public:
         QHBoxLayout *rowY1 = new QHBoxLayout();
         rowY1->addWidget(btnSetY1);
         rowY1->addWidget(d_sbY1, 1);
-        calForm->addRow(tr("Y1 Anchor & Value:"), rowY1);
+        calForm->addRow(tr("Y1 Anchor && Value:"), rowY1);
 
         QPushButton *btnSetY2 = new QPushButton(tr("Set Y2"), grpCal);
         d_sbY2 = makeValueSpin(100.0);
         QHBoxLayout *rowY2 = new QHBoxLayout();
         rowY2->addWidget(btnSetY2);
         rowY2->addWidget(d_sbY2, 1);
-        calForm->addRow(tr("Y2 Anchor & Value:"), rowY2);
+        calForm->addRow(tr("Y2 Anchor && Value:"), rowY2);
 
         d_cbScaleY = new QComboBox(grpCal);
         d_cbScaleY->addItem(tr("Linear"), false);
@@ -734,12 +734,12 @@ public:
         sideLay->addWidget(grpCal);
 
         // 2. Digitizing & Auto-Trace Group
-        QGroupBox *grpTrace = new QGroupBox(tr("Point Picking & Color Auto-Trace"), sidePanel);
+        QGroupBox *grpTrace = new QGroupBox(tr("Point Picking && Color Auto-Trace"), sidePanel);
         QVBoxLayout *traceLay = new QVBoxLayout(grpTrace);
 
         QHBoxLayout *pickRow = new QHBoxLayout();
         QPushButton *btnPickManual = new QPushButton(tr("Pick Data Points"), grpTrace);
-        QPushButton *btnPickColor = new QPushButton(tr("Pick Curve Color & Auto-Trace"), grpTrace);
+        QPushButton *btnPickColor = new QPushButton(tr("Pick Curve Color && Auto-Trace"), grpTrace);
         pickRow->addWidget(btnPickManual);
         pickRow->addWidget(btnPickColor);
         traceLay->addLayout(pickRow);
@@ -808,7 +808,7 @@ public:
 
         QHBoxLayout *expBtns = new QHBoxLayout();
         QPushButton *btnExportTbl = new QPushButton(tr("Export to Worksheet"), sidePanel);
-        QPushButton *btnExportBoth = new QPushButton(tr("Export to Worksheet & Graph"), sidePanel);
+        QPushButton *btnExportBoth = new QPushButton(tr("Export to Worksheet && Graph"), sidePanel);
         QPushButton *btnClose = new QPushButton(tr("Close"), sidePanel);
         expBtns->addWidget(btnExportTbl);
         expBtns->addWidget(btnExportBoth);

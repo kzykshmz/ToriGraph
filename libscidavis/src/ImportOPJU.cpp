@@ -3635,9 +3635,7 @@ bool parseCpyuaOpjuBuffer(const QByteArray &data, OpjuProject &proj, QString *ou
         int targetIdx = idToIndex.value(static_cast<int>(dsId) - seqShift, -1);
         if (targetIdx >= 0) {
             const RawCpyuaDataset &cand = datasets[targetIdx];
-            if (cand.skipped)
-                continue;
-            if (cand.hasMetadata
+            if (cand.skipped || cand.hasMetadata
                 || (!sn.isEmpty() && cand.hasHeaderName
                     && !datasetMatchesColumnName(cand, curWorkbookName, sn))) {
                 targetIdx = -1;

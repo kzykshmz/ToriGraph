@@ -4501,7 +4501,7 @@ void Table::showColumnPropertiesDialog(int col)
     mainLay->addLayout(navLay);
 
     // Labels & Designation group
-    QGroupBox *grpMeta = new QGroupBox(tr("Column Labels & Designation"), &dlg);
+    QGroupBox *grpMeta = new QGroupBox(tr("Column Labels && Designation"), &dlg);
     QFormLayout *metaForm = new QFormLayout(grpMeta);
     QLineEdit *editShortName = new QLineEdit(grpMeta);
     QLineEdit *editLongName = new QLineEdit(grpMeta);
@@ -4524,7 +4524,7 @@ void Table::showColumnPropertiesDialog(int col)
     boxDataType->addItem(tr("Date and time"), int(SciDAVis::ColumnMode::DateTime));
     boxDataType->addItem(tr("Month names"), int(SciDAVis::ColumnMode::Month));
     boxDataType->addItem(tr("Day names"), int(SciDAVis::ColumnMode::Day));
-    QPushButton *btnFormatPanel = new QPushButton(tr("Type & Format..."), grpMeta);
+    QPushButton *btnFormatPanel = new QPushButton(tr("Type && Format..."), grpMeta);
     typeRowLay->addWidget(boxDataType, 1);
     typeRowLay->addWidget(btnFormatPanel);
 

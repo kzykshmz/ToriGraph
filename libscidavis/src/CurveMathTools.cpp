@@ -1398,14 +1398,14 @@ void CurveMathTools::showIntersectionLookupDialog(ApplicationWindow *app, Graph 
     QHBoxLayout *lookupBtnRow = new QHBoxLayout();
     QPushButton *btnFindY = new QPushButton(trMath("Find Y at X"), tabLookup);
     QPushButton *btnFindX = new QPushButton(trMath("Find X at Y"), tabLookup);
-    QPushButton *btnArea = new QPushButton(trMath("Polygon Area & Arc Length"), tabLookup);
+    QPushButton *btnArea = new QPushButton(trMath("Polygon Area && Arc Length"), tabLookup);
     lookupBtnRow->addWidget(btnFindY);
     lookupBtnRow->addWidget(btnFindX);
     lookupBtnRow->addWidget(btnArea);
     formLookup->addRow(trMath("Curve:"), cbLookCurve);
     formLookup->addRow(trMath("Query X or Y Value:"), sbQueryVal);
     formLookup->addRow(lookupBtnRow);
-    tabs->addTab(tabLookup, trMath("X/Y Lookup & Geometry"));
+    tabs->addTab(tabLookup, trMath("X/Y Lookup && Geometry"));
 
     mainLayout->addWidget(tabs);
     mainLayout->addWidget(outputBox);
@@ -4235,7 +4235,7 @@ void CurveMathTools::showFillBetweenDialog(ApplicationWindow *app, Graph *g)
 
     form->addRow(QObject::tr("First Curve (Boundary A):"), cbA);
     form->addRow(QObject::tr("Second Curve (Boundary B):"), cbB);
-    form->addRow(QObject::tr("Fill Color & Opacity:"), colorRow);
+    form->addRow(QObject::tr("Fill Color && Opacity:"), colorRow);
     form->addRow(QObject::tr("Fill Opacity (%):"), sbOpacity);
 
     QDialogButtonBox *btns =
@@ -5754,7 +5754,7 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
                      [&](int) { syncElasticPreview(chkAutoElastic->isChecked()); });
 
     QCheckBox *chkPlotConstruct = new QCheckBox(
-            QObject::tr("Plot 0.2% offset construction line & yield marker"), &dlg);
+            QObject::tr("Plot 0.2% offset construction line && yield marker"), &dlg);
     chkPlotConstruct->setChecked(true);
 
     QCheckBox *chkCallout =
@@ -9759,7 +9759,7 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
     sbWin->setValue(11);
 
     QCheckBox *chkPlot =
-            new QCheckBox(QObject::tr("Create Considere (θ & σt vs εt) Plot"), &dlg);
+            new QCheckBox(QObject::tr("Create Considere (θ && σt vs εt) Plot"), &dlg);
     chkPlot->setChecked(true);
 
     QComboBox *cbPlotMode = new QComboBox(&dlg);
