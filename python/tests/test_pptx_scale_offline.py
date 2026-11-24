@@ -302,6 +302,7 @@ def test_pptx_skips_graph3d_and_reraises_2d_rpc_error(emf_bytes, tmp_path):
 
 def test_pptx_strict_ooxml_ole_limits_and_locked_permission(emf_bytes, tmp_path, monkeypatch):
     """Verify Strict OOXML rejection, >128 MB stream guard, and friendly locked-file error."""
+    import os
     import zipfile
     from torigraph.pptx import _check_pptx_writable, _validate_ole_payload_sizes
 
@@ -314,6 +315,24 @@ def test_pptx_strict_ooxml_ole_limits_and_locked_permission(emf_bytes, tmp_path,
     with pytest.raises(ToriGraphError, match="Strict OOXML"):
         export_graphs_to_pptx(
             FakeSession(emf_bytes), tmp_path / "out_strict.pptx", ["Graph1"], deck=strict_pptx
+        )
+
+    strict_pres_pptx = tmp_path / "strict_presentation_deck.pptx"
+    with zipfile.ZipFile(strict_pres_pptx, "w") as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>',
+        )
+        zf.writestr(
+            "ppt/presentation.xml",
+            '<p:presentation xmlns:p="http://purl.oclc.org/ooxml/presentationml/main" conformance="strict"/>',
+        )
+    with pytest.raises(ToriGraphError, match="Strict OOXML"):
+        export_graphs_to_pptx(
+            FakeSession(emf_bytes),
+            tmp_path / "out_strict_pres.pptx",
+            ["Graph1"],
+            deck=strict_pres_pptx,
         )
 
     oversize_buf = b"x" * 128_000_001
@@ -332,6 +351,178 @@ def test_pptx_strict_ooxml_ole_limits_and_locked_permission(emf_bytes, tmp_path,
     monkeypatch.setattr("builtins.open", deny_write)
     with pytest.raises(PermissionError, match="Close the presentation in PowerPoint"):
         _check_pptx_writable(locked)
+
+    # Atomic save: os.replace raising PermissionError must preserve existing deck and clean .tmp
+    target_deck = tmp_path / "locked_replace.pptx"
+    sentinel = b"existing-valid-deck-bytes"
+    target_deck.write_bytes(sentinel)
+
+    def fail_replace(src, dst):
+        raise PermissionError(13, "Sharing violation on replace", str(dst))
+
+    monkeypatch.setattr("builtins.open", real_open)
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(PermissionError, match="Close the presentation in PowerPoint"):
+        export_graphs_to_pptx(
+            FakeSession(emf_bytes), target_deck, ["Graph1"], overwrite=True
+        )
+    assert target_deck.read_bytes() == sentinel
+    assert not [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+
+
+def test_pptx_project_scope_downgrade_preserves_graph2_payload(emf_bytes, tmp_path):
+    """Downgrading Graph1 in embed_scope='project' must NOT cache Graph1 XML onto Graph2."""
+    import zipfile
+
+    class DowngradeSession(FakeSession):
+        def call(self, method, _params=None, **kw):
+            self.calls.append((method, kw))
+            if method == "graph.export_ole":
+                Path(kw["emf_path"]).write_bytes(self.emf)
+                g_name = kw["graph"]
+                if g_name == "Graph1":
+                    return {
+                        "prog_id": "ToriGraph.Graph.1",
+                        "graph": "Graph1",
+                        "width_mm": 83.33,
+                        "height_mm": 83.33,
+                        "embed_scope": "graph",
+                        "scope_downgraded": True,
+                        "sciprj_xml": "<sciprj>UNIQUE_GRAPH1_XML</sciprj>",
+                    }
+                assert kw["embed_scope"] == "graph", f"Graph2 received embed_scope={kw['embed_scope']!r}"
+                assert kw["skip_project_stream"] is False, "Graph2 must not skip its own project stream"
+                return {
+                    "prog_id": "ToriGraph.Graph.1",
+                    "graph": "Graph2",
+                    "width_mm": 83.33,
+                    "height_mm": 83.33,
+                    "embed_scope": "graph",
+                    "sciprj_xml": "<sciprj>UNIQUE_GRAPH2_XML</sciprj>",
+                }
+            if method == "graph.get_info":
+                ax = {"enabled": True, "title_font_pt": 20, "numbers_font_pt": 20}
+                return {"layers": [{"axes": {"x": ax, "y": ax}}]}
+            raise AssertionError(method)
+
+    s = DowngradeSession(emf_bytes)
+    out = tmp_path / "downgraded_batch.pptx"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = export_graphs_to_pptx(s, out, ["Graph1", "Graph2"], embed_scope="project", per_slide=2)
+
+    assert res["ok"] is True
+    assert res["embed_scope"] == "graph"
+    assert res["embedded_count"] == 2
+    assert res["static_fallback_count"] == 0
+    assert any("downgraded" in w.lower() for w in res["warnings"])
+    assert any("downgraded" in str(w.message).lower() for w in caught)
+
+    ole_calls = [c[1] for c in s.calls if c[0] == "graph.export_ole"]
+    assert [(c["graph"], c["embed_scope"], c["skip_project_stream"]) for c in ole_calls] == [
+        ("Graph1", "project", False),
+        ("Graph2", "graph", False),
+    ]
+
+    with zipfile.ZipFile(out, "r") as zf:
+        ole1 = zf.read("ppt/embeddings/oleObject1.bin")
+        ole2 = zf.read("ppt/embeddings/oleObject2.bin")
+    assert b"UNIQUE_GRAPH1_XML" in ole1 and b"UNIQUE_GRAPH2_XML" not in ole1
+    assert b"UNIQUE_GRAPH2_XML" in ole2 and b"UNIQUE_GRAPH1_XML" not in ole2
+
+
+def test_pptx_oversize_ole_falls_back_to_static_emf(emf_bytes, tmp_path):
+    """Both RPC ole_exceeds_limits and local >128MB/>=256MB checks fall back cleanly to static EMF."""
+    import zipfile
+
+    class LimitSession(FakeSession):
+        def __init__(self, emf, mode):
+            super().__init__(emf)
+            self.mode = mode
+
+        def call(self, method, _params=None, **kw):
+            self.calls.append((method, kw))
+            if method == "graph.export_ole":
+                Path(kw["emf_path"]).write_bytes(self.emf)
+                g_name = kw["graph"]
+                if g_name == "Graph1" and self.mode == "rpc_exceeds":
+                    return {
+                        "ok": True,
+                        "prog_id": "ToriGraph.Graph.1",
+                        "graph": "Graph1",
+                        "width_mm": 83.33,
+                        "height_mm": 83.33,
+                        "embed_scope": "graph",
+                        "ole_exceeds_limits": True,
+                        "limit_reason": "Embedded OLE project stream (130000000 bytes) exceeds the 128 MB limit.",
+                    }
+                if g_name == "Graph1" and self.mode == "local_cfb_256mb":
+                    if kw["embed_scope"] == "project":
+                        return {
+                            "ok": True,
+                            "prog_id": "ToriGraph.Graph.1",
+                            "graph": "Graph1",
+                            "width_mm": 83.33,
+                            "height_mm": 83.33,
+                            "embed_scope": "project",
+                            "sciprj_xml": "P" * 127_500_000,
+                        }
+                    return {
+                        "ok": True,
+                        "prog_id": "ToriGraph.Graph.1",
+                        "graph": "Graph1",
+                        "width_mm": 83.33,
+                        "height_mm": 83.33,
+                        "embed_scope": "graph",
+                        "sciprj_xml": "G" * 127_500_000,
+                    }
+                return {
+                    "ok": True,
+                    "prog_id": "ToriGraph.Graph.1",
+                    "graph": g_name,
+                    "width_mm": 83.33,
+                    "height_mm": 83.33,
+                    "embed_scope": "graph",
+                    "sciprj_xml": "<sciprj>SMALL_GRAPH2</sciprj>",
+                }
+            if method == "graph.get_info":
+                ax = {"enabled": True, "title_font_pt": 20, "numbers_font_pt": 20}
+                return {"layers": [{"axes": {"x": ax, "y": ax}}]}
+            raise AssertionError(method)
+
+    # Case A: Server flags ole_exceeds_limits=True and omits sciprj_xml (allow_whole_project=False)
+    s_rpc = LimitSession(emf_bytes, "rpc_exceeds")
+    out_rpc = tmp_path / "rpc_limit_fallback.pptx"
+    with warnings.catch_warnings(record=True) as w_rpc:
+        warnings.simplefilter("always")
+        res_rpc = export_graphs_to_pptx(s_rpc, out_rpc, ["Graph1", "Graph2"], per_slide=2)
+    assert res_rpc["ok"] is True
+    assert res_rpc["embedded_count"] == 2
+    assert res_rpc["static_fallback_count"] == 1
+    assert [p["is_ole"] for p in res_rpc["placements"]] == [False, True]
+    assert any("static EMF" in msg for msg in res_rpc["warnings"])
+    assert any("static EMF" in str(item.message) for item in w_rpc)
+    assert not [c for c in s_rpc.calls if c[0] == "save_project"]
+    with zipfile.ZipFile(out_rpc, "r") as zf:
+        ole_parts = [n for n in zf.namelist() if n.startswith("ppt/embeddings/")]
+        emf_parts = [n for n in zf.namelist() if n.startswith("ppt/media/")]
+        assert len(ole_parts) == 1 and len(emf_parts) == 2
+
+    # Case B: Client-side 256 MB CFB (127.5 MB x 2 + overhead) downgrades project->graph, then falls back to static EMF
+    s_cfb = LimitSession(emf_bytes, "local_cfb_256mb")
+    out_cfb = tmp_path / "cfb_limit_fallback.pptx"
+    with warnings.catch_warnings(record=True) as w_cfb:
+        warnings.simplefilter("always")
+        res_cfb = export_graphs_to_pptx(
+            s_cfb, out_cfb, ["Graph1", "Graph2"], embed_scope="project", per_slide=2
+        )
+    assert res_cfb["ok"] is True
+    assert res_cfb["embed_scope"] == "graph"
+    assert res_cfb["static_fallback_count"] == 1
+    assert [p["is_ole"] for p in res_cfb["placements"]] == [False, True]
+    assert any("downgraded to per-graph scope" in msg for msg in res_cfb["warnings"])
+    assert any("static EMF" in msg for msg in res_cfb["warnings"])
+    assert len(w_cfb) >= 2
 
 
 if __name__ == "__main__":

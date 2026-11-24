@@ -104,6 +104,13 @@ void registerJapaneseStrings()
         "埋め込まれたプロジェクト内にグラフ「%1」が見つかりませんでした。");
     reg("No graph could be rendered from the embedded project.",
         "埋め込まれたプロジェクトからグラフを描画できませんでした。");
+    reg("PowerPoint Connection Lost", "PowerPoint との接続が失われました");
+    reg("The PowerPoint container that hosted this embedded graph closed unexpectedly.\n\n"
+        "This window has been switched to standalone mode so you can save your changes with "
+        "File -> Save Project As...",
+        "この埋め込みグラフを開いていた PowerPoint 側が予期せず終了しました。\n\n"
+        "編集内容が失われないよう、このウィンドウを単独モードに切り替えました。"
+        "「ファイル」→「名前を付けてプロジェクトを保存...」で保存できます。");
 }
 
 QString copyForPowerPointLabel()
@@ -1113,6 +1120,7 @@ public:
                 m_editor->setProperty("_tg_ole_container_died_handled", true);
                 m_editor->setOleEmbeddedMode(false);
                 if (!ApplicationWindow::isNonInteractiveContext(m_editor)) {
+                    ToriGraphOleUi::registerJapaneseStrings();
                     QMessageBox::warning(
                             m_editor,
                             ApplicationWindow::tr("PowerPoint Connection Lost"),

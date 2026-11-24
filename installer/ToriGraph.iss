@@ -71,7 +71,7 @@ english.TaskAssocProject=Associate project files (.sciprj) with ToriGraph
 japanese.MenuRepairOle=OLE サーバーを再登録 (PowerPoint 連携修復)
 english.MenuRepairOle=Re-register OLE Server (Repair PowerPoint Integration)
 japanese.MenuQuickGuide=ToriGraph かんたんガイド (使い方・FAQ)
-english.MenuQuickGuide=ToriGraph Quick Guide (Japanese)
+english.MenuQuickGuide=ToriGraph Quick Guide
 japanese.MenuInstallPySdk=Python SDK (torigraph) を再インストール
 english.MenuInstallPySdk=Re-install Python SDK (torigraph)
 japanese.StatusInstallPython=Python 自動化 SDK (torigraph) をインストールしています...
@@ -88,15 +88,17 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; F1 quick guide (manual\index.html). Already staged by build-windows-installer.ps1; listed explicitly so a
-; stage without the manual fails loudly instead of shipping an installer whose F1 falls back to the web.
+; F1 quick guides (manual\index.html, manual\index.en.html). Already staged by build-windows-installer.ps1;
+; listed explicitly so a stage without the manuals fails loudly instead of shipping an installer whose F1 falls back to the web.
 Source: "{#StageDir}\manual\index.html"; DestDir: "{app}\manual"; Flags: ignoreversion
+Source: "{#StageDir}\manual\index.en.html"; DestDir: "{app}\manual"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:MenuRepairOle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"" -PauseOnError"; WorkingDir: "{app}"
-Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.html"
-Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ & \""{app}\scripts\install-python-sdk.ps1\"" -SdkDir \""{app}\python\""; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ throw 'Exit code ' + $LASTEXITCODE }} }} catch {{ Write-Host $_ -ForegroundColor Red; [void](Read-Host 'Press Enter to close') }}"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.en.html"; Languages: english
+Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.html"; Languages: japanese
+Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ & \""{app}\scripts\install-python-sdk.ps1\"" -SdkDir \""{app}\python\""; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ throw 'Exit code ' + $LASTEXITCODE } } catch {{ Write-Host $_ -ForegroundColor Red; [void](Read-Host 'Press Enter to close') }"""; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

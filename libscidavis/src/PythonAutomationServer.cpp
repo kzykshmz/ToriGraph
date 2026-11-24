@@ -117,6 +117,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFont>
 #include <QFontDatabase>
 #include <QHBoxLayout>
@@ -153,6 +154,7 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -6842,14 +6844,26 @@ QByteArray readGzipHeaderBytes(const QString &filePath, int maxOutBytes)
 }
 
 void restoreProjectSnapshotOnError(ApplicationWindow *app, const QByteArray &snap,
-                                   const QString &savedProjName, bool savedWasSaved)
+                                   const QString &savedProjName, bool savedWasSaved,
+                                   const QStringList &savedRecentProjects,
+                                   const QString &savedRootFolderName,
+                                   bool reacquireProjectTracking)
 {
     if (!app)
         return;
+
+    if (reacquireProjectTracking && !savedProjName.isEmpty()
+        && savedProjName != QLatin1String("untitled") && QFileInfo::exists(savedProjName)
+        && (savedProjName.endsWith(QLatin1String(".sciprj"), Qt::CaseInsensitive)
+            || savedProjName.endsWith(QLatin1String(".sciprj.gz"), Qt::CaseInsensitive))
+        && QFileInfo(savedProjName).size() <= 32LL * 1024LL * 1024LL) {
+        (void)app->loadProject(savedProjName);
+    }
+
     resetProjectInPlaceHeadless(app);
     if (!snap.isEmpty()) {
         QTemporaryFile tmpProj(
-                QDir::temp().filePath(QStringLiteral("torigraph_open_rb_XXXXXX.sciprj")));
+                QDir::temp().filePath(QStringLiteral("torigraph_open_rb_XXXXXX.sciprj~")));
         if (tmpProj.open()) {
             const QString tmpPath = tmpProj.fileName();
             tmpProj.write(snap);
@@ -6857,9 +6871,46 @@ void restoreProjectSnapshotOnError(ApplicationWindow *app, const QByteArray &sna
             tmpProj.close();
             (void)app->loadProject(tmpPath);
             QFile::remove(tmpPath);
+            for (QFileSystemWatcher *watcher : app->findChildren<QFileSystemWatcher *>()) {
+                if (!watcher)
+                    continue;
+                for (const QString &watched : watcher->files()) {
+                    if (watched == tmpPath || watched.contains(QLatin1String("torigraph_open_rb_")))
+                        watcher->removePath(watched);
+                }
+            }
         }
     }
+
+    QStringList restoredRecent = savedRecentProjects;
+    for (int i = restoredRecent.size() - 1; i >= 0; --i) {
+        if (restoredRecent.at(i).contains(QLatin1String("torigraph_open_rb_")))
+            restoredRecent.removeAt(i);
+    }
+    app->recentProjects = restoredRecent;
+    app->updateRecentProjectsList();
+
     app->projectname = savedProjName.isEmpty() ? QStringLiteral("untitled") : savedProjName;
+    if (app->projectname == QLatin1String("untitled")) {
+        app->setWindowTitle(ApplicationWindow::tr("ToriGraph - untitled"));
+    } else {
+        app->setWindowTitle(ApplicationWindow::tr("ToriGraph") + QStringLiteral(" - ")
+                            + app->projectname);
+    }
+
+    if (Folder *rf = app->projectFolder()) {
+        const QString targetRootName = !savedRootFolderName.isEmpty()
+                ? savedRootFolderName
+                : ((app->projectname == QLatin1String("untitled"))
+                           ? ApplicationWindow::tr("UNTITLED")
+                           : QFileInfo(app->projectname).baseName());
+        rf->setName(targetRootName);
+        if (rf->folderListItem()) {
+            QSignalBlocker sbFolders(&app->folders);
+            rf->folderListItem()->setText(0, targetRootName);
+        }
+    }
+
     if (savedWasSaved)
         app->savedProject();
     else
@@ -6981,7 +7032,7 @@ static const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "name:str*; checked:bool=null", "app.trigger_action('actionNextWindow')" },
     { "app.grab_gui_diagnostic", "app", "Session.call(method='app.grab_gui_diagnostic', path='')",
       "Capture main-window screenshot and ribbon/dock/table geometry diagnostics.",
-      "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0; show_explorer:bool=null; expand_inspector:bool=null; inspector_tab:int=null; scroll_inspector:bool|int=null",
+      "path:str=''; width:int=0; height:int=0; ribbon_tab:int=0; show_explorer:bool=null; expand_inspector:bool=null; inspector_tab:int=null; scroll_inspector:bool|int=null; focus_hud:bool=null; workspace_mode:str=''\x5btabs|split|mdi]; dock_explorer:str=''\x5bleft|right|bottom]; explorer_width:int=null; focus_table_drawer:bool=null; check_all_tabs:bool=true",
       "app.call('app.grab_gui_diagnostic', path='ui.png')" },
 
     // 1b. Workbooks (several worksheets as sheet tabs of one window)
@@ -10085,8 +10136,10 @@ QString pyEscapeStr(const QString &raw)
             out.append(QStringLiteral("\\r"));
         else if (u == '\t')
             out.append(QStringLiteral("\\t"));
-        else if (u < 0x20)
+        else if (u < 0x20 || u == 0x7F || (u >= 0x80 && u <= 0x9F))
             out.append(QStringLiteral("\\x%1").arg(u, 2, 16, QLatin1Char('0')));
+        else if (u == 0x2028 || u == 0x2029)
+            out.append(QStringLiteral("\\u%1").arg(u, 4, 16, QLatin1Char('0')));
         else
             out.append(s.at(i));
     }
@@ -10214,26 +10267,49 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         return QObject::tr(enText);
     };
 
+    auto sanitizePyCommentText = [](const QString &raw) -> QString {
+        const QString s = sanitizeUtf16Surrogates(raw);
+        QString out;
+        out.reserve(s.size());
+        for (int i = 0; i < s.size(); ++i) {
+            const QChar ch = s.at(i);
+            const ushort u = ch.unicode();
+            if (u == '\r' || u == '\n' || u == '\v' || u == '\f' || u == 0x0085
+                || u == 0x2028 || u == 0x2029) {
+                if (u == '\n' && i > 0 && s.at(i - 1) == QLatin1Char('\r'))
+                    continue;
+                out.append(QLatin1Char(' '));
+            } else if (u < 0x20 || u == 0x7F || (u >= 0x80 && u <= 0x9F)) {
+                if (u == '\t')
+                    out.append(QLatin1Char(' '));
+            } else {
+                out.append(ch);
+            }
+        }
+        return out;
+    };
+
     QStringList lines;
-    lines << QStringLiteral("# ") + pyTr("Auto-generated reproducible ToriGraph script");
+    lines << QStringLiteral("# ") + sanitizePyCommentText(pyTr("Auto-generated reproducible ToriGraph script"));
     lines << QStringLiteral("# ")
-                    + pyTr("Reproduces the visual appearance (data, curves, axes, annotations). Analysis and fit computations are not re-run.");
+                    + sanitizePyCommentText(pyTr("Reproduces the visual appearance (data, curves, axes, annotations). Analysis and fit computations are not re-run."));
     lines << QStringLiteral("import torigraph as tg");
     lines << QString();
     // Elements this generator cannot (yet) rebuild are listed as "# Not reproduced: ..." / "# 未再現: ..." comments
     // right after the import line, so the reader sees them before running the script.
     QStringList unreproduced;
-    auto noteUnreproduced = [&unreproduced, &pyTr](const QString &what) {
-        const QString ln = QStringLiteral("# ") + pyTr("Not reproduced: %1").arg(what);
+    auto noteUnreproduced = [&unreproduced, &pyTr, &sanitizePyCommentText](const QString &what) {
+        const QString body = sanitizePyCommentText(pyTr("Not reproduced: %1").arg(sanitizePyCommentText(what)));
+        const QString ln = QStringLiteral("# ") + body;
         if (!unreproduced.contains(ln))
             unreproduced << ln;
     };
-    auto finishScript = [&lines, &unreproduced, &pyTr]() -> QString {
+    auto finishScript = [&lines, &unreproduced, &pyTr, &sanitizePyCommentText]() -> QString {
         QStringList out = lines;
         if (!unreproduced.isEmpty()) {
             QStringList block;
             block << QStringLiteral("# ")
-                            + pyTr("Warning: the following elements are not reproduced by this script (adjust their appearance manually).");
+                            + sanitizePyCommentText(pyTr("Warning: the following elements are not reproduced by this script (adjust their appearance manually)."));
             block << unreproduced;
             block << QString();
             for (int i = 0; i < block.size(); ++i)
@@ -11266,7 +11342,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 lines << pageSizeLine;
         } else {
             noteUnreproduced(pyTr("style preset '%1' (not found on this PC)")
-                                     .arg(stylePresetId));
+                                     .arg(sanitizePyCommentText(stylePresetId)));
         }
     }
 
@@ -12400,9 +12476,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             throwRpcRuntime(QStringLiteral("Project file is empty: %1").arg(path));
 
         auto captureRollbackSnapshot = [d_app](QByteArray *outSnap, QString *outName,
-                                              bool *outSaved) {
+                                              bool *outSaved, QStringList *outRecent,
+                                              QString *outRootFolder) {
             *outName = d_app->projectname;
             *outSaved = d_app->saved;
+            *outRecent = d_app->recentProjects;
+            *outRootFolder = d_app->projectFolder() ? d_app->projectFolder()->name() : QString();
             if (!d_app->windowsList().isEmpty()) {
                 sanitizeAllProjectFunctionCurves(d_app);
                 *outSnap = d_app->saveProjectToByteArray();
@@ -12420,9 +12499,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             QByteArray rollbackSnap;
             QString savedProjName;
             bool savedWasSaved = true;
+            QStringList savedRecent;
+            QString savedRootFolder;
             if (!append) {
                 confirmUnsavedProjectBeforeReset(server, d_app, params);
-                captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved);
+                captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved, &savedRecent,
+                                        &savedRootFolder);
                 resetProjectInPlaceHeadless(d_app);
             }
             const int winBefore = d_app->windowsList().size();
@@ -12430,7 +12512,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             ImportOPJU::ImportStats stats;
             if (!ImportOPJU::importFile(d_app, absPath, &opjuErr, &stats)) {
                 if (!append)
-                    restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved);
+                    restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved,
+                                                  savedRecent, savedRootFolder, false);
                 throwRpcRuntime(opjuErr.isEmpty()
                                         ? QStringLiteral("Failed to import OPJU file: %1").arg(path)
                                         : opjuErr);
@@ -12530,11 +12613,15 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         QByteArray rollbackSnap;
         QString savedProjName;
         bool savedWasSaved = true;
-        captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved);
+        QStringList savedRecent;
+        QString savedRootFolder;
+        captureRollbackSnapshot(&rollbackSnap, &savedProjName, &savedWasSaved, &savedRecent,
+                                &savedRootFolder);
         resetProjectInPlaceHeadless(d_app);
         const bool ok = d_app->loadProject(absPath);
         if (!ok) {
-            restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved);
+            restoreProjectSnapshotOnError(d_app, rollbackSnap, savedProjName, savedWasSaved,
+                                          savedRecent, savedRootFolder, true);
             throwRpcRuntime(QStringLiteral("Failed to load project: %1").arg(path));
         }
         d_app->projectname = absPath;
@@ -22111,7 +22198,8 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         const QString olePathRaw = !optionalJsonString(params, QStringLiteral("ole_path")).trimmed().isEmpty()
                 ? optionalJsonString(params, QStringLiteral("ole_path")).trimmed()
                 : optionalJsonString(params, QStringLiteral("path")).trimmed();
-        const bool needOleCompound = !skipProjectStream || !olePathRaw.isEmpty();
+        const bool needProjectBytes = !skipProjectStream || !olePathRaw.isEmpty();
+        const bool needOleCompound = needProjectBytes && (includeBase64 || !olePathRaw.isEmpty());
         // "graph" (default): embed the graph and the tables/matrices it plots only;
         // "project": embed the whole project (and results log), as before.
         const QString embedScopeStr =
@@ -22159,9 +22247,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         QByteArray projBytes;
         bool scopeDowngraded = false;
+        bool oleExceedsLimits = false;
         QString oleScopeWarning;
+        QString oleLimitReason;
         static constexpr qint64 kMaxOleStreamBytes = 128000000LL;
-        if (needOleCompound) {
+        if (needProjectBytes) {
             for (MyWidget *w : d_app->windowsList()) {
                 if (w && w->inherits("MultiLayer")) {
                     for (Graph *lg : static_cast<MultiLayer *>(w)->layersList()) {
@@ -22178,6 +22268,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (projBytes.size() > kMaxOleStreamBytes
                 && embedScope == SciDAVisOle::EmbedScope::WholeProject) {
                 embedScope = SciDAVisOle::EmbedScope::GraphOnly;
+                embeddedWindows.clear();
                 projBytes = SciDAVisOle::buildEmbeddedProjectBytes(d_app, embedTarget, embedScope,
                                                                    &embeddedWindows);
                 scopeDowngraded = true;
@@ -22191,10 +22282,13 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                         QStringLiteral("Failed to serialize .sciprj payload for OLE export."));
             }
             if (projBytes.size() > kMaxOleStreamBytes) {
-                throwRpcRuntime(
-                        QStringLiteral("Embedded OLE project stream (%1 bytes) exceeds the 128 MB "
-                                       "limit; export a static EMF/PNG image instead.")
-                                .arg(projBytes.size()));
+                oleExceedsLimits = true;
+                oleLimitReason = QStringLiteral(
+                        "Embedded OLE project stream (%1 bytes) exceeds the 128 MB "
+                        "limit; export a static EMF/PNG image instead.")
+                                         .arg(projBytes.size());
+                projBytes.clear();
+                embeddedWindows.clear();
             }
         }
 
@@ -22232,11 +22326,16 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
         if (rg.emfBytes.isEmpty())
             throwRpcRuntime(QStringLiteral("Failed to render vector EMF preview for OLE export."));
-        if (needOleCompound && rg.emfBytes.size() > kMaxOleStreamBytes) {
-            throwRpcRuntime(
-                    QStringLiteral("Rendered EMF preview (%1 bytes) exceeds the 128 MB OLE stream "
-                                   "limit; export a raster PNG image instead.")
-                            .arg(rg.emfBytes.size()));
+        if (rg.emfBytes.size() > kMaxOleStreamBytes) {
+            oleExceedsLimits = true;
+            if (oleLimitReason.isEmpty()) {
+                oleLimitReason = QStringLiteral(
+                        "Rendered EMF preview (%1 bytes) exceeds the 128 MB OLE stream "
+                        "limit; export a raster PNG image instead.")
+                                         .arg(rg.emfBytes.size());
+            }
+            projBytes.clear();
+            embeddedWindows.clear();
         }
 
         payload.emfBytes = rg.emfBytes;
@@ -22246,7 +22345,9 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         // Build self-contained CFBF OLE Compound Storage (.bin) in memory when needed (zero COM out-of-proc launch!)
         QByteArray oleCompoundBytes;
-        if (needOleCompound) {
+        if (needOleCompound && !oleExceedsLimits) {
+            bool cfbExceededLimit = false;
+            qint64 cfbBytesSize = 0;
             ILockBytes *lockBytes = nullptr;
             HRESULT hr = CreateILockBytesOnHGlobal(nullptr, TRUE, &lockBytes);
             if (SUCCEEDED(hr) && lockBytes) {
@@ -22256,21 +22357,28 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 if (SUCCEEDED(hr) && stg) {
                     WriteClassStg(stg, SciDAVisOle::graph_clsid);
                     hr = SciDAVisOle::savePayloadToStorage(stg, payload);
-                    stg->Commit(STGC_DEFAULT);
+                    if (SUCCEEDED(hr))
+                        stg->Commit(STGC_DEFAULT);
+                    else if (hr == STG_E_INSUFFICIENTMEMORY)
+                        cfbExceededLimit = true;
                     stg->Release();
                     if (SUCCEEDED(hr)) {
                         STATSTG stat{};
                         if (SUCCEEDED(lockBytes->Stat(&stat, STATFLAG_NONAME))
-                            && stat.cbSize.QuadPart > 0
-                            && stat.cbSize.QuadPart < 256000000ULL) {
-                            HGLOBAL hg = nullptr;
-                            if (SUCCEEDED(GetHGlobalFromILockBytes(lockBytes, &hg)) && hg) {
-                                const void *rawPtr = GlobalLock(hg);
-                                if (rawPtr) {
-                                    oleCompoundBytes = QByteArray(
-                                            static_cast<const char *>(rawPtr),
-                                            static_cast<int>(stat.cbSize.QuadPart));
-                                    GlobalUnlock(hg);
+                            && stat.cbSize.QuadPart > 0) {
+                            cfbBytesSize = static_cast<qint64>(stat.cbSize.QuadPart);
+                            if (stat.cbSize.QuadPart >= 256000000ULL) {
+                                cfbExceededLimit = true;
+                            } else {
+                                HGLOBAL hg = nullptr;
+                                if (SUCCEEDED(GetHGlobalFromILockBytes(lockBytes, &hg)) && hg) {
+                                    const void *rawPtr = GlobalLock(hg);
+                                    if (rawPtr) {
+                                        oleCompoundBytes = QByteArray(
+                                                static_cast<const char *>(rawPtr),
+                                                static_cast<int>(stat.cbSize.QuadPart));
+                                        GlobalUnlock(hg);
+                                    }
                                 }
                             }
                         }
@@ -22278,8 +22386,22 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 }
                 lockBytes->Release();
             }
-            if (oleCompoundBytes.isEmpty())
+            if (cfbExceededLimit) {
+                oleExceedsLimits = true;
+                oleLimitReason = cfbBytesSize > 0
+                        ? QStringLiteral(
+                                  "Combined OLE compound storage (%1 bytes) reaches or exceeds the "
+                                  "256 MB PowerPoint container limit; export a static EMF/PNG image instead.")
+                                  .arg(cfbBytesSize)
+                        : QStringLiteral(
+                                  "Combined OLE compound storage exceeds PowerPoint container limits; "
+                                  "export a static EMF/PNG image instead.");
+                projBytes.clear();
+                oleCompoundBytes.clear();
+                embeddedWindows.clear();
+            } else if (oleCompoundBytes.isEmpty()) {
                 throwRpcRuntime(QStringLiteral("Failed to build OLE Compound Storage binary."));
+            }
         }
 
         const QString emfPathRaw = optionalJsonString(params, QStringLiteral("emf_path")).trimmed();
@@ -22298,7 +22420,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         }
 
         QString absOlePath;
-        if (!olePathRaw.isEmpty()) {
+        if (!olePathRaw.isEmpty() && !oleExceedsLimits && !oleCompoundBytes.isEmpty()) {
             const QFileInfo ofi(olePathRaw);
             if (!ofi.dir().exists())
                 QDir().mkpath(ofi.dir().absolutePath());
@@ -22340,7 +22462,11 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             outResult[QStringLiteral("scope_downgraded")] = true;
             outResult[QStringLiteral("warning")] = oleScopeWarning;
         }
-        if (needOleCompound)
+        if (oleExceedsLimits) {
+            outResult[QStringLiteral("ole_exceeds_limits")] = true;
+            outResult[QStringLiteral("limit_reason")] = oleLimitReason;
+        }
+        if (needProjectBytes && !oleExceedsLimits)
             outResult[QStringLiteral("embedded_windows")] =
                     QJsonArray::fromStringList(embeddedWindows);
         outResult[QStringLiteral("width_mm")] = safeJsonDouble(widthMm);
@@ -22349,7 +22475,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
         outResult[QStringLiteral("height_hm")] = static_cast<int>(rg.extentHm.cy);
         outResult[QStringLiteral("width_px")] = rg.pixelSize.width();
         outResult[QStringLiteral("height_px")] = rg.pixelSize.height();
-        if (!skipProjectStream)
+        if (!skipProjectStream && !oleExceedsLimits && !projBytes.isEmpty())
             outResult[QStringLiteral("sciprj_xml")] = QString::fromUtf8(projBytes);
         outResult[QStringLiteral("emf_bytes")] = rg.emfBytes.size();
         outResult[QStringLiteral("ole_bytes")] = oleCompoundBytes.size();

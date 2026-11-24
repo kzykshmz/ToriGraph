@@ -540,8 +540,13 @@ def build_ole_compound_file(
                     written = wintypes.ULONG(0)
                     hr_w = write_fn(stm_ptr, buf, len(payload), ctypes.byref(written))
                     if hr_w < 0 or int(written.value) != len(payload):
+                        hr_u = hr_w & 0xFFFFFFFF
+                        if hr_u == 0x80030008:  # STG_E_INSUFFICIENTMEMORY
+                            raise ValueError(
+                                f"IStream::Write({stream_name!r}) exceeded OLE compound limits (0x{hr_u:08X})"
+                            )
                         raise RuntimeError(
-                            f"IStream::Write({stream_name!r}) failed: 0x{hr_w & 0xFFFFFFFF:08X}"
+                            f"IStream::Write({stream_name!r}) failed: 0x{hr_u:08X}"
                         )
             finally:
                 vt_stm = ctypes.cast(
@@ -558,7 +563,10 @@ def build_ole_compound_file(
 
         hr_c = commit_stg(stg_ptr, 0)
         if hr_c < 0:
-            raise RuntimeError(f"IStorage::Commit failed: HRESULT=0x{hr_c & 0xFFFFFFFF:08X}")
+            hr_cu = hr_c & 0xFFFFFFFF
+            if hr_cu == 0x80030008:  # STG_E_INSUFFICIENTMEMORY
+                raise ValueError(f"IStorage::Commit exceeded OLE compound limits (0x{hr_cu:08X})")
+            raise RuntimeError(f"IStorage::Commit failed: HRESULT=0x{hr_cu:08X}")
     finally:
         vtable_stg = ctypes.cast(
             ctypes.cast(stg_ptr, ctypes.POINTER(ctypes.c_void_p))[0],
@@ -1147,11 +1155,14 @@ def _fetch_graph_ole_payload(
     warn_list: Optional[List[str]] = None,
     allow_whole_project: bool = False,
     ole_meta: Optional[Dict[str, Any]] = None,
-) -> Tuple[bytes, bytes, int, int, int, int, str, str, Optional[bytes]]:
+) -> Tuple[Optional[bytes], bytes, int, int, int, int, str, str, Optional[bytes]]:
     """Fetch ``(project_bytes, emf_bytes, w_hm, h_hm, w_px, h_px, prog_id, canonical_window, updated_cache)`` via RPC.
 
     With ``embed_scope="graph"`` every graph gets its own project stream (the graph and the
     tables it plots), so the project cache is only used for ``embed_scope="project"``.
+    When an OLE stream/container exceeds PowerPoint limits (``ole_exceeds_limits``),
+    ``project_bytes`` is returned as ``None`` so the caller falls back cleanly to a static EMF
+    without invoking whole-project snapshot embedding.
     Problems that change what is embedded or how large it is are appended to ``warn_list``
     and issued as :class:`UserWarning` instead of being hidden.
 
@@ -1182,6 +1193,7 @@ def _fetch_graph_ole_payload(
     prog_id = TORIGRAPH_OLE_PROG_ID
     canonical_window = graph_name
     per_graph_project = embed_scope != "project"
+    ole_exceeds_limits = False
 
     skip_proj = (cached_project_bytes is not None) and not per_graph_project
     try:
@@ -1195,10 +1207,27 @@ def _fetch_graph_ole_payload(
             embed_scope=str(embed_scope),
         )
         if isinstance(ole_res, Mapping):
-            if ole_res.get("warning"):
-                _warn(str(ole_res["warning"]))
+            raw_warning = ole_res.get("warning")
+            if raw_warning:
+                _warn(str(raw_warning))
+
+            ole_exceeds_limits = bool(ole_res.get("ole_exceeds_limits"))
             got_scope = ole_res.get("embed_scope")
-            if per_graph_project and got_scope not in (None, "graph"):
+            scope_downgraded = bool(ole_res.get("scope_downgraded")) or (
+                not per_graph_project and got_scope == "graph"
+            )
+            if scope_downgraded:
+                per_graph_project = True
+                cached_project_bytes = None
+                if ole_meta is not None:
+                    ole_meta["scope_downgraded"] = True
+                    ole_meta["effective_embed_scope"] = "graph"
+                if not (raw_warning and "downgrad" in str(raw_warning).lower()):
+                    _warn(
+                        f"Whole-project OLE payload for '{graph_name}' was downgraded to "
+                        "per-graph scope; remaining graphs in this batch will use per-graph scope."
+                    )
+            elif per_graph_project and got_scope not in (None, "graph"):
                 _refuse_whole_project(
                     f"graph.export_ole embedded scope {got_scope!r} for '{graph_name}' instead of 'graph'."
                 )
@@ -1206,7 +1235,7 @@ def _fetch_graph_ole_payload(
                     f"graph.export_ole embedded scope {got_scope!r} for '{graph_name}' instead of "
                     "'graph'; the slide object contains the whole project."
                 )
-            elif per_graph_project and got_scope is None and not skip_proj:
+            elif per_graph_project and got_scope is None and not skip_proj and not ole_exceeds_limits:
                 _refuse_whole_project(
                     f"This ToriGraph does not support embed_scope, so the object for '{graph_name}' "
                     "would contain the whole project."
@@ -1215,6 +1244,12 @@ def _fetch_graph_ole_payload(
                     f"This ToriGraph does not support embed_scope; the object for '{graph_name}' "
                     "contains the whole project (all windows and the results log)."
                 )
+
+            if ole_exceeds_limits and ole_meta is not None:
+                ole_meta["ole_exceeds_limits"] = True
+                if ole_res.get("limit_reason"):
+                    ole_meta["limit_reason"] = str(ole_res["limit_reason"])
+
             prog_id = str(ole_res.get("prog_id") or TORIGRAPH_OLE_PROG_ID)
             if ole_res.get("graph"):
                 canonical_window = str(ole_res["graph"])
@@ -1227,11 +1262,12 @@ def _fetch_graph_ole_payload(
                     if ole_res.get(k) is not None:
                         ole_meta[k] = ole_res[k]
 
-            xml_val = ole_res.get("sciprj_xml") or ole_res.get("project_xml")
-            if isinstance(xml_val, str) and xml_val:
-                proj_bytes = xml_val.encode("utf-8")
-            elif isinstance(ole_res.get("sciprj_base64"), str) and ole_res["sciprj_base64"]:
-                proj_bytes = base64.b64decode(ole_res["sciprj_base64"])
+            if not ole_exceeds_limits:
+                xml_val = ole_res.get("sciprj_xml") or ole_res.get("project_xml")
+                if isinstance(xml_val, str) and xml_val:
+                    proj_bytes = xml_val.encode("utf-8")
+                elif isinstance(ole_res.get("sciprj_base64"), str) and ole_res["sciprj_base64"]:
+                    proj_bytes = base64.b64decode(ole_res["sciprj_base64"])
 
             if emf_tmp.is_file() and emf_tmp.stat().st_size >= 44:
                 emf_bytes = emf_tmp.read_bytes()
@@ -1247,7 +1283,11 @@ def _fetch_graph_ole_payload(
             "the slide."
         )
 
-    if proj_bytes is None:
+    if ole_exceeds_limits:
+        proj_bytes = None
+        if per_graph_project:
+            cached_project_bytes = None
+    elif proj_bytes is None:
         if cached_project_bytes is not None and not per_graph_project:
             proj_bytes = cached_project_bytes
         else:
@@ -1260,9 +1300,12 @@ def _fetch_graph_ole_payload(
             sciprj_tmp = tmp_dir / "workspace_ole_snapshot.sciprj"
             session.save_project(sciprj_tmp, compress=False, snapshot=True)
             proj_bytes = sciprj_tmp.read_bytes()
-            cached_project_bytes = proj_bytes
+            if not per_graph_project:
+                cached_project_bytes = proj_bytes
     elif not per_graph_project:
         cached_project_bytes = proj_bytes
+    else:
+        cached_project_bytes = None
 
     if emf_bytes is None:
         session.call("graph.export", graph=graph_name, path=os.fspath(emf_tmp), dpi=int(dpi))
@@ -1728,12 +1771,19 @@ def export_graphs_to_pptx(
     embedded_count = 0
     static_fallback_count = 0
 
-    def _ole_exceeds_limits(project_bytes: bytes, preview_emf_bytes: bytes) -> bool:
-        return (
-            len(project_bytes) > MAX_OLE_STREAM_BYTES
-            or len(preview_emf_bytes) > MAX_OLE_STREAM_BYTES
-            or (2 * len(project_bytes) + len(preview_emf_bytes)) >= MAX_OLE_CFB_BYTES
-        )
+    def _ole_exceeds_limits(
+        project_bytes: Optional[bytes], preview_emf_bytes: bytes
+    ) -> bool:
+        if project_bytes is None:
+            return True
+        proj_len = len(project_bytes)
+        emf_len = len(preview_emf_bytes)
+        if proj_len > MAX_OLE_STREAM_BYTES or emf_len > MAX_OLE_STREAM_BYTES:
+            return True
+        stream_total = 2 * proj_len + emf_len
+        # Include CFB header, CompObj/Ole/Meta streams, directory, MiniStream, and FAT/DIFAT overhead.
+        cfb_overhead = 8192 + ((stream_total + 511) // 512) * 4
+        return (stream_total + cfb_overhead) >= MAX_OLE_CFB_BYTES
 
     def _place_built_item(
         target_slide: Any,
@@ -1779,6 +1829,7 @@ def export_graphs_to_pptx(
     with tempfile.TemporaryDirectory(prefix="torigraph_pptx_") as tmp:
         tmp_dir = Path(tmp)
         cached_proj: Optional[bytes] = None
+        active_embed_scope = embed_scope
 
         # Pre-build OLE payloads for all requested graphs
         built_items: List[Dict[str, Any]] = []
@@ -1801,12 +1852,25 @@ def export_graphs_to_pptx(
                 tmp_dir=tmp_dir,
                 seq_idx=idx,
                 cached_project_bytes=cached_proj,
-                embed_scope=embed_scope,
+                embed_scope=active_embed_scope,
                 warn_list=warn_list,
                 allow_whole_project=allow_whole_project,
                 ole_meta=ole_meta,
             )
-            if embed_scope == "project" and _ole_exceeds_limits(proj_b, emf_b):
+            if (
+                ole_meta.get("scope_downgraded")
+                or ole_meta.get("effective_embed_scope") == "graph"
+            ):
+                active_embed_scope = "graph"
+                cached_proj = None
+
+            if (
+                active_embed_scope == "project"
+                and not ole_meta.get("ole_exceeds_limits")
+                and proj_b is not None
+                and _ole_exceeds_limits(proj_b, emf_b)
+            ):
+                active_embed_scope = "graph"
                 cached_proj = None
                 msg = (
                     f"Whole-project OLE payload for '{g_nm}' exceeds PowerPoint CFB limits "
@@ -1845,7 +1909,13 @@ def export_graphs_to_pptx(
                 else (ole_meta or None)
             )
             ole_bytes: Optional[bytes] = None
-            if not _ole_exceeds_limits(proj_b, emf_b):
+            limit_exceeded = (
+                bool(ole_meta.get("ole_exceeds_limits"))
+                or proj_b is None
+                or _ole_exceeds_limits(proj_b, emf_b)
+            )
+            if not limit_exceeded:
+                assert proj_b is not None
                 ole_bin_path = tmp_dir / f"ole_{idx}_{_safe_tmp_component(canonical_win)}.bin"
                 try:
                     build_ole_compound_file(
@@ -1858,6 +1928,12 @@ def export_graphs_to_pptx(
                         width_px=w_px,
                         height_px=h_px,
                     )
+                    cfb_size = ole_bin_path.stat().st_size
+                    if cfb_size >= MAX_OLE_CFB_BYTES:
+                        raise ValueError(
+                            f"OLE compound container ({cfb_size} bytes) reaches or exceeds the "
+                            f"{MAX_OLE_CFB_BYTES}-byte (256 MB) container limit."
+                        )
                     ole_bytes = ole_bin_path.read_bytes()
                 except ValueError as exc:
                     msg = (
@@ -1867,8 +1943,10 @@ def export_graphs_to_pptx(
                     warn_list.append(msg)
                     warnings.warn(msg, UserWarning, stacklevel=2)
             else:
+                reason = str(ole_meta.get("limit_reason") or "").strip()
+                detail = f" ({reason})" if reason else ""
                 msg = (
-                    f"OLE payload for '{g_nm}' exceeds the 128 MB stream / <256 MB CFB limit; "
+                    f"OLE payload for '{g_nm}' exceeds the 128 MB stream / <256 MB CFB limit{detail}; "
                     "inserted a static EMF image instead (not editable via double-click)."
                 )
                 warn_list.append(msg)
@@ -2283,7 +2361,7 @@ def export_graphs_to_pptx(
         "prog_id": TORIGRAPH_OLE_PROG_ID,
         "placements": placements,
         "scale": explicit_scale_f if (replaced_count > 0 and replaced_count == embedded_count) else (new_placement_scale_f if new_placement_scale_f is not None else (LAB_SLIDE_PLACEMENT_SCALE if slide_scale_used else None)),
-        "embed_scope": embed_scope,
+        "embed_scope": active_embed_scope,
         "effective_scales": [pl.get("effective_scale") for pl in placements],
         "warnings": warn_list,
     }

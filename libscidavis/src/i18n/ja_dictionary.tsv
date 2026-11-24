@@ -6402,8 +6402,7 @@ Font Size	フォントサイズ
 %1 row(s) after the Considère point (post-necking) are masked in the table and excluded from the fits.	Considère 点より後 (くびれ後) の %1 行は表でマスクし、フィットから除いています。
 %1 rows x %2 columns	%1 行 × %2 列
 %1 scans	%1 スキャン
-%1 settings were read and applied.	%1 件の設定を読み込み、反映しました。
-%1 settings were read. Restart ToriGraph to use them.	%1 件の設定を読み込みました。ToriGraph を再起動すると反映されます。
+%1 settings were read and applied live (language, theme colors, fonts, numeric format, and auto-save).\n\nWindow dock positions and startup scripting engine settings take effect on the next launch.	%1 件の設定を読み込み、即時反映しました(言語・テーマ色・フォント・数値書式・自動保存)。\n\nドックウィンドウの配置と起動時スクリプトエンジンの設定は次回起動時に反映されます。
 %1 settings were written to\n%2	%1 件の設定を書き出しました。\n%2
 %1 value(s) <= 0 were excluded (the lognormal plot needs positive values).	0 以下の値 %1 個を除外しました(対数正規プロットには正の値が必要です)。
 %1 was written by a newer ToriGraph (preset format %2; this version reads format %3). Unknown settings are ignored.	%1 は新しい版の ToriGraph で書かれています (プリセット形式 %2、この版が読めるのは形式 %3 まで)。分からない設定は無視しました。
@@ -7520,3 +7519,43 @@ grouped bar horizontal offset (bar offset amount)	棒グラフの横並び(棒�
 first curve assigned to right Y axis (drawn on left Y axis)	1 本目の曲線を右の Y 軸に割り当てる設定(左軸で描かれる)
 stack offset / waterfall curve offsets (re-apply with g.set_stack_offsets)	スタックオフセット・ウォーターフォールの曲線のずらし(g.set_stack_offsets で付け直す)
 shaded band numeric data (skipped because of non-numeric entries)	シェード帯の数値データ(非数値を含むためスキップ)
+Settings were recently reset or imported in this session and will finish taking effect after restarting ToriGraph.\n\nExport the currently stored settings on disk anyway?	このセッションで設定が初期化または読み込まれたため、再起動後に反映が完了します。\n\n現在ディスクに保存されている設定をそのまま書き出しますか?
+PowerPoint Connection Lost	PowerPoint との接続が失われました
+The PowerPoint container that hosted this embedded graph closed unexpectedly.\n\nThis window has been switched to standalone mode so you can save your changes with File -> Save Project As...	この埋め込みグラフを開いていた PowerPoint 側が予期せず終了しました。\n\n編集内容が失われないよう、このウィンドウを単独モードに切り替えました。「ファイル」→「名前を付けてプロジェクトを保存...」で保存できます。
+Please select or activate a 2D graph window first.	先に 2D グラフウィンドウを選択またはアクティブにしてください。
+Could not parse any worksheet data from "%1"%2.	"%1" からワークシートデータを読み込めませんでした%2。
+Data Import Failed	データインポート失敗
+This window is editing an embedded PowerPoint graph object, so it cannot %1 here without losing your embedded changes.\n\nUse File -> Save to update PowerPoint, or Save Project As... to save a separate .sciprj file.	このウィンドウは PowerPoint に埋め込まれたグラフオブジェクトを編集中のため、変更を失わずにここから「%1」ことはできません。\n\nPowerPoint を更新するには「ファイル」→「保存」を、別の .sciprj ファイルとして保存するには「名前を付けてプロジェクトを保存...」を使ってください。
+Embedded PowerPoint Object	PowerPoint 埋め込みオブジェクト
+Open "%1" in a separate ToriGraph window?	"%1" を別の ToriGraph ウィンドウで開きますか?
+open another project	別のプロジェクトを開く
+open a recent project	最近使ったプロジェクトを開く
+start a new project	新しいプロジェクトを開始する
+open a project	プロジェクトを開く
+append another project	別のプロジェクトを追加読み込みする
+Axes, error bars, and colormaps cannot be cut directly; click the layer background to cut the layer, or use Graph -> Add/Remove Curve.	軸・エラーバー・カラーマップは直接切り取れません。レイヤーを切り取るにはレイヤー背景をクリックするか、「グラフ」→「曲線の追加・削除」を使ってください。
+Please select or activate a 2D graph window first to apply a style preset.	スタイルプリセットを適用するには、先に 2D グラフウィンドウを選択またはアクティブにしてください。
+Please enter limits that satisfy: Start < End!	開始 < 終了 となる範囲を入力してください!
+Scale input error	スケール入力エラー
+Logarithmic scale requires positive limits (> 0).	対数スケールには正の範囲 (> 0) が必要です。
+Logarithmic Scale	対数スケール
+Logarithmic scale requires a positive Start limit (> 0).\nClamp Start from %1 to the smallest positive value (%2)?	対数スケールには正の開始値 (> 0) が必要です。\n開始値を %1 から最小の正の値 (%2) に切り詰めますか?
+Bound input error	境界値の入力エラー
+Invalid lower bound for parameter '%1': %2	パラメータ '%1' の下限値が不正です: %2
+Invalid upper bound for parameter '%1': %2	パラメータ '%1' の上限値が不正です: %2
+Lower bound must be <= upper bound for parameter '%1'.	パラメータ '%1' の下限値は上限値以下にしてください。
+Please select a fit function.	フィット関数を選択してください。
+Initial guess error	初期値の入力エラー
+Initial time constant '%1' cannot be zero.	初期時定数 '%1' を 0 にすることはできません。
+Install Unsigned Update?	未署名の更新をインストールしますか?
+The update package (v%1) passed SHA-256 checksum verification, HOWEVER it is NOT digitally signed with an Authenticode certificate.\n\nToriGraph will ask you to save unsaved changes and close before applying the update and restarting.\n\nInstall this unsigned update anyway?	更新パッケージ (v%1) は SHA-256 チェックサムの検証に合格しましたが、Authenticode 証明書によるデジタル署名が付けられていません。\n\n更新を適用して再起動する前に、未保存の変更を保存するか確認して ToriGraph を終了します。\n\nこの未署名の更新をこのままインストールしますか?
+Warning: This package is also NOT digitally signed with an Authenticode certificate.	警告: このパッケージには Authenticode 証明書によるデジタル署名も付いていません。
+The staged update package has no verified SHA-256 checksum.\n\nInstall this unverified update anyway?	準備された更新パッケージには検証済みの SHA-256 チェックサムがありません。\n\nこの未検証の更新をこのままインストールしますか?
+Auto-detected candidate elastic window: [%1, %2] %3 (10–55% UTS; final R² window computed on OK).	自動検出された弾性域候補区間: [%1, %2] %3 (UTS の 10〜55%; 最終的な R² 区間は OK 押下時に計算)。
+\s[relaxed 2–85% UTS]	\s[緩和範囲 2〜85% UTS]
+Auto-detected elastic region: [%1, %2] %3  (E = %4 %5, R² = %6)%7	自動検出された弾性域: [%1, %2] %3  (E = %4 %5, R² = %6)%7
+Searched strain [%1, %2] %3, stress 10–60% UTS (relaxed 2–85% of UTS = %4).	探索ひずみ [%1, %2] %3, 応力 10〜60% UTS (緩和範囲 2〜85% UTS = %4)。
+No valid strain-stress points found on selection.	選択範囲に有効なひずみ-応力データ点が見つかりません。
+Auto-detect failed and was switched to manual bounds. %1 Adjust Elastic Strain Min/Max above.	自動検出に失敗したため手動範囲に切り替えました。%1 上の「弾性域の最小ひずみ」「弾性域の最大ひずみ」を調整してください。
+Manual elastic fit interval: [%1, %2] %3.	手動設定の弾性フィット区間: [%1, %2] %3。
+Instrumental FWHM (%1 deg) deconvolved using fitted Pseudo-Voigt shape factor η (mean η = %2).	装置広がり半値幅 (%1 deg) をフィットした擬フォークト形状因子 η (平均 η = %2) を用いてデコンボリューションしました。

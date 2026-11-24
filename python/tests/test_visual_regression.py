@@ -125,6 +125,7 @@ def test_live_dpi_scale_invariance_and_pdf_vector_parity(tg_app, tmp_path: Path)
         tg_app.close_window(tbl)
 
 
+@pytest.mark.visual
 def test_export_600dpi_x_axis_title_centered(tg_app, tmp_path: Path) -> None:
     """Verify 600 DPI PNG export centers bottom X-axis title on the plot frame (not shifted)."""
     tbl = tg_app.create_table(

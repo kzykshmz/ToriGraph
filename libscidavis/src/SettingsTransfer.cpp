@@ -67,10 +67,17 @@ void registerSettingsTransferTranslations()
         reg("Read the settings in\n%1\n\nSettings found in the file replace your current ones. "
             "Continue?",
             "次のファイルの設定を読み込みます。\n%1\n\nファイルにある設定は今の設定を上書きします。続けますか?");
-        reg("%1 settings were read. Restart ToriGraph to use them.",
-            "%1 件の設定を読み込みました。ToriGraph を再起動すると反映されます。");
-        reg("%1 settings were read and applied.",
-            "%1 件の設定を読み込み、反映しました。");
+        reg("Settings were recently reset or imported in this session and will finish "
+            "taking effect after restarting ToriGraph.\n\n"
+            "Export the currently stored settings on disk anyway?",
+            "このセッションで設定が初期化または読み込まれたため、再起動後に反映が完了します。\n\n"
+            "現在ディスクに保存されている設定をそのまま書き出しますか?");
+        reg("%1 settings were read and applied live (language, theme colors, fonts, "
+            "numeric format, and auto-save).\n\n"
+            "Window dock positions and startup scripting engine settings take effect on "
+            "the next launch.",
+            "%1 件の設定を読み込み、即時反映しました(言語・テーマ色・フォント・数値書式・自動保存)。\n\n"
+            "ドックウィンドウの配置と起動時スクリプトエンジンの設定は次回起動時に反映されます。");
         reg("Erase all ToriGraph settings (recent files, preferences, window layout, "
             "style presets chosen as default...) and return to the defaults?\n\n"
             "Projects and data files are not touched. This cannot be undone; use "
