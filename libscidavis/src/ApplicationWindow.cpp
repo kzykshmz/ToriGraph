@@ -2924,8 +2924,8 @@ void ApplicationWindow::closeEvent(QCloseEvent *ce)
     if (d_ole_embedded) {
         setProperty("_toriLastOleSaveOk", QVariant(true));
         setProperty("_toriLastOleSaveError", QVariant());
-        if (d_ole_on_close)
-            d_ole_on_close();
+        if (auto onClose = d_ole_on_close)
+            onClose();
         const QVariant okProp = property("_toriLastOleSaveOk");
         const bool oleOk = okProp.isValid() ? okProp.toBool() : true;
         if (!oleOk) {

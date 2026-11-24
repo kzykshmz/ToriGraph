@@ -182,6 +182,7 @@ private:
     QComboBox *recentModelBox = nullptr;
 
     Fit *d_fitter;
+    int d_accept_depth = 0;
     QPointer<Graph> d_graph;
     QwtPlotCurve *d_preview_curve = nullptr;
     QStringList d_user_functions, d_user_function_names, d_user_function_params;

@@ -68,6 +68,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QPair>
+#include <QPointer>
 #include <QVector>
 #include <QAbstractItemView>
 #include <QCompleter>
@@ -372,8 +373,15 @@ FitDialog::~FitDialog()
 {
     clearPreviewCurve();
     if (d_fitter) {
-        delete d_fitter;
-        d_fitter = 0;
+        if (d_accept_depth > 0) {
+            // FitDialog::accept() currently has d_fitter active on the call stack (e.g.
+            // inside Filter::setDataCurve or Fit::fit modal QMessageBox); detach ownership
+            // so the unwinding accept() guard deletes it once all Fit frames have returned.
+            d_fitter = nullptr;
+        } else {
+            delete d_fitter;
+            d_fitter = nullptr;
+        }
     }
 }
 
@@ -1978,6 +1986,29 @@ void FitDialog::accept()
     if (!d_graph)
         return;
     QPointer<FitDialog> self(this);
+    struct AcceptDepthGuard {
+        QPointer<FitDialog> dlg;
+        QPointer<Fit> *fitterSlot = nullptr;
+        explicit AcceptDepthGuard(FitDialog *d, QPointer<Fit> *slot) : dlg(d), fitterSlot(slot)
+        {
+            if (dlg) {
+                if (dlg->d_accept_depth == 0 && fitterSlot)
+                    *fitterSlot = dlg->d_fitter;
+                ++dlg->d_accept_depth;
+            }
+        }
+        ~AcceptDepthGuard()
+        {
+            if (dlg) {
+                --dlg->d_accept_depth;
+            } else if (fitterSlot && *fitterSlot) {
+                delete fitterSlot->data();
+                *fitterSlot = nullptr;
+            }
+        }
+    };
+    QPointer<Fit> activeFitter;
+    AcceptDepthGuard acceptGuard(this, &activeFitter);
 
     QString curve = boxCurve->currentText();
     QStringList curvesList = d_graph->analysableCurvesList();
@@ -2165,22 +2196,29 @@ void FitDialog::accept()
     if (d_fitter) {
         delete d_fitter;
         d_fitter = 0;
+        activeFitter = nullptr;
     }
 
-    if (useBuiltInCat)
+    if (useBuiltInCat) {
         fitBuiltInFunction(builtInFuncName, paramsInit.data());
-    else if (usePluginCat) {
+        activeFitter = d_fitter;
+    } else if (usePluginCat) {
         d_fitter = new PluginFit(app, d_graph);
-        if (!((PluginFit *)d_fitter)->load(d_plugin_files_list[funcBox->currentRow()])) {
-            if (!self)
-                return;
+        activeFitter = d_fitter;
+        const bool pluginLoaded =
+                ((PluginFit *)d_fitter)->load(d_plugin_files_list[funcBox->currentRow()]);
+        if (!self)
+            return;
+        if (!pluginLoaded) {
             delete d_fitter;
             d_fitter = 0;
+            activeFitter = nullptr;
             return;
         }
         d_fitter->setInitialGuesses(paramsInit.data());
     } else {
         d_fitter = new NonLinearFit(app, d_graph);
+        activeFitter = d_fitter;
         ((NonLinearFit *)d_fitter)->setParametersList(parameters);
         ((NonLinearFit *)d_fitter)->setFormula(formula);
         d_fitter->setInitialGuesses(paramsInit.data());
@@ -2199,11 +2237,13 @@ void FitDialog::accept()
         }
     }
 
-    if (!d_fitter || !d_fitter->setDataFromCurve(curve, start, end)) {
-        if (!self)
-            return;
+    const bool dataOk = d_fitter && d_fitter->setDataFromCurve(curve, start, end);
+    if (!self)
+        return;
+    if (!dataOk) {
         delete d_fitter;
         d_fitter = 0;
+        activeFitter = nullptr;
         return;
     }
 
@@ -2219,6 +2259,8 @@ void FitDialog::accept()
     } else if (weightIdx == 6) {
         weightOk = d_fitter->setWeightingMethod(Fit::WeightVariance, colFullName);
     }
+    if (!self)
+        return;
     if (!weightOk) {
         if (weightIdx == 4 || weightIdx == 6) {
             QMessageBox::critical(this, tr("Weighting Error"),
@@ -2229,10 +2271,9 @@ void FitDialog::accept()
             return;
         delete d_fitter;
         d_fitter = 0;
+        activeFitter = nullptr;
         return;
     }
-    if (!self)
-        return;
 
     if (boxLinearConstraints && !boxLinearConstraints->text().trimmed().isEmpty()) {
         if (!d_fitter->setLinearConstraintExpr(boxLinearConstraints->text().trimmed())) {
@@ -2244,6 +2285,7 @@ void FitDialog::accept()
                 return;
             delete d_fitter;
             d_fitter = 0;
+            activeFitter = nullptr;
             return;
         }
     }
@@ -2260,6 +2302,7 @@ void FitDialog::accept()
     if (!d_graph) {
         delete d_fitter;
         d_fitter = 0;
+        activeFitter = nullptr;
         return;
     }
 

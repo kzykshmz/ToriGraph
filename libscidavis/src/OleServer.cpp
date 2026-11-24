@@ -397,21 +397,25 @@ Graph3D *findTargetGraph3D(ApplicationWindow *app, const QString &targetName,
 QImage captureGraph3DOleImage(Graph3D *g3d)
 {
     QImage fb;
-    if (!g3d)
+    QPointer<Graph3D> g3dGuard(g3d);
+    if (!g3dGuard)
         return fb;
-    g3d->update();
+    g3dGuard->update();
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    if (g3d->sp) {
-        g3d->sp->makeCurrent();
-        fb = g3d->sp->grabFramebuffer();
+    if (!g3dGuard)
+        return fb;
+    if (g3dGuard->sp) {
+        g3dGuard->sp->makeCurrent();
+        fb = g3dGuard->sp->grabFramebuffer();
     }
-    if (fb.isNull()) {
+    if (fb.isNull() && g3dGuard) {
         QTemporaryFile tmpPng(
                 QDir::temp().filePath(QStringLiteral("torigraph_ole3d_XXXXXX.png")));
         if (tmpPng.open()) {
             const QString tmpPath = tmpPng.fileName();
             tmpPng.close();
-            g3d->exportImage(tmpPath, 100, false);
+            if (g3dGuard)
+                g3dGuard->exportImage(tmpPath, 100, false);
             fb.load(tmpPath);
             QFile::remove(tmpPath);
         }
@@ -989,24 +993,31 @@ class SciDAVisGraphObject final : public IOleObject,
             }
         };
 
-        if (ml) {
-            Graph *single = (m_payload.targetLayer >= 1 && m_payload.targetLayer <= ml->layers())
-                    ? ml->layer(m_payload.targetLayer)
+        QPointer<MultiLayer> mlGuard(ml);
+        QPointer<Graph3D> g3dGuard(g3d);
+        if (mlGuard) {
+            Graph *single = (m_payload.targetLayer >= 1 && m_payload.targetLayer <= mlGuard->layers())
+                    ? mlGuard->layer(m_payload.targetLayer)
                     : nullptr;
-            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(ml, single, false);
+            OleRenderedGraph rg = SciDAVisEmf::renderMultiLayer(mlGuard, single, false);
             if (!rg.emfBytes.isEmpty()) {
                 newEmf = rg.emfBytes;
                 newDib = rg.dibBytes;
                 newPx = rg.pixelSize;
                 updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
             }
-        } else if (g3d) {
-            OleRenderedGraph rg = SciDAVisEmf::renderFromImage(captureGraph3DOleImage(g3d));
-            if (!rg.emfBytes.isEmpty()) {
-                newEmf = rg.emfBytes;
-                newDib = rg.dibBytes;
-                newPx = rg.pixelSize;
-                updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
+        } else if (g3dGuard) {
+            const QImage g3dImg = captureGraph3DOleImage(g3dGuard);
+            if (!m_editor)
+                return S_FALSE;
+            if (g3dGuard) {
+                OleRenderedGraph rg = SciDAVisEmf::renderFromImage(g3dImg);
+                if (!rg.emfBytes.isEmpty()) {
+                    newEmf = rg.emfBytes;
+                    newDib = rg.dibBytes;
+                    newPx = rg.pixelSize;
+                    updateExtentPreservingSlideBox(rg.extentHm, rg.pixelSize);
+                }
             }
         }
 
@@ -1025,10 +1036,10 @@ class SciDAVisGraphObject final : public IOleObject,
             return STG_E_INSUFFICIENTMEMORY;
         }
 
-        if (ml)
-            m_payload.targetWindow = ml->name();
-        else if (g3d)
-            m_payload.targetWindow = g3d->name();
+        if (mlGuard)
+            m_payload.targetWindow = mlGuard->name();
+        else if (g3dGuard)
+            m_payload.targetWindow = g3dGuard->name();
         m_extent = nextExtent;
         m_initialRenderExtentHm = nextInitRender;
 
