@@ -2545,9 +2545,11 @@ int runSuite63JapaneseUiAccessibilityGate(ApplicationWindow *mw)
         QApplication::processEvents();
     }
     {
+        // Phase 2 UX overhaul renamed "X/Y" -> "Axis" and replaced table-mutating "Std Dev (SD)" / "5%"
+        // error-bar buttons with safe "Adjacent Col" + "Add Error Bars...".
         auto trD = [](const char *s) { return QCoreApplication::translate("GraphInspectorDock", s); };
-        const QStringList needTip = QStringList() << trD("Overall") << trD("X/Y") << trD("Curve")
-                                                  << trD("Legend") << trD("Std Dev (SD)") << trD("5%")
+        const QStringList needTip = QStringList() << trD("Overall") << trD("Axis") << trD("Curve")
+                                                  << trD("Legend") << trD("Add Error Bars...")
                                                   << trD("Adjacent Col") << trD("Top-Left")
                                                   << trD("Outside Right");
         QSet<QString> seen;

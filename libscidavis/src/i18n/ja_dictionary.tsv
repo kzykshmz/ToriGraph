@@ -3783,6 +3783,7 @@ Pseudo-Voigt / Voigt Lorentz Fraction (μ)	Pseudo-Voigt / Voigt ローレンツ�
 Pseudo-Voigt / Voigt Lorentz Fraction (μ):	Pseudo-Voigt / Voigt ローレンツ混合比 (μ):
 Pseudo-Voigt Peak with separate Gaussian (wG) and Lorentzian (wL) widths	擬フォークトピーク (ガウス幅 wG・ローレンツ幅 wL 独立)
 Pseudo-Voigt Peak with shared FWHM w and Lorentz fraction mu	擬フォークトピーク (共通半値全幅 w・ローレンツ比 mu)
+Pseudo-Voigt approximation to Voigt profile (alias of PseudoVoigt1)	フォークト分布の擬フォークト近似 (PseudoVoigt1 の別名)
 PseudoVoigt Fit	Pseudo-Voigt フィット
 Publication Style Presets	論文・発表スタイルプリセット
 Published: %1	公開日: %1

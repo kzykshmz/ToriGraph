@@ -142,7 +142,7 @@ def test_export_graphs_to_pptx_scale_effective_pt_and_warnings(emf_bytes):
     check(len(sp_calls) == 1 and sp_calls[0]["snapshot"] is True and sp_calls[0]["compress"] is False,
           f"save_project must be called with snapshot=True ({sp_calls})")
 
-    # 4b. legacy FakeSession without snapshot= parameter falls back cleanly via TypeError
+    # 4b. legacy FakeSession without snapshot= parameter must NOT silently mutate project path via non-snapshot save_project
     class LegacyFakeSession(FakeSession):
         def save_project(self, path, compress=False):
             self.calls.append(("legacy_save_project", {"path": str(path), "compress": compress}))
@@ -151,10 +151,10 @@ def test_export_graphs_to_pptx_scale_effective_pt_and_warnings(emf_bytes):
     s_leg = LegacyFakeSession(emf_bytes, fail_export_ole=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        export_graphs_to_pptx(s_leg, tmp / "d_legacy.pptx", ["Graph1"], allow_whole_project=True)
+        with pytest.raises((TypeError, ToriGraphError)):
+            export_graphs_to_pptx(s_leg, tmp / "d_legacy.pptx", ["Graph1"], allow_whole_project=True)
     leg_calls = [c[1] for c in s_leg.calls if c[0] == "legacy_save_project"]
-    check(len(leg_calls) == 1 and leg_calls[0]["compress"] is False,
-          f"legacy save_project fallback failed ({leg_calls})")
+    check(len(leg_calls) == 0, f"legacy save_project without snapshot= must not be called ({leg_calls})")
 
     # 5. box with width + scale is rejected; box=(left, top) + scale works
     try:
@@ -298,6 +298,40 @@ def test_pptx_skips_graph3d_and_reraises_2d_rpc_error(emf_bytes, tmp_path):
     s_err = MixedSession(emf_bytes, fail_2d=True)
     with pytest.raises(RpcError, match="Graph1"):
         export_graphs_to_pptx(s_err, tmp_path / "err.pptx", ["Graph1"], preset="lab_slide_83mm")
+
+
+def test_pptx_strict_ooxml_ole_limits_and_locked_permission(emf_bytes, tmp_path, monkeypatch):
+    """Verify Strict OOXML rejection, >128 MB stream guard, and friendly locked-file error."""
+    import zipfile
+    from torigraph.pptx import _check_pptx_writable, _validate_ole_payload_sizes
+
+    strict_pptx = tmp_path / "strict_deck.pptx"
+    with zipfile.ZipFile(strict_pptx, "w") as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"></Types>',
+        )
+    with pytest.raises(ToriGraphError, match="Strict OOXML"):
+        export_graphs_to_pptx(
+            FakeSession(emf_bytes), tmp_path / "out_strict.pptx", ["Graph1"], deck=strict_pptx
+        )
+
+    oversize_buf = b"x" * 128_000_001
+    with pytest.raises(ValueError, match="128 MB"):
+        _validate_ole_payload_sizes([("ToriGraphProject", oversize_buf)])
+
+    locked = tmp_path / "open_in_powerpoint.pptx"
+    locked.write_bytes(b"placeholder")
+    real_open = open
+
+    def deny_write(file, mode="r", *args, **kwargs):
+        if Path(file) == locked and "r+b" in str(mode):
+            raise PermissionError(13, "Sharing violation", str(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", deny_write)
+    with pytest.raises(PermissionError, match="Close the presentation in PowerPoint"):
+        _check_pptx_writable(locked)
 
 
 if __name__ == "__main__":

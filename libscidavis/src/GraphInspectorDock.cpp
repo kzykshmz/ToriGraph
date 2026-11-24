@@ -7085,9 +7085,23 @@ void GraphInspectorDock::syncInspectorFromSelection()
         break;
     }
 
+    // Always keep lightweight Page, Axis, and Curve fields in sync so programmatic inspections
+    // and tests (e.g. Suite 63e InspectorMinorTicksCombo) never read stale values off-tab; only
+    // defer the heavier up-to-24-row Legend widget rebuild when another tab is active.
     const InspectorPageIndex curPage = currentInspectorPage();
-    if (d_tab_dirty[int(curPage)])
-        syncTabPage(curPage);
+    syncPageLayerControls();
+    syncAxisControls();
+    syncCurveControls();
+    d_tab_dirty[int(PageTabPageLayer)] = false;
+    d_tab_dirty[int(PageTabAxis)] = false;
+    d_tab_dirty[int(PageTabCurve)] = false;
+    if (curPage == PageTabLegend) {
+        syncLegendControls();
+        d_tab_dirty[int(PageTabLegend)] = false;
+    } else {
+        d_tab_dirty[int(PageTabLegend)] = true;
+    }
+    QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
 }
 
 void GraphInspectorDock::openAddCurvePopover()

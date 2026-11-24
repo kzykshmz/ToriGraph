@@ -123,3 +123,87 @@ def test_live_dpi_scale_invariance_and_pdf_vector_parity(tg_app, tmp_path: Path)
     finally:
         tg_app.close_window(g)
         tg_app.close_window(tbl)
+
+
+def test_export_600dpi_x_axis_title_centered(tg_app, tmp_path: Path) -> None:
+    """Verify 600 DPI PNG export centers bottom X-axis title on the plot frame (not shifted)."""
+    tbl = tg_app.create_table(
+        {"Strain": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0], "Stress": [0.0, 120.0, 240.0, 310.0, 355.0, 380.0]},
+        designations=["X", "Y"],
+    )
+    g = tg_app.plot_xy(tbl, "Strain", ["Stress"], style="line", lw=2.0)
+    try:
+        g.apply_style_preset("isij_85mm")
+        g.set_axis("bottom", title="Tensile Strain / %")
+        g.set_axis("left", title="Engineering Stress / MPa")
+        png_600 = tmp_path / "x_title_center_600dpi.png"
+        g.export(png_600, dpi=600)
+
+        with Image.open(png_600) as im:
+            rgb = im.convert("RGB")
+            w, h = rgb.size
+            px = rgb.load()
+
+            # Locate the bottom X-axis spine as the lowest horizontal dark line spanning >=40% width.
+            spine_rows = []
+            for y in range(int(h * 0.45), int(h * 0.90)):
+                dark_xs = [
+                    x for x in range(w)
+                    if px[x, y][0] < 90 and px[x, y][1] < 90 and px[x, y][2] < 90
+                ]
+                if len(dark_xs) >= int(0.40 * w):
+                    spine_rows.append((y, dark_xs[0], dark_xs[-1]))
+
+            assert spine_rows, "Could not locate bottom axis spine in 600 DPI export"
+            bottom_spine_y, frame_left, frame_right = spine_rows[-1]
+            frame_width = float(frame_right - frame_left)
+            frame_mid_x = 0.5 * float(frame_left + frame_right)
+            assert frame_width > 0.35 * w
+
+            # Segment horizontal ink bands below the spine into ticks row(s) and X-axis title band.
+            bands: list[tuple[int, int, list[tuple[int, int]]]] = []
+            cur_band_pts: list[tuple[int, int]] = []
+            cur_start = -1
+            cur_end = -1
+            gap = 0
+            for y in range(bottom_spine_y + 12, h):
+                row_dark = [
+                    x for x in range(frame_left - 80 if frame_left >= 80 else 0, min(w, frame_right + 80))
+                    if px[x, y][0] < 140 and px[x, y][1] < 140 and px[x, y][2] < 140
+                ]
+                if len(row_dark) >= 5:
+                    if cur_start < 0:
+                        cur_start = y
+                    cur_end = y
+                    gap = 0
+                    for x in row_dark:
+                        cur_band_pts.append((x, y))
+                elif cur_start >= 0:
+                    gap += 1
+                    if gap >= 8:
+                        if len(cur_band_pts) >= 40:
+                            bands.append((cur_start, cur_end, cur_band_pts))
+                        cur_band_pts = []
+                        cur_start = -1
+                        cur_end = -1
+                        gap = 0
+            if cur_start >= 0 and len(cur_band_pts) >= 40:
+                bands.append((cur_start, cur_end, cur_band_pts))
+
+            assert len(bands) >= 2, f"Expected tick-number and X-axis title ink bands, found {len(bands)}"
+            _, _, title_pts = bands[-1]
+            xs_title = [p[0] for p in title_pts]
+            centroid_x = sum(xs_title) / float(len(xs_title))
+            bbox_mid_x = 0.5 * float(min(xs_title) + max(xs_title))
+
+            assert abs(bbox_mid_x - frame_mid_x) < 0.05 * frame_width, (
+                f"X-axis title bbox midpoint shifted horizontally: title_mid={bbox_mid_x:.1f}, "
+                f"frame_mid={frame_mid_x:.1f}, frame_w={frame_width:.1f}"
+            )
+            assert abs(centroid_x - frame_mid_x) < 0.08 * frame_width, (
+                f"X-axis title ink centroid shifted horizontally: centroid={centroid_x:.1f}, "
+                f"frame_mid={frame_mid_x:.1f}, frame_w={frame_width:.1f}"
+            )
+    finally:
+        tg_app.close_window(g)
+        tg_app.close_window(tbl)
