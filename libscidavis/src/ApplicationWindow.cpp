@@ -2588,9 +2588,9 @@ ApplicationWindow::ApplicationWindow()
     d_explorer_container->installEventFilter(this);
     lv.installEventFilter(this);
     connect(&explorerWindow, &QDockWidget::dockLocationChanged, this,
-            [this](Qt::DockWidgetArea) { updateExplorerAdaptiveLayout(); });
+            [this](Qt::DockWidgetArea) { updateExplorerAdaptiveLayout(false); });
     connect(&explorerWindow, &QDockWidget::topLevelChanged, this,
-            [this](bool) { updateExplorerAdaptiveLayout(); });
+            [this](bool) { updateExplorerAdaptiveLayout(false); });
     connect(&explorerWindow, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         if (d_suppress_explorer_user_track || d_headless_mode)
             return;
@@ -3657,7 +3657,7 @@ void ApplicationWindow::insertTranslatedStrings()
     d_last_tool_mode_text.clear();
     refreshToolModeIndicator();
     retranslateOpenModelessDialogs();
-    updateExplorerAdaptiveLayout();
+    updateExplorerAdaptiveLayout(false);
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
@@ -28385,6 +28385,15 @@ QMenu *ApplicationWindow::createPopupMenu()
 bool ApplicationWindow::eventFilter(QObject *watched, QEvent *event)
 {
     if (event && watched == d_explorer_container && event->type() == QEvent::Show) {
+        if (!d_suppress_explorer_user_track && !d_headless_mode && this->isVisible()) {
+            const bool isSplit = d_modern_ribbon
+                    && (d_modern_ribbon->workspaceLayoutMode()
+                        == ModernRibbonBar::LayoutSplitTableGraph);
+            if (isSplit && width() < 1480) {
+                d_explorer_user_shown_in_narrow_split = true;
+                d_explorer_auto_collapsed_for_split = false;
+            }
+        }
         if (!explorerWindow.isFloating()
             && (dockWidgetArea(&explorerWindow) == Qt::LeftDockWidgetArea
                 || dockWidgetArea(&explorerWindow) == Qt::RightDockWidgetArea)
@@ -28394,7 +28403,7 @@ bool ApplicationWindow::eventFilter(QObject *watched, QEvent *event)
     }
     if (event && (watched == d_explorer_container || watched == &lv)) {
         if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
-            updateExplorerAdaptiveLayout();
+            updateExplorerAdaptiveLayout(false);
     }
     if (event && !d_restoring_window_geometry && !d_ole_embedded) {
         const QEvent::Type et = event->type();
@@ -28722,25 +28731,27 @@ void ApplicationWindow::updateExplorerFolderPaneVisibility()
         folders.setVisible(hasSubfolders);
 }
 
-void ApplicationWindow::updateExplorerAdaptiveLayout()
+void ApplicationWindow::updateExplorerAdaptiveLayout(bool allowAutoCollapse)
 {
     updateExplorerFolderPaneVisibility();
 
-    const bool isSplitLayout = d_modern_ribbon
-            && (d_modern_ribbon->workspaceLayoutMode()
-                == ModernRibbonBar::LayoutSplitTableGraph);
-    if (isSplitLayout && width() < 1480 && !d_explorer_user_shown_in_narrow_split
-        && !d_headless_mode && !d_ole_embedded && !explorerWindow.isHidden()) {
-        d_suppress_explorer_user_track = true;
-        explorerWindow.hide();
-        d_suppress_explorer_user_track = false;
-        d_explorer_auto_collapsed_for_split = true;
-    } else if ((!isSplitLayout || width() >= 1480) && d_explorer_auto_collapsed_for_split
-               && explorerWindow.isHidden()) {
-        d_suppress_explorer_user_track = true;
-        explorerWindow.show();
-        d_suppress_explorer_user_track = false;
-        d_explorer_auto_collapsed_for_split = false;
+    if (allowAutoCollapse) {
+        const bool isSplitLayout = d_modern_ribbon
+                && (d_modern_ribbon->workspaceLayoutMode()
+                    == ModernRibbonBar::LayoutSplitTableGraph);
+        if (isSplitLayout && width() < 1480 && !d_explorer_user_shown_in_narrow_split
+            && !d_headless_mode && !d_ole_embedded && !explorerWindow.isHidden()) {
+            d_suppress_explorer_user_track = true;
+            explorerWindow.hide();
+            d_suppress_explorer_user_track = false;
+            d_explorer_auto_collapsed_for_split = true;
+        } else if ((!isSplitLayout || width() >= 1480) && d_explorer_auto_collapsed_for_split
+                   && explorerWindow.isHidden()) {
+            d_suppress_explorer_user_track = true;
+            explorerWindow.show();
+            d_suppress_explorer_user_track = false;
+            d_explorer_auto_collapsed_for_split = false;
+        }
     }
 
     if (!d_explorer_container || !d_explorer_bar_grid)

@@ -13787,6 +13787,32 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             }
         }
 
+        const bool hasShowExplorer = params.contains(QStringLiteral("show_explorer"))
+                && !params.value(QStringLiteral("show_explorer")).isNull();
+        const bool wantExplorer =
+                hasShowExplorer && optionalJsonBool(params, QStringLiteral("show_explorer"), false);
+        const bool hasExpandInspector = params.contains(QStringLiteral("expand_inspector"))
+                && !params.value(QStringLiteral("expand_inspector")).isNull();
+        const bool wantExpandInspector =
+                hasExpandInspector && optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
+
+        GraphInspectorDock *insp = d_app->findChild<GraphInspectorDock *>();
+        struct ScopedHeadlessInspectorGuard {
+            ApplicationWindow *app = nullptr;
+            bool wasHeadless = false;
+            ScopedHeadlessInspectorGuard(ApplicationWindow *a, bool reveal)
+                : app(a), wasHeadless(a ? a->isHeadlessMode() : false)
+            {
+                if (app && reveal && wasHeadless)
+                    app->setHeadlessMode(false);
+            }
+            ~ScopedHeadlessInspectorGuard()
+            {
+                if (app && wasHeadless)
+                    app->setHeadlessMode(true);
+            }
+        } headlessInspectorGuard(d_app, wantExplorer || wantExpandInspector);
+
         bool dockedLeftOrRight = false;
         if (params.contains(QStringLiteral("dock_explorer"))
             && !params.value(QStringLiteral("dock_explorer")).isNull()) {
@@ -13808,15 +13834,12 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
                 d_app->addDockWidget(Qt::LeftDockWidgetArea, &d_app->explorerWindow);
                 dockedLeftOrRight = true;
             }
-            if (!params.contains(QStringLiteral("show_explorer"))
-                || optionalJsonBool(params, QStringLiteral("show_explorer"), true)) {
+            if (!hasShowExplorer || wantExplorer) {
                 d_app->explorerWindow.show();
             }
         }
-        if (params.contains(QStringLiteral("show_explorer"))
-            && !params.value(QStringLiteral("show_explorer")).isNull()) {
-            d_app->explorerWindow.setVisible(
-                    optionalJsonBool(params, QStringLiteral("show_explorer"), true));
+        if (hasShowExplorer) {
+            d_app->explorerWindow.setVisible(wantExplorer);
         }
 
         if (params.contains(QStringLiteral("focus_table_drawer"))
@@ -13825,27 +13848,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             if (auto *hud = d_app->findChild<FocusCanvasHudOverlay *>())
                 hud->setTableDrawerVisible(ftd);
         }
-
-        GraphInspectorDock *insp = d_app->findChild<GraphInspectorDock *>();
-        const bool hasExpandInspector = params.contains(QStringLiteral("expand_inspector"))
-                && !params.value(QStringLiteral("expand_inspector")).isNull();
-        const bool wantExpandInspector =
-                hasExpandInspector && optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
-        struct ScopedHeadlessInspectorGuard {
-            ApplicationWindow *app = nullptr;
-            bool wasHeadless = false;
-            ScopedHeadlessInspectorGuard(ApplicationWindow *a, bool reveal)
-                : app(a), wasHeadless(a ? a->isHeadlessMode() : false)
-            {
-                if (app && reveal && wasHeadless)
-                    app->setHeadlessMode(false);
-            }
-            ~ScopedHeadlessInspectorGuard()
-            {
-                if (app && wasHeadless)
-                    app->setHeadlessMode(true);
-            }
-        } headlessInspectorGuard(d_app, wantExpandInspector);
 
         if (insp && hasExpandInspector) {
             if (wantExpandInspector) {
@@ -14085,12 +14087,6 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
 
         bool diagOk = true;
         QStringList diagErrors;
-        const bool wantExplorer = params.contains(QStringLiteral("show_explorer"))
-                && !params.value(QStringLiteral("show_explorer")).isNull()
-                && optionalJsonBool(params, QStringLiteral("show_explorer"), false);
-        const bool wantExpandedInspector = params.contains(QStringLiteral("expand_inspector"))
-                && !params.value(QStringLiteral("expand_inspector")).isNull()
-                && optionalJsonBool(params, QStringLiteral("expand_inspector"), false);
         if (wantExplorer
             && (!expVisible || explorerTopY == 99999 || explorerTopY < 0
                 || explorerPos.x() < 0)) {
@@ -14098,7 +14094,7 @@ bool dispatchCoreAndGraphMethod(PythonAutomationServer *server, ApplicationWindo
             diagErrors << QStringLiteral(
                     "Explorer requested visible (show_explorer=true) but reported invalid or offscreen geometry.");
         }
-        if (wantExpandedInspector
+        if (wantExpandInspector
             && (!inspVisible || !insp || insp->isCollapsedRail() || inspectorTopY == 99999
                 || inspectorTopY < 0 || inspectorPos.x() < 0 || insp->width() <= 64)) {
             diagOk = false;

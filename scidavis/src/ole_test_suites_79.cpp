@@ -1,7 +1,10 @@
 #include "ole_test_common.h"
 #include "future/table/TableModel.h"
 
+#include <QStackedWidget>
 #include <QTableView>
+#include <QToolButton>
+#include <QToolTip>
 
 // =========================================================================================
 // Suite 79: Zero-base UX & Quality Overhaul (Wave 2A/2B) Regression Gate
@@ -551,7 +554,15 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
             tKeep->setCell(r, 1, double(r * 10));
         }
         MultiLayer *mlExp = w79->multilayerPlot(tKeep, QStringList() << tKeep->colName(1), Graph::Line);
+        CHECK_COND(mlExp != nullptr, "79f: mlExp null");
+        const QString mlExpName = mlExp->name();
         QCoreApplication::processEvents();
+
+        const QString keepProjPath = tmp79.filePath(QStringLiteral("keep_79.sciprj"));
+        w79->projectname = keepProjPath;
+        w79->recentProjects = QStringList{ QStringLiteral("C:/torigraph_keep_sentinel_79.sciprj") };
+        CHECK_COND(w79->saveProject(), "79f: saveProject() on keepProjPath failed");
+        const QStringList recentsBefore = w79->recentProjects;
 
         PythonAutomationServer *srv = w79->pythonAutomationServer();
         CHECK_COND(srv != nullptr, "79f: pythonAutomationServer null");
@@ -562,21 +573,42 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
             f.open(QIODevice::WriteOnly);
             f.write("a,b\n1,2\n");
         }
-        for (const QString &badPath :
-             QStringList{ tmp79.filePath(QStringLiteral("nonexistent_79.sciprj")), fakeCsv }) {
+        const QString corruptBodyPath = tmp79.filePath(QStringLiteral("corrupt_body_79.sciprj"));
+        {
+            QFile f(corruptBodyPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "79f: failed to write corruptBodyPath");
+            f.write("SciDAVis\ncorrupt_body_no_version\n");
+        }
+        for (const QString &badPath : QStringList{
+                     tmp79.filePath(QStringLiteral("nonexistent_79.sciprj")), fakeCsv, corruptBodyPath }) {
             QJsonObject req;
             req["jsonrpc"] = "2.0";
             req["id"] = 7901;
             req["method"] = "app.open_project";
-            req["params"] = QJsonObject{ { "path", badPath } };
+            req["params"] = QJsonObject{ { "path", badPath }, { "force", true } };
             const QJsonObject resp = srv->handleRpcRequest(req);
             CHECK_COND(resp.contains("error"),
                        "79f: app.open_project did not fail on invalid path: " << badPath.toStdString());
             CHECK_COND(w79->table("T79Keep") != nullptr,
                        "79f: invalid app.open_project wiped current project!");
+            CHECK_COND(w79->projectname == keepProjPath,
+                       "79f: rollback altered projectname to '"
+                               << w79->projectname.toStdString() << "'");
+            for (const QString &rp : w79->recentProjects) {
+                CHECK_COND(!rp.contains(QLatin1String("torigraph_open_rb_")),
+                           "79f: rollback temp path leaked into recentProjects: " << rp.toStdString());
+            }
+            CHECK_COND(w79->recentProjects == recentsBefore,
+                       "79f: rollback mutated recentProjects");
         }
 
-        // Export Python localization EN vs JA
+        // Export Python localization EN vs JA + multiline injection sanitization
+        mlExp = qobject_cast<MultiLayer *>(w79->window(mlExpName));
+        CHECK_COND(mlExp != nullptr, "79f: invalid app.open_project lost graph window after rollback!");
+        const QVariant prevPresetProp = mlExp->property("toriAppliedStylePreset");
+        mlExp->setProperty("toriAppliedStylePreset",
+                           QStringLiteral("BadPreset\nimport os; os.system('echo pwn')"));
+
         w79->switchToLanguage("en");
         QCoreApplication::processEvents();
         const QString pyEn = PythonAutomationServer::generatePythonScriptForWindow(
@@ -587,8 +619,15 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                 w79, mlExp, true, QStringLiteral("inline"));
         w79->switchToLanguage("en");
         QCoreApplication::processEvents();
+        mlExp->setProperty("toriAppliedStylePreset", prevPresetProp);
+
         CHECK_COND(!pyEn.isEmpty() && !pyJa.isEmpty() && pyEn != pyJa,
                    "79f: Export Python output identical in EN and JA!");
+        for (QChar ch : pyEn) {
+            CHECK_COND(ch.unicode() <= 0x3000,
+                       "79f: Export Python in EN mode leaked Japanese character U+"
+                               << std::hex << int(ch.unicode()) << std::dec);
+        }
         bool jaHasNonAscii = false;
         for (QChar ch : pyJa) {
             if (ch.unicode() > 0x3000) {
@@ -597,8 +636,18 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
             }
         }
         CHECK_COND(jaHasNonAscii, "79f: Export Python in JA mode lacked Japanese comments!");
+        auto hasInjectedImportLine = [](const QString &script) {
+            const QStringList lines = script.split(QLatin1Char('\n'));
+            for (const QString &ln : lines) {
+                if (ln.trimmed().startsWith(QLatin1String("import os")))
+                    return true;
+            }
+            return false;
+        };
+        CHECK_COND(!hasInjectedImportLine(pyEn) && !hasInjectedImportLine(pyJa),
+                   "79f: Export Python did not sanitize multiline injection in style preset!");
 
-        // grab_gui_diagnostic returns real visible geometry + clip report
+        // grab_gui_diagnostic returns real visible geometry + zero clipped ribbon captions
         const QString diagPng = tmp79.filePath(QStringLiteral("diag_79.png"));
         QJsonObject diagReq;
         diagReq["jsonrpc"] = "2.0";
@@ -614,6 +663,580 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw)
                            && diagRes.contains("clipped_ribbon_captions")
                            && diagRes.contains("inspector_clipped_bottom"),
                    "79f: grab_gui_diagnostic missing expected geometry/clip keys");
+        CHECK_COND(diagRes.value("clipped_ribbon_captions").toInt() == 0,
+                   "79f: grab_gui_diagnostic reported clipped ribbon captions: "
+                           << diagRes.value("clipped_ribbon_captions").toInt());
+
+        const QString diagExpandedPng = tmp79.filePath(QStringLiteral("diag_79_expanded.png"));
+        QJsonObject diagReqExp;
+        diagReqExp["jsonrpc"] = "2.0";
+        diagReqExp["id"] = 7903;
+        diagReqExp["method"] = "app.grab_gui_diagnostic";
+        diagReqExp["params"] = QJsonObject{ { "path", diagExpandedPng },
+                                            { "width", 1366 },
+                                            { "height", 768 },
+                                            { "show_explorer", true },
+                                            { "expand_inspector", true },
+                                            { "scroll_inspector", true } };
+        const QJsonObject diagExpResp = srv->handleRpcRequest(diagReqExp);
+        CHECK_COND(!diagExpResp.contains("error"),
+                   "79f: grab_gui_diagnostic (explorer + expanded/scrolled inspector) errored");
+        const QJsonObject diagExpRes = diagExpResp.value("result").toObject();
+        CHECK_COND(diagExpRes.value("ok").toBool(),
+                   "79f: grab_gui_diagnostic (explorer + expanded/scrolled inspector) returned ok=false: "
+                           << diagExpRes.value("diagnostic_error").toString().toStdString()
+                           << " expTop=" << diagExpRes.value("explorer_top_y").toInt()
+                           << " inspTop=" << diagExpRes.value("inspector_top_y").toInt()
+                           << " scrollMax=" << diagExpRes.value("inspector_scroll_max").toInt());
+    }
+
+    // -------------------------------------------------------------------------
+    // 79g: HUD shortcuts, Plot bar X guard, SelectionMoveResizer deferred teardown,
+    //      CSV reimportFromSource(), OPJU numeric type="3" X column
+    // -------------------------------------------------------------------------
+    {
+        // Global shortcuts remain bound on ApplicationWindow when Focus HUD hides menuBar()
+        const QList<QAction *> winActs = w79->actions();
+        auto hasShortcutBound = [&](const QKeySequence &seq) -> bool {
+            for (const QAction *act : winActs) {
+                if (!act)
+                    continue;
+                if (act->shortcut() == seq || act->shortcuts().contains(seq))
+                    return true;
+            }
+            return false;
+        };
+        CHECK_COND(hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+Z")))
+                           && hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+Y")))
+                           && hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+S")))
+                           && hasShortcutBound(QKeySequence(Qt::Key_F1))
+                           && hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+R"))),
+                   "79g: core shortcut actions (Undo/Redo/Save/Help/Unzoom) are not attached to ApplicationWindow!");
+
+        ModernRibbonBar *rib = w79->modernRibbonBar();
+        CHECK_COND(rib != nullptr, "79g: modernRibbonBar null");
+        rib->setFocusHudMode(true);
+        QCoreApplication::processEvents();
+        CHECK_COND(w79->menuBar() && w79->menuBar()->isHidden(),
+                   "79g: Focus HUD did not hide menuBar");
+        CHECK_COND(hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+Z")))
+                           && hasShortcutBound(QKeySequence(QStringLiteral("Ctrl+S"))),
+                   "79g: core Undo/Save shortcuts unavailable while menuBar is hidden in Focus HUD");
+        rib->setFocusHudMode(false);
+        QCoreApplication::processEvents();
+
+        // Regression test: ribbon button ancestor stylesheets must never leak unscoped
+        // background:#FFFFFF into QToolTip / QTipLabel (white-on-white popup fix)
+        {
+            if (!qApp->styleSheet().contains(QLatin1String("QToolTip")))
+                ModernUiTheme::applyModernTheme(qApp);
+            w79->resize(1366, 768);
+            w79->show();
+            rib->setCurrentTabIndex(1);
+            QCoreApplication::processEvents();
+
+            QStackedWidget *tabStack =
+                    rib->findChild<QStackedWidget *>(QStringLiteral("ModernRibbonTabStack"));
+            CHECK_COND(tabStack != nullptr, "79g: ModernRibbonTabStack not found");
+            QToolButton *tipBtn = nullptr;
+            for (QToolButton *tb : tabStack->findChildren<QToolButton *>()) {
+                if (tb && tb->isVisibleTo(rib) && tb->width() > 8 && tb->height() > 8) {
+                    tipBtn = tb;
+                    break;
+                }
+            }
+            CHECK_COND(tipBtn != nullptr, "79g: no visible ribbon QToolButton found on tab 1");
+
+            auto hasUnscopedBackground = [](const QString &qss) -> bool {
+                QString topLevel;
+                topLevel.reserve(qss.size());
+                int depth = 0;
+                for (QChar ch : qss) {
+                    if (ch == QLatin1Char('{'))
+                        ++depth;
+                    else if (ch == QLatin1Char('}') && depth > 0)
+                        --depth;
+                    else if (depth == 0)
+                        topLevel.append(ch);
+                }
+                return topLevel.contains(QLatin1String("background"), Qt::CaseInsensitive);
+            };
+            for (QWidget *anc = tipBtn; anc != nullptr; anc = anc->parentWidget()) {
+                CHECK_COND(!hasUnscopedBackground(anc->styleSheet()),
+                           "79g: unscoped background stylesheet on ribbon ancestor '"
+                                   << anc->objectName().toStdString() << "'");
+                if (anc == w79.get())
+                    break;
+            }
+
+            struct TipEffectGuard {
+                bool prevFade = QApplication::isEffectEnabled(Qt::UI_FadeTooltip);
+                bool prevAnim = QApplication::isEffectEnabled(Qt::UI_AnimateTooltip);
+                QPointer<QWidget> win;
+                QPointer<QWidget> btn;
+                bool prevWinAlways = false;
+                bool prevBtnAlways = false;
+                TipEffectGuard(QWidget *w, QWidget *b) : win(w), btn(b)
+                {
+                    QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
+                    QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
+                    if (win) {
+                        prevWinAlways = win->testAttribute(Qt::WA_AlwaysShowToolTips);
+                        win->setAttribute(Qt::WA_AlwaysShowToolTips, true);
+                    }
+                    if (btn) {
+                        prevBtnAlways = btn->testAttribute(Qt::WA_AlwaysShowToolTips);
+                        btn->setAttribute(Qt::WA_AlwaysShowToolTips, true);
+                    }
+                }
+                ~TipEffectGuard()
+                {
+                    QToolTip::hideText();
+                    if (btn)
+                        btn->setAttribute(Qt::WA_AlwaysShowToolTips, prevBtnAlways);
+                    if (win)
+                        win->setAttribute(Qt::WA_AlwaysShowToolTips, prevWinAlways);
+                    QApplication::setEffectEnabled(Qt::UI_FadeTooltip, prevFade);
+                    QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, prevAnim);
+                }
+            } tipEffectGuard(w79.get(), tipBtn);
+
+            QCoreApplication::processEvents();
+            QToolTip::showText(tipBtn->mapToGlobal(tipBtn->rect().bottomLeft()),
+                               QStringLiteral("Tooltip Contrast Check 12345"), tipBtn);
+
+            QWidget *tipLbl = nullptr;
+            for (QWidget *tl : QApplication::topLevelWidgets()) {
+                if (!tl)
+                    continue;
+                const QString cls = QString::fromLatin1(tl->metaObject()->className());
+                if ((cls == QLatin1String("QTipLabel")
+                     || (tl->inherits("QLabel")
+                         && (tl->windowFlags() & Qt::WindowType_Mask) == Qt::ToolTip))
+                    && !tl->isHidden()) {
+                    tipLbl = tl;
+                    break;
+                }
+            }
+            CHECK_COND(tipLbl != nullptr && QToolTip::isVisible(),
+                       "79g: QToolTip::showText did not create visible QTipLabel (qtIsVis="
+                               << QToolTip::isVisible() << " topLevels="
+                               << QApplication::topLevelWidgets().size() << " btnVis="
+                               << tipBtn->isVisible() << ")");
+            tipLbl->ensurePolished();
+            const QImage tipImg = tipLbl->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+            CHECK_COND(!tipImg.isNull() && tipImg.width() >= 20 && tipImg.height() >= 12,
+                       "79g: QTipLabel image invalid or too small");
+
+            int darkBgPixels = 0;
+            int brightFgPixels = 0;
+            int innerTotal = 0;
+            const int x0 = 4;
+            const int y0 = 4;
+            const int x1 = tipImg.width() - 4;
+            const int y1 = tipImg.height() - 4;
+            for (int y = y0; y < y1; ++y) {
+                for (int x = x0; x < x1; ++x) {
+                    const QRgb px = tipImg.pixel(x, y);
+                    const int luma = qRound(0.299 * qRed(px) + 0.587 * qGreen(px)
+                                            + 0.114 * qBlue(px));
+                    if (luma < 80)
+                        ++darkBgPixels;
+                    else if (luma > 170)
+                        ++brightFgPixels;
+                    ++innerTotal;
+                }
+            }
+            QToolTip::hideText();
+            QCoreApplication::processEvents();
+            CHECK_COND(innerTotal > 0 && darkBgPixels > innerTotal / 2 && brightFgPixels >= 10,
+                       "79g: QTipLabel pixel contrast check failed (dark="
+                               << darkBgPixels << " bright=" << brightFgPixels
+                               << " total=" << innerTotal << ")");
+        }
+
+        // Y-only table must not get ToriPlotThisDataBar
+        Table *tNoX = w79->newTable(4, 2, "T79NoX", "NoX");
+        tNoX->setColPlotDesignation(0, SciDAVis::Y);
+        tNoX->setColPlotDesignation(1, SciDAVis::Y);
+        for (int r = 0; r < 4; ++r) {
+            tNoX->setCell(r, 0, double(r));
+            tNoX->setCell(r, 1, double(r * 2));
+        }
+        w79->offerPlotAfterImport(tNoX);
+        QCoreApplication::processEvents();
+        CHECK_COND(tNoX->findChild<QFrame *>(QStringLiteral("ToriPlotThisDataBar")) == nullptr,
+                   "79g: offerPlotAfterImport unexpectedly attached ToriPlotThisDataBar to Y-only table!");
+        tNoX->askOnCloseEvent(false);
+        tNoX->close();
+
+        // SelectionMoveResizer Escape & removeLayer() deferred teardown (ASan UAF guard)
+        MultiLayer *mlSmr = w79->newGraph("G79Smr");
+        CHECK_COND(mlSmr != nullptr, "79g: G79Smr creation failed");
+        Graph *layer1 = mlSmr->activeGraph();
+        Graph *layer2 = mlSmr->addLayer();
+        CHECK_COND(layer1 != nullptr && layer2 != nullptr, "79g: addLayer failed");
+        mlSmr->resize(640, 480);
+        mlSmr->show();
+        QCoreApplication::processEvents();
+        layer1->setGeometry(10, 10, 160, 140);
+        layer2->setGeometry(180, 10, 160, 140);
+        QCoreApplication::processEvents();
+
+        auto selectLayerViaClick = [&](Graph *targetG) -> QPointer<SelectionMoveResizer> {
+            QWidget *host = targetG ? targetG->parentWidget() : nullptr;
+            const QPoint hostPt = targetG->frameGeometry().topLeft() + QPoint(2, 2);
+            if (QScrollArea *sa = mlSmr->findChild<QScrollArea *>(
+                        QStringLiteral("MultiLayerCanvasScroll"))) {
+                sa->ensureVisible(hostPt.x(), hostPt.y());
+            }
+            const QPoint mlPt = host ? host->mapTo(mlSmr, hostPt) : QPoint(182, 12);
+            QMouseEvent pressEv(QEvent::MouseButtonPress, mlPt, Qt::LeftButton, Qt::LeftButton,
+                                Qt::NoModifier);
+            QApplication::sendEvent(mlSmr, &pressEv);
+            QMouseEvent relEv(QEvent::MouseButtonRelease, mlPt, Qt::LeftButton, Qt::NoButton,
+                              Qt::NoModifier);
+            QApplication::sendEvent(mlSmr, &relEv);
+            QCoreApplication::processEvents();
+            for (SelectionMoveResizer *sr : mlSmr->findChildren<SelectionMoveResizer *>()) {
+                if (sr && sr->contains(static_cast<QWidget *>(targetG)))
+                    return QPointer<SelectionMoveResizer>(sr);
+            }
+            return QPointer<SelectionMoveResizer>();
+        };
+
+        QPointer<SelectionMoveResizer> smrEsc = selectLayerViaClick(layer2);
+        CHECK_COND(!smrEsc.isNull(), "79g: click did not create SelectionMoveResizer on layer2");
+        QKeyEvent escEvt(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(smrEsc.data(), &escEvt);
+        for (int pass = 0; pass < 2; ++pass) {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        CHECK_COND(smrEsc.isNull(),
+                   "79g: SelectionMoveResizer was not destroyed cleanly on Qt::Key_Escape");
+
+        QPointer<SelectionMoveResizer> smrRm = selectLayerViaClick(layer2);
+        CHECK_COND(!smrRm.isNull(), "79g: second click did not create SelectionMoveResizer on layer2");
+        mlSmr->setActiveGraph(layer2);
+        mlSmr->removeLayer();
+        for (int pass = 0; pass < 2; ++pass) {
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        CHECK_COND(smrRm.isNull(),
+                   "79g: SelectionMoveResizer leaked or dangled after MultiLayer::removeLayer()");
+
+        // CSV open() followed by overwrite + reimportFromSource()
+        const QString csvPath = tmp79.filePath(QStringLiteral("reimport79.csv"));
+        {
+            QFile f(csvPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "79g: failed to write initial reimport79.csv");
+            f.write("Strain,Stress\n0,0\n1,100\n2,200\n");
+        }
+        const QList<MyWidget *> winsBeforeCsv = w79->windowsList();
+        w79->open(csvPath);
+        QCoreApplication::processEvents();
+        Table *tCsv = w79->table(QStringLiteral("reimport79"));
+        if (!tCsv) {
+            for (MyWidget *w : w79->windowsList()) {
+                if (Table *cand = qobject_cast<Table *>(w)) {
+                    if (!winsBeforeCsv.contains(cand)) {
+                        tCsv = cand;
+                        break;
+                    }
+                }
+            }
+        }
+        CHECK_COND(tCsv != nullptr && tCsv->numRows() == 3 && tCsv->numCols() == 2,
+                   "79g: w79->open(reimport79.csv) did not produce expected 3x2 table (ptr="
+                           << (tCsv != nullptr) << " r=" << (tCsv ? tCsv->numRows() : -1)
+                           << " c=" << (tCsv ? tCsv->numCols() : -1) << ")");
+        const QString origCol0Name = tCsv->column(0) ? tCsv->column(0)->name() : QString();
+        const QString origCol0Long = tCsv->column(0) ? tCsv->column(0)->longName() : QString();
+        const QString origCol1Name = tCsv->column(1) ? tCsv->column(1)->name() : QString();
+        const QString origCol1Long = tCsv->column(1) ? tCsv->column(1)->longName() : QString();
+        CHECK_COND((origCol0Name == QLatin1String("Strain") || origCol0Long == QLatin1String("Strain"))
+                           && (origCol1Name == QLatin1String("Stress")
+                               || origCol1Long == QLatin1String("Stress")),
+                   "79g: initial CSV headers did not preserve Strain/Stress");
+
+        {
+            QFile f(csvPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly | QIODevice::Truncate),
+                       "79g: failed to overwrite reimport_79.csv");
+            f.write("Strain,Stress\n0,0\n1,110\n2,220\n3,330\n");
+        }
+        CHECK_COND(tCsv->reimportFromSource(), "79g: reimportFromSource() failed on CSV");
+        QCoreApplication::processEvents();
+        CHECK_COND(tCsv->numRows() == 4,
+                   "79g: CSV reimportFromSource row count mismatch: " << tCsv->numRows());
+        const QString reCol0Name = tCsv->column(0) ? tCsv->column(0)->name() : QString();
+        const QString reCol0Long = tCsv->column(0) ? tCsv->column(0)->longName() : QString();
+        const QString reCol1Name = tCsv->column(1) ? tCsv->column(1)->name() : QString();
+        const QString reCol1Long = tCsv->column(1) ? tCsv->column(1)->longName() : QString();
+        CHECK_COND((reCol0Name == QLatin1String("Strain") || reCol0Long == QLatin1String("Strain"))
+                           && (reCol1Name == QLatin1String("Stress")
+                               || reCol1Long == QLatin1String("Stress")),
+                   "79g: CSV reimportFromSource lost Strain/Stress header names");
+        CHECK_COND(std::fabs(tCsv->cell(0, 1) - 0.0) < 1e-9
+                           && std::fabs(tCsv->cell(3, 1) - 330.0) < 1e-9,
+                   "79g: CSV reimportFromSource values mismatch: c(0,1)=" << tCsv->cell(0, 1)
+                                                                          << " c(3,1)=" << tCsv->cell(3, 1));
+
+        // Minimal ZIP .opju with type="3" Numeric X column (must not misclassify as Time/DateTime)
+        const QByteArray opjuXml =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                "<OriginProject version=\"2024\">\n"
+                "  <Folder name=\"Type3Test\">\n"
+                "    <Workbook name=\"Type3Book\">\n"
+                "      <Worksheet name=\"Sheet1\">\n"
+                "        <Column name=\"A\" type=\"3\" designation=\"X\" longName=\"TimeOrX\">\n"
+                "          <Data><v>0.0</v><v>1.0</v><v>2.0</v></Data>\n"
+                "        </Column>\n"
+                "        <Column name=\"B\" designation=\"Y\" longName=\"Signal\">\n"
+                "          <Data><v>10.0</v><v>20.0</v><v>30.0</v></Data>\n"
+                "        </Column>\n"
+                "      </Worksheet>\n"
+                "    </Workbook>\n"
+                "  </Folder>\n"
+                "</OriginProject>\n";
+        torizip::ZipWriter opjuZw;
+        CHECK_COND(opjuZw.addFile(QStringLiteral("OriginProj.xml"), opjuXml,
+                                  torizip::ZipWriter::Compression::Store),
+                   "79g: ZipWriter::addFile failed");
+        const QString synOpjuPath = tmp79.filePath(QStringLiteral("type3_79.opju"));
+        {
+            QFile f(synOpjuPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "79g: failed to write type3_79.opju");
+            f.write(opjuZw.finish());
+        }
+        QString opjuErr;
+        ImportOPJU::ImportStats opjuStats;
+        CHECK_COND(ImportOPJU::importFile(w79, synOpjuPath, &opjuErr, &opjuStats),
+                   "79g: ImportOPJU::importFile failed: " << opjuErr.toStdString());
+        Table *tOpju = w79->table(QStringLiteral("Type3Book"));
+        if (!tOpju) {
+            std::function<void(Folder *)> walkOpju = [&](Folder *f) {
+                if (!f || tOpju)
+                    return;
+                for (MyWidget *w : f->windowsList()) {
+                    if (Table *cand = qobject_cast<Table *>(w)) {
+                        if (cand->name().contains(QStringLiteral("Type3Book"))) {
+                            tOpju = cand;
+                            return;
+                        }
+                    }
+                }
+                for (Folder *sub : f->folders())
+                    walkOpju(sub);
+            };
+            walkOpju(w79->projectFolder());
+        }
+        CHECK_COND(tOpju != nullptr && tOpju->column(0) != nullptr,
+                   "79g: Type3Book table missing after ImportOPJU");
+        CHECK_COND(tOpju->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric,
+                   "79g: OPJU column with type=\"3\" was not imported as Numeric!");
+        CHECK_COND(std::fabs(tOpju->cell(0, 0) - 0.0) < 1e-9
+                           && std::fabs(tOpju->cell(1, 0) - 1.0) < 1e-9
+                           && std::fabs(tOpju->cell(2, 0) - 2.0) < 1e-9,
+                   "79g: OPJU type=\"3\" column numeric values mismatch");
+    }
+
+    // -------------------------------------------------------------------------
+    // 79h: Graph::copy Legend token remap across interleaved ErrorBars,
+    //      1x2 isij_85mm square aspect & explicit Y step preservation,
+    //      RecalcManager Auto Undo/Redo replay, moveFolder children, aborted appendProject undo
+    // -------------------------------------------------------------------------
+    {
+        // Interleaved ErrorBars curve index remapping in Graph::copy
+        Table *tLeg = w79->newTable(4, 4, "T79LegCopy", "LegCopy");
+        for (int r = 0; r < 4; ++r) {
+            tLeg->setCell(r, 0, double(r));
+            tLeg->setCell(r, 1, double(r + 1));
+            tLeg->setCell(r, 2, 0.2);
+            tLeg->setCell(r, 3, double(2 * r + 5));
+        }
+        MultiLayer *mlSrc = w79->newGraph("G79CopySrc");
+        Graph *gSrc = mlSrc->activeGraph();
+        CHECK_COND(gSrc != nullptr, "79h: G79CopySrc activeGraph null");
+        gSrc->insertCurve(tLeg, tLeg->colName(1), Graph::Line);
+        gSrc->addErrorBars(tLeg->colName(0), tLeg->colName(1), tLeg, tLeg->colName(2));
+        gSrc->insertCurve(tLeg, tLeg->colName(3), Graph::Line);
+        const int idxY1Src = gSrc->curveIndex(tLeg->colName(1));
+        const int idxY2Src = gSrc->curveIndex(tLeg->colName(3));
+        CHECK_COND(idxY1Src == 0 && idxY2Src >= 1,
+                   "79h: unexpected source curve indices y1=" << idxY1Src << " y2=" << idxY2Src);
+        Legend *srcLeg = gSrc->legend();
+        CHECK_COND(srcLeg != nullptr, "79h: source Legend null");
+        const QString srcText = QStringLiteral("\\l(%1) %(%1)\n\\l(%2) %(%2)")
+                                        .arg(idxY1Src + 1)
+                                        .arg(idxY2Src + 1);
+        srcLeg->setText(srcText);
+
+        MultiLayer *mlDst = w79->newGraph("G79CopyDst");
+        Graph *gDst = mlDst->activeGraph();
+        CHECK_COND(gDst != nullptr, "79h: G79CopyDst activeGraph null");
+        gDst->copy(w79, gSrc);
+        const int idxY1Dst = gDst->curveIndex(tLeg->colName(1));
+        const int idxY2Dst = gDst->curveIndex(tLeg->colName(3));
+        Legend *dstLeg = gDst->legend();
+        CHECK_COND(idxY1Dst >= 0 && idxY2Dst >= 0 && dstLeg != nullptr,
+                   "79h: Graph::copy lost curves or legend");
+        CHECK_COND(gDst->curveType(idxY1Dst) != Graph::ErrorBars
+                           && gDst->curveType(idxY2Dst) != Graph::ErrorBars,
+                   "79h: Graph::copy curve mapping landed on ErrorBars");
+        const QString expectedDst = QStringLiteral("\\l(%1) %(%1)\n\\l(%2) %(%2)")
+                                            .arg(idxY1Dst + 1)
+                                            .arg(idxY2Dst + 1);
+        CHECK_COND(dstLeg->text() == expectedDst,
+                   "79h: Graph::copy did not remap Legend tokens (got '"
+                           << dstLeg->text().toStdString() << "', expected '"
+                           << expectedDst.toStdString() << "')");
+
+        // 1x2 isij_85mm preserves square panels & explicit Y-axis step
+        Table *tTwo = w79->newTable(5, 3, "T79IsijTwo", "IsijTwo");
+        for (int r = 0; r < 5; ++r) {
+            tTwo->setCell(r, 0, double(r * 10));
+            tTwo->setCell(r, 1, double(r * 50));
+            tTwo->setCell(r, 2, double(200 - r * 40));
+        }
+        MultiLayer *mlTwo = w79->newGraph("G79IsijTwo");
+        Graph *gp1 = mlTwo->activeGraph();
+        Graph *gp2 = mlTwo->addLayer();
+        CHECK_COND(gp1 != nullptr && gp2 != nullptr, "79h: G79IsijTwo layers null");
+        gp1->insertCurve(tTwo, tTwo->colName(1), Graph::Line);
+        gp2->insertCurve(tTwo, tTwo->colName(2), Graph::Line);
+        mlTwo->setRows(1);
+        mlTwo->setCols(2);
+        gp1->setScale(QwtPlot::yLeft, 0.0, 200.0, 50.0);
+        CHECK_COND(mlTwo->applyStylePresetById(QStringLiteral("isij_85mm")),
+                   "79h: applyStylePresetById(isij_85mm) failed");
+        QCoreApplication::processEvents();
+        CHECK_COND(std::fabs(gp1->axisStep(QwtPlot::yLeft) - 50.0) < 1e-6,
+                   "79h: 1x2 isij_85mm overwrote explicit Y-axis step 50.0 (got "
+                           << gp1->axisStep(QwtPlot::yLeft) << ")");
+        if (gp1->plotWidget() && gp1->plotWidget()->canvas() && gp2->plotWidget()
+            && gp2->plotWidget()->canvas()) {
+            const QSize sz1 = gp1->plotWidget()->canvas()->size();
+            const QSize sz2 = gp2->plotWidget()->canvas()->size();
+            const double ar1 = (sz1.height() > 0) ? double(sz1.width()) / double(sz1.height()) : 0.0;
+            const double ar2 = (sz2.height() > 0) ? double(sz2.width()) / double(sz2.height()) : 0.0;
+            CHECK_COND(ar1 > 0.85 && ar1 < 1.15 && ar2 > 0.85 && ar2 < 1.15,
+                       "79h: 1x2 isij_85mm canvas aspect drifted from square: ar1="
+                               << ar1 << " ar2=" << ar2);
+        }
+
+        // RecalcManager Auto mode recalculates dirty links after Undo/Redo replay
+        Table *tRec = w79->newTable(5, 2, "T79Rec", "Rec");
+        for (int r = 0; r < 5; ++r) {
+            tRec->setCell(r, 0, double(r));
+            tRec->setCell(r, 1, double(2 * r));
+        }
+        MultiLayer *mlRec = w79->multilayerPlot(tRec, QStringList() << tRec->colName(1), Graph::Scatter);
+        Graph *gRec = mlRec->activeGraph();
+        CHECK_COND(gRec != nullptr, "79h: mlRec activeGraph null");
+        RecalcManager *rm = RecalcManager::instance(w79);
+        CHECK_COND(rm != nullptr, "79h: RecalcManager null");
+        rm->setRecalcMode(RecalcManager::Auto);
+        const int lid = rm->registerLink(w79, gRec, tRec, tRec->colName(1),
+                                         QStringLiteral("Rec79AutoFit"), RecalcManager::OpLinearFit);
+        CHECK_COND(lid > 0, "79h: RecalcManager::registerLink failed");
+        QCoreApplication::processEvents();
+        w79->d_workspace.setActiveSubWindow(tRec);
+        tRec->column(1)->setValueAt(4, 16.0);
+        QCoreApplication::processEvents();
+        QwtPlotCurve *fitEdited = gRec->curve(QStringLiteral("Rec79AutoFit"));
+        CHECK_COND(fitEdited != nullptr && fitEdited->dataSize() >= 2,
+                   "79h: Rec79AutoFit curve missing after edit");
+        const double yEndEdited = fitEdited->y(fitEdited->dataSize() - 1);
+        w79->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(!rm->hasDirtyLinks(gRec),
+                   "79h: RecalcManager still has dirty links after Undo replay!");
+        fitEdited = gRec->curve(QStringLiteral("Rec79AutoFit"));
+        CHECK_COND(fitEdited != nullptr && std::fabs(tRec->cell(4, 1) - 8.0) < 1e-9,
+                   "79h: Undo did not revert T79Rec cell(4,1) to 8.0");
+        const double yEndUndone = fitEdited->y(fitEdited->dataSize() - 1);
+        CHECK_COND(yEndUndone < yEndEdited - 1.0 && std::fabs(yEndUndone - 8.0) < 1e-5,
+                   "79h: RecalcManager Auto did not recalculate fit after Undo (yEndUndone="
+                           << yEndUndone << ")");
+        w79->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(!rm->hasDirtyLinks(gRec),
+                   "79h: RecalcManager still has dirty links after Redo replay!");
+        fitEdited = gRec->curve(QStringLiteral("Rec79AutoFit"));
+        const double yEndRedone = fitEdited ? fitEdited->y(fitEdited->dataSize() - 1) : 0.0;
+        CHECK_COND(std::fabs(yEndRedone - yEndEdited) < 1e-5,
+                   "79h: RecalcManager Auto did not recalculate fit after Redo (got "
+                           << yEndRedone << " expected " << yEndEdited << ")");
+        rm->removeLinksForGraph(gRec);
+
+        // moveFolder preserves multiple child subfolders cleanly
+        Folder *rootF = w79->projectFolder();
+        CHECK_COND(rootF != nullptr, "79h: rootF null");
+        Folder &parentA = rootF->addChild<Folder>(QStringLiteral("MoveParentA79"));
+        w79->addFolderListViewItem(&parentA);
+        FolderListItem *parentAItem = new FolderListItem(rootF->folderListItem(), &parentA);
+        parentA.setFolderListItem(parentAItem);
+
+        Folder &child1 = parentA.addChild<Folder>(QStringLiteral("MoveChild1_79"));
+        FolderListItem *child1Item = new FolderListItem(parentAItem, &child1);
+        child1.setFolderListItem(child1Item);
+
+        Folder &child2 = parentA.addChild<Folder>(QStringLiteral("MoveChild2_79"));
+        FolderListItem *child2Item = new FolderListItem(parentAItem, &child2);
+        child2.setFolderListItem(child2Item);
+
+        Folder &destB = rootF->addChild<Folder>(QStringLiteral("MoveDestB79"));
+        w79->addFolderListViewItem(&destB);
+        FolderListItem *destBItem = new FolderListItem(rootF->folderListItem(), &destB);
+        destB.setFolderListItem(destBItem);
+
+        w79->moveFolder(parentAItem, destBItem);
+        QCoreApplication::processEvents();
+        Folder *movedParent = destB.findSubfolder(QStringLiteral("MoveParentA79"));
+        CHECK_COND(movedParent != nullptr, "79h: moveFolder did not relocate MoveParentA79 under MoveDestB79");
+        CHECK_COND(movedParent->findSubfolder(QStringLiteral("MoveChild1_79")) != nullptr
+                           && movedParent->findSubfolder(QStringLiteral("MoveChild2_79")) != nullptr,
+                   "79h: moveFolder dropped sibling child subfolders!");
+        CHECK_COND(rootF->findSubfolder(QStringLiteral("MoveParentA79")) == nullptr,
+                   "79h: original MoveParentA79 still present under root after moveFolder");
+
+        // Aborted appendProject leaves no orphan folder/table even across Undo/Redo
+        w79->changeFolder(rootF, true);
+        const QString truncProjPath = tmp79.filePath(QStringLiteral("trunc_append_79.sciprj"));
+        {
+            QFile f(truncProjPath);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "79h: failed to write trunc_append_79.sciprj");
+            f.write("SciDAVis 2.9.0 project file\n"
+                    "<scripting-lang>\tPython\n"
+                    "<windows>\t1\n"
+                    "<table>\n"
+                    "T79TruncZombie\t2\t2\t19/08/2026 00:00:00\n"
+                    "<header>\tA[X]\tB[Y]\n");
+        }
+        const int foldersBeforeAppend = rootF->folders().size();
+        w79->appendProject(truncProjPath);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        CHECK_COND(rootF->folders().size() == foldersBeforeAppend,
+                   "79h: aborted appendProject left an orphan subfolder");
+        CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
+                   "79h: aborted appendProject left zombie table behind");
+        w79->d_workspace.setActiveSubWindow(tRec);
+        for (int step = 0; step < 3; ++step) {
+            w79->undo();
+            QCoreApplication::processEvents();
+            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
+                       "79h: Undo after aborted appendProject resurrected zombie table!");
+        }
+        for (int step = 0; step < 3; ++step) {
+            w79->redo();
+            QCoreApplication::processEvents();
+            CHECK_COND(w79->table(QStringLiteral("T79TruncZombie")) == nullptr,
+                       "79h: Redo after aborted appendProject resurrected zombie table!");
+        }
     }
 
     w79->switchToLanguage("en");

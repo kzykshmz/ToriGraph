@@ -313,7 +313,7 @@ public slots:
      */
     void addTextLayer(const QPoint &pos);
 
-    Graph *activeGraph() { return active_graph; };
+    Graph *activeGraph() { return active_graph.data(); };
     void setActiveGraph(Graph *g);
     void activateGraph(LayerButton *button);
 
@@ -414,7 +414,7 @@ private:
     void resizeLayers(const QSize &size, const QSize &oldSize, bool scaleFonts);
     QSize lastSize; // workaround for resize layers after hide/minimize
 
-    Graph *active_graph;
+    QPointer<Graph> active_graph;
     //! Used for resizing of layers.
     int graphs, cols, rows, graph_width, graph_height, colsSpace, rowsSpace;
     int left_margin, right_margin, top_margin, bottom_margin;

@@ -571,7 +571,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
     lastSize = QSize(-1, -1);
     hor_align = HCenter;
     vert_align = VCenter;
-    active_graph = 0;
+    active_graph = nullptr;
     addTextOn = false;
     d_scale_on_print = true;
     d_print_cropmarks = false;
@@ -903,7 +903,7 @@ MultiLayer::MultiLayer(const QString &label, QWidget *parent, const QString name
             const QString snap = captureUndoSnapshot();
             if (checked) {
                 double ratio = 1.0;
-                Graph *ag = active_graph ? active_graph : layer(1);
+                Graph *ag = active_graph ? active_graph.data() : layer(1);
                 if (ag && ag->plotWidget() && ag->plotWidget()->plotLayout()) {
                     const QRect cr = ag->plotWidget()->plotLayout()->canvasRect();
                     if (cr.width() > 20 && cr.height() > 20)
@@ -1339,7 +1339,7 @@ void MultiLayer::activateGraph(LayerButton *button)
 
 void MultiLayer::setActiveGraph(Graph *g)
 {
-    if (!g)
+    if (!g || !graphsList.contains(g))
         return;
     clearLayerSelector();
     if (active_graph == g) {
@@ -1544,6 +1544,20 @@ void MultiLayer::confirmRemoveLayer()
         removeLayer();
 }
 
+static void detachClosingLayer(MultiLayer *ml, Graph *g)
+{
+    if (!ml || !g)
+        return;
+    g->blockSignals(true);
+    g->disconnect(ml);
+    g->removeEventFilter(ml);
+    if (Plot *cp = g->plotWidget()) {
+        cp->removeEventFilter(ml);
+        if (cp->canvas())
+            cp->canvas()->removeEventFilter(ml);
+    }
+}
+
 void MultiLayer::removeLayer()
 {
     if (!active_graph)
@@ -1601,6 +1615,7 @@ void MultiLayer::removeLayer()
         index = graphsList.count() - 1;
 
     active_graph = (graphs > 0 && index >= 0) ? (Graph *)graphsList.at(index) : nullptr;
+    detachClosingLayer(this, closingGraph);
     closingGraph->setParent(nullptr);
     closingGraph->close();
 
@@ -3929,20 +3944,21 @@ void MultiLayer::setLayersNumber(int n)
                         ++it;
                 }
                 graphsList.removeLast();
+                detachClosingLayer(this, g);
                 g->setParent(nullptr);
                 g->close();
             }
         }
         graphs = n;
         if (!graphs) {
-            active_graph = 0;
+            active_graph = nullptr;
             refreshLayerButtonBadges();
             syncCanvasOverlayVisibility();
             return;
         }
 
         // check whether the active Graph.has been deleted
-        if (graphsList.indexOf(active_graph) == -1)
+        if (graphsList.indexOf(active_graph.data()) == -1)
             active_graph = (Graph *)graphsList.last();
         for (int j = 0; j < (int)graphsList.count(); j++) {
             Graph *gr = (Graph *)graphsList.at(j);
@@ -5000,7 +5016,7 @@ Graph *MultiLayer::addLinkedLayer(Graph *parentLayer, bool linkX, bool linkY,
                                   const QString &xFormula, const QString &yFormula)
 {
     if (!parentLayer)
-        parentLayer = active_graph ? active_graph : layer(1);
+        parentLayer = active_graph ? active_graph.data() : layer(1);
     if (!parentLayer)
         return addLayer();
 
@@ -5220,7 +5236,7 @@ void MultiLayer::setInsetZoomDataRect(Graph *insetLayer, const QRectF &roi)
 Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, bool showConnectors)
 {
     if (!sourceLayer)
-        sourceLayer = active_graph ? active_graph : layer(1);
+        sourceLayer = active_graph ? active_graph.data() : layer(1);
     if (!sourceLayer)
         return addLayer();
 
@@ -7232,7 +7248,7 @@ void MultiLayer::updateCanvasStatusPill()
     }
 
     QString fontFam = QStringLiteral("Arial");
-    Graph *g = active_graph ? active_graph : layer(1);
+    Graph *g = active_graph ? active_graph.data() : layer(1);
     if (g) {
         const QString af = g->axisFont(QwtPlot::xBottom).family().trimmed();
         if (!af.isEmpty())
@@ -9901,6 +9917,7 @@ void MultiLayer::openQuickLayerColumnsPopup()
     }
 
     auto *popup = new QFrame(this, Qt::Popup | Qt::FramelessWindowHint);
+    popup->setObjectName(QStringLiteral("LayerColumnsChecklistPopup"));
     popup->setAttribute(Qt::WA_DeleteOnClose, true);
     const QColor surfaceBg(0xFF, 0xFF, 0xFF);
     const QColor borderStrong(0xC8, 0xD1, 0xDC);
@@ -9908,9 +9925,9 @@ void MultiLayer::openQuickLayerColumnsPopup()
     const QColor borderSubtle(0xE2, 0xE8, 0xF0);
     const QColor textSecondary(0x64, 0x74, 0x8B);
     popup->setStyleSheet(QStringLiteral(
-            "QFrame { background-color: %1; border: 1px solid %2; border-radius: 8px; }"
-            "QLabel { color: %3; border: none; font-weight: 600; font-size: 10.8pt; }"
-            "QTreeWidget { background-color: %1; color: %3; border: 1px solid %4; "
+            "QFrame#LayerColumnsChecklistPopup { background-color: %1; border: 1px solid %2; border-radius: 8px; }"
+            "QLabel#LayerColumnsChecklistHeader { color: %3; border: none; font-weight: 600; font-size: 10.8pt; }"
+            "QFrame#LayerColumnsChecklistPopup QTreeWidget { background-color: %1; color: %3; border: 1px solid %4; "
             "border-radius: 5px; font-size: 10.8pt; }")
                                  .arg(surfaceBg.name(), borderStrong.name(),
                                       textPrimary.name(), borderSubtle.name()));
@@ -9920,6 +9937,7 @@ void MultiLayer::openQuickLayerColumnsPopup()
     vbox->setSpacing(6);
 
     auto *hdr = new QLabel(tr("Layer Columns Checklist"), popup);
+    hdr->setObjectName(QStringLiteral("LayerColumnsChecklistHeader"));
     vbox->addWidget(hdr);
 
     auto *tree = new QTreeWidget(popup);
@@ -10182,7 +10200,7 @@ Graph *MultiLayer::resolveColumnDropTarget(const QPoint &canvasPt, const QPoint 
         return targetGr;
     }
 
-    targetGr = active_graph ? active_graph : const_cast<MultiLayer *>(this)->layer(1);
+    targetGr = active_graph ? active_graph.data() : const_cast<MultiLayer *>(this)->layer(1);
     if (targetGr) {
         Plot *pl = targetGr->plotWidget();
         const bool onlyRightY = pl && pl->axisEnabled(QwtPlot::yRight)

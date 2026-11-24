@@ -1194,6 +1194,10 @@ GraphInspectorDock::GraphInspectorDock(ApplicationWindow *app, QWidget *parent)
     connect(d_coalesce_refresh_timer, &QTimer::timeout, this, [this]() {
         if (!d_target_ml || d_target_ml->isRestoringSnapshot())
             return;
+        for (int i = d_bound_layers.size() - 1; i >= 0; --i) {
+            if (d_bound_layers.at(i).isNull())
+                d_bound_layers.removeAt(i);
+        }
         for (Graph *g : d_target_ml->layersList())
             bindLayerSignals(g);
         if (!d_syncing_props && !d_syncing_tree) {
@@ -1221,7 +1225,9 @@ Graph *GraphInspectorDock::activeLayer() const
     if (!d_target_ml)
         return nullptr;
     Graph *ag = d_target_ml->activeGraph();
-    return ag ? ag : d_target_ml->layer(1);
+    if (ag && d_target_ml->layersList().contains(ag))
+        return ag;
+    return d_target_ml->layer(1);
 }
 
 QVector<Graph *> GraphInspectorDock::targetLayersForScope() const

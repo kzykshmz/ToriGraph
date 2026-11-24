@@ -3129,8 +3129,10 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
 
     auto addPillSep = [this, pillLayout]() {
         QFrame *sep = new QFrame(this);
+        sep->setObjectName(QStringLiteral("FocusHudDivider"));
         sep->setFixedSize(1, 18);
-        sep->setStyleSheet(QStringLiteral("background-color: rgba(148, 163, 184, 75);"));
+        sep->setStyleSheet(
+                QStringLiteral("QFrame#FocusHudDivider { background-color: rgba(148, 163, 184, 75); }"));
         pillLayout->addWidget(sep);
     };
 
@@ -3966,6 +3968,14 @@ ModernRibbonBar::ModernRibbonBar(ApplicationWindow *app, QWidget *parent)
             "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
             "  font-size: 10pt;"
             "  font-weight: 700;"
+            "}"
+            "QToolTip {"
+            "  background-color: #0F172A;"
+            "  color: #F8FAFC;"
+            "  font-size: 10.5pt;"
+            "  border: 1px solid #334155;"
+            "  border-radius: 5px;"
+            "  padding: 4px 8px;"
             "}"));
 
     QVBoxLayout *rootLayout = new QVBoxLayout(this);
@@ -4447,7 +4457,9 @@ QWidget *ModernRibbonBar::createRibbonScrollPage(QHBoxLayout **outRowLayout)
 {
     RibbonHorizontalScrollArea *scroll = new RibbonHorizontalScrollArea(d_tab_stack);
     QWidget *container = new QWidget(scroll);
-    container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
+    container->setObjectName(QStringLiteral("ModernRibbonPageContainer"));
+    container->setStyleSheet(
+            QStringLiteral("QWidget#ModernRibbonPageContainer { background: #FFFFFF; }"));
     QHBoxLayout *row = new QHBoxLayout(container);
     row->setContentsMargins(4, 4, 4, 4);
     row->setSpacing(2);
@@ -4505,8 +4517,10 @@ QWidget *ModernRibbonBar::createRibbonGroup(QHBoxLayout *pageRow, QHBoxLayout **
 
     if (addDividerAfter) {
         QFrame *div = new QFrame();
+        div->setObjectName(QStringLiteral("RibbonGroupDivider"));
         div->setFixedSize(1, 28);
-        div->setStyleSheet(QStringLiteral("background-color: #CBD5E1; margin: 0px 3px;"));
+        div->setStyleSheet(
+                QStringLiteral("QFrame#RibbonGroupDivider { background-color: #CBD5E1; margin: 0px 3px; }"));
         pageRow->addWidget(div, 0, Qt::AlignVCenter);
     }
 

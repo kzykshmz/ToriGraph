@@ -193,7 +193,7 @@ public:
     QToolBar *modernRibbonToolBar() const { return d_ribbon_toolbar; }
     QMenu *createPopupMenu() override;
     bool eventFilter(QObject *watched, QEvent *event) override;
-    void updateExplorerAdaptiveLayout();
+    void updateExplorerAdaptiveLayout(bool allowAutoCollapse = true);
     GraphInspectorDock *graphInspectorDock() const { return d_graph_inspector_dock; }
     void toggleGraphInspectorDock();
     void updateGraphInspectorResponsiveness();
