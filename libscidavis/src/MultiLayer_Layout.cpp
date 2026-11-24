@@ -1218,12 +1218,16 @@ void MultiLayer::setPageZoom(double factor)
     }
 
     lastSize = newCanvasSize;
+    const bool prevSuppressResizeLayout = d_suppress_canvas_resize_layout;
+    if (graphs > 0)
+        d_suppress_canvas_resize_layout = true;
     syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode, d_base_page_px,
                            d_page_zoom, d_page_bg_color);
     const bool freePx =
             (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
     resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame, newCanvasSize.width(),
                                        newCanvasSize.height(), freePx);
+    d_suppress_canvas_resize_layout = prevSuppressResizeLayout;
 
     // Every zoom is computed from the layer rectangles at 100 % (kept as doubles), never from the
     // previous zoomed rectangle: chaining qRound(x * ratio) shifted layers by a pixel per zoom

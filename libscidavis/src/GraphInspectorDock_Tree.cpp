@@ -1605,7 +1605,7 @@ void GraphInspectorDock::syncTabPage(InspectorPageIndex pageIdx)
     QTimer::singleShot(0, this, &GraphInspectorDock::updatePropScrollCue);
 }
 
-void GraphInspectorDock::syncInspectorFromSelection()
+void GraphInspectorDock::syncInspectorFromSelection(bool allowTabSwitch)
 {
     if (!d_target_ml)
         return;
@@ -1616,33 +1616,35 @@ void GraphInspectorDock::syncInspectorFromSelection()
     Graph *g = activeLayer();
     const Graph::GraphSelection sel = g ? g->currentSelection() : Graph::GraphSelection();
 
-    switch (sel.kind) {
-    case Graph::GraphSelection::Axis:
-    case Graph::GraphSelection::AxisTitle:
+    if (sel.kind == Graph::GraphSelection::Axis || sel.kind == Graph::GraphSelection::AxisTitle)
         d_active_axis = qBound(0, sel.primaryId, 3);
-        switchToInspectorPage(PageTabAxis);
-        break;
-    case Graph::GraphSelection::ReferenceLine:
-        switchToInspectorPage(PageTabAxis);
-        break;
-    case Graph::GraphSelection::Curve:
-    case Graph::GraphSelection::ErrorBars:
-    case Graph::GraphSelection::Spectrogram:
-        switchToInspectorPage(PageTabCurve);
-        break;
-    case Graph::GraphSelection::PlotTitle:
-    case Graph::GraphSelection::LegendBox:
-    case Graph::GraphSelection::TextAnnotation:
-    case Graph::GraphSelection::ArrowAnnotation:
-    case Graph::GraphSelection::ImageAnnotation:
-        switchToInspectorPage(PageTabLegend);
-        break;
-    case Graph::GraphSelection::Page:
-    case Graph::GraphSelection::Layer:
-        switchToInspectorPage(PageTabPageLayer);
-        break;
-    case Graph::GraphSelection::None:
-        break;
+
+    if (allowTabSwitch) {
+        switch (sel.kind) {
+        case Graph::GraphSelection::Axis:
+        case Graph::GraphSelection::AxisTitle:
+        case Graph::GraphSelection::ReferenceLine:
+            switchToInspectorPage(PageTabAxis);
+            break;
+        case Graph::GraphSelection::Curve:
+        case Graph::GraphSelection::ErrorBars:
+        case Graph::GraphSelection::Spectrogram:
+            switchToInspectorPage(PageTabCurve);
+            break;
+        case Graph::GraphSelection::PlotTitle:
+        case Graph::GraphSelection::LegendBox:
+        case Graph::GraphSelection::TextAnnotation:
+        case Graph::GraphSelection::ArrowAnnotation:
+        case Graph::GraphSelection::ImageAnnotation:
+            switchToInspectorPage(PageTabLegend);
+            break;
+        case Graph::GraphSelection::Page:
+        case Graph::GraphSelection::Layer:
+            switchToInspectorPage(PageTabPageLayer);
+            break;
+        case Graph::GraphSelection::None:
+            break;
+        }
     }
 
     // Always keep lightweight Page, Axis, and Curve fields in sync so programmatic inspections

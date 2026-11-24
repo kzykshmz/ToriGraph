@@ -991,7 +991,7 @@ GraphInspectorDock::GraphInspectorDock(ApplicationWindow *app, QWidget *parent)
             bindLayerSignals(g);
         if (!d_syncing_props && !d_syncing_tree) {
             refreshObjectTree();
-            syncInspectorFromSelection();
+            syncInspectorFromSelection(false);
         }
     });
 
@@ -2064,9 +2064,11 @@ QColor GraphInspectorDock::pickColorInteractive(QWidget *parent, const QColor &i
     if (ApplicationWindow::isNonInteractiveContext(parent))
         return initial;
 
+    QPointer<QWidget> parentGuard(parent);
+
     // A3-6: compact ToriGraph Standard + Okabe-Ito + Basic/Grayscale color swatch popup,
     // with a "Custom Color..." button opening QColorDialog::getColor().
-    QMenu popup(parent);
+    QMenu popup;
     QWidget *panel = new QWidget(&popup);
     QVBoxLayout *vlay = new QVBoxLayout(panel);
     vlay->setContentsMargins(8, 8, 8, 8);
@@ -2148,15 +2150,17 @@ QColor GraphInspectorDock::pickColorInteractive(QWidget *parent, const QColor &i
     QPoint popupPos = QCursor::pos();
     if (QWidget *fw = QApplication::focusWidget()) {
         if (fw->objectName() == QLatin1String("InspectorColorSwatchBtn")
-            && (!parent || parent->isAncestorOf(fw))) {
+            && (!parentGuard || parentGuard->isAncestorOf(fw))) {
             popupPos = fw->mapToGlobal(QPoint(0, fw->height() + 2));
         }
     }
     popup.exec(popupPos);
 
     if (openCustom) {
-        return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black), parent,
-                                      title, QColorDialog::ShowAlphaChannel);
+        if (!parentGuard)
+            return QColor();
+        return QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::black),
+                                      parentGuard.data(), title, QColorDialog::ShowAlphaChannel);
     }
     return chosen;
 }

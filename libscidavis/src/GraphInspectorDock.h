@@ -110,7 +110,7 @@ public:
 
     void refreshAll();
     void refreshObjectTree();
-    void syncInspectorFromSelection();
+    void syncInspectorFromSelection(bool allowTabSwitch = true);
 
     void applyTheme();
     void retranslateUi();
