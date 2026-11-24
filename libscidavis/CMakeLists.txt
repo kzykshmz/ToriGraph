@@ -1,6 +1,7 @@
 ###################### HEADERS ##############################################
 set( HEADERS
   "src/ApplicationWindow.h"
+  "src/ApplicationWindow_Internal.h"
   "src/EmfPaintDevice.h"
   "src/OleServer.h"
   "src/IconLoader.h"
@@ -193,6 +194,12 @@ set( HEADERS
 ###################### SOURCES ##############################################
 set( SRCS
   "src/ApplicationWindow.cpp"
+  "src/ApplicationWindow_Menus.cpp"
+  "src/ApplicationWindow_SettingsAndStyles.cpp"
+  "src/ApplicationWindow_ProjectIO.cpp"
+  "src/ApplicationWindow_DataAndExport.cpp"
+  "src/ApplicationWindow_Plots.cpp"
+  "src/ApplicationWindow_Analysis.cpp"
   "src/EmfPaintDevice.cpp"
   "src/OleServer.cpp"
   "src/IconLoader.cpp"
@@ -393,9 +400,14 @@ add_library( libscidavis STATIC
   )
 
 if( MSVC )
-  # ApplicationWindow.cpp (33k lines) and PythonAutomationServer.cpp (30k lines) need >65k COFF sections
+  # Large ApplicationWindow* TUs and PythonAutomationServer.cpp need >65k COFF sections
   set_source_files_properties(
     "src/ApplicationWindow.cpp"
+    "src/ApplicationWindow_Menus.cpp"
+    "src/ApplicationWindow_SettingsAndStyles.cpp"
+    "src/ApplicationWindow_ProjectIO.cpp"
+    "src/ApplicationWindow_Plots.cpp"
+    "src/ApplicationWindow_Analysis.cpp"
     "src/PythonAutomationServer.cpp"
     PROPERTIES COMPILE_OPTIONS "/bigobj"
   )
