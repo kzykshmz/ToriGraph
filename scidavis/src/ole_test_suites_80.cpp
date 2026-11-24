@@ -207,6 +207,17 @@ struct AxesDialogProbe80 : public AxesDialog
         boxEnd->setText(endTxt);
         accept();
     }
+
+    void setTickFormulaAndUpdate(const QString &formulaTxt)
+    {
+        generalDialog.setCurrentWidget(axesPage);
+        axesList->setCurrentRow(0);
+        axesTitlesList->setCurrentRow(0);
+        if (!boxShowFormula->isChecked())
+            boxShowFormula->click();
+        boxFormula->setPlainText(formulaTxt);
+        accept();
+    }
 };
 
 static QByteArray encodeCpyuaZeroRle80(const QByteArray &raw)
@@ -1063,6 +1074,9 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
     // 80e: Locale RejectGroupSeparator, ScaleDraw, Dialogs, P0-3/P1-4 Log-axis Fit
     // -------------------------------------------------------------------------
     {
+        w80->switchToLanguage(QStringLiteral("en"));
+        QCoreApplication::processEvents();
+
         // num_locale_fit P1: en_US TableModel::setData + String2DoubleFilter (default
         // OmitGroupSeparator) and MyParser::Eval multi-expression rejection (nRes != 1).
         {
@@ -1112,10 +1126,13 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 QGroupBox *grpHistEn = nullptr;
                 for (QGroupBox *gb : pdHistEn.findChildren<QGroupBox *>()) {
                     if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
-                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(0, 1)->widget())
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(1, 1)->widget())
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(2, 1)->widget())) {
+                        auto *it0 = gl->itemAtPosition(0, 1);
+                        auto *it1 = gl->itemAtPosition(1, 1);
+                        auto *it2 = gl->itemAtPosition(2, 1);
+                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2 && it0 && it1 && it2
+                            && qobject_cast<QLineEdit *>(it0->widget())
+                            && qobject_cast<QLineEdit *>(it1->widget())
+                            && qobject_cast<QLineEdit *>(it2->widget())) {
                             grpHistEn = gb;
                             break;
                         }
@@ -1188,6 +1205,22 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                        << (sdMuX ? sdMuX->upperBound() : -1.0) << ")");
                 }
 
+                // Round 7 P1 coverage: AxesDialog::updatePlot() tick-formula nRes != 1 rejection
+                {
+                    bool sawFormMsgBox = false;
+                    QTimer formBoxTimer;
+                    installModalBoxAutoAccept(formBoxTimer, sawFormMsgBox);
+                    AxesDialogProbe80 axFormDlg;
+                    axFormDlg.setGraph(gMu);
+                    axFormDlg.setTickFormulaAndUpdate(QStringLiteral("x,5"));
+                    formBoxTimer.stop();
+                    CHECK_COND(sawFormMsgBox
+                                       && gMu->getAxesFormulas().value(QwtPlot::xBottom)
+                                               != QStringLiteral("x,5"),
+                               "80e-muparser: AxesDialog tick formula failed to reject 'x,5' (sawBox="
+                                       << sawFormMsgBox << ")");
+                }
+
                 {
                     EnvVarGuard80 fitEnIniGuard(
                             "TORIGRAPH_SETTINGS_INI",
@@ -1232,6 +1265,123 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                                "80e-muparser: FitDialog failed to reject '1,250' (sawBox="
                                        << sawFitMsgBox << " curves=" << gMu->curves() << "/"
                                        << preCurvesEn << ")");
+                }
+
+                // Round 7 P0 ASan regression: destroying FitDialog during Filter::isDataAcceptable
+                // (Sub-check A) or FitDialog::accept() (Sub-check B) modal QMessageBox must NOT
+                // double-free or UAF d_fitter / FitDialog (`this`) / child QMessageBox.
+                {
+                    struct InteractiveGuard80
+                    {
+                        ApplicationWindow *app = nullptr;
+                        QVariant prevNonInteractive;
+                        bool prevHeadless = true;
+                        explicit InteractiveGuard80(ApplicationWindow *w)
+                            : app(w)
+                            , prevNonInteractive(qApp->property("torigraph_noninteractive"))
+                            , prevHeadless(w ? w->isHeadlessMode() : true)
+                        {
+                            qApp->setProperty("torigraph_noninteractive", false);
+                            if (app)
+                                app->setHeadlessMode(false);
+                        }
+                        ~InteractiveGuard80()
+                        {
+                            qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+                            if (app)
+                                app->setHeadlessMode(prevHeadless);
+                        }
+                    };
+
+                    EnvVarGuard80 fitDeadIniGuard(
+                            "TORIGRAPH_SETTINGS_INI",
+                            QFile::encodeName(tmp80.filePath(QStringLiteral("fit_dead_80.ini"))));
+
+                    auto runFitSelfDestructModalCheck =
+                            [&](const char *label, Table *tbl, const QString &modelName,
+                                const QString &expectedMsgFragment) -> int {
+                                MultiLayer *mlFitDead = w80->multilayerPlot(
+                                        tbl, QStringList() << tbl->colName(1), Graph::Scatter);
+                                Graph *gFitDead = mlFitDead ? mlFitDead->activeGraph() : nullptr;
+                                CHECK_COND(gFitDead && gFitDead->curve(0),
+                                           label << ": gFitDead setup failed");
+
+                                QPointer<FitDialog> fdDead = new FitDialog(w80);
+                                fdDead->setAttribute(Qt::WA_DeleteOnClose, true);
+                                fdDead->setGraph(gFitDead);
+                                CHECK_COND(fdDead->selectRecentModel(modelName),
+                                           label << ": selectRecentModel("
+                                                 << modelName.toStdString() << ") failed");
+                                fdDead->showFitPage();
+
+                                bool sawFitDeadBox = false;
+                                QString capturedBoxText;
+                                QTimer fitDeadTimer;
+                                fitDeadTimer.setInterval(10);
+                                QObject::connect(&fitDeadTimer, &QTimer::timeout, [&]() {
+                                    QMessageBox *mb = qobject_cast<QMessageBox *>(
+                                            QApplication::activeModalWidget());
+                                    if (!mb) {
+                                        for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                                            if (auto *cand = qobject_cast<QMessageBox *>(tlw)) {
+                                                if (cand->isVisible()) {
+                                                    mb = cand;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (!mb)
+                                        return;
+                                    sawFitDeadBox = true;
+                                    capturedBoxText = mb->text();
+                                    if (fdDead) {
+                                        QPointer<FitDialog> target = fdDead;
+                                        target->close();
+                                        if (target)
+                                            delete target.data();
+                                    }
+                                    mb->accept();
+                                });
+                                InteractiveGuard80 interactive80(w80);
+                                fitDeadTimer.start();
+                                fdDead->accept();
+                                fitDeadTimer.stop();
+                                pumpEventsMs80(25);
+                                CHECK_COND(sawFitDeadBox && fdDead.isNull()
+                                                   && (expectedMsgFragment.isEmpty()
+                                                       || capturedBoxText.contains(
+                                                               expectedMsgFragment)),
+                                           label << ": FitDialog self-destruction during modal QMessageBox failed (sawBox="
+                                                 << sawFitDeadBox << ", null=" << fdDead.isNull()
+                                                 << ", text='" << capturedBoxText.toStdString()
+                                                 << "')");
+                                return 0;
+                            };
+
+                    // Sub-check A: 2 points with ExpDecay1 (d_min_points=3) passes start < end and
+                    // hits Filter::isDataAcceptable() (`Filter.cpp:222`) modal QMessageBox.
+                    Table *tFitDeadA = w80->newTable(2, 2, "T80FitDeadA", "FitDeadA80");
+                    tFitDeadA->setCell(0, 0, 1.0);
+                    tFitDeadA->setCell(0, 1, 2.0);
+                    tFitDeadA->setCell(1, 0, 2.0);
+                    tFitDeadA->setCell(1, 1, 5.0);
+                    if (runFitSelfDestructModalCheck("80e-fit-self-destruct-A", tFitDeadA,
+                                                     QStringLiteral("ExpDecay1"),
+                                                     QStringLiteral("at least 3 points"))
+                        != 0)
+                        return 1;
+
+                    // Sub-check B: 1 point with Polynomial (start >= end) hits FitDialog's own
+                    // parentWidget()-parented modal QMessageBox (`FitDialog.cpp`).
+                    Table *tFitDeadB = w80->newTable(1, 2, "T80FitDeadB", "FitDeadB80");
+                    tFitDeadB->setCell(0, 0, 1.0);
+                    tFitDeadB->setCell(0, 1, 2.0);
+                    if (runFitSelfDestructModalCheck("80e-fit-self-destruct-B", tFitDeadB,
+                                                     QStringLiteral("Polynomial"),
+                                                     QStringLiteral("from < end"))
+                        != 0)
+                        return 1;
                 }
             }
         }
@@ -1294,10 +1444,13 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 QGroupBox *grpHist = nullptr;
                 for (QGroupBox *gb : pdHist.findChildren<QGroupBox *>()) {
                     if (auto *gl = qobject_cast<QGridLayout *>(gb->layout())) {
-                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(0, 1)->widget())
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(1, 1)->widget())
-                            && qobject_cast<QLineEdit *>(gl->itemAtPosition(2, 1)->widget())) {
+                        auto *it0 = gl->itemAtPosition(0, 1);
+                        auto *it1 = gl->itemAtPosition(1, 1);
+                        auto *it2 = gl->itemAtPosition(2, 1);
+                        if (gl->rowCount() >= 3 && gl->columnCount() >= 2 && it0 && it1 && it2
+                            && qobject_cast<QLineEdit *>(it0->widget())
+                            && qobject_cast<QLineEdit *>(it1->widget())
+                            && qobject_cast<QLineEdit *>(it2->widget())) {
                             grpHist = gb;
                             break;
                         }
@@ -1782,6 +1935,19 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             dock80->setCollapsedRail(false);
             dock80->setTargetMultiLayer(mlDiag, true);
             QCoreApplication::processEvents();
+
+            // Round 7 P1 (07_inspector_page_ja): switching to Overall/Page tab before viewport
+            // auto-fit resize must NOT snap back to Curve tab via modifiedPlot coalesced refresh.
+            dock80->switchToInspectorPage(GraphInspectorDock::PageTabPageLayer);
+            QCoreApplication::processEvents();
+            CHECK_COND(dock80->propertyStack() && dock80->propertyStack()->currentIndex() == 0,
+                       "80f-page-tab-preserve: failed to switch to PageTabPageLayer");
+            wDiag->resize(1366, 768);
+            pumpEventsMs80(90);
+            CHECK_COND(dock80->propertyStack()->currentIndex() == 0,
+                       "80f-page-tab-preserve: P1 regression! resize snapped Inspector away from Page tab to index "
+                               << dock80->propertyStack()->currentIndex());
+
             QTreeWidget *tree = dock80->objectTree();
             QTreeWidgetItem *curveItem = nullptr;
             const int curveKind = static_cast<int>(Graph::GraphSelection::Curve);
@@ -1817,6 +1983,81 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
             CHECK_COND(gDiag->curves() == 0,
                        "80f-insp: Key_Delete on GraphInspectorDock objectTree did not delete curve (curves="
                                << gDiag->curves() << ")");
+
+            // Round 7 P1 ASan regression: deleting the target curve mid-modal pickColorInteractive
+            // QMenu::exec() must cleanly bail via QPointer/curveKey re-lookup with zero UAF.
+            {
+                Table *tCol = wDiag->newTable(4, 2, "T80ColUaf", "ColUaf80");
+                for (int r = 0; r < 4; ++r) {
+                    tCol->setCell(r, 0, double(r));
+                    tCol->setCell(r, 1, double(r * 3 + 2));
+                }
+                MultiLayer *mlColTest = wDiag->multilayerPlot(
+                        tCol, QStringList() << tCol->colName(1), Graph::Scatter);
+                Graph *gColTest = mlColTest ? mlColTest->activeGraph() : nullptr;
+                CHECK_COND(gColTest && gColTest->curves() == 1 && gColTest->curve(0),
+                           "80f-insp-color-uaf: mlColTest setup failed");
+                const QString initHex =
+                        gColTest->curve(0)->pen().color().name(QColor::HexRgb).toUpper();
+                dock80->setTargetMultiLayer(mlColTest, true);
+                dock80->switchToInspectorPage(GraphInspectorDock::PageTabCurve);
+                QCoreApplication::processEvents();
+
+                QPushButton *btnCol = nullptr;
+                for (QPushButton *cand :
+                     dock80->findChildren<QPushButton *>(QStringLiteral("InspectorColorSwatchBtn"))) {
+                    if (cand && cand->isVisible()) {
+                        btnCol = cand;
+                        break;
+                    }
+                }
+                CHECK_COND(btnCol != nullptr,
+                           "80f-insp-color-uaf: visible InspectorColorSwatchBtn not found");
+
+                struct NonInteractivePropGuard80
+                {
+                    QVariant prev;
+                    explicit NonInteractivePropGuard80(bool on)
+                        : prev(qApp->property("torigraph_noninteractive"))
+                    {
+                        qApp->setProperty("torigraph_noninteractive", on);
+                    }
+                    ~NonInteractivePropGuard80()
+                    {
+                        qApp->setProperty("torigraph_noninteractive", prev);
+                    }
+                } interactiveScope(false);
+
+                bool sawColorPopup = false;
+                bool clickedColorSwatch = false;
+                QTimer popupTimer;
+                popupTimer.setInterval(15);
+                QObject::connect(&popupTimer, &QTimer::timeout, [&]() {
+                    auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                    if (!popup || sawColorPopup)
+                        return;
+                    sawColorPopup = true;
+                    if (gColTest && gColTest->curves() > 0)
+                        gColTest->removeCurve(0);
+                    for (QToolButton *sw : popup->findChildren<QToolButton *>()) {
+                        const QString tip = sw->toolTip();
+                        if (tip.startsWith(QLatin1Char('#')) && tip != initHex) {
+                            clickedColorSwatch = true;
+                            sw->click();
+                            return;
+                        }
+                    }
+                    popup->close();
+                });
+                popupTimer.start();
+                btnCol->click();
+                popupTimer.stop();
+                QCoreApplication::processEvents();
+                CHECK_COND(sawColorPopup && clickedColorSwatch && gColTest->curves() == 0,
+                           "80f-insp-color-uaf: modal color popup curve-deletion test failed (sawPopup="
+                                   << sawColorPopup << ", clicked=" << clickedColorSwatch
+                                   << ", curves=" << gColTest->curves() << ")");
+            }
         }
 
         w80->switchToLanguage(QStringLiteral("en"));
