@@ -4022,6 +4022,15 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         // Force full layout & render pass first so headless geometries are finalized before telemetry.
         pumpLayoutEvents();
+        if (reqW >= 64 || reqH >= 64 || hasShowExplorer || hasExpandInspector
+            || params.contains(QStringLiteral("dock_explorer"))
+            || params.contains(QStringLiteral("workspace_mode"))) {
+            // Allow coalesced viewport auto-fit debounce timers (20 ms) to settle before grab().
+            QEventLoop settleLoop;
+            QTimer::singleShot(45, &settleLoop, &QEventLoop::quit);
+            settleLoop.exec(QEventLoop::ExcludeUserInputEvents);
+            pumpLayoutEvents();
+        }
         bool savedOk = true;
         QPixmap pm = d_app->grab();
         pumpLayoutEvents();
