@@ -568,7 +568,7 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
     d_btn_link_top_x->setPopupMode(QToolButton::InstantPopup);
     d_btn_link_top_x->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     d_btn_link_top_x->setIcon(IconLoader::duotoneIcon(QStringLiteral("axis-scale"), 15));
-    d_menu_link_top_x = new QMenu(d_btn_link_top_x);
+    d_menu_link_top_x = new QMenu(d_app ? static_cast<QWidget *>(d_app.data()) : nullptr);
     d_btn_link_top_x->setMenu(d_menu_link_top_x);
 
     auto addTopXFormulaLink = [this](const QString &formula, const QString &defaultTitle) {
@@ -752,13 +752,19 @@ QWidget *GraphInspectorDock::buildPageLayerInspector()
                 });
         d_menu_link_top_x->addSeparator();
         d_menu_link_top_x->addAction(tr("Custom Formula..."), this, [this, addTopXFormulaLink]() {
+            if (ApplicationWindow::isNonInteractiveContext(d_app))
+                return;
+            QPointer<GraphInspectorDock> self(this);
+            QPointer<MultiLayer> mlGuard(d_target_ml);
             bool ok = false;
+            QWidget *dlgParent = d_app ? static_cast<QWidget *>(d_app.data()) : nullptr;
             const QString expr = QInputDialog::getText(
-                    this, tr("Link Top-X Formula"),
+                    dlgParent, tr("Link Top-X Formula"),
                     tr("Formula in terms of bottom X (variable 'x'):"), QLineEdit::Normal,
                     QStringLiteral("1000.0/x"), &ok);
-            if (ok && !expr.trimmed().isEmpty())
-                addTopXFormulaLink(expr.trimmed(), QString());
+            if (!self || !mlGuard || !ok || expr.trimmed().isEmpty())
+                return;
+            addTopXFormulaLink(expr.trimmed(), QString());
         });
     });
     lay->addWidget(d_btn_link_top_x);
@@ -1142,10 +1148,12 @@ QWidget *GraphInspectorDock::buildAxisInspector()
     d_btn_ref_add_custom->setCursor(Qt::PointingHandCursor);
     connect(d_btn_ref_add_custom, &QPushButton::clicked, this, [this]() {
         if (Graph *g = activeLayer()) {
+            QPointer<GraphInspectorDock> self(this);
             const int defOrient =
                     (d_active_axis == QwtPlot::yLeft || d_active_axis == QwtPlot::yRight) ? 0 : 1;
             addReferenceLineInteractive(g, defOrient);
-            refreshAll();
+            if (self)
+                self->refreshAll(false);
         }
     });
     refRow->addWidget(d_btn_ref_zero_y, 1);
@@ -3058,8 +3066,9 @@ QWidget *GraphInspectorDock::buildLegendInspector()
                     (gGuard->isPiePlot() ? gGuard->pieLegendText() : gGuard->legendText())
                             .trimmed();
             if (!curTxt.isEmpty() && curTxt != autoTxt) {
+                QWidget *msgParent = d_app ? static_cast<QWidget *>(d_app.data()) : nullptr;
                 const auto ans = QMessageBox::question(
-                        this, tr("Rebuild Legend"),
+                        msgParent, tr("Rebuild Legend"),
                         tr("Rebuilding the legend will overwrite your custom legend labels and "
                            "header. Continue?"),
                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -3514,8 +3523,9 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         const QString startDir = !oldIm->fileName().isEmpty()
                 ? QFileInfo(oldIm->fileName()).absolutePath()
                 : (d_app ? d_app->workingDir : QString());
+        QWidget *dlgParent = d_app ? static_cast<QWidget *>(d_app.data()) : nullptr;
         const QString fn = QFileDialog::getOpenFileName(
-                this, tr("Select Replacement Image"), startDir,
+                dlgParent, tr("Select Replacement Image"), startDir,
                 tr("Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.gif *.svg);;All Files (*)"));
         if (!self || !mlGuard || !gGuard || fn.isEmpty() || !QFile::exists(fn))
             return;

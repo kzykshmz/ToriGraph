@@ -355,7 +355,7 @@ private:
     QPushButton *d_btn_box_inward = nullptr;
     QPushButton *d_btn_link_right_y = nullptr;
     QToolButton *d_btn_link_top_x = nullptr;
-    QMenu *d_menu_link_top_x = nullptr;
+    QPointer<QMenu> d_menu_link_top_x;
     QCheckBox *d_chk_panel_labels = nullptr;
     QComboBox *d_combo_panel_pos = nullptr;
 

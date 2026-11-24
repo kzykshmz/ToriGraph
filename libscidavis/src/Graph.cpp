@@ -2615,7 +2615,8 @@ bool Graph::editReferenceLineDialog(int index)
 
     ReferenceLineSpec spec = d_ref_lines[index];
 
-    QDialog dlg(this);
+    QPointer<Graph> safeG(this);
+    QDialog dlg(window());
     dlg.setWindowTitle(tr("Edit Reference Line"));
     dlg.setModal(true);
     dlg.setFont(QFont(QStringLiteral("Arial"), 10));
@@ -2700,7 +2701,7 @@ bool Graph::editReferenceLineDialog(int index)
     btnRow->addWidget(bbox);
     mainLay->addLayout(btnRow);
 
-    if (dlg.exec() != QDialog::Accepted)
+    if (dlg.exec() != QDialog::Accepted || !safeG || index < 0 || index >= d_ref_lines.size())
         return false;
 
     if (deleted) {

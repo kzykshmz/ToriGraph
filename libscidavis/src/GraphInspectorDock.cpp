@@ -1007,7 +1007,13 @@ GraphInspectorDock::GraphInspectorDock(ApplicationWindow *app, QWidget *parent)
     }
 }
 
-GraphInspectorDock::~GraphInspectorDock() = default;
+GraphInspectorDock::~GraphInspectorDock()
+{
+    if (d_menu_link_top_x) {
+        d_menu_link_top_x->close();
+        d_menu_link_top_x->deleteLater();
+    }
+}
 
 Graph *GraphInspectorDock::activeLayer() const
 {
