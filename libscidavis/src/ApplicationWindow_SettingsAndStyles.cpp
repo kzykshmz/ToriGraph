@@ -3702,14 +3702,18 @@ void ApplicationWindow::showPageSetupDialog()
     QWidget *w = d_workspace.activeSubWindow();
     if (!w || !w->inherits("MultiLayer"))
         return;
-    MultiLayer *ml = static_cast<MultiLayer *>(w);
-    const QString before = ml->captureUndoSnapshot();
-    const int prevCount = ml->undoStack() ? ml->undoStack()->count() : 0;
-    ml->showPageSetupDialog();
-    if (!ml->undoStack() || ml->undoStack()->count() == prevCount)
-        ml->pushUndoSnapshot(tr("Page Setup"), before);
+    QPointer<ApplicationWindow> self(this);
+    QPointer<MultiLayer> safeMl(static_cast<MultiLayer *>(w));
+    const QString before = safeMl->captureUndoSnapshot();
+    const int prevCount = safeMl->undoStack() ? safeMl->undoStack()->count() : 0;
+    safeMl->showPageSetupDialog();
+    if (!self)
+        return;
+    if (safeMl && (!safeMl->undoStack() || safeMl->undoStack()->count() == prevCount))
+        safeMl->pushUndoSnapshot(tr("Page Setup"), before);
     syncGraphPageAndToolbarMenuState();
-    emit modified();
+    if (safeMl)
+        emit modified();
 }
 
 void ApplicationWindow::fitPageToLayers()
