@@ -2324,6 +2324,7 @@ QwtPlotCurve *GraphStatsAndSurfaceFit::addConfidenceEllipse(ApplicationWindow *a
                                          QList<Column *>() << colX << colY);
     if (!backing)
         return nullptr;
+    backing->setProperty("_tg_internal_helper", true);
 
     DataCurve *ellipseCurve = new DataCurve(backing, tblName + "_" + colX->name(),
                                             tblName + "_" + colY->name());
@@ -4408,25 +4409,47 @@ void GraphStatsAndSurfaceFit::showPCADialog(ApplicationWindow *app)
     form->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
     lay->addLayout(form);
 
-    auto populateCols = [&]() {
-        colList->clear();
-        int idx = tableCombo->currentIndex();
-        if (idx < 0 || idx >= tables.size())
-            return;
-        Table *t = tables[idx];
-        for (int c = 0; c < t->numCols(); ++c) {
-            if (columnHasNumericValues(t->column(c))) {
-                QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
-                it->setSelected(true);
-            }
-        }
-    };
-    populateCols();
-    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                     [&](int) { populateCols(); });
+    QLabel *hintLbl = new QLabel(
+            QObject::tr("Select at least 2 numeric columns (X columns are excluded by default)."),
+            &dlg);
+    hintLbl->setWordWrap(true);
+    hintLbl->setStyleSheet(QStringLiteral("QLabel { color: #b45309; font-size: 11px; }"));
+    lay->addWidget(hintLbl);
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QPushButton *okBtn = btns->button(QDialogButtonBox::Ok);
+    auto updateSelectionState = [&]() {
+        const bool ok = (colList->selectedItems().size() >= 2);
+        if (okBtn)
+            okBtn->setEnabled(ok);
+        hintLbl->setVisible(!ok);
+    };
+
+    auto populateCols = [&]() {
+        QSignalBlocker blk(colList);
+        colList->clear();
+        int idx = tableCombo->currentIndex();
+        if (idx < 0 || idx >= tables.size()) {
+            updateSelectionState();
+            return;
+        }
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (columnHasNumericValues(col)) {
+                QListWidgetItem *it = new QListWidgetItem(col->name(), colList);
+                const bool isX = (col && col->plotDesignation() == SciDAVis::X);
+                it->setSelected(!isX);
+            }
+        }
+        updateSelectionState();
+    };
+    populateCols();
+    QObject::connect(tableCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { populateCols(); });
+    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg, updateSelectionState);
+
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     lay->addWidget(btns);
@@ -9413,15 +9436,21 @@ void GraphStatsAndSurfaceFit::showWeibullDialog(ApplicationWindow *app)
     lay->addWidget(btns);
 
     if (dlg.exec() == QDialog::Accepted) {
+        const bool mleRequested = cbEstimator->currentData().toBool();
         const WeibullPlotResult wr = plotWeibullProbability(
                 app, tables[cbTable->currentIndex()], cbData->currentText(),
                 cbCensor->currentData().toString(), cbCensorCoding->currentData().toInt(),
-                chkThreeParam->isChecked(), cbEstimator->currentData().toBool(), true,
+                chkThreeParam->isChecked(), mleRequested, true,
                 chkJisUnbias->isEnabled() && chkJisUnbias->isChecked());
         if (!wr.valid) {
             QString msg = wr.error;
             if (!wr.notes.isEmpty())
                 msg += QStringLiteral("\n\n") + wr.notes.join(QLatin1Char('\n'));
+            QMessageBox::warning(app, QObject::tr("Weibull Probability Plot"), msg);
+        } else if (mleRequested && !wr.usedMle) {
+            QString msg = !wr.notes.isEmpty()
+                    ? wr.notes.join(QLatin1Char('\n'))
+                    : QObject::tr("MLE did not converge; median rank regression values are reported instead.");
             QMessageBox::warning(app, QObject::tr("Weibull Probability Plot"), msg);
         }
     }
@@ -9894,26 +9923,16 @@ void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
 
     QListWidget *colList = new QListWidget(&dlg);
     colList->setSelectionMode(QAbstractItemView::MultiSelection);
-    auto populateCols = [&]() {
-        colList->clear();
-        const int idx = cbTable->currentIndex();
-        if (idx < 0 || idx >= tables.size())
-            return;
-        Table *t = tables[idx];
-        for (int c = 0; c < t->numCols(); ++c) {
-            if (columnHasNumericValues(t->column(c))) {
-                QListWidgetItem *it = new QListWidgetItem(t->column(c)->name(), colList);
-                it->setSelected(true);
-            }
-        }
-    };
-    populateCols();
-    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
-                     [&](int) { populateCols(); });
-
     topForm->addRow(QObject::tr("Source Table:"), cbTable);
     topForm->addRow(QObject::tr("Variables (2+ Numeric Columns):"), colList);
     lay->addLayout(topForm);
+
+    QLabel *hintLbl = new QLabel(
+            QObject::tr("Select at least 2 numeric columns (X columns are excluded by default)."),
+            &dlg);
+    hintLbl->setWordWrap(true);
+    hintLbl->setStyleSheet(QStringLiteral("QLabel { color: #b45309; font-size: 11px; }"));
+    lay->addWidget(hintLbl);
 
     QTabWidget *tabs = new QTabWidget(&dlg);
 
@@ -9943,6 +9962,37 @@ void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
 
     QDialogButtonBox *btns =
             new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QPushButton *okBtn = btns->button(QDialogButtonBox::Ok);
+    auto updateSelectionState = [&]() {
+        const bool ok = (colList->selectedItems().size() >= 2);
+        if (okBtn)
+            okBtn->setEnabled(ok);
+        hintLbl->setVisible(!ok);
+    };
+    auto populateCols = [&]() {
+        QSignalBlocker blk(colList);
+        colList->clear();
+        const int idx = cbTable->currentIndex();
+        if (idx < 0 || idx >= tables.size()) {
+            updateSelectionState();
+            return;
+        }
+        Table *t = tables[idx];
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (columnHasNumericValues(col)) {
+                QListWidgetItem *it = new QListWidgetItem(col->name(), colList);
+                const bool isX = (col && col->plotDesignation() == SciDAVis::X);
+                it->setSelected(!isX);
+            }
+        }
+        updateSelectionState();
+    };
+    populateCols();
+    QObject::connect(cbTable, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int) { populateCols(); });
+    QObject::connect(colList, &QListWidget::itemSelectionChanged, &dlg, updateSelectionState);
+
     QObject::connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     lay->addWidget(btns);
@@ -9953,7 +10003,7 @@ void GraphStatsAndSurfaceFit::showClusteringDialog(ApplicationWindow *app)
     QStringList selected;
     for (QListWidgetItem *it : colList->selectedItems())
         selected << it->text();
-    if (selected.isEmpty())
+    if (selected.size() < 2)
         return;
 
     if (tabs->currentIndex() == 0) {

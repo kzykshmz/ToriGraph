@@ -3082,8 +3082,13 @@ void PiecewiseAndRobustFit::showCompareDatasetsDialog(ApplicationWindow *app, Gr
     QStringList models = NonLinearFit::builtInModelNames();
     if (!models.contains(QStringLiteral("Linear")))
         models.prepend(QStringLiteral("Linear"));
-    modelCombo->addItems(models);
-    const int expIdx = modelCombo->findText(QStringLiteral("ExpDec1"));
+    for (const QString &mName : models) {
+        const QString displayLabel = (mName == QLatin1String("VoigtApprox"))
+                ? QStringLiteral("PseudoVoigt1 (Voigt approx.)")
+                : mName;
+        modelCombo->addItem(displayLabel, mName);
+    }
+    const int expIdx = modelCombo->findData(QStringLiteral("ExpDec1"));
     if (expIdx >= 0)
         modelCombo->setCurrentIndex(expIdx);
     form->addRow(QObject::tr("Model Function:"), modelCombo);
@@ -3107,7 +3112,10 @@ void PiecewiseAndRobustFit::showCompareDatasetsDialog(ApplicationWindow *app, Gr
                                  QObject::tr("Please check at least two datasets."));
             return;
         }
-        const auto out = compareDatasets(app, g, chosen, modelCombo->currentText());
+        QString modelKey = modelCombo->currentData().toString();
+        if (modelKey.isEmpty())
+            modelKey = modelCombo->currentText();
+        const auto out = compareDatasets(app, g, chosen, modelKey);
         if (!out.valid) {
             QMessageBox::warning(app, QObject::tr("Compare Datasets"),
                                  QObject::tr("Dataset comparison failed (insufficient degrees of freedom or model mismatch)."));

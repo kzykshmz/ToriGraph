@@ -81,8 +81,9 @@ public slots:
      * 2 -> border + shadow
      */
     void setBackgroundType(int bkg);
-    //! Set rotation angle (not yet implemented)
+    //! Set rotation angle
     void setAngle(int angle);
+    void done(int r) override;
     //! Set the background color to 'c'
     void setBackgroundColor(QColor c);
     //! Set the text color to 'c'
@@ -149,7 +150,9 @@ protected:
     QComboBox *alignmentBox;
     TextFormatButtons *formatButtons;
     QSpinBox *boxBackgroundTransparency;
+    QSpinBox *boxAngle = nullptr;
     QDoubleSpinBox *boxFontSize = nullptr;
+    int d_angle = 0;
 };
 
 #endif // TEXTDLG_H

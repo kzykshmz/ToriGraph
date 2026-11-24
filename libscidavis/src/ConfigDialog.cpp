@@ -750,8 +750,9 @@ void ConfigDialog::initFittingPage()
     lblPrecision = new QLabel();
     fitParamsLayout->addWidget(lblPrecision, 0, 0);
     boxPrecision = new QSpinBox();
+    boxPrecision->setRange(1, 15);
     fitParamsLayout->addWidget(boxPrecision, 0, 1);
-    boxPrecision->setValue(app->fit_output_precision);
+    boxPrecision->setValue(qBound(1, app->fit_output_precision, 15));
 
     logBox = new QCheckBox();
     logBox->setChecked(app->writeFitResultsToLog);
@@ -1142,17 +1143,29 @@ void ConfigDialog::languageChange()
 
 void ConfigDialog::accept()
 {
-    apply();
-    close();
+    if (applySettings())
+        QDialog::accept();
+}
+
+void ConfigDialog::done(int r)
+{
+    QDialog::done(r);
+    if (testAttribute(Qt::WA_DeleteOnClose))
+        deleteLater();
 }
 
 void ConfigDialog::apply()
 {
+    applySettings();
+}
+
+bool ConfigDialog::applySettings()
+{
     ApplicationWindow *app = (ApplicationWindow *)parentWidget();
     if (!app)
-        return;
+        return false;
 
-    // tables page
+    // Validate before mutating any state or persisting settings.
     QString sep = boxSeparator->currentText();
     sep.replace(tr("TAB"), "\t", Qt::CaseInsensitive);
     sep.replace("\\t", "\t");
@@ -1160,10 +1173,20 @@ void ConfigDialog::apply()
     sep.replace("\\s", " ");
 
     if (sep.contains(QRegExp("[0-9.eE+-]")) != 0) {
+        if (itemsList)
+            itemsList->setCurrentRow(1);
+        generalDialog->setCurrentWidget(tables);
         QMessageBox::warning(
-                0, tr("Import options error"),
+                this, tr("Import options error"),
                 tr("The separator must not contain the following characters: 0-9eE.+-"));
-        return;
+        boxSeparator->setFocus();
+        return false;
+    }
+
+    if (d_pendingLanguageIdx >= 0 && d_pendingLanguageIdx < app->locales.size()
+        && app->locales.at(d_pendingLanguageIdx) != app->appLanguage) {
+        app->switchToLanguage(d_pendingLanguageIdx);
+        languageChange();
     }
 
     app->columnSeparator = sep;
@@ -1314,6 +1337,7 @@ void ConfigDialog::apply()
     settings.setValue("/General/UseForeignSeparator", boxUseForeignSeparator->isChecked());
     settings.setValue("/General/SetColumnTypeToTextOnInvalidInput",
                       boxConvertToTextColumn->isChecked());
+    return true;
 }
 
 int ConfigDialog::curveStyle()
@@ -1584,9 +1608,8 @@ void ConfigDialog::setColumnSeparator(const QString &sep)
 
 void ConfigDialog::switchToLanguage(int param)
 {
-    ApplicationWindow *app = (ApplicationWindow *)parentWidget();
-    app->switchToLanguage(param);
-    languageChange();
+    // Stage language selection until Apply/OK so Cancel leaves the application language intact.
+    d_pendingLanguageIdx = param;
 }
 
 void ConfigDialog::insertLanguagesList()
@@ -1620,6 +1643,7 @@ void ConfigDialog::insertLanguagesList()
     }
     boxLanguage->addItems(languages);
     boxLanguage->setCurrentIndex(lang);
+    d_pendingLanguageIdx = lang;
 }
 
 void ConfigDialog::showPointsBox(bool)

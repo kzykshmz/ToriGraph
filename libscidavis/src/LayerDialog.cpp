@@ -696,33 +696,33 @@ void LayerDialog::update()
 
     if (graphs > 0 && cellLayers > 0 && !fitBox->isChecked()) {
         if (cols > cellLayers) {
-            QMessageBox::about(this, tr("Columns input error"),
-                               tr("The number of columns you've entered is greater than the "
-                                  "number of graphs (%1)!")
-                                       .arg(cellLayers));
+            QMessageBox::warning(this, tr("Columns input error"),
+                                 tr("The number of columns you've entered is greater than the "
+                                    "number of graphs (%1)!")
+                                         .arg(cellLayers));
             boxX->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
         }
 
         if (rows > cellLayers) {
-            QMessageBox::about(this, tr("Rows input error"),
-                               tr("The number of rows you've entered is greater than the number "
-                                  "of graphs (%1)!")
-                                       .arg(cellLayers));
+            QMessageBox::warning(this, tr("Rows input error"),
+                                 tr("The number of rows you've entered is greater than the number "
+                                    "of graphs (%1)!")
+                                         .arg(cellLayers));
             boxY->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
         }
 
         if (rows * cols < cellLayers) {
-            QMessageBox::about(this, tr("Grid input error"),
-                               tr("The grid (%1 x %2 = %3 cells) is too small for the %4 "
-                                  "layer(s) that occupy a grid cell!")
-                                       .arg(cols)
-                                       .arg(rows)
-                                       .arg(rows * cols)
-                                       .arg(cellLayers));
+            QMessageBox::warning(this, tr("Grid input error"),
+                                 tr("The grid (%1 x %2 = %3 cells) is too small for the %4 "
+                                    "layer(s) that occupy a grid cell!")
+                                         .arg(cols)
+                                         .arg(rows)
+                                         .arg(rows * cols)
+                                         .arg(cellLayers));
             boxX->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
@@ -863,5 +863,12 @@ void LayerDialog::accept()
 {
     update();
     if (!property("lastUpdateAborted").toBool())
-        close();
+        QDialog::accept();
+}
+
+void LayerDialog::done(int r)
+{
+    QDialog::done(r);
+    if (testAttribute(Qt::WA_DeleteOnClose))
+        deleteLater();
 }

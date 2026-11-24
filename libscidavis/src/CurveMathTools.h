@@ -20,6 +20,7 @@
 
 class ApplicationWindow;
 class Graph;
+class Legend;
 class Matrix;
 class MultiLayer;
 class QwtPlotCurve;
@@ -278,6 +279,11 @@ public:
                                                     double elasticXMax = std::numeric_limits<double>::quiet_NaN());
     static void showWorkHardeningDialog(ApplicationWindow *app);
 
+    //! Place a callout / summary Legend box inside the canvas while avoiding plotted data curves.
+    static void placeCalloutAutoAvoid(Graph *g, Legend *box, int marginPx = 14,
+                                      bool allowScaleExpand = true,
+                                      bool preferUpperRight = false);
+
     struct XRDPeakEntry {
         double twoThetaDeg = 0.0;
         double dSpacingAngstrom = 0.0;
@@ -285,11 +291,12 @@ public:
         double intensity = 0.0;
         double scherrerSizeNm = 0.0;
         QString hklLabel;
+        double pseudoVoigtEta = 0.5;
     };
     struct XRDAnalysisResult {
         bool valid = false;
         QString error;
-        double wavelengthAngstrom = 1.540598;
+        double wavelengthAngstrom = 1.541838;
         double meanScherrerSizeNm = 0.0;
         double whSizeNm = 0.0;     // NaN when W-H has no physical solution (intercept <= 0)
         double whMicrostrain = 0.0; // NaN when the W-H slope is negative (no physical solution)
@@ -311,11 +318,11 @@ public:
     };
     static XRDAnalysisResult analyzeXRD(ApplicationWindow *app, Graph *g,
                                         const QString &curveTitle = QString(),
-                                        double wavelengthAngstrom = 1.540598,
+                                        double wavelengthAngstrom = 1.541838,
                                         double instrFwhmDeg = 0.05,
                                         double scherrerK = 0.90,
                                         const QString &crystalSystem = QStringLiteral("fcc"),
-                                        bool stripKAlpha2 = false,
+                                        bool stripKAlpha2 = true,
                                         bool addTopDSpacingAxis = true,
                                         bool createWilliamsonHallPlot = true,
                                         double cOverA = 1.633);

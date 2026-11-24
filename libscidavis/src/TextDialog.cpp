@@ -68,6 +68,7 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     textType = type;
     selectedFont = QFont(QStringLiteral("Arial"));
     selectedFont.setPointSizeF(12.0);
+    buttonDefault = nullptr;
 
     // top groupbox
     groupBox1 = new QGroupBox(QString());
@@ -80,13 +81,6 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     colorBtn = new ColorButton();
     // add color button
     topLayout->addWidget(colorBtn, 0, 1);
-
-    buttonOk = new QPushButton(tr("&OK"));
-    buttonOk->setAutoDefault(true);
-    buttonOk->setDefault(true);
-
-    // add ok button
-    topLayout->addWidget(buttonOk, 0, 3);
 
     // add font label
     topLayout->addWidget(new QLabel(tr("Font")), 1, 0);
@@ -109,12 +103,6 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     // add font button + fractional pt spinbox
     topLayout->addLayout(fontRowLayout, 1, 1);
 
-    buttonApply = new QPushButton(tr("&Apply"));
-    buttonApply->setAutoDefault(false);
-
-    // add apply button
-    topLayout->addWidget(buttonApply, 1, 3);
-
     if (textType == TextDialog::AxisTitle) {
         // add label "alignment"
         topLayout->addWidget(new QLabel(tr("Alignment")), 2, 0);
@@ -134,11 +122,6 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
         topLayout->addWidget(backgroundBox, 2, 1);
     }
 
-    buttonCancel = new QPushButton(tr("&Cancel"));
-    buttonCancel->setAutoDefault(false);
-    // add cancel button
-    topLayout->addWidget(buttonCancel, 2, 3);
-
     if (textType == TextDialog::TextMarker) { // TODO: Sometime background features for axes lables
                                               // should be implemented
         topLayout->addWidget(new QLabel(tr("Opacity")), 3, 0);
@@ -157,18 +140,28 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
         // add background button
         topLayout->addWidget(backgroundBtn, 4, 1);
 
+        topLayout->addWidget(new QLabel(tr("Rotation")), 5, 0);
+        boxAngle = new QSpinBox();
+        boxAngle->setRange(-360, 360);
+        boxAngle->setSingleStep(15);
+        boxAngle->setWrapping(true);
+        boxAngle->setSuffix(QStringLiteral("\u00B0"));
+        boxAngle->setValue(d_angle);
+        topLayout->addWidget(boxAngle, 5, 1);
+        connect(boxAngle, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                [this](int ang) { d_angle = ang; });
+
         connect(boxBackgroundTransparency, SIGNAL(valueChanged(int)), this,
                 SLOT(updateTransparency(int)));
         connect(backgroundBtn, SIGNAL(changed(const QColor &)), this,
                 SLOT(pickBackgroundColor(const QColor &)));
 
         buttonDefault = new QPushButton(tr("Set As &Default"));
-        topLayout->addWidget(buttonDefault, 3, 3);
+        buttonDefault->setAutoDefault(false);
         connect(buttonDefault, SIGNAL(clicked()), this, SLOT(setDefaultValues()));
     }
 
-    // align the OK, Apply, and Cancel buttons to the right
-    topLayout->setColumnStretch(2, 1);
+    topLayout->setColumnStretch(1, 1);
 
     textEditBox = new QTextEdit();
     textEditBox->setAcceptRichText(false);
@@ -180,11 +173,32 @@ TextDialog::TextDialog(TextType type, QWidget *parent, Qt::WindowFlags fl) : QDi
     setFocusPolicy(Qt::StrongFocus);
     setFocusProxy(textEditBox);
 
+    buttonOk = new QPushButton(tr("&OK"));
+    buttonOk->setAutoDefault(true);
+    buttonOk->setDefault(true);
+
+    buttonApply = new QPushButton(tr("&Apply"));
+    buttonApply->setAutoDefault(false);
+
+    buttonCancel = new QPushButton(tr("&Cancel"));
+    buttonCancel->setAutoDefault(false);
+
+    // Keep OK / Apply / Cancel in a trailing QHBoxLayout so ToriUx keeps the footer sticky.
+    QHBoxLayout *footerLayout = new QHBoxLayout();
+    footerLayout->setContentsMargins(0, 4, 0, 0);
+    if (buttonDefault)
+        footerLayout->addWidget(buttonDefault);
+    footerLayout->addStretch(1);
+    footerLayout->addWidget(buttonOk);
+    footerLayout->addWidget(buttonApply);
+    footerLayout->addWidget(buttonCancel);
+
     // put everything together
     QVBoxLayout *mainLayout = new QVBoxLayout();
     mainLayout->addWidget(groupBox1);
     mainLayout->addWidget(formatButtons);
-    mainLayout->addWidget(textEditBox);
+    mainLayout->addWidget(textEditBox, 1);
+    mainLayout->addLayout(footerLayout);
     setLayout(mainLayout);
 
     // signals and slots connections
@@ -238,7 +252,14 @@ void TextDialog::setDefaultValues()
 void TextDialog::accept()
 {
     apply();
-    close();
+    QDialog::accept();
+}
+
+void TextDialog::done(int r)
+{
+    QDialog::done(r);
+    if (testAttribute(Qt::WA_DeleteOnClose))
+        deleteLater();
 }
 
 void TextDialog::setBackgroundType(int bkg)
@@ -298,15 +319,18 @@ void TextDialog::customFont()
     }
 }
 
-void TextDialog::setAngle(int /*angle*/)
+void TextDialog::setAngle(int angle)
 {
-    // Rotation is not editable in this dialog; kept for API compatibility with the callers.
+    d_angle = angle;
+    if (boxAngle) {
+        QSignalBlocker blk(boxAngle);
+        boxAngle->setValue(angle);
+    }
 }
 
 int TextDialog::angle()
 {
-    // Rotation is not editable in this dialog; always 0.
-    return 0;
+    return boxAngle ? boxAngle->value() : d_angle;
 }
 
 void TextDialog::setText(const QString &t)

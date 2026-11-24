@@ -49,7 +49,8 @@ public:
     void setMultiLayer(MultiLayer *g);
 
 protected slots:
-    void accept();
+    void accept() override;
+    void done(int r) override;
     void update();
     void enableLayoutOptions(bool ok);
     void onAspectPresetChanged(int index);

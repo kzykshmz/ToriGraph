@@ -32,6 +32,7 @@
 #include "Table.h"
 #include "FunctionCurve.h"
 #include "PlotCurve.h"
+#include "CurveMathTools.h"
 #include "future/core/column/Column.h"
 
 #include <QApplication>
@@ -299,13 +300,8 @@ void Filter::showLegend()
     if (!d_graph)
         return;
     Legend *mrk = d_graph->newLegend(legendInfo());
-    if (mrk && d_graph->hasLegend()) {
-        Legend *legend = d_graph->legend();
-        if (legend && legend != mrk) {
-            QPoint p = legend->rect().bottomLeft();
-            mrk->setOrigin(QPoint(p.x(), p.y() + 20));
-        }
-    }
+    if (mrk)
+        CurveMathTools::placeCalloutAutoAvoid(d_graph, mrk, 14, false, true);
     d_graph->replot();
 }
 

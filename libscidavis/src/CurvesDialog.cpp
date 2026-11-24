@@ -27,6 +27,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "CurvesDialog.h"
+#include "AssociationsDialog.h"
 #include "Graph.h"
 #include "I18nJapanese.h"
 #include "MultiLayer.h"
@@ -63,26 +64,14 @@ void registerCurvesDialogTranslations()
     if (s_registered)
         return;
     s_registered = true;
-    auto reg = [](const char *en, const char *ja) {
-        ToriGraphFullJapaneseTranslator::registerExtraTranslation(QString::fromUtf8(en),
-                                                                  QString::fromUtf8(ja));
+    auto regCtx = [](const char *en, const char *ja) {
+        ToriGraphFullJapaneseTranslator::registerContextTranslation(
+                QStringLiteral("CurvesDialog"), QString::fromUtf8(en), QString::fromUtf8(ja));
     };
-    reg("Line", "折れ線");
-    reg("Scatter", "散布図");
-    reg("Line + Symbol", "折れ線＋マーカー");
-    reg("Vertical drop lines", "垂直ドロップライン");
-    reg("Spline", "スプライン曲線");
-    reg("Vertical steps", "垂直ステップ");
-    reg("Horizontal steps", "水平ステップ");
-    // "Area" is also a result column (面積) elsewhere, so the plot-style meaning is only
-    // registered for this dialog's tr() context (H1).
-    ToriGraphFullJapaneseTranslator::registerContextTranslation(
-            QStringLiteral("CurvesDialog"), QStringLiteral("Area"), QString::fromUtf8("面グラフ"));
-    reg("Vertical Bars", "縦棒グラフ");
-    reg("Horizontal Bars", "横棒グラフ");
-    reg("Long Name: %1", "ロングネーム: %1");
-    reg("Units: %1", "単位: %1");
-    reg("Filter columns...", "列を検索...");
+    regCtx("Add selected column(s) to graph (>>)", "選択した列をグラフに追加 (>>)");
+    regCtx("Add selected column(s) to graph", "選択した列をグラフに追加");
+    regCtx("Remove selected curve(s) from graph (<<)", "選択した曲線をグラフから削除 (<<)");
+    regCtx("Remove selected curve(s) from graph", "選択した曲線をグラフから削除");
 }
 
 QString formatAvailableColumnDisplay(Table *t, int colIdx, const QString &rawColName,
@@ -173,12 +162,16 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     btnAdd->setIcon(IconLoader::duotoneIcon("curve-add"));
     btnAdd->setIconSize(QSize(18, 18));
     btnAdd->setFixedSize(40, 32);
+    btnAdd->setToolTip(tr("Add selected column(s) to graph (>>)"));
+    btnAdd->setAccessibleName(tr("Add selected column(s) to graph"));
     vl1->addWidget(btnAdd);
 
     btnRemove = new QPushButton();
     btnRemove->setIcon(IconLoader::duotoneIcon("curve-remove"));
     btnRemove->setIconSize(QSize(18, 18));
     btnRemove->setFixedSize(40, 32);
+    btnRemove->setToolTip(tr("Remove selected curve(s) from graph (<<)"));
+    btnRemove->setAccessibleName(tr("Remove selected curve(s) from graph"));
     vl1->addWidget(btnRemove);
     vl1->addStretch();
 
@@ -246,8 +239,8 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
     connect(btnMoveDown, SIGNAL(clicked()), this, SLOT(moveCurveDown()));
     connect(btnAdd, SIGNAL(clicked()), this, SLOT(addCurves()));
     connect(btnRemove, SIGNAL(clicked()), this, SLOT(removeCurves()));
-    connect(btnOK, SIGNAL(clicked()), this, SLOT(close()));
-    connect(btnCancel, SIGNAL(clicked()), this, SLOT(close()));
+    connect(btnOK, SIGNAL(clicked()), this, SLOT(accept()));
+    connect(btnCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(contents, SIGNAL(currentRowChanged(int)), this, SLOT(showCurveBtn(int)));
     connect(contents, SIGNAL(itemSelectionChanged()), this, SLOT(enableRemoveBtn()));
     connect(available, SIGNAL(itemSelectionChanged()), this, SLOT(enableAddBtn()));
@@ -266,7 +259,7 @@ CurvesDialog::CurvesDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 
 void CurvesDialog::showCurveBtn(int)
 {
-    if (!d_graph || !d_graphGuard) {
+    if (!d_graphGuard) {
         btnEditFunction->setEnabled(false);
         btnAssociations->setEnabled(false);
         btnRange->setEnabled(false);
@@ -347,26 +340,36 @@ void CurvesDialog::applyAvailableFilter()
 
 void CurvesDialog::showCurveRangeDialog()
 {
+    if (!d_graphGuard)
+        return;
     int curve = contents->currentRow();
     if (curve < 0)
         curve = 0;
 
     ApplicationWindow *app = appWindow();
     if (app) {
-        app->showCurveRangeDialog(d_graph, curve);
-        updateCurveRange();
+        app->showCurveRangeDialog(d_graphGuard.data(), curve);
+        if (d_graphGuard)
+            updateCurveRange();
     }
 }
 
 void CurvesDialog::showPlotAssociations()
 {
+    if (!d_graphGuard)
+        return;
     int curve = contents->currentRow();
     if (curve < 0)
         curve = 0;
 
     ApplicationWindow *app = appWindow();
     if (app) {
-        app->showPlotAssociations(curve);
+        AssociationsDialog ad(this, Qt::WindowStaysOnTopHint);
+        if (MultiLayer *ml = d_graphGuard->multiLayerParent())
+            ad.setProperty("targetMultiLayerPtr", QVariant::fromValue(static_cast<QObject *>(ml)));
+        ad.setGraph(d_graphGuard.data());
+        ad.initTablesList(app->tableList(), curve);
+        ad.exec();
         if (d_graphGuard) {
             setGraph(d_graphGuard.data());
             updateCurveRange();
@@ -379,12 +382,15 @@ void CurvesDialog::showPlotAssociations()
 
 void CurvesDialog::showFunctionDialog()
 {
+    if (!d_graphGuard)
+        return;
     ApplicationWindow *app = appWindow();
     int currentRow = contents->currentRow();
-    close();
+    Graph *g = d_graphGuard.data();
+    accept();
 
-    if (app)
-        app->showFunctionDialog(d_graph, currentRow);
+    if (app && g)
+        app->showFunctionDialog(g, currentRow);
 }
 
 QSize CurvesDialog::sizeHint() const
@@ -459,7 +465,6 @@ void CurvesDialog::init()
 
 void CurvesDialog::setGraph(Graph *graph)
 {
-    d_graph = graph;
     d_graphGuard = graph;
     contents->clear();
     if (d_graphGuard)
@@ -471,13 +476,15 @@ void CurvesDialog::setGraph(Graph *graph)
 
 void CurvesDialog::addCurves()
 {
-    if (!d_graph || !d_graphGuard)
+    if (!d_graphGuard)
         return;
 
     MultiLayer *ml = d_graphGuard->multiLayerParent();
     const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
 
     QStringList emptyColumns;
+    QStringList missingXColumns;
+    QStringList selfXColumns;
     bool addedAny = false;
     QList<QListWidgetItem *> lst = available->selectedItems();
     for (int i = 0; i < lst.size(); ++i) {
@@ -496,24 +503,53 @@ void CurvesDialog::addCurves()
             }
         }
         if (!alreadyPlotted) {
-            if (!addCurve(text))
-                emptyColumns << text;
-            else
+            bool missingX = false;
+            bool selfX = false;
+            if (!addCurve(text, &missingX, &selfX)) {
+                if (missingX)
+                    missingXColumns << text;
+                else if (selfX)
+                    selfXColumns << text;
+                else
+                    emptyColumns << text;
+            } else {
                 addedAny = true;
+            }
         }
     }
-    d_graphGuard->updatePlot();
+    if (d_graphGuard)
+        d_graphGuard->updatePlot();
     if (addedAny && ml)
         ml->pushUndoSnapshot(tr("Add Curves"), beforeSnap);
     Graph::showPlotErrorMessage(this, emptyColumns);
+    if (!missingXColumns.isEmpty() && !ApplicationWindow::isNonInteractiveContext(this)) {
+        QMessageBox::warning(
+                this, tr("Error"),
+                tr("Please set a default X column for this table, first!")
+                        + QStringLiteral("<p>")
+                        + tr("Right-click the header of the column to use as X and choose "
+                             "\"Set Column(s) As\" > \"X\", then plot again."));
+    } else if (!selfXColumns.isEmpty() && !ApplicationWindow::isNonInteractiveContext(this)) {
+        QMessageBox::warning(
+                this, tr("Error"),
+                tr("Please select a Y column to plot!")
+                        + QStringLiteral("<p>")
+                        + tr("Click the header of the Y column(s) to plot (Ctrl+click for "
+                             "several). A column becomes Y via right-click > \"Set Column(s) "
+                             "As\" > \"Y\"."));
+    }
 
     showCurveRange(boxShowRange->isChecked());
     showCurveBtn(contents->currentRow());
 }
 
-bool CurvesDialog::addCurve(const QString &name)
+bool CurvesDialog::addCurve(const QString &name, bool *outMissingX, bool *outSelfX)
 {
-    if (!d_graph || !d_graphGuard)
+    if (outMissingX)
+        *outMissingX = false;
+    if (outSelfX)
+        *outSelfX = false;
+    if (!d_graphGuard)
         return false;
 
     ApplicationWindow *app = appWindow();
@@ -556,9 +592,17 @@ bool CurvesDialog::addCurve(const QString &name)
     if (ycol < 0 || ycol >= t->numCols())
         return false;
 
+    if (t->noXColumn()) {
+        if (outMissingX)
+            *outMissingX = true;
+        return false;
+    }
     int xcol = t->colX(ycol);
-    if (xcol < 0 || xcol >= t->numCols())
-        xcol = 0;
+    if (xcol < 0 || xcol >= t->numCols()) {
+        if (outSelfX)
+            *outSelfX = true;
+        return false;
+    }
 
     if (d_graphGuard->insertCurve(t, t->colName(xcol), t->colName(ycol), style)) {
         CurveLayout cl = Graph::initCurveLayout();
@@ -602,7 +646,7 @@ bool CurvesDialog::addCurve(const QString &name)
 
 void CurvesDialog::removeCurves()
 {
-    if (!d_graph || !d_graphGuard)
+    if (!d_graphGuard)
         return;
 
     QList<QListWidgetItem *> lst = contents->selectedItems();
@@ -647,7 +691,7 @@ void CurvesDialog::moveCurveDown()
 
 void CurvesDialog::moveSelectedCurveBy(int delta)
 {
-    if (delta == 0 || !d_graph || !d_graphGuard)
+    if (delta == 0 || !d_graphGuard)
         return;
 
     const int nCurves = d_graphGuard->curves();
@@ -748,7 +792,7 @@ int CurvesDialog::curveStyle()
 
 void CurvesDialog::showCurveRange(bool on)
 {
-    if (!d_graph || !d_graphGuard)
+    if (!d_graphGuard)
         return;
 
     int row = contents->currentRow();
@@ -866,11 +910,22 @@ void CurvesDialog::showCurrentFolder(bool currentFolder)
     applyAvailableFilter();
 }
 
+void CurvesDialog::done(int result)
+{
+    ApplicationWindow *app = appWindow();
+    if (app)
+        app->d_add_curves_dialog_size = this->size();
+
+    QDialog::done(result);
+    if (testAttribute(Qt::WA_DeleteOnClose))
+        deleteLater();
+}
+
 void CurvesDialog::closeEvent(QCloseEvent *e)
 {
     ApplicationWindow *app = appWindow();
     if (app)
         app->d_add_curves_dialog_size = this->size();
 
-    e->accept();
+    QDialog::closeEvent(e);
 }

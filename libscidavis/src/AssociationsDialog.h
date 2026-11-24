@@ -31,8 +31,10 @@
 
 #include "MyWidget.h"
 #include <QDialog>
+#include <QPointer>
 
 class QLabel;
+class QCheckBox;
 class QComboBox;
 class QListWidget;
 class QPushButton;
@@ -57,20 +59,24 @@ private slots:
     void updateTable(int index);
     void selectWorksheet(int comboIdx);
     void updateCurves();
-    void accept();
+    void accept() override;
 
 private:
+    void done(int result) override;
     void changePlotAssociation(int curve, const QString &text);
     void updateColumnTypes();
     void uncheckCol(int col);
+    void selectCheckboxAt(int row, int col);
+    bool findCheckboxPosition(QCheckBox *cb, int *outRow, int *outCol) const;
     void updatePlotAssociation(int row, int col);
     QString plotAssociation(const QString &text);
     Table *findTable(int index);
-    bool eventFilter(QObject *object, QEvent *e);
+    bool eventFilter(QObject *object, QEvent *e) override;
 
     QList<MyWidget *> *tables;
     Table *active_table;
-    Graph *graph;
+    QPointer<Graph> graphGuard;
+    bool d_updatingCheckboxes = false;
     QStringList plotAssociationsList;
     QList<int> dataCurvesList;
 

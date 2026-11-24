@@ -31,6 +31,7 @@ class DataCurve;
 class Graph;
 class Matrix;
 class MultiLayer;
+class QMenu;
 class QwtPlotCurve;
 class QwtPlotSpectrogram;
 class Spectrogram;
@@ -161,6 +162,7 @@ private:
     DragMode hitTestPixelPos(const QPoint &pos) const;
     void updateCursorForPos(const QPoint &pos);
     void showRoiContextMenu(const QPoint &globalPos, bool insideRoi = true);
+    void populateGadgetModeMenu(QMenu *modeMenu, bool showAdvDomain);
     void setupFloatingBar();
     void updateFloatingBar();
 

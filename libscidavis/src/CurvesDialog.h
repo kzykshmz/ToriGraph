@@ -80,18 +80,18 @@ the graph contents list, depending on the selected item in this list:
     void refreshAvailableColumns();
 
 private:
-    void closeEvent(QCloseEvent *);
+    void closeEvent(QCloseEvent *) override;
+    void done(int result) override;
 
     void init();
-    bool addCurve(const QString &name);
+    bool addCurve(const QString &name, bool *outMissingX = nullptr, bool *outSelfX = nullptr);
     void moveSelectedCurveBy(int delta);
     void applyAvailableFilter();
     ApplicationWindow *appWindow() const;
-    QSize sizeHint() const;
-    void contextMenuEvent(QContextMenuEvent *);
+    QSize sizeHint() const override;
+    void contextMenuEvent(QContextMenuEvent *) override;
 
     int defaultCurveLineWidth, defaultSymbolSize;
-    Graph *d_graph = nullptr;
     QPointer<Graph> d_graphGuard;
 
     QPushButton *btnAdd;

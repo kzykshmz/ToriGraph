@@ -79,6 +79,7 @@ public slots:
     void togglePage(bool all) { showAll(all); }
     void selectCurve(int index);
     void reject() override;
+    void done(int r) override;
 
 private slots:
     void showStatistics();
@@ -113,6 +114,7 @@ private slots:
     void changeErrorBarsThrough();
 
     void setAutomaticBinning();
+    bool evaluateHistogramInputs(double *beginVal, double *endVal, double *binVal, bool showErrors);
     bool validInput();
     void showPlotAssociations(QTreeWidgetItem *item, int);
 

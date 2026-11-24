@@ -3613,25 +3613,14 @@ void RoiGadgetTool::setupFloatingBar()
                 act->setChecked(d_sg_window == w);
                 connect(act, &QAction::triggered, this, [this, w]() { setSavGolWindow(w); });
             }
+        }
+        if (d_mode == QuickFit || d_mode == QuickSigmoidal || d_mode == Integrate
+            || d_mode == QuickPeaks || d_mode == Differentiate) {
+            m.addSeparator();
+            QMenu *switchMenu = m.addMenu(tr("Switch Gadget..."));
+            populateGadgetModeMenu(switchMenu, showAdvDomain);
         } else {
-            struct ModeItem { GadgetMode mode; const char *label; };
-            const ModeItem modes[] = {
-                { RegionStats, QT_TR_NOOP("Region Statistics") },
-                { QuickFit, QT_TR_NOOP("Quick Fit") },
-                { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
-                { Integrate, QT_TR_NOOP("Integrate") },
-                { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
-                { Intersect, QT_TR_NOOP("Curve Intersection") },
-                { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
-                { MaskRegion, QT_TR_NOOP("Mask Region") },
-                { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
-            };
-            for (const auto &mi : modes) {
-                QAction *act = m.addAction(tr(mi.label));
-                act->setCheckable(true);
-                act->setChecked(d_mode == mi.mode);
-                connect(act, &QAction::triggered, this, [this, gm = mi.mode]() { setGadgetMode(gm); });
-            }
+            populateGadgetModeMenu(&m, showAdvDomain);
         }
         m.exec(bar->btnOption->mapToGlobal(QPoint(0, bar->btnOption->height())));
     });
@@ -3714,6 +3703,44 @@ void RoiGadgetTool::updateFloatingBar()
     bar->reposition();
 }
 
+void RoiGadgetTool::populateGadgetModeMenu(QMenu *modeMenu, bool showAdvDomain)
+{
+    if (!modeMenu)
+        return;
+    struct ModeItem {
+        GadgetMode mode;
+        const char *label;
+    };
+    const ModeItem modes[] = {
+        { RegionStats, QT_TR_NOOP("Region Statistics") },
+        { QuickFit, QT_TR_NOOP("Quick Fit") },
+        { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
+        { QuickSigmoidal, QT_TR_NOOP("Quick Sigmoidal Fit") },
+        { Integrate, QT_TR_NOOP("Integrate") },
+        { Interpolate, QT_TR_NOOP("Interpolate") },
+        { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
+        { Intersect, QT_TR_NOOP("Curve Intersection") },
+        { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
+        { FFT, QT_TR_NOOP("FFT Preview") },
+        { RiseTime, QT_TR_NOOP("Rise Time (10-90%)") },
+        { Cluster, QT_TR_NOOP("Cluster Selector") },
+        { MaskRegion, QT_TR_NOOP("Mask Region") },
+        { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
+    };
+    for (const auto &mi : modes) {
+        // C4-7: hide redundant/specialty modes unless advanced mode is enabled or already active.
+        const bool redundantOrAdv = (mi.mode == QuickSigmoidal || mi.mode == RiseTime
+                                     || mi.mode == Cluster || mi.mode == Interpolate
+                                     || mi.mode == FFT);
+        if (!showAdvDomain && redundantOrAdv && d_mode != mi.mode)
+            continue;
+        QAction *act = modeMenu->addAction(tr(mi.label));
+        act->setCheckable(true);
+        act->setChecked(d_mode == mi.mode);
+        connect(act, &QAction::triggered, this, [this, m = mi.mode]() { setGadgetMode(m); });
+    }
+}
+
 void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos, bool insideRoi)
 {
     if (!d_graph_guard)
@@ -3723,45 +3750,10 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos, bool insideRoi)
     ApplicationWindow *appWin = d_app ? d_app.data() : resolveAppWindowFromGraph(d_graph_guard);
     const bool showAdvDomain = appWin ? appWin->showsAdvancedDomainFeatures() : false;
 
-    auto populateModeMenu = [&](QMenu *modeMenu) {
-        struct ModeItem {
-            GadgetMode mode;
-            const char *label;
-        };
-        const ModeItem modes[] = {
-            { RegionStats, QT_TR_NOOP("Region Statistics") },
-            { QuickFit, QT_TR_NOOP("Quick Fit") },
-            { QuickPeaks, QT_TR_NOOP("Quick Peaks") },
-            { QuickSigmoidal, QT_TR_NOOP("Quick Sigmoidal Fit") },
-            { Integrate, QT_TR_NOOP("Integrate") },
-            { Interpolate, QT_TR_NOOP("Interpolate") },
-            { Differentiate, QT_TR_NOOP("Differentiate (dY/dX)") },
-            { Intersect, QT_TR_NOOP("Curve Intersection") },
-            { Integrate2D, QT_TR_NOOP("2D Integration (Surface/Matrix)") },
-            { FFT, QT_TR_NOOP("FFT Preview") },
-            { RiseTime, QT_TR_NOOP("Rise Time (10-90%)") },
-            { Cluster, QT_TR_NOOP("Cluster Selector") },
-            { MaskRegion, QT_TR_NOOP("Mask Region") },
-            { UnmaskRegion, QT_TR_NOOP("Unmask Region") }
-        };
-        for (const auto &mi : modes) {
-            // C4-7: hide redundant/specialty modes unless advanced mode is enabled or already active.
-            const bool redundantOrAdv = (mi.mode == QuickSigmoidal || mi.mode == RiseTime
-                                         || mi.mode == Cluster || mi.mode == Interpolate
-                                         || mi.mode == FFT);
-            if (!showAdvDomain && redundantOrAdv && d_mode != mi.mode)
-                continue;
-            QAction *act = modeMenu->addAction(tr(mi.label));
-            act->setCheckable(true);
-            act->setChecked(d_mode == mi.mode);
-            connect(act, &QAction::triggered, this, [this, m = mi.mode]() { setGadgetMode(m); });
-        }
-    };
-
     if (!insideRoi) {
         // C4-6: right-clicking outside the ROI offers a quick way to close or switch modes.
         QMenu *modeMenu = menu.addMenu(tr("Gadget Mode"));
-        populateModeMenu(modeMenu);
+        populateGadgetModeMenu(modeMenu, showAdvDomain);
         QAction *actOutTable = menu.addAction(tr("Output Results to Worksheet"));
         connect(actOutTable, &QAction::triggered, this, [this]() { createOutputTable(); });
         menu.addSeparator();
@@ -3776,7 +3768,7 @@ void RoiGadgetTool::showRoiContextMenu(const QPoint &globalPos, bool insideRoi)
     }
 
     QMenu *modeMenu = menu.addMenu(tr("Gadget Mode"));
-    populateModeMenu(modeMenu);
+    populateGadgetModeMenu(modeMenu, showAdvDomain);
 
     // C4-6: only show options that apply to the active gadget mode.
     if (d_mode == QuickFit || d_mode == QuickSigmoidal) {

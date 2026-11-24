@@ -58,6 +58,7 @@
 #include <QHash>
 #include <QLabel>
 #include <QLineEdit>
+#include <QScopedValueRollback>
 #include <QListWidget>
 #include <QLocale>
 #include <QMdiSubWindow>
@@ -2024,8 +2025,8 @@ double matSciClipSegmentLengthInRect(double x0, double y0, double x1, double y1,
     return std::hypot(dx * (t1 - t0), dy * (t1 - t0));
 }
 
-void placeCalloutAutoAvoid(Graph *g, Legend *box, int marginPx = 14, bool allowScaleExpand = true,
-                           bool preferUpperRight = false)
+void placeCalloutAutoAvoidImpl(Graph *g, Legend *box, int marginPx = 14,
+                               bool allowScaleExpand = true, bool preferUpperRight = false)
 {
     if (!g || !box)
         return;
@@ -2270,7 +2271,7 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text,
     box->setFont(calloutFnt);
     box->setOriginCoord(x, y);
 
-    placeCalloutAutoAvoid(g, box, 14, true, preferUpperRight);
+    placeCalloutAutoAvoidImpl(g, box, 14, true, preferUpperRight);
 
     int markerId = -1;
     for (int tid : g->textMarkerKeys()) {
@@ -2290,8 +2291,8 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text,
                              if (!liveBox || !liveBox->isVisible())
                                  return;
                              *guard = true;
-                             placeCalloutAutoAvoid(gPtr.data(), liveBox, 14, false,
-                                                   preferUpperRight);
+                             placeCalloutAutoAvoidImpl(gPtr.data(), liveBox, 14, false,
+                                                       preferUpperRight);
                              *guard = false;
                          });
     }
@@ -2299,6 +2300,12 @@ Legend *addMatSciCalloutBox(Graph *g, double x, double y, const QString &text,
 }
 
 } // namespace
+
+void CurveMathTools::placeCalloutAutoAvoid(Graph *g, Legend *box, int marginPx,
+                                          bool allowScaleExpand, bool preferUpperRight)
+{
+    placeCalloutAutoAvoidImpl(g, box, marginPx, allowScaleExpand, preferUpperRight);
+}
 
 CurveMathTools::ArrheniusResult CurveMathTools::createArrheniusPlot(
         ApplicationWindow *app, Table *srcTable, const QString &tempCol, const QString &rateCol,
@@ -3044,6 +3051,7 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
                                         QList<Column *>() << colX << colDiff);
     if (!hidTbl)
         return nullptr;
+    hidTbl->setProperty("_tg_internal_helper", true);
 
     auto *diffCurve = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colX->name(),
                                     hidName + QStringLiteral("_") + colDiff->name(), 0, m - 1);
@@ -3580,6 +3588,8 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
     Table *arcTbl = app->newHiddenTable(
             hidArcName, QStringLiteral("EIS Randles-CPE Smooth Fit"),
             QList<Column *>() << cArcLogF << cArcZRe << cArcNegZIm << cArcLogMag << cArcPhase);
+    if (arcTbl)
+        arcTbl->setProperty("_tg_internal_helper", true);
 
     // 1. Nyquist Plot (-Z'' vs Z' with 1:1 isometric equal-span axes)
     MultiLayer *mlNyq = app->newGraph(makeUniqueTableName(app, QStringLiteral("EISNyquistPlot")));
@@ -4152,7 +4162,8 @@ void registerTensileExtraTranslations()
 double tensileStressUnitToGPa(const QString &unitIn)
 {
     const QString u = unitIn.trimmed();
-    if (u.contains(QLatin1String("GPa"), Qt::CaseInsensitive))
+    if (u.contains(QLatin1String("GPa"), Qt::CaseInsensitive)
+        || u.contains(QLatin1String("kN/mm"), Qt::CaseInsensitive))
         return 1.0;
     if (u.contains(QLatin1String("MPa"), Qt::CaseInsensitive)
         || u.contains(QLatin1String("N/mm"), Qt::CaseInsensitive))
@@ -4833,19 +4844,8 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
 
     const QString offsetPctStr = QString::number(res.offsetFraction * 100.0, 'g', 3);
 
-    // Check if existing graph labels are pure ASCII (avoid mixing Japanese legend onto all-English ISIJ plots)
-    bool graphHasCjk = false;
-    if (targetGraph->plotWidget()) {
-        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-            const QString at = targetGraph->plotWidget()->axisTitle(a).text();
-            for (QChar ch : at) {
-                if (ch.unicode() >= 0x3000) {
-                    graphHasCjk = true;
-                    break;
-                }
-            }
-        }
-    }
+    const bool isJapaneseUi =
+            (app && app->appLanguage.startsWith(QLatin1String("ja"), Qt::CaseInsensitive));
 
     const QByteArray prevPropKey =
             (QStringLiteral("_toriTensileItems_") + srcCurve->title().text()).toUtf8();
@@ -4911,7 +4911,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         QVector<qreal> vy = { 0.0, res.offsetYieldY };
         colOX->replaceValues(0, vx);
         colOY->replaceValues(0, vy);
-        const QString legComment = graphHasCjk
+        const QString legComment = isJapaneseUi
                 ? QStringLiteral("%1% オフセット線").arg(offsetPctStr)
                 : QStringLiteral("%1% offset").arg(offsetPctStr);
         colOY->setComment(legComment);
@@ -4919,6 +4919,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
         const QString hidName = app->generateUniqueName(QStringLiteral("GadgetFit_OffsetYield"));
         Table *hidTbl = app->newHiddenTable(hidName, legComment, QList<Column *>() << colOX << colOY);
         if (hidTbl) {
+            hidTbl->setProperty("_tg_internal_helper", true);
             auto *cOff = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colOX->name(),
                                        hidName + QStringLiteral("_") + colOY->name(), 0, 1);
             cOff->setType(Graph::Line);
@@ -4958,7 +4959,7 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
             eDisplay = QStringLiteral("%1 %2").arg(res.youngsModulus, 0, 'g', 4).arg(stressUnit);
         }
         const QString plasticWord =
-                graphHasCjk ? QStringLiteral("塑性") : QStringLiteral("plastic");
+                isJapaneseUi ? QStringLiteral("塑性") : QStringLiteral("plastic");
         const QString callout = QStringLiteral(
                 "<i>σ</i><sub>%1</sub> = %2 %3\n"
                 "<i>E</i> = %4 (<i>R</i><sup>2</sup> = %5)\n"
@@ -5206,13 +5207,28 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     sbElasticMax->setValue(mem.valid ? mem.elasticMax : 0.30);
     sbElasticMax->setEnabled(!chkAutoElastic->isChecked());
 
+    QLabel *lblElasticStatus = new QLabel(&dlg);
+    lblElasticStatus->setWordWrap(true);
+    auto previewInPct = std::make_shared<bool>(mem.valid ? (mem.resolvedStrainMode != 0) : true);
+    auto syncingElastic = std::make_shared<bool>(false);
+
     auto syncElasticPreview = [&](bool overwriteValues) {
+        if (*syncingElastic)
+            return;
+        QScopedValueRollback<bool> syncGuard(*syncingElastic, true);
+
         const double qNaN = std::numeric_limits<double>::quiet_NaN();
         const int uMode = cbStrainUnit->currentData().toInt();
         bool inPct = (uMode != 0);
         double detMin = qNaN, detMax = qNaN;
-        auto inferColumnStrainPct = [](Column *cX, Column *cY, double &outDetMin,
-                                       double &outDetMax) -> bool {
+        double searchedMinX = qNaN, searchedMaxX = qNaN, searchedUtsY = qNaN, xAtUts = qNaN;
+        QString probeError;
+        bool probeValid = false;
+        bool probeRelaxed = false;
+        double probeE = 0.0, probeR2 = 0.0;
+        QString probeStressUnit = QStringLiteral("MPa");
+        auto inferColumnStrainPct = [&](Column *cX, Column *cY, double &outDetMin,
+                                        double &outDetMax) -> bool {
             if (!cX)
                 return true;
             int vote = classifyStrainUnitText(cX->units(), true);
@@ -5221,7 +5237,7 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
             if (vote < 0)
                 vote = classifyStrainUnitText(cX->name(), false);
 
-            double maxX = -1e300, maxY = -1e300;
+            double minX = 1e300, maxX = -1e300, maxY = -1e300;
             int utsR = -1;
             const int nX = cX->rowCount();
             if (cY) {
@@ -5230,19 +5246,29 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
                     double xv = 0.0, yv = 0.0;
                     if (!readMatSciCell(cX, r, xv) || !readMatSciCell(cY, r, yv))
                         continue;
+                    minX = std::min(minX, xv);
                     maxX = std::max(maxX, xv);
                     if (yv > maxY) {
                         maxY = yv;
                         utsR = r;
+                        xAtUts = xv;
                     }
                 }
             } else {
                 for (int r = 0; r < nX; ++r) {
                     double xv = 0.0;
-                    if (readMatSciCell(cX, r, xv))
+                    if (readMatSciCell(cX, r, xv)) {
+                        minX = std::min(minX, xv);
                         maxX = std::max(maxX, xv);
+                    }
                 }
             }
+            if (minX <= maxX) {
+                searchedMinX = minX;
+                searchedMaxX = maxX;
+            }
+            if (maxY > -1e290)
+                searchedUtsY = maxY;
 
             double slopeEst = std::numeric_limits<double>::quiet_NaN();
             if (cY && utsR >= 2 && maxY > 0.0) {
@@ -5304,10 +5330,34 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
                 Column *cY = resolveMatSciColumn(t, cbStressCol->currentText());
                 const bool inferredPct = inferColumnStrainPct(cX, cY, detMin, detMax);
                 inPct = (uMode == 1 || uMode == 0) ? (uMode == 1) : inferredPct;
+                probeValid = (std::isfinite(detMin) && std::isfinite(detMax) && detMax > detMin);
+                if (!probeValid)
+                    probeError = QObject::tr(
+                            "Could not find at least 2 rising points in 10–55% of UTS for automatic elastic preview.");
             }
         } else {
             const int gIdx = cbGraph->currentIndex();
             if (gIdx >= 0 && gIdx < graphs.size()) {
+                if (QwtPlotCurve *cv = resolveCurve(graphs[gIdx], cbCurve->currentText())) {
+                    double loX = 1e300, hiX = -1e300, hiY = -1e300;
+                    for (int i = 0; i < cv->dataSize(); ++i) {
+                        const double xv = cv->x(i), yv = cv->y(i);
+                        if (!std::isfinite(xv) || !std::isfinite(yv))
+                            continue;
+                        loX = std::min(loX, xv);
+                        hiX = std::max(hiX, xv);
+                        if (yv > hiY) {
+                            hiY = yv;
+                            xAtUts = xv;
+                        }
+                    }
+                    if (loX <= hiX) {
+                        searchedMinX = loX;
+                        searchedMaxX = hiX;
+                    }
+                    if (hiY > -1e290)
+                        searchedUtsY = hiY;
+                }
                 const TensileResult pr = analyzeTensile(
                         nullptr, graphs[gIdx], cbCurve->currentText(),
                         sbOffsetPct->value() / 100.0, uMode, qNaN, qNaN, false, false, false);
@@ -5315,28 +5365,114 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
                     inPct = pr.strainInPercent;
                     detMin = pr.elasticXMin;
                     detMax = pr.elasticXMax;
-                } else if (uMode != 1 && uMode != 0) {
-                    if (QwtPlotCurve *cv = resolveCurve(graphs[gIdx], cbCurve->currentText())) {
-                        if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
-                            Table *st = dc->table();
-                            Column *cX = st ? st->column(dc->xColumnName()) : nullptr;
-                            Column *cY = st ? st->column(dc->yColumnName()) : nullptr;
-                            double dummyLo = qNaN, dummyHi = qNaN;
-                            inPct = inferColumnStrainPct(cX, cY, dummyLo, dummyHi);
+                    probeValid = true;
+                    probeRelaxed = pr.elasticAutoRelaxed;
+                    probeE = pr.youngsModulus;
+                    probeR2 = pr.elasticR2;
+                    probeStressUnit = pr.stressUnit.isEmpty() ? QStringLiteral("MPa") : pr.stressUnit;
+                } else {
+                    probeError = pr.error;
+                    if (uMode != 1 && uMode != 0) {
+                        if (QwtPlotCurve *cv = resolveCurve(graphs[gIdx], cbCurve->currentText())) {
+                            if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
+                                Table *st = dc->table();
+                                Column *cX = st ? st->column(dc->xColumnName()) : nullptr;
+                                Column *cY = st ? st->column(dc->yColumnName()) : nullptr;
+                                double dummyLo = qNaN, dummyHi = qNaN;
+                                inPct = inferColumnStrainPct(cX, cY, dummyLo, dummyHi);
+                            }
                         }
                     }
                 }
             }
         }
+        const bool wasPct = *previewInPct;
+        *previewInPct = inPct;
         const QString suf = inPct ? QStringLiteral(" %") : QStringLiteral(" (-)");
         sbElasticMin->setSuffix(suf);
         sbElasticMax->setSuffix(suf);
         sbElasticMin->setSingleStep(inPct ? 0.02 : 0.0002);
         sbElasticMax->setSingleStep(inPct ? 0.05 : 0.0005);
+        if (!overwriteValues && wasPct != inPct) {
+            const double scale = inPct ? 100.0 : 0.01;
+            sbElasticMin->setValue(sbElasticMin->value() * scale);
+            sbElasticMax->setValue(sbElasticMax->value() * scale);
+        }
         if ((overwriteValues || chkAutoElastic->isChecked()) && std::isfinite(detMin)
             && std::isfinite(detMax) && detMax > detMin) {
             sbElasticMin->setValue(detMin);
             sbElasticMax->setValue(detMax);
+        }
+
+        const QString uTag = inPct ? QStringLiteral("%") : QStringLiteral("(-)");
+        if (probeValid && std::isfinite(detMin) && std::isfinite(detMax) && detMax > detMin) {
+            lblElasticStatus->setStyleSheet(QStringLiteral(
+                    "QLabel { color: #065f46; background: #ecfdf5; border: 1px solid #a7f3d0; "
+                    "border-radius: 3px; padding: 4px 6px; font-size: 11px; }"));
+            if (cbSourceMode->currentData().toInt() == 1) {
+                lblElasticStatus->setText(
+                        QObject::tr("Auto-detected candidate elastic window: [%1, %2] %3 (10–55% UTS; final R² window computed on OK).")
+                                .arg(detMin, 0, 'g', 4)
+                                .arg(detMax, 0, 'g', 4)
+                                .arg(uTag));
+            } else {
+                const QString relaxTag = probeRelaxed
+                        ? QObject::tr(" [relaxed 2–85% UTS]")
+                        : QString();
+                lblElasticStatus->setText(
+                        QObject::tr("Auto-detected elastic region: [%1, %2] %3  (E = %4 %5, R² = %6)%7")
+                                .arg(detMin, 0, 'g', 4)
+                                .arg(detMax, 0, 'g', 4)
+                                .arg(uTag)
+                                .arg(probeE, 0, 'g', 4)
+                                .arg(probeStressUnit)
+                                .arg(probeR2, 0, 'f', 4)
+                                .arg(relaxTag));
+            }
+        } else if (chkAutoElastic->isChecked()) {
+            // Auto-detect failed: uncheck Auto-detect, seed fallback manual bounds, and show exact searched interval.
+            if (std::isfinite(searchedMinX) && std::isfinite(searchedMaxX) && searchedMaxX > searchedMinX) {
+                const double spanEnd = (std::isfinite(xAtUts) && xAtUts > searchedMinX)
+                        ? xAtUts
+                        : searchedMaxX;
+                const double seedLo = searchedMinX;
+                const double seedHi = searchedMinX + 0.25 * (spanEnd - searchedMinX);
+                if (seedHi > seedLo) {
+                    sbElasticMin->setValue(seedLo);
+                    sbElasticMax->setValue(seedHi);
+                }
+            }
+            {
+                QSignalBlocker blkAuto(chkAutoElastic);
+                chkAutoElastic->setChecked(false);
+            }
+            sbElasticMin->setEnabled(true);
+            sbElasticMax->setEnabled(true);
+
+            const QString rangeDesc = (std::isfinite(searchedMinX) && std::isfinite(searchedMaxX))
+                    ? QObject::tr("Searched strain [%1, %2] %3, stress 10–60% UTS (relaxed 2–85% of UTS = %4).")
+                              .arg(searchedMinX, 0, 'g', 4)
+                              .arg(searchedMaxX, 0, 'g', 4)
+                              .arg(uTag)
+                              .arg(std::isfinite(searchedUtsY)
+                                           ? QString::number(searchedUtsY, 'g', 4)
+                                           : QStringLiteral("?"))
+                    : QObject::tr("No valid strain-stress points found on selection.");
+            lblElasticStatus->setStyleSheet(QStringLiteral(
+                    "QLabel { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; "
+                    "border-radius: 3px; padding: 4px 6px; font-size: 11px; }"));
+            lblElasticStatus->setText(
+                    QObject::tr("Auto-detect failed and was switched to manual bounds. %1 Adjust Elastic Strain Min/Max above.")
+                            .arg(rangeDesc));
+        } else {
+            lblElasticStatus->setStyleSheet(QStringLiteral(
+                    "QLabel { color: #1e3a8a; background: #eff6ff; border: 1px solid #bfdbfe; "
+                    "border-radius: 3px; padding: 4px 6px; font-size: 11px; }"));
+            lblElasticStatus->setText(
+                    QObject::tr("Manual elastic fit interval: [%1, %2] %3.")
+                            .arg(sbElasticMin->value(), 0, 'g', 4)
+                            .arg(sbElasticMax->value(), 0, 'g', 4)
+                            .arg(uTag));
         }
     };
 
@@ -5389,6 +5525,17 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
     form->addRow(QString(), chkAutoElastic);
     form->addRow(QObject::tr("Elastic Strain Min:"), sbElasticMin);
     form->addRow(QObject::tr("Elastic Strain Max:"), sbElasticMax);
+    form->addRow(QString(), lblElasticStatus);
+    QObject::connect(sbElasticMin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) {
+                         if (!chkAutoElastic->isChecked() && !*syncingElastic)
+                             syncElasticPreview(false);
+                     });
+    QObject::connect(sbElasticMax, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &dlg,
+                     [&](double) {
+                         if (!chkAutoElastic->isChecked() && !*syncingElastic)
+                             syncElasticPreview(false);
+                     });
     form->addRow(QString(), chkPlotConstruct);
     form->addRow(QString(), chkCallout);
     form->addRow(QString(), chkTrueTable);
@@ -5551,18 +5698,20 @@ void CurveMathTools::showTensileYieldDialog(ApplicationWindow *app)
         }
     }
 
-    TensileDialogMemory &memW = tensileDialogMemory();
-    memW.valid = true;
-    memW.dialogStrainMode = cbStrainUnit->currentData().toInt();
-    memW.resolvedStrainMode = (trRes.elasticSlopeRaw > 0.0) ? (trRes.strainInPercent ? 1 : 0)
-                                                            : strainMode;
-    memW.offsetFraction = offFrac;
-    memW.autoElastic = chkAutoElastic->isChecked();
-    memW.elasticMin = sbElasticMin->value();
-    memW.elasticMax = sbElasticMax->value();
-    memW.graphName = chosenGraph->multiLayerParent() ? chosenGraph->multiLayerParent()->name()
-                                                     : QString();
-    memW.curveTitle = chosenCurve;
+    if (trRes.valid) {
+        TensileDialogMemory &memW = tensileDialogMemory();
+        memW.valid = true;
+        memW.dialogStrainMode = cbStrainUnit->currentData().toInt();
+        memW.resolvedStrainMode = (trRes.elasticSlopeRaw > 0.0) ? (trRes.strainInPercent ? 1 : 0)
+                                                                : strainMode;
+        memW.offsetFraction = offFrac;
+        memW.autoElastic = chkAutoElastic->isChecked();
+        memW.elasticMin = sbElasticMin->value();
+        memW.elasticMax = sbElasticMax->value();
+        memW.graphName = chosenGraph->multiLayerParent() ? chosenGraph->multiLayerParent()->name()
+                                                         : QString();
+        memW.curveTitle = chosenCurve;
+    }
 
     if (!trRes.valid && !ApplicationWindow::isNonInteractiveContext(app)) {
         QString msg = trRes.error.isEmpty()
@@ -9105,6 +9254,7 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
                 colSY->setComment(stageLbl);
                 const QString hidName = app->generateUniqueName(QStringLiteral("GadgetFit_StageIII"));
                 if (Table *hidTbl = app->newHiddenTable(hidName, stageLbl, QList<Column *>() << colSX << colSY)) {
+                    hidTbl->setProperty("_tg_internal_helper", true);
                     auto *cS3 = new DataCurve(hidTbl, hidName + QStringLiteral("_") + colSX->name(),
                                               hidName + QStringLiteral("_") + colSY->name(), 0, 1);
                     cS3->setType(Graph::Line);
@@ -10237,6 +10387,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             }
         }
         double fwhmObs = fwhm0;
+        double bestEta = 0.5;
         if (corePts.size() >= 5) {
             auto evalPvRss = [&](double wTry, double etaTry, double hTry) -> double {
                 const double halfW = std::max(1e-6, 0.5 * wTry);
@@ -10251,7 +10402,6 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 return rss;
             };
             double bestW = fwhm0;
-            double bestEta = 0.5;
             double bestH = hApex;
             double bestRss = evalPvRss(bestW, bestEta, bestH);
             double stepW = 0.12 * fwhm0;
@@ -10300,9 +10450,17 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
 
         const double dAng = effLambda / (2.0 * sinTh);
         const bool resLimited = (fwhmObs <= effInstFwhm + 1e-6);
+        // Preserve fitted Pseudo-Voigt shape factor eta when deconvolving instrumental broadening:
+        // pure Gaussian (eta=0) subtracts in quadrature; pure Lorentzian (eta=1) subtracts linearly.
+        const double etaMix = std::clamp(bestEta, 0.0, 1.0);
+        const double fwhmGaussDeconv =
+                std::sqrt(std::max(0.0, fwhmObs * fwhmObs - effInstFwhm * effInstFwhm));
+        const double fwhmLorDeconv = std::max(0.0, fwhmObs - effInstFwhm);
         const double fwhmPhysDeg = resLimited
                 ? 0.0
-                : std::sqrt(std::max(0.0, fwhmObs * fwhmObs - effInstFwhm * effInstFwhm));
+                : ((effInstFwhm <= 0.0)
+                           ? fwhmObs
+                           : ((1.0 - etaMix) * fwhmGaussDeconv + etaMix * fwhmLorDeconv));
         const double betaRad = fwhmPhysDeg * (M_PI / 180.0);
         const double dSchNm = resLimited
                 ? std::numeric_limits<double>::quiet_NaN()
@@ -10314,6 +10472,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         ipk.pub.fwhmDeg = fwhmPhysDeg;
         ipk.pub.intensity = bg[size_t(pkIdx)] + hApex;
         ipk.pub.scherrerSizeNm = dSchNm;
+        ipk.pub.pseudoVoigtEta = etaMix;
         ipk.rawApexY = std::max(yRaw[size_t(pkIdx)], bg[size_t(pkIdx)] + hApex);
         ipk.fwhmObsDeg = fwhmObs;
         ipk.betaRad = betaRad;
@@ -10560,6 +10719,18 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         }
     }
     res.valid = true;
+    if (effInstFwhm > 0.0 && cntSch > 0) {
+        double sumEta = 0.0;
+        for (const InternalPeak &ipk : pks) {
+            if (!ipk.resolutionLimited)
+                sumEta += ipk.pub.pseudoVoigtEta;
+        }
+        const double meanEta = sumEta / double(std::max(1, cntSch));
+        res.notes << QObject::tr(
+                "Instrumental FWHM (%1 deg) deconvolved using fitted Pseudo-Voigt shape factor \u03B7 (mean \u03B7 = %2).")
+                             .arg(effInstFwhm, 0, 'g', 4)
+                             .arg(meanEta, 0, 'f', 2);
+    }
     if (resLimitedCount > 0) {
         res.error = QObject::tr(
                 "Warning: %1 of %2 peak(s) have observed FWHM <= instrumental FWHM (%3 deg); "
@@ -11102,17 +11273,26 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
                      [&](int) { syncSrc(); });
 
     QComboBox *cbAnode = new QComboBox(&dlg);
-    cbAnode->addItem(QStringLiteral("Cu K\u03B11 (1.540598 \u00C5)"), 1.540598);
-    cbAnode->addItem(QStringLiteral("Cu K\u03B1 avg (1.541838 \u00C5)"), 1.541838);
-    cbAnode->addItem(QStringLiteral("Co K\u03B11 (1.788965 \u00C5)"), 1.788965);
-    cbAnode->addItem(QStringLiteral("Fe K\u03B11 (1.936040 \u00C5)"), 1.936040);
-    cbAnode->addItem(QStringLiteral("Cr K\u03B11 (2.289700 \u00C5)"), 2.289700);
-    cbAnode->addItem(QStringLiteral("Mo K\u03B11 (0.709319 \u00C5)"), 0.709319);
+    auto addAnodePreset = [&](const QString &label, double wlAngstrom, bool isKaAvg) {
+        const int idx = cbAnode->count();
+        cbAnode->addItem(label, wlAngstrom);
+        cbAnode->setItemData(idx, isKaAvg, Qt::UserRole + 1);
+    };
+    addAnodePreset(QStringLiteral("Cu K\u03B1 avg (1.541838 \u00C5)"), 1.541838, true);
+    addAnodePreset(QStringLiteral("Cu K\u03B11 (1.540598 \u00C5)"), 1.540598, false);
+    addAnodePreset(QStringLiteral("Co K\u03B1 avg (1.790260 \u00C5)"), 1.790260, true);
+    addAnodePreset(QStringLiteral("Co K\u03B11 (1.788965 \u00C5)"), 1.788965, false);
+    addAnodePreset(QStringLiteral("Fe K\u03B1 avg (1.937355 \u00C5)"), 1.937355, true);
+    addAnodePreset(QStringLiteral("Fe K\u03B11 (1.936042 \u00C5)"), 1.936042, false);
+    addAnodePreset(QStringLiteral("Cr K\u03B1 avg (2.291002 \u00C5)"), 2.291002, true);
+    addAnodePreset(QStringLiteral("Cr K\u03B11 (2.289700 \u00C5)"), 2.289700, false);
+    addAnodePreset(QStringLiteral("Mo K\u03B1 avg (0.710749 \u00C5)"), 0.710749, true);
+    addAnodePreset(QStringLiteral("Mo K\u03B11 (0.709319 \u00C5)"), 0.709319, false);
 
     QDoubleSpinBox *sbLambda = new QDoubleSpinBox(&dlg);
     sbLambda->setRange(0.005, 50.0);
     sbLambda->setDecimals(6);
-    sbLambda->setValue(1.540598);
+    sbLambda->setValue(1.541838);
 
     QComboBox *cbLambdaUnit = new QComboBox(&dlg);
     cbLambdaUnit->addItem(QStringLiteral("\u00C5"), 0);
@@ -11134,7 +11314,7 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
         if (u == 1)
             return v * 10.0;
         if (u == 2)
-            return (v > 1e-9) ? (kHcKeVAngstrom / v) : 1.540598;
+            return (v > 1e-9) ? (kHcKeVAngstrom / v) : 1.541838;
         return v;
     };
     auto setLambdaBoxFromAngstrom = [&](double ang) {
@@ -11202,13 +11382,12 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
     registerAnalysisNoticeTranslationsOnce();
     QCheckBox *chkStripKa2 = new QCheckBox(
             QObject::tr("Strip K\u03B12 Doublet (Rachinger, per-anode wavelengths)"), &dlg);
-    // Initial anode is monochromatic Cu Ka1 (1.540598 A): Ka2 stripping must start OFF and turn
-    // ON automatically only when the unmonochromated Cu Ka average (1.541838 A) is picked.
-    chkStripKa2->setChecked(false);
+    // Default radiation source is unmonochromated Cu Ka avg (1.541838 A), so Ka2 stripping
+    // starts ON and toggles automatically between Ka avg presets (ON) and Ka1 presets (OFF).
+    chkStripKa2->setChecked(true);
     QObject::connect(cbAnode, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg,
                      [&](int) {
-                         const double wl = cbAnode->currentData().toDouble();
-                         chkStripKa2->setChecked(std::fabs(wl - 1.541838) < 1e-5);
+                         chkStripKa2->setChecked(cbAnode->currentData(Qt::UserRole + 1).toBool());
                      });
 
     QCheckBox *chkTopD =

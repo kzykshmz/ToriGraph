@@ -293,6 +293,9 @@ void PolynomialFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_has_custom_dof = false;
+    d_custom_n_points = 0;
+    d_custom_p_free = 0;
     d_straight_line_fit = false;
     d_convergence = Converged;
     d_fit_notes.clear();
@@ -305,32 +308,48 @@ void PolynomialFit::fit()
                           "was performed.");
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
-        const std::vector<double> baseW = computeWeightsVector();
+        const bool isWeighted =
+                !(d_y_error_source == UnknownErrors && d_weighting_method == WeightNone);
+        const std::vector<double> baseW = isWeighted ? computeWeightsVector() : std::vector<double>();
         std::vector<double> xt, yt, wt;
         xt.reserve(d_x.size());
         yt.reserve(d_y.size());
         wt.reserve(d_y.size());
         const double ln10 = std::log(10.0);
+        int excludedLogCount = 0;
+        int excludedWeightCount = 0;
         for (size_t i = 0; i < d_x.size(); ++i) {
-            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0))
+            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0)) {
+                ++excludedLogCount;
                 continue;
+            }
+            double wi = 1.0;
+            if (isWeighted) {
+                if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {
+                    ++excludedWeightCount;
+                    continue;
+                }
+                wi = baseW[i];
+            }
             xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
             yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
+            if (!isWeighted) {
                 wt.push_back(1.0);
             } else {
-                const double wi = (i < baseW.size() && std::isfinite(baseW[i]) && baseW[i] > 0.0)
-                                          ? baseW[i]
-                                          : 1.0;
                 const double w_trans =
                         d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
                 wt.push_back(std::max(1e-30, w_trans));
             }
         }
-        if (xt.size() < d_x.size())
+        if (excludedLogCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
                               "log-space fit.")
-                                   .arg(int(d_x.size() - xt.size()))
+                                   .arg(excludedLogCount)
+                                   .arg(int(d_x.size()));
+        if (excludedWeightCount > 0)
+            d_fit_notes << tr("%1 of %2 points with non-positive or invalid weights were excluded "
+                              "from the log-space fit.")
+                                   .arg(excludedWeightCount)
                                    .arg(int(d_x.size()));
         if (xt.size() < size_t(d_p)) {
             chi_2 = -1.0;
@@ -340,6 +359,9 @@ void PolynomialFit::fit()
                                       int(xt.size()));
             return;
         }
+        d_has_custom_dof = true;
+        d_custom_n_points = int(xt.size());
+        d_custom_p_free = int(d_p);
         if (d_p == 2)
             setStraightLinePearson(xt, yt);
 
@@ -356,13 +378,6 @@ void PolynomialFit::fit()
         gsl_vector_view wv = gsl_vector_view_array(wt.data(), wt.size());
         gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(xt.size(), d_p);
         gsl_multifit_wlinear(X, &wv.vector, &yv.vector, c, covar, &chi_2, work);
-        if (xt.size() < d_x.size() && xt.size() > size_t(d_p)
-            && (d_y_error_source == UnknownErrors || d_scale_errors)) {
-            const int fullDof = int(d_x.size()) - effectiveFreeParameters();
-            const int subDof = int(xt.size()) - int(d_p);
-            if (fullDof > 0 && subDof > 0)
-                gsl_matrix_scale(covar, double(fullDof) / double(subDof));
-        }
 
         for (unsigned i = 0; i < d_p; ++i)
             d_results[i] = gsl_vector_get(c, i);
@@ -587,6 +602,9 @@ void LinearFit::fit()
 
     d_result_errors.clear();
     d_has_custom_r2 = false;
+    d_has_custom_dof = false;
+    d_custom_n_points = 0;
+    d_custom_p_free = 0;
     d_straight_line_fit = false;
     d_convergence = Converged;
     d_fit_notes.clear();
@@ -599,32 +617,48 @@ void LinearFit::fit()
                           "was performed.");
 
     if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
-        const std::vector<double> baseW = computeWeightsVector();
+        const bool isWeighted =
+                !(d_y_error_source == UnknownErrors && d_weighting_method == WeightNone);
+        const std::vector<double> baseW = isWeighted ? computeWeightsVector() : std::vector<double>();
         std::vector<double> xt, yt, wt;
         xt.reserve(d_x.size());
         yt.reserve(d_y.size());
         wt.reserve(d_y.size());
         const double ln10 = std::log(10.0);
+        int excludedLogCount = 0;
+        int excludedWeightCount = 0;
         for (size_t i = 0; i < d_x.size(); ++i) {
-            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0))
+            if ((d_app_log_x && d_x[i] <= 0.0) || (d_app_log_y && d_y[i] <= 0.0)) {
+                ++excludedLogCount;
                 continue;
+            }
+            double wi = 1.0;
+            if (isWeighted) {
+                if (i >= baseW.size() || !std::isfinite(baseW[i]) || baseW[i] <= 0.0) {
+                    ++excludedWeightCount;
+                    continue;
+                }
+                wi = baseW[i];
+            }
             xt.push_back(d_app_log_x ? std::log10(d_x[i]) : d_x[i]);
             yt.push_back(d_app_log_y ? std::log10(d_y[i]) : d_y[i]);
-            if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
+            if (!isWeighted) {
                 wt.push_back(1.0);
             } else {
-                const double wi = (i < baseW.size() && std::isfinite(baseW[i]) && baseW[i] > 0.0)
-                                          ? baseW[i]
-                                          : 1.0;
                 const double w_trans =
                         d_app_log_y ? (wi * (d_y[i] * ln10) * (d_y[i] * ln10)) : wi;
                 wt.push_back(std::max(1e-30, w_trans));
             }
         }
-        if (xt.size() < d_x.size())
+        if (excludedLogCount > 0)
             d_fit_notes << tr("%1 of %2 points with non-positive values were excluded from the "
                               "log-space fit.")
-                                   .arg(int(d_x.size() - xt.size()))
+                                   .arg(excludedLogCount)
+                                   .arg(int(d_x.size()));
+        if (excludedWeightCount > 0)
+            d_fit_notes << tr("%1 of %2 points with non-positive or invalid weights were excluded "
+                              "from the log-space fit.")
+                                   .arg(excludedWeightCount)
                                    .arg(int(d_x.size()));
         if (xt.size() < 2) {
             chi_2 = -1.0;
@@ -634,22 +668,14 @@ void LinearFit::fit()
                                       int(xt.size()));
             return;
         }
+        d_has_custom_dof = true;
+        d_custom_n_points = int(xt.size());
+        d_custom_p_free = 2;
         setStraightLinePearson(xt, yt);
 
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
         gsl_fit_wlinear(xt.data(), 1, wt.data(), 1, yt.data(), 1, xt.size(), &c0, &c1, &cov00,
                         &cov01, &cov11, &chi_2);
-        if (xt.size() < d_x.size() && xt.size() > 2
-            && (d_y_error_source == UnknownErrors || d_scale_errors)) {
-            const int fullDof = int(d_x.size()) - effectiveFreeParameters();
-            const int subDof = int(xt.size()) - 2;
-            if (fullDof > 0 && subDof > 0) {
-                const double adj = double(fullDof) / double(subDof);
-                cov00 *= adj;
-                cov01 *= adj;
-                cov11 *= adj;
-            }
-        }
 
         d_results[0] = c0;
         d_results[1] = c1;

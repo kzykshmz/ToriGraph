@@ -65,8 +65,9 @@ public slots:
     virtual void languageChange();
     void insertLanguagesList();
 
-    void accept();
+    void accept() override;
     void apply();
+    void done(int r) override;
 
     void setCurrentPage(int index);
     void setColumnSeparator(const QString &sep);
@@ -116,6 +117,8 @@ private slots:
     void checkForUpdatesFromDialog();
 
 private:
+    bool applySettings();
+    int d_pendingLanguageIdx = -1;
     void initPlotsPage();
     void initAppPage();
     void initCurvesPage();

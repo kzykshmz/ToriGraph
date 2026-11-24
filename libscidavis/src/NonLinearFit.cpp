@@ -104,7 +104,7 @@ static const OriginModelSpec kOriginModels[] = {
       QT_TRANSLATE_NOOP("NonLinearFit", "Pseudo-Voigt Peak with separate Gaussian (wG) and Lorentzian (wL) widths") },
     { "VoigtApprox", "Peak Functions", "A, xc, w, mu, y0",
       "y0+A*(mu*2/PI*w/(4*(x-xc)^2+w^2)+(1-mu)*sqrt(4*ln(2))/(sqrt(PI)*w)*exp(-4*ln(2)*((x-xc)/w)^2))",
-      QT_TRANSLATE_NOOP("NonLinearFit", "Pseudo-Voigt Peak (shared FWHM w and Lorentz fraction mu)") },
+      QT_TRANSLATE_NOOP("NonLinearFit", "Pseudo-Voigt approximation to Voigt profile (alias of PseudoVoigt1)") },
     { "PearsonVII", "Peak Functions", "A, xc, w, m, y0",
       "y0+A*(1+(2^(1/m)-1)*(2*(x-xc)/w)^2)^(-m)",
       QT_TRANSLATE_NOOP("NonLinearFit", "Pearson VII XRD Diffraction Peak") },
@@ -288,7 +288,8 @@ static QString normalizeModelKey(const QString &name)
         return "ExpGrow1";
     if (k.compare("PseudoVoigt", Qt::CaseInsensitive) == 0)
         return "PseudoVoigt1";
-    if (k.compare("Voigt", Qt::CaseInsensitive) == 0)
+    if (k.compare("Voigt", Qt::CaseInsensitive) == 0
+        || k.compare("PseudoVoigt1 (Voigt approx.)", Qt::CaseInsensitive) == 0)
         return "VoigtApprox";
     if (k.compare("Strexp", Qt::CaseInsensitive) == 0)
         return "Strexp (KWW)";
@@ -2687,9 +2688,14 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
     QGroupBox *gbModel = new QGroupBox(tr("2. Model & Shared Parameter Flags"));
     QFormLayout *fl = new QFormLayout(gbModel);
     QComboBox *modelBox = new QComboBox();
-    modelBox->addItem(tr("<Custom Formula>"));
-    modelBox->addItems(builtInModelNames());
-    int expIdx = modelBox->findText("ExpDec1");
+    modelBox->addItem(tr("<Custom Formula>"), QString());
+    for (const QString &mName : builtInModelNames()) {
+        const QString displayLabel = (mName == QLatin1String("VoigtApprox"))
+                ? QStringLiteral("PseudoVoigt1 (Voigt approx.)")
+                : mName;
+        modelBox->addItem(displayLabel, mName);
+    }
+    int expIdx = modelBox->findData("ExpDec1");
     if (expIdx >= 0)
         modelBox->setCurrentIndex(expIdx);
 
@@ -2708,7 +2714,9 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
 
     auto refreshParams = [&]() {
         if (modelBox->currentIndex() > 0) {
-            QString m = modelBox->currentText();
+            QString m = modelBox->currentData().toString();
+            if (m.isEmpty())
+                m = modelBox->currentText();
             formulaEdit->setText(builtInModelFormula(m));
             paramsEdit->setText(builtInModelParameters(m).join(", "));
         }
@@ -2751,7 +2759,10 @@ void NonLinearFit::showGlobalFitDialog(ApplicationWindow *app, Graph *g)
 
     NonLinearFit fitter(app, g);
     if (modelBox->currentIndex() > 0) {
-        fitter.setBuiltInModel(modelBox->currentText());
+        QString modelKey = modelBox->currentData().toString();
+        if (modelKey.isEmpty())
+            modelKey = modelBox->currentText();
+        fitter.setBuiltInModel(modelKey);
     } else {
         QStringList pNames;
         for (int i = 0; i < paramTable->rowCount(); ++i)

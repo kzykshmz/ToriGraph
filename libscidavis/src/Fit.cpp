@@ -43,6 +43,7 @@
 #include "MultiPeakFit.h"
 #include "ExponentialFit.h"
 #include "SigmoidalFit.h"
+#include "CurveMathTools.h"
 #include "future/core/column/Column.h"
 #include "I18nJapanese.h"
 
@@ -4368,13 +4369,7 @@ void Fit::insertFitSummaryBoxOnGraph()
         mrk->setFont(calloutFont);
         mrk->setFrameStyle(Legend::Line);
         mrk->setBackgroundColor(QColor(255, 255, 255, 235));
-        if (d_graph->hasLegend()) {
-            Legend *leg = d_graph->legend();
-            if (leg && leg != mrk) {
-                const QPoint p = leg->rect().bottomLeft();
-                mrk->setOrigin(QPoint(p.x(), p.y() + 14));
-            }
-        }
+        CurveMathTools::placeCalloutAutoAvoid(d_graph, mrk, 14, false, true);
     }
     d_graph->replot();
 }

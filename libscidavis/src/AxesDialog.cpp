@@ -1977,6 +1977,38 @@ bool AxesDialog::updatePlot()
 
     // Pre-validate all dirty Scale, Axis Formula, and Axis Break inputs before mutating d_graph
     if (commitScales) {
+        auto findSmallestPositiveOnAxis = [this](int qwtAxis, double fallbackEnd) -> double {
+            const bool xAxis = (qwtAxis == QwtPlot::xBottom || qwtAxis == QwtPlot::xTop);
+            double minPos = std::numeric_limits<double>::infinity();
+            for (int ci = 0; ci < d_graph->curves(); ++ci) {
+                QwtPlotCurve *c = d_graph->curve(ci);
+                if (!c)
+                    continue;
+                if (xAxis ? (c->xAxis() != qwtAxis) : (c->yAxis() != qwtAxis))
+                    continue;
+                for (int i = 0; i < c->dataSize(); ++i) {
+                    const double v = xAxis ? c->x(i) : c->y(i);
+                    if (std::isfinite(v) && v > 0.0 && v < minPos)
+                        minPos = v;
+                }
+            }
+            if (!std::isfinite(minPos)) {
+                for (int ci = 0; ci < d_graph->curves(); ++ci) {
+                    QwtPlotCurve *c = d_graph->curve(ci);
+                    if (!c)
+                        continue;
+                    for (int i = 0; i < c->dataSize(); ++i) {
+                        const double v = xAxis ? c->x(i) : c->y(i);
+                        if (std::isfinite(v) && v > 0.0 && v < minPos)
+                            minPos = v;
+                    }
+                }
+            }
+            if (std::isfinite(minPos) && minPos > 0.0 && minPos < fallbackEnd)
+                return minPos;
+            return std::min(1e-3, 0.01 * fallbackEnd);
+        };
+
         for (int r = 0; r < 4; ++r) {
             if (!d_stagedScales[r].dirty)
                 continue;
@@ -1989,15 +2021,36 @@ bool AxesDialog::updatePlot()
                                                                 : axesType.value(a, Graph::AxisType::Numeric);
             if (aType == Graph::AxisType::Time || aType == Graph::AxisType::Date
                 || aType == Graph::AxisType::DateTime) {
-                QDateTime qdt = QDateTime::fromString(from, "yyyy-MM-dd hh:mm:ss");
+                QDateTime qdt = QDateTime::fromString(st.start.trimmed(), "yyyy-MM-dd hh:mm:ss");
+                if (!qdt.isValid()) {
+                    generalDialog.setCurrentWidget(scalesPage);
+                    axesList->setCurrentRow(r);
+                    QMessageBox::critical(
+                            this, tr("Start limit error"),
+                            tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
+                    boxStart->setFocus();
+                    return false;
+                }
                 from = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
-                qdt = QDateTime::fromString(to, "yyyy-MM-dd hh:mm:ss");
+                qdt = QDateTime::fromString(st.end.trimmed(), "yyyy-MM-dd hh:mm:ss");
+                if (!qdt.isValid()) {
+                    generalDialog.setCurrentWidget(scalesPage);
+                    axesList->setCurrentRow(r);
+                    QMessageBox::critical(
+                            this, tr("End limit error"),
+                            tr("Please enter a valid date/time in yyyy-MM-dd hh:mm:ss format."));
+                    boxEnd->setFocus();
+                    return false;
+                }
                 to = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
             }
+            double startVal = 0.0, endVal = 0.0;
             try {
                 MyParser parser;
                 parser.SetExpr(from);
-                parser.Eval();
+                startVal = parser.Eval();
+                if (!std::isfinite(startVal))
+                    throw mu::ParserError("Non-finite limit");
             } catch (mu::ParserError &e) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
@@ -2008,13 +2061,60 @@ bool AxesDialog::updatePlot()
             try {
                 MyParser parser;
                 parser.SetExpr(to);
-                parser.Eval();
+                endVal = parser.Eval();
+                if (!std::isfinite(endVal))
+                    throw mu::ParserError("Non-finite limit");
             } catch (mu::ParserError &e) {
                 generalDialog.setCurrentWidget(scalesPage);
                 axesList->setCurrentRow(r);
                 QMessageBox::critical(this, tr("End limit error"), QStringFromString(e.GetMsg()));
                 boxEnd->setFocus();
                 return false;
+            }
+            if (startVal >= endVal) {
+                generalDialog.setCurrentWidget(scalesPage);
+                axesList->setCurrentRow(r);
+                QMessageBox::critical(this, tr("Input error"),
+                                      tr("Please enter limits that satisfy: Start < End!"));
+                boxEnd->setFocus();
+                return false;
+            }
+            if (st.scaleType == 1) {
+                if (endVal <= 0.0) {
+                    generalDialog.setCurrentWidget(scalesPage);
+                    axesList->setCurrentRow(r);
+                    QMessageBox::critical(
+                            this, tr("Scale input error"),
+                            tr("Logarithmic scale requires positive limits (> 0)."));
+                    boxEnd->setFocus();
+                    return false;
+                }
+                if (startVal <= 0.0) {
+                    const double clampedStart = findSmallestPositiveOnAxis(a, endVal);
+                    bool acceptClamp = ApplicationWindow::isNonInteractiveContext(this);
+                    if (!acceptClamp) {
+                        acceptClamp = (QMessageBox::question(
+                                               this, tr("Logarithmic Scale"),
+                                               tr("Logarithmic scale requires a positive Start limit (> 0).\n"
+                                                  "Clamp Start from %1 to the smallest positive value (%2)?")
+                                                       .arg(QLocale().toString(startVal, 'g', 8),
+                                                            QLocale().toString(clampedStart, 'g', 8)),
+                                               QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+                                       == QMessageBox::Yes);
+                    }
+                    if (!acceptClamp) {
+                        generalDialog.setCurrentWidget(scalesPage);
+                        axesList->setCurrentRow(r);
+                        boxStart->setFocus();
+                        return false;
+                    }
+                    const QString clampedStr = QString::number(clampedStart, 'g', 12);
+                    d_stagedScales[r].start = clampedStr;
+                    if (axesList && axesList->currentRow() == r && boxStart) {
+                        QSignalBlocker bStart(boxStart);
+                        boxStart->setText(clampedStr);
+                    }
+                }
             }
             if (st.useStep) {
                 double stp = 0.0;
@@ -2030,7 +2130,7 @@ bool AxesDialog::updatePlot()
                     boxStep->setFocus();
                     return false;
                 }
-                if (stp <= 0) {
+                if (!std::isfinite(stp) || stp <= 0) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(this, tr("Step input error"),
@@ -2047,6 +2147,34 @@ bool AxesDialog::updatePlot()
             if (!d_stagedAxes[r].dirty)
                 continue;
             const StagedAxisEdit &st = d_stagedAxes[r];
+            const QString factorTxt = st.divideFactor.trimmed();
+            if (!factorTxt.isEmpty()) {
+                bool ok = false;
+                double v = QLocale::c().toDouble(factorTxt, &ok);
+                if (!ok)
+                    v = factorTxt.toDouble(&ok);
+                if (!ok) {
+                    try {
+                        MyParser parser;
+                        parser.SetExpr(factorTxt.toUtf8().constData());
+                        v = parser.Eval();
+                        ok = std::isfinite(v);
+                    } catch (...) {
+                        ok = false;
+                    }
+                }
+                if (!ok || !std::isfinite(v) || std::fabs(v) <= 1e-300) {
+                    generalDialog.setCurrentWidget(axesPage);
+                    if (axesTitlesList)
+                        axesTitlesList->setCurrentRow(r);
+                    QMessageBox::critical(
+                            this, tr("Divide factor error"),
+                            tr("Please enter a valid non-zero numeric value or expression for Divide by Factor."));
+                    if (boxDivideFactor)
+                        boxDivideFactor->setFocus();
+                    return false;
+                }
+            }
             if (st.axisType == Graph::AxisType::Numeric && st.showFormula) {
                 QString formula = st.formula.toLower();
                 try {
@@ -3988,9 +4116,13 @@ bool AxesDialog::commitScaleRow(int row)
     case Graph::AxisType::Time:
     case Graph::AxisType::Date:
     case Graph::AxisType::DateTime: {
-        QDateTime qdt = QDateTime::fromString(from, "yyyy-MM-dd hh:mm:ss");
+        QDateTime qdt = QDateTime::fromString(st.start.trimmed(), "yyyy-MM-dd hh:mm:ss");
+        if (!qdt.isValid())
+            return false;
         from = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
-        qdt = QDateTime::fromString(to, "yyyy-MM-dd hh:mm:ss");
+        qdt = QDateTime::fromString(st.end.trimmed(), "yyyy-MM-dd hh:mm:ss");
+        if (!qdt.isValid())
+            return false;
         to = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
         break;
     }
@@ -4012,6 +4144,10 @@ bool AxesDialog::commitScaleRow(int row)
     } catch (...) {
         return false;
     }
+    if (!std::isfinite(start) || !std::isfinite(end) || start >= end)
+        return false;
+    if (st.scaleType == 1 && (start <= 0.0 || end <= 0.0))
+        return false;
 
     if (st.useStep) {
         if (stp <= 0)
@@ -4183,6 +4319,14 @@ bool AxesDialog::commitAxisRow(int row)
         QFont af = st.axisFont;
         if (af.family().trimmed().isEmpty())
             af.setFamily(QStringLiteral("Arial"));
+        if (row == 0)
+            xBottomFont = af;
+        else if (row == 1)
+            yLeftFont = af;
+        else if (row == 2)
+            xTopFont = af;
+        else if (row == 3)
+            yRightFont = af;
         d_graph->setAxisFont(axis, af);
     }
     if (st.titleFontDirty) {
@@ -4333,17 +4477,10 @@ void AxesDialog::applyTickAndAxisStyleToAllAxes()
         srcTitleFont.setFamily(QStringLiteral("Arial"));
     srcTitleFont.setPointSizeF(PlotStyleLimits::effectiveFontPointSizeF(srcTitleFont, 12.0));
 
-    xBottomFont = srcTickFont;
-    yLeftFont = srcTickFont;
-    xTopFont = srcTickFont;
-    yRightFont = srcTickFont;
-
+    // Stage the current axis's tick & font styles onto all 4 axes without mutating cached member
+    // fonts, forcing hidden axes visible, or applying to the graph until the user clicks Apply/OK.
     for (int r = 0; r < 4; ++r) {
         StagedAxisEdit &dst = d_stagedAxes[r];
-        if (src.showAxis && src.showBackbone) {
-            dst.showAxis = true;
-            dst.showBackbone = true;
-        }
         dst.majTicksType = src.majTicksType;
         dst.minTicksType = src.minTicksType;
         dst.axisColor = src.axisColor;
@@ -4357,5 +4494,4 @@ void AxesDialog::applyTickAndAxisStyleToAllAxes()
     }
 
     d_axesTabDirty = true;
-    updatePlot();
 }

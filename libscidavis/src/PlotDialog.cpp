@@ -202,10 +202,19 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     privateTabWidget = new QTabWidget(this);
     privateTabWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    // Keep the curve/layer navigation tree pinned on the left; only the right tab area scrolls.
+    QScrollArea *contentScroll = new QScrollArea(this);
+    contentScroll->setObjectName(QStringLiteral("PlotDialogContentScrollArea"));
+    contentScroll->setWidgetResizable(true);
+    contentScroll->setFrameShape(QFrame::NoFrame);
+    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    contentScroll->setWidget(privateTabWidget);
+
     d_mainSplitter = new QSplitter(Qt::Horizontal, this);
     d_mainSplitter->setChildrenCollapsible(false);
     d_mainSplitter->addWidget(d_leftTreePanel);
-    d_mainSplitter->addWidget(privateTabWidget);
+    d_mainSplitter->addWidget(contentScroll);
     d_mainSplitter->setStretchFactor(0, 0);
     d_mainSplitter->setStretchFactor(1, 1);
     d_mainSplitter->setSizes({ 255, 525 });
@@ -213,16 +222,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(10, 10, 10, 10);
     mainLayout->setSpacing(8);
-
-    // Only the tree + tab area scrolls; the OK / Apply / Cancel row below stays visible.
-    QScrollArea *contentScroll = new QScrollArea(this);
-    contentScroll->setObjectName(QStringLiteral("PlotDialogContentScrollArea"));
-    contentScroll->setWidgetResizable(true);
-    contentScroll->setFrameShape(QFrame::NoFrame);
-    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    contentScroll->setWidget(d_mainSplitter);
-    mainLayout->addWidget(contentScroll, 1);
+    mainLayout->addWidget(d_mainSplitter, 1);
 
     initAxesPage();
     initLinePage();
@@ -293,7 +293,7 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
     connect(btnMore, SIGNAL(toggled(bool)), this, SLOT(showAll(bool)));
 
     connect(buttonOk, SIGNAL(clicked()), this, SLOT(quit()));
-    connect(buttonCancel, SIGNAL(clicked()), this, SLOT(close()));
+    connect(buttonCancel, SIGNAL(clicked()), this, SLOT(reject()));
     connect(buttonApply, SIGNAL(clicked()), this, SLOT(acceptParams()));
     connect(btnWorksheet, SIGNAL(clicked()), this, SLOT(showWorksheet()));
     connect(btnEditCurve, SIGNAL(clicked()), this, SLOT(editCurve()));
@@ -312,7 +312,8 @@ PlotDialog::PlotDialog(bool showExtended, QWidget *parent, Qt::WindowFlags fl)
             SLOT(updateTreeWidgetItem(QTreeWidgetItem *)));
     connect(boxPlotType, SIGNAL(currentIndexChanged(int)), this, SLOT(changePlotType(int)));
 
-    QShortcut *shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
+    QShortcut *shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), listBox, nullptr, nullptr,
+                                        Qt::WidgetWithChildrenShortcut);
     connect(shortcut, SIGNAL(activated()), this, SLOT(removeSelectedCurve()));
 
     togglePage(true);
@@ -364,14 +365,16 @@ void PlotDialog::showPlotAssociations(QTreeWidgetItem *item, int)
         return;
     }
 
+    Graph *g = ci->graph();
+    const int idx = ci->plotItemIndex();
     if (((PlotCurve *)it)->type() == Graph::Function) {
         close();
-        app->showFunctionDialog(ci->graph(), ci->plotItemIndex());
+        app->showFunctionDialog(g, idx);
     } else {
 #if QT_VERSION >= 0x050000
         close();
 #endif
-        app->showPlotAssociations(ci->plotItemIndex());
+        app->showPlotAssociations(idx);
 #if QT_VERSION < 0x050000
         close();
 #endif
@@ -396,6 +399,7 @@ void PlotDialog::editCurve()
 
     int index = item->plotItemIndex();
     int curveType = static_cast<const PlotCurve *>(pi)->type();
+    Graph *itemGraph = item->graph();
 
 #if QT_VERSION >= 0x050000
     close();
@@ -403,7 +407,7 @@ void PlotDialog::editCurve()
 
     if (app) {
         if (curveType == Graph::Function)
-            app->showFunctionDialog(item->graph(), index);
+            app->showFunctionDialog(itemGraph, index);
         else
             app->showPlotAssociations(index);
     }
@@ -1733,6 +1737,17 @@ void PlotDialog::removeSelectedCurve()
     Graph *graph = item->graph();
     const int curveIdx = item->plotItemIndex();
     if (graph && curveIdx >= 0) {
+        if (!ApplicationWindow::isNonInteractiveContext(this)) {
+            const QwtPlotItem *pi = item->plotItem();
+            const QString curveTitle = pi ? pi->title().text() : item->text(0);
+            if (QMessageBox::question(
+                        this, tr("Remove Curve"),
+                        tr("Remove curve \"%1\" from the plot?").arg(curveTitle),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                != QMessageBox::Yes) {
+                return;
+            }
+        }
         QScopedValueRollback<int> selfEdit(d_selfEditDepth, d_selfEditDepth + 1);
         MultiLayer *ml = d_mlGuard ? d_mlGuard.data() : graph->multiLayerParent();
         const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
@@ -1945,7 +1960,7 @@ void PlotDialog::clearTabWidget()
 void PlotDialog::quit()
 {
     if (acceptParams())
-        close();
+        accept();
 }
 
 void PlotDialog::showWorksheet()
@@ -2739,9 +2754,14 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
     QwtPlotItem *plotItem = curveItem ? const_cast<QwtPlotItem *>(curveItem->plotItem()) : nullptr;
     Graph *graph = curveItem ? curveItem->graph() : nullptr;
 
+    double histBegin = 0.0;
+    double histEnd = 0.0;
+    double histBin = 0.0;
+    bool histValsReady = false;
     if (curveItem && plotItem && graph && tabsToCommit.contains(histogramPage)
         && curveItem->plotItemType() == Graph::Histogram && !automaticBox->isChecked()) {
-        if (explicitAccept && !validInput())
+        histValsReady = evaluateHistogramInputs(&histBegin, &histEnd, &histBin, explicitAccept);
+        if (explicitAccept && !histValsReady)
             return false;
     }
 
@@ -2987,14 +3007,20 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
 
         if (tabsToCommit.contains(histogramPage) && curveItem->plotItemType() == Graph::Histogram) {
             QwtHistogram *h = static_cast<QwtHistogram *>(plotItem);
-            if (h && (automaticBox->isChecked() || validInput())) {
-                if (!(h->autoBinning() == automaticBox->isChecked()
-                      && h->binSize() == binSizeBox->text().toDouble()
-                      && h->begin() == histogramBeginBox->text().toDouble()
-                      && h->end() == histogramEndBox->text().toDouble())) {
-                    h->setBinning(automaticBox->isChecked(), binSizeBox->text().toDouble(),
-                                  histogramBeginBox->text().toDouble(),
-                                  histogramEndBox->text().toDouble());
+            if (h && automaticBox->isChecked()) {
+                double optBegin = h->begin(), optEnd = h->end(), optBin = h->binSize();
+                evaluateHistogramInputs(&optBegin, &optEnd, &optBin, false);
+                if (!h->autoBinning()) {
+                    h->setBinning(true, optBin, optBegin, optEnd);
+                    h->loadData();
+                    graph->updateScale();
+                }
+                needReplot = true;
+                anyHandled = true;
+            } else if (h && histValsReady) {
+                if (!(h->autoBinning() == false && h->binSize() == histBin
+                      && h->begin() == histBegin && h->end() == histEnd)) {
+                    h->setBinning(false, histBin, histBegin, histEnd);
                     h->loadData();
                     graph->updateScale();
                 }
@@ -3199,102 +3225,131 @@ void PlotDialog::setAutomaticBinning()
     GroupBoxH->setEnabled(!automaticBox->isChecked());
 }
 
-bool PlotDialog::validInput()
+bool PlotDialog::evaluateHistogramInputs(double *beginVal, double *endVal, double *binVal,
+                                         bool showErrors)
 {
-    QString from = histogramBeginBox->text();
-    QString to = histogramEndBox->text();
-    QString step = binSizeBox->text();
-    QRegExp nonDigit("\\D");
-
-    if (histogramBeginBox->text().isEmpty()) {
-        QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid start limit!"));
-        histogramBeginBox->setFocus();
-        return false;
-    }
-
-    if (histogramEndBox->text().isEmpty()) {
-        QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid end limit!"));
-        histogramEndBox->setFocus();
-        return false;
-    }
-
-    if (binSizeBox->text().isEmpty()) {
-        QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid bin size value!"));
-        binSizeBox->setFocus();
-        return false;
-    }
-
-    from = from.remove(".");
-    to = to.remove(".");
-    step = step.remove(".");
-
-    int pos = from.indexOf("-", 0);
-    if (pos == 0)
-        from = from.replace(pos, 1, "");
-
-    pos = to.indexOf("-", 0);
-    if (pos == 0)
-        to = to.replace(pos, 1, "");
-
-    double start, end, stp;
-    // bool error = false;
-    if (from.contains(nonDigit)) {
+    auto evalExpr = [](const QString &raw, double *out, QString *errMsg) -> bool {
+        const QString trimmed = raw.trimmed();
+        if (trimmed.isEmpty()) {
+            if (errMsg)
+                *errMsg = QString();
+            return false;
+        }
+        bool ok = false;
+        double val = QLocale::c().toDouble(trimmed, &ok);
+        if (!ok)
+            val = QLocale().toDouble(trimmed, &ok);
+        if (ok && std::isfinite(val)) {
+            if (out)
+                *out = val;
+            return true;
+        }
         try {
             MyParser parser;
-            parser.SetExpr(histogramBeginBox->text());
-            start = parser.Eval();
+            parser.SetExpr(trimmed);
+            val = parser.Eval();
+            if (!std::isfinite(val)) {
+                if (errMsg)
+                    *errMsg = tr("Expression evaluates to a non-finite value.");
+                return false;
+            }
+            if (out)
+                *out = val;
+            return true;
         } catch (mu::ParserError &e) {
-            QMessageBox::critical(this, tr("Start limit error"), QStringFromString(e.GetMsg()));
+            if (errMsg)
+                *errMsg = QStringFromString(e.GetMsg());
+            return false;
+        }
+    };
+
+    if (histogramBeginBox->text().trimmed().isEmpty()) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid start limit!"));
             histogramBeginBox->setFocus();
-            // error = true;
-            return false;
         }
-    } else
-        start = histogramBeginBox->text().toDouble();
+        return false;
+    }
 
-    if (to.contains(nonDigit)) {
-        try {
-            MyParser parser;
-            parser.SetExpr(histogramEndBox->text());
-            end = parser.Eval();
-        } catch (mu::ParserError &e) {
-            QMessageBox::critical(this, tr("End limit error"), QStringFromString(e.GetMsg()));
+    if (histogramEndBox->text().trimmed().isEmpty()) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Input error"), tr("Please enter a valid end limit!"));
             histogramEndBox->setFocus();
-            // error=true;
-            return false;
         }
-    } else
-        end = histogramEndBox->text().toDouble();
+        return false;
+    }
+
+    if (binSizeBox->text().trimmed().isEmpty()) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Input error"),
+                                  tr("Please enter a valid bin size value!"));
+            binSizeBox->setFocus();
+        }
+        return false;
+    }
+
+    double start = 0.0, end = 0.0, stp = 0.0;
+    QString errMsg;
+    if (!evalExpr(histogramBeginBox->text(), &start, &errMsg)) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Start limit error"),
+                                  errMsg.isEmpty() ? tr("Please enter a valid start limit!")
+                                                   : errMsg);
+            histogramBeginBox->setFocus();
+        }
+        return false;
+    }
+
+    if (!evalExpr(histogramEndBox->text(), &end, &errMsg)) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("End limit error"),
+                                  errMsg.isEmpty() ? tr("Please enter a valid end limit!")
+                                                   : errMsg);
+            histogramEndBox->setFocus();
+        }
+        return false;
+    }
 
     if (start >= end) {
-        QMessageBox::critical(this, tr("Input error"),
-                              tr("Please enter limits that satisfy: begin < end!"));
-        histogramEndBox->setFocus();
-        return false;
-    }
-
-    if (step.contains(nonDigit)) {
-        try {
-            MyParser parser;
-            parser.SetExpr(binSizeBox->text());
-            stp = parser.Eval();
-        } catch (mu::ParserError &e) {
-            QMessageBox::critical(this, tr("Bin size input error"), QStringFromString(e.GetMsg()));
-            binSizeBox->setFocus();
-            // error=true;
-            return false;
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Input error"),
+                                  tr("Please enter limits that satisfy: begin < end!"));
+            histogramEndBox->setFocus();
         }
-    } else
-        stp = binSizeBox->text().toDouble();
-
-    if (stp <= 0) {
-        QMessageBox::critical(this, tr("Bin size input error"),
-                              tr("Please enter a positive bin size value!"));
-        binSizeBox->setFocus();
         return false;
     }
 
+    if (!evalExpr(binSizeBox->text(), &stp, &errMsg)) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Bin size input error"),
+                                  errMsg.isEmpty() ? tr("Please enter a valid bin size value!")
+                                                   : errMsg);
+            binSizeBox->setFocus();
+        }
+        return false;
+    }
+
+    if (stp <= 0.0 || !std::isfinite((end - start) / stp)) {
+        if (showErrors) {
+            QMessageBox::critical(this, tr("Bin size input error"),
+                                  tr("Please enter a positive bin size value!"));
+            binSizeBox->setFocus();
+        }
+        return false;
+    }
+
+    if (beginVal)
+        *beginVal = start;
+    if (endVal)
+        *endVal = end;
+    if (binVal)
+        *binVal = stp;
     return true;
+}
+
+bool PlotDialog::validInput()
+{
+    return evaluateHistogramInputs(nullptr, nullptr, nullptr, true);
 }
 void PlotDialog::setPiePenStyle(const Qt::PenStyle &style)
 {
@@ -3651,19 +3706,20 @@ void PlotDialog::hideEvent(QHideEvent *e)
     QDialog::hideEvent(e);
 }
 
-void PlotDialog::reject()
+void PlotDialog::done(int r)
 {
     if (d_externalSyncTimer)
         d_externalSyncTimer->stop();
-    if (testAttribute(Qt::WA_DeleteOnClose)) {
-        // Call close() while visible so closeEvent() and WA_DeleteOnClose cleanup run,
-        // then QDialog::reject() sets QDialog::Rejected and emits rejected()/finished().
-        QPointer<PlotDialog> self(this);
-        close();
-        if (self)
-            QDialog::reject();
-        return;
-    }
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(this->parent());
+    if (app && btnMore)
+        app->d_extended_plot_dialog = btnMore->isChecked();
+    QDialog::done(r);
+    if (testAttribute(Qt::WA_DeleteOnClose))
+        deleteLater();
+}
+
+void PlotDialog::reject()
+{
     QDialog::reject();
 }
 
