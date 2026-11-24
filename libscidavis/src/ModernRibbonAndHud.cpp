@@ -2304,6 +2304,10 @@ void ModernRibbonBar::updateStatusBarZoomIndicator(MultiLayer *ml)
             if (!d_shutting_down && mlPtr && d_zoom_bound_ml == mlPtr)
                 updateStatusBarZoomIndicator(mlPtr.data());
         });
+        connect(ml, &MultiLayer::pageZoomChanged, this, [this, mlPtr](double) {
+            if (!d_shutting_down && mlPtr && d_zoom_bound_ml == mlPtr)
+                updateStatusBarZoomIndicator(mlPtr.data());
+        });
     }
 
     const bool showZoom = (ml != nullptr);

@@ -1292,7 +1292,7 @@ void GraphInspectorDock::setTargetMultiLayer(MultiLayer *ml, bool forceRefresh)
         }
         if (!ml)
             updateQuickStartPlotButtonState();
-        syncInspectorFromSelection();
+        syncInspectorFromSelection(false);
         return;
     }
 
@@ -1764,7 +1764,7 @@ void GraphInspectorDock::buildUi()
         setUserPinned(true);
         setCollapsedRail(false);
         switchToInspectorPage(idx);
-        syncInspectorFromSelection();
+        syncInspectorFromSelection(false);
     };
 
     d_rail_page_btn = makeRailBtn(QStringLiteral("page-setup"), QString());
@@ -3062,5 +3062,5 @@ void GraphInspectorDock::retranslateUi()
 
     // A5-1: retranslate Object Manager tree nodes and dynamic labels immediately on language switch.
     refreshObjectTree();
-    syncInspectorFromSelection();
+    syncInspectorFromSelection(false);
 }

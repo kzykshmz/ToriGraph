@@ -1299,6 +1299,7 @@ void MultiLayer::setPageZoom(double factor)
     repositionCanvasStatusPill();
     updateCanvasStatusPill();
     syncCanvasOverlayVisibility();
+    emit pageZoomChanged(d_page_zoom);
 }
 
 double MultiLayer::pageZoom() const

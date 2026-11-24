@@ -400,6 +400,7 @@ signals:
     void showRightAxisTitleDialog();
     void showMarkerPopupMenu();
     void modifiedPlot();
+    void pageZoomChanged(double zoom);
     void cursorInfo(const QString &);
     void showImageDialog();
     void showLineDialog();
