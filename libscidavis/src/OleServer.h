@@ -105,6 +105,10 @@ bool initializeOleClipboardOnly();
 // Flush OLE clipboard if owned and revoke class factory before exit
 void shutdownOleServer();
 
+// Run one pass of the dead-container watchdog over live graph objects (exposed for testing)
+void runContainerWatchdogTickForTesting();
+int liveGraphObjectCountForTesting();
+
 // Clipboard sequence number (GetClipboardSequenceNumber) right after the last successful copy for
 // PowerPoint put its object on the clipboard; 0 when no such object is held.
 DWORD lastCopyClipboardSequence();

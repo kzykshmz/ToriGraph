@@ -22,6 +22,7 @@
 #include "PolynomialFit.h"
 #include "SmoothFilter.h"
 #include "Table.h"
+#include "core/Project.h"
 #include "core/column/Column.h"
 
 #include <qwt_plot_canvas.h>
@@ -747,6 +748,7 @@ bool RecalcManager::executeLink(RecalcLink &link)
     }
 
     QScopedValueRollback<bool> recalcGuard(d_recalculating, true);
+    ScopedProjectUndoSuppressor undoSuppress(app->project());
     QScopedValueRollback<bool> logGuard(app->writeFitResultsToLog, false);
     QScopedValueRollback<bool> pasteGuard(app->pasteFitResultsToPlot, false);
 

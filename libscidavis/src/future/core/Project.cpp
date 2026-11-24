@@ -55,7 +55,8 @@ public:
         : mdi_window_visibility(static_cast<MdiWindowVisibility>(
                 Project::global("default_mdi_window_visibility").toInt())),
           primary_view(0),
-          scripting_engine(0)
+          scripting_engine(0),
+          undo_suppress_depth(0)
     {
     }
     ~Private()
@@ -73,6 +74,7 @@ public:
 #endif
     AbstractScriptingEngine *scripting_engine;
     QString file_name;
+    int undo_suppress_depth;
 };
 
 Project::Project() : future::Folder(tr("Unnamed")), d(new Private())
@@ -93,6 +95,22 @@ Project::~Project()
 QUndoStack *Project::undoStack() const
 {
     return &d->undo_stack;
+}
+
+void Project::beginSuppressUndo()
+{
+    ++d->undo_suppress_depth;
+}
+
+void Project::endSuppressUndo()
+{
+    if (d->undo_suppress_depth > 0)
+        --d->undo_suppress_depth;
+}
+
+bool Project::isUndoSuppressed() const
+{
+    return d->undo_suppress_depth > 0;
 }
 
 #ifndef LEGACY_CODE_0_2_x

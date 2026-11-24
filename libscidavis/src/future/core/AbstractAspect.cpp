@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "core/AbstractAspect.h"
 #include "core/AspectPrivate.h"
+#include "core/Project.h"
 #include "core/aspectcommands.h"
 #include "core/future_Folder.h"
 #include "lib/XmlStreamReader.h"
@@ -201,10 +202,20 @@ void AbstractAspect::moveChild(int from, int to)
     exec(new AspectChildMoveCmd(d_aspect_private, from, to));
 }
 
+namespace {
+
+QUndoStack *activeUndoStack(const AbstractAspect *aspect)
+{
+    const Project *proj = aspect->project();
+    return (proj && proj->isUndoSuppressed()) ? nullptr : aspect->undoStack();
+}
+
+} // namespace
+
 void AbstractAspect::exec(QUndoCommand *cmd)
 {
     Q_CHECK_PTR(cmd);
-    QUndoStack *stack = undoStack();
+    QUndoStack *stack = activeUndoStack(this);
     if (stack)
         stack->push(cmd);
     else {
@@ -215,14 +226,14 @@ void AbstractAspect::exec(QUndoCommand *cmd)
 
 void AbstractAspect::beginMacro(const QString &text)
 {
-    QUndoStack *stack = undoStack();
+    QUndoStack *stack = activeUndoStack(this);
     if (stack)
         stack->beginMacro(text);
 }
 
 void AbstractAspect::endMacro()
 {
-    QUndoStack *stack = undoStack();
+    QUndoStack *stack = activeUndoStack(this);
     if (stack)
         stack->endMacro();
 }

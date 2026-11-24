@@ -848,6 +848,7 @@ class SciDAVisGraphObject final : public IOleObject,
 
     void finishClose()
     {
+        ComPtr<IOleObject> alive(this);
         if (m_stopped)
             return;
         m_closing = true;
@@ -1111,18 +1112,70 @@ public:
         return false;
     }
 
+    static bool rejectEditorModalDialogs(ApplicationWindow *ed)
+    {
+        if (!ed)
+            return false;
+        auto belongsToEditor = [ed](QWidget *w) {
+            for (QWidget *cur = w; cur; cur = cur->parentWidget()) {
+                if (cur == ed)
+                    return true;
+            }
+            return false;
+        };
+        bool hadModal = false;
+        if (QWidget *modal = QApplication::activeModalWidget()) {
+            if (auto *dlg = qobject_cast<QDialog *>(modal)) {
+                if (belongsToEditor(dlg)) {
+                    hadModal = true;
+                    dlg->reject();
+                }
+            }
+        }
+        const QList<QDialog *> childDlgs = ed->findChildren<QDialog *>();
+        for (QDialog *dlg : childDlgs) {
+            if (dlg && dlg->isVisible()) {
+                if (dlg->isModal())
+                    hadModal = true;
+                dlg->reject();
+            }
+        }
+        return hadModal;
+    }
+
     void handleContainerAbnormalExit()
     {
+        ComPtr<IOleObject> alive(this);
         if (m_stopped)
             return;
         if (m_editor && m_editor->isVisible() && !m_editor->saved) {
             if (!m_editor->property("_tg_ole_container_died_handled").toBool()) {
                 m_editor->setProperty("_tg_ole_container_died_handled", true);
-                m_editor->setOleEmbeddedMode(false);
-                if (!ApplicationWindow::isNonInteractiveContext(m_editor)) {
+                QPointer<ApplicationWindow> standaloneEd = m_editor;
+                const size_t activeGen = m_activeEditorRefGen;
+                disconnectEditorDestroyedConn();
+                ++m_editorGeneration;
+                m_editor = nullptr;
+                m_targetMl = nullptr;
+                m_targetG3d = nullptr;
+                if (standaloneEd) {
+                    standaloneEd->setOleEmbeddedCallbacks({}, {});
+                    standaloneEd->setOleEmbeddedMode(false);
+                    standaloneEd->setAttribute(Qt::WA_QuitOnClose, true);
+                }
+                finishClose();
+                m_site.Reset();
+                releaseEditorRefOnce(activeGen);
+                if (qApp && standaloneEd && standaloneEd->isVisible()) {
+                    g_embeddedServerMode = false;
+                    if (auto *guiApp = qobject_cast<QApplication *>(qApp))
+                        guiApp->setQuitOnLastWindowClosed(true);
+                }
+                updateOleQuitGuard();
+                if (standaloneEd && !ApplicationWindow::isNonInteractiveContext(standaloneEd)) {
                     ToriGraphOleUi::registerJapaneseStrings();
                     QMessageBox::warning(
-                            m_editor,
+                            standaloneEd,
                             ApplicationWindow::tr("PowerPoint Connection Lost"),
                             ApplicationWindow::tr(
                                     "The PowerPoint container that hosted this embedded graph "
@@ -1133,11 +1186,39 @@ public:
             }
             return;
         }
+        if (m_editor && m_editor->property("_tg_ole_container_died_handled").toBool())
+            return;
         if (m_editor) {
-            m_editor->savedProject();
-            m_editor->close();
+            disconnectEditorDestroyedConn();
+            const size_t closingGen = m_activeEditorRefGen;
+            ++m_editorGeneration;
+            QPointer<ApplicationWindow> ed = m_editor;
+            m_editor = nullptr;
+            m_targetMl = nullptr;
+            m_targetG3d = nullptr;
+            if (ed) {
+                ed->setOleEmbeddedCallbacks({}, {});
+                ed->savedProject();
+                if (rejectEditorModalDialogs(ed.data())) {
+                    ed->setAttribute(Qt::WA_DeleteOnClose, false);
+                    ed->hide();
+                    QTimer::singleShot(0, ed.data(), [ed]() {
+                        if (ed) {
+                            ed->close();
+                            ed->deleteLater();
+                        }
+                    });
+                } else {
+                    ed->close();
+                }
+            }
+            finishClose();
+            m_site.Reset();
+            releaseEditorRefOnce(closingGen);
+            return;
         }
         finishClose();
+        m_site.Reset();
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
@@ -1223,24 +1304,7 @@ public:
                 // Reject any open child/modal dialogs before hiding and deferring deletion so an
                 // incoming COM STA Close() inside a nested QDialog::exec() never destroys the
                 // parent ApplicationWindow while the dialog's stack frame is still unwinding.
-                auto belongsToEditor = [ed](QWidget *w) {
-                    for (QWidget *cur = w; cur; cur = cur->parentWidget()) {
-                        if (cur == ed.data())
-                            return true;
-                    }
-                    return false;
-                };
-                if (QWidget *modal = QApplication::activeModalWidget()) {
-                    if (auto *dlg = qobject_cast<QDialog *>(modal)) {
-                        if (belongsToEditor(dlg))
-                            dlg->reject();
-                    }
-                }
-                const QList<QDialog *> childDlgs = ed->findChildren<QDialog *>();
-                for (QDialog *dlg : childDlgs) {
-                    if (dlg && dlg->isVisible())
-                        dlg->reject();
-                }
+                rejectEditorModalDialogs(ed.data());
                 ed->hide();
                 QTimer::singleShot(0, ed.data(), [ed]() {
                     if (ed) {
@@ -2388,6 +2452,23 @@ bool initializeOleClipboardOnly()
     return true;
 }
 
+void runContainerWatchdogTickForTesting()
+{
+    const auto snapshot = g_liveGraphObjects;
+    for (SciDAVisGraphObject *obj : snapshot) {
+        if (!obj || !g_liveGraphObjects.contains(obj))
+            continue;
+        ComPtr<IOleObject> alive(obj);
+        if (obj->isContainerProcessDead())
+            obj->handleContainerAbnormalExit();
+    }
+}
+
+int liveGraphObjectCountForTesting()
+{
+    return g_liveGraphObjects.size();
+}
+
 bool initializeOleServer(bool embeddedMode)
 {
     if (!g_oleInitialized) {
@@ -2432,11 +2513,7 @@ bool initializeOleServer(bool embeddedMode)
         QObject::connect(watchdog, &QTimer::timeout, qApp, []() {
             if (!g_embeddedServerMode || ApplicationWindow::isNonInteractiveContext(nullptr))
                 return;
-            const auto snapshot = g_liveGraphObjects;
-            for (SciDAVisGraphObject *obj : snapshot) {
-                if (obj && obj->isContainerProcessDead())
-                    obj->handleContainerAbnormalExit();
-            }
+            runContainerWatchdogTickForTesting();
             if (!g_everHadServerActivity || !g_liveGraphObjects.isEmpty()
                 || hasVisibleNormalAppWindow()) {
                 return;

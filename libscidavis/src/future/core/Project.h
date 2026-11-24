@@ -33,6 +33,8 @@
 #include "core/future_Folder.h"
 #include "core/interfaces.h"
 
+#include <QPointer>
+
 class QString;
 class ProjectWindow;
 class QAction;
@@ -60,6 +62,9 @@ public:
     virtual const Project *project() const { return this; }
     virtual Project *project() { return this; }
     virtual QUndoStack *undoStack() const;
+    void beginSuppressUndo();
+    void endSuppressUndo();
+    bool isUndoSuppressed() const;
     virtual QString path() const { return ""; }
 #ifndef LEGACY_CODE_0_2_x
     virtual ProjectWindow *view();
@@ -93,6 +98,42 @@ private:
     Private *d;
 
     friend class ProjectConfigPage;
+};
+
+//! RAII helper that suppresses Project undo-stack pushes while in scope.
+class ScopedProjectUndoSuppressor
+{
+public:
+    explicit ScopedProjectUndoSuppressor(Project *project = nullptr) : d_project(project)
+    {
+        if (d_project)
+            d_project->beginSuppressUndo();
+    }
+    ~ScopedProjectUndoSuppressor()
+    {
+        if (d_project)
+            d_project->endSuppressUndo();
+    }
+    ScopedProjectUndoSuppressor(const ScopedProjectUndoSuppressor &) = delete;
+    ScopedProjectUndoSuppressor &operator=(const ScopedProjectUndoSuppressor &) = delete;
+    ScopedProjectUndoSuppressor(ScopedProjectUndoSuppressor &&other) noexcept
+        : d_project(other.d_project)
+    {
+        other.d_project.clear();
+    }
+    ScopedProjectUndoSuppressor &operator=(ScopedProjectUndoSuppressor &&other) noexcept
+    {
+        if (this != &other) {
+            if (d_project)
+                d_project->endSuppressUndo();
+            d_project = other.d_project;
+            other.d_project.clear();
+        }
+        return *this;
+    }
+
+private:
+    QPointer<Project> d_project;
 };
 
 #endif // ifndef PROJECT_H
