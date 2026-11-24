@@ -1621,6 +1621,27 @@ OleRenderedGraph renderMultiLayer(MultiLayer *ml, Graph *singleLayer, bool inclu
         };
         widthHm = toHm(ml->pageWidthPhysical(), ml->pageUnit());
         heightHm = toHm(ml->pageHeightPhysical(), ml->pageUnit());
+        // If panel labels expanded mlLayersRect beyond the nominal canvas page rect, expand the
+        // physical HIMETRIC extent proportionally so PowerPoint does not clip or squash the labels.
+        const QRect basePhysicalRect = (ml->canvasWidget() && !ml->canvasWidget()->rect().isEmpty())
+                ? ml->canvasWidget()->rect()
+                : mlLayersRect;
+        if (!basePhysicalRect.isEmpty() && !mlLayersRect.isEmpty()
+            && mlLayersRect != basePhysicalRect) {
+            if (basePhysicalRect.width() > 0 && mlLayersRect.width() > basePhysicalRect.width()) {
+                widthHm = std::max(1000L,
+                                   static_cast<LONG>(std::lround(double(widthHm)
+                                                                 * double(mlLayersRect.width())
+                                                                 / double(basePhysicalRect.width()))));
+            }
+            if (basePhysicalRect.height() > 0 && mlLayersRect.height() > basePhysicalRect.height()) {
+                heightHm = std::max(
+                        1000L,
+                        static_cast<LONG>(std::lround(double(heightHm)
+                                                      * double(mlLayersRect.height())
+                                                      / double(basePhysicalRect.height()))));
+            }
+        }
     } else {
         const double unitPxDpi = 96.0;
         logicalBaseDpiX = unitPxDpi;

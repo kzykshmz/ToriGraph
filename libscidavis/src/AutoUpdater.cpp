@@ -701,6 +701,38 @@ bool isHeadlessOrEmbeddedProcess(const ApplicationWindow *app)
     return false;
 }
 
+bool isInteractiveGuiContext(const ApplicationWindow *app)
+{
+    return !isHeadlessOrEmbeddedProcess(app)
+            && !ApplicationWindow::isNonInteractiveContext(app);
+}
+
+bool isAllowedUrlForUpdater(const QUrl &url, const ApplicationWindow *app)
+{
+    if (!AutoUpdater::isAllowedUpdateUrl(url))
+        return false;
+    if (isInteractiveGuiContext(app)
+        && url.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0) {
+        return false;
+    }
+    return true;
+}
+
+QSet<QString> &explicitlyConfirmedUnverifiedScripts()
+{
+    static QSet<QString> s_scripts;
+    return s_scripts;
+}
+
+QString canonicalScriptKey(const QString &scriptPath)
+{
+    const QFileInfo fi(scriptPath);
+    QString canon = fi.canonicalFilePath();
+    if (canon.isEmpty())
+        canon = QDir::cleanPath(fi.absoluteFilePath());
+    return QDir::fromNativeSeparators(canon).toLower();
+}
+
 } // namespace
 
 // ============================================================================
@@ -1024,11 +1056,16 @@ void UpdateAvailableDialog::retranslateUi()
         d_btnDownloadInstall->setText(tr("Open Release Page..."));
     // Without a published SHA-256 the package cannot be verified: by default the dialog only
     // offers the release page (AutoUpdate/AllowUnverifiedInstall=true re-enables installing).
+    const bool noSha = d_info.expectedSha256.trimmed().isEmpty();
     d_btnDownloadInstall->setToolTip(
-            d_info.expectedSha256.trimmed().isEmpty()
-                    ? tr("This release does not publish a SHA-256 checksum, so ToriGraph cannot "
-                         "verify the download. Open the release page to download and install it "
-                         "manually.")
+            noSha
+                    ? (canInstallFromDialog()
+                               ? tr("Warning: This release does not publish a SHA-256 checksum "
+                                    "(enabled via AutoUpdate/AllowUnverifiedInstall). You will "
+                                    "still be asked to confirm explicitly before installing.")
+                               : tr("This release does not publish a SHA-256 checksum, so "
+                                    "ToriGraph cannot verify the download. Open the release page "
+                                    "to download and install it manually."))
                     : QString());
 }
 
@@ -1114,7 +1151,7 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
         return;
     }
 
-    if (!AutoUpdater::isAllowedUpdateUrl(d_info.assetUrl)) {
+    if (!isAllowedUrlForUpdater(d_info.assetUrl, d_app)) {
         AutoUpdater::showFailureWithReleasePage(
                 this, tr("Update Download Failed"),
                 tr("Blocked untrusted download URL: %1").arg(d_info.assetUrl.toString()),
@@ -1171,8 +1208,9 @@ void UpdateAvailableDialog::onStartDownloadAndInstall()
     d_activeReply = d_nam.get(req);
     d_stallTimer->start(kDownloadStallTimeoutMs);
 
-    connect(d_activeReply, &QNetworkReply::redirected, this, [this](const QUrl &newUrl) {
-        if (!AutoUpdater::isAllowedUpdateUrl(newUrl)) {
+    const QPointer<ApplicationWindow> appGuard(d_app);
+    connect(d_activeReply, &QNetworkReply::redirected, this, [this, appGuard](const QUrl &newUrl) {
+        if (!isAllowedUrlForUpdater(newUrl, appGuard.data())) {
             d_downloadBlockedRedirect = true;
             if (d_activeReply)
                 d_activeReply->abort();
@@ -1265,7 +1303,7 @@ void UpdateAvailableDialog::onDownloadFinished()
         return;
     }
 
-    if (d_downloadBlockedRedirect || !AutoUpdater::isAllowedUpdateUrl(finalReplyUrl)) {
+    if (d_downloadBlockedRedirect || !isAllowedUrlForUpdater(finalReplyUrl, d_app)) {
         QFile::remove(d_partFilePath);
         d_progressBar->setRange(0, 100);
         d_progressBar->setValue(0);
@@ -1321,7 +1359,7 @@ void UpdateAvailableDialog::onDownloadFinished()
         }
         d_shaState = ShaBadgeState::Verified;
         updateShaBadgeStyle();
-    } else if (!AutoUpdater::allowUnverifiedInstall()) {
+    } else if (!isInteractiveGuiContext(d_app) || !AutoUpdater::allowUnverifiedInstall()) {
         QFile::remove(d_partFilePath);
         restoreButtonsAfterFailure();
         const QString reason = tr("This release does not publish a SHA-256 checksum, so automatic "
@@ -1389,12 +1427,11 @@ void UpdateAvailableDialog::restoreButtonsAfterFailure()
 
 void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
 {
-    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
-            && !ApplicationWindow::isNonInteractiveContext(d_app);
+    const bool interactiveGui = isInteractiveGuiContext(d_app);
     const bool shaVerified = verified && !d_info.expectedSha256.trimmed().isEmpty()
             && AutoUpdater::verifyFileSha256(d_finalPackagePath, d_info.expectedSha256);
 
-    if (!shaVerified && !AutoUpdater::allowUnverifiedInstall()) {
+    if (!shaVerified && (!interactiveGui || !AutoUpdater::allowUnverifiedInstall())) {
         QFile::remove(d_finalPackagePath);
         restoreButtonsAfterFailure();
         const QString reason = tr("This release does not publish a SHA-256 checksum, so automatic "
@@ -1409,6 +1446,7 @@ void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
     }
 
     const QString actualSha = AutoUpdater::computeFileSha256(d_finalPackagePath);
+    bool packageUnsigned = false;
 
     if (isSignablePackageFile(d_finalPackagePath)) {
         QString sigErr;
@@ -1428,49 +1466,51 @@ void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
             }
             return;
         }
-        if (sigStatus == AutoUpdater::CodeSignatureStatus::Unsigned
-            && AutoUpdater::requireCodeSignature()) {
-            restoreButtonsAfterFailure();
-            if (!interactiveGui) {
-                QFile::remove(d_finalPackagePath);
-                qWarning("Rejected unsigned update package in non-interactive mode: %s",
-                         qPrintable(d_finalPackagePath));
+        if (sigStatus == AutoUpdater::CodeSignatureStatus::Unsigned) {
+            packageUnsigned = true;
+            if (AutoUpdater::requireCodeSignature()) {
+                restoreButtonsAfterFailure();
+                if (!interactiveGui) {
+                    QFile::remove(d_finalPackagePath);
+                    qWarning("Rejected unsigned update package in non-interactive mode: %s",
+                             qPrintable(d_finalPackagePath));
+                    return;
+                }
+                QString notesPreview = d_info.bodyMarkdown.trimmed();
+                if (notesPreview.isEmpty())
+                    notesPreview = tr("No release notes provided for this version.");
+                else if (notesPreview.size() > 600)
+                    notesPreview = notesPreview.left(600) + QStringLiteral("...");
+
+                const QUrl httpsReleasePage =
+                        (d_info.htmlUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive)
+                                 == 0
+                         && AutoUpdater::isAllowedUpdateUrl(d_info.htmlUrl))
+                        ? d_info.htmlUrl
+                        : QUrl(QString::fromLatin1(kDefaultReleasesPage));
+                const QString displaySha = shaVerified
+                        ? d_info.expectedSha256.trimmed().toLower()
+                        : (actualSha.isEmpty() ? QStringLiteral("-") : actualSha);
+                const QString msg = shaVerified
+                        ? tr("The downloaded update package (v%1) is not digitally signed with an "
+                             "Authenticode certificate, so automatic installation is disabled for your "
+                             "safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
+                             "Click \"Open Release Page\" to review and install the update manually "
+                             "from GitHub.")
+                                  .arg(d_info.version, displaySha, notesPreview)
+                        : tr("The downloaded update package (v%1) is not digitally signed with an "
+                             "Authenticode certificate, so automatic installation is disabled for your "
+                             "safety.\n\nComputed SHA-256 (unverified):\n%2\n\nRelease Notes:\n%3\n\n"
+                             "Click \"Open Release Page\" to review and install the update manually "
+                             "from GitHub.")
+                                  .arg(d_info.version, displaySha, notesPreview);
+                if (AutoUpdater::showFailureWithReleasePage(
+                            this, tr("Manual Update Required (Unsigned Package)"), msg,
+                            httpsReleasePage)) {
+                    accept();
+                }
                 return;
             }
-            QString notesPreview = d_info.bodyMarkdown.trimmed();
-            if (notesPreview.isEmpty())
-                notesPreview = tr("No release notes provided for this version.");
-            else if (notesPreview.size() > 600)
-                notesPreview = notesPreview.left(600) + QStringLiteral("...");
-
-            const QUrl httpsReleasePage =
-                    (d_info.htmlUrl.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive)
-                             == 0
-                     && AutoUpdater::isAllowedUpdateUrl(d_info.htmlUrl))
-                    ? d_info.htmlUrl
-                    : QUrl(QString::fromLatin1(kDefaultReleasesPage));
-            const QString displaySha = shaVerified
-                    ? d_info.expectedSha256.trimmed().toLower()
-                    : (actualSha.isEmpty() ? QStringLiteral("-") : actualSha);
-            const QString msg = shaVerified
-                    ? tr("The downloaded update package (v%1) is not digitally signed with an "
-                         "Authenticode certificate, so automatic installation is disabled for your "
-                         "safety.\n\nVerified SHA-256:\n%2\n\nRelease Notes:\n%3\n\n"
-                         "Click \"Open Release Page\" to review and install the update manually "
-                         "from GitHub.")
-                              .arg(d_info.version, displaySha, notesPreview)
-                    : tr("The downloaded update package (v%1) is not digitally signed with an "
-                         "Authenticode certificate, so automatic installation is disabled for your "
-                         "safety.\n\nComputed SHA-256 (unverified):\n%2\n\nRelease Notes:\n%3\n\n"
-                         "Click \"Open Release Page\" to review and install the update manually "
-                         "from GitHub.")
-                              .arg(d_info.version, displaySha, notesPreview);
-            if (AutoUpdater::showFailureWithReleasePage(
-                        this, tr("Manual Update Required (Unsigned Package)"), msg,
-                        httpsReleasePage)) {
-                accept();
-            }
-            return;
         }
     }
 
@@ -1495,30 +1535,54 @@ void UpdateAvailableDialog::offerInstallAfterDownload(bool verified)
     }
 
     QMessageBox::StandardButton ans = QMessageBox::No;
-    if (verified) {
-        ans = QMessageBox::question(
-                this, tr("Install Update & Restart"),
-                tr("The update package (v%1) has been downloaded and its SHA-256 checksum "
-                   "verified.\n\nToriGraph will now ask you to save unsaved changes and close. "
-                   "The update is applied only after ToriGraph has closed; ToriGraph then "
-                   "restarts automatically.\n\nInstall update and restart now?")
-                        .arg(d_info.version),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (shaVerified) {
+        if (packageUnsigned) {
+            ans = QMessageBox::warning(
+                    this, tr("Install Unsigned Update?"),
+                    tr("The update package (v%1) passed SHA-256 checksum verification, HOWEVER "
+                       "it is NOT digitally signed with an Authenticode certificate.\n\n"
+                       "ToriGraph will ask you to save unsaved changes and close before applying "
+                       "the update and restarting.\n\nInstall this unsigned update anyway?")
+                            .arg(d_info.version),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        } else {
+            ans = QMessageBox::question(
+                    this, tr("Install Update & Restart"),
+                    tr("The update package (v%1) has been downloaded and its SHA-256 checksum "
+                       "verified.\n\nToriGraph will now ask you to save unsaved changes and close. "
+                       "The update is applied only after ToriGraph has closed; ToriGraph then "
+                       "restarts automatically.\n\nInstall update and restart now?")
+                            .arg(d_info.version),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        }
     } else {
         // Unverified packages are never applied by default: "No" is the default button.
+        QString unverifiedMsg = tr("The update package (v%1) has been downloaded, but it could NOT "
+                                   "be verified because this release does not publish a SHA-256 "
+                                   "checksum.\n\nInstall it anyway? ToriGraph will ask you to save "
+                                   "unsaved changes, close, and then apply the update.")
+                                        .arg(d_info.version);
+        if (packageUnsigned) {
+            unverifiedMsg += QStringLiteral("\n\n")
+                    + tr("Warning: This package is also NOT digitally signed with an Authenticode "
+                         "certificate.");
+        }
         ans = QMessageBox::warning(
-                this, tr("Install Unverified Update?"),
-                tr("The update package (v%1) has been downloaded, but it could NOT be verified "
-                   "because this release does not publish a SHA-256 checksum.\n\nInstall it "
-                   "anyway? ToriGraph will ask you to save unsaved changes, close, and then "
-                   "apply the update.")
-                        .arg(d_info.version),
+                this, tr("Install Unverified Update?"), unverifiedMsg,
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     }
     if (ans != QMessageBox::Yes) {
+        if (d_stagedScriptPath.endsWith(QStringLiteral(".ps1"), Qt::CaseInsensitive)) {
+            QFile::remove(d_stagedScriptPath);
+            QFile::remove(d_stagedScriptPath.left(d_stagedScriptPath.size() - 4)
+                          + QStringLiteral(".cmd"));
+            d_stagedScriptPath.clear();
+        }
         restoreButtonsAfterFailure();
         return;
     }
+    if (!shaVerified)
+        explicitlyConfirmedUnverifiedScripts().insert(canonicalScriptKey(d_stagedScriptPath));
 
     // The script must not start before ToriGraph has actually closed (save confirmation
     // first); closeAppAndLaunchUpdater() does that once this dialog has returned.
@@ -1645,18 +1709,15 @@ QUrl AutoUpdater::feedUrl() const
 {
     // Plaintext http:// feeds (loopback test servers) are only honoured for headless /
     // non-interactive runs (tests, automation). In the interactive GUI a user could be
-    // tricked into an http feed through an environment variable or a stale setting.
-    const bool interactiveGui = !isHeadlessOrEmbeddedProcess(d_app)
-            && !ApplicationWindow::isNonInteractiveContext(d_app);
+    // tricked into an http feed through an override, environment variable, or stale setting.
+    const bool interactiveGui = isInteractiveGuiContext(d_app);
     const auto httpBlockedHere = [interactiveGui](const QUrl &u) {
         return interactiveGui
                 && u.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0;
     };
 
-    // The programmatic override (tests / embedding code, never user-controlled) keeps its
-    // loopback http allowance.
     if (!d_feedUrlOverride.isEmpty()) {
-        return isAllowedUpdateUrl(d_feedUrlOverride) ? d_feedUrlOverride : QUrl();
+        return isAllowedUrlForUpdater(d_feedUrlOverride, d_app) ? d_feedUrlOverride : QUrl();
     }
 
     const QString envFeed = qEnvironmentVariable("TORIGRAPH_UPDATE_FEED_URL").trimmed();
@@ -2041,6 +2102,16 @@ bool AutoUpdater::verifyFileSha256(const QString &filePath, const QString &expec
 
 bool AutoUpdater::requireCodeSignature()
 {
+    const QString envVal =
+            qEnvironmentVariable("TORIGRAPH_REQUIRE_CODE_SIGNATURE").trimmed().toLower();
+    if (envVal == QStringLiteral("1") || envVal == QStringLiteral("true")
+        || envVal == QStringLiteral("yes") || envVal == QStringLiteral("on")) {
+        return true;
+    }
+    if (envVal == QStringLiteral("0") || envVal == QStringLiteral("false")
+        || envVal == QStringLiteral("no") || envVal == QStringLiteral("off")) {
+        return false;
+    }
     return ApplicationWindow::getSettings()
             .value(QString::fromLatin1(kSettingsKeyRequireSig), false)
             .toBool();
@@ -2501,10 +2572,18 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    }\r\n"
             "    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExeName)\r\n"
             "    $targetFull = [System.IO.Path]::GetFullPath($TargetExe)\r\n"
-            "    foreach ($q in @(Get-Process -Name $baseName -ErrorAction SilentlyContinue)) {\r\n"
-            "        $qPath = $null\r\n"
-            "        try { $qPath = $q.Path } catch { $qPath = $null }\r\n"
-            "        if ($qPath -and ([System.IO.Path]::GetFullPath($qPath) -ieq $targetFull)) { $found += $q }\r\n"
+            "    $targetDirNorm = [System.IO.Path]::GetFullPath($TargetInstallDir).TrimEnd('\\')\r\n"
+            "    $procNames = @($baseName, 'ToriGraph', 'scidavis') | Select-Object -Unique\r\n"
+            "    foreach ($pn in $procNames) {\r\n"
+            "        if (-not $pn) { continue }\r\n"
+            "        foreach ($q in @(Get-Process -Name $pn -ErrorAction SilentlyContinue)) {\r\n"
+            "            $qPath = $null\r\n"
+            "            try { $qPath = $q.Path } catch { $qPath = $null }\r\n"
+            "            if (-not $qPath) { continue }\r\n"
+            "            $qFull = [System.IO.Path]::GetFullPath($qPath)\r\n"
+            "            $qDir = [System.IO.Path]::GetDirectoryName($qFull).TrimEnd('\\')\r\n"
+            "            if (($qFull -ieq $targetFull) -or ($qDir -ieq $targetDirNorm)) { $found += $q }\r\n"
+            "        }\r\n"
             "    }\r\n"
             "    return @($found | Sort-Object -Property Id -Unique)\r\n"
             "}\r\n"
@@ -2561,7 +2640,8 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "}\r\n"
             "$BackedUpRelPaths = New-Object System.Collections.Generic.List[string]\r\n"
             "$CreatedFiles = New-Object System.Collections.Generic.List[string]\r\n"
-            "$CreatedDirs = New-Object System.Collections.Generic.List[string]\r\n\r\n"
+            "$CreatedDirs = New-Object System.Collections.Generic.List[string]\r\n"
+            "$RollbackFailed = $false\r\n\r\n"
             "# (3) Extract .zip via Expand-Archive or run installer, (4) restore full backup on error\r\n"
             "try {\r\n"
             "    $ext = [System.IO.Path]::GetExtension($DownloadedFile).ToLowerInvariant()\r\n"
@@ -2599,9 +2679,13 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            }\r\n"
             "            throw \"Required signed executable '$ExeName' not found inside update archive.\"\r\n"
             "        }\r\n"
-            "        foreach ($exeNode in $allNodes) {\r\n"
-            "            if ((-not $exeNode.PSIsContainer) -and ([System.IO.Path]::GetExtension($exeNode.Name).ToLowerInvariant() -eq '.exe') -and ($exeNode.FullName -ine $candExe)) {\r\n"
-            "                Test-AuthenticodeFile -FilePath $exeNode.FullName -MustBeSigned $false -CheckSubject $false\r\n"
+            "        foreach ($binNode in $allNodes) {\r\n"
+            "            if ($binNode.PSIsContainer -or ($binNode.FullName -ieq $candExe)) { continue }\r\n"
+            "            $binExt = [System.IO.Path]::GetExtension($binNode.Name).ToLowerInvariant()\r\n"
+            "            if ($binExt -eq '.exe') {\r\n"
+            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $RequireSignature -CheckSubject $false\r\n"
+            "            } elseif ($binExt -eq '.dll' -or $binExt -eq '.pyd') {\r\n"
+            "                Test-AuthenticodeFile -FilePath $binNode.FullName -MustBeSigned $false -CheckSubject $false\r\n"
             "            }\r\n"
             "        }\r\n"
             "        foreach ($node in $allNodes) {\r\n"
@@ -2726,11 +2810,12 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "            $rollbackErrors.Add(\"restore ${TargetExe}: $($_.Exception.Message)\")\r\n"
             "        }\r\n"
             "    }\r\n"
+            "    $RollbackFailed = (-not $rollbackOk)\r\n"
             "    if ($rollbackOk) {\r\n"
             "        $rbReport = \"ToriGraph update failed and previous installation files were rolled back: $errMsg\"\r\n"
             "    } else {\r\n"
             "        $rbDetail = ($rollbackErrors -join '; ')\r\n"
-            "        $rbReport = \"ToriGraph update failed AND rollback encountered errors ($rbDetail). Original error: $errMsg\"\r\n"
+            "        $rbReport = \"ToriGraph update failed AND rollback encountered errors ($rbDetail). Original error: $errMsg (Backup preserved at: $BackupDir)\"\r\n"
             "    }\r\n"
             "    try { Set-Content -LiteralPath $LogFile -Value $rbReport -Encoding UTF8 } catch { }\r\n"
             "    if (-not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')) {\r\n"
@@ -2745,11 +2830,13 @@ QString AutoUpdater::writeWindowsStagingUpdaterScript(const QString &downloadedF
             "    if ($ExtractDir -and (Test-Path -LiteralPath $ExtractDir)) {\r\n"
             "        Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
             "    }\r\n"
-            "    if ($BackupDir -and (Test-Path -LiteralPath $BackupDir)) {\r\n"
-            "        Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
-            "    }\r\n"
-            "    if ($SecureStageDir -and (Test-Path -LiteralPath $SecureStageDir)) {\r\n"
-            "        Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "    if (-not $RollbackFailed) {\r\n"
+            "        if ($BackupDir -and (Test-Path -LiteralPath $BackupDir)) {\r\n"
+            "            Remove-Item -LiteralPath $BackupDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
+            "        if ($SecureStageDir -and (Test-Path -LiteralPath $SecureStageDir)) {\r\n"
+            "            Remove-Item -LiteralPath $SecureStageDir -Recurse -Force -ErrorAction SilentlyContinue\r\n"
+            "        }\r\n"
             "    }\r\n"
             "}\r\n\r\n"
             "# (4b) Success: delete the downloaded package (only when it sits in ToriGraph's own\r\n"
@@ -2989,13 +3076,27 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
         const QRegularExpressionMatch shaMatch = shaRe.match(scriptText);
         const QString scriptSha =
                 shaMatch.hasMatch() ? normalizeSha256Token(shaMatch.captured(1)) : QString();
-        if (!allowUnverifiedInstall() && scriptSha.isEmpty()) {
-            showFailureWithReleasePage(
-                    app, tr("Security Verification Failed"),
-                    tr("This release does not publish a SHA-256 checksum, so automatic "
-                       "installation is blocked."),
-                    releasePage);
-            return false;
+        if (scriptSha.isEmpty()) {
+            const QString canonKey = canonicalScriptKey(scriptPath);
+            const bool preConfirmed =
+                    explicitlyConfirmedUnverifiedScripts().remove(canonKey);
+            if (!isInteractiveGuiContext(app) || !allowUnverifiedInstall()) {
+                showFailureWithReleasePage(
+                        app, tr("Security Verification Failed"),
+                        tr("This release does not publish a SHA-256 checksum, so automatic "
+                           "installation is blocked."),
+                        releasePage);
+                return false;
+            }
+            if (!preConfirmed) {
+                const QMessageBox::StandardButton ans = QMessageBox::warning(
+                        app, tr("Install Unverified Update?"),
+                        tr("The staged update package has no verified SHA-256 checksum.\n\n"
+                           "Install this unverified update anyway?"),
+                        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (ans != QMessageBox::Yes)
+                    return false;
+            }
         }
 
         static const QRegularExpression pkgRe(
@@ -3048,13 +3149,32 @@ bool AutoUpdater::closeAppAndLaunchUpdater(ApplicationWindow *app, const QString
     if (guiApp)
         guiApp->setQuitOnLastWindowClosed(false);
 
-    // 1) Close first: this runs the normal "save changes?" confirmation. Cancel keeps
-    //    ToriGraph open and nothing is installed.
-    if (app && !app->close()) {
+    // 1) Close all open ToriGraph windows first so unsaved-changes prompts run cleanly and no
+    //    extra window keeps ToriGraph.exe open during installation.
+    QList<QPointer<ApplicationWindow>> windowsToClose;
+    QPointer<ApplicationWindow> primaryGuard(app);
+    if (app)
+        windowsToClose.append(primaryGuard);
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *w = qobject_cast<ApplicationWindow *>(tlw)) {
+            if (w != app && w->isVisible())
+                windowsToClose.append(QPointer<ApplicationWindow>(w));
+        }
+    }
+    bool allClosed = true;
+    for (const QPointer<ApplicationWindow> &w : windowsToClose) {
+        if (w && !w->close()) {
+            allClosed = false;
+            break;
+        }
+    }
+    if (!allClosed) {
         if (guiApp)
             guiApp->setQuitOnLastWindowClosed(quitOnLast);
+        QWidget *msgParent = primaryGuard ? static_cast<QWidget *>(primaryGuard.data())
+                                          : QApplication::activeWindow();
         QMessageBox::information(
-                app, tr("Update Not Installed"),
+                msgParent, tr("Update Not Installed"),
                 tr("ToriGraph is still open, so the update was not installed. The downloaded "
                    "package is kept; run \"Check for Updates\" again when you are ready to "
                    "install it."));
@@ -3165,7 +3285,7 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
         return;
 
     const QUrl targetUrl = feedUrl();
-    if (!isAllowedUpdateUrl(targetUrl)) {
+    if (!isAllowedUrlForUpdater(targetUrl, d_app)) {
         if (!silentIfUpToDate) {
             handleCheckResult(false, ReleaseInfo(),
                               tr("Blocked untrusted update feed URL."), silentIfUpToDate);
@@ -3186,9 +3306,11 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
 
     auto blockedRedirect = std::make_shared<bool>(false);
     QNetworkReply *activeReply = d_activeCheckReply;
+    const QPointer<ApplicationWindow> appGuard(d_app);
     connect(d_activeCheckReply, &QNetworkReply::redirected, this,
-            [this, activeReply, blockedRedirect](const QUrl &newUrl) {
-        if (!AutoUpdater::isAllowedUpdateUrl(newUrl) && d_activeCheckReply == activeReply) {
+            [this, activeReply, blockedRedirect, appGuard](const QUrl &newUrl) {
+        if (!isAllowedUrlForUpdater(newUrl, appGuard.data())
+            && d_activeCheckReply == activeReply) {
             *blockedRedirect = true;
             d_activeCheckReply->abort();
         }
@@ -3212,7 +3334,7 @@ void AutoUpdater::checkForUpdates(bool silentIfUpToDate)
         const QByteArray payload = reply->readAll();
         reply->deleteLater();
 
-        if (*blockedRedirect || !AutoUpdater::isAllowedUpdateUrl(finalUrl)) {
+        if (*blockedRedirect || !isAllowedUrlForUpdater(finalUrl, d_app)) {
             handleCheckResult(false, ReleaseInfo(),
                               tr("Blocked untrusted update feed URL."), silent);
             return;

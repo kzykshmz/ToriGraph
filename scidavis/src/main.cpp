@@ -33,6 +33,8 @@
 #include "globals.h"
 #ifdef Q_OS_WIN
 #include "OleServer.h"
+#include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include <QAction>
@@ -46,6 +48,7 @@
 #include <QTimer>
 
 #include <cstdio>
+#include <memory>
 #include <typeinfo>
 
 // The following stuff is for the doxygen title page
@@ -196,10 +199,24 @@ int main(int argc, char **argv)
     QCoreApplication::setOrganizationName("ToriGraph");
     QCoreApplication::setApplicationName("ToriGraph");
 
-    Application app(argc, argv);
-    ToriGraphCrash::installCrashHandler();
-    QStringList args = app.arguments();
-    args.removeFirst(); // remove application name
+    // Extract arguments before creating QApplication so `--version` and invalid CLI flags do not
+    // pay for full GUI/theme/font initialization.
+    QStringList args;
+#ifdef Q_OS_WIN
+    {
+        int wargc = 0;
+        if (LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc)) {
+            for (int i = 1; i < wargc; ++i)
+                args.append(QString::fromWCharArray(wargv[i]));
+            LocalFree(wargv);
+        }
+    }
+    if (args.isEmpty() && argc > 1)
+#endif
+    {
+        for (int i = 1; i < argc; ++i)
+            args.append(QString::fromLocal8Bit(argv[i]));
+    }
 
     bool oleEmbedded = false;
     bool headlessMode = false;
@@ -261,21 +278,47 @@ int main(int argc, char **argv)
             }
         } else if (arg.startsWith(QStringLiteral("--rpc-port="))) {
             parseRpcPort(arg.mid(11));
-        } else if (arg == QStringLiteral("--rpc-port-file") && i + 1 < args.count()) {
-            rpcPortFile = args[++i];
+        } else if (arg == QStringLiteral("--rpc-port-file")) {
+            if (i + 1 < args.count() && !args[i + 1].trimmed().isEmpty()) {
+                rpcPortFile = args[++i];
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--rpc-port-file requires a file path");
+            }
         } else if (arg.startsWith(QStringLiteral("--rpc-port-file="))) {
-            rpcPortFile = arg.mid(16);
-        } else if (arg == QStringLiteral("--rpc-pipe") && i + 1 < args.count()) {
-            rpcPipeName = args[++i];
+            const QString val = arg.mid(16);
+            if (!val.trimmed().isEmpty()) {
+                rpcPortFile = val;
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--rpc-port-file requires a file path");
+            }
+        } else if (arg == QStringLiteral("--rpc-pipe")) {
+            if (i + 1 < args.count() && !args[i + 1].trimmed().isEmpty()) {
+                rpcPipeName = args[++i];
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--rpc-pipe requires a pipe name");
+            }
         } else if (arg.startsWith(QStringLiteral("--rpc-pipe="))) {
-            rpcPipeName = arg.mid(11);
-        } else if (!afterRunPython && arg == QStringLiteral("--run-python")
-                   && i + 1 < args.count()) {
-            runPythonScript = args[++i];
-            afterRunPython = true;
+            const QString val = arg.mid(11);
+            if (!val.trimmed().isEmpty()) {
+                rpcPipeName = val;
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--rpc-pipe requires a pipe name");
+            }
+        } else if (!afterRunPython && arg == QStringLiteral("--run-python")) {
+            if (i + 1 < args.count() && !args[i + 1].trimmed().isEmpty()) {
+                runPythonScript = args[++i];
+                afterRunPython = true;
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--run-python requires a script path");
+            }
         } else if (!afterRunPython && arg.startsWith(QStringLiteral("--run-python="))) {
-            runPythonScript = arg.mid(13);
-            afterRunPython = true;
+            const QString val = arg.mid(13);
+            if (!val.trimmed().isEmpty()) {
+                runPythonScript = val;
+                afterRunPython = true;
+            } else if (cmdLineError.isEmpty()) {
+                cmdLineError = QStringLiteral("--run-python requires a script path");
+            }
         } else if (afterRunPython) {
             // Everything after the script path belongs to the script (including -h/--help,
             // -a, -l=..., -m, -x ...); only --headless/--rpc-* above are taken by ToriGraph.
@@ -286,6 +329,7 @@ int main(int argc, char **argv)
     }
 
     if (!cmdLineError.isEmpty()) {
+        QCoreApplication coreApp(argc, argv);
         const QByteArray msg = QByteArray("ToriGraph: ") + cmdLineError.toUtf8() + '\n';
         std::fwrite(msg.constData(), 1, static_cast<size_t>(msg.size()), stderr);
         std::fflush(stderr);
@@ -293,6 +337,7 @@ int main(int argc, char **argv)
     }
 
     if (wantVersion) {
+        QCoreApplication coreApp(argc, argv);
         const QString verText = SciDAVis::versionString() + SciDAVis::extraVersion()
                 + QStringLiteral("\n") + QObject::tr("Released") + QStringLiteral(": ")
                 + SciDAVis::releaseDateString() + QStringLiteral("\n")
@@ -302,6 +347,60 @@ int main(int argc, char **argv)
         std::fflush(stdout);
         return 0;
     }
+
+    const bool wantHelpEarly = filteredArgs.contains(QStringLiteral("-h"))
+            || filteredArgs.contains(QStringLiteral("--help"));
+    if (wantHelpEarly && headlessMode) {
+        QCoreApplication coreApp(argc, argv);
+        QString s = QStringLiteral("\n") + QObject::tr("Usage") + QStringLiteral(": ToriGraph [")
+                + QObject::tr("options") + QStringLiteral("] [") + QObject::tr("file")
+                + QStringLiteral("_") + QObject::tr("name") + QStringLiteral("]\n\n");
+        s += QObject::tr("Valid options are") + QStringLiteral(":\n");
+        s += QStringLiteral("-a ") + QObject::tr("or") + QStringLiteral(" --about: ")
+                + QObject::tr("show about dialog and exit") + QStringLiteral("\n");
+        s += QStringLiteral("-h ") + QObject::tr("or") + QStringLiteral(" --help: ")
+                + QObject::tr("show command line options") + QStringLiteral("\n");
+        s += QStringLiteral("-l=XX ") + QObject::tr("or") + QStringLiteral(" --lang=XX: ")
+                + QObject::tr("start ToriGraph in language")
+                + QStringLiteral(" XX ('en', 'fr', 'de', ...)\n");
+        s += QStringLiteral("-m ") + QObject::tr("or") + QStringLiteral(" --manual: ")
+                + QObject::tr("show ToriGraph manual in a standalone window")
+                + QStringLiteral("\n");
+        s += QStringLiteral("-v ") + QObject::tr("or") + QStringLiteral(" --version: ")
+                + QObject::tr("print ToriGraph version and release date")
+                + QStringLiteral("\n");
+        s += QStringLiteral("-x ") + QObject::tr("or") + QStringLiteral(" --execute: ")
+                + QObject::tr("execute the script file given as argument")
+                + QStringLiteral("\n");
+        s += QStringLiteral("--headless: ")
+                + QObject::tr("run without visible GUI window for Python automation")
+                + QStringLiteral("\n");
+        s += QStringLiteral("--rpc-port <port>: ")
+                + QObject::tr("bind localhost JSON-RPC 2.0 server to <port> (0 = ephemeral)")
+                + QStringLiteral("\n");
+        s += QStringLiteral("--rpc-port-file <path>: ")
+                + QObject::tr("write bound JSON-RPC endpoint URL atomically to <path>")
+                + QStringLiteral("\n");
+        s += QStringLiteral("--rpc-pipe <name>: ")
+                + QObject::tr("start local named pipe JSON-RPC 2.0 server")
+                + QStringLiteral("\n");
+        s += QStringLiteral("--run-python <script.py> [args...]: ")
+                + QObject::tr("execute Python automation script against this ToriGraph instance "
+                              "(all following arguments are passed to the script)")
+                + QStringLiteral("\n\n");
+        s += QStringLiteral("'") + QObject::tr("file") + QStringLiteral("_")
+                + QObject::tr("name") + QStringLiteral("' ")
+                + QObject::tr("can be any .sciprj, .sciprj.gz, .qti, qti.gz, .opj, .ogm, "
+                              ".ogw, .ogg, .org, .py or ASCII file")
+                + QStringLiteral("\n");
+        const QByteArray helpUtf8 = s.toUtf8();
+        std::fwrite(helpUtf8.constData(), 1, static_cast<size_t>(helpUtf8.size()), stdout);
+        std::fflush(stdout);
+        return 0;
+    }
+
+    Application app(argc, argv);
+    ToriGraphCrash::installCrashHandler();
 
     // -h/--help and -a/--about are answered before any OLE registration or window creation,
     // and leave through a normal return (no ::exit() that would skip OLE shutdown).
@@ -502,8 +601,20 @@ int main(int argc, char **argv)
 
                 if (!runPythonScript.isEmpty()) {
                     const QString absScript = QFileInfo(runPythonScript).absoluteFilePath();
-                    QProcess *pyProc = rpcServer->startPythonScriptProcess(
-                            absScript, runPythonExtraArgs, activeMw);
+                    auto capturedErr = std::make_shared<QByteArray>();
+                    auto reportGuiPyError = [activeMw](const QString &msg) {
+                        std::fprintf(stderr, "%s\n", msg.toUtf8().constData());
+                        std::fflush(stderr);
+                        if (activeMw && !QCoreApplication::closingDown()) {
+                            QMessageBox::warning(activeMw,
+                                                 QObject::tr("ToriGraph - Python Script Error"),
+                                                 msg);
+                        }
+                    };
+                    QProcess *pyProc = QFileInfo::exists(absScript)
+                            ? rpcServer->startPythonScriptProcess(absScript, runPythonExtraArgs,
+                                                                  activeMw)
+                            : nullptr;
                     if (pyProc) {
                         auto flushOut = [pyProc]() {
                             const QByteArray outBytes = pyProc->readAllStandardOutput();
@@ -513,9 +624,11 @@ int main(int argc, char **argv)
                                 std::fflush(stdout);
                             }
                         };
-                        auto flushErr = [pyProc]() {
+                        auto flushErr = [pyProc, capturedErr]() {
                             const QByteArray errBytes = pyProc->readAllStandardError();
                             if (!errBytes.isEmpty()) {
+                                if (capturedErr->size() < 4096)
+                                    capturedErr->append(errBytes.left(4096 - capturedErr->size()));
                                 std::fwrite(errBytes.constData(), 1,
                                             static_cast<size_t>(errBytes.size()), stderr);
                                 std::fflush(stderr);
@@ -560,9 +673,57 @@ int main(int argc, char **argv)
                                         : 1;
                                 QTimer::singleShot(0, &app, [&app, rc]() { app.exit(rc); });
                             }
+                        } else {
+                            QPointer<ApplicationWindow> mwGuard(activeMw);
+                            QObject::connect(
+                                    pyProc, &QProcess::errorOccurred, &app,
+                                    [mwGuard, absScript, flushErr](QProcess::ProcessError err) {
+                                        if (err == QProcess::FailedToStart) {
+                                            flushErr();
+                                            const QString msg = QObject::tr(
+                                                    "Failed to start Python interpreter for:\n%1")
+                                                                        .arg(absScript);
+                                            std::fprintf(stderr, "%s\n", msg.toUtf8().constData());
+                                            std::fflush(stderr);
+                                            if (mwGuard && !QCoreApplication::closingDown()) {
+                                                QMessageBox::warning(
+                                                        mwGuard,
+                                                        QObject::tr("ToriGraph - Python Script Error"),
+                                                        msg);
+                                            }
+                                        }
+                                    });
+                            QObject::connect(
+                                    pyProc,
+                                    QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                                    &app,
+                                    [mwGuard, absScript, capturedErr, flushOut, flushErr](
+                                            int exitCode, QProcess::ExitStatus status) {
+                                        flushOut();
+                                        flushErr();
+                                        if ((status != QProcess::NormalExit || exitCode != 0)
+                                            && mwGuard && !QCoreApplication::closingDown()) {
+                                            const QString detail = QString::fromUtf8(*capturedErr).trimmed();
+                                            QString msg = QObject::tr("Python script exited with code %1:\n%2")
+                                                                  .arg(exitCode)
+                                                                  .arg(absScript);
+                                            if (!detail.isEmpty())
+                                                msg += QStringLiteral("\n\n") + detail;
+                                            QMessageBox::warning(
+                                                    mwGuard,
+                                                    QObject::tr("ToriGraph - Python Script Error"),
+                                                    msg);
+                                        }
+                                    });
                         }
                     } else if (headlessMode) {
+                        std::fprintf(stderr, "Failed to launch --run-python script: %s\n",
+                                     absScript.toUtf8().constData());
+                        std::fflush(stderr);
                         QTimer::singleShot(0, &app, [&app]() { app.exit(1); });
+                    } else {
+                        reportGuiPyError(QObject::tr("Python script not found or could not be started:\n%1")
+                                                 .arg(absScript));
                     }
                 }
             }

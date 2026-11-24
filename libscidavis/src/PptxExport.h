@@ -50,6 +50,7 @@ struct SlideItem
     QString previewExtension = QStringLiteral("emf"); //!< "emf" or "png"
     qint64 widthHm = 0; //!< natural (page) size, 1/100 mm
     qint64 heightHm = 0;
+    double scalePercent = -1.0; //!< < 0 = inherit DeckOptions::scalePercent; 0 = fit cell
 };
 
 struct DeckOptions
@@ -62,6 +63,8 @@ struct DeckOptions
     bool shrinkToFit = true;
     //! Add slides at the end of an existing .pptx instead of replacing it.
     bool appendToExisting = false;
+    //! When true, resolve preset paste scale per MultiLayer instead of sharing one global scalePercent.
+    bool perGraphPresetScale = false;
 };
 
 struct Placement
@@ -70,6 +73,7 @@ struct Placement
     int slide = 0; //!< 1-based slide number in the written deck
     qint64 left = 0, top = 0, width = 0, height = 0; //!< EMU
     double effectivePercent = 0.0; //!< size on the slide / page size x 100
+    double requestedPercent = -1.0; //!< requested paste percent before shrink-to-fit
     bool shrunk = false; //!< made smaller than scalePercent to fit the cell
 };
 

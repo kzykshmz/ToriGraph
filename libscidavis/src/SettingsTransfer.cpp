@@ -201,6 +201,7 @@ bool SettingsTransfer::isPersonalKey(const QString &key)
         "General/Paths/HelpFile",
         "General/Paths/FitPlugins",
         "PptxExport/LastPath",
+        "PptxExport/LastProjectId",
         "General/DockWindows",
         "General/ExplorerSplitter",
         "AutoUpdate/RequireCodeSignature",
@@ -231,6 +232,8 @@ bool SettingsTransfer::isPersonalKey(const QString &key)
         || k.startsWith(QLatin1String("LastGraphWindow/"), Qt::CaseInsensitive)) {
         return true;
     }
+    if (k.startsWith(QLatin1String("PptxExport/ProjectPaths/"), Qt::CaseInsensitive))
+        return true;
     if (k.startsWith(QLatin1String("AutoUpdate/LastCheck"), Qt::CaseInsensitive))
         return true;
 
@@ -424,7 +427,18 @@ void SettingsTransfer::exportInteractive(ApplicationWindow *app)
 {
     if (!app)
         return;
-    app->saveSettings(); // write the current in-memory state first (no-op after import/reset)
+    if (saveSuppressed()) {
+        const auto ans = QMessageBox::question(
+                app, trST("Export Settings"),
+                trST("Settings were recently reset or imported in this session and will finish "
+                     "taking effect after restarting ToriGraph.\n\n"
+                     "Export the currently stored settings on disk anyway?"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ans != QMessageBox::Yes)
+            return;
+    } else {
+        app->saveSettings(); // write the current in-memory state first
+    }
     QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     if (dir.isEmpty())
         dir = QDir::homePath();
@@ -476,23 +490,41 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
     setSaveSuppressed(false);
     QPointer<ApplicationWindow> callerGuard(app);
     bool appliedToCaller = false;
+    auto applyLiveToWindow = [](ApplicationWindow *aw, bool isPrimary) {
+        if (!aw)
+            return;
+        const QString prevLang = aw->appLanguage;
+        const bool prevAutoSave = aw->autoSave;
+        const int prevAutoSaveTime = aw->autoSaveTime;
+        aw->readSettings(/*restoreWindowLayout=*/false);
+        const bool newAutoSave = aw->autoSave;
+        const int newAutoSaveTime = aw->autoSaveTime;
+        aw->applyUserSettings(/*resetScriptingLang=*/isPrimary);
+        if (!aw->appLanguage.isEmpty() && aw->appLanguage != prevLang)
+            aw->switchToLanguage(aw->appLanguage);
+        aw->autoSave = prevAutoSave;
+        aw->autoSaveTime = prevAutoSaveTime;
+        aw->setSaveSettings(newAutoSave, newAutoSaveTime);
+    };
     for (QWidget *tlw : QApplication::topLevelWidgets()) {
         if (auto *aw = qobject_cast<ApplicationWindow *>(tlw)) {
             const bool isCaller = (aw == callerGuard.data());
-            aw->readSettings(/*restoreWindowLayout=*/false);
-            aw->applyUserSettings(/*resetScriptingLang=*/isCaller);
+            applyLiveToWindow(aw, isCaller);
             if (isCaller)
                 appliedToCaller = true;
         }
     }
-    if (!appliedToCaller && callerGuard) {
-        callerGuard->readSettings(/*restoreWindowLayout=*/false);
-        callerGuard->applyUserSettings(/*resetScriptingLang=*/true);
-    }
+    if (!appliedToCaller && callerGuard)
+        applyLiveToWindow(callerGuard.data(), true);
     if (callerGuard)
         callerGuard->saveSettings();
-    QMessageBox::information(callerGuard.data(), trST("Import Settings"),
-                             trST("%1 settings were read and applied.").arg(n));
+    QMessageBox::information(
+            callerGuard.data(), trST("Import Settings"),
+            trST("%1 settings were read and applied live (language, theme colors, fonts, "
+                 "numeric format, and auto-save).\n\n"
+                 "Window dock positions and startup scripting engine settings take effect on "
+                 "the next launch.")
+                    .arg(n));
 }
 
 void SettingsTransfer::resetInteractive(ApplicationWindow *app)

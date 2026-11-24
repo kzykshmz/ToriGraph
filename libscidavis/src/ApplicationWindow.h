@@ -1812,7 +1812,20 @@ private:
     void releaseProjectFileLock();
     void trackOpenedProjectFile(const QString &fn);
     void untrackOpenedProjectFile();
-    bool checkExternalModificationBeforeSave();
+    bool checkExternalModificationBeforeSave(bool *outSavedAsNew = nullptr);
+    bool offerBackupIfPresent(const QString &corruptFn, bool *outAccepted = nullptr);
+    bool guardProjectActionOutsideOleEmbedded(const QString &actionDesc,
+                                              const QString &filePathToOpen = QString());
+    void clearLastCopiedLayerIfReferencing(MyWidget *w);
+    static bool isInternalHelperWindow(const MyWidget *w);
+    void updateExplorerFolderPaneVisibility();
+    void retranslateOpenModelessDialogs();
+    bool d_suppress_explorer_user_track = false;
+    bool d_explorer_user_shown_in_narrow_split = false;
+    bool d_explorer_auto_collapsed_for_split = false;
+    bool d_suppress_delete_folder_undo_clear = false;
+    bool d_in_insert_translated_strings = false;
+    QPointer<MultiLayer> d_last_copied_layer_source_ml;
     void updateEmptyGraphPanePlaceholder();
     void rebuildStylePresetsMenu();
     MultiLayer *openMultiLayerFromTemplateFile(const QString &fn, QString *errOut = nullptr);

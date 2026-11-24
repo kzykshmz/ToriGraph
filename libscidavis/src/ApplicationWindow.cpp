@@ -221,7 +221,10 @@
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_errno.h>
 #include "OleServer.h"
+#include "PlotCurve.h"
 #include <QElapsedTimer>
+#include <QProcess>
+#include <QRegularExpression>
 
 #include <zlib.h>
 
@@ -565,6 +568,7 @@ void registerApplicationWindowJapaneseStrings()
         add("&Edit", "編集(&E)");
         add("&View", "表示(&V)");
         add("Scripting", "スクリプト(&S)");
+        add("&Scripting", "スクリプト(&S)");
         add("&Graph", "グラフ(&G)");
         add("Gra&ph", "グラフ(&P)");
         add("3D &Plot", "3Dプロット(&P)");
@@ -575,8 +579,12 @@ void registerApplicationWindowJapaneseStrings()
         add("&Analysis", "解析(&A)");
         add("Anal&yze", "解析(&Y)");
         add("&Tools", "ツール(&T)");
+        add("Too&ls", "ツール(&L)");
+        add("Wor&ksheet Analysis", "表の解析(&K)");
+        add("Worksheet &Analysis", "表の解析(&A)");
         add("&Quick Fit", "クイックフィット(&Q)");
         add("For&mat", "書式(&O)");
+        add("F&ormat", "書式(&O)");
         add("&Windows", "ウィンドウ(&W)");
         add("&Language", "言語 / Language(&L)");
         add("&Help", "ヘルプ(&H)");
@@ -2320,8 +2328,11 @@ ApplicationWindow::ApplicationWindow()
     setAttribute(Qt::WA_DeleteOnClose);
     QCoreApplication::setAttribute(Qt::AA_DontShowIconsInMenus, false);
     if (QApplication *qa = qobject_cast<QApplication *>(qApp)) {
-        if (qa->styleSheet().isEmpty())
+        if (qa->styleSheet().isEmpty()
+            || !qa->property("_tg_modern_theme_applied").toBool()) {
             ModernUiTheme::applyModernTheme(qa);
+            qa->setProperty("_tg_modern_theme_applied", true);
+        }
     }
 
     // Cold-start i18n fix: register extra dictionary entries and install Japanese translator
@@ -2441,6 +2452,9 @@ ApplicationWindow::ApplicationWindow()
     lv.header()->setStretchLastSection(true);
     lv.setMinimumHeight(80);
     lv.setSelectionMode(QTreeWidget::ExtendedSelection);
+    lv.setTextElideMode(Qt::ElideMiddle);
+    lv.setWordWrap(false);
+    updateExplorerFolderPaneVisibility();
 
     explorerSplitter->addWidget(&folders);
     explorerSplitter->addWidget(&lv);
@@ -2526,6 +2540,19 @@ ApplicationWindow::ApplicationWindow()
             [this](Qt::DockWidgetArea) { updateExplorerAdaptiveLayout(); });
     connect(&explorerWindow, &QDockWidget::topLevelChanged, this,
             [this](bool) { updateExplorerAdaptiveLayout(); });
+    connect(&explorerWindow, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (d_suppress_explorer_user_track || d_headless_mode)
+            return;
+        if (!this->isVisible())
+            return;
+        const bool isSplit = d_modern_ribbon
+                && (d_modern_ribbon->workspaceLayoutMode()
+                    == ModernRibbonBar::LayoutSplitTableGraph);
+        if (isSplit && width() < 1480) {
+            d_explorer_user_shown_in_narrow_split = visible;
+            d_explorer_auto_collapsed_for_split = false;
+        }
+    });
     updateExplorerAdaptiveLayout();
 
     explorerWindow.setWidget(d_explorer_container);
@@ -2625,13 +2652,6 @@ ApplicationWindow::ApplicationWindow()
     readSettings();
     if (autoSave && autoSaveTime > 0)
         savingTimerId = startTimer(autoSaveTime * 60000);
-    if (file_tools) {
-        insertToolBar(file_tools, d_ribbon_toolbar);
-        insertToolBarBreak(file_tools);
-    } else {
-        addToolBar(Qt::TopToolBarArea, d_ribbon_toolbar);
-        addToolBarBreak(Qt::TopToolBarArea);
-    }
     d_ribbon_toolbar->setVisible(true);
     updateExplorerAdaptiveLayout();
     createLanguagesList();
@@ -2663,6 +2683,7 @@ ApplicationWindow::ApplicationWindow()
                     actionWorkspaceLayoutMdi->setChecked(mode == ModernRibbonBar::LayoutFreeMdi);
                 }
                 updateGraphInspectorResponsiveness();
+                updateExplorerAdaptiveLayout();
                 windowActivated(d_workspace.activeSubWindow());
             });
     connect(d_modern_ribbon, &ModernRibbonBar::openPythonConsoleRequested, this,
@@ -2821,6 +2842,8 @@ ApplicationWindow::ApplicationWindow()
                     || et == QEvent::WindowStateChange) {
                     updateGraphInspectorResponsiveness();
                     updateEmptyGraphPanePlaceholder();
+                    if (et == QEvent::Resize || et == QEvent::Show)
+                        updateExplorerAdaptiveLayout();
                 }
             } else if (watched == d_workspace.viewport() && event
                        && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
@@ -2853,8 +2876,6 @@ ApplicationWindow::ApplicationWindow()
     updateGraphInspectorResponsiveness();
     updateEmptyGraphPanePlaceholder();
     updateUndoRedoActionsForActiveWindow();
-
-    ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
 void ApplicationWindow::initFonts()
@@ -3258,8 +3279,31 @@ void ApplicationWindow::lockToolbar(const bool status)
     }
 }
 
+void ApplicationWindow::retranslateOpenModelessDialogs()
+{
+    QEvent langChangeEvent(QEvent::LanguageChange);
+    for (QDialog *dlg : findChildren<QDialog *>()) {
+        if (!dlg || dlg->isModal())
+            continue;
+        qApp->sendEvent(dlg, &langChangeEvent);
+        for (QWidget *child : dlg->findChildren<QWidget *>()) {
+            if (child)
+                qApp->sendEvent(child, &langChangeEvent);
+        }
+    }
+}
+
+static void updateStatusBarForWindow(QLabel *statusLabel, QMdiSubWindow *w);
+
 void ApplicationWindow::insertTranslatedStrings()
 {
+    struct ScopedInInsertTranslated {
+        bool &flag;
+        bool prev;
+        explicit ScopedInInsertTranslated(bool &f) : flag(f), prev(f) { flag = true; }
+        ~ScopedInInsertTranslated() { flag = prev; }
+    } insertLangGuard(d_in_insert_translated_strings);
+
     if (projectname == "untitled")
         setWindowTitle(tr("ToriGraph - untitled"));
 
@@ -3307,6 +3351,17 @@ void ApplicationWindow::insertTranslatedStrings()
             else if (w->inherits("Graph3D"))
                 it->setText(1, tr("3D Graph"));
             it->setText(2, w->aspect());
+            const QString typeStr = it->text(1);
+            const QString lblStr = w->windowLabel();
+            QString tip = w->name();
+            if (!typeStr.isEmpty())
+                tip += QStringLiteral("\n") + tr("Type") + QStringLiteral(": ") + typeStr;
+            if (!w->aspect().isEmpty())
+                tip += QStringLiteral("  (") + w->aspect() + QStringLiteral(")");
+            if (!lblStr.isEmpty())
+                tip += QStringLiteral("\n") + tr("Label") + QStringLiteral(": ") + lblStr;
+            it->setToolTip(0, tip);
+            it->setToolTip(1, tip);
         }
     }
     if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
@@ -3377,17 +3432,17 @@ void ApplicationWindow::insertTranslatedStrings()
     file->setTitle(tr("&File"));
     edit->setTitle(tr("&Edit"));
     view->setTitle(tr("&View"));
-    scriptingMenu->setTitle(tr("Scripting"));
+    scriptingMenu->setTitle(tr("&Scripting"));
     graph->setTitle(tr("&Graph"));
     plot3DMenu->setTitle(tr("3D &Plot"));
     matrixMenu->setTitle(tr("&Matrix"));
     tableMenu->setTitle(tr("&Table"));
     plot2D->setTitle(tr("&Plot"));
-    dataMenu->setTitle(tr("Worksheet &Analysis"));
-    plotDataMenu->setTitle(tr("&Tools"));
+    dataMenu->setTitle(tr("Wor&ksheet Analysis"));
+    plotDataMenu->setTitle(tr("Too&ls"));
     calcul->setTitle(tr("&Analysis"));
     d_quick_fit_menu->setTitle(tr("&Quick Fit"));
-    format->setTitle(tr("For&mat"));
+    format->setTitle(tr("F&ormat"));
     windowsMenu->setTitle(tr("&Windows"));
     help->setTitle(tr("&Help"));
     if (colorPaletteMenu) {
@@ -3518,6 +3573,10 @@ void ApplicationWindow::insertTranslatedStrings()
         d_graph_inspector_dock->retranslateUi();
     if (GraphMiniToolbar *mtb = GraphMiniToolbar::instance())
         mtb->retranslateUi();
+    updateStatusBarForWindow(d_status_info, d_workspace.activeSubWindow());
+    d_last_tool_mode_text.clear();
+    refreshToolModeIndicator();
+    retranslateOpenModelessDialogs();
     updateExplorerAdaptiveLayout();
     ModernUiTheme::upgradeAllWindowIcons(this);
 }
@@ -4091,12 +4150,12 @@ void ApplicationWindow::initMainMenu()
 
     format = new QMenu(this);
     format->setFont(appFont);
-    format->setTitle(tr("For&mat"));
+    format->setTitle(tr("F&ormat"));
     connect(format, SIGNAL(aboutToShow()), this, SLOT(syncGraphPageAndToolbarMenuState()));
 
     scriptingMenu = new QMenu(this);
     scriptingMenu->setFont(appFont);
-    scriptingMenu->setTitle(tr("Scripting"));
+    scriptingMenu->setTitle(tr("&Scripting"));
 
     windowsMenu = new QMenu(this);
     windowsMenu->setFont(appFont);
@@ -4136,7 +4195,7 @@ void ApplicationWindow::initPlotDataMenu()
 {
     plotDataMenu = new QMenu(this);
     plotDataMenu->setFont(appFont);
-    plotDataMenu->setTitle(tr("&Tools"));
+    plotDataMenu->setTitle(tr("Too&ls"));
 
     plotDataMenu->addAction(btnPointer);
     plotDataMenu->addAction(btnZoomIn);
@@ -4247,7 +4306,7 @@ void ApplicationWindow::initTableAnalysisMenu()
 {
     dataMenu = new QMenu(this);
     dataMenu->setFont(appFont);
-    dataMenu->setTitle(tr("Worksheet &Analysis"));
+    dataMenu->setTitle(tr("Wor&ksheet Analysis"));
 
     dataMenu->addAction(actionShowColStatistics);
     dataMenu->addAction(actionShowRowStatistics);
@@ -4305,11 +4364,8 @@ void ApplicationWindow::initTableAnalysisMenu()
 
 void ApplicationWindow::customMenu(MyWidget *w)
 {
-    menuBar()->clear();
-    menuBar()->addMenu(file);
-    menuBar()->addMenu(edit);
-    menuBar()->addMenu(view);
-    menuBar()->addMenu(scriptingMenu);
+    QList<QMenu *> desiredMenus;
+    desiredMenus << file << edit << view << scriptingMenu;
     if (scriptingMenu && scriptingMenu->menuAction())
         scriptingMenu->menuAction()->setVisible(true);
 
@@ -4348,18 +4404,10 @@ void ApplicationWindow::customMenu(MyWidget *w)
         actionSaveTemplate->setEnabled(true);
 
         if (w->inherits("MultiLayer")) {
-            menuBar()->addMenu(graph);
-            menuBar()->addMenu(plotDataMenu);
-            menuBar()->addMenu(calcul);
-            if (QMenu *menuMoreGadgets = findChild<QMenu *>(QStringLiteral("menuMoreGadgets")))
-        menuMoreGadgets->setTitle(tr("&More Gadgets"));
-    if (QMenu *menuFileTemplates = findChild<QMenu *>(QStringLiteral("menuFileTemplates")))
-        menuFileTemplates->setTitle(tr("&Templates (.qpt)"));
-    if (stylePresetsMenu)
-        rebuildStylePresetsMenu();
-    if (gadgetsMenu)
-                menuBar()->addMenu(gadgetsMenu);
-            menuBar()->addMenu(format);
+            desiredMenus << graph << plotDataMenu << calcul;
+            if (gadgetsMenu)
+                desiredMenus << gadgetsMenu;
+            desiredMenus << format;
 
             exportPlot->setEnabled(true);
             actionShowExportASCIIDialog->setEnabled(false);
@@ -4409,7 +4457,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
         } else if (w->inherits("Graph3D")) {
             disableActions();
 
-            menuBar()->addMenu(format);
+            desiredMenus << format;
 
             actionPrint->setEnabled(true);
             actionSaveTemplate->setEnabled(true);
@@ -4426,8 +4474,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
             if (((Graph3D *)w)->coordStyle() == Qwt3D::NOCOORD)
                 actionShowAxisDialog->setEnabled(false);
         } else if (w->inherits("Table")) {
-            menuBar()->addMenu(plot2D);
-            menuBar()->addMenu(dataMenu);
+            desiredMenus << plot2D << dataMenu;
 
             actionShowExportASCIIDialog->setEnabled(true);
             exportPlot->setEnabled(false);
@@ -4438,7 +4485,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
             static_cast<Table *>(w)->d_future_table->fillProjectMenu(tableMenu);
             tableMenu->addSeparator();
             if (actionReimportData) {
-                const bool hasSource = !w->property("_tg_import_source_path").toString().isEmpty();
+                const bool hasSource = static_cast<Table *>(w)->hasImportSource();
                 actionReimportData->setEnabled(hasSource);
                 tableMenu->addAction(actionReimportData);
             }
@@ -4448,9 +4495,9 @@ void ApplicationWindow::customMenu(MyWidget *w)
             tableMenu->addSeparator();
             tableMenu->addAction(actionConvertTable);
             ModernUiTheme::upgradeMenuIcons(tableMenu);
-            menuBar()->addMenu(tableMenu);
+            desiredMenus << tableMenu;
         } else if (w->inherits("Matrix")) {
-            menuBar()->addMenu(plot3DMenu);
+            desiredMenus << plot3DMenu;
 
             qDeleteAll(matrixMenu->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly));
             matrixMenu->clear();
@@ -4467,7 +4514,7 @@ void ApplicationWindow::customMenu(MyWidget *w)
             matrixMenu->addSeparator();
             matrixMenu->addAction(actionConvertMatrix);
             ModernUiTheme::upgradeMenuIcons(matrixMenu);
-            menuBar()->addMenu(matrixMenu);
+            desiredMenus << matrixMenu;
         } else if (w->inherits("Note")) {
             actionSaveTemplate->setEnabled(false);
             actionNoteExecute->setEnabled(true);
@@ -4486,12 +4533,26 @@ void ApplicationWindow::customMenu(MyWidget *w)
             connect(actionNoteEvaluate, SIGNAL(triggered()), w, SLOT(evaluate()));
         } else
             disableActions();
-
-        menuBar()->addMenu(windowsMenu);
     } else
         disableActions();
 
-    menuBar()->addMenu(help);
+    if (windowsMenu)
+        windowsMenu->setEnabled(w != nullptr);
+    desiredMenus << windowsMenu << help;
+
+    QList<QAction *> desiredActs;
+    desiredActs.reserve(desiredMenus.size());
+    for (QMenu *m : desiredMenus) {
+        if (m && m->menuAction())
+            desiredActs << m->menuAction();
+    }
+    if (menuBar()->actions() != desiredActs) {
+        menuBar()->clear();
+        for (QMenu *m : desiredMenus) {
+            if (m)
+                menuBar()->addMenu(m);
+        }
+    }
 }
 
 void ApplicationWindow::disableActions()
@@ -5489,6 +5550,8 @@ void ApplicationWindow::applyColorPaletteByAction()
             ml->pushUndoSnapshot(tr("Apply Color Palette"), before);
             emit modified();
         }
+    } else if (!isNonInteractiveContext(this)) {
+        showUxHint(tr("Please select or activate a 2D graph window first."));
     }
 }
 
@@ -5497,8 +5560,11 @@ void ApplicationWindow::applyAspectRatioByAction()
     QAction *act = qobject_cast<QAction *>(sender());
     if (!act)
         return;
-    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer")) {
+        if (!isNonInteractiveContext(this))
+            showUxHint(tr("Please select or activate a 2D graph window first."));
         return;
+    }
 
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
     double ratio = act->data().toDouble();
@@ -5523,8 +5589,11 @@ void ApplicationWindow::applyAspectRatioByAction()
 
 void ApplicationWindow::setGraphKeepAspectRatio(bool keep)
 {
-    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer"))
+    if (!d_workspace.activeSubWindow() || !d_workspace.activeSubWindow()->inherits("MultiLayer")) {
+        if (!isNonInteractiveContext(this))
+            showUxHint(tr("Please select or activate a 2D graph window first."));
         return;
+    }
     MultiLayer *ml = static_cast<MultiLayer *>(d_workspace.activeSubWindow());
     const QString before = ml->captureUndoSnapshot();
     ml->setKeepAspectRatio(keep);
@@ -5570,7 +5639,7 @@ void ApplicationWindow::filterExplorerWindows()
         QList<MyWidget *> subWins =
                 current_folder->findWindows(QString(), true, true, false, true, true);
         for (MyWidget *w : subWins) {
-            if (w && !existingWindowItems.contains(w)) {
+            if (w && !isInternalHelperWindow(w) && !existingWindowItems.contains(w)) {
                 addListViewItem(w);
                 existingWindowItems.insert(w);
             }
@@ -5583,7 +5652,7 @@ void ApplicationWindow::filterExplorerWindows()
             QTreeWidgetItem *it = lv.topLevelItem(i);
             if (it && it->type() == WindowListItem::WindowType) {
                 MyWidget *w = static_cast<WindowListItem *>(it)->window();
-                if (w && !curWinSet.contains(w))
+                if (w && (!curWinSet.contains(w) || isInternalHelperWindow(w)))
                     delete lv.takeTopLevelItem(i);
             }
         }
@@ -5599,7 +5668,7 @@ void ApplicationWindow::filterExplorerWindows()
             typeMatches = (typeFilter == 0 || typeFilter == 5);
         } else if (it->type() == WindowListItem::WindowType) {
             MyWidget *w = static_cast<WindowListItem *>(it)->window();
-            if (!w) {
+            if (!w || isInternalHelperWindow(w)) {
                 typeMatches = false;
             } else {
                 switch (typeFilter) {
@@ -6950,6 +7019,8 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
     else if (!ag->isTernaryPlot() && !ag->isPolarPlot())
         finalizeLastGraphSettings(g);
     g->applyPendingNewGraphStylePreset(); // E1: apply the new-graph preset now
+    if (w)
+        ToriUx::dismissPlotThisDataBar(w);
     customMenu(g);
 
     emit modified();
@@ -7038,6 +7109,8 @@ MultiLayer *ApplicationWindow::multilayerPlot(int c, int r, int style)
         }
     }
     g->applyPendingNewGraphStylePreset(); // E1: apply the new-graph preset now
+    if (w)
+        ToriUx::dismissPlotThisDataBar(w);
     customMenu(g);
     emit modified();
     return g;
@@ -7066,6 +7139,8 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
         int pos = s.indexOf(":", 0);
         QString caption = s.left(pos) + "_";
         Table *w = (Table *)table(caption);
+        if (w)
+            ToriUx::dismissPlotThisDataBar(w);
 
         int posX = s.indexOf("(X)", pos);
         QString xColName = caption + s.mid(pos + 2, posX - pos - 2);
@@ -7268,6 +7343,14 @@ Table *ApplicationWindow::newTable(const QString &fname, const QString &sep, int
     Table *w = new Table(scriptEnv, fname, sep, lines, renameCols, stripSpaces, simplifySpaces,
                          convertToNumeric, numericLocale, fname, &d_workspace);
     if (w) {
+        if (!w->importSucceeded()) {
+            const QString err = w->lastImportError();
+            if (!err.isEmpty())
+                setProperty("torigraph_last_import_error", err);
+            w->askOnCloseEvent(false);
+            delete w;
+            return nullptr;
+        }
         w->setName(generateUniqueName(tr("Table")));
         w->setAutoRecalcFormulas(RecalcManager::instance(this)->recalcMode()
                                  == RecalcManager::Auto);
@@ -8239,7 +8322,10 @@ void ApplicationWindow::changeAppStyle(const QString &s)
         return;
     appStyle = s;
     if (QApplication *qa = qobject_cast<QApplication *>(qApp)) {
-        ModernUiTheme::applyModernTheme(qa);
+        if (!qa->property("_tg_modern_theme_applied").toBool() || qa->styleSheet().isEmpty()) {
+            ModernUiTheme::applyModernTheme(qa);
+            qa->setProperty("_tg_modern_theme_applied", true);
+        }
         QPalette pal = qa->palette();
         if (panelsColor.isValid())
             pal.setColor(QPalette::Active, QPalette::Base, QColor(panelsColor));
@@ -8542,26 +8628,31 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
             }
         }
-        if (emptyInitialTable && QFileInfo::exists(sorted_files.first())) {
-            emptyInitialTable->askOnCloseEvent(false);
-            if (emptyInitialTable->d_future_table)
-                emptyInitialTable->d_future_table->remove();
-            emptyInitialTable = nullptr;
-        }
-
+        Table *firstNewTable = nullptr;
         for (int i = 0; i < sorted_files.size(); i++) {
             Table *w = newTable(sorted_files[i], local_column_separator, local_ignored_lines,
                                 local_rename_columns, local_strip_spaces, local_simplify_spaces,
                                 local_convert_to_numeric, local_numeric_locale);
             if (!w) {
-                const QString msg =
-                        tr("Could not import \"%1\". Check file permissions, separator, and text "
-                           "format.")
-                                .arg(QFileInfo(sorted_files[i]).fileName());
+                const QString storedErr = property("torigraph_last_import_error").toString();
+                const QString msg = storedErr.isEmpty()
+                        ? tr("Could not import \"%1\". Check file permissions, separator, and text "
+                             "format.")
+                                  .arg(QFileInfo(sorted_files[i]).fileName())
+                        : storedErr;
                 setProperty("torigraph_last_import_error", msg);
                 if (!isNonInteractiveContext(this))
                     QMessageBox::warning(this, tr("ASCII Import Failed"), msg);
                 continue;
+            }
+            if (!firstNewTable) {
+                firstNewTable = w;
+                if (emptyInitialTable && emptyInitialTable != w) {
+                    emptyInitialTable->askOnCloseEvent(false);
+                    if (emptyInitialTable->d_future_table)
+                        emptyInitialTable->d_future_table->remove();
+                    emptyInitialTable = nullptr;
+                }
             }
             const QFileInfo impFi(sorted_files[i]);
             QString baseTitle =
@@ -8731,6 +8822,20 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             break;
         }
         case ImportASCIIDialog::Overwrite: {
+            struct ScopedTableMacroGuard {
+                future::Table *tbl = nullptr;
+                explicit ScopedTableMacroGuard(future::Table *t, const QString &text) : tbl(t)
+                {
+                    if (tbl)
+                        tbl->beginMacro(text);
+                }
+                ~ScopedTableMacroGuard()
+                {
+                    if (tbl)
+                        tbl->endMacro();
+                }
+            } overwriteMacro(table->d_future_table, tr("Import ASCII (Overwrite)"));
+
             if (table->rowCount() != temp->rowCount())
                 table->d_future_table->setRowCount(temp->rowCount());
             for (int col = 0; col < table->columnCount() && col < temp->columnCount(); col++) {
@@ -8850,6 +8955,8 @@ static void activateExistingProjectWindow(ApplicationWindow *aw)
 void ApplicationWindow::open()
 {
     if (isNonInteractiveContext(this))
+        return;
+    if (guardProjectActionOutsideOleEmbedded(tr("open another project")))
         return;
     OpenProjectDialog *open_dialog = new OpenProjectDialog(this, d_extended_open_dialog);
     open_dialog->setDirectory(workingDir);
@@ -9033,8 +9140,17 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
         AsciiTableImportFilter::ImportReport report;
         std::unique_ptr<future::Table> ft(
                 AsciiTableImportFilter::importDroppedTextData(raw, baseTitle, fn, &report));
-        if (!ft || ft->columnCount() < 1 || ft->rowCount() < 1)
+        if (!ft || ft->columnCount() < 1 || ft->rowCount() < 1) {
+            const QString summary = AsciiTableImportFilter::describeImportReport(report);
+            const QString errMsg = tr("Could not parse any worksheet data from \"%1\"%2.")
+                                           .arg(fi.fileName(),
+                                                summary.isEmpty() ? QString()
+                                                                  : (QStringLiteral("\n") + summary));
+            setProperty("torigraph_last_import_error", errMsg);
+            if (!isNonInteractiveContext(this))
+                QMessageBox::warning(this, tr("Data Import Failed"), errMsg);
             return nullptr;
+        }
 
         if (projectname == QLatin1String("untitled")) {
             const QList<MyWidget *> allWins = windowsList();
@@ -9094,6 +9210,11 @@ ApplicationWindow *ApplicationWindow::open(const QString &fn, const QStringList 
             qDeleteAll(cols);
             return nullptr;
         }
+        if (t->d_future_table) {
+            t->d_future_table->setImportSource(fn, QString(), report.separator, report.encoding,
+                                               report.headerLines,
+                                               report.unitsRowDetected ? 1 : 0, t->numCols());
+        }
         offerPlotAfterImport(t);
         modifiedProject();
         if (statusBar()) {
@@ -9118,6 +9239,8 @@ void ApplicationWindow::openRecentProject()
     QString fn = trigger->text();
     int pos = fn.indexOf(" ", 0);
     fn = fn.right(fn.length() - pos - 1);
+    if (guardProjectActionOutsideOleEmbedded(tr("open a recent project"), fn))
+        return;
 
     QFile f(fn);
     if (!f.exists()) {
@@ -9462,7 +9585,7 @@ void ApplicationWindow::trackOpenedProjectFile(const QString &fn)
     }
 }
 
-bool ApplicationWindow::checkExternalModificationBeforeSave()
+bool ApplicationWindow::checkExternalModificationBeforeSave(bool *outSavedAsNew)
 {
     if (isNonInteractiveContext(this) || d_watched_project_path.isEmpty())
         return true;
@@ -9491,13 +9614,86 @@ bool ApplicationWindow::checkExternalModificationBeforeSave()
     box.exec();
     QAbstractButton *clicked = box.clickedButton();
     if (clicked == saveAsBtn) {
-        saveProjectAs();
+        const bool okAs = saveProjectAs();
+        if (outSavedAsNew)
+            *outSavedAsNew = okAs;
         return false;
     }
     if (clicked == overwriteBtn)
         return true;
     Q_UNUSED(cancelBtn)
+    if (outSavedAsNew)
+        *outSavedAsNew = false;
     return false;
+}
+
+bool ApplicationWindow::offerBackupIfPresent(const QString &corruptFn, bool *outAccepted)
+{
+    if (outAccepted)
+        *outAccepted = false;
+    if (isNonInteractiveContext(this) || corruptFn.endsWith(QLatin1String("~"))
+        || !QFile::exists(corruptFn + QStringLiteral("~"))) {
+        return false;
+    }
+    const int choice = QMessageBox::question(
+            this, tr("File opening error"),
+            tr("The file <b>%1</b> is corrupted, but there exists a backup copy.<br>Do you "
+               "want to open the backup instead?")
+                    .arg(corruptFn),
+            QMessageBox::Yes | QMessageBox::Default, QMessageBox::No | QMessageBox::Escape);
+    if (choice == QMessageBox::Yes) {
+        if (outAccepted)
+            *outAccepted = true;
+        QMessageBox::information(
+                this, tr("Opening backup copy"),
+                tr("The original (corrupt) file is being left untouched, in case you want to "
+                   "try rescuing data manually. If you want to continue working with the "
+                   "automatically restored backup copy, you have to explicitly overwrite the "
+                   "original file."));
+        return true;
+    }
+    return false;
+}
+
+bool ApplicationWindow::guardProjectActionOutsideOleEmbedded(const QString &actionDesc,
+                                                           const QString &filePathToOpen)
+{
+    if (!d_ole_embedded)
+        return false;
+    if (!isNonInteractiveContext(this)) {
+        const QString body = tr("This window is editing an embedded PowerPoint graph object, "
+                                "so it cannot %1 here without losing your embedded changes.\n\n"
+                                "Use File -> Save to update PowerPoint, or Save Project As... "
+                                "to save a separate .sciprj file.")
+                                     .arg(actionDesc);
+        if (!filePathToOpen.isEmpty()) {
+            const auto btn = QMessageBox::question(
+                    this, tr("Embedded PowerPoint Object"),
+                    body + QStringLiteral("\n\n")
+                            + tr("Open \"%1\" in a separate ToriGraph window?")
+                                      .arg(QFileInfo(filePathToOpen).fileName()),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            if (btn == QMessageBox::Yes) {
+                QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                        QStringList() << filePathToOpen);
+            }
+        } else {
+            QMessageBox::information(this, tr("Embedded PowerPoint Object"), body);
+        }
+    }
+    return true;
+}
+
+bool ApplicationWindow::isInternalHelperWindow(const MyWidget *w)
+{
+    if (!w)
+        return false;
+    if (w->property("_tg_internal_helper").toBool())
+        return true;
+    const QString oname = w->objectName();
+    const QString wname = const_cast<MyWidget *>(w)->name();
+    return oname.startsWith(QLatin1String("GadgetFit_"))
+            || wname.startsWith(QLatin1String("GadgetFit_"));
 }
 
 bool ApplicationWindow::loadProject(const QString &fn)
@@ -9514,35 +9710,6 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     renamedTables.clear();
     setProperty("_tg_load_truncated", false);
     unique_ptr<QFile> file;
-
-    auto offerBackupIfPresent = [&](const QString &corruptFn, bool *outAccepted) -> bool {
-        if (outAccepted)
-            *outAccepted = false;
-        if (nonInteractive || corruptFn.endsWith(QLatin1String("~"))
-            || !QFile::exists(corruptFn + "~")) {
-            return false;
-        }
-        int choice = QMessageBox::question(
-                this, tr("File opening error"),
-                tr("The file <b>%1</b> is corrupted, but there exists a backup copy.<br>Do you "
-                   "want to open the backup instead?")
-                        .arg(corruptFn),
-                QMessageBox::Yes | QMessageBox::Default, QMessageBox::No | QMessageBox::Escape);
-        if (choice == QMessageBox::Yes) {
-            if (outAccepted)
-                *outAccepted = true;
-            QMessageBox::information(
-                    this, tr("Opening backup copy"),
-                    tr("The original (corrupt) file is being left untouched, in case you want "
-                       "to "
-                       "try rescuing data manually. If you want to continue working with the "
-                       "automatically restored backup copy, you have to explicitly overwrite "
-                       "the "
-                       "original file."));
-            return true;
-        }
-        return false;
-    };
 
     if (!isBackupTilde && !acquireProjectFileLock(fn, !nonInteractive))
         return false;
@@ -10016,6 +10183,7 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     folders.blockSignals(false);
     // change folder to user defined current folder
     changeFolder(cf, true);
+    updateExplorerFolderPaneVisibility();
 
     for (MyWidget *mw : windowsList()) {
         if (mw) {
@@ -12122,8 +12290,9 @@ bool ApplicationWindow::saveProject()
         return false;
     }
 
-    if (!checkExternalModificationBeforeSave())
-        return false;
+    bool savedAsNew = false;
+    if (!checkExternalModificationBeforeSave(&savedAsNew))
+        return savedAsNew;
 
     d_ignore_watcher_changes = true;
     const bool wroteOk = writeProjectFile(projectFolder(), projectname);
@@ -12341,7 +12510,9 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
         if (!nonInteractive)
             QMessageBox::critical(this, tr("Error"), tr("Please enter a valid name!"));
         return false;
-    } else if (newName.contains(QRegExp("\\W"))) {
+    } else if (newName.contains(QRegularExpression(
+                       QStringLiteral("[^\\p{L}\\p{N}_]"),
+                       QRegularExpression::UseUnicodePropertiesOption))) {
         if (!nonInteractive) {
             QMessageBox::critical(
                     this, tr("Error"),
@@ -14712,6 +14883,26 @@ void ApplicationWindow::copySelection()
         results->copy();
         return;
     }
+    if (!isNonInteractiveContext(this)) {
+        if (QWidget *fw = QApplication::focusWidget()) {
+            if (QLineEdit *le = qobject_cast<QLineEdit *>(fw)) {
+                if (le->hasSelectedText()) {
+                    le->copy();
+                    return;
+                }
+            } else if (QTextEdit *te = qobject_cast<QTextEdit *>(fw)) {
+                if (te->textCursor().hasSelection()) {
+                    te->copy();
+                    return;
+                }
+            } else if (QPlainTextEdit *pte = qobject_cast<QPlainTextEdit *>(fw)) {
+                if (pte->textCursor().hasSelection()) {
+                    pte->copy();
+                    return;
+                }
+            }
+        }
+    }
 
     QWidget *m = d_workspace.activeSubWindow();
     if (!m)
@@ -14730,19 +14921,9 @@ void ApplicationWindow::copySelection()
             return;
         if (g->markerSelected()) {
             copyMarker();
-        } else if (g->titleSelected()
-                   || g->currentSelection().kind == Graph::GraphSelection::PlotTitle) {
-            const QString titleText =
-                    g->plotWidget() ? g->plotWidget()->title().text() : QString();
-            if (!titleText.isEmpty() && QApplication::clipboard())
-                QApplication::clipboard()->setText(titleText);
-        } else if (g->currentSelection().kind == Graph::GraphSelection::AxisTitle
-                   && g->currentSelection().primaryId >= 0
-                   && g->currentSelection().primaryId < 4) {
-            const QString axisText = g->axisTitle(g->currentSelection().primaryId);
-            if (!axisText.isEmpty() && QApplication::clipboard())
-                QApplication::clipboard()->setText(axisText);
         } else {
+            // Even when PlotTitle or AxisTitle is selected (outside an active inline text editor),
+            // Ctrl+C copies the graph as an editable PowerPoint OLE object.
             copyActiveLayer();
         }
     } else if (Graph3D *g3d = qobject_cast<Graph3D *>(m)) {
@@ -14825,8 +15006,8 @@ void ApplicationWindow::cutSelection()
                    || sel.kind == Graph::GraphSelection::Spectrogram) {
             if (statusBar())
                 statusBar()->showMessage(
-                        tr("Selected element cannot be cut; press Delete to remove it or click "
-                           "the layer background to cut the layer."),
+                        tr("Axes, error bars, and colormaps cannot be cut directly; click the "
+                           "layer background to cut the layer, or use Graph -> Add/Remove Curve."),
                         8000);
             return;
         } else {
@@ -15137,7 +15318,8 @@ void ApplicationWindow::undo()
             if (!nonInteractive)
                 QApplication::restoreOverrideCursor();
         }
-    } else if (d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
+    } else if (!qobject_cast<Graph3D *>(aw) && !qobject_cast<Note *>(aw)
+               && d_project && d_project->undoStack() && d_project->undoStack()->canUndo()) {
         const QString cmdText = d_project->undoStack()->undoText();
         QPointer<MyWidget> prevLastMod(lastModified);
         lastModified = nullptr;
@@ -15212,7 +15394,8 @@ void ApplicationWindow::redo()
             if (!nonInteractive)
                 QApplication::restoreOverrideCursor();
         }
-    } else if (d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
+    } else if (!qobject_cast<Graph3D *>(aw) && !qobject_cast<Note *>(aw)
+               && d_project && d_project->undoStack() && d_project->undoStack()->canRedo()) {
         const QString cmdText = d_project->undoStack()->redoText();
         QPointer<MyWidget> prevLastMod(lastModified);
         lastModified = nullptr;
@@ -15489,6 +15672,7 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
 
     if (lastModified == w)
         lastModified = nullptr;
+    clearLastCopiedLayerIfReferencing(w);
     if (w->folder() && w->folder()->activeWindow() == w)
         w->folder()->setActiveWindow(nullptr);
     if (current_folder && current_folder->activeWindow() == w)
@@ -15645,6 +15829,27 @@ QMenu *ApplicationWindow::showMarkerPopupMenuImpl()
     Graph *g = ml->activeGraph();
     if (!g)
         return nullptr;
+
+    // P2-14: If the user right-clicked in empty outer margins of the graph (outside the plot
+    // canvas and not on an outer legend box) while a marker remained selected, clear the stale
+    // marker selection and open the graph context menu instead of a stale marker menu.
+    if (!isNonInteractiveContext(this) && g->plotWidget() && g->plotWidget()->canvas()
+        && g->underMouse()) {
+        const QPoint canvasPos = g->plotWidget()->canvas()->mapFromGlobal(QCursor::pos());
+        const bool inCanvas = g->plotWidget()->canvas()->rect().contains(canvasPos);
+        Legend *selLeg = dynamic_cast<Legend *>(g->selectedMarkerPtr());
+        const bool onOuterLegend =
+                selLeg && selLeg->isVisible() && selLeg->rect().contains(canvasPos);
+        if (!inCanvas && !onOuterLegend) {
+            g->setSelectedMarker(-1);
+            g->setCurrentSelection(Graph::GraphSelection(), true);
+            auto *cm = new QMenu(this);
+            buildGraphContextMenu(*cm, ml, false);
+            ModernUiTheme::upgradeMenuIcons(cm);
+            return cm;
+        }
+    }
+
     auto markerMenu = new QMenu(this);
 
     const bool isPrimaryLegend =
@@ -15751,6 +15956,8 @@ void ApplicationWindow::windowsMenuActivated(bool checked)
 
 void ApplicationWindow::newProject()
 {
+    if (guardProjectActionOutsideOleEmbedded(tr("start a new project")))
+        return;
     saveSettings(); // the recent projects must be saved
 
     ApplicationWindow *ed = new ApplicationWindow();
@@ -16198,8 +16405,15 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
             cols << dst;
         }
         Table *t = newTable(generateUniqueName(baseTitle), path, cols);
-        if (!t)
+        if (!t) {
+            qDeleteAll(cols);
             return false;
+        }
+        if (t->d_future_table) {
+            t->d_future_table->setImportSource(path, QString(), report.separator, report.encoding,
+                                               report.headerLines,
+                                               report.unitsRowDetected ? 1 : 0, t->numCols());
+        }
 
         if (autoPlotLine && anyNumeric && t->numCols() >= 2) {
             QStringList yCols;
@@ -16395,7 +16609,8 @@ void ApplicationWindow::dropEvent(QDropEvent *e)
             || ext == QLatin1String("opju") || ext == QLatin1String("qti")
             || ext == QLatin1String("ogm") || ext == QLatin1String("ogw")
             || ext == QLatin1String("ogg") || ext == QLatin1String("org")) {
-            open(fileName);
+            if (!guardProjectActionOutsideOleEmbedded(tr("open a project"), fileName))
+                open(fileName);
             handledAny = true;
         } else if (ext == QLatin1String("ras")) {
             bool isSunRaster = false;
@@ -19209,41 +19424,44 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 
 Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStringList &lst)
 {
-    QStringList fList = lst[0].split("\t");
-    QString caption = fList[0];
+    if (!app || lst.size() < 3)
+        return 0;
+
+    QStringList fList = lst.value(0).split("\t");
+    QString caption = fList.value(0);
+    if (caption.isEmpty())
+        caption = app->generateUniqueName(tr("Graph"));
     while (app->alreadyUsedName(caption))
         caption = app->generateUniqueName(tr("Graph"));
-    QString date = fList[1];
+    QString date = fList.value(1);
     if (date.isEmpty())
         date = QLocale().toString(QDateTime::currentDateTime());
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    fList = lst[2].split("\t", Qt::SkipEmptyParts);
-#else
-    fList = lst[2].split("\t", QString::SkipEmptyParts);
-#endif
-    if (fList.size() > 1)
+    // Keep empty parts so an empty plotAssociation/formula ("SurfaceFunction\t\tx0...") does not
+    // shift coordinates left and overrun fList[7].
+    fList = lst.value(2).split("\t");
+    if (fList.size() < 8)
+        return 0;
+    if (!fList[1].isEmpty())
         fList[1] = remapSurfacePlotSource(app->renamedTables, fList[1]);
+    const double xl = fList.value(2).toDouble();
+    const double xr = fList.value(3).toDouble();
+    const double yl = fList.value(4).toDouble();
+    const double yr = fList.value(5).toDouble();
+    const double zl = fList.value(6).toDouble();
+    const double zr = fList.value(7).toDouble();
     Graph3D *plot = 0;
     {
         ScopedDisableRenamedLookup guard;
         if (fList[1].endsWith("(Y)", Qt::CaseSensitive)) // Ribbon plot
-            plot = app->dataPlot3D(caption, fList[1], fList[2].toDouble(), fList[3].toDouble(),
-                                   fList[4].toDouble(), fList[5].toDouble(), fList[6].toDouble(),
-                                   fList[7].toDouble());
+            plot = app->dataPlot3D(caption, fList[1], xl, xr, yl, yr, zl, zr);
         else if (fList[1].contains("(Z)", Qt::CaseSensitive))
-            plot = app->dataPlotXYZ(caption, fList[1], fList[2].toDouble(), fList[3].toDouble(),
-                                    fList[4].toDouble(), fList[5].toDouble(), fList[6].toDouble(),
-                                    fList[7].toDouble());
+            plot = app->dataPlotXYZ(caption, fList[1], xl, xr, yl, yr, zl, zr);
         else if (fList[1].startsWith("matrix<", Qt::CaseSensitive)
                  && fList[1].endsWith(">", Qt::CaseInsensitive))
-            plot = app->openMatrixPlot3D(caption, fList[1], fList[2].toDouble(), fList[3].toDouble(),
-                                         fList[4].toDouble(), fList[5].toDouble(), fList[6].toDouble(),
-                                         fList[7].toDouble());
+            plot = app->openMatrixPlot3D(caption, fList[1], xl, xr, yl, yr, zl, zr);
         else
-            plot = app->newPlot3D(caption, fList[1], fList[2].toDouble(), fList[3].toDouble(),
-                                  fList[4].toDouble(), fList[5].toDouble(), fList[6].toDouble(),
-                                  fList[7].toDouble());
+            plot = app->newPlot3D(caption, fList[1], xl, xr, yl, yr, zl, zr);
     }
 
     if (!plot)
@@ -19252,116 +19470,96 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
     app->setListViewDate(caption, date);
     plot->setBirthDate(date);
     plot->setIgnoreFonts(true);
-    restoreWindowGeometry(app, plot, lst[1]);
+    restoreWindowGeometry(app, plot, lst.value(1));
 
+    auto splitNonEmptyTabs = [&lst](int idx) -> QStringList {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    fList = lst[3].split("\t", Qt::SkipEmptyParts);
-    plot->setStyle(fList);
-
-    fList = lst[4].split("\t", Qt::SkipEmptyParts);
-    plot->setGrid(fList[1].toInt());
-
-    fList = lst[5].split("\t");
-    plot->setTitle(fList);
-
-    fList = lst[6].split("\t", Qt::SkipEmptyParts);
-    plot->setColors(fList);
-
-    fList = lst[7].split("\t", Qt::SkipEmptyParts);
-    fList.pop_front();
-    plot->setAxesLabels(fList);
-
-    fList = lst[8].split("\t", Qt::SkipEmptyParts);
-    plot->setTicks(fList);
-
-    fList = lst[9].split("\t", Qt::SkipEmptyParts);
-    plot->setTickLengths(fList);
-
-    fList = lst[10].split("\t", Qt::SkipEmptyParts);
-    plot->setOptions(fList);
-
-    fList = lst[11].split("\t", Qt::SkipEmptyParts);
-    plot->setNumbersFont(fList);
-
-    fList = lst[12].split("\t", Qt::SkipEmptyParts);
-    plot->setXAxisLabelFont(fList);
-
-    fList = lst[13].split("\t", Qt::SkipEmptyParts);
-    plot->setYAxisLabelFont(fList);
-
-    fList = lst[14].split("\t", Qt::SkipEmptyParts);
-    plot->setZAxisLabelFont(fList);
-
-    fList = lst[15].split("\t", Qt::SkipEmptyParts);
-    plot->setRotation(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[16].split("\t", Qt::SkipEmptyParts);
-    plot->setZoom(fList[1].toDouble());
-
-    fList = lst[17].split("\t", Qt::SkipEmptyParts);
-    plot->setScale(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[18].split("\t", Qt::SkipEmptyParts);
-    plot->setShift(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[19].split("\t", Qt::SkipEmptyParts);
-    plot->setMeshLineWidth(fList[1].toInt());
+        return lst.value(idx).split("\t", Qt::SkipEmptyParts);
 #else
-    fList = lst[3].split("\t", QString::SkipEmptyParts);
-    plot->setStyle(fList);
-
-    fList = lst[4].split("\t", QString::SkipEmptyParts);
-    plot->setGrid(fList[1].toInt());
-
-    fList = lst[5].split("\t");
-    plot->setTitle(fList);
-
-    fList = lst[6].split("\t", QString::SkipEmptyParts);
-    plot->setColors(fList);
-
-    fList = lst[7].split("\t", QString::SkipEmptyParts);
-    fList.pop_front();
-    plot->setAxesLabels(fList);
-
-    fList = lst[8].split("\t", QString::SkipEmptyParts);
-    plot->setTicks(fList);
-
-    fList = lst[9].split("\t", QString::SkipEmptyParts);
-    plot->setTickLengths(fList);
-
-    fList = lst[10].split("\t", QString::SkipEmptyParts);
-    plot->setOptions(fList);
-
-    fList = lst[11].split("\t", QString::SkipEmptyParts);
-    plot->setNumbersFont(fList);
-
-    fList = lst[12].split("\t", QString::SkipEmptyParts);
-    plot->setXAxisLabelFont(fList);
-
-    fList = lst[13].split("\t", QString::SkipEmptyParts);
-    plot->setYAxisLabelFont(fList);
-
-    fList = lst[14].split("\t", QString::SkipEmptyParts);
-    plot->setZAxisLabelFont(fList);
-
-    fList = lst[15].split("\t", QString::SkipEmptyParts);
-    plot->setRotation(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[16].split("\t", QString::SkipEmptyParts);
-    plot->setZoom(fList[1].toDouble());
-
-    fList = lst[17].split("\t", QString::SkipEmptyParts);
-    plot->setScale(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[18].split("\t", QString::SkipEmptyParts);
-    plot->setShift(fList[1].toDouble(), fList[2].toDouble(), fList[3].toDouble());
-
-    fList = lst[19].split("\t", QString::SkipEmptyParts);
-    plot->setMeshLineWidth(fList[1].toInt());
+        return lst.value(idx).split("\t", QString::SkipEmptyParts);
 #endif
+    };
 
-    if (d_file_version > 71) {
-        fList = lst[20].split(
+    if (lst.size() > 3)
+        plot->setStyle(splitNonEmptyTabs(3));
+
+    if (lst.size() > 4) {
+        fList = splitNonEmptyTabs(4);
+        if (fList.size() > 1)
+            plot->setGrid(fList.value(1).toInt());
+    }
+
+    if (lst.size() > 5) {
+        fList = lst.value(5).split("\t");
+        plot->setTitle(fList);
+    }
+
+    if (lst.size() > 6)
+        plot->setColors(splitNonEmptyTabs(6));
+
+    if (lst.size() > 7) {
+        fList = splitNonEmptyTabs(7);
+        if (!fList.isEmpty())
+            fList.pop_front();
+        plot->setAxesLabels(fList);
+    }
+
+    if (lst.size() > 8)
+        plot->setTicks(splitNonEmptyTabs(8));
+
+    if (lst.size() > 9)
+        plot->setTickLengths(splitNonEmptyTabs(9));
+
+    if (lst.size() > 10)
+        plot->setOptions(splitNonEmptyTabs(10));
+
+    if (lst.size() > 11)
+        plot->setNumbersFont(splitNonEmptyTabs(11));
+
+    if (lst.size() > 12)
+        plot->setXAxisLabelFont(splitNonEmptyTabs(12));
+
+    if (lst.size() > 13)
+        plot->setYAxisLabelFont(splitNonEmptyTabs(13));
+
+    if (lst.size() > 14)
+        plot->setZAxisLabelFont(splitNonEmptyTabs(14));
+
+    if (lst.size() > 15) {
+        fList = splitNonEmptyTabs(15);
+        if (fList.size() > 3)
+            plot->setRotation(fList.value(1).toDouble(), fList.value(2).toDouble(),
+                              fList.value(3).toDouble());
+    }
+
+    if (lst.size() > 16) {
+        fList = splitNonEmptyTabs(16);
+        if (fList.size() > 1)
+            plot->setZoom(fList.value(1).toDouble());
+    }
+
+    if (lst.size() > 17) {
+        fList = splitNonEmptyTabs(17);
+        if (fList.size() > 3)
+            plot->setScale(fList.value(1).toDouble(), fList.value(2).toDouble(),
+                           fList.value(3).toDouble());
+    }
+
+    if (lst.size() > 18) {
+        fList = splitNonEmptyTabs(18);
+        if (fList.size() > 3)
+            plot->setShift(fList.value(1).toDouble(), fList.value(2).toDouble(),
+                           fList.value(3).toDouble());
+    }
+
+    if (lst.size() > 19) {
+        fList = splitNonEmptyTabs(19);
+        if (fList.size() > 1)
+            plot->setMeshLineWidth(fList.value(1).toInt());
+    }
+
+    if (d_file_version > 71 && lst.size() > 20) {
+        fList = lst.value(20).split(
                 "\t"); // using QString::SkipEmptyParts here causes a crash for empty window labels
         const QString unescLbl = QString(fList.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
         plot->setWindowLabel(unescLbl);
@@ -19369,18 +19567,59 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
         app->setListViewLabel(plot->name(), unescLbl);
     }
 
-    if (d_file_version >= 88) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        fList = lst[21].split("\t", Qt::SkipEmptyParts);
-#else
-        fList = lst[21].split("\t", QString::SkipEmptyParts);
-#endif
-        plot->setOrtho(fList[1].toInt());
+    if (d_file_version >= 88 && lst.size() > 21) {
+        fList = splitNonEmptyTabs(21);
+        if (fList.size() > 1)
+            plot->setOrtho(fList.value(1).toInt());
     }
 
     plot->update();
     plot->setIgnoreFonts(true);
     return plot;
+}
+
+void ApplicationWindow::clearLastCopiedLayerIfReferencing(MyWidget *w)
+{
+    if (!lastCopiedLayer) {
+        copiedLayer = false;
+        d_last_copied_layer_source_ml.clear();
+        return;
+    }
+    bool shouldClear = (w == nullptr);
+    if (!shouldClear && w->inherits("MultiLayer")) {
+        MultiLayer *ml = static_cast<MultiLayer *>(w);
+        if (d_last_copied_layer_source_ml == ml || ml->graphPtrs().contains(lastCopiedLayer))
+            shouldClear = true;
+    }
+    if (!shouldClear && (w->inherits("Table") || w->inherits("Matrix"))) {
+        if (Plot *plt = lastCopiedLayer->plotWidget()) {
+            const QwtPlotItemList &items = plt->itemList();
+            for (QwtPlotItem *item : items) {
+                if (const DataCurve *dc = dynamic_cast<const DataCurve *>(item)) {
+                    if (dc->table() == w) {
+                        shouldClear = true;
+                        break;
+                    }
+                } else if (QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(item)) {
+                    if (er->masterCurve() && er->masterCurve()->table() == w) {
+                        shouldClear = true;
+                        break;
+                    }
+                } else if (const Spectrogram *sp = dynamic_cast<const Spectrogram *>(item)) {
+                    if (sp->matrix() == w) {
+                        shouldClear = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (shouldClear) {
+        delete lastCopiedLayer;
+        lastCopiedLayer = nullptr;
+        copiedLayer = false;
+        d_last_copied_layer_source_ml.clear();
+    }
 }
 
 void ApplicationWindow::copyActiveLayer()
@@ -19393,6 +19632,7 @@ void ApplicationWindow::copyActiveLayer()
         return;
 
     copiedLayer = true;
+    d_last_copied_layer_source_ml = ml;
 
     delete lastCopiedLayer;
     lastCopiedLayer = new Graph(0, 0, Qt::Widget);
@@ -19643,6 +19883,14 @@ void ApplicationWindow::connectTable(Table *w)
         connect(w->d_future_table, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
                 SLOT(handleAspectDescriptionChanged(const AbstractAspect *)), Qt::UniqueConnection);
     }
+    connect(w, &TableView::selectionStatsChanged, this, [this, w](const QString &summary) {
+        if (!d_status_info || d_workspace.activeSubWindow() != w)
+            return;
+        if (summary.trimmed().isEmpty())
+            updateStatusBarForWindow(d_status_info, w);
+        else
+            d_status_info->setText(summary);
+    });
 
 #ifdef LEGACY_CODE_0_2_x
     connect(w->d_future_table, SIGNAL(requestRowStatistics()), this, SLOT(showRowStatistics()));
@@ -19887,9 +20135,7 @@ void ApplicationWindow::createActions()
     connect(actionAddFunctionCurve, SIGNAL(triggered()), this, SLOT(addFunctionCurve()));
 
     actionUnzoom = new QAction(IconLoader::load("zoom-auto"), tr("&Rescale to Show All"), this);
-    actionUnzoom->setShortcuts(QList<QKeySequence>()
-                               << QKeySequence(tr("Ctrl+R"))
-                               << QKeySequence(tr("Ctrl+Shift+R")));
+    actionUnzoom->setShortcut(tr("Ctrl+R"));
     connect(actionUnzoom, SIGNAL(triggered()), this, SLOT(setAutoScale()));
 
     actionNewLegend = new QAction(IconLoader::load("legend"), tr("New / Reconstruct &Legend"), this);
@@ -21272,8 +21518,6 @@ void ApplicationWindow::createActions()
     ASSIGN_ACT_OBJNAME(actionNoteEvaluate);
     ASSIGN_ACT_OBJNAME(actionSaveNote);
 #undef ASSIGN_ACT_OBJNAME
-
-    ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
 void ApplicationWindow::translateActionsStrings()
@@ -21462,9 +21706,7 @@ void ApplicationWindow::translateActionsStrings()
     actionAddFunctionCurve->setShortcut(tr("Ctrl+Alt+F"));
 
     actionUnzoom->setText(tr("&Rescale to Show All"));
-    actionUnzoom->setShortcuts(QList<QKeySequence>()
-                               << QKeySequence(tr("Ctrl+R"))
-                               << QKeySequence(tr("Ctrl+Shift+R")));
+    actionUnzoom->setShortcut(tr("Ctrl+R"));
     actionUnzoom->setToolTip(tr("Best fit"));
 
     actionNewLegend->setText(tr("New / Reconstruct &Legend"));
@@ -22264,7 +22506,8 @@ void ApplicationWindow::translateActionsStrings()
     }
     retranslateUxSwitches(); // G1 / C15 switches (UxNavigation.cpp)
 
-    ModernUiTheme::upgradeAllWindowIcons(this);
+    if (!d_in_insert_translated_strings)
+        ModernUiTheme::upgradeAllWindowIcons(this);
 }
 
 Graph3D *ApplicationWindow::openMatrixPlot3D(const QString &caption, const QString &matrix_name,
@@ -25385,10 +25628,198 @@ void ApplicationWindow::appendProject()
     appendProject(open_dialog->selectedFiles()[0]);
 }
 
+static bool preflightScanLegacyProjectComplete(QFile *file, int fileVersion)
+{
+    if (!file)
+        return false;
+    const qint64 origPos = file->pos();
+    file->seek(0);
+    QTextStream t(file);
+    t.setCodec(QTextCodec::codecForName("UTF-8"));
+
+    if (t.atEnd()) {
+        file->seek(origPos);
+        return false;
+    }
+    t.readLine(); // header line already verified
+    if (fileVersion < 73 && !t.atEnd())
+        t.readLine();
+
+    int folderDepth = 0;
+    bool ok = true;
+    QString s;
+    while (!t.atEnd()) {
+        s = t.readLine(1048576);
+        if (s.isNull())
+            break;
+        if (s.left(8) == QLatin1String("<folder>")) {
+            if (s.split(QLatin1Char('\t')).count() < 4) {
+                ok = false;
+                break;
+            }
+            ++folderDepth;
+        } else if (s == QLatin1String("</folder>")) {
+            --folderDepth;
+            if (folderDepth < 0) {
+                ok = false;
+                break;
+            }
+        } else if (s == QLatin1String("<table>")) {
+            if (fileVersion < 0x000200) {
+                while (s != QLatin1String("</table>") && !t.atEnd()) {
+                    s = t.readLine();
+                    if (s.isNull())
+                        break;
+                }
+                if (s != QLatin1String("</table>")) {
+                    ok = false;
+                    break;
+                }
+            } else {
+                const QString lenLine = t.readLine();
+                bool okLen = false;
+                const int length = lenLine.toInt(&okLen);
+                if (lenLine.isNull() || !okLen || length < 0) {
+                    ok = false;
+                    break;
+                }
+                if (length > 0) {
+                    if (length <= 262144) {
+                        const QString chunk = t.read(length);
+                        if (chunk.length() < length) {
+                            ok = false;
+                            break;
+                        }
+                    } else {
+                        int remaining = length;
+                        while (remaining > 0) {
+                            const int step = qMin(remaining, 1024);
+                            const QString chunk = t.read(step);
+                            if (chunk.length() < step) {
+                                ok = false;
+                                break;
+                            }
+                            remaining -= step;
+                        }
+                        if (!ok)
+                            break;
+                    }
+                    t.readLine(); // skip trailing newline after XML payload
+                } else {
+                    t.readLine();
+                }
+                const QString geomLine = t.readLine();
+                QString endTableLine = t.readLine();
+                while (endTableLine.isEmpty() && !endTableLine.isNull() && !t.atEnd())
+                    endTableLine = t.readLine();
+                if (geomLine.isNull() || endTableLine != QLatin1String("</table>")) {
+                    ok = false;
+                    break;
+                }
+            }
+        } else if (s.left(17) == QLatin1String("<TableStatistics>")) {
+            while (s != QLatin1String("</TableStatistics>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+            }
+            if (s != QLatin1String("</TableStatistics>")) {
+                ok = false;
+                break;
+            }
+        } else if (s == QLatin1String("<matrix>")) {
+            while (s != QLatin1String("</matrix>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+            }
+            if (s != QLatin1String("</matrix>")) {
+                ok = false;
+                break;
+            }
+        } else if (s == QLatin1String("<note>")) {
+            int hdrCount = 0;
+            for (; hdrCount < 3 && !t.atEnd(); ++hdrCount) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+            }
+            if (hdrCount < 3) {
+                ok = false;
+                break;
+            }
+            while (s != QLatin1String("</note>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+            }
+            if (s != QLatin1String("</note>")) {
+                ok = false;
+                break;
+            }
+        } else if (s == QLatin1String("<multiLayer>")) {
+            const QString hdr = t.readLine();
+            if (hdr.isNull() || hdr.split(QLatin1Char('\t')).size() < 4) {
+                ok = false;
+                break;
+            }
+            while (s != QLatin1String("</multiLayer>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+                if (s.left(7) == QLatin1String("<graph>")) {
+                    while (s != QLatin1String("</graph>") && !t.atEnd()) {
+                        s = t.readLine();
+                        if (s.isNull())
+                            break;
+                    }
+                    if (s != QLatin1String("</graph>")) {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!ok || s != QLatin1String("</multiLayer>")) {
+                ok = false;
+                break;
+            }
+        } else if (s == QLatin1String("<SurfacePlot>")) {
+            while (s != QLatin1String("</SurfacePlot>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    break;
+            }
+            if (s != QLatin1String("</SurfacePlot>")) {
+                ok = false;
+                break;
+            }
+        } else if (s.left(5) == QLatin1String("<log>")) {
+            if (!s.contains(QLatin1String("</log>"))) {
+                while (s != QLatin1String("</log>") && !s.endsWith(QLatin1String("</log>"))
+                       && !t.atEnd()) {
+                    s = t.readLine();
+                    if (s.isNull())
+                        break;
+                }
+                if (s != QLatin1String("</log>") && !s.endsWith(QLatin1String("</log>"))) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    file->seek(origPos);
+    return ok && (folderDepth == 0);
+}
+
 void ApplicationWindow::appendProject(const QString &fn)
 {
     this->setProperty("torigraph_last_append_ok", false);
+    setProperty("_tg_load_truncated", false);
     if (fn.isEmpty())
+        return;
+    if (guardProjectActionOutsideOleEmbedded(tr("append another project"), fn))
         return;
 
     struct ScopedRestoreFileVersion
@@ -25436,7 +25867,13 @@ void ApplicationWindow::appendProject(const QString &fn)
     if (fn.endsWith(".gz", Qt::CaseInsensitive) || fn.endsWith(".gz~", Qt::CaseInsensitive)) {
         file = openCompressedFile(fn);
         if (!file) {
-            if (!nonInteractive && !fn.endsWith(QLatin1String("~")) && QFile::exists(fn + "~")) {
+            bool backupAccepted = false;
+            if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
+                appendProject(fn + QStringLiteral("~"));
+                return;
+            }
+            if (!backupAccepted && !nonInteractive && !fn.endsWith(QLatin1String("~"))
+                && QFile::exists(fn + "~")) {
                 QMessageBox::critical(this, tr("File opening error"),
                                       tr("The file <b>%1</b> is not a valid project file.").arg(fn));
             }
@@ -25464,12 +25901,47 @@ void ApplicationWindow::appendProject(const QString &fn)
         if (hdrParts.count() < 2
             || (hdrParts[0] != "SciDAVis" && hdrParts[0] != "ToriGraph"
                 && hdrParts[0] != "QtiPlot")) {
-            if (!nonInteractive) {
+            file->close();
+            delete file;
+            bool backupAccepted = false;
+            if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
+                appendProject(fn + QStringLiteral("~"));
+                return;
+            }
+            if (!backupAccepted && !nonInteractive) {
                 QMessageBox::critical(this, tr("File opening error"),
                                       tr("The file <b>%1</b> is not a valid project file.").arg(fn));
             }
+            return;
+        }
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        QStringList verParts = hdrParts[1].split(QLatin1Char('.'), Qt::SkipEmptyParts);
+#else
+        QStringList verParts = hdrParts[1].split(QLatin1Char('.'), QString::SkipEmptyParts);
+#endif
+        while (verParts.size() < 3)
+            verParts << QStringLiteral("0");
+        const int parsedVersion = (fn.endsWith(".qti", Qt::CaseInsensitive)
+                                   || fn.endsWith(".qti.gz", Qt::CaseInsensitive)
+                                   || fn.endsWith(".qti~", Qt::CaseInsensitive)
+                                   || fn.endsWith(".qti.gz~", Qt::CaseInsensitive))
+                ? (100 * verParts[0].toInt() + 10 * verParts[1].toInt() + verParts[2].toInt())
+                : ((verParts[0].toInt() << 16) + (verParts[1].toInt() << 8) + verParts[2].toInt());
+        if (!preflightScanLegacyProjectComplete(file, parsedVersion)) {
             file->close();
             delete file;
+            bool backupAccepted = false;
+            if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
+                appendProject(fn + QStringLiteral("~"));
+                return;
+            }
+            if (!backupAccepted && !nonInteractive) {
+                QMessageBox::critical(
+                        this, tr("File opening error"),
+                        tr("The project file <b>%1</b> is incomplete or corrupted (unexpected end "
+                           "of file) and could not be appended safely.")
+                                .arg(fn));
+            }
             return;
         }
         file->seek(0);
@@ -25533,8 +26005,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                     mw->askOnCloseEvent(false);
             }
             const bool prevConfirm = confirmCloseFolder;
+            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
             confirmCloseFolder = false;
+            d_suppress_delete_folder_undo_clear = true;
             deleteFolder(appendedRoot);
+            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
             confirmCloseFolder = prevConfirm;
             current_folder = cf;
             if (cf && cf->folderListItem())
@@ -25566,8 +26041,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                     mw->askOnCloseEvent(false);
             }
             const bool prevConfirm = confirmCloseFolder;
+            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
             confirmCloseFolder = false;
+            d_suppress_delete_folder_undo_clear = true;
             deleteFolder(appendedRoot);
+            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
             confirmCloseFolder = prevConfirm;
             current_folder = cf;
             if (cf && cf->folderListItem())
@@ -25591,8 +26069,11 @@ void ApplicationWindow::appendProject(const QString &fn)
         file->close();
         delete file;
         const bool prevConfirm = confirmCloseFolder;
+        const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
         confirmCloseFolder = false;
+        d_suppress_delete_folder_undo_clear = true;
         deleteFolder(appendedRoot);
+        d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
         confirmCloseFolder = prevConfirm;
         current_folder = cf;
         if (cf && cf->folderListItem())
@@ -25631,14 +26112,19 @@ void ApplicationWindow::appendProject(const QString &fn)
         if (d_file_version < 73)
             t.readLine();
 
+        bool truncatedProject = false;
         // process tables and matrix information
         while (!t.atEnd()) {
             s = t.readLine(1048576); // workaround for safely reading very big lines
+            if (s.isNull())
+                break;
             lst.clear();
             if (s.left(8) == "<folder>") {
                 lst = s.split("\t");
-                if (lst.count() < 4)
+                if (lst.count() < 4) {
+                    truncatedProject = true;
                     break;
+                }
                 Folder &f = current_folder->addChild<Folder>(lst[1]);
                 f.setBirthDate(lst[2]);
                 f.setModificationDate(lst[3]);
@@ -25650,6 +26136,10 @@ void ApplicationWindow::appendProject(const QString &fn)
                 current_folder = &f;
             } else if (s == "<table>") {
                 openTable(this, t);
+                if (property("_tg_load_truncated").toBool()) {
+                    truncatedProject = true;
+                    break;
+                }
             } else if (s.startsWith(QLatin1String("<workbook>\t"))) {
                 WorkbookManager::instance(this)->restoreFromLine(s, current_folder, renamedTables);
             } else if (s.left(17) == "<TableStatistics>") {
@@ -25660,7 +26150,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                         break;
                     tsLst << s;
                 }
-                if (s == "</TableStatistics>" && !tsLst.isEmpty())
+                if (s != "</TableStatistics>") {
+                    truncatedProject = true;
+                    break;
+                }
+                if (!tsLst.isEmpty())
                     tsLst.pop_back();
                 openTableStatistics(tsLst);
             } else if (s == "<matrix>") {
@@ -25670,7 +26164,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                         break;
                     lst << s;
                 }
-                if (s == "</matrix>" && !lst.isEmpty())
+                if (s != "</matrix>") {
+                    truncatedProject = true;
+                    break;
+                }
+                if (!lst.isEmpty())
                     lst.pop_back();
                 openMatrix(this, lst);
             } else if (s == "<note>") {
@@ -25680,7 +26178,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                         break;
                     lst << s;
                 }
-                Note *m = (lst.size() >= 3) ? openNote(this, lst) : nullptr;
+                if (lst.size() < 3) {
+                    truncatedProject = true;
+                    break;
+                }
+                Note *m = openNote(this, lst);
                 QStringList cont;
                 while (s != "</note>" && !t.atEnd()) {
                     s = t.readLine();
@@ -25688,7 +26190,11 @@ void ApplicationWindow::appendProject(const QString &fn)
                         break;
                     cont << s;
                 }
-                if (s == "</note>" && !cont.isEmpty())
+                if (s != "</note>") {
+                    truncatedProject = true;
+                    break;
+                }
+                if (!cont.isEmpty())
                     cont.pop_back();
                 if (m)
                     m->restore(cont);
@@ -25702,110 +26208,160 @@ void ApplicationWindow::appendProject(const QString &fn)
         }
 
         // process the rest
-        t.seek(0);
+        if (!truncatedProject && !property("_tg_load_truncated").toBool()) {
+            t.seek(0);
 
-        MultiLayer *plot = 0;
-        while (!t.atEnd()) {
-            s = t.readLine(1048576); // workaround for safely reading very big lines
-            if (s.isNull())
-                break;
-            if (s.left(8) == "<folder>") {
-                lst = s.split("\t");
-                if (lst.size() >= 2) {
-                    Folder *sub = current_folder->findSubfolder(lst[1]);
-                    if (sub)
-                        current_folder = sub;
-                }
-            } else if (s == "<multiLayer>") { // process multilayers information
-                s = t.readLine();
-                QStringList graph = s.split("\t");
-                if (s.isNull() || graph.size() < 4)
+            MultiLayer *plot = 0;
+            while (!t.atEnd()) {
+                s = t.readLine(1048576); // workaround for safely reading very big lines
+                if (s.isNull())
                     break;
-                QString caption = graph[0];
-                plot = multilayerPlot(caption);
-                plot->setCols(graph[1].toInt());
-                plot->setRows(graph[2].toInt());
-                setListViewDate(caption, graph[3]);
-                plot->setBirthDate(graph[3]);
-                plot->blockSignals(true);
+                if (s.left(8) == "<folder>") {
+                    lst = s.split("\t");
+                    if (lst.size() >= 2) {
+                        Folder *sub = current_folder->findSubfolder(lst[1]);
+                        if (sub)
+                            current_folder = sub;
+                    }
+                } else if (s == "<multiLayer>") { // process multilayers information
+                    s = t.readLine();
+                    QStringList graph = s.split("\t");
+                    if (s.isNull() || graph.size() < 4) {
+                        truncatedProject = true;
+                        break;
+                    }
+                    QString caption = graph[0];
+                    plot = multilayerPlot(caption);
+                    plot->setCols(graph[1].toInt());
+                    plot->setRows(graph[2].toInt());
+                    setListViewDate(caption, graph[3]);
+                    plot->setBirthDate(graph[3]);
+                    plot->blockSignals(true);
 
-                restoreWindowGeometry(this, plot, t.readLine());
+                    restoreWindowGeometry(this, plot, t.readLine());
 
-                if (d_file_version > 71 && !t.atEnd()) {
-                    QStringList lst = t.readLine().split("\t");
-                    const QString unescLbl = QString(lst.value(1))
-                                                     .replace(QLatin1String("&#9;"), QLatin1String("\t"))
-                                                     .replace(QLatin1String("<br>"), QLatin1String("\n"));
-                    plot->setWindowLabel(unescLbl);
-                    setListViewLabel(plot->name(), unescLbl);
-                    plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
-                }
+                    if (d_file_version > 71 && !t.atEnd()) {
+                        QStringList lst = t.readLine().split("\t");
+                        const QString unescLbl = QString(lst.value(1))
+                                                         .replace(QLatin1String("&#9;"),
+                                                                  QLatin1String("\t"))
+                                                         .replace(QLatin1String("<br>"),
+                                                                  QLatin1String("\n"));
+                        plot->setWindowLabel(unescLbl);
+                        setListViewLabel(plot->name(), unescLbl);
+                        plot->setCaptionPolicy((MyWidget::CaptionPolicy)lst.value(2).toInt());
+                    }
 
-                if (d_file_version > 83 && !t.atEnd()) {
+                    if (d_file_version > 83 && !t.atEnd()) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-                    const auto skipEmpty = Qt::SkipEmptyParts;
+                        const auto skipEmpty = Qt::SkipEmptyParts;
 #else
-                    const auto skipEmpty = QString::SkipEmptyParts;
+                        const auto skipEmpty = QString::SkipEmptyParts;
 #endif
-                    QStringList lst = t.readLine().split("\t", skipEmpty);
-                    if (lst.size() >= 5)
-                        plot->setMargins(lst[1].toInt(), lst[2].toInt(), lst[3].toInt(),
-                                         lst[4].toInt());
-                    if (!t.atEnd()) {
-                        lst = t.readLine().split("\t", skipEmpty);
-                        if (lst.size() >= 3)
-                            plot->setSpacing(lst[1].toInt(), lst[2].toInt());
-                    }
-                    if (!t.atEnd()) {
-                        lst = t.readLine().split("\t", skipEmpty);
-                        if (lst.size() >= 3)
-                            plot->setLayerCanvasSize(lst[1].toInt(), lst[2].toInt());
-                    }
-                    if (!t.atEnd()) {
-                        lst = t.readLine().split("\t", skipEmpty);
-                        if (lst.size() >= 3)
-                            plot->setAlignement(lst[1].toInt(), lst[2].toInt());
-                    }
-                }
-
-                while (s != "</multiLayer>" && !t.atEnd()) { // open layers
-                    s = t.readLine();
-                    if (s.isNull())
-                        break;
-                    if (s.left(7) == "<graph>") {
-                        lst.clear();
-                        while (s != "</graph>" && !t.atEnd()) {
-                            s = t.readLine();
-                            if (s.isNull())
-                                break;
-                            lst << s;
+                        QStringList lst = t.readLine().split("\t", skipEmpty);
+                        if (lst.size() >= 5)
+                            plot->setMargins(lst[1].toInt(), lst[2].toInt(), lst[3].toInt(),
+                                             lst[4].toInt());
+                        if (!t.atEnd()) {
+                            lst = t.readLine().split("\t", skipEmpty);
+                            if (lst.size() >= 3)
+                                plot->setSpacing(lst[1].toInt(), lst[2].toInt());
                         }
-                        openGraph(this, plot, lst);
-                    } else if (s.trimmed().startsWith("<Tori")) {
-                        plot->restorePhase5Tag(s.trimmed());
+                        if (!t.atEnd()) {
+                            lst = t.readLine().split("\t", skipEmpty);
+                            if (lst.size() >= 3)
+                                plot->setLayerCanvasSize(lst[1].toInt(), lst[2].toInt());
+                        }
+                        if (!t.atEnd()) {
+                            lst = t.readLine().split("\t", skipEmpty);
+                            if (lst.size() >= 3)
+                                plot->setAlignement(lst[1].toInt(), lst[2].toInt());
+                        }
                     }
-                }
-                plot->finalizePhase5Restore();
-                plot->blockSignals(false);
-            } else if (s == "<SurfacePlot>") { // process 3D plots information
-                lst.clear();
-                while (s != "</SurfacePlot>" && !t.atEnd()) {
-                    s = t.readLine();
-                    if (s.isNull())
+
+                    while (s != "</multiLayer>" && !t.atEnd()) { // open layers
+                        s = t.readLine();
+                        if (s.isNull())
+                            break;
+                        if (s.left(7) == "<graph>") {
+                            lst.clear();
+                            while (s != "</graph>" && !t.atEnd()) {
+                                s = t.readLine();
+                                if (s.isNull())
+                                    break;
+                                lst << s;
+                            }
+                            if (s != "</graph>") {
+                                truncatedProject = true;
+                                break;
+                            }
+                            openGraph(this, plot, lst);
+                        } else if (s.trimmed().startsWith("<Tori")) {
+                            plot->restorePhase5Tag(s.trimmed());
+                        }
+                    }
+                    plot->finalizePhase5Restore();
+                    plot->blockSignals(false);
+                    if (truncatedProject || s != "</multiLayer>") {
+                        truncatedProject = true;
                         break;
-                    lst << s;
+                    }
+                } else if (s == "<SurfacePlot>") { // process 3D plots information
+                    lst.clear();
+                    while (s != "</SurfacePlot>" && !t.atEnd()) {
+                        s = t.readLine();
+                        if (s.isNull())
+                            break;
+                        lst << s;
+                    }
+                    if (s != "</SurfacePlot>") {
+                        truncatedProject = true;
+                        break;
+                    }
+                    openSurfacePlot(this, lst);
+                } else if (s == "</folder>") {
+                    Folder *parent = (Folder *)current_folder->parent();
+                    if (!parent)
+                        current_folder = projectFolder();
+                    else
+                        current_folder = parent;
                 }
-                openSurfacePlot(this, lst);
-            } else if (s == "</folder>") {
-                Folder *parent = (Folder *)current_folder->parent();
-                if (!parent)
-                    current_folder = projectFolder();
-                else
-                    current_folder = parent;
             }
         }
         file->close();
         delete file;
+
+        if (truncatedProject || property("_tg_load_truncated").toBool()) {
+            const bool prevConfirm = confirmCloseFolder;
+            const bool prevSuppressUndoClear = d_suppress_delete_folder_undo_clear;
+            confirmCloseFolder = false;
+            d_suppress_delete_folder_undo_clear = true;
+            deleteFolder(appendedRoot);
+            d_suppress_delete_folder_undo_clear = prevSuppressUndoClear;
+            confirmCloseFolder = prevConfirm;
+            current_folder = cf;
+            if (cf && cf->folderListItem())
+                folders.setCurrentItem(cf->folderListItem());
+            folders.blockSignals(false);
+            changeFolder(cf, true);
+            blockSignals(false);
+            renamedTables.clear();
+            if (!nonInteractive)
+                QApplication::restoreOverrideCursor();
+            bool backupAccepted = false;
+            if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
+                appendProject(fn + QStringLiteral("~"));
+                return;
+            }
+            if (!backupAccepted && !nonInteractive) {
+                QMessageBox::critical(
+                        this, tr("File opening error"),
+                        tr("The project file <b>%1</b> is incomplete or corrupted (unexpected end "
+                           "of file) and could not be appended safely.")
+                                .arg(fn));
+            }
+            return;
+        }
     }
 
     if (cf && cf->folderListItem())
@@ -25813,6 +26369,7 @@ void ApplicationWindow::appendProject(const QString &fn)
     folders.blockSignals(false);
     // keep caller's active folder after appending project
     changeFolder(cf, true);
+    updateExplorerFolderPaneVisibility();
     for (MyWidget *mw : windowsList()) {
         if (!mw)
             continue;
@@ -26043,7 +26600,9 @@ QMenu *ApplicationWindow::showFolderPopupMenuImpl(QTreeWidgetItem *it, bool from
     QMenu *cm = new QMenu(this);
     cm->addAction(tr("&Find..."), this, SLOT(showFindDialogue()));
     cm->addSeparator();
-    cm->addAction(tr("App&end Project..."), this, SLOT(appendProject()));
+    QAction *appendProjAct = cm->addAction(tr("App&end Project..."), this, SLOT(appendProject()));
+    if (appendProjAct && d_ole_embedded)
+        appendProjAct->setEnabled(false);
     if (((FolderListItem *)it)->folder()->parent())
         cm->addAction(tr("Save &As Project..."), this, SLOT(saveAsProject()));
     else
@@ -26388,10 +26947,14 @@ void ApplicationWindow::addFolder()
     if (!isNonInteractiveContext(this))
         fi->treeWidget()->editItem(fi, 0);
     fi->treeWidget()->resizeColumnToContents(0);
+    updateExplorerFolderPaneVisibility();
 }
 
 bool ApplicationWindow::deleteFolder(Folder *f)
 {
+    if (!f || f == projectFolder())
+        return false;
+
     if (confirmCloseFolder && !isNonInteractiveContext(this)
         && QMessageBox::question(
                 this, tr("Delete folder?"),
@@ -26401,41 +26964,78 @@ bool ApplicationWindow::deleteFolder(Folder *f)
                 tr("&Delete"), tr("&Cancel"), QString(), 1, 1)
                 != 0) {
         return false;
-    } else {
-        d_folder_active_windows.remove(f);
-        FolderListItem *fi = f->folderListItem();
-        foreach (MyWidget *w, f->windowsList())
-            closeWindow(w);
-
-        if (!(f->children()).isEmpty()) {
-            FolderListItem *item = (FolderListItem *)fi->child(0);
-            int initial_depth = item->depth();
-            QTreeWidgetItemIterator it(item);
-            while (item && item->depth() >= initial_depth) {
-                Folder *subFolder = (Folder *)item->folder();
-                if (subFolder) {
-                    d_folder_active_windows.remove(subFolder);
-                    foreach (MyWidget *w, subFolder->windowsList()) {
-                        if (w) {
-                            w->askOnCloseEvent(false);
-                            closeWindow(w);
-                        }
-                    }
-
-                    FolderListItem *old_item = item;
-                    it++;
-                    item = (FolderListItem *)(*it);
-                    delete subFolder;
-                    delete old_item;
-                }
-            }
-        }
-
-        delete f;
-        delete fi;
-        updateEmptyGraphPanePlaceholder();
-        return true;
     }
+
+    // Collect the subtree in bottom-up (post-order) BEFORE deleting any Folder or FolderListItem,
+    // avoiding QTreeWidgetItemIterator use-after-free when parent items are deleted.
+    QList<QPointer<Folder>> doomedFolders;
+    QSet<Folder *> doomedSet;
+    std::function<void(Folder *)> collectPostOrder = [&](Folder *node) {
+        if (!node || doomedSet.contains(node))
+            return;
+        doomedSet.insert(node);
+        for (Folder *child : node->folders())
+            collectPostOrder(child);
+        doomedFolders.append(QPointer<Folder>(node));
+    };
+    collectPostOrder(f);
+
+    if (current_folder && doomedSet.contains(current_folder)) {
+        Folder *fallback = qobject_cast<Folder *>(f->parent());
+        if (!fallback || doomedSet.contains(fallback))
+            fallback = projectFolder();
+        current_folder = fallback;
+    }
+
+    for (const QPointer<Folder> &fp : doomedFolders) {
+        Folder *df = fp.data();
+        if (!df)
+            continue;
+        d_folder_active_windows.remove(df);
+        const QList<MyWidget *> wins = df->windowsList();
+        for (MyWidget *w : wins) {
+            if (!w)
+                continue;
+            w->askOnCloseEvent(false);
+            closeWindow(w);
+        }
+    }
+
+    // Remove any folder entries referencing the deleted subtree from lv.
+    for (int i = lv.topLevelItemCount() - 1; i >= 0; --i) {
+        QTreeWidgetItem *it = lv.topLevelItem(i);
+        if (it && it->type() == FolderListItem::FolderType) {
+            Folder *lf = static_cast<FolderListItem *>(it)->folder();
+            if (doomedSet.contains(lf))
+                delete lv.takeTopLevelItem(i);
+        }
+    }
+
+    FolderListItem *rootFi = f->folderListItem();
+    for (const QPointer<Folder> &fp : doomedFolders) {
+        if (fp)
+            fp->setFolderListItem(nullptr);
+    }
+    if (rootFi) {
+        QSignalBlocker sbFolders(&folders);
+        if (QTreeWidgetItem *pItem = rootFi->parent())
+            pItem->removeChild(rootFi);
+        else if (const int topIdx = folders.indexOfTopLevelItem(rootFi); topIdx >= 0)
+            folders.takeTopLevelItem(topIdx);
+        delete rootFi;
+    }
+
+    for (const QPointer<Folder> &fp : doomedFolders) {
+        if (fp)
+            delete fp.data();
+    }
+
+    if (!d_suppress_delete_folder_undo_clear && d_project && d_project->undoStack())
+        d_project->undoStack()->clear();
+
+    updateExplorerFolderPaneVisibility();
+    updateEmptyGraphPanePlaceholder();
+    return true;
 }
 
 void ApplicationWindow::deleteFolder()
@@ -26744,7 +27344,7 @@ void ApplicationWindow::deactivateFolders()
 
 void ApplicationWindow::addListViewItem(MyWidget *w)
 {
-    if (!w)
+    if (!w || isInternalHelperWindow(w))
         return;
 
     WindowListItem *it = new WindowListItem(&lv, w);
@@ -26772,10 +27372,19 @@ void ApplicationWindow::addListViewItem(MyWidget *w)
     syncBatchWindowName(w);
     if (WorkbookManager *wb = WorkbookManager::existing(this))
         wb->decorateListItem(it, w); // D8: "Sheet of <book>"
+    QString tip = w->name();
+    if (!it->text(1).isEmpty())
+        tip += QStringLiteral("\n") + tr("Type") + QStringLiteral(": ") + it->text(1);
+    if (!w->aspect().isEmpty())
+        tip += QStringLiteral("  (") + w->aspect() + QStringLiteral(")");
+    if (!w->windowLabel().isEmpty())
+        tip += QStringLiteral("\n") + tr("Label") + QStringLiteral(": ") + w->windowLabel();
+    it->setToolTip(0, tip);
+    it->setToolTip(1, tip);
     if (lv.columnCount() >= 5 && lv.isColumnHidden(3)) {
         if (d_batch_window_updates_depth > 0) {
             d_batch_pending_lv_resize = true;
-        } else {
+        } else if (!lv.isColumnHidden(1)) {
             lv.resizeColumnToContents(1);
             lv.resizeColumnToContents(2);
         }
@@ -27053,6 +27662,12 @@ void ApplicationWindow::setOleEmbeddedMode(bool embedded)
         mt->cancelScheduledAndHide();
     if (embedded && d_python_server)
         d_python_server->stop();
+    if (actionNewProject)
+        actionNewProject->setEnabled(!embedded);
+    if (actionOpen)
+        actionOpen->setEnabled(!embedded);
+    if (recent)
+        recent->setEnabled(!embedded);
     if (actionToggleFocusHudMode)
         actionToggleFocusHudMode->setEnabled(true);
     if (actionCommandPalette)
@@ -27824,8 +28439,35 @@ void ApplicationWindow::finalizeLastGraphSettings(MultiLayer *g)
     d_restoring_window_geometry = prevRestoring;
 }
 
+void ApplicationWindow::updateExplorerFolderPaneVisibility()
+{
+    Folder *root = projectFolder();
+    const bool hasSubfolders = root && !root->folders().isEmpty();
+    if (folders.isHidden() == hasSubfolders)
+        folders.setVisible(hasSubfolders);
+}
+
 void ApplicationWindow::updateExplorerAdaptiveLayout()
 {
+    updateExplorerFolderPaneVisibility();
+
+    const bool isSplitLayout = d_modern_ribbon
+            && (d_modern_ribbon->workspaceLayoutMode()
+                == ModernRibbonBar::LayoutSplitTableGraph);
+    if (isSplitLayout && width() < 1480 && !d_explorer_user_shown_in_narrow_split
+        && !d_headless_mode && !d_ole_embedded && !explorerWindow.isHidden()) {
+        d_suppress_explorer_user_track = true;
+        explorerWindow.hide();
+        d_suppress_explorer_user_track = false;
+        d_explorer_auto_collapsed_for_split = true;
+    } else if ((!isSplitLayout || width() >= 1480) && d_explorer_auto_collapsed_for_split
+               && explorerWindow.isHidden()) {
+        d_suppress_explorer_user_track = true;
+        explorerWindow.show();
+        d_suppress_explorer_user_track = false;
+        d_explorer_auto_collapsed_for_split = false;
+    }
+
     if (!d_explorer_container || !d_explorer_bar_grid)
         return;
 
@@ -27931,6 +28573,10 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
 
     if (lv.columnCount() >= 5) {
         const bool compactDock = verticalMode && (contW <= 0 || contW < 360);
+        // Column 0 already carries the compact duotone type icon; hide the wide Type text column
+        // (e.g. "Sheet of <workbook>") in narrow side docks and middle-elide names so sibling
+        // workbook sheets remain distinguishable instead of squeezed.
+        lv.setColumnHidden(1, compactDock);
         lv.setColumnHidden(2, compactDock);
         lv.setColumnHidden(3, verticalMode);
         lv.setColumnHidden(4, compactDock);
@@ -27938,19 +28584,22 @@ void ApplicationWindow::updateExplorerAdaptiveLayout()
             if (compactDock) {
                 hdr->setStretchLastSection(false);
                 hdr->setSectionResizeMode(0, QHeaderView::Stretch);
-                hdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
             } else {
                 hdr->setSectionResizeMode(0, QHeaderView::Interactive);
-                hdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+                hdr->setSectionResizeMode(1, QHeaderView::Interactive);
                 hdr->setSectionResizeMode(2, QHeaderView::ResizeToContents);
                 hdr->setStretchLastSection(true);
             }
         }
-        if (verticalMode && !compactDock) {
+        if (!compactDock) {
             lv.resizeColumnToContents(1);
-            lv.resizeColumnToContents(2);
-            if (lv.columnWidth(0) < 110)
-                lv.setColumnWidth(0, 140);
+            if (lv.columnWidth(1) > 130)
+                lv.setColumnWidth(1, 130);
+            if (verticalMode) {
+                lv.resizeColumnToContents(2);
+                if (lv.columnWidth(0) < 110)
+                    lv.setColumnWidth(0, 140);
+            }
         }
     }
 }
@@ -28506,8 +29155,11 @@ Graph *activeGraphForAnalysis(ApplicationWindow *app, QMdiArea &workspace, QActi
                               bool requireCurves = true)
 {
     QWidget *w = workspace.activeSubWindow();
-    if (!w || !w->inherits("MultiLayer"))
+    if (!w || !w->inherits("MultiLayer")) {
+        if (app && !ApplicationWindow::isNonInteractiveContext(app))
+            app->showUxHint(ApplicationWindow::tr("Click or activate a 2D graph window first."));
         return nullptr;
+    }
 
     MultiLayer *plot = static_cast<MultiLayer *>(w);
     if (plot->isEmpty()) {
@@ -28536,8 +29188,13 @@ Graph *activeGraphForAnalysis(ApplicationWindow *app, QMdiArea &workspace, QActi
         return nullptr;
     }
 
-    if (requireCurves && !g->validCurvesDataSize())
+    if (requireCurves && !g->validCurvesDataSize()) {
+        if (app && !ApplicationWindow::isNonInteractiveContext(app)) {
+            app->showUxHint(
+                    ApplicationWindow::tr("This graph has no plottable curve data yet."));
+        }
         return nullptr;
+    }
 
     return g;
 }
@@ -31388,7 +32045,12 @@ void ApplicationWindow::applyStylePresentationSlide()
 void ApplicationWindow::applyStylePresetById(const QString &presetId)
 {
     MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
-    if (!ml || presetId.trimmed().isEmpty())
+    if (!ml) {
+        if (!isNonInteractiveContext(this))
+            showUxHint(tr("Please select or activate a 2D graph window first to apply a style preset."));
+        return;
+    }
+    if (presetId.trimmed().isEmpty())
         return;
     if (!ml->applyStylePresetById(presetId))
         return;
@@ -32378,6 +33040,7 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
     QString redoText = tr("&Redo");
 
     MyWidget *aw = activeWindow();
+    const bool is3DOrNote = (qobject_cast<Graph3D *>(aw) != nullptr || qobject_cast<Note *>(aw) != nullptr);
     if (MultiLayer *ml = qobject_cast<MultiLayer *>(aw)) {
         if (QUndoStack *us = ml->undoStack()) {
             canU = us->canUndo();
@@ -32387,7 +33050,7 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
             if (canR && !us->redoText().trimmed().isEmpty())
                 redoText = tr("&Redo %1").arg(us->redoText().trimmed());
         }
-    } else if (d_project && d_project->undoStack()) {
+    } else if (!is3DOrNote && d_project && d_project->undoStack()) {
         QUndoStack *us = d_project->undoStack();
         canU = us->canUndo();
         canR = us->canRedo();
@@ -32408,7 +33071,9 @@ void ApplicationWindow::updateUndoRedoActionsForActiveWindow()
     }
     const QString scopeTip = qobject_cast<MultiLayer *>(aw)
             ? tr("Undo history of this graph window (each graph has its own).")
-            : tr("Undo history of the worksheets (shared by all tables and matrices).");
+            : (qobject_cast<Graph3D *>(aw)
+                       ? tr("3D graphs do not record Undo/Redo history.")
+                       : tr("Undo history of the worksheets (shared by all tables and matrices)."));
     actionUndo->setToolTip(cleanMenuTextForTip(undoText) + QStringLiteral(" (Ctrl+Z)\n") + scopeTip);
     actionRedo->setToolTip(cleanMenuTextForTip(redoText) + QStringLiteral(" (Ctrl+Y)\n") + scopeTip);
 
@@ -32428,11 +33093,7 @@ void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *
     if (!ml)
         return;
 
-    const QWidgetList layerPtrs = ml->graphPtrs();
-    if (lastCopiedLayer && layerPtrs.contains(lastCopiedLayer)) {
-        lastCopiedLayer = nullptr;
-        copiedLayer = false;
-    }
+    clearLastCopiedLayerIfReferencing(ml);
 
     if (d_active_peak_analyzer_dlg && d_active_peak_analyzer_dlg.data() != excludeDlg) {
         const QVariant peakTargetVar = d_active_peak_analyzer_dlg->property("targetMultiLayerPtr");
@@ -33122,6 +33783,7 @@ void ApplicationWindow::plotPolarData()
                              tr("No valid finite (theta, r) numeric pairs were found."));
         return;
     }
+    ToriUx::dismissPlotThisDataBar(t);
     if (!ag->hasLegend())
         ag->newLegend();
     ag->placeLegendAnchor(Graph::LegendTopRight);

@@ -94,9 +94,9 @@ Source: "{#StageDir}\manual\index.html"; DestDir: "{app}\manual"; Flags: ignorev
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{cm:MenuRepairOle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuRepairOle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\register-ole.ps1"" -Mode Install -ExePath ""{app}\{#MyAppExeName}"" -PauseOnError"; WorkingDir: "{app}"
 Name: "{group}\{cm:MenuQuickGuide}"; Filename: "{app}\manual\index.html"
-Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"""; WorkingDir: "{app}"
+Name: "{group}\{cm:MenuInstallPySdk}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ & \""{app}\scripts\install-python-sdk.ps1\"" -SdkDir \""{app}\python\""; if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ throw 'Exit code ' + $LASTEXITCODE }} }} catch {{ Write-Host $_ -ForegroundColor Red; [void](Read-Host 'Press Enter to close') }}"""; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -142,7 +142,7 @@ Root: HKA; Subkey: "Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE";
 Root: HKA; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "TORIGRAPH_EXE"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue; Tasks: addtopath; Check: IsAdminInstallMode
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"" -Silent"; StatusMsg: "{cm:StatusInstallPython}"; Flags: runhidden waituntilterminated; Tasks: installpython
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\scripts\install-python-sdk.ps1"" -SdkDir ""{app}\python"" -Silent"; StatusMsg: "{cm:StatusInstallPython}"; Flags: runhidden waituntilterminated runasoriginaluser; Tasks: installpython
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchAfterInstall}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
@@ -202,7 +202,7 @@ begin
     Result := C;
 end;
 
-procedure CleanupStaleHkcuProgId(ProgIdName: string);
+procedure CleanupStaleHkcuProgId(ProgIdName: string; ExpectedExe: string);
 var
   ProgKey, CmdVal, ExePath: string;
 begin
@@ -212,11 +212,13 @@ begin
   ExePath := '';
   if RegQueryStringValue(HKEY_CURRENT_USER, ProgKey + '\shell\open\command', '', CmdVal) then
     ExePath := ExtractExeFromCommand(CmdVal);
-  if (ExePath <> '') and (not FileExists(ExePath)) then
+  if (ExePath <> '') and
+     ((not FileExists(ExePath)) or
+      ((ExpectedExe <> '') and (CompareText(ExePath, ExpectedExe) <> 0))) then
     RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, ProgKey);
 end;
 
-procedure CleanupStaleHkcuOleRegistration();
+procedure CleanupStaleHkcuOleRegistration(ExpectedOleExe: string; ExpectedProjExe: string);
 var
   ClsidKey, LocalServerKey, ValStr, ExePath, AssocVal: string;
   ClsidRemoved: Boolean;
@@ -231,16 +233,17 @@ begin
       ExePath := ExtractExeFromCommand(ValStr);
     if (ExePath = '') and RegQueryStringValue(HKEY_CURRENT_USER, LocalServerKey, '', ValStr) then
       ExePath := ExtractExeFromCommand(ValStr);
-    if (ExePath = '') or (not FileExists(ExePath)) then
+    if (ExePath = '') or (not FileExists(ExePath)) or
+       ((ExpectedOleExe <> '') and (CompareText(ExePath, ExpectedOleExe) <> 0)) then
     begin
       RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER, ClsidKey);
       ClsidRemoved := True;
     end;
   end;
 
-  CleanupStaleHkcuProgId(OleProgId);
-  CleanupStaleHkcuProgId(LegacyProgId);
-  CleanupStaleHkcuProgId(ProjectProgId);
+  CleanupStaleHkcuProgId(OleProgId, ExpectedOleExe);
+  CleanupStaleHkcuProgId(LegacyProgId, ExpectedOleExe);
+  CleanupStaleHkcuProgId(ProjectProgId, ExpectedProjExe);
 
   if ClsidRemoved then
   begin
@@ -337,7 +340,13 @@ begin
     RemoveDirFromPathAt(HKEY_CURRENT_USER, EnvSubKey, DirPath);
 end;
 
-procedure CleanupOriginalUserStaleHkcuOle();
+function EscapePsSingle(S: string): string;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
+end;
+
+procedure CleanupOriginalUserStaleHkcuOle(ExpectedOleExe: string; ExpectedProjExe: string);
 var
   PsExe, PsCmd, Params: string;
   ResultCode: Integer;
@@ -351,12 +360,19 @@ begin
   PsCmd :=
     '$ErrorActionPreference = ''SilentlyContinue''; ' +
     '$clsid = ''HKCU:\Software\Classes\CLSID\' + OleClsid + '''; ' +
+    '$expOle = ''' + EscapePsSingle(ExpectedOleExe) + '''; ' +
+    '$expProj = ''' + EscapePsSingle(ExpectedProjExe) + '''; ' +
     'function Get-CmdExe($s) { ' +
     '  $t = if ($null -ne $s) { ('''' + $s) -replace ''^\s+|\s+$'', '''' } else { '''' }; ' +
     '  if (-not $t) { return '''' }; ' +
     '  if ($t -match ''^\x22([^\x22]*)'') { return ($Matches[1] -replace ''^\s+|\s+$'', '''') }; ' +
     '  if ($t -match ''^(.+?\.exe)\b'') { return ($Matches[1] -replace ''^\s+|\s+$'', '''') }; ' +
     '  return (($t -split ''\s+'')[0] -replace ''^\s+|\s+$'', ''''); ' +
+    '}; ' +
+    'function Test-ExeDiffers($a, $b) { ' +
+    '  if (-not $b) { return $false }; ' +
+    '  try { return ([System.IO.Path]::GetFullPath($a) -ine [System.IO.Path]::GetFullPath($b)) } ' +
+    '  catch { return ($a -ine $b) } ' +
     '}; ' +
     '$removed = $false; ' +
     'if (Test-Path -LiteralPath $clsid) { ' +
@@ -365,15 +381,16 @@ begin
     '    $exe = Get-CmdExe (Get-ItemProperty -LiteralPath $ls -Name ''ServerExecutable'' -ErrorAction SilentlyContinue).ServerExecutable; ' +
     '    if (-not $exe) { $exe = Get-CmdExe (Get-ItemProperty -LiteralPath $ls -Name ''(default)'' -ErrorAction SilentlyContinue).''(default)'' } ' +
     '  }; ' +
-    '  if ((-not $exe) -or (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue))) { Remove-Item -LiteralPath $clsid -Recurse -Force -ErrorAction SilentlyContinue; $removed = $true } ' +
+    '  if ((-not $exe) -or (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) -or (Test-ExeDiffers $exe $expOle)) { Remove-Item -LiteralPath $clsid -Recurse -Force -ErrorAction SilentlyContinue; $removed = $true } ' +
     '}; ' +
     'foreach ($p in @(''' + OleProgId + ''', ''' + LegacyProgId + ''', ''' + ProjectProgId + ''')) { ' +
     '  $pk = ''HKCU:\Software\Classes\'' + $p; ' +
+    '  $expTarget = if ($p -eq ''' + ProjectProgId + ''') { $expProj } else { $expOle }; ' +
     '  if (Test-Path -LiteralPath $pk) { ' +
     '    $ck = Join-Path $pk ''shell\open\command''; ' +
     '    if (Test-Path -LiteralPath $ck) { ' +
     '      $ce = Get-CmdExe (Get-ItemProperty -LiteralPath $ck -Name ''(default)'' -ErrorAction SilentlyContinue).''(default)''; ' +
-    '      if ($ce -and (-not (Test-Path -LiteralPath $ce -PathType Leaf -ErrorAction SilentlyContinue))) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } ' +
+    '      if ($ce -and ((-not (Test-Path -LiteralPath $ce -PathType Leaf -ErrorAction SilentlyContinue)) -or (Test-ExeDiffers $ce $expTarget))) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } ' +
     '    } ' +
     '    elseif ($removed -and ($p -ne ''' + ProjectProgId + ''')) { Remove-Item -LiteralPath $pk -Recurse -Force -ErrorAction SilentlyContinue } ' +
     '  } ' +
@@ -400,13 +417,24 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  InstalledExe, CleanOleExe, CleanProjExe: string;
 begin
   if CurStep = ssPostInstall then
   begin
     if IsAdminInstallMode then
     begin
-      CleanupStaleHkcuOleRegistration();
-      CleanupOriginalUserStaleHkcuOle();
+      InstalledExe := ExpandConstant('{app}\{#MyAppExeName}');
+      if WizardIsTaskSelected('registerole') then
+        CleanOleExe := InstalledExe
+      else
+        CleanOleExe := '';
+      if WizardIsTaskSelected('assocsciprj') then
+        CleanProjExe := InstalledExe
+      else
+        CleanProjExe := '';
+      CleanupStaleHkcuOleRegistration(CleanOleExe, CleanProjExe);
+      CleanupOriginalUserStaleHkcuOle(CleanOleExe, CleanProjExe);
     end;
     if WizardIsTaskSelected('addtopath') then
       AddDirToPath(ExpandConstant('{app}'));
@@ -418,6 +446,6 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     RemoveDirFromPath(ExpandConstant('{app}'));
-    CleanupStaleHkcuOleRegistration();
+    CleanupStaleHkcuOleRegistration('', '');
   end;
 end;

@@ -1090,6 +1090,48 @@ public:
         return !m_editor.isNull() || (m_site != nullptr && !m_stopped);
     }
 
+    bool isContainerProcessDead() const
+    {
+        if (!m_site || m_stopped)
+            return false;
+        ComPtr<IOleContainer> container;
+        const HRESULT hr = m_site->GetContainer(&container);
+        if (hr == RPC_E_DISCONNECTED || hr == RPC_E_SERVER_DIED || hr == RPC_E_SERVER_DIED_DNE
+            || hr == RPC_E_SERVERFAULT || hr == RPC_E_INVALID_OBJREF
+            || hr == HRESULT_FROM_WIN32(RPC_S_SERVER_UNAVAILABLE)) {
+            return true;
+        }
+        return false;
+    }
+
+    void handleContainerAbnormalExit()
+    {
+        if (m_stopped)
+            return;
+        if (m_editor && m_editor->isVisible() && !m_editor->saved) {
+            if (!m_editor->property("_tg_ole_container_died_handled").toBool()) {
+                m_editor->setProperty("_tg_ole_container_died_handled", true);
+                m_editor->setOleEmbeddedMode(false);
+                if (!ApplicationWindow::isNonInteractiveContext(m_editor)) {
+                    QMessageBox::warning(
+                            m_editor,
+                            ApplicationWindow::tr("PowerPoint Connection Lost"),
+                            ApplicationWindow::tr(
+                                    "The PowerPoint container that hosted this embedded graph "
+                                    "closed unexpectedly.\n\n"
+                                    "This window has been switched to standalone mode so you can "
+                                    "save your changes with File -> Save Project As..."));
+                }
+            }
+            return;
+        }
+        if (m_editor) {
+            m_editor->savedProject();
+            m_editor->close();
+        }
+        finishClose();
+    }
+
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override
     {
         if (!out)
@@ -2365,7 +2407,9 @@ bool initializeOleServer(bool embeddedMode)
     }
 
     if (embeddedMode && qApp) {
-        // Exit zombie -Embedding server processes if no object creation or lock occurs within 30s
+        // Exit zombie -Embedding server processes if no object creation/lock occurs within 30s,
+        // and monitor for abnormal container termination (e.g. PowerPoint crash) so orphaned
+        // -Embedding processes do not linger forever without leaking unsaved editor edits.
         QTimer::singleShot(30000, qApp, []() {
             if (!g_embeddedServerMode || g_everHadServerActivity)
                 return;
@@ -2375,6 +2419,27 @@ bool initializeOleServer(bool embeddedMode)
             }
             QCoreApplication::quit();
         });
+        auto *watchdog = new QTimer(qApp);
+        watchdog->setInterval(15000);
+        QObject::connect(watchdog, &QTimer::timeout, qApp, []() {
+            if (!g_embeddedServerMode || ApplicationWindow::isNonInteractiveContext(nullptr))
+                return;
+            const auto snapshot = g_liveGraphObjects;
+            for (SciDAVisGraphObject *obj : snapshot) {
+                if (obj && obj->isContainerProcessDead())
+                    obj->handleContainerAbnormalExit();
+            }
+            if (!g_everHadServerActivity || !g_liveGraphObjects.isEmpty()
+                || hasVisibleNormalAppWindow()) {
+                return;
+            }
+            for (QWidget *tlw : QApplication::topLevelWidgets()) {
+                if (tlw && tlw->isVisible())
+                    return;
+            }
+            QCoreApplication::quit();
+        });
+        watchdog->start();
     }
     return true;
 }

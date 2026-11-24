@@ -510,8 +510,9 @@ Placement placeInCell(const SlideItem &item, qint64 cl, qint64 ct, qint64 cw, qi
     const qint64 natW = (item.widthHm > 0 ? item.widthHm : 8500) * kEmuPerHimetric;
     const qint64 natH = (item.heightHm > 0 ? item.heightHm : 8500) * kEmuPerHimetric;
     double w = 0.0, h = 0.0;
-    if (opt.scalePercent > 0.0) {
-        const double s = opt.scalePercent / 100.0;
+    const double itemScale = (item.scalePercent >= 0.0) ? item.scalePercent : opt.scalePercent;
+    if (itemScale > 0.0) {
+        const double s = itemScale / 100.0;
         w = double(natW) * s;
         h = double(natH) * s;
         if (opt.shrinkToFit && (w > double(cw) + 0.5 || h > double(ch) + 0.5)) {
@@ -535,6 +536,7 @@ Placement placeInCell(const SlideItem &item, qint64 cl, qint64 ct, qint64 cw, qi
     p.height = std::max<qint64>(1, std::llround(h));
     p.left = cl + std::max<qint64>(0, (cw - p.width) / 2);
     p.top = ct + std::max<qint64>(0, (ch - p.height) / 2);
+    p.requestedPercent = itemScale;
     p.effectivePercent = 100.0 * double(p.width) / double(natW);
     return p;
 }
@@ -1140,6 +1142,10 @@ void registerTranslations()
         "開きません。ヘルプの「PowerPoint 連携を修復」を使ってください。");
     reg("Open", "開く");
     reg("Close", "閉じる");
+    reg("Use each graph's own preset scale (mixed presets)",
+        "グラフごとのプリセット倍率を維持する (異なる体裁が混在)");
+    reg("Cannot write to %1.\nClose the file in PowerPoint or check folder permissions and try again.",
+        "%1 に書き込めません。\nPowerPoint で開いている場合は閉じて、フォルダの書き込み権限を確認してからやり直してください。");
     reg("Could not send the graphs to PowerPoint.", "PowerPoint へ送れませんでした。");
     reg("Whole-project data (%1 MB) exceeded the 128 MB PowerPoint limit, so only this graph and "
         "its source data (%2 MB) were embedded.",
@@ -1517,6 +1523,11 @@ DeckResult exportGraphs(ApplicationWindow *app, const QList<MyWidget *> &windows
         SlideItem it;
         QString err;
         if (buildSlideItem(app, w, &it, &err)) {
+            if (opt.perGraphPresetScale && it.scalePercent < 0.0 && w && w->inherits("MultiLayer")) {
+                const QString pid = w->property("toriAppliedStylePreset").toString().trimmed();
+                if (!pid.isEmpty())
+                    it.scalePercent = presetPastePercent(pid);
+            }
             items.append(it);
             if (!err.isEmpty())
                 warnings << QStringLiteral("%1: %2").arg(w->name(), err);
@@ -1586,9 +1597,27 @@ QString defaultDeckPath(ApplicationWindow *app)
             return lastPath;
 
         const QFileInfo pfi(app->projectname);
-        const QString base = pfi.completeBaseName().isEmpty()
-                ? QStringLiteral("ToriGraph_graphs")
-                : pfi.completeBaseName();
+        QString base = pfi.fileName();
+        static const char *const kDeckProjSuffixes[] = {
+            ".sciprj.gz~", ".sciprj.gz", ".sciprj~", ".sciprj",
+            ".qti.gz~",    ".qti.gz",    ".qti~",    ".qti",
+            ".tgprj.gz~",  ".tgprj.gz",  ".tgprj~",  ".tgprj",
+            ".opju",       ".opj",       ".ogm",     ".ogw",
+            ".ogg",        ".org"
+        };
+        bool strippedDeckSuffix = false;
+        for (const char *sfx : kDeckProjSuffixes) {
+            const QString qsfx = QLatin1String(sfx);
+            if (base.length() > qsfx.length() && base.endsWith(qsfx, Qt::CaseInsensitive)) {
+                base.chop(qsfx.length());
+                strippedDeckSuffix = true;
+                break;
+            }
+        }
+        if (!strippedDeckSuffix)
+            base = pfi.completeBaseName();
+        if (base.isEmpty())
+            base = QStringLiteral("ToriGraph_graphs");
         const QString projDir = pfi.absolutePath();
         if (!projDir.isEmpty() && QFileInfo(projDir).isDir())
             return QDir(projDir).filePath(base + QStringLiteral(".pptx"));
@@ -1861,9 +1890,13 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         }
         return targets;
     };
-    auto computeTargetPastePct = [collectPreviewTargets, labPct](bool applyLabFirst) -> double {
+    struct TargetScaleInfo {
+        double scalePct = 100.0;
+        bool mixedPresets = false;
+    };
+    auto computeTargetScaleInfo = [collectPreviewTargets, labPct](bool applyLabFirst) -> TargetScaleInfo {
         if (applyLabFirst)
-            return labPct;
+            return { labPct, false };
         const QList<MyWidget *> targets = collectPreviewTargets();
         bool anyMl = false;
         bool allSamePreset = true;
@@ -1880,10 +1913,11 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
             }
         }
         if (anyMl && allSamePreset && !commonPreset.isEmpty())
-            return presetPastePercent(commonPreset);
-        return 100.0;
+            return { presetPastePercent(commonPreset), false };
+        return { 100.0, anyMl && !allSamePreset };
     };
 
+    const TargetScaleInfo initScaleInfo = computeTargetScaleInfo(false);
     auto *gbScale = new QGroupBox(T("Size on the slide"), dlg);
     auto *vs = new QVBoxLayout(gbScale);
     auto *hs = new QHBoxLayout();
@@ -1895,7 +1929,7 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     spin->setDecimals(0);
     spin->setSingleStep(10.0);
     spin->setSuffix(QStringLiteral(" %"));
-    spin->setValue(computeTargetPastePct(false));
+    spin->setValue(initScaleInfo.scalePct);
     QObject::connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), dlg, [spin]() {
         spin->setProperty("_tg_user_edited_scale", true);
     });
@@ -1903,12 +1937,27 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
     hs->addWidget(spin);
     hs->addStretch(1);
     vs->addLayout(hs);
+    auto *chkPerGraphScale =
+            new QCheckBox(T("Use each graph's own preset scale (mixed presets)"), gbScale);
+    chkPerGraphScale->setObjectName(QStringLiteral("pptxPerGraphPresetScale"));
+    chkPerGraphScale->setChecked(initScaleInfo.mixedPresets);
+    chkPerGraphScale->setVisible(initScaleInfo.mixedPresets);
+    vs->addWidget(chkPerGraphScale);
     auto *rbFit = new QRadioButton(T("Fit the graphs to the slide"), gbScale);
     rbFit->setObjectName(QStringLiteral("pptxScaleFit"));
     vs->addWidget(rbFit);
     (st.value(QLatin1String(kKeyFit), false).toBool() ? rbFit : rbScale)->setChecked(true);
-    spin->setEnabled(rbScale->isChecked());
-    QObject::connect(rbScale, &QRadioButton::toggled, spin, &QWidget::setEnabled);
+    auto updateScaleControlsEnabled = [rbScale, spin, chkPerGraphScale]() {
+        const bool fixedOn = rbScale->isChecked();
+        const bool mixedOn = chkPerGraphScale->isVisible() && chkPerGraphScale->isChecked();
+        spin->setEnabled(fixedOn && !mixedOn);
+        chkPerGraphScale->setEnabled(fixedOn);
+    };
+    updateScaleControlsEnabled();
+    QObject::connect(rbScale, &QRadioButton::toggled, dlg,
+                     [updateScaleControlsEnabled](bool) { updateScaleControlsEnabled(); });
+    QObject::connect(chkPerGraphScale, &QCheckBox::toggled, dlg,
+                     [updateScaleControlsEnabled](bool) { updateScaleControlsEnabled(); });
     auto *chkShrink = new QCheckBox(T("Shrink graphs that do not fit"), gbScale);
     chkShrink->setObjectName(QStringLiteral("pptxShrinkToFit"));
     chkShrink->setChecked(st.value(QLatin1String(kKeyShrink), true).toBool());
@@ -1942,14 +1991,24 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
                            " border-radius: 4px; padding: 6px;"));
     lblShrinkWarn->setVisible(false);
     vs->addWidget(lblShrinkWarn);
-    auto syncScaleFromTarget = [spin, chkPreset, computeTargetPastePct](bool forceOverride) {
-        if (!forceOverride && spin->property("_tg_user_edited_scale").toBool())
-            return;
+    auto syncScaleFromTarget = [spin, chkPreset, chkPerGraphScale, computeTargetScaleInfo,
+                                updateScaleControlsEnabled](bool forceOverride) {
         const bool applyLab = chkPreset && chkPreset->isChecked();
-        const QSignalBlocker sb(spin);
-        spin->setValue(computeTargetPastePct(applyLab));
+        const TargetScaleInfo info = computeTargetScaleInfo(applyLab);
+        chkPerGraphScale->setVisible(info.mixedPresets);
+        if (!forceOverride && spin->property("_tg_user_edited_scale").toBool()) {
+            updateScaleControlsEnabled();
+            return;
+        }
+        {
+            const QSignalBlocker sbSpin(spin);
+            const QSignalBlocker sbMix(chkPerGraphScale);
+            spin->setValue(info.scalePct);
+            chkPerGraphScale->setChecked(info.mixedPresets);
+        }
         if (forceOverride)
             spin->setProperty("_tg_user_edited_scale", false);
+        updateScaleControlsEnabled();
     };
     if (chkPreset) {
         QObject::connect(chkPreset, &QCheckBox::toggled, dlg,
@@ -1994,9 +2053,9 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
             edPath->setText(QDir::toNativeSeparators(f));
     });
 
-    auto updateLayoutPreview = [cbPer, cbSize, rbScale, spin, chkShrink, chkPreset, edPath,
-                                lblExistingSizeNote, lblShrinkWarn, collectPreviewTargets, haveLab,
-                                lab, labPct]() {
+    auto updateLayoutPreview = [cbPer, cbSize, rbScale, spin, chkShrink, chkPreset,
+                                chkPerGraphScale, edPath, lblExistingSizeNote, lblShrinkWarn,
+                                collectPreviewTargets, haveLab, lab, labPct]() {
         QString candPath = QDir::fromNativeSeparators(edPath->text().trimmed());
         if (!candPath.isEmpty() && !candPath.endsWith(QLatin1String(".pptx"), Qt::CaseInsensitive))
             candPath += QStringLiteral(".pptx");
@@ -2014,10 +2073,13 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
         qint64 cl = 0, ct = 0, cw = 0, ch = 0;
         gridCell(slideW, slideH, perSlide, 0, &cl, &ct, &cw, &ch);
 
-        const double scalePct = spin->value();
+        const double fallbackScalePct = spin->value();
         const bool applyLab = chkPreset && chkPreset->isChecked();
+        const bool perGraph = !applyLab && chkPerGraphScale->isVisible()
+                && chkPerGraphScale->isChecked();
         const QList<MyWidget *> targets = collectPreviewTargets();
-        double minEffPct = scalePct;
+        double minEffPct = fallbackScalePct;
+        double maxScaleRequested = fallbackScalePct;
         double maxReqWcm = 0.0, maxReqHcm = 0.0;
         bool anyExceeds = false;
         bool anyUsesLab = false;
@@ -2025,14 +2087,21 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
             double wMm = 85.0, hMm = 85.0;
             bool usesLab = false;
             graphPageSizeMmForPreview(w, applyLab, haveLab ? &lab : nullptr, &wMm, &hMm, &usesLab);
-            const double reqW = wMm * 100.0 * double(kEmuPerHimetric) * (scalePct / 100.0);
-            const double reqH = hMm * 100.0 * double(kEmuPerHimetric) * (scalePct / 100.0);
+            double graphScalePct = fallbackScalePct;
+            if (perGraph && w && w->inherits("MultiLayer")) {
+                const QString pid = w->property("toriAppliedStylePreset").toString().trimmed();
+                if (!pid.isEmpty())
+                    graphScalePct = presetPastePercent(pid);
+            }
+            const double reqW = wMm * 100.0 * double(kEmuPerHimetric) * (graphScalePct / 100.0);
+            const double reqH = hMm * 100.0 * double(kEmuPerHimetric) * (graphScalePct / 100.0);
             if (reqW > double(cw) + 0.5 || reqH > double(ch) + 0.5) {
                 anyExceeds = true;
                 if (usesLab)
                     anyUsesLab = true;
                 const double f = std::min(double(cw) / reqW, double(ch) / reqH);
-                minEffPct = std::min(minEffPct, scalePct * f);
+                minEffPct = std::min(minEffPct, graphScalePct * f);
+                maxScaleRequested = std::max(maxScaleRequested, graphScalePct);
                 maxReqWcm = std::max(maxReqWcm, reqW / double(kEmuPerCm));
                 maxReqHcm = std::max(maxReqHcm, reqH / double(kEmuPerCm));
             }
@@ -2051,25 +2120,29 @@ QDialog *createSendDialog(ApplicationWindow *app, QWidget *parent)
                         T("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to "
                           "~%5 % (~%6 pt tick labels instead of %7 pt).")
                                 .arg(perSlide)
-                                .arg(cellWStr, cellHStr, fmtNumber(scalePct), fmtNumber(minEffPct),
-                                     fmtNumber(effPt), fmtNumber(nomPt)));
+                                .arg(cellWStr, cellHStr, fmtNumber(maxScaleRequested),
+                                     fmtNumber(minEffPct), fmtNumber(effPt), fmtNumber(nomPt)));
             } else {
                 lblShrinkWarn->setText(
                         T("Layout preview: %1-up cell is %2 x %3 cm, so %4 % will auto-shrink to "
                           "~%5 % to fit.")
                                 .arg(perSlide)
-                                .arg(cellWStr, cellHStr, fmtNumber(scalePct), fmtNumber(minEffPct)));
+                                .arg(cellWStr, cellHStr, fmtNumber(maxScaleRequested),
+                                     fmtNumber(minEffPct)));
             }
         } else {
             lblShrinkWarn->setText(
                     T("Layout preview: at %1 %, the graph (%2 x %3 cm) exceeds the %4-up cell "
                       "(%5 x %6 cm) and may overlap or clip.")
-                            .arg(fmtNumber(scalePct), fmtNumber(maxReqWcm), fmtNumber(maxReqHcm))
+                            .arg(fmtNumber(maxScaleRequested), fmtNumber(maxReqWcm),
+                                 fmtNumber(maxReqHcm))
                             .arg(perSlide)
                             .arg(cellWStr, cellHStr));
         }
         lblShrinkWarn->setVisible(true);
     };
+    QObject::connect(chkPerGraphScale, &QCheckBox::toggled, dlg,
+                     [updateLayoutPreview](bool) { updateLayoutPreview(); });
     QObject::connect(cbPer, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
                      [updateLayoutPreview](int) { updateLayoutPreview(); });
     QObject::connect(cbSize, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
@@ -2169,12 +2242,15 @@ bool readSendDialog(QDialog *dialog, ApplicationWindow *app, QList<MyWidget *> *
         o.widescreen = cb->currentData().toBool();
     auto *rbFit = dialog->findChild<QRadioButton *>(QStringLiteral("pptxScaleFit"));
     auto *spin = dialog->findChild<QDoubleSpinBox *>(QStringLiteral("pptxScalePercent"));
+    auto *chkPerGraph = dialog->findChild<QCheckBox *>(QStringLiteral("pptxPerGraphPresetScale"));
     o.scalePercent = (rbFit && rbFit->isChecked()) ? 0.0 : (spin ? spin->value() : 100.0);
     if (auto *chk = dialog->findChild<QCheckBox *>(QStringLiteral("pptxShrinkToFit")))
         o.shrinkToFit = chk->isChecked();
     bool preset = false;
     if (auto *chk = dialog->findChild<QCheckBox *>(QStringLiteral("pptxApplyPreset")))
         preset = chk->isChecked();
+    o.perGraphPresetScale = !preset && !(rbFit && rbFit->isChecked()) && chkPerGraph
+            && chkPerGraph->isVisible() && chkPerGraph->isChecked();
 
     QString p;
     if (auto *ed = dialog->findChild<QLineEdit *>(QStringLiteral("pptxPath")))
@@ -2246,6 +2322,14 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
             opt.appendToExisting = false;
         else
             return;
+    }
+
+    if (!ApplicationWindow::probeExportWritableNoTruncate(path)) {
+        QMessageBox::warning(app, title,
+                             T("Cannot write to %1.\nClose the file in PowerPoint or check folder "
+                               "permissions and try again.")
+                                     .arg(QDir::toNativeSeparators(path)));
+        return;
     }
 
     QList<MyWidget *> windows;
@@ -2389,10 +2473,12 @@ void sendGraphsToPowerPoint(ApplicationWindow *app)
         lines << T("Size on the slide: %1 % of the graph page.")
                          .arg(fmtNumber(res.placements.first().effectivePercent));
     for (const Placement &pl : res.placements) {
-        if (pl.shrunk)
+        if (pl.shrunk) {
+            const double reqPct = (pl.requestedPercent > 0.0) ? pl.requestedPercent : opt.scalePercent;
             lines << T("%1 did not fit at %2 % and was shrunk to %3 %.")
-                             .arg(pl.graphName, fmtNumber(opt.scalePercent),
+                             .arg(pl.graphName, fmtNumber(reqPct),
                                   fmtNumber(pl.effectivePercent));
+        }
     }
     lines << T("Double-click a graph on the slide to edit it in ToriGraph.");
 #ifdef Q_OS_WIN
