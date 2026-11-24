@@ -23,6 +23,7 @@
 #include "ModernRibbonAndHud.h"
 #include "MultiLayer.h"
 #include "Plot.h"
+#include "PlotCurve.h"
 #include "PlotToolInterface.h"
 #include "Table.h"
 #include "IconLoader.h"
@@ -122,8 +123,8 @@ void registerUxTranslations()
             "Excel で範囲をコピーしてワークシートに Ctrl+V で貼り付けるか、Excel (.xlsx) / CSV ファイルをウィンドウにドロップしてから、もう一度作図ボタンを押してください。");
         reg("No numeric data in Y column of \"%1\".",
             "「%1」の Y 列に数値データがありません。");
-        reg("Enter numeric values in column B(Y), or paste both X and Y columns from Excel (Ctrl+V).",
-            "B(Y) 列に数値を入力するか、Excel から X と Y の 2 列を貼り付けてください (Ctrl+V)。");
+        reg("Enter numeric values in a Y column (e.g. %1), or paste both X and Y columns from Excel (Ctrl+V).",
+            "Y 列（例: %1）に数値を入力するか、Excel から X と Y の 2 列を貼り付けてください (Ctrl+V)。");
         reg("Graph export works on a graph window. Click the graph you want to export first.",
             "画像のエクスポートはグラフのウィンドウが対象です。先にエクスポートしたいグラフをクリックしてください。");
         reg("Copying for PowerPoint works on a graph window. Click the graph you want to copy first.",
@@ -271,23 +272,64 @@ void registerUxTranslations()
     });
 }
 
-QString quickGuideFilePath()
+QString quickGuideFilePath(const QString &language)
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        appDir + QStringLiteral("/manual/index.html"),
-        // development builds: <repo>/build/scidavis/ToriGraph.exe -> <repo>/manual
-        appDir + QStringLiteral("/../../manual/index.html"),
-        appDir + QStringLiteral("/../manual/index.html"),
-        appDir + QStringLiteral("/../share/doc/torigraph/manual/index.html"),
-    };
-    for (const QString &c : candidates) {
-        const QFileInfo fi(c);
-        // The old placeholder was a 3-byte file; treat anything that small as "not installed".
-        if (fi.isFile() && fi.size() > 256)
-            return QDir::cleanPath(fi.absoluteFilePath());
+    QString lang = language.trimmed();
+    if (lang.isEmpty()) {
+        if (const ApplicationWindow *activeApp = qobject_cast<ApplicationWindow *>(
+                    QApplication::activeWindow())) {
+            lang = activeApp->appLanguage;
+        }
+        if (lang.isEmpty()) {
+            const QWidgetList tops = QApplication::topLevelWidgets();
+            for (QWidget *w : tops) {
+                if (const ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(w)) {
+                    lang = aw->appLanguage;
+                    break;
+                }
+            }
+        }
     }
-    return QString();
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList relDirs = {
+        appDir + QStringLiteral("/manual"),
+        // development builds: <repo>/build/scidavis/ToriGraph.exe -> <repo>/manual
+        appDir + QStringLiteral("/../../manual"),
+        appDir + QStringLiteral("/../manual"),
+        appDir + QStringLiteral("/../share/doc/torigraph/manual"),
+    };
+
+    auto probeManual = [&relDirs](const QString &fileName) -> QString {
+        for (const QString &dir : relDirs) {
+            const QFileInfo fi(dir + QLatin1Char('/') + fileName);
+            // The old placeholder was a 3-byte file; treat anything that small as "not installed".
+            if (fi.isFile() && fi.size() > 256)
+                return QDir::cleanPath(fi.absoluteFilePath());
+        }
+        return QString();
+    };
+
+    if (lang.startsWith(QLatin1String("en"), Qt::CaseInsensitive)) {
+        const QString enGuide = probeManual(QStringLiteral("index.en.html"));
+        if (!enGuide.isEmpty())
+            return enGuide;
+    }
+    return probeManual(QStringLiteral("index.html"));
+}
+
+void dismissPlotThisDataBar(Table *table)
+{
+    if (!table)
+        return;
+    const QList<QFrame *> bars = table->findChildren<QFrame *>(QStringLiteral("ToriPlotThisDataBar"));
+    for (QFrame *bar : bars) {
+        if (!bar)
+            continue;
+        bar->setObjectName(QString());
+        bar->hide();
+        bar->deleteLater();
+    }
 }
 
 namespace {
@@ -1130,7 +1172,7 @@ private:
 
 QUrl ApplicationWindow::quickGuideUrl() const
 {
-    const QString local = ToriUx::quickGuideFilePath();
+    const QString local = ToriUx::quickGuideFilePath(appLanguage);
     if (!local.isEmpty())
         return QUrl::fromLocalFile(local);
     if (!helpFilePath.isEmpty()) {
@@ -1277,10 +1319,21 @@ QString ApplicationWindow::plotBlockerForTable(Table *table, int curveType) cons
                      "again.");
     }
     if (!tableHasPlottableYData(table, curveType)) {
+        QString yHint = QStringLiteral("2[Y]");
+        for (int c = 0; c < table->columnCount(); ++c) {
+            if (table->colPlotDesignation(c) == SciDAVis::Y) {
+                const Column *yc = table->column(c);
+                const QString colShort = yc ? yc->name().trimmed() : QString();
+                if (!colShort.isEmpty())
+                    yHint = colShort + QStringLiteral("[Y]");
+                break;
+            }
+        }
         return tr("No numeric data in Y column of \"%1\".").arg(table->name())
                 + QStringLiteral("<p>")
-                + tr("Enter numeric values in column B(Y), or paste both X and Y columns from "
-                     "Excel (Ctrl+V).");
+                + tr("Enter numeric values in a Y column (e.g. %1), or paste both X and Y "
+                     "columns from Excel (Ctrl+V).")
+                          .arg(yHint);
     }
     return QString();
 }
@@ -1328,7 +1381,10 @@ MultiLayer *ApplicationWindow::plotColumnsFromTable(Table *table, int type)
         }
         break;
     }
-    return multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
+    MultiLayer *created = multilayerPlot(table, cols, (Graph::CurveType)type, startRow, endRow);
+    if (created)
+        ToriUx::dismissPlotThisDataBar(table);
+    return created;
 }
 
 void ApplicationWindow::showUxHint(const QString &text, int timeoutMs)
@@ -1523,10 +1579,36 @@ void ApplicationWindow::attachEmptyTableHint(Table *table)
     new EmptyTableHint(this, table, view);
 }
 
+static bool tableAlreadyHasMultiLayer(const ApplicationWindow *app, const Table *table)
+{
+    if (!app || !table)
+        return false;
+    const QList<MultiLayer *> mls = app->findChildren<MultiLayer *>();
+    for (MultiLayer *ml : mls) {
+        if (!ml)
+            continue;
+        for (Graph *g : ml->layersList()) {
+            if (!g)
+                continue;
+            for (int i = 0; i < g->curves(); ++i) {
+                if (const DataCurve *dc = dynamic_cast<const DataCurve *>(g->curve(i))) {
+                    if (dc->table() == table)
+                        return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void ApplicationWindow::offerPlotAfterImport(Table *table)
 {
     if (!table || d_headless_mode || m_batch || !tableHasPlottableYData(table))
         return;
+    if (tableAlreadyHasMultiLayer(this, table)) {
+        ToriUx::dismissPlotThisDataBar(table);
+        return;
+    }
     if (table->findChild<QFrame *>(QStringLiteral("ToriPlotThisDataBar")))
         return;
     QTableView *view = mainTableView(table);

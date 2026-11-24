@@ -49,6 +49,7 @@ class QLineEdit;
 class QListWidget;
 class QMdiSubWindow;
 class QMenu;
+class QPushButton;
 class QStackedWidget;
 class QTabBar;
 class QTableView;
@@ -156,6 +157,7 @@ signals:
     void closeDrawerRequested();
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void changeEvent(QEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
@@ -284,6 +286,8 @@ public:
     double splitLeftRatio() const { return d_split_left_ratio; }
     void setSplitLeftRatio(double ratio);
     bool isApplyingSplitGeometry() const { return d_applying_split_geometry; }
+    MyWidget *splitPlotTarget() const { return d_split_plot.data(); }
+    Table *resolvedWorksheetTarget() const;
 
     void setFocusHudMode(bool enabled);
     void toggleFocusHudMode() { setFocusHudMode(!d_focus_hud_mode); }
@@ -410,6 +414,9 @@ private:
     void importOpjInteractive();
     void invokeAppToggleLanguage();
     void applyWorksheetColumnRole(int roleCode);
+    void pasteFromClipboardSmart();
+    void updateEmptyWelcomeHub();
+    void retranslateWelcomeHub();
     void initStatusBarZoomControls();
     void updateStatusBarZoomIndicator(MultiLayer *ml);
 
@@ -456,6 +463,7 @@ private:
     QVector<RibbonGroupInfo> d_groups;
     bool d_minimized = false;
     bool d_updating_collapse = false;
+    bool d_updating_welcome_hub = false;
     qint64 d_restored_by_click_ms = -1;
 
     WorkspaceLayoutMode d_layout_mode = LayoutTabbed;
@@ -471,6 +479,19 @@ private:
     QVector<QPair<QPointer<QWidget>, bool>> d_saved_focus_visibility;
     QPointer<CommandPalettePopup> d_command_palette;
     QPointer<FocusCanvasHudOverlay> d_focus_hud_overlay;
+
+    QPointer<QFrame> d_welcome_hub_card;
+    QPointer<QLabel> d_welcome_title_lbl;
+    QPointer<QLabel> d_welcome_subtitle_lbl;
+    QPointer<QLabel> d_welcome_drop_lbl;
+    QPointer<QPushButton> d_welcome_paste_btn;
+    QPointer<QPushButton> d_welcome_open_btn;
+    QPointer<QPushButton> d_welcome_recent_btn;
+    QPointer<QMenu> d_welcome_recent_menu;
+    QPointer<QPushButton> d_welcome_sample_btn;
+    QPointer<QPushButton> d_welcome_new_table_btn;
+    QPointer<QPushButton> d_welcome_guide_btn;
+    QPointer<QWidget> d_watched_empty_graph_pane;
 };
 
 #endif // MODERN_RIBBON_AND_HUD_H

@@ -10,14 +10,19 @@
 #include <QString>
 
 class QWidget;
+class Table;
 
 namespace ToriUx {
 
 //! Register the Japanese strings used by the navigation / menu / status features (idempotent).
 void registerUxTranslations();
 
-//! Absolute path of the bundled quick guide (manual/index.html), or empty when not installed.
-QString quickGuideFilePath();
+//! Absolute path of the bundled quick guide (manual/index.en.html for EN with fallback to
+//! manual/index.html), or empty when not installed.
+QString quickGuideFilePath(const QString &language = QString());
+
+//! Dismiss any floating "Plot this data" bar attached to \a table.
+void dismissPlotThisDataBar(Table *table);
 
 //! Keep a top-level window inside the available screen area.
 /**

@@ -97,13 +97,12 @@ protected:
         if (!event || event->type() != QEvent::Paint)
             return false;
         QWidget *w = qobject_cast<QWidget *>(watched);
-        if (!w || !w->isVisible() || d_painting.contains(w))
+        if (!w || w->width() < 8 || w->height() < 8 || d_painting.contains(w))
             return false;
 
         const auto *cb = qobject_cast<const QComboBox *>(w);
         const auto *sb = cb ? nullptr : qobject_cast<const QAbstractSpinBox *>(w);
-        const bool isSpin = sb && (qobject_cast<const QSpinBox *>(w) != nullptr
-                                   || qobject_cast<const QDoubleSpinBox *>(w) != nullptr);
+        const bool isSpin = sb && sb->buttonSymbols() != QAbstractSpinBox::NoButtons;
         if (!cb && !isSpin)
             return false;
 
@@ -118,7 +117,7 @@ protected:
             return true;
         painter.setRenderHint(QPainter::Antialiasing, true);
         const bool enabled = w->isEnabled();
-        const QColor col = enabled ? QColor(0x47, 0x55, 0x69) : QColor(0x94, 0xA3, 0xB8);
+        const QColor col = enabled ? QColor(0x47, 0x55, 0x69) : ModernUiTheme::disabledTextColor();
 
         if (cb) {
             QStyleOptionComboBox opt;
@@ -385,7 +384,7 @@ public:
             const bool enabled = (option->state & QStyle::State_Enabled) != 0;
             const bool active = ((option->state & QStyle::State_Sunken) != 0)
                     || ((option->state & QStyle::State_MouseOver) != 0);
-            const QColor col = !enabled ? QColor(0x94, 0xA3, 0xB8)
+            const QColor col = !enabled ? ModernUiTheme::disabledTextColor()
                     : active            ? QColor(0x1D, 0x4E, 0xD8)
                                         : QColor(0x47, 0x55, 0x69);
             const QRectF r = QRectF(option->rect);
@@ -565,13 +564,13 @@ public:
         if (auto *ab = qobject_cast<QAbstractButton *>(widget)) {
             if (ab->text().trimmed().isEmpty() && ab->accessibleName().isEmpty()
                 && !ab->toolTip().isEmpty()) {
+                static const QRegularExpression reHtmlTags(QStringLiteral("<[^>]*>"));
                 QString name = ab->toolTip();
-                name.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+                name.remove(reHtmlTags);
                 ab->setAccessibleName(name.simplified());
             }
         }
-        if ((qobject_cast<QComboBox *>(widget) || qobject_cast<QSpinBox *>(widget)
-             || qobject_cast<QDoubleSpinBox *>(widget))
+        if ((qobject_cast<QComboBox *>(widget) || qobject_cast<QAbstractSpinBox *>(widget))
             && !widget->property("_tg_arrow_overlay").toBool()) {
             widget->setProperty("_tg_arrow_overlay", true);
             widget->installEventFilter(ComboSpinArrowPainter::instance());
@@ -856,8 +855,7 @@ static QString matchByObjectName(const QString &objName)
         return QString();
 
     const QString clean = objName.trimmed();
-    const QStringList registered = IconLoader::registeredIconIds();
-    if (registered.contains(clean))
+    if (IconLoader::isRegisteredIconId(clean))
         return clean;
 
     QString normalized = clean.toLower();
@@ -880,33 +878,43 @@ static QString matchByObjectName(const QString &objName)
     // Check direct alias resolution if objectName uses hyphen/underscore semantic form
     QString dashed = clean.toLower();
     dashed.replace(QLatin1Char('_'), QLatin1Char('-'));
-    if (registered.contains(dashed))
+    if (IconLoader::isRegisteredIconId(dashed))
         return dashed;
 
     return QString();
 }
 
-static QString matchByTextAndToolTip(const QString &rawText, const QString &rawToolTip,
-                                     const QString &shortcutStr)
+static QString matchByTextAndToolTipUncached(const QString &text, const QString &tip,
+                                             const QString &combined, const QString &sc)
 {
-    const QString text = stripJapaneseMnemonicSuffix(cleanLabelText(rawText));
-    const QString tip = stripJapaneseMnemonicSuffix(cleanLabelText(rawToolTip));
-    const QString combined = text + QLatin1Char(' ') + tip;
-    const QString sc = shortcutStr.trimmed().toLower();
-
+    auto isAscii = [](const char *s) -> bool {
+        for (const unsigned char *p = reinterpret_cast<const unsigned char *>(s); *p; ++p) {
+            if (*p >= 0x80)
+                return false;
+        }
+        return true;
+    };
     auto has = [&](const char *utf8Sub) -> bool {
+        if (isAscii(utf8Sub))
+            return combined.contains(QLatin1String(utf8Sub));
         return combined.contains(QString::fromUtf8(utf8Sub));
     };
     auto textIs = [&](const char *utf8Exact) -> bool {
+        if (isAscii(utf8Exact))
+            return text == QLatin1String(utf8Exact);
         return text == QString::fromUtf8(utf8Exact);
     };
     auto tipIs = [&](const char *utf8Exact) -> bool {
+        if (isAscii(utf8Exact))
+            return tip == QLatin1String(utf8Exact);
         return tip == QString::fromUtf8(utf8Exact);
     };
 
     // 0. PowerPoint export and Excel import have their own icons. Only the action text is
     //    checked: other tooltips (the Lab Slide preset, the CSV import) mention both names.
     auto textHas = [&](const char *utf8Sub) -> bool {
+        if (isAscii(utf8Sub))
+            return text.contains(QLatin1String(utf8Sub));
         return text.contains(QString::fromUtf8(utf8Sub));
     };
     if (textHas("send to powerpoint") || textHas("powerpoint へ送る") || textHas("powerpointへ送る")
@@ -1417,6 +1425,27 @@ static QString matchByTextAndToolTip(const QString &rawText, const QString &rawT
     return QString();
 }
 
+static QString matchByTextAndToolTip(const QString &rawText, const QString &rawToolTip,
+                                     const QString &shortcutStr)
+{
+    const QString text = stripJapaneseMnemonicSuffix(cleanLabelText(rawText));
+    const QString tip = stripJapaneseMnemonicSuffix(cleanLabelText(rawToolTip));
+    const QString sc = shortcutStr.trimmed().toLower();
+    const QString cacheKey = text + QLatin1Char('\x1f') + tip + QLatin1Char('\x1f') + sc;
+
+    static QHash<QString, QString> s_cache;
+    const auto hit = s_cache.constFind(cacheKey);
+    if (hit != s_cache.cend())
+        return hit.value();
+
+    const QString combined = text + QLatin1Char(' ') + tip;
+    const QString result = matchByTextAndToolTipUncached(text, tip, combined, sc);
+    if (s_cache.size() >= 4096)
+        s_cache.clear();
+    s_cache.insert(cacheKey, result);
+    return result;
+}
+
 static bool hasSkippedAncestor(const QWidget *w)
 {
     for (const QWidget *p = w ? w->parentWidget() : nullptr; p != nullptr; p = p->parentWidget()) {
@@ -1574,6 +1603,14 @@ void ModernUiTheme::applyModernTheme(QApplication *app)
     if (!app->property("_toriKbdFocusFilterInstalled").toBool()) {
         app->installEventFilter(KeyboardFocusTracker::instance());
         app->setProperty("_toriKbdFocusFilterInstalled", true);
+    }
+    const QWidgetList widgets = QApplication::allWidgets();
+    for (QWidget *w : widgets) {
+        if ((qobject_cast<QComboBox *>(w) || qobject_cast<QAbstractSpinBox *>(w))
+            && !w->property("_tg_arrow_overlay").toBool()) {
+            w->setProperty("_tg_arrow_overlay", true);
+            w->installEventFilter(ComboSpinArrowPainter::instance());
+        }
     }
 }
 
@@ -2164,7 +2201,7 @@ QString ModernUiTheme::semanticIconForToolButton(const QToolButton *button)
     return QString();
 }
 
-static void upgradeSingleActionIcon(QAction *action, const QSet<QString> &registeredSet)
+static void upgradeSingleActionIcon(QAction *action)
 {
     if (!action || action->isSeparator())
         return;
@@ -2183,7 +2220,7 @@ static void upgradeSingleActionIcon(QAction *action, const QSet<QString> &regist
         if (existingIconName != semId)
             action->setIcon(IconLoader::duotoneIcon(semId, 20, false));
     } else if (!action->icon().isNull() && !existingIconName.isEmpty()
-               && !registeredSet.contains(existingIconName)) {
+               && !IconLoader::isRegisteredIconId(existingIconName)) {
         // A named icon that is not a duotone id (a legacy or freedesktop name): map it through
         // the alias table. Nameless icons (colour swatches, Qt's own MDI system-menu icons)
         // are kept; the old fallback turned them into the generic graph icon.
@@ -2199,8 +2236,6 @@ void ModernUiTheme::upgradeMenuIcons(QMenu *menu)
         return;
 
     IconLoader::init();
-    const QStringList regList = IconLoader::registeredIconIds();
-    const QSet<QString> registeredSet(regList.cbegin(), regList.cend());
 
     QSet<QAction *> menuActions;
     const QList<QAction *> topActs = menu->actions();
@@ -2215,7 +2250,7 @@ void ModernUiTheme::upgradeMenuIcons(QMenu *menu)
     }
 
     for (QAction *action : menuActions)
-        upgradeSingleActionIcon(action, registeredSet);
+        upgradeSingleActionIcon(action);
 }
 
 void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
@@ -2224,8 +2259,6 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
         return;
 
     IconLoader::init();
-    const QStringList regList = IconLoader::registeredIconIds();
-    const QSet<QString> registeredSet(regList.cbegin(), regList.cend());
 
     // 1. Standardize classic QToolBar icon sizes to crisp 20x20 px
     const QList<QToolBar *> toolBars = rootWindow->findChildren<QToolBar *>();
@@ -2318,7 +2351,7 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
     }
 
     for (QAction *action : allActions)
-        upgradeSingleActionIcon(action, registeredSet);
+        upgradeSingleActionIcon(action);
 
     // 3. Upgrade standalone & popup QToolButtons (Explorer toolbar, Plot/Layer popup buttons, etc.)
     const QList<QToolButton *> toolButtons = rootWindow->findChildren<QToolButton *>();
@@ -2352,7 +2385,7 @@ void ModernUiTheme::upgradeAllWindowIcons(QWidget *rootWindow)
             if (!btn->text().isEmpty() && btn->toolButtonStyle() == Qt::ToolButtonIconOnly)
                 btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         } else if (!btn->icon().isNull() && !existingIconName.isEmpty()
-                   && !registeredSet.contains(existingIconName)) {
+                   && !IconLoader::isRegisteredIconId(existingIconName)) {
             const QString resolved = IconLoader::resolveIconId(existingIconName);
             btn->setProperty("_tg_duotone_id", resolved);
             btn->setIcon(IconLoader::duotoneIcon(resolved, 20, false));

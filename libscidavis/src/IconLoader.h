@@ -53,6 +53,7 @@ public:
     static QPixmap duotonePixmap(const QString &semanticId, int pxSize = 24, qreal dpr = 0.0,
                                  bool darkSurface = false);
     static QStringList registeredIconIds();
+    static bool isRegisteredIconId(const QString &id);
     static QString resolveIconId(const QString &nameOrAlias);
 
     // Names that were neither a registered id nor an alias and therefore fell back to a

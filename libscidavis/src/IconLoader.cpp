@@ -41,6 +41,8 @@
 #include <QtDebug>
 #include <QtSvg/QSvgRenderer>
 
+#include <mutex>
+
 namespace {
 
 enum class AccentDomain {
@@ -64,7 +66,7 @@ struct DuotoneSvgSpec {
 static QString primaryHexColor(bool darkSurface, bool disabled)
 {
     if (disabled)
-        return darkSurface ? QStringLiteral("#64748B") : QStringLiteral("#94A3B8");
+        return darkSurface ? QStringLiteral("#94A3B8") : QStringLiteral("#94A3B8");
     return darkSurface ? QStringLiteral("#F8FAFC") : QStringLiteral("#1E293B");
 }
 
@@ -96,7 +98,7 @@ static QString accentHexColor(AccentDomain domain, bool darkSurface, bool disabl
     }
 
     if (disabled) {
-        const QColor neutral = darkSurface ? QColor(QStringLiteral("#475569"))
+        const QColor neutral = darkSurface ? QColor(QStringLiteral("#64748B"))
                                            : QColor(QStringLiteral("#CBD5E1"));
         const int r = (c.red() * 45 + neutral.red() * 55) / 100;
         const int g = (c.green() * 45 + neutral.green() * 55) / 100;
@@ -1678,7 +1680,8 @@ struct IconRegistryState {
 static IconRegistryState &registry()
 {
     static IconRegistryState s;
-    if (!s.initialized) {
+    static std::once_flag s_initOnce;
+    std::call_once(s_initOnce, []() {
         const int specCount = static_cast<int>(sizeof(kIconSpecs) / sizeof(kIconSpecs[0]));
         s.specIndexById.reserve(specCount * 2);
         s.orderedIds.reserve(specCount);
@@ -1696,7 +1699,7 @@ static IconRegistryState &registry()
                               QString::fromLatin1(kAliasTable[i].canonical));
         }
         s.initialized = true;
-    }
+    });
     return s;
 }
 
@@ -2016,9 +2019,14 @@ void IconLoader::clearUnresolvedIconNames()
 
 QStringList IconLoader::registeredIconIds()
 {
-    IconRegistryState &st = registry();
-    QMutexLocker locker(&st.mutex);
+    const IconRegistryState &st = registry();
     return st.orderedIds;
+}
+
+bool IconLoader::isRegisteredIconId(const QString &id)
+{
+    const IconRegistryState &st = registry();
+    return st.specIndexById.contains(id);
 }
 
 QString IconLoader::resolveIconId(const QString &nameOrAlias)

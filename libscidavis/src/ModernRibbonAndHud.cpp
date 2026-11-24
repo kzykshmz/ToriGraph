@@ -27,6 +27,7 @@
  ***************************************************************************/
 
 #include "ModernRibbonAndHud.h"
+#include "UxNavigation.h"
 #include "Workbook.h"
 #include "XlsxImport.h"
 
@@ -34,15 +35,21 @@
 #include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QClipboard>
 #include <QComboBox>
 #include <QCursor>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDockWidget>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QHideEvent>
@@ -56,9 +63,12 @@
 #include <QMdiArea>
 #include <QMdiSubWindow>
 #include <QMenu>
+#include <QMenuBar>
 #include <QMetaObject>
+#include <QMimeData>
 #include <QPainter>
 #include <QPalette>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QResizeEvent>
 #include <QScreen>
@@ -76,6 +86,7 @@
 #include <QTableWidgetItem>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -115,7 +126,8 @@ enum PaletteItemRoles {
     RoleEntryIndex = Qt::UserRole + 1,
     RoleShortcutText = Qt::UserRole + 2,
     RoleCategoryText = Qt::UserRole + 3,
-    RoleDisabledEntry = Qt::UserRole + 4
+    RoleDisabledEntry = Qt::UserRole + 4,
+    RoleDisabledReason = Qt::UserRole + 5
 };
 
 static QString cleanMnemonicText(const QString &raw)
@@ -197,8 +209,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
         Q_UNUSED(option);
-        Q_UNUSED(index);
-        return QSize(480, 38);
+        const QString reason = index.data(RoleDisabledReason).toString();
+        return QSize(480, reason.isEmpty() ? 38 : 54);
     }
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
@@ -221,6 +233,16 @@ public:
             painter->drawRoundedRect(rowRect, 7.0, 7.0);
         }
 
+        const QString shortcut = index.data(RoleShortcutText).toString();
+        const QString category = index.data(RoleCategoryText).toString();
+        const QString title = index.data(Qt::DisplayRole).toString();
+        const QString reason = index.data(RoleDisabledReason).toString();
+        const bool hasReason = !reason.isEmpty();
+        const bool dimmed = index.data(RoleDisabledEntry).toBool();
+
+        if (dimmed)
+            painter->setOpacity(0.68);
+
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         const int iconPx = 20;
         const QRect iconRect(rowRect.left() + 10,
@@ -228,14 +250,7 @@ public:
         if (!icon.isNull())
             icon.paint(painter, iconRect, Qt::AlignCenter, QIcon::Normal, QIcon::Off);
 
-        const QString shortcut = index.data(RoleShortcutText).toString();
-        const QString category = index.data(RoleCategoryText).toString();
-        const QString title = index.data(Qt::DisplayRole).toString();
-        // C12: commands that cannot run now are listed dimmed, with the reason as category
-        const bool dimmed = index.data(RoleDisabledEntry).toBool();
-        if (dimmed)
-            painter->setOpacity(0.55);
-
+        const int topH = hasReason ? 26 : rowRect.height();
         int rightEdge = rowRect.right() - 10;
         if (!shortcut.isEmpty()) {
             QFont badgeFont(QStringLiteral("Segoe UI"), 10);
@@ -243,9 +258,9 @@ public:
             painter->setFont(badgeFont);
             const QFontMetrics bfm(badgeFont);
             const int bw = bfm.horizontalAdvance(shortcut) + 14;
-            const int bh = 24;
+            const int bh = 22;
             const QRect badgeRect(rightEdge - bw,
-                                  rowRect.top() + (rowRect.height() - bh) / 2, bw, bh);
+                                  rowRect.top() + (topH - bh) / 2, bw, bh);
             painter->setPen(QPen(QColor(203, 213, 225), 1.0));
             painter->setBrush(selected ? QColor(255, 255, 255) : QColor(241, 245, 249));
             painter->drawRoundedRect(badgeRect, 5.0, 5.0);
@@ -259,7 +274,7 @@ public:
             painter->setFont(catFont);
             const QFontMetrics cfm(catFont);
             const int cw = qMin(148, cfm.horizontalAdvance(category) + 6);
-            const QRect catRect(rightEdge - cw, rowRect.top(), cw, rowRect.height());
+            const QRect catRect(rightEdge - cw, rowRect.top(), cw, topH);
             painter->setPen(selected ? QColor(37, 99, 235) : QColor(100, 116, 139));
             painter->drawText(catRect, Qt::AlignRight | Qt::AlignVCenter,
                               cfm.elidedText(category, Qt::ElideRight, cw));
@@ -269,13 +284,27 @@ public:
         QFont titleFont(QStringLiteral("Segoe UI"), 11);
         titleFont.setWeight(selected ? QFont::DemiBold : QFont::Normal);
         painter->setFont(titleFont);
-        painter->setPen(selected ? QColor(29, 78, 216) : QColor(15, 23, 42));
+        painter->setPen(dimmed ? QColor(71, 85, 105)
+                               : (selected ? QColor(29, 78, 216) : QColor(15, 23, 42)));
         const int textLeft = iconRect.right() + 10;
         const int availW = qMax(40, rightEdge - textLeft);
         const QFontMetrics tfm(titleFont);
-        const QRect textRect(textLeft, rowRect.top(), availW, rowRect.height());
+        const QRect textRect(textLeft, rowRect.top(), availW, topH);
         painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
                           tfm.elidedText(title, Qt::ElideRight, availW));
+
+        if (hasReason) {
+            painter->setOpacity(1.0);
+            QFont reasonFont(QStringLiteral("Segoe UI"), 9);
+            painter->setFont(reasonFont);
+            painter->setPen(selected ? QColor(51, 65, 85) : QColor(71, 85, 105));
+            const int reasonW = qMax(60, (rowRect.right() - 10) - textLeft);
+            const QFontMetrics rfm(reasonFont);
+            const QRect reasonRect(textLeft, rowRect.top() + 24, reasonW,
+                                   qMax(16, rowRect.height() - 24));
+            painter->drawText(reasonRect, Qt::AlignLeft | Qt::AlignVCenter,
+                              rfm.elidedText(reason, Qt::ElideRight, reasonW));
+        }
 
         painter->restore();
     }
@@ -593,7 +622,366 @@ void registerRibbonCollapseTranslations()
             "%1: ウィンドウの幅が足りないため、このグループのコマンドをここにまとめています");
         reg("Double-click a tab to minimize or restore the ribbon (Ctrl+F1)",
             "タブをダブルクリックするとリボンを最小化/元に戻します (Ctrl+F1)");
+        reg("Free", "フリー");
+        reg("Paste", "貼り付け");
+        reg("Paste (Ctrl+V)", "貼り付け");
+        reg("Paste clipboard data or table cells into worksheet (Ctrl+V)",
+            "クリップボードやExcelの表データをワークシートに貼り付け (Ctrl+V)");
+        reg("Clipboard is empty. Copy cells in Excel or TSV/CSV text first, then press Ctrl+V.",
+            "クリップボードが空です。ExcelのセルやCSV/TSVテキストをコピーしてからCtrl+Vで貼り付けてください。");
+        reg("Start Analyzing Data in Seconds", "すぐにデータ解析・作図を始めましょう");
+        reg("Paste from Excel, drop a CSV/XLSX/XRD/OPJU file here, or open a sample project.",
+            "Excelからの貼り付け、CSV/XLSX/XRD/OPJUファイルのドロップ、またはサンプルを開いて開始できます。");
+        reg("Drop CSV / XLSX / XRD / TXT / OPJU files anywhere here",
+            "CSV / XLSX / XRD / TXT / OPJU ファイルをここにドロップ");
+        reg("Paste from Excel (Ctrl+V)", "Excelから貼り付け (Ctrl+V)");
+        reg("Open File...", "ファイルを開く...");
+        reg("Recent", "最近使ったファイル");
+        reg("No recent files", "最近使ったファイルはありません");
+        reg("New Worksheet", "新しいワークシート");
+        reg("Quick Guide", "クイックガイド");
+        reg("Show 10+ Sample Templates (XRD / Raman / Tensile / Cyclic / Peak Fit)",
+            "10種類以上のサンプルを開く (XRD / ラマン / 引張 / サイクル / ピークフィット)");
+        reg("Requires an open worksheet (click or create a worksheet)",
+            "ワークシートが必要です（選択または新規作成してください）");
+        reg("Requires a numeric or selected worksheet column",
+            "数値データまたは選択されたワークシート列が必要です");
+        reg("Requires a graph window (click a graph or plot data first)",
+            "グラフウィンドウが必要です（グラフを選択するか先に作図してください）");
+        reg("Requires a plotted curve on the active graph",
+            "アクティブなグラフ上にプロット済み曲線が必要です");
+        reg("Requires a selected graph object or layer",
+            "グラフ上のオブジェクトまたはレイヤーを選択してください");
+        reg("Requires a matrix window", "行列ウィンドウが必要です");
+        reg("Requires a 3D graph window", "3Dグラフウィンドウが必要です");
+        reg("Requires an open project window", "開いているウィンドウが必要です");
+        reg("Currently unavailable in this view context",
+            "現在の表示コンテキストでは実行できません");
     });
+}
+
+} // namespace
+
+namespace {
+
+static QString foldKanaAndSearchText(const QString &raw)
+{
+    if (raw.isEmpty())
+        return QString();
+    const QString norm = raw.normalized(QString::NormalizationForm_KC).toLower();
+    QString out;
+    out.reserve(norm.size());
+    for (int i = 0; i < norm.size(); ++i) {
+        const QChar ch = norm.at(i);
+        const ushort uc = ch.unicode();
+        if (uc >= 0x30A1 && uc <= 0x30F6)
+            out.append(QChar(uc - 0x60));
+        else
+            out.append(ch);
+    }
+    return out;
+}
+
+static QString romajiToHiragana(const QString &asciiLower)
+{
+    if (asciiLower.size() < 2)
+        return QString();
+    for (int i = 0; i < asciiLower.size(); ++i) {
+        const ushort u = asciiLower.at(i).unicode();
+        if (!((u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') || u == '-'))
+            return QString();
+    }
+
+    struct MapEntry {
+        const char *rom;
+        const ushort hira[2];
+    };
+    static const MapEntry kRomaji[] = {
+        { "kya", { 0x304D, 0x3083 } }, { "kyu", { 0x304D, 0x3085 } },
+        { "kyo", { 0x304D, 0x3087 } }, { "sha", { 0x3057, 0x3083 } },
+        { "shi", { 0x3057, 0 } },      { "shu", { 0x3057, 0x3085 } },
+        { "sho", { 0x3057, 0x3087 } }, { "chi", { 0x3061, 0 } },
+        { "cha", { 0x3061, 0x3083 } }, { "chu", { 0x3061, 0x3085 } },
+        { "cho", { 0x3061, 0x3087 } }, { "tsu", { 0x3064, 0 } },
+        { "nya", { 0x306B, 0x3083 } }, { "nyu", { 0x306B, 0x3085 } },
+        { "nyo", { 0x306B, 0x3087 } }, { "hya", { 0x3072, 0x3083 } },
+        { "hyu", { 0x3072, 0x3085 } }, { "hyo", { 0x3072, 0x3087 } },
+        { "mya", { 0x307F, 0x3083 } }, { "myu", { 0x307F, 0x3085 } },
+        { "myo", { 0x307F, 0x3087 } }, { "rya", { 0x308A, 0x3083 } },
+        { "ryu", { 0x308A, 0x3085 } }, { "ryo", { 0x308A, 0x3087 } },
+        { "gya", { 0x304E, 0x3083 } }, { "gyu", { 0x304E, 0x3085 } },
+        { "gyo", { 0x304E, 0x3087 } }, { "bya", { 0x3073, 0x3083 } },
+        { "byu", { 0x3073, 0x3085 } }, { "byo", { 0x3073, 0x3087 } },
+        { "pya", { 0x3074, 0x3083 } }, { "pyu", { 0x3074, 0x3085 } },
+        { "pyo", { 0x3074, 0x3087 } }, { "fya", { 0x3075, 0x3083 } },
+        { "fyu", { 0x3075, 0x3085 } }, { "fyo", { 0x3075, 0x3087 } },
+        { "ka", { 0x304B, 0 } },       { "ki", { 0x304D, 0 } },
+        { "ku", { 0x304F, 0 } },       { "ke", { 0x3051, 0 } },
+        { "ko", { 0x3053, 0 } },       { "sa", { 0x3055, 0 } },
+        { "si", { 0x3057, 0 } },       { "su", { 0x3059, 0 } },
+        { "se", { 0x305B, 0 } },       { "so", { 0x305D, 0 } },
+        { "ta", { 0x305F, 0 } },       { "ti", { 0x3061, 0 } },
+        { "tu", { 0x3064, 0 } },       { "te", { 0x3066, 0 } },
+        { "to", { 0x3068, 0 } },       { "na", { 0x306A, 0 } },
+        { "ni", { 0x306B, 0 } },       { "nu", { 0x306C, 0 } },
+        { "ne", { 0x306D, 0 } },       { "no", { 0x306E, 0 } },
+        { "ha", { 0x306F, 0 } },       { "hi", { 0x3072, 0 } },
+        { "hu", { 0x3075, 0 } },       { "fu", { 0x3075, 0 } },
+        { "he", { 0x3078, 0 } },       { "ho", { 0x307B, 0 } },
+        { "fa", { 0x3075, 0x3041 } },  { "fi", { 0x3075, 0x3043 } },
+        { "fe", { 0x3075, 0x3047 } },  { "fo", { 0x3075, 0x3049 } },
+        { "ma", { 0x307E, 0 } },       { "mi", { 0x307F, 0 } },
+        { "mu", { 0x3080, 0 } },       { "me", { 0x3081, 0 } },
+        { "mo", { 0x3082, 0 } },       { "ya", { 0x3084, 0 } },
+        { "yu", { 0x3086, 0 } },       { "yo", { 0x3088, 0 } },
+        { "ra", { 0x3089, 0 } },       { "ri", { 0x308A, 0 } },
+        { "ru", { 0x308B, 0 } },       { "re", { 0x308C, 0 } },
+        { "ro", { 0x308D, 0 } },       { "wa", { 0x308F, 0 } },
+        { "wo", { 0x3092, 0 } },       { "ga", { 0x304C, 0 } },
+        { "gi", { 0x304E, 0 } },       { "gu", { 0x3050, 0 } },
+        { "ge", { 0x3052, 0 } },       { "go", { 0x3054, 0 } },
+        { "za", { 0x3056, 0 } },       { "zi", { 0x3058, 0 } },
+        { "ji", { 0x3058, 0 } },       { "zu", { 0x305A, 0 } },
+        { "ze", { 0x305C, 0 } },       { "zo", { 0x305E, 0 } },
+        { "ja", { 0x3058, 0x3083 } },  { "ju", { 0x3058, 0x3085 } },
+        { "jo", { 0x3058, 0x3087 } },  { "da", { 0x3060, 0 } },
+        { "di", { 0x3062, 0 } },       { "du", { 0x3065, 0 } },
+        { "de", { 0x3067, 0 } },       { "do", { 0x3069, 0 } },
+        { "ba", { 0x3070, 0 } },       { "bi", { 0x3073, 0 } },
+        { "bu", { 0x3076, 0 } },       { "be", { 0x3079, 0 } },
+        { "bo", { 0x307C, 0 } },       { "pa", { 0x3071, 0 } },
+        { "pi", { 0x3074, 0 } },       { "pu", { 0x3077, 0 } },
+        { "pe", { 0x307A, 0 } },       { "po", { 0x307D, 0 } },
+        { "nn", { 0x3093, 0 } },
+        { "a", { 0x3042, 0 } },        { "i", { 0x3044, 0 } },
+        { "u", { 0x3046, 0 } },        { "e", { 0x3048, 0 } },
+        { "o", { 0x304A, 0 } },
+    };
+
+    QString out;
+    out.reserve(asciiLower.size());
+    int idx = 0;
+    while (idx < asciiLower.size()) {
+        const QChar c = asciiLower.at(idx);
+        if (c == QLatin1Char('-')) {
+            out.append(QChar(0x30FC));
+            ++idx;
+            continue;
+        }
+        if (idx + 1 < asciiLower.size() && c == asciiLower.at(idx + 1) && c >= QLatin1Char('a')
+            && c <= QLatin1Char('z') && c != QLatin1Char('a') && c != QLatin1Char('i')
+            && c != QLatin1Char('u') && c != QLatin1Char('e') && c != QLatin1Char('o')
+            && c != QLatin1Char('n')) {
+            out.append(QChar(0x3063)); // small tsu
+            ++idx;
+            continue;
+        }
+        bool matched = false;
+        for (const MapEntry &m : kRomaji) {
+            const int len = static_cast<int>(qstrlen(m.rom));
+            if (idx + len <= asciiLower.size()
+                && QStringView(asciiLower).mid(idx, len) == QLatin1String(m.rom)) {
+                out.append(QChar(m.hira[0]));
+                if (m.hira[1] != 0)
+                    out.append(QChar(m.hira[1]));
+                idx += len;
+                matched = true;
+                break;
+            }
+        }
+        if (matched)
+            continue;
+        if (c == QLatin1Char('n')) {
+            if (idx + 1 >= asciiLower.size()) {
+                out.append(QChar(0x3093));
+                ++idx;
+                continue;
+            }
+            const QChar next = asciiLower.at(idx + 1);
+            if (next != QLatin1Char('a') && next != QLatin1Char('i') && next != QLatin1Char('u')
+                && next != QLatin1Char('e') && next != QLatin1Char('o')
+                && next != QLatin1Char('y')) {
+                out.append(QChar(0x3093));
+                ++idx;
+                continue;
+            }
+        }
+        return QString();
+    }
+    return out;
+}
+
+static QString spacedObjectNameKeywords(const QString &objName)
+{
+    if (objName.isEmpty())
+        return QString();
+    QString raw = objName;
+    if (raw.startsWith(QLatin1String("action")) && raw.size() > 6
+        && raw.at(6).isUpper()) {
+        raw = raw.mid(6);
+    }
+    QString spaced;
+    spaced.reserve(raw.size() + 8);
+    for (int i = 0; i < raw.size(); ++i) {
+        const QChar c = raw.at(i);
+        if (c == QLatin1Char('_') || c == QLatin1Char('-')) {
+            spaced.append(QLatin1Char(' '));
+            continue;
+        }
+        if (i > 0 && c.isUpper() && !raw.at(i - 1).isUpper())
+            spaced.append(QLatin1Char(' '));
+        spaced.append(c);
+    }
+    return spaced.toLower();
+}
+
+static QString actionParentMenuHint(const QAction *act)
+{
+    if (!act)
+        return QString();
+    for (QWidget *w : act->associatedWidgets()) {
+        if (QMenu *m = qobject_cast<QMenu *>(w)) {
+            const QString mt = cleanMnemonicText(m->title()).trimmed();
+            if (!mt.isEmpty())
+                return mt;
+        }
+    }
+    return QString();
+}
+
+static QString computeActionDisabledReason(const QAction *act, ApplicationWindow *app,
+                                           ModernRibbonBar *ribbon)
+{
+    if (!app)
+        return CommandPalettePopup::tr("Currently unavailable in this view context");
+    if (app->d_workspace.subWindowList().isEmpty())
+        return CommandPalettePopup::tr("Requires an open project window");
+
+    QWidget *aw = app->d_workspace.activeSubWindow();
+    Table *activeTable = qobject_cast<Table *>(aw);
+    Table *wsTarget = ribbon ? ribbon->resolvedWorksheetTarget() : activeTable;
+    MultiLayer *activeMl = qobject_cast<MultiLayer *>(aw);
+    if (!activeMl && ribbon && ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph)
+        activeMl = qobject_cast<MultiLayer *>(ribbon->splitPlotTarget());
+    Matrix *activeMatrix = qobject_cast<Matrix *>(aw);
+    Graph3D *active3d = qobject_cast<Graph3D *>(aw);
+
+    int activeCurves = 0;
+    bool hasSelectedGraphObj = false;
+    if (activeMl) {
+        if (Graph *g = activeMl->activeGraph() ? activeMl->activeGraph() : activeMl->layer(1)) {
+            activeCurves = g->plotItemsList().size();
+            hasSelectedGraphObj =
+                    (g->currentSelection().kind != Graph::GraphSelection::None);
+        }
+    }
+
+    const QString obj = act ? act->objectName().toLower() : QString();
+    const QString clean = act ? cleanMnemonicText(act->text()).toLower() : QString();
+    const QString tip = act ? cleanMnemonicText(act->toolTip()).toLower() : QString();
+    const QString comb = obj + QLatin1Char(' ') + clean + QLatin1Char(' ') + tip;
+
+    if ((comb.contains(QLatin1String("matrix"))
+         && !comb.contains(QLatin1String("to matrix"))
+         && !comb.contains(QLatin1String("convert"))
+         && !comb.contains(QLatin1String("correlation"))
+         && !comb.contains(QString::fromUtf8("\xE8\xA1\x8C\xE5\x88\x97\xE3\x81\xB8\xE5\xA4\x89\xE6\x8F\x9B")))
+        || comb.contains(QLatin1String("spatial filter"))
+        || comb.contains(QLatin1String("2d spatial"))) {
+        if (!activeMatrix)
+            return CommandPalettePopup::tr("Requires a matrix window");
+    }
+
+    if (comb.contains(QLatin1String("3d"))
+        && (comb.contains(QLatin1String("rotation")) || comb.contains(QLatin1String("surface3d"))
+            || comb.contains(QLatin1String("perspective"))
+            || comb.contains(QLatin1String("floor")))) {
+        if (!active3d)
+            return CommandPalettePopup::tr("Requires a 3D graph window");
+    }
+
+    const bool isPlotAction =
+            (obj.startsWith(QLatin1String("actionplot"))
+             || comb.contains(QLatin1String("error bar"))
+             || comb.contains(QString::fromUtf8("\xE3\x82\xA8\xE3\x83\xA9\xE3\x83\xBC\xE3\x83\x90\xE3\x83\xBC")));
+    const bool isTableAction =
+            comb.contains(QLatin1String("stacked bar"))
+            || comb.contains(QLatin1String("polar"))
+            || comb.contains(QLatin1String("double-y"))
+            || comb.contains(QLatin1String("y-offset"))
+            || comb.contains(QLatin1String("violin"))
+            || comb.contains(QLatin1String("pareto"))
+            || comb.contains(QLatin1String("q-q"))
+            || comb.contains(QLatin1String("ternary"))
+            || comb.contains(QLatin1String("plot table"))
+            || comb.contains(QLatin1String("column"))
+            || comb.contains(QLatin1String("worksheet"))
+            || comb.contains(QLatin1String("sort"))
+            || comb.contains(QLatin1String("formula"))
+            || comb.contains(QLatin1String("fill"))
+            || comb.contains(QLatin1String("norm"))
+            || comb.contains(QLatin1String("re-import"))
+            || comb.contains(QLatin1String("reimport"))
+            || comb.contains(QLatin1String("to matrix"))
+            || comb.contains(QString::fromUtf8("\xE5\x88\x97"))
+            || comb.contains(QString::fromUtf8("\xE3\x83\xAF\xE3\x83\xBC\xE3\x82\xAF\xE3\x82\xB7\xE3\x83\xBC\xE3\x83\x88"));
+
+    if (isPlotAction || isTableAction) {
+        if (!wsTarget && !activeTable) {
+            return CommandPalettePopup::tr(
+                    "Requires an open worksheet (click or create a worksheet)");
+        }
+        return CommandPalettePopup::tr("Requires a numeric or selected worksheet column");
+    }
+
+    const bool isCurveAction =
+            comb.contains(QLatin1String("fit")) || comb.contains(QLatin1String("smooth"))
+            || comb.contains(QLatin1String("diff")) || comb.contains(QLatin1String("integ"))
+            || comb.contains(QLatin1String("fft")) || comb.contains(QLatin1String("peak"))
+            || comb.contains(QLatin1String("interp")) || comb.contains(QLatin1String("filter"))
+            || comb.contains(QLatin1String("wavelet")) || comb.contains(QLatin1String("psd"))
+            || comb.contains(QLatin1String("baseline")) || comb.contains(QLatin1String("translate"))
+            || comb.contains(QLatin1String("roc")) || comb.contains(QLatin1String("kaplan"))
+            || comb.contains(QString::fromUtf8("\xE3\x83\x95\xE3\x82\xA3\xE3\x83\x83\xE3\x83\x88"))
+            || comb.contains(QString::fromUtf8("\xE5\xB9\xB3\xE6\xBB\x91"))
+            || comb.contains(QString::fromUtf8("\xE7\xA9\x8D\xE5\x88\x86"))
+            || comb.contains(QString::fromUtf8("\xE5\xBE\xAE\xE5\x88\x86"))
+            || comb.contains(QString::fromUtf8("\xE3\x83\x94\xE3\x83\xBC\xE3\x82\xAF"));
+
+    if (isCurveAction) {
+        if (!activeMl) {
+            return CommandPalettePopup::tr(
+                    "Requires a graph window (click a graph or plot data first)");
+        }
+        if (activeCurves == 0)
+            return CommandPalettePopup::tr("Requires a plotted curve on the active graph");
+    }
+
+    if (comb.contains(QLatin1String("graph")) || comb.contains(QLatin1String("layer"))
+        || comb.contains(QLatin1String("axis")) || comb.contains(QLatin1String("axes"))
+        || comb.contains(QLatin1String("legend")) || comb.contains(QLatin1String("grid"))
+        || comb.contains(QLatin1String("page")) || comb.contains(QLatin1String("ole"))
+        || comb.contains(QLatin1String("powerpoint")) || comb.contains(QLatin1String("python"))
+        || comb.contains(QLatin1String("style")) || comb.contains(QLatin1String("aspect"))
+        || comb.contains(QLatin1String("frame"))
+        || comb.contains(QString::fromUtf8("\xE3\x82\xB0\xE3\x83\xA9\xE3\x83\x95"))
+        || comb.contains(QString::fromUtf8("\xE8\xBB\xB8"))
+        || comb.contains(QString::fromUtf8("\xE5\x87\xA1\xE4\xBE\x8B"))
+        || comb.contains(QString::fromUtf8("\xE3\x83\xAC\xE3\x82\xA4\xE3\x83\xA4\xE3\x83\xBC"))) {
+        if (!activeMl) {
+            return CommandPalettePopup::tr(
+                    "Requires a graph window (click a graph or plot data first)");
+        }
+        if (!hasSelectedGraphObj)
+            return CommandPalettePopup::tr("Requires a selected graph object or layer");
+    }
+
+    if (activeMl && !hasSelectedGraphObj)
+        return CommandPalettePopup::tr("Requires a selected graph object or layer");
+    if (activeTable)
+        return CommandPalettePopup::tr("Requires a numeric or selected worksheet column");
+
+    return CommandPalettePopup::tr("Currently unavailable in this view context");
 }
 
 } // namespace
@@ -670,7 +1058,7 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
     d_list_widget = new QListWidget(this);
     d_list_widget->setObjectName(QStringLiteral("CommandPaletteList"));
     d_list_widget->setItemDelegate(new CommandPaletteItemDelegate(d_list_widget));
-    d_list_widget->setUniformItemSizes(true);
+    d_list_widget->setUniformItemSizes(false);
     d_list_widget->setMouseTracking(true);
     d_list_widget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     d_list_widget->installEventFilter(this);
@@ -682,11 +1070,11 @@ CommandPalettePopup::CommandPalettePopup(ApplicationWindow *app, ModernRibbonBar
 
     connect(d_search_edit, &QLineEdit::textChanged, this,
             &CommandPalettePopup::rebuildFilteredList);
-    connect(d_list_widget, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
+    connect(d_list_widget, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         if (item)
             executeItemAt(d_list_widget->row(item));
     });
-    connect(d_list_widget, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
+    connect(d_list_widget, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
         if (item)
             executeItemAt(d_list_widget->row(item));
     });
@@ -718,9 +1106,9 @@ void CommandPalettePopup::refreshCommands()
         e.title = title;
         e.category = category;
         e.shortcutText = shortcut;
-        e.searchKey = (title + QLatin1Char(' ') + category + QLatin1Char(' ') + shortcut
-                       + QLatin1Char(' ') + keywords)
-                              .toLower();
+        e.searchKey = foldKanaAndSearchText(title + QLatin1Char(' ') + category
+                                            + QLatin1Char(' ') + shortcut + QLatin1Char(' ')
+                                            + keywords);
         e.iconId = iconId;
         e.callback = std::move(fn);
         e.priorityBoost = boost;
@@ -1000,6 +1388,10 @@ void CommandPalettePopup::refreshCommands()
     if (d_app) {
         const QString catCanvas = tr("Graph Canvas");
         MultiLayer *activeMl = qobject_cast<MultiLayer *>(d_app->d_workspace.activeSubWindow());
+        if (!activeMl && d_ribbon
+            && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+            activeMl = qobject_cast<MultiLayer *>(d_ribbon->splitPlotTarget());
+        }
         auto addCanvasEntry = [&](const QString &id, const QString &title, const QString &keywords,
                                   const QString &iconId, std::function<void(MultiLayer *, Graph *)> fn,
                                   int boost = 72) {
@@ -1007,14 +1399,13 @@ void CommandPalettePopup::refreshCommands()
             e.id = id;
             e.title = title;
             e.category = catCanvas;
-            e.searchKey = (title + QLatin1Char(' ') + catCanvas + QLatin1Char(' ') + keywords)
-                                  .toLower();
+            e.searchKey = foldKanaAndSearchText(title + QLatin1Char(' ') + catCanvas
+                                                + QLatin1Char(' ') + keywords);
             e.iconId = iconId;
             e.priorityBoost = activeMl ? boost : -35;
             if (!activeMl) {
                 e.disabled = true;
-                e.disabledReason = tr("Not available for a worksheet: click a graph window first.");
-                e.category = e.disabledReason;
+                e.disabledReason = tr("Requires a graph window (click a graph or plot data first)");
             } else {
                 QPointer<ApplicationWindow> appPtr(d_app);
                 e.callback = [appPtr, fn = std::move(fn)]() {
@@ -1140,49 +1531,86 @@ void CommandPalettePopup::refreshCommands()
 
     if (d_app) {
         QSet<QString> seenTitles;
+        QSet<QString> coveredObjectNames = {
+            QStringLiteral("actionTensileYieldDialog"),
+            QStringLiteral("actionMergeGraphs"),
+            QStringLiteral("actionWorkspaceLayoutSplit"),
+            QStringLiteral("actionWorkspaceLayoutTabbed"),
+            QStringLiteral("actionWorkspaceLayoutMdi"),
+            QStringLiteral("actionToggleFocusHudMode"),
+            QStringLiteral("actionToggleGraphInspector"),
+            QStringLiteral("actionOpenPythonConsole"),
+            QStringLiteral("actionRunPythonScript"),
+            QStringLiteral("actionCheckUpdates"),
+            QStringLiteral("actionCommandPalette")
+        };
+        const char *const kCoveredAppTexts[] = {
+            "&ISIJ Journal (85 mm, 600 DPI)",
+            "&Lab Slide (18 pt @ 140%, 83.3 mm)",
+            "Apply Style Preset to &Multiple Graphs...",
+            "Plot Table Using &Template...",
+            "Sample Project &Gallery...",
+            "&Kissinger / Thermal Desorption (TDS)...",
+            "&Work Hardening && Considere Analysis...",
+            "&XRD Peak && Williamson-Hall Analyzer...",
+            "&VASP Electronic Band && DOS Plotter...",
+            "Export Reproducible &Python Script...",
+            "&Tabbed Workspace View"
+        };
+        QSet<const QAction *> seenActions;
         for (const CommandEntry &ce : d_entries)
             seenTitles.insert(ce.title.toLower());
+        for (const char *raw : kCoveredAppTexts) {
+            const QString rawClean = cleanMnemonicText(QString::fromUtf8(raw)).trimmed().toLower();
+            if (!rawClean.isEmpty())
+                seenTitles.insert(rawClean);
+            const QString trClean = cleanMnemonicText(ApplicationWindow::tr(raw)).trimmed().toLower();
+            if (!trClean.isEmpty())
+                seenTitles.insert(trClean);
+        }
 
         const QList<QAction *> actions = d_app->findChildren<QAction *>();
         const QString catCommand = tr("Command");
-        QString disabledReasonText = tr("Not available in the current state.");
-        {
-            QWidget *aw = d_app->d_workspace.activeSubWindow();
-            if (!aw)
-                disabledReasonText =
-                        tr("Not available now: open or create a worksheet or graph first.");
-            else if (qobject_cast<Table *>(aw))
-                disabledReasonText = tr("Not available for a worksheet: click a graph window first.");
-            else if (qobject_cast<MultiLayer *>(aw))
-                disabledReasonText = tr("Not available for this window: click a worksheet (or "
-                                        "select a curve) first.");
-        }
         for (QAction *act : actions) {
             if (!act || act->isSeparator() || act->menu() != nullptr)
                 continue;
+            if (seenActions.contains(act)
+                || (!act->objectName().isEmpty()
+                    && coveredObjectNames.contains(act->objectName()))) {
+                continue;
+            }
             // Hidden actions (e.g. other-field features switched off) stay out of the list;
-            // disabled ones are listed dimmed with the reason (C12).
+            // disabled ones are listed dimmed with per-action reasons (C12).
             if (!act->isVisible())
                 continue;
 
-            const QString cleanTitle = cleanMnemonicText(act->text());
-            if (cleanTitle.isEmpty() || cleanTitle.size() <= 1)
+            const QString cleanTitle = cleanMnemonicText(act->text()).trimmed();
+            if (cleanTitle.isEmpty())
+                continue;
+            if (cleanTitle.size() == 1 && !cleanTitle.at(0).isLetter())
                 continue;
 
+            QString displayTitle = cleanTitle;
             const QString lowerTitle = cleanTitle.toLower();
-            if (seenTitles.contains(lowerTitle))
-                continue;
-            seenTitles.insert(lowerTitle);
+            const QString menuHint = actionParentMenuHint(act);
+            if (seenTitles.contains(lowerTitle)) {
+                if (menuHint.isEmpty() || seenTitles.contains((cleanTitle + QStringLiteral(" (") + menuHint + QLatin1Char(')')).toLower()))
+                    continue;
+                displayTitle = cleanTitle + QStringLiteral(" (") + menuHint + QLatin1Char(')');
+            }
+            seenTitles.insert(displayTitle.toLower());
+            seenActions.insert(act);
 
             CommandEntry e;
             e.id = act->objectName();
-            e.title = cleanTitle;
-            e.category = catCommand;
+            e.title = displayTitle;
+            e.category = !menuHint.isEmpty() ? menuHint : catCommand;
             e.shortcutText = act->shortcut().toString(QKeySequence::NativeText);
             const QString tip = cleanMnemonicText(act->toolTip());
-            e.searchKey = (cleanTitle + QLatin1Char(' ') + tip + QLatin1Char(' ')
-                           + act->objectName() + QLatin1Char(' ') + e.shortcutText)
-                                  .toLower();
+            e.searchKey = foldKanaAndSearchText(
+                    displayTitle + QLatin1Char(' ') + tip + QLatin1Char(' ') + menuHint
+                    + QLatin1Char(' ') + spacedObjectNameKeywords(act->objectName())
+                    + QLatin1Char(' ') + act->objectName() + QLatin1Char(' ') + e.shortcutText);
             // Use the action's own duotone id (the one shown in menus and the ribbon); the old
             // keyword guess from the object name gave many entries an unrelated icon. Without
             // an id the palette falls back to the action's icon.
@@ -1193,8 +1621,7 @@ void CommandPalettePopup::refreshCommands()
             e.priorityBoost = 0;
             if (!act->isEnabled()) {
                 e.disabled = true;
-                e.disabledReason = disabledReasonText;
-                e.category = disabledReasonText;
+                e.disabledReason = computeActionDisabledReason(act, d_app.data(), d_ribbon.data());
                 e.priorityBoost = -40;
             }
             d_entries.append(std::move(e));
@@ -1229,56 +1656,85 @@ int CommandPalettePopup::fuzzyMatchScore(const QString &needleLower, const Comma
     if (needleLower.isEmpty())
         return 100 + entry.priorityBoost;
 
-    const QString titleLower = entry.title.toLower();
-    if (titleLower == needleLower)
-        return 1200 + entry.priorityBoost;
-    if (titleLower.startsWith(needleLower))
-        return 900 + entry.priorityBoost;
+    const QString titleFolded = foldKanaAndSearchText(entry.title);
+    QStringList variants;
+    variants << needleLower;
+    const QString romHira = romajiToHiragana(needleLower);
+    if (!romHira.isEmpty() && romHira != needleLower)
+        variants << romHira;
 
-    const int subIdx = titleLower.indexOf(needleLower);
-    if (subIdx >= 0)
-        return 700 - qMin(120, subIdx * 3) + entry.priorityBoost;
-
-    const QStringList tokens = needleLower.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    if (tokens.size() > 1) {
-        bool allTokensFound = true;
-        int tokenBonus = 0;
-        for (const QString &tok : tokens) {
-            if (!entry.searchKey.contains(tok)) {
-                allTokensFound = false;
-                break;
-            }
-            if (titleLower.contains(tok))
-                tokenBonus += 40;
-        }
-        if (allTokensFound)
-            return 520 + tokenBonus + entry.priorityBoost;
-    }
-
-    if (entry.searchKey.contains(needleLower))
-        return 420 + entry.priorityBoost;
-
-    // Subsequence fuzzy match across titleLower
-    int pos = 0;
-    int streak = 0;
-    int score = 200;
-    for (int i = 0; i < needleLower.size(); ++i) {
-        const QChar ch = needleLower.at(i);
-        if (ch.isSpace())
+    int bestScore = -1;
+    for (int v = 0; v < variants.size(); ++v) {
+        const QString &q = variants.at(v);
+        const int romPenalty = (v == 0) ? 0 : -40;
+        if (titleFolded == q) {
+            bestScore = qMax(bestScore, 1200 + romPenalty + entry.priorityBoost);
             continue;
-        const int found = titleLower.indexOf(ch, pos);
-        if (found < 0)
-            return -1;
-        if (found == pos) {
-            streak += 1;
-            score += 18 + streak * 6;
-        } else {
-            streak = 0;
-            score -= qMin(25, found - pos);
         }
-        pos = found + 1;
+        if (titleFolded.startsWith(q)) {
+            bestScore = qMax(bestScore, 900 + romPenalty + entry.priorityBoost);
+            continue;
+        }
+        const int subIdx = titleFolded.indexOf(q);
+        if (subIdx >= 0) {
+            bestScore = qMax(bestScore, 700 - qMin(120, subIdx * 3) + romPenalty + entry.priorityBoost);
+            continue;
+        }
+
+        const QStringList tokens = q.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (tokens.size() > 1) {
+            bool allTokensFound = true;
+            int tokenBonus = 0;
+            for (const QString &tok : tokens) {
+                if (!entry.searchKey.contains(tok)) {
+                    allTokensFound = false;
+                    break;
+                }
+                if (titleFolded.contains(tok))
+                    tokenBonus += 40;
+            }
+            if (allTokensFound) {
+                bestScore = qMax(bestScore, 520 + tokenBonus + romPenalty + entry.priorityBoost);
+                continue;
+            }
+        }
+
+        if (entry.searchKey.contains(q)) {
+            bestScore = qMax(bestScore, 420 + romPenalty + entry.priorityBoost);
+            continue;
+        }
+
+        auto subseqScore = [&](const QString &haystack, int baseScore) -> int {
+            int pos = 0;
+            int streak = 0;
+            int score = baseScore;
+            for (int i = 0; i < q.size(); ++i) {
+                const QChar ch = q.at(i);
+                if (ch.isSpace())
+                    continue;
+                const int found = haystack.indexOf(ch, pos);
+                if (found < 0)
+                    return -1;
+                if (found == pos) {
+                    streak += 1;
+                    score += 18 + streak * 6;
+                } else {
+                    streak = 0;
+                    score -= qMin(25, found - pos);
+                }
+                pos = found + 1;
+            }
+            return qMax(1, score + romPenalty + (entry.priorityBoost / 2));
+        };
+
+        int ss = subseqScore(titleFolded, 200);
+        if (ss < 0)
+            ss = subseqScore(entry.searchKey, 120);
+        if (ss > 0)
+            bestScore = qMax(bestScore, ss);
     }
-    return qMax(1, score + (entry.priorityBoost / 2));
+
+    return bestScore;
 }
 
 void CommandPalettePopup::rebuildFilteredList(const QString &query)
@@ -1286,7 +1742,7 @@ void CommandPalettePopup::rebuildFilteredList(const QString &query)
     if (!d_list_widget)
         return;
 
-    const QString needle = query.trimmed().toLower();
+    const QString needle = foldKanaAndSearchText(query.trimmed());
     struct ScoredIdx
     {
         int index;
@@ -1326,6 +1782,7 @@ void CommandPalettePopup::rebuildFilteredList(const QString &query)
         item->setData(RoleCategoryText, ce.category);
         if (ce.disabled) {
             item->setData(RoleDisabledEntry, true);
+            item->setData(RoleDisabledReason, ce.disabledReason);
             item->setToolTip(ce.disabledReason);
         }
     }
@@ -1383,15 +1840,33 @@ bool CommandPalettePopup::eventFilter(QObject *watched, QEvent *event)
         if (watched == d_search_edit || watched == d_list_widget) {
             if (ke->key() == Qt::Key_Down) {
                 if (d_list_widget && d_list_widget->count() > 0) {
-                    const int next = qMin(d_list_widget->count() - 1,
-                                          d_list_widget->currentRow() + 1);
+                    const int cnt = d_list_widget->count();
+                    const int cur = d_list_widget->currentRow();
+                    const int next = (cur < 0) ? 0 : ((cur + 1) % cnt);
                     d_list_widget->setCurrentRow(next);
                 }
                 return true;
             }
             if (ke->key() == Qt::Key_Up) {
                 if (d_list_widget && d_list_widget->count() > 0) {
-                    const int prev = qMax(0, d_list_widget->currentRow() - 1);
+                    const int cnt = d_list_widget->count();
+                    const int cur = d_list_widget->currentRow();
+                    const int prev = (cur < 0) ? (cnt - 1) : ((cur - 1 + cnt) % cnt);
+                    d_list_widget->setCurrentRow(prev);
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_PageDown) {
+                if (d_list_widget && d_list_widget->count() > 0) {
+                    const int next = qMin(d_list_widget->count() - 1,
+                                          qMax(0, d_list_widget->currentRow()) + 8);
+                    d_list_widget->setCurrentRow(next);
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_PageUp) {
+                if (d_list_widget && d_list_widget->count() > 0) {
+                    const int prev = qMax(0, d_list_widget->currentRow() - 8);
                     d_list_widget->setCurrentRow(prev);
                 }
                 return true;
@@ -1776,6 +2251,12 @@ FocusTableDrawer::FocusTableDrawer(ApplicationWindow *app, QWidget *parent)
                 &FocusTableDrawer::prepareForAppShutdown);
     }
 
+    installEventFilter(this);
+    if (d_table_view)
+        d_table_view->installEventFilter(this);
+    if (d_table_combo)
+        d_table_combo->installEventFilter(this);
+
     retranslateUi();
 }
 
@@ -1788,6 +2269,12 @@ void FocusTableDrawer::prepareForAppShutdown()
 {
     d_shutting_down = true;
     d_syncing = true;
+
+    removeEventFilter(this);
+    if (d_table_view)
+        d_table_view->removeEventFilter(this);
+    if (d_table_combo)
+        d_table_combo->removeEventFilter(this);
 
     if (d_proxy_model)
         d_proxy_model->setSourceModel(nullptr);
@@ -2448,11 +2935,24 @@ void FocusTableDrawer::hideEvent(QHideEvent *event)
     }
 }
 
+bool FocusTableDrawer::eventFilter(QObject *watched, QEvent *event)
+{
+    if (!d_shutting_down && event && event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Escape) {
+            emit closeDrawerRequested();
+            return true;
+        }
+    }
+    return QFrame::eventFilter(watched, event);
+}
+
 // ============================================================================
 // FocusCanvasHudOverlay
 // ============================================================================
 
-static void syncFocusHudOleButton(QToolButton *btnOle, ApplicationWindow *app)
+static void syncFocusHudOleButton(QToolButton *btnOle, ApplicationWindow *app,
+                                  ModernRibbonBar *ribbon = nullptr)
 {
     if (!btnOle)
         return;
@@ -2466,6 +2966,12 @@ static void syncFocusHudOleButton(QToolButton *btnOle, ApplicationWindow *app)
             QMdiSubWindow *sw = app->d_workspace.activeSubWindow();
             hasGraph = (qobject_cast<MultiLayer *>(sw) != nullptr
                         || qobject_cast<Graph3D *>(sw) != nullptr);
+        }
+        if (!hasGraph && ribbon
+            && ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+            MyWidget *splitPlot = ribbon->splitPlotTarget();
+            hasGraph = (qobject_cast<MultiLayer *>(splitPlot) != nullptr
+                        || qobject_cast<Graph3D *>(splitPlot) != nullptr);
         }
     }
     if (!hasGraph) {
@@ -2509,7 +3015,7 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  color: #FFFFFF;"
             "}"
             "QFrame#FocusCanvasDarkPill QToolButton:disabled {"
-            "  color: rgba(248, 250, 252, 110);"
+            "  color: #CBD5E1;"
             "}"
             "QFrame#FocusCanvasDarkPill QToolButton::menu-indicator {"
             "  image: none;"
@@ -2562,8 +3068,16 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
     d_btn_presets->setMenu(d_presets_menu);
 
     d_btn_ole = makeDarkBtn(QStringLiteral("copy-ole"), [this]() {
-        if (!d_shutting_down && d_app)
-            d_app->copyGraphAsOleObject();
+        if (d_shutting_down || !d_app)
+            return;
+        QMdiSubWindow *sw = d_app->d_workspace.activeSubWindow();
+        if (qobject_cast<MultiLayer *>(sw) == nullptr && qobject_cast<Graph3D *>(sw) == nullptr
+            && d_ribbon
+            && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
+            if (MyWidget *splitPlot = d_ribbon->splitPlotTarget())
+                d_app->activateSubWindow(splitPlot);
+        }
+        d_app->copyGraphAsOleObject();
     });
 
     addPillSep();
@@ -2593,6 +3107,9 @@ FocusCanvasHudOverlay::FocusCanvasHudOverlay(ApplicationWindow *app, ModernRibbo
             "  background-color: #2563EB;"
             "  border: 1px solid #93C5FD;"
             "  color: #FFFFFF;"
+            "}"
+            "QToolButton:disabled {"
+            "  color: #CBD5E1;"
             "}");
 
     d_btn_worksheet = new QToolButton(viewportParent);
@@ -2855,7 +3372,7 @@ void FocusCanvasHudOverlay::retranslateUi()
     }
     if (d_btn_ole) {
         d_btn_ole->setText(ToriGraphOleUi::copyForPowerPointLabel());
-        syncFocusHudOleButton(d_btn_ole, d_app.data());
+        syncFocusHudOleButton(d_btn_ole, d_app.data(), d_ribbon.data());
     }
     if (d_btn_palette) {
         d_btn_palette->setText(tr("Search"));
@@ -2942,7 +3459,7 @@ void FocusCanvasHudOverlay::setOverlayActive(bool active)
     if (d_table_drawer && isTableDrawerVisible())
         d_table_drawer->refreshTableList(true);
 
-    syncFocusHudOleButton(d_btn_ole, d_app.data());
+    syncFocusHudOleButton(d_btn_ole, d_app.data(), d_ribbon.data());
 
     show();
     if (d_btn_worksheet)
@@ -2960,45 +3477,6 @@ void FocusCanvasHudOverlay::setTableDrawerVisible(bool visible)
     if (d_shutting_down)
         return;
 
-    auto findVisibleSplitTable = [this]() -> Table * {
-        if (!d_app || !d_ribbon
-            || d_ribbon->workspaceLayoutMode() != ModernRibbonBar::LayoutSplitTableGraph) {
-            return nullptr;
-        }
-        const QList<QMdiSubWindow *> subs =
-                d_app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
-        for (int i = subs.size() - 1; i >= 0; --i) {
-            if (Table *tbl = qobject_cast<Table *>(subs.at(i))) {
-                if (!tbl->isHidden() && tbl->status() != MyWidget::Hidden
-                    && !d_app->hiddenWindows.contains(tbl)
-                    && !d_app->outWindows.contains(tbl)
-                    && !tbl->name().startsWith(QLatin1String("RpcFitCurve"))) {
-                    return tbl;
-                }
-            }
-        }
-        return nullptr;
-    };
-
-    if (visible && d_active) {
-        if (Table *splitTbl = findVisibleSplitTable()) {
-            // Left Split worksheet is already visible — focus/activate it directly
-            // instead of floating a duplicate FocusTableDrawer card on top of it.
-            if (d_btn_worksheet && d_btn_worksheet->isChecked()) {
-                QSignalBlocker blocker(d_btn_worksheet.data());
-                d_btn_worksheet->setChecked(false);
-            }
-            if (d_table_drawer) {
-                d_table_drawer->hide();
-                d_table_drawer->setCurrentTable(splitTbl);
-            }
-            d_app->d_workspace.setActiveSubWindow(splitTbl);
-            splitTbl->setFocus();
-            repositionOverlayWidgets();
-            return;
-        }
-    }
-
     if (d_btn_worksheet && d_btn_worksheet->isChecked() != visible) {
         QSignalBlocker blocker(d_btn_worksheet.data());
         d_btn_worksheet->setChecked(visible);
@@ -3009,9 +3487,16 @@ void FocusCanvasHudOverlay::setTableDrawerVisible(bool visible)
     if (visible && d_active) {
         d_table_drawer->refreshTableList(true);
         d_table_drawer->show();
+        d_table_drawer->raise();
         repositionOverlayWidgets();
     } else {
+        const bool hadDrawerFocus = d_table_drawer->isAncestorOf(QApplication::focusWidget())
+                || QApplication::focusWidget() == d_table_drawer;
         d_table_drawer->hide();
+        if (hadDrawerFocus && d_app && d_ribbon) {
+            if (MyWidget *splitPlot = d_ribbon->splitPlotTarget())
+                splitPlot->setFocus();
+        }
     }
 }
 
@@ -3024,7 +3509,7 @@ void FocusCanvasHudOverlay::refreshActiveContext()
 {
     if (d_shutting_down)
         return;
-    syncFocusHudOleButton(d_btn_ole, d_app.data());
+    syncFocusHudOleButton(d_btn_ole, d_app.data(), d_ribbon.data());
     if (d_active) {
         if (isTableDrawerVisible() && d_table_drawer)
             d_table_drawer->refreshTableList(true);
@@ -3134,29 +3619,6 @@ void FocusCanvasHudOverlay::repositionOverlayWidgets()
     raise();
 
     if (d_table_drawer && !d_table_drawer->isHidden()) {
-        if (d_app && d_ribbon
-            && d_ribbon->workspaceLayoutMode() == ModernRibbonBar::LayoutSplitTableGraph) {
-            bool hasVisibleSplitTbl = false;
-            for (QMdiSubWindow *sw : d_app->d_workspace.subWindowList()) {
-                if (Table *tbl = qobject_cast<Table *>(sw)) {
-                    if (!tbl->isHidden() && tbl->status() != MyWidget::Hidden
-                        && !d_app->hiddenWindows.contains(tbl)
-                        && !d_app->outWindows.contains(tbl)
-                        && !tbl->name().startsWith(QLatin1String("RpcFitCurve"))) {
-                        hasVisibleSplitTbl = true;
-                        break;
-                    }
-                }
-            }
-            if (hasVisibleSplitTbl) {
-                d_table_drawer->hide();
-                if (d_btn_worksheet && d_btn_worksheet->isChecked()) {
-                    QSignalBlocker blocker(d_btn_worksheet.data());
-                    d_btn_worksheet->setChecked(false);
-                }
-                return;
-            }
-        }
         const int drawerTop = topY + ph + 10;
         const int drawerH = qMax(200, vpSz.height() - drawerTop - 14);
         const int drawerW =
@@ -3673,20 +4135,23 @@ void ModernRibbonBar::updateHeaderResponsiveness()
         bool showLang;
         bool shortCmdFocus;
         bool compactLayout;
+        bool langIconOnly;
+        bool focusIconOnly;
         bool modeIconOnly;
         bool cmdIconOnly;
         bool showCtx;
     };
 
-    // C14: the language switch stays in every tier (icon-only when narrow). It used to vanish
-    // below 1560 px, i.e. on most laptops, leaving only the menu bar to change the language.
+    // Progressive degradation so 1366x768 (EN & JA) keeps Search, Tabs|Split|Free, Focus, and
+    // context badge legible with labels instead of collapsing all 6 header pills to icons.
     const HeaderTier kTiers[] = {
-        { true, false, false, false, false, true },   // Ultra-wide: full labels + language
-        { true, false, false, false, false, true },   // Wide: search pill + full mode labels + ctx
-        { true, true, true, false, false, true },     // Medium: search pill + short mode labels + ctx
-        { true, true, true, true, false, true },      // 1280px+: always-visible 180-210px search pill + icon segmented modes + ctx
-        { true, true, true, true, false, false },     // Compact: search pill + icon segmented modes
-        { true, true, true, true, true, false }       // Minimal icon-only fallback
+        { true, false, false, false, false, false, false, true }, // Ultra-wide: full labels
+        { true, true, false, false, false, false, false, true },  // Wide (~1500px): compact cmd/focus + full mode labels
+        { true, true, true, true, false, false, false, true },    // Laptop (~1366px): Tabs|Split|Free, Focus, icon Lang/Guide, Search + ctx
+        { true, true, true, true, true, false, false, true },     // ~1280px with ctx: icon Focus + labeled mode pills
+        { true, true, true, true, true, false, false, false },    // ~1150px: hide ctx before collapsing mode labels
+        { true, true, true, true, true, true, false, false },     // Compact: search pill + icon modes
+        { true, true, true, true, true, true, true, false }       // Minimal icon-only fallback
     };
 
     auto applyButtonsForTier = [this](const HeaderTier &t) {
@@ -3699,8 +4164,8 @@ void ModernRibbonBar::updateHeaderResponsiveness()
                     : Qt::ToolButtonTextBesideIcon;
             if (d_btn_cmd_palette->toolButtonStyle() != searchStyle)
                 d_btn_cmd_palette->setToolButtonStyle(searchStyle);
-            const int minW = t.cmdIconOnly ? 0 : 132;
-            const int maxW = t.cmdIconOnly ? 36 : 168;
+            const int minW = t.cmdIconOnly ? 0 : 124;
+            const int maxW = t.cmdIconOnly ? 36 : (t.shortCmdFocus ? 168 : 216);
             if (d_btn_cmd_palette->minimumWidth() != minW)
                 d_btn_cmd_palette->setMinimumWidth(minW);
             if (d_btn_cmd_palette->maximumWidth() != maxW)
@@ -3722,7 +4187,7 @@ void ModernRibbonBar::updateHeaderResponsiveness()
                 d_btn_layout_split->setText(wantSplit);
         }
         if (d_btn_layout_mdi) {
-            const QString wantMdi = t.compactLayout ? tr("Free View") : tr("Free MDI");
+            const QString wantMdi = t.compactLayout ? tr("Free") : tr("Free MDI");
             if (d_btn_layout_mdi->text() != wantMdi)
                 d_btn_layout_mdi->setText(wantMdi);
         }
@@ -3730,19 +4195,33 @@ void ModernRibbonBar::updateHeaderResponsiveness()
             const QString wantGuide = tr("Guide");
             if (d_btn_help_guide->text() != wantGuide)
                 d_btn_help_guide->setText(wantGuide);
-            const Qt::ToolButtonStyle helpStyle =
-                    t.shortCmdFocus ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
+            const Qt::ToolButtonStyle helpStyle = (t.shortCmdFocus || t.langIconOnly)
+                    ? Qt::ToolButtonIconOnly
+                    : Qt::ToolButtonTextBesideIcon;
             if (d_btn_help_guide->toolButtonStyle() != helpStyle)
                 d_btn_help_guide->setToolButtonStyle(helpStyle);
         }
 
-        const Qt::ToolButtonStyle pillStyle =
+        const Qt::ToolButtonStyle segStyle =
                 t.modeIconOnly ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon;
-        QToolButton *modePills[] = { d_btn_layout_tabbed, d_btn_layout_split, d_btn_layout_mdi,
-                                     d_btn_focus_mode, d_btn_lang_switch };
-        for (QToolButton *hb : modePills) {
-            if (hb && hb->toolButtonStyle() != pillStyle)
-                hb->setToolButtonStyle(pillStyle);
+        QToolButton *segPills[] = { d_btn_layout_tabbed, d_btn_layout_split, d_btn_layout_mdi };
+        for (QToolButton *hb : segPills) {
+            if (hb && hb->toolButtonStyle() != segStyle)
+                hb->setToolButtonStyle(segStyle);
+        }
+        if (d_btn_focus_mode) {
+            const Qt::ToolButtonStyle focusStyle = (t.modeIconOnly || t.focusIconOnly)
+                    ? Qt::ToolButtonIconOnly
+                    : Qt::ToolButtonTextBesideIcon;
+            if (d_btn_focus_mode->toolButtonStyle() != focusStyle)
+                d_btn_focus_mode->setToolButtonStyle(focusStyle);
+        }
+        if (d_btn_lang_switch) {
+            const Qt::ToolButtonStyle langStyle = (t.modeIconOnly || t.langIconOnly)
+                    ? Qt::ToolButtonIconOnly
+                    : Qt::ToolButtonTextBesideIcon;
+            if (d_btn_lang_switch->toolButtonStyle() != langStyle)
+                d_btn_lang_switch->setToolButtonStyle(langStyle);
         }
     };
 
@@ -3823,6 +4302,16 @@ void ModernRibbonBar::prepareForAppShutdown()
         disconnect(&d_app->d_workspace, nullptr, this, nullptr);
         if (QWidget *vp = d_app->d_workspace.viewport())
             vp->removeEventFilter(this);
+        if (QStatusBar *sb = d_app->statusBar())
+            sb->removeEventFilter(this);
+    }
+    if (d_watched_empty_graph_pane) {
+        d_watched_empty_graph_pane->removeEventFilter(this);
+        d_watched_empty_graph_pane.clear();
+    }
+    if (d_welcome_hub_card) {
+        d_welcome_hub_card->removeEventFilter(this);
+        delete d_welcome_hub_card.data();
     }
 
     if (d_zoom_bound_ml) {
@@ -4075,7 +4564,7 @@ void ModernRibbonBar::buildAllTabs()
                     if (d_app)
                         CurveMathTools::showSampleGalleryDialog(d_app);
                 },
-                false, true);
+                false, false);
 
         // C4: Undo / Redo on Home (icon only: Home must fit 1280 px without scrolling)
         QHBoxLayout *gEdit = nullptr;
@@ -4092,10 +4581,17 @@ void ModernRibbonBar::buildAllTabs()
             tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
         }
 
-        // C4/B5: "Copy for PowerPoint" on Home as well (bound to the application's action).
-        // It fits 1280 px now that rarely used groups fold into drop-downs (C14).
+        // C4/B5: "Copy for PowerPoint" & "Paste (Ctrl+V)" on Home.
         QHBoxLayout *gClipboard = nullptr;
         createRibbonGroup(row, &gClipboard, true, [this]() { return tr("Clipboard"); }, 85);
+        QToolButton *pasteBtn = addRibbonButton(
+                gClipboard, QStringLiteral("paste"),
+                [this]() { return tr("Paste (Ctrl+V)"); },
+                [this]() {
+                    return tr("Paste clipboard data or table cells into worksheet (Ctrl+V)");
+                },
+                [this]() { pasteFromClipboardSmart(); });
+        pasteBtn->setObjectName(QStringLiteral("RibbonHomePasteBtn"));
         addActionButton(
                 gClipboard, QStringLiteral("copy-ole"),
                 []() { return ToriGraphOleUi::copyForPowerPointLabel(); },
@@ -4149,7 +4645,7 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (!d_app)
                         return;
-                    Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow());
+                    Table *tbl = resolvedWorksheetTarget();
                     if (!tbl) {
                         d_app->showUxHint(tr("Click a worksheet first to add a column."));
                         return;
@@ -5298,9 +5794,7 @@ void ModernRibbonBar::buildAllTabs()
                 gFormula, QStringLiteral("formula"), [this]() { return tr("Formula F(x)="); },
                 [this]() { return tr("Edit column formula, long name, units, and numeric format"); },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+                    if (Table *tbl = resolvedWorksheetTarget()) {
                         const int col = qMax(0, tbl->firstSelectedColumn());
                         tbl->showColumnPropertiesDialog(col);
                     }
@@ -5309,9 +5803,7 @@ void ModernRibbonBar::buildAllTabs()
                 gFormula, QStringLiteral("sort-table"), [this]() { return tr("Sort..."); },
                 [this]() { return tr("Sort worksheet columns or rows"); },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+                    if (Table *tbl = resolvedWorksheetTarget()) {
                         if (tbl->d_future_table) {
                             QList<Column *> cols;
                             for (int c = 0; c < tbl->numCols(); ++c) {
@@ -5329,9 +5821,7 @@ void ModernRibbonBar::buildAllTabs()
                     return tr("Copy the top row of the selection down to the remaining selected cells (Ctrl+D)");
                 },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow()))
+                    if (Table *tbl = resolvedWorksheetTarget())
                         tbl->fillSelectionDown();
                 }));
         trackTblBtn(addRibbonButton(
@@ -5340,9 +5830,7 @@ void ModernRibbonBar::buildAllTabs()
                     return tr("Find or replace values in the active worksheet (Ctrl+F / Ctrl+H)");
                 },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow()))
+                    if (Table *tbl = resolvedWorksheetTarget())
                         tbl->showFindReplaceDialog(true);
                 }));
 
@@ -5351,18 +5839,14 @@ void ModernRibbonBar::buildAllTabs()
                 gCols, QStringLiteral("add-column"), [this]() { return tr("Add Column"); },
                 [this]() { return tr("Append Y Column to Active Worksheet"); },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow()))
+                    if (Table *tbl = resolvedWorksheetTarget())
                         tbl->addCol();
                 }));
         d_btn_ws_reimport = addRibbonButton(
                 gCols, QStringLiteral("recalc-now"), [this]() { return tr("Re-import"); },
                 [this]() { return tr("Reload data from the original CSV / Excel source file"); },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+                    if (Table *tbl = resolvedWorksheetTarget()) {
                         if (tbl->hasImportSource())
                             tbl->reimportFromSource();
                     }
@@ -5373,9 +5857,7 @@ void ModernRibbonBar::buildAllTabs()
                     return tr("Copy selected cells together with Long Name and Units headers");
                 },
                 [this]() {
-                    if (!d_app)
-                        return;
-                    if (Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow()))
+                    if (Table *tbl = resolvedWorksheetTarget())
                         tbl->copySelectionWithHeaders();
                 }));
         trackTblBtn(addRibbonButton(
@@ -5384,8 +5866,11 @@ void ModernRibbonBar::buildAllTabs()
                 [this]() {
                     if (!d_app)
                         return;
-                    if (qobject_cast<Table *>(d_app->d_workspace.activeSubWindow()))
+                    if (Table *tbl = resolvedWorksheetTarget()) {
+                        if (d_app->d_workspace.activeSubWindow() != tbl)
+                            d_app->activateSubWindow(tbl);
                         d_app->convertTableToMatrix();
+                    }
                 }));
 
         row->addStretch(1);
@@ -5918,6 +6403,7 @@ void ModernRibbonBar::retranslateUi()
         d_command_palette->retranslateUi();
     if (d_focus_hud_overlay)
         d_focus_hud_overlay->retranslateUi();
+    retranslateWelcomeHub();
 
     // C14: folded-group buttons and the minimize hint on the tab row
     registerRibbonCollapseTranslations();
@@ -5986,6 +6472,368 @@ void ModernRibbonBar::syncCheckableStates()
     }
 }
 
+Table *ModernRibbonBar::resolvedWorksheetTarget() const
+{
+    if (d_shutting_down || !d_app)
+        return nullptr;
+
+    if (Table *activeTbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow())) {
+        if (!d_app->hiddenWindows.contains(activeTbl) && !d_app->outWindows.contains(activeTbl)
+            && activeTbl->status() != MyWidget::Hidden) {
+            return activeTbl;
+        }
+    }
+
+    if (d_layout_mode == LayoutSplitTableGraph) {
+        auto isEligibleTable = [this](Table *tbl) -> bool {
+            if (!tbl || tbl->status() == MyWidget::Hidden || tbl->isHidden())
+                return false;
+            if (d_app->hiddenWindows.contains(tbl) || d_app->outWindows.contains(tbl))
+                return false;
+            if (tbl->name().startsWith(QLatin1String("RpcFitCurve")))
+                return false;
+            return true;
+        };
+
+        if (isEligibleTable(d_split_table.data()))
+            return d_split_table.data();
+
+        const QList<QMdiSubWindow *> ordered =
+                d_app->d_workspace.subWindowList(QMdiArea::ActivationHistoryOrder);
+        for (int i = ordered.size() - 1; i >= 0; --i) {
+            if (Table *t = qobject_cast<Table *>(ordered.at(i))) {
+                if (isEligibleTable(t))
+                    return t;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+void ModernRibbonBar::pasteFromClipboardSmart()
+{
+    if (d_shutting_down || !d_app)
+        return;
+
+    QWidget *aw = d_app->d_workspace.activeSubWindow();
+    if (qobject_cast<Matrix *>(aw) || qobject_cast<Note *>(aw)) {
+        d_app->pasteSelection();
+        return;
+    }
+
+    const QClipboard *cb = QApplication::clipboard();
+    const QMimeData *mime = cb ? cb->mimeData() : nullptr;
+    if (!mime || (!mime->hasText() && !mime->hasHtml()
+                  && !mime->hasFormat(QStringLiteral("text/tab-separated-values"))
+                  && !mime->hasFormat(QStringLiteral("text/csv"))
+                  && !mime->hasUrls())) {
+        d_app->showUxHint(
+                tr("Clipboard is empty. Copy cells in Excel or TSV/CSV text first, then press Ctrl+V."),
+                4500);
+        return;
+    }
+
+    if (mime->hasUrls() && !mime->hasText()) {
+        for (const QUrl &u : mime->urls()) {
+            if (u.isLocalFile()) {
+                d_app->open(u.toLocalFile());
+                return;
+            }
+        }
+    }
+
+    Table *tbl = qobject_cast<Table *>(aw);
+    if (!tbl)
+        tbl = resolvedWorksheetTarget();
+    if (!tbl)
+        tbl = d_app->newTable();
+    if (tbl) {
+        if (d_app->d_workspace.activeSubWindow() != tbl)
+            d_app->activateSubWindow(tbl);
+        tbl->pasteSelection();
+        updateEmptyWelcomeHub();
+    } else {
+        d_app->pasteSelection();
+    }
+}
+
+void ModernRibbonBar::retranslateWelcomeHub()
+{
+    if (d_shutting_down || !d_welcome_hub_card)
+        return;
+    if (d_welcome_title_lbl)
+        d_welcome_title_lbl->setText(tr("Start Analyzing Data in Seconds"));
+    if (d_welcome_subtitle_lbl) {
+        d_welcome_subtitle_lbl->setText(
+                tr("Paste from Excel, drop a CSV/XLSX/XRD/OPJU file here, or open a sample project."));
+    }
+    if (d_welcome_drop_lbl) {
+        d_welcome_drop_lbl->setText(
+                tr("Drop CSV / XLSX / XRD / TXT / OPJU files anywhere here"));
+    }
+    if (d_welcome_paste_btn)
+        d_welcome_paste_btn->setText(tr("Paste from Excel (Ctrl+V)"));
+    if (d_welcome_open_btn)
+        d_welcome_open_btn->setText(tr("Open File..."));
+    if (d_welcome_recent_btn)
+        d_welcome_recent_btn->setText(tr("Recent"));
+    if (d_welcome_sample_btn) {
+        d_welcome_sample_btn->setText(tr("Samples"));
+        d_welcome_sample_btn->setToolTip(
+                tr("Show 10+ Sample Templates (XRD / Raman / Tensile / Cyclic / Peak Fit)"));
+    }
+    if (d_welcome_new_table_btn)
+        d_welcome_new_table_btn->setText(tr("New Worksheet"));
+    if (d_welcome_guide_btn)
+        d_welcome_guide_btn->setText(tr("Quick Guide"));
+}
+
+void ModernRibbonBar::updateEmptyWelcomeHub()
+{
+    if (d_shutting_down || !d_app || d_updating_welcome_hub)
+        return;
+
+    struct ReentrancyGuard {
+        bool &flag;
+        explicit ReentrancyGuard(bool &f) : flag(f) { flag = true; }
+        ~ReentrancyGuard() { flag = false; }
+    } guard(d_updating_welcome_hub);
+
+    QWidget *vp = d_app->d_workspace.viewport();
+    if (vp) {
+        QWidget *emptyPane = vp->findChild<QWidget *>(QStringLiteral("emptyGraphPaneCard"));
+        if (emptyPane && emptyPane != d_watched_empty_graph_pane) {
+            if (d_watched_empty_graph_pane)
+                d_watched_empty_graph_pane->removeEventFilter(this);
+            d_watched_empty_graph_pane = emptyPane;
+            emptyPane->installEventFilter(this);
+        }
+    }
+
+    int visibleWindows = 0;
+    if (Folder *curFolder = d_app->currentFolder()) {
+        for (MyWidget *mw : curFolder->windowsList()) {
+            if (!mw || mw->status() == MyWidget::Hidden)
+                continue;
+            if (d_app->hiddenWindows.contains(mw) || d_app->outWindows.contains(mw))
+                continue;
+            if (mw->isHidden())
+                continue;
+            ++visibleWindows;
+        }
+    } else {
+        for (QMdiSubWindow *sw : d_app->d_workspace.subWindowList()) {
+            if (sw && !sw->isHidden())
+                ++visibleWindows;
+        }
+    }
+
+    const bool hasTableOnlySplit = (d_layout_mode == LayoutSplitTableGraph && d_split_table
+                                    && !d_split_plot && !d_split_table->isHidden());
+    if (d_watched_empty_graph_pane && (visibleWindows == 0 || hasTableOnlySplit))
+        d_watched_empty_graph_pane->hide();
+
+    const bool suppressedEnv = !vp || !vp->isVisible() || d_app->isHeadlessMode()
+            || d_app->isOleEmbeddedMode() || d_app->batchMode() || d_focus_hud_mode;
+    const bool showHub =
+            !suppressedEnv && (visibleWindows == 0) && vp->width() >= 260 && vp->height() >= 200;
+
+    if (!showHub) {
+        if (d_welcome_hub_card)
+            d_welcome_hub_card->hide();
+        return;
+    }
+
+    if (!d_welcome_hub_card) {
+        QFrame *card = new QFrame(vp);
+        card->setObjectName(QStringLiteral("CenterWelcomeHubCard"));
+        card->setAcceptDrops(true);
+        card->setFocusPolicy(Qt::StrongFocus);
+        card->installEventFilter(this);
+        card->setStyleSheet(QStringLiteral(
+                "QFrame#CenterWelcomeHubCard {"
+                "  background-color: #FFFFFF;"
+                "  border: 1px solid #CBD5E1;"
+                "  border-radius: 14px;"
+                "}"
+                "QLabel#WelcomeHubTitle {"
+                "  color: #0F172A;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+                "  font-size: 14pt;"
+                "  font-weight: 700;"
+                "}"
+                "QLabel#WelcomeHubSubtitle {"
+                "  color: #475569;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+                "  font-size: 10pt;"
+                "}"
+                "QLabel#WelcomeHubDropZone {"
+                "  background-color: #F8FAFC;"
+                "  color: #334155;"
+                "  border: 1.5px dashed #94A3B8;"
+                "  border-radius: 10px;"
+                "  padding: 12px 14px;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+                "  font-size: 10pt;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton#WelcomeHubPasteBtn {"
+                "  background-color: #2563EB;"
+                "  color: #FFFFFF;"
+                "  border: 1px solid #1D4ED8;"
+                "  border-radius: 8px;"
+                "  padding: 7px 14px;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+                "  font-size: 10pt;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton#WelcomeHubPasteBtn:hover {"
+                "  background-color: #1D4ED8;"
+                "}"
+                "QPushButton.WelcomeHubSecondaryBtn {"
+                "  background-color: #F8FAFC;"
+                "  color: #0F172A;"
+                "  border: 1px solid #CBD5E1;"
+                "  border-radius: 8px;"
+                "  padding: 7px 12px;"
+                "  font-family: 'Yu Gothic UI', 'Segoe UI', 'Meiryo UI', sans-serif;"
+                "  font-size: 10pt;"
+                "  font-weight: 600;"
+                "}"
+                "QPushButton.WelcomeHubSecondaryBtn:hover {"
+                "  background-color: #EFF6FF;"
+                "  border: 1px solid #2563EB;"
+                "  color: #1D4ED8;"
+                "}"));
+
+        QVBoxLayout *vlay = new QVBoxLayout(card);
+        vlay->setContentsMargins(24, 22, 24, 22);
+        vlay->setSpacing(12);
+
+        d_welcome_title_lbl = new QLabel(card);
+        d_welcome_title_lbl->setObjectName(QStringLiteral("WelcomeHubTitle"));
+        d_welcome_title_lbl->setAlignment(Qt::AlignCenter);
+        d_welcome_title_lbl->setWordWrap(true);
+        vlay->addWidget(d_welcome_title_lbl);
+
+        d_welcome_subtitle_lbl = new QLabel(card);
+        d_welcome_subtitle_lbl->setObjectName(QStringLiteral("WelcomeHubSubtitle"));
+        d_welcome_subtitle_lbl->setAlignment(Qt::AlignCenter);
+        d_welcome_subtitle_lbl->setWordWrap(true);
+        vlay->addWidget(d_welcome_subtitle_lbl);
+
+        d_welcome_drop_lbl = new QLabel(card);
+        d_welcome_drop_lbl->setObjectName(QStringLiteral("WelcomeHubDropZone"));
+        d_welcome_drop_lbl->setAlignment(Qt::AlignCenter);
+        d_welcome_drop_lbl->setWordWrap(true);
+        vlay->addWidget(d_welcome_drop_lbl);
+
+        QGridLayout *grid = new QGridLayout();
+        grid->setSpacing(8);
+
+        auto makeBtn = [card](const QString &iconId, bool primary) -> QPushButton * {
+            QPushButton *btn = new QPushButton(card);
+            btn->setIcon(IconLoader::duotoneIcon(iconId, 18, primary));
+            btn->setIconSize(QSize(18, 18));
+            btn->setMinimumHeight(36);
+            btn->setCursor(Qt::PointingHandCursor);
+            if (!primary)
+                btn->setProperty("class", QStringLiteral("WelcomeHubSecondaryBtn"));
+            return btn;
+        };
+
+        d_welcome_paste_btn = makeBtn(QStringLiteral("paste"), true);
+        d_welcome_paste_btn->setObjectName(QStringLiteral("WelcomeHubPasteBtn"));
+        connect(d_welcome_paste_btn, &QPushButton::clicked, this,
+                &ModernRibbonBar::pasteFromClipboardSmart);
+        grid->addWidget(d_welcome_paste_btn, 0, 0, 1, 2);
+
+        d_welcome_open_btn = makeBtn(QStringLiteral("file-open"), false);
+        connect(d_welcome_open_btn, &QPushButton::clicked, this, [this]() {
+            if (d_app)
+                d_app->open();
+        });
+        grid->addWidget(d_welcome_open_btn, 1, 0);
+
+        d_welcome_recent_btn = makeBtn(QStringLiteral("folder-open"), false);
+        d_welcome_recent_menu = new QMenu(d_welcome_recent_btn);
+        d_welcome_recent_menu->setProperty("class", QStringLiteral("RibbonDropdownMenu"));
+        connect(d_welcome_recent_menu, &QMenu::aboutToShow, this, [this]() {
+            if (!d_welcome_recent_menu || !d_app)
+                return;
+            d_welcome_recent_menu->clear();
+            int added = 0;
+            for (const QString &fn : d_app->recentProjects) {
+                if (fn.trimmed().isEmpty())
+                    continue;
+                const QFileInfo fi(fn);
+                QAction *act = d_welcome_recent_menu->addAction(
+                        fi.fileName().isEmpty() ? fn : fi.fileName(), this,
+                        [this, fn]() {
+                            if (d_app)
+                                d_app->open(fn);
+                        });
+                act->setToolTip(fn);
+                if (++added >= 10)
+                    break;
+            }
+            if (added == 0) {
+                QAction *emptyAct = d_welcome_recent_menu->addAction(tr("No recent files"));
+                emptyAct->setEnabled(false);
+            }
+        });
+        d_welcome_recent_btn->setMenu(d_welcome_recent_menu);
+        grid->addWidget(d_welcome_recent_btn, 1, 1);
+
+        d_welcome_sample_btn = makeBtn(QStringLiteral("sample-gallery"), false);
+        connect(d_welcome_sample_btn, &QPushButton::clicked, this, [this]() {
+            if (d_app)
+                CurveMathTools::showSampleGalleryDialog(d_app);
+        });
+        grid->addWidget(d_welcome_sample_btn, 2, 0);
+
+        d_welcome_new_table_btn = makeBtn(QStringLiteral("new-table"), false);
+        connect(d_welcome_new_table_btn, &QPushButton::clicked, this, [this]() {
+            if (d_app)
+                d_app->newTable();
+        });
+        grid->addWidget(d_welcome_new_table_btn, 2, 1);
+
+        d_welcome_guide_btn = makeBtn(QStringLiteral("help"), false);
+        connect(d_welcome_guide_btn, &QPushButton::clicked, this, [this]() {
+            if (!d_app)
+                return;
+            if (QAction *a = d_app->findChild<QAction *>(QStringLiteral("actionShowHelp")))
+                a->trigger();
+            else
+                QMetaObject::invokeMethod(d_app.data(), "showHelp", Qt::DirectConnection);
+        });
+        grid->addWidget(d_welcome_guide_btn, 3, 0, 1, 2);
+
+        vlay->addLayout(grid);
+        d_welcome_hub_card = card;
+        retranslateWelcomeHub();
+    }
+
+    const int cardW = qBound(240, qMin(520, vp->width() - 32), qMax(240, vp->width() - 16));
+    if (d_welcome_hub_card->width() != cardW) {
+        d_welcome_hub_card->setFixedWidth(cardW);
+        d_welcome_hub_card->adjustSize();
+    }
+    const int cardH = qMin(qMax(220, vp->height() - 24),
+                           qMax(280, d_welcome_hub_card->sizeHint().height()));
+    const int x = qMax(8, (vp->width() - cardW) / 2);
+    const int y = qMax(8, (vp->height() - cardH) / 2);
+    const QRect wantRect(x, y, cardW, cardH);
+    if (d_welcome_hub_card->geometry() != wantRect)
+        d_welcome_hub_card->setGeometry(wantRect);
+    if (d_welcome_hub_card->isHidden()) {
+        d_welcome_hub_card->show();
+        d_welcome_hub_card->raise();
+    }
+}
+
 void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
 {
     if (d_shutting_down)
@@ -6031,19 +6879,36 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
         updateHeaderResponsiveness();
     }
 
+    if (d_app) {
+        if (QStatusBar *sb = d_app->statusBar()) {
+            if (QToolButton *cmdHint =
+                        sb->findChild<QToolButton *>(QStringLiteral("StatusBarCommandHintBtn"))) {
+                sb->removeWidget(cmdHint);
+                cmdHint->hide();
+                cmdHint->deleteLater();
+            }
+        }
+    }
+
     Table *activeTable = qobject_cast<Table *>(activeWindow);
+    Table *wsTarget = activeTable ? activeTable : resolvedWorksheetTarget();
     MultiLayer *activeMl = qobject_cast<MultiLayer *>(activeWindow);
     const bool hasGraph = (activeMl != nullptr || qobject_cast<Graph3D *>(activeWindow) != nullptr);
 
-    // E5-1: Gate Table-only actions to an active Table so they never invoke unchecked casts.
+    if (activeMl) {
+        if (Table *srcTbl = sourceTableFromMultiLayer(activeMl))
+            ToriUx::dismissPlotThisDataBar(srcTbl);
+    }
+
+    // Gate Table actions to active Table OR visible paired Split Table.
     if (d_act_add_column)
-        d_act_add_column->setEnabled(activeTable != nullptr);
+        d_act_add_column->setEnabled(wsTarget != nullptr);
     for (const QPointer<QWidget> &w : d_table_context_widgets) {
         if (w)
-            w->setEnabled(activeTable != nullptr);
+            w->setEnabled(wsTarget != nullptr);
     }
     if (d_btn_ws_reimport)
-        d_btn_ws_reimport->setEnabled(activeTable != nullptr && activeTable->hasImportSource());
+        d_btn_ws_reimport->setEnabled(wsTarget != nullptr && wsTarget->hasImportSource());
 
     // A1-8: Disable Copy for PowerPoint when no graph window is active, while keeping the
     // double-click re-editing hint in the tooltip.
@@ -6068,6 +6933,7 @@ void ModernRibbonBar::updateActiveContext(MyWidget *activeWindow)
     syncCheckableStates();
     if (d_focus_hud_overlay)
         d_focus_hud_overlay->refreshActiveContext();
+    updateEmptyWelcomeHub();
 }
 
 void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
@@ -6182,6 +7048,7 @@ void ModernRibbonBar::setWorkspaceLayoutMode(WorkspaceLayoutMode mode)
 
     if (d_focus_hud_overlay && d_focus_hud_mode)
         d_focus_hud_overlay->repositionOverlayWidgets();
+    updateEmptyWelcomeHub();
 
     emit workspaceLayoutModeChanged(mode);
 }
@@ -6394,8 +7261,10 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
 
     const int tileTopY = focusHudActive ? 48 : 0;
     const double splitRatio = qBound(0.15, d_split_left_ratio, 0.85);
-    const int leftW = qMax(120, qRound(vpRect.width() * splitRatio));
-    const int rightW = qMax(120, vpRect.width() - leftW);
+    const int minPaneW = (vpRect.width() < 1000) ? qMax(80, qMin(120, vpRect.width() / 4)) : 120;
+    const int leftW = qBound(minPaneW, qRound(vpRect.width() * splitRatio),
+                             qMax(minPaneW, vpRect.width() - minPaneW));
+    const int fullW = qMax(minPaneW, vpRect.width());
     const int fullH = qMax(100, vpRect.height() - tileTopY);
 
     if (d_split_table && d_split_table != targetTable)
@@ -6424,10 +7293,13 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
         if (targetTable->minimumWidth() > leftW)
             targetTable->setMinimumWidth(leftW);
         targetTable->setGeometry(0, tileTopY, leftW, fullH);
-        const int actualLeftW = qBound(120, targetTable->geometry().width(), qMax(120, vpRect.width() - 120));
+        const int actualLeftW = qBound(minPaneW, targetTable->geometry().width(),
+                                       qMax(minPaneW, vpRect.width() - minPaneW));
         if (actualLeftW != targetTable->geometry().width())
             targetTable->setGeometry(0, tileTopY, actualLeftW, fullH);
-        const int actualRightW = qMax(120, vpRect.width() - actualLeftW);
+        const int actualRightW = qMax(minPaneW, vpRect.width() - actualLeftW);
+        if (targetPlot->minimumWidth() > actualRightW)
+            targetPlot->setMinimumWidth(actualRightW);
         targetPlot->setGeometry(actualLeftW, tileTopY, actualRightW, fullH);
         if (activeMw == targetTable) {
             targetPlot->raise();
@@ -6436,13 +7308,29 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
             targetTable->raise();
             targetPlot->raise();
         }
+        if (MultiLayer *ml = qobject_cast<MultiLayer *>(targetPlot)) {
+            if (multiLayerUsesTable(ml, targetTable))
+                ToriUx::dismissPlotThisDataBar(targetTable);
+        }
     } else if (targetTable) {
         prepareTileWindow(targetTable);
-        targetTable->setGeometry(0, tileTopY, leftW, fullH);
+        if (targetTable->minimumWidth() > fullW)
+            targetTable->setMinimumWidth(fullW);
+        targetTable->setGeometry(0, tileTopY, fullW, fullH);
         targetTable->raise();
+        for (MyWidget *mw : eligibleWins) {
+            if (MultiLayer *ml = qobject_cast<MultiLayer *>(mw)) {
+                if (multiLayerUsesTable(ml, targetTable)) {
+                    ToriUx::dismissPlotThisDataBar(targetTable);
+                    break;
+                }
+            }
+        }
     } else if (targetPlot) {
         prepareTileWindow(targetPlot);
-        targetPlot->setGeometry(leftW, tileTopY, rightW, fullH);
+        if (targetPlot->minimumWidth() > fullW)
+            targetPlot->setMinimumWidth(fullW);
+        targetPlot->setGeometry(0, tileTopY, fullW, fullH);
         targetPlot->raise();
     }
 
@@ -6460,8 +7348,20 @@ void ModernRibbonBar::applySplitWorkspaceGeometry()
     }
 
     d_applying_split_geometry = false;
+
+    Table *wsTarget = resolvedWorksheetTarget();
+    if (d_act_add_column)
+        d_act_add_column->setEnabled(wsTarget != nullptr);
+    for (const QPointer<QWidget> &w : d_table_context_widgets) {
+        if (w)
+            w->setEnabled(wsTarget != nullptr);
+    }
+    if (d_btn_ws_reimport)
+        d_btn_ws_reimport->setEnabled(wsTarget != nullptr && wsTarget->hasImportSource());
+
     if (d_focus_hud_overlay && focusHudActive)
         d_focus_hud_overlay->repositionOverlayWidgets();
+    updateEmptyWelcomeHub();
 }
 
 void ModernRibbonBar::setFocusHudMode(bool enabled)
@@ -6499,6 +7399,11 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
             if (QStatusBar *sb = d_app->statusBar()) {
                 d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(sb), !sb->isHidden()));
                 sb->hide();
+            }
+
+            if (QMenuBar *mb = d_app->menuBar()) {
+                d_saved_focus_visibility.append(qMakePair(QPointer<QWidget>(mb), !mb->isHidden()));
+                mb->hide();
             }
         }
 
@@ -6564,6 +7469,7 @@ void ModernRibbonBar::setFocusHudMode(bool enabled)
             d_focus_hud_overlay->repositionOverlayWidgets();
     }
 
+    updateEmptyWelcomeHub();
     emit focusHudModeChanged(d_focus_hud_mode);
 }
 
@@ -7024,6 +7930,7 @@ void ModernRibbonBar::triggerPlot2D(int curveType)
 
     if (fromGraph) {
         if (d_app->plotColumnsFromTable(tbl, curveType)) {
+            ToriUx::dismissPlotThisDataBar(tbl);
             d_app->showUxHint(
                     tr("Created a new graph from \"%1\", the worksheet of the active graph.")
                             .arg(tbl->name()),
@@ -7044,7 +7951,8 @@ void ModernRibbonBar::triggerPlot2D(int curveType)
                 ? QStringList { yCols.first() }
                 : (!allCols.isEmpty() ? QStringList { allCols.last() } : QStringList());
         if (!pick.isEmpty() && d_app->plotBlockerForTable(tbl, curveType).isEmpty()) {
-            d_app->multilayerPlot(tbl, pick, curveType);
+            if (d_app->multilayerPlot(tbl, pick, curveType))
+                ToriUx::dismissPlotThisDataBar(tbl);
             if (d_layout_mode == LayoutSplitTableGraph)
                 applySplitWorkspaceGeometry();
             return;
@@ -7053,7 +7961,8 @@ void ModernRibbonBar::triggerPlot2D(int curveType)
                && d_app->plotBlockerForTable(tbl, curveType).isEmpty()) {
         const QStringList yCols = tbl->YColumns();
         if (!yCols.isEmpty()) {
-            d_app->multilayerPlot(tbl, yCols, curveType);
+            if (d_app->multilayerPlot(tbl, yCols, curveType))
+                ToriUx::dismissPlotThisDataBar(tbl);
             if (d_layout_mode == LayoutSplitTableGraph)
                 applySplitWorkspaceGeometry();
             return;
@@ -7061,11 +7970,22 @@ void ModernRibbonBar::triggerPlot2D(int curveType)
     }
 
     // Validation with messages that say where to fix things (B7), then the normal plot path.
-    if (tableIsActive)
+    if (tableIsActive) {
         QMetaObject::invokeMethod(d_app, "selectPlotType", Qt::DirectConnection,
                                   Q_ARG(int, curveType));
-    else
-        d_app->plotColumnsFromTable(tbl, curveType);
+        if (Folder *curFolder = d_app->currentFolder()) {
+            for (MyWidget *mw : curFolder->windowsList()) {
+                if (MultiLayer *ml = qobject_cast<MultiLayer *>(mw)) {
+                    if (multiLayerUsesTable(ml, tbl)) {
+                        ToriUx::dismissPlotThisDataBar(tbl);
+                        break;
+                    }
+                }
+            }
+        }
+    } else if (d_app->plotColumnsFromTable(tbl, curveType)) {
+        ToriUx::dismissPlotThisDataBar(tbl);
+    }
     if (d_layout_mode == LayoutSplitTableGraph)
         applySplitWorkspaceGeometry();
 }
@@ -7097,7 +8017,7 @@ void ModernRibbonBar::applyWorksheetColumnRole(int roleCode)
 {
     if (d_shutting_down || !d_app)
         return;
-    Table *tbl = qobject_cast<Table *>(d_app->d_workspace.activeSubWindow());
+    Table *tbl = resolvedWorksheetTarget();
     if (!tbl || !tbl->d_future_table || tbl->numCols() <= 0)
         return;
 
@@ -7222,6 +8142,15 @@ void ModernRibbonBar::initStatusBarZoomControls()
     sb->addPermanentWidget(d_status_fit_btn);
     d_status_zoom_btn->hide();
     d_status_fit_btn->hide();
+
+    // Command search is already prominent at top-right of the Ribbon; drop redundant bottom Ctrl+K pill.
+    sb->installEventFilter(this);
+    if (QToolButton *cmdHint =
+                sb->findChild<QToolButton *>(QStringLiteral("StatusBarCommandHintBtn"))) {
+        sb->removeWidget(cmdHint);
+        cmdHint->hide();
+        cmdHint->deleteLater();
+    }
 }
 
 void ModernRibbonBar::updateStatusBarZoomIndicator(MultiLayer *ml)
@@ -7297,7 +8226,7 @@ void ModernRibbonBar::triggerMatrixOrXyzPlot(int kind)
         return;
     }
 
-    auto plotFromMatrix = [this, kind](Matrix *m) {
+    auto plotFromMatrix = [this, kind, tbl](Matrix *m) {
         if (!m || !d_app)
             return;
         if (kind == 0) {
@@ -7308,6 +8237,8 @@ void ModernRibbonBar::triggerMatrixOrXyzPlot(int kind)
             d_app->activateSubWindow(m);
             d_app->plot3DWireSurface();
         }
+        if (tbl)
+            ToriUx::dismissPlotThisDataBar(tbl);
         if (d_layout_mode == LayoutSplitTableGraph)
             applySplitWorkspaceGeometry();
     };
@@ -7574,6 +8505,7 @@ void ModernRibbonBar::triggerTable3DPlot(int graph3dType)
     }
     if (zCol >= 0) {
         d_app->dataPlotXYZ(tbl, tbl->colName(zCol), graph3dType);
+        ToriUx::dismissPlotThisDataBar(tbl);
         if (d_layout_mode == LayoutSplitTableGraph)
             applySplitWorkspaceGeometry();
         return;
@@ -7703,10 +8635,66 @@ bool ModernRibbonBar::eventFilter(QObject *watched, QEvent *event)
             }
         }
     }
+    if (d_app && watched == d_app->statusBar() && event
+        && (event->type() == QEvent::ChildAdded || event->type() == QEvent::Show)) {
+        if (QStatusBar *sb = d_app->statusBar()) {
+            if (QToolButton *cmdHint =
+                        sb->findChild<QToolButton *>(QStringLiteral("StatusBarCommandHintBtn"))) {
+                sb->removeWidget(cmdHint);
+                cmdHint->hide();
+                cmdHint->deleteLater();
+            }
+        }
+    }
     if (d_app && watched == d_app->d_workspace.viewport() && event) {
-        if (event->type() == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph
+        const QEvent::Type et = event->type();
+        if (et == QEvent::Resize && d_layout_mode == LayoutSplitTableGraph
             && !d_applying_split_geometry) {
             applySplitWorkspaceGeometry();
+        }
+        if (et == QEvent::Resize || et == QEvent::Show) {
+            updateEmptyWelcomeHub();
+        } else if (et == QEvent::ChildAdded || et == QEvent::ChildRemoved) {
+            QChildEvent *ce = static_cast<QChildEvent *>(event);
+            if (!d_updating_welcome_hub && ce->child() != d_welcome_hub_card.data())
+                updateEmptyWelcomeHub();
+        }
+    }
+    if (d_watched_empty_graph_pane && watched == d_watched_empty_graph_pane && event
+        && (event->type() == QEvent::Show || event->type() == QEvent::Resize)) {
+        const bool hasTableOnlySplit = (d_layout_mode == LayoutSplitTableGraph && d_split_table
+                                        && !d_split_plot && !d_split_table->isHidden());
+        if ((d_welcome_hub_card && !d_welcome_hub_card->isHidden()) || hasTableOnlySplit) {
+            d_watched_empty_graph_pane->hide();
+            return true;
+        }
+    }
+    if (d_welcome_hub_card && watched == d_welcome_hub_card && event) {
+        const QEvent::Type et = event->type();
+        if (et == QEvent::DragEnter || et == QEvent::Drop) {
+            if (d_app)
+                QApplication::sendEvent(d_app.data(), event);
+            if (et == QEvent::Drop)
+                updateEmptyWelcomeHub();
+            return true;
+        }
+        if (et == QEvent::DragMove) {
+            QDragMoveEvent *dme = static_cast<QDragMoveEvent *>(event);
+            if (dme->mimeData()
+                && (dme->mimeData()->hasUrls()
+                    || dme->mimeData()->hasFormat(QLatin1String(MultiLayer::kColumnMimeType)))) {
+                dme->acceptProposedAction();
+                return true;
+            }
+        }
+        if (et == QEvent::ShortcutOverride || et == QEvent::KeyPress) {
+            QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+            if (ke->key() == Qt::Key_V && (ke->modifiers() & Qt::ControlModifier)) {
+                if (et == QEvent::KeyPress)
+                    pasteFromClipboardSmart();
+                ke->accept();
+                return true;
+            }
         }
     }
     if (d_app && event && d_layout_mode == LayoutSplitTableGraph && !d_applying_split_geometry
