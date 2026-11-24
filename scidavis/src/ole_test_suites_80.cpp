@@ -16,6 +16,7 @@
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QTableView>
+#include <QThread>
 #include <QTimer>
 #include <QUndoStack>
 
@@ -61,9 +62,26 @@ static void pumpEventsMs80(int ms)
 {
     QElapsedTimer t;
     t.start();
-    while (t.elapsed() < ms) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    const int minPasses = qMax(2, ms / 20);
+    for (int pass = 0; pass < minPasses || t.elapsed() < ms; ++pass) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        if (t.elapsed() < ms)
+            QThread::msleep(10);
+    }
+}
+
+template <typename Pred>
+static void waitUntilMs80(int timeoutMs, Pred &&pred)
+{
+    QElapsedTimer t;
+    t.start();
+    for (int pass = 0;; ++pass) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        if (pred() || (pass >= 2 && t.elapsed() >= timeoutMs))
+            break;
+        QThread::msleep(15);
     }
 }
 
@@ -429,7 +447,7 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                            << rib->splitLeftRatio());
 
         wVis->resize(760, 420);
-        pumpEventsMs80(60);
+        waitUntilMs80(2000, [&]() { return mlSp->pageZoom() < zoomLarge - 0.10; });
         CHECK_COND(std::fabs(rib->splitLeftRatio() - 0.40) < 0.02,
                    "80c: programmatic shrink drifted splitLeftRatio to "
                            << rib->splitLeftRatio());
@@ -439,9 +457,9 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                            << zoomLarge << " shrunk=" << zoomShrunk << ")");
 
         mlSp->setPageZoom(1.35);
-        pumpEventsMs80(10);
+        pumpEventsMs80(20);
         wVis->resize(900, 480);
-        pumpEventsMs80(60);
+        pumpEventsMs80(120);
         CHECK_COND(std::fabs(mlSp->pageZoom() - 1.35) < 1e-4,
                    "80c: Split viewport resize overwrote explicit user zoom 1.35 with "
                            << mlSp->pageZoom());
