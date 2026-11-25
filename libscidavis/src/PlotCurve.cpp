@@ -909,6 +909,25 @@ void PlotCurve::applyStackTransformToCurrentData()
     }
 }
 
+void PlotCurve::copyStackTransform(const PlotCurve *src)
+{
+    if (!src)
+        return;
+    d_stack_dx = src->d_stack_dx;
+    d_stack_dy = src->d_stack_dy;
+    d_applied_dx = src->d_applied_dx;
+    d_applied_dy = src->d_applied_dy;
+    d_norm01 = src->d_norm01;
+    d_raw_y_backup = src->d_raw_y_backup;
+
+    if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
+        foreach (DataCurve *err, dc->errorBarsList()) {
+            if (err)
+                err->loadData(); // the error scale follows the normalisation range
+        }
+    }
+}
+
 bool PlotCurve::stackNormalizeRange(double *minY, double *span) const
 {
     if (!d_norm01 || d_raw_y_backup.isEmpty() || d_raw_y_backup.size() != dataSize())

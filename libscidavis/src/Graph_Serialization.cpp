@@ -1450,8 +1450,10 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
 
                 c->setSymbolSkip(srcPc->symbolSkip());
                 if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars) {
-                    c->setStackNormalize01(srcPc->stackNormalize01());
-                    c->setStackOffset(srcPc->stackOffsetX(), srcPc->stackOffsetY());
+                    // x / y above are the source's displayed points, i.e. its stack offset and
+                    // 0-1 normalisation are already applied: take the transform state over as is
+                    // instead of applying it a second time.
+                    c->copyStackTransform(srcPc);
                 }
 
                 c->setAxis(srcPc->xAxis(), srcPc->yAxis());

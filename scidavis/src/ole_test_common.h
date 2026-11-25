@@ -661,5 +661,6 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw);
 int runSuite88ExportAndFftSampling(ApplicationWindow *mw);
 int runSuite89CurveDataMapping(ApplicationWindow *mw);
 int runSuite90FftWindowTeardown(ApplicationWindow *mw);
+int runSuite91GraphCopyStackTransforms(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

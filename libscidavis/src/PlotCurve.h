@@ -63,6 +63,10 @@ public:
     void setStackNormalize01(bool normalize);
     bool stackNormalize01() const { return d_norm01; }
     void applyStackTransformToCurrentData();
+    //! Takes over  src's stack offset / 0-1 normalisation state (including the raw Y values the
+    //! normalisation works from) as it is. For a curve that already holds  src's displayed
+    //! points (Graph::copy): applying the offset / normalisation again would transform them twice.
+    void copyStackTransform(const PlotCurve *src);
     //! While 0-1 normalisation is active: minimum and span of the raw (untransformed) Y values
     //! the normalisation maps to 0..1. Returns false when normalisation is off or its source
     //! values are not available.
