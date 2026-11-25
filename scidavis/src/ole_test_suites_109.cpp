@@ -63,6 +63,9 @@
 //        app.rename_window, and leaves the workbook as it was (it used to take the name, so
 //        a workbook and a table answered to the same name); a free name is taken, and a
 //        workbook made from a worksheet may take that sheet's name back
+//   109h workbook.create with a name follows the same rule: the name of another window is an
+//        error and makes no workbook (it used to be taken); the name of a worksheet the workbook
+//        is made from and the default names (no name given) are kept
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -1339,6 +1342,37 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(!isErr(back), "109g: the workbook could not take back the name of its own sheet: "
                                          << errText(back));
         std::cout << "[PASS] 109g: workbook.rename refuses the names of other windows\n";
+
+        // ---- 109h: workbook.create with a name follows the same rule ----
+        const int booksBefore = bookNames().size();
+        for (const char *taken : { "T109G", "G109G", "M109G" }) {
+            const QJsonObject r = rpc(QStringLiteral("workbook.create"),
+                                      QJsonObject{ { "name", taken }, { "sheets", 1 } });
+            std::cout << "[INFO] 109h: workbook.create named " << taken << " -> "
+                      << (isErr(r) ? errText(r) : std::string("created")) << "\n";
+            CHECK_COND(isErr(r) && QString::fromStdString(errText(r)).contains(QLatin1String(taken)),
+                       "109h: workbook.create accepted the name of the window " << taken);
+            CHECK_COND(bookNames().size() == booksBefore,
+                       "109h: the refused workbook.create named " << taken << " made a workbook: "
+                               << bookNames().join(QStringLiteral(", ")).toStdString());
+        }
+        CHECK_COND(!isErr(rpc(QStringLiteral("table.create"),
+                              QJsonObject{ { "name", "U109G" }, { "rows", 3 }, { "cols", 2 } })),
+                   "109h: table U109G");
+        CHECK_COND(isErr(rpc(QStringLiteral("workbook.create"),
+                             QJsonObject{ { "name", "T109G" }, { "tables", QJsonArray{ "U109G" } } })),
+                   "109h: workbook.create of U109G took the name of the table T109G");
+        // the name of a worksheet it is made from, and the default names, are kept
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.create"),
+                              QJsonObject{ { "name", "U109G" }, { "tables", QJsonArray{ "U109G" } } })),
+                   "109h: workbook.create named after its own worksheet failed");
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.create"), QJsonObject{ { "sheets", 1 } })),
+                   "109h: workbook.create without a name failed");
+        CHECK_COND(bookNames().contains(QStringLiteral("U109G"))
+                           && bookNames().size() == booksBefore + 2,
+                   "109h: workbooks after the allowed creations: "
+                           << bookNames().join(QStringLiteral(", ")).toStdString());
+        std::cout << "[PASS] 109h: workbook.create refuses the names of other windows\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

@@ -59,6 +59,21 @@ void setErr(QString *err, const QString &msg)
         *err = msg;
 }
 
+// A workbook takes no name of another window (worksheet, matrix, graph, note): workbook and
+// window would answer to the same name, which app.rename_window refuses as well. The name of one
+// of its own sheets is allowed (a workbook made from worksheets is named after the first one).
+bool nameTakenByOtherWindow(ApplicationWindow *app, const QString &name,
+                            const QList<Table *> &ownSheets, QString *err)
+{
+    if (!app || name.isEmpty() || !app->alreadyUsedName(name))
+        return false;
+    for (Table *s : ownSheets)
+        if (s && s->name() == name)
+            return false;
+    setErr(err, wbTr("The name %1 is already used by another window.").arg(name));
+    return true;
+}
+
 bool nonInteractive(ApplicationWindow *app)
 {
     return ApplicationWindow::isNonInteractiveContext(app);
@@ -934,18 +949,8 @@ bool WorkbookManager::renameBook(const QString &book, const QString &newName, QS
         setErr(err, wbTr("A workbook named %1 already exists.").arg(nn));
         return false;
     }
-    // Nor the name of another window (worksheet, matrix, graph, note): workbook and window would
-    // answer to the same name, which app.rename_window refuses as well. The name of one of its
-    // own sheets is allowed (a workbook made from worksheets is named after the first one).
-    if (d_app && d_app->alreadyUsedName(nn)) {
-        bool ownSheet = false;
-        for (Table *s : b->sheets)
-            ownSheet = ownSheet || (s && s->name() == nn);
-        if (!ownSheet) {
-            setErr(err, wbTr("The name %1 is already used by another window.").arg(nn));
-            return false;
-        }
-    }
+    if (nameTakenByOtherWindow(d_app, nn, b->sheets, err)) // nor the name of another window
+        return false;
     // The sheets keep their table names (and so every graph / formula reference); the old
     // name stays the prefix that is left out of the tab labels.
     b->name = nn;
@@ -1967,6 +1972,10 @@ bool WorkbookManager::handleRpc(const QString &method, const QJsonObject &params
             }
             tables << t;
         }
+        // A name given here follows the rule of workbook.rename: the name of another window is
+        // an error (the default names of a new workbook are left as they are).
+        if (nameTakenByOtherWindow(d_app, sanitizeName(name), tables, err))
+            return false;
         QString book;
         if (!tables.isEmpty()) {
             book = createBookFromTables(name, tables, nullptr, err);
