@@ -1987,32 +1987,26 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
     return result;
 }
 
-// A metadata preamble is text ("key,value,unit", "Integration Time (sec): 0.1"). A line set
-// aside that holds only numbers is a data row the block search skipped (ragged rows whose
-// width grows further down, "a,b / 1,2 / 3,4 / 5,6,7", "t,T1 / 0,20 / 2,22,32", blocks of
-// rows separated by blank lines): the file has no preamble then. Shared by the GUI import
-// (importLabTextDataInternal) and AsciiTableImportFilter::hasDataPreamble (app.import_csv).
-bool preambleHoldsNumericRow(const QStringList &preLines, const QString &sep)
+// Cells of a line above the data block (the preamble check of importLabTextDataInternal):
+// how many hold a number and how many hold text (missing tokens and empty cells count as
+// neither).
+void countPreambleLineCells(const QString &line, const QString &sep, int &num, int &txt)
 {
-    for (const QString &line : preLines) {
-        const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
-                ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
-                : line.split(sep);
-        int num = 0, txt = 0;
-        for (const QString &cell : cells) {
-            const QString t = cell.trimmed();
-            double v = 0.0;
-            if (t.isEmpty() || isMissingNumericToken(t, false))
-                continue;
-            if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
-                ++num;
-            else
-                ++txt;
-        }
-        if (num >= 1 && txt == 0)
-            return true;
+    const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
+            ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
+            : line.split(sep);
+    num = 0;
+    txt = 0;
+    for (const QString &cell : cells) {
+        const QString t = cell.trimmed();
+        double v = 0.0;
+        if (t.isEmpty() || isMissingNumericToken(t, false))
+            continue;
+        if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
+            ++num;
+        else
+            ++txt;
     }
-    return false;
 }
 
 future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QString &tableName,
@@ -3120,11 +3114,71 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             QStringList pre;
             for (int i = 0; i < preambleEnd; ++i)
                 pre << QString(buf + lines[i].start, lines[i].end - lines[i].start).trimmed();
-            // Rows that hold only numbers above the block are data rows the block search skipped
-            // (a table whose rows get wider further down, blocks separated by blank lines): no
-            // preamble, the file is read from its first line as app.import_csv reads it
-            // (hasDataPreamble() applies the same rule).
-            if (hdrStart > 0 && preambleHoldsNumericRow(pre, QString(bestSep))) {
+            // A row of numbers above the block can be a data row the block search skipped: the
+            // file has no preamble then and is read from its first line, as app.import_csv reads
+            // it (hasDataPreamble() runs this same code). That is so for a row of two numbers or
+            // more that is
+            //  - narrower than the block and joined to it without a text row in between (a table
+            //    whose rows get wider further down: "t,T1 / 0,20 / 1,21 / 2,22,32",
+            //    "a,b / 1,2 / 3,4 / 5,6,7 / 8,9,10,11", "1,2 / 3,4,5"), or
+            //  - in an earlier block of the same table, under a copy of the header right above
+            //    the block (blocks separated by blank lines: "x y / 1 10 / 2 20 / x y / 1 11").
+            // A metadata preamble may hold numbers too and stays one: a summary row as wide as
+            // the data under its own header ("Specimen,MaxForce,Elong / 1,1234.5,12.3 /
+            // Time,Force,Disp / 0,0,0"), "Points,1001", a single "1001".
+            bool numberRowsAreData = false;
+            if (hdrStart > 0) {
+                const QString sepStr(bestSep);
+                auto lineText = [&](int idx) {
+                    return QString(buf + lines[idx].start, lines[idx].end - lines[idx].start)
+                            .trimmed();
+                };
+                auto sameCells = [&](int a, int b) {
+                    int na = 0, ta = 0;
+                    countPreambleLineCells(lineText(a), sepStr, na, ta);
+                    if (ta == 0)
+                        return false;
+                    const QString la = lineText(a), lb = lineText(b);
+                    const bool ws = sepStr.isEmpty() || sepStr == QLatin1String(" ");
+                    QStringList ca = ws ? la.split(QRegularExpression(QStringLiteral("\\s+")),
+                                                   Qt::SkipEmptyParts)
+                                        : la.split(sepStr);
+                    QStringList cb = ws ? lb.split(QRegularExpression(QStringLiteral("\\s+")),
+                                                   Qt::SkipEmptyParts)
+                                        : lb.split(sepStr);
+                    for (QString &s : ca)
+                        s = s.trimmed();
+                    for (QString &s : cb)
+                        s = s.trimmed();
+                    return ca == cb;
+                };
+                QVector<int> nums(bestStart, 0), txts(bestStart, 0);
+                for (int i = 0; i < bestStart; ++i)
+                    countPreambleLineCells(lineText(i), sepStr, nums[i], txts[i]);
+                auto numberRow = [&](int i) { return nums[i] >= 1 && txts[i] == 0; };
+                for (int i = 0; i < hdrStart && !numberRowsAreData; ++i) {
+                    if (!(nums[i] >= 2 && txts[i] == 0))
+                        continue;
+                    if (nums[i] < bestFields) {
+                        bool joined = true;
+                        for (int k = i + 1; k < bestStart && joined; ++k)
+                            joined = !(nums[k] == 0 && txts[k] > 0);
+                        if (joined) {
+                            numberRowsAreData = true;
+                            continue;
+                        }
+                    }
+                    int top = i, bottom = i;
+                    while (top > 0 && numberRow(top - 1))
+                        --top;
+                    while (bottom + 1 < hdrStart && numberRow(bottom + 1))
+                        ++bottom;
+                    if (bottom + 1 == hdrStart && hdrStart < bestStart && top > 0
+                        && sameCells(top - 1, hdrStart))
+                        numberRowsAreData = true;
+                }
+            }
+            if (numberRowsAreData) {
                 hdrStart = 0;
                 forcedUnitsRow = -1;
                 forcedCommentsRow = -1;
@@ -4900,15 +4954,10 @@ bool AsciiTableImportFilter::hasDataPreamble(const QByteArray &rawBytes,
             true /*detectPreamble*/, true /*preambleProbeOnly*/));
     // (a table comes back only from the special formats -- .ras, VASP, SPEC -- which have no
     // preamble in this sense)
-    bool found = !probe && !g_lastImportReport.preamble.isEmpty();
-    if (found) {
-        // A line set aside that holds only numbers is a data row the block search skipped
-        // (ragged rows, "a,b,c / 1,2 / 3,4,5,6"): no preamble then. The import itself drops
-        // such a preamble too (importLabTextDataInternal); this is kept as a guard.
-        if (preambleHoldsNumericRow(g_lastImportReport.preamble.split(QLatin1Char('\n')),
-                                    g_lastImportReport.separator))
-            found = false;
-    }
+    // Rows of numbers above the block that are data rows the block search skipped (a table whose
+    // rows get wider further down, blocks separated by blank lines) leave no preamble: the probe
+    // runs the same decision as the import (importLabTextDataInternal).
+    const bool found = !probe && !g_lastImportReport.preamble.isEmpty();
     g_lastImportReport = savedReport;
     g_lastDecodedEncoding = savedEncoding;
     g_lastDecodeInvalidChars = savedInvalid;

@@ -22,6 +22,9 @@
 //   104c a table whose rows get wider further down ("t,T1 / 0,20 / 2,22,32", "a,b / 1,2 /
 //        5,6,7 / 8,9,10,11 / 12", "1,2 / 3,4,5"), and blocks separated by a blank line: the GUI
 //        keeps every row as app.import_csv does (no preamble of number rows)
+//   104d a preamble with a row of numbers as wide as the data above its header ("Specimen,
+//        MaxForce,Elong / 1,1234.5,12.3 / Time,Force,Disp / ...") or a "Points,1001" line stays
+//        a preamble: the header Time,Force,Disp is kept (GUI, hasDataPreamble, app.import_csv)
 // =============================================================================
 
 namespace {
@@ -442,6 +445,80 @@ int runSuite104ImportRound3(ApplicationWindow *mw)
               { { "x", split("1|2|x|1|2|3") }, { "y", split("10|20|y|11|21|31") } } },
     });
     reportSection("104c rows getting wider further down keep every row (GUI as RPC)");
+
+    // -------------------------------------------------------------------------
+    // 104d: a preamble that holds a number row of the data's width above the header, or a
+    // "Points,1001" line, stays a preamble (only number rows narrower than the data and
+    // joined to it without a header in between are data rows the block search skipped)
+    // -------------------------------------------------------------------------
+    {
+        struct PreCase104
+        {
+            const char *tag;
+            const char *file;
+            QByteArray bytes;
+            QString preamble;
+            QVector<ExpCol104> cols;
+        };
+        const QVector<PreCase104> pcases = {
+            { "d1",
+              "tensile_summary.csv",
+              "Specimen,MaxForce,Elong\n1,1234.5,12.3\nTime,Force,Disp\n0,0,0\n0.1,5.2,0.01\n"
+              "0.2,10.4,0.02\n0.3,15.6,0.03\n",
+              QStringLiteral("Specimen,MaxForce,Elong\n1,1234.5,12.3"),
+              { { "Time", split("0|0.1|0.2|0.3"), 1 },
+                { "Force", split("0|5.2|10.4|15.6"), 1 },
+                { "Disp", split("0|0.01|0.02|0.03"), 1 } } },
+            { "d2",
+              "tensile_points.csv",
+              "Machine,AG-X\nPoints,1001\nTime,Force,Disp\n0,0,0\n0.1,5.2,0.01\n0.2,10.4,0.02\n"
+              "0.3,15.6,0.03\n",
+              QStringLiteral("Machine,AG-X\nPoints,1001"),
+              { { "Time", split("0|0.1|0.2|0.3"), 1 },
+                { "Force", split("0|5.2|10.4|15.6"), 1 },
+                { "Disp", split("0|0.01|0.02|0.03"), 1 } } },
+            { "d3",
+              "tensile_two.csv",
+              "Specimen,MaxForce,Elong\n1,1234.5,12.3\n2,1240.1,12.1\nTime,Force,Disp\n0,0,0\n"
+              "0.1,5.2,0.01\n0.2,10.4,0.02\n0.3,15.6,0.03\n",
+              QStringLiteral("Specimen,MaxForce,Elong\n1,1234.5,12.3\n2,1240.1,12.1"),
+              { { "Time", split("0|0.1|0.2|0.3"), 1 },
+                { "Force", split("0|5.2|10.4|15.6"), 1 },
+                { "Disp", split("0|0.01|0.02|0.03"), 1 } } },
+            { "d4",
+              "points_only.csv",
+              "Points\n1001\nTime,Force,Disp\n0,0,0\n0.1,5.2,0.01\n0.2,10.4,0.02\n0.3,15.6,0.03\n",
+              QStringLiteral("Points\n1001"),
+              { { "Time", split("0|0.1|0.2|0.3"), 1 },
+                { "Force", split("0|5.2|10.4|15.6"), 1 },
+                { "Disp", split("0|0.01|0.02|0.03"), 1 } } },
+        };
+        for (const PreCase104 &cs : pcases) {
+            const QString path = writeFile(QString::fromLatin1(cs.file), cs.bytes);
+            AsciiTableImportFilter::ImportReport rep;
+            const QVector<Col104> gui = guiImport(path, &rep);
+            const QVector<Col104> viaRpc = rpcImport(path);
+            std::cout << "    104" << cs.tag << " GUI preamble '"
+                      << rep.preamble.toStdString() << "' " << dumpCols(gui) << "\n"
+                      << "    104" << cs.tag << " RPC " << dumpCols(viaRpc) << "\n";
+            if (rep.preamble != cs.preamble || !colsMatch(gui, cs.cols)) {
+                std::cerr << "[FAIL] 104" << cs.tag << " (GUI) " << cs.file << ": preamble '"
+                          << rep.preamble.toStdString() << "' " << dumpCols(gui) << "\n";
+                ++failures;
+            }
+            if (!AsciiTableImportFilter::hasDataPreamble(cs.bytes, path)) {
+                std::cerr << "[FAIL] 104" << cs.tag << " " << cs.file
+                          << ": hasDataPreamble() is false\n";
+                ++failures;
+            }
+            if (!colsMatch(viaRpc, cs.cols)) {
+                std::cerr << "[FAIL] 104" << cs.tag << " (RPC) " << cs.file << ": "
+                          << dumpCols(viaRpc) << "\n";
+                ++failures;
+            }
+        }
+    }
+    reportSection("104d a preamble with a summary row of numbers keeps the header below it");
     // every section runs, so that one failing case does not hide the others
     CHECK_COND(failures == 0, "104: " << failures << " failure(s)");
 
