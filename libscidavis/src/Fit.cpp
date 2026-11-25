@@ -1088,6 +1088,52 @@ bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
     return stationary;
 }
 
+bool Fit::lmStepConverged(gsl_multifit_fdfsolver *s, const gsl_vector *dx, const gsl_vector *x,
+                          double tol, const std::vector<int> *kktSigns)
+{
+    if (!dx || !x)
+        return false;
+    // Relative step test: the same for data of any size.
+    if (gsl_multifit_test_delta(dx, x, 0.0, tol) == GSL_SUCCESS)
+        return true;
+    // The absolute part (GSL's epsabs) lets a parameter that sits at 0 converge, but on its own
+    // it also accepts any step of parameters far below tol. Such a step must also be small
+    // against the whole parameter vector, measured by what each parameter does to the model
+    // (MINPACK's xtol test ||D dx|| <= tol ||D x||, D_j = norm of Jacobian column j): this does
+    // not depend on the units or the size of the data.
+    if (gsl_multifit_test_delta(dx, x, tol, tol) != GSL_SUCCESS)
+        return false;
+    if (!s || !s->f || dx->size != x->size || x->size != s->x->size)
+        return false;
+    const size_t n = s->f->size;
+    const size_t p = x->size;
+    gsl_matrix *J = gsl_matrix_alloc(n, p);
+#if GSL_MAJOR_VERSION < 2
+    gsl_matrix_memcpy(J, s->J);
+#else
+    if (gsl_multifit_fdfsolver_jac(s, J) != GSL_SUCCESS) {
+        gsl_matrix_free(J);
+        return false;
+    }
+#endif
+    double dxNorm2 = 0.0, xNorm2 = 0.0;
+    for (size_t j = 0; j < p; ++j) {
+        gsl_vector_view col = gsl_matrix_column(J, j);
+        const double d = gsl_blas_dnrm2(&col.vector);
+        const double dd = d * gsl_vector_get(dx, j);
+        const double dxj = d * gsl_vector_get(x, j);
+        dxNorm2 += dd * dd;
+        xNorm2 += dxj * dxj;
+    }
+    gsl_matrix_free(J);
+    if (!std::isfinite(dxNorm2) || !std::isfinite(xNorm2))
+        return false;
+    if (xNorm2 > 0.0)
+        return std::sqrt(dxNorm2) <= tol * std::sqrt(xNorm2);
+    // every parameter is 0 or has no influence: the gradient decides
+    return lmGradientIsStationary(s, 1e-4, kktSigns);
+}
+
 double Fit::snapToBound(double p, double lo, double hi)
 {
     const bool hasLo = std::isfinite(lo);
@@ -1492,26 +1538,39 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 }
                 break;
             }
-            int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
+            std::vector<int> kkt(p_free, 0);
+            for (size_t k = 0; k < p_free; ++k)
+                kkt[k] = ctx.kktSign(k, gsl_vector_get(s->x, k));
+            const bool step_converged =
+                    lmStepConverged(s, s->dx, s->x, d_tolerance, &kkt);
 
-            bool phys_converged = (iterations >= 2);
+            // The same in the parameters themselves: relative, or the absolute floor tol^2 (a
+            // parameter on a bound at 0) confirmed by the gradient, since a floor alone accepts
+            // any step of tiny parameters. The gradient bound is the tolerance itself (1e-4 let
+            // a*x+b on data of size 1e-22 stop 2e-5 away from the solution).
+            bool phys_rel = (iterations >= 2);
             double dx_norm = gsl_blas_dnrm2(s->dx);
             if (dx_norm == 0.0)
-                phys_converged = false;
+                phys_rel = false;
+            bool phys_abs = phys_rel;
             for (size_t k = 0; k < p_free; ++k) {
                 double pj_new = ctx.mapUtoP(k, gsl_vector_get(s->x, k));
-                if (std::abs(pj_new - prev_phys[k]) > d_tolerance * (d_tolerance + std::abs(pj_new)))
-                    phys_converged = false;
+                const double dp = std::abs(pj_new - prev_phys[k]);
+                if (dp > d_tolerance * (d_tolerance + std::abs(pj_new)))
+                    phys_abs = false;
+                if (!(dp < d_tolerance * std::abs(pj_new)))
+                    phys_rel = false;
                 prev_phys[k] = pj_new;
             }
+            const bool phys_converged = phys_rel
+                    || (phys_abs && !step_converged
+                        && lmGradientIsStationary(s, std::min(1e-4, d_tolerance), &kkt));
 
-            if (delta_status == GSL_SUCCESS || phys_converged) {
+            if (step_converged || phys_converged) {
                 status = GSL_SUCCESS;
                 break;
             }
-            status = delta_status;
-            if (status != GSL_CONTINUE)
-                break;
+            status = GSL_CONTINUE;
         }
         if (status == GSL_CONTINUE) {
             // Iteration budget exhausted: keep the last iterate but flag it as not converged.
@@ -1687,9 +1746,7 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                                 if (std::isfinite(tryNorm2) && tryNorm2 < curNorm2) {
                                     if (gsl_multifit_fdfsolver_set(s, &f, x_try) == GSL_SUCCESS) {
                                         recovered = true;
-                                        if (gsl_multifit_test_delta(dx_try, x_try, d_tolerance,
-                                                                    d_tolerance)
-                                            == GSL_SUCCESS) {
+                                        if (lmStepConverged(s, dx_try, x_try, d_tolerance)) {
                                             status = GSL_SUCCESS;
                                         } else {
                                             status = GSL_CONTINUE;
@@ -1716,14 +1773,11 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 continue;
             break;
         }
-        int delta_status = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
-        if (delta_status == GSL_SUCCESS) {
+        if (lmStepConverged(s, s->dx, s->x, d_tolerance)) {
             status = GSL_SUCCESS;
             break;
         }
-        status = delta_status;
-        if (status != GSL_CONTINUE)
-            break;
+        status = GSL_CONTINUE;
     }
     if (status == GSL_CONTINUE) {
         d_convergence = MaxIterationsReached;
@@ -3311,6 +3365,15 @@ void Fit::fit()
     }
 
     storeCustomFitResults(par);
+    if (status == GSL_SUCCESS && chi_2 >= 0.0) {
+        // A curve further from the data than their mean usually means a wrong minimum (a model
+        // with an offset can always do better); say so even when the solver stopped regularly.
+        const double r2 = rSquare();
+        if (std::isfinite(r2) && r2 < 0.0)
+            d_fit_notes << tr("R^2 is negative: the fitted curve is further from the data than "
+                              "their mean. The fit may have stopped away from the best "
+                              "solution; check the initial values.");
+    }
     if (status == GSL_SUCCESS && chi_2 >= 0.0 && !d_suppress_curve_output && d_graph) {
         generateFitCurve(par);
         if ((d_conf_band || d_pred_band) && d_graph)

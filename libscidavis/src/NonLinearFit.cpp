@@ -1916,15 +1916,9 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 ++iter;
                 break;
             }
-            int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
-            if (dstat == GSL_SUCCESS) {
+            const std::vector<int> kkt = slotKktSigns(ctx.freeSlots, s->x);
+            if (lmStepConverged(s, s->dx, s->x, d_tolerance, &kkt)) {
                 deltaConverged = true;
-                ++iter;
-                break;
-            }
-            if (dstat != GSL_CONTINUE) {
-                d_convergence = NoProgress;
-                hardErrorStatus = dstat;
                 ++iter;
                 break;
             }
@@ -2406,15 +2400,9 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                 ++iter;
                 break;
             }
-            int dstat = gsl_multifit_test_delta(s->dx, s->x, d_tolerance, d_tolerance);
-            if (dstat == GSL_SUCCESS) {
+            const std::vector<int> kkt = slotKktSigns(ctx.freeSlots, s->x);
+            if (lmStepConverged(s, s->dx, s->x, d_tolerance, &kkt)) {
                 deltaConverged = true;
-                ++iter;
-                break;
-            }
-            if (dstat != GSL_CONTINUE) {
-                d_convergence = NoProgress;
-                hardErrorStatus = dstat;
                 ++iter;
                 break;
             }

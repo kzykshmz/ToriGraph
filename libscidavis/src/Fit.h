@@ -210,6 +210,16 @@ public:
     //! pushes it out of the box, however large the gradient.
     static bool lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol = 1e-4,
                                        const std::vector<int> *kktSigns = nullptr);
+    //! Convergence test after an accepted LM step dx that led to x (the solver state s is at x).
+    //! Converged when every |dx_i| < tol * |x_i| (relative only, independent of the size of the
+    //! parameters), or when the step passes gsl_multifit_test_delta(dx, x, tol, tol) only
+    //! through its absolute part (a parameter near 0) and is also small against the whole
+    //! vector weighted by the Jacobian column norms (MINPACK's xtol test). The absolute part
+    //! alone passed any step of parameters far below tol (a*x+b on data of size 1e-22
+    //! "converged" at r2 = -54).
+    static bool lmStepConverged(gsl_multifit_fdfsolver *s, const gsl_vector *dx,
+                                const gsl_vector *x, double tol,
+                                const std::vector<int> *kktSigns = nullptr);
     //! Value reported for a parameter in the box [lo, hi] (either side may be infinite): within
     //! a small tolerance of a finite bound it is the bound. Shared by the single-curve, global
     //! and implicit fits, so they agree on which parameters sit on a bound.

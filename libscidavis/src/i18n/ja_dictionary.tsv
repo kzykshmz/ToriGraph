@@ -6920,6 +6920,7 @@ Not converged (maximum iterations reached; check the initial values)	未収束(�
 Not converged (no further improvement; check the initial values)	未収束(改善が止まった/初期値を確認)
 Not converged (the fit failed: the model gave no finite values at the parameters the solver reached; check the initial values)	未収束(フィット失敗: 到達したパラメータでモデルの値が有限にならない/初期値を確認)
 %1 = %2 is at a bound of its allowed range.	%1 = %2 は許容範囲の境界にあります。
+R^2 is negative: the fitted curve is further from the data than their mean. The fit may have stopped away from the best solution; check the initial values.	R^2 が負です: フィット曲線はデータの平均値よりもデータから離れています。最適解に達する前に止まった可能性があります。初期値を確認してください。
 The interpolation range from %1 to %2 does not overlap the X range of the data (%3 to %4).	補間範囲 (%1 から %2) がデータの X 範囲 (%3 から %4) と重なりません。
 Not found.	見つかりませんでした。
 Not updated: the formula uses a column with a circular reference.	未更新: 循環参照のある列を数式が参照しています。

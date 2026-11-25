@@ -46,6 +46,11 @@
 //        is an error); the interpolant is built from the points in the range and one point on
 //        each side then (GUI and curvemath.interpolate alike). A repeated X in that window,
 //        or without a range, stays an error.
+//   106h a*x+b with the default initial values on data of size 1e-20 / 1e-22 / 1e-30 stopped
+//        "converged" away from the solution (r2 0.629 / -54 / -6e7): the absolute part of the
+//        step test passed for any step of such small parameters. The single, global and
+//        implicit ODR fits now give the linear least squares line there and at 1e+20. A
+//        negative r2 (a fit further from the data than their mean) is noted.
 // =============================================================================
 namespace {
 
@@ -806,6 +811,165 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
             }
         }
         EXPECT106(gNo == int(sizeof(gcases) / sizeof(gcases[0])), "106g: graphs missing");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106h: the convergence test does not depend on the size of the parameters. With the
+    // default initial values, a*x+b on data of size 1e-20 gave r2 0.629 (0.638 is right), 1e-22
+    // gave a ten times too large with r2 -54 and 1e-30 r2 -6e7, all "converged": the absolute
+    // part (1e-6) of the step test passed for any step once the parameters were below 1e-20.
+    // The single, global and implicit ODR fits must give the linear least squares solution at
+    // 1e-20, 1e-22, 1e-30 and 1e+20 as well.
+    // -------------------------------------------------------------------------
+    {
+        std::vector<double> hx, hBase;
+        {
+            SplitMix106 rng(5);
+            for (int i = 0; i < 60; ++i) {
+                const double xv = 10.0 * i / 59.0;
+                hx.push_back(xv);
+                hBase.push_back(3.0 * std::exp(-std::pow((xv - 4.2) / 1.3, 2)) + 0.5 * xv
+                                + 0.05 * rng.gauss());
+            }
+        }
+        // linear least squares (what numpy.polyfit(x, y, 1) gives) and its r2
+        auto lineFit = [](const std::vector<double> &x, const std::vector<double> &y, double &a,
+                          double &b, double &r2) {
+            const double n = double(x.size());
+            double mx = 0.0, my = 0.0;
+            for (size_t i = 0; i < x.size(); ++i) {
+                mx += x[i];
+                my += y[i];
+            }
+            mx /= n;
+            my /= n;
+            double sxx = 0.0, sxy = 0.0, syy = 0.0;
+            for (size_t i = 0; i < x.size(); ++i) {
+                sxx += (x[i] - mx) * (x[i] - mx);
+                sxy += (x[i] - mx) * (y[i] - my);
+                syy += (y[i] - my) * (y[i] - my);
+            }
+            a = sxy / sxx;
+            b = my - a * mx;
+            double ss = 0.0;
+            for (size_t i = 0; i < x.size(); ++i)
+                ss += (y[i] - a * x[i] - b) * (y[i] - a * x[i] - b);
+            r2 = 1.0 - ss / syy;
+        };
+        auto relClose = [](double v, double ref, double rel) {
+            return std::isfinite(v) && std::fabs(v - ref) <= rel * std::fabs(ref);
+        };
+        for (double sc : { 1e-20, 1e-22, 1e-30, 1e+20 }) {
+            std::vector<double> hy, hy2;
+            for (size_t i = 0; i < hBase.size(); ++i) {
+                hy.push_back(sc * hBase[i]);
+                hy2.push_back(sc * (0.7 * hBase[i] + 0.3));
+            }
+            double aRef, bRef, r2Ref;
+            lineFit(hx, hy, aRef, bRef, r2Ref);
+
+            // analysis.fit_nonlinear with a formula and the default initial values
+            const QString gname = plotXY(hx, hy);
+            EXPECT106(!gname.isEmpty(), "106h: scale " << sc << ": graph not created");
+            const QJsonObject r =
+                    result(rpc(QStringLiteral("analysis.fit_nonlinear"),
+                               QJsonObject{ { "graph", gname },
+                                            { "curve", 0 },
+                                            { "formula", "a*x+b" },
+                                            { "param_names", QJsonArray{ "a", "b" } },
+                                            { "plot_curve", false } }));
+            const double a = num(r.value("params").toObject().value("a"));
+            const double b = num(r.value("params").toObject().value("b"));
+            const double r2 = num(r.value("r2"));
+            std::cout << "[INFO] 106h scale " << sc << ": converged "
+                      << r.value("converged").toBool() << ", a " << a << " (ref " << aRef
+                      << "), b " << b << " (ref " << bRef << "), r2 " << r2 << " (ref " << r2Ref
+                      << "), notes '"
+                      << r.value("notes").toVariant().toStringList().join(" | ").toStdString()
+                      << "'\n";
+            EXPECT106(r.value("converged").toBool() && relClose(a, aRef, 1e-6)
+                              && relClose(b, bRef, 1e-6) && std::fabs(r2 - r2Ref) < 1e-6,
+                      "106h: scale " << sc
+                                     << ": a*x+b must give the linear least squares solution");
+
+            // the global fit (a and b per curve) runs through its own solver loop
+            {
+                const QString tName = QStringLiteral("T106_H%1").arg(++tableNo);
+                Table *t = w->newTable(int(hx.size()), 3, tName, tName);
+                EXPECT106(t != nullptr, "106h: global table not created");
+                if (!t)
+                    continue;
+                for (int i = 0; i < int(hx.size()); ++i) {
+                    t->setCell(i, 0, hx[size_t(i)]);
+                    t->setCell(i, 1, hy[size_t(i)]);
+                    t->setCell(i, 2, hy2[size_t(i)]);
+                }
+                MultiLayer *gml = w->multilayerPlot(
+                        t, QStringList() << t->colName(1) << t->colName(2), Graph::Line);
+                QCoreApplication::processEvents();
+                Graph *gg = gml ? gml->activeGraph() : nullptr;
+                EXPECT106(gg && gg->curves() == 2, "106h: global graph not created");
+                if (!gg || gg->curves() != 2)
+                    continue;
+                NonLinearFit nlf(w, gg);
+                nlf.setSilent(true);
+                nlf.setParametersList(QStringList{ "a", "b" });
+                nlf.setFormula(QStringLiteral("a*x+b"));
+                const bool ok = nlf.fitGlobal(
+                        QStringList{ gg->curve(0)->title().text(), gg->curve(1)->title().text() },
+                        QVector<bool>{ false, false }, nullptr);
+                const std::vector<double> res = nlf.results(); // curve 0
+                std::cout << "[INFO] 106h global scale " << sc << ": converged "
+                          << (ok && nlf.converged()) << ", curve 0 a "
+                          << (res.size() == 2 ? res[0] : nan) << " b "
+                          << (res.size() == 2 ? res[1] : nan) << "\n";
+                EXPECT106(ok && nlf.converged() && res.size() == 2 && relClose(res[0], aRef, 1e-6)
+                                  && relClose(res[1], bRef, 1e-6),
+                          "106h: global scale " << sc
+                                                << ": curve 0 must get its least squares line");
+            }
+
+            // the implicit ODR fit y - (a*x + b) = 0: for |a| << 1 the orthogonal distance is the
+            // vertical one, so the least squares line again
+            if (sc < 1.0) {
+                const QJsonObject ro =
+                        result(rpc(QStringLiteral("analysis.fit_implicit_odr"),
+                                   QJsonObject{ { "graph", gname },
+                                                { "curve", 0 },
+                                                { "formula", "y - (a*x + b)" },
+                                                { "param_names", QJsonArray{ "a", "b" } },
+                                                { "plot_curve", false } }));
+                const double ao = num(ro.value("params").toObject().value("a"));
+                const double bo = num(ro.value("params").toObject().value("b"));
+                std::cout << "[INFO] 106h ODR scale " << sc << ": converged "
+                          << ro.value("converged").toBool() << ", a " << ao << ", b " << bo
+                          << "\n";
+                EXPECT106(ro.value("converged").toBool() && relClose(ao, aRef, 1e-6)
+                                  && relClose(bo, bRef, 1e-6),
+                          "106h: ODR scale " << sc << ": must give the least squares line");
+            }
+        }
+
+        // A fit further from the data than their mean (r2 < 0) says so in the notes: a*x
+        // (through the origin) on data around 10 with a falling slope.
+        {
+            std::vector<double> ny;
+            for (double xv : hx)
+                ny.push_back(10.0 - 0.3 * xv);
+            const QString gname = plotXY(hx, ny);
+            const QJsonObject r =
+                    result(rpc(QStringLiteral("analysis.fit_nonlinear"),
+                               QJsonObject{ { "graph", gname },
+                                            { "curve", 0 },
+                                            { "formula", "a*x" },
+                                            { "param_names", QJsonArray{ "a" } },
+                                            { "plot_curve", false } }));
+            const QString notes = r.value("notes").toVariant().toStringList().join(" | ");
+            std::cout << "[INFO] 106h a*x on 10-0.3x: r2 " << num(r.value("r2")) << ", notes '"
+                      << notes.toStdString() << "'\n";
+            EXPECT106(num(r.value("r2")) < 0.0 && notes.contains(QLatin1String("R^2")),
+                      "106h: a negative r2 must be explained in the notes");
+        }
     }
 #undef EXPECT106
 
