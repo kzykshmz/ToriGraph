@@ -68,6 +68,9 @@
 #include "globals.h"
 
 #include "core/column/Column.h"
+#include "core/datatypes/Double2DateTimeFilter.h"
+#include "core/datatypes/Double2DayOfWeekFilter.h"
+#include "core/datatypes/Double2MonthFilter.h"
 #include "core/datatypes/Double2StringFilter.h"
 #include "lib/Interval.h"
 #include "matrix/future_Matrix.h"
@@ -636,20 +639,20 @@ struct ScopedRpcUndoMacro
     ScopedRpcUndoMacro &operator=(const ScopedRpcUndoMacro &) = delete;
 };
 
-//! Evaluates every formula column of `tables` with the worksheets' own dependency-ordered
-//! recalculation -- the one automatic recalculation runs (Table::setAutoRecalcFormulas(true) ->
-//! recalculateFormulaColumnsOrdered / evaluateCrossTableDag) -- so a circular formula gets a
-//! formula error and keeps its values instead of feeding on itself. For the duration every
-//! worksheet of the project counts as auto-recalculating (set quietly through the future::Table
-//! flag, so cycles across worksheets are found too); the previous modes are restored afterwards.
-void recalcFormulaColumnsWithCycleCheck(ApplicationWindow *app, const QVector<Table *> &tables)
+//! Evaluates every formula column of `tables` (app.recalculate: all worksheets) with the
+//! worksheets' own dependency-ordered recalculation -- the one automatic recalculation runs
+//! (Table::setAutoRecalcFormulas(true) -> recalculateFormulaColumnsOrdered /
+//! evaluateCrossTableDag) -- so a circular formula gets a formula error and keeps its values
+//! instead of feeding on itself. For the duration only the worksheets in `tables` count as
+//! auto-recalculating (set quietly through the future::Table flag), so a worksheet in manual mode
+//! that is not in `tables` is not evaluated. The previous modes are restored afterwards.
+//! A single worksheet (table.recalculate, set_formula) is evaluated with
+//! Table::recalculateFormulaColumnsChecked instead, which touches no other worksheet.
+void recalcFormulaColumnsWithCycleCheck(const QVector<Table *> &tables)
 {
     QVector<QPointer<Table>> quietlyEnabled;
-    for (MyWidget *w : app->windowsList()) {
-        if (!w || !w->inherits("Table"))
-            continue;
-        auto *t = static_cast<Table *>(w);
-        if (!t->autoRecalcFormulas() && t->d_future_table) {
+    for (Table *t : tables) {
+        if (t && !t->autoRecalcFormulas() && t->d_future_table) {
             t->d_future_table->setAutoRecalcFormulas(true);
             quietlyEnabled.append(QPointer<Table>(t));
         }
@@ -706,6 +709,34 @@ bool isCalendarColumnMode(SciDAVis::ColumnMode m)
 {
     return m == SciDAVis::ColumnMode::DateTime || m == SciDAVis::ColumnMode::Month
             || m == SciDAVis::ColumnMode::Day;
+}
+
+//! A number as a date/time, month or day-of-week cell of `col`, converted the way the GUI
+//! column-type conversion from numbers does (the numeric path of writeBulkColumnArray): a day
+//! count through the column's numeric date/time base (Double2DateTimeFilter), a month number
+//! (1 = January) or a day of the week (1 = Monday). Invalid for other columns.
+QDateTime calendarDateTimeFromNumber(Column *col, double value)
+{
+    if (!col || !std::isfinite(value))
+        return QDateTime();
+    Column number(QStringLiteral("number"), QVector<qreal>{ value });
+    std::unique_ptr<AbstractSimpleFilter> conv;
+    switch (col->columnMode()) {
+    case SciDAVis::ColumnMode::DateTime:
+        conv.reset(new Double2DateTimeFilter(*col->numericDateTimeBaseFilter()));
+        break;
+    case SciDAVis::ColumnMode::Month:
+        conv.reset(new Double2MonthFilter());
+        break;
+    case SciDAVis::ColumnMode::Day:
+        conv.reset(new Double2DayOfWeekFilter());
+        break;
+    default:
+        return QDateTime();
+    }
+    if (!conv->input(0, &number))
+        return QDateTime();
+    return conv->dateTimeAt(0);
 }
 
 //! A cell as the worksheet shows it: numbers as doubles, every other column type (text, date/time,
@@ -2728,8 +2759,13 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 rolledBack = true;
             } else {
                 bool restoreOk = true;
+                // set where the workspace is actually cleared (and rebuilt); a rollback that
+                // fails before that (snapshot not staged) leaves the windows and their Undo
+                // history untouched
+                bool workspaceReset = false;
                 if (hadUntouchedSingleTable) {
                     resetProjectInPlaceHeadless(d_app);
+                    workspaceReset = true;
                     createUniqueTableHeadless(d_app, untouchedTblRows, untouchedTblCols,
                                               untouchedTblName);
                 } else if (needFullWorkspaceRestore) {
@@ -2765,6 +2801,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     }
                     if (staged) {
                         resetProjectInPlaceHeadless(d_app);
+                        workspaceReset = true;
                         if (!d_app->loadProject(tmpPath)) {
                             rollbackError =
                                     QStringLiteral("atomic rollback failed: the pre-batch snapshot "
@@ -2777,6 +2814,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 } else {
                     // Empty pre-batch workspace: clearing it is the full rollback.
                     resetProjectInPlaceHeadless(d_app);
+                    workspaceReset = true;
                 }
                 d_app->recentProjects = savedRecent;
                 d_app->projectname = savedProjName;
@@ -2791,7 +2829,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 d_app->setWindowTitle(savedWindowTitle);
                 // The workspace was rebuilt from the snapshot: the Undo history of the windows
                 // that existed before the batch cannot be carried over.
-                undoHistoryCleared = true;
+                undoHistoryCleared = workspaceReset;
                 if (!savedActiveWinName.isEmpty()) {
                     if (MyWidget *aw = findWindowByName(d_app, savedActiveWinName))
                         d_app->activateSubWindow(aw);
@@ -3866,7 +3904,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const int maxPasses = std::max(2, allTables.size() + 2);
         for (int pass = 0; pass < maxPasses; ++pass) {
             const QStringList before = formulaState(allTables);
-            recalcFormulaColumnsWithCycleCheck(d_app, allTables);
+            recalcFormulaColumnsWithCycleCheck(allTables);
             if (formulaState(allTables) == before)
                 break;
         }
@@ -5495,6 +5533,15 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const QJsonValue val = params.value(QStringLiteral("value"));
         if (val.isNull() || val.isUndefined()) {
             t->clearCell(row, colIdx);
+        } else if (col && isCalendarColumnMode(col->columnMode()) && val.isDouble()) {
+            // a number in a date/time, month or day column is a day count / month / weekday
+            // number, converted like set_column_data(mode=...) with numbers -- not text that the
+            // input filter would read as a time ("3" -> 03:00:00)
+            const QDateTime dt = calendarDateTimeFromNumber(col, val.toDouble());
+            if (dt.isValid())
+                col->setDateTimeAt(row, dt);
+            else
+                t->clearCell(row, colIdx);
         } else if (col && isCalendarColumnMode(col->columnMode())) {
             // date/time, month and day columns keep their type: the value goes through the
             // column's input filter, as when it is typed into the cell
@@ -5575,14 +5622,19 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const bool hasFormula = !formula.trimmed().isEmpty();
         // Table::setCommand evaluates the column through the worksheets' dependency graph (a
         // circular formula gets a formula error and is not evaluated), but only while automatic
-        // recalculation is on; for recalculate=true it is switched on for this call.
+        // recalculation is on. In manual mode, recalculate=true evaluates this column alone the
+        // same way; the other formula columns (and worksheets) stay as they are, as in manual
+        // mode. Setting and evaluating the formula are one Undo step.
         const bool wasAuto = t->autoRecalcFormulas();
         const bool forceEval = doRecalc && hasFormula && !wasAuto && t->d_future_table;
-        if (forceEval)
-            t->d_future_table->setAutoRecalcFormulas(true);
-        t->setCommand(colIdx, formula);
-        if (forceEval)
-            t->d_future_table->setAutoRecalcFormulas(false);
+        {
+            ScopedRpcUndoMacro formulaMacro(
+                    forceEval ? t->d_future_table : nullptr,
+                    QObject::tr("%1: apply formula to column").arg(t->name()));
+            t->setCommand(colIdx, formula);
+            if (forceEval)
+                t->recalculateFormulaColumnsChecked(QVector<int>{ colIdx });
+        }
         const bool evaluated = hasFormula && (wasAuto || forceEval);
         Column *fcol = t->column(colIdx);
         const QString fErr = (evaluated && fcol) ? fcol->formulaError() : QString();
@@ -5600,14 +5652,22 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         int onlyCol = -1;
         if (params.contains(QStringLiteral("col")) && !params.value(QStringLiteral("col")).isNull())
             onlyCol = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
-        // every formula column of the worksheet, in dependency order; circular ones are marked
-        recalcFormulaColumnsWithCycleCheck(d_app, QVector<Table *>{ t });
+        // the formula columns of this worksheet (or only `col`), in dependency order; circular
+        // ones are marked. Other worksheets are not evaluated, whatever their mode.
+        QVector<int> evalCols;
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (col && !col->formulaIntervals().isEmpty() && (onlyCol < 0 || c == onlyCol))
+                evalCols.append(c);
+        }
+        t->recalculateFormulaColumnsChecked(evalCols);
         bool allOk = true;
         for (int c = 0; c < t->numCols(); ++c) {
             Column *col = t->column(c);
             if (!col || col->formula(0).trimmed().isEmpty())
                 continue;
-            d_app->updateCurves(t, fullColumnName(t, c));
+            if (onlyCol < 0 || c == onlyCol)
+                d_app->updateCurves(t, fullColumnName(t, c));
             if ((onlyCol < 0 || c == onlyCol) && !col->formulaError().isEmpty())
                 allOk = false;
         }

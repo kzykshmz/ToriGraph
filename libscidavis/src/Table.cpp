@@ -4527,6 +4527,14 @@ bool Table::autoRecalcFormulas() const
     return d_auto_recalc_formulas;
 }
 
+bool Table::recalculateFormulaColumnsChecked(const QVector<int> &cols)
+{
+    if (!d_future_table || cols.isEmpty())
+        return false;
+    // includeProjectTables = false: the other worksheets' formulas are edges of the graph only
+    return evaluateCrossTableDag(cols, false);
+}
+
 void Table::showColumnPropertiesDialog(int col)
 {
     if (!d_future_table || numCols() <= 0 || ApplicationWindow::isNonInteractiveContext(this))

@@ -140,17 +140,24 @@ QVariant TableModel::data(const QModelIndex &index, int role) const
     if (!col_ptr)
         return QVariant();
 
+    // Rows at/after the column's data length (a new worksheet, rows added by a resize, a longer
+    // neighbouring column) hold no value. Column::isInvalid() reports them as invalid so that
+    // statistics and formulas skip them, but they are shown as plain empty cells, not as the
+    // red "-" of an invalid cell inside the data.
+    const bool beyondData = row >= col_ptr->rowCount();
     QString postfix;
     switch (role) {
     case Qt::ToolTipRole:
         if (col_ptr->isMasked(row))
             postfix = " " + tr("(masked)");
-        if (col_ptr->isInvalid(row))
+        if (!beyondData && col_ptr->isInvalid(row))
             return QVariant(tr("invalid cell (ignored in all operations)",
                                "tooltip string for invalid rows")
                             + postfix);
         if (d_formula_mode)
             return QVariant(col_ptr->formula(row));
+        if (beyondData)
+            return postfix.isEmpty() ? QVariant() : QVariant(postfix);
         return QVariant(col_ptr->asStringColumn()->textAt(row) + postfix);
     case Qt::EditRole:
         if (d_formula_mode)
@@ -166,13 +173,15 @@ QVariant TableModel::data(const QModelIndex &index, int role) const
     case Qt::DisplayRole: {
         if (d_formula_mode)
             return QVariant(col_ptr->formula(row));
+        if (beyondData)
+            return QVariant(QString());
         if (col_ptr->isInvalid(row))
             return QVariant(tr("-", "string for invalid rows"));
 
         return QVariant(col_ptr->asStringColumn()->textAt(row) + postfix);
     }
     case Qt::ForegroundRole: {
-        if (col_ptr->isInvalid(index.row()))
+        if (!beyondData && col_ptr->isInvalid(row))
             return QVariant(QBrush(QColor(0xff, 0, 0))); // invalid -> red letters
         else
             return QVariant(QBrush(QColor(0, 0, 0)));

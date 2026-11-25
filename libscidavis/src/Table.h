@@ -410,6 +410,12 @@ public slots:
     //! Live Worksheet F(x)= Formula Auto-Recalculation
     void setAutoRecalcFormulas(bool on);
     bool autoRecalcFormulas() const;
+    //! Evaluates only the formula columns `cols` of this worksheet, in dependency order and
+    //! regardless of the recalculation mode. The dependency graph spans the formulas of every
+    //! worksheet (manual ones included), so circular references -- also across worksheets -- get
+    //! a formula error and keep their values; no other column or worksheet is evaluated.
+    //! Returns true if any value changed.
+    bool recalculateFormulaColumnsChecked(const QVector<int> &cols);
 
     //! OriginPro-style Column Properties Dialog (Short Name, Long Name, Units, Designation, Comments, F(x)=)
     void showColumnPropertiesDialog(int col = -1);

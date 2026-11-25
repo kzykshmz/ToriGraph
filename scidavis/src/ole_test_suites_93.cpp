@@ -1,4 +1,5 @@
 #include "ole_test_common.h"
+#include "future/table/TableModel.h"
 
 // =============================================================================
 // Suite 93: worksheet core - sorting tables with formula columns, and rows beyond a column's
@@ -19,6 +20,8 @@
 //       the end are empty, negative rows are invalid
 //   93g formula references past a source column's data: tablecol("Short","V"),
 //       column("Short/V"), cell("A",11) and cell("A",0) are empty, cell("A",3) is the value
+//   93h the worksheet shows rows past a column's data (new worksheet, resize) as plain empty
+//       cells (Display / ToolTip / Foreground), a real invalid cell in the data as a red "-"
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -421,6 +424,69 @@ int runSuite93WorksheetSortAndBlankRows(ApplicationWindow *mw)
                 "93g: cell(A,3) " << s93(suite93Dump(t->column(2), 10)));
         suite93CloseWindow(t);
         suite93CloseWindow(s);
+    }
+
+    // ------------------------------------------------ 93h: rows past the data look empty
+    // The worksheet shows rows after a column's data (a new worksheet, rows added by a resize)
+    // as plain empty cells -- no red "-" and no "invalid cell" tooltip -- while a real invalid
+    // cell inside the data keeps the red "-".
+    {
+        Table *t = mw->newTable(QStringLiteral("V93"), 30, 2);
+        CHECK_COND(t != nullptr, "93h: table V93");
+        QAbstractItemModel *m = t->tableModel();
+        CHECK_COND(m != nullptr, "93h: table model");
+        const QColor red(0xff, 0, 0);
+        auto display = [&](int r, int c) { return m->data(m->index(r, c), Qt::DisplayRole); };
+        auto tooltip = [&](int r, int c) { return m->data(m->index(r, c), Qt::ToolTipRole); };
+        auto isRed = [&](int r, int c) {
+            const QVariant v = m->data(m->index(r, c), Qt::ForegroundRole);
+            return v.canConvert<QBrush>() && v.value<QBrush>().color() == red;
+        };
+        // first row (of rows r0..r1-1, columns 0..cols-1) not shown as a plain empty cell
+        auto firstNonPlain = [&](int r0, int r1, int cols) -> QString {
+            for (int r = r0; r < r1; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    if (!display(r, c).toString().isEmpty() || isRed(r, c)
+                        || !tooltip(r, c).toString().isEmpty())
+                        return QStringLiteral("row %1 col %2: '%3' tip '%4'%5")
+                                .arg(r)
+                                .arg(c)
+                                .arg(display(r, c).toString(), tooltip(r, c).toString(),
+                                     isRed(r, c) ? QStringLiteral(" red") : QString());
+                }
+            }
+            return QString();
+        };
+        CHECK93(m->rowCount() == 30, "93h: model rows " << m->rowCount());
+        const QString fresh = firstNonPlain(0, 30, 2);
+        CHECK93(fresh.isEmpty(), "93h: new worksheet cell not empty: " << s93(fresh));
+
+        suite93Fill(t, 0, { 1, 2, 3 });
+        t->column(0)->setInvalid(Interval<int>(1, 1), true);
+        t->setNumRows(100);
+        CHECK93(m->rowCount() == 100, "93h: model rows after resize " << m->rowCount());
+        CHECK93(display(0, 0).toString() == t->text(0, 0) && !display(0, 0).toString().isEmpty()
+                        && !isRed(0, 0),
+                "93h: data cell (0,0) " << s93(display(0, 0).toString()));
+        CHECK93(display(1, 0).toString() == QLatin1String("-") && isRed(1, 0)
+                        && !tooltip(1, 0).toString().isEmpty(),
+                "93h: invalid cell inside the data is not a red '-' with a tooltip: '"
+                        << s93(display(1, 0).toString()) << "'");
+        CHECK93(!display(2, 0).toString().isEmpty() && !isRed(2, 0),
+                "93h: data cell (2,0) " << s93(display(2, 0).toString()));
+        const QString pastA = firstNonPlain(3, 100, 1);
+        CHECK93(pastA.isEmpty(), "93h: cell after the data of A not empty: " << s93(pastA));
+        // column B has no data at all
+        QString pastB;
+        for (int r = 0; r < 100 && pastB.isEmpty(); ++r) {
+            if (!display(r, 1).toString().isEmpty() || isRed(r, 1)
+                || !tooltip(r, 1).toString().isEmpty())
+                pastB = QStringLiteral("row %1").arg(r);
+        }
+        CHECK93(pastB.isEmpty(), "93h: empty column B shows a value: " << s93(pastB));
+        CHECK93(t->column(0)->isInvalid(50) && t->column(1)->isInvalid(0),
+                "93h: rows past the data are no longer invalid for readers");
+        suite93CloseWindow(t);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

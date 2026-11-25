@@ -19,6 +19,13 @@
 //   94e circular formulas: set_formula / table.recalculate / app.recalculate report a formula
 //       error and the values stay put (also in manual recalculation mode)
 //   94f atomic app.batch rollback keeps the root folder name and reports undo_history_cleared
+//   94g table.recalculate / set_formula evaluate only the named worksheet (only `col`; no
+//       dependent columns of a manual worksheet), other manual worksheets are left alone, and a
+//       cycle through a manual worksheet is still reported
+//   94h set_cell with a number on date/time / month / day columns converts the number like
+//       set_column_data(mode=...) (a day count, not "3" read as 03:00)
+//   94i a rollback that fails before clearing the workspace does not report
+//       undo_history_cleared
 // =============================================================================
 
 int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw)
@@ -538,6 +545,247 @@ int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw)
                              { "atomic", true } }));
         CHECK_COND(ok.value("ok").toBool() && !ok.value("undo_history_cleared").toBool(true),
                    "94f: successful batch reported undo_history_cleared");
+    }
+
+    // -------------------------------------------------------------------------
+    // 94g: recalculation scope -- table.recalculate / set_formula evaluate only the named
+    //      worksheet (and only `col`), whatever the mode of the other worksheets
+    // -------------------------------------------------------------------------
+    {
+        auto colText = [](Table *t, int c, int rows) {
+            QStringList out;
+            for (int r = 0; r < rows; ++r)
+                out << (t->column(c)->isInvalid(r) ? QStringLiteral("_") : t->text(r, c));
+            return out.join(QLatin1Char(','));
+        };
+
+        // another worksheet in manual mode that reads this one is not recalculated
+        Table *ta = w94->newTable(3, 1, QStringLiteral("T94RA"), QStringLiteral("RA94"));
+        Table *tb = w94->newTable(3, 1, QStringLiteral("T94RB"), QStringLiteral("RB94"));
+        CHECK_COND(ta && tb, "94g: tables RA/RB");
+        ta->setColName(0, QStringLiteral("x"));
+        tb->setColName(0, QStringLiteral("b"));
+        for (int r = 0; r < 3; ++r)
+            ta->setCell(r, 0, double(r + 1));
+        ta->addCol();
+        ta->setColName(1, QStringLiteral("f"));
+        QJsonObject r = rpc(QStringLiteral("table.set_formula"),
+                            QJsonObject{ { "table", "T94RA" }, { "col", "f" },
+                                         { "formula", "col(\"x\")*2" } });
+        CHECK_COND(res(r).value("ok").toBool() && colText(ta, 1, 3) == QLatin1String("2,4,6"),
+                   "94g: set_formula on the auto worksheet: " << colText(ta, 1, 3).toStdString());
+        tb->setAutoRecalcFormulas(false);
+        r = rpc(QStringLiteral("table.set_formula"),
+                QJsonObject{ { "table", "T94RB" }, { "col", "b" },
+                             { "formula", "tablecol(\"T94RA\",\"x\")*10" } });
+        CHECK_COND(res(r).value("ok").toBool() && colText(tb, 0, 3) == QLatin1String("10,20,30"),
+                   "94g: set_formula(recalculate) in manual mode did not evaluate the column: "
+                           << colText(tb, 0, 3).toStdString());
+        for (int row = 0; row < 3; ++row)
+            ta->setCell(row, 0, double(row + 5));
+        CHECK_COND(colText(tb, 0, 3) == QLatin1String("10,20,30"),
+                   "94g: manual worksheet followed a change of the other one");
+        r = rpc(QStringLiteral("table.recalculate"), QJsonObject{ { "table", "T94RA" } });
+        CHECK_COND(!isErr(r) && res(r).value("ok").toBool()
+                           && colText(ta, 1, 3) == QLatin1String("10,12,14"),
+                   "94g: table.recalculate(T94RA) did not evaluate its formula: "
+                           << colText(ta, 1, 3).toStdString());
+        CHECK_COND(colText(tb, 0, 3) == QLatin1String("10,20,30") && !tb->autoRecalcFormulas(),
+                   "94g: table.recalculate(T94RA) recalculated the manual worksheet T94RB: "
+                           << colText(tb, 0, 3).toStdString());
+
+        // col = X evaluates X only; set_formula does not recalculate the dependent columns of a
+        // manual worksheet; without col the whole worksheet is evaluated in dependency order
+        Table *tc = w94->newTable(3, 4, QStringLiteral("T94RC"), QStringLiteral("RC94"));
+        CHECK_COND(tc != nullptr, "94g: table RC");
+        tc->setAutoRecalcFormulas(false);
+        const char *names[] = { "x", "f", "g", "h" };
+        for (int c = 0; c < 4; ++c)
+            tc->setColName(c, QString::fromLatin1(names[c]));
+        for (int row = 0; row < 3; ++row)
+            tc->setCell(row, 0, double(row + 1));
+        const QList<QPair<QString, QString>> formulas{ { "f", "col(\"x\")*2" },
+                                                       { "g", "col(\"x\")+100" },
+                                                       { "h", "col(\"f\")+1" } };
+        for (const auto &fx : formulas) {
+            r = rpc(QStringLiteral("table.set_formula"),
+                    QJsonObject{ { "table", "T94RC" }, { "col", fx.first }, { "formula", fx.second } });
+            CHECK_COND(res(r).value("ok").toBool(), "94g: set_formula " << fx.first.toStdString());
+        }
+        CHECK_COND(colText(tc, 1, 3) == QLatin1String("2,4,6")
+                           && colText(tc, 2, 3) == QLatin1String("101,102,103")
+                           && colText(tc, 3, 3) == QLatin1String("3,5,7"),
+                   "94g: initial formulas of T94RC: " << colText(tc, 1, 3).toStdString() << " | "
+                                                     << colText(tc, 2, 3).toStdString() << " | "
+                                                     << colText(tc, 3, 3).toStdString());
+        for (int row = 0; row < 3; ++row)
+            tc->setCell(row, 0, double(10 * (row + 1)));
+        r = rpc(QStringLiteral("table.recalculate"),
+                QJsonObject{ { "table", "T94RC" }, { "col", "f" } });
+        CHECK_COND(!isErr(r) && res(r).value("ok").toBool()
+                           && colText(tc, 1, 3) == QLatin1String("20,40,60"),
+                   "94g: table.recalculate(col=f) did not evaluate f: " << colText(tc, 1, 3).toStdString());
+        CHECK_COND(colText(tc, 2, 3) == QLatin1String("101,102,103")
+                           && colText(tc, 3, 3) == QLatin1String("3,5,7"),
+                   "94g: table.recalculate(col=f) also recalculated g/h: "
+                           << colText(tc, 2, 3).toStdString() << " | " << colText(tc, 3, 3).toStdString());
+        r = rpc(QStringLiteral("table.set_formula"),
+                QJsonObject{ { "table", "T94RC" }, { "col", "f" }, { "formula", "col(\"x\")*3" } });
+        CHECK_COND(res(r).value("ok").toBool() && colText(tc, 1, 3) == QLatin1String("30,60,90"),
+                   "94g: set_formula(f) in manual mode: " << colText(tc, 1, 3).toStdString());
+        CHECK_COND(colText(tc, 2, 3) == QLatin1String("101,102,103")
+                           && colText(tc, 3, 3) == QLatin1String("3,5,7"),
+                   "94g: set_formula(f) in manual mode recalculated other columns: "
+                           << colText(tc, 2, 3).toStdString() << " | " << colText(tc, 3, 3).toStdString());
+        CHECK_COND(!tc->autoRecalcFormulas(), "94g: T94RC switched to automatic recalculation");
+        r = rpc(QStringLiteral("table.recalculate"), QJsonObject{ { "table", "T94RC" } });
+        CHECK_COND(!isErr(r) && res(r).value("ok").toBool()
+                           && colText(tc, 1, 3) == QLatin1String("30,60,90")
+                           && colText(tc, 2, 3) == QLatin1String("110,120,130")
+                           && colText(tc, 3, 3) == QLatin1String("31,61,91"),
+                   "94g: table.recalculate(T94RC) without col: " << colText(tc, 2, 3).toStdString()
+                                                               << " | " << colText(tc, 3, 3).toStdString());
+
+        // a cycle through a manual worksheet is still found by table.recalculate
+        Table *ya = w94->newTable(2, 1, QStringLiteral("T94YA"), QStringLiteral("YA94"));
+        Table *yb = w94->newTable(2, 1, QStringLiteral("T94YB"), QStringLiteral("YB94"));
+        CHECK_COND(ya && yb, "94g: tables YA/YB");
+        ya->setColName(0, QStringLiteral("a"));
+        yb->setColName(0, QStringLiteral("b"));
+        yb->setAutoRecalcFormulas(false);
+        rpc(QStringLiteral("table.set_formula"),
+            QJsonObject{ { "table", "T94YA" }, { "col", "a" },
+                         { "formula", "tablecol(\"T94YB\",\"b\")+1" } });
+        const QJsonObject rb = res(rpc(QStringLiteral("table.set_formula"),
+                                       QJsonObject{ { "table", "T94YB" }, { "col", "b" },
+                                                    { "formula", "tablecol(\"T94YA\",\"a\")+1" } }));
+        CHECK_COND(!rb.value("ok").toBool() && !rb.value("formula_error").toString().isEmpty(),
+                   "94g: set_formula closing a cycle through a manual worksheet reported ok");
+        const QStringList ya0 = tableState(ya), yb0 = tableState(yb);
+        const QJsonObject ry = res(rpc(QStringLiteral("table.recalculate"),
+                                       QJsonObject{ { "table", "T94YA" } }));
+        CHECK_COND(!ry.value("ok").toBool() && !ry.value("formula_errors").toArray().isEmpty()
+                           && tableState(ya) == ya0 && tableState(yb) == yb0,
+                   "94g: table.recalculate missed the cycle through the manual worksheet ("
+                           << ya->text(0, 0).toStdString() << ", " << yb->text(0, 0).toStdString()
+                           << ")");
+    }
+
+    // -------------------------------------------------------------------------
+    // 94h: set_cell with a number on date/time, month and day columns converts the number
+    //      (a day count / month / weekday), like set_column_data(mode=...) with numbers
+    // -------------------------------------------------------------------------
+    {
+        Table *t = w94->newTable(2, 1, QStringLiteral("T94SN"), QStringLiteral("SN94"));
+        CHECK_COND(t != nullptr, "94h: newTable failed");
+        QJsonObject r = rpc(QStringLiteral("table.add_column"),
+                            QJsonObject{ { "table", "T94SN" }, { "name", "When" }, { "mode", "datetime" },
+                                         { "data", QJsonArray{ "2024-03-01 10:00:00",
+                                                               "2024-03-02 10:00:00" } } });
+        CHECK_COND(!isErr(r), "94h: add_column(datetime) failed");
+        const int cWhen = t->numCols() - 1;
+        r = rpc(QStringLiteral("table.add_column"),
+                QJsonObject{ { "table", "T94SN" }, { "name", "Ref" }, { "mode", "datetime" },
+                             { "data", QJsonArray{ 3.0, 2460000.5 } } });
+        CHECK_COND(!isErr(r), "94h: add_column(numbers, datetime) failed");
+        const int cRef = t->numCols() - 1;
+        r = rpc(QStringLiteral("table.set_cell"),
+                QJsonObject{ { "table", "T94SN" }, { "row", 0 }, { "col", "When" }, { "value", 3 } });
+        CHECK_COND(!isErr(r) && colMode(t, cWhen) == SciDAVis::ColumnMode::DateTime,
+                   "94h: set_cell(3) changed the type of the date/time column");
+        const QDateTime got0 = t->column(cWhen)->dateTimeAt(0);
+        CHECK_COND(!t->column(cWhen)->isInvalid(0) && got0 == t->column(cRef)->dateTimeAt(0)
+                           && got0 != QDateTime(QDate(1900, 1, 1), QTime(3, 0, 0)),
+                   "94h: set_cell(3) on a date/time column is not the day count 3: "
+                           << got0.toString(Qt::ISODate).toStdString() << " vs "
+                           << t->column(cRef)->dateTimeAt(0).toString(Qt::ISODate).toStdString());
+        r = rpc(QStringLiteral("table.set_cell"),
+                QJsonObject{ { "table", "T94SN" }, { "row", 1 }, { "col", "When" },
+                             { "value", 2460000.5 } });
+        CHECK_COND(!isErr(r) && !t->column(cWhen)->isInvalid(1)
+                           && t->column(cWhen)->dateTimeAt(1) == t->column(cRef)->dateTimeAt(1),
+                   "94h: set_cell(2460000.5) on a date/time column: "
+                           << t->column(cWhen)->dateTimeAt(1).toString(Qt::ISODate).toStdString()
+                           << " vs "
+                           << t->column(cRef)->dateTimeAt(1).toString(Qt::ISODate).toStdString());
+        // a string still goes through the input filter
+        r = rpc(QStringLiteral("table.set_cell"),
+                QJsonObject{ { "table", "T94SN" }, { "row", 1 }, { "col", "When" },
+                             { "value", "2025-01-02 03:04:05" } });
+        CHECK_COND(!isErr(r) && t->column(cWhen)->dateTimeAt(1)
+                                   == QDateTime(QDate(2025, 1, 2), QTime(3, 4, 5)),
+                   "94h: set_cell(string) on a date/time column");
+
+        r = rpc(QStringLiteral("table.add_column"),
+                QJsonObject{ { "table", "T94SN" }, { "name", "Mo" }, { "mode", "month" },
+                             { "data", QJsonArray{ 1.0, 2.0 } } });
+        const int cMo = t->numCols() - 1;
+        CHECK_COND(!isErr(r) && colMode(t, cMo) == SciDAVis::ColumnMode::Month,
+                   "94h: add_column(month) failed");
+        r = rpc(QStringLiteral("table.set_cell"),
+                QJsonObject{ { "table", "T94SN" }, { "row", 0 }, { "col", "Mo" }, { "value", 5 } });
+        CHECK_COND(!isErr(r) && colMode(t, cMo) == SciDAVis::ColumnMode::Month
+                           && !t->column(cMo)->isInvalid(0) && t->column(cMo)->dateAt(0).month() == 5,
+                   "94h: set_cell(5) on a month column is not May: "
+                           << t->column(cMo)->dateTimeAt(0).toString(Qt::ISODate).toStdString());
+
+        r = rpc(QStringLiteral("table.add_column"),
+                QJsonObject{ { "table", "T94SN" }, { "name", "Dw" }, { "mode", "day" },
+                             { "data", QJsonArray{ 1.0, 2.0 } } });
+        const int cDw = t->numCols() - 1;
+        CHECK_COND(!isErr(r) && colMode(t, cDw) == SciDAVis::ColumnMode::Day,
+                   "94h: add_column(day) failed");
+        r = rpc(QStringLiteral("table.set_cell"),
+                QJsonObject{ { "table", "T94SN" }, { "row", 1 }, { "col", "Dw" }, { "value", 3 } });
+        CHECK_COND(!isErr(r) && colMode(t, cDw) == SciDAVis::ColumnMode::Day
+                           && !t->column(cDw)->isInvalid(1)
+                           && t->column(cDw)->dateAt(1).dayOfWeek() == 3,
+                   "94h: set_cell(3) on a day-of-week column is not Wednesday: "
+                           << t->column(cDw)->dateTimeAt(1).toString(Qt::ISODate).toStdString());
+    }
+
+    // -------------------------------------------------------------------------
+    // 94i: an atomic rollback that fails before the workspace is cleared (the snapshot cannot be
+    //      staged in the temp folder) leaves the windows -- and their Undo history -- in place,
+    //      so it must not report undo_history_cleared
+    // -------------------------------------------------------------------------
+    {
+        Table *t = w94->table(QStringLiteral("T94N"));
+        CHECK_COND(t != nullptr, "94i: T94N missing");
+        const QByteArray prevTmp = qgetenv("TMP");
+        const QByteArray prevTemp = qgetenv("TEMP");
+        const QString badTemp = QDir(QDir::tempPath())
+                                        .filePath(QStringLiteral("tg94_missing_dir/sub"));
+        qputenv("TMP", QDir::toNativeSeparators(badTemp).toLocal8Bit());
+        qputenv("TEMP", QDir::toNativeSeparators(badTemp).toLocal8Bit());
+        const bool tempRedirected = QDir::cleanPath(QDir::tempPath()) == QDir::cleanPath(badTemp);
+        const QJsonArray cmds{
+            QJsonObject{ { "method", "table.set_cell" },
+                         { "params", QJsonObject{ { "table", "T94N" }, { "row", 0 }, { "col", 0 },
+                                                  { "value", 777.0 } } } },
+            QJsonObject{ { "method", "table.set_cell" },
+                         { "params", QJsonObject{ { "table", "NoSuchTable94" }, { "row", 0 },
+                                                  { "col", 0 }, { "value", 1.0 } } } },
+        };
+        const QJsonObject r = res(rpc(QStringLiteral("app.batch"),
+                                      QJsonObject{ { "commands", cmds }, { "atomic", true } }));
+        auto restoreEnv = [](const char *name, const QByteArray &prev) {
+            if (prev.isNull())
+                qunsetenv(name);
+            else
+                qputenv(name, prev);
+        };
+        restoreEnv("TMP", prevTmp);
+        restoreEnv("TEMP", prevTemp);
+        CHECK_COND(tempRedirected, "94i: could not point the temp folder at a missing directory ("
+                                           << QDir::tempPath().toStdString() << ")");
+        CHECK_COND(!r.value("rolled_back").toBool(true)
+                           && !r.value("rollback_error").toString().isEmpty(),
+                   "94i: rollback without a temp folder did not fail as expected");
+        CHECK_COND(!r.value("undo_history_cleared").toBool(true),
+                   "94i: failed rollback (workspace untouched) reported undo_history_cleared");
+        CHECK_COND(w94->table(QStringLiteral("T94N")) == t && t->cell(0, 0) == 777.0,
+                   "94i: the workspace was rebuilt although the rollback failed early");
     }
 
     w94.reset();
