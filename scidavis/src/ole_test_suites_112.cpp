@@ -29,6 +29,10 @@
 //        new coordinates and a rotation they show the matrix's new coordinate range (they used
 //        to stay at the first range, also after save -> reopen); an axis range the user fixed
 //        stays, and the axes still follow the matrix after the project is reopened
+//   112e a histogram with a function curve and / or a fit curve moved before it keeps the
+//        automatic Y title "Counts" ("度数") after undo -> redo and save -> reopen (the kind
+//        of the title was taken from the first curve, the function curve, so it became the
+//        column name "y")
 // =============================================================================
 
 namespace {
@@ -692,6 +696,99 @@ int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw)
             expectAxes(rd, QStringLiteral("G112D"), 5, 6, -1, 1, "reopened, new coordinates");
             expectAxes(rd, QStringLiteral("G112DC"), 5, 6, -1, 1, "reopened, new coordinates");
             expectAxes(rd, QStringLiteral("G112DL"), 10, 20, -1, 1, "reopened, new coordinates");
+        }
+    }
+
+    // ---- 112e: the Y title "Counts" of a histogram with a function / fit curve before it -----
+    {
+        const QString prjE = tmp.filePath(QStringLiteral("histtitle_112e.sciprj"));
+        auto yTitle = [](Rpc112 &rpc, const QString &graph) {
+            const QJsonObject r = Rpc112::result(
+                    rpc.call(QStringLiteral("graph.get_info"), QJsonObject { { "graph", graph } }));
+            return r.value(QStringLiteral("layers"))
+                    .toArray()
+                    .first()
+                    .toObject()
+                    .value(QStringLiteral("axes"))
+                    .toObject()
+                    .value(QStringLiteral("y"))
+                    .toObject()
+                    .value(QStringLiteral("title"))
+                    .toString();
+        };
+        const QString counts = Graph::tr("Counts"); // 日本語では「度数」
+        const QStringList graphs { QStringLiteral("G112EF"), QStringLiteral("G112EG"),
+                                   QStringLiteral("G112EB") };
+        {
+            AppWinGuard112 w(new ApplicationWindow());
+            Rpc112 rpc;
+            rpc.srv = w->pythonAutomationServer();
+            CHECK_COND(rpc.srv != nullptr, "112e: pythonAutomationServer null");
+            CHECK_COND(rpc.makeTable(QStringLiteral("T112E"), QStringLiteral("y"),
+                                     normalSample112(200, 5.0, 1.0)),
+                       "112e: table T112E");
+            for (const QString &gn : graphs) {
+                CHECK112(!rpc.histogram(QStringLiteral("T112E"), QStringLiteral("y"), gn).isEmpty(),
+                         "112e: plot.histogram " << gn.toStdString());
+                const QString t0 = yTitle(rpc, gn);
+                CHECK112(t0 == counts,
+                         "112e: " << gn.toStdString() << " initial Y title '" << t0.toStdString()
+                                  << "'");
+                // G112EF: a function curve, G112EG: a Gauss fit (function curve), G112EB: both
+                if (gn != QStringLiteral("G112EG"))
+                    CHECK112(Rpc112::ok(rpc.call(QStringLiteral("plot.function"),
+                                                 QJsonObject { { "formula", "40*exp(-(x-5)^2/2)" },
+                                                               { "x_min", 1.0 },
+                                                               { "x_max", 9.0 },
+                                                               { "graph", gn } })),
+                             "112e: plot.function " << gn.toStdString());
+                if (gn != QStringLiteral("G112EF"))
+                    CHECK112(Rpc112::ok(rpc.call(QStringLiteral("analysis.fit_nonlinear"),
+                                                 QJsonObject { { "graph", gn },
+                                                               { "curve", 0 },
+                                                               { "model", "Gauss" } })),
+                             "112e: analysis.fit_nonlinear " << gn.toStdString());
+                // the histogram goes to the end of the list, an auxiliary curve comes first
+                CHECK112(Rpc112::ok(rpc.call(QStringLiteral("graph.move_curve"),
+                                             QJsonObject { { "graph", gn },
+                                                           { "curve", 0 },
+                                                           { "direction", "top" } })),
+                         "112e: graph.move_curve " << gn.toStdString());
+                CHECK112(curveTypeOf112(w, gn) != Graph::Histogram,
+                         "112e: " << gn.toStdString() << " still has the histogram first");
+                const QString t1 = yTitle(rpc, gn);
+                CHECK112(t1 == counts,
+                         "112e: " << gn.toStdString() << " Y title after the move '"
+                                  << t1.toStdString() << "'");
+                CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.undo"),
+                                             QJsonObject { { "graph", gn } }))
+                                 && Rpc112::ok(rpc.call(QStringLiteral("app.redo"),
+                                                        QJsonObject { { "graph", gn } })),
+                         "112e: undo / redo " << gn.toStdString());
+                const QString t2 = yTitle(rpc, gn);
+                std::cout << "[INFO] 112e " << gn.toStdString() << ": Y title '"
+                          << t0.toStdString() << "' -> moved '" << t1.toStdString()
+                          << "' -> undo/redo '" << t2.toStdString() << "'\n";
+                CHECK112(t2 == counts,
+                         "112e: " << gn.toStdString() << " Y title after undo / redo '"
+                                  << t2.toStdString() << "'");
+            }
+            CHECK_COND(w->saveFolder(w->projectFolder(), prjE), "112e: saving the project failed");
+        }
+        {
+            AppWinGuard112 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(prjE), "112e: reopening the project failed");
+            QCoreApplication::processEvents();
+            Rpc112 rpc;
+            rpc.srv = rd->pythonAutomationServer();
+            for (const QString &gn : graphs) {
+                const QString t = yTitle(rpc, gn);
+                std::cout << "[INFO] 112e reopened " << gn.toStdString() << ": Y title '"
+                          << t.toStdString() << "'\n";
+                CHECK112(t == counts,
+                         "112e: reopened " << gn.toStdString() << " Y title '" << t.toStdString()
+                                           << "'");
+            }
         }
     }
 

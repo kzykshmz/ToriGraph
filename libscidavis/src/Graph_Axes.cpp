@@ -2141,7 +2141,12 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
     }
 
     QList<Column *> xBottomCols, xTopCols, yLeftCols, yRightCols;
+    // 軸題の種類（ヒストグラムの「Counts」など）は、関数曲線・フィット曲線・計算結果の曲線を
+    // 除いたデータ曲線の先頭から決める。関数曲線をヒストグラムより前に動かすと、保存して開き
+    // 直したときや Redo の後に Y 軸題が「Counts」から列名に変わっていた。データ曲線が一つも
+    // ないときだけ、従来どおり先頭の曲線の種類を使う。
     int detectedStyle = -1;
+    int firstCurveStyle = -1;
 
     for (int i = 0; i < n_curves; ++i) {
         QwtPlotCurve *pc = curve(i);
@@ -2150,7 +2155,10 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
         const int cType = (i < c_type.size()) ? c_type[i] : -1;
         if (cType == ErrorBars)
             continue;
-        if (detectedStyle < 0)
+        if (firstCurveStyle < 0)
+            firstCurveStyle = cType;
+        if (detectedStyle < 0 && cType != Function && !dynamic_cast<FunctionCurve *>(pc)
+            && !isAuxiliaryOrFitCurve(pc, hasNonHiddenDataCurve))
             detectedStyle = cType;
 
         DataCurve *dc = dynamic_cast<DataCurve *>(pc);
@@ -2173,6 +2181,8 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
                 dst << yc;
         }
     }
+    if (detectedStyle < 0)
+        detectedStyle = firstCurveStyle;
 
     auto cleanColAxisTitle = [fmt](Column *col) -> QString {
         if (!col)
