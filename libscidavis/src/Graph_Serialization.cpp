@@ -560,9 +560,10 @@ QString Graph::saveCurveLayout(int index)
     if (style == Histogram) {
         QwtHistogram *h = (QwtHistogram *)c;
         s += QString::number(h->autoBinning()) + "\t";
-        s += QString::number(h->binSize()) + "\t";
-        s += QString::number(h->begin()) + "\t";
-        s += QString::number(h->end()) + "\t";
+        // Bin width/range in the shortest exact round-trip form (default is 6 digits).
+        s += QString::number(h->binSize(), 'g', QLocale::FloatingPointShortest) + "\t";
+        s += QString::number(h->begin(), 'g', QLocale::FloatingPointShortest) + "\t";
+        s += QString::number(h->end(), 'g', QLocale::FloatingPointShortest) + "\t";
     } else if (style == VectXYXY || style == VectXYAM) {
         VectorCurve *v = (VectorCurve *)c;
         s += COLORNAME(v->color()) + "\t";

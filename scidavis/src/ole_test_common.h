@@ -653,5 +653,6 @@ int runSuite79ZeroBaseOverhaulV2Gate(ApplicationWindow *mw);
 int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw);
 int runSuite81NumericalTransformCorrectness(ApplicationWindow *mw);
 int runSuite82JsonRpcParamValidation(ApplicationWindow *mw);
+int runSuite84ProjectSerializationFidelity(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

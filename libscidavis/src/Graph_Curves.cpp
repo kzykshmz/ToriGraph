@@ -2372,6 +2372,13 @@ void Graph::plotSpectrogram(Matrix *m, CurveType type)
 
 void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
 {
+    // An empty <spectrogram> block has no matrix line to restore from: flag the load as
+    // truncated (same mechanism as openTable/openMatrix) instead of dereferencing lst.end().
+    if (lst.isEmpty()) {
+        if (app)
+            app->setProperty("_tg_load_truncated", true);
+        return;
+    }
     QStringList::const_iterator line = lst.begin();
     QString s = (*line).trimmed();
     QString matrixName = s.remove("<matrix>").remove("</matrix>");

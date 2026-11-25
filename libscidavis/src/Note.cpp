@@ -81,16 +81,19 @@ QString Note::saveToString(const QString &info)
 
 void Note::restore(const QStringList &data)
 {
+    // A hand-made or damaged <note> block may carry no body lines at all: restore an empty
+    // note instead of dereferencing data.begin() == data.end().
     QStringList::ConstIterator line = data.begin();
-    QStringList fields;
+    if (line == data.end())
+        return;
 
-    fields = (*line).split("\t");
+    const QStringList fields = (*line).split("\t");
     if (fields[0] == "AutoExec") {
-        setAutoexec(fields[1] == "1");
+        setAutoexec(fields.value(1) == "1");
         line++;
     }
 
-    if (*line == "<content>")
+    if (line != data.end() && *line == "<content>")
         line++;
     while (line != data.end() && *line != "</content>")
         te->insertPlainText((*line++) + "\n");

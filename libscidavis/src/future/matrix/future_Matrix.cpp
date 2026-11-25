@@ -1227,10 +1227,12 @@ void Matrix::save(QXmlStreamWriter *writer) const
     writer->writeAttribute("displayed_digits", QString::number(displayedDigits()));
     writer->writeEndElement();
     writer->writeStartElement("coordinates");
-    writer->writeAttribute("x_start", QString::number(xStart()));
-    writer->writeAttribute("x_end", QString::number(xEnd()));
-    writer->writeAttribute("y_start", QString::number(yStart()));
-    writer->writeAttribute("y_end", QString::number(yEnd()));
+    // Shortest exact round-trip form: the default 6 significant digits turned 166.2375 into
+    // 166.238, while 'g',17 would write 166.23750000000001.
+    writer->writeAttribute("x_start", QString::number(xStart(), 'g', QLocale::FloatingPointShortest));
+    writer->writeAttribute("x_end", QString::number(xEnd(), 'g', QLocale::FloatingPointShortest));
+    writer->writeAttribute("y_start", QString::number(yStart(), 'g', QLocale::FloatingPointShortest));
+    writer->writeAttribute("y_end", QString::number(yEnd(), 'g', QLocale::FloatingPointShortest));
     writer->writeEndElement();
 
     for (int col = 0; col < cols; col++)

@@ -130,13 +130,13 @@ void Grid::load(const QStringList &grid)
 
     QPen majPenX, minPenX, majPenY, minPenY;
     if (grid.count() == 21) { // since 0.9 final
-        majPenX = QPen(QColor(COLORVALUE(grid[5])), grid[7].toInt(),
+        majPenX = QPen(QColor(COLORVALUE(grid[5])), grid[7].toDouble(),
                        Graph::getPenStyle(grid[6].toInt()));
-        minPenX = QPen(QColor(COLORVALUE(grid[8])), grid[10].toInt(),
+        minPenX = QPen(QColor(COLORVALUE(grid[8])), grid[10].toDouble(),
                        Graph::getPenStyle(grid[9].toInt()));
-        majPenY = QPen(QColor(COLORVALUE(grid[11])), grid[13].toInt(),
+        majPenY = QPen(QColor(COLORVALUE(grid[11])), grid[13].toDouble(),
                        Graph::getPenStyle(grid[12].toInt()));
-        minPenY = QPen(QColor(COLORVALUE(grid[14])), grid[16].toInt(),
+        minPenY = QPen(QColor(COLORVALUE(grid[14])), grid[16].toDouble(),
                        Graph::getPenStyle(grid[15].toInt()));
 
         xZeroOn = grid[17].toInt();
@@ -144,9 +144,9 @@ void Grid::load(const QStringList &grid)
         xAxis = grid[19].toInt();
         yAxis = grid[20].toInt();
     } else { // older versions of QtiPlot (<= 0.9rc3)
-        majPenX = QPen(ColorButton::color(grid[5].toInt()), grid[7].toInt(),
+        majPenX = QPen(ColorButton::color(grid[5].toInt()), grid[7].toDouble(),
                        Graph::getPenStyle(grid[6].toInt()));
-        minPenX = QPen(ColorButton::color(grid[8].toInt()), grid[10].toInt(),
+        minPenX = QPen(ColorButton::color(grid[8].toInt()), grid[10].toDouble(),
                        Graph::getPenStyle(grid[9].toInt()));
         majPenY = majPenX;
         minPenY = minPenX;
@@ -251,6 +251,14 @@ void Grid::copy(Grid *grid)
     enableZeroLineY(grid->yZeroLineEnabled());
 }
 
+// Grid pens may be fractional (e.g. 0.8 from the automation API); QPen::width() would round
+// them to an int on save and therefore also in Undo snapshots. Integer widths still write as
+// "1", so older readers and files keep working.
+static QString penWidthString(const QPen &pen)
+{
+    return QString::number(pen.widthF(), 'g', 8);
+}
+
 QString Grid::saveToString()
 {
     QString s = "grid\t";
@@ -261,19 +269,19 @@ QString Grid::saveToString()
 
     s += COLORNAME(majPenX().color()) + "\t";
     s += QString::number(majPenX().style() - 1) + "\t";
-    s += QString::number(majPenX().width()) + "\t";
+    s += penWidthString(majPenX()) + "\t";
 
     s += COLORNAME(minPenX().color()) + "\t";
     s += QString::number(minPenX().style() - 1) + "\t";
-    s += QString::number(minPenX().width()) + "\t";
+    s += penWidthString(minPenX()) + "\t";
 
     s += COLORNAME(majPenY().color()) + "\t";
     s += QString::number(majPenY().style() - 1) + "\t";
-    s += QString::number(majPenY().width()) + "\t";
+    s += penWidthString(majPenY()) + "\t";
 
     s += COLORNAME(minPenY().color()) + "\t";
     s += QString::number(minPenY().style() - 1) + "\t";
-    s += QString::number(minPenY().width()) + "\t";
+    s += penWidthString(minPenY()) + "\t";
 
     s += QString::number(xZeroLineEnabled()) + "\t";
     s += QString::number(yZeroLineEnabled()) + "\t";

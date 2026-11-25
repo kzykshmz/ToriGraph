@@ -1737,7 +1737,11 @@ QString Table::saveComments()
     // TODO: obsolete, remove for 0.3.0, only needed for template saving
     QString s = "Comments\t";
     for (int i = 0; i < numCols(); i++) {
-        s += column(i)->comment() + "\t";
+        // The template format is one tab-separated line: a tab or line break inside a comment
+        // would shift or cut off the following columns' comments (same policy as LongNames/Units).
+        QString c = column(i)->comment();
+        c.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ');
+        s += c + "\t";
     }
     return s + "\n";
 }

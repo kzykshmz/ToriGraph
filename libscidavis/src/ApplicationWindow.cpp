@@ -3829,11 +3829,13 @@ void ApplicationWindow::folderProperties()
 
 void ApplicationWindow::addFolder()
 {
-    QStringList lst = current_folder->subfolders();
-    QString name = tr("New Folder");
-    lst = lst.filter(name);
-    if (!lst.isEmpty())
-        name += " (" + QString::number(lst.size() + 1) + ")";
+    const QStringList lst = current_folder->subfolders();
+    const QString baseName = tr("New Folder");
+    QString name = baseName;
+    // Pick the first free "New Folder (n)": counting the existing matches is not enough once
+    // one of them was deleted or renamed, and a duplicate sibling name is ambiguous on reload.
+    for (int n = 2; lst.contains(name); ++n)
+        name = baseName + " (" + QString::number(n) + ")";
 
     Folder &f = current_folder->addChild<Folder>(name);
     addFolderListViewItem(&f);

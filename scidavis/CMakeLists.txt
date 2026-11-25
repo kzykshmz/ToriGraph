@@ -202,6 +202,7 @@ if( WIN32 )
     "src/ole_test_suites_80.cpp"
     "src/ole_test_suites_81.cpp"
     "src/ole_test_suites_82.cpp"
+    "src/ole_test_suites_84.cpp"
     "src/ole_test_common.h"
   )
   add_executable( scidavis_ole_test ${OLE_TEST_SRCS} "${RESOURCES}" )
@@ -223,9 +224,9 @@ if( WIN32 )
     )
   endif()
 
-  # Register modular regression suites (36..82, note: 54 was never allocated) with CTest
-  foreach( _sid RANGE 36 82 )
-    if( NOT _sid EQUAL 54 )
+  # Register modular regression suites (36..84, note: 54 was never allocated) with CTest
+  foreach( _sid RANGE 36 84 )
+    if( NOT _sid EQUAL 54 AND NOT _sid EQUAL 83 )
       add_test(
         NAME "ole_suite_${_sid}"
         COMMAND scidavis_ole_test "--suite=${_sid}"

@@ -3202,15 +3202,16 @@ QString Graph3D::saveToString(const QString &geometry)
     }
 
     double start, stop;
+    // Axis ranges are saved in the shortest exact round-trip form (default is 6 digits).
     sp->coordinates()->axes[X1].limits(start, stop);
-    s += QString::number(start) + "\t";
-    s += QString::number(stop) + "\t";
+    s += QString::number(start, 'g', QLocale::FloatingPointShortest) + "\t";
+    s += QString::number(stop, 'g', QLocale::FloatingPointShortest) + "\t";
     sp->coordinates()->axes[Y1].limits(start, stop);
-    s += QString::number(start) + "\t";
-    s += QString::number(stop) + "\t";
+    s += QString::number(start, 'g', QLocale::FloatingPointShortest) + "\t";
+    s += QString::number(stop, 'g', QLocale::FloatingPointShortest) + "\t";
     sp->coordinates()->axes[Z1].limits(start, stop);
-    s += QString::number(start) + "\t";
-    s += QString::number(stop) + "\n";
+    s += QString::number(start, 'g', QLocale::FloatingPointShortest) + "\t";
+    s += QString::number(stop, 'g', QLocale::FloatingPointShortest) + "\n";
 
     QString st;
     if (sp->coordinates()->style() == Qwt3D::NOCOORD)

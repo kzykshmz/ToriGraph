@@ -1392,6 +1392,10 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     item->folder()->setName(fi.baseName());
 
     bool truncatedProject = false;
+    // Folders created by the first pass, in <folder> order. The second pass walks the same
+    // lines and must re-enter exactly these folders: looking them up by name would send the
+    // windows of a second same-named sibling folder into the first one.
+    QList<QPointer<Folder>> loadedFolders;
     // process tables and matrix information
     while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
@@ -1414,6 +1418,7 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
             FolderListItem *fli = new FolderListItem(current_folder->folderListItem(), &f);
             fli->setText(0, list[1]);
             f.setFolderListItem(fli);
+            loadedFolders.append(QPointer<Folder>(&f));
 
             current_folder = &f;
         } else if (s == "<table>") {
@@ -1504,17 +1509,21 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     current_folder = projectFolder();
 
     MultiLayer *plot = 0;
+    int folderIndex = 0;
     while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
         if (s.isNull())
             break;
         if (s.left(8) == "<folder>") {
             list = s.split("\t");
-            if (list.count() >= 2) {
-                Folder *sub = current_folder->findSubfolder(list[1]);
-                if (sub)
-                    current_folder = sub;
-            }
+            Folder *sub = nullptr;
+            if (folderIndex < loadedFolders.size())
+                sub = loadedFolders.at(folderIndex).data();
+            else if (list.count() >= 2)
+                sub = current_folder->findSubfolder(list[1]);
+            ++folderIndex;
+            if (sub)
+                current_folder = sub;
         } else if (s == "<multiLayer>") { // process multilayers information
             ++aux;
 
@@ -2237,7 +2246,9 @@ void ApplicationWindow::saveAsTemplate()
             fn.append(selectedFilter);
         }
 
-        QFile f(fn);
+        // QSaveFile writes to a temporary file and only replaces an existing template on a
+        // successful commit(), so a failed write no longer truncates the user's old template.
+        QSaveFile f(fn);
         if (!f.open(QIODevice::WriteOnly)) {
             QMessageBox::critical(this, tr("Export Error"),
                                   tr("Could not write to file: <br><h4> %1 </h4><p>Please verify "
@@ -2252,8 +2263,11 @@ void ApplicationWindow::saveAsTemplate()
         t.setCodec(QTextCodec::codecForName("UTF-8"));
         t << text;
         t.flush();
-        const bool writeOk = (t.status() == QTextStream::Ok) && (f.error() == QFile::NoError);
-        f.close();
+        bool writeOk = (t.status() == QTextStream::Ok) && (f.error() == QFile::NoError);
+        if (writeOk)
+            writeOk = f.commit();
+        else
+            f.cancelWriting();
         QApplication::restoreOverrideCursor();
         if (!writeOk) {
             QMessageBox::critical(this, tr("Export Error"),
@@ -2687,10 +2701,20 @@ static QString remapSurfacePlotSource(const QStringList &renamedTables, const QS
 // TODO: most of this code belongs into matrix
 Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList &flist)
 {
+    // An empty or cut-short <matrix> block cannot be restored: report it through the same
+    // truncation flag openTable uses instead of reading past the end of flist.
+    if (flist.size() < (app->d_file_version < 0x000200 ? 1 : 2)) {
+        app->setProperty("_tg_load_truncated", true);
+        return nullptr;
+    }
     if (app->d_file_version < 0x000200) {
         QStringList::const_iterator line = flist.begin();
 
         QStringList list = (*line).split("\t");
+        if (list.size() < 4) {
+            app->setProperty("_tg_load_truncated", true);
+            return nullptr;
+        }
         const QString rawCaption = list[0];
         QString caption = rawCaption;
         caption.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
@@ -3058,6 +3082,12 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
 
 TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist)
 {
+    // Needs the "caption\tbase\trow|col\tdate" header and the targets line; an empty or
+    // cut-short <TableStatistics> block is reported as truncated instead of read past its end.
+    if (flist.size() < 2 || flist.at(0).split("\t").size() < 4) {
+        setProperty("_tg_load_truncated", true);
+        return nullptr;
+    }
     QStringList::const_iterator line = flist.begin();
 
     QStringList list = (*line++).split("\t");
@@ -4630,6 +4660,8 @@ void ApplicationWindow::appendProject(const QString &fn)
             t.readLine();
 
         bool truncatedProject = false;
+        // Folders created by the first pass, in <folder> order (see openProject).
+        QList<QPointer<Folder>> appendedFolders;
         // process tables and matrix information
         while (!t.atEnd()) {
             s = t.readLine(1048576); // workaround for safely reading very big lines
@@ -4649,6 +4681,7 @@ void ApplicationWindow::appendProject(const QString &fn)
                 FolderListItem *fli = new FolderListItem(current_folder->folderListItem(), &f);
                 fli->setText(0, lst[1]);
                 f.setFolderListItem(fli);
+                appendedFolders.append(QPointer<Folder>(&f));
 
                 current_folder = &f;
             } else if (s == "<table>") {
@@ -4729,17 +4762,21 @@ void ApplicationWindow::appendProject(const QString &fn)
             t.seek(0);
 
             MultiLayer *plot = 0;
+            int folderIndex = 0;
             while (!t.atEnd()) {
                 s = t.readLine(1048576); // workaround for safely reading very big lines
                 if (s.isNull())
                     break;
                 if (s.left(8) == "<folder>") {
                     lst = s.split("\t");
-                    if (lst.size() >= 2) {
-                        Folder *sub = current_folder->findSubfolder(lst[1]);
-                        if (sub)
-                            current_folder = sub;
-                    }
+                    Folder *sub = nullptr;
+                    if (folderIndex < appendedFolders.size())
+                        sub = appendedFolders.at(folderIndex).data();
+                    else if (lst.size() >= 2)
+                        sub = current_folder->findSubfolder(lst[1]);
+                    ++folderIndex;
+                    if (sub)
+                        current_folder = sub;
                 } else if (s == "<multiLayer>") { // process multilayers information
                     s = t.readLine();
                     QStringList graph = s.split("\t");
