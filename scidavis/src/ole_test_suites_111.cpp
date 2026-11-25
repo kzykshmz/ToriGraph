@@ -71,6 +71,9 @@
 //        has fewer lines than curves; a line that is not a curve's and a curve without a line
 //        stay as they are; a column used by a curve and by error bars, with a fit curve after
 //        them, leaves each number once and within the curves
+//   111m a table closed through app.close_window comes back with app.undo without a window
+//        (the RPC deleted the window its removal keeps for Undo), with its curve; app.redo
+//        closes it again; the menu's Undo with another worksheet active brings it back as well
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -1107,10 +1110,15 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         Graph *ag = aml->layersList().at(0);
         std::cout << "[INFO] 111h: AG111 " << layerTitles(ag) << "\n";
         QPointer<future::Table> fb(b->d_future_table);
+        QPointer<Table> bw(b);
         QUndoStack *ps = a->d_future_table->undoStack();
         r = lrpc(QString::fromLatin1("app.close_window"), QJsonObject{ { "name", "B111e" } });
         CHECK_COND(!isErr(r), "111h: close_window B111e: " << errText(r));
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        // the window of B goes for good while its curves are held (app.close_window used to
+        // delete it; it now keeps it for the Undo, 111m)
+        if (bw)
+            delete bw.data();
         std::cout << "[INFO] 111h: B111e closed (its table kept: " << (fb ? "yes" : "no") << ") "
                   << layerTitles(ag) << "\n";
         CHECK_COND(layerTitles(ag) == "A111_y;", "111h: closing B111e: " << layerTitles(ag));
@@ -1752,6 +1760,50 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(fails111l == 0, "111l: " << fails111l << " case(s) failed");
     }
     std::cout << "[PASS] 111l: the legend numbers after removed error bars move up\n";
+
+    // ---- 111m: a table closed through app.close_window comes back with app.undo ----
+    // The RPC deleted the window that the table's removal keeps for its Undo, so app.undo
+    // without a window brought back a table without a window (and the graph's curve not at all).
+    {
+        Table *ct = w111->newTable(QStringLiteral("CT111"), 4, 2);
+        Table *cu = w111->newTable(QStringLiteral("CU111"), 4, 2);
+        CHECK_COND(ct && cu, "111m: tables");
+        ct->setColName(0, QStringLiteral("x"));
+        ct->setColName(1, QStringLiteral("y"));
+        CHECK_COND(setCol("CT111", "x", { 1, 2, 3, 4 }) && setCol("CT111", "y", { 1, 4, 9, 16 }),
+                   "111m: fill CT111");
+        CHECK_COND(call("plot.xy", QJsonObject{ { "table", "CT111" }, { "x_col", "x" },
+                                                { "y_cols", QJsonArray{ "y" } }, { "graph_name", "CG111" } }),
+                   "111m: graph CG111");
+        const QString legendBefore = legendOf("CG111");
+        CHECK_COND(call("app.close_window", QJsonObject{ { "name", "CT111" } })
+                           && w111->table(QStringLiteral("CT111")) == nullptr && curvesOf("CG111") == 0,
+                   "111m: app.close_window CT111");
+        CHECK_COND(call("app.undo", QJsonObject{}), "111m: app.undo");
+        const bool back = w111->table(QStringLiteral("CT111")) != nullptr;
+        std::cout << "[INFO] 111m: after app.undo: table " << (back ? "back" : "missing") << ", "
+                  << curvesOf("CG111") << " curve(s), legend " << shownText(legendOf("CG111")) << "\n";
+        CHECK_COND(back && curvesOf("CG111") == 1 && legendOf("CG111") == legendBefore,
+                   "111m: app.undo did not bring back CT111 and its curve");
+        CHECK_COND(call("app.redo", QJsonObject{}) && w111->table(QStringLiteral("CT111")) == nullptr
+                           && curvesOf("CG111") == 0,
+                   "111m: app.redo did not close CT111 again");
+        CHECK_COND(call("app.undo", QJsonObject{}) && w111->table(QStringLiteral("CT111")) != nullptr
+                           && curvesOf("CG111") == 1,
+                   "111m: the second app.undo did not bring back CT111");
+        // the menu's Undo (Ctrl+Z) with another worksheet active
+        Table *ct2 = w111->table(QStringLiteral("CT111"));
+        w111->closeWindow(ct2);
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QStringLiteral("CT111")) == nullptr, "111m: closing CT111 (GUI)");
+        w111->activateSubWindow(cu);
+        QCoreApplication::processEvents();
+        w111->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QStringLiteral("CT111")) != nullptr && curvesOf("CG111") == 1,
+                   "111m: Ctrl+Z did not bring back CT111");
+    }
+    std::cout << "[PASS] 111m: a table closed through app.close_window comes back with app.undo\n";
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";
     return 0;

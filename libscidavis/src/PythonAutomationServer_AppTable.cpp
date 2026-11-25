@@ -4007,7 +4007,17 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         if (wg && wg->folder())
             d_app->closeWindow(wg.data());
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        if (wg) {
+        // A worksheet or matrix removed with an Undo step (the project's stack holds it) keeps
+        // its window, as when it is closed from the menu: the Undo shows that window again and
+        // brings back the curves it held. Deleting it left the Undo a table without a window.
+        bool keptForUndo = false;
+        if (auto *t = qobject_cast<Table *>(wg.data()))
+            keptForUndo = t->d_future_table && !t->d_future_table->parentAspect()
+                    && t->d_future_table->property("_tg_owned_by_undo_cmd").toBool();
+        else if (auto *m = qobject_cast<Matrix *>(wg.data()))
+            keptForUndo = m->d_future_matrix && !m->d_future_matrix->parentAspect()
+                    && m->d_future_matrix->property("_tg_owned_by_undo_cmd").toBool();
+        if (wg && !keptForUndo) {
             wg->hide();
             wg->setParent(nullptr);
             delete wg.data();
