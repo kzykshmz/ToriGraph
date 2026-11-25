@@ -65,6 +65,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 92, "runSuite92RenamePropagation", &runSuite92RenamePropagation },
     { 93, "runSuite93WorksheetSortAndBlankRows", &runSuite93WorksheetSortAndBlankRows },
     { 94, "runSuite94RpcWorksheetDataFidelity", &runSuite94RpcWorksheetDataFidelity },
+    { 95, "runSuite95FitDataDriven", &runSuite95FitDataDriven },
     { 96, "runSuite96XrdPeaksAndUnsortedDiff", &runSuite96XrdPeaksAndUnsortedDiff },
     { 97, "runSuite97PlotDataFidelity", &runSuite97PlotDataFidelity },
 };
@@ -5568,6 +5569,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite94RpcWorksheetDataFidelity(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite95FitDataDriven(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite96XrdPeaksAndUnsortedDiff(mw) != 0)

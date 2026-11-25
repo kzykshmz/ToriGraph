@@ -2442,8 +2442,91 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             const QVector<double> d2Centers = mpf.detectPeaksSecondDerivative(sgWin, prominence);
             if (!d2Centers.isEmpty()) {
                 std::vector<double> cStd(d2Centers.begin(), d2Centers.end());
-                if (reqPeaks > 0 && int(cStd.size()) > reqPeaks)
-                    cStd.resize(size_t(reqPeaks));
+                if (reqPeaks > 0 && int(cStd.size()) > reqPeaks) {
+                    // Keep the reqPeaks tallest detections (height of the data above its median
+                    // at the nearest sample), not the first ones in X order, which are often
+                    // noise at the low-X end. Two detections closer than half the narrower one's
+                    // full width at half height (or one smoothing window) are the same peak seen
+                    // through a noisy second derivative.
+                    const std::vector<double> &xs = mpf.x();
+                    const std::vector<double> &ys = mpf.y();
+                    std::vector<double> sortedY = ys;
+                    double med = 0.0;
+                    if (!sortedY.empty()) {
+                        std::nth_element(sortedY.begin(),
+                                         sortedY.begin() + long(sortedY.size() / 2),
+                                         sortedY.end());
+                        med = sortedY[sortedY.size() / 2];
+                    }
+                    const bool allowNeg = mpf.negativePeaksAllowed();
+                    auto nearestIdx = [&](double xc) -> long {
+                        size_t best = 0;
+                        for (size_t i = 1; i < xs.size(); ++i) {
+                            if (std::abs(xs[i] - xc) < std::abs(xs[best] - xc))
+                                best = i;
+                        }
+                        return long(best);
+                    };
+                    // Full width at half height, in samples, of the data around sample i.
+                    auto widthAt = [&](long i) -> long {
+                        const long n = long(ys.size());
+                        const double sgn = (allowNeg && ys[size_t(i)] < med) ? -1.0 : 1.0;
+                        const double half = 0.5 * sgn * (ys[size_t(i)] - med);
+                        long l = i, r = i;
+                        while (l > 0 && sgn * (ys[size_t(l - 1)] - med) > half)
+                            --l;
+                        while (r + 1 < n && sgn * (ys[size_t(r + 1)] - med) > half)
+                            ++r;
+                        return r - l + 1;
+                    };
+                    struct D2Pick
+                    {
+                        double xc;
+                        long idx;
+                        double height;
+                        long width;
+                    };
+                    std::vector<D2Pick> picks;
+                    if (!xs.empty() && ys.size() == xs.size()) {
+                        for (double xc : cStd) {
+                            const long i = nearestIdx(xc);
+                            const double h = ys[size_t(i)] - med;
+                            picks.push_back({ xc, i, allowNeg ? std::abs(h) : h, widthAt(i) });
+                        }
+                    }
+                    std::stable_sort(picks.begin(), picks.end(),
+                                     [](const D2Pick &a, const D2Pick &b) {
+                                         return a.height > b.height;
+                                     });
+                    std::vector<D2Pick> kept;
+                    for (int pass = 0; pass < 2 && int(kept.size()) < reqPeaks; ++pass) {
+                        for (const D2Pick &pk : picks) {
+                            if (int(kept.size()) >= reqPeaks)
+                                break;
+                            bool take = true;
+                            for (const D2Pick &k : kept) {
+                                // pass 0: resolved detections only; pass 1 fills up the rest
+                                const long sep =
+                                        std::max(long(sgWin), std::min(k.width, pk.width) / 2);
+                                if ((pass == 0 && std::labs(k.idx - pk.idx) < sep)
+                                    || k.xc == pk.xc) {
+                                    take = false;
+                                    break;
+                                }
+                            }
+                            if (take)
+                                kept.push_back(pk);
+                        }
+                    }
+                    if (int(kept.size()) == reqPeaks) {
+                        cStd.clear();
+                        for (const D2Pick &k : kept)
+                            cStd.push_back(k.xc);
+                    } else {
+                        cStd.resize(size_t(reqPeaks));
+                    }
+                    std::sort(cStd.begin(), cStd.end());
+                }
                 mpf.setNumPeaks(static_cast<int>(cStd.size()));
                 mpf.seedPeaksFromCenters(cStd, prominence);
             } else {

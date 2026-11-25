@@ -287,6 +287,8 @@ void MultiPeakFit::setDataCurve(int curve, double start, double end)
 {
     Fit::setDataCurve(curve, start, end);
     d_detected_2nd_deriv_centers.clear();
+    d_has_seed_request = false;
+    d_seed_centers.clear();
     d_baseline_subtracted = false;
     d_last_baseline.clear();
 }
@@ -1130,6 +1132,10 @@ bool MultiPeakFit::autoDetectPeaks(int maxPeaks, double minProminenceRatio)
 bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters,
                                         double minProminenceRatio)
 {
+    d_has_seed_request = true;
+    d_seed_centers = pickedCenters;
+    d_seed_prominence = minProminenceRatio;
+
     const size_t n = d_x.size();
     if (n < 3 || d_y.size() != n)
         return false;
@@ -1155,12 +1161,62 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
         y_smooth[i] = (d_y[i - 1] + d_y[i] + d_y[i + 1]) / 3.0;
     y_smooth[n - 1] = (d_y[n - 2] + 2.0 * d_y[n - 1]) / 3.0;
 
-    int minSep = std::max(2, int(n) / std::max(12, 5 * targetPeaks));
+    // Full width at half height, in samples, of the extremum at idx of arr measured from base.
+    // A side that reaches a valley first (the curve turns back towards a neighbouring peak by
+    // more than a quarter of the height) or the end of the data gives no width; 0 when neither
+    // side does.
+    auto localFwhmIdx = [n](const std::vector<double> &arr, double base, size_t idx) -> double {
+        const double h = arr[idx] - base;
+        if (!(std::abs(h) > 0.0) || !std::isfinite(h))
+            return 0.0;
+        const double sgn = (h > 0.0) ? 1.0 : -1.0;
+        const double hAbs = std::abs(h);
+        auto rel = [&](long k) { return sgn * (arr[size_t(k)] - base); };
+        auto side = [&](long dir) -> double {
+            double lowest = hAbs;
+            for (long k = long(idx) + dir; k >= 0 && k < long(n); k += dir) {
+                const double v = rel(k);
+                if (v <= 0.5 * hAbs) {
+                    const double prev = rel(k - dir);
+                    double frac = (prev - v > 0.0) ? (prev - 0.5 * hAbs) / (prev - v) : 0.5;
+                    frac = std::max(0.0, std::min(1.0, frac));
+                    return double(std::labs(k - long(idx))) - 1.0 + frac;
+                }
+                lowest = std::min(lowest, v);
+                if (v - lowest > 0.25 * hAbs)
+                    return -1.0;
+            }
+            return -1.0;
+        };
+        const double l = side(-1), r = side(+1);
+        if (l > 0.0 && r > 0.0)
+            return l + r;
+        if (l > 0.0)
+            return 2.0 * l;
+        if (r > 0.0)
+            return 2.0 * r;
+        return 0.0;
+    };
+
+    // Width used when a peak's own width cannot be measured: the former point-count rule
+    // (twice the old minimum separation n / max(12, 5k)).
+    const double fallbackFwhmIdx =
+            2.0 * double(std::max(2, int(n) / std::max(12, 5 * targetPeaks)));
+
     struct ChosenPeak
     {
         size_t idx = 0;
         double exactXc = 0.0;
         bool hasExactXc = false;
+        double fwhmIdx = 0.0;
+    };
+    // Two extrema closer than half the narrower peak's FWHM are the same peak (noise on its
+    // top). Resolved peaks of the data (separated by a valley) are farther apart than that, so
+    // they are all kept; the former rule (1/15 of the point count) dropped a neighbour 1.7 FWHM
+    // away.
+    auto farEnough = [](size_t i, double fwhmI, size_t j, double fwhmJ) {
+        const double sep = std::max(2.0, 0.5 * std::min(fwhmI, fwhmJ));
+        return double(std::labs(long(i) - long(j))) >= sep;
     };
     std::vector<ChosenPeak> chosen;
 
@@ -1177,7 +1233,8 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                 bestIdx = i;
             }
         }
-        chosen.push_back({ bestIdx, xc_pick, true });
+        double w = localFwhmIdx(y_smooth, y0, bestIdx);
+        chosen.push_back({ bestIdx, xc_pick, true, w > 0.0 ? w : fallbackFwhmIdx });
     }
 
     // 3. Find local extrema candidates
@@ -1186,6 +1243,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
         size_t idx;
         double prom;
         double height;
+        double fwhmIdx;
     };
     std::vector<PeakCand> cands;
     for (size_t j = 1; j + 1 < n; ++j) {
@@ -1213,7 +1271,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                 }
                 double prom = y_smooth[j] - std::max(min_left, min_right);
                 if (prom >= 0.35 * minProminenceRatio * span)
-                    cands.push_back({ rawIdx, prom, h });
+                    cands.push_back({ rawIdx, prom, h, localFwhmIdx(y_smooth, y0, j) });
             }
         }
         if (d_negative_peaks_allowed && y_smooth[j] <= y_smooth[j - 1]
@@ -1241,7 +1299,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                 }
                 double prom = std::min(max_left, max_right) - y_smooth[j];
                 if (prom >= 0.35 * minProminenceRatio * span)
-                    cands.push_back({ rawIdx, prom, depth });
+                    cands.push_back({ rawIdx, prom, depth, localFwhmIdx(y_smooth, y0, j) });
             }
         }
     }
@@ -1252,18 +1310,36 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
         return a.height > b.height;
     });
 
+    {
+        // Candidates whose width could not be measured take the median of the measured ones.
+        std::vector<double> ws;
+        for (const auto &c : cands) {
+            if (c.fwhmIdx > 0.0)
+                ws.push_back(c.fwhmIdx);
+        }
+        double typical = fallbackFwhmIdx;
+        if (!ws.empty()) {
+            std::nth_element(ws.begin(), ws.begin() + long(ws.size() / 2), ws.end());
+            typical = ws[ws.size() / 2];
+        }
+        for (auto &c : cands) {
+            if (!(c.fwhmIdx > 0.0))
+                c.fwhmIdx = typical;
+        }
+    }
+
     for (const auto &c : cands) {
         if (int(chosen.size()) >= targetPeaks)
             break;
         bool ok = true;
         for (const auto &sel : chosen) {
-            if (std::abs(int(c.idx) - int(sel.idx)) < minSep) {
+            if (!farEnough(c.idx, c.fwhmIdx, sel.idx, sel.fwhmIdx)) {
                 ok = false;
                 break;
             }
         }
         if (ok)
-            chosen.push_back({ c.idx, d_x[c.idx], false });
+            chosen.push_back({ c.idx, d_x[c.idx], false, c.fwhmIdx });
     }
 
     // 4. Fallback if fewer than targetPeaks were found
@@ -1273,14 +1349,18 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                                                : std::max(0.0, d_y[i] - y0);
     }
 
-    double defaultSigmaIdx = std::max(2.0, double(n) / (4.0 * targetPeaks));
-    for (const auto &sel : chosen) {
-        double h = residual[sel.idx];
+    // Remove each chosen peak from the residual as a Gaussian of its own local width (the former
+    // common width n/(4k) samples was far wider than narrow peaks and erased their neighbours).
+    auto subtractFromResidual = [&](size_t idx, double fwhmIdx) {
+        const double sigmaIdx = std::max(1.0, fwhmIdx / (2.0 * std::sqrt(2.0 * M_LN2)));
+        const double h = residual[idx];
         for (size_t i = 0; i < n; ++i) {
-            double d = (double(i) - double(sel.idx)) / defaultSigmaIdx;
+            double d = (double(i) - double(idx)) / sigmaIdx;
             residual[i] = std::max(0.0, residual[i] - h * std::exp(-0.5 * d * d));
         }
-    }
+    };
+    for (const auto &sel : chosen)
+        subtractFromResidual(sel.idx, sel.fwhmIdx);
 
     while (int(chosen.size()) < targetPeaks) {
         size_t bestIdx = 0;
@@ -1288,7 +1368,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
         for (size_t i = 1; i + 1 < n; ++i) {
             bool far_enough = true;
             for (const auto &sel : chosen) {
-                if (std::abs(int(i) - int(sel.idx)) < minSep) {
+                if (!farEnough(i, sel.fwhmIdx, sel.idx, sel.fwhmIdx)) {
                     far_enough = false;
                     break;
                 }
@@ -1302,12 +1382,11 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
             bestIdx = std::min(n - 2,
                                std::max<size_t>(1, ((chosen.size() + 1) * n) / (targetPeaks + 1)));
         }
-        chosen.push_back({ bestIdx, d_x[bestIdx], false });
-        double h = residual[bestIdx];
-        for (size_t i = 0; i < n; ++i) {
-            double d = (double(i) - double(bestIdx)) / defaultSigmaIdx;
-            residual[i] = std::max(0.0, residual[i] - h * std::exp(-0.5 * d * d));
-        }
+        double w = (bestVal > 0.0) ? localFwhmIdx(residual, 0.0, bestIdx) : 0.0;
+        if (!(w > 0.0))
+            w = fallbackFwhmIdx;
+        chosen.push_back({ bestIdx, d_x[bestIdx], false, w });
+        subtractFromResidual(bestIdx, w);
     }
 
     // Sort chosen peaks by xc ascending
@@ -1320,7 +1399,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
     double xSpan = std::abs(d_x.back() - d_x.front());
     if (xSpan <= 0.0)
         xSpan = 1.0;
-    double minW = std::max(1e-9, (xSpan / double(n)) * 1.2);
+    double minW = (xSpan / double(n)) * 1.2;
     double maxW = xSpan * 0.8;
 
     auto initSinglePeakParams = [&](PeakProfile prof, double H, double fwhm, double &xcInOut,
@@ -1405,7 +1484,7 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
                         }
                     }
                     double fwhm1 = gr - gl;
-                    if (fwhm1 > 1e-9)
+                    if (fwhm1 > 1e-12 * xSpan)
                         wOut = std::max(minW, std::min(maxW, wOut * (fwhm / fwhm1)));
                 } else {
                     xcInOut -= bestDx;
@@ -1619,12 +1698,76 @@ bool MultiPeakFit::seedPeaksFromCenters(const std::vector<double> &pickedCenters
 
 void MultiPeakFit::guessInitialValues()
 {
+    if (d_has_seed_request) {
+        const std::vector<double> centers = d_seed_centers;
+        seedPeaksFromCenters(centers, d_seed_prominence);
+        return;
+    }
     if (!d_detected_2nd_deriv_centers.empty()
         && int(d_detected_2nd_deriv_centers.size()) == d_peaks) {
         seedPeaksFromCenters(d_detected_2nd_deriv_centers);
         return;
     }
     autoDetectPeaks(d_peaks);
+}
+
+void MultiPeakFit::refineSolverResult(std::vector<double> &par, int &iterations, int &status)
+{
+    // A peak whose centre left the X range of the data does not describe these data (e.g. a
+    // surplus peak turning into a very broad hump centred far outside to model a sloping
+    // background). Such a solution is not adopted: the fit is repeated from the same initial
+    // values with those centres confined to the data range.
+    if (d_in_bootstrap || d_peaks <= 0 || !d_param_init || par.size() < d_p
+        || d_p < unsigned(3 * d_peaks + 1) || d_x.empty())
+        return;
+    if (!d_doublet_constraints.isEmpty() || !d_linear_constraint_expr.trimmed().isEmpty())
+        return;
+
+    double xLo = std::numeric_limits<double>::infinity();
+    double xHi = -std::numeric_limits<double>::infinity();
+    for (double xv : d_x) {
+        if (std::isfinite(xv)) {
+            xLo = std::min(xLo, xv);
+            xHi = std::max(xHi, xv);
+        }
+    }
+    if (!(xHi > xLo))
+        return;
+
+    std::vector<int> escaped;
+    for (int m = 0; m < d_peaks; ++m) {
+        const int idx = 3 * m + 1;
+        if (unsigned(idx) >= d_p || isParameterFixed(idx) || hasParameterBounds(idx))
+            continue;
+        const double xc = par[size_t(idx)];
+        if (!std::isfinite(xc) || xc < xLo || xc > xHi)
+            escaped.push_back(idx);
+    }
+    if (escaped.empty())
+        return;
+
+    for (int idx : escaped)
+        setParameterBounds(idx, xLo, xHi);
+    int iter2 = 0, status2 = GSL_EINVAL;
+    std::vector<double> par2 = (d_solver == NelderMeadSimplex) ? fitGslMultimin(iter2, status2)
+                                                               : fitGslMultifit(iter2, status2);
+    for (int idx : escaped)
+        clearParameterBounds(idx);
+
+    if (status2 == GSL_SUCCESS && std::isfinite(chi_2) && chi_2 >= 0.0) {
+        par = par2;
+        iterations += iter2;
+        status = status2;
+        d_fit_notes << tr("Peak centres that left the X range of the data were confined to it.");
+        return;
+    }
+    // The confined fit failed: restore the solver state of the original solution.
+    int iter3 = 0, status3 = GSL_EINVAL;
+    std::vector<double> par3 = (d_solver == NelderMeadSimplex) ? fitGslMultimin(iter3, status3)
+                                                               : fitGslMultifit(iter3, status3);
+    par = par3;
+    iterations += iter2 + iter3;
+    status = status3;
 }
 
 QVector<double> MultiPeakFit::detectPeaksSecondDerivative(int sgWindow, double relThreshold)
@@ -3778,27 +3921,42 @@ void GaussAmpFit::guessInitialValues()
     if (d_x.empty() || d_y.size() != d_x.size())
         return;
 
-    double y0 = *std::min_element(d_y.begin(), d_y.end());
-    auto maxIt = std::max_element(d_y.begin(), d_y.end());
-    size_t maxIdx = size_t(std::distance(d_y.begin(), maxIt));
-    double A = std::max(1e-9, *maxIt - y0);
+    // A dip (largest deviation from the baseline downward) is the same shape with A < 0: work
+    // on the mirrored data s*y so that the extremum, half level and width are found the same way.
+    const double s = dataLooksLikeDip(d_y) ? -1.0 : 1.0;
+    auto sy = [&](size_t k) { return s * d_y[k]; };
+    size_t lowIdx = 0, topIdx = 0;
+    for (size_t k = 1; k < d_y.size(); ++k) {
+        if (sy(k) < sy(lowIdx))
+            lowIdx = k;
+        if (sy(k) > sy(topIdx))
+            topIdx = k;
+    }
+    const double xSpan = std::abs(d_x.back() - d_x.front());
+    const double xFloorScale = (xSpan > 0.0) ? std::min(1.0, xSpan) : 1.0;
+    const double rawSpan = sy(topIdx) - sy(lowIdx);
+    const double ySpan = (rawSpan > 0.0) ? rawSpan : 1.0;
+    double A = std::max(1e-9 * std::min(1.0, ySpan), rawSpan);
+    double y0 = d_y[lowIdx];
+    size_t maxIdx = topIdx;
     double xc = d_x[maxIdx];
-    double halfY = y0 + 0.5 * A;
+    double halfY = sy(lowIdx) + 0.5 * A;
     double xLeft = d_x.front(), xRight = d_x.back();
     for (int k = int(maxIdx); k > 0; --k) {
-        if (d_y[k - 1] <= halfY) {
+        if (sy(size_t(k - 1)) <= halfY) {
             xLeft = d_x[k - 1];
             break;
         }
     }
     for (size_t k = maxIdx; k + 1 < d_y.size(); ++k) {
-        if (d_y[k + 1] <= halfY) {
+        if (sy(k + 1) <= halfY) {
             xRight = d_x[k + 1];
             break;
         }
     }
-    double fwhm = std::max(1e-6, xRight - xLeft);
+    double fwhm = std::max(1e-6 * xFloorScale, xRight - xLeft);
     double sigma = fwhm / (2.0 * std::sqrt(2.0 * M_LN2));
+    A *= s;
 
     gsl_vector_set(d_param_init, 0, y0);
     gsl_vector_set(d_param_init, 1, A);

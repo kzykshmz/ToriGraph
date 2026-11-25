@@ -516,7 +516,13 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
 
     double x_min = *std::min_element(d_x.begin(), d_x.end());
     double x_max = *std::max_element(d_x.begin(), d_x.end());
-    double x_span = std::max(1e-9, x_max - x_min);
+    // Spans and lower limits follow the data's own scale: absolute floors such as 1e-9 or 1e-6
+    // swallowed data recorded in SI units (x ~ 1e-9 m or s). For spans >= 1 the scaled floors
+    // equal the former absolute ones.
+    double x_span = x_max - x_min;
+    if (!(x_span > 0.0))
+        x_span = 1e-9;
+    const double xFloorScale = std::min(1.0, x_span);
     double x_mid = 0.5 * (x_min + x_max);
 
     auto minIt = std::min_element(d_y.begin(), d_y.end());
@@ -524,33 +530,46 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
     size_t maxIdx = size_t(std::distance(d_y.begin(), maxIt));
     double y_min = *minIt;
     double y_max = *maxIt;
-    double y_span = std::max(1e-9, y_max - y_min);
+    double y_span = y_max - y_min;
+    if (!(y_span > 0.0))
+        y_span = 1e-9;
+    const double yFloorScale = std::min(1.0, y_span);
     double y_front = d_y.front();
     double y_back = d_y.back();
+
+    // Full width at the level halfY around the extremum at idx (a maximum when up, a minimum
+    // otherwise), interpolated between samples; falls back to 0.2 of the X span when the
+    // crossings are not found on both sides.
+    auto widthAround = [&](size_t idx, double level, bool up) -> double {
+        auto beyond = [&](double v) { return up ? (v <= level) : (v >= level); };
+        const double dyTiny = 1e-15 * yFloorScale;
+        double xL = x_min, xR = x_max;
+        for (int k = int(idx); k > 0; --k) {
+            if (beyond(d_y[k - 1])) {
+                double dy = d_y[k] - d_y[k - 1];
+                double frac = (std::abs(dy) > dyTiny) ? ((level - d_y[k - 1]) / dy) : 0.5;
+                xL = d_x[k - 1] + std::max(0.0, std::min(1.0, frac)) * (d_x[k] - d_x[k - 1]);
+                break;
+            }
+        }
+        for (size_t k = idx; k + 1 < n; ++k) {
+            if (beyond(d_y[k + 1])) {
+                double dy = d_y[k] - d_y[k + 1];
+                double frac = (std::abs(dy) > dyTiny) ? ((d_y[k] - level) / dy) : 0.5;
+                xR = d_x[k] + std::max(0.0, std::min(1.0, frac)) * (d_x[k + 1] - d_x[k]);
+                break;
+            }
+        }
+        double w = std::max(1e-6 * xFloorScale, std::abs(xR - xL));
+        if (w >= 0.95 * x_span)
+            w = 0.2 * x_span;
+        return w;
+    };
 
     // Peak shape characteristics around maxIdx
     double xc_peak = d_x[maxIdx];
     double halfY = y_min + 0.5 * y_span;
-    double xLeft = x_min, xRight = x_max;
-    for (int k = int(maxIdx); k > 0; --k) {
-        if (d_y[k - 1] <= halfY) {
-            double dy = d_y[k] - d_y[k - 1];
-            double frac = (std::abs(dy) > 1e-15) ? ((halfY - d_y[k - 1]) / dy) : 0.5;
-            xLeft = d_x[k - 1] + std::max(0.0, std::min(1.0, frac)) * (d_x[k] - d_x[k - 1]);
-            break;
-        }
-    }
-    for (size_t k = maxIdx; k + 1 < n; ++k) {
-        if (d_y[k + 1] <= halfY) {
-            double dy = d_y[k] - d_y[k + 1];
-            double frac = (std::abs(dy) > 1e-15) ? ((d_y[k] - halfY) / dy) : 0.5;
-            xRight = d_x[k] + std::max(0.0, std::min(1.0, frac)) * (d_x[k + 1] - d_x[k]);
-            break;
-        }
-    }
-    double fwhm = std::max(1e-6, std::abs(xRight - xLeft));
-    if (fwhm >= 0.95 * x_span)
-        fwhm = 0.2 * x_span;
+    double fwhm = widthAround(maxIdx, halfY, true);
 
     // 1. Arrhenius: y = A * exp(-Ea / (R * x))
     if (key.compare("Arrhenius", Qt::CaseInsensitive) == 0) {
@@ -1026,10 +1045,11 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
         || key.compare("Chapman", Qt::CaseInsensitive) == 0) {
         bool isGrow = key.contains("Grow", Qt::CaseInsensitive);
         double y0_g = isGrow ? y_front : y_back;
-        double A_g = isGrow ? std::max(1e-6, (y_back - y_front) * 0.1) : (y_front - y_back);
-        if (std::abs(A_g) < 1e-9)
+        double A_g = isGrow ? std::max(1e-6 * yFloorScale, (y_back - y_front) * 0.1)
+                            : (y_front - y_back);
+        if (std::abs(A_g) < 1e-9 * yFloorScale)
             A_g = y_span;
-        double t_g = std::max(1e-6, 0.35 * x_span);
+        double t_g = std::max(1e-6 * xFloorScale, 0.35 * x_span);
         setByName("y0", y0_g);
         setByName("A", A_g);
         setByName("t", t_g);
@@ -1207,11 +1227,31 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
                        || key.compare("VoigtApprox", Qt::CaseInsensitive) == 0
                        || key.compare("EMG", Qt::CaseInsensitive) == 0
                        || key.compare("GramCharlier", Qt::CaseInsensitive) == 0);
+    // The peak models are y0 + A*shape(x): a dip (the largest deviation from the baseline is
+    // downward) is the same shape with A < 0, the centre at the minimum and y0 at the top.
+    bool isPeakModel = false;
+    for (int i = 0; i < kNumOriginModels; ++i) {
+        if (key.compare(QString::fromLatin1(kOriginModels[i].name), Qt::CaseInsensitive) == 0) {
+            isPeakModel = (qstrcmp(kOriginModels[i].category, "Peak Functions") == 0);
+            break;
+        }
+    }
+    double y0_g = y_min;
+    double ampSign = 1.0;
+    if (isPeakModel && dataLooksLikeDip(d_y)) {
+        const size_t minIdx = size_t(std::distance(d_y.begin(), minIt));
+        xc_peak = d_x[minIdx];
+        fwhm = widthAround(minIdx, y_max - 0.5 * y_span, false);
+        y0_g = y_max;
+        ampSign = -1.0;
+    }
     double sigma_g = fwhm / (2.0 * std::sqrt(2.0 * M_LN2));
     double area_g = y_span * fwhm * std::sqrt(M_PI / (4.0 * M_LN2));
-    setByName("y0", y_min);
-    setByName("xc", (key.compare("LogNormal", Qt::CaseInsensitive) == 0) ? std::max(1e-6, xc_peak) : xc_peak);
-    setByName("A", isAreaPeak ? area_g : y_span);
+    setByName("y0", y0_g);
+    setByName("xc", (key.compare("LogNormal", Qt::CaseInsensitive) == 0)
+                    ? std::max(1e-6 * xFloorScale, xc_peak)
+                    : xc_peak);
+    setByName("A", ampSign * (isAreaPeak ? area_g : y_span));
     if (key.compare("GaussAmp", Qt::CaseInsensitive) == 0
         || key.compare("EMG", Qt::CaseInsensitive) == 0
         || key.compare("GramCharlier", Qt::CaseInsensitive) == 0)
@@ -1219,7 +1259,7 @@ void NonLinearFit::guessBuiltInParameters(const QString &modelName)
     else if (key.compare("Gauss", Qt::CaseInsensitive) == 0)
         setByName("w", 2.0 * sigma_g);
     else if (key.compare("LogNormal", Qt::CaseInsensitive) == 0)
-        setByName("w", std::max(0.05, fwhm / (2.0 * std::max(1e-3, xc_peak))));
+        setByName("w", std::max(0.05, fwhm / (2.0 * std::max(1e-3 * xFloorScale, xc_peak))));
     else
         setByName("w", fwhm);
     setByName("wG", fwhm);

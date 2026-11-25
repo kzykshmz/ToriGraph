@@ -990,6 +990,8 @@ void registerFitJapaneseStrings()
             "未収束(改善が止まった/初期値を確認)");
         reg("The parameters and the curve shown are the last iterate, not a converged result.",
             "表示中のパラメータと曲線は最後の反復値で、収束した結果ではありません。");
+        reg("Peak centres that left the X range of the data were confined to it.",
+            "データの X 範囲の外へ出たピーク中心を範囲内に制約しました。");
         reg("Convergence", "収束");
         reg("converged", "収束");
         reg("Not converged", "未収束");
@@ -2060,6 +2062,37 @@ void Fit::setInitialGuesses(double *x_init)
         gsl_vector_set(d_param_init, i, x_init[i]);
     d_initial_guesses_set = true;
     d_all_guesses_set = true;
+}
+
+bool Fit::dataLooksLikeDip(const std::vector<double> &y)
+{
+    std::vector<double> v;
+    v.reserve(y.size());
+    for (double yi : y) {
+        if (std::isfinite(yi))
+            v.push_back(yi);
+    }
+    const size_t n = v.size();
+    if (n < 3)
+        return false;
+    const double yMin = *std::min_element(v.begin(), v.end());
+    const double yMax = *std::max_element(v.begin(), v.end());
+
+    // Baseline 1: the end points (mean of the first and last 5 %, at least one point each).
+    const size_t k = std::max<size_t>(1, n / 20);
+    double endSum = 0.0;
+    for (size_t i = 0; i < k; ++i)
+        endSum += v[i] + v[n - 1 - i];
+    const double endBase = endSum / double(2 * k);
+
+    // Baseline 2: the median.
+    std::vector<double> s = v;
+    std::nth_element(s.begin(), s.begin() + long(n / 2), s.end());
+    const double median = s[n / 2];
+
+    // A dip only when both baselines agree, so that a broad peak whose median lies high on
+    // the peak (end points still low) keeps the usual upward guess.
+    return (median - yMin) > (yMax - median) && (endBase - yMin) > (yMax - endBase);
 }
 
 void Fit::generateFunction(bool yes, int points)
@@ -3180,6 +3213,9 @@ void Fit::fit()
     else
         par = fitGslMultifit(iterations, status);
 
+    if (status == GSL_SUCCESS && std::isfinite(chi_2) && chi_2 >= 0.0)
+        refineSolverResult(par, iterations, status);
+
     if (status != GSL_SUCCESS || !std::isfinite(chi_2) || chi_2 < 0.0) {
         chi_2 = -1.0;
         d_y_fit.clear();
@@ -3299,6 +3335,28 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
     data.success = true;
     for (unsigned i = 0; i < d_p; i++)
         d_script->setDouble(gsl_vector_get(x, i), d_param_names[i].toUtf8());
+
+    // Difference step for each parameter: relative to the parameter's own size, never an
+    // absolute floor. A fixed floor of 1e-8 is larger than parameters such as xc = 2e-9 (nm
+    // written in metres) or t = 2e-9 (ns written in seconds) and made their derivatives wrong.
+    // When the current value is close to 0, 1 % of the initial value sets the scale; a
+    // parameter that also starts at 0 takes the scale of the data.
+    double dataScale = 0.0;
+    for (size_t i = 0; i < d_x.size(); ++i) {
+        if (std::isfinite(d_x[i]))
+            dataScale = std::max(dataScale, std::abs(d_x[i]));
+        if (i < d_y.size() && std::isfinite(d_y[i]))
+            dataScale = std::max(dataScale, std::abs(d_y[i]));
+    }
+    if (!(dataScale > 0.0) || !std::isfinite(dataScale))
+        dataScale = 1.0;
+    std::vector<double> stepScale(d_p, 0.01 * dataScale);
+    for (unsigned j = 0; j < d_p; ++j) {
+        const double init = d_param_init ? std::abs(gsl_vector_get(d_param_init, j)) : 0.0;
+        if (init > 0.0 && std::isfinite(init))
+            stepScale[j] = 0.01 * init;
+    }
+
     for (unsigned i = 0; i < d_x.size(); i++) {
         if (i >= d_y_errors.size() || !std::isfinite(d_y_errors[i]) || !(d_y_errors[i] > 0.0)) {
             for (unsigned j = 0; j < d_p; j++)
@@ -3314,7 +3372,7 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
                 continue;
             }
             double xj = gsl_vector_get(x, j);
-            double h = std::max(1e-8, 1e-6 * std::abs(xj));
+            double h = 1e-6 * std::max(std::abs(xj), stepScale[j]);
             data.param = d_param_names[j];
             data.success = true;
             gsl_deriv_central(&F, xj, h, &result, &abserr);

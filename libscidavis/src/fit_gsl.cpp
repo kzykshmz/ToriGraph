@@ -1356,8 +1356,10 @@ static int generic_origin_multi_peak_df(int profile, const gsl_vector *x, void *
                 w_abs = 1e-12;
 
             double phi = eval_origin_peak_profile(profile, 1.0, xcj, w_abs, xi, mu, m, alpha, tau);
-            double hc = 1e-6 * (w_abs > 1.0 ? w_abs : 1.0);
-            double hw = 1e-6 * (w_abs > 1e-4 ? w_abs : 1e-4);
+            // Steps relative to the peak width (an absolute floor such as 1e-6 exceeds the
+            // whole peak when x is in SI units, e.g. w ~ 1e-10 m).
+            double hc = 1e-6 * w_abs;
+            double hw = 1e-6 * w_abs;
 
             double phi_cp = eval_origin_peak_profile(profile, 1.0, xcj + hc, w_abs, xi, mu, m, alpha, tau);
             double phi_cm = eval_origin_peak_profile(profile, 1.0, xcj - hc, w_abs, xi, mu, m, alpha, tau);

@@ -159,6 +159,7 @@ protected:
     double toInternalParameter(int index, double userVal) const override;
     double fromInternalParameter(int index, double internalVal) const override;
     double covarSolverToStoredScale(int parIndex, double solverVal) const override;
+    void refineSolverResult(std::vector<double> &par, int &iterations, int &status) override;
 
 private:
     struct DoubletConstraint
@@ -238,6 +239,13 @@ private:
 
     //! Cached peak centers from last detectPeaksSecondDerivative() call
     std::vector<double> d_detected_2nd_deriv_centers;
+
+    //! The arguments of the last seedPeaksFromCenters() / autoDetectPeaks() call. fit() runs
+    //! guessInitialValues() again; repeating the same request keeps the centres the caller
+    //! (or the user, by picking them) gave instead of replacing them by an automatic search.
+    bool d_has_seed_request = false;
+    std::vector<double> d_seed_centers;
+    double d_seed_prominence = 0.08;
 
     //! Tracks whether subtractBaselineFromData() was applied
     bool d_baseline_subtracted = false;

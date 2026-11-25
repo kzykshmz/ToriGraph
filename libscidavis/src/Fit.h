@@ -244,6 +244,15 @@ protected:
     //! Customs and stores the fit results according to the derived class specifications. Used by exponential fits.
     virtual void storeCustomFitResults(const std::vector<double> &par) { d_results = par; }
 
+    //! Called by fit() after a successful solver run and before the results are stored or
+    //! plotted. A subclass may reject the solution and run the solver again (updating par,
+    //! iterations and status). The default keeps the solution.
+    virtual void refineSolverResult(std::vector<double> &, int &, int &) { }
+
+    //! true when the largest deviation of y from its baseline (both the median and the mean
+    //! of the end points) is downward, i.e. the data show a dip rather than a peak.
+    static bool dataLooksLikeDip(const std::vector<double> &y);
+
     //! Generates argument values wrt to d_gen_function
     void generateX(std::vector<double> &X) const;
 
