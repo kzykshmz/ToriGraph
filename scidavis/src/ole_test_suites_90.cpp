@@ -2,6 +2,7 @@
 #include "PythonAutomationServer.h"
 
 #include <QJsonObject>
+#include <QPointer>
 
 // =============================================================================
 // Suite 90: tearing down an ApplicationWindow that holds a maximized subwindow created after a
@@ -13,6 +14,8 @@
 //        deleted the TableModel the comments header reads in sizeHint()).
 //   90b  the same with Differentiation (another Filter with a hidden result table and a result
 //        graph) whose result graph is then maximized by hand before the next table is created.
+//   90c  invalidateModelessGraphDialogs must not dereference a dialog's dangling
+//        "targetMultiLayerPtr" (QVariant::value<QObject *>() runs qobject_cast on it).
 // A crash here kills the test process, which the runner reports as a failed suite.
 // =============================================================================
 
@@ -173,6 +176,28 @@ int runSuite90FftWindowTeardown(ApplicationWindow *mw)
         w.reset();
         std::cout << "[PASS] 90b: window with Differentiation result graph + later maximized table "
                      "torn down\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 90c: a modeless dialog whose "targetMultiLayerPtr" points to an object that has already
+    // been deleted must not be dereferenced when another graph's dialogs are invalidated.
+    // -------------------------------------------------------------------------
+    {
+        AppWinGuard90 w;
+        MultiLayer *ml = makeFixture90(w, QStringLiteral("T90c"));
+        CHECK_COND(ml != nullptr, "90c: plot fixture failed");
+        auto *dlg = new QDialog(w);
+        dlg->setModal(false);
+        QPointer<QDialog> dlgGuard(dlg);
+        auto *gone = new QObject();
+        dlg->setProperty("targetMultiLayerPtr", QVariant::fromValue(gone));
+        delete gone; // the dialog now holds a dangling pointer, as after its graph was deleted
+        w->invalidateModelessGraphDialogs(ml);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        CHECK_COND(!dlgGuard.isNull(),
+                   "90c: a dialog targeting another (deleted) window must not be invalidated");
+        std::cout << "[PASS] 90c: dangling targetMultiLayerPtr is compared, not dereferenced\n";
+        w.reset();
     }
 
     std::cout << "[PASS] Suite 90 passed.\n";

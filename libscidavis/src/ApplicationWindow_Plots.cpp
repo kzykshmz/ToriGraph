@@ -253,6 +253,16 @@ using namespace ApplicationWindowInternal;
 
 namespace {
 
+// Reads the raw QObject* stored in a dialog's "targetMultiLayerPtr" property WITHOUT touching the
+// object. QVariant::value<QObject *>() runs qobject_cast on the stored pointer, which dereferences
+// it - a use-after-free when the target window has already been deleted (the dialog outlives it).
+const QObject *storedTargetPointer(const QVariant &v)
+{
+    if (!v.isValid() || v.userType() != QMetaType::QObjectStar)
+        return nullptr;
+    return *static_cast<QObject *const *>(v.constData());
+}
+
 // Acklam's rational approximation for the standard normal inverse CDF \Phi^{-1}(p)
 double inverseStandardNormalCDF(double p)
 {
@@ -2999,7 +3009,7 @@ void ApplicationWindow::removeCurve()
         if (qobject_cast<PlotDialog *>(dlg) || qobject_cast<CurveRangeDialog *>(dlg)
             || qobject_cast<CurvesDialog *>(dlg) || qobject_cast<FunctionDialog *>(dlg)) {
             const QVariant tp = dlg->property("targetMultiLayerPtr");
-            if (!tp.isValid() || tp.value<QObject *>() == static_cast<QObject *>(ml)) {
+            if (!tp.isValid() || storedTargetPointer(tp) == static_cast<QObject *>(ml)) {
                 invalidateModelessGraphDialogs(ml);
                 break;
             }
@@ -5133,7 +5143,7 @@ void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *
     if (d_active_peak_analyzer_dlg && d_active_peak_analyzer_dlg.data() != excludeDlg) {
         const QVariant peakTargetVar = d_active_peak_analyzer_dlg->property("targetMultiLayerPtr");
         const QObject *peakTargetObj =
-                peakTargetVar.isValid() ? peakTargetVar.value<QObject *>() : nullptr;
+                storedTargetPointer(peakTargetVar);
         if (!peakTargetVar.isValid() || peakTargetObj == static_cast<QObject *>(ml)) {
             d_active_peak_analyzer_dlg->blockSignals(true);
             d_active_peak_analyzer_dlg->disconnect();
@@ -5162,7 +5172,7 @@ void ApplicationWindow::invalidateModelessGraphDialogs(MultiLayer *ml, QDialog *
         const QVariant targetVar = dlg->property("targetMultiLayerPtr");
         bool shouldInvalidate = false;
         if (targetVar.isValid()) {
-            shouldInvalidate = (targetVar.value<QObject *>() == static_cast<QObject *>(ml));
+            shouldInvalidate = (storedTargetPointer(targetVar) == static_cast<QObject *>(ml));
         } else if (dlg->testAttribute(Qt::WA_DeleteOnClose)) {
             shouldInvalidate = (qobject_cast<PlotDialog *>(dlg) != nullptr
                                 || qobject_cast<CurvesDialog *>(dlg) != nullptr
