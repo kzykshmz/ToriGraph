@@ -49,6 +49,11 @@
 //        0.075 % strain at 5 %: a return shorter than 1 % of the X range was taken for noise,
 //        the branches were sorted into one and x = 4.973 gave a value on neither of them; now
 //        the loading, unloading and reloading values (the threshold comes from the X noise).
+//   100m lookup_xy on a quantized X (LSB 0.001, each level held ~10 rows) with a 1-LSB step
+//        back every 23 rows: most second differences were 0, the noise 0 and the threshold
+//        1e-9 of the range, so each flicker was a turn and x on those levels gave several
+//        values and y null; now the threshold is at least 2.5 LSB and the curve is one branch
+//        (also when equal levels differ by ~1e-17 from floating-point rounding).
 // Noise comes from a fixed splitmix64 + Box-Muller generator (identical on every platform).
 // =============================================================================
 namespace {
@@ -1009,6 +1014,70 @@ int runSuite100NumericsRound2(ApplicationWindow *mw)
                        "100l: x = " << xo << " must give one value " << sLoad(xo) << " (got "
                                     << ro.value("y").toDouble(nan) << ")");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // 100m: lookup_xy on a quantized X with sparse 1-LSB flicker
+    // -------------------------------------------------------------------------
+    {
+        // A coarse extensometer / ADC: LSB 0.001, the true strain rises 0.0001 per row, so
+        // each level is held ~10 rows and most second differences of X are 0 (MAD noise 0).
+        // Every 23rd row reads one LSB low (a step back of 1 LSB). Levels are an accumulated
+        // sum of 0.001; on every 5th level the last row is k * 0.001 instead, which differs
+        // from the sum by ~1e-17 (a floating-point "step" that is not the resolution).
+        // Before: the threshold fell to 1e-9 of the X range, every flicker was a turn, x at
+        // a flickering level gave several values and y null.
+        const double lsb = 0.001;
+        std::vector<double> x, y, lvl(1, 0.0);
+        int reprDiffers = 0;
+        for (int i = 0; i < 2000; ++i) {
+            const double t = 0.0001 * i;
+            const int k = int(std::floor(t / lsb + 0.5));
+            while (int(lvl.size()) <= k + 1)
+                lvl.push_back(lvl.back() + lsb);
+            double v = lvl[size_t(k)];
+            if (i % 23 == 11 && k > 0) {
+                v = lvl[size_t(k - 1)];
+            } else if (k % 5 == 0 && int(std::floor(0.0001 * (i + 1) / lsb + 0.5)) != k) {
+                v = k * lsb;
+                if (v != lvl[size_t(k)])
+                    ++reprDiffers;
+            }
+            x.push_back(v);
+            y.push_back(1000.0 * t + 5.0);
+        }
+        CHECK_COND(reprDiffers > 0, "100m: the data must contain floating-point level differences");
+        const QString g = plotXY(x, y);
+        CHECK_COND(!g.isEmpty(), "100m: plot setup failed");
+        int nullY = 0;
+        int multi = 0;
+        double worst = 0.0;
+        QString notice;
+        for (int q = 0; q <= 180; ++q) {
+            const double xq = 0.01 + 0.001 * q; // on the levels, where the flicker lands
+            const QJsonObject r = rpc(QStringLiteral("curvemath.lookup_xy"),
+                                      QJsonObject{ { "graph", g }, { "curve", 0 }, { "x", xq } })
+                                          .value(QStringLiteral("result"))
+                                          .toObject();
+            if (r.value("y_values").toArray().size() > 1)
+                ++multi;
+            if (!r.value("ok").toBool() || !r.value("y").isDouble()) {
+                ++nullY;
+                continue;
+            }
+            worst = std::max(worst, std::fabs(r.value("y").toDouble() - (1000.0 * xq + 5.0)));
+            notice = r.value("notice").toString();
+        }
+        std::cout << "[INFO] 100m quantized X with 1-LSB flicker: " << nullY << " of 181 without y, "
+                  << multi << " with several values, worst |dy| " << worst << " ("
+                  << reprDiffers << " float level differences), notice: "
+                  << notice.toStdString() << "\n";
+        CHECK_COND(nullY == 0 && multi == 0 && worst < 2.0,
+                   "100m: a quantized X with sparse 1-LSB flicker must give one y everywhere ("
+                           << nullY << " of 181 null, " << multi << " with several values, worst |dy| "
+                           << worst << ")");
+        CHECK_COND(notice.contains(QLatin1String("one branch")),
+                   "100m: the notice must say the curve was taken as one branch");
     }
 
     w.reset();

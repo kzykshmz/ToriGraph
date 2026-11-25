@@ -935,15 +935,21 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             // by more than 8 times its noise (robust spread of the second difference of X): an
             // almost monotonic X with noise (x = 0.01 i + N(0, 0.005), 1000 points) steps back
             // ~170 times, was taken for branches, and ~2 % of x gave several values and 'y'
-            // null. Such a curve is one branch, sorted. The threshold comes from the noise only
-            // (without noise, a tiny floor of 1e-9 of the X range for rounding): a floor of 1 %
-            // of the X range took a short real return for noise and sorted the branches into
-            // one, e.g. a partial elastic unloading of 0.075 % strain in a 0-10 % tensile test,
-            // which gave a value on neither branch.
+            // null. Such a curve is one branch, sorted. The threshold does not depend on the X
+            // range: a floor of 1 % of the range took a short real return for noise and sorted
+            // the branches into one, e.g. a partial elastic unloading of 0.075 % strain in a
+            // 0-10 % tensile test, which gave a value on neither branch. It is at least 2.5 times
+            // the resolution of X (the smallest step between rows, ignoring floating-point
+            // differences of equal readings): a quantized X (coarse extensometer, ADC) holds each
+            // level for several rows, so most second differences are 0 and so is the noise, and
+            // each 1-LSB flicker back was a turn (x on those levels gave several values). A tiny
+            // floor of 1e-9 of the X range covers rounding when neither applies.
             int nPts = 0;
             const int nTurns = CurveMathTools::countXTurns(g, curveTitle, &nPts);
             int nBranchTurns = nTurns;
             double xNoise = 0.0;
+            double xLsb = 0.0;
+            double xThr = 0.0;
             if (nTurns > 0 && 4 * nTurns <= nPts) {
                 std::vector<double> xr, yr;
                 extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xr, yr);
@@ -962,7 +968,18 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         v = std::fabs(v - med);
                     xNoise = 1.4826 * median(d2) / std::sqrt(1.5);
                     const auto mm = std::minmax_element(xr.begin(), xr.end());
-                    const double thr = std::max(8.0 * xNoise, 1e-9 * (*mm.second - *mm.first));
+                    const double span = *mm.second - *mm.first;
+                    const double scale = std::max(std::fabs(*mm.first), std::fabs(*mm.second));
+                    // Steps below this are floating-point differences of one reading (e.g.
+                    // 0.1 + 0.2 vs 0.3, ~1e-17), not the resolution of X.
+                    const double tinyDx = std::max(1e-9 * span, 1e-12 * scale);
+                    for (size_t i = 1; i < xr.size(); ++i) {
+                        const double dx = std::fabs(xr[i] - xr[i - 1]);
+                        if (dx > tinyDx && (xLsb == 0.0 || dx < xLsb))
+                            xLsb = dx;
+                    }
+                    const double thr = std::max({ 8.0 * xNoise, 2.5 * xLsb, 1e-9 * span });
+                    xThr = thr;
                     // Direction 0 until X has left the start by more than thr; then the furthest
                     // X in the current direction, and a turn when X is thr back from it.
                     int dir = 0;
@@ -1009,12 +1026,15 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (nTurns > 0 && 4 * nTurns <= nPts) {
                 outResult[QStringLiteral("notice")] =
                         QStringLiteral("X steps back %1 time(s) in %2 points, each time by no more "
-                                       "than 8 times its noise (%3); the curve was taken as one "
+                                       "than %3 (the larger of 8 times its noise, %4, and 2.5 "
+                                       "times its resolution, %5); the curve was taken as one "
                                        "branch and the points were sorted by X (equal X averaged) "
                                        "before interpolating.")
                                 .arg(nTurns)
                                 .arg(nPts)
-                                .arg(xNoise, 0, 'g', 4);
+                                .arg(xThr, 0, 'g', 4)
+                                .arg(8.0 * xNoise, 0, 'g', 4)
+                                .arg(2.5 * xLsb, 0, 'g', 4);
             } else if (nTurns > 0) {
                 outResult[QStringLiteral("notice")] =
                         QStringLiteral("X is not in order (%1 changes of direction in %2 points); "
