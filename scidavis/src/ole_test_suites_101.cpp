@@ -48,6 +48,10 @@
 //        designation and data changes still reach the header and the views, each change once.
 //   101g opening a project with a 2000-column table adds the columns in one go (it took
 //        ~18 s; the columns were appended one by one): time limit, names, values, widths.
+//   101h date/time cells in the DST gap (New York, 2024-03-10 02:xx, held with the offset before
+//        the gap): sorting compares clock times (by instant 02:xx tied with 03:xx and was
+//        interleaved with it), and saving / reopening a project keeps them (read as local times,
+//        Qt 5 made them invalid: empty cells); ordinary date/times and empty cells unchanged.
 // =============================================================================
 
 namespace {
@@ -900,6 +904,146 @@ int runSuite101WorksheetRound2(ApplicationWindow *mw)
                            .contains(QStringLiteral("[Z")),
                    "101g: header of the last column");
         std::cout << "[PASS] 101g: a 2000-column project opens with its columns added at once\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 101h: sorting and reopening date/time cells in the DST gap
+    // -------------------------------------------------------------------------
+    {
+        // The cells a New York PC holds on 2024-03-10 (made with New York's zone, as in 101c-2):
+        // 02:xx is in the gap, held as 02:xx with the offset before it (UTC-5), which is the
+        // instant of 03:xx. Sorting compared instants: 02:xx tied with 03:xx and was
+        // interleaved with it.
+        const QTimeZone ny(QByteArrayLiteral("America/New_York"));
+        CHECK_COND(ny.isValid(), "101h: no America/New_York time zone");
+        const QDate gapDay(2024, 3, 10);
+        const QTime rowTimes[] = { QTime(3, 15), QTime(2, 45), QTime(1, 30), QTime(3, 0),
+                                   QTime(2, 0),  QTime(3, 45), QTime(2, 30, 0, 500) };
+        const int n = int(sizeof(rowTimes) / sizeof(rowTimes[0]));
+        Table *t = w101->newTable(n, 2, QStringLiteral("T101Gap"), QStringLiteral("Gap101"));
+        CHECK_COND(t != nullptr, "101h: newTable failed");
+        Column *dc = t->column(0);
+        dc->setColumnMode(SciDAVis::ColumnMode::DateTime);
+        QList<QDateTime> cells;
+        QVector<qreal> ids;
+        for (int i = 0; i < n; ++i) {
+            cells << NumericDateTimeBaseFilter::wallClockInZone(
+                    QDateTime(gapDay, rowTimes[i], Qt::UTC), ny);
+            ids << i;
+        }
+        dc->replaceDateTimes(0, cells);
+        t->column(1)->replaceValues(0, ids);
+        auto dumpTimes = [&](Column *c) {
+            QStringList l;
+            for (int i = 0; i < c->rowCount(); ++i)
+                l << (c->dateTimeAt(i).isValid()
+                              ? c->dateTimeAt(i).toString(QStringLiteral("hh:mm:ss.zzz"))
+                              : QStringLiteral("-"));
+            return l.join(QLatin1Char(' '));
+        };
+        const QString ascending =
+                QStringLiteral("01:30:00.000 02:00:00.000 02:30:00.500 02:45:00.000 "
+                               "03:00:00.000 03:15:00.000 03:45:00.000");
+        t->d_future_table->sortColumns(dc, QList<Column *>() << dc << t->column(1), true);
+        std::cout << "[INFO] 101h: ascending " << dumpTimes(dc).toStdString() << "\n";
+        CHECK_COND(dumpTimes(dc) == ascending,
+                   "101h: ascending sort by clock time -> " << dumpTimes(dc).toStdString());
+        const double idsAsc[] = { 2, 4, 6, 1, 3, 0, 5 };
+        for (int i = 0; i < n; ++i)
+            CHECK_COND(t->column(1)->valueAt(i) == idsAsc[i],
+                       "101h: row " << i << " moved apart from its date/time (id "
+                                    << t->column(1)->valueAt(i) << ")");
+        t->d_future_table->sortColumns(dc, QList<Column *>() << dc << t->column(1), false);
+        CHECK_COND(dumpTimes(dc)
+                           == QStringLiteral("03:45:00.000 03:15:00.000 03:00:00.000 "
+                                             "02:45:00.000 02:30:00.500 02:00:00.000 "
+                                             "01:30:00.000"),
+                   "101h: descending sort by clock time -> " << dumpTimes(dc).toStdString());
+        t->d_future_table->sortColumns(dc, QList<Column *>() << dc << t->column(1), true);
+
+        // A second column: ordinary local date/times (milliseconds, years apart) and an empty
+        // cell, which reopening has to keep as they were.
+        Table *t2 = w101->newTable(4, 1, QStringLiteral("T101Plain"), QStringLiteral("Plain101"));
+        CHECK_COND(t2 != nullptr, "101h: newTable failed");
+        Column *pc = t2->column(0);
+        pc->setColumnMode(SciDAVis::ColumnMode::DateTime);
+        const QList<QDateTime> plain = { QDateTime(QDate(2024, 1, 2), QTime(10, 0, 0, 123)),
+                                         QDateTime(QDate(1999, 12, 31), QTime(23, 59, 59, 999)),
+                                         QDateTime(QDate(2024, 7, 1), QTime(0, 0)),
+                                         QDateTime(QDate(1970, 1, 1), QTime(0, 0)) };
+        pc->replaceDateTimes(0, plain);
+        pc->setInvalid(2, true);
+
+        // XML of one column (Column::save / load): the clock time of every cell comes back
+        {
+            bool ok = false;
+            std::unique_ptr<Column> back = load101(save101(dc), &ok);
+            CHECK_COND(ok && dumpTimes(back.get()) == ascending,
+                       "101h: column XML round trip -> " << dumpTimes(back.get()).toStdString());
+            for (int i = 0; i < n; ++i)
+                CHECK_COND(back->dateTimeAt(i).date() == gapDay,
+                           "101h: column XML round trip changed the date of row " << i);
+            // the PC's own DST gap, wherever it has one: reading it back used to give an
+            // empty cell (Qt 5 makes the local date/time invalid)
+            QDateTime localGap;
+            for (QDate d(2024, 1, 1); d.year() == 2024 && !localGap.isValid(); d = d.addDays(1))
+                for (int h = 0; h < 24; ++h)
+                    if (!QDateTime(d, QTime(h, 30)).isValid()) {
+                        localGap = QDateTime(d, QTime(h, 30), Qt::UTC);
+                        break;
+                    }
+            if (localGap.isValid()) {
+                Column lg(QStringLiteral("s101_gap"), SciDAVis::ColumnMode::DateTime);
+                lg.setDateTimeAt(0, NumericDateTimeBaseFilter::localWallClock(localGap));
+                std::unique_ptr<Column> lb = load101(save101(&lg), &ok);
+                CHECK_COND(ok && !lb->isInvalid(0) && lb->dateTimeAt(0).isValid()
+                                   && lb->dateTimeAt(0).date() == localGap.date()
+                                   && lb->dateTimeAt(0).time() == localGap.time(),
+                           "101h: the PC's DST gap " << dt101(localGap).toStdString() << " -> "
+                                                     << dt101(lb->dateTimeAt(0)).toStdString());
+            } else {
+                std::cout << "[INFO] 101h: the PC's zone has no DST gap in 2024; the gap is "
+                             "checked through New York's cells only\n";
+            }
+        }
+
+        // project file: save, reopen, compare
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "101h: no temporary directory");
+        const QString path = tmp.filePath(QStringLiteral("gap101.sciprj"));
+        QJsonObject r = rpc(QStringLiteral("app.save_project"), QJsonObject{ { "path", path } });
+        CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
+                   "101h: save_project failed: " << errText(r));
+        r = rpc(QStringLiteral("app.open_project"),
+                QJsonObject{ { "path", path }, { "force", true } });
+        CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
+                   "101h: open_project failed: " << errText(r));
+        Table *lt = w101->table(QStringLiteral("T101Gap"));
+        Table *lp = w101->table(QStringLiteral("T101Plain"));
+        CHECK_COND(lt != nullptr && lp != nullptr, "101h: tables not found after open");
+        Column *ldc = lt->column(0);
+        std::cout << "[INFO] 101h: reopened " << dumpTimes(ldc).toStdString() << "\n";
+        CHECK_COND(ldc->columnMode() == SciDAVis::ColumnMode::DateTime
+                           && dumpTimes(ldc) == ascending,
+                   "101h: reopened gap cells -> " << dumpTimes(ldc).toStdString());
+        for (int i = 0; i < n; ++i)
+            CHECK_COND(!ldc->isInvalid(i) && ldc->dateTimeAt(i).date() == gapDay
+                               && lt->column(1)->valueAt(i) == idsAsc[i],
+                       "101h: reopened row " << i << " -> "
+                                             << dt101(ldc->dateTimeAt(i)).toStdString());
+        Column *lpc = lp->column(0);
+        for (int i = 0; i < plain.size(); ++i) {
+            if (i == 2) {
+                CHECK_COND(lpc->isInvalid(2), "101h: the empty cell is not empty after reopening");
+                continue;
+            }
+            CHECK_COND(!lpc->isInvalid(i) && lpc->dateTimeAt(i) == plain.at(i)
+                               && lpc->dateTimeAt(i).timeSpec() == Qt::LocalTime,
+                       "101h: reopened " << dt101(plain.at(i)).toStdString() << " -> "
+                                         << dt101(lpc->dateTimeAt(i)).toStdString());
+        }
+        std::cout << "[PASS] 101h: date/time cells sort by clock time and keep it through saving "
+                     "and reopening (DST gap included)\n";
     }
 
     std::cout << "[PASS] Suite 101 passed.\n";

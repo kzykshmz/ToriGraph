@@ -2639,6 +2639,17 @@ struct SortComparators
             return false;
         return a.first > b.first;
     }
+    // Date/time cells are wall-clock times: they are ordered by their date and time fields, not
+    // by the instant. A clock time skipped when DST starts (02:30 on 2024-03-10 in New York) is
+    // held with the offset before the gap, which is the instant of 03:30; by instant the rows
+    // 02:00-02:59 tied with 03:00-03:59 and were interleaved with them.
+    static bool wallClockLess(const QDateTime &a, const QDateTime &b)
+    {
+        const QDate da = a.date(), db = b.date();
+        if (da != db)
+            return da < db;
+        return a.time() < b.time();
+    }
     static bool dateTimeLess(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
     {
         const bool ia = !a.first.isValid();
@@ -2647,7 +2658,7 @@ struct SortComparators
             return !ia; // invalid / empty always goes to the end
         if (ia)
             return false;
-        return a.first < b.first;
+        return wallClockLess(a.first, b.first);
     }
     static bool dateTimeGreater(const QPair<QDateTime, int> &a, const QPair<QDateTime, int> &b)
     {
@@ -2657,7 +2668,7 @@ struct SortComparators
             return !ia; // invalid / empty always goes to the end
         if (ia)
             return false;
-        return a.first > b.first;
+        return wallClockLess(b.first, a.first);
     }
 };
 

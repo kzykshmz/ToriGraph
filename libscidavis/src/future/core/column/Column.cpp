@@ -30,6 +30,7 @@
 #include "core/column/Column.h"
 #include "core/column/ColumnPrivate.h"
 #include "core/column/columncommands.h"
+#include "core/datatypes/NumericDateTimeBaseFilter.h"
 #include "lib/XmlStreamReader.h"
 #include "IconLoader.h"
 #include <QIcon>
@@ -738,10 +739,22 @@ bool Column::XmlReadRow(XmlStreamReader *reader)
         setTextAt(index, str);
         break;
 
-    case SciDAVis::TypeQDateTime:
-        QDateTime date_time = QDateTime::fromString(str, "yyyy-dd-MM hh:mm:ss:zzz");
+    case SciDAVis::TypeQDateTime: {
+        // save() writes the cell's date and time fields ("yyyy-dd-MM hh:mm:ss:zzz"). They are
+        // read as a wall-clock time and made local like the cells of a conversion: read as a
+        // local time at once, a clock time skipped when DST starts (02:30 on 2024-03-10 in New
+        // York) was invalid in Qt 5 and became an empty cell on reopening.
+        QDateTime date_time;
+        const int sep = str.indexOf(QLatin1Char(' '));
+        const QDate date = sep > 0 ? QDate::fromString(str.left(sep), "yyyy-dd-MM") : QDate();
+        const QTime time = sep > 0 ? QTime::fromString(str.mid(sep + 1), "hh:mm:ss:zzz") : QTime();
+        if (date.isValid() && time.isValid())
+            date_time = NumericDateTimeBaseFilter::localWallClock(QDateTime(date, time, Qt::UTC));
+        else
+            date_time = QDateTime::fromString(str, "yyyy-dd-MM hh:mm:ss:zzz");
         setDateTimeAt(index, date_time);
         break;
+    }
     }
 
     str = attribs.value(reader->namespaceUri().toString(), "invalid").toString();
