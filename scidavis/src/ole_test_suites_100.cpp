@@ -45,6 +45,10 @@
 //        430 K to the broad one at 470 K; now the largest sample (and with noise, near it).
 //   100k lookup_xy on an almost monotonic X with noise (x = 0.01 i + N(0, 0.005), 1000 points)
 //        was taken for branches (~2 % of x gave y null); now sorted and one value.
+//   100l lookup_xy on a tensile curve (0-10 % strain) with a partial elastic unloading of
+//        0.075 % strain at 5 %: a return shorter than 1 % of the X range was taken for noise,
+//        the branches were sorted into one and x = 4.973 gave a value on neither of them; now
+//        the loading, unloading and reloading values (the threshold comes from the X noise).
 // Noise comes from a fixed splitmix64 + Box-Muller generator (identical on every platform).
 // =============================================================================
 namespace {
@@ -937,6 +941,74 @@ int runSuite100NumericsRound2(ApplicationWindow *mw)
                            << nullY << " of 181 were null)");
         CHECK_COND(notice.contains(QLatin1String("one branch")),
                    "100k: the notice must say the curve was taken as one branch");
+    }
+
+    // -------------------------------------------------------------------------
+    // 100l: lookup_xy on a tensile curve with a short partial elastic unloading
+    // -------------------------------------------------------------------------
+    {
+        // Strain 0-10 % (step 0.01), stress elastic with E = 200 GPa up to 300 MPa, then
+        // hardening. At 5 % the load is reduced by 150 MPa (0.075 % strain, step 0.005) and
+        // raised again along the same elastic line; then loading goes on to 10 %. The return
+        // is shorter than 1 % of the X range: the old floor sorted the branches into one and
+        // x = 4.973 gave a value on neither branch.
+        auto sLoad = [](double e) {
+            return e <= 0.15 ? 2000.0 * e : 300.0 + 50.0 * std::sqrt(e - 0.15);
+        };
+        std::vector<double> x, y;
+        for (int i = 0; i <= 500; ++i) {
+            x.push_back(0.01 * i);
+            y.push_back(sLoad(x.back()));
+        }
+        const double sPeak = y.back();
+        for (int k = 1; k <= 15; ++k) { // unloading
+            x.push_back(5.0 - 0.005 * k);
+            y.push_back(sPeak - 2000.0 * (5.0 - x.back()));
+        }
+        for (int k = 1; k <= 15; ++k) { // reloading
+            x.push_back(4.925 + 0.005 * k);
+            y.push_back(sPeak - 2000.0 * (5.0 - x.back()));
+        }
+        for (int i = 501; i <= 1000; ++i) {
+            x.push_back(0.01 * i);
+            y.push_back(sLoad(x.back()));
+        }
+        const QString g = plotXY(x, y);
+        CHECK_COND(!g.isEmpty(), "100l: plot setup failed");
+        auto lookup = [&](double xq) {
+            return rpc(QStringLiteral("curvemath.lookup_xy"),
+                       QJsonObject{ { "graph", g }, { "curve", 0 }, { "x", xq } })
+                    .value(QStringLiteral("result"))
+                    .toObject();
+        };
+        const double xq = 4.973;
+        const double yLoad = y[497] + (xq - x[497]) / (x[498] - x[497]) * (y[498] - y[497]);
+        const double yElastic = sPeak - 2000.0 * (5.0 - xq);
+        const QJsonObject r = lookup(xq);
+        const QJsonArray yv = r.value(QStringLiteral("y_values")).toArray();
+        std::cout << "[INFO] 100l partial unloading x=" << xq << ": y="
+                  << (r.value("y").isDouble() ? std::to_string(r.value("y").toDouble())
+                                              : std::string("null"))
+                  << " y_values=" << yv.size() << " (loading " << yLoad << ", elastic "
+                  << yElastic << ") notice: " << r.value("notice").toString().toStdString()
+                  << "\n";
+        bool branchesOk = r.value("ok").toBool() && r.value("y").isNull() && yv.size() == 3
+                && std::fabs(yv.at(0).toDouble() - yLoad) < 1e-9;
+        for (int k = 1; branchesOk && k < yv.size(); ++k)
+            branchesOk = std::fabs(yv.at(k).toDouble() - yElastic) < 1e-9;
+        CHECK_COND(branchesOk && r.value("notice").toString().contains(QLatin1String("turns back 2")),
+                   "100l: x = 4.973 must give the loading, unloading and reloading values ["
+                           << yLoad << ", " << yElastic << ", " << yElastic
+                           << "] with y null (the branches were sorted into one)");
+        // outside the unloading loop the curve has one value
+        for (const double xo : { 4.9, 7.0 }) {
+            const QJsonObject ro = lookup(xo);
+            CHECK_COND(ro.value("ok").toBool()
+                               && std::fabs(ro.value("y").toDouble(nan) - sLoad(xo)) < 1e-6
+                               && ro.value("y_values").toArray().size() == 1,
+                       "100l: x = " << xo << " must give one value " << sLoad(xo) << " (got "
+                                    << ro.value("y").toDouble(nan) << ")");
+        }
     }
 
     w.reset();

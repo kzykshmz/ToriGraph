@@ -136,11 +136,12 @@ IsoDateTime parseIso8601DateTime(const QString &input)
 //! clock with am / pm.
 QTime parseTimeOfDay(const QString &text, const QStringList &formats)
 {
-    // "10:00:15 pm", "10:00 AM", "10:00:00.5 p.m.": the 12-hour clock in English whatever the
-    // locale (QTime's "ap" follows the locale's AM/PM texts)
+    // "10:00:15 pm", "10:00 AM", "10:00:00.5 p.m.", "10:00 p. m." (Spanish-language Windows and
+    // Excel): the 12-hour clock in English whatever the locale (QTime's "ap" follows the
+    // locale's AM/PM texts)
     static const QRegularExpression ampm(
             QStringLiteral("^(\\d{1,2}(?::\\d{2}(?::\\d{2}(?:[.,]\\d+)?)?)?)"
-                           "\\s*([AaPp])\\.?[Mm]\\.?$"));
+                           "\\s*([AaPp])\\.?\\s*[Mm]\\.?$"));
     const QRegularExpressionMatch am = ampm.match(text);
     if (am.hasMatch()) {
         QString clock = am.captured(1);
@@ -206,7 +207,8 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
     if (input_value.isEmpty())
         return QDateTime();
     // the cells hold local date/times; a clock time skipped when DST starts ("2024-03-10 02:30"
-    // in New York) is moved forward by the gap instead of becoming an empty cell
+    // in New York) keeps its clock time (with the offset before the gap) instead of becoming an
+    // empty cell
     return NumericDateTimeBaseFilter::localWallClock(wallClockFromText(input_value));
 }
 
@@ -278,16 +280,29 @@ QDateTime String2DateTimeFilter::wallClockFromText(const QString &input_value) c
         }
     }
     // The time is the first word after the date, with the next word when that is am / pm
-    // ("10:00 pm", "10:00:00.5 p.m."). Words after the time are dropped as before, e.g. a zone
-    // name the conversion cannot use ("2024-01-02 10:00:00 UTC", "2024-01-02 10:00 JST"): the
-    // clock time as written is kept.
+    // ("10:00 pm", "10:00:00.5 p.m."), or the next two when am / pm is written as two words
+    // ("10:00 p. m.", as Spanish-language Windows and Excel write it; the non-breaking space
+    // between them is a space after simplified()). Other words after the time are dropped as
+    // before, e.g. a zone name the conversion cannot use ("2024-01-02 10:00:00 UTC",
+    // "2024-01-02 10:00 JST"): the clock time as written is kept. A word after the time that
+    // starts like am / pm ("p.", "a", "p.x") but is not one makes the value invalid: dropping
+    // it read "10:00 p. x" as 10:00 in the morning.
     const bool hasTimePart = !words.isEmpty();
     QString time_string = date_string;
     if (hasTimePart) {
         time_string = words.at(0);
         static const QRegularExpression ampmWord(QStringLiteral("^[AaPp]\\.?[Mm]\\.?$"));
-        if (words.size() > 1 && ampmWord.match(words.at(1)).hasMatch())
+        static const QRegularExpression apWord(QStringLiteral("^[AaPp]\\.?$"));
+        static const QRegularExpression mWord(QStringLiteral("^[Mm]\\.?$"));
+        static const QRegularExpression apStart(QStringLiteral("^[AaPp](?:\\.|$)"));
+        if (words.size() > 1 && ampmWord.match(words.at(1)).hasMatch()) {
             time_string += QLatin1Char(' ') + words.at(1);
+        } else if (words.size() > 2 && apWord.match(words.at(1)).hasMatch()
+                   && mWord.match(words.at(2)).hasMatch()) {
+            time_string += QLatin1Char(' ') + words.at(1) + QLatin1Char(' ') + words.at(2);
+        } else if (words.size() > 1 && apStart.match(words.at(1)).hasMatch()) {
+            return QDateTime();
+        }
     }
 
     // try to find a valid date

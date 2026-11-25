@@ -932,10 +932,14 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             // (more than one per 4 points, as for differentiate) are rows in no particular
             // order: those are sorted by X as before, with a notice.
             // A step back of X counts as a turn only when X travels back from its furthest point
-            // by more than 8 times its noise (robust spread of the second difference of X) and
-            // more than 1 % of the X range: an almost monotonic X with noise (x = 0.01 i +
-            // N(0, 0.005), 1000 points) steps back ~170 times, was taken for branches, and
-            // ~2 % of x gave several values and 'y' null. Such a curve is one branch, sorted.
+            // by more than 8 times its noise (robust spread of the second difference of X): an
+            // almost monotonic X with noise (x = 0.01 i + N(0, 0.005), 1000 points) steps back
+            // ~170 times, was taken for branches, and ~2 % of x gave several values and 'y'
+            // null. Such a curve is one branch, sorted. The threshold comes from the noise only
+            // (without noise, a tiny floor of 1e-9 of the X range for rounding): a floor of 1 %
+            // of the X range took a short real return for noise and sorted the branches into
+            // one, e.g. a partial elastic unloading of 0.075 % strain in a 0-10 % tensile test,
+            // which gave a value on neither branch.
             int nPts = 0;
             const int nTurns = CurveMathTools::countXTurns(g, curveTitle, &nPts);
             int nBranchTurns = nTurns;
@@ -958,7 +962,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         v = std::fabs(v - med);
                     xNoise = 1.4826 * median(d2) / std::sqrt(1.5);
                     const auto mm = std::minmax_element(xr.begin(), xr.end());
-                    const double thr = std::max(8.0 * xNoise, 0.01 * (*mm.second - *mm.first));
+                    const double thr = std::max(8.0 * xNoise, 1e-9 * (*mm.second - *mm.first));
                     // Direction 0 until X has left the start by more than thr; then the furthest
                     // X in the current direction, and a turn when X is thr back from it.
                     int dir = 0;
@@ -1005,9 +1009,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (nTurns > 0 && 4 * nTurns <= nPts) {
                 outResult[QStringLiteral("notice")] =
                         QStringLiteral("X steps back %1 time(s) in %2 points, each time by no more "
-                                       "than its noise (%3) or 1 % of the X range; the curve was "
-                                       "taken as one branch and the points were sorted by X "
-                                       "(equal X averaged) before interpolating.")
+                                       "than 8 times its noise (%3); the curve was taken as one "
+                                       "branch and the points were sorted by X (equal X averaged) "
+                                       "before interpolating.")
                                 .arg(nTurns)
                                 .arg(nPts)
                                 .arg(xNoise, 0, 'g', 4);

@@ -79,7 +79,9 @@ public:
 
     //! The wall-clock time `wall` (its date and time fields) as a local date/time, the form the
     //! cells of a date/time column hold. A clock time that does not exist locally (skipped when
-    //! DST starts) is moved forward by the gap instead of becoming invalid (an empty cell).
+    //! DST starts) is kept as written with the offset in force before the gap
+    //! (Qt::OffsetFromUTC) instead of becoming invalid (an empty cell); its date and time fields,
+    //! which the cell shows and the numeric conversion reads, are those of `wall`.
     static QDateTime localWallClock(const QDateTime &wall);
     //! The same in the time zone `zone` (localWallClock() uses the PC's zone); lets the DST gap
     //! be checked on a PC whose own zone has none.
