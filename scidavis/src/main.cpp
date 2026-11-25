@@ -509,6 +509,11 @@ int main(int argc, char **argv)
         mw->activateSubWindow();
         mw->savedProject();
         mw->parseCommandLineArguments(filteredArgs);
+        // open() may hand back another ApplicationWindow (a project, or a file of an unknown
+        // type read by plotFile) and close() this one: WA_DeleteOnClose only schedules its
+        // deletion. Run it now, so that the replacement window found below gets the RPC server
+        // instead of a window deleted by the first event-loop pass (which reset the connection).
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 
         ApplicationWindow *activeMw = mw.data();
         if (!activeMw) {

@@ -120,6 +120,12 @@ public:
                                                 const QString &tableName,
                                                 const QString &filePathHint,
                                                 ImportReport *outReport = nullptr);
+    //! True when the drop import would set metadata lines above the header / numeric block aside
+    //! as a preamble (tensile tester and DSC exports, "; Instrument ..." headers, spectrometer
+    //! .txt). Looks at the first lines of the file only. Shared with the JSON-RPC import, which
+    //! then reads such a file as the GUI import does.
+    static bool hasDataPreamble(const QByteArray &rawBytes, const QString &filePathHint,
+                                const QString &encodingHint = QString());
 
     static QString decodeLabTextAuto(const QByteArray &rawBytes,
                                      const QString &encodingHint = QString());
@@ -133,6 +139,13 @@ public:
     //! "n/a", "n.d.", "nd", "null", "#n/a", "#div/0!", "#value!", "#ref!", "#name?", "#num!",
     //! "#null!", "#getting_data", "#spill!", "#calc!", case-insensitive).
     static bool isMissingDataToken(const QString &raw);
+    //! Number of a cell as the text import reads it with the C locale: also full-width digits,
+    //! point and signs ("２．５", "－３") and Fortran exponents ("1.0D+00", "2.5d-3").
+    //! False for text and for values that are not finite. Shared with the JSON-RPC import.
+    static bool parseNumberToken(const QString &trimmed, double &outValue);
+    //! True for a plain number that overflows a double ("1e400"): the import reads it as a
+    //! missing value, like "inf". Shared with the JSON-RPC import.
+    static bool isOverflowNumberToken(const QString &trimmed);
     //! Separator choice of the text import from sample lines (the non-empty, non-'#' lines at
     //! the top of the data): "\t", ",", ";" or " " (whitespace). Shared with the JSON-RPC import.
     static QString detectSeparator(const QStringList &sampleLines, const QString &filePathHint);

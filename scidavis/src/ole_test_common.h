@@ -672,5 +672,6 @@ int runSuite98RpcImportRobustness(ApplicationWindow *mw);
 int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw);
 int runSuite100NumericsRound2(ApplicationWindow *mw);
 int runSuite101WorksheetRound2(ApplicationWindow *mw);
+int runSuite103ImportRound2(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

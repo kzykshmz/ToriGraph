@@ -52,6 +52,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -200,6 +201,100 @@ bool isMissingDataTokenImpl(const QString &raw)
             || lo == QLatin1String("#calc!");
 }
 
+//! ASCII equivalent of a full-width number character ("１", "．", "－", "＋", "Ｅ"), 0 for others.
+char asciiForFullwidthNumberChar(ushort u)
+{
+    if (u >= 0xFF10 && u <= 0xFF19)
+        return static_cast<char>('0' + (u - 0xFF10));
+    switch (u) {
+    case 0xFF0E:
+        return '.';
+    case 0xFF0D:
+        return '-';
+    case 0xFF0B:
+        return '+';
+    case 0xFF25:
+        return 'E';
+    case 0xFF45:
+        return 'e';
+    default:
+        return 0;
+    }
+}
+
+//! Copies a number token into `buf` as ASCII (full-width digits, point, signs and exponent
+//! mapped to ASCII; a Fortran exponent "1.0D+00" / "2.5d-3" turned into 'e'). Returns the
+//! length, or -1 when the token holds other non-ASCII characters or blanks.
+int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize)
+{
+    if (!ptr || len <= 0 || len >= bufSize)
+        return -1;
+    int n = 0;
+    int dPos = -1;
+    for (int i = 0; i < len; ++i) {
+        ushort u = ptr[i].unicode();
+        if (u >= 0x80) {
+            const char c = asciiForFullwidthNumberChar(u);
+            if (!c)
+                return -1;
+            u = static_cast<uchar>(c);
+        }
+        if (u == ' ' || u == '\t')
+            return -1;
+        if (u == 'D' || u == 'd')
+            dPos = (dPos == -1) ? n : -2;
+        buf[n++] = static_cast<char>(u);
+    }
+    if (dPos >= 1) {
+        // Fortran double-precision exponent: digits (with a point, or a signed exponent) on the
+        // left, an integer exponent on the right; "2D3" without either stays text.
+        bool mantissaDigits = false, mantissaPoint = false, mantissaOk = true;
+        for (int i = 0; i < dPos; ++i) {
+            const char c = buf[i];
+            if (c >= '0' && c <= '9')
+                mantissaDigits = true;
+            else if (c == '.')
+                mantissaPoint = true;
+            else if (!((c == '+' || c == '-') && i == 0))
+                mantissaOk = false;
+        }
+        int e = dPos + 1;
+        const bool expSigned = e < n && (buf[e] == '+' || buf[e] == '-');
+        if (expSigned)
+            ++e;
+        bool expOk = e < n;
+        for (int i = e; i < n; ++i)
+            expOk = expOk && buf[i] >= '0' && buf[i] <= '9';
+        if (mantissaOk && mantissaDigits && expOk && (mantissaPoint || expSigned))
+            buf[dPos] = 'e';
+    }
+    return n;
+}
+
+//! A plain number whose magnitude overflows a double ("1e400", "-1.0D+999"): read as a missing
+//! value, like "inf", so that one such cell does not turn its column into text.
+bool isOverflowNumberSpan(const QChar *ptr, int len)
+{
+    char buf[72];
+    const int n = asciiNumberTokenToBuffer(ptr, len, buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return false;
+    bool hasExp = false;
+    for (int i = 0; i < n; ++i) {
+        const char c = buf[i];
+        if (c == 'e' || c == 'E')
+            hasExp = true;
+        else if (!((c >= '0' && c <= '9') || c == '.' || c == '+' || c == '-'))
+            return false;
+    }
+    if (!hasExp)
+        return false;
+    buf[n] = '\0';
+    char *end = nullptr;
+    const double v = std::strtod(buf, &end);
+    return end == buf + n && std::isinf(v);
+}
+
 bool isMissingNumericToken(const QString &trimmed, bool wasQuoted)
 {
     if (isMissingDataTokenImpl(trimmed))
@@ -209,7 +304,9 @@ bool isMissingNumericToken(const QString &trimmed, bool wasQuoted)
         return true;
     if (!wasQuoted
         && (lo == QLatin1String("inf") || lo == QLatin1String("+inf")
-            || lo == QLatin1String("-inf"))) {
+            || lo == QLatin1String("-inf") || lo == QLatin1String("infinity")
+            || lo == QLatin1String("+infinity") || lo == QLatin1String("-infinity")
+            || isOverflowNumberSpan(trimmed.constData(), trimmed.size()))) {
         return true;
     }
     return false;
@@ -220,21 +317,15 @@ bool tryParseAsciiDoubleSpan(const QChar *ptr, int len, double &outVal)
     if (!ptr || len <= 0 || len > 60)
         return false;
     char buf[64];
-    int outIdx = 0;
-    int startIdx = 0;
-    if (ptr[0] == QLatin1Char('+'))
-        startIdx = 1;
-    if (startIdx >= len)
+    const int n = asciiNumberTokenToBuffer(ptr, len, buf, sizeof(buf));
+    if (n <= 0)
         return false;
-    for (int i = startIdx; i < len; ++i) {
-        const ushort u = ptr[i].unicode();
-        if (u >= 0x80 || u == ' ' || u == '\t')
-            return false;
-        buf[outIdx++] = static_cast<char>(u);
-    }
+    const int startIdx = (buf[0] == '+') ? 1 : 0;
+    if (startIdx >= n)
+        return false;
     double val = 0.0;
-    const auto res = std::from_chars(buf, buf + outIdx, val);
-    if (res.ec == std::errc() && res.ptr == buf + outIdx && std::isfinite(val)) {
+    const auto res = std::from_chars(buf + startIdx, buf + n, val);
+    if (res.ec == std::errc() && res.ptr == buf + n && std::isfinite(val)) {
         outVal = val;
         return true;
     }
@@ -258,7 +349,7 @@ bool isMissingNumericSpan(const QChar *ptr, int len, bool wasQuoted)
     if (len <= 16) {
         return isMissingNumericToken(QString(ptr, len), wasQuoted);
     }
-    return false;
+    return !wasQuoted && isOverflowNumberSpan(ptr, len);
 }
 
 bool tryParseLabDouble(const QString &trimmed, const QLocale &primaryLoc, bool useCustomLocale,
@@ -389,10 +480,13 @@ bool isPureNumberString(const QString &s)
     const QString t = s.trimmed();
     if (t.isEmpty())
         return false;
+    double v = 0.0;
+    if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
+        return true;
     bool ok = false;
     QLocale cLoc = QLocale::c();
     cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
-    const double v = cLoc.toDouble(t, &ok);
+    v = cLoc.toDouble(t, &ok);
     return ok && std::isfinite(v);
 }
 
@@ -479,7 +573,7 @@ bool isSingleUnitAtom(const QString &atomRaw)
             QStringLiteral("(?:\\^(?:\\([^)]+\\)|\\{[^}]+\\}|[+-]?\\d+(?:\\.\\d+)?)|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+|-[1234])$"));
     core.remove(kTrailingExpRe);
     static const QRegularExpression kLengthAreaVolRe(
-            QStringLiteral("^((?:[pnμµucdkhM])?m)[23]$"));
+            QStringLiteral("^((?:[pnμµucdkhmM])?m)[23]$"));
     const auto mLen = kLengthAreaVolRe.match(core);
     if (mLen.hasMatch())
         core = mLen.captured(1);
@@ -553,8 +647,13 @@ bool isLikelyScientificUnit(const QString &rawCandidate)
                                             Qt::SkipEmptyParts);
     if (parts.isEmpty() || parts.size() > 6)
         return false;
-    for (const QString &part : parts) {
-        if (!isSingleUnitAtom(part))
+    // "1/s", "1/K", "1/min": a reciprocal unit, the "1" is its numerator.
+    const bool reciprocal = parts.size() >= 2 && parts.first() == QLatin1String("1")
+            && cand.startsWith(QLatin1String("1/"));
+    for (int i = 0; i < parts.size(); ++i) {
+        if (i == 0 && reciprocal)
+            continue;
+        if (!isSingleUnitAtom(parts.at(i)))
             return false;
     }
     return true;
@@ -1893,7 +1992,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                          int ignoredLines, bool firstRowNamesColumns,
                                          bool trimSpaces, bool simplifySpaces,
                                          bool convertToNumeric, const QLocale &numericLocale,
-                                         bool autoFixTabOnCsv, bool detectPreamble = false)
+                                         bool autoFixTabOnCsv, bool detectPreamble = false,
+                                         bool preambleProbeOnly = false)
 {
     g_lastImportReport = AsciiTableImportFilter::ImportReport();
     g_lastDecodedEncoding.clear();
@@ -2545,6 +2645,33 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     ++outText;
             }
         };
+        // Missing cells (empty, "NaN", "-", "N/A", "inf", ...) of a split row, counting the empty
+        // fields that splitLineEx dropped at the end ("0," -> one missing cell).
+        auto missingCells = [&](const SplitLineResult &sr) -> int {
+            int n = std::max(0, sr.rawFieldCount - int(sr.parts.size()));
+            for (const QString &f : sr.parts) {
+                if (f.isEmpty() || isMissingNumericToken(f, false))
+                    ++n;
+            }
+            return n;
+        };
+        // Numeric data row for the block search: at least two numbers, or (missing cells count as
+        // number fields) one number plus missing cells and no text ("0,", "0,NaN", ",1.5").
+        auto isNumericBlockRow = [&](const SplitLineResult &sr, int num, int txt) -> bool {
+            if (num >= 2 && num >= txt && sr.parts.size() >= 2)
+                return true;
+            return num >= 1 && txt == 0 && sr.rawFieldCount >= 2 && num + missingCells(sr) >= 2;
+        };
+        // ';' / '!' comment line inside a ','/tab separated file ("; pause", "! note").
+        auto isBangSemicolonComment = [&](int idx, QChar sep) -> bool {
+            if (sep == QLatin1Char(';') || idx < 0 || idx >= lines.size())
+                return false;
+            int s = lines[idx].start;
+            while (s < lines[idx].end && buf[s].isSpace())
+                ++s;
+            return s < lines[idx].end
+                    && (buf[s] == QLatin1Char(';') || buf[s] == QLatin1Char('!'));
+        };
         auto isCommentLineForSep = [&](int idx, QChar sep, bool allowAlphaHashIds) -> bool {
             if (idx < 0 || idx >= lines.size())
                 return false;
@@ -2589,7 +2716,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         const QChar(&seps)[4] = (europeanSemicolonDetected || effectiveLocale.decimalPoint() == QLatin1Char(','))
                 ? sepsEuro
                 : sepsC;
-        int bestStart = -1, bestFields = 0;
+        int bestStart = -1, bestFields = 0, bestRawFields = 0;
         QChar bestSep;
         for (const QChar sep : seps) {
             if (europeanSemicolonDetected && sep == QLatin1Char(','))
@@ -2597,15 +2724,23 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             for (int i = 0; i < lines.size(); ++i) {
                 if (bestStart >= 0 && i > bestStart)
                     break; // an earlier block was already found with another separator
-                if (isCommentLineForSep(i, sep, false))
+                if (isCommentLineForSep(i, sep, false) || isBangSemicolonComment(i, sep))
                     continue;
                 const SplitLineResult sr0 = splitLineEx(i, sep);
                 const QStringList &p0 = sr0.parts;
                 const int p0RawCount = sr0.rawFieldCount;
                 int p0Num = 0, p0Txt = 0;
                 rowStats(p0, p0Num, p0Txt);
-                if (p0.size() < 2 || p0Num < 2 || p0Num < p0Txt)
+                if (!isNumericBlockRow(sr0, p0Num, p0Txt))
                     continue;
+                // Accepted only through its missing cells ("0,", "0,NaN"): the rows below must
+                // exist and hold numbers and missing cells only, so that a sparse row further down
+                // a table with text columns is not taken for the start of the data.
+                const bool relaxedStart = !(p0.size() >= 2 && p0Num >= 2 && p0Num >= p0Txt);
+                // A missing value at the end of the first data row ("0,", "300<TAB>1.5<TAB>")
+                // shortens its split; the block is as wide as the widest of its first rows.
+                int blockWidth = (p0.size() >= 2) ? int(p0.size()) : p0RawCount;
+                int blockRawWidth = p0RawCount;
                 // P1-D4(b): a mixed text+numeric header row (e.g. "Time (s), 300, 400, 500")
                 // sitting right above pure-numeric data rows is the header, not the first data row.
                 int nextDataIdx = i + 1;
@@ -2622,7 +2757,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 int checkedFollow = 0;
                 bool ok = true;
                 for (int k = i + 1; k < lines.size() && checkedFollow < 2 && ok; ++k) {
-                    if (isCommentLineForSep(k, sep, true))
+                    if (isCommentLineForSep(k, sep, true) || isBangSemicolonComment(k, sep))
                         continue;
                     // following rows may lack trailing values ("2\t" -> one field) or be all-missing ("#N/A,#N/A", "#DIV/0!,") or specimen+missing ("#2,")
                     const SplitLineResult srk = splitLineEx(k, sep);
@@ -2634,14 +2769,20 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                             || (pk.size() < srk.rawFieldCount && num == 0 && txt == 1))) {
                         continue;
                     }
-                    ok = (pk.size() <= p0.size() && num >= 1 && num >= txt);
+                    ok = (pk.size() <= std::max<int>(p0.size(), p0RawCount) && num >= 1
+                          && num >= txt && (!relaxedStart || txt == 0));
+                    if (ok) {
+                        blockWidth = std::max<int>(blockWidth, pk.size());
+                        blockRawWidth = std::max(blockRawWidth, srk.rawFieldCount);
+                    }
                     ++checkedFollow;
                 }
-                if (!ok)
+                if (!ok || (relaxedStart && checkedFollow == 0))
                     continue;
-                if (bestStart < 0 || i < bestStart || (i == bestStart && p0.size() > bestFields)) {
+                if (bestStart < 0 || i < bestStart || (i == bestStart && blockWidth > bestFields)) {
                     bestStart = i;
-                    bestFields = p0.size();
+                    bestFields = blockWidth;
+                    bestRawFields = blockRawWidth;
                     bestSep = sep;
                 }
                 break;
@@ -2649,8 +2790,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
         if (bestStart >= 0) {
             int bsNum = 0, bsTxt = 0;
-            rowStats(splitLine(bestStart, bestSep), bsNum, bsTxt);
-            const bool bestStartAllNumeric = (bsNum >= 2 && bsTxt == 0);
+            const SplitLineResult srBest = splitLineEx(bestStart, bestSep);
+            rowStats(srBest.parts, bsNum, bsTxt);
+            const bool bestStartAllNumeric = (bsTxt == 0 && isNumericBlockRow(srBest, bsNum, bsTxt));
             int hdrStart = bestStart;
             auto matchesBestWidth = [&](int idx) -> bool {
                 if (idx < 0 || isCommentLineForSep(idx, bestSep, false))
@@ -2658,7 +2800,9 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 const SplitLineResult sr = splitLineEx(idx, bestSep);
                 if (bestSep == QLatin1Char(' '))
                     return sr.parts.size() == bestFields;
-                return sr.rawFieldCount == bestFields || sr.parts.size() == bestFields;
+                // "x,y,z" above "1,2," rows (an empty last column): the raw width counts too
+                return sr.rawFieldCount == bestFields || sr.parts.size() == bestFields
+                        || (bestRawFields > bestFields && sr.rawFieldCount == bestRawFields);
             };
             auto isPureTextRowWithFields = [&](int idx) -> bool {
                 if (!matchesBestWidth(idx))
@@ -2829,6 +2973,11 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 g_lastImportReport.preamble = pre.mid(0, 200).join(QLatin1Char('\n'));
             }
         }
+    }
+    // hasDataPreamble(): only the preamble decision is wanted, not the table
+    if (preambleProbeOnly) {
+        g_lastImportReport.separator = preambleSeparator;
+        return nullptr;
     }
 
     // Gather up to 15 sample lines for separator auto-detection
@@ -3512,11 +3661,24 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
     QVector<qint64> widthHistSmall(kWidthHistSmall + 1, 0);
     QHash<int, qint64> widthHistLarge;
     qint64 *const widthHist = widthHistSmall.data();
+    // Every line ending in a separator ("x,y,", "1,2,") with nothing after it, the header line
+    // included: the separator is a line terminator, not an empty last column.
+    int trailingSepWidth = -1;
+    bool allLinesEndWithSep = !whitespaceDelim;
+    auto noteTrailingSep = [&](int w, bool lastEmptyUnquoted) {
+        if (!allLinesEndWithSep)
+            return;
+        if (w < 2 || !lastEmptyUnquoted || (trailingSepWidth >= 0 && w != trailingSepWidth))
+            allLinesEndWithSep = false;
+        trailingSepWidth = w;
+    };
     for (const QVector<LabCsvCell> &rec : previewRecords) {
         if (rec.size() <= kWidthHistSmall)
             ++widthHist[rec.size()];
         else
             ++widthHistLarge[rec.size()];
+        noteTrailingSep(rec.size(),
+                        !rec.isEmpty() && !rec.last().quoted && rec.last().value.trimmed().isEmpty());
     }
     {
         int countPos = scanPos;
@@ -3538,8 +3700,17 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             else
                 ++widthHistLarge[w];
             ++dataRowCount;
+            if (allLinesEndWithSep) {
+                const QChar *lp = nullptr;
+                int ll = 0;
+                if (w > 0)
+                    rowSpans[w - 1].trimmedView(lp, ll);
+                noteTrailingSep(w, w > 0 && !rowSpans[w - 1].quoted && ll == 0);
+            }
         }
     }
+    if (allLinesEndWithSep && trailingSepWidth >= 2 && trailingSepWidth == maxCols)
+        --maxCols;
     maxCols = std::max(1, maxCols);
 
     // One malformed line with a huge number of fields would make maxCols x dataRowCount buffers
@@ -3931,6 +4102,108 @@ int AsciiTableImportFilter::dialogDefaultUnitsRow()
     return g_dialogUnitsRow;
 }
 
+namespace {
+// Length of the run of non-ASCII characters that contains each character (0 for ASCII).
+QVector<int> nonAsciiRunLengths(const QString &s)
+{
+    QVector<int> run(s.size(), 0);
+    int i = 0;
+    while (i < s.size()) {
+        if (s.at(i).unicode() < 0x80) {
+            ++i;
+            continue;
+        }
+        int j = i;
+        while (j < s.size() && s.at(j).unicode() >= 0x80)
+            ++j;
+        for (int k = i; k < j; ++k)
+            run[k] = j - i;
+        i = j;
+    }
+    return run;
+}
+
+// How much a decoded text looks like Japanese (Shift-JIS / EUC-JP candidates). Kana, kanji next to
+// other Japanese characters, full-width forms and JIS symbols count for it; a lone half-width
+// katakana (what Latin-1 "°", "µ" become in Shift-JIS) and private-use characters count against.
+int japaneseTextScore(const QString &s)
+{
+    const QVector<int> run = nonAsciiRunLengths(s);
+    int score = 0;
+    for (int i = 0; i < s.size(); ++i) {
+        const ushort u = s.at(i).unicode();
+        if (u < 0x80)
+            continue;
+        if ((u >= 0x3000 && u <= 0x30FF) || (u >= 0xFF01 && u <= 0xFF5E) || u == 0x2103
+            || u == 0x203B || u == 0x00B0 || u == 0x00B1 || u == 0x00D7 || u == 0x00F7
+            || (u >= 0x2460 && u <= 0x24FF) || (u >= 0x0391 && u <= 0x03C9)
+            || (u >= 0x2190 && u <= 0x22FF) || (u >= 0x2500 && u <= 0x257F)) {
+            score += 2;
+        } else if (u >= 0x4E00 && u <= 0x9FFF) {
+            score += (run[i] >= 2) ? 2 : 1;
+        } else if (u >= 0xFF61 && u <= 0xFF9F) {
+            score += (run[i] >= 2) ? 1 : -2;
+        } else if ((u >= 0xE000 && u <= 0xFAFF) || u == 0xFFFD) {
+            score -= 3;
+        }
+    }
+    return score;
+}
+
+// How much a Windows-1252 decoded text looks like Western text: single accented letters next to
+// ASCII letters and single unit symbols ("°", "µ", "±", "²") count for it; runs of 3+ high
+// characters (what multi-byte Japanese becomes) and C1 control codes count against.
+int westernTextScore(const QString &s)
+{
+    const QVector<int> run = nonAsciiRunLengths(s);
+    static const QString kUnitSymbols = QStringLiteral("°µ±²³·‰€£§¹¼½¾×÷");
+    static const QString kPunct = QStringLiteral("–—‘’“”…•©®™");
+    auto isAsciiLower = [](QChar c) { return c.unicode() < 0x80 && c.isLower(); };
+    auto isAsciiLetter = [](QChar c) { return c.unicode() < 0x80 && c.isLetter(); };
+    int score = 0;
+    for (int i = 0; i < s.size(); ++i) {
+        const QChar ch = s.at(i);
+        const ushort u = ch.unicode();
+        if (u < 0x80)
+            continue;
+        if (u <= 0x9F || u == 0xFFFD) {
+            score -= 3;
+            continue;
+        }
+        if (run[i] >= 3) {
+            score -= 1;
+            continue;
+        }
+        if (run[i] == 2)
+            continue;
+        const QChar prev = (i > 0) ? s.at(i - 1) : QLatin1Char(' ');
+        const QChar next = (i + 1 < s.size()) ? s.at(i + 1) : QLatin1Char(' ');
+        if (kUnitSymbols.contains(ch)) {
+            score += 2;
+        } else if (kPunct.contains(ch)) {
+            score += 1;
+        } else if (ch.isLetter()) {
+            if (isAsciiLower(prev) || isAsciiLower(next)
+                || (ch.isUpper() && (isAsciiLetter(prev) || isAsciiLetter(next))))
+                score += 2;
+        }
+    }
+    return score;
+}
+
+QString decodeCountingInvalid(QTextCodec *codec, const QByteArray &rawBytes, int &outInvalid)
+{
+    QTextCodec::ConverterState state;
+    QString s = codec->toUnicode(rawBytes.constData(), rawBytes.size(), &state);
+    outInvalid = state.invalidChars;
+    if (state.remainingChars > 0) {
+        s.append(QChar::ReplacementCharacter);
+        ++outInvalid;
+    }
+    return s;
+}
+} // namespace
+
 QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
                                                   const QString &encodingHint)
 {
@@ -4071,19 +4344,43 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         }
     }
 
-    // 6. Shift-JIS / CP932 fallback (Japanese lab instruments: Shimadzu, Rigaku, Keyence, JEOL)
+    // 6. Shift-JIS / CP932 (Japanese lab instruments: Shimadzu, Rigaku, Keyence, JEOL), weighed
+    //    against EUC-JP and Windows-1252 / Latin-1: a Latin-1 "°C" or "µm" is also valid
+    //    Shift-JIS (half-width katakana), so validity alone does not decide. Shift-JIS stays the
+    //    choice unless another candidate is clearly more plausible.
     QTextCodec *sjis = QTextCodec::codecForName("Windows-31J");
     if (!sjis)
         sjis = QTextCodec::codecForName("CP932");
     if (!sjis)
         sjis = QTextCodec::codecForName("Shift-JIS");
     if (sjis) {
-        QTextCodec::ConverterState sjisState;
-        QString decoded = sjis->toUnicode(rawBytes.constData(), rawBytes.size(), &sjisState);
-        int sjisInvalid = sjisState.invalidChars;
-        if (sjisState.remainingChars > 0) {
-            decoded.append(QChar::ReplacementCharacter);
-            ++sjisInvalid;
+        int sjisInvalid = 0;
+        QString decoded = decodeCountingInvalid(sjis, rawBytes, sjisInvalid);
+        const int sjisScore = (sjisInvalid == 0) ? japaneseTextScore(decoded) : 0;
+        int eucInvalid = -1;
+        QString eucDecoded;
+        if (QTextCodec *euc = QTextCodec::codecForName("EUC-JP"))
+            eucDecoded = decodeCountingInvalid(euc, rawBytes, eucInvalid);
+        const int eucScore = (eucInvalid == 0) ? japaneseTextScore(eucDecoded) : 0;
+        int westInvalid = -1;
+        QString westDecoded;
+        if (QTextCodec *w1252 = QTextCodec::codecForName("windows-1252"))
+            westDecoded = decodeCountingInvalid(w1252, rawBytes, westInvalid);
+        const int westScore = (westInvalid == 0) ? westernTextScore(westDecoded) : 0;
+        const bool eucBetter = eucInvalid == 0 && eucScore > 0
+                && (sjisInvalid > 0 || eucScore > sjisScore);
+        const bool westBetter = westInvalid == 0 && westScore > 0
+                && (sjisInvalid > 0 || westScore > sjisScore)
+                && (!eucBetter || westScore > eucScore);
+        if (westBetter) {
+            g_lastDecodedEncoding = QStringLiteral("Windows-1252");
+            g_lastDecodeInvalidChars = 0;
+            return westDecoded;
+        }
+        if (eucBetter) {
+            g_lastDecodedEncoding = QStringLiteral("EUC-JP");
+            g_lastDecodeInvalidChars = 0;
+            return eucDecoded;
         }
         if (sjisInvalid == 0) {
             g_lastDecodedEncoding = QStringLiteral("Shift-JIS");
@@ -4116,6 +4413,16 @@ bool AsciiTableImportFilter::looksLikeUnitCell(const QString &cell, QString *out
 bool AsciiTableImportFilter::isMissingDataToken(const QString &raw)
 {
     return isMissingDataTokenImpl(raw);
+}
+
+bool AsciiTableImportFilter::parseNumberToken(const QString &trimmed, double &outValue)
+{
+    return tryParseAsciiDoubleSpan(trimmed.constData(), trimmed.size(), outValue);
+}
+
+bool AsciiTableImportFilter::isOverflowNumberToken(const QString &trimmed)
+{
+    return isOverflowNumberSpan(trimmed.constData(), trimmed.size());
 }
 
 QString AsciiTableImportFilter::detectSeparator(const QStringList &sampleLines,
@@ -4348,6 +4655,77 @@ future::Table *AsciiTableImportFilter::importDroppedTextData(const QByteArray &r
     if (outReport)
         *outReport = g_lastImportReport;
     return t;
+}
+
+bool AsciiTableImportFilter::hasDataPreamble(const QByteArray &rawBytes,
+                                             const QString &filePathHint,
+                                             const QString &encodingHint)
+{
+    // Only the head of the file (1000 lines, 128 KiB): a preamble with its header and the first
+    // data rows fits there, and a large or very wide file is not read twice.
+    // UTF-16 text is not cut (a '\n' byte is not a line end there).
+    QByteArray head = rawBytes;
+    if (!rawBytes.contains('\0')) {
+        int lines = 0;
+        int cut = -1;
+        const int limit = std::min(rawBytes.size(), 128 * 1024);
+        for (int i = 0; i < limit; ++i) {
+            if (rawBytes.at(i) == '\n' && ++lines >= 1000) {
+                cut = i + 1;
+                break;
+            }
+        }
+        if (cut < 0 && rawBytes.size() > limit) {
+            cut = rawBytes.lastIndexOf('\n', limit - 1) + 1;
+            if (cut <= 0)
+                cut = limit;
+        }
+        if (cut > 0)
+            head = rawBytes.left(cut);
+    }
+    const ImportReport savedReport = g_lastImportReport;
+    const QString savedEncoding = g_lastDecodedEncoding;
+    const int savedInvalid = g_lastDecodeInvalidChars;
+    std::unique_ptr<future::Table> probe(importLabTextDataInternal(
+            head, QStringLiteral("PreambleProbe"), filePathHint, QString() /*auto separator*/,
+            encodingHint, -1 /*auto units row*/, 0 /*ignoredLines*/,
+            true /*firstRowNamesColumns*/, true /*trimSpaces*/, false /*simplifySpaces*/,
+            true /*convertToNumeric*/, QLocale::c(), true /*autoFixTabOnCsv*/,
+            true /*detectPreamble*/, true /*preambleProbeOnly*/));
+    // (a table comes back only from the special formats -- .ras, VASP, SPEC -- which have no
+    // preamble in this sense)
+    bool found = !probe && !g_lastImportReport.preamble.isEmpty();
+    if (found) {
+        // A metadata preamble is text ("key,value,unit", "Integration Time (sec): 0.1"). A line
+        // set aside that holds only numbers is a data row the block search skipped (ragged
+        // rows, "a,b,c / 1,2 / 3,4,5,6"): no preamble then.
+        const QString sep = g_lastImportReport.separator;
+        const QStringList preLines = g_lastImportReport.preamble.split(QLatin1Char('\n'));
+        for (const QString &line : preLines) {
+            const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
+                    ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
+                    : line.split(sep);
+            int num = 0, txt = 0;
+            for (const QString &cell : cells) {
+                const QString t = cell.trimmed();
+                double v = 0.0;
+                if (t.isEmpty() || isMissingNumericToken(t, false))
+                    continue;
+                if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
+                    ++num;
+                else
+                    ++txt;
+            }
+            if (num >= 1 && txt == 0) {
+                found = false;
+                break;
+            }
+        }
+    }
+    g_lastImportReport = savedReport;
+    g_lastDecodedEncoding = savedEncoding;
+    g_lastDecodeInvalidChars = savedInvalid;
+    return found;
 }
 
 AbstractAspect *AsciiTableImportFilter::importAspect(QIODevice &input)

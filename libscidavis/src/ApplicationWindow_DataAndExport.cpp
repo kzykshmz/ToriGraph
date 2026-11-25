@@ -985,8 +985,10 @@ ApplicationWindow *ApplicationWindow::plotFile(const QString &fn)
 {
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
     ApplicationWindow *app = new ApplicationWindow();
+    app->setHeadlessMode(d_headless_mode);
     app->applyUserSettings();
-    app->showMaximized();
+    if (!d_headless_mode)
+        app->showMaximized();
 
     Table *t = app->newTable(fn, app->columnSeparator, 0, true, app->strip_spaces,
                              app->simplify_spaces, app->d_convert_to_numeric,

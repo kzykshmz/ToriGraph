@@ -1418,7 +1418,11 @@ bool isMissingNumericSentinel(const QString &trimmed)
             || low == QStringLiteral("nan") || low == QStringLiteral("+nan")
             || low == QStringLiteral("-nan") || low == QStringLiteral("inf")
             || low == QStringLiteral("+inf") || low == QStringLiteral("-inf")
-            || low == QStringLiteral("null") || low == QStringLiteral("none");
+            || low == QStringLiteral("infinity") || low == QStringLiteral("+infinity")
+            || low == QStringLiteral("-infinity") || low == QStringLiteral("null")
+            || low == QStringLiteral("none")
+            // a number too large for a double ("1e400"), read as the GUI import reads it
+            || AsciiTableImportFilter::isOverflowNumberToken(trimmed);
 }
 
 int countUnquotedImportChar(const QString &line, QChar ch)
@@ -1544,7 +1548,10 @@ bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
             return true;
     }
     out = cLoc.toDouble(trimmed, &ok);
-    return ok && std::isfinite(out);
+    if (ok && std::isfinite(out))
+        return true;
+    // full-width digits ("２．５") and Fortran exponents ("1.0D+00"), as the GUI import reads them
+    return AsciiTableImportFilter::parseNumberToken(trimmed, out);
 }
 
 QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text, int startPos,
@@ -1746,6 +1753,37 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
     while (!records.isEmpty() && outMaxCols > 1 && records.last().size() == 1
            && !records.last()[0].quoted && records.last()[0].value.isEmpty()) {
         records.removeLast();
+    }
+    // Every line ending in a separator ("x,y,", "1,2,") with nothing after it, the header line
+    // included: the separator terminates the line, it does not open an empty last column (as
+    // in the GUI import). Blank lines do not count.
+    if (outMaxCols >= 2) {
+        bool allEndWithSep = true;
+        int nonBlank = 0;
+        for (const QVector<ParsedCsvCell> &rec : records) {
+            bool blank = true;
+            for (const ParsedCsvCell &cell : rec) {
+                if (cell.quoted || !cell.value.trimmed().isEmpty()) {
+                    blank = false;
+                    break;
+                }
+            }
+            if (blank)
+                continue;
+            ++nonBlank;
+            if (rec.size() != outMaxCols || rec.last().quoted
+                || !rec.last().value.trimmed().isEmpty()) {
+                allEndWithSep = false;
+                break;
+            }
+        }
+        if (allEndWithSep && nonBlank > 0) {
+            for (QVector<ParsedCsvCell> &rec : records) {
+                if (rec.size() == outMaxCols)
+                    rec.removeLast();
+            }
+            --outMaxCols;
+        }
     }
     return records;
 }
@@ -3312,6 +3350,36 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             }
         }
 
+        // Metadata lines above the header / numeric block (tensile tester and DSC exports with
+        // "key,value" lines, "; Instrument ..." headers, spectrometer .txt): read as the GUI
+        // import (File > Open, drag & drop) reads such a file, with its preamble detection.
+        // Only for the default layout options; explicit separator / header / skip_lines /
+        // numeric / comments settings keep the import below.
+        {
+            const QString sepParam = optionalJsonString(params, QStringLiteral("separator"));
+            const bool defaultLayout = ignoredLines == 0
+                    && (sepParam.isEmpty()
+                        || sepParam.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0)
+                    && !(params.contains(QStringLiteral("header"))
+                         && !params.value(QStringLiteral("header")).isNull())
+                    && optionalJsonBool(params, QStringLiteral("numeric"), true)
+                    && !optionalJsonBool(params, QStringLiteral("with_comments"), false)
+                    && !optionalJsonBool(params, QStringLiteral("comments"), false);
+            if (defaultLayout
+                && AsciiTableImportFilter::hasDataPreamble(rawBytes, absPath, encodingHint)) {
+                std::unique_ptr<future::Table> preFt(AsciiTableImportFilter::importLabTextData(
+                        rawBytes, QStringLiteral("PreambleImportTmp"), absPath, QString(),
+                        encodingHint, unitsRowHint));
+                if (preFt && preFt->columnCount() > 0 && preFt->rowCount() > 0) {
+                    Table *t = createTableFromImportedColumns(d_app, preFt.get(), reqImportName,
+                                                              absPath, QStringLiteral("__pre_col_"));
+                    outResult = serializeTableInfo(t);
+                    outResult[QStringLiteral("ok")] = true;
+                    return true;
+                }
+            }
+        }
+
         int pos = 0;
         {
             const int len0 = text.size();
@@ -3382,7 +3450,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             bool allRow0Numeric = true;
             for (const ParsedCsvCell &cell : records[0]) {
                 const QString tok = cell.value.trimmed();
-                if (tok.isEmpty())
+                // missing values ("NaN 1") are data cells like the empty ones
+                if (tok.isEmpty() || (!cell.quoted && isMissingNumericSentinel(tok)))
                     continue;
                 double dv = 0.0;
                 if (!cell.quoted && parseImportNumber(tok, decimalComma, dv)) {
