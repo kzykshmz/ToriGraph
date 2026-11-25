@@ -1738,7 +1738,15 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(call("table.remove_column", QJsonObject{ { "table", t }, { "col", "w" } }),
                    "111l: remove column w (Origin-style legend)");
         expect("Origin-style legend, column w removed", QStringLiteral("\\l(1) %(1)\n"));
+        // the legend edited before the table's Undo: w's own \l(n) line is put back into it
+        CHECK_COND(call("graph.set_legend",
+                        QJsonObject{ { "graph", gname }, { "text", "\\l(1) %(1)\n\nNote\n" } }),
+                   "111l: legend edited after removing w");
         CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111l: undo w (Origin-style)");
+        expect("Origin-style legend edited, column w back",
+               QStringLiteral("\\l(1) %(1)\n\nNote\n\\l(3) %(3)\n"));
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", originStyle } }),
+                   "111l: Origin-style legend again");
         CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 0 } }),
                    "111l: remove y (Origin-style legend)");
         // y goes with its error bars: w is the only item left and takes number 1

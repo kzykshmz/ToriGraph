@@ -1716,14 +1716,12 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
         t.fitCurve = d_fit_curves.contains(dynamic_cast<QwtPlotCurve *>(it));
         Legend *leg = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
         if (leg && t.type != ErrorBars && !isPiePlot()) {
-            const QString token = "\\c{" + QString::number(idx + 1) + "}";
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            const QStringList lines = leg->text().split("\n", Qt::SkipEmptyParts);
-#else
-            const QStringList lines = leg->text().split("\n", QString::SkipEmptyParts);
-#endif
+            // the line removeLegendCurveNumber() takes out: \c{n} or the Origin-style \l(n)
+            const QRegularExpression tokenRx(
+                    QStringLiteral(R"(\\c\{%1\}|\\l\(%1\))").arg(idx + 1));
+            const QStringList lines = leg->text().split(QLatin1Char('\n'));
             for (const QString &ln : lines) {
-                if (ln.contains(token)) {
+                if (tokenRx.match(ln).hasMatch()) {
                     t.legendLine = ln;
                     break;
                 }
@@ -1875,29 +1873,40 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
                     oldToNew[i] = (i < pos) ? i : i + 1;
                 QString text = remapLegendCurveTokens(leg->text(), oldToNew);
                 if (!t.legendLine.isEmpty()) {
+                    // the line under its new number, in either form (\c{n}, \l(n) and %(n));
+                    // empty lines of the legend stay where they are
                     QString line = t.legendLine;
-                    line.replace("\\c{" + QString::number(t.index + 1) + "}",
-                                 "\\c{" + QString::number(pos + 1) + "}");
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-                    QStringList lines = text.split("\n", Qt::SkipEmptyParts);
-#else
-                    QStringList lines = text.split("\n", QString::SkipEmptyParts);
-#endif
+                    const QString from = QString::number(t.index + 1);
+                    const QString to = QString::number(pos + 1);
+                    line.replace("\\c{" + from + "}", "\\c{" + to + "}");
+                    line.replace("\\l(" + from + ")", "\\l(" + to + ")");
+                    line.replace("%(" + from + ")", "%(" + to + ")");
+                    QStringList lines = text.split(QLatin1Char('\n'));
+                    auto tokenRx = [](int n) {
+                        return QRegularExpression(
+                                QStringLiteral(R"(\\c\{%1\}|\\l\(%1\))").arg(n));
+                    };
                     int at = -1;
-                    const QString prevTok = "\\c{" + QString::number(pos) + "}";
-                    const QString nextTok = "\\c{" + QString::number(pos + 2) + "}";
+                    const QRegularExpression prevRx = tokenRx(pos);
+                    const QRegularExpression nextRx = tokenRx(pos + 2);
                     for (int li = 0; pos > 0 && li < lines.size() && at < 0; ++li) {
-                        if (lines[li].contains(prevTok))
+                        if (prevRx.match(lines[li]).hasMatch())
                             at = li + 1;
                     }
                     for (int li = 0; li < lines.size() && at < 0; ++li) {
-                        if (lines[li].contains(nextTok))
+                        if (nextRx.match(lines[li]).hasMatch())
                             at = li;
                     }
-                    if (at < 0)
+                    if (at < 0) {
+                        // at the end, before the final line break if the text has one
                         at = lines.size();
+                        if (at > 0 && lines.last().isEmpty())
+                            --at;
+                    }
                     lines.insert(at, line);
-                    text = lines.join("\n") + "\n";
+                    text = lines.join(QLatin1Char('\n'));
+                    if (!text.endsWith(QLatin1Char('\n')))
+                        text += QLatin1Char('\n');
                 }
                 if (text != leg->text())
                     leg->setText(text);
