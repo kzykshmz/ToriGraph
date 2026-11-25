@@ -160,15 +160,13 @@ def _build_comp_obj_stream(user_type: str = "ToriGraph Graph", prog_id: str = TO
         fmt_bytes,
         struct.pack("<I", len(prog_bytes)),
         prog_bytes,
-        # Unicode marker (0x71B239F4) + UTF-16LE userType, clipFormat, progId
+        # Unicode marker (0x71B239F4) followed by three empty Unicode entries
+        # (UnicodeUserType, UnicodeClipboardFormat, Reserved2), byte-for-byte what
+        # ole32!WriteFmtUserTypeStg writes when the ANSI strings already carry the names.
+        # This sidesteps the characters-vs-bytes ambiguity of the length prefixes.
         struct.pack("<I", 0x71B239F4),
+        struct.pack("<III", 0, 0, 0),
     ]
-    # MS-OLEDS 2.1.5 LengthPrefixedUnicodeString: the length counts Unicode *characters*
-    # (UTF-16 code units) including the terminating null, not bytes.
-    for s in (user_type, "Embed Source", prog_id):
-        u16 = (s + "\x00").encode("utf-16-le")
-        parts.append(struct.pack("<I", len(u16) // 2))
-        parts.append(u16)
     return b"".join(parts)
 
 

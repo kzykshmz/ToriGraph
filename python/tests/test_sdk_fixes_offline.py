@@ -553,38 +553,20 @@ def test_pptx_slide_scale_server_fields_and_close_discard() -> None:
     assert tg_pptx._graph_slide_scale(s, "Graph1", {"name": "Graph1"}) is None
 
 
-def _parse_comp_obj_unicode_strings(stream: bytes) -> List[str]:
-    """Walk a CompObj stream per MS-OLEDS 2.3.3 and return the three Unicode strings."""
+def test_comp_obj_unicode_lengths_count_characters() -> None:
+    """Non-Windows CompObj mirrors ole32!WriteFmtUserTypeStg: names in the ANSI part, then the
+    Unicode marker and three empty Unicode entries (no characters-vs-bytes length ambiguity)."""
     import struct
 
-    pos = 28  # Reserved1 + Version + Reserved2 (CLSID)
-    for _ in range(3):  # AnsiUserType, AnsiClipboardFormat, Reserved1 (length-prefixed ANSI)
-        (n,) = struct.unpack_from("<I", stream, pos)
-        pos += 4 + n
-    (marker,) = struct.unpack_from("<I", stream, pos)
-    assert marker == 0x71B239F4
-    pos += 4
-    out: List[str] = []
-    for _ in range(3):  # LengthPrefixedUnicodeString: length = characters incl. the null
-        (n_chars,) = struct.unpack_from("<I", stream, pos)
-        pos += 4
-        raw = stream[pos : pos + 2 * n_chars]
-        pos += 2 * n_chars
-        txt = raw.decode("utf-16-le")
-        assert txt.endswith("\x00"), txt
-        out.append(txt[:-1])
-    assert pos == len(stream), (pos, len(stream))
-    return out
-
-
-def test_comp_obj_unicode_lengths_count_characters() -> None:
-    """Non-Windows CompObj writes MS-OLEDS character counts (incl. null), not UTF-16 byte counts."""
     stream = tg_pptx._build_comp_obj_stream("ToriGraph Graph", "ToriGraph.Graph.1")
-    assert _parse_comp_obj_unicode_strings(stream) == [
-        "ToriGraph Graph",
-        "Embed Source",
-        "ToriGraph.Graph.1",
-    ]
+    pos = 28
+    ansi: List[bytes] = []
+    for _ in range(3):
+        (n,) = struct.unpack_from("<I", stream, pos)
+        ansi.append(stream[pos + 4 : pos + 4 + n])
+        pos += 4 + n
+    assert ansi == [b"ToriGraph Graph\x00", b"Embed Source\x00", b"ToriGraph.Graph.1\x00"]
+    assert stream[pos:] == struct.pack("<IIII", 0x71B239F4, 0, 0, 0)
 
 
 def test_unix_local_socket_candidates_follow_qdir_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:
