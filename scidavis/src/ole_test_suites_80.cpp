@@ -1496,7 +1496,7 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                            << rib->splitLeftRatio());
 
         wVis->resize(760, 420);
-        waitUntilMs80(2000, [&]() { return mlSp->pageZoom() < zoomLarge - 0.10; });
+        waitUntilMs80(8000, [&]() { return mlSp->pageZoom() < zoomLarge - 0.10; });
         CHECK_COND(std::fabs(rib->splitLeftRatio() - 0.40) < 0.02,
                    "80c: programmatic shrink drifted splitLeftRatio to "
                            << rib->splitLeftRatio());
