@@ -642,7 +642,7 @@ int runSuite105RpcImportColumnTypes(ApplicationWindow *mw)
                               << " " << cellText(tp, 1).toStdString());
             // dates and clock times written with digits, and other date/time texts: the input
             // filter's reading, as typed into the cell
-            const QStringList filterTexts = { "20250506", "0930", "093000", "10:30",
+            const QStringList filterTexts = { "20250506", "0930", "093000", "130000", "10:30",
                                               "2024-01-02 03:04", "2025-05-06T07:08:09" };
             for (const QString &text : filterTexts) {
                 const QJsonObject r = paste(row, text);

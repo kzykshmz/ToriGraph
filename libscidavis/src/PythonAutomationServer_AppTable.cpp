@@ -1604,8 +1604,9 @@ bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
 //! JSON number ("45000" is the same cell as 45000). Through the input filter "2" and "45000"
 //! were clock times on 1900-01-01 (its "h" / "hmmss" formats: 02:00, 04:50:00) and "45000.5" or
 //! "1.5e4" empty cells. Digit strings written as a date or a clock time keep the filter's
-//! reading: the column's own format, a date in the yyyyMMdd form ("20250506") and digits with a
-//! leading zero ("0930", "093000").
+//! reading: the column's own format, a date in the yyyyMMdd form ("20250506"), digits with a
+//! leading zero ("0930", "093000") and six digits that are a valid hhmmss clock time ("130000"
+//! stays 13:00:00 as before).
 bool dateTimeTextAsDayCount(Column *col, const QString &trimmed, bool decimalComma, double &days)
 {
     if (!col || col->columnMode() != SciDAVis::ColumnMode::DateTime || trimmed.isEmpty())
@@ -1617,6 +1618,10 @@ bool dateTimeTextAsDayCount(Column *col, const QString &trimmed, bool decimalCom
     if (leadingZeroDigits.match(trimmed).hasMatch())
         return false;
     if (QDate::fromString(trimmed, QStringLiteral("yyyyMMdd")).isValid())
+        return false;
+    static const QRegularExpression sixDigits(QStringLiteral("^[0-9]{6}$"));
+    if (sixDigits.match(trimmed).hasMatch()
+        && QTime::fromString(trimmed, QStringLiteral("hhmmss")).isValid())
         return false;
     if (const auto *f = dynamic_cast<const String2DateTimeFilter *>(col->inputFilter())) {
         if (!f->format().isEmpty() && QDateTime::fromString(trimmed, f->format()).isValid())
