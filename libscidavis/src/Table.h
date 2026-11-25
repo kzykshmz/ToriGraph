@@ -135,9 +135,13 @@ public:
     //! references to it in the formulas of this and the other tables are rewritten to the new
     //! name at the same position, once, in the current macro (undone with the import). Names
     //! still in the table (swapped / reordered headers) are matched by name and kept; columns that
-    //! were removed are not listed, so references to them are kept too. Like a column rename,
-    //! nothing is rewritten outside a macro or while Undo / Redo replays.
-    void propagateRelabeledColumnNames(const QStringList &oldNames, int firstCol = 0);
+    //! were removed are not listed, so references to them are kept too. `namesBeforeImport` is
+    //! every column name of the table before the import (taken before columns are removed or
+    //! added): a new name in it is not a rename target ([A,B] -> [C,A] does not turn B into A),
+    //! only names the import brought in are. Like a column rename, nothing is rewritten outside
+    //! a macro or while Undo / Redo replays.
+    void propagateRelabeledColumnNames(const QStringList &oldNames,
+                                       const QStringList &namesBeforeImport, int firstCol = 0);
     //! Number of table renames propagated by handleAspectDescriptionChange so far (tests).
     static quint64 tableRenamePropagationCount();
 

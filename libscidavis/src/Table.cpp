@@ -2329,6 +2329,8 @@ bool Table::reimportFromSource()
     QApplication::setOverrideCursor(Qt::WaitCursor);
     d_future_table->beginMacro(tr("%1: re-import from source").arg(name()));
     d_future_table->setRowCount(maxRows);
+    // every name the table had before the import, the removed columns included
+    const QStringList namesBeforeImport = colNames();
     if (importedSpan > newCols.size())
         d_future_table->removeColumns(newCols.size(), importedSpan - newCols.size());
 
@@ -2389,7 +2391,7 @@ bool Table::reimportFromSource()
         if (!extraCols.isEmpty())
             d_future_table->insertColumns(common, extraCols);
     }
-    propagateRelabeledColumnNames(oldNames);
+    propagateRelabeledColumnNames(oldNames, namesBeforeImport);
     d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow,
                                     newCols.size(), numericLocaleName);
     const QVector<int> derivedCols =
@@ -5361,7 +5363,8 @@ QStringList Table::colNamesInRange(int first, int count) const
     return out;
 }
 
-void Table::propagateRelabeledColumnNames(const QStringList &oldNames, int firstCol)
+void Table::propagateRelabeledColumnNames(const QStringList &oldNames,
+                                          const QStringList &namesBeforeImport, int firstCol)
 {
     if (!d_future_table || oldNames.isEmpty())
         return;
@@ -5370,6 +5373,10 @@ void Table::propagateRelabeledColumnNames(const QStringList &oldNames, int first
         return;
 
     // Only names that are gone: a name still in the table resolves to that column by name.
+    // And only onto names the import brought in: a new name that some column of the table
+    // already had before the import (a header moved to another position, [A,B] -> [C,A], or the
+    // name of a removed column, [A,B,C] -> [C,X]) is not a rename target, otherwise the
+    // references to the vanished name would silently merge with those to that other column.
     // The new names are all in the table and the rewritten old names are not, so applying the
     // pairs one after the other cannot chain (A -> B -> C).
     const QStringList finalNames = colNames();
@@ -5381,7 +5388,7 @@ void Table::propagateRelabeledColumnNames(const QStringList &oldNames, int first
         const QString &oldName = oldNames.at(i);
         const QString newName = c->name();
         if (oldName.isEmpty() || newName.isEmpty() || oldName == newName
-            || finalNames.contains(oldName))
+            || finalNames.contains(oldName) || namesBeforeImport.contains(newName))
             continue;
         renames.push_back(qMakePair(oldName, newName));
     }
@@ -5570,6 +5577,8 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
             if (renameCols)
                 targetNames[i] = src->name();
         }
+        // every name the table had before the import, the removed columns included
+        const QStringList namesBeforeImport = colNames();
         // Remove the surplus imported columns first, so that a header moving left ([A,B,C] ->
         // [C,A]) does not collide with the old column "C" during the rename below.
         if (importedSpan > overwritten_cols)
@@ -5622,7 +5631,7 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
         }
         if (!extraCols.isEmpty())
             d_future_table->insertColumns(overwritten_cols, extraCols);
-        propagateRelabeledColumnNames(oldNames);
+        propagateRelabeledColumnNames(oldNames, namesBeforeImport);
         delete numFilter;
         d_future_table->setImportSource(fname, QString(), sep,
                                         AsciiTableImportFilter::dialogDefaultEncoding(),

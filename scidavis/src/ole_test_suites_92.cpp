@@ -32,7 +32,10 @@
 //       [p] -> [q,p]): old names that no column carries any more are rewritten to the new name
 //       at the same position in the own table (col("A"), column("A"), col(B)) and other tables
 //       (tablecol("T","A"), column("T/A")), once, in the import's undo step; names that stay
-//       (swap, a name moved to an added column) and the names of deleted columns are kept
+//       (swap, a name moved to an added column) and the names of deleted columns are kept;
+//       a new name that another column had before the import ([A,B] -> [C,A], [A,B] -> [B,C],
+//       [A,B,C] -> [C,X] with C removed) is no target, so the references to the vanished name
+//       are not merged into that column's (they keep the name and do not compute its data)
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -861,6 +864,163 @@ int runSuite92RenamePropagation(ApplicationWindow *mw)
 
         suite92CloseWindow(ti);
         suite92CloseWindow(tk);
+    }
+
+    // ------------------- 92h (cont.): a name another column had before the import is no target
+    // The old name is gone, but the new name at its position belonged to another column before
+    // the import (a header moved, or a removed column's name): rewriting would merge the
+    // references to two old columns into one and silently compute with the wrong data, so they
+    // keep the vanished name (and fail) instead. Each case runs twice: with the single-letter
+    // names of the report (formula texts only: a single upper-case letter that is no column name
+    // falls back to the Origin column letter, col("B") = 2nd column, by design of
+    // future::Table::column) and with lower-case names, where the values are checked too.
+    {
+        QTemporaryDir tmpM;
+        CHECK_COND(tmpM.isValid(), "92h merge: temp dir");
+        struct MergeCase
+        {
+            const char *label;
+            QByteArray first, second; // CSV before / for the re-import or overwrite
+            bool overwrite;
+            QStringList names; // column names of the table afterwards
+            QString a, b; // the names the "A" / "B" references carry afterwards
+            QVector<double> aWant, bWant; // their values (empty: not checked)
+            QVector<double> notA, notB; // values they must not silently compute (empty: none)
+        };
+        const QString A = QStringLiteral("A"), B = QStringLiteral("B");
+        const QString C = QStringLiteral("C"), X = QStringLiteral("X");
+        const QString F1 = QStringLiteral("F1"), F2 = QStringLiteral("F2");
+        const QVector<double> none;
+        const QVector<MergeCase> cases{
+            // B is gone and position 1 is now "A" (the old column A moved): no B -> A
+            { "re-import [A,B] -> [C,A]", "A,B\n1,10\n2,20\n3,30\n", "C,A\n5,50\n6,60\n7,70\n",
+              false, { C, A, F1, F2 }, A, B, { 100, 120, 140 }, none, none, { 100, 120, 140 } },
+            { "overwrite [A,B] -> [C,A]", "A,B\n1,10\n2,20\n3,30\n", "C,A\n5,50\n6,60\n7,70\n",
+              true, { C, A, F1, F2 }, A, B, { 100, 120, 140 }, none, none, { 100, 120, 140 } },
+            // A is gone and position 0 is now "B" (the old column B moved): no A -> B
+            { "re-import [A,B] -> [B,C]", "A,B\n1,10\n2,20\n3,30\n", "B,C\n5,50\n6,60\n7,70\n",
+              false, { B, C, F1, F2 }, A, B, none, { 10, 12, 14 }, { 10, 12, 14 }, none },
+            // the old column C is removed first, so position 0 "C" is no target for A; B -> X is
+            // a real rename (X is new)
+            { "re-import [A,B,C] -> [C,X]", "A,B,C\n1,10,100\n2,20,200\n3,30,300\n",
+              "C,X\n5,50\n6,60\n7,70\n", false, { C, X, F1, F2 }, A, X, none, { 100, 120, 140 },
+              { 10, 12, 14 }, none },
+            { "overwrite [A,B,C] -> [C,X]", "A,B,C\n1,10,100\n2,20,200\n3,30,300\n",
+              "C,X\n5,50\n6,60\n7,70\n", true, { C, X, F1, F2 }, A, X, none, { 100, 120, 140 },
+              { 10, 12, 14 }, none },
+        };
+        int caseNo = 0;
+        for (int variant = 0; variant < 2; ++variant)
+        for (const MergeCase &mcIn : cases) {
+            const bool lower = variant == 1;
+            // A -> aa, B -> bb, C -> cc, X -> xx in the lower-case run
+            auto nm = [lower](QString n) {
+                if (lower && n.size() == 1 && n.at(0).isUpper())
+                    n = n.toLower().repeated(2);
+                return n;
+            };
+            auto nmCsv = [lower](QByteArray b) {
+                if (lower) {
+                    for (const char *c : { "A", "B", "C", "X" })
+                        b.replace(c, QByteArray(c).toLower().repeated(2));
+                }
+                return b;
+            };
+            MergeCase mc = mcIn;
+            mc.first = nmCsv(mc.first);
+            mc.second = nmCsv(mc.second);
+            for (QString &n : mc.names)
+                n = nm(n);
+            mc.a = nm(mc.a);
+            mc.b = nm(mc.b);
+            const std::string label = std::string(mc.label) + (lower ? " (lower-case)" : "");
+            const QString csv = tmpM.filePath(QStringLiteral("s92m_%1.csv").arg(caseNo));
+            const QString tName = QStringLiteral("S92M%1").arg(caseNo);
+            const QString nName = QStringLiteral("S92N%1").arg(caseNo);
+            ++caseNo;
+            CHECK_COND(suite92WriteFile(csv, mc.first), "92h merge: write first CSV");
+            QSet<MyWidget *> before;
+            for (MyWidget *w : mw->windowsList())
+                before.insert(w);
+            mw->importASCII(QStringList() << csv, ImportASCIIDialog::NewTables,
+                            QStringLiteral(","), 0, true, true, false, true, QLocale::c());
+            Table *tm = nullptr;
+            for (MyWidget *w : mw->windowsList()) {
+                if (!before.contains(w) && qobject_cast<Table *>(w))
+                    tm = qobject_cast<Table *>(w);
+            }
+            CHECK_COND(tm && tm->numRows() == 3, "92h merge: imported table");
+            CHECK_COND(mw->renameWindow(tm, tName), "92h merge: name the table");
+            Table *tn = mw->newTable(nName, 3, 2);
+            CHECK_COND(tn, "92h merge: other table");
+            tm->setAutoRecalcFormulas(false);
+            tn->setAutoRecalcFormulas(false);
+            // F1 / F2 are outside the imported span: they keep their formulas
+            const int firstF = tm->numCols();
+            tm->setNumCols(firstF + 2);
+            tm->setColName(firstF, F1);
+            tm->setColName(firstF + 1, F2);
+            suite92SetFormula(tm, firstF, QStringLiteral("col(\"%1\")*2").arg(nm(A)));
+            suite92SetFormula(tm, firstF + 1, QStringLiteral("col(\"%1\")*2").arg(nm(B)));
+            suite92SetFormula(tn, 0,
+                              QStringLiteral("tablecol(\"%1\",\"%2\")*2").arg(tName, nm(A)));
+            suite92SetFormula(tn, 1,
+                              QStringLiteral("tablecol(\"%1\",\"%2\")*2").arg(tName, nm(B)));
+
+            CHECK_COND(suite92WriteFile(csv, mc.second), "92h merge: write second CSV");
+            if (mc.overwrite) {
+                mw->d_workspace.setActiveSubWindow(tm);
+                mw->importASCII(QStringList() << csv, ImportASCIIDialog::Overwrite,
+                                QStringLiteral(","), 0, true, true, false, true, QLocale::c());
+            } else {
+                CHECK92(tm->reimportFromSource(), "92h " << label << ": reimportFromSource");
+            }
+            QCoreApplication::processEvents();
+
+            CHECK92(tm->colNames() == mc.names,
+                    "92h " << label << ": names " << q92(tm->colNames()) << " (want "
+                           << q92(mc.names) << ")");
+            const int f1 = tm->colIndex(F1), f2 = tm->colIndex(F2);
+            const QString wF1 = QStringLiteral("col(\"%1\")*2").arg(mc.a);
+            const QString wF2 = QStringLiteral("col(\"%1\")*2").arg(mc.b);
+            const QString wN0 = QStringLiteral("tablecol(\"%1\",\"%2\")*2").arg(tName, mc.a);
+            const QString wN1 = QStringLiteral("tablecol(\"%1\",\"%2\")*2").arg(tName, mc.b);
+            CHECK92(suite92Formula(tm, f1) == wF1 && suite92Formula(tm, f2) == wF2,
+                    "92h " << label << ": own table " << q92(suite92Formula(tm, f1)) << " / "
+                           << q92(suite92Formula(tm, f2)) << " (want " << q92(wF1) << " / "
+                           << q92(wF2) << ")");
+            CHECK92(suite92Formula(tn, 0) == wN0 && suite92Formula(tn, 1) == wN1,
+                    "92h " << label << ": other table " << q92(suite92Formula(tn, 0))
+                           << " / " << q92(suite92Formula(tn, 1)) << " (want " << q92(wN0)
+                           << " / " << q92(wN1) << ")");
+            // values: an existing target evaluates to it; a vanished name must not evaluate to
+            // the data of the column that took over its position
+            struct Eval
+            {
+                Table *t;
+                int col;
+                const QVector<double> *want, *notWant;
+            };
+            const Eval evals[] = { { tm, f1, &mc.aWant, &mc.notA },
+                                   { tm, f2, &mc.bWant, &mc.notB },
+                                   { tn, 0, &mc.aWant, &mc.notA },
+                                   { tn, 1, &mc.bWant, &mc.notB } };
+            QString vals;
+            for (const Eval &ev : evals) {
+                if (!lower)
+                    break;
+                if (!ev.want->isEmpty())
+                    CHECK92(suite92Values(ev.t, ev.col, *ev.want, &vals),
+                            "92h " << label << ": " << q92(suite92Formula(ev.t, ev.col))
+                                   << " -> " << q92(vals));
+                if (!ev.notWant->isEmpty())
+                    CHECK92(!suite92Values(ev.t, ev.col, *ev.notWant, &vals),
+                            "92h " << label << ": " << q92(suite92Formula(ev.t, ev.col))
+                                   << " silently computed " << q92(vals));
+            }
+            suite92CloseWindow(tm);
+            suite92CloseWindow(tn);
+        }
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

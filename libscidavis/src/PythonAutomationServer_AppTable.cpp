@@ -1591,6 +1591,8 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
     const int dataRowCount = std::max(0, records.size() - dataStartIdx);
     const int neededCols = std::max(1, startColOffset + maxCols);
     const int neededRows = std::max(1, startRowOffset + dataRowCount);
+    // every name the table had before the import (before the columns added below)
+    const QStringList namesBeforeImport = t->colNames();
     if (t->numCols() < neededCols) {
         const int oldCols = t->numCols();
         t->setNumCols(neededCols);
@@ -1758,7 +1760,7 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         if (assignDefaultPlotDesignations)
             t->setColPlotDesignation(dstCol, (dstCol == 0) ? SciDAVis::X : SciDAVis::Y);
     }
-    t->propagateRelabeledColumnNames(oldHeaderNames, startColOffset);
+    t->propagateRelabeledColumnNames(oldHeaderNames, namesBeforeImport, startColOffset);
 }
 
 // ============================================================================
@@ -2887,6 +2889,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             // columns re-pointed through temporary names: references keep their names, except
             // names that are gone afterwards (propagateRelabeledColumnNames below)
             const QStringList oldNames = t->colNamesInRange(0, nCols);
+            const QStringList namesBeforeImport = t->colNames();
             Table::RenamePropagationBlocker renameBlocker(t);
             for (int c = 0; c < nCols; ++c)
                 t->setColName(c, QStringLiteral("__ras_col_%1__").arg(c));
@@ -2905,7 +2908,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
                 applyDefaultNumericFormat6g(t, c);
             }
-            t->propagateRelabeledColumnNames(oldNames);
+            t->propagateRelabeledColumnNames(oldNames, namesBeforeImport);
             outResult = serializeTableInfo(t);
             outResult[QStringLiteral("ok")] = true;
             return true;
@@ -2934,6 +2937,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 // columns re-pointed through temporary names: references keep their names,
                 // except names that are gone afterwards (propagateRelabeledColumnNames below)
                 const QStringList oldNames = t->colNamesInRange(0, nCols);
+                const QStringList namesBeforeImport = t->colNames();
                 Table::RenamePropagationBlocker renameBlocker(t);
                 for (int c = 0; c < nCols; ++c)
                     t->setColName(c, QStringLiteral("__vasp_col_%1__").arg(c));
@@ -2952,7 +2956,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     t->setColPlotDesignation(c, srcCol->plotDesignation());
                     applyDefaultNumericFormat6g(t, c);
                 }
-                t->propagateRelabeledColumnNames(oldNames);
+                t->propagateRelabeledColumnNames(oldNames, namesBeforeImport);
                 outResult = serializeTableInfo(t);
                 if (std::isfinite(fermiEV))
                     outResult[QStringLiteral("fermi_energy_ev")] = fermiEV;
@@ -4987,6 +4991,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                                                   optionalJsonString(params, QStringLiteral("name")));
                 }
             }
+            // every name the table had before the paste (before the columns added below)
+            const QStringList namesBeforeImport = t->colNames();
             if (t->numCols() < nCols)
                 t->setNumCols(nCols);
             if (t->numRows() < nRows)
@@ -5013,7 +5019,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 applyDefaultNumericFormat6g(t, c);
                 d_app->updateCurves(t, fullColumnName(t, c));
             }
-            t->propagateRelabeledColumnNames(oldNames);
+            t->propagateRelabeledColumnNames(oldNames, namesBeforeImport);
             d_app->refreshAllGraphsAutoAxisTitles();
             outResult = serializeTableInfo(t);
             outResult[QStringLiteral("ok")] = true;

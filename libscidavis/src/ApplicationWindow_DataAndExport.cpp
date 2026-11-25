@@ -1315,6 +1315,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                                     temp->child(0));
             break;
         case ImportASCIIDialog::NewRows: {
+            // every name the table had before the import (before the columns added below)
+            const QStringList namesBeforeImport = table->colNames();
             const int existing_columns = table->columnCount();
             int missing_columns = temp->columnCount() - existing_columns;
             for (int col = 0; col < missing_columns; col++) {
@@ -1340,8 +1342,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (local_rename_columns)
                     targetNames[col] = src_col->name();
             }
-            table->propagateRelabeledColumnNames(
-                    renameImportedColumnsViaTemp(table, targetNames));
+            table->propagateRelabeledColumnNames(renameImportedColumnsViaTemp(table, targetNames),
+                                                 namesBeforeImport);
             break;
         }
         case ImportASCIIDialog::Overwrite: {
@@ -1359,6 +1361,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
             } overwriteMacro(table->d_future_table, tr("Import ASCII (Overwrite)"));
 
+            // every name the table had before the import, the removed columns included
+            const QStringList namesBeforeImport = table->colNames();
             const int prevRows = table->rowCount();
             const int newRows = temp->rowCount();
             const int importedSpan = computeTableImportedSpan(table);
@@ -1411,7 +1415,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                     table->d_future_table->insertColumns(common, extraCols);
             }
             // after the extra columns: a name one of them carries is still in the table
-            table->propagateRelabeledColumnNames(oldNames);
+            table->propagateRelabeledColumnNames(oldNames, namesBeforeImport);
             if (table->d_future_table) {
                 table->d_future_table->setImportSource(
                         file, QString(), local_column_separator,
