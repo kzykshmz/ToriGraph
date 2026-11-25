@@ -1011,7 +1011,9 @@ struct PureLuResult
     bool singular = false;
 };
 
-PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
+// Square-shape, size and finite-entry checks shared by the LU (invert) and determinant paths;
+// returns the cells row-major and their 1-norm.
+std::vector<double> readSquareMatrixChecked(Matrix *m, const QString &opLabel, double *norm1Out)
 {
     const int n = m->numRows();
     if (n <= 0 || n != m->numCols()) {
@@ -1030,13 +1032,8 @@ PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
                         .arg(opLabel));
     }
 
-    PureLuResult res;
-    res.n = n;
-    res.lu.resize(size_t(n) * size_t(n), 0.0);
-    res.piv.resize(size_t(n));
-    for (int i = 0; i < n; ++i)
-        res.piv[size_t(i)] = i;
-
+    std::vector<double> a(size_t(n) * size_t(n), 0.0);
+    double norm1 = 0.0;
     for (int c = 0; c < n; ++c) {
         double colAbsSum = 0.0;
         for (int r = 0; r < n; ++r) {
@@ -1048,11 +1045,25 @@ PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
                                 .arg(r)
                                 .arg(c));
             }
-            res.lu[size_t(r) * size_t(n) + size_t(c)] = v;
+            a[size_t(r) * size_t(n) + size_t(c)] = v;
             colAbsSum += std::abs(v);
         }
-        res.norm1 = std::max(res.norm1, colAbsSum);
+        norm1 = std::max(norm1, colAbsSum);
     }
+    if (norm1Out)
+        *norm1Out = norm1;
+    return a;
+}
+
+PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
+{
+    PureLuResult res;
+    res.lu = readSquareMatrixChecked(m, opLabel, &res.norm1);
+    const int n = m->numRows();
+    res.n = n;
+    res.piv.resize(size_t(n));
+    for (int i = 0; i < n; ++i)
+        res.piv[size_t(i)] = i;
 
     if (res.norm1 == 0.0) {
         res.singular = true;
@@ -1097,12 +1108,10 @@ PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
 
 double computeMatrixDeterminantHeadless(Matrix *m)
 {
-    const PureLuResult lu = factorizeSquareMatrixPureLu(m, QStringLiteral("determinant"));
-    if (lu.singular)
-        return 0.0;
-    double det = double(lu.signum);
-    for (int i = 0; i < lu.n; ++i)
-        det *= lu.lu[size_t(i) * size_t(lu.n) + size_t(i)];
+    // Same singularity rule as the GUI's Matrix::determinant() (pivot vs. n*eps times the largest
+    // |entry| of its original column); the inverse keeps its own rcond test above.
+    const std::vector<double> a = readSquareMatrixChecked(m, QStringLiteral("determinant"), nullptr);
+    const double det = Matrix::denseDeterminant(a.data(), m->numRows());
     if (!std::isfinite(det)) {
         throwRpcRuntime(
                 QStringLiteral("Matrix '%1' determinant overflowed IEEE-754 double range.")

@@ -156,6 +156,12 @@ public slots:
     void invert();
     //! Calculate the determinant of the matrix
     double determinant();
+    //! Determinant of the n x n row-major matrix `a` (LU with partial pivoting). Shared by
+    //! determinant() and the JSON-RPC matrix.determinant so that both decide singularity alike:
+    //! a pivot whose magnitude is not above n * eps times the largest |a_ik| of its column k in
+    //! the original matrix counts as singular and gives 0 (scale-independent: diag(1e10, 1e-7)
+    //! keeps 1e3, [[1,2,3],[4,5,6],[7,8,9]] gives 0). Returns NaN for a non-finite entry.
+    static double denseDeterminant(const double *a, int n);
 
     //! Calculate matrix values using the formula for all selected cells
     bool recalculate();

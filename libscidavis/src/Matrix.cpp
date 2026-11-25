@@ -332,8 +332,8 @@ struct DenseLuDecomposition
 };
 
 // relPivotTol > 0: a pivot not above relPivotTol * ||A||_1 counts as singular (what invert()
-// needs). relPivotTol == 0: only an exactly zero or non-finite pivot counts as singular (what
-// determinant() needs: a relative tolerance made e.g. diag(1e10, 1e-5) "singular", det = 0).
+// needs). relPivotTol == 0: only an exactly zero or non-finite pivot counts as singular.
+// determinant() does not use this; it goes through Matrix::denseDeterminant().
 static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n, double relPivotTol)
 {
     DenseLuDecomposition res;
@@ -406,6 +406,55 @@ static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n, double relP
 
 } // namespace
 
+double Matrix::denseDeterminant(const double *a, int n)
+{
+    if (!a || n <= 0)
+        return std::numeric_limits<double>::quiet_NaN();
+    const size_t nn = size_t(n);
+    std::vector<double> lu(a, a + nn * nn);
+    std::vector<double> colMax(nn, 0.0);
+    for (size_t i = 0; i < nn; ++i) {
+        for (size_t j = 0; j < nn; ++j) {
+            const double v = lu[i * nn + j];
+            if (!std::isfinite(v))
+                return std::numeric_limits<double>::quiet_NaN();
+            colMax[j] = std::max(colMax[j], std::abs(v));
+        }
+    }
+
+    const double relTol = double(n) * std::numeric_limits<double>::epsilon();
+    double det = 1.0;
+    for (size_t k = 0; k < nn; ++k) {
+        size_t pivRow = k;
+        double maxAbs = std::abs(lu[k * nn + k]);
+        for (size_t i = k + 1; i < nn; ++i) {
+            const double cand = std::abs(lu[i * nn + k]);
+            if (cand > maxAbs) {
+                maxAbs = cand;
+                pivRow = i;
+            }
+        }
+        // Singular when the pivot is lost in the rounding of its own column (or not finite).
+        if (!std::isfinite(maxAbs) || !(maxAbs > relTol * colMax[k]))
+            return 0.0;
+        if (pivRow != k) {
+            for (size_t j = 0; j < nn; ++j)
+                std::swap(lu[k * nn + j], lu[pivRow * nn + j]);
+            det = -det;
+        }
+        const double diag = lu[k * nn + k];
+        det *= diag;
+        for (size_t i = k + 1; i < nn; ++i) {
+            const double lik = lu[i * nn + k] / diag;
+            if (lik != 0.0) {
+                for (size_t j = k + 1; j < nn; ++j)
+                    lu[i * nn + j] -= lik * lu[k * nn + j];
+            }
+        }
+    }
+    return det;
+}
+
 double Matrix::determinant()
 {
     if (!d_future_matrix)
@@ -430,15 +479,11 @@ double Matrix::determinant()
     if (!nonInteractive)
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
-    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, rows, 0.0);
-    double det = 0.0;
-    if (lu.nonFinite) {
-        det = std::numeric_limits<double>::quiet_NaN();
-    } else if (!lu.singular) {
-        det = double(lu.sign);
-        for (int k = 0; k < rows; ++k)
-            det *= lu.lu[size_t(k) * size_t(rows) + size_t(k)];
-    }
+    std::vector<double> a(size_t(rows) * size_t(rows), 0.0);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < rows; ++j)
+            a[size_t(i) * size_t(rows) + size_t(j)] = cell(i, j);
+    const double det = denseDeterminant(a.data(), rows);
 
     if (!nonInteractive)
         QApplication::restoreOverrideCursor();

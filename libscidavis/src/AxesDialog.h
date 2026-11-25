@@ -345,6 +345,15 @@ protected:
     void markFrameDirty();
     void markBreakDirty();
     bool commitScaleRow(int row);
+    //! Axis type and format info that committing row `row` will actually apply: a pending Axes-tab
+    //! type/format with the origin commitAxisRow() fills in, otherwise the current ones. The scale
+    //! tab shows and parses date/time limits against these so that display and apply agree.
+    Graph::AxisType pendingAxisType(int row) const;
+    QString pendingAxisFormatInfo(int row) const;
+    //! Date/time Start (isEnd = false) or End text of row `row` -> axis value. A text still equal
+    //! to what updateScale() showed under the same type/format gives back the exact shown value.
+    bool dateTimeScaleTextToValue(int row, Graph::AxisType type, const QString &info,
+                                  const QString &text, bool isEnd, double *out) const;
     void commitGridState();
     bool commitAxisRow(int row);
     void commitFrameState();
@@ -394,6 +403,20 @@ protected:
     StagedGridEdit d_stagedGrids[2];
     StagedAxisEdit d_stagedAxes[4];
     StagedBreakEdit d_stagedBreaks[4];
+
+    //! Date/time Start/End texts updateScale() last showed for a row and the exact axis values
+    //! behind them (the text is rounded to milliseconds).
+    struct ShownDateTimeScale
+    {
+        bool valid = false;
+        Graph::AxisType type = Graph::AxisType::Numeric;
+        QString formatInfo;
+        QString startText;
+        QString endText;
+        double start = 0.0;
+        double end = 0.0;
+    };
+    ShownDateTimeScale d_shownDateTimeScale[4];
 };
 
 #endif

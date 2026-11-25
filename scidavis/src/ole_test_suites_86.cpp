@@ -2,6 +2,7 @@
 #include "Graph_Internal.h"
 #include "ScaleDraw.h"
 
+#include <QComboBox>
 #include <QLineEdit>
 #include <QListWidget>
 
@@ -25,6 +26,9 @@
 //   86e formula-linked axis - 1e7/x over a parent range starting at 0 keeps true positions
 //   86f axis break          - a tiny before/after step falls back to automatic (tick cap)
 //   86g AxesDialog          - Time (ms) / Date (days from origin) start/end conversion
+//   86h AxesDialog          - untouched Time limits 0..2500 / 0..800 ms survive OK (ms shown)
+//   86i AxesDialog          - Numeric -> Time / Date switch: shown limits = applied limits
+//   86j log autoscale       - X error bars do not pull down a Y log axis (only base points)
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -119,7 +123,62 @@ struct Suite86AxesDialogProbe : public AxesDialog
         boxEnd->setText(end);
         return updatePlot();
     }
+    static int rowOf(int qwtAxis)
+    {
+        switch (qwtAxis) {
+        case QwtPlot::xBottom:
+            return 0;
+        case QwtPlot::yLeft:
+            return 1;
+        case QwtPlot::xTop:
+            return 2;
+        default:
+            return 3;
+        }
+    }
+    // The date/time Start/End in the boxes parse the way updatePlot() will parse them and satisfy
+    // Start < End, so updatePlot() cannot stop in a (blocking) QMessageBox.
+    bool shownLimitsValid(int qwtAxis, double *lo, double *hi) const
+    {
+        const int row = rowOf(qwtAxis);
+        const Graph::AxisType t = pendingAxisType(row);
+        const QString info = pendingAxisFormatInfo(row);
+        return dateTimeScaleTextToValue(row, t, info, startText(), false, lo)
+                && dateTimeScaleTextToValue(row, t, info, endText(), true, hi) && *lo < *hi;
+    }
+    // OK pressed on the Scale tab without touching anything.
+    bool commitUntouched()
+    {
+        generalDialog.setCurrentWidget(scalesPage);
+        return updatePlot();
+    }
+    // Axes tab: change the axis type in the combo (as the user does), staging the row.
+    void switchAxisType(int qwtAxis, Graph::AxisType type)
+    {
+        setCurrentQwtAxis(qwtAxis);
+        generalDialog.setCurrentWidget(axesPage);
+        const int idx = boxAxisType->findData(static_cast<int>(type));
+        boxAxisType->setCurrentIndex(idx);
+        showAxisFormatOptions(idx);
+        markAxisDirty();
+    }
+    // Scale tab: stage the row (optionally with a new End text), then OK.
+    void stageScale(const QString &end)
+    {
+        generalDialog.setCurrentWidget(scalesPage);
+        if (!end.isEmpty())
+            boxEnd->setText(end);
+        markScaleDirty();
+    }
+    bool ok() { return updatePlot(); }
 };
+
+void suite86Range(Graph *g, int axis, double *lo, double *hi)
+{
+    const QwtScaleDiv *sd = g->plotWidget()->axisScaleDiv(axis);
+    *lo = sd ? qMin(sd->lowerBound(), sd->upperBound()) : -1.0;
+    *hi = sd ? qMax(sd->lowerBound(), sd->upperBound()) : -1.0;
+}
 
 } // namespace
 
@@ -412,8 +471,8 @@ int runSuite86AxisScaleCorrectness(ApplicationWindow *mw)
             dlg.showScaleOf(QwtPlot::xBottom);
             std::cout << "[INFO] 86g Time axis 0..3600000 ms shown as " << dlg.startText().toStdString()
                       << " .. " << dlg.endText().toStdString() << "\n";
-            CHECK86(dlg.startText() == QLatin1String("1970-01-01 00:00:00")
-                            && dlg.endText() == QLatin1String("1970-01-01 01:00:00"),
+            CHECK86(dlg.startText() == QLatin1String("1970-01-01 00:00:00.000")
+                            && dlg.endText() == QLatin1String("1970-01-01 01:00:00.000"),
                     "86g: Time axis (ms after 00:00:00) shown as " << dlg.startText().toStdString()
                             << " .. " << dlg.endText().toStdString());
             dlg.showScaleOf(QwtPlot::yLeft);
@@ -452,6 +511,182 @@ int runSuite86AxisScaleCorrectness(ApplicationWindow *mw)
                     "86g: Date axis 2020-01-03..2020-01-08 12:00 must become 2..7.5 days, got "
                             << lo << " .. " << hi);
         }
+    }
+
+    // ------------------------------------------------ 86h: untouched Time limits keep their ms
+    {
+        Graph *g = suite86Graph(mw, "S86TimeMs", { 0.0, 2500.0 }, { 0.0, 1.0 });
+        CHECK_COND(g != nullptr, "86h: graph");
+        g->setLabelsDateTimeFormat(QwtPlot::xBottom, Graph::AxisType::Time,
+                                   QStringLiteral("00:00:00;hh:mm:ss"));
+        const double ends[] = { 2500.0, 800.0 };
+        for (const double hiMs : ends) {
+            g->setScale(QwtPlot::xBottom, 0.0, hiMs, 0.0, 5, 1, 0, false);
+            Suite86AxesDialogProbe dlg;
+            dlg.setGraph(g);
+            dlg.showScaleOf(QwtPlot::xBottom);
+            std::cout << "[INFO] 86h Time axis 0.." << hiMs << " ms shown as "
+                      << dlg.startText().toStdString() << " .. " << dlg.endText().toStdString()
+                      << "\n";
+            const QString wantEnd = hiMs == 2500.0 ? QStringLiteral("1970-01-01 00:00:02.500")
+                                                   : QStringLiteral("1970-01-01 00:00:00.800");
+            CHECK86(dlg.startText() == QLatin1String("1970-01-01 00:00:00.000")
+                            && dlg.endText() == wantEnd,
+                    "86h: Time axis 0.." << hiMs << " ms shown as " << dlg.startText().toStdString()
+                                         << " .. " << dlg.endText().toStdString());
+            double lo = 0.0, hi = 0.0;
+            if (!dlg.shownLimitsValid(QwtPlot::xBottom, &lo, &hi)) {
+                CHECK86(false, "86h: shown Time limits of 0.." << hiMs << " ms do not parse to "
+                                                                   "Start < End (OK would fail)");
+                continue;
+            }
+            const bool ok = dlg.commitUntouched();
+            suite86Range(g, QwtPlot::xBottom, &lo, &hi);
+            std::cout << "[INFO] 86h untouched OK on 0.." << hiMs << " ms -> " << lo << " .. "
+                      << hi << "\n";
+            CHECK86(ok && std::fabs(lo) < 1e-9 && std::fabs(hi - hiMs) < 1e-9,
+                    "86h: untouched OK changed the Time range 0.." << hiMs << " ms to " << lo
+                                                                   << " .. " << hi);
+        }
+        // ".zzz" is parsed on input as well (and the plain seconds form still is, see 86g).
+        Suite86AxesDialogProbe dlg;
+        dlg.setGraph(g);
+        const bool ok = dlg.applyRange(QwtPlot::xBottom, QStringLiteral("1970-01-01 00:00:00.250"),
+                                       QStringLiteral("1970-01-01 00:00:01.750"));
+        double lo = 0.0, hi = 0.0;
+        suite86Range(g, QwtPlot::xBottom, &lo, &hi);
+        std::cout << "[INFO] 86h Time apply 00.250..01.750 -> " << lo << " .. " << hi << " ms\n";
+        CHECK86(ok && std::fabs(lo - 250.0) < 1e-9 && std::fabs(hi - 1750.0) < 1e-9,
+                "86h: Time 00:00:00.250..00:00:01.750 must become 250..1750 ms, got " << lo
+                                                                                    << " .. " << hi);
+    }
+
+    // ------------------------------------------------ 86i: type switch inside the dialog
+    {
+        // Numeric -> Time: the shown limits use the origin the commit applies (00:00:00), and an
+        // edited End lands where the text says.
+        Graph *g = suite86Graph(mw, "S86SwitchTime", { 0.0, 10.0 }, { 0.0, 10.0 });
+        CHECK_COND(g != nullptr, "86i: graph (Time)");
+        g->setScale(QwtPlot::xBottom, 0.0, 10.0, 0.0, 5, 1, 0, false);
+        {
+            Suite86AxesDialogProbe dlg;
+            dlg.setGraph(g);
+            dlg.switchAxisType(QwtPlot::xBottom, Graph::AxisType::Time);
+            dlg.showScaleOf(QwtPlot::xBottom);
+            std::cout << "[INFO] 86i Numeric 0..10 switched to Time shown as "
+                      << dlg.startText().toStdString() << " .. " << dlg.endText().toStdString()
+                      << "\n";
+            CHECK86(dlg.startText() == QLatin1String("1970-01-01 00:00:00.000")
+                            && dlg.endText() == QLatin1String("1970-01-01 00:00:00.010"),
+                    "86i: Numeric 0..10 switched to Time shown as "
+                            << dlg.startText().toStdString() << " .. "
+                            << dlg.endText().toStdString()
+                            << " (expected 00:00:00.000 .. 00:00:00.010)");
+            dlg.stageScale(QStringLiteral("1970-01-01 00:00:00.020"));
+            double lo = 0.0, hi = 0.0;
+            if (dlg.shownLimitsValid(QwtPlot::xBottom, &lo, &hi)) {
+                const bool ok = dlg.ok();
+                suite86Range(g, QwtPlot::xBottom, &lo, &hi);
+                std::cout << "[INFO] 86i Time after switch, End 00.020 -> " << lo << " .. " << hi
+                          << " ms\n";
+                CHECK86(ok && std::fabs(lo) < 1e-9 && std::fabs(hi - 20.0) < 1e-9,
+                        "86i: Numeric -> Time with End 00:00:00.020 must give 0..20 ms, got "
+                                << lo << " .. " << hi);
+                CHECK86(g->axesType().value(QwtPlot::xBottom) == Graph::AxisType::Time,
+                        "86i: bottom axis did not become Time");
+            } else {
+                CHECK86(false, "86i: Numeric -> Time limits do not parse to Start < End");
+            }
+        }
+
+        // Numeric -> Date: shown against the 1900-01-01 origin the commit applies; untouched
+        // limits keep the range, an edited End lands where the text says.
+        Graph *gd = suite86Graph(mw, "S86SwitchDate", { 0.0, 1.0 }, { 0.0, 10.0 });
+        CHECK_COND(gd != nullptr, "86i: graph (Date)");
+        gd->setScale(QwtPlot::yLeft, 0.0, 10.0, 0.0, 5, 1, 0, false);
+        {
+            Suite86AxesDialogProbe dlg;
+            dlg.setGraph(gd);
+            dlg.switchAxisType(QwtPlot::yLeft, Graph::AxisType::Date);
+            dlg.showScaleOf(QwtPlot::yLeft);
+            std::cout << "[INFO] 86i Numeric 0..10 switched to Date shown as "
+                      << dlg.startText().toStdString() << " .. " << dlg.endText().toStdString()
+                      << "\n";
+            CHECK86(dlg.startText() == QLatin1String("1900-01-01 00:00:00")
+                            && dlg.endText() == QLatin1String("1900-01-11 00:00:00"),
+                    "86i: Numeric 0..10 switched to Date shown as "
+                            << dlg.startText().toStdString() << " .. "
+                            << dlg.endText().toStdString()
+                            << " (expected 1900-01-01 .. 1900-01-11)");
+            dlg.stageScale(QString());
+            double lo = 0.0, hi = 0.0;
+            if (dlg.shownLimitsValid(QwtPlot::yLeft, &lo, &hi)) {
+                const bool ok = dlg.ok();
+                suite86Range(gd, QwtPlot::yLeft, &lo, &hi);
+                std::cout << "[INFO] 86i Date after switch, untouched -> " << lo << " .. " << hi
+                          << " days\n";
+                CHECK86(ok && std::fabs(lo) < 1e-9 && std::fabs(hi - 10.0) < 1e-9,
+                        "86i: Numeric -> Date with untouched limits must keep 0..10, got " << lo
+                                                                                         << " .. "
+                                                                                         << hi);
+                CHECK86(gd->axesType().value(QwtPlot::yLeft) == Graph::AxisType::Date,
+                        "86i: left axis did not become Date");
+            } else {
+                CHECK86(false, "86i: Numeric -> Date limits do not parse to Start < End");
+            }
+        }
+        Graph *gd2 = suite86Graph(mw, "S86SwitchDate2", { 0.0, 1.0 }, { 0.0, 10.0 });
+        CHECK_COND(gd2 != nullptr, "86i: graph (Date 2)");
+        gd2->setScale(QwtPlot::yLeft, 0.0, 10.0, 0.0, 5, 1, 0, false);
+        {
+            Suite86AxesDialogProbe dlg;
+            dlg.setGraph(gd2);
+            dlg.switchAxisType(QwtPlot::yLeft, Graph::AxisType::Date);
+            dlg.showScaleOf(QwtPlot::yLeft);
+            dlg.stageScale(QStringLiteral("1900-01-21 00:00:00"));
+            double lo = 0.0, hi = 0.0;
+            if (dlg.shownLimitsValid(QwtPlot::yLeft, &lo, &hi)) {
+                const bool ok = dlg.ok();
+                suite86Range(gd2, QwtPlot::yLeft, &lo, &hi);
+                std::cout << "[INFO] 86i Date after switch, End 1900-01-21 -> " << lo << " .. "
+                          << hi << " days\n";
+                CHECK86(ok && std::fabs(lo) < 1e-9 && std::fabs(hi - 20.0) < 1e-9,
+                        "86i: Numeric -> Date with End 1900-01-21 must give 0..20 days, got "
+                                << lo << " .. " << hi);
+            } else {
+                CHECK86(false, "86i: Numeric -> Date (edited End) limits do not parse");
+            }
+        }
+    }
+
+    // ------------------------------------------------ 86j: log Y axis with X error bars
+    {
+        Table *t = mw->newTable(QStringLiteral("S86LogXErr"), 3, 3);
+        CHECK_COND(t != nullptr, "86j: table");
+        const double xs[] = { 1.0, 2.0, 3.0 };
+        const double ys[] = { 0.0, 2.0, 50.0 };
+        for (int r = 0; r < 3; ++r) {
+            t->column(0)->setValueAt(r, xs[r]);
+            t->column(1)->setValueAt(r, ys[r]);
+            t->column(2)->setValueAt(r, 1.9);
+        }
+        MultiLayer *ml = mw->multilayerPlot(t, QStringList() << t->colName(1), Graph::LineSymbols);
+        Graph *g = ml ? ml->activeGraph() : nullptr;
+        CHECK_COND(g != nullptr, "86j: graph");
+        // type 0 = horizontal (X) error bars: they must not extend the Y axis.
+        CHECK_COND(g->addErrorBars(t->colName(0), t->colName(1), t, t->colName(2), 0),
+                   "86j: addErrorBars (X) failed");
+        g->setScale(QwtPlot::yLeft, 1.0, 100.0, 0.0, 5, 8, 1, false);
+        g->setAutoScale();
+        double lo = 0.0, hi = 0.0;
+        suite86Range(g, QwtPlot::yLeft, &lo, &hi);
+        std::cout << "[INFO] 86j log Y autoscale y={0,2,50} with X error 1.9: " << lo << " .. "
+                  << hi << "\n";
+        // 2 - 1.9 = 0.1 would drag the lower bound a decade below the positive data.
+        CHECK86(lo >= 1.0 - 1e-9 && lo <= 2.0 + 1e-9,
+                "86j: X error bars pulled the log Y lower bound to " << lo
+                                                                     << " (expected ~2, >= 1)");
+        CHECK86(hi >= 50.0 * (1.0 - 1e-9), "86j: log Y upper bound must cover 50, got " << hi);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

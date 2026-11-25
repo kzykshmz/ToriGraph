@@ -4,11 +4,14 @@
 #include "lib/Interval.h"
 #include "lib/XmlStreamReader.h"
 #include "table/future_Table.h"
+#include "PythonAutomationServer.h"
 
 #include <QBuffer>
+#include <QJsonObject>
 #include <QXmlStreamWriter>
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -22,8 +25,10 @@
 //   85d normalizeColumns / normalizeSelection: max of the valid values, empty cells stay empty
 //   85e NumericDateTimeBaseFilter unit Month counts whole years (2020-01-01 -> 2021-03-01 = 14)
 //   85f Matrix::recalculate: x steps along the columns, y along the rows
-//   85g Matrix::determinant: no relative pivot tolerance (diag(1e10, 1e-5) -> 1e5)
+//   85g Matrix::determinant: no ||A||-relative pivot tolerance (diag(1e10, 1e-5) -> 1e5)
 //   85h Matrix transpose swaps the x and y coordinate ranges
+//   85i determinant singularity: GUI (Matrix::determinant) and JSON-RPC matrix.determinant use
+//       the same scale-independent pivot rule (diag(1e10, 1e-7) -> 1e3, 1..9 3x3 -> 0)
 // Every check is evaluated (failures are counted) so a single run reports all regressions.
 // =============================================================================
 namespace {
@@ -357,6 +362,60 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
         m->setCell(1, 1, 4.0);
         const double det0 = m->determinant();
         CHECK85(det0 == 0.0, "85g: det([[1,2],[2,4]]) = " << det0 << ", expected 0");
+    }
+
+    // ------------------------------------------------ 85i: GUI and SDK determinant agree
+    {
+        PythonAutomationServer *srv = mw->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "85i: pythonAutomationServer null");
+        struct DetCase
+        {
+            const char *label;
+            int n;
+            std::vector<double> rowMajor;
+            double expected;
+        };
+        const std::vector<DetCase> cases = {
+            { "diag(1e10, 1e-5)", 2, { 1e10, 0.0, 0.0, 1e-5 }, 1e5 },
+            { "diag(1e10, 1e-7)", 2, { 1e10, 0.0, 0.0, 1e-7 }, 1e3 },
+            { "[[1,2,3],[4,5,6],[7,8,9]]", 3, { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 0.0 },
+            { "[[1,2],[2,4]]", 2, { 1, 2, 2, 4 }, 0.0 },
+        };
+        int rpcId = 8500;
+        for (const DetCase &c : cases) {
+            Matrix *m = mw->newMatrix(QStringLiteral("S85DetRule%1").arg(rpcId - 8499), c.n, c.n);
+            CHECK_COND(m != nullptr, "85i: matrix");
+            for (int r = 0; r < c.n; ++r)
+                for (int col = 0; col < c.n; ++col)
+                    m->setCell(r, col, c.rowMajor[size_t(r) * size_t(c.n) + size_t(col)]);
+            const double gui = m->determinant();
+
+            QJsonObject params;
+            params[QStringLiteral("matrix")] = m->name();
+            QJsonObject req;
+            req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            req[QStringLiteral("id")] = ++rpcId;
+            req[QStringLiteral("method")] = QStringLiteral("matrix.determinant");
+            req[QStringLiteral("params")] = params;
+            const QJsonObject resp = srv->handleRpcRequest(req);
+            QCoreApplication::processEvents();
+            const QJsonValue dv =
+                    resp.value(QStringLiteral("result")).toObject().value(QStringLiteral("determinant"));
+            const double sdk = dv.isDouble() ? dv.toDouble() : std::numeric_limits<double>::quiet_NaN();
+
+            std::cout << "[INFO] 85i det(" << c.label << "): GUI = " << gui << ", SDK = " << sdk
+                      << ", expected " << c.expected << "\n";
+            auto matchesExpected = [&c](double v) {
+                return c.expected == 0.0 ? v == 0.0
+                                         : std::fabs(v - c.expected) <= std::fabs(c.expected) * 1e-9;
+            };
+            CHECK85(matchesExpected(gui), "85i: GUI det(" << c.label << ") = " << gui << ", expected "
+                                               << c.expected);
+            CHECK85(matchesExpected(sdk), "85i: SDK det(" << c.label << ") = " << sdk << ", expected "
+                                               << c.expected);
+            CHECK85(gui == sdk, "85i: GUI and SDK disagree on det(" << c.label << "): " << gui
+                                                                  << " vs " << sdk);
+        }
     }
 
     // ------------------------------------------------ 85h: transpose swaps coordinates

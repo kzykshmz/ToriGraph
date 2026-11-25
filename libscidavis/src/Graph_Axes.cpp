@@ -2805,6 +2805,12 @@ void Graph::applyLogAutoScalePositiveRange()
                 continue;
             }
             auto *eb = dynamic_cast<QwtErrorPlotCurve *>(cv);
+            // Only bars drawn along this axis extend it (as in applyZeroSnapOnAutoAxes); an X
+            // error bar on a Y log axis contributes its base point alone.
+            if (eb
+                && !((isX && eb->direction() == QwtErrorPlotCurve::Horizontal)
+                     || (!isX && eb->direction() == QwtErrorPlotCurve::Vertical)))
+                eb = nullptr;
             const int n = cv->dataSize();
             for (int k = 0; k < n; ++k) {
                 const double base = isX ? cv->x(k) : cv->y(k);

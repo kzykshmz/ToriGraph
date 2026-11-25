@@ -389,9 +389,44 @@ double evalAxisScalarOrEmptyFallback(const QString &raw, double fallback, bool *
 // Julian day (DateTimeScaleDraw). The origin is parsed from the axis format info the same way
 // Graph::setLabelsDateTimeFormat() does. Time and Date are converted in UTC so that no daylight
 // saving shift enters the round trip; DateTime keeps its local-time conversion.
+// Time values are milliseconds, so the Time text always carries ".zzz"; Date/DateTime show it
+// only when a millisecond part is present. Input accepts both spellings.
 const QString kScaleDateTimeTextFormat = QStringLiteral("yyyy-MM-dd hh:mm:ss");
+const QString kScaleDateTimeTextFormatMs = QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz");
 constexpr double kScaleMsPerDay = 86400000.0;
 constexpr double kScaleJulianUnixEpoch = 2440587.5;
+
+bool isDateTimeAxisType(Graph::AxisType type)
+{
+    return type == Graph::AxisType::Time || type == Graph::AxisType::Date
+            || type == Graph::AxisType::DateTime;
+}
+
+// Format info a date/time axis gets when the Axes tab commits `format` with label format
+// `formatText` over the current info `current`: an existing origin is kept, a missing one is
+// replaced by the type's default origin (commitAxisRow() writes exactly this string).
+QString dateTimeFormatInfoFor(Graph::AxisType format, const QString &current,
+                              const QString &formatText)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QStringList lst = current.split(";", Qt::KeepEmptyParts);
+#else
+    QStringList lst = current.split(";", QString::KeepEmptyParts);
+#endif
+    if (lst.size() < 2 || lst[0].isEmpty()) {
+        lst = QStringList();
+        if (format == Graph::AxisType::Time)
+            lst << QTime(0, 0, 0).toString();
+        else if (format == Graph::AxisType::Date)
+            lst << QDate(1900, 1, 1).toString("yyyy-MM-dd");
+        else
+            lst << QDateTime(QDate(1900, 1, 1), QTime(0, 0, 0)).toString("yyyy-MM-ddThh:mm:ss");
+        lst << formatText;
+    } else {
+        lst[1] = formatText;
+    }
+    return lst.join(";");
+}
 
 // Frame (value 0) of a Time/Date axis. *julian is set when a Date axis has no valid origin.
 QDateTime dateTimeAxisZero(Graph::AxisType type, const QString &formatInfo, bool *julian)
@@ -411,37 +446,40 @@ QDateTime dateTimeAxisZero(Graph::AxisType type, const QString &formatInfo, bool
     return QDateTime();
 }
 
-QString dateTimeAxisValueToText(Graph::AxisType type, const QString &formatInfo, double v)
+// Axis value -> date/time (invalid when the value is not representable).
+QDateTime dateTimeAxisValueToDateTime(Graph::AxisType type, const QString &formatInfo, double v)
 {
     if (!std::isfinite(v))
-        return QString();
+        return QDateTime();
     if (type == Graph::AxisType::Time || type == Graph::AxisType::Date) {
         bool julian = false;
         const QDateTime zero = dateTimeAxisZero(type, formatInfo, &julian);
         if (type == Graph::AxisType::Time) {
             if (std::fabs(v) > 1e17)
-                return QString();
-            return zero.addMSecs(qint64(std::llround(v))).toString(kScaleDateTimeTextFormat);
+                return QDateTime();
+            return zero.addMSecs(qint64(std::llround(v)));
         }
         if (std::fabs(v) > 1e11)
-            return QString();
+            return QDateTime();
         if (!julian)
-            return zero.addMSecs(qint64(std::llround(v * kScaleMsPerDay)))
-                    .toString(kScaleDateTimeTextFormat);
+            return zero.addMSecs(qint64(std::llround(v * kScaleMsPerDay)));
         const double day = std::floor(v);
         const QDateTime dayStart(QDate::fromJulianDay(qint64(day)), QTime(0, 0, 0), Qt::UTC);
-        return dayStart.addMSecs(qint64(std::llround((v - day) * kScaleMsPerDay)))
-                .toString(kScaleDateTimeTextFormat);
+        return dayStart.addMSecs(qint64(std::llround((v - day) * kScaleMsPerDay)));
     }
+    if (std::fabs(v) > 1e11)
+        return QDateTime();
     return QDateTime::fromMSecsSinceEpoch(
-                   qint64(std::llround((v - kScaleJulianUnixEpoch) * kScaleMsPerDay)))
-            .toString(kScaleDateTimeTextFormat);
+            qint64(std::llround((v - kScaleJulianUnixEpoch) * kScaleMsPerDay)));
 }
 
 bool dateTimeAxisTextToValue(Graph::AxisType type, const QString &formatInfo, const QString &text,
                              double *out)
 {
-    QDateTime dt = QDateTime::fromString(text.trimmed(), kScaleDateTimeTextFormat);
+    const QString trimmed = text.trimmed();
+    QDateTime dt = QDateTime::fromString(trimmed, kScaleDateTimeTextFormatMs);
+    if (!dt.isValid())
+        dt = QDateTime::fromString(trimmed, kScaleDateTimeTextFormat);
     if (!dt.isValid())
         return false;
     if (type != Graph::AxisType::Time && type != Graph::AxisType::Date) {
@@ -2289,12 +2327,11 @@ bool AxesDialog::updatePlot()
             QString to = st.end.toLower();
             QString step = st.step.toLower();
             const int a = Graph::mapToQwtAxis(r);
-            const Graph::AxisType aType = d_stagedAxes[r].dirty ? d_stagedAxes[r].axisType
-                                                                : axesType.value(a, Graph::AxisType::Numeric);
-            if (aType == Graph::AxisType::Time || aType == Graph::AxisType::Date
-                || aType == Graph::AxisType::DateTime) {
+            const Graph::AxisType aType = pendingAxisType(r);
+            if (isDateTimeAxisType(aType)) {
+                const QString aInfo = pendingAxisFormatInfo(r);
                 double dtVal = 0.0;
-                if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.start, &dtVal)) {
+                if (!dateTimeScaleTextToValue(r, aType, aInfo, st.start, false, &dtVal)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
@@ -2306,7 +2343,7 @@ bool AxesDialog::updatePlot()
                     return false;
                 }
                 from = QString::number(dtVal, 'f', 16);
-                if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.end, &dtVal)) {
+                if (!dateTimeScaleTextToValue(r, aType, aInfo, st.end, true, &dtVal)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
@@ -2589,6 +2626,8 @@ void AxesDialog::setGraph(Graph *g)
         return;
 
     d_graph = g;
+    for (ShownDateTimeScale &shown : d_shownDateTimeScale)
+        shown = ShownDateTimeScale();
     clearAllDirtyState();
     d_stagedRefLines = d_graph->referenceLines();
 
@@ -2805,12 +2844,32 @@ void AxesDialog::updateScale()
     double aend = std::max(scDiv->lowerBound(), scDiv->upperBound());
     double astep = d_graph->axisStep(a);
 
+    d_shownDateTimeScale[axis] = ShownDateTimeScale();
     switch (aType) {
     case Graph::AxisType::Time:
     case Graph::AxisType::Date:
     case Graph::AxisType::DateTime: {
-        boxStart->setText(dateTimeAxisValueToText(aType, formatInfo.value(a), astart));
-        boxEnd->setText(dateTimeAxisValueToText(aType, formatInfo.value(a), aend));
+        // Shown against the format info the commit will apply (a pending type switch included),
+        // with milliseconds whenever they matter (always for Time, whose values are ms).
+        const QString aInfo = pendingAxisFormatInfo(axis);
+        const QDateTime dtStart = dateTimeAxisValueToDateTime(aType, aInfo, astart);
+        const QDateTime dtEnd = dateTimeAxisValueToDateTime(aType, aInfo, aend);
+        const bool withMs = aType == Graph::AxisType::Time
+                || (dtStart.isValid() && dtStart.time().msec() != 0)
+                || (dtEnd.isValid() && dtEnd.time().msec() != 0);
+        const QString &fmt = withMs ? kScaleDateTimeTextFormatMs : kScaleDateTimeTextFormat;
+        const QString startText = dtStart.isValid() ? dtStart.toString(fmt) : QString();
+        const QString endText = dtEnd.isValid() ? dtEnd.toString(fmt) : QString();
+        boxStart->setText(startText);
+        boxEnd->setText(endText);
+        ShownDateTimeScale &shown = d_shownDateTimeScale[axis];
+        shown.valid = true;
+        shown.type = aType;
+        shown.formatInfo = aInfo;
+        shown.startText = startText;
+        shown.endText = endText;
+        shown.start = astart;
+        shown.end = aend;
         break;
     }
     default: {
@@ -4351,6 +4410,41 @@ void AxesDialog::markBreakDirty()
     captureBreakRowFromUi(row);
 }
 
+Graph::AxisType AxesDialog::pendingAxisType(int row) const
+{
+    if (row < 0 || row >= 4)
+        return Graph::AxisType::Numeric;
+    if (d_stagedAxes[row].dirty)
+        return d_stagedAxes[row].axisType;
+    return axesType.value(Graph::mapToQwtAxis(row), Graph::AxisType::Numeric);
+}
+
+QString AxesDialog::pendingAxisFormatInfo(int row) const
+{
+    if (row < 0 || row >= 4)
+        return QString();
+    const QString current = formatInfo.value(Graph::mapToQwtAxis(row));
+    const StagedAxisEdit &st = d_stagedAxes[row];
+    if (st.dirty && isDateTimeAxisType(st.axisType))
+        return dateTimeFormatInfoFor(st.axisType, current, st.formatText);
+    return current;
+}
+
+bool AxesDialog::dateTimeScaleTextToValue(int row, Graph::AxisType type, const QString &info,
+                                          const QString &text, bool isEnd, double *out) const
+{
+    if (row >= 0 && row < 4) {
+        const ShownDateTimeScale &shown = d_shownDateTimeScale[row];
+        if (shown.valid && shown.type == type && shown.formatInfo == info
+            && text == (isEnd ? shown.endText : shown.startText)
+            && std::isfinite(isEnd ? shown.end : shown.start)) {
+            *out = isEnd ? shown.end : shown.start;
+            return true;
+        }
+    }
+    return dateTimeAxisTextToValue(type, info, text, out);
+}
+
 bool AxesDialog::commitScaleRow(int row)
 {
     if (!d_graph || row < 0 || row >= 4)
@@ -4360,16 +4454,17 @@ bool AxesDialog::commitScaleRow(int row)
     QString to = st.end.toLower();
     QString step = st.step.toLower();
     const int a = Graph::mapToQwtAxis(row);
-    const Graph::AxisType aType = axesType.value(a, Graph::AxisType::Numeric);
+    const Graph::AxisType aType = pendingAxisType(row);
     switch (aType) {
     case Graph::AxisType::Time:
     case Graph::AxisType::Date:
     case Graph::AxisType::DateTime: {
+        const QString aInfo = pendingAxisFormatInfo(row);
         double dtVal = 0.0;
-        if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.start, &dtVal))
+        if (!dateTimeScaleTextToValue(row, aType, aInfo, st.start, false, &dtVal))
             return false;
         from = QString::number(dtVal, 'f', 16);
-        if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.end, &dtVal))
+        if (!dateTimeScaleTextToValue(row, aType, aInfo, st.end, true, &dtVal))
             return false;
         to = QString::number(dtVal, 'f', 16);
         break;
@@ -4501,27 +4596,8 @@ bool AxesDialog::commitAxisRow(int row)
         rightAxisOn = st.showAxis;
 
     if (axis >= 0 && axis < formatInfo.size()) {
-        if (format == Graph::AxisType::Time || format == Graph::AxisType::Date
-            || format == Graph::AxisType::DateTime) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-            QStringList lst = formatInfo[axis].split(";", Qt::KeepEmptyParts);
-#else
-            QStringList lst = formatInfo[axis].split(";", QString::KeepEmptyParts);
-#endif
-            if (lst.size() < 2 || lst[0].isEmpty()) {
-                lst = QStringList();
-                if (format == Graph::AxisType::Time)
-                    lst << QTime(0, 0, 0).toString();
-                else if (format == Graph::AxisType::Date)
-                    lst << QDate(1900, 1, 1).toString("yyyy-MM-dd");
-                else
-                    lst << QDateTime(QDate(1900, 1, 1), QTime(0, 0, 0))
-                                    .toString("yyyy-MM-ddThh:mm:ss");
-                lst << st.formatText;
-            } else {
-                lst[1] = st.formatText;
-            }
-            formatInfo[axis] = lst.join(";");
+        if (isDateTimeAxisType(format)) {
+            formatInfo[axis] = dateTimeFormatInfoFor(format, formatInfo[axis], st.formatText);
         } else if (format == Graph::AxisType::Day || format == Graph::AxisType::Month) {
             formatInfo[axis] = QString::number(st.formatIndex);
         } else if (format == Graph::AxisType::ColHeader) {
