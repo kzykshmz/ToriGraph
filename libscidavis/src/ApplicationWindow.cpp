@@ -2283,10 +2283,8 @@ void ApplicationWindow::removeWindowFromLists(MyWidget *w)
     QString caption = w->name();
     if (w->inherits("Table")) {
         Table *m = (Table *)w;
-        for (int i = 0; i < m->numCols(); i++) {
-            QString name = m->colName(i);
-            removeCurves(name);
-        }
+        // kept with the table (not deleted), so that the table's return puts them back
+        takeCurvesOfRemovedTable(m);
         QList<MyWidget *> windows = windowsList();
         for (QMdiSubWindow *sw : d_workspace.subWindowList()) {
             if (MyWidget *mw = qobject_cast<MyWidget *>(sw)) {
@@ -5275,6 +5273,7 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
     if (table) {
         if (Table *tblView = static_cast<Table *>(table->view())) {
             initTable(tblView);
+            restoreCurvesOfReaddedTable(tblView);
             if (WorkbookManager *wm = WorkbookManager::existing(this))
                 wm->onTableReadded(tblView);
             if (ModernRibbonBar *rib = modernRibbonBar()) {

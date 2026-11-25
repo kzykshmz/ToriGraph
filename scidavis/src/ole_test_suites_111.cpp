@@ -1,4 +1,5 @@
 #include "ole_test_common.h"
+#include "BoxCurve.h"
 #include "PythonAutomationServer.h"
 #include "future/table/future_Table.h"
 
@@ -34,7 +35,15 @@
 //        invalid, its data entry undone) keeps its curve as an empty curve with its style and
 //        legend line: the curve used to leave the graph without an Undo step, so Undo / Redo
 //        brought the data back but not the curve. Saving works with an empty curve; plotting a
-//        column without data is still refused
+//        column without data is still refused; the saved project opens with the empty curve in
+//        place (it used to be dropped on reading) and the curve takes the data when it comes
+//   111f a box (box plot) whose column is empty for a while stays in place without points and
+//        Undo brings its data back (it used to leave the graph for good)
+//   111g the curves of a table or column that leaves the project come back with it: undoing the
+//        creation of a table (table.create), of integrate's result table (app.undo / app.redo)
+//        and of an added column, then redoing it, brings the curve back (it was lost); deleting
+//        the data table and undoing that brings its curve back with its style and legend line,
+//        Redo takes it again
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -673,6 +682,44 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         const QString prj = tmp.filePath(QString::fromLatin1("e111.sciprj"));
         r = rpc(QString::fromLatin1("app.save_project"), QJsonObject{ { "path", prj } });
         CHECK_COND(!isErr(r) && QFileInfo(prj).size() > 0, "111e: save with an empty curve: " << errText(r));
+        {
+            // the saved project opens with the empty curve in place, as it was, and the curve
+            // shows the data when the column gets it
+            AppWinGuard111 rd(new ApplicationWindow());
+            rd->applyUserSettings();
+            CHECK_COND(rd->loadProject(prj), "111e: reopening the project failed");
+            QCoreApplication::processEvents();
+            MultiLayer *rml = nullptr;
+            for (MyWidget *mw2 : rd->windowsList()) {
+                if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String("EG111"))
+                    rml = static_cast<MultiLayer *>(mw2);
+            }
+            CHECK_COND(rml != nullptr && !rml->layersList().isEmpty(), "111e: EG111 after reopening");
+            Graph *rg = rml->layersList().at(0);
+            auto rsig = [&]() {
+                std::string s;
+                for (int i = 0; i < rg->curves(); ++i) {
+                    QwtPlotCurve *c = rg->curve(i);
+                    s += (c ? c->title().text().toStdString() + ":" + c->pen().color().name().toStdString()
+                                      + ":" + std::to_string(c->dataSize())
+                            : std::string("?"))
+                            + ";";
+                }
+                return s;
+            };
+            std::cout << "[INFO] 111e: reopened EG111 " << rsig() << "\n";
+            CHECK_COND(rsig() == "E111_y:#ff0000:4;E111_z:#d55e00:0;",
+                       "111e: the empty curve was not read back in place: " << rsig());
+            Table *rt = rd->table(QString::fromLatin1("E111"));
+            CHECK_COND(rt != nullptr, "111e: table E111 after reopening");
+            const int zc = rt->colIndex(QString::fromLatin1("E111_z"));
+            CHECK_COND(zc >= 0, "111e: column z after reopening");
+            for (int row = 0; row < 4; ++row)
+                rt->column(zc)->setValueAt(row, double(row + 2));
+            rd->updateCurves(rt, QString::fromLatin1("E111_z"));
+            CHECK_COND(rsig() == "E111_y:#ff0000:4;E111_z:#d55e00:4;",
+                       "111e: the reopened empty curve did not take the data: " << rsig());
+        }
         CHECK_COND(undoE(true) && sigE() == e0, "111e: undo clear z: " << sigE());
         r = rpc(QString::fromLatin1("plot.xy"),
                 QJsonObject{ { "table", "E111" }, { "x_col", "x" }, { "y_cols", QJsonArray{ "w" } },
@@ -681,6 +728,205 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
                   << (isErr(r) ? errText(r) : std::string("no error")) << "\n";
         CHECK_COND(isErr(r), "111e: plotting a column without data is no longer refused");
         std::cout << "[PASS] 111e: an emptied column keeps its curve and Undo / Redo bring the data back\n";
+    }
+
+    // ---- 111f: a box whose column is empty for a while keeps its place ----
+    {
+        Table *t = w111->newTable(QString::fromLatin1("B111"), 5, 2);
+        CHECK_COND(t != nullptr, "111f: table B111");
+        t->setColName(0, QString::fromLatin1("a"));
+        t->setColName(1, QString::fromLatin1("b"));
+        CHECK_COND(setCol("B111", "a", { 1, 2, 3, 4, 5 }) && setCol("B111", "b", { 3, 5, 4, 6, 8 }),
+                   "111f: fill B111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.box"),
+                            QJsonObject{ { "table", "B111" }, { "cols", QJsonArray{ "a", "b" } },
+                                         { "graph_name", "BG111" } });
+        CHECK_COND(!isErr(r), "111f: plot.box: " << errText(r));
+        MultiLayer *bml = nullptr;
+        for (MyWidget *mw2 : w111->windowsList()) {
+            if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String("BG111"))
+                bml = static_cast<MultiLayer *>(mw2);
+        }
+        CHECK_COND(bml != nullptr && !bml->layersList().isEmpty(), "111f: graph BG111");
+        Graph *bg = bml->layersList().at(0);
+        // "title@position:points;" of the boxes
+        auto boxSig = [&]() {
+            std::string s;
+            for (int i = 0; i < bg->curves(); ++i) {
+                auto *bc = dynamic_cast<BoxCurve *>(bg->curve(i));
+                s += bc ? bc->title().text().toStdString() + "@" + std::to_string(bc->x(0)) + ":"
+                                + std::to_string(bc->dataSize())
+                        : std::string("?");
+                s += ";";
+            }
+            return s;
+        };
+        const std::string b0 = boxSig();
+        std::cout << "[INFO] 111f: BG111 " << b0 << "\n";
+        CHECK_COND(bg->curves() == 2 && b0.find(":5;") != std::string::npos, "111f: setup: " << b0);
+
+        r = rpc(QString::fromLatin1("table.set_column_data"),
+                QJsonObject{ { "table", "B111" }, { "col", "a" },
+                             { "data", QJsonArray{ QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue(),
+                                                   QJsonValue() } } });
+        CHECK_COND(!isErr(r), "111f: clear a: " << errText(r));
+        const std::string b1 = boxSig();
+        std::cout << "[INFO] 111f: a emptied " << b1 << "\n";
+        CHECK_COND(bg->curves() == 2 && b1.rfind(b0.substr(0, b0.find(':')) + ":0;", 0) == 0,
+                   "111f: the box of the emptied column left the graph (or moved): " << b1);
+        CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"), QJsonObject{ { "table", "B111" } })),
+                   "111f: undo clear a");
+        CHECK_COND(boxSig() == b0, "111f: undo did not bring the box back: " << boxSig() << " expected " << b0);
+        std::cout << "[PASS] 111f: a box keeps its place while its column is empty\n";
+    }
+
+    // ---- 111g: curves of a table that leaves the project come back with it ----
+    {
+        Table *t = w111->newTable(QString::fromLatin1("I111"), 6, 2);
+        CHECK_COND(t != nullptr && t->d_future_table && t->d_future_table->undoStack(), "111g: table I111");
+        t->setColName(0, QString::fromLatin1("x"));
+        t->setColName(1, QString::fromLatin1("y"));
+        CHECK_COND(setCol("I111", "x", { 0, 1, 2, 3, 4, 5 }) && setCol("I111", "y", { 1, 2, 4, 3, 5, 6 }),
+                   "111g: fill I111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "I111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "y" } }, { "graph_name", "IG111" } });
+        CHECK_COND(!isErr(r), "111g: plot IG111: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_curve_style"),
+                QJsonObject{ { "graph", "IG111" }, { "curve", 0 }, { "color", "#00aa00" }, { "lw", 3.0 } });
+        CHECK_COND(!isErr(r), "111g: style: " << errText(r));
+        MultiLayer *iml = nullptr;
+        for (MyWidget *mw2 : w111->windowsList()) {
+            if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String("IG111"))
+                iml = static_cast<MultiLayer *>(mw2);
+        }
+        CHECK_COND(iml != nullptr && !iml->layersList().isEmpty(), "111g: graph IG111");
+        Graph *ig = iml->layersList().at(0);
+        auto isig = [&]() {
+            std::string s;
+            for (int i = 0; i < ig->curves(); ++i) {
+                QwtPlotCurve *c = ig->curve(i);
+                s += (c ? c->title().text().toStdString() + ":" + c->pen().color().name().toStdString()
+                                  + ":" + std::to_string(c->dataSize())
+                        : std::string("?"))
+                        + ";";
+            }
+            return s + "|" + (ig->legend() ? ig->legend()->text().toStdString() : std::string());
+        };
+        QUndoStack *ps = t->d_future_table->undoStack();
+
+        // a table made by an RPC (table.create) with a curve on IG111: undo the table's
+        // creation (its curve goes with it), then redo it: the curve comes back. (The project
+        // stack may be at its Undo limit, so its index does not count the steps.)
+        r = rpc(QString::fromLatin1("table.create"),
+                QJsonObject{ { "rows", 4 }, { "cols", 2 }, { "name", "J111" },
+                             { "col_names", QJsonArray{ "u", "v" } } });
+        CHECK_COND(!isErr(r), "111g: table.create J111: " << errText(r));
+        CHECK_COND(setCol("J111", "u", { 0, 2, 4, 5 }) && setCol("J111", "v", { 6, 5, 7, 4 }),
+                   "111g: fill J111");
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "IG111" }, { "table", "J111" }, { "x_col", "u" }, { "y_col", "v" } });
+        CHECK_COND(!isErr(r), "111g: add J111 curve: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_curve_style"),
+                QJsonObject{ { "graph", "IG111" }, { "curve", 1 }, { "color", "#aa00aa" }, { "lw", 2.5 } });
+        CHECK_COND(!isErr(r), "111g: style J111 curve: " << errText(r));
+        const std::string g1 = isig();
+        std::cout << "[INFO] 111g: with J111 " << g1 << "\n";
+        CHECK_COND(ig->curves() == 2, "111g: setup with J111: " << g1);
+        int steps = 0;
+        while (w111->table(QString::fromLatin1("J111")) != nullptr && ps->canUndo() && steps < 20) {
+            ps->undo();
+            ++steps;
+        }
+        QCoreApplication::processEvents();
+        std::cout << "[INFO] 111g: J111 creation undone " << isig() << "\n";
+        CHECK_COND(w111->table(QString::fromLatin1("J111")) == nullptr && ig->curves() == 1,
+                   "111g: undoing the creation of J111: " << isig());
+        for (int k = 0; k < steps; ++k)
+            ps->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QString::fromLatin1("J111")) != nullptr && isig() == g1,
+                   "111g: redo of the creation of J111 did not bring its curve back: " << isig()
+                                                                                       << " expected " << g1);
+
+        // integrate's result table and curve: undo the result table's creation, then redo it
+        {
+            r = rpc(QString::fromLatin1("curvemath.integrate"),
+                    QJsonObject{ { "graph", "IG111" }, { "curve", 0 }, { "plot_curve", true } });
+            CHECK_COND(!isErr(r), "111g: integrate: " << errText(r));
+            const QString outCurve = res(r).value(QString::fromLatin1("output_curve")).toString();
+            const QString outTable = outCurve.section(QLatin1Char('_'), 0, 0);
+            const std::string gi = isig();
+            std::cout << "[INFO] 111g: integrate -> " << outTable.toStdString() << " " << gi << "\n";
+            CHECK_COND(!outTable.isEmpty() && w111->table(outTable) != nullptr
+                               && gi.find(outCurve.toStdString() + ":") != std::string::npos,
+                       "111g: integrate did not add a result table and curve: " << gi);
+            // app.undo / app.redo without a window, as a script does
+            int isteps = 0;
+            while (w111->table(outTable) != nullptr && isteps < 20) {
+                CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"), QJsonObject{})), "111g: app.undo");
+                ++isteps;
+            }
+            std::cout << "[INFO] 111g: result table undone (" << isteps << " step(s)) " << isig() << "\n";
+            CHECK_COND(w111->table(outTable) == nullptr
+                               && isig().find(outCurve.toStdString() + ":") == std::string::npos,
+                       "111g: undoing the result table: " << isig());
+            for (int k = 0; k < isteps; ++k)
+                CHECK_COND(!isErr(rpc(QString::fromLatin1("app.redo"), QJsonObject{})), "111g: app.redo");
+            CHECK_COND(w111->table(outTable) != nullptr && isig() == gi,
+                       "111g: redo of the result table did not bring its curve back: " << isig()
+                                                                                         << " expected " << gi);
+            r = rpc(QString::fromLatin1("plot.remove_curve"),
+                    QJsonObject{ { "graph", "IG111" }, { "curve", outCurve } });
+            CHECK_COND(!isErr(r), "111g: remove the result curve: " << errText(r));
+        }
+
+        // a column added by an RPC with a curve: undo the column's addition (the curve goes with
+        // it, as the result columns of integrate and the like), then redo it: the curve comes back
+        r = rpc(QString::fromLatin1("table.add_column"),
+                QJsonObject{ { "table", "I111" }, { "name", "w" }, { "data", QJsonArray{ 9, 8, 7, 8, 9, 7 } } });
+        CHECK_COND(!isErr(r), "111g: add column w: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "IG111" }, { "table", "I111" }, { "x_col", "x" }, { "y_col", "w" } });
+        CHECK_COND(!isErr(r), "111g: add w curve: " << errText(r));
+        const std::string gw = isig();
+        CHECK_COND(gw.find("I111_w:") != std::string::npos, "111g: setup with w: " << gw);
+        int wsteps = 0;
+        while (t->colIndex(QString::fromLatin1("I111_w")) >= 0 && ps->canUndo() && wsteps < 20) {
+            ps->undo();
+            ++wsteps;
+        }
+        QCoreApplication::processEvents();
+        std::cout << "[INFO] 111g: column w undone (" << wsteps << " step(s)) " << isig() << "\n";
+        CHECK_COND(isig().find("I111_w:") == std::string::npos, "111g: the curve of w stayed: " << isig());
+        for (int k = 0; k < wsteps; ++k)
+            ps->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(isig() == gw, "111g: redo of column w did not bring its curve back: " << isig()
+                                                                                       << " expected " << gw);
+        r = rpc(QString::fromLatin1("plot.remove_curve"),
+                QJsonObject{ { "graph", "IG111" }, { "curve", "I111_w" } });
+        CHECK_COND(!isErr(r), "111g: remove w curve: " << errText(r));
+
+        // the user deletes the data table: Undo brings it back with its curves, Redo takes them again
+        const std::string g2 = isig();
+        w111->closeWindow(t);
+        QCoreApplication::processEvents();
+        std::cout << "[INFO] 111g: I111 deleted " << isig() << "\n";
+        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && ig->curves() < 2,
+                   "111g: deleting I111: " << isig());
+        ps->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QString::fromLatin1("I111")) != nullptr && isig() == g2,
+                   "111g: undo of deleting I111 did not bring its curves back: " << isig() << " expected " << g2);
+        ps->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && ig->curves() < 2,
+                   "111g: redo of deleting I111: " << isig());
+        ps->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(isig() == g2, "111g: second undo of deleting I111: " << isig());
+        std::cout << "[PASS] 111g: curves of a table that leaves the project come back with it\n";
     }
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";

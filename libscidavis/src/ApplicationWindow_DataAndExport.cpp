@@ -3033,8 +3033,14 @@ void ApplicationWindow::connectTable(Table *w)
     connect(w, SIGNAL(statusChanged(MyWidget *)), this, SLOT(updateWindowStatus(MyWidget *)));
     connect(w, SIGNAL(hiddenWindow(MyWidget *)), this, SLOT(hideWindow(MyWidget *)));
     connect(w, SIGNAL(closedWindow(MyWidget *)), this, SLOT(closeWindow(MyWidget *)));
-    connect(w, SIGNAL(aboutToRemoveCol(const QString &)), this,
-            SLOT(removeCurves(const QString &)));
+    // the curves of a column that goes are kept with it (not deleted) and come back with it
+    {
+        QPointer<Table> colGuard(w);
+        connect(w, &Table::aboutToRemoveCol, this, [this, colGuard](const QString &name) {
+            if (colGuard)
+                takeCurvesOfRemovedColumn(colGuard.data(), name);
+        });
+    }
     connect(w, SIGNAL(modifiedData(Table *, const QString &)), this,
             SLOT(updateCurves(Table *, const QString &)));
     connect(w, SIGNAL(modifiedWindow(MyWidget *)), this, SLOT(modifiedProject(MyWidget *)));
@@ -3048,6 +3054,11 @@ void ApplicationWindow::connectTable(Table *w)
                 [this, tableGuard](int first, int count) {
                     if (tableGuard)
                         removeCurvesOfColumnsWithUndo(tableGuard.data(), first, count);
+                });
+        connect(w->d_future_table, &future::Table::columnsInserted, this,
+                [this, tableGuard](int, int) {
+                    if (tableGuard)
+                        restoreCurvesOfReaddedTable(tableGuard.data());
                 });
     }
     connect(w, &TableView::selectionStatsChanged, this, [this, w](const QString &summary) {

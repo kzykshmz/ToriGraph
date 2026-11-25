@@ -2497,7 +2497,201 @@ private:
     bool d_initial_redo_done = false;
 };
 
+//! Curves taken out of their layers because a table or a column left the project, kept as a
+//! child of that table (its future::Table) or column: the undo stack keeps those objects while
+//! the step can be undone or redone, so the curves come back with them, and are deleted with them.
+class HeldRemovedCurves : public QObject
+{
+public:
+    static constexpr const char *kName = "_tg_held_removed_curves";
+    explicit HeldRemovedCurves(QObject *owner) : QObject(owner) { setObjectName(QLatin1String(kName)); }
+    ~HeldRemovedCurves() override
+    {
+        for (Layer &l : layers)
+            Graph::discardTakenCurves(l.taken);
+    }
+    static HeldRemovedCurves *of(QObject *owner)
+    {
+        if (!owner)
+            return nullptr;
+        return dynamic_cast<HeldRemovedCurves *>(owner->findChild<QObject *>(
+                QLatin1String(kName), Qt::FindDirectChildrenOnly));
+    }
+
+    struct Layer
+    {
+        QPointer<Graph> graph;
+        //! the graph window and the layer's place in it: an Undo / Redo of the graph replaces
+        //! its layers (snapshot), and the curves then go to the layer now at that place
+        QPointer<MultiLayer> window;
+        int layerIndex = -1;
+        Graph::TakenCurves taken;
+    };
+    QList<Layer> layers;
+};
+
+QObject *heldCurvesOwner(Table *t)
+{
+    if (!t)
+        return nullptr;
+    return t->d_future_table ? static_cast<QObject *>(t->d_future_table) : static_cast<QObject *>(t);
+}
+
+//! The tables and columns that hold curves (few, usually none): a re-added table or column
+//! checks them all, since a curve comes back only when all its columns are back.
+QList<QPointer<QObject>> &heldCurvesOwners()
+{
+    static QList<QPointer<QObject>> owners;
+    return owners;
+}
+
+//! Takes the curves that use any of \a names out of every 2D layer into the holder of \a owner.
+void takeCurvesInto(const QList<MyWidget *> &windows, QObject *owner, const QStringList &names)
+{
+    if (!owner || names.isEmpty())
+        return;
+    HeldRemovedCurves *held = HeldRemovedCurves::of(owner);
+    for (MyWidget *w : windows) {
+        if (!w || !w->inherits("MultiLayer"))
+            continue;
+        auto *ml = static_cast<MultiLayer *>(w);
+        const QWidgetList layers = ml->graphPtrs();
+        for (int li = 0; li < layers.size(); ++li) {
+            auto *g = static_cast<Graph *>(layers.at(li));
+            if (!g)
+                continue;
+            Graph::TakenCurves taken = g->takeCurvesUsingColumns(names);
+            if (!taken.out)
+                continue;
+            if (!held) {
+                held = new HeldRemovedCurves(owner);
+                heldCurvesOwners().append(QPointer<QObject>(owner));
+            }
+            HeldRemovedCurves::Layer l;
+            l.graph = g;
+            l.window = ml;
+            l.layerIndex = li;
+            l.taken = taken;
+            held->layers.append(l);
+        }
+    }
+}
+
+//! true when every column the held curves read is in the project again (a curve put back
+//! without one of them would be deleted by its loadData())
+bool heldCurvesColumnsBack(const HeldRemovedCurves *held)
+{
+    auto has = [](Table *t, const QString &name) {
+        return name.isEmpty() || (t && t->column(name) != nullptr);
+    };
+    for (const HeldRemovedCurves::Layer &l : held->layers) {
+        for (const Graph::TakenCurve &tc : l.taken.curves) {
+            auto *dc = dynamic_cast<DataCurve *>(tc.item);
+            if (!dc)
+                continue;
+            Table *t = dc->table();
+            if (!t || !t->d_future_table || !t->d_future_table->parentAspect())
+                return false;
+            if (!has(t, dc->title().text()))
+                return false;
+            if (!dynamic_cast<QwtErrorPlotCurve *>(dc) && !has(t, dc->xColumnName()))
+                return false;
+        }
+    }
+    return true;
+}
+
+//! Puts the curves of the holder of \a owner back, once all their columns are back.
+void restoreHeldCurves(QObject *owner)
+{
+    HeldRemovedCurves *held = HeldRemovedCurves::of(owner);
+    if (!held || !heldCurvesColumnsBack(held))
+        return;
+    for (HeldRemovedCurves::Layer &l : held->layers) {
+        Graph *g = l.graph.data();
+        if (!g && l.window && l.layerIndex >= 0) {
+            // the graph's Undo / Redo replaced its layers: the layer now at that place, without
+            // the curves it already has again
+            const QWidgetList now = l.window->graphPtrs();
+            g = (l.layerIndex < now.size()) ? qobject_cast<Graph *>(now.at(l.layerIndex)) : nullptr;
+            QSet<QwtPlotItem *> dup;
+            for (const Graph::TakenCurve &tc : l.taken.curves) {
+                auto *dc = dynamic_cast<DataCurve *>(tc.item);
+                if (!g || !dc)
+                    continue;
+                for (int i = 0; i < g->curves(); ++i) {
+                    auto *have = dynamic_cast<DataCurve *>(g->curve(i));
+                    if (have && have->table() == dc->table() && have->type() == dc->type()
+                        && have->title().text() == dc->title().text()
+                        && have->xColumnName() == dc->xColumnName()) {
+                        dup.insert(tc.item);
+                        break;
+                    }
+                }
+            }
+            // error bars of a curve left out go too (first, while their curve still exists)
+            for (const Graph::TakenCurve &tc : l.taken.curves) {
+                auto *er = dynamic_cast<QwtErrorPlotCurve *>(tc.item);
+                if (er && dup.contains(er->masterCurve()))
+                    dup.insert(er);
+            }
+            for (int pass = 0; pass < 2; ++pass) {
+                for (Graph::TakenCurve &tc : l.taken.curves) {
+                    if (!tc.item || !dup.contains(tc.item)
+                        || (pass == 0) != (dynamic_cast<QwtErrorPlotCurve *>(tc.item) != nullptr))
+                        continue;
+                    delete tc.item;
+                    tc.item = nullptr;
+                }
+            }
+        }
+        // a layer deleted meanwhile is skipped: its curves are deleted with the holder
+        if (g)
+            g->restoreTakenCurves(l.taken);
+    }
+    delete held;
+}
+
 } // namespace
+
+void ApplicationWindow::takeCurvesOfRemovedTable(Table *t)
+{
+    if (!t)
+        return;
+    QStringList names;
+    for (int i = 0; i < t->numCols(); ++i)
+        names << t->colName(i);
+    takeCurvesInto(windowsList(), heldCurvesOwner(t), names);
+}
+
+void ApplicationWindow::takeCurvesOfRemovedColumn(Table *t, const QString &name)
+{
+    if (!t)
+        return;
+    const int ci = t->colIndex(name);
+    Column *col = (ci >= 0) ? t->column(ci) : nullptr;
+    // held with the column (kept by the undo step that removes it); without it, with the table
+    takeCurvesInto(windowsList(), col ? static_cast<QObject *>(col) : heldCurvesOwner(t),
+                   QStringList() << name);
+    removeCurves(name); // what is left: 3D plots of the column
+}
+
+void ApplicationWindow::restoreCurvesOfReaddedTable(Table *t)
+{
+    Q_UNUSED(t);
+    QList<QPointer<QObject>> &owners = heldCurvesOwners();
+    if (owners.isEmpty())
+        return;
+    const QList<QPointer<QObject>> pending = owners;
+    owners.clear();
+    for (const QPointer<QObject> &o : pending) {
+        if (!o)
+            continue;
+        restoreHeldCurves(o.data());
+        if (HeldRemovedCurves::of(o.data()) && !owners.contains(o))
+            owners.append(o); // still waiting for a column
+    }
+}
 
 void ApplicationWindow::removeCurvesOfColumnsWithUndo(Table *t, int first, int count)
 {

@@ -586,6 +586,18 @@ public slots:
     //! be removed, and records it in the removal's undo step: Undo puts those curves back into
     //! their layers once the columns are back, keeping later edits of the graphs.
     void removeCurvesOfColumnsWithUndo(Table *t, int first, int count);
+    //! Takes the 2D curves that use the columns of \a t, which leaves the project (deleted, or
+    //! its creation undone), out of their layers and keeps them with the table (not deleted):
+    //! when the table comes back (Undo of the deletion, Redo of the creation),
+    //! restoreCurvesOfReaddedTable() puts them back with their style, legend line and error bars.
+    //! They are deleted with the table.
+    void takeCurvesOfRemovedTable(Table *t);
+    //! The same for a column that leaves the project outside a removal that records its curves
+    //! itself (removeCurvesOfColumnsWithUndo()): e.g. Undo of the step that added the column. The
+    //! curves are kept with the column and come back when it does.
+    void takeCurvesOfRemovedColumn(Table *t, const QString &name);
+    //! Puts back the curves kept for \a t and its columns whose columns are all back.
+    void restoreCurvesOfReaddedTable(Table *t);
     QStringList dependingPlots(const QString &caption);
     QStringList depending3DPlots(Matrix *m);
     QStringList multilayerDependencies(MyWidget *w);
