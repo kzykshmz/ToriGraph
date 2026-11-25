@@ -451,6 +451,9 @@ void Table::removeColumns(int first, int count)
     WAIT_CURSOR;
     BulkColumnChangeGuard bulk(d_view);
     beginMacro(QObject::tr("%1: remove %2 column(s)").arg(name()).arg(count));
+    // e.g. the curves that use these columns: removed and recorded here, before the columns go,
+    // so Undo restores them after the columns are back
+    emit columnsRemovalStarting(first, count);
     auto bulkView = std::make_shared<QPointer<TableView>>();
     exec(new BulkColumnChangeMarkerCmd(this, true, bulkView));
     QList<Column *> cols;

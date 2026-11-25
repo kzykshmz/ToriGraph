@@ -418,6 +418,10 @@ signals:
     void columnsReplaced(int first, int count);
     void columnsAboutToBeRemoved(int first, int count);
     void columnsRemoved(int first, int count);
+    //! Emitted by removeColumns() inside its undo macro before any column goes, so what depends
+    //! on the columns can record its own changes in the same undo step (exec()). Not emitted
+    //! when an undo or redo replays the removal.
+    void columnsRemovalStarting(int first, int count);
     void rowsAboutToBeInserted(int before, int count);
     void rowsInserted(int first, int count);
     void rowsAboutToBeRemoved(int first, int count);

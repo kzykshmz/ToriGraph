@@ -3043,6 +3043,12 @@ void ApplicationWindow::connectTable(Table *w)
     if (w && w->d_future_table) {
         connect(w->d_future_table, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
                 SLOT(handleAspectDescriptionChanged(const AbstractAspect *)), Qt::UniqueConnection);
+        QPointer<Table> tableGuard(w);
+        connect(w->d_future_table, &future::Table::columnsRemovalStarting, this,
+                [this, tableGuard](int first, int count) {
+                    if (tableGuard)
+                        removeCurvesOfColumnsWithUndo(tableGuard.data(), first, count);
+                });
     }
     connect(w, &TableView::selectionStatsChanged, this, [this, w](const QString &summary) {
         if (!d_status_info || d_workspace.activeSubWindow() != w)

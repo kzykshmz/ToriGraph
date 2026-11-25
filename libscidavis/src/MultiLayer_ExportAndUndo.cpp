@@ -1494,6 +1494,21 @@ void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSna
         app->updateUndoRedoActionsForActiveWindow();
 }
 
+QUndoCommand *MultiLayer::createUndoSnapshotCommand(const QString &label,
+                                                    const QString &beforeSnapshot)
+{
+    if (d_is_restoring_snapshot || d_undo_suppress_depth > 0 || beforeSnapshot.isEmpty())
+        return nullptr;
+
+    const QString afterSnapshot = saveToString(QString());
+    if (afterSnapshot == beforeSnapshot)
+        return nullptr;
+
+    const int activeIdx = active_graph ? graphsList.indexOf(active_graph) : 0;
+    return new MultiLayerSnapshotUndoCommand(this, findMultiLayerApp(this), label, beforeSnapshot,
+                                             afterSnapshot, qMax(0, activeIdx), -1);
+}
+
 namespace {
 
 enum class SnapshotRenameKind { TableRename, ColRename, MatrixRename };

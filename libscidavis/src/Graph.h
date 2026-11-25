@@ -276,6 +276,8 @@ public slots:
      * \brief Removes all curves defined by the title/plot association string s.
      */
     void removeCurves(const QString &s);
+    //! True when removeCurves(s) would remove at least one curve.
+    bool hasCurvesUsingColumn(const QString &s);
 
     void updateCurvesData(Table *w, const QString &yColName);
 
@@ -1183,6 +1185,8 @@ signals:
     void showFitResults(const QString &);
 
 private:
+    //! The title/plot association test of removeCurves() for one curve.
+    bool curveUsesColumn(int index, const QString &s);
     //! List storing pointers to the curves resulting after a fit session, in case the user wants to delete them later on.
     QList<QwtPlotCurve *> d_fit_curves;
     //! Render hint for plot items.

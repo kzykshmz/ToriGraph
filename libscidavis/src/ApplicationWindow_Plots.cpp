@@ -2448,6 +2448,55 @@ void ApplicationWindow::removeCurves(const QString &name)
     QApplication::restoreOverrideCursor();
 }
 
+void ApplicationWindow::removeCurvesOfColumnsWithUndo(Table *t, int first, int count)
+{
+    if (!t || !t->d_future_table || count < 1 || Table::isUndoRedoReplaying())
+        return;
+    QStringList names;
+    for (int i = first; i < first + count && i < t->numCols(); ++i)
+        names << t->colName(i);
+    if (names.isEmpty())
+        return;
+
+    // Each graph window that uses one of the columns: snapshot, remove its curves now (the
+    // aboutToRemoveCol pass then finds nothing left) and put the snapshot command in the
+    // removal's undo macro ahead of the column commands. Undo runs it after the columns are
+    // back and restores the curves with their style, order and layers; Redo removes them again
+    // before the columns go.
+    const QList<MyWidget *> windows = windowsList();
+    for (MyWidget *w : windows) {
+        if (!w || !w->inherits("MultiLayer"))
+            continue;
+        auto *ml = static_cast<MultiLayer *>(w);
+        const QWidgetList layers = ml->graphPtrs();
+        bool uses = false;
+        for (QWidget *lw : layers) {
+            auto *g = static_cast<Graph *>(lw);
+            for (const QString &n : names) {
+                if (g && g->hasCurvesUsingColumn(n)) {
+                    uses = true;
+                    break;
+                }
+            }
+            if (uses)
+                break;
+        }
+        if (!uses)
+            continue;
+        const QString before = ml->captureUndoSnapshot();
+        if (before.isEmpty())
+            continue; // snapshots suppressed: removeCurves() still removes them, unrecorded
+        for (QWidget *lw : layers) {
+            if (auto *g = static_cast<Graph *>(lw)) {
+                for (const QString &n : names)
+                    g->removeCurves(n);
+            }
+        }
+        if (QUndoCommand *cmd = ml->createUndoSnapshotCommand(tr("Remove Curves"), before))
+            t->d_future_table->exec(cmd);
+    }
+}
+
 void ApplicationWindow::updateCurves(Table *t, const QString &name)
 {
     QList<MyWidget *> windows = windowsList();

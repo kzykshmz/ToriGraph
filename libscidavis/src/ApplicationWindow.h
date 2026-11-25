@@ -577,6 +577,10 @@ public slots:
     void windowsMenuAboutToShow();
     void windowsMenuActivated(bool);
     void removeCurves(const QString &name);
+    //! Removes the 2D curves that use columns first..first+count-1 of \a t, which are about to
+    //! be removed, and records it in the removal's undo step: Undo restores those graphs as
+    //! they were once the columns are back.
+    void removeCurvesOfColumnsWithUndo(Table *t, int first, int count);
     QStringList dependingPlots(const QString &caption);
     QStringList depending3DPlots(Matrix *m);
     QStringList multilayerDependencies(MyWidget *w);

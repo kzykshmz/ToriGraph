@@ -51,6 +51,7 @@ class LayerButton;
 class SelectionMoveResizer;
 class ApplicationWindow;
 class QUndoStack;
+class QUndoCommand;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDragLeaveEvent;
@@ -266,6 +267,10 @@ public:
     bool isUndoSuppressed() const { return d_undo_suppress_depth > 0; }
     QString captureUndoSnapshot();
     void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
+    //! The command pushUndoSnapshot() would push, for another undo stack (the caller owns it):
+    //! undo restores \a beforeSnapshot, redo the present state (its first redo does nothing).
+    //! Null when snapshots are suppressed or nothing changed.
+    QUndoCommand *createUndoSnapshotCommand(const QString &label, const QString &beforeSnapshot);
     bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
                                 int preferredActiveLayer = -1, bool restoreGeometry = false);
     //! `tableColNames`: columns of the renamed table; when given, only references to those

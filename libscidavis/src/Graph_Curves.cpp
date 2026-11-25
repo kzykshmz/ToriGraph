@@ -1604,31 +1604,43 @@ void Graph::removePie()
     emit modifiedGraph();
 }
 
+bool Graph::curveUsesColumn(int index, const QString &s)
+{
+    QwtPlotItem *it = plotItem(index);
+    if (!it)
+        return false;
+
+    if (it->title().text() == s)
+        return true;
+
+    if (it->rtti() != QwtPlotItem::Rtti_PlotCurve)
+        return false;
+    PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+    if (!pc || pc->type() == Function)
+        return false;
+    DataCurve *dc = dynamic_cast<DataCurve *>(pc);
+    if (!dc)
+        return false;
+
+    return dc->plotAssociation().contains(QRegExp("\\b" + QRegExp::escape(s) + "\\b"))
+            || dc->plotAssociation().contains(QRegExp("\b" + s + "\b"));
+}
+
+bool Graph::hasCurvesUsingColumn(const QString &s)
+{
+    for (int i = 0; i < n_curves; ++i) {
+        if (curveUsesColumn(i, s))
+            return true;
+    }
+    return false;
+}
+
 void Graph::removeCurves(const QString &s)
 {
     for (int i = n_curves - 1; i >= 0; --i) {
         if (i >= n_curves)
             continue;
-        QwtPlotItem *it = plotItem(i);
-        if (!it)
-            continue;
-
-        if (it->title().text() == s) {
-            removeCurve(i);
-            continue;
-        }
-
-        if (it->rtti() != QwtPlotItem::Rtti_PlotCurve)
-            continue;
-        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
-        if (!pc || pc->type() == Function)
-            continue;
-        DataCurve *dc = dynamic_cast<DataCurve *>(pc);
-        if (!dc)
-            continue;
-
-        if (dc->plotAssociation().contains(QRegExp("\\b" + QRegExp::escape(s) + "\\b"))
-            || dc->plotAssociation().contains(QRegExp("\b" + s + "\b")))
+        if (curveUsesColumn(i, s))
             removeCurve(i);
     }
     d_plot->replot();
