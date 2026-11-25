@@ -605,6 +605,7 @@ QJsonObject serializeColumnMeta(Table *t, int colIdx)
     meta[QStringLiteral("mode")] =
             col ? columnModeToString(col->columnMode()) : QStringLiteral("numeric");
     meta[QStringLiteral("formula")] = col ? col->formula(0) : QString();
+    meta[QStringLiteral("formula_error")] = col ? col->formulaError() : QString();
     meta[QStringLiteral("formatted_axis_title")] =
             col ? col->formattedAxisTitle() : t->colLabel(colIdx);
     if (col) {
@@ -616,6 +617,110 @@ QJsonObject serializeColumnMeta(Table *t, int colIdx)
     return meta;
 }
 
+//! Opens one undo macro on an aspect for the lifetime of the object, so that everything a single
+//! RPC call changes is undone by one Undo step (a no-op without an undo stack).
+struct ScopedRpcUndoMacro
+{
+    AbstractAspect *aspect = nullptr;
+    ScopedRpcUndoMacro(AbstractAspect *a, const QString &label) : aspect(a)
+    {
+        if (aspect)
+            aspect->beginMacro(label);
+    }
+    ~ScopedRpcUndoMacro()
+    {
+        if (aspect)
+            aspect->endMacro();
+    }
+    ScopedRpcUndoMacro(const ScopedRpcUndoMacro &) = delete;
+    ScopedRpcUndoMacro &operator=(const ScopedRpcUndoMacro &) = delete;
+};
+
+//! Evaluates every formula column of `tables` with the worksheets' own dependency-ordered
+//! recalculation -- the one automatic recalculation runs (Table::setAutoRecalcFormulas(true) ->
+//! recalculateFormulaColumnsOrdered / evaluateCrossTableDag) -- so a circular formula gets a
+//! formula error and keeps its values instead of feeding on itself. For the duration every
+//! worksheet of the project counts as auto-recalculating (set quietly through the future::Table
+//! flag, so cycles across worksheets are found too); the previous modes are restored afterwards.
+void recalcFormulaColumnsWithCycleCheck(ApplicationWindow *app, const QVector<Table *> &tables)
+{
+    QVector<QPointer<Table>> quietlyEnabled;
+    for (MyWidget *w : app->windowsList()) {
+        if (!w || !w->inherits("Table"))
+            continue;
+        auto *t = static_cast<Table *>(w);
+        if (!t->autoRecalcFormulas() && t->d_future_table) {
+            t->d_future_table->setAutoRecalcFormulas(true);
+            quietlyEnabled.append(QPointer<Table>(t));
+        }
+    }
+    for (Table *t : tables) {
+        if (t)
+            t->setAutoRecalcFormulas(true);
+    }
+    for (const QPointer<Table> &t : quietlyEnabled) {
+        if (t)
+            t->setAutoRecalcFormulas(false);
+    }
+}
+
+//! [{table, col, error}] for every formula column of `tables` that carries a formula error.
+QJsonArray formulaErrorsJson(const QVector<Table *> &tables)
+{
+    QJsonArray out;
+    for (Table *t : tables) {
+        if (!t)
+            continue;
+        for (int c : t->formulaErrorColumns()) {
+            QJsonObject e;
+            e[QStringLiteral("table")] = t->name();
+            e[QStringLiteral("col")] = t->colLabel(c);
+            e[QStringLiteral("error")] = t->column(c) ? t->column(c)->formulaError() : QString();
+            out.append(e);
+        }
+    }
+    return out;
+}
+
+//! "datetime"/"date"/"time", "month" and "day" (the spellings table.set_column_meta accepts).
+bool calendarColumnModeFromHint(const QString &modeHint, SciDAVis::ColumnMode *out)
+{
+    const QString m = modeHint.trimmed().toLower();
+    if (m == QStringLiteral("datetime") || m == QStringLiteral("date")
+        || m == QStringLiteral("time")) {
+        *out = SciDAVis::ColumnMode::DateTime;
+        return true;
+    }
+    if (m == QStringLiteral("month")) {
+        *out = SciDAVis::ColumnMode::Month;
+        return true;
+    }
+    if (m == QStringLiteral("day")) {
+        *out = SciDAVis::ColumnMode::Day;
+        return true;
+    }
+    return false;
+}
+
+bool isCalendarColumnMode(SciDAVis::ColumnMode m)
+{
+    return m == SciDAVis::ColumnMode::DateTime || m == SciDAVis::ColumnMode::Month
+            || m == SciDAVis::ColumnMode::Day;
+}
+
+//! A cell as the worksheet shows it: numbers as doubles, every other column type (text, date/time,
+//! month, day of week) as its displayed text, like export_csv.
+QJsonValue columnCellToJson(Column *col, int row)
+{
+    if (!col || col->isInvalid(row))
+        return QJsonValue::Null;
+    if (col->columnMode() == SciDAVis::ColumnMode::Numeric)
+        return safeJsonDouble(col->valueAt(row));
+    if (col->columnMode() == SciDAVis::ColumnMode::Text)
+        return col->textAt(row);
+    return col->asStringColumn()->textAt(row);
+}
+
 void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QString &modeHint)
 {
     Column *col = t->column(colIdx);
@@ -625,6 +730,26 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
     const int n = arr.size();
     if (n > t->numRows())
         t->setNumRows(n);
+
+    // Date/time, month and day columns: strings are written as text and then converted with the
+    // column-type conversion of the GUI (the same parsing as Column > Type), numbers are written as
+    // numbers and converted the same way (e.g. a day count to a date) -- the target type is kept.
+    SciDAVis::ColumnMode calendarMode = SciDAVis::ColumnMode::Numeric;
+    if (calendarColumnModeFromHint(modeHint, &calendarMode)) {
+        bool anyString = false;
+        for (const QJsonValue &v : arr) {
+            if (v.isString() && !v.toString().trimmed().isEmpty()) {
+                anyString = true;
+                break;
+            }
+        }
+        writeBulkColumnArray(t, colIdx, arr,
+                             anyString ? QStringLiteral("text") : QStringLiteral("numeric"));
+        col = t->column(colIdx);
+        if (col && col->columnMode() != calendarMode)
+            col->setColumnMode(calendarMode);
+        return;
+    }
 
     bool useText = (modeHint.compare(QStringLiteral("text"), Qt::CaseInsensitive) == 0);
     if (!useText && modeHint.isEmpty()) {
@@ -2163,6 +2288,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             outResult[QStringLiteral("completed")] = 0;
             outResult[QStringLiteral("total")] = 0;
             outResult[QStringLiteral("rolled_back")] = false;
+            outResult[QStringLiteral("undo_history_cleared")] = false;
             outResult[QStringLiteral("elapsed_ms")] = 0.0;
             outResult[QStringLiteral("results")] = QJsonArray();
             outResult[QStringLiteral("failed_index")] = QJsonValue::Null;
@@ -2213,6 +2339,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         int untouchedTblCols = 2;
         const QString savedProjName = d_app->projectname;
         const QStringList savedRecent = d_app->recentProjects;
+        // loadProject() of the staged snapshot renames the root folder after the temporary file
+        const QString savedRootFolderName =
+                d_app->projectFolder() ? d_app->projectFolder()->name() : QString();
+        const QString savedWindowTitle = d_app->windowTitle();
         QString savedActiveWinName;
         if (QWidget *actW = d_app->d_workspace.activeSubWindow()) {
             if (auto *mw = qobject_cast<MyWidget *>(actW))
@@ -2383,6 +2513,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
 
         bool rolledBack = false;
+        bool undoHistoryCleared = false;
         QString rollbackError;
         if (failedIndex >= 0 && atomic && bctx.recursionDepth == 1) {
             const auto openSnaps = bctx.preBatchGraphSnaps;
@@ -2467,6 +2598,17 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 d_app->recentProjects = savedRecent;
                 d_app->projectname = savedProjName;
                 d_app->updateRecentProjectsList();
+                if (Folder *rootF = d_app->projectFolder()) {
+                    if (!savedRootFolderName.isEmpty() && rootF->name() != savedRootFolderName) {
+                        rootF->setName(savedRootFolderName);
+                        if (rootF->folderListItem())
+                            rootF->folderListItem()->setText(0, savedRootFolderName);
+                    }
+                }
+                d_app->setWindowTitle(savedWindowTitle);
+                // The workspace was rebuilt from the snapshot: the Undo history of the windows
+                // that existed before the batch cannot be carried over.
+                undoHistoryCleared = true;
                 if (!savedActiveWinName.isEmpty()) {
                     if (MyWidget *aw = findWindowByName(d_app, savedActiveWinName))
                         d_app->activateSubWindow(aw);
@@ -2511,6 +2653,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         outResult[QStringLiteral("completed")] = completedCount;
         outResult[QStringLiteral("total")] = totalSteps;
         outResult[QStringLiteral("rolled_back")] = rolledBack;
+        outResult[QStringLiteral("undo_history_cleared")] = undoHistoryCleared;
         outResult[QStringLiteral("elapsed_ms")] = safeJsonDouble(elapsedMs);
         outResult[QStringLiteral("results")] = resultsJsonArr;
         outResult[QStringLiteral("failed_index")] =
@@ -3498,44 +3641,33 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             if (w && w->inherits("Table"))
                 allTables.append(static_cast<Table *>(w));
         }
-        const int maxPasses = std::max(2, allTables.size() + 2);
-        for (int pass = 0; pass < maxPasses; ++pass) {
-            bool anyDelta = false;
-            for (Table *t : allTables) {
+        // Formula columns are evaluated in dependency order through the worksheets' own
+        // recalculation, so circular formulas get a formula error and keep their values (they
+        // used to grow on every call). Passes repeat only while something still changes.
+        auto formulaState = [](const QVector<Table *> &tables) {
+            QStringList st;
+            for (Table *t : tables) {
                 for (int c = 0; c < t->numCols(); ++c) {
                     Column *col = t->column(c);
                     if (!col || col->formula(0).trimmed().isEmpty())
                         continue;
-                    const int nRows = t->numRows();
-                    std::vector<double> beforeVals(static_cast<size_t>(std::max(0, nRows)), 0.0);
-                    std::vector<unsigned char> beforeInv(static_cast<size_t>(std::max(0, nRows)), 0);
-                    for (int r = 0; r < nRows; ++r) {
-                        beforeInv[static_cast<size_t>(r)] = col->isInvalid(r) ? 1 : 0;
-                        if (!col->isInvalid(r)
-                            && col->columnMode() == SciDAVis::ColumnMode::Numeric) {
-                            beforeVals[static_cast<size_t>(r)] = col->valueAt(r);
-                        }
-                    }
-                    t->recalculate(c, false);
                     for (int r = 0; r < t->numRows(); ++r) {
-                        const unsigned char nowInv = col->isInvalid(r) ? 1 : 0;
-                        if (r >= nRows || nowInv != beforeInv[static_cast<size_t>(r)]) {
-                            anyDelta = true;
-                            break;
-                        }
-                        if (!nowInv && col->columnMode() == SciDAVis::ColumnMode::Numeric) {
-                            const double nv = col->valueAt(r);
-                            const double ov = beforeVals[static_cast<size_t>(r)];
-                            if ((std::isnan(nv) != std::isnan(ov))
-                                || (!std::isnan(nv) && std::abs(nv - ov) > 1e-15)) {
-                                anyDelta = true;
-                                break;
-                            }
-                        }
+                        if (col->isInvalid(r))
+                            st << QStringLiteral("\x01");
+                        else if (col->columnMode() == SciDAVis::ColumnMode::Numeric)
+                            st << QString::number(col->valueAt(r), 'g', 17);
+                        else
+                            st << col->asStringColumn()->textAt(r);
                     }
                 }
             }
-            if (!anyDelta)
+            return st;
+        };
+        const int maxPasses = std::max(2, allTables.size() + 2);
+        for (int pass = 0; pass < maxPasses; ++pass) {
+            const QStringList before = formulaState(allTables);
+            recalcFormulaColumnsWithCycleCheck(d_app, allTables);
+            if (formulaState(allTables) == before)
                 break;
         }
         for (Table *t : allTables) {
@@ -3545,9 +3677,11 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             }
         }
         const int updatedLinks = rm->recalculateAll();
-        outResult[QStringLiteral("ok")] = true;
+        const QJsonArray fErrs = formulaErrorsJson(allTables);
+        outResult[QStringLiteral("ok")] = fErrs.isEmpty();
         outResult[QStringLiteral("updated_links")] = updatedLinks;
         outResult[QStringLiteral("tables_checked")] = allTables.size();
+        outResult[QStringLiteral("formula_errors")] = fErrs;
         return true;
     }
 
@@ -4671,10 +4805,15 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                             .arg(nextRows)
                             .arg(nextCols));
         }
-        if (nextRows != t->numRows())
-            t->setNumRows(nextRows);
-        if (nextCols != t->numCols())
-            t->setNumCols(nextCols);
+        {
+            // rows and columns change in one Undo step
+            ScopedRpcUndoMacro resizeMacro(t->d_future_table,
+                                           QObject::tr("%1: resize").arg(t->name()));
+            if (nextRows != t->numRows())
+                t->setNumRows(nextRows);
+            if (nextCols != t->numCols())
+                t->setNumCols(nextCols);
+        }
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -4817,7 +4956,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             } else if (isNumericCol) {
                 dataArr.append(safeJsonDouble(col->valueAt(r)));
             } else {
-                dataArr.append(col->textAt(r));
+                // text as stored; date/time, month and day columns as displayed (like export_csv)
+                dataArr.append(columnCellToJson(col, r));
             }
         }
         outResult = serializeColumnMeta(t, idx);
@@ -4867,25 +5007,63 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         Table *t = resolveTable(d_app, params, QStringLiteral("table"), false);
         const bool tableWasCreated = (t == nullptr);
         int preexistingCols = 0;
+        // Column that receives each key. On an existing table a key that names one of its columns
+        // writes to that column, and the other keys become new columns at the end; only when no
+        // key names an existing column is the dict written over the columns from the left
+        // (renaming them), as for a freshly created table.
+        QVector<int> targetCol(keys.size(), -1);
+        int appendedCols = 0;
+        if (!tableWasCreated) {
+            bool anyNameMatch = false;
+            for (int k = 0; k < keys.size(); ++k) {
+                for (int c = 0; c < t->numCols(); ++c) {
+                    if (t->colLabel(c) == keys[k]) {
+                        targetCol[k] = c;
+                        anyNameMatch = true;
+                        break;
+                    }
+                }
+            }
+            if (anyNameMatch) {
+                for (int k = 0; k < keys.size(); ++k) {
+                    if (targetCol[k] < 0)
+                        targetCol[k] = t->numCols() + appendedCols++;
+                }
+            } else {
+                for (int k = 0; k < keys.size(); ++k)
+                    targetCol[k] = k;
+                appendedCols = std::max(0, int(keys.size()) - t->numCols());
+            }
+        } else {
+            for (int k = 0; k < keys.size(); ++k)
+                targetCol[k] = k;
+        }
+
         if (!t) {
             t = createUniqueTableHeadless(d_app, maxRows, keys.size(),
                                           params.value(QStringLiteral("name")).toString());
         } else {
-            // The table only grows here, so check the final max(rows) x max(cols) footprint
-            // against the shared 25,000,000-cell cap before resizing anything.
+            // The table only grows here, so check the final rows x cols footprint against the
+            // shared 4,096-column / 25,000,000-cell caps before resizing anything.
             const qint64 finalRows = std::max<qint64>(t->numRows(), maxRows);
-            const qint64 finalCols = std::max<qint64>(t->numCols(), keys.size());
+            const qint64 finalCols = qint64(t->numCols()) + appendedCols;
             const bool grows = finalRows > t->numRows() || finalCols > t->numCols();
-            if (grows && finalRows * finalCols > 25000000LL) {
+            if (grows && (finalCols > 4096 || finalRows * finalCols > 25000000LL)) {
                 throwInvalidParams(
-                        QStringLiteral("table.set_data_dict would resize table '%1' to %2x%3, exceeding the 25,000,000-cell limit.")
+                        QStringLiteral("table.set_data_dict would resize table '%1' to %2x%3, exceeding the 4,096-column / 25,000,000-cell limit.")
                                 .arg(t->name())
                                 .arg(finalRows)
                                 .arg(finalCols));
             }
             preexistingCols = t->numCols();
-            if (t->numCols() < keys.size())
-                t->setNumCols(keys.size());
+        }
+
+        // resizing, renaming and writing every column are one Undo step
+        ScopedRpcUndoMacro dictMacro(t->d_future_table,
+                                     QObject::tr("%1: set data").arg(t->name()));
+        if (!tableWasCreated) {
+            if (appendedCols > 0)
+                t->setNumCols(preexistingCols + appendedCols);
             if (t->numRows() < maxRows)
                 t->setNumRows(maxRows);
         }
@@ -4895,9 +5073,11 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const QJsonObject longNamesMap = params.value(QStringLiteral("long_names")).toObject();
         const QJsonObject commentsMap = params.value(QStringLiteral("comments")).toObject();
         const QJsonObject desigMap = params.value(QStringLiteral("designations")).toObject();
-        for (int c = 0; c < keys.size(); ++c) {
-            const QString colKey = keys[c];
-            t->setColName(c, colKey);
+        for (int k = 0; k < keys.size(); ++k) {
+            const QString colKey = keys[k];
+            const int c = targetCol[k];
+            if (t->colLabel(c) != colKey)
+                t->setColName(c, colKey);
             // Default X,Y,Y,... roles only for a freshly created table or newly appended columns;
             // an existing table keeps the roles the user (or table.create) already assigned.
             if (tableWasCreated || c >= preexistingCols)
@@ -4991,6 +5171,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                                                   optionalJsonString(params, QStringLiteral("name")));
                 }
             }
+            // growing, relabelling and filling the columns are one Undo step
+            ScopedRpcUndoMacro rasPasteMacro(t->d_future_table,
+                                             QObject::tr("%1: paste").arg(t->name()));
             // every name the table had before the paste (before the columns added below)
             const QStringList namesBeforeImport = t->colNames();
             if (t->numCols() < nCols)
@@ -5075,8 +5258,13 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
 
         const bool assignDesigs = (startRow == 0 && startCol == 0);
-        populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, false, unitsRowHint,
-                                          convertNumeric, startRow, startCol, assignDesigs);
+        {
+            // growing the table, the temporary header names and the data are one Undo step
+            ScopedRpcUndoMacro pasteMacro(t->d_future_table,
+                                          QObject::tr("%1: paste").arg(t->name()));
+            populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, false, unitsRowHint,
+                                              convertNumeric, startRow, startCol, assignDesigs);
+        }
         for (int c = startCol; c < std::min(t->numCols(), startCol + maxCols); ++c)
             d_app->updateCurves(t, fullColumnName(t, c));
         d_app->refreshAllGraphsAutoAxisTitles();
@@ -5096,12 +5284,20 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             throwInvalidParams(
                     QStringLiteral("Row %1 exceeds 25,000,000 total worksheet cells.").arg(row));
         }
+        // growing the table, converting the column type and writing the cell are one Undo step
+        ScopedRpcUndoMacro setCellMacro(t->d_future_table,
+                                        QObject::tr("%1: change cell value(s)").arg(t->name()));
         if (row >= t->numRows())
             t->setNumRows(row + 1);
         Column *col = t->column(colIdx);
         const QJsonValue val = params.value(QStringLiteral("value"));
         if (val.isNull() || val.isUndefined()) {
             t->clearCell(row, colIdx);
+        } else if (col && isCalendarColumnMode(col->columnMode())) {
+            // date/time, month and day columns keep their type: the value goes through the
+            // column's input filter, as when it is typed into the cell
+            t->setText(row, colIdx,
+                       val.isString() ? val.toString() : QString::number(val.toDouble(), 'g', 15));
         } else if (col && col->columnMode() == SciDAVis::ColumnMode::Text) {
             col->setTextAt(row, val.isString() ? val.toString()
                                                : QString::number(val.toDouble(), 'g', 15));
@@ -5146,13 +5342,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         outResult[QStringLiteral("col")] = colIdx;
         outResult[QStringLiteral("masked")] = col ? col->isMasked(row) : false;
         outResult[QStringLiteral("invalid")] = col ? col->isInvalid(row) : true;
-        if (!col || col->isInvalid(row)) {
-            outResult[QStringLiteral("value")] = QJsonValue::Null;
-        } else if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
-            outResult[QStringLiteral("value")] = safeJsonDouble(col->valueAt(row));
-        } else {
-            outResult[QStringLiteral("value")] = col->textAt(row);
-        }
+        outResult[QStringLiteral("value")] = columnCellToJson(col, row);
         outResult[QStringLiteral("text")] = t->text(row, colIdx);
         return true;
     }
@@ -5179,36 +5369,53 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         Table *t = resolveTable(d_app, params);
         const int colIdx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
         const QString formula = optionalJsonString(params, QStringLiteral("formula"));
-        t->setCommand(colIdx, formula);
         const bool doRecalc = optionalJsonBool(params, QStringLiteral("recalculate"), true);
-        bool okRecalc = true;
-        if (doRecalc && !formula.trimmed().isEmpty()) {
-            okRecalc = t->recalculate(colIdx, false);
+        const bool hasFormula = !formula.trimmed().isEmpty();
+        // Table::setCommand evaluates the column through the worksheets' dependency graph (a
+        // circular formula gets a formula error and is not evaluated), but only while automatic
+        // recalculation is on; for recalculate=true it is switched on for this call.
+        const bool wasAuto = t->autoRecalcFormulas();
+        const bool forceEval = doRecalc && hasFormula && !wasAuto && t->d_future_table;
+        if (forceEval)
+            t->d_future_table->setAutoRecalcFormulas(true);
+        t->setCommand(colIdx, formula);
+        if (forceEval)
+            t->d_future_table->setAutoRecalcFormulas(false);
+        const bool evaluated = hasFormula && (wasAuto || forceEval);
+        Column *fcol = t->column(colIdx);
+        const QString fErr = (evaluated && fcol) ? fcol->formulaError() : QString();
+        if (evaluated)
             d_app->updateCurves(t, fullColumnName(t, colIdx));
-        }
-        outResult[QStringLiteral("ok")] = okRecalc;
+        outResult[QStringLiteral("ok")] = fErr.isEmpty();
         outResult[QStringLiteral("col")] = t->colLabel(colIdx);
         outResult[QStringLiteral("formula")] = formula;
+        outResult[QStringLiteral("formula_error")] = fErr;
         return true;
     }
 
     if (method == QStringLiteral("table.recalculate")) {
         Table *t = resolveTable(d_app, params);
+        int onlyCol = -1;
+        if (params.contains(QStringLiteral("col")) && !params.value(QStringLiteral("col")).isNull())
+            onlyCol = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
+        // every formula column of the worksheet, in dependency order; circular ones are marked
+        recalcFormulaColumnsWithCycleCheck(d_app, QVector<Table *>{ t });
         bool allOk = true;
-        if (params.contains(QStringLiteral("col")) && !params.value(QStringLiteral("col")).isNull()) {
-            const int colIdx = resolveColumnIndex(t, params.value(QStringLiteral("col")), true);
-            allOk = t->recalculate(colIdx, false);
-            d_app->updateCurves(t, fullColumnName(t, colIdx));
-        } else {
-            for (int c = 0; c < t->numCols(); ++c) {
-                if (t->column(c) && !t->column(c)->formula(0).trimmed().isEmpty()) {
-                    allOk = t->recalculate(c, false) && allOk;
-                    d_app->updateCurves(t, fullColumnName(t, c));
-                }
-            }
+        for (int c = 0; c < t->numCols(); ++c) {
+            Column *col = t->column(c);
+            if (!col || col->formula(0).trimmed().isEmpty())
+                continue;
+            d_app->updateCurves(t, fullColumnName(t, c));
+            if ((onlyCol < 0 || c == onlyCol) && !col->formulaError().isEmpty())
+                allOk = false;
         }
         outResult[QStringLiteral("ok")] = allOk;
         outResult[QStringLiteral("table")] = t->name();
+        if (onlyCol >= 0) {
+            outResult[QStringLiteral("formula_error")] =
+                    t->column(onlyCol) ? t->column(onlyCol)->formulaError() : QString();
+        }
+        outResult[QStringLiteral("formula_errors")] = formulaErrorsJson(QVector<Table *>{ t });
         return true;
     }
 
@@ -5773,20 +5980,25 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         QString mode = params.value(QStringLiteral("mode")).toString().trimmed().toLower();
         if (mode.isEmpty())
             mode = params.value(QStringLiteral("direction")).toString().trimmed().toLower();
-        if (mode == QStringLiteral("h") || mode == QStringLiteral("horizontal")) {
-            m->d_future_matrix->mirrorHorizontally();
-        } else if (mode == QStringLiteral("v") || mode == QStringLiteral("vertical")) {
-            m->d_future_matrix->mirrorVertically();
-        } else if (mode == QStringLiteral("rot90_cw") || mode == QStringLiteral("cw")) {
-            m->transpose();
-            m->d_future_matrix->mirrorHorizontally();
-        } else if (mode == QStringLiteral("rot90_ccw") || mode == QStringLiteral("ccw")) {
-            m->transpose();
-            m->d_future_matrix->mirrorVertically();
-        } else {
+        const bool flipH = (mode == QStringLiteral("h") || mode == QStringLiteral("horizontal"));
+        const bool flipV = (mode == QStringLiteral("v") || mode == QStringLiteral("vertical"));
+        const bool rotCw = (mode == QStringLiteral("rot90_cw") || mode == QStringLiteral("cw"));
+        const bool rotCcw = (mode == QStringLiteral("rot90_ccw") || mode == QStringLiteral("ccw"));
+        if (!flipH && !flipV && !rotCw && !rotCcw) {
             throwInvalidParams(
                     QStringLiteral("Unknown flip mode '%1' (expected 'h'|'v'|'rot90_cw'|'rot90_ccw').")
                             .arg(mode));
+        }
+        {
+            // a rotation is a transpose plus a mirror: one Undo step for the whole call
+            ScopedRpcUndoMacro flipMacro(m->d_future_matrix,
+                                         QObject::tr("%1: flip/rotate").arg(m->name()));
+            if (rotCw || rotCcw)
+                m->transpose();
+            if (flipH || rotCw)
+                m->d_future_matrix->mirrorHorizontally();
+            else
+                m->d_future_matrix->mirrorVertically();
         }
         d_app->updateMatrixPlots(m);
         outResult = serializeMatrixInfo(m);

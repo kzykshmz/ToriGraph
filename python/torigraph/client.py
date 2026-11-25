@@ -1435,6 +1435,12 @@ class TableProxy:
         columns: Optional[Sequence[str]] = None,
         include_index: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        """Write ``{column_name: values}`` into this worksheet.
+
+        A key that names an existing column overwrites that column; the other keys are added as
+        new columns at the end. When no key names an existing column (e.g. a new table with the
+        default column names), the columns are written from the left and renamed to the keys.
+        """
         req_order = column_order if column_order is not None else columns
         (
             payload_data,
@@ -3614,7 +3620,12 @@ class Session:
         defer_replot: bool = True,
         raise_on_error: bool = True,
     ) -> Any:
-        """Execute a command list via ``app.batch`` OR enter a recording ``with app.batch() as b:`` block."""
+        """Execute a command list via ``app.batch`` OR enter a recording ``with app.batch() as b:`` block.
+
+        When an atomic batch fails and the workspace is rebuilt from its pre-batch snapshot, the
+        result has ``rolled_back=True`` and ``undo_history_cleared=True``: the data is back, but the
+        Undo history from before the batch is gone.
+        """
         if commands is not None:
             return self.call(
                 "app.batch",
