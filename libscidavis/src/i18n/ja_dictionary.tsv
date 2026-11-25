@@ -4577,6 +4577,7 @@ The number of rows you've entered is greater than the number of graphs (%1)!	指
 The original (corrupt) file is being left untouched, in case you want to try rescuing data manually. If you want to continue working with the automatically restored backup copy, you have to explicitly overwrite the original file.	元の破損ファイルは手動復旧用にそのまま残されています。自動復元されたバックアップで作業を続ける場合は、明示的に上書き保存してください。
 The plugin does not implement a %1 method necessary for Levenberg-Marquardt fitting.	プラグインにレーベンバーグ・マルカート法に必要なメソッド %1 が実装されていません。
 The plugin does not implement a %1 method necessary for simplex fitting.	プラグインにシンプレックス法に必要なメソッド %1 が実装されていません。
+The original values of curve "%1" cannot be recovered from its 0-1 normalization; the result cannot be written to the worksheet.	曲線「%1」は 0-1 に正規化した値から元の値を復元できないため、結果をワークシートに書き込めません。
 The points of curve "%1" do not correspond to worksheet rows; the result cannot be written to the worksheet.	曲線「%1」の点はワークシートの行に対応していないため、結果をワークシートに書き込めません。
 The polynomial order must be lower than the number of left points plus the number of right points!	多項式次数は左右の点数の合計より小さい必要があります。
 The response data set %1 does not exist!	応答データセット %1 が存在しません。

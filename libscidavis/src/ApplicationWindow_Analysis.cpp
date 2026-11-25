@@ -2570,6 +2570,44 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
             return false;
         }
 
+        // The curve shows its data with the stack offset (and possibly the 0-1 normalisation)
+        // applied, and the baseline was found on those shown values; the table holds the
+        // original values. Both the point and the baseline under it are mapped back to the
+        // original coordinates, so the table gets y_raw - baseline_raw (no offset baked in, and
+        // the normalisation's scale undone). The fixed zero baseline means y = 0 of the data.
+        // All values are computed before the first write, so a refusal leaves the table as is.
+        const bool zeroBaseline = (bf.baselineMode() == MultiPeakFit::BaselineZero);
+        QVector<QPair<int, double>> writes;
+        writes.reserve(dc->dataSize());
+        for (int pt = 0; pt < dc->dataSize(); ++pt) {
+            const int row = dc->tableRow(pt); // -1: the point is not a table row
+            if (row < 0 || row >= t->numRows())
+                continue;
+            if ((xCol && xCol->isMasked(row)) || srcYCol->isMasked(row))
+                continue;
+            const double xv = dc->x(pt);
+            const double yv = dc->y(pt);
+            if (!std::isfinite(xv) || !std::isfinite(yv))
+                continue;
+            double rawY = 0.0;
+            double rawBase = 0.0;
+            if (!dc->displayToRaw(xv, yv, nullptr, &rawY)
+                || (!zeroBaseline && !dc->displayToRaw(xv, evalBaseAtX(xv), nullptr, &rawBase))) {
+                if (st->app->statusBar()) {
+                    st->app->statusBar()->showMessage(
+                            ApplicationWindow::tr("The original values of curve \"%1\" cannot be "
+                                                  "recovered from its 0-1 normalization; the "
+                                                  "result cannot be written to the worksheet.")
+                                    .arg(curveName),
+                            8000);
+                }
+                return false;
+            }
+            const double outY = rawY - rawBase;
+            if (std::isfinite(outY))
+                writes.append(qMakePair(row, outY));
+        }
+
         if (overwriteSource) {
             if (!ApplicationWindow::isNonInteractiveContext(st->app.data())) {
                 if (QMessageBox::question(
@@ -2586,18 +2624,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
                 }
             }
             t->d_future_table->beginMacro(ApplicationWindow::tr("Subtract Baseline"));
-            for (int pt = 0; pt < dc->dataSize(); ++pt) {
-                const int row = dc->tableRow(pt); // -1: the point is not a table row
-                if (row < 0 || row >= t->numRows())
-                    continue;
-                if ((xCol && xCol->isMasked(row)) || srcYCol->isMasked(row))
-                    continue;
-                const double xv = dc->x(pt);
-                const double yv = dc->y(pt);
-                if (!std::isfinite(xv) || !std::isfinite(yv))
-                    continue;
-                srcYCol->setValueAt(row, yv - evalBaseAtX(xv));
-            }
+            for (const QPair<int, double> &w : writes)
+                srcYCol->setValueAt(w.first, w.second);
             t->d_future_table->endMacro();
             st->g->replot();
             if (st->app && st->app->statusBar()) {
@@ -2632,18 +2660,8 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
         }
         if (t->numRows() > 0)
             outCol->setValueAt(t->numRows() - 1, std::numeric_limits<double>::quiet_NaN());
-        for (int pt = 0; pt < dc->dataSize(); ++pt) {
-            const int row = dc->tableRow(pt); // -1: the point is not a table row
-            if (row < 0 || row >= t->numRows())
-                continue;
-            if ((xCol && xCol->isMasked(row)) || srcYCol->isMasked(row))
-                continue;
-            const double xv = dc->x(pt);
-            const double yv = dc->y(pt);
-            if (!std::isfinite(xv) || !std::isfinite(yv))
-                continue;
-            outCol->setValueAt(row, yv - evalBaseAtX(xv));
-        }
+        for (const QPair<int, double> &w : writes)
+            outCol->setValueAt(w.first, w.second);
 
         t->d_future_table->beginMacro(ApplicationWindow::tr("Subtract Baseline"));
         t->d_future_table->addChild(outCol);

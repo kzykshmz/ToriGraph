@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <memory>
+#include <sstream>
 #include <vector>
 
 // =============================================================================
@@ -36,6 +37,9 @@
 //       / NonLinear fits fall back to unweighted (same result as without error bars)
 //   89n York fit keeps a point with X error 0 (exact X) and leaves out a point with both 0
 //   89o horizontal TranslateCurveTool on a 0-1 normalised curve with constant Y writes X
+//   89p baseline subtraction (overwrite / new column) and Subtract Straight Line (in place) write
+//       y - baseline in the original coordinates: no stack offset baked in, 0-1 normalisation
+//       undone; a curve whose normalisation cannot be undone is refused
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -971,6 +975,222 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
                     "89o: vertical move of a constant-Y normalised curve must still be refused");
         }
         suite89Close(ml);
+    }
+
+    // ------------------------------------------------ 89p: baseline / line subtraction values
+    {
+        // y = 8 + 2x with a peak of 24 at x = 4. The end-to-end straight baseline (mean of the
+        // first and of the last three points) is exactly 8 + 2x, so "y - baseline" in the
+        // original coordinates is { 0, 0, 0, 24, 0, 0, 0 } whatever offset or 0-1 normalisation
+        // the curve is shown with; the fixed zero baseline leaves the original y.
+        const std::vector<double> xs = { 1, 2, 3, 4, 5, 6, 7 };
+        const std::vector<double> ys = { 10, 12, 14, 40, 18, 20, 22 };
+        const std::vector<double> peakOnly = { 0, 0, 0, 24, 0, 0, 0 };
+        int caseNo = 0;
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); // 89k's dialog
+
+        struct Case89p
+        {
+            Table *t = nullptr;
+            MultiLayer *ml = nullptr;
+            Graph *g = nullptr;
+            DataCurve *c = nullptr;
+            QString title;
+        };
+        // dy: stack offset in y; norm: 0-1 normalisation (applied before the offset).
+        auto makeCase = [&](double dy, bool norm, const std::vector<double> &y) {
+            Case89p k;
+            k.t = suite89Table(mw, QStringLiteral("S89Base%1").arg(++caseNo), { xs, y });
+            k.g = suite89Plot(mw, k.t, QStringList() << k.t->colName(1), Graph::LineSymbols,
+                              &k.ml);
+            k.c = k.g ? dynamic_cast<DataCurve *>(k.g->curve(0)) : nullptr;
+            if (k.c) {
+                if (norm)
+                    k.c->setStackNormalize01(true);
+                k.c->setStackOffset(0.0, dy);
+                k.title = k.c->title().text();
+            }
+            return k;
+        };
+        auto columnIs = [&](Table *t, int col, const std::vector<double> &want) {
+            if (!t || col < 0 || col >= t->numCols())
+                return false;
+            for (int r = 0; r < int(want.size()); ++r) {
+                if (!near89(suite89Cell(t, col, r), want[size_t(r)], 1e-9))
+                    return false;
+            }
+            return true;
+        };
+        auto columnText = [&](Table *t, int col) {
+            std::ostringstream os;
+            for (int r = 0; t && col >= 0 && col < t->numCols() && r < int(xs.size()); ++r)
+                os << (r ? ", " : "") << suite89Cell(t, col, r);
+            return os.str();
+        };
+
+        // Peak Analyzer "Subtract Baseline Now" (needs the interactive dialog, as in 89k).
+        auto peakSubtract = [&](Case89p &k, int baselineMode, bool overwrite) {
+            qApp->setProperty("torigraph_noninteractive", false);
+            mw->activateSubWindow(k.ml);
+            QApplication::processEvents();
+            if (mw->statusBar())
+                mw->statusBar()->clearMessage();
+            QTimer boxProbe;
+            QObject::connect(&boxProbe, &QTimer::timeout, [&]() {
+                if (QMessageBox *mb =
+                            qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    if (QAbstractButton *yes = mb->button(QMessageBox::Yes))
+                        yes->click();
+                    else
+                        mb->reject();
+                }
+            });
+            boxProbe.start(20);
+            mw->showPeakAnalyzerDialog(0);
+            QDialog *peakDlg = nullptr;
+            for (QDialog *d : mw->findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) {
+                if (d && d->isVisible())
+                    peakDlg = d;
+            }
+            bool modeSet = false;
+            bool clicked = false;
+            if (peakDlg) {
+                for (QComboBox *cb : peakDlg->findChildren<QComboBox *>()) {
+                    const int idx = cb->findText(k.title);
+                    if (idx >= 0) {
+                        cb->setCurrentIndex(idx);
+                        break;
+                    }
+                }
+                const QString zeroText = ApplicationWindow::tr("Zero (y = 0 Fixed)");
+                for (QComboBox *cb : peakDlg->findChildren<QComboBox *>()) {
+                    if (cb->findText(zeroText) >= 0) {
+                        const int idx = cb->findData(baselineMode);
+                        if (idx >= 0) {
+                            cb->setCurrentIndex(idx);
+                            modeSet = true;
+                        }
+                        break;
+                    }
+                }
+                const QString overwriteText =
+                        ApplicationWindow::tr("Overwrite original data column (destructive)");
+                for (QCheckBox *cbx : peakDlg->findChildren<QCheckBox *>()) {
+                    if (cbx->text() == overwriteText)
+                        cbx->setChecked(overwrite);
+                }
+                const QString subtractText = ApplicationWindow::tr("Subtract Baseline Now");
+                for (QPushButton *pb : peakDlg->findChildren<QPushButton *>()) {
+                    if (pb->text() == subtractText) {
+                        pb->click();
+                        clicked = true;
+                        break;
+                    }
+                }
+            }
+            QApplication::processEvents();
+            boxProbe.stop();
+            if (peakDlg)
+                peakDlg->close();
+            QApplication::processEvents();
+            // There is no running event loop here: delete the closed (WA_DeleteOnClose) dialog
+            // now, so no hidden dialog keeps a "targetMultiLayerPtr" to a window closed later.
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            qApp->setProperty("torigraph_noninteractive", true);
+            return peakDlg && modeSet && clicked;
+        };
+        auto subColumn = [](Table *t) {
+            return (t && t->column(1)) ? t->colIndex(t->column(1)->name() + "_Sub") : -1;
+        };
+
+        const int zeroMode = int(MultiPeakFit::BaselineZero);
+        const int lineMode = int(MultiPeakFit::BaselineLinear);
+        struct PeakCase
+        {
+            const char *label;
+            double dy;
+            bool norm;
+            int mode;
+            bool overwrite;
+        };
+        const PeakCase peakCases[] = {
+            { "offset 100, zero baseline, overwrite", 100.0, false, zeroMode, true },
+            { "offset 100, zero baseline, new column", 100.0, false, zeroMode, false },
+            { "offset 100, straight baseline, overwrite", 100.0, false, lineMode, true },
+            { "offset 100, straight baseline, new column", 100.0, false, lineMode, false },
+            { "0-1 normalised + offset 1, straight baseline, overwrite", 1.0, true, lineMode,
+              true },
+            { "0-1 normalised + offset 1, straight baseline, new column", 1.0, true, lineMode,
+              false },
+            { "0-1 normalised + offset 1, zero baseline, overwrite", 1.0, true, zeroMode, true },
+            { "no offset, straight baseline, overwrite", 0.0, false, lineMode, true },
+            { "no offset, zero baseline, new column", 0.0, false, zeroMode, false },
+        };
+        for (const PeakCase &pc : peakCases) {
+            Case89p k = makeCase(pc.dy, pc.norm, ys);
+            CHECK_COND(k.c != nullptr, "89p: curve");
+            const bool ran = peakSubtract(k, pc.mode, pc.overwrite);
+            const std::vector<double> &want = (pc.mode == zeroMode) ? ys : peakOnly;
+            const int outCol = pc.overwrite ? 1 : subColumn(k.t);
+            std::cout << "[INFO] 89p Peak Analyzer " << pc.label << ": column " << outCol
+                      << " = {" << columnText(k.t, outCol) << "}\n";
+            CHECK89(ran, "89p: Peak Analyzer dialog / mode / button (" << pc.label << ")");
+            CHECK89(columnIs(k.t, outCol, want),
+                    "89p: " << pc.label << " must write y - baseline in the original coordinates, "
+                            << "got {" << columnText(k.t, outCol) << "}");
+            if (!pc.overwrite)
+                CHECK89(columnIs(k.t, 1, ys),
+                        "89p: " << pc.label << " must keep the source column, got {"
+                                << columnText(k.t, 1) << "}");
+            CHECK89(columnIs(k.t, 0, xs), "89p: " << pc.label << " must keep the X column");
+            suite89Close(k.ml);
+        }
+
+        // Subtract Straight Line in place; the line is given in the shown coordinates through
+        // the shown points at x = 1 and x = 7 of the background 8 + 2x.
+        struct LineCase
+        {
+            const char *label;
+            double dy;
+            bool norm;
+            QPointF p1, p2;
+        };
+        const LineCase lineCases[] = {
+            { "offset 100", 100.0, false, QPointF(1.0, 110.0), QPointF(7.0, 122.0) },
+            // shown y = (y - 10) / 30 + 1
+            { "0-1 normalised + offset 1", 1.0, true, QPointF(1.0, 1.0), QPointF(7.0, 1.4) },
+            { "no offset", 0.0, false, QPointF(1.0, 10.0), QPointF(7.0, 22.0) },
+        };
+        for (const LineCase &lc : lineCases) {
+            Case89p k = makeCase(lc.dy, lc.norm, ys);
+            CHECK_COND(k.c != nullptr, "89p: line curve");
+            QwtPlotCurve *res =
+                    CurveMathTools::subtractStraightLine(mw, k.g, k.title, lc.p1, lc.p2, true);
+            std::cout << "[INFO] 89p Subtract Straight Line in place, " << lc.label << ": Y = {"
+                      << columnText(k.t, 1) << "}\n";
+            CHECK89(res != nullptr && columnIs(k.t, 1, peakOnly),
+                    "89p: Subtract Straight Line (" << lc.label << ") must write y - line in the "
+                            << "original coordinates, got {" << columnText(k.t, 1) << "}");
+            suite89Close(k.ml);
+        }
+
+        // All Y equal and 0-1 normalised: the original values cannot be recovered, refused.
+        {
+            const std::vector<double> flat(xs.size(), 7.0);
+            Case89p k = makeCase(0.0, true, flat);
+            CHECK_COND(k.c != nullptr, "89p: flat curve");
+            if (mw->statusBar())
+                mw->statusBar()->clearMessage();
+            QwtPlotCurve *res = CurveMathTools::subtractStraightLine(
+                    mw, k.g, k.title, QPointF(1.0, 0.0), QPointF(7.0, 0.0), true);
+            const QString msg = mw->statusBar() ? mw->statusBar()->currentMessage() : QString();
+            std::cout << "[INFO] 89p Subtract Straight Line on a flat normalised curve: "
+                      << (res ? "done" : "refused") << ", status \"" << msg.toStdString()
+                      << "\"\n";
+            CHECK89(res == nullptr && columnIs(k.t, 1, flat) && msg.contains(k.title),
+                    "89p: a flat normalised curve must be refused without touching the table");
+            suite89Close(k.ml);
+        }
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

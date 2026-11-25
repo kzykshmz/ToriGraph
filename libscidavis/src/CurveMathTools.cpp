@@ -506,11 +506,13 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
                 }
                 return nullptr;
             }
-            MultiLayer *ml = g->multiLayerParent();
-            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
-            future::Table *ft = tbl->d_future_table;
-            if (ft)
-                ft->beginMacro(trMath("Subtract Straight Line"));
+            // The curve shows its data with the stack offset (and possibly the 0-1
+            // normalisation) applied, and the line is given in those shown coordinates; the
+            // table holds the original values. The point and the line under it are both mapped
+            // back to the original coordinates, so the table gets y_raw - line_raw. All values
+            // are computed before the first write, so a refusal leaves the table as is.
+            QVector<QPair<int, double>> writes;
+            writes.reserve(n);
             for (int i = 0; i < n; ++i) {
                 const int row = dc->tableRow(i); // -1: the point is not a table row
                 if (row < 0 || row >= yCol->rowCount())
@@ -519,9 +521,33 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
                     continue;
                 const double xv = dc->x(i);
                 const double yv = dc->y(i);
-                if (std::isfinite(xv) && std::isfinite(yv))
-                    yCol->setValueAt(row, yv - evalLine(xv));
+                if (!std::isfinite(xv) || !std::isfinite(yv))
+                    continue;
+                double rawY = 0.0;
+                double rawLine = 0.0;
+                if (!dc->displayToRaw(xv, yv, nullptr, &rawY)
+                    || !dc->displayToRaw(xv, evalLine(xv), nullptr, &rawLine)) {
+                    if (app->statusBar()) {
+                        app->statusBar()->showMessage(
+                                trMath("The original values of curve \"%1\" cannot be recovered "
+                                       "from its 0-1 normalization; the result cannot be "
+                                       "written to the worksheet.")
+                                        .arg(curveTitle),
+                                8000);
+                    }
+                    return nullptr;
+                }
+                const double outY = rawY - rawLine;
+                if (std::isfinite(outY))
+                    writes.append(qMakePair(row, outY));
             }
+            MultiLayer *ml = g->multiLayerParent();
+            const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
+            future::Table *ft = tbl->d_future_table;
+            if (ft)
+                ft->beginMacro(trMath("Subtract Straight Line"));
+            for (const QPair<int, double> &w : writes)
+                yCol->setValueAt(w.first, w.second);
             if (ft)
                 ft->endMacro();
             dc->loadData();
