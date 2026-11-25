@@ -2811,6 +2811,11 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             // first of them when a row without numbers (the header) or the file start is above
             // them, or when there are several. A single such row under a line of another width
             // (a title) stays a header candidate ("Temp,300" above "0," / "1,2.5").
+            // Each of those rows must have the shape of the data below, column by column: text
+            // only in a column that holds no number from the start row down (the text column
+            // that is empty further down), numbers only in a column that holds numbers there.
+            // "Month,2024" / "Time (s),300" / "Rate,10" above "1," / "0," (text over the numeric
+            // first column) are a header or a preamble and stop the chain.
             if (bestRelaxed) {
                 auto prevDataIdx = [&](int fromIdx) -> int {
                     int cur = fromIdx;
@@ -2820,13 +2825,48 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                         --cur;
                     return cur;
                 };
+                // 0 = missing, 1 = number, 2 = text
+                auto cellKind = [&](const QString &f) -> int {
+                    if (f.isEmpty() || isMissingNumericToken(f, false))
+                        return 0;
+                    double dv = 0.0;
+                    return tryParseLabDouble(f, primaryLoc, hasDistinctNumericLocale, dv) ? 1 : 2;
+                };
+                const int profCols = std::max(bestFields, bestRawFields);
+                QVector<bool> colHasNum(profCols, false);
+                {
+                    int scanned = 0;
+                    for (int k = bestStart; k < lines.size() && scanned < 32; ++k) {
+                        if (isCommentLineForSep(k, bestSep, true)
+                            || isBangSemicolonComment(k, bestSep))
+                            continue;
+                        const SplitLineResult srk = splitLineEx(k, bestSep);
+                        for (int c = 0; c < srk.rawParts.size() && c < profCols; ++c) {
+                            if (cellKind(srk.rawParts[c]) == 1)
+                                colHasNum[c] = true;
+                        }
+                        ++scanned;
+                    }
+                }
+                auto chainRowFits = [&](const SplitLineResult &sr) -> bool {
+                    for (int c = 0; c < sr.rawParts.size(); ++c) {
+                        const int kind = cellKind(sr.rawParts[c]);
+                        if (kind == 0)
+                            continue;
+                        const bool numBelow = c < profCols && colHasNum[c];
+                        if ((kind == 1) != numBelow)
+                            return false;
+                    }
+                    return true;
+                };
                 int top = bestStart;
                 int chain = 0;
                 int up = prevDataIdx(top - 1);
                 while (up >= 0 && matchesBestWidth(up)) {
+                    const SplitLineResult srUp = splitLineEx(up, bestSep);
                     int num = 0, txt = 0;
-                    rowStats(splitLineEx(up, bestSep).parts, num, txt);
-                    if (num < 1)
+                    rowStats(srUp.parts, num, txt);
+                    if (num < 1 || !chainRowFits(srUp))
                         break;
                     top = up;
                     ++chain;
@@ -2932,7 +2972,23 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     const SplitLineResult srPrev1 = splitLineEx(prev1, bestSep);
                     int p1Num = 0, p1Txt = 0;
                     rowStats(srPrev1.parts, p1Num, p1Txt);
-                    if (p1Num >= 1 && p1Txt >= 1) {
+                    // The outlier sits in a value column. Above a start row accepted through its
+                    // missing cells, a row that starts with a name over the numeric first column
+                    // ("Month,2024" under "Operator,Tanaka", above "1,") is a mixed header with a
+                    // preamble line above it, not a data row.
+                    auto firstCellKind = [&](const SplitLineResult &sr) -> int {
+                        if (sr.rawParts.isEmpty() || sr.rawParts[0].isEmpty()
+                            || isMissingNumericToken(sr.rawParts[0], false))
+                            return 0;
+                        double dv = 0.0;
+                        return tryParseLabDouble(sr.rawParts[0], primaryLoc,
+                                                 hasDistinctNumericLocale, dv)
+                                ? 1
+                                : 2;
+                    };
+                    const bool p1FirstText = bestRelaxed && firstCellKind(srPrev1) == 2
+                            && firstCellKind(splitLineEx(bestStart, bestSep)) == 1;
+                    if (p1Num >= 1 && p1Txt >= 1 && !p1FirstText) {
                         bestStart = prev1;
                         hdrStart = prev1;
                         continue;

@@ -34,7 +34,8 @@
 //        that is empty further down keeps its header and first rows (GUI and RPC); paste_tsv
 //        with an empty last column clears the cells it is pasted over; "3D-1" (no point) is
 //        an identifier, not a Fortran number; nearly-UTF-8 text with one stray Latin-1 byte
-//        stays UTF-8 with a warning
+//        stays UTF-8 with a warning; a "key,value" preamble line or a "Name,300" header above
+//        a first data row with a missing cell ("1,", "0,") stays a preamble / header (103j6)
 // =============================================================================
 
 namespace {
@@ -642,6 +643,51 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
                                               "Time,Load\n0,\n1,\n2,3.5\n3,4.5\n"),
                              { { "Time", { 0, 1, 2, 3 } }, { "Load", { NaN, NaN, 3.5, 4.5 } } }),
                    "103j1b: missing values in the first two data rows");
+
+        // j6: rows above a relaxed start ("1,", "0,") whose shape does not match the data below
+        // (text over the numeric first column) are a header or a preamble, not data rows of a
+        // text column that is empty further down
+        struct ShapeCase
+        {
+            const char *tag;
+            QByteArray bytes;
+            QString preamble; // expected at the start of the GUI preamble
+            QStringList names; // expected column names (empty: not checked)
+            QVector<QVector<double>> nums;
+        };
+        const QVector<ShapeCase> shapes {
+            { "j6a", "Operator,Tanaka\nMonth,2024\n1,\n2,\n3,105\n",
+              QStringLiteral("Operator,Tanaka"),
+              { QStringLiteral("Month"), QStringLiteral("2024") },
+              { { 1, 2, 3 }, { NaN, NaN, 105 } } },
+            { "j6b", "Rate,10\nTime (s),300\n0,\n1,2.5\n", QStringLiteral("Rate,10"),
+              { QStringLiteral("Time"), QStringLiteral("300") },
+              { { 0, 1 }, { NaN, 2.5 } } },
+            { "j6c", "Rate,10\nMass,5.2\nTemp,300\n0,\n1,2.5\n2,3.5\n",
+              QStringLiteral("Rate,10\nMass,5.2"), {}, { { 0, 1, 2 }, { NaN, 2.5, 3.5 } } },
+        };
+        for (const ShapeCase &sc : shapes) {
+            const QString path =
+                    writeFile(QStringLiteral("shape_%1.csv").arg(QLatin1String(sc.tag)), sc.bytes);
+            AsciiTableImportFilter::ImportReport srep;
+            std::unique_ptr<future::Table> sft(AsciiTableImportFilter::importDroppedTextData(
+                    sc.bytes, QStringLiteral("Shape103"), path, &srep));
+            CHECK_COND(sft && AsciiTableImportFilter::hasDataPreamble(sc.bytes, path)
+                               && srep.preamble.startsWith(sc.preamble)
+                               && srep.dataRows == sc.nums[0].size(),
+                       "103" << sc.tag << " (GUI): preamble '" << srep.preamble.toStdString()
+                             << "' rows " << srep.dataRows << " " << dumpCols(guiImport(path)));
+            for (int pass = 0; pass < 2; ++pass) {
+                const QVector<Col103> cols = (pass == 0) ? guiImport(path) : rpcImport(path);
+                bool ok = cols.size() == sc.nums.size();
+                for (int c = 0; ok && c < sc.nums.size(); ++c) {
+                    ok = cols[c].numeric && numsEqual(cols[c].nums, sc.nums[c])
+                            && (sc.names.isEmpty() || cols[c].name == sc.names[c]);
+                }
+                CHECK_COND(ok, "103" << sc.tag << " (" << (pass == 0 ? "GUI" : "RPC")
+                                     << "): " << dumpCols(cols));
+            }
+        }
 
         // j3: paste_tsv over existing data: the empty last column of the pasted range clears the
         // cells below it (only app.import_csv drops a column that every line leaves empty)
