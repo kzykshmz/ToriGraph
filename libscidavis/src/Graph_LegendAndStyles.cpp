@@ -651,6 +651,7 @@ long Graph::insertTextMarker(const QStringList &list, int fileVersion)
     mrk->setAngle(fList[11].toInt());
 
     QString text = QString();
+    bool exactText = false;
     if (fileVersion < 71) {
         int bkg = fList[10].toInt();
         if (bkg <= 2)
@@ -681,11 +682,13 @@ long Graph::insertTextMarker(const QStringList &list, int fileVersion)
         c.setAlpha(fList[13].toInt());
         mrk->setBackgroundColor(c);
 
-        int n = (int)fList.count();
-        for (int i = 0; i < n - 14; i++)
-            text += fList[14 + i] + "\n";
+        // The writer joins the lines of the text with tabs, so joining them back gives the text
+        // as it was. Trimming it dropped a line break at the end (a legend made by
+        // Graph::legendText() ends in one) on the first reopen.
+        text = fList.mid(14).join(QLatin1Char('\n'));
+        exactText = true;
     }
-    QString unescMarker = text.trimmed();
+    QString unescMarker = exactText ? text : text.trimmed();
     unescMarker.replace(QLatin1String("&#9;"), QLatin1String("\t"));
     unescMarker.replace(QLatin1String("&#60;"), QLatin1String("<"));
     mrk->setText(unescMarker);

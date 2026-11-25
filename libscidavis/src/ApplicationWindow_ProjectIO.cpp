@@ -3601,7 +3601,13 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 
             if (d_file_version >= 0x011800) // 1.24.0
             {
-                // skeep capStyle, joinStyle and custom dash pattern values
+                // capStyle, joinStyle and custom dash pattern, as for the data curves (they were
+                // skipped, so a fit curve lost its line cap on the first reopen)
+                if (current_index + 2 < curve.size()) {
+                    cl.lCapStyle = curve[current_index].toInt();
+                    cl.lJoinStyle = curve[current_index + 1].toInt();
+                    cl.lCustomDash = curve[current_index + 2];
+                }
                 current_index += 3;
             }
 
@@ -3610,9 +3616,16 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
 
             j++;
             while (j < list.size() && list[j] == "<formula>") { // d_file_version >= 0x000105
-                QString formula;
+                // The writer puts a line break after the formula; the lines in between are the
+                // formula itself. Line breaks at the end are dropped: they were added on every
+                // reopen (each line got one, and the writer one more), so the formula grew by an
+                // empty line each save -> reopen -> save; older files may carry such lines.
+                QStringList formulaLines;
                 for (j++; j < list.size() && list[j] != "</formula>"; j++)
-                    formula += list[j] + "\n";
+                    formulaLines << list[j];
+                QString formula = formulaLines.join(QLatin1Char('\n'));
+                while (formula.endsWith(QLatin1Char('\n')))
+                    formula.chop(1);
                 func_spec << formula;
                 if (j < list.size())
                     j++;

@@ -8,6 +8,8 @@
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QFile>
+#include <QTemporaryDir>
 
 #include <gsl/gsl_blas.h>
 #include <gsl/gsl_multifit_nlin.h>
@@ -69,6 +71,13 @@
 //        lmGradientIsStationary on a 100 000 x 4 solver give the same answers on every call
 //        (their time per call is reported; they allocated and copied an n x p Jacobian on
 //        every call).
+//   106m save -> reopen -> save of a graph with a nonlinear and a linear fit curve: each
+//        reopen added an empty line at the end of every <formula> of a fit curve (the reader
+//        put a line break after every line, the writer one more), the line cap of the fit
+//        curves was lost on the first reopen (16 -> 0: the reader skipped the cap / join /
+//        dash fields), and a legend text ending in a line break lost it on the first reopen.
+//        The formulas, cap / join and legend text are kept, and saves 1, 2 and 3 are equal in
+//        the function curve and legend lines.
 // =============================================================================
 namespace {
 
@@ -1374,6 +1383,133 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
         gsl_vector_free(dxTiny);
         gsl_vector_free(x0);
         gsl_multifit_fdfsolver_free(s);
+    }
+
+    // -------------------------------------------------------------------------
+    // 106m: save -> reopen -> save does not change the fit curves or the legend
+    {
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "106m: temp dir creation failed");
+        std::vector<double> mx, my;
+        for (int i = 0; i <= 60; ++i) {
+            const double xv = 10.0 * i / 60.0;
+            mx.push_back(xv);
+            my.push_back(10.0 + 100.0 * std::exp(-(xv - 5.0) * (xv - 5.0) / 2.0) + 0.5 * xv);
+        }
+        const QString gM = plotXY(mx, my);
+        CHECK_COND(!gM.isEmpty(), "106m: test graph not created");
+        const QJsonObject rn = rpc(QStringLiteral("analysis.fit_nonlinear"),
+                                   QJsonObject{ { "graph", gM },
+                                                { "curve", 0 },
+                                                { "formula", "y0+A*exp(-(x-xc)^2/(2*w^2))" },
+                                                { "param_names", QJsonArray{ "y0", "A", "xc", "w" } },
+                                                { "init_params",
+                                                  QJsonObject{ { "y0", 10.0 }, { "A", 90.0 }, { "xc", 5.0 }, { "w", 1.2 } } } });
+        const QJsonObject rl = rpc(QStringLiteral("analysis.fit_linear"),
+                                   QJsonObject{ { "graph", gM }, { "curve", 0 } });
+        CHECK_COND(!rn.contains(QStringLiteral("error")) && !rl.contains(QStringLiteral("error")),
+                   "106m: fits failed: " << errMsg(rn).toStdString() << " / "
+                                         << errMsg(rl).toStdString());
+
+        auto findGraph = [](ApplicationWindow *app, const QString &name) -> Graph * {
+            for (MyWidget *mw2 : app->windowsList())
+                if (mw2 && mw2->name() == name)
+                    if (auto *ml = qobject_cast<MultiLayer *>(mw2))
+                        return ml->activeGraph();
+            return nullptr;
+        };
+        struct FnState
+        {
+            QStringList formulas;
+            int cap = -1;
+            int join = -1;
+        };
+        auto fnStates = [](Graph *g) {
+            QList<FnState> out;
+            for (int i = 0; g && i < g->curves(); ++i)
+                if (auto *fc = dynamic_cast<FunctionCurve *>(g->curve(i)))
+                    out.append({ fc->formulas(), int(fc->pen().capStyle()),
+                                 int(fc->pen().joinStyle()) });
+            return out;
+        };
+        // The lines of a saved project that hold the function curves (their line and formulas)
+        // and the legends; the sampled points are left out.
+        auto fnAndLegendLines = [](const QString &path) {
+            QFile f(path);
+            QStringList out;
+            if (!f.open(QIODevice::ReadOnly))
+                return QStringList{ QStringLiteral("<unreadable>") };
+            const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+            bool inFormula = false;
+            for (const QString &l : lines) {
+                if (l == QLatin1String("<formula>"))
+                    inFormula = true;
+                if (inFormula || l.startsWith(QLatin1String("FunctionCurve\t"))
+                    || l.startsWith(QLatin1String("<legend>")))
+                    out << l;
+                if (l == QLatin1String("</formula>"))
+                    inFormula = false;
+            }
+            return out;
+        };
+
+        Graph *g0 = findGraph(w, gM);
+        CHECK_COND(g0 && g0->legend(), "106m: graph / legend missing");
+        // A legend whose text ends in a line break (as Graph::legendText() makes it).
+        const QString legText = QStringLiteral("\\l(1)%(1)\n\\l(2)%(2)\n\\l(3)%(3)\n");
+        g0->legend()->setText(legText);
+        const QList<FnState> live = fnStates(g0);
+        EXPECT106(live.size() == 2, "106m: " << live.size() << " function curves (want 2)");
+
+        QStringList paths;
+        for (int k = 1; k <= 3; ++k)
+            paths << tmp.filePath(QStringLiteral("fitcurves_106m_%1.sciprj").arg(k));
+        CHECK_COND(w->saveFolder(w->projectFolder(), paths[0]), "106m: save 1 failed");
+        for (int k = 1; k < 3; ++k) {
+            AppWinGuard106 rd(new ApplicationWindow());
+            rd->setHeadlessMode(true);
+            rd->applyUserSettings();
+            CHECK_COND(rd->loadProject(paths[k - 1]), "106m: reopen " << k << " failed");
+            QCoreApplication::processEvents();
+            Graph *g = findGraph(rd, gM);
+            const QList<FnState> st = fnStates(g);
+            EXPECT106(st.size() == live.size(),
+                      "106m: reopen " << k << ": " << st.size() << " function curves (want "
+                                      << live.size() << ")");
+            for (int i = 0; i < std::min(st.size(), live.size()); ++i) {
+                EXPECT106(st[i].formulas == live[i].formulas,
+                          "106m: reopen " << k << ": function curve " << i << " formulas '"
+                                          << live[i].formulas.join(QStringLiteral("|")).toStdString()
+                                          << "' -> '"
+                                          << st[i].formulas.join(QStringLiteral("|")).toStdString()
+                                          << "'");
+                EXPECT106(st[i].cap == live[i].cap && st[i].join == live[i].join,
+                          "106m: reopen " << k << ": function curve " << i << " cap / join "
+                                          << live[i].cap << "/" << live[i].join << " -> "
+                                          << st[i].cap << "/" << st[i].join);
+            }
+            const QString lt = (g && g->legend()) ? g->legend()->text() : QString();
+            EXPECT106(lt == legText,
+                      "106m: reopen " << k << ": legend '" << legText.toStdString() << "' -> '"
+                                      << lt.toStdString() << "'");
+            CHECK_COND(rd->saveFolder(rd->projectFolder(), paths[k]),
+                       "106m: save " << (k + 1) << " failed");
+        }
+        for (int k = 1; k < 3; ++k) {
+            const QStringList a = fnAndLegendLines(paths[k - 1]);
+            const QStringList b = fnAndLegendLines(paths[k]);
+            int firstDiff = -1;
+            for (int i = 0; i < std::max(a.size(), b.size()) && firstDiff < 0; ++i)
+                if (a.value(i) != b.value(i))
+                    firstDiff = i;
+            std::cout << "[INFO] 106m: save " << k << " vs " << (k + 1) << ": " << a.size()
+                      << " / " << b.size() << " function curve and legend lines\n";
+            EXPECT106(firstDiff < 0 && a.size() > 4,
+                      "106m: save " << k << " and " << (k + 1)
+                                    << " differ in the function curves / legend at line "
+                                    << firstDiff << ": '" << a.value(firstDiff).toStdString()
+                                    << "' vs '" << b.value(firstDiff).toStdString() << "'");
+        }
     }
 #undef EXPECT106
 
