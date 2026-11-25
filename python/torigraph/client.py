@@ -3911,6 +3911,14 @@ class Session:
         table: Optional[Union[str, TableProxy]] = None,
         matrix: Optional[Union[str, MatrixProxy]] = None,
     ) -> Dict[str, Any]:
+        """Undo the last operation.
+
+        With ``window`` / ``graph`` / ``table`` / ``matrix``: on that window's Undo stack.
+        Without: on the stack the last call changed (that graph, or the project stack shared
+        by tables and matrices); calls that change nothing, such as reads, do not count, and
+        the active window does not decide it (``activate_window`` does). When that stack has
+        nothing left to undo, the active window or the most recently modified stack is used.
+        """
         win_name: Optional[str] = None
         if isinstance(window, GraphProxy) and graph is None:
             graph = window
@@ -3936,6 +3944,13 @@ class Session:
         table: Optional[Union[str, TableProxy]] = None,
         matrix: Optional[Union[str, MatrixProxy]] = None,
     ) -> Dict[str, Any]:
+        """Redo the last undone operation.
+
+        With ``window`` / ``graph`` / ``table`` / ``matrix``: on that window's Undo stack.
+        Without: on the stack the last call changed or undid (as :meth:`undo`). When that
+        stack has nothing left to redo, the active window or the most recently modified stack
+        is used.
+        """
         win_name: Optional[str] = None
         if isinstance(window, GraphProxy) and graph is None:
             graph = window

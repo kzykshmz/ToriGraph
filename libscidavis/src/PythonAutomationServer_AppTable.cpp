@@ -4354,6 +4354,50 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const int mlIdxBefore =
                 (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
 
+        // No target given: step the stack that the last RPC changed (recorded by
+        // PythonAutomationServer::dispatchMethod), not the MDI active window's. Graph RPCs do not
+        // activate their graph, so the active window is often the worksheet whose data entry
+        // would be undone instead (the curves then lost their data). Only when nothing is
+        // recorded, or the recorded stack has nothing to undo / redo, the active window and the
+        // most recently modified stack below decide.
+        {
+            QUndoStack *recorded = nullptr;
+            MultiLayer *recordedMl = nullptr;
+            if (lastUndoDomain == QStringLiteral("graph") && !lastUndoGraph.isEmpty()) {
+                MyWidget *mw = findWindowByName(d_app, lastUndoGraph);
+                if (mw && mw->inherits("MultiLayer")) {
+                    recordedMl = static_cast<MultiLayer *>(mw);
+                    recorded = recordedMl->undoStack();
+                }
+            } else if (lastUndoDomain == QStringLiteral("project")) {
+                recorded = projStack;
+            }
+            if (recorded && (isUndo ? recorded->canUndo() : recorded->canRedo())) {
+                {
+                    ScopedTableReplayGuard replayGuard;
+                    if (isUndo)
+                        recorded->undo();
+                    else
+                        recorded->redo();
+                }
+                if (!recordedMl)
+                    refreshAfterProjectUndoRedo();
+                d_app->updateUndoRedoActionsForActiveWindow();
+                QUndoStack *other = recordedMl ? projStack
+                                               : (fallbackMl ? fallbackMl->undoStack() : nullptr);
+                outResult[QStringLiteral("ok")] = true;
+                if (recordedMl) {
+                    outResult[QStringLiteral("graph")] = recordedMl->name();
+                    outResult[QStringLiteral("window")] = recordedMl->name();
+                }
+                outResult[QStringLiteral("can_undo")] =
+                        recorded->canUndo() || (other && other->canUndo());
+                outResult[QStringLiteral("can_redo")] =
+                        recorded->canRedo() || (other && other->canRedo());
+                return true;
+            }
+        }
+
         if (activeSub) {
             ScopedTableReplayGuard replayGuard;
             if (isUndo)

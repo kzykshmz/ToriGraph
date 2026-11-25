@@ -30,6 +30,11 @@
 //        made them grow with the square of the rows: 96 s to sort, Undo over 120 s); masks
 //        and empty cells move with their rows, the formula column stays consistent, and
 //        Undo / Redo restore the exact masks and values
+//   109e app.undo / app.redo without a window take the stack the last RPC changed: after
+//        graph.set_axis / add_layer / remove_layer they undo that graph operation, not the data
+//        entered into the active worksheet (the data went NaN and the curve was lost); after a
+//        table edit they undo the table even when the graph is the active window and a graph
+//        RPC that changes nothing (copy_format) came in between
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -556,6 +561,120 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(!isErr(rpc(QStringLiteral("app.undo"), QJsonObject{ { "table", "S109" } })),
                    "109d: undo the sort again");
         std::cout << "[PASS] 109d: sorting a large table with scattered masks is fast and undoable\n";
+    }
+
+    // ---- 109e: app.undo / app.redo without a window undo what the last RPC changed ----
+    {
+        Table *t = w109->newTable(QStringLiteral("U109"), 5, 2);
+        CHECK_COND(t != nullptr, "109e: table U109");
+        QJsonObject r = rpc(QStringLiteral("table.set_column_data"),
+                            QJsonObject{ { "table", "U109" }, { "col", "1" }, { "data", numbers({ 1, 2, 3, 4, 5 }) } });
+        CHECK_COND(!isErr(r), "109e: set column 1: " << errText(r));
+        r = rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject{ { "table", "U109" }, { "col", "2" }, { "data", numbers({ 10, 20, 30, 40, 50 }) } });
+        CHECK_COND(!isErr(r), "109e: set column 2: " << errText(r));
+        r = rpc(QStringLiteral("plot.xy"),
+                QJsonObject{ { "table", "U109" }, { "x_col", "1" }, { "y_cols", QJsonArray{ "2" } },
+                             { "graph_name", "GU109" } });
+        CHECK_COND(!isErr(r), "109e: plot GU109: " << errText(r));
+        MultiLayer *gml = nullptr;
+        for (MyWidget *mw : w109->windowsList())
+            if (mw && mw->name() == QLatin1String("GU109"))
+                gml = qobject_cast<MultiLayer *>(mw);
+        CHECK_COND(gml != nullptr, "109e: graph GU109 not found");
+        // the user works in the worksheet: the table is the active window, not the graph
+        w109->activateSubWindow(t);
+        QCoreApplication::processEvents();
+        QWidget *act = w109->d_workspace.activeSubWindow();
+        std::cout << "[INFO] 109e: active window before the graph RPCs: "
+                  << (act == t ? "U109" : (act ? "other" : "(none)")) << "\n";
+
+        auto graphInfo = [&]() {
+            return res(rpc(QStringLiteral("graph.get_info"), QJsonObject{ { "graph", "GU109" } }));
+        };
+        auto xMax = [&]() {
+            return graphInfo()
+                    .value(QStringLiteral("layers"))
+                    .toArray()
+                    .at(0)
+                    .toObject()
+                    .value(QStringLiteral("axes"))
+                    .toObject()
+                    .value(QStringLiteral("x"))
+                    .toObject()
+                    .value(QStringLiteral("max"))
+                    .toDouble();
+        };
+        auto layerCount = [&]() { return int(graphInfo().value(QStringLiteral("layers")).toArray().size()); };
+        auto curveCount = [&]() {
+            int n = 0;
+            const QJsonObject info = graphInfo();
+            const QJsonArray layers = info.value(QStringLiteral("layers")).toArray();
+            for (int i = 0; i < layers.size(); ++i)
+                n += int(layers.at(i).toObject().value(QStringLiteral("curves")).toArray().size());
+            return n;
+        };
+        auto dataIntact = [&]() {
+            const QVector<double> y = columnValues("U109", "2");
+            // (sameValues lets NaN through: NaN - w > 1e-9 is false)
+            return y.size() == 5 && std::none_of(y.begin(), y.end(), [](double v) { return std::isnan(v); })
+                    && sameValues(y, { 10, 20, 30, 40, 50 });
+        };
+        const double xMax0 = xMax();
+        CHECK_COND(curveCount() == 1 && std::fabs(xMax0 - 20.0) > 1e-9, "109e: setup of GU109");
+
+        // set_axis -> app.undo (no window) undoes the axis, not the table's data entry
+        r = rpc(QStringLiteral("graph.set_axis"),
+                QJsonObject{ { "graph", "GU109" }, { "axis", "x" }, { "min", 0 }, { "max", 20 } });
+        CHECK_COND(!isErr(r), "109e: set_axis: " << errText(r));
+        CHECK_COND(std::fabs(xMax() - 20.0) < 1e-9, "109e: set_axis did not set x max 20");
+        r = rpc(QStringLiteral("app.undo"), QJsonObject{});
+        CHECK_COND(!isErr(r), "109e: app.undo after set_axis: " << errText(r));
+        std::cout << "[INFO] 109e: after app.undo: x max " << xMax() << ", y "
+                  << q(columnValues("U109", "2")) << ", curves " << curveCount() << "\n";
+        CHECK_COND(dataIntact(), "109e: app.undo after set_axis undid the table data: "
+                                         << q(columnValues("U109", "2")));
+        CHECK_COND(curveCount() == 1, "109e: app.undo after set_axis lost the curve");
+        CHECK_COND(std::fabs(xMax() - xMax0) < 1e-9,
+                   "109e: app.undo after set_axis did not restore x max: " << xMax());
+        r = rpc(QStringLiteral("app.redo"), QJsonObject{});
+        CHECK_COND(!isErr(r), "109e: app.redo: " << errText(r));
+        CHECK_COND(std::fabs(xMax() - 20.0) < 1e-9 && curveCount() == 1,
+                   "109e: app.redo did not redo set_axis: x max " << xMax());
+        CHECK_COND(dataIntact(), "109e: app.redo changed the table data");
+
+        // add_layer / remove_layer -> app.undo
+        r = rpc(QStringLiteral("graph.add_layer"), QJsonObject{ { "graph", "GU109" } });
+        CHECK_COND(!isErr(r) && layerCount() == 2, "109e: add_layer: " << errText(r));
+        r = rpc(QStringLiteral("app.undo"), QJsonObject{});
+        CHECK_COND(!isErr(r) && layerCount() == 1 && curveCount() == 1,
+                   "109e: app.undo after add_layer: layers " << layerCount() << ", curves " << curveCount());
+        CHECK_COND(dataIntact(), "109e: app.undo after add_layer changed the table data");
+        r = rpc(QStringLiteral("graph.add_layer"), QJsonObject{ { "graph", "GU109" } });
+        CHECK_COND(!isErr(r) && layerCount() == 2, "109e: add_layer again: " << errText(r));
+        r = rpc(QStringLiteral("graph.remove_layer"), QJsonObject{ { "graph", "GU109" }, { "layer", 1 } });
+        CHECK_COND(!isErr(r) && layerCount() == 1, "109e: remove_layer: " << errText(r));
+        r = rpc(QStringLiteral("app.undo"), QJsonObject{});
+        CHECK_COND(!isErr(r) && layerCount() == 2 && curveCount() == 1,
+                   "109e: app.undo after remove_layer: layers " << layerCount() << ", curves " << curveCount());
+        CHECK_COND(dataIntact(), "109e: app.undo after remove_layer changed the table data");
+
+        // a table edit, then the graph becomes the active window and a graph RPC that changes
+        // nothing (copy_format): app.undo still undoes the table edit
+        r = rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject{ { "table", "U109" }, { "col", "2" }, { "data", numbers({ 7, 7, 7, 7, 7 }) } });
+        CHECK_COND(!isErr(r), "109e: set column 2 again: " << errText(r));
+        w109->activateSubWindow(gml);
+        QCoreApplication::processEvents();
+        const int layersBefore = layerCount();
+        r = rpc(QStringLiteral("graph.copy_format"), QJsonObject{ { "graph", "GU109" } });
+        CHECK_COND(!isErr(r), "109e: copy_format: " << errText(r));
+        r = rpc(QStringLiteral("app.undo"), QJsonObject{});
+        CHECK_COND(!isErr(r), "109e: app.undo after the table edit: " << errText(r));
+        CHECK_COND(dataIntact(), "109e: app.undo after the table edit did not restore the data: "
+                                         << q(columnValues("U109", "2")));
+        CHECK_COND(layerCount() == layersBefore, "109e: app.undo after the table edit changed the graph");
+        std::cout << "[PASS] 109e: app.undo / app.redo without a window follow the last RPC's target\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

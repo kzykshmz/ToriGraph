@@ -72,6 +72,7 @@
 #include "matrix/future_Matrix.h"
 #include "table/AsciiTableImportFilter.h"
 #include "table/future_Table.h"
+#include "core/Project.h"
 
 #ifdef Q_OS_WIN
 #include "EmfPaintDevice.h"
@@ -1190,10 +1191,10 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.recalculate", "app", "Session.recalculate()",
       "Evaluate all dirty column formulas and registered analysis links.", "", "app.recalculate()" },
     { "app.undo", "app", "Session.undo(window=None, *, graph=None, table=None, matrix=None)",
-      "Undo the last operation on a specified graph/table/matrix window or the most recently modified stack.",
+      "Undo the last operation on the given graph/table/matrix window. Without a window: undo on the stack the last RPC changed (that graph, or the project stack of tables and matrices; RPCs that change nothing, such as reads, do not count), not on the active window; app.activate_window also selects it. When that stack has nothing to undo, the active window or the most recently modified stack is used.",
       "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.undo(table=tbl)" },
     { "app.redo", "app", "Session.redo(window=None, *, graph=None, table=None, matrix=None)",
-      "Redo the last undone operation on a specified graph/table/matrix window or the most recently modified stack.",
+      "Redo the last undone operation on the given graph/table/matrix window. Without a window: redo on the stack the last RPC changed or undid (as app.undo); when it has nothing to redo, the active window or the most recently modified stack is used.",
       "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.redo(table=tbl)" },
     { "app.set_focus_hud", "app", "Session.set_focus_hud(enabled=None)",
       "Enable, disable, or toggle the floating canvas Focus HUD.", "enabled:bool=true",
@@ -5031,72 +5032,92 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
             return hookedRes;
     }
 
-    auto findProjUndoIdx = [&]() -> int {
-        if (!d_app)
-            return -1;
-        for (MyWidget *w : d_app->windowsList()) {
-            if (!w)
-                continue;
-            if (w->inherits("Table")) {
-                auto *t = static_cast<Table *>(w);
-                if (t->d_future_table && t->d_future_table->undoStack())
-                    return t->d_future_table->undoStack()->index();
-            } else if (w->inherits("Matrix")) {
-                auto *m = static_cast<Matrix *>(w);
-                if (m->d_future_matrix && m->d_future_matrix->undoStack())
-                    return m->d_future_matrix->undoStack()->index();
+    // Undo routing for app.undo / app.redo without a target: remember which undo stack (one
+    // graph's, or the project's shared by tables and matrices) this RPC actually changed. RPCs
+    // that change nothing (reads, copy_format, ...) keep the previous target, and graph RPCs do
+    // not make their graph the MDI active window, so the active window is not a usable guide.
+    // indexChanged is also emitted when a pushed command merges into the previous one.
+    struct UndoTargetWatch
+    {
+        ApplicationWindow *app;
+        const QString &method;
+        QString &domain;
+        QString &graphName;
+        QUndoStack *projStack = nullptr;
+        QUndoStack *firstStack = nullptr;
+        QUndoStack *lastStack = nullptr;
+        QPointer<MultiLayer> firstGraph, lastGraph;
+        QSet<MultiLayer *> graphsBefore;
+        QVector<QMetaObject::Connection> conns;
+
+        UndoTargetWatch(ApplicationWindow *a, const QString &m, QString &d, QString &g)
+            : app(a), method(m), domain(d), graphName(g)
+        {
+            if (!app)
+                return;
+            projStack = app->project() ? app->project()->undoStack() : nullptr;
+            watch(projStack, nullptr);
+            for (MyWidget *w : app->windowsList()) {
+                if (auto *ml = qobject_cast<MultiLayer *>(w)) {
+                    graphsBefore.insert(ml);
+                    watch(ml->undoStack(), ml);
+                }
             }
         }
-        return -1;
-    };
-    const int projIdxBefore = findProjUndoIdx();
-
-    auto updateLastUndoTracking = [&](const QJsonObject &res) {
-        if (method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo"))
-            return;
-        if (method == QStringLiteral("app.new_project")
-            || method == QStringLiteral("app.open_project")) {
-            d_last_undo_domain.clear();
-            d_last_undo_graph.clear();
-            return;
+        void watch(QUndoStack *us, MultiLayer *ml)
+        {
+            if (!us)
+                return;
+            QPointer<MultiLayer> mlp(ml);
+            conns.append(QObject::connect(us, &QUndoStack::indexChanged, [this, us, mlp](int) {
+                if (!firstStack) {
+                    firstStack = us;
+                    firstGraph = mlp;
+                }
+                lastStack = us;
+                lastGraph = mlp;
+            }));
         }
-        const int projIdxAfter = findProjUndoIdx();
-        const bool isReadOnlyGraph = (method == QStringLiteral("graph.get_info")
-                                      || method == QStringLiteral("graph.inspect")
-                                      || method == QStringLiteral("graph.export")
-                                      || method == QStringLiteral("graph.copy_image")
-                                      || method == QStringLiteral("graph.copy_ole")
-                                      || method == QStringLiteral("graph.export_ole")
-                                      || method == QStringLiteral("graph.to_python")
-                                      || ((method == QStringLiteral("graph.auto_layout")
-                                           || method == QStringLiteral("graph.fix_layout"))
-                                          && params.value(QStringLiteral("dry_run")).toBool(false))
-                                      || method == QStringLiteral("gadget.query"));
-        if (!isReadOnlyGraph
-            && (method.startsWith(QStringLiteral("plot."))
-                || method.startsWith(QStringLiteral("graph."))
-                || (res.contains(QStringLiteral("graph"))
-                    && !res.value(QStringLiteral("graph")).toString().trimmed().isEmpty()))) {
-            d_last_undo_domain = QStringLiteral("graph");
-            const QString gName = res.value(QStringLiteral("graph")).toString().trimmed();
-            if (!gName.isEmpty())
-                d_last_undo_graph = gName;
-            else if (!params.value(QStringLiteral("graph")).toString().trimmed().isEmpty())
-                d_last_undo_graph = params.value(QStringLiteral("graph")).toString().trimmed();
-        } else if ((projIdxBefore >= 0 && projIdxAfter != projIdxBefore)
-                   || method.startsWith(QStringLiteral("table.set_"))
-                   || method == QStringLiteral("table.add_column")
-                   || method == QStringLiteral("table.remove_column")
-                   || method == QStringLiteral("table.resize")
-                   || method == QStringLiteral("table.paste_tsv")
-                   || method == QStringLiteral("matrix.set_data")
-                   || method == QStringLiteral("matrix.set_formula")
-                   || method == QStringLiteral("matrix.transpose")
-                   || method == QStringLiteral("matrix.invert")
-                   || method == QStringLiteral("matrix.flip")) {
-            d_last_undo_domain = QStringLiteral("project");
+        ~UndoTargetWatch()
+        {
+            for (const QMetaObject::Connection &c : conns)
+                QObject::disconnect(c);
+            if (method == QStringLiteral("app.new_project")
+                || method == QStringLiteral("app.open_project")) {
+                domain.clear();
+                graphName.clear();
+                return;
+            }
+            // app.undo / app.redo: the stack they stepped is the first one that moved (refreshing
+            // the graphs afterwards must not redirect the next call).
+            const bool stepCall =
+                    method == QStringLiteral("app.undo") || method == QStringLiteral("app.redo");
+            QUndoStack *us = stepCall ? firstStack : lastStack;
+            MultiLayer *ml = stepCall ? firstGraph.data() : lastGraph.data();
+            if (us && ml) {
+                domain = QStringLiteral("graph");
+                graphName = ml->name();
+                return;
+            }
+            if (us && us == projStack) {
+                domain = QStringLiteral("project");
+                return;
+            }
+            // a graph created by this RPC that already holds an Undo step
+            if (!app)
+                return;
+            for (MyWidget *w : app->windowsList()) {
+                auto *nml = qobject_cast<MultiLayer *>(w);
+                if (nml && !graphsBefore.contains(nml) && nml->undoStack()
+                    && nml->undoStack()->count() > 0) {
+                    domain = QStringLiteral("graph");
+                    graphName = nml->name();
+                }
+            }
         }
-    };
+        UndoTargetWatch(const UndoTargetWatch &) = delete;
+        UndoTargetWatch &operator=(const UndoTargetWatch &) = delete;
+    } undoTargetWatch(d_app, method, d_last_undo_domain, d_last_undo_graph);
 
     QJsonObject result;
     if (dispatchCoreAndGraphMethod(this, d_app, d_focus_hud_fallback, d_workspace_mode_fallback,
@@ -5104,13 +5125,11 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                                    result)) {
         if (!result.contains(QStringLiteral("ok")))
             result[QStringLiteral("ok")] = true;
-        updateLastUndoTracking(result);
         return result;
     }
     if (dispatchAnalysisAndScienceMethod(d_app, method, params, result)) {
         if (!result.contains(QStringLiteral("ok")))
             result[QStringLiteral("ok")] = true;
-        updateLastUndoTracking(result);
         return result;
     }
 
