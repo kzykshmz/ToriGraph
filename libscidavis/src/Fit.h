@@ -210,6 +210,15 @@ public:
     //! pushes it out of the box, however large the gradient.
     static bool lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol = 1e-4,
                                        const std::vector<int> *kktSigns = nullptr);
+    //! Value reported for a parameter in the box [lo, hi] (either side may be infinite): within
+    //! a small tolerance of a finite bound it is the bound. Shared by the single-curve, global
+    //! and implicit fits, so they agree on which parameters sit on a bound.
+    static double snapToBound(double p, double lo, double hi);
+    //! -1 / +1 when snapToBound(p, lo, hi) is the lower / upper bound, 0 otherwise.
+    static int boundSide(double p, double lo, double hi);
+    //! Entry of lmGradientIsStationary's kktSigns for a solver variable u that maps to the
+    //! parameter by p(u): side from boundSide, dPdU = dp/du at the solver value.
+    static int kktSignForBound(int side, double dPdU);
     //! Registers the Japanese strings of the fit core (convergence / statistics messages)
     static void registerJapaneseStrings();
 
@@ -240,6 +249,9 @@ protected slots:
     void scriptError(const QString &message, const QString &script_name, int line_number);
 
 protected:
+    //! Adds the fit note "<name> = <value> is at a bound of its allowed range." (once).
+    void addBoundNote(const QString &name, double value);
+
     //! Execute the fit using GSL multidimensional minimization (Nelder-Mead Simplex).
     std::vector<double> fitGslMultimin(int &iterations, int &status);
 

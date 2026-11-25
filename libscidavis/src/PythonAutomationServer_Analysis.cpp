@@ -1417,6 +1417,16 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                                          : ba[0].toDouble();
                         const double hi = ba[1].isNull() ? std::numeric_limits<double>::infinity()
                                                          : ba[1].toDouble();
+                        // Swapping a reversed pair silently would fit a box the caller did
+                        // not mean (often a typo in one of the two numbers).
+                        if (lo > hi) {
+                            throwInvalidParams(
+                                    QStringLiteral("analysis.fit_nonlinear: bounds for '%1' have "
+                                                   "lower %2 > upper %3; give [lower, upper].")
+                                            .arg(pNames[i])
+                                            .arg(lo, 0, 'g', 10)
+                                            .arg(hi, 0, 'g', 10));
+                        }
                         nlf.setParameterBounds(i, lo, hi);
                     }
                 }
@@ -1728,8 +1738,14 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         enforceArialGraphFonts(g);
         g->replot();
         undoGuard.commit();
+        // converged follows the solver state (a stall is not converged), and the notes say which
+        // parameters ended on a bound, as analysis.fit_nonlinear does.
+        const bool globalConverged = ok && nlf.converged();
         outResult[QStringLiteral("ok")] = ok;
-        outResult[QStringLiteral("converged")] = ok;
+        outResult[QStringLiteral("converged")] = globalConverged;
+        outResult[QStringLiteral("convergence_message")] = nlf.convergenceMessage();
+        if (!nlf.fitNotes().isEmpty())
+            outResult[QStringLiteral("notes")] = QJsonArray::fromStringList(nlf.fitNotes());
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("param_names")] = toJsonArray(pNames);
         if (sumTbl) {

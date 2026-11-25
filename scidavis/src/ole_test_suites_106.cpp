@@ -1,5 +1,6 @@
 #include "ole_test_common.h"
 #include "PythonAutomationServer.h"
+#include "NonLinearFit.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -33,6 +34,12 @@
 //        invalid-params error listing the parameter names; x_min alone or x_max alone in
 //        fit_nonlinear, fit_linear, curvemath.integrate and curvemath.differentiate was ignored
 //        (the whole curve was used); the missing side is now the end of the data.
+//   106e the global (multi-curve) fit: a shared t on its bound [3, 5] / [3, inf) / [0.1, 1]
+//        ended "no further improvement" like 106a; it is converged now, equals the global fit
+//        with t fixed at the bound and notes it. analysis.fit_global reports converged from the
+//        solver state, convergence_message and notes.
+//   106f analysis.fit_nonlinear bounds with lower > upper were swapped silently; they are an
+//        invalid-params error naming the parameter.
 // =============================================================================
 namespace {
 
@@ -560,6 +567,136 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                   << " (explicit " << d2.first << " from " << d2.second << ")\n";
         EXPECT106(d1.first > 0 && d1.first == d2.first && close(d1.second, d2.second, 1e-12),
                   "106d: differentiate with x_min alone must use [x_min, last x]");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106e: the global (multi-curve) fit judges a parameter on its bound the same way
+    // -------------------------------------------------------------------------
+    {
+        SplitMix106 rng(27);
+        std::vector<double> gx, gy1, gy2;
+        for (int i = 0; i <= 40; ++i) {
+            const double xv = 0.25 * i;
+            gx.push_back(xv);
+            gy1.push_back(2.0 + 5.0 * std::exp(-xv / 1.7) + 0.05 * rng.gauss());
+            gy2.push_back(1.0 + 3.0 * std::exp(-xv / 1.7) + 0.05 * rng.gauss());
+        }
+        const QString tName = QStringLiteral("T106_G");
+        Table *t = w->newTable(int(gx.size()), 3, tName, tName);
+        CHECK_COND(t != nullptr, "106e: table not created");
+        t->setColName(0, QStringLiteral("X"));
+        t->setColName(1, QStringLiteral("Y1"));
+        t->setColName(2, QStringLiteral("Y2"));
+        for (int r = 0; r < int(gx.size()); ++r) {
+            t->setCell(r, 0, gx[size_t(r)]);
+            t->setCell(r, 1, gy1[size_t(r)]);
+            t->setCell(r, 2, gy2[size_t(r)]);
+        }
+        MultiLayer *ml = w->multilayerPlot(t, QStringList() << t->colName(1) << t->colName(2),
+                                           Graph::Line);
+        QCoreApplication::processEvents();
+        Graph *g = ml ? ml->activeGraph() : nullptr;
+        CHECK_COND(g && g->curves() == 2, "106e: two-curve graph not created");
+        const QStringList titles{ g->curve(0)->title().text(), g->curve(1)->title().text() };
+        const QVector<bool> shared{ false, false, true };
+
+        // y0, A per curve, t shared: bounded to [lo, hi] (hi may be infinite) or fixed at t0.
+        auto globalFit = [&](double t0, double lo, double hi, bool fixT, std::vector<double> &res,
+                             QStringList &notes) {
+            NonLinearFit nlf(w, g);
+            nlf.setSilent(true);
+            nlf.setParametersList(QStringList{ "y0", "A", "t" });
+            nlf.setFormula(QStringLiteral("y0+A*exp(-x/t)"));
+            nlf.setInitialGuess(0, 1.0);
+            nlf.setInitialGuess(1, 4.0);
+            nlf.setInitialGuess(2, t0);
+            if (fixT)
+                nlf.setParameterFixed(2, true);
+            else
+                nlf.setParameterBounds(2, lo, hi);
+            const bool ok = nlf.fitGlobal(titles, shared, nullptr);
+            res = nlf.results();
+            notes = nlf.fitNotes();
+            return ok && nlf.converged();
+        };
+        const double inf = std::numeric_limits<double>::infinity();
+        struct GCase
+        {
+            double lo, hi, t0, tBound;
+        };
+        const GCase gcases[] = { { 3.0, 5.0, 1.0, 3.0 }, { 3.0, 5.0, 3.0, 3.0 },
+                                 { 3.0, 5.0, 4.9, 3.0 }, { 3.0, 5.0, 6.0, 3.0 },
+                                 { 3.0, inf, 1.0, 3.0 }, { 0.1, 1.0, 2.0, 1.0 } };
+        for (const GCase &c : gcases) {
+            std::vector<double> ref, res;
+            QStringList refNotes, notes;
+            const bool refConv = globalFit(c.tBound, 0.0, 0.0, true, ref, refNotes);
+            const bool conv = globalFit(c.t0, c.lo, c.hi, false, res, notes);
+            const bool same = refConv && res.size() == 3 && ref.size() == 3
+                    && close(res[2], c.tBound, 1e-9) && close(res[0], ref[0], 1e-4)
+                    && close(res[1], ref[1], 1e-4);
+            std::cout << "[INFO] 106e global bounds [" << c.lo << ", " << c.hi << "] t0=" << c.t0
+                      << ": converged " << conv << ", y0 " << (res.size() == 3 ? res[0] : nan)
+                      << " A " << (res.size() == 3 ? res[1] : nan) << " t "
+                      << (res.size() == 3 ? res[2] : nan) << " (t fixed: y0 "
+                      << (ref.size() == 3 ? ref[0] : nan) << " A " << (ref.size() == 3 ? ref[1] : nan)
+                      << "), notes '" << notes.join(" | ").toStdString() << "'\n";
+            EXPECT106(conv, "106e: global bounds [" << c.lo << ", " << c.hi << "] t0=" << c.t0
+                                                    << ": a solution on the bound must be converged");
+            EXPECT106(same, "106e: global bounds [" << c.lo << ", " << c.hi << "] t0=" << c.t0
+                                                    << ": must equal the fit with t fixed at the bound");
+            EXPECT106(notes.join(" ").contains(QStringLiteral("t = %1").arg(c.tBound)),
+                      "106e: global bounds [" << c.lo << ", " << c.hi << "] t0=" << c.t0
+                                              << ": notes must say that t is at its bound");
+        }
+
+        // analysis.fit_global on noise-free decays (the SDK e2e case): converged, no notes.
+        std::vector<double> ex2, ya, yb;
+        for (int xv = 0; xv <= 90; xv += 3) {
+            ex2.push_back(xv);
+            ya.push_back(5.0 + 80.0 * std::exp(-xv / 18.0));
+            yb.push_back(12.0 + 140.0 * std::exp(-xv / 18.0));
+        }
+        Table *t2 = w->newTable(int(ex2.size()), 3, QStringLiteral("T106_G2"),
+                                QStringLiteral("T106_G2"));
+        CHECK_COND(t2 != nullptr, "106e: table 2 not created");
+        for (int r = 0; r < int(ex2.size()); ++r) {
+            t2->setCell(r, 0, ex2[size_t(r)]);
+            t2->setCell(r, 1, ya[size_t(r)]);
+            t2->setCell(r, 2, yb[size_t(r)]);
+        }
+        MultiLayer *ml2 = w->multilayerPlot(t2, QStringList() << t2->colName(1) << t2->colName(2),
+                                            Graph::Line);
+        QCoreApplication::processEvents();
+        CHECK_COND(ml2 != nullptr, "106e: graph 2 not created");
+        const QJsonObject gr = result(rpc(QStringLiteral("analysis.fit_global"),
+                                          QJsonObject{ { "graph", ml2->name() },
+                                                       { "model", "ExpDec1" },
+                                                       { "shared", QJsonArray{ "t1" } } }));
+        std::cout << "[INFO] 106e fit_global ExpDec1: ok " << gr.value("ok").toBool()
+                  << ", converged " << gr.value("converged").toBool() << ", message '"
+                  << gr.value("convergence_message").toString().toStdString() << "'\n";
+        EXPECT106(gr.value("ok").toBool() && gr.value("converged").toBool()
+                          && gr.value("notes").toArray().isEmpty(),
+                  "106e: fit_global on noise-free decays must converge without notes");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106f: reversed bounds are an error naming the parameter
+    // -------------------------------------------------------------------------
+    {
+        const QJsonObject resp = expFit(QJsonObject{
+                { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", 1 } } },
+                { "bounds", QJsonObject{ { "t", QJsonArray{ 3, 1 } } } } });
+        std::cout << "[INFO] 106f bounds t [3, 1]: error " << errCode(resp) << " '"
+                  << errMsg(resp).toStdString() << "'\n";
+        EXPECT106(errCode(resp) == -32602 && errMsg(resp).contains(QLatin1String("'t'")),
+                  "106f: bounds with lower > upper must be an invalid-params error naming 't'");
+        const QJsonObject okResp = expFit(QJsonObject{
+                { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", 1 } } },
+                { "bounds", QJsonObject{ { "t", QJsonArray{ 1, 1 } } } } });
+        EXPECT106(!okResp.contains(QStringLiteral("error")),
+                  "106f: equal bounds (t held at 1) must still be accepted");
     }
 #undef EXPECT106
 

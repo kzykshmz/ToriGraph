@@ -602,54 +602,18 @@ struct ConstrainedFitContext
 
     double snapP(size_t k, double p) const
     {
-        if (modes[k] == BoundBoth) {
-            double span = std::max(1.0, hi[k] - lo[k]);
-            if (p <= lo[k] + 1e-6 * span)
-                return lo[k];
-            if (p >= hi[k] - 1e-6 * span)
-                return hi[k];
-            return std::max(lo[k], std::min(hi[k], p));
-        }
-        if (modes[k] == BoundLower) {
-            if (p <= lo[k] + 1e-7 * std::max(1.0, std::abs(lo[k])))
-                return lo[k];
-            return std::max(lo[k], p);
-        }
-        if (modes[k] == BoundUpper) {
-            if (p >= hi[k] - 1e-7 * std::max(1.0, std::abs(hi[k])))
-                return hi[k];
-            return std::min(hi[k], p);
-        }
-        return p;
+        return (modes[k] == BoundNone) ? p : Fit::snapToBound(p, lo[k], hi[k]);
     }
 
     //! -1 / +1 when free variable k (solver value u) is held at its lower / upper bound (the
     //! value snapP reports is the bound), 0 otherwise.
     int boundSide(size_t k, double u) const
     {
-        if (modes[k] == BoundNone)
-            return 0;
-        const double p = snapP(k, mapUtoP(k, u));
-        if (std::isfinite(lo[k]) && p == lo[k])
-            return -1;
-        if (std::isfinite(hi[k]) && p == hi[k])
-            return 1;
-        return 0;
+        return (modes[k] == BoundNone) ? 0 : Fit::boundSide(mapUtoP(k, u), lo[k], hi[k]);
     }
 
-    //! Sign for Fit::lmGradientIsStationary: a step -g_u in u moves p by -g_u * dP/dU, which
-    //! the bound blocks when it points out of the box (down at the lower bound, up at the upper).
-    int kktSign(size_t k, double u) const
-    {
-        const int side = boundSide(k, u);
-        if (side == 0)
-            return 0;
-        const double d = dPdU(k, u);
-        if (d == 0.0 || !std::isfinite(d))
-            return 0;
-        // lower bound: blocked when g_u * dPdU >= 0; upper bound: when g_u * dPdU <= 0
-        return (d > 0.0 ? 1 : -1) * (side < 0 ? 1 : -1);
-    }
+    //! Entry of Fit::lmGradientIsStationary's kktSigns for free variable k.
+    int kktSign(size_t k, double u) const { return Fit::kktSignForBound(boundSide(k, u), dPdU(k, u)); }
 
     void applyDependentParams(std::vector<double> &fullVec) const
     {
@@ -1124,6 +1088,59 @@ bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
     return stationary;
 }
 
+double Fit::snapToBound(double p, double lo, double hi)
+{
+    const bool hasLo = std::isfinite(lo);
+    const bool hasHi = std::isfinite(hi);
+    if (hasLo && hasHi) {
+        const double span = std::max(1.0, hi - lo);
+        if (p <= lo + 1e-6 * span)
+            return lo;
+        if (p >= hi - 1e-6 * span)
+            return hi;
+        return std::max(lo, std::min(hi, p));
+    }
+    if (hasLo) {
+        if (p <= lo + 1e-7 * std::max(1.0, std::abs(lo)))
+            return lo;
+        return std::max(lo, p);
+    }
+    if (hasHi) {
+        if (p >= hi - 1e-7 * std::max(1.0, std::abs(hi)))
+            return hi;
+        return std::min(hi, p);
+    }
+    return p;
+}
+
+int Fit::boundSide(double p, double lo, double hi)
+{
+    const double snapped = snapToBound(p, lo, hi);
+    if (std::isfinite(lo) && snapped == lo)
+        return -1;
+    if (std::isfinite(hi) && snapped == hi)
+        return 1;
+    return 0;
+}
+
+int Fit::kktSignForBound(int side, double dPdU)
+{
+    // A step -g_u in u moves p by -g_u * dPdU; the bound blocks it when it points out of the
+    // box: at the lower bound when g_u * dPdU >= 0, at the upper bound when g_u * dPdU <= 0.
+    if (side == 0 || dPdU == 0.0 || !std::isfinite(dPdU))
+        return 0;
+    return (dPdU > 0.0 ? 1 : -1) * (side < 0 ? 1 : -1);
+}
+
+void Fit::addBoundNote(const QString &name, double value)
+{
+    const QString note = tr("%1 = %2 is at a bound of its allowed range.")
+                                 .arg(name)
+                                 .arg(QLocale().toString(value, 'g', d_prec));
+    if (!d_fit_notes.contains(note))
+        d_fit_notes << note;
+}
+
 QString Fit::convergenceMessage() const
 {
     switch (d_convergence) {
@@ -1518,12 +1535,7 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             result[ctx.free_to_full[k]] = p_val;
             if (ctx.boundSide(k, gsl_vector_get(s->x, k)) != 0) {
                 const int j = ctx.free_to_full[k];
-                const QString note = tr("%1 = %2 is at a bound of its allowed range.")
-                                             .arg(d_param_names[j])
-                                             .arg(QLocale().toString(
-                                                     fromInternalParameter(j, p_val), 'g', d_prec));
-                if (!d_fit_notes.contains(note))
-                    d_fit_notes << note;
+                addBoundNote(d_param_names[j], fromInternalParameter(j, p_val));
             }
         }
         ctx.applyDependentParams(result);

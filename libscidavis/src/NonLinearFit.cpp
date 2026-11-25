@@ -1359,7 +1359,27 @@ struct GlobalFitSlot
         }
         return 1.0;
     }
+
+    //! Reported value: on the bound when within the tolerance the single-curve fit uses.
+    double snapP(double p) const { return (mode == GBoundNone) ? p : Fit::snapToBound(p, lo, hi); }
+    //! -1 / +1 when the slot (solver value u) is held at its lower / upper bound, else 0.
+    int boundSide(double u) const
+    {
+        return (mode == GBoundNone) ? 0 : Fit::boundSide(mapUtoP(u), lo, hi);
+    }
 };
+
+//! kktSigns for Fit::lmGradientIsStationary: a slot held at a bound whose gradient points out
+//! of the box is a constrained minimum, not a stall (as in the single-curve fit).
+std::vector<int> slotKktSigns(const std::vector<GlobalFitSlot> &slotList, const gsl_vector *u)
+{
+    std::vector<int> signs(slotList.size(), 0);
+    for (size_t k = 0; k < slotList.size(); ++k) {
+        const double uk = gsl_vector_get(u, k);
+        signs[k] = Fit::kktSignForBound(slotList[k].boundSide(uk), slotList[k].dPdU(uk));
+    }
+    return signs;
+}
 
 struct GlobalFitContext
 {
@@ -1885,7 +1905,8 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
                     deltaConverged = true;
                 } else if (status == GSL_ENOPROG) {
-                    if (!lmGradientIsStationary(s))
+                    const std::vector<int> kkt = slotKktSigns(ctx.freeSlots, s->x);
+                    if (!lmGradientIsStationary(s, 1e-4, &kkt))
                         d_convergence = NoProgress;
                     deltaConverged = (d_convergence == Converged);
                 } else {
@@ -1923,6 +1944,24 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             d_convergence = MaxIterationsReached;
 
         ctx.unpack(s->x, fittedParams);
+        // A parameter on its bound reports the bound and a note, as in the single-curve fit.
+        for (size_t k = 0; k < n_free; ++k) {
+            const GlobalFitSlot &sl = ctx.freeSlots[k];
+            const double uk = gsl_vector_get(s->x, k);
+            if (sl.boundSide(uk) == 0)
+                continue;
+            const double pv = sl.snapP(sl.mapUtoP(uk));
+            if (sl.curveIdx < 0) {
+                for (int m = 0; m < M; ++m)
+                    fittedParams[size_t(m)][size_t(sl.paramIdx)] = pv;
+                addBoundNote(d_param_names[sl.paramIdx], pv);
+            } else {
+                fittedParams[size_t(sl.curveIdx)][size_t(sl.paramIdx)] = pv;
+                addBoundNote(QStringLiteral("%1 (%2)")
+                                     .arg(d_param_names[sl.paramIdx], curveTitles[sl.curveIdx]),
+                             pv);
+            }
+        }
         gsl_blas_ddot(s->f, s->f, &rss_total);
         if (!std::isfinite(rss_total) || rss_total < 0.0) {
             d_convergence = NoProgress;
@@ -2356,7 +2395,8 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                 if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
                     deltaConverged = true;
                 } else if (status == GSL_ENOPROG) {
-                    if (!lmGradientIsStationary(s))
+                    const std::vector<int> kkt = slotKktSigns(ctx.freeSlots, s->x);
+                    if (!lmGradientIsStationary(s, 1e-4, &kkt))
                         d_convergence = NoProgress;
                     deltaConverged = (d_convergence == Converged);
                 } else {
@@ -2394,6 +2434,14 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
             d_convergence = MaxIterationsReached;
 
         ctx.unpack(s->x, pOpt);
+        for (size_t k = 0; k < n_free; ++k) {
+            const GlobalFitSlot &sl = ctx.freeSlots[k];
+            const double uk = gsl_vector_get(s->x, k);
+            if (sl.boundSide(uk) == 0)
+                continue;
+            pOpt[size_t(sl.paramIdx)] = sl.snapP(sl.mapUtoP(uk));
+            addBoundNote(d_param_names[sl.paramIdx], pOpt[size_t(sl.paramIdx)]);
+        }
         gsl_blas_ddot(s->f, s->f, &ssr);
         if (!std::isfinite(ssr) || ssr < 0.0) {
             d_convergence = NoProgress;
