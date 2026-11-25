@@ -10517,14 +10517,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     // sample's standard deviation (the residual of white noise has variance 1.5 sigma^2). The
     // median ignores the few samples where a peak's curvature dominates the residual.
     std::vector<double> noiseBuf;
-    auto localNoiseSigma = [&](int i) -> double {
-        const int lo = std::max(1, i - promSpan);
-        const int hi = std::min(N - 2, i + promSpan);
-        if (hi - lo + 1 < 5)
-            return 0.0;
-        noiseBuf.clear();
-        for (int k = lo; k <= hi; ++k)
-            noiseBuf.push_back(yRaw[size_t(k)] - 0.5 * (yRaw[size_t(k - 1)] + yRaw[size_t(k + 1)]));
+    auto madSigmaOfBuf = [&]() -> double {
         auto mid = noiseBuf.begin() + noiseBuf.size() / 2;
         std::nth_element(noiseBuf.begin(), mid, noiseBuf.end());
         const double med = *mid;
@@ -10532,6 +10525,52 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             v = std::fabs(v - med);
         std::nth_element(noiseBuf.begin(), mid, noiseBuf.end());
         return 1.4826 * (*mid) / std::sqrt(1.5);
+    };
+    auto residual = [&](int k) {
+        return yRaw[size_t(k)] - 0.5 * (yRaw[size_t(k - 1)] + yRaw[size_t(k + 1)]);
+    };
+    // The residual cannot tell noise from the curvature of a peak that spans only a few samples:
+    // on a coarse (~0.1 deg step) pattern with crowded peaks more than half of the window is
+    // curvature, and the median is not 0 even without any noise. The background samples (net
+    // intensity below the candidate floor, not on a flat run) carry no peak curvature, so they
+    // decide when there are at least 20 of them:
+    //  - no jitter there (white noise makes about 2/3 of the samples local extrema, a smooth
+    //    background almost none): the pattern is noise-free and the noise tests are skipped, so
+    //    noise-free data keep the results they had before the noise tests existed;
+    //  - otherwise their residual spread caps the local estimate at 3x (generous for counting
+    //    noise, which is larger on the peaks than on the background).
+    // Flat runs (a background clipped to 0, a constant one) say nothing about the noise and
+    // are left out; without enough samples the local estimate is used as it is.
+    bool noiseFree = false;
+    double bgNoiseSigma = std::numeric_limits<double>::infinity();
+    {
+        noiseBuf.clear();
+        int nExtrema = 0;
+        for (int k = 1; k < N - 1; ++k) {
+            const double dPrev = yRaw[size_t(k)] - yRaw[size_t(k - 1)];
+            const double dNext = yRaw[size_t(k + 1)] - yRaw[size_t(k)];
+            if (ySmooth[size_t(k)] >= 0.035 * maxNet || dPrev == 0.0 || dNext == 0.0)
+                continue;
+            noiseBuf.push_back(residual(k));
+            if (dPrev * dNext < 0.0)
+                ++nExtrema;
+        }
+        if (noiseBuf.size() >= 20) {
+            noiseFree = nExtrema < 0.1 * double(noiseBuf.size());
+            bgNoiseSigma = madSigmaOfBuf();
+        }
+    }
+    auto localNoiseSigma = [&](int i) -> double {
+        if (noiseFree)
+            return 0.0;
+        const int lo = std::max(1, i - promSpan);
+        const int hi = std::min(N - 2, i + promSpan);
+        if (hi - lo + 1 < 5)
+            return 0.0;
+        noiseBuf.clear();
+        for (int k = lo; k <= hi; ++k)
+            noiseBuf.push_back(residual(k));
+        return std::min(madSigmaOfBuf(), 3.0 * bgNoiseSigma);
     };
     std::vector<int> candIdx;
     for (int i = 2; i < N - 2; ++i) {
@@ -10549,27 +10588,78 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         // could take the real reflection's (hkl), wrecking the Williamson-Hall fit). For an
         // isolated peak, and for the taller of two neighbours, nothing changes.
         const double yi = ySmooth[size_t(i)];
+        // winL / winR: lowest point on each side of the whole window (the old base);
+        // minL / minR (at argL / argR): lowest point before the curve rises above the apex.
+        double winL = yi;
         double minL = yi;
+        int argL = i;
+        bool risenL = false;
         for (int k = i - 1; k >= std::max(0, i - promSpan); --k) {
-            if (ySmooth[size_t(k)] > yi)
-                break;
-            minL = std::min(minL, ySmooth[size_t(k)]);
+            winL = std::min(winL, ySmooth[size_t(k)]);
+            risenL = risenL || ySmooth[size_t(k)] > yi;
+            if (!risenL && ySmooth[size_t(k)] < minL) {
+                minL = ySmooth[size_t(k)];
+                argL = k;
+            }
         }
+        double winR = yi;
         double minR = yi;
+        int argR = i;
+        bool risenR = false;
         for (int k = i + 1; k <= std::min(N - 1, i + promSpan); ++k) {
-            if (ySmooth[size_t(k)] > yi)
-                break;
-            minR = std::min(minR, ySmooth[size_t(k)]);
+            winR = std::min(winR, ySmooth[size_t(k)]);
+            risenR = risenR || ySmooth[size_t(k)] > yi;
+            if (!risenR && ySmooth[size_t(k)] < minR) {
+                minR = ySmooth[size_t(k)];
+                argR = k;
+            }
         }
         const double prom = yi - std::max(minL, minR);
-        if (prom < 0.03 * maxNet)
-            continue;
-        // Significance against the counting noise: a maximum that stands less than 5 sigma
-        // above its surroundings is not a resolved reflection. Noise-free data (sigma = 0)
-        // are unaffected.
-        if (prom < 5.0 * localNoiseSigma(i))
-            continue;
-        candIdx.push_back(i);
+        // The valley towards a taller neighbour is judged against the candidate's own height:
+        // a weak reflection 0.5-0.6 deg beside one ten times taller sits on its flank, and a
+        // valley of 3 % of the tallest peak would have to be half as deep as the weak peak
+        // itself. Noise wiggles on a flank are left to the noise test below.
+        const bool deepEnough = prom >= std::min(0.03 * maxNet, 0.1 * yi);
+        // Significance against the counting noise. A single sample of the apex against a single
+        // sample of the valley (5 sigma, as before) dropped the weak high-angle reflections of
+        // low-count data: Al (222), 7 % of (111), is 70 counts on a 400-count background
+        // (sigma 20), but it spans ~28 samples at a 0.02 deg step. So compare means instead:
+        // the M samples of the core (this maximum above half its prominence) against M samples
+        // around the valley, with noise sigma * sqrt(2 / M) for the difference. A noise maximum
+        // is a few samples wide and its valley mean is not a lucky low sample, while a
+        // reflection gains sqrt(M). Factor 5, on 60 simulated Al patterns per case with Poisson
+        // noise: Al (222) on the 400-count background found in 60 of 60 at a 0.02 deg step
+        // (5 sigma of one sample: 34) and in 42 of 60 at 0.05 deg (17), with at most one noise
+        // peak in 60 patterns (4.5 already let noise peaks through at 0.02 deg).
+        bool significant = true;
+        const double sigmaI = localNoiseSigma(i);
+        if (sigmaI > 0.0) {
+            const double halfLevel = yi - 0.5 * prom;
+            auto inCore = [&](int k) {
+                return ySmooth[size_t(k)] >= halfLevel && ySmooth[size_t(k)] <= yi;
+            };
+            double coreSum = yi;
+            int coreN = 1;
+            for (int k = i - 1; k >= 0 && inCore(k); --k, ++coreN)
+                coreSum += ySmooth[size_t(k)];
+            for (int k = i + 1; k < N && inCore(k); ++k, ++coreN)
+                coreSum += ySmooth[size_t(k)];
+            // The valley that sets the prominence (the higher of the two minima).
+            const int argBase = (minL >= minR) ? argL : argR;
+            const int vLo = std::max(0, argBase - coreN / 2);
+            const int vHi = std::min(N, vLo + coreN);
+            double valleySum = 0.0;
+            for (int k = vLo; k < vHi; ++k)
+                valleySum += ySmooth[size_t(k)];
+            const double valleyMean = valleySum / double(std::max(1, vHi - vLo));
+            significant = coreSum / coreN - valleyMean
+                    >= 5.0 * sigmaI * std::sqrt(2.0 / double(coreN));
+        }
+        // Noise-free data also keep the window prominence used before the noise tests, so an
+        // ideal pattern keeps the peaks it had (a wiggle on a flank needs noise).
+        const bool legacyNoiseFree = noiseFree && yi - std::max(winL, winR) >= 0.03 * maxNet;
+        if ((deepEnough && significant) || legacyNoiseFree)
+            candIdx.push_back(i);
     }
 
     // Merge close candidates keeping the taller peak, cap at top 20. Candidates closer than
@@ -10750,9 +10840,22 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             double bestH = hApex;
             double bestRss = evalPvRss(bestW, bestEta, bestH, bestX);
             double stepW = 0.12 * fwhm0;
-            double stepX = 0.10 * fwhm0;
-            const double xLo = xApex - 0.3 * fwhm0;
-            const double xHi = xApex + 0.3 * fwhm0;
+            // The centre may move only as far as the noise can have moved the apex: up to
+            // 15 sigma / height of a width (0.25 FWHM for the (222) case above), at most
+            // 0.3 of it. Noise-free data keep the 3-point apex exactly. A weak peak on a taller
+            // neighbour's flank has its half-maximum crossing on the neighbour's side beyond the
+            // neighbour (fwhm0 far too wide), and the neighbour's core points pulled the centre
+            // 0.1 deg onto it: the width used is twice the narrower half width, and the centre
+            // does not move towards a side whose half width is over 3 times the other (an apex
+            // displaced by noise makes them differ by up to ~2 times).
+            const double halfL = hasLeft ? xApex - xLeft : fwhm0;
+            const double halfR = hasRight ? xRight - xApex : fwhm0;
+            const double shiftWidth = std::max(0.0, std::min(fwhm0, 2.0 * std::min(halfL, halfR)));
+            const double maxShift = shiftWidth
+                    * std::min(0.3, 15.0 * localNoiseSigma(pkIdx) / std::max(hApex, 1e-12));
+            double stepX = std::min(0.10 * fwhm0, maxShift);
+            const double xLo = (halfL > 3.0 * halfR) ? xApex : xApex - maxShift;
+            const double xHi = (halfR > 3.0 * halfL) ? xApex : xApex + maxShift;
             double stepEta = 0.20;
             double stepH = 0.03 * hApex;
             const double wLo = 0.72 * fwhm0;

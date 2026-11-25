@@ -36,8 +36,13 @@
 #include "I18nJapanese.h"
 
 #include <QApplication>
+#include <QDateTime>
 #include <QLocale>
 #include <QMessageBox>
+
+#include <algorithm>
+#include <numeric>
+#include <vector>
 
 Differentiation::Differentiation(ApplicationWindow *parent, Graph *g) : Filter(parent, g)
 {
@@ -73,6 +78,16 @@ void registerDifferentiationTranslationsOnce()
                               "the duplicate X values first."),
             QString::fromUtf8("微分できません: 隣り合う点で X が同じ組が %1 組あり (最初は x = %2)、"
                               "0 で割ることになります。重複した X を削除するか平均してから実行してください。"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QString::fromUtf8("X is not in order (%1 changes of direction in %2 points); the points "
+                              "were sorted by X before differentiating."),
+            QString::fromUtf8("X が順に並んでいません (%2 点で向きが %1 回変わる)。X の順に並べ替えてから微分しました。"));
+    ToriGraphFullJapaneseTranslator::registerExtraTranslation(
+            QString::fromUtf8("X turns back %1 time(s) (first at x = %2); each branch was "
+                              "differentiated in row order, and the turning points use the "
+                              "one-sided slope of the incoming branch."),
+            QString::fromUtf8("X が %1 回折り返しています (最初は x = %2)。枝ごとに行の順で微分し、"
+                              "折り返し点は手前の枝の片側差分にしました。"));
 }
 
 } // namespace
@@ -81,11 +96,17 @@ void Differentiation::init()
 {
     setObjectName(tr("Derivative"));
     d_min_points = 4;
-    // Differentiate in X order, as Integration and Interpolation do. In row order an unsorted
-    // curve (shuffled rows, a scan that turns back) gave wrong slopes without any warning.
-    // Points that share an X become adjacent after the sort, so output() still refuses them.
-    // A descending curve gives the same slopes as before, now listed in ascending X.
-    d_sort_data = true;
+    // Take the points in row order; output() decides how to treat X (see there). Sorting by X
+    // up front broke scans that go out and back (loading/unloading, CV, hysteresis).
+    d_sort_data = false;
+}
+
+QString Differentiation::logInfo()
+{
+    if (d_notice.isEmpty())
+        return QString();
+    return QStringLiteral("[%1] %2: %3\n")
+            .arg(QLocale().toString(QDateTime::currentDateTime()), objectName(), d_notice);
 }
 
 void Differentiation::output()
@@ -93,6 +114,53 @@ void Differentiation::output()
     ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
     if (!app || d_x.size() < 3 || d_y.size() != d_x.size())
         return;
+
+    registerDifferentiationTranslationsOnce();
+    d_notice.clear();
+    d_error_message.clear();
+
+    // How X runs decides the order of differentiation:
+    //  - monotonic (rising or falling): row order, nothing to say;
+    //  - a few changes of direction: a scan made of monotonic branches that goes out and back
+    //    (loading/unloading, CV, hysteresis), often on the same X grid. Each branch is
+    //    differentiated in row order; sorting would interleave the branches (or put equal X
+    //    next to each other) and give nonsense slopes;
+    //  - many changes of direction: rows in no particular order, sorted by X.
+    // The boundary is more than one change per 4 points: a branch then has fewer than 4 points
+    // on average, too short to be a sweep, while shuffled rows change direction at about 2 of
+    // every 3 points.
+    const size_t nPts = d_x.size();
+    int nTurns = 0;
+    {
+        int prevSign = 0;
+        for (size_t i = 1; i < nPts; ++i) {
+            const double dx = d_x[i] - d_x[i - 1];
+            const int sign = (dx > 0.0) ? 1 : (dx < 0.0 ? -1 : 0);
+            if (sign == 0)
+                continue;
+            if (prevSign != 0 && sign != prevSign)
+                ++nTurns;
+            prevSign = sign;
+        }
+    }
+    if (4 * size_t(nTurns) > nPts) {
+        std::vector<size_t> order(nPts);
+        std::iota(order.begin(), order.end(), size_t(0));
+        std::stable_sort(order.begin(), order.end(),
+                         [this](size_t a, size_t b) { return d_x[a] < d_x[b]; });
+        std::vector<double> xs(nPts), ys(nPts);
+        for (size_t i = 0; i < nPts; ++i) {
+            xs[i] = d_x[order[i]];
+            ys[i] = d_y[order[i]];
+        }
+        d_x.swap(xs);
+        d_y.swap(ys);
+        d_notice = tr("X is not in order (%1 changes of direction in %2 points); the points were "
+                      "sorted by X before differentiating.")
+                           .arg(nTurns)
+                           .arg(int(nPts));
+        nTurns = 0;
+    }
 
     // Adjacent duplicate X would give inf/NaN slopes: refuse up front with a clear message.
     {
@@ -106,13 +174,14 @@ void Differentiation::output()
             }
         }
         if (nDup > 0) {
-            registerDifferentiationTranslationsOnce();
+            d_notice.clear();
             const QString msg =
                     tr("Cannot differentiate: %1 pair(s) of adjacent points have the same X "
                        "(first at x = %2), which would divide by zero. Remove or average "
                        "the duplicate X values first.")
                             .arg(nDup)
                             .arg(firstDupX, 0, 'g', 8);
+            d_error_message = msg;
             app->updateLog(msg + QLatin1Char('\n'));
             if (!isSilentOrNonInteractive()) {
                 // Filter::run() has set the wait cursor: take it off while the message is up
@@ -176,13 +245,20 @@ void Differentiation::output()
     xCol->setPlotDesignation(SciDAVis::X);
     yCol->setPlotDesignation(SciDAVis::Y);
     // Interior points: mean of the left and right slopes (Origin's definition). End points:
-    // one-sided (forward / backward) difference, so the output keeps all n points.
-    const size_t nPts = d_x.size();
+    // one-sided (forward / backward) difference, so the output keeps all n points. A turning
+    // point of an out-and-back scan ends one branch and starts the next: the mean would mix
+    // the slopes of two different branches, so it takes the incoming branch's slope.
+    int nTurnPts = 0;
+    double firstTurnX = 0.0;
     for (size_t i = 0; i < nPts; i++) {
+        const bool turning = nTurns > 0 && i > 0 && i + 1 < nPts
+                && (d_x[i] - d_x[i - 1]) * (d_x[i + 1] - d_x[i]) < 0.0;
+        if (turning && nTurnPts++ == 0)
+            firstTurnX = d_x[i];
         double dydx;
         if (i == 0)
             dydx = (d_y[1] - d_y[0]) / (d_x[1] - d_x[0]);
-        else if (i == nPts - 1)
+        else if (i == nPts - 1 || turning)
             dydx = (d_y[i] - d_y[i - 1]) / (d_x[i] - d_x[i - 1]);
         else
             dydx = 0.5
@@ -191,6 +267,12 @@ void Differentiation::output()
         xCol->setValueAt(int(i), d_x[i]);
         yCol->setValueAt(int(i), dydx);
     }
+    if (nTurnPts > 0)
+        d_notice = tr("X turns back %1 time(s) (first at x = %2); each branch was differentiated "
+                      "in row order, and the turning points use the one-sided slope of the "
+                      "incoming branch.")
+                           .arg(nTurnPts)
+                           .arg(firstTurnX, 0, 'g', 8);
 
     if (!xLongName.isEmpty())
         xCol->setLongName(xLongName);

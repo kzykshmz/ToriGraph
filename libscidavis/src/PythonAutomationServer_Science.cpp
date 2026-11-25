@@ -751,7 +751,16 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                     outCurve = dg->curve(dg->curves() - 1)->title().text();
             }
         }
-        outResult[QStringLiteral("ok")] = ok && (derivMl != nullptr || derivTbl != nullptr);
+        const bool okOut = ok && (derivMl != nullptr || derivTbl != nullptr);
+        outResult[QStringLiteral("ok")] = okOut;
+        if (!okOut) {
+            // Say why (e.g. two adjacent points with the same X) instead of a bare ok: false.
+            outResult[QStringLiteral("message")] = diff.errorMessage().isEmpty()
+                    ? QStringLiteral("Differentiation of '%1' produced no result.").arg(curveTitle)
+                    : diff.errorMessage();
+        }
+        if (!diff.xHandlingNotice().isEmpty())
+            outResult[QStringLiteral("notice")] = diff.xHandlingNotice();
         if (derivMl)
             outResult[QStringLiteral("graph")] = derivMl->name();
         if (derivTbl)

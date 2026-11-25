@@ -41,8 +41,20 @@ public:
     Differentiation(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                     double end);
 
+    //! Notice about how X was treated (sorted by X, or the turning points of a scan that goes
+    //! back); empty when X was monotonic.
+    QString xHandlingNotice() const { return d_notice; }
+    //! Why the last run() refused to differentiate; empty if it did not.
+    QString errorMessage() const { return d_error_message; }
+
+protected:
+    QString logInfo() override;
+
 private:
     void init();
-    void output();
+    void output() override;
+
+    QString d_notice;
+    QString d_error_message;
 };
 #endif
