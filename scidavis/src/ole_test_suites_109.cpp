@@ -241,6 +241,24 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(res(r).value(QStringLiteral("ok")).toBool()
                            && sameValues(columnValues("Q109", "C"), { 14, 16, 18 }),
                    "109b: col(\"2\") / Long Name in a table named A,B,C: " << q(columnValues("Q109", "C")));
+
+        // names such as X, Y or 2024 cannot be positions in a 3-column table: letters and numbers
+        // still read by position there
+        Table *v = w109->newTable(QStringLiteral("XY109"), 3, 3);
+        CHECK_COND(v != nullptr, "109b: table XY109");
+        v->setColName(0, QStringLiteral("X"));
+        v->setColName(1, QStringLiteral("Y"));
+        v->setColName(2, QStringLiteral("2024"));
+        rpc(QStringLiteral("table.set_column_data"),
+            QJsonObject{ { "table", "XY109" }, { "col", "X" }, { "data", numbers({ 1, 2, 3 }) } });
+        rpc(QStringLiteral("table.set_column_data"),
+            QJsonObject{ { "table", "XY109" }, { "col", "Y" }, { "data", numbers({ 5, 6, 7 }) } });
+        r = rpc(QStringLiteral("table.set_formula"),
+                QJsonObject{ { "table", "XY109" }, { "col", "2024" }, { "formula", "col(\"A\")+col(\"2\")" } });
+        CHECK_COND(res(r).value(QStringLiteral("ok")).toBool()
+                           && sameValues(columnValues("XY109", "2024"), { 6, 8, 10 }),
+                   "109b: col(\"A\")+col(\"2\") in a table named X,Y,2024: "
+                           << q(columnValues("XY109", "2024")));
         std::cout << "[PASS] 109b: column letters, numbers and Long Names still resolve\n";
     }
 

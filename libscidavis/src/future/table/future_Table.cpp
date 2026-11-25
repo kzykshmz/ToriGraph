@@ -282,21 +282,41 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
                     return false;
             return true;
         };
-        // A table that names its columns with letters ("A", "B", ...) or numbers ("1", "2", ...,
-        // the default names) uses that style as names. A reference in the same style that matches
-        // no column then names a column that is gone (removed, or renamed without the formula
-        // following), and reading the column now at that position would silently give the
-        // values of another column. The positional reading only applies when no column of the
-        // table is named in the style of the reference.
-        auto tableHasColumnNamed = [this](bool (*styleOf)(const QString &)) {
+        auto letterIndex = [](const QString &s) {
+            qint64 idx = 0;
+            for (const QChar ch : s) {
+                idx = idx * 26 + (ch.unicode() - QLatin1Char('A').unicode() + 1);
+                if (idx > 1000000)
+                    break;
+            }
+            return idx;
+        };
+        // A table whose columns carry position-like names ("A", "B", ... or "1", "2", ..., the
+        // default names) uses them as names. A reference in the same style that matches no column
+        // then names a column that is gone (removed, or renamed without the formula following),
+        // and reading the column now at that position would silently give the values of another
+        // column. The positional reading is refused when some column of the table has a name in
+        // the style of the reference that could itself be a position in this table (letter or
+        // number 1..columnCount). Names such as "X", "Y" or "2024" in a small table do not, so
+        // col("A") or col("1") still reads the first column there.
+        auto tableHasPositionLikeName = [this](bool (*styleOf)(const QString &),
+                                               qint64 (*indexOf)(const QString &)) {
             for (int i = 0; i < columnCount(); i++) {
                 const Column *col = d_table_private.column(i);
-                if (col && styleOf(col->name()))
-                    return true;
+                if (col && styleOf(col->name())) {
+                    const qint64 idx = indexOf(col->name());
+                    if (idx >= 1 && idx <= columnCount())
+                        return true;
+                }
             }
             return false;
         };
-        if (isUpperAlphaName(name) && !tableHasColumnNamed(isUpperAlphaName)) {
+        auto digitIndex = [](const QString &s) -> qint64 {
+            bool ok = false;
+            const qint64 v = s.toLongLong(&ok);
+            return ok ? v : 0;
+        };
+        if (isUpperAlphaName(name) && !tableHasPositionLikeName(isUpperAlphaName, letterIndex)) {
             int alphaIdx = 0;
             for (const QChar ch : name) {
                 alphaIdx = alphaIdx * 26 + (ch.unicode() - QLatin1Char('A').unicode() + 1);
@@ -310,7 +330,7 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
         bool okNum = false;
         const int oneBased = name.toInt(&okNum);
         if (okNum && oneBased >= 1 && oneBased <= columnCount()
-            && !tableHasColumnNamed(isDigitName))
+            && !tableHasPositionLikeName(isDigitName, digitIndex))
             return d_table_private.column(oneBased - 1);
     }
 
