@@ -258,8 +258,11 @@ public slots:
                           const QString &xColName = QString());
     bool insertCurve(Table *w, const QString &name, int style, int startRow = 0, int endRow = -1);
     bool insertCurve(Table *w, int xcol, const QString &name, int style);
+    //! A curve whose columns hold no valid point is not added (false), unless keepEmpty is set:
+    //! reading a project keeps such a curve as an empty curve, as it was saved (the column was
+    //! empty for a while), so that it shows again when the column gets data.
     bool insertCurve(Table *w, const QString &xColName, const QString &yColName, int style,
-                     int startRow = 0, int endRow = -1);
+                     int startRow = 0, int endRow = -1, bool keepEmpty = false);
     void insertPlotItem(QwtPlotItem *i, int type);
 
     //! Shows/Hides a curve defined by its index.

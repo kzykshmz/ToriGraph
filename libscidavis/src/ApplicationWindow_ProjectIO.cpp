@@ -3525,12 +3525,14 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                         if (d_file_version < 72)
                             curve_loaded = ag->insertCurve(w, curve[1].toInt(), curve[2], plotType);
                         else if (d_file_version < 90)
-                            curve_loaded = ag->insertCurve(w, curve[1], curve[2], plotType);
+                            // 列はあるが点の無い曲線（保存時に列が空だった）も戻す
+                            curve_loaded = ag->insertCurve(w, curve[1], curve[2], plotType, 0, -1,
+                                                           true);
                         else {
                             int startRow = curve[curve.count() - 3].toInt();
                             int endRow = curve[curve.count() - 2].toInt();
                             curve_loaded = ag->insertCurve(w, curve[1], curve[2], plotType,
-                                                           startRow, endRow);
+                                                           startRow, endRow, true);
                         }
                     }
 

@@ -1091,7 +1091,7 @@ bool Graph::insertCurve(Table *w, int xcol, const QString &name, int style)
 }
 
 bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColName, int style,
-                        int startRow, int endRow)
+                        int startRow, int endRow, bool keepEmpty)
 {
     if (!w)
         return false;
@@ -1164,8 +1164,9 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
     if (!c->loadData())
         return false;
     // loadData() は有効な点が無くなった既存の曲線を空のまま残す。新しく作図する曲線は従来どおり、
-    // 有効な点が 1 つも無ければ作らない（空の列で作図したときはエラーになる）。
-    if (c->dataSize() <= 0) {
+    // 有効な点が 1 つも無ければ作らない（空の列で作図したときはエラーになる）。プロジェクトの
+    // 読み込み（keepEmpty）では、保存したときに空だった曲線も体裁ごと戻す。
+    if (c->dataSize() <= 0 && !keepEmpty) {
         c->remove();
         return false;
     }
