@@ -26,9 +26,10 @@
 //        X range holding one point that is widened or gets a second point
 //   87g  a plot emptied (NOPLOT) by degenerate data saves the style the user chose: the Style
 //        record of saveToString names it (not the floor style), and a new Graph3D restored from
-//        it draws with that style once the data is back (ribbon with an X range: wireframe and
-//        points; 1-row matrix: wireframe). A broken record ("nofloor" as the plot style, written
-//        by the old code) restores the default filled mesh
+//        it stays empty (NOPLOT) right after setStyle and draws with that style once the data is
+//        back (ribbon with an X range: wireframe and points; 1-row matrix: wireframe). A broken
+//        record ("nofloor" as the plot style, written by the old code) restores the default
+//        filled mesh
 // The checks report every failure (they do not stop at the first one); 87e/87f come last because
 // the old code could loop forever there.
 // =============================================================================
@@ -607,6 +608,10 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw)
                         "87g " << v.label << ": restored plot with one point is drawn");
                 if (rec.size() >= 4)
                     gn->setStyle(rec);
+                // setStyle only remembers the style: the plot stays empty until data is back
+                CHECK87(gn->plotStyle() == Qwt3D::NOPLOT,
+                        "87g " << v.label << ": restored one-point plot is drawn with style "
+                               << int(gn->plotStyle()) << " right after setStyle");
                 gn->updateScales(-0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
                 const Qwt3D::GridData *grid = SurfacePeek87::grid(gn->sp);
                 CHECK87(gn->plotStyle() == v.drawn && gn->pointType() == v.point,
@@ -627,6 +632,9 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw)
             Graph3D *gb = new Graph3D(QString());
             gb->addData(tg, tg->colName(0), tg->colName(1), -0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
             gb->setStyle(broken);
+            CHECK87(gb->plotStyle() == Qwt3D::NOPLOT,
+                    "87g broken record (empty plot): drawn with style " << int(gb->plotStyle())
+                                                                        << " right after setStyle");
             gb->updateScales(-0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
             CHECK87(gb->plotStyle() == Qwt3D::FILLEDMESH,
                     "87g broken record (empty plot): style " << int(gb->plotStyle())
@@ -671,6 +679,9 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw)
                     "87g matrix: restored 1x5 matrix plot is drawn");
             if (rec.size() >= 4)
                 gn->setStyle(rec);
+            CHECK87(gn->plotStyle() == Qwt3D::NOPLOT,
+                    "87g matrix: restored 1x5 matrix plot is drawn with style "
+                            << int(gn->plotStyle()) << " right after setStyle");
             mg->setDimensions(3, 5);
             fill();
             gn->updateMatrixData(mg);

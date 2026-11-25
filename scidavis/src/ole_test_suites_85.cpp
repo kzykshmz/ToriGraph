@@ -31,7 +31,8 @@
 //       the same scale-independent pivot rule (diag(1e10, 1e-7) -> 1e3, 1..9 3x3 -> 0); a pivot
 //       is only zeroed when it is lost in the rounding of its own cancellation, so triangular
 //       matrices keep their true determinant ([[1,1e16],[0,1]] -> 1,
-//       [[1,1000],[0,1e-13]] -> 1e-13)
+//       [[1,1000],[0,1e-13]] -> 1e-13); the multiplier's own cancellation is counted, so
+//       rank-deficient integer matrices give exactly 0 (3x3 and 4x4 cases)
 // Every check is evaluated (failures are counted) so a single run reports all regressions.
 // =============================================================================
 namespace {
@@ -390,6 +391,13 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
             // nearly singular but exact in binary: 1 + 2^-30 - 1 = 2^-30 is not noise
             { "[[1,1],[1,1+2^-30]]", 2, { 1.0, 1.0, 1.0, 1.0 + std::ldexp(1.0, -30) },
               std::ldexp(1.0, -30) },
+            // rank-deficient integer matrices (det = 0 exactly): the multiplier l_ik is itself
+            // produced by a cancellation, so its uncertainty has to be carried into the scale
+            // or the rounding residue survives (-1.19e-11 / -9.4e-10 before the fix)
+            { "[[85,121,0],[-11,25,-108],[18,26,-1]]", 3,
+              { 85, 121, 0, -11, 25, -108, 18, 26, -1 }, 0.0 },
+            { "[[98,-92,-52,16],[62,-66,-16,-2],[-51,63,28,76],[16,-32,16,-46]]", 4,
+              { 98, -92, -52, 16, 62, -66, -16, -2, -51, 63, 28, 76, 16, -32, 16, -46 }, 0.0 },
         };
         int rpcId = 8500;
         for (const DetCase &c : cases) {

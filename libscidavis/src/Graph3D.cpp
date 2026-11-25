@@ -3085,32 +3085,52 @@ void Graph3D::setStyle(const QStringList &st)
     else if (st[2] == "floordata")
         sp->setFloorStyle(FLOORDATA);
 
-    if (st[3] == "filledmesh")
-        sp->setPlotStyle(FILLEDMESH);
-    else if (st[3] == "filled")
-        sp->setPlotStyle(FILLED);
-    else if (st[3] == "points") {
+    // A plot whose data was too small to draw (fewer than two points) was set to NOPLOT while its
+    // data was read, before this style line. Keep it empty and only remember the saved style in
+    // style_ / pointStyle, so that resetNonEmptyStyle() draws it with that style once the data is
+    // back; drawing it now would show an empty plot with a style (and enable the 3D toolbar).
+    const bool emptyPlot = sp->plotStyle() == NOPLOT;
+    Qwt3D::PLOTSTYLE named = NOPLOT; // NOPLOT here means "no style name recognised"
+    if (st[3] == "filledmesh") {
+        named = FILLEDMESH;
+        if (!emptyPlot)
+            sp->setPlotStyle(FILLEDMESH);
+    } else if (st[3] == "filled") {
+        named = FILLED;
+        if (!emptyPlot)
+            sp->setPlotStyle(FILLED);
+    } else if (st[3] == "points") {
         pointSize = st[4].toDouble();
 
         smooth = false;
         if (st[5] == "1")
             smooth = true;
 
-        sp->setPlotStyle(Dot(pointSize, smooth));
+        named = USER;
+        if (!emptyPlot)
+            sp->setPlotStyle(Dot(pointSize, smooth));
         pointStyle = Dots;
-    } else if (st[3] == "wireframe")
-        sp->setPlotStyle(WIREFRAME);
-    else if (st[3] == "hiddenline")
-        sp->setPlotStyle(HIDDENLINE);
-    else if (st[3] == "bars") {
+    } else if (st[3] == "wireframe") {
+        named = WIREFRAME;
+        if (!emptyPlot)
+            sp->setPlotStyle(WIREFRAME);
+    } else if (st[3] == "hiddenline") {
+        named = HIDDENLINE;
+        if (!emptyPlot)
+            sp->setPlotStyle(HIDDENLINE);
+    } else if (st[3] == "bars") {
         barsRad = (st[4]).toDouble();
-        sp->setPlotStyle(Bar(barsRad));
+        named = USER;
+        if (!emptyPlot)
+            sp->setPlotStyle(Bar(barsRad));
         pointStyle = VerticalBars;
     } else if (st[3] == "cones") {
         conesRad = (st[4]).toDouble();
         conesQuality = (st[5]).toInt();
 
-        sp->setPlotStyle(Cone3D(conesRad, conesQuality));
+        named = USER;
+        if (!emptyPlot)
+            sp->setPlotStyle(Cone3D(conesRad, conesQuality));
         pointStyle = Cones;
     } else if (st[3] == "cross") {
         crossHairRad = (st[4]).toDouble();
@@ -3124,12 +3144,17 @@ void Graph3D::setStyle(const QStringList &st)
         if (st[7] == "1")
             crossHairBoxed = true;
 
-        sp->setPlotStyle(
-                CrossHair(crossHairRad, crossHairLineWidth, crossHairSmooth, crossHairBoxed));
+        named = USER;
+        if (!emptyPlot)
+            sp->setPlotStyle(CrossHair(crossHairRad, crossHairLineWidth, crossHairSmooth,
+                                       crossHairBoxed));
         pointStyle = HairCross;
     }
 
-    style_ = sp->plotStyle();
+    if (!emptyPlot)
+        style_ = sp->plotStyle();
+    else if (named != NOPLOT)
+        style_ = named;
 }
 
 void Graph3D::setRotation(double xVal, double yVal, double zVal)
