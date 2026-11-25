@@ -1097,6 +1097,13 @@ public:
     bool isPolarPlot() const { return d_is_polar; }
     bool isPoleFigurePlot() const;
     double polarRadiusMax() const { return d_polar_rmax; }
+    // View range of a polar plot that differs from the one derived from the radius (set by a
+    // style preset that makes room for the legend, or restored from a project). updatePlot()
+    // keeps it; adding a series (setupPolarPlot) drops it.
+    void setPolarViewRange(double xMin, double xMax, double yMin, double yMax);
+    bool hasPolarViewRange() const { return d_polar_view_set; }
+    // Range derived from the radius and the number of series (the default view).
+    void polarDefaultViewRange(double *xMin, double *xMax, double *yMin, double *yMax) const;
     QString ternaryLabel(int idx) const
     {
         return (idx >= 0 && idx < 3) ? d_ternary_labels[idx] : QString();
@@ -1256,6 +1263,8 @@ private:
     QString d_ternary_labels[3] = { QString("A"), QString("B"), QString("C") };
     bool d_is_polar = false;
     double d_polar_rmax = 1.0;
+    bool d_polar_view_set = false;
+    double d_polar_view[4] = { 0.0, 0.0, 0.0, 0.0 }; // x min, x max, y min, y max
     QwtPlotItem *d_ternary_item = nullptr;
     QwtPlotItem *d_polar_item = nullptr;
     QStringList d_custom_category_labels[4];

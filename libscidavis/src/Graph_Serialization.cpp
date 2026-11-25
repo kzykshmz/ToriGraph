@@ -1298,10 +1298,35 @@ QString Graph::saveToString(bool saveAsTemplate)
             s += QString("<ToriPolarPlot enabled=\"1\" rmax=\"%1\"/>\n")
                          .arg(QString::number(d_polar_rmax, 'g', 15));
             if (!saveAsTemplate) {
-                for (const PolarSeriesSpec &ps : d_polar_series) {
+                // The curves of the polar series are plain PlotCurves that saveCurves() skips;
+                // their current look (set_curve_style, style presets) is written here, since
+                // d_polar_series only holds the look they were created with.
+                QList<PlotCurve *> polarCurves;
+                for (int i = 0; i < n_curves; ++i) {
+                    PlotCurve *pc = dynamic_cast<PlotCurve *>(plotItem(i));
+                    if (pc && pc->type() == Function && !dynamic_cast<FunctionCurve *>(pc)
+                        && !dynamic_cast<DataCurve *>(pc))
+                        polarCurves << pc;
+                }
+                const bool byOrder = (polarCurves.size() == d_polar_series.size());
+                QList<PlotCurve *> unused = polarCurves;
+                for (int si = 0; si < d_polar_series.size(); ++si) {
+                    const PolarSeriesSpec &ps = d_polar_series[si];
                     const int m = qMin(ps.x.size(), ps.y.size());
                     if (m <= 0)
                         continue;
+                    PlotCurve *pc = nullptr;
+                    if (byOrder) {
+                        pc = polarCurves[si];
+                    } else {
+                        for (PlotCurve *cand : unused) {
+                            if (cand->title().text() == ps.label) {
+                                pc = cand;
+                                break;
+                            }
+                        }
+                    }
+                    unused.removeAll(pc);
                     QStringList xs, ys;
                     xs.reserve(m);
                     ys.reserve(m);
@@ -1309,13 +1334,61 @@ QString Graph::saveToString(bool saveAsTemplate)
                         xs << QString::number(ps.x[k], 'g', 12);
                         ys << QString::number(ps.y[k], 'g', 12);
                     }
-                    s += QString("<ToriPolarSeries label=\"%1\" color=\"%2\" width=\"%3\" "
-                                 "x=\"%4\" y=\"%5\"/>\n")
-                                 .arg(escAttr(ps.label))
-                                 .arg(ps.color.name(QColor::HexArgb))
-                                 .arg(QString::number(ps.width, 'g', 8))
-                                 .arg(xs.join(","))
-                                 .arg(ys.join(","));
+                    QString look;
+                    if (pc) {
+                        const QPen pen = pc->pen();
+                        look = QString(" style=\"%1\" curve=\"%2\"")
+                                       .arg(int(pen.style()))
+                                       .arg(int(pc->style()));
+                        if (pen.style() == Qt::CustomDashLine) {
+                            QStringList dash;
+                            for (qreal v : pen.dashPattern())
+                                dash << QString::number(v, 'g', 8);
+                            look += QString(" dash=\"%1\"").arg(dash.join(' '));
+                        }
+                        const QwtSymbol sym = pc->symbol();
+                        look += QString(" sym=\"%1\" symsize=\"%2\" sympen=\"%3\" symw=\"%4\" "
+                                        "symbrush=\"%5\" visible=\"%6\"")
+                                        .arg(QString::number(SymbolBox::symbolIndex(sym.style())),
+                                             QString::number(sym.size().width()),
+                                             sym.pen().color().name(QColor::HexArgb),
+                                             QString::number(sym.pen().widthF(), 'g', 8),
+                                             sym.brush().style() == Qt::NoBrush
+                                                     ? QStringLiteral("none")
+                                                     : sym.brush().color().name(QColor::HexArgb),
+                                             QString::number(pc->isVisible() ? 1 : 0));
+                    }
+                    s += QString("<ToriPolarSeries label=\"%1\" color=\"%2\" width=\"%3\"%4 "
+                                 "x=\"%5\" y=\"%6\"/>\n")
+                                 .arg(escAttr(pc ? pc->title().text() : ps.label),
+                                      (pc ? pc->pen().color() : ps.color).name(QColor::HexArgb),
+                                      QString::number(pc ? pc->pen().widthF() : ps.width, 'g', 8),
+                                      look, xs.join(","), ys.join(","));
+                }
+                // A view range other than the one derived from the radius (legend room made by
+                // a style preset, a function curve's range) is restored after the series, which
+                // re-derive the default one.
+                double dx0 = 0.0, dx1 = 0.0, dy0 = 0.0, dy1 = 0.0;
+                polarDefaultViewRange(&dx0, &dx1, &dy0, &dy1);
+                const QwtScaleDiv *xd = d_plot->axisScaleDiv(QwtPlot::xBottom);
+                const QwtScaleDiv *yd = d_plot->axisScaleDiv(QwtPlot::yLeft);
+                if (xd && yd) {
+                    const double vx0 = qMin(xd->lowerBound(), xd->upperBound());
+                    const double vx1 = qMax(xd->lowerBound(), xd->upperBound());
+                    const double vy0 = qMin(yd->lowerBound(), yd->upperBound());
+                    const double vy1 = qMax(yd->lowerBound(), yd->upperBound());
+                    auto differs = [](double a, double b) {
+                        return std::fabs(a - b) > 1e-9 * qMax(1.0, std::fabs(b));
+                    };
+                    if (vx1 > vx0 && vy1 > vy0
+                        && (differs(vx0, dx0) || differs(vx1, dx1) || differs(vy0, dy0)
+                            || differs(vy1, dy1)))
+                        s += QString("<ToriPolarView xmin=\"%1\" xmax=\"%2\" ymin=\"%3\" "
+                                     "ymax=\"%4\"/>\n")
+                                     .arg(QString::number(vx0, 'g', 15),
+                                          QString::number(vx1, 'g', 15),
+                                          QString::number(vy0, 'g', 15),
+                                          QString::number(vy1, 'g', 15));
                 }
             }
         }
@@ -1738,6 +1811,9 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
         for (int a = 0; a < QwtPlot::axisCnt; ++a)
             enableAxis(a, false);
+        if (g->d_polar_view_set)
+            setPolarViewRange(g->d_polar_view[0], g->d_polar_view[1], g->d_polar_view[2],
+                              g->d_polar_view[3]);
     }
 
     d_axis_unit_format = g->axisUnitFormat();
@@ -2505,14 +2581,61 @@ bool Graph::restorePhase5Tag(const QString &line)
             ps.color = QColor(attrs.value("color", "#ff0072b2"));
             if (!ps.color.isValid())
                 ps.color = QColor(0, 114, 178);
-            ps.width = qMax(1.0, attrs.value("width", "2").toDouble());
+            const double wAttr = attrs.value("width", "2").toDouble();
+            ps.width = (std::isfinite(wAttr) && wAttr > 0.0) ? qMin(wAttr, 100.0) : 2.0;
 
             PlotCurve *pc = new PlotCurve(ps.label);
             pc->setType(Function);
             pc->setData(ps.x.constData(), ps.y.constData(), m);
-            QPen p(ps.color, ps.width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            // The look attributes (style, curve, dash, sym*, visible) are absent in files written
+            // before they were saved: those curves keep the solid line they were drawn with.
+            Qt::PenStyle penStyle = Qt::SolidLine;
+            bool okStyle = false;
+            const int styleAttr = attrs.value("style").toInt(&okStyle);
+            if (okStyle && styleAttr >= int(Qt::NoPen) && styleAttr <= int(Qt::CustomDashLine))
+                penStyle = Qt::PenStyle(styleAttr);
+            QPen p(ps.color, ps.width, penStyle, Qt::RoundCap, Qt::RoundJoin);
+            if (penStyle == Qt::CustomDashLine) {
+                QVector<qreal> dash;
+                for (const QString &t : attrs.value("dash").split(' ', Qt::SkipEmptyParts)) {
+                    const double v = t.toDouble();
+                    if (std::isfinite(v) && v > 0.0)
+                        dash << v;
+                }
+                if (dash.size() >= 2 && dash.size() % 2 == 0)
+                    p.setDashPattern(dash);
+                else
+                    p.setStyle(Qt::DashLine);
+            }
             p.setCosmetic(false);
             pc->setPen(p);
+            bool okCurve = false;
+            const int curveAttr = attrs.value("curve").toInt(&okCurve);
+            if (okCurve && curveAttr >= int(QwtPlotCurve::NoCurve)
+                && curveAttr <= int(QwtPlotCurve::Dots))
+                pc->setStyle(QwtPlotCurve::CurveStyle(curveAttr));
+            bool okSym = false;
+            const int symAttr = attrs.value("sym").toInt(&okSym);
+            if (okSym && symAttr > 0) {
+                const int symSize = qBound(1, attrs.value("symsize", "7").toInt(), 200);
+                QColor symPen(attrs.value("sympen"));
+                if (!symPen.isValid())
+                    symPen = ps.color;
+                const double symW = attrs.value("symw", "1").toDouble();
+                QPen sp(symPen, (std::isfinite(symW) && symW > 0.0) ? qMin(symW, 50.0) : 1.0);
+                sp.setCosmetic(false);
+                const QString brushAttr = attrs.value("symbrush", "none");
+                QBrush sb(Qt::NoBrush);
+                if (brushAttr != QLatin1String("none")) {
+                    const QColor bc(brushAttr);
+                    if (bc.isValid())
+                        sb = QBrush(bc);
+                }
+                pc->setSymbol(
+                        QwtSymbol(SymbolBox::style(symAttr), sb, sp, QSize(symSize, symSize)));
+            }
+            if (attrs.contains("visible"))
+                pc->setVisible(attrs.value("visible").toInt() != 0);
 
             c_type.resize(++n_curves);
             c_type[n_curves - 1] = Function;
@@ -2520,6 +2643,7 @@ bool Graph::restorePhase5Tag(const QString &line)
             c_keys[n_curves - 1] = d_plot->insertCurve(pc);
             syncCurveZOrder();
             d_polar_series.append(ps);
+            d_polar_view_set = false;
 
             const double rMax = qMax(1e-6, d_polar_rmax);
             const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
@@ -2531,6 +2655,16 @@ bool Graph::restorePhase5Tag(const QString &line)
             setScale(QwtPlot::yLeft, yLo, yHi, 0.0, 5, 0, 0, false);
             for (int a = 0; a < QwtPlot::axisCnt; ++a)
                 enableAxis(a, false);
+            if (hasLegend())
+                placeLegendAnchor(LegendTopRight);
+        }
+        return true;
+    }
+
+    if (s.startsWith("<ToriPolarView")) {
+        if (d_is_polar) {
+            setPolarViewRange(attrs.value("xmin").toDouble(), attrs.value("xmax").toDouble(),
+                              attrs.value("ymin").toDouble(), attrs.value("ymax").toDouble());
             if (hasLegend())
                 placeLegendAnchor(LegendTopRight);
         }

@@ -1493,9 +1493,12 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "table:str=''; x_col:int|str=null; y_col:int|str=null; z_col:int|str=null; style:str='scatter'[scatter|trajectory|bars|ribbon]",
       "g3 = app.plot_3d_xyz(tbl, 'X', 'Y', 'Z')" },
     { "plot.3d_function", "plot",
-      "Session.plot_3d_function(formula, *, x_min=-5, x_max=5, y_min=-5, y_max=5)",
-      "Create a 3D analytical surface z = f(x, y).",
-      "formula:str*; x_min:float=-5; x_max:float=5; y_min:float=-5; y_max:float=5",
+      "Session.plot_3d_function(formula, *, x_min=-5, x_max=5, y_min=-5, y_max=5, z_min=None, z_max=None)",
+      "Create a 3D analytical surface z = f(x, y). An omitted z_min / z_max is the range of f "
+      "on the surface grid (widened a little when f is constant), so the surface is not clipped; "
+      "a given bound clips the surface there.",
+      "formula:str*; x_min:float=-5; x_max:float=5; y_min:float=-5; y_max:float=5; "
+      "z_min:float=null(auto); z_max:float=null(auto)",
       "g3 = app.plot_3d_function('sin(x)*cos(y)')" },
 
     // 5. Graph Layout, Inspection, Styling & Export (graph.*)
@@ -2591,10 +2594,12 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             emittedG3 = true;
         } else if (!g3d->formula().trimmed().isEmpty()) {
             lines << QStringLiteral(
-                             "g3 = app.plot_3d_function(%1, x_min=%2, x_max=%3, y_min=%4, y_max=%5)")
+                             "g3 = app.plot_3d_function(%1, x_min=%2, x_max=%3, y_min=%4, "
+                             "y_max=%5, z_min=%6, z_max=%7)")
                              .arg(pyEscapeStr(g3d->formula().trimmed()),
                                   pyFormatNum(g3d->xStart()), pyFormatNum(g3d->xStop()),
-                                  pyFormatNum(g3d->yStart()), pyFormatNum(g3d->yStop()));
+                                  pyFormatNum(g3d->yStart()), pyFormatNum(g3d->yStop()),
+                                  pyFormatNum(g3d->zStart()), pyFormatNum(g3d->zStop()));
             emittedG3 = true;
         }
         if (!emittedG3) {

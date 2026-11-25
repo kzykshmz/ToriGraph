@@ -4846,8 +4846,18 @@ class Session:
         y_min: float = -5.0,
         y_max: float = 5.0,
         graph_name: Optional[str] = None,
+        *,
+        z_min: Optional[float] = None,
+        z_max: Optional[float] = None,
         **kwargs: Any,
     ) -> GraphProxy:
+        """Create a 3D surface ``z = f(x, y)`` over ``[x_min, x_max] x [y_min, y_max]``.
+
+        ``z_min`` / ``z_max`` set the Z range; the surface is clipped there. A bound left at
+        ``None`` is the range of the function on the surface grid (widened a little when the
+        function is constant), so e.g. ``50*x*y`` on ``[0, 1]^2`` gets Z ``0..50`` instead of
+        being cut flat.
+        """
         res = self.call(
             "plot.3d_function",
             formula=formula,
@@ -4855,6 +4865,8 @@ class Session:
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
+            z_min=z_min,
+            z_max=z_max,
             graph_name=graph_name,
             **kwargs,
         )

@@ -1371,13 +1371,16 @@ void Graph::updatePlot()
             d_plot->enableAxis(i, false);
         drawAxesBackbones(false);
     } else if (d_is_polar) {
-        const double rMax = qMax(1e-6, d_polar_rmax);
-        const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
-        const int extraRows = qMax(0, nPolarRows - 1);
-        const double yLo = -1.44 * rMax;
-        const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
-        const double halfX = 0.5 * (yHi - yLo);
-        d_plot->setAxisScale(QwtPlot::xBottom, -halfX, halfX);
+        double xLo = 0.0, xHi = 0.0, yLo = 0.0, yHi = 0.0;
+        if (d_polar_view_set) {
+            xLo = d_polar_view[0];
+            xHi = d_polar_view[1];
+            yLo = d_polar_view[2];
+            yHi = d_polar_view[3];
+        } else {
+            polarDefaultViewRange(&xLo, &xHi, &yLo, &yHi);
+        }
+        d_plot->setAxisScale(QwtPlot::xBottom, xLo, xHi);
         d_plot->setAxisScale(QwtPlot::yLeft, yLo, yHi);
         for (int i = 0; i < QwtPlot::axisCnt; i++)
             d_plot->enableAxis(i, false);
@@ -3539,6 +3542,7 @@ void Graph::setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double
 {
     const bool alreadyPolar = d_is_polar;
     d_is_polar = true;
+    d_polar_view_set = false;
     d_is_ternary = false;
     m_autoscale = false;
 
@@ -3663,6 +3667,36 @@ void Graph::setupPolarPlot(const QVector<double> &thetaDeg, const QVector<double
 
     d_plot->replot();
     emit modifiedGraph();
+}
+
+void Graph::polarDefaultViewRange(double *xMin, double *xMax, double *yMin, double *yMax) const
+{
+    const double rMax = qMax(1e-6, d_polar_rmax);
+    const int nPolarRows = qMax(1, qMax(int(d_polar_series.size()), n_curves));
+    const int extraRows = qMax(0, nPolarRows - 1);
+    const double yLo = -1.44 * rMax;
+    const double yHi = (1.64 + 0.36 * double(extraRows)) * rMax;
+    const double halfX = 0.5 * (yHi - yLo);
+    *xMin = -halfX;
+    *xMax = halfX;
+    *yMin = yLo;
+    *yMax = yHi;
+}
+
+void Graph::setPolarViewRange(double xMin, double xMax, double yMin, double yMax)
+{
+    if (!d_is_polar || !std::isfinite(xMin) || !std::isfinite(xMax) || !std::isfinite(yMin)
+        || !std::isfinite(yMax) || !(xMax > xMin) || !(yMax > yMin))
+        return;
+    d_polar_view[0] = xMin;
+    d_polar_view[1] = xMax;
+    d_polar_view[2] = yMin;
+    d_polar_view[3] = yMax;
+    d_polar_view_set = true;
+    setScale(QwtPlot::xBottom, xMin, xMax, 0.0, 5, 0, 0, false);
+    setScale(QwtPlot::yLeft, yMin, yMax, 0.0, 5, 0, 0, false);
+    for (int a = 0; a < QwtPlot::axisCnt; ++a)
+        enableAxis(a, false);
 }
 
 DataCurve *Graph::pointColorMapCurve() const

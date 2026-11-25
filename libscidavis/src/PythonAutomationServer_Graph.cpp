@@ -1908,7 +1908,11 @@ QJsonObject serializeAxisInfo(Graph *g, int qwtAxis)
             ax[QStringLiteral("inverted")] = (lo > hi);
         }
         const QwtScaleEngine *se = plt->axisScaleEngine(qwtAxis);
-        const bool isLog = (dynamic_cast<const QwtLog10ScaleEngine *>(se) != nullptr);
+        // A broken axis has a piecewise engine; it is log10 when both sides are (as Plot reads it).
+        const Graph::AxisBreakSpec brkNow = g->axisBreak(qwtAxis);
+        const bool isLog = brkNow.enabled
+                ? (brkNow.log10Before && brkNow.log10After)
+                : (dynamic_cast<const QwtLog10ScaleEngine *>(se) != nullptr);
         ax[QStringLiteral("scale")] = isLog ? QStringLiteral("log10") : QStringLiteral("linear");
 
         if (auto *sd = dynamic_cast<ScaleDraw *>(plt->axisScaleDraw(qwtAxis))) {
@@ -3035,11 +3039,16 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                                       spec.stepAfter);
             if (spec.stepBefore < 0.0 || spec.stepAfter < 0.0)
                 throwInvalidParams(QStringLiteral("step_before and step_after must be >= 0."));
-            spec.log10Before = optionalJsonBool(params, QStringLiteral("log_before"), spec.log10Before);
-            spec.log10After = optionalJsonBool(params, QStringLiteral("log_after"), spec.log10After);
             const Plot *plt = g->plotWidget();
-            const bool axisIsLog = plt
-                    && dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr;
+            const bool axisIsLog = plt && Plot::isLog10ScaleEngine(plt->axisScaleEngine(ax));
+            // log_before / log_after default to the axis' current scale, as the axis dialog
+            // does: an axis that already has a break keeps the scales of its two sides, any
+            // other axis is broken on its own scale (a log10 axis stays log10 on both sides).
+            const bool hadBreak = g->axisBreak(ax).enabled || g->axisBreakSuspended(ax);
+            const bool defLogBefore = hadBreak ? spec.log10Before : axisIsLog;
+            const bool defLogAfter = hadBreak ? spec.log10After : axisIsLog;
+            spec.log10Before = optionalJsonBool(params, QStringLiteral("log_before"), defLogBefore);
+            spec.log10After = optionalJsonBool(params, QStringLiteral("log_after"), defLogAfter);
             if ((axisIsLog || spec.log10Before) && spec.breakFrom <= 0.0) {
                 throwInvalidParams(
                         QStringLiteral("Axis break on log10 scale requires start > 0, got %1.")

@@ -1388,10 +1388,8 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                     const double newYHi =
                             qMax(1.64 * rMax, (rMax - reqTopFrac * curYLo) / (1.0 - reqTopFrac));
                     const double halfX = 0.5 * (newYHi - curYLo);
-                    gr->setScale(QwtPlot::xBottom, -halfX, halfX, 0.0, 5, 0, 0, false);
-                    gr->setScale(QwtPlot::yLeft, curYLo, newYHi, 0.0, 5, 0, 0, false);
-                    for (int a = 0; a < QwtPlot::axisCnt; ++a)
-                        gr->enableAxis(a, false);
+                    // Kept by updatePlot() and saved with the project (<ToriPolarView>).
+                    gr->setPolarViewRange(-halfX, halfX, curYLo, newYHi);
                     gr->placeLegendAnchor(Graph::LegendTopRight);
                 }
             }

@@ -4439,16 +4439,72 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         const double xr = optionalJsonFiniteDouble(params, QStringLiteral("x_max"), 5.0);
         const double yl = optionalJsonFiniteDouble(params, QStringLiteral("y_min"), -5.0);
         const double yr = optionalJsonFiniteDouble(params, QStringLiteral("y_max"), 5.0);
-        const double zl = optionalJsonFiniteDouble(params, QStringLiteral("z_min"), -5.0);
-        const double zr = optionalJsonFiniteDouble(params, QStringLiteral("z_max"), 5.0);
         validateFiniteCoordRange(xl, xr, QStringLiteral("plot.3d_function X range"));
         validateFiniteCoordRange(yl, yr, QStringLiteral("plot.3d_function Y range"));
-        validateFiniteCoordRange(zl, zr, QStringLiteral("plot.3d_function Z range"));
-        if (xl >= xr || yl >= yr || zl >= zr) {
-            throwInvalidParams(QStringLiteral("plot.3d_function requires min < max on X, Y, and Z."));
-        }
+        if (xl >= xr || yl >= yr)
+            throwInvalidParams(QStringLiteral("plot.3d_function requires min < max on X and Y."));
         validateMuParserExprOrThrow(formula, { QStringLiteral("x"), QStringLiteral("y") },
                                     QStringLiteral("plot.3d_function"));
+        // Z range: an omitted z_min / z_max comes from the function on the surface grid
+        // (Graph3D::addFunction's 41 x 31 mesh) so the surface is not clipped; a fixed
+        // -5..5 used to flatten e.g. 50*x*y.
+        auto hasParam = [&params](const QString &k) {
+            return params.contains(k) && !params.value(k).isNull()
+                    && !params.value(k).isUndefined();
+        };
+        double fLo = std::numeric_limits<double>::infinity();
+        double fHi = -std::numeric_limits<double>::infinity();
+        if (!hasParam(QStringLiteral("z_min")) || !hasParam(QStringLiteral("z_max"))) {
+            try {
+                MyParser parser;
+                double vx = xl, vy = yl;
+                parser.DefineVar(_T("x"), &vx);
+                parser.DefineVar(_T("y"), &vy);
+                parser.SetExpr(formula);
+                constexpr int kNx = 41, kNy = 31;
+                for (int i = 0; i < kNx; ++i) {
+                    vx = xl + (xr - xl) * double(i) / double(kNx - 1);
+                    for (int j = 0; j < kNy; ++j) {
+                        vy = yl + (yr - yl) * double(j) / double(kNy - 1);
+                        const double v = parser.Eval();
+                        if (std::isfinite(v)) {
+                            fLo = std::min(fLo, v);
+                            fHi = std::max(fHi, v);
+                        }
+                    }
+                }
+            } catch (const mu::ParserError &) {
+                // Validated above; an evaluation error leaves the fallback range.
+            }
+            if (!(fLo <= fHi)) {
+                fLo = -5.0; // no finite value on the grid: the former fixed range
+                fHi = 5.0;
+            } else {
+                const double mag = std::max(1.0, std::max(std::fabs(fLo), std::fabs(fHi)));
+                if (!(fHi - fLo > 1e-12 * mag)) {
+                    const double pad = (fLo != 0.0) ? 0.1 * std::fabs(fLo) : 1.0; // flat surface
+                    fLo -= pad;
+                    fHi += pad;
+                }
+            }
+        }
+        const bool zMinGiven = hasParam(QStringLiteral("z_min"));
+        const bool zMaxGiven = hasParam(QStringLiteral("z_max"));
+        const double zl =
+                zMinGiven ? optionalJsonFiniteDouble(params, QStringLiteral("z_min"), -5.0) : fLo;
+        const double zr =
+                zMaxGiven ? optionalJsonFiniteDouble(params, QStringLiteral("z_max"), 5.0) : fHi;
+        validateFiniteCoordRange(zl, zr, QStringLiteral("plot.3d_function Z range"));
+        if (zl >= zr) {
+            throwInvalidParams(
+                    QStringLiteral("plot.3d_function requires z_min < z_max, got [%1, %2]%3.")
+                            .arg(zl)
+                            .arg(zr)
+                            .arg((zMinGiven && zMaxGiven)
+                                         ? QString()
+                                         : QStringLiteral(" (the omitted bound is the function's "
+                                                          "range on the grid)")));
+        }
         Graph3D *plot = d_app->newPlot3D(formula, xl, xr, yl, yr, zl, zr);
         if (!plot)
             throwRpcRuntime(QStringLiteral("Failed to create 3D function surface plot."));
