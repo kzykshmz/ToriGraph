@@ -1758,8 +1758,12 @@ void TableView::applyDescription()
         const QString unitsStr = d_units_edit ? d_units_edit->text() : QString();
         const QString comment = ui.comment_box->document()->toPlainText();
         d_comment_dirty = false;
-        if (!shortName.isEmpty() && col->name() != shortName)
+        if (!shortName.isEmpty() && col->name() != shortName) {
+            // In a macro so the formula references rewritten by the rename join its undo step.
+            d_table->beginMacro(tr("%1: rename to %2").arg(col->name(), shortName));
             col->setName(shortName);
+            d_table->endMacro();
+        }
         if (col->longName() != longName)
             col->setLongName(longName);
         if (col->units() != unitsStr)

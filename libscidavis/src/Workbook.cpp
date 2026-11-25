@@ -48,83 +48,6 @@ const char *const kTabBarObjectName = "torigraph_workbook_tabs";
 const char *const kPrevSheetShortcutName = "torigraph_wb_prev_sheet";
 const char *const kNextSheetShortcutName = "torigraph_wb_next_sheet";
 
-QString rewriteTableRefsInFormula(const QString &formula, const QString &oldTableName,
-                                  const QString &newTableName)
-{
-    const QString escapedOld = QRegularExpression::escape(oldTableName);
-    const QRegularExpression tableColRx(
-            QStringLiteral("((?<![A-Za-z0-9_])(?:tablecol|column__)\\s*\\(\\s*\")") + escapedOld
-            + QStringLiteral("(\"\\s*,)"));
-    const QRegularExpression pathColRx(
-            QStringLiteral("((?<![A-Za-z0-9_])(?:col|column|column_|cell|cell_)\\s*\\(\\s*\")")
-            + escapedOld + QStringLiteral("(\\\\/|/)"));
-
-    auto replaceWithCapture = [](const QString &src, const QRegularExpression &rx,
-                                 const QString &midText) -> QString {
-        QRegularExpressionMatchIterator it = rx.globalMatch(src);
-        if (!it.hasNext())
-            return src;
-        QString out;
-        int lastPos = 0;
-        while (it.hasNext()) {
-            const QRegularExpressionMatch m = it.next();
-            out.append(src.mid(lastPos, m.capturedStart(0) - lastPos));
-            out.append(m.captured(1));
-            out.append(midText);
-            out.append(m.captured(2));
-            lastPos = m.capturedEnd(0);
-        }
-        out.append(src.mid(lastPos));
-        return out;
-    };
-
-    QString out = replaceWithCapture(formula, tableColRx, newTableName);
-    out = replaceWithCapture(out, pathColRx, newTableName);
-    return out;
-}
-
-void updateCrossTableFormulaReferences(ApplicationWindow *app, const QString &oldTableName,
-                                       const QString &newTableName)
-{
-    if (!app || oldTableName.isEmpty() || newTableName.isEmpty() || oldTableName == newTableName)
-        return;
-    const QList<MyWidget *> wins = app->windowsList();
-    for (MyWidget *mw : wins) {
-        Table *other = qobject_cast<Table *>(mw);
-        if (!other || !other->d_future_table)
-            continue;
-        struct PendingUpdate
-        {
-            int col = 0;
-            Interval<int> iv;
-            QString formula;
-        };
-        QVector<PendingUpdate> updates;
-        for (int c = 0; c < other->numCols(); ++c) {
-            Column *cp = other->column(c);
-            if (!cp)
-                continue;
-            const QList<Interval<int>> ivs = cp->formulaIntervals();
-            for (const Interval<int> &iv : ivs) {
-                const QString f = cp->formula(iv.start());
-                const QString updated = rewriteTableRefsInFormula(f, oldTableName, newTableName);
-                if (updated != f)
-                    updates.push_back({ c, iv, updated });
-            }
-        }
-        if (updates.isEmpty())
-            continue;
-        other->d_future_table->beginMacro(
-                QCoreApplication::translate("WorkbookManager", "Update formula references to %1")
-                        .arg(newTableName));
-        for (const PendingUpdate &u : updates) {
-            if (Column *cp = other->column(u.col))
-                cp->setFormula(u.iv, u.formula);
-        }
-        other->d_future_table->endMacro();
-    }
-}
-
 QString wbTr(const char *s)
 {
     return QCoreApplication::translate("WorkbookManager", s);
@@ -982,13 +905,13 @@ bool WorkbookManager::renameSheet(Table *t, const QString &label, QString *err)
     const QString newName = prefixed ? prefix + QLatin1Char('_') + lbl : lbl;
     if (newName == t->name())
         return true;
-    const QString oldTableName = t->name();
+    // renameWindow -> Table::handleAspectDescriptionChange also rewrites the formula references
+    // of the other tables (one undo step with the rename).
     if (!d_app->renameWindow(t, newName)) {
         setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
                             .arg(newName));
         return false;
     }
-    updateCrossTableFormulaReferences(d_app, oldTableName, t->name());
     refreshBars(bookName);
     return true;
 }

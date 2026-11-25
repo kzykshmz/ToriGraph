@@ -2654,9 +2654,14 @@ bool ExtraPlotTypes::updateGraphTagsForRename(Graph *g, const QString &oldName,
                 if (a.value(QStringLiteral("matrix")) == oldName)
                     updates.insert(QStringLiteral("matrix"), newName);
             } else if (updateTableName) {
-                if (a.value(QStringLiteral("table")) == oldName)
+                // x / y of a tag owned by another table (Table1 vs Table1_Sheet1) stay put.
+                const QString tagTbl = a.value(QStringLiteral("table"));
+                const bool ownedByOther = !tagTbl.isEmpty() && tagTbl != oldName;
+                if (tagTbl == oldName)
                     updates.insert(QStringLiteral("table"), newName);
                 for (const char *k : { "x", "y" }) {
+                    if (ownedByOther)
+                        break;
                     const QString key = QLatin1String(k);
                     const QString cur = a.value(key);
                     const QString nxt = remapPrefixedCol(cur);
@@ -2693,9 +2698,13 @@ bool ExtraPlotTypes::updateGraphTagsForRename(Graph *g, const QString &oldName,
                         updates.insert(key, newName);
                 }
             } else if (updateTableName) {
-                if (a.value(QStringLiteral("table")) == oldName)
+                const QString tagTbl = a.value(QStringLiteral("table"));
+                const bool ownedByOther = !tagTbl.isEmpty() && tagTbl != oldName;
+                if (tagTbl == oldName)
                     updates.insert(QStringLiteral("table"), newName);
                 for (const char *k : { "a", "b", "i" }) {
+                    if (ownedByOther)
+                        break;
                     const QString key = QLatin1String(k);
                     const QString cur = a.value(key);
                     const QString nxt = remapPrefixedCol(cur);

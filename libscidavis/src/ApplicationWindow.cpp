@@ -1741,14 +1741,24 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
             return false;
         }
 
-        updateTableNames(name, newName);
-    } else if (w->inherits("Matrix"))
-        changeMatrixName(name, newName);
+        // Table::handleAspectDescriptionChange updates the graphs, the graph undo snapshots,
+        // the project explorer and the formula references of the other tables, on the rename
+        // and on its undo / redo. The macro makes the formula updates one undo step with it.
+        Table *t = static_cast<Table *>(w);
+        if (t->d_future_table)
+            t->d_future_table->beginMacro(tr("%1: rename to %2").arg(name, newName));
+        w->setName(newName);
+        if (t->d_future_table)
+            t->d_future_table->endMacro();
+    } else {
+        if (w->inherits("Matrix"))
+            changeMatrixName(name, newName);
+        w->setName(newName);
+        renameListViewItem(name, newName);
+    }
 
-    w->setName(newName);
     syncBatchWindowName(w);
     w->setCaptionPolicy(w->captionPolicy());
-    renameListViewItem(name, newName);
     if (d_graph_inspector_dock && d_graph_inspector_dock->targetMultiLayer() == w)
         d_graph_inspector_dock->refreshAll();
     return true;

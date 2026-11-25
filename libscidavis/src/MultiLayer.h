@@ -257,7 +257,10 @@ public:
     void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
     bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
                                 int preferredActiveLayer = -1, bool restoreGeometry = false);
-    void remapUndoSnapshotsForTableRename(const QString &oldName, const QString &newName);
+    //! `tableColNames`: columns of the renamed table; when given, only references to those
+    //! columns (`oldName_<column>`) are rewritten (not those of a table named oldName_...).
+    void remapUndoSnapshotsForTableRename(const QString &oldName, const QString &newName,
+                                          const QStringList *tableColNames = nullptr);
     void remapUndoSnapshotsForColRename(const QString &oldColName, const QString &newColName);
     void remapUndoSnapshotsForMatrixRename(const QString &oldName, const QString &newName);
 

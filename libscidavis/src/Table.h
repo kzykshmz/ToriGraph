@@ -50,6 +50,7 @@ class QLineEdit;
 class QCheckBox;
 class QLabel;
 class QPushButton;
+class ApplicationWindow;
 
 /*!\brief MDI window providing a spreadsheet table with column logic.
  */
@@ -88,6 +89,24 @@ public:
     static void beginUndoRedoReplay();
     static void endUndoRedoReplay();
     static bool isUndoRedoReplaying();
+
+    //! Rewrites the table references of `formula` (tablecol("old", ...), column__("old", ...),
+    //! col("old/...") and the other path forms) from table `oldTableName` to `newTableName`.
+    static QString rewriteTableRefsInFormula(const QString &formula, const QString &oldTableName,
+                                             const QString &newTableName);
+    //! Rewrites the references to column `oldCol` of table `targetTable` in a formula of table
+    //! `formulaTable` to `newCol`. References are resolved like the formula dependency analysis:
+    //! col("A") / col(A) / cell("A", i) name a column of `formulaTable`, col("T/A") and
+    //! tablecol("T", "A") a column of table T; only references that resolve to `targetTable`'s
+    //! column `oldCol` are changed.
+    static QString rewriteColumnRefsInFormula(const QString &formula, const QString &formulaTable,
+                                              const QString &targetTable, const QString &oldCol,
+                                              const QString &newCol);
+    //! Updates the formulas of every table of `app` that refer to table `oldTableName` so they
+    //! refer to `newTableName`. Each changed formula goes through Column::setFormula (undoable).
+    static void updateCrossTableFormulaReferences(ApplicationWindow *app,
+                                                  const QString &oldTableName,
+                                                  const QString &newTableName);
 
     //! Sets the number of significant digits
     void setNumericPrecision(int prec);
@@ -391,6 +410,10 @@ private:
     void reportFormulaErrorsToUser(int focusCol = -1) const;
 
     QHash<const AbstractAspect *, QString> d_stored_column_labels;
+    //! Table name stored on aspectDescriptionAboutToChange, compared with the new name in
+    //! handleAspectDescriptionChange (rename, undo and redo of a rename).
+    QString d_stored_table_name;
+    bool d_has_stored_table_name = false;
     bool d_auto_recalc_formulas = true;
     bool d_in_auto_recalc = false;
     bool d_pending_unwrapped_recalc = false;

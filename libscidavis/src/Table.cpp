@@ -1863,8 +1863,20 @@ void Table::setColComment(int col, const QString &s)
 
 void Table::setColName(int col, const QString &text)
 {
-    if (Column *c = column(col))
+    Column *c = column(col);
+    if (!c)
+        return;
+    if (text.isEmpty() || c->name() == text) {
         c->setName(text);
+        return;
+    }
+    // The macro lets handleAspectDescriptionChange rewrite the formula references to the
+    // column as part of the same undo step.
+    if (d_future_table)
+        d_future_table->beginMacro(tr("%1: rename to %2").arg(c->name(), text));
+    c->setName(text);
+    if (d_future_table)
+        d_future_table->endMacro();
 }
 
 QStringList Table::selectedColumns()
@@ -4996,8 +5008,263 @@ void Table::updateFunctionDoc()
             scriptEnv->mathFunctionDoc(ui.add_function_combobox->currentText()));
 }
 
+namespace {
+
+// The same reference forms as collectCrossTableRefs() (the formula dependency analysis).
+const QRegularExpression &renameColRefRx()
+{
+    static const QRegularExpression rx(QStringLiteral(
+            "(?<![A-Za-z0-9_])(col|column|column_|cell|cell_)\\s*\\(\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|[^,()]*)\\s*(,|\\))"));
+    return rx;
+}
+
+const QRegularExpression &renameTableColRefRx()
+{
+    static const QRegularExpression rx(QStringLiteral(
+            "(?<![A-Za-z0-9_])(tablecol|column__)\\s*\\(\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*,\\s*(\"((?:[^\"\\\\]|\\\\.)*)\"|[^,()]*)\\s*(,|\\))"));
+    return rx;
+}
+
+QString unescapeFormulaPath(QString s)
+{
+    s.replace(QLatin1String("\\/"), QLatin1String("/"));
+    s.replace(QLatin1String("\\\\"), QLatin1String("\\"));
+    return s;
+}
+
+QString escapeFormulaName(QString s)
+{
+    s.replace(QLatin1String("\\"), QLatin1String("\\\\"));
+    return s;
+}
+
+// Text for an unquoted column argument col(A): kept unquoted when the new name is a plain
+// identifier, quoted otherwise (col("new name") is read the same way).
+QString bareColumnArgument(const QString &newCol)
+{
+    static const QRegularExpression ident(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+    if (ident.match(newCol).hasMatch())
+        return newCol;
+    return QLatin1Char('"') + escapeFormulaName(newCol) + QLatin1Char('"');
+}
+
+struct FormulaEdit
+{
+    int start = 0;
+    int length = 0;
+    QString text;
+};
+
+QString applyFormulaEdits(const QString &formula, QVector<FormulaEdit> edits)
+{
+    if (edits.isEmpty())
+        return formula;
+    std::sort(edits.begin(), edits.end(),
+              [](const FormulaEdit &a, const FormulaEdit &b) { return a.start > b.start; });
+    QString out = formula;
+    for (const FormulaEdit &e : edits)
+        out.replace(e.start, e.length, e.text);
+    return out;
+}
+
+// Edit for an unquoted argument captured as `capIdx` (it may carry surrounding blanks).
+bool bareArgumentEdit(const QRegularExpressionMatch &m, int capIdx, const QString &oldCol,
+                      const QString &newCol, FormulaEdit &edit)
+{
+    const QString raw = m.captured(capIdx);
+    const QString arg = raw.trimmed();
+    if (arg.isEmpty() || arg != oldCol)
+        return false;
+    bool isNum = false;
+    arg.toInt(&isNum);
+    if (isNum)
+        return false; // a column number, not a name
+    edit.start = m.capturedStart(capIdx) + raw.indexOf(arg);
+    edit.length = arg.size();
+    edit.text = bareColumnArgument(newCol);
+    return true;
+}
+
+// Tables of the application, `self` first (also when it is not registered yet).
+QList<Table *> renameTargetTables(ApplicationWindow *app, Table *self)
+{
+    QList<Table *> out;
+    if (self)
+        out.append(self);
+    if (!app)
+        return out;
+    for (MyWidget *mw : app->windowsList()) {
+        Table *t = qobject_cast<Table *>(mw);
+        if (t && t != self && t->d_future_table)
+            out.append(t);
+    }
+    return out;
+}
+
+} // namespace
+
+QString Table::rewriteTableRefsInFormula(const QString &formula, const QString &oldTableName,
+                                         const QString &newTableName)
+{
+    if (formula.isEmpty() || oldTableName.isEmpty() || newTableName.isEmpty()
+        || oldTableName == newTableName)
+        return formula;
+    const QString escapedOld = QRegularExpression::escape(oldTableName);
+    const QRegularExpression tableColRx(
+            QStringLiteral("((?<![A-Za-z0-9_])(?:tablecol|column__)\\s*\\(\\s*\")") + escapedOld
+            + QStringLiteral("(\"\\s*,)"));
+    const QRegularExpression pathColRx(
+            QStringLiteral("((?<![A-Za-z0-9_])(?:col|column|column_|cell|cell_)\\s*\\(\\s*\")")
+            + escapedOld + QStringLiteral("(\\\\/|/)"));
+
+    auto replaceWithCapture = [](const QString &src, const QRegularExpression &rx,
+                                 const QString &midText) -> QString {
+        QRegularExpressionMatchIterator it = rx.globalMatch(src);
+        if (!it.hasNext())
+            return src;
+        QString out;
+        int lastPos = 0;
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            out.append(src.mid(lastPos, m.capturedStart(0) - lastPos));
+            out.append(m.captured(1));
+            out.append(midText);
+            out.append(m.captured(2));
+            lastPos = m.capturedEnd(0);
+        }
+        out.append(src.mid(lastPos));
+        return out;
+    };
+
+    QString out = replaceWithCapture(formula, tableColRx, newTableName);
+    out = replaceWithCapture(out, pathColRx, newTableName);
+    return out;
+}
+
+QString Table::rewriteColumnRefsInFormula(const QString &formula, const QString &formulaTable,
+                                          const QString &targetTable, const QString &oldCol,
+                                          const QString &newCol)
+{
+    if (formula.isEmpty() || targetTable.isEmpty() || oldCol.isEmpty() || newCol.isEmpty()
+        || oldCol == newCol)
+        return formula;
+
+    QVector<FormulaEdit> edits;
+
+    // col("A"), col("T/A"), col(A), cell("A", i), column("T/A"), ...
+    QRegularExpressionMatchIterator it = renameColRefRx().globalMatch(formula);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        if (m.capturedStart(3) >= 0) {
+            const QString raw = m.captured(3);
+            const QString name = unescapeFormulaPath(raw);
+            if (name.contains(QLatin1Char('/'))) {
+                const QString tablePart = name.section(QLatin1Char('/'), 0, 0);
+                const QString colPart = name.section(QLatin1Char('/'), 1);
+                if (tablePart != targetTable || colPart != oldCol)
+                    continue;
+                // keep the table part (and its separator) as written, replace the column part
+                const QString escapedOldTail = escapeFormulaName(oldCol);
+                if (!raw.endsWith(escapedOldTail))
+                    continue;
+                FormulaEdit e;
+                e.start = m.capturedStart(3) + raw.size() - escapedOldTail.size();
+                e.length = escapedOldTail.size();
+                e.text = escapeFormulaName(newCol);
+                edits.push_back(e);
+            } else {
+                if (formulaTable != targetTable || name != oldCol)
+                    continue;
+                FormulaEdit e;
+                e.start = m.capturedStart(3);
+                e.length = raw.size();
+                e.text = escapeFormulaName(newCol);
+                edits.push_back(e);
+            }
+        } else if (formulaTable == targetTable) {
+            FormulaEdit e;
+            if (bareArgumentEdit(m, 2, oldCol, newCol, e))
+                edits.push_back(e);
+        }
+    }
+
+    // tablecol("T", "A"), tablecol("T", A), column__("T", ...)
+    QRegularExpressionMatchIterator itTbl = renameTableColRefRx().globalMatch(formula);
+    while (itTbl.hasNext()) {
+        const QRegularExpressionMatch m = itTbl.next();
+        QString tblName = m.captured(2);
+        tblName.replace(QLatin1String("\\\\"), QLatin1String("\\"));
+        if (tblName != targetTable)
+            continue;
+        if (m.capturedStart(4) >= 0) {
+            QString colName = m.captured(4);
+            colName.replace(QLatin1String("\\\\"), QLatin1String("\\"));
+            if (colName != oldCol)
+                continue;
+            FormulaEdit e;
+            e.start = m.capturedStart(4);
+            e.length = m.captured(4).size();
+            e.text = escapeFormulaName(newCol);
+            edits.push_back(e);
+        } else {
+            FormulaEdit e;
+            if (bareArgumentEdit(m, 3, oldCol, newCol, e))
+                edits.push_back(e);
+        }
+    }
+
+    return applyFormulaEdits(formula, edits);
+}
+
+void Table::updateCrossTableFormulaReferences(ApplicationWindow *app, const QString &oldTableName,
+                                              const QString &newTableName)
+{
+    if (!app || oldTableName.isEmpty() || newTableName.isEmpty() || oldTableName == newTableName)
+        return;
+    const QList<Table *> tables = renameTargetTables(app, nullptr);
+    for (Table *other : tables) {
+        struct PendingUpdate
+        {
+            int col = 0;
+            Interval<int> iv;
+            QString formula;
+        };
+        QVector<PendingUpdate> updates;
+        for (int c = 0; c < other->numCols(); ++c) {
+            Column *cp = other->column(c);
+            if (!cp)
+                continue;
+            const QList<Interval<int>> ivs = cp->formulaIntervals();
+            for (const Interval<int> &iv : ivs) {
+                const QString f = cp->formula(iv.start());
+                const QString updated = rewriteTableRefsInFormula(f, oldTableName, newTableName);
+                if (updated != f)
+                    updates.push_back({ c, iv, updated });
+            }
+        }
+        if (updates.isEmpty())
+            continue;
+        const bool prevGuard = other->d_in_auto_recalc;
+        other->d_in_auto_recalc = true;
+        other->d_future_table->beginMacro(
+                QCoreApplication::translate("WorkbookManager", "Update formula references to %1")
+                        .arg(newTableName));
+        for (const PendingUpdate &u : updates) {
+            if (Column *cp = other->column(u.col))
+                cp->setFormula(u.iv, u.formula);
+        }
+        other->d_future_table->endMacro();
+        other->d_in_auto_recalc = prevGuard;
+    }
+}
+
 void Table::handleAspectDescriptionAboutToChange(const AbstractAspect *aspect)
 {
+    if (d_future_table && aspect == d_future_table) {
+        d_stored_table_name = aspect->name();
+        d_has_stored_table_name = true;
+        return;
+    }
     const Column *col = qobject_cast<const Column *>(aspect);
     if (col && d_future_table && d_future_table->columnIndex(col) != -1) {
         d_stored_column_labels[col] = aspect->name();
@@ -5009,6 +5276,27 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
     if (aspect == d_future_table) {
         setObjectName(d_future_table->name());
         updateCaption();
+        if (!d_has_stored_table_name)
+            return;
+        const QString oldTableName = d_stored_table_name;
+        const QString newTableName = d_future_table->name();
+        d_stored_table_name.clear();
+        d_has_stored_table_name = false;
+        if (oldTableName.isEmpty() || oldTableName == newTableName)
+            return;
+        // A rename, or the undo / redo of one: graphs, graph undo snapshots and the project
+        // explorer follow the name each time. Formula references are rewritten only on the
+        // forward edit (inside the rename macro); undo / redo replays those commands.
+        ApplicationWindow *aw = owningApplicationWindowForTable(this);
+        if (!aw || !aw->windowsList().contains(this))
+            return;
+        aw->updateTableNames(oldTableName, newTableName);
+        aw->renameListViewItem(oldTableName, newTableName);
+        const bool forwardEdit = !isUndoRedoReplaying()
+                && (!d_future_table->undoStack()
+                    || isUndoStackInMacro(d_future_table->undoStack()));
+        if (forwardEdit)
+            updateCrossTableFormulaReferences(aw, oldTableName, newTableName);
         return;
     }
     const Column *col = qobject_cast<const Column *>(aspect);
@@ -5028,19 +5316,32 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
             emit changedColHeader(name() + "_" + old_name, name() + "_" + new_name);
 
             if (!inUndoOrOutsideMacro) {
-                const bool prevGuard = d_in_auto_recalc;
-                d_in_auto_recalc = true;
-                for (int i = 0; i < d_future_table->columnCount(); i++) {
-                    QList<Interval<int>> formula_intervals = column(i)->formulaIntervals();
-                    foreach (Interval<int> interval, formula_intervals) {
-                        QString formula = column(i)->formula(interval.start());
-                        if (formula.contains("\"" + old_name + "\"")) {
-                            formula.replace("\"" + old_name + "\"", "\"" + new_name + "\"");
-                            column(i)->setFormula(interval, formula);
+                // References to this column, resolved like the formula dependency analysis:
+                // own-table col("A") / col("Self/A") / tablecol("Self","A") and other tables'
+                // col("Self/A") / tablecol("Self","A"). tablecol("Other","A") in this table is
+                // left alone. The setFormula commands join the rename macro (undoable).
+                const QString selfName = name();
+                const QList<Table *> tables =
+                        renameTargetTables(owningApplicationWindowForTable(this), this);
+                for (Table *t : tables) {
+                    const QString formulaTable = t->name();
+                    const bool prevGuard = t->d_in_auto_recalc;
+                    t->d_in_auto_recalc = true;
+                    for (int i = 0; i < t->numCols(); i++) {
+                        Column *cp = t->column(i);
+                        if (!cp)
+                            continue;
+                        const QList<Interval<int>> formula_intervals = cp->formulaIntervals();
+                        for (const Interval<int> &interval : formula_intervals) {
+                            const QString formula = cp->formula(interval.start());
+                            const QString updated = rewriteColumnRefsInFormula(
+                                    formula, formulaTable, selfName, old_name, new_name);
+                            if (updated != formula)
+                                cp->setFormula(interval, updated);
                         }
                     }
+                    t->d_in_auto_recalc = prevGuard;
                 }
-                d_in_auto_recalc = prevGuard;
             }
         }
     }

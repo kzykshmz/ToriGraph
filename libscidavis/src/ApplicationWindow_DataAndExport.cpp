@@ -260,6 +260,24 @@ void ApplicationWindow::updateTableNames(const QString &oldName, const QString &
     const QString newPrefix = newName + QLatin1Char('_');
 
     QList<MyWidget *> windows = windowsList();
+
+    // Column names of the renamed table (called after the rename, or before it): graph undo
+    // snapshots then rewrite only `oldName_<column of this table>`, not the columns of another
+    // table whose name starts with `oldName_` (Table1 vs Table1_Sheet1).
+    Table *renamedTable = nullptr;
+    for (const QString &candidate : { newName, oldName }) {
+        for (MyWidget *w : windows) {
+            Table *t = qobject_cast<Table *>(w);
+            if (t && t->name() == candidate) {
+                renamedTable = t;
+                break;
+            }
+        }
+        if (renamedTable)
+            break;
+    }
+    const QStringList renamedTableCols = renamedTable ? renamedTable->colNames() : QStringList();
+
     foreach (MyWidget *w, windows) {
         if (!w)
             continue;
@@ -270,7 +288,8 @@ void ApplicationWindow::updateTableNames(const QString &oldName, const QString &
                 if (widget)
                     ((Graph *)widget)->updateCurveNames(oldName, newName);
             }
-            ml->remapUndoSnapshotsForTableRename(oldName, newName);
+            ml->remapUndoSnapshotsForTableRename(oldName, newName,
+                                                 renamedTable ? &renamedTableCols : nullptr);
         } else if (w->inherits("Graph3D")) {
             Graph3D *g3 = static_cast<Graph3D *>(w);
             if (g3->userFunction() || g3->matrix())
