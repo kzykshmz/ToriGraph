@@ -2355,7 +2355,9 @@ bool Table::reimportFromSource()
     }
 
     // Two-pass rename prevents sibling collisions when columns are swapped or removed (e.g. [A,B]->[B,A]).
-    // The columns are matched by name, so formula references keep the names they use.
+    // The columns are matched by name, so formula references keep the names they use; only the
+    // names that are gone afterwards are rewritten (propagateRelabeledColumnNames below).
+    const QStringList oldNames = colNamesInRange(0, common);
     std::optional<RenamePropagationBlocker> renameBlocker(std::in_place, this);
     int tmpIdx = 0;
     for (int i = 0; i < common; ++i) {
@@ -2387,6 +2389,7 @@ bool Table::reimportFromSource()
         if (!extraCols.isEmpty())
             d_future_table->insertColumns(common, extraCols);
     }
+    propagateRelabeledColumnNames(oldNames);
     d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow,
                                     newCols.size(), numericLocaleName);
     const QVector<int> derivedCols =
@@ -5348,6 +5351,68 @@ quint64 Table::tableRenamePropagationCount()
     return s_tableRenamePropagations;
 }
 
+QStringList Table::colNamesInRange(int first, int count) const
+{
+    QStringList out;
+    for (int i = 0; i < count; ++i) {
+        const Column *c = d_future_table ? d_future_table->column(first + i) : nullptr;
+        out << (c ? c->name() : QString());
+    }
+    return out;
+}
+
+void Table::propagateRelabeledColumnNames(const QStringList &oldNames, int firstCol)
+{
+    if (!d_future_table || oldNames.isEmpty())
+        return;
+    if (isUndoRedoReplaying()
+        || (d_future_table->undoStack() && !isUndoStackInMacro(d_future_table->undoStack())))
+        return;
+
+    // Only names that are gone: a name still in the table resolves to that column by name.
+    // The new names are all in the table and the rewritten old names are not, so applying the
+    // pairs one after the other cannot chain (A -> B -> C).
+    const QStringList finalNames = colNames();
+    QVector<QPair<QString, QString>> renames;
+    for (int i = 0; i < oldNames.size(); ++i) {
+        const Column *c = d_future_table->column(firstCol + i);
+        if (!c)
+            continue;
+        const QString &oldName = oldNames.at(i);
+        const QString newName = c->name();
+        if (oldName.isEmpty() || newName.isEmpty() || oldName == newName
+            || finalNames.contains(oldName))
+            continue;
+        renames.push_back(qMakePair(oldName, newName));
+    }
+    if (renames.isEmpty())
+        return;
+
+    const QString selfName = name();
+    const QList<Table *> tables = renameTargetTables(owningApplicationWindowForTable(this), this);
+    for (Table *t : tables) {
+        const QString formulaTable = t->name();
+        const bool prevGuard = t->d_in_auto_recalc;
+        t->d_in_auto_recalc = true;
+        for (int i = 0; i < t->numCols(); ++i) {
+            Column *cp = t->column(i);
+            if (!cp)
+                continue;
+            const QList<Interval<int>> formulaIntervals = cp->formulaIntervals();
+            for (const Interval<int> &interval : formulaIntervals) {
+                const QString formula = cp->formula(interval.start());
+                QString updated = formula;
+                for (const auto &r : renames)
+                    updated = rewriteColumnRefsInFormula(updated, formulaTable, selfName, r.first,
+                                                         r.second);
+                if (updated != formula)
+                    cp->setFormula(interval, updated);
+            }
+        }
+        t->d_in_auto_recalc = prevGuard;
+    }
+}
+
 void Table::handleAspectDescriptionAboutToChange(const AbstractAspect *aspect)
 {
     if (d_future_table && aspect == d_future_table) {
@@ -5509,8 +5574,11 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
         // [C,A]) does not collide with the old column "C" during the rename below.
         if (importedSpan > overwritten_cols)
             d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
+        QStringList oldNames;
         if (renameCols) {
-            // matched by name: formula references keep the names they use
+            // matched by name: formula references keep the names they use (the names that are
+            // gone afterwards are rewritten by propagateRelabeledColumnNames below)
+            oldNames = colNamesInRange(0, overwritten_cols);
             RenamePropagationBlocker renameBlocker(this);
             int tmpIdx = 0;
             for (int i = 0; i < overwritten_cols; i++) {
@@ -5554,6 +5622,7 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
         }
         if (!extraCols.isEmpty())
             d_future_table->insertColumns(overwritten_cols, extraCols);
+        propagateRelabeledColumnNames(oldNames);
         delete numFilter;
         d_future_table->setImportSource(fname, QString(), sep,
                                         AsciiTableImportFilter::dialogDefaultEncoding(),

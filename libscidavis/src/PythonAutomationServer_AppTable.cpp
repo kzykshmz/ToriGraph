@@ -1600,9 +1600,13 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
     if (t->numRows() < neededRows)
         t->setNumRows(neededRows);
 
-    // The header columns are re-pointed through temporary names below: references keep theirs.
+    // The header columns are re-pointed through temporary names below: references keep theirs,
+    // except names that are gone afterwards (propagateRelabeledColumnNames at the end).
+    const bool relabelHeader = hasHeader && !headerRow.isEmpty() && startRowOffset == 0;
+    const QStringList oldHeaderNames =
+            relabelHeader ? t->colNamesInRange(startColOffset, maxCols) : QStringList();
     Table::RenamePropagationBlocker renameBlocker(t);
-    if (hasHeader && !headerRow.isEmpty() && startRowOffset == 0) {
+    if (relabelHeader) {
         for (int c = 0; c < maxCols; ++c) {
             t->setColName(startColOffset + c,
                           QStringLiteral("__import_col_%1__").arg(startColOffset + c));
@@ -1754,6 +1758,7 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         if (assignDefaultPlotDesignations)
             t->setColPlotDesignation(dstCol, (dstCol == 0) ? SciDAVis::X : SciDAVis::Y);
     }
+    t->propagateRelabeledColumnNames(oldHeaderNames, startColOffset);
 }
 
 // ============================================================================
@@ -2879,7 +2884,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
             if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
                 t->setWindowLabel(absPath);
-            // columns re-pointed through temporary names: references keep their names
+            // columns re-pointed through temporary names: references keep their names, except
+            // names that are gone afterwards (propagateRelabeledColumnNames below)
+            const QStringList oldNames = t->colNamesInRange(0, nCols);
             Table::RenamePropagationBlocker renameBlocker(t);
             for (int c = 0; c < nCols; ++c)
                 t->setColName(c, QStringLiteral("__ras_col_%1__").arg(c));
@@ -2898,6 +2905,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
                 applyDefaultNumericFormat6g(t, c);
             }
+            t->propagateRelabeledColumnNames(oldNames);
             outResult = serializeTableInfo(t);
             outResult[QStringLiteral("ok")] = true;
             return true;
@@ -2923,7 +2931,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
                 if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
                     t->setWindowLabel(absPath);
-                // columns re-pointed through temporary names: references keep their names
+                // columns re-pointed through temporary names: references keep their names,
+                // except names that are gone afterwards (propagateRelabeledColumnNames below)
+                const QStringList oldNames = t->colNamesInRange(0, nCols);
                 Table::RenamePropagationBlocker renameBlocker(t);
                 for (int c = 0; c < nCols; ++c)
                     t->setColName(c, QStringLiteral("__vasp_col_%1__").arg(c));
@@ -2942,6 +2952,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     t->setColPlotDesignation(c, srcCol->plotDesignation());
                     applyDefaultNumericFormat6g(t, c);
                 }
+                t->propagateRelabeledColumnNames(oldNames);
                 outResult = serializeTableInfo(t);
                 if (std::isfinite(fermiEV))
                     outResult[QStringLiteral("fermi_energy_ev")] = fermiEV;
@@ -4980,7 +4991,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 t->setNumCols(nCols);
             if (t->numRows() < nRows)
                 t->setNumRows(nRows);
-            // columns re-pointed through temporary names: references keep their names
+            // columns re-pointed through temporary names: references keep their names, except
+            // names that are gone afterwards (propagateRelabeledColumnNames below)
+            const QStringList oldNames = t->colNamesInRange(0, nCols);
             Table::RenamePropagationBlocker renameBlocker(t);
             for (int c = 0; c < nCols; ++c)
                 t->setColName(c, QStringLiteral("__ras_paste_col_%1__").arg(c));
@@ -5000,6 +5013,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 applyDefaultNumericFormat6g(t, c);
                 d_app->updateCurves(t, fullColumnName(t, c));
             }
+            t->propagateRelabeledColumnNames(oldNames);
             d_app->refreshAllGraphsAutoAxisTitles();
             outResult = serializeTableInfo(t);
             outResult[QStringLiteral("ok")] = true;

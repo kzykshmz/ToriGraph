@@ -1041,14 +1041,17 @@ void ApplicationWindow::importASCII()
 // Renames columns 0..targetNames.size()-1 of `table` to targetNames (empty entry = keep the
 // name) through temporary names first, so that swapped headers ([A,B] -> [B,A]) do not collide
 // with a sibling and get uniquified to "B 1". Same scheme as Table::reimportFromSource(). The
-// columns are matched by name, so formula references keep the names they use.
-static void renameImportedColumnsViaTemp(Table *table, const QVector<QString> &targetNames)
+// columns are matched by name, so formula references keep the names they use. Returns the names
+// the columns had before, for Table::propagateRelabeledColumnNames() once the table has its final
+// columns (names that are gone then were real renames).
+static QStringList renameImportedColumnsViaTemp(Table *table, const QVector<QString> &targetNames)
 {
     future::Table *ft = table ? table->d_future_table : nullptr;
     if (!ft)
-        return;
-    Table::RenamePropagationBlocker renameBlocker(table);
+        return QStringList();
     const int n = qMin(targetNames.size(), ft->columnCount());
+    const QStringList oldNames = table->colNamesInRange(0, n);
+    Table::RenamePropagationBlocker renameBlocker(table);
     int tmpIdx = 0;
     for (int i = 0; i < n; ++i) {
         Column *dst = ft->column(i);
@@ -1066,6 +1069,7 @@ static void renameImportedColumnsViaTemp(Table *table, const QVector<QString> &t
             continue;
         dst->setName(targetNames[i]);
     }
+    return oldNames;
 }
 
 void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
@@ -1336,7 +1340,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (local_rename_columns)
                     targetNames[col] = src_col->name();
             }
-            renameImportedColumnsViaTemp(table, targetNames);
+            table->propagateRelabeledColumnNames(
+                    renameImportedColumnsViaTemp(table, targetNames));
             break;
         }
         case ImportASCIIDialog::Overwrite: {
@@ -1380,7 +1385,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             if (importedSpan > temp->columnCount())
                 table->d_future_table->removeColumns(temp->columnCount(),
                                                      importedSpan - temp->columnCount());
-            renameImportedColumnsViaTemp(table, targetNames);
+            const QStringList oldNames = renameImportedColumnsViaTemp(table, targetNames);
             if (temp->columnCount() > common) {
                 QList<Column *> extraCols;
                 extraCols.reserve(temp->columnCount() - common);
@@ -1405,6 +1410,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (!extraCols.isEmpty())
                     table->d_future_table->insertColumns(common, extraCols);
             }
+            // after the extra columns: a name one of them carries is still in the table
+            table->propagateRelabeledColumnNames(oldNames);
             if (table->d_future_table) {
                 table->d_future_table->setImportSource(
                         file, QString(), local_column_separator,

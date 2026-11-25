@@ -125,6 +125,19 @@ public:
         Table *d_table;
     };
     bool isRenamePropagationBlocked() const { return d_rename_propagation_blocked > 0; }
+    //! Names of columns first .. first+count-1 (an empty entry for a missing column). Taken
+    //! before columns are re-pointed through temporary names, for
+    //! propagateRelabeledColumnNames().
+    QStringList colNamesInRange(int first, int count) const;
+    //! After columns were re-pointed through temporary names under a RenamePropagationBlocker
+    //! (re-import, overwrite import): `oldNames[i]` is the name column `firstCol + i` had before.
+    //! An old name that no column of the table carries any more was a real rename, so the
+    //! references to it in the formulas of this and the other tables are rewritten to the new
+    //! name at the same position, once, in the current macro (undone with the import). Names
+    //! still in the table (swapped / reordered headers) are matched by name and kept; columns that
+    //! were removed are not listed, so references to them are kept too. Like a column rename,
+    //! nothing is rewritten outside a macro or while Undo / Redo replays.
+    void propagateRelabeledColumnNames(const QStringList &oldNames, int firstCol = 0);
     //! Number of table renames propagated by handleAspectDescriptionChange so far (tests).
     static quint64 tableRenamePropagationCount();
 

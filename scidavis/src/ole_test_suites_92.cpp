@@ -28,6 +28,11 @@
 //   92g column names with \, / and ": references are rewritten in each function's own syntax
 //       (legacy col/tablecol literal, column/cell path escaped) and evaluate to the column;
 //       a legacy reference cannot hold " and is left alone
+//   92h re-import / overwrite import as a real rename ([A,B] -> [Time,Signal], [x,y] -> [p],
+//       [p] -> [q,p]): old names that no column carries any more are rewritten to the new name
+//       at the same position in the own table (col("A"), column("A"), col(B)) and other tables
+//       (tablecol("T","A"), column("T/A")), once, in the import's undo step; names that stay
+//       (swap, a name moved to an added column) and the names of deleted columns are kept
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -681,6 +686,181 @@ int runSuite92RenamePropagation(ApplicationWindow *mw)
 
         suite92CloseWindow(ts);
         suite92CloseWindow(tu);
+    }
+
+    // ------------------------------------------------ 92h: re-import / overwrite as a real rename
+    {
+        QTemporaryDir tmp92;
+        CHECK_COND(tmp92.isValid(), "92h: temp dir");
+        const QString csv = tmp92.filePath(QStringLiteral("s92h.csv"));
+        CHECK_COND(suite92WriteFile(csv, "A,B\n1,10\n2,20\n3,30\n"), "92h: write [A,B]");
+        QSet<MyWidget *> before;
+        for (MyWidget *w : mw->windowsList())
+            before.insert(w);
+        mw->importASCII(QStringList() << csv, ImportASCIIDialog::NewTables, QStringLiteral(","),
+                        0, true, true, false, true, QLocale::c());
+        Table *ti = nullptr;
+        for (MyWidget *w : mw->windowsList()) {
+            if (!before.contains(w) && qobject_cast<Table *>(w))
+                ti = qobject_cast<Table *>(w);
+        }
+        CHECK_COND(ti && ti->numCols() == 2 && ti->numRows() == 3, "92h: imported table");
+        CHECK_COND(mw->renameWindow(ti, QStringLiteral("S92H")), "92h: name the table S92H");
+        Table *tk = mw->newTable(QStringLiteral("S92K"), 3, 3);
+        CHECK_COND(tk, "92h: table S92K");
+        ti->setAutoRecalcFormulas(false);
+        tk->setAutoRecalcFormulas(false);
+        // C and D are outside the imported span: they keep their formulas
+        ti->setNumCols(4);
+        ti->setColName(2, QStringLiteral("C"));
+        ti->setColName(3, QStringLiteral("D"));
+        suite92SetFormula(ti, 2, QStringLiteral("col(\"B\")/col(\"A\")"));
+        suite92SetFormula(ti, 3, QStringLiteral("column(\"A\")+col(B)"));
+        suite92SetFormula(tk, 0, QStringLiteral("tablecol(\"S92H\",\"A\")*3"));
+        suite92SetFormula(tk, 1, QStringLiteral("column(\"S92H/A\")*4"));
+        suite92SetFormula(tk, 2, QStringLiteral("tablecol(\"S92H\",\"B\")+1"));
+
+        // x / y: the names the "A" / "B" references should carry after each step (a deleted
+        // column's references keep its name). Checks the formula texts and, with `values` and
+        // where the columns exist, the recalculated values (that pushes undo commands, so it is
+        // left out right after an import that is undone next).
+        struct Expect
+        {
+            QStringList names; // column names of S92H, in order
+            QString x, y;
+        };
+        auto colValues = [&](const QString &n) {
+            QVector<double> v;
+            const int idx = ti->colIndex(n);
+            for (int r = 0; r < 3 && idx >= 0; ++r)
+                v << ti->cell(r, idx);
+            return v;
+        };
+        auto checkAll = [&](const char *step, const Expect &e, bool values = true) {
+            CHECK92(ti->colNames() == e.names,
+                    "92h " << step << ": names " << q92(ti->colNames()) << " (want "
+                           << q92(e.names) << ")");
+            const int cIdx = ti->colIndex(QStringLiteral("C"));
+            const int dIdx = ti->colIndex(QStringLiteral("D"));
+            const QString fC = QStringLiteral("col(\"%1\")/col(\"%2\")").arg(e.y, e.x);
+            const QString fD = QStringLiteral("column(\"%1\")+col(%2)").arg(e.x, e.y);
+            const QString fK0 = QStringLiteral("tablecol(\"S92H\",\"%1\")*3").arg(e.x);
+            const QString fK1 = QStringLiteral("column(\"S92H/%1\")*4").arg(e.x);
+            const QString fK2 = QStringLiteral("tablecol(\"S92H\",\"%1\")+1").arg(e.y);
+            CHECK92(suite92Formula(ti, cIdx) == fC,
+                    "92h " << step << ": C " << q92(suite92Formula(ti, cIdx)) << " (want "
+                           << q92(fC) << ")");
+            CHECK92(suite92Formula(ti, dIdx) == fD,
+                    "92h " << step << ": D " << q92(suite92Formula(ti, dIdx)) << " (want "
+                           << q92(fD) << ")");
+            CHECK92(suite92Formula(tk, 0) == fK0 && suite92Formula(tk, 1) == fK1
+                            && suite92Formula(tk, 2) == fK2,
+                    "92h " << step << ": other table " << q92(suite92Formula(tk, 0)) << " / "
+                           << q92(suite92Formula(tk, 1)) << " / " << q92(suite92Formula(tk, 2))
+                           << " (want " << q92(fK0) << " / " << q92(fK1) << " / " << q92(fK2)
+                           << ")");
+            if (!values)
+                return;
+            const QVector<double> x = colValues(e.x), y = colValues(e.y);
+            QString vals;
+            if (x.size() == 3) {
+                QVector<double> w0, w1;
+                for (double v : x) {
+                    w0 << 3 * v;
+                    w1 << 4 * v;
+                }
+                CHECK92(suite92Values(tk, 0, w0, &vals),
+                        "92h " << step << ": " << q92(fK0) << " -> " << q92(vals));
+                CHECK92(suite92Values(tk, 1, w1, &vals),
+                        "92h " << step << ": " << q92(fK1) << " -> " << q92(vals));
+            }
+            if (y.size() == 3) {
+                QVector<double> w2;
+                for (double v : y)
+                    w2 << v + 1;
+                CHECK92(suite92Values(tk, 2, w2, &vals),
+                        "92h " << step << ": " << q92(fK2) << " -> " << q92(vals));
+            }
+            if (x.size() == 3 && y.size() == 3) {
+                QVector<double> wc, wd;
+                for (int r = 0; r < 3; ++r) {
+                    wc << y.at(r) / x.at(r);
+                    wd << x.at(r) + y.at(r);
+                }
+                CHECK92(suite92Values(ti, cIdx, wc, &vals),
+                        "92h " << step << ": " << q92(fC) << " -> " << q92(vals));
+                CHECK92(suite92Values(ti, dIdx, wd, &vals),
+                        "92h " << step << ": " << q92(fD) << " -> " << q92(vals));
+            }
+        };
+        const QString C = QStringLiteral("C"), D = QStringLiteral("D");
+        const Expect eAB{ { QStringLiteral("A"), QStringLiteral("B"), C, D }, QStringLiteral("A"),
+                          QStringLiteral("B") };
+        checkAll("before", eAB);
+
+        // re-import with [Time,Signal]: A / B are gone, so their references follow by position
+        const Expect eTS{ { QStringLiteral("Time"), QStringLiteral("Signal"), C, D },
+                          QStringLiteral("Time"), QStringLiteral("Signal") };
+        CHECK_COND(suite92WriteFile(csv, "Time,Signal\n2,8\n4,20\n5,30\n"),
+                   "92h: write [Time,Signal]");
+        CHECK92(ti->reimportFromSource(), "92h: reimportFromSource");
+        QCoreApplication::processEvents();
+        checkAll("re-import [Time,Signal]", eTS, false);
+        CHECK92(colValues(QStringLiteral("Time")) == (QVector<double>() << 2 << 4 << 5),
+                "92h: re-imported data");
+        // one project Undo takes back the import together with the rewritten references
+        us->undo();
+        checkAll("re-import undo", eAB, false);
+        CHECK92(colValues(QStringLiteral("A")) == (QVector<double>() << 1 << 2 << 3),
+                "92h: re-import undo data");
+        us->redo();
+        checkAll("re-import redo", eTS);
+
+        // [Time,Signal] -> [Signal,Time]: both names stay, so nothing is rewritten (as 92e)
+        const Expect eST{ { QStringLiteral("Signal"), QStringLiteral("Time"), C, D },
+                          QStringLiteral("Time"), QStringLiteral("Signal") };
+        CHECK_COND(suite92WriteFile(csv, "Signal,Time\n30,3\n60,6\n90,9\n"),
+                   "92h: write [Signal,Time]");
+        CHECK92(ti->reimportFromSource(), "92h: reimportFromSource (swap)");
+        QCoreApplication::processEvents();
+        checkAll("re-import swap", eST);
+
+        // overwrite import (GUI) with [x,y]: Signal (column 0) -> x, Time (column 1) -> y
+        const Expect eXY{ { QStringLiteral("x"), QStringLiteral("y"), C, D }, QStringLiteral("y"),
+                          QStringLiteral("x") };
+        CHECK_COND(suite92WriteFile(csv, "x,y\n1,2\n2,6\n4,4\n"), "92h: write [x,y]");
+        mw->d_workspace.setActiveSubWindow(ti);
+        mw->importASCII(QStringList() << csv, ImportASCIIDialog::Overwrite, QStringLiteral(","),
+                        0, true, true, false, true, QLocale::c());
+        checkAll("overwrite [x,y]", eXY, false);
+        us->undo();
+        checkAll("overwrite undo", eST, false);
+        CHECK92(colValues(QStringLiteral("Time")) == (QVector<double>() << 3 << 6 << 9),
+                "92h: overwrite undo data");
+        us->redo();
+        checkAll("overwrite redo", eXY);
+
+        // fewer columns ([x,y] -> [p]): x -> p; y is deleted, its references stay "y"
+        CHECK_COND(suite92WriteFile(csv, "p\n5\n6\n7\n"), "92h: write [p]");
+        mw->d_workspace.setActiveSubWindow(ti);
+        mw->importASCII(QStringList() << csv, ImportASCIIDialog::Overwrite, QStringLiteral(","),
+                        0, true, true, false, true, QLocale::c());
+        checkAll("overwrite [p]",
+                 Expect{ { QStringLiteral("p"), C, D }, QStringLiteral("y"), QStringLiteral("p") });
+
+        // more columns ([p] -> [q,p]): column 0 becomes q, but "p" is still in the table (the
+        // added column), so the references keep "p" and evaluate to it
+        CHECK_COND(suite92WriteFile(csv, "q,p\n1,11\n2,12\n3,13\n"), "92h: write [q,p]");
+        mw->d_workspace.setActiveSubWindow(ti);
+        mw->importASCII(QStringList() << csv, ImportASCIIDialog::Overwrite, QStringLiteral(","),
+                        0, true, true, false, true, QLocale::c());
+        checkAll("overwrite [q,p]", Expect{ { QStringLiteral("q"), QStringLiteral("p"), C, D },
+                                            QStringLiteral("y"), QStringLiteral("p") });
+        CHECK92(colValues(QStringLiteral("p")) == (QVector<double>() << 11 << 12 << 13),
+                "92h: added column p");
+
+        suite92CloseWindow(ti);
+        suite92CloseWindow(tk);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
