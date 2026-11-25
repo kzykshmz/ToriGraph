@@ -470,6 +470,13 @@ public slots:
                      bool local_rename_columns, bool local_strip_spaces, bool local_simplify_spaces,
                      bool local_convert_to_numeric, QLocale local_numeric_locale);
     void exportAllTables(const QString &sep, bool colNames, bool expSelection);
+    //! Writes every table to `dir` (the non-dialog part of exportAllTables). With expSelection,
+    //! a table that has a cell selection exports that selection and a table without one exports
+    //! the whole table. Returns false when a table could not be written (`failedTable`/`error`
+    //! name it) or the user cancelled an overwrite prompt.
+    bool exportTablesToDirectory(const QString &dir, const QString &sep, bool colNames,
+                                 bool expSelection, QString *failedTable = nullptr,
+                                 QString *error = nullptr);
     void exportASCII(const QString &tableName, const QString &sep, bool colNames,
                      bool expSelection);
 

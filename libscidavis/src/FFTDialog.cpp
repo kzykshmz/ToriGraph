@@ -129,6 +129,7 @@ FFTDialog::FFTDialog(int type, QWidget *parent, Qt::WindowFlags fl) : QDialog(pa
         gl1->addWidget(new QLabel(tr("Real")), 1, 0);
         boxReal = new QComboBox();
         gl1->addWidget(boxReal, 1, 1);
+        connect(boxReal, SIGNAL(activated(int)), this, SLOT(activateRealColumn(int)));
 
         gl1->addWidget(new QLabel(tr("Imaginary")), 2, 0);
         boxImaginary = new QComboBox();
@@ -265,4 +266,25 @@ void FFTDialog::setTable(Table *t)
         boxReal->setCurrentIndex(t->colIndex(l[0]));
         boxImaginary->setCurrentIndex(t->colIndex(l[1]));
     }
+    // FFT takes X from colX(real) (see FFT::setDataFromTable), which differs from the first X
+    // column when the table has several X columns: derive the default interval from that one.
+    if (selected)
+        activateRealColumn(boxReal->currentIndex());
+}
+
+void FFTDialog::activateRealColumn(int index)
+{
+    if (!d_table || d_type != onTable || index < 0)
+        return;
+    const QString realName = boxReal->itemText(index);
+    if (realName.isEmpty())
+        return;
+    const int realCol = d_table->colIndex(realName);
+    if (realCol < 0)
+        return;
+    const int xcol = d_table->colX(realCol);
+    if (xcol < 0 || xcol == realCol)
+        return;
+    boxName->setCurrentIndex(xcol);
+    boxSampling->setText(defaultSamplingText(d_table, xcol));
 }

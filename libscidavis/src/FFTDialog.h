@@ -61,6 +61,9 @@ public slots:
     void setGraph(Graph *g);
     void setTable(Table *t);
     void activateCurve(const QString &curveName);
+    //! Table mode: selects the X column of the chosen real column under "Sampling" and puts
+    //! its grid step into the sampling interval (FFT uses colX(real), not the first X column).
+    void activateRealColumn(int index);
     void accept();
 
 private:

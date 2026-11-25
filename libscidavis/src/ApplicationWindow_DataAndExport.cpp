@@ -2182,67 +2182,88 @@ void ApplicationWindow::exportAllTables(const QString &sep, bool colNames, bool 
             this, tr("Choose a directory to export the tables to"), workingDir,
             QFileDialog::ShowDirsOnly);
     if (!dir.isEmpty()) {
-        QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
         workingDir = dir;
-
-        auto &settings = getSettings();
-        Table::AsciiExportOptions opts;
-        opts.utf8Bom = settings.value("/General/ExportASCII/UTF8BOM", true).toBool();
-        opts.longNameAndUnits = settings.value("/General/ExportASCII/LongNameUnits", true).toBool();
-        // comma/semicolon separated files get .csv (Excel opens them directly), others .txt
-        const QString trimmedSep = sep.trimmed();
-        const QString ext = (trimmedSep == QLatin1String(",") || trimmedSep == QLatin1String(";"))
-                ? QStringLiteral(".csv")
-                : QStringLiteral(".txt");
-
-        bool confirmOverwrite = true;
-        bool success = true;
-        Table *failedTable = nullptr;
-        foreach (MyWidget *w, windowsList()) {
-            if (w->inherits("Table")) {
-                Table *t = (Table *)w;
-                QString safeName = t->name();
-                safeName.replace(QRegExp(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
-                QString fileName = dir + "/" + safeName + ext;
-                QFile f(fileName);
-                if (f.exists(fileName) && confirmOverwrite && !isNonInteractiveContext(this)) {
-                    QApplication::restoreOverrideCursor();
-                    switch (QMessageBox::question(
-                            this, tr("Overwrite file?"),
-                            tr("A file called: <p><b>%1</b><p>already exists. "
-                               "Do you want to overwrite it?")
-                                    .arg(fileName),
-                            tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
-                    case 0:
-                        success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
-                        break;
-
-                    case 1:
-                        confirmOverwrite = false;
-                        success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
-                        break;
-
-                    case 2:
-                        return;
-                        break;
-                    }
-                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-                } else
-                    success = t->exportASCII(fileName, sep, colNames, expSelection, opts);
-
-                if (!success) {
-                    failedTable = t;
-                    break;
-                }
-            }
-        }
-        QApplication::restoreOverrideCursor();
-        if (failedTable && !isNonInteractiveContext(this))
-            statusBar()->showMessage(tr("Export stopped at table %1: %2")
-                                             .arg(failedTable->name(),
-                                                  failedTable->lastExportError()),
+        QString failedName, error;
+        if (!exportTablesToDirectory(dir, sep, colNames, expSelection, &failedName, &error)
+            && !failedName.isEmpty() && !isNonInteractiveContext(this))
+            statusBar()->showMessage(tr("Export stopped at table %1: %2").arg(failedName, error),
                                      15000);
     }
+}
+
+bool ApplicationWindow::exportTablesToDirectory(const QString &dir, const QString &sep,
+                                                bool colNames, bool expSelection,
+                                                QString *failedTable, QString *error)
+{
+    if (failedTable)
+        failedTable->clear();
+    if (error)
+        error->clear();
+
+    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+
+    auto &settings = getSettings();
+    Table::AsciiExportOptions opts;
+    opts.utf8Bom = settings.value("/General/ExportASCII/UTF8BOM", true).toBool();
+    opts.longNameAndUnits = settings.value("/General/ExportASCII/LongNameUnits", true).toBool();
+    // comma/semicolon separated files get .csv (Excel opens them directly), others .txt
+    const QString trimmedSep = sep.trimmed();
+    const QString ext = (trimmedSep == QLatin1String(",") || trimmedSep == QLatin1String(";"))
+            ? QStringLiteral(".csv")
+            : QStringLiteral(".txt");
+
+    bool confirmOverwrite = true;
+    foreach (MyWidget *w, windowsList()) {
+        if (!w->inherits("Table"))
+            continue;
+        Table *t = (Table *)w;
+        // "Selection only" is remembered in the settings, so with "All tables" it is usually
+        // on while most tables have nothing selected. Such a table is exported whole instead
+        // of failing with "no cells are selected" and stopping the export of the rest.
+        bool tableSelection = false;
+        if (expSelection) {
+            const QList<int> selCols = t->selectedColumnIndices();
+            const int topRow = t->firstSelectedRow();
+            tableSelection = !selCols.isEmpty() && topRow >= 0 && t->lastSelectedRow() >= topRow;
+        }
+        QString safeName = t->name();
+        safeName.replace(QRegExp(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+        QString fileName = dir + "/" + safeName + ext;
+        bool success = true;
+        if (QFile::exists(fileName) && confirmOverwrite && !isNonInteractiveContext(this)) {
+            QApplication::restoreOverrideCursor();
+            switch (QMessageBox::question(this, tr("Overwrite file?"),
+                                          tr("A file called: <p><b>%1</b><p>already exists. "
+                                             "Do you want to overwrite it?")
+                                                  .arg(fileName),
+                                          tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
+            case 0:
+                success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
+                break;
+
+            case 1:
+                confirmOverwrite = false;
+                success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
+                break;
+
+            default:
+                return false;
+            }
+            QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+        } else
+            success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
+
+        if (!success) {
+            QApplication::restoreOverrideCursor();
+            if (failedTable)
+                *failedTable = t->name();
+            if (error)
+                *error = t->lastExportError();
+            return false;
+        }
+    }
+    QApplication::restoreOverrideCursor();
+    return true;
 }
 
 void ApplicationWindow::exportASCII(const QString &tableName, const QString &sep, bool colNames,

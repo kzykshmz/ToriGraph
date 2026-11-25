@@ -3821,8 +3821,23 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
     out.setCodec("UTF-8");
     out.setGenerateByteOrderMark(options.utf8Bom);
 
-    auto quoteField = [&separator](const QString &raw) -> QString {
-        const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator))
+    // A field must be quoted when it contains any non-blank character of the separator, not
+    // only the separator as a whole: with ", " or ";\t" a cell "Al,Zn" would otherwise be
+    // written bare and readers that split on ',' (Excel) would break the row.
+    QString sepChars;
+    for (const QChar ch : separator) {
+        if (!ch.isSpace() && !sepChars.contains(ch))
+            sepChars += ch;
+    }
+    auto quoteField = [&separator, &sepChars](const QString &raw) -> QString {
+        bool hasSepChar = false;
+        for (const QChar ch : sepChars) {
+            if (raw.contains(ch)) {
+                hasSepChar = true;
+                break;
+            }
+        }
+        const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator)) || hasSepChar
                 || raw.contains(QLatin1Char('"'))
                 || raw.contains(QLatin1Char('\n'))
                 || raw.contains(QLatin1Char('\r'));

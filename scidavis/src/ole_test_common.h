@@ -658,5 +658,6 @@ int runSuite84ProjectSerializationFidelity(ApplicationWindow *mw);
 int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw);
 int runSuite86AxisScaleCorrectness(ApplicationWindow *mw);
 int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw);
+int runSuite88ExportAndFftSampling(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

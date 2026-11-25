@@ -3181,13 +3181,11 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                 .arg(curveTitle));
             }
             RpcFFT fft(d_app, g, curveTitle);
-            if (hasExplicitSampling) {
+            // Without an explicit interval keep the one FFT derived from its own uniform grid
+            // (ensureUniformGridAndSampling: span / (valid points - 1)). |x1 - x0| is wrong for
+            // non-uniform, descending or partly invalid X and shifted the frequency axis.
+            if (hasExplicitSampling)
                 fft.setSampling(explicitDt);
-            } else {
-                const double dtGuess = std::abs(xs[1] - xs[0]);
-                if (std::isfinite(dtGuess) && dtGuess > 0.0)
-                    fft.setSampling(dtGuess);
-            }
             fft.setInverseFFT(params.value(QStringLiteral("inverse")).toBool(false));
             fft.normalizeAmplitudes(params.value(QStringLiteral("normalize")).toBool(true));
             fft.shiftFrequencies(params.value(QStringLiteral("shift")).toBool(false));
