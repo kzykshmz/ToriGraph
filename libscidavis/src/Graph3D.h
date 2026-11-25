@@ -232,6 +232,10 @@ public slots:
 
     double zoom() { return (d_base_zoom > 1e-12) ? (sp->zoom() / d_base_zoom) : sp->zoom(); };
     void setZoom(double val);
+    //! Sets the zoom relative to the base zoom, as zoom() returns it and a ToriGraph project
+    //! stores it. Unlike setZoom(), a large value (above 0.35 x a base zoom above 10) is not read
+    //! as the absolute zoom of an old SciDAVis project.
+    void setRelativeZoom(double val);
     void updateZoom(double val);
 
     Qwt3D::PLOTSTYLE plotStyle();

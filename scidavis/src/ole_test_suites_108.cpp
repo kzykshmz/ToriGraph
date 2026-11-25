@@ -22,6 +22,9 @@
 //        rectangle, the plot area, the canvas size and the exported PNG of the source
 //   108c a heatmap has the same plot area (colour bar margin) right after creation, after
 //        app.clone_window and after save -> reopen, and exports the same PNG
+//   108d a 3D surface with a base zoom above 10 (X, Y 0..10, Z 0..14: 11.5) zoomed in 4.5 times
+//        keeps its zoom after clone_window and save -> reopen (the saved relative 4.5 was read
+//        as an absolute zoom, the reopened plot shrank to about 1/11.5 of it)
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -395,6 +398,58 @@ int runSuite108PlotGeometryCloneRoundTrip(ApplicationWindow *mw)
                          "108a: " << n << " clone raw zoom " << z0.raw << " -> " << zc.raw
                                   << ", zoom " << z0.rel << " -> " << zc.rel);
             }
+        }
+
+        // ---- 108d: a manual zoom on a plot whose base zoom is above 10 -----------------------
+        {
+            // X, Y 0..10 and Z 0..14: base zoom = |diagonal| / sqrt(3) = 11.5
+            QVector<QVector<double>> cells(8, QVector<double>(8));
+            for (int r = 0; r < 8; ++r)
+                for (int c = 0; c < 8; ++c)
+                    cells[r][c] = r + c;
+            QJsonArray data;
+            for (const QVector<double> &row : cells) {
+                QJsonArray jr;
+                for (double v : row)
+                    jr.append(v);
+                data.append(jr);
+            }
+            CHECK_COND(Rpc108::ok(rpc.call(QStringLiteral("matrix.create"),
+                                           QJsonObject{ { "rows", 8 },
+                                                        { "cols", 8 },
+                                                        { "name", "M108Z" },
+                                                        { "x_min", 0.0 },
+                                                        { "x_max", 10.0 },
+                                                        { "y_min", 0.0 },
+                                                        { "y_max", 10.0 } }))
+                               && Rpc108::ok(rpc.call(QStringLiteral("matrix.set_data"),
+                                                      QJsonObject{ { "matrix", "M108Z" },
+                                                                   { "data", data } })),
+                       "108d: matrix M108Z");
+            CHECK108(Rpc108::ok(rpc.call(QStringLiteral("plot.3d_matrix"),
+                                         QJsonObject{ { "matrix", "M108Z" },
+                                                      { "style", "surface" },
+                                                      { "graph_name", "G108Z" } })),
+                     "108d: plot.3d_matrix M108Z");
+            auto *g = qobject_cast<Graph3D *>(findWindow108(w, QStringLiteral("G108Z")));
+            CHECK_COND(g && g->sp, "108d: G108Z missing");
+            const double base = g->sp->zoom();
+            // zoomed in 4.5 times with the mouse wheel (the drawn zoom, relative 4.5)
+            g->sp->setZoom(4.5 * base);
+            Zoom3D108 z0;
+            z0.graph = QStringLiteral("G108Z");
+            CHECK108(zoom3D108(w, z0.graph, &z0), "108d: G108Z missing");
+            std::cout << "[INFO] 108d: base zoom " << base << ", raw zoom " << z0.raw
+                      << ", zoom " << z0.rel << "\n";
+            CHECK108(base > 10.0 && near108(z0.rel, 4.5),
+                     "108d: base zoom " << base << " (> 10 expected), zoom " << z0.rel);
+            zooms << z0;
+            CHECK108(clone108(rpc, z0.graph, QStringLiteral("G108ZC")), "108d: clone_window");
+            Zoom3D108 zc;
+            CHECK108(zoom3D108(w, QStringLiteral("G108ZC"), &zc), "108d: clone missing");
+            CHECK108(near108(zc.raw, z0.raw) && near108(zc.rel, z0.rel),
+                     "108d: clone raw zoom " << z0.raw << " -> " << zc.raw << ", zoom " << z0.rel
+                                             << " -> " << zc.rel);
         }
 
         // ---- 108b: 2D clone geometry ---------------------------------------------------------

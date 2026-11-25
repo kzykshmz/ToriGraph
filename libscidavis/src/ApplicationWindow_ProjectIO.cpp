@@ -4096,8 +4096,16 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
 
     if (lst.size() > 16) {
         fList = splitNonEmptyTabs(16);
-        if (fList.size() > 1)
-            plot->setZoom(fList.value(1).toDouble());
+        if (fList.size() > 1) {
+            // ToriGraph 3 projects store the zoom relative to the base zoom (Graph3D::zoom()):
+            // it is applied as such, also when it is large (a plot zoomed in 4.5 times with a
+            // base zoom of 11.5). setZoom() reads a value above 0.35 x a base zoom above 10 as
+            // the absolute zoom that SciDAVis and older projects stored.
+            if (d_file_version >= 0x030000)
+                plot->setRelativeZoom(fList.value(1).toDouble());
+            else
+                plot->setZoom(fList.value(1).toDouble());
+        }
     }
 
     if (lst.size() > 17) {

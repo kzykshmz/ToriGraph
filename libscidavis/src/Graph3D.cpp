@@ -3192,6 +3192,15 @@ void Graph3D::setZoom(double val)
     sp->setZoom(rawZoom);
 }
 
+void Graph3D::setRelativeZoom(double val)
+{
+    if (!sp || !std::isfinite(val) || val <= 0.0)
+        return;
+    if (!(d_base_zoom > 1e-12) || !std::isfinite(d_base_zoom))
+        updateBaseZoom();
+    sp->setZoom(val * d_base_zoom);
+}
+
 void Graph3D::updateZoom(double val)
 {
     if (!sp || !std::isfinite(val) || val <= 0.0)
@@ -3856,7 +3865,7 @@ void Graph3D::copy(Graph3D *g)
     if (g->sp && std::isfinite(g->sp->zoom()) && g->sp->zoom() > 0.0)
         sp->setZoom(g->sp->zoom());
     else
-        setZoom(g->zoom());
+        setRelativeZoom(g->zoom());
     setScale(g->xScale(), g->yScale(), g->zScale());
     setShift(g->xShift(), g->yShift(), g->zShift());
     setMeshLineWidth((int)g->meshLineWidth());
