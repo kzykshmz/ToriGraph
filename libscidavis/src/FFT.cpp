@@ -45,6 +45,12 @@
 
 namespace {
 
+// Brings the samples onto the uniform grid FFT works on and sets the sampling interval.
+// Rows whose X or Y is not finite (e.g. empty rows below the data, or invalid cells) are
+// dropped, and the grid has one point per remaining sample: dt = (xmax - xmin)/(m - 1) with
+// m = number of finite samples. FFTDialog's default sampling interval uses the same formula,
+// so the value it hands to FFT::setSampling() describes this grid. x and yInterleaved are
+// shrunk to m points when samples were dropped.
 void ensureUniformGridAndSampling(std::vector<double> &x, std::vector<double> &yInterleaved,
                                   double &samplingOut)
 {
@@ -65,14 +71,18 @@ void ensureUniformGridAndSampling(std::vector<double> &x, std::vector<double> &y
             pts.push_back({ x[i], yInterleaved[2 * i], yInterleaved[2 * i + 1] });
         }
     }
-    if (pts.size() < 2)
+    const size_t m = pts.size();
+    if (m < 2)
         return;
+
+    // Finite samples in their original row order (kept for a uniform grid).
+    const std::vector<Sample> original = pts;
 
     if (pts.back().x < pts.front().x)
         std::reverse(pts.begin(), pts.end());
 
     bool sorted = true;
-    for (size_t i = 1; i < pts.size(); ++i) {
+    for (size_t i = 1; i < m; ++i) {
         if (pts[i].x < pts[i - 1].x) {
             sorted = false;
             break;
@@ -89,13 +99,13 @@ void ensureUniformGridAndSampling(std::vector<double> &x, std::vector<double> &y
     if (!std::isfinite(span) || span <= 0.0)
         return;
 
-    const double uniformDt = span / static_cast<double>(n - 1);
+    const double uniformDt = span / static_cast<double>(m - 1);
     if (!std::isfinite(uniformDt) || uniformDt <= 0.0)
         return;
 
-    bool isUniform = (pts.size() == n && sorted);
+    bool isUniform = sorted;
     if (isUniform) {
-        for (size_t i = 1; i < n; ++i) {
+        for (size_t i = 1; i < m; ++i) {
             const double step = pts[i].x - pts[i - 1].x;
             if (step <= 0.0 || std::fabs(step - uniformDt) > 1e-2 * uniformDt) {
                 isUniform = false;
@@ -105,16 +115,28 @@ void ensureUniformGridAndSampling(std::vector<double> &x, std::vector<double> &y
     }
 
     samplingOut = uniformDt;
-    if (isUniform)
+    if (isUniform) {
+        if (m == n)
+            return; // nothing dropped: keep the data untouched
+        // Drop the non-finite rows, keeping the original order (ascending or descending).
+        std::vector<double> newX(m);
+        std::vector<double> newY(2 * m);
+        for (size_t i = 0; i < m; ++i) {
+            newX[i] = original[i].x;
+            newY[2 * i] = original[i].re;
+            newY[2 * i + 1] = original[i].im;
+        }
+        x = std::move(newX);
+        yInterleaved = std::move(newY);
         return;
+    }
 
-    // Resample onto a uniform grid over [xMin, xMax] via linear interpolation
-    std::vector<double> newX(n);
-    std::vector<double> newY(2 * n, 0.0);
+    // Resample onto a uniform grid of m points over [xMin, xMax] via linear interpolation
+    std::vector<double> newX(m);
+    std::vector<double> newY(2 * m, 0.0);
     size_t j = 0;
-    const size_t m = pts.size();
-    for (size_t i = 0; i < n; ++i) {
-        const double gx = (i + 1 == n) ? xMax : (xMin + static_cast<double>(i) * uniformDt);
+    for (size_t i = 0; i < m; ++i) {
+        const double gx = (i + 1 == m) ? xMax : (xMin + static_cast<double>(i) * uniformDt);
         newX[i] = gx;
         while (j + 2 < m && pts[j + 1].x < gx)
             ++j;

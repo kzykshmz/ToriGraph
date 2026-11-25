@@ -37,6 +37,8 @@
 #include <QLocale>
 #include <gsl/gsl_fft_halfcomplex.h>
 
+#include <cmath>
+
 Convolution::Convolution(ApplicationWindow *parent, Table *t, const QString &signalColName,
                          const QString &responseColName)
     : Filter(parent, t)
@@ -177,10 +179,33 @@ void Convolution::convlv(double *sig, int n, double *dres, int m, int sign)
     // 1 <= k < n/2, [n/2] = Re(n/2). Only k = 0 and k = n/2 (Nyquist) are purely real.
     double re, im, size;
     const int nh = n / 2;
+
+    // Deconvolution divides by the response spectrum. Symmetric kernels such as [1,2,1] or
+    // [1,4,6,4,1] have an exact zero at the Nyquist bin, and 0/0 there would spread inf/NaN
+    // over every output point after the inverse FFT. Bins whose magnitude is zero or below
+    // 1e-12 of the largest bin carry no recoverable information: their output is set to 0.
+    double zeroMag2 = 0.0; // squared magnitude threshold
+    if (sign != 1) {
+        double maxMag2 = 0.0;
+        for (i = 0; i <= nh; i++) {
+            double mag2;
+            if (i == 0 || i == nh)
+                mag2 = res[i] * res[i];
+            else
+                mag2 = res[i] * res[i] + res[n - i] * res[n - i];
+            if (std::isfinite(mag2) && mag2 > maxMag2)
+                maxMag2 = mag2;
+        }
+        const double relTol = 1e-12;
+        zeroMag2 = maxMag2 * relTol * relTol;
+    }
+
     for (i = 0; i <= nh; i++) { // multiply/divide both ffts
         if (i == 0 || i == nh) {
             if (sign == 1)
                 sig[i] = res[i] * sig[i];
+            else if (!(res[i] * res[i] > zeroMag2))
+                sig[i] = 0.0;
             else
                 sig[i] = sig[i] / res[i];
         } else {
@@ -190,6 +215,11 @@ void Convolution::convlv(double *sig, int n, double *dres, int m, int sign)
                 im = res[i] * sig[ni] + res[ni] * sig[i];
             } else {
                 size = res[i] * res[i] + res[ni] * res[ni];
+                if (!(size > zeroMag2)) {
+                    sig[i] = 0.0;
+                    sig[ni] = 0.0;
+                    continue;
+                }
                 re = res[i] * sig[i] + res[ni] * sig[ni];
                 im = res[i] * sig[ni] - res[ni] * sig[i];
                 re /= size;

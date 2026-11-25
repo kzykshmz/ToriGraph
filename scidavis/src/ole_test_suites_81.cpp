@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -22,6 +23,9 @@
 //   81e Correlation          - zero padding to >= 2*rows (no circular wrap into lags)
 //   81f SmoothFilter (FFT)   - X in descending order must still low-pass
 //   81g FFT / FFTDialog      - default sampling interval = (xmax - xmin)/(n - 1), |dt| used
+//   81h Deconvolution        - kernels with a zero at the Nyquist bin ([1,2,1], [1,4,6,4,1])
+//                              must not divide by zero (finite output, peak preserved)
+//   81i FFT / FFTDialog      - table with empty rows below the data: grid of the finite rows
 // All checks compare against values computed directly from the definitions.
 // Every check is evaluated (failures are counted) so a single run reports all regressions.
 // =============================================================================
@@ -391,6 +395,122 @@ int runSuite81NumericalTransformCorrectness(ApplicationWindow *mw)
         } else {
             CHECK81(false, "81g: non-uniform FFT output table not found");
         }
+    }
+
+    // ------------------------------------------------ 81h: deconvolution, Nyquist zero
+    // [1,2,1] and [1,4,6,4,1] have H(n/2) = 0 exactly. conv followed by deconv with the same
+    // kernel must give back the delta except for its (unrecoverable) Nyquist component:
+    // delta_p[j] - (-1)^(j-p)/n, with no inf/NaN.
+    {
+        const std::vector<std::vector<double>> kernels = { { 1.0, 2.0, 1.0 },
+                                                           { 1.0, 4.0, 6.0, 4.0, 1.0 } };
+        const int p = 5;
+        for (size_t kk = 0; kk < kernels.size(); ++kk) {
+            const std::vector<double> &resp = kernels[kk];
+            const std::string tag = "81h[m=" + std::to_string(resp.size()) + "]";
+            std::vector<double> sig(12, 0.0);
+            sig[size_t(p)] = 1.0;
+            Table *t = suite81Table(mw, QString("S81DeconvNyq%1").arg(int(kk)),
+                                    QStringList() << "Sig" << "Resp", 12, { sig, resp });
+            CHECK_COND(t != nullptr, "81h: table");
+            const int colsBefore = t->numCols();
+            Convolution cv(mw, t, t->name() + "_Sig", t->name() + "_Resp");
+            CHECK81(cv.run(), tag << ": Convolution run failed");
+            const std::vector<double> conv = suite81Column(t, colsBefore + 1, 16);
+            const std::vector<double> convExp = suite81CircularConv(sig, 16, resp);
+            CHECK81(suite81MaxAbsDiff(conv, convExp) < 1e-9,
+                    tag << ": convolution differs from the direct sum");
+
+            // The convolved signal fits in the first 12 rows (support p-m2 .. p+m2).
+            std::vector<double> conv12(conv.begin(), conv.begin() + std::min<size_t>(12, conv.size()));
+            Table *t2 = suite81Table(mw, QString("S81DeconvNyqB%1").arg(int(kk)),
+                                     QStringList() << "Sig" << "Resp", 12, { conv12, resp });
+            CHECK_COND(t2 != nullptr, "81h: table 2");
+            const int cols2 = t2->numCols();
+            Deconvolution dcv(mw, t2, t2->name() + "_Sig", t2->name() + "_Resp");
+            CHECK81(!dcv.error(), tag << ": Deconvolution init error");
+            CHECK81(dcv.run(), tag << ": Deconvolution run failed");
+            const std::vector<double> got = suite81Column(t2, cols2 + 1, 16);
+            std::cout << "[INFO] " << tag << " deconv(conv(delta@5)) = " << suite81Str(got) << "\n";
+
+            bool allFinite = got.size() == 16;
+            size_t argmax = 0;
+            for (size_t i = 0; i < got.size(); ++i) {
+                if (!std::isfinite(got[i]))
+                    allFinite = false;
+                if (std::fabs(got[i]) > std::fabs(got[argmax]))
+                    argmax = i;
+            }
+            CHECK81(allFinite, tag << ": deconvolution output must be finite, got " << suite81Str(got));
+            CHECK81(argmax == size_t(p),
+                    tag << ": deconvolution peak must stay at row " << p << ", got " << argmax);
+            std::vector<double> expect(16);
+            for (int j = 0; j < 16; ++j)
+                expect[size_t(j)] = (j == p ? 1.0 : 0.0) - (((j - p) % 2 == 0) ? 1.0 : -1.0) / 16.0;
+            const double err = suite81MaxAbsDiff(got, expect);
+            CHECK81(err < 1e-9, tag << ": deconvolution must recover the delta minus its Nyquist "
+                                       "component (max err "
+                                    << err << ")");
+        }
+    }
+
+    // ------------------------------------------------ 81i: FFT, empty rows below the data
+    // 30-row table with X/Y in the first 10 rows only: FFT works on the 10 finite rows and its
+    // grid step equals FFTDialog's default (xmax - xmin)/(10 - 1), so df = 1/(10*dt).
+    {
+        std::vector<double> x, y;
+        for (int i = 0; i < 10; ++i) {
+            x.push_back(0.2 * i);
+            y.push_back(std::cos(2.0 * M_PI * i / 5.0));
+        }
+        const double dt = 0.2;
+        Table *t = suite81Table(mw, "S81FftEmptyRows", QStringList() << "X" << "Y", 30, { x, y });
+        CHECK_COND(t != nullptr, "81i: table");
+        t->setColPlotDesignation(0, SciDAVis::X);
+        t->setColPlotDesignation(1, SciDAVis::Y);
+
+        double dflt = 0.0;
+        {
+            std::unique_ptr<FFTDialog> dlg(new FFTDialog(FFTDialog::onTable, mw));
+            dlg->setTable(t);
+            dflt = dlg->boxSampling->text().toDouble();
+            std::cout << "[INFO] 81i FFTDialog default sampling (10 of 30 rows) = "
+                      << dlg->boxSampling->text().toStdString() << "\n";
+            CHECK81(std::fabs(dflt - dt) < 1e-12,
+                    "81i: FFTDialog default sampling must be 0.2, got "
+                            << dlg->boxSampling->text().toStdString());
+        }
+
+        // FFT's own grid step (no setSampling): df = 1/(m*dt_grid) must be 1/(10*dflt).
+        auto runFft = [&](bool overrideSampling, double sampling, int &rowsOut) {
+            const QSet<QString> before = suite81WindowNames(mw);
+            FFT fft(mw, t, t->name() + "_Y");
+            if (overrideSampling)
+                fft.setSampling(sampling);
+            fft.setSilent(true);
+            CHECK81(fft.run(), "81i: FFT run failed");
+            Table *ft = suite81NewTable(mw, before);
+            rowsOut = ft ? ft->numRows() : -1;
+            if (!ft)
+                return std::numeric_limits<double>::quiet_NaN();
+            const std::vector<double> f = suite81Column(ft, 0, 3);
+            return f.size() == 3 ? f[2] - f[1] : std::numeric_limits<double>::quiet_NaN();
+        };
+        int rowsOwn = -1, rowsDlg = -1;
+        const double dfOwn = runFft(false, 0.0, rowsOwn);
+        const double dfDlg = runFft(true, dflt, rowsDlg);
+        const double dfExp = 1.0 / (10.0 * dflt);
+        std::cout << "[INFO] 81i FFT df (own grid) = " << dfOwn << ", df (dialog dt) = " << dfDlg
+                  << ", expected 1/(10*dt) = " << dfExp << ", rows = " << rowsOwn << "/"
+                  << rowsDlg << "\n";
+        CHECK81(std::fabs(dfOwn - dfExp) < 1e-12,
+                "81i: FFT grid step must equal the dialog default (df " << dfOwn << " vs "
+                                                                        << dfExp << ")");
+        CHECK81(std::fabs(dfDlg - dfExp) < 1e-12,
+                "81i: FFT with the dialog default must give df = 1/(10*dt), got " << dfDlg);
+        CHECK81(rowsOwn == 10 && rowsDlg == 10,
+                "81i: FFT output must have one row per finite input row (10), got "
+                        << rowsOwn << "/" << rowsDlg);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

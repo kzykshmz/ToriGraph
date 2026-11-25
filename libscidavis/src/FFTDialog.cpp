@@ -56,7 +56,8 @@ using namespace std;
 namespace {
 
 // Default sampling interval: the step of the uniform grid FFT works on, i.e. the X span of the
-// finite points divided by (n - 1) (see ensureUniformGridAndSampling in FFT.cpp). Unlike
+// finite points divided by (n - 1), n = number of finite points (empty rows below the data are
+// not counted; FFT's grid also has n points, see ensureUniformGridAndSampling in FFT.cpp). Unlike
 // x[1] - x[0] it stays positive for descending X and matches the resampled grid for
 // non-uniform X, so FFTDialog::accept() no longer overrides FFT's interval with a wrong one.
 QString defaultSamplingText(const std::vector<double> &xs)
