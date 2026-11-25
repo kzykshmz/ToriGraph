@@ -37,6 +37,58 @@
 #include <QXmlStreamWriter>
 #include <QtDebug>
 
+#include <algorithm>
+
+namespace {
+//! The intervals sorted by their start, overlapping and touching ones merged (invalid ones
+//! dropped): the form in which masks are compared and combined in linear time.
+QList<Interval<int>> normalizedIntervals(QList<Interval<int>> list)
+{
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [](const Interval<int> &iv) { return iv.start() > iv.end(); }),
+               list.end());
+    std::sort(list.begin(), list.end(),
+              [](const Interval<int> &a, const Interval<int> &b) { return a.start() < b.start(); });
+    QList<Interval<int>> out;
+    out.reserve(list.size());
+    for (const Interval<int> &iv : list) {
+        if (!out.isEmpty() && iv.start() <= out.last().end() + 1)
+            out.last().setEnd(qMax(out.last().end(), iv.end()));
+        else
+            out.append(iv);
+    }
+    return out;
+}
+
+//! \c from minus \c minus; both normalized (see normalizedIntervals), so is the result
+QList<Interval<int>> subtractedIntervals(const QList<Interval<int>> &from,
+                                         const QList<Interval<int>> &minus)
+{
+    QList<Interval<int>> out;
+    int j = 0;
+    const int n = minus.size();
+    for (const Interval<int> &iv : from) {
+        int s = iv.start();
+        const int e = iv.end();
+        while (j < n && minus.at(j).end() < s)
+            ++j;
+        int k = j;
+        while (k < n && minus.at(k).start() <= e) {
+            if (minus.at(k).start() > s)
+                out.append(Interval<int>(s, minus.at(k).start() - 1));
+            s = qMax(s, minus.at(k).end() + 1);
+            if (minus.at(k).end() >= e)
+                break; // it may also cover the start of the next interval
+            ++k;
+        }
+        if (s <= e)
+            out.append(Interval<int>(s, e));
+        j = k;
+    }
+    return out;
+}
+} // namespace
+
 Column::Column(const QString &name, SciDAVis::ColumnMode mode) : AbstractColumn(name)
 {
     d_column_private = new Private(this, mode);
@@ -129,9 +181,8 @@ bool Column::copy(const AbstractColumn *other)
     }
     beginMacro(tr("%1: copy %2").arg(name(), other->name()));
     exec(new ColumnFullCopyCmd(d_column_private, other));
-    clearMasks();
-    for (const Interval<int> &iv : srcMasks)
-        setMasked(iv, true);
+    // all the masks in one command (one setMasked() per interval grew with their square)
+    replaceMaskedIntervals(normalizedIntervals(srcMasks));
     endMacro();
     return true;
 }
@@ -174,10 +225,12 @@ bool Column::copy(const AbstractColumn *source, int source_start, int dest_start
     }
     beginMacro(tr("%1: partial copy %2").arg(name(), source->name()));
     exec(new ColumnPartialCopyCmd(d_column_private, source, source_start, dest_start, num_rows));
-    if (dstHadMasks)
-        setMasked(Interval<int>(dest_start, dstEnd), false);
+    // the destination rows take the source's masks, in one command
+    QList<Interval<int>> masks = subtractedIntervals(normalizedIntervals(dstMasks),
+                                                     { Interval<int>(dest_start, dstEnd) });
     for (const Interval<int> &iv : mappedMasks)
-        setMasked(iv, true);
+        masks.append(iv);
+    replaceMaskedIntervals(normalizedIntervals(masks));
     endMacro();
     return true;
 }
@@ -332,6 +385,30 @@ void Column::replaceInvalidIntervals(const QList<Interval<int>> &intervals)
 void Column::replaceMaskedIntervals(const QList<Interval<int>> &intervals)
 {
     exec(new ColumnReplaceMaskingCmd(d_column_private, IntervalAttribute<bool>(intervals)));
+}
+
+bool Column::setMaskedIntervals(const QList<Interval<int>> &intervals, bool mask)
+{
+    const QList<Interval<int>> given = normalizedIntervals(intervals);
+    if (given.isEmpty())
+        return false;
+    const QList<Interval<int>> current = normalizedIntervals(maskedIntervals());
+    QList<Interval<int>> result;
+    if (mask) {
+        result = current;
+        for (const Interval<int> &iv : given)
+            result.append(iv);
+        result = normalizedIntervals(result);
+    } else {
+        result = subtractedIntervals(current, given);
+    }
+    if (result == current)
+        return false;
+    auto *cmd = new ColumnReplaceMaskingCmd(d_column_private, IntervalAttribute<bool>(result));
+    if (!mask)
+        cmd->setText(QObject::tr("%1: unmask cells").arg(name()));
+    exec(cmd);
+    return true;
 }
 
 void Column::setFormula(Interval<int> i, QString formula)
@@ -632,6 +709,15 @@ bool Column::load(XmlStreamReader *reader)
         // by one scanned the list of empty cells read so far for every row, so a column with
         // scattered empty cells took a time growing with the square of the rows to open.
         RowBuffer rows;
+        // likewise the <mask> elements: one setMasked() each copied all the masks read so far
+        // (a column with 25000 scattered masked runs took minutes and gigabytes to open)
+        QList<Interval<int>> masks;
+        auto applyRead = [this, &rows, &masks]() {
+            XmlApplyRows(rows);
+            if (!masks.isEmpty())
+                setMaskedIntervals(masks, true);
+            masks.clear();
+        };
         // read child elements
         while (!reader->atEnd()) {
             reader->readNext();
@@ -650,7 +736,7 @@ bool Column::load(XmlStreamReader *reader)
                 else if (reader->name() == "output_filter")
                     ret_val = XmlReadOutputFilter(reader);
                 else if (reader->name() == "mask")
-                    ret_val = XmlReadMask(reader);
+                    ret_val = XmlReadMask(reader, &masks);
                 else if (reader->name() == "formula")
                     ret_val = XmlReadFormula(reader);
                 else if (reader->name() == "row")
@@ -659,17 +745,17 @@ bool Column::load(XmlStreamReader *reader)
                 {
                     reader->raiseWarning(tr("unknown element '%1'").arg(reader->name().toString()));
                     if (!reader->skipToEndElement()) {
-                        XmlApplyRows(rows);
+                        applyRead();
                         return false;
                     }
                 }
                 if (!ret_val) {
-                    XmlApplyRows(rows);
+                    applyRead();
                     return false;
                 }
             }
         }
-        XmlApplyRows(rows);
+        applyRead();
     } else // no column element
         reader->raiseError(tr("no column element found"));
 
@@ -718,7 +804,7 @@ bool Column::XmlReadOutputFilter(XmlStreamReader *reader)
     return true;
 }
 
-bool Column::XmlReadMask(XmlStreamReader *reader)
+bool Column::XmlReadMask(XmlStreamReader *reader, QList<Interval<int>> *masks)
 {
     Q_ASSERT(reader->isStartElement() && reader->name() == "mask");
 
@@ -730,7 +816,7 @@ bool Column::XmlReadMask(XmlStreamReader *reader)
         reader->raiseError(tr("invalid or missing start or end row"));
         return false;
     }
-    setMasked(Interval<int>(start, end));
+    masks->append(Interval<int>(start, end));
     if (!reader->skipToEndElement())
         return false;
 

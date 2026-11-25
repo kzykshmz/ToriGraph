@@ -6057,43 +6057,45 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         bool macroStarted = false;
         int actualChanged = 0;
         QSet<int> dirtyCols;
-        // Change runs of consecutive rows with one setMasked(Interval) each instead of one
-        // command (and one view/plot update) per row; a row listed twice counts once.
+        // The runs of consecutive rows that change are set with one command per column
+        // (Column::setMaskedIntervals): one setMasked(Interval) per run copied all the masks of
+        // the column for each command, so scattered rows took time and memory growing with the
+        // square of the runs (over 4 minutes and 6.5 GB for 25000 runs). A row listed twice
+        // counts once.
         QVector<int> sortedRows = rowsToChange;
         std::sort(sortedRows.begin(), sortedRows.end());
         sortedRows.erase(std::unique(sortedRows.begin(), sortedRows.end()), sortedRows.end());
         for (int c : targetCols) {
             if (Column *col = t->column(c)) {
-                bool colChanged = false;
-                int runStart = -1;
-                int runEnd = -1;
-                auto flushRun = [&]() {
-                    if (runStart < 0)
-                        return;
-                    if (!macroStarted && t->d_future_table) {
-                        t->d_future_table->beginMacro(QStringLiteral("%1: mask").arg(t->name()));
-                        macroStarted = true;
-                    }
-                    col->setMasked(Interval<int>(runStart, runEnd), maskFlag);
-                    runStart = runEnd = -1;
-                };
+                // whether each listed row is masked now, in one pass over the sorted masks
+                // (isMasked() per row scans all the masks)
+                QList<Interval<int>> masks = col->maskedIntervals();
+                std::sort(masks.begin(), masks.end(),
+                          [](const Interval<int> &a, const Interval<int> &b) {
+                              return a.start() < b.start();
+                          });
+                QList<Interval<int>> runs;
+                int m = 0;
+                int maskedUpTo = -1; // largest end of the masks starting at or before the row
                 for (int r : sortedRows) {
-                    if (col->isMasked(r) != maskFlag) {
-                        if (runStart >= 0 && r == runEnd + 1) {
-                            runEnd = r;
-                        } else {
-                            flushRun();
-                            runStart = runEnd = r;
-                        }
-                        colChanged = true;
-                        ++actualChanged;
-                    } else {
-                        flushRun();
-                    }
+                    while (m < masks.size() && masks.at(m).start() <= r)
+                        maskedUpTo = std::max(maskedUpTo, masks.at(m++).end());
+                    if ((maskedUpTo >= r) == maskFlag)
+                        continue;
+                    if (!runs.isEmpty() && runs.last().end() + 1 == r)
+                        runs.last().setEnd(r);
+                    else
+                        runs.append(Interval<int>(r, r));
+                    ++actualChanged;
                 }
-                flushRun();
-                if (colChanged)
-                    dirtyCols.insert(c);
+                if (runs.isEmpty())
+                    continue;
+                if (!macroStarted && t->d_future_table) {
+                    t->d_future_table->beginMacro(QStringLiteral("%1: mask").arg(t->name()));
+                    macroStarted = true;
+                }
+                col->setMaskedIntervals(runs, maskFlag);
+                dirtyCols.insert(c);
             }
         }
         if (macroStarted && t->d_future_table)

@@ -29,7 +29,10 @@
 //        of 2000 scattered rows take seconds at most (each masked row used to recalculate the
 //        whole formula column), the formula values stay, Undo / Redo restore the masks, and a
 //        data change still recalculates the formula column; masking a GUI selection (runs of
-//        rows) is one Undo step
+//        rows) is one Undo step; mask_rows / unmask_rows of 12500 scattered rows, a GUI
+//        selection of 3000 single rows and mask_rows of all columns are one command per
+//        column (one per run grew with the square of the runs: 20 s for 12500 runs, over 4
+//        minutes and 6.5 GB for 25000) and Undo / Redo restore the exact masks
 //   109d sorting a table of 100000 rows x 20 columns whose column 1 has 50000 masked rows
 //        (scattered over the rows by the sort) and 1 % empty cells, with a formula column:
 //        sort, Undo and Redo take seconds at most (one mask command per masked run of rows
@@ -46,7 +49,9 @@
 //        all empty cells read so far: 6.6 s for one numeric column); rows out of order, gaps
 //        and repeated rows read as before; a project with a 20000 x 20 table with empty cells,
 //        masks, a formula column, text / date columns and a number format opens fast and
-//        unchanged
+//        unchanged; a column with 12500 masked runs reads in one step (5 s before, one
+//        command per <mask> element), and <mask> elements out of order, overlapping or
+//        touching read as their union
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -414,6 +419,112 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         us->undo();
         CHECK_COND(c2->maskedIntervals().isEmpty(), "109c: Undo of the GUI mask");
         t->deselectAll();
+
+        // many scattered runs: every other row of 25000 (12500 masked runs). mask_rows put one
+        // command per run on the Undo stack, each holding a copy of all the masks set so far
+        // (time and memory grew with the square of the runs: 20 s for 12500 runs, over 4
+        // minutes and 6.5 GB for 25000). Now one command per column, Undo in one step.
+        {
+            const int NB = 25000;
+            Table *tb = w109->newTable(QStringLiteral("MB109"), NB, 2);
+            CHECK_COND(tb != nullptr && tb->numRows() == NB, "109c: table MB109");
+            Column *mc = tb->column(0);
+            QUndoStack *ub = tb->d_future_table->undoStack();
+            CHECK_COND(ub != nullptr, "109c: MB109 has no undo stack");
+            auto lastStepCommands = [ub]() {
+                const QUndoCommand *cmd = ub->index() > 0 ? ub->command(ub->index() - 1) : nullptr;
+                return cmd ? cmd->childCount() : -1;
+            };
+            QJsonArray every2;
+            for (int i = 0; i < NB; i += 2)
+                every2.append(i);
+            const int idx0 = ub->index();
+            timer.restart();
+            r = rpc(QStringLiteral("table.mask_rows"),
+                    QJsonObject { { "table", "MB109" }, { "col", 0 }, { "rows", every2 } });
+            const qint64 msMany = timer.elapsed();
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == NB / 2,
+                       "109c: mask_rows of 12500 scattered rows: " << errText(r));
+            CHECK_COND(mc->maskedIntervals().size() == NB / 2 && mc->isMasked(0) && !mc->isMasked(1)
+                               && mc->isMasked(NB - 2) && !mc->isMasked(NB - 1),
+                       "109c: 12500 scattered masks: " << mc->maskedIntervals().size() << " runs");
+            CHECK_COND(ub->index() == idx0 + 1 && lastStepCommands() == 1,
+                       "109c: mask_rows of 12500 runs is " << ub->index() - idx0 << " step(s) of "
+                                                           << lastStepCommands() << " command(s)");
+            // unmask every fourth row: 12500 runs become 6250, again one command
+            QJsonArray every4;
+            for (int i = 0; i < NB; i += 4)
+                every4.append(i);
+            timer.restart();
+            r = rpc(QStringLiteral("table.unmask_rows"),
+                    QJsonObject { { "table", "MB109" }, { "col", 0 }, { "rows", every4 } });
+            const qint64 msUnmaskMany = timer.elapsed();
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == NB / 4,
+                       "109c: unmask_rows of 6250 scattered rows: " << errText(r));
+            CHECK_COND(mc->maskedIntervals().size() == NB / 4 && !mc->isMasked(0) && mc->isMasked(2)
+                               && !mc->isMasked(4) && mc->isMasked(NB - 2),
+                       "109c: masks after unmasking every fourth row: "
+                               << mc->maskedIntervals().size() << " runs");
+            CHECK_COND(ub->index() == idx0 + 2 && lastStepCommands() == 1,
+                       "109c: unmask_rows of 6250 runs is " << ub->index() - idx0 - 1
+                                                            << " step(s) of " << lastStepCommands()
+                                                            << " command(s)");
+            // GUI: a selection of 3000 single rows in column 2 is masked with one command
+            Column *mc2 = tb->column(1);
+            tb->deselectAll();
+            tb->setCellsSelected(0, 1, 5999, 1, true);
+            for (int i = 1; i < 6000; i += 2)
+                tb->setCellsSelected(i, 1, i, 1, false);
+            timer.restart();
+            tb->d_future_table->maskSelection();
+            const qint64 msGui = timer.elapsed();
+            CHECK_COND(mc2->maskedIntervals().size() == 3000 && mc2->isMasked(5998)
+                               && !mc2->isMasked(5999) && !mc2->isMasked(1),
+                       "109c: GUI mask of 3000 single rows: " << mc2->maskedIntervals().size());
+            CHECK_COND(ub->index() == idx0 + 3 && lastStepCommands() == 1,
+                       "109c: GUI mask of 3000 runs is " << lastStepCommands() << " command(s)");
+            tb->deselectAll();
+            std::cout << "[INFO] 109c: 12500 scattered rows: mask " << msMany << " ms, unmask "
+                      << msUnmaskMany << " ms; GUI mask of 3000 rows " << msGui << " ms\n";
+            // (the GUI time is mostly the selection model answering isSelected() for each row of
+            // a selection of 3000 ranges; only the number of commands is checked there)
+            CHECK_COND(msMany < 2000 * kTestTimingScale && msUnmaskMany < 2000 * kTestTimingScale,
+                       "109c: many scattered masks: mask " << msMany << " ms, unmask "
+                                                           << msUnmaskMany << " ms");
+            // Undo / Redo step by step restore the exact masks
+            ub->undo();
+            CHECK_COND(mc2->maskedIntervals().isEmpty(), "109c: Undo of the GUI mask (MB109)");
+            ub->undo();
+            CHECK_COND(mc->maskedIntervals().size() == NB / 2 && mc->isMasked(0) && mc->isMasked(4),
+                       "109c: Undo of unmask_rows: " << mc->maskedIntervals().size() << " runs");
+            ub->undo();
+            CHECK_COND(mc->maskedIntervals().isEmpty(), "109c: Undo of mask_rows left masks");
+            ub->redo();
+            ub->redo();
+            CHECK_COND(mc->maskedIntervals().size() == NB / 4 && !mc->isMasked(0)
+                               && mc->isMasked(2),
+                       "109c: Redo of mask_rows / unmask_rows: " << mc->maskedIntervals().size());
+            // rows already in the state asked for change nothing and add no Undo step
+            const int idxNoop = ub->index();
+            r = rpc(QStringLiteral("table.mask_rows"),
+                    QJsonObject {
+                            { "table", "MB109" }, { "col", 0 }, { "rows", QJsonArray { 2, 6 } } });
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == 0
+                               && ub->index() == idxNoop,
+                       "109c: masking masked rows changed "
+                               << res(r).value(QStringLiteral("changed_cells")).toInt()
+                               << " cell(s), " << ub->index() - idxNoop << " step(s)");
+            // all columns at once: one step, one command per column that changes
+            r = rpc(QStringLiteral("table.mask_rows"),
+                    QJsonObject { { "table", "MB109" }, { "rows", QJsonArray { 0, 1, 3 } } });
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == 6
+                               && ub->index() == idxNoop + 1 && lastStepCommands() == 2
+                               && mc->isMasked(Interval<int>(0, 3)) && mc2->isMasked(0)
+                               && mc2->isMasked(1) && !mc2->isMasked(2) && mc2->isMasked(3),
+                       "109c: mask_rows of all columns: "
+                               << res(r).value(QStringLiteral("changed_cells")).toInt()
+                               << " cells, " << lastStepCommands() << " command(s)");
+        }
         std::cout << "[PASS] 109c: masking rows read by a formula column is fast and undoable\n";
     }
 
@@ -935,7 +1046,68 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
             }
             CHECK_COND(msOpen < 8000 * kTestTimingScale, "109f: opening took " << msOpen << " ms");
         }
-        std::cout << "[PASS] 109f: columns with scattered empty cells are read quickly and unchanged\n";
+
+        // (4) masks scattered over the rows: each <mask> element was one setMasked command that
+        //     copied all the masks read so far (12500 masked runs: 20 s to open a project; 25000:
+        //     over 4 minutes and 6.5 GB). The masks of a column are now set in one step.
+        {
+            const int NM = 25000;
+            Column src(QStringLiteral("mask109"), SciDAVis::ColumnMode::Numeric);
+            QVector<qreal> values(NM);
+            for (int k = 0; k < NM; ++k)
+                values[k] = k;
+            src.replaceValues(0, values);
+            QList<Interval<int>> runs;
+            for (int k = 0; k < NM; k += 2)
+                runs << Interval<int>(k, k);
+            src.replaceMaskedIntervals(runs);
+            const QByteArray xml = saveCol(&src);
+            timer.start();
+            bool ok = false;
+            std::unique_ptr<Column> dst = loadCol(xml, SciDAVis::ColumnMode::Numeric, &ok);
+            const qint64 msMasks = timer.elapsed();
+            std::cout << "[INFO] 109f: reading a column of " << NM << " rows with " << runs.size()
+                      << " masked runs: " << msMasks << " ms\n";
+            CHECK_COND(ok && dst->rowCount() == NM, "109f: loading the masked column failed");
+            QList<Interval<int>> got = dst->maskedIntervals();
+            std::sort(got.begin(), got.end(), [](const Interval<int> &a, const Interval<int> &b) {
+                return a.start() < b.start();
+            });
+            CHECK_COND(got == runs,
+                       "109f: masks after loading: " << got.size() << " runs, expected "
+                                                     << runs.size());
+            CHECK_COND(dst->valueAt(NM - 1) == NM - 1 && dst->invalidIntervals().isEmpty(),
+                       "109f: values of the masked column");
+            CHECK_COND(msMasks < 1500 * kTestTimingScale,
+                       "109f: reading 12500 masked runs took " << msMasks << " ms");
+
+            // <mask> elements out of order, overlapping, touching and repeated (hand-written,
+            // also after the rows) read as their union, as before
+            Column plain(QStringLiteral("maskx109"), SciDAVis::ColumnMode::Numeric);
+            plain.replaceValues(0, QVector<qreal>(30, 1.0));
+            QByteArray hx = saveCol(&plain);
+            const int end = hx.lastIndexOf("</column>");
+            CHECK_COND(end > 0, "109f: no </column> in the saved XML");
+            hx.insert(end,
+                      "<mask start_row=\"20\" end_row=\"22\"/>"
+                      "<mask start_row=\"8\" end_row=\"12\"/>"
+                      "<mask start_row=\"10\" end_row=\"14\"/>"
+                      "<mask start_row=\"15\" end_row=\"15\"/>"
+                      "<mask start_row=\"2\" end_row=\"3\"/>"
+                      "<mask start_row=\"21\" end_row=\"21\"/>"
+                      "<mask start_row=\"40\" end_row=\"41\"/>");
+            std::unique_ptr<Column> hd = loadCol(hx, SciDAVis::ColumnMode::Numeric, &ok);
+            CHECK_COND(ok && hd->rowCount() == 30, "109f: hand-written masks: loading failed");
+            QVector<bool> mflags(45, false);
+            for (int k = 0; k < 45; ++k)
+                mflags[k] = hd->isMasked(k);
+            QVector<bool> want(45, false);
+            for (int k : { 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 40, 41 })
+                want[k] = true;
+            CHECK_COND(mflags == want, "109f: hand-written masks read differently");
+        }
+        std::cout << "[PASS] 109f: columns with scattered empty cells are read quickly and "
+                     "unchanged\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

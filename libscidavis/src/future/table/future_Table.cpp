@@ -965,16 +965,20 @@ void Table::maskSelection()
     QList<Column *> list = d_view->selectedColumns();
     foreach (Column *col_ptr, list) {
         int col = columnIndex(col_ptr);
-        // one setMasked(Interval) per run of selected rows, not one command per row
+        // the runs of selected rows with one command per column: one setMasked(Interval) per
+        // run copied all the masks of the column for each command (grew with the square of
+        // the runs for a scattered selection)
+        QList<Interval<int>> runs;
         for (int row = first; row <= last; row++) {
             if (!d_view->isCellSelected(row, col))
                 continue;
             int runEnd = row;
             while (runEnd < last && d_view->isCellSelected(runEnd + 1, col))
                 ++runEnd;
-            col_ptr->setMasked(Interval<int>(row, runEnd), true);
+            runs.append(Interval<int>(row, runEnd));
             row = runEnd;
         }
+        col_ptr->setMaskedIntervals(runs, true);
     }
     endMacro();
     RESET_CURSOR;
@@ -994,16 +998,20 @@ void Table::unmaskSelection()
     QList<Column *> list = d_view->selectedColumns();
     foreach (Column *col_ptr, list) {
         int col = columnIndex(col_ptr);
-        // one setMasked(Interval) per run of selected rows, not one command per row
+        // the runs of selected rows with one command per column: one setMasked(Interval) per
+        // run copied all the masks of the column for each command (grew with the square of
+        // the runs for a scattered selection)
+        QList<Interval<int>> runs;
         for (int row = first; row <= last; row++) {
             if (!d_view->isCellSelected(row, col))
                 continue;
             int runEnd = row;
             while (runEnd < last && d_view->isCellSelected(runEnd + 1, col))
                 ++runEnd;
-            col_ptr->setMasked(Interval<int>(row, runEnd), false);
+            runs.append(Interval<int>(row, runEnd));
             row = runEnd;
         }
+        col_ptr->setMaskedIntervals(runs, false);
     }
     endMacro();
     RESET_CURSOR;

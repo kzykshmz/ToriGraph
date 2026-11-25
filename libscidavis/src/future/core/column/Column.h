@@ -227,6 +227,14 @@ public:
     void replaceInvalidIntervals(const QList<Interval<int>> &intervals);
     //! Replace all masked intervals by the given ones in one Undo step (see replaceInvalidIntervals)
     void replaceMaskedIntervals(const QList<Interval<int>> &intervals);
+    //! Mask (or unmask) all the given intervals in one Undo step
+    /**
+     * The intervals may be in any order, overlap or touch. One command for any number of
+     * intervals (setMasked() per interval copies all the masks for each command, which grows
+     * with the square of the intervals). Nothing is done when the masks do not change.
+     * \return true if the masks changed
+     */
+    bool setMaskedIntervals(const QList<Interval<int>> &intervals, bool mask = true);
     //@}
 
     //! \name Formula related functions
@@ -345,8 +353,8 @@ private:
     bool XmlReadInputFilter(XmlStreamReader *reader);
     //! Read XML output filter element
     bool XmlReadOutputFilter(XmlStreamReader *reader);
-    //! Read XML mask element
-    bool XmlReadMask(XmlStreamReader *reader);
+    //! Read XML mask element (collected in \c masks, set in one step at the end of the column)
+    bool XmlReadMask(XmlStreamReader *reader, QList<Interval<int>> *masks);
     //! Read XML formula element
     bool XmlReadFormula(XmlStreamReader *reader);
     //! The rows read by XmlReadRow(), stored in one step by XmlApplyRows()
