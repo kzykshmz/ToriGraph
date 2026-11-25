@@ -412,6 +412,11 @@ void validateMuParserExprOrThrow(const QString &expr, const QStringList &varName
                                  const QString &opName);
 int requireCurveMinPoints(Graph *g, const QString &curveTitle, int minPts, const QString &opName,
                           int *distinctXOut = nullptr);
+// Reads the optional 'x_min' / 'x_max' of a curve operation (absent or null = not given). When
+// only one side is given, the other is the end of the curve's valid, unmasked X data. Returns
+// false when neither is given; throws invalid params unless the result is finite x_min < x_max.
+bool resolveCurveXRange(Graph *g, const QString &curveTitle, const QJsonObject &params,
+                        const QString &opName, double &xMin, double &xMax);
 QColor parseColorValue(const QJsonValue &val, const QColor &fallback = QColor(Qt::black));
 Qt::PenStyle parsePenStyleValue(const QJsonValue &val, Qt::PenStyle fallback = Qt::SolidLine);
 QString windowTypeString(MyWidget *w);

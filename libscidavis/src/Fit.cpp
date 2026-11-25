@@ -623,6 +623,34 @@ struct ConstrainedFitContext
         return p;
     }
 
+    //! -1 / +1 when free variable k (solver value u) is held at its lower / upper bound (the
+    //! value snapP reports is the bound), 0 otherwise.
+    int boundSide(size_t k, double u) const
+    {
+        if (modes[k] == BoundNone)
+            return 0;
+        const double p = snapP(k, mapUtoP(k, u));
+        if (std::isfinite(lo[k]) && p == lo[k])
+            return -1;
+        if (std::isfinite(hi[k]) && p == hi[k])
+            return 1;
+        return 0;
+    }
+
+    //! Sign for Fit::lmGradientIsStationary: a step -g_u in u moves p by -g_u * dP/dU, which
+    //! the bound blocks when it points out of the box (down at the lower bound, up at the upper).
+    int kktSign(size_t k, double u) const
+    {
+        const int side = boundSide(k, u);
+        if (side == 0)
+            return 0;
+        const double d = dPdU(k, u);
+        if (d == 0.0 || !std::isfinite(d))
+            return 0;
+        // lower bound: blocked when g_u * dPdU >= 0; upper bound: when g_u * dPdU <= 0
+        return (d > 0.0 ? 1 : -1) * (side < 0 ? 1 : -1);
+    }
+
     void applyDependentParams(std::vector<double> &fullVec) const
     {
         for (size_t m = 0; m < dep_indices.size(); ++m) {
@@ -1050,7 +1078,8 @@ void Fit::setStraightLinePearson(const std::vector<double> &x, const std::vector
     d_line_pearson_r = qBound(-1.0, sxy / std::sqrt(sxx * syy), 1.0);
 }
 
-bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol)
+bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
+                                 const std::vector<int> *kktSigns)
 {
     // MINPACK-style scale-invariant gradient test: the cosine of the angle between the residual
     // vector f and every column of the Jacobian must be small at a stationary point.
@@ -1081,8 +1110,15 @@ bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol)
         double dot = 0.0;
         gsl_blas_ddot(&col.vector, s->f, &dot);
         const double cosAngle = std::abs(dot) / (cnorm * fnorm);
-        if (!std::isfinite(cosAngle) || cosAngle > gtol)
+        if (!std::isfinite(cosAngle)) {
             stationary = false;
+        } else if (cosAngle > gtol) {
+            // A variable held at a bound is stationary when the descent direction (-dot)
+            // points out of the box: the bound, not the gradient, stops it (KKT condition).
+            const int sgn = (kktSigns && j < kktSigns->size()) ? (*kktSigns)[j] : 0;
+            if (!(sgn != 0 && double(sgn) * dot >= 0.0))
+                stationary = false;
+        }
     }
     gsl_matrix_free(J);
     return stationary;
@@ -1427,7 +1463,13 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 if (status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) {
                     status = GSL_SUCCESS;
                 } else if (status == GSL_ENOPROG) {
-                    if (!lmGradientIsStationary(s))
+                    // A parameter held at a bound keeps a gradient that points out of the box;
+                    // that is a constrained minimum, not a stall (the tanh / square transforms
+                    // flatten its column, so the solver cannot move any further).
+                    std::vector<int> kkt(p_free, 0);
+                    for (size_t k = 0; k < p_free; ++k)
+                        kkt[k] = ctx.kktSign(k, gsl_vector_get(s->x, k));
+                    if (!lmGradientIsStationary(s, 1e-4, &kkt))
                         d_convergence = NoProgress;
                     status = GSL_SUCCESS;
                 }
@@ -1474,6 +1516,15 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
         for (size_t k = 0; k < p_free; ++k) {
             double p_val = ctx.snapP(k, ctx.mapUtoP(k, gsl_vector_get(s->x, k)));
             result[ctx.free_to_full[k]] = p_val;
+            if (ctx.boundSide(k, gsl_vector_get(s->x, k)) != 0) {
+                const int j = ctx.free_to_full[k];
+                const QString note = tr("%1 = %2 is at a bound of its allowed range.")
+                                             .arg(d_param_names[j])
+                                             .arg(QLocale().toString(
+                                                     fromInternalParameter(j, p_val), 'g', d_prec));
+                if (!d_fit_notes.contains(note))
+                    d_fit_notes << note;
+            }
         }
         ctx.applyDependentParams(result);
         for (unsigned j = 0; j < d_p; ++j)

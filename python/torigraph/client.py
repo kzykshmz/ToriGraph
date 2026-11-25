@@ -5058,7 +5058,8 @@ class Session:
         ``x_col`` + ``y_col``; a graph is created when needed).
 
         Args:
-            x_min, x_max: fit only the points with ``x_min <= x <= x_max`` (give both).
+            x_min, x_max: fit only the points with ``x_min <= x <= x_max``; a side that is
+                not given is the end of the data.
             plot_curve: draw the fitted line on the graph (default ``True``).
             fit_label: name of the fit curve / result entry.
             weighting: ``"none"`` (default), ``"instrumental"`` (1/error-bar^2),
@@ -5154,7 +5155,7 @@ class Session:
             init_params: initial values ``{"a": 1.0, ...}``.
             bounds: ``{"a": [lower, upper], ...}`` (``None`` for an open side).
             fixed: names of parameters held at their initial value.
-            x_min, x_max: fit range in x.
+            x_min, x_max: fit range in x; a side that is not given is the end of the data.
             max_iter: iteration limit (default 1000); tolerance: default 1e-7.
             points: number of points of the drawn fit curve (default 200).
             weighting, weight_col: weighting method (``"none"``, ``"instrumental"``,
@@ -5168,7 +5169,10 @@ class Session:
         Returns:
             dict with ``params`` / ``param_names`` / ``param_values``, ``errors``, ``chi2``,
             ``chi2_dof``, ``r2``, ``adj_r2``, ``aic``, ``bic``, ``converged`` and
-            ``convergence_message``.
+            ``convergence_message`` (statistics that are not defined, e.g. ``adj_r2`` without
+            residual degrees of freedom, are ``None``), plus ``notes`` when there is something to
+            report (e.g. a parameter that ended on its bound). Unknown parameter names in
+            ``init_params`` / ``bounds`` / ``fixed`` raise an invalid-params error.
         """
         return self.call(
             "analysis.fit_nonlinear",

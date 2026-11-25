@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 Interpolation::Interpolation(ApplicationWindow *parent, Graph *g, const QString &curveTitle, int m)
     : Filter(parent, g)
@@ -83,6 +84,40 @@ void Interpolation::init(int m)
     }
     d_sort_data = true;
     d_min_points = (d_method == Linear) ? 2 : (d_method + 3);
+}
+
+void Interpolation::setDataCurve(int curve, double start, double end)
+{
+    if (start > end)
+        qSwap(start, end);
+    d_range_clipped = false;
+    // The interpolant goes through every point of the curve: building it from the points inside
+    // [start, end] only would change the spline (and leave nothing to interpolate in a gap
+    // between two points). Filter::setDataCurve sets d_from / d_to to the data range.
+    Filter::setDataCurve(curve, -std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::infinity());
+    if (d_init_err)
+        return;
+    d_data_x_min = d_from;
+    d_data_x_max = d_to;
+    const double from = std::max(start, d_data_x_min);
+    const double to = std::min(end, d_data_x_max);
+    if (!(from < to)) {
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The interpolation range from %1 to %2 does not overlap the X "
+                                     "range of the data (%3 to %4).")
+                                          .arg(start)
+                                          .arg(end)
+                                          .arg(d_data_x_min)
+                                          .arg(d_data_x_max));
+        d_init_err = true;
+        return;
+    }
+    d_range_clipped = (from > start) || (to < end);
+    d_from = from;
+    d_to = to;
 }
 
 void Interpolation::setMethod(int m)

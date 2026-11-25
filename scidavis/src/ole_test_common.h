@@ -676,6 +676,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw);
 int runSuite103ImportRound2(ApplicationWindow *mw);
 int runSuite104ImportRound3(ApplicationWindow *mw);
 int runSuite105RpcImportColumnTypes(ApplicationWindow *mw);
+int runSuite106NumericsRound3(ApplicationWindow *mw);
 int runSuite107PlotFixesRound3(ApplicationWindow *mw);
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw);
 

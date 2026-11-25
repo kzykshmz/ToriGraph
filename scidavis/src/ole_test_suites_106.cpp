@@ -1,0 +1,573 @@
+#include "ole_test_common.h"
+#include "PythonAutomationServer.h"
+
+#include <QJsonArray>
+#include <QJsonObject>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// =============================================================================
+// Suite 106: numerical analysis regressions (fit bounds, undefined statistics, interpolation
+// range, silently ignored fit parameters), all through JSON-RPC.
+//   106a analysis.fit_nonlinear "y0+A*exp(-x/t)" with bounds t in [3, 5] whose optimum lies
+//        below 3: the solution is t = 3 (the same as a fit with t fixed at 3), but with t0 = 1,
+//        3, 4.9 and 6 the fit ended "no further improvement" (not converged), because the
+//        gradient test did not know that the parameter sat on its bound. It is converged now
+//        (Karush-Kuhn-Tucker: the descent direction points out of the box), and the result
+//        says in "notes" that t is at its bound. The same for the upper bound of [0.1, 1] and a
+//        one-sided bound [3, null]; the open side was 1e30 and the start point became 1e26 (a
+//        "converged" t = 1e26). A bound that does not bind gives no note.
+//   106b r2 / adj_r2 that are not defined are null: n = p = 3 gave adj_r2 = 1 (min(1, NaN)),
+//        a diverging fit (all params null) gave r2 = adj_r2 = 0 and an empty
+//        convergence_message; it now says why the fit failed.
+//   106c curvemath.interpolate with x_min / x_max took only the points inside the range for the
+//        coefficients and shrank the grid to the first / last of them ([0.5, 5.5] gave
+//        [1, 4.5], a spline different from the spline through all points; [2, 2.9] gave a
+//        bare ok: false). The coefficients now come from every point, the grid is the range
+//        (cut to the data with a warning), and a range outside the data is an error saying so.
+//   106d fit_nonlinear: unknown names in fixed / init_params / bounds ("Y0", "tau", "T") are an
+//        invalid-params error listing the parameter names; x_min alone or x_max alone in
+//        fit_nonlinear, fit_linear, curvemath.integrate and curvemath.differentiate was ignored
+//        (the whole curve was used); the missing side is now the end of the data.
+// =============================================================================
+namespace {
+
+struct SplitMix106
+{
+    uint64_t s;
+    explicit SplitMix106(uint64_t seed) : s(seed) {}
+    uint64_t next()
+    {
+        s += 0x9E3779B97F4A7C15ULL;
+        uint64_t z = s;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+    double uniform() { return double((next() >> 11) + 1) * (1.0 / 9007199254740992.0); }
+    double gauss()
+    {
+        const double u1 = uniform();
+        const double u2 = uniform();
+        return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
+    }
+};
+
+// Natural cubic spline through (x, y) (the same as GSL's cspline), evaluated at xe.
+double naturalSpline106(const std::vector<double> &x, const std::vector<double> &y, double xe)
+{
+    const size_t n = x.size();
+    std::vector<double> m(n, 0.0); // second derivatives
+    if (n > 2) {
+        std::vector<double> a(n, 0.0), b(n, 0.0), c(n, 0.0), d(n, 0.0);
+        for (size_t i = 1; i + 1 < n; ++i) {
+            const double h0 = x[i] - x[i - 1];
+            const double h1 = x[i + 1] - x[i];
+            a[i] = h0;
+            b[i] = 2.0 * (h0 + h1);
+            c[i] = h1;
+            d[i] = 6.0 * ((y[i + 1] - y[i]) / h1 - (y[i] - y[i - 1]) / h0);
+        }
+        for (size_t i = 2; i + 1 < n; ++i) {
+            const double w = a[i] / b[i - 1];
+            b[i] -= w * c[i - 1];
+            d[i] -= w * d[i - 1];
+        }
+        for (size_t i = n - 2; i >= 1; --i) {
+            m[i] = (d[i] - c[i] * m[i + 1]) / b[i];
+            if (i == 1)
+                break;
+        }
+    }
+    size_t k = 0;
+    while (k + 2 < n && xe > x[k + 1])
+        ++k;
+    const double h = x[k + 1] - x[k];
+    const double t = (xe - x[k]) / h;
+    const double u = 1.0 - t;
+    return u * y[k] + t * y[k + 1]
+            + ((u * u * u - u) * m[k] + (t * t * t - t) * m[k + 1]) * h * h / 6.0;
+}
+
+double linearInterp106(const std::vector<double> &x, const std::vector<double> &y, double xe)
+{
+    size_t k = 0;
+    while (k + 2 < x.size() && xe > x[k + 1])
+        ++k;
+    const double t = (xe - x[k]) / (x[k + 1] - x[k]);
+    return y[k] + t * (y[k + 1] - y[k]);
+}
+
+} // namespace
+
+int runSuite106NumericsRound3(ApplicationWindow *mw)
+{
+    Q_UNUSED(mw);
+    std::cout << "[INFO] Running Suite 106: numerics round 3 (fit bounds KKT, undefined r2, "
+                 "interpolation range, ignored fit parameters)...\n";
+
+    struct NonInteractiveQuitGuard106
+    {
+        QVariant prevNonInteractive;
+        bool prevQuitOnLast = true;
+        NonInteractiveQuitGuard106()
+            : prevNonInteractive(qApp->property("torigraph_noninteractive"))
+            , prevQuitOnLast(QApplication::quitOnLastWindowClosed())
+        {
+            qApp->setProperty("torigraph_noninteractive", true);
+            QApplication::setQuitOnLastWindowClosed(false);
+        }
+        ~NonInteractiveQuitGuard106()
+        {
+            qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+            QApplication::setQuitOnLastWindowClosed(prevQuitOnLast);
+        }
+    } envGuard106;
+
+    struct AppWinGuard106
+    {
+        ApplicationWindow *win = nullptr;
+        explicit AppWinGuard106(ApplicationWindow *w = nullptr) : win(w) {}
+        ~AppWinGuard106() { reset(); }
+        AppWinGuard106(const AppWinGuard106 &) = delete;
+        AppWinGuard106 &operator=(const AppWinGuard106 &) = delete;
+        void reset(ApplicationWindow *next = nullptr)
+        {
+            if (win) {
+                win->savedProject();
+                win->setOleEmbeddedMode(true);
+                delete win;
+            }
+            win = next;
+            QApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        ApplicationWindow *operator->() const { return win; }
+        operator ApplicationWindow *() const { return win; }
+    };
+
+    AppWinGuard106 w(new ApplicationWindow());
+    w->applyUserSettings();
+    w->confirmCloseTable = false;
+    w->confirmClosePlot2D = false;
+    w->confirmClosePlot3D = false;
+    w->confirmCloseFolder = false;
+    w->resize(1280, 800);
+    w->show();
+    QCoreApplication::processEvents();
+
+    PythonAutomationServer *srv = w->pythonAutomationServer();
+    CHECK_COND(srv != nullptr, "106: pythonAutomationServer null");
+
+    // Every sub-case is checked; the suite fails at the end when any check failed.
+    int failures = 0;
+#define EXPECT106(cond, msg)                                                                     \
+    do {                                                                                         \
+        if (!(cond)) {                                                                           \
+            std::cerr << "[FAIL] " << msg << " (line " << __LINE__ << ")" << std::endl;          \
+            ++failures;                                                                          \
+        }                                                                                        \
+    } while (0)
+
+    int rpcId = 60000;
+    auto rpc = [&](const QString &method, const QJsonObject &params) -> QJsonObject {
+        QJsonObject req;
+        req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+        req[QStringLiteral("id")] = ++rpcId;
+        req[QStringLiteral("method")] = method;
+        req[QStringLiteral("params")] = params;
+        const QJsonObject resp = srv->handleRpcRequest(req);
+        QCoreApplication::processEvents();
+        return resp;
+    };
+    auto result = [](const QJsonObject &resp) {
+        return resp.value(QStringLiteral("result")).toObject();
+    };
+    auto errMsg = [](const QJsonObject &resp) {
+        return resp.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString();
+    };
+    auto errCode = [](const QJsonObject &resp) {
+        return resp.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt();
+    };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto num = [&](const QJsonValue &v) { return v.isDouble() ? v.toDouble() : nan; };
+    auto close = [](double a, double b, double rel) {
+        return std::isfinite(a) && std::isfinite(b)
+                && std::fabs(a - b) <= rel * std::max(1.0, std::max(std::fabs(a), std::fabs(b)));
+    };
+
+    int tableNo = 0;
+    // Two-column table plotted as a line; returns the graph window name ("" on failure).
+    auto plotXY = [&](const std::vector<double> &x, const std::vector<double> &y) -> QString {
+        const QString tName = QStringLiteral("T106_%1").arg(++tableNo);
+        Table *t = w->newTable(int(x.size()), 2, tName, tName);
+        if (!t)
+            return QString();
+        t->setColName(0, QStringLiteral("X"));
+        t->setColName(1, QStringLiteral("Y"));
+        for (int r = 0; r < int(x.size()); ++r) {
+            t->setCell(r, 0, x[size_t(r)]);
+            t->setCell(r, 1, y[size_t(r)]);
+        }
+        MultiLayer *ml = w->multilayerPlot(t, QStringList() << t->colName(1), Graph::Line);
+        QCoreApplication::processEvents();
+        return (ml && ml->activeGraph() && ml->activeGraph()->curves() == 1) ? ml->name()
+                                                                              : QString();
+    };
+
+    // y = 2 + 5 exp(-x / 1.7) + N(0, 0.05), x = 0..10 step 0.25 (41 points)
+    std::vector<double> ex, ey;
+    {
+        SplitMix106 rng(15);
+        for (int i = 0; i <= 40; ++i) {
+            const double xv = 0.25 * i;
+            ex.push_back(xv);
+            ey.push_back(2.0 + 5.0 * std::exp(-xv / 1.7) + 0.05 * rng.gauss());
+        }
+    }
+    const QString gExp = plotXY(ex, ey);
+    CHECK_COND(!gExp.isEmpty(), "106: exponential test graph not created");
+    auto expFit = [&](QJsonObject extra) -> QJsonObject {
+        QJsonObject p{ { "graph", gExp },
+                       { "curve", 0 },
+                       { "formula", "y0+A*exp(-x/t)" },
+                       { "param_names", QJsonArray{ "y0", "A", "t" } },
+                       { "plot_curve", false } };
+        for (auto it = extra.begin(); it != extra.end(); ++it)
+            p[it.key()] = it.value();
+        return rpc(QStringLiteral("analysis.fit_nonlinear"), p);
+    };
+
+    // -------------------------------------------------------------------------
+    // 106a: a solution on a bound is converged, whatever the initial value
+    // -------------------------------------------------------------------------
+    {
+        const QJsonObject ref = result(expFit(QJsonObject{
+                { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", 3 } } },
+                { "fixed", QJsonArray{ "t" } } }));
+        const double refY0 = num(ref.value("params").toObject().value("y0"));
+        const double refA = num(ref.value("params").toObject().value("A"));
+        EXPECT106(ref.value("converged").toBool() && std::isfinite(refY0) && std::isfinite(refA),
+                  "106a: the reference fit with t fixed at 3 must converge");
+        for (double t0 : { 1.0, 3.0, 4.0, 4.9, 6.0 }) {
+            const QJsonObject r = result(expFit(QJsonObject{
+                    { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", t0 } } },
+                    { "bounds", QJsonObject{ { "t", QJsonArray{ 3, 5 } } } } }));
+            const QJsonObject pr = r.value("params").toObject();
+            const double t = num(pr.value("t"));
+            const QString notes = r.value("notes").toVariant().toStringList().join(" | ");
+            std::cout << "[INFO] 106a t0=" << t0 << ": converged " << r.value("converged").toBool()
+                      << ", t " << t << ", y0 " << num(pr.value("y0")) << " (ref " << refY0
+                      << "), A " << num(pr.value("A")) << " (ref " << refA << "), message '"
+                      << r.value("convergence_message").toString().toStdString() << "', notes '"
+                      << notes.toStdString() << "'\n";
+            EXPECT106(r.value("ok").toBool() && r.value("converged").toBool(),
+                      "106a: t0=" << t0 << ": a solution on the bound t = 3 must be converged");
+            EXPECT106(close(t, 3.0, 1e-9), "106a: t0=" << t0 << ": t must be the bound 3, got " << t);
+            EXPECT106(close(num(pr.value("y0")), refY0, 1e-5) && close(num(pr.value("A")), refA, 1e-5),
+                      "106a: t0=" << t0 << ": y0 / A must equal the fit with t fixed at 3");
+            // "t = 3 is at a bound of its allowed range." (translated in a Japanese UI)
+            EXPECT106(notes.contains(QLatin1String("t = 3")),
+                      "106a: t0=" << t0 << ": notes must say that t is at its bound");
+        }
+        // The upper bound of [0.1, 1] and a one-sided lower bound [3, open) bind as well.
+        struct BCase
+        {
+            double lo, hi, tFix, t0;
+        };
+        const BCase bcases[] = { { 0.1, 1.0, 1.0, 0.5 }, { 0.1, 1.0, 1.0, 2.0 },
+                                 { 3.0, nan, 3.0, 1.0 }, { 3.0, nan, 3.0, 8.0 } };
+        for (const BCase &b : bcases) {
+            const QJsonObject rf = result(expFit(QJsonObject{
+                    { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", b.tFix } } },
+                    { "fixed", QJsonArray{ "t" } } }));
+            const QJsonArray range{ b.lo, std::isfinite(b.hi) ? QJsonValue(b.hi) : QJsonValue() };
+            const QJsonObject r = result(expFit(QJsonObject{
+                    { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", b.t0 } } },
+                    { "bounds", QJsonObject{ { "t", range } } } }));
+            const QJsonObject pr = r.value("params").toObject();
+            const QString notes = r.value("notes").toVariant().toStringList().join(" | ");
+            std::cout << "[INFO] 106a bounds [" << b.lo << ", " << b.hi << "] t0=" << b.t0
+                      << ": converged " << r.value("converged").toBool() << ", t "
+                      << num(pr.value("t")) << ", notes '" << notes.toStdString() << "'\n";
+            EXPECT106(r.value("converged").toBool() && close(num(pr.value("t")), b.tFix, 1e-9)
+                              && close(num(pr.value("y0")),
+                                       num(rf.value("params").toObject().value("y0")), 1e-5)
+                              && close(num(pr.value("A")),
+                                       num(rf.value("params").toObject().value("A")), 1e-5),
+                      "106a: bounds [" << b.lo << ", " << b.hi << "] t0=" << b.t0
+                                       << ": must converge to the fit with t fixed at " << b.tFix);
+            EXPECT106(notes.contains(QStringLiteral("t = %1").arg(b.tFix)),
+                      "106a: bounds [" << b.lo << ", " << b.hi << "] t0=" << b.t0
+                                       << ": notes must say that t is at its bound");
+        }
+        // A bound that does not bind (true t ~ 1.7): no note, converged.
+        const QJsonObject r = result(expFit(QJsonObject{
+                { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "t", 1 } } },
+                { "bounds", QJsonObject{ { "t", QJsonArray{ 0.5, 3 } } } } }));
+        const double t = num(r.value("params").toObject().value("t"));
+        EXPECT106(r.value("converged").toBool() && t > 1.5 && t < 1.9,
+                  "106a: an inactive bound must converge inside the box (t " << t << ")");
+        EXPECT106(r.value("notes").toArray().isEmpty(),
+                  "106a: an inactive bound must not be reported as reached");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106b: undefined r2 / adj_r2 are null, a failed fit says why
+    // -------------------------------------------------------------------------
+    {
+        const QString g3 = plotXY({ 0.0, 1.0, 2.0 }, { 7.0, 4.0, 3.0 });
+        const QJsonObject r = result(rpc(QStringLiteral("analysis.fit_nonlinear"),
+                                         QJsonObject{ { "graph", g3 },
+                                                      { "curve", 0 },
+                                                      { "formula", "y0+A*exp(-x/t)" },
+                                                      { "param_names", QJsonArray{ "y0", "A", "t" } },
+                                                      { "init_params", QJsonObject{ { "y0", 2 }, { "A", 5 }, { "t", 1 } } },
+                                                      { "plot_curve", false } }));
+        std::cout << "[INFO] 106b n = p = 3: chi2_dof null " << r.value("chi2_dof").isNull()
+                  << ", r2 " << num(r.value("r2")) << " (null " << r.value("r2").isNull()
+                  << "), adj_r2 null " << r.value("adj_r2").isNull() << " (value "
+                  << num(r.value("adj_r2")) << ")\n";
+        EXPECT106(r.value("chi2_dof").isNull(), "106b: n = p: chi2_dof must be null");
+        EXPECT106(r.value("adj_r2").isNull(), "106b: n = p: adj_r2 is not defined and must be null, got "
+                                                      << num(r.value("adj_r2")));
+
+        const QJsonObject d = result(expFit(QJsonObject{
+                { "init_params", QJsonObject{ { "y0", 0 }, { "A", 1e6 }, { "t", -0.01 } } } }));
+        bool allNull = true;
+        const QJsonObject dp = d.value("params").toObject();
+        for (auto it = dp.begin(); it != dp.end(); ++it)
+            allNull = allNull && it.value().isNull();
+        std::cout << "[INFO] 106b diverging fit: params all null " << allNull << ", r2 null "
+                  << d.value("r2").isNull() << ", adj_r2 null " << d.value("adj_r2").isNull()
+                  << ", message '" << d.value("convergence_message").toString().toStdString()
+                  << "'\n";
+        EXPECT106(!d.value("converged").toBool(), "106b: the diverging fit must not be converged");
+        if (allNull) {
+            EXPECT106(d.value("r2").isNull() && d.value("adj_r2").isNull(),
+                      "106b: a failed fit must give r2 = adj_r2 = null");
+        }
+        EXPECT106(!d.value("convergence_message").toString().trimmed().isEmpty(),
+                  "106b: a failed fit must say why in convergence_message");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106c: interpolation range
+    // -------------------------------------------------------------------------
+    {
+        const std::vector<double> ix{ 0.0, 1.0, 2.5, 3.0, 4.5, 6.0 };
+        std::vector<double> iy;
+        for (double v : ix)
+            iy.push_back(std::sin(v));
+        const QString gi = plotXY(ix, iy);
+        CHECK_COND(!gi.isEmpty(), "106c: interpolation test graph not created");
+        MultiLayer *mli = qobject_cast<MultiLayer *>(w->window(gi));
+        CHECK_COND(mli && mli->activeGraph(), "106c: interpolation graph not found");
+        auto outCurve = [&](const QJsonObject &r, std::vector<double> &X, std::vector<double> &Y) {
+            X.clear();
+            Y.clear();
+            Graph *g = mli->activeGraph();
+            const int idx = g->curveIndex(r.value("output_curve").toString());
+            QwtPlotCurve *c = (idx >= 0) ? g->curve(idx) : nullptr;
+            if (!c)
+                return false;
+            for (int i = 0; i < int(c->dataSize()); ++i) {
+                X.push_back(c->x(i));
+                Y.push_back(c->y(i));
+            }
+            return true;
+        };
+        auto interp = [&](const QString &m, QJsonValue lo, QJsonValue hi, int pts) {
+            QJsonObject p{ { "graph", gi }, { "curve", 0 }, { "method", m }, { "points", pts } };
+            if (!lo.isUndefined())
+                p["x_min"] = lo;
+            if (!hi.isUndefined())
+                p["x_max"] = hi;
+            return rpc(QStringLiteral("curvemath.interpolate"), p);
+        };
+
+        struct ICase
+        {
+            const char *method;
+            double lo, hi;
+            int pts;
+            double gridLo, gridHi;
+            bool warned;
+        };
+        const ICase cases[] = { { "linear", 0.5, 5.5, 6, 0.5, 5.5, false },
+                                { "spline", 0.5, 5.5, 11, 0.5, 5.5, false },
+                                { "linear", 2.0, 2.9, 4, 2.0, 2.9, false },
+                                { "spline", 2.2, 3.6, 8, 2.2, 3.6, false },
+                                { "linear", -1.0, 3.0, 5, 0.0, 3.0, true } };
+        for (const ICase &c : cases) {
+            const QJsonObject resp = interp(QLatin1String(c.method), c.lo, c.hi, c.pts);
+            const QJsonObject r = result(resp);
+            std::vector<double> X, Y;
+            const bool got = r.value("ok").toBool() && outCurve(r, X, Y);
+            double worst = got ? 0.0 : nan;
+            for (size_t i = 0; got && i < X.size(); ++i) {
+                const double ref = (QLatin1String(c.method) == QLatin1String("linear"))
+                        ? linearInterp106(ix, iy, X[i])
+                        : naturalSpline106(ix, iy, X[i]);
+                worst = std::max(worst, std::fabs(Y[i] - ref));
+            }
+            const QString warn = r.value("warnings").toVariant().toStringList().join(" | ");
+            std::cout << "[INFO] 106c " << c.method << " [" << c.lo << ", " << c.hi << "]: ok "
+                      << r.value("ok").toBool() << ", " << X.size() << " points "
+                      << (X.empty() ? nan : X.front()) << " .. " << (X.empty() ? nan : X.back())
+                      << ", worst |y - ref| " << worst << ", warnings '" << warn.toStdString()
+                      << "', error '" << errMsg(resp).toStdString() << "'\n";
+            EXPECT106(got && int(X.size()) == c.pts,
+                      "106c: " << c.method << " [" << c.lo << ", " << c.hi << "] must give "
+                               << c.pts << " points");
+            EXPECT106(got && !X.empty() && close(X.front(), c.gridLo, 1e-12)
+                              && close(X.back(), c.gridHi, 1e-12),
+                      "106c: " << c.method << " [" << c.lo << ", " << c.hi
+                               << "]: the grid must span the range (within the data)");
+            EXPECT106(got && worst < 1e-9,
+                      "106c: " << c.method << " [" << c.lo << ", " << c.hi
+                               << "]: values must come from the interpolant through every point ("
+                               << worst << ")");
+            EXPECT106(warn.isEmpty() != c.warned,
+                      "106c: " << c.method << " [" << c.lo << ", " << c.hi << "]: warning "
+                               << (c.warned ? "expected" : "unexpected"));
+        }
+        const QJsonObject out = interp(QStringLiteral("linear"), 7.0, 9.0, 5);
+        std::cout << "[INFO] 106c range outside the data: error '" << errMsg(out).toStdString()
+                  << "'\n";
+        EXPECT106(errCode(out) == -32602 && errMsg(out).contains(QLatin1String("range")),
+                  "106c: a range outside the data must be an invalid-params error saying why");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106d: unknown parameter names, one-sided X range
+    // -------------------------------------------------------------------------
+    {
+        const QJsonObject init{ { "y0", 1 }, { "A", 4 }, { "t", 1 } };
+        struct UCase
+        {
+            const char *label;
+            QJsonObject extra;
+        };
+        const UCase ucases[] = {
+            { "fixed Y0", QJsonObject{ { "init_params", init }, { "fixed", QJsonArray{ "Y0" } } } },
+            { "init_params tau",
+              QJsonObject{ { "init_params", QJsonObject{ { "y0", 1 }, { "A", 4 }, { "tau", 1 } } } } },
+            { "bounds T",
+              QJsonObject{ { "init_params", init }, { "bounds", QJsonObject{ { "T", QJsonArray{ 0, 1 } } } } } },
+        };
+        for (const UCase &u : ucases) {
+            const QJsonObject resp = expFit(u.extra);
+            std::cout << "[INFO] 106d " << u.label << ": error " << errCode(resp) << " '"
+                      << errMsg(resp).toStdString() << "'\n";
+            EXPECT106(errCode(resp) == -32602 && errMsg(resp).contains(QLatin1String("y0"))
+                              && errMsg(resp).contains(QLatin1String("A"))
+                              && errMsg(resp).contains(QLatin1String("t")),
+                      "106d: " << u.label << ": an unknown name must be an invalid-params error "
+                                              "listing the parameter names");
+        }
+        // Known names still work.
+        const QJsonObject okFit = result(expFit(QJsonObject{
+                { "init_params", init }, { "fixed", QJsonArray{ "y0" } },
+                { "bounds", QJsonObject{ { "t", QJsonArray{ 0.1, 10 } } } } }));
+        EXPECT106(okFit.value("converged").toBool(), "106d: known names must still fit");
+
+        // fit_nonlinear: x_min alone == [x_min, last x]; x_max alone == [first x, x_max]
+        auto paramsOf = [&](const QJsonObject &r) {
+            const QJsonObject p = r.value("params").toObject();
+            return std::vector<double>{ num(p.value("y0")), num(p.value("A")), num(p.value("t")) };
+        };
+        auto sameParams = [&](const std::vector<double> &a, const std::vector<double> &b) {
+            for (size_t i = 0; i < a.size(); ++i)
+                if (!close(a[i], b[i], 1e-9))
+                    return false;
+            return true;
+        };
+        const auto full = paramsOf(result(expFit(QJsonObject{ { "init_params", init } })));
+        const auto lo1 = paramsOf(result(expFit(QJsonObject{ { "init_params", init }, { "x_min", 2.0 } })));
+        const auto lo2 = paramsOf(result(
+                expFit(QJsonObject{ { "init_params", init }, { "x_min", 2.0 }, { "x_max", 10.0 } })));
+        const auto hi1 = paramsOf(result(expFit(QJsonObject{ { "init_params", init }, { "x_max", 6.0 } })));
+        const auto hi2 = paramsOf(result(
+                expFit(QJsonObject{ { "init_params", init }, { "x_min", 0.0 }, { "x_max", 6.0 } })));
+        const auto hiN = paramsOf(result(expFit(QJsonObject{
+                { "init_params", init }, { "x_min", QJsonValue::Null }, { "x_max", 6.0 } })));
+        std::cout << "[INFO] 106d fit_nonlinear t: all " << full[2] << ", x_min=2 " << lo1[2]
+                  << " (explicit " << lo2[2] << "), x_max=6 " << hi1[2] << " (explicit " << hi2[2]
+                  << ", x_min null " << hiN[2] << ")\n";
+        EXPECT106(sameParams(lo1, lo2) && !sameParams(lo1, full),
+                  "106d: fit_nonlinear x_min alone must fit [x_min, last x]");
+        EXPECT106(sameParams(hi1, hi2) && sameParams(hiN, hi2),
+                  "106d: fit_nonlinear x_max alone (or x_min null) must fit [first x, x_max]");
+
+        auto linN = [&](QJsonObject extra) {
+            QJsonObject p{ { "graph", gExp }, { "curve", 0 }, { "plot_curve", false } };
+            for (auto it = extra.begin(); it != extra.end(); ++it)
+                p[it.key()] = it.value();
+            const QJsonObject r = result(rpc(QStringLiteral("analysis.fit_linear"), p));
+            return std::make_pair(r.value("n").toInt(-1), num(r.value("slope")));
+        };
+        const auto l1 = linN(QJsonObject{ { "x_min", 5.0 } });
+        const auto l2 = linN(QJsonObject{ { "x_max", 5.0 } });
+        std::cout << "[INFO] 106d fit_linear n: x_min=5 " << l1.first << ", x_max=5 " << l2.first
+                  << " (of 41)\n";
+        EXPECT106(l1.first == 21 && l2.first == 21,
+                  "106d: fit_linear with one side of the range must use 21 points (got "
+                          << l1.first << ", " << l2.first << ")");
+
+        auto area = [&](QJsonObject extra) {
+            QJsonObject p{ { "graph", gExp }, { "curve", 0 } };
+            for (auto it = extra.begin(); it != extra.end(); ++it)
+                p[it.key()] = it.value();
+            return num(result(rpc(QStringLiteral("curvemath.integrate"), p)).value("area"));
+        };
+        const double aHi1 = area(QJsonObject{ { "x_max", 4.0 } });
+        const double aHi2 = area(QJsonObject{ { "x_min", 0.0 }, { "x_max", 4.0 } });
+        const double aLo1 = area(QJsonObject{ { "x_min", 4.0 } });
+        const double aLo2 = area(QJsonObject{ { "x_min", 4.0 }, { "x_max", 10.0 } });
+        std::cout << "[INFO] 106d integrate: x_max=4 " << aHi1 << " (explicit " << aHi2
+                  << "), x_min=4 " << aLo1 << " (explicit " << aLo2 << ")\n";
+        EXPECT106(close(aHi1, aHi2, 1e-12) && close(aLo1, aLo2, 1e-12),
+                  "106d: integrate with one side of the range must use the end of the data");
+
+        auto derivRows = [&](QJsonObject extra) {
+            QJsonObject p{ { "graph", gExp }, { "curve", 0 } };
+            for (auto it = extra.begin(); it != extra.end(); ++it)
+                p[it.key()] = it.value();
+            const QJsonObject r = result(rpc(QStringLiteral("curvemath.differentiate"), p));
+            Table *t = w->table(r.value("table").toString());
+            if (!t || !t->column(0))
+                return std::make_pair(-1, nan);
+            int n = 0;
+            double first = nan;
+            for (int i = 0; i < t->column(0)->rowCount(); ++i) {
+                const double v = t->column(0)->valueAt(i);
+                if (std::isfinite(v) && !t->column(0)->isInvalid(i)) {
+                    if (n == 0)
+                        first = v;
+                    ++n;
+                }
+            }
+            return std::make_pair(n, first);
+        };
+        const auto d1 = derivRows(QJsonObject{ { "x_min", 5.0 } });
+        const auto d2 = derivRows(QJsonObject{ { "x_min", 5.0 }, { "x_max", 10.0 } });
+        std::cout << "[INFO] 106d differentiate x_min=5: " << d1.first << " rows from " << d1.second
+                  << " (explicit " << d2.first << " from " << d2.second << ")\n";
+        EXPECT106(d1.first > 0 && d1.first == d2.first && close(d1.second, d2.second, 1e-12),
+                  "106d: differentiate with x_min alone must use [x_min, last x]");
+    }
+#undef EXPECT106
+
+    w.reset();
+    if (failures > 0) {
+        std::cerr << "[FAIL] Suite 106: " << failures << " check(s) failed.\n";
+        return 1;
+    }
+    std::cout << "[PASS] Suite 106 passed.\n";
+    return 0;
+}

@@ -76,6 +76,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 103, "runSuite103ImportRound2", &runSuite103ImportRound2 },
     { 104, "runSuite104ImportRound3", &runSuite104ImportRound3 },
     { 105, "runSuite105RpcImportColumnTypes", &runSuite105RpcImportColumnTypes },
+    { 106, "runSuite106NumericsRound3", &runSuite106NumericsRound3 },
     { 107, "runSuite107PlotFixesRound3", &runSuite107PlotFixesRound3 },
     { 109, "runSuite109WorksheetFormulaRefsAndMasks", &runSuite109WorksheetFormulaRefsAndMasks },
 };
@@ -5612,6 +5613,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite105RpcImportColumnTypes(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite106NumericsRound3(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite107PlotFixesRound3(mw) != 0)

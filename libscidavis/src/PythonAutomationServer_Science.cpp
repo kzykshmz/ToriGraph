@@ -610,18 +610,10 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                       QStringLiteral("akima") });
         }
 
-        const bool hasRange = params.contains(QStringLiteral("x_min"))
-                && params.contains(QStringLiteral("x_max"))
-                && !params.value(QStringLiteral("x_min")).isNull()
-                && !params.value(QStringLiteral("x_max")).isNull();
         double xMin = -std::numeric_limits<double>::infinity();
         double xMax = std::numeric_limits<double>::infinity();
-        if (hasRange) {
-            xMin = params.value(QStringLiteral("x_min")).toDouble();
-            xMax = params.value(QStringLiteral("x_max")).toDouble();
-            if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
-                throwInvalidParams(QStringLiteral("curvemath.integrate requires finite x_min < x_max."));
-        }
+        const bool hasRange = resolveCurveXRange(g, curveTitle, params,
+                                                 QStringLiteral("curvemath.integrate"), xMin, xMax);
 
         std::vector<double> xs, ys;
         extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xs, ys);
@@ -712,14 +704,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const int winBefore = d_app->windowsList().size();
         RpcDifferentiation diff(d_app, g);
         bool okData = false;
-        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))
-            && !params.value(QStringLiteral("x_min")).isNull()
-            && !params.value(QStringLiteral("x_max")).isNull()) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
-            if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
-                throwInvalidParams(
-                        QStringLiteral("curvemath.differentiate requires finite x_min < x_max."));
+        double xMin = 0.0, xMax = 0.0;
+        if (resolveCurveXRange(g, curveTitle, params, QStringLiteral("curvemath.differentiate"),
+                               xMin, xMax)) {
             okData = diff.setDataFromCurve(curveTitle, xMin, xMax, g);
         } else {
             okData = diff.setDataFromCurve(curveTitle, g);
@@ -806,6 +793,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             .arg(minPts)
                             .arg(distinctX));
         }
+        double dataXMin = 0.0;
+        double dataXMax = 0.0;
         {
             std::vector<double> xs, ys;
             extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xs, ys);
@@ -814,6 +803,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         QStringLiteral("curvemath.interpolate requires >= %1 valid unmasked points.")
                                 .arg(minPts));
             }
+            const auto mm = std::minmax_element(xs.cbegin(), xs.cend());
+            dataXMin = *mm.first;
+            dataXMax = *mm.second;
             bool inc = true, dec = true;
             for (size_t k = 1; k < xs.size(); ++k) {
                 const double dx = xs[k] - xs[k - 1];
@@ -828,33 +820,73 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
         }
         const int outPts = parseBoundedInt(params, QStringLiteral("points"), 200, 2, 1000000);
-        const bool hasXRange = params.contains(QStringLiteral("x_min"))
-                && params.contains(QStringLiteral("x_max"))
-                && !params.value(QStringLiteral("x_min")).isNull()
-                && !params.value(QStringLiteral("x_max")).isNull();
-        double interpXMin = 0.0;
-        double interpXMax = 0.0;
+        const QJsonValue xMinVal = params.value(QStringLiteral("x_min"));
+        const QJsonValue xMaxVal = params.value(QStringLiteral("x_max"));
+        const bool hasXMin = !xMinVal.isUndefined() && !xMinVal.isNull();
+        const bool hasXMax = !xMaxVal.isUndefined() && !xMaxVal.isNull();
+        const bool hasXRange = hasXMin || hasXMax;
+        // A side that is not given is the end of the data.
+        double interpXMin = dataXMin;
+        double interpXMax = dataXMax;
         if (hasXRange) {
-            interpXMin = parseFiniteCoordDouble(params.value(QStringLiteral("x_min")),
-                                                QStringLiteral("x_min"));
-            interpXMax = parseFiniteCoordDouble(params.value(QStringLiteral("x_max")),
-                                                QStringLiteral("x_max"));
+            if (hasXMin)
+                interpXMin = parseFiniteCoordDouble(xMinVal, QStringLiteral("x_min"));
+            if (hasXMax)
+                interpXMax = parseFiniteCoordDouble(xMaxVal, QStringLiteral("x_max"));
             validateFiniteCoordRange(interpXMin, interpXMax,
                                      QStringLiteral("curvemath.interpolate [x_min, x_max]"));
             if (interpXMin >= interpXMax)
                 throwInvalidParams(
-                        QStringLiteral("curvemath.interpolate requires x_min < x_max."));
+                        QStringLiteral("curvemath.interpolate requires x_min < x_max (x_min = %1, "
+                                       "x_max = %2; a side that is not given is the end of the "
+                                       "data).")
+                                .arg(interpXMin, 0, 'g', 10)
+                                .arg(interpXMax, 0, 'g', 10));
+            // The interpolant is not extrapolated: a range without any overlap with the data
+            // has nothing to return.
+            if (!(std::max(interpXMin, dataXMin) < std::min(interpXMax, dataXMax))) {
+                throwInvalidParams(
+                        QStringLiteral("curvemath.interpolate: the range [%1, %2] does not overlap "
+                                       "the X range of the data [%3, %4] (no extrapolation).")
+                                .arg(interpXMin, 0, 'g', 10)
+                                .arg(interpXMax, 0, 'g', 10)
+                                .arg(dataXMin, 0, 'g', 10)
+                                .arg(dataXMax, 0, 'g', 10));
+            }
         }
         const int curvesBefore = g->curves();
         std::unique_ptr<RpcInterpolation> interp = hasXRange
                 ? std::make_unique<RpcInterpolation>(d_app, g, curveTitle, interpXMin, interpXMax,
                                                      im)
                 : std::make_unique<RpcInterpolation>(d_app, g, curveTitle, im);
+        if (interp->error()) {
+            throwInvalidParams(
+                    QStringLiteral("curvemath.interpolate could not take the data of curve '%1' "
+                                   "(at least %2 valid points with distinct X are needed).")
+                            .arg(curveTitle)
+                            .arg(minPts));
+        }
         interp->setOutputPoints(outPts);
         const bool ok = interp->run() && (g->curves() > curvesBefore);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = ok;
+        if (!ok) {
+            outResult[QStringLiteral("message")] =
+                    QStringLiteral("Interpolation of '%1' produced no result.").arg(curveTitle);
+        }
+        if (hasXRange && interp->rangeClipped()) {
+            const QString clipped =
+                    QStringLiteral("The range [%1, %2] reaches past the X range of the data "
+                                   "[%3, %4]; the output covers [%5, %6] only (no extrapolation).")
+                            .arg(interpXMin, 0, 'g', 10)
+                            .arg(interpXMax, 0, 'g', 10)
+                            .arg(dataXMin, 0, 'g', 10)
+                            .arg(dataXMax, 0, 'g', 10)
+                            .arg(interp->outputFrom(), 0, 'g', 10)
+                            .arg(interp->outputTo(), 0, 'g', 10);
+            outResult[QStringLiteral("warnings")] = QJsonArray{ clipped };
+        }
         outResult[QStringLiteral("graph")] = ml->name();
         if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
             outResult[QStringLiteral("output_curve")] = g->curve(g->curves() - 1)->title().text();

@@ -47,6 +47,18 @@ public:
     void setMethod(int m);
     void setMethod(InterpolationMethod m) { setMethod((int)m); };
 
+    //! Takes every valid point of the curve for the interpolant; the output grid is
+    //! [start, end] cut to the X range of the data (no extrapolation).
+    void setDataCurve(int curve, double start, double end) override;
+    //! true when the requested range reached past the data and the grid was cut to it
+    bool rangeClipped() const { return d_range_clipped; }
+    //! X range of the output grid
+    double outputFrom() const { return d_from; }
+    double outputTo() const { return d_to; }
+    //! X range of the data the interpolant is built from
+    double dataXMin() const { return d_data_x_min; }
+    double dataXMax() const { return d_data_x_max; }
+
 protected:
     bool isDataAcceptable() const override;
 
@@ -56,6 +68,9 @@ private:
 
     //! the interpolation method
     int d_method;
+    bool d_range_clipped = false;
+    double d_data_x_min = 0.0;
+    double d_data_x_max = 0.0;
 };
 
 #endif

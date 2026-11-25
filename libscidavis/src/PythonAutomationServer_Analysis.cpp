@@ -608,6 +608,52 @@ int requireCurveMinPoints(Graph *g, const QString &curveTitle, int minPts, const
     return validPts;
 }
 
+bool resolveCurveXRange(Graph *g, const QString &curveTitle, const QJsonObject &params,
+                        const QString &opName, double &xMin, double &xMax)
+{
+    const QJsonValue loVal = params.value(QStringLiteral("x_min"));
+    const QJsonValue hiVal = params.value(QStringLiteral("x_max"));
+    const bool hasLo = !loVal.isUndefined() && !loVal.isNull();
+    const bool hasHi = !hiVal.isUndefined() && !hiVal.isNull();
+    if (!hasLo && !hasHi)
+        return false;
+    auto parse = [&](const QJsonValue &v, const QString &key) {
+        const double d = v.toDouble(std::numeric_limits<double>::quiet_NaN());
+        if (!v.isDouble() || !std::isfinite(d))
+            throwInvalidParams(QStringLiteral("%1: '%2' must be a finite number.").arg(opName, key));
+        return d;
+    };
+    if (hasLo)
+        xMin = parse(loVal, QStringLiteral("x_min"));
+    if (hasHi)
+        xMax = parse(hiVal, QStringLiteral("x_max"));
+    if (!hasLo || !hasHi) {
+        QwtPlotCurve *c = (g && g->curveIndex(curveTitle) >= 0)
+                ? g->curve(g->curveIndex(curveTitle))
+                : nullptr;
+        std::vector<double> xs, ys;
+        extractValidUnmaskedCurveXY(c, xs, ys);
+        if (xs.empty()) {
+            throwInvalidParams(
+                    QStringLiteral("%1: curve '%2' has no valid data points.").arg(opName, curveTitle));
+        }
+        const auto mm = std::minmax_element(xs.cbegin(), xs.cend());
+        if (!hasLo)
+            xMin = *mm.first;
+        if (!hasHi)
+            xMax = *mm.second;
+    }
+    if (!(xMin < xMax)) {
+        throwInvalidParams(
+                QStringLiteral("%1 requires x_min < x_max (x_min = %2, x_max = %3; a side that is "
+                               "not given is the end of the data).")
+                        .arg(opName)
+                        .arg(xMin, 0, 'g', 10)
+                        .arg(xMax, 0, 'g', 10));
+    }
+    return true;
+}
+
 int resolveCurveIndex(Graph *g, const QJsonObject &params, const QString &key, bool required,
                       bool *matchedByLabel)
 {
@@ -915,11 +961,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             lf.scaleErrors(params.value(QStringLiteral("scale_errors")).toBool(true));
 
         bool dataOk = false;
-        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
-            if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
-                throwInvalidParams(QStringLiteral("analysis.fit_linear requires finite x_min < x_max."));
+        double xMin = 0.0, xMax = 0.0;
+        if (resolveCurveXRange(g, curveTitle, params, QStringLiteral("analysis.fit_linear"), xMin,
+                               xMax)) {
             dataOk = lf.setDataFromCurve(curveTitle, xMin, xMax, g);
         } else {
             dataOk = lf.setDataFromCurve(curveTitle, g);
@@ -1240,11 +1284,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
 
         bool dataOk = false;
         requireCurveMinPoints(g, curveTitle, 2, QStringLiteral("analysis.fit_nonlinear"));
-        if (params.contains(QStringLiteral("x_min")) && params.contains(QStringLiteral("x_max"))) {
-            const double xMin = params.value(QStringLiteral("x_min")).toDouble();
-            const double xMax = params.value(QStringLiteral("x_max")).toDouble();
-            if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMin >= xMax)
-                throwInvalidParams(QStringLiteral("analysis.fit_nonlinear requires finite x_min < x_max."));
+        double xMin = 0.0, xMax = 0.0;
+        if (resolveCurveXRange(g, curveTitle, params, QStringLiteral("analysis.fit_nonlinear"),
+                               xMin, xMax)) {
             dataOk = nlf.setDataFromCurve(curveTitle, xMin, xMax, g);
         } else {
             dataOk = nlf.setDataFromCurve(curveTitle, g);
@@ -1276,17 +1318,47 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             nlf.guessInitialValues();
 
         const QStringList pNames = nlf.parameterNames();
+        // A name that is not a parameter of the model (e.g. "Y0" for "y0") must not be dropped
+        // silently: the fit would run without the fixed value / bound / initial value.
+        auto requireKnownNames = [&](const QStringList &names, const QString &key) {
+            QStringList unknown;
+            for (const QString &n : names) {
+                if (!pNames.contains(n))
+                    unknown << n;
+            }
+            if (!unknown.isEmpty()) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("analysis.fit_nonlinear: unknown parameter name(s) in '%1': "
+                                       "%2 (names are case-sensitive).")
+                                .arg(key, unknown.join(QStringLiteral(", "))),
+                        pNames);
+            }
+        };
+        auto requireAtMostParams = [&](int count, const QString &key) {
+            if (count > pNames.size()) {
+                throwInvalidParamsWithAvailable(
+                        QStringLiteral("analysis.fit_nonlinear: '%1' has %2 entries but the model "
+                                       "has %3 parameters.")
+                                .arg(key)
+                                .arg(count)
+                                .arg(pNames.size()),
+                        pNames);
+            }
+        };
         // Explicit initial guesses (dict by param name OR array by index)
-        const QJsonValue initGuessVal = params.contains(QStringLiteral("initial_values"))
-                ? params.value(QStringLiteral("initial_values"))
-                : params.value(QStringLiteral("init_params"));
+        const QString initKey = params.contains(QStringLiteral("initial_values"))
+                ? QStringLiteral("initial_values")
+                : QStringLiteral("init_params");
+        const QJsonValue initGuessVal = params.value(initKey);
         if (!initGuessVal.isUndefined() && !initGuessVal.isNull()) {
             if (initGuessVal.isArray()) {
                 const QJsonArray ia = initGuessVal.toArray();
+                requireAtMostParams(ia.size(), initKey);
                 for (int i = 0; i < std::min(pNames.size(), ia.size()); ++i)
                     nlf.setInitialGuess(i, ia[i].toDouble());
             } else if (initGuessVal.isObject()) {
                 const QJsonObject io = initGuessVal.toObject();
+                requireKnownNames(io.keys(), initKey);
                 for (int i = 0; i < pNames.size(); ++i) {
                     if (io.contains(pNames[i]))
                         nlf.setInitialGuess(i, io.value(pNames[i]).toDouble());
@@ -1299,6 +1371,17 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             const QJsonValue fv = params.value(QStringLiteral("fixed"));
             if (fv.isArray()) {
                 const QJsonArray fa = fv.toArray();
+                QStringList names;
+                int boolCount = 0;
+                for (const QJsonValue &v : fa) {
+                    if (v.isString())
+                        names << v.toString();
+                    else if (v.isBool())
+                        ++boolCount;
+                }
+                requireKnownNames(names, QStringLiteral("fixed"));
+                if (names.isEmpty())
+                    requireAtMostParams(boolCount, QStringLiteral("fixed"));
                 for (int i = 0; i < fa.size(); ++i) {
                     if (fa[i].isBool() && i < pNames.size())
                         nlf.setParameterFixed(i, fa[i].toBool());
@@ -1310,6 +1393,7 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 }
             } else if (fv.isObject()) {
                 const QJsonObject fo = fv.toObject();
+                requireKnownNames(fo.keys(), QStringLiteral("fixed"));
                 for (int i = 0; i < pNames.size(); ++i) {
                     if (fo.contains(pNames[i]))
                         nlf.setParameterFixed(i, fo.value(pNames[i]).toBool());
@@ -1321,12 +1405,18 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         if (params.contains(QStringLiteral("bounds"))
             && params.value(QStringLiteral("bounds")).isObject()) {
             const QJsonObject bo = params.value(QStringLiteral("bounds")).toObject();
+            requireKnownNames(bo.keys(), QStringLiteral("bounds"));
             for (int i = 0; i < pNames.size(); ++i) {
                 if (bo.contains(pNames[i]) && bo.value(pNames[i]).isArray()) {
                     const QJsonArray ba = bo.value(pNames[i]).toArray();
                     if (ba.size() >= 2) {
-                        const double lo = ba[0].isNull() ? -1e30 : ba[0].toDouble();
-                        const double hi = ba[1].isNull() ? 1e30 : ba[1].toDouble();
+                        // An open side is infinite (as in the fit dialog): a finite stand-in
+                        // such as 1e30 made a two-sided box whose start point was clamped to
+                        // lo + 1e-4 * 1e30, far from the initial value (t = 1e26 "converged").
+                        const double lo = ba[0].isNull() ? -std::numeric_limits<double>::infinity()
+                                                         : ba[0].toDouble();
+                        const double hi = ba[1].isNull() ? std::numeric_limits<double>::infinity()
+                                                         : ba[1].toDouble();
                         nlf.setParameterBounds(i, lo, hi);
                     }
                 }
@@ -1416,9 +1506,19 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 && std::all_of(resVec.begin(), resVec.end(),
                                [](double v) { return std::isfinite(v); });
 
+        QString convergenceMsg = nlf.convergenceMessage();
+        if (!converged && convergenceMsg.isEmpty()) {
+            // The solver stopped with an error (e.g. exp overflow at the parameters it reached):
+            // there is no result to report, so say why instead of an empty message.
+            convergenceMsg = QObject::tr(
+                    "Not converged (the fit failed: the model gave no finite values at the "
+                    "parameters the solver reached; check the initial values)");
+        }
         outResult[QStringLiteral("ok")] = converged;
         outResult[QStringLiteral("converged")] = converged;
-        outResult[QStringLiteral("convergence_message")] = nlf.convergenceMessage();
+        outResult[QStringLiteral("convergence_message")] = convergenceMsg;
+        if (fitExecuted && !nlf.fitNotes().isEmpty())
+            outResult[QStringLiteral("notes")] = QJsonArray::fromStringList(nlf.fitNotes());
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("curve")] = curveTitle;
         outResult[QStringLiteral("model")] = modelName.isEmpty() ? customFormula : modelName;
@@ -1433,10 +1533,15 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 validChi2 ? safeJsonDouble(nlf.reducedChiSquare()) : QJsonValue::Null;
         outResult[QStringLiteral("rss")] =
                 validChi2 ? safeJsonDouble(nlf.rss()) : QJsonValue::Null;
-        outResult[QStringLiteral("r2")] =
-                validChi2 ? safeJsonDouble(std::min(1.0, nlf.rSquare())) : QJsonValue(0.0);
-        outResult[QStringLiteral("adj_r2")] =
-                validChi2 ? safeJsonDouble(std::min(1.0, nlf.adjustedRSquare())) : QJsonValue(0.0);
+        // Undefined R^2 (failed fit, no residual degrees of freedom, constant y) is null; note
+        // that std::min(1.0, NaN) is 1.0, so the clamp must not see a NaN.
+        auto r2Json = [&](double v) -> QJsonValue {
+            if (!validChi2 || !std::isfinite(v))
+                return QJsonValue(QJsonValue::Null);
+            return QJsonValue(std::min(1.0, v));
+        };
+        outResult[QStringLiteral("r2")] = r2Json(nlf.rSquare());
+        outResult[QStringLiteral("adj_r2")] = r2Json(nlf.adjustedRSquare());
         outResult[QStringLiteral("aic")] =
                 validChi2 ? safeJsonDouble(nlf.aic()) : QJsonValue::Null;
         outResult[QStringLiteral("aicc")] =

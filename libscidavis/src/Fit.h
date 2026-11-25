@@ -203,8 +203,13 @@ public:
     bool parameterConfidenceInterval(int i, double level, double *lo, double *hi) const;
     //! Upper quantile of Student's t distribution: t such that P(T <= t) = p
     static double studentTQuantile(double p, int dof);
-    //! Scale-invariant stationarity test of an LM solver state (used to judge GSL_ENOPROG)
-    static bool lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol = 1e-4);
+    //! Scale-invariant stationarity test of an LM solver state (used to judge GSL_ENOPROG).
+    //! kktSigns (optional, one entry per solver variable) marks variables held at a bound:
+    //! +1 / -1 when the bound blocks the descent direction if sign * (J_j . f) >= 0, 0 for a
+    //! free variable. Such a variable is stationary (Karush-Kuhn-Tucker) when the gradient
+    //! pushes it out of the box, however large the gradient.
+    static bool lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol = 1e-4,
+                                       const std::vector<int> *kktSigns = nullptr);
     //! Registers the Japanese strings of the fit core (convergence / statistics messages)
     static void registerJapaneseStrings();
 
