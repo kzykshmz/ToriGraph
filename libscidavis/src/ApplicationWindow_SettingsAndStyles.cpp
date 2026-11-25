@@ -4930,17 +4930,26 @@ void ApplicationWindow::mergeOpenGraphsDialog()
         lg->syncChildLinkedLayers();
         lg->replot();
     }
-    if (merged->pageViewMode()) {
-        merged->fitLayersToPage();
-        merged->fitPageZoomToViewport();
-    } else {
-        merged->arrangeLayers(false, false);
+    // 結合後の最終配置は利用者が求めた配置なので、収まらない格子にはページを広げてよい
+    // （広げたときはステータスバーで知らせる）。
+    merged->takeLayoutPageGrowth();
+    {
+        LayoutPageGrowthScope growthScope(merged);
+        if (merged->pageViewMode())
+            merged->fitLayersToPage();
+        else
+            merged->arrangeLayers(false, false);
     }
+    if (merged->pageViewMode())
+        merged->fitPageZoomToViewport();
+    const QSizeF mergeGrownFrom = merged->takeLayoutPageGrowth();
 
     customMenu(merged);
     activateSubWindow(merged);
     emit merged->modifiedPlot();
     emit modified();
+    if (mergeGrownFrom.isValid())
+        statusBar()->showMessage(merged->layoutPageGrowthMessage(mergeGrownFrom), 10000);
 }
 
 MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *targetTable)

@@ -565,6 +565,19 @@ void applyPlotLevelConvenienceParams(Graph *g, const QJsonObject &params)
     replotGraphOrDefer(g);
 }
 
+// warnings 用の一文: 収まらない格子のために arrangeLayers がページを grownFrom から広げた。
+QString layoutPageGrowthWarning(MultiLayer *ml, const QSizeF &grownFrom)
+{
+    return QStringLiteral("The %1 x %2 panels did not fit the %3 x %4 page; the page was "
+                          "enlarged to %5 x %6 so every panel stays on it.")
+            .arg(ml->getRows())
+            .arg(ml->getCols())
+            .arg(grownFrom.width(), 0, 'g', 6)
+            .arg(grownFrom.height(), 0, 'g', 6)
+            .arg(ml->pageWidthPhysical(), 0, 'g', 6)
+            .arg(ml->pageHeightPhysical(), 0, 'g', 6);
+}
+
 } // namespace
 
 namespace rpc_internal {
@@ -4511,11 +4524,22 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Layer"));
         Graph *g = ml->addLayer(x, y, w, h);
         enforceArialGraphFonts(g);
-        if (optionalJsonBool(params, QStringLiteral("arrange"), true) && w == 0 && h == 0)
-            ml->arrangeLayers(true, false);
+        QSizeF addGrownFrom;
+        if (optionalJsonBool(params, QStringLiteral("arrange"), true) && w == 0 && h == 0) {
+            // 格子を組み直す配置は利用者が求めた配置なので、収まらなければページを広げてよい。
+            ml->takeLayoutPageGrowth();
+            {
+                LayoutPageGrowthScope growthScope(ml);
+                ml->arrangeLayers(true, false);
+            }
+            addGrownFrom = ml->takeLayoutPageGrowth();
+        }
         if (g)
             undoGuard.commit();
         outResult = serializeGraphInfo(ml);
+        if (addGrownFrom.isValid())
+            outResult[QStringLiteral("warnings")] =
+                    QJsonArray{ layoutPageGrowthWarning(ml, addGrownFrom) };
         const int newIdx = std::max(0, ml->layers() - 1);
         outResult[QStringLiteral("layer")] = newIdx;
         outResult[QStringLiteral("layer_index")] = newIdx;
@@ -5094,10 +5118,17 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             lg->syncChildLinkedLayers();
             lg->replot();
         }
-        if (merged->pageViewMode())
-            merged->fitLayersToPage();
-        else
-            merged->arrangeLayers(false, false);
+        // 結合後の最終配置は利用者が求めた配置なので、収まらない格子にはページを広げてよい
+        // （graph.arrange_layers と同じく warnings で知らせる）。
+        merged->takeLayoutPageGrowth();
+        {
+            LayoutPageGrowthScope growthScope(merged);
+            if (merged->pageViewMode())
+                merged->fitLayersToPage();
+            else
+                merged->arrangeLayers(false, false);
+        }
+        const QSizeF mergeGrownFrom = merged->takeLayoutPageGrowth();
 
         applyRequestedWindowName(d_app, merged, params);
         if (optionalJsonBool(params, QStringLiteral("close_sources"), false)) {
@@ -5115,6 +5146,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         outResult = serializeGraphInfo(merged);
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("primary_panels")] = primaryPanelCount;
+        if (mergeGrownFrom.isValid())
+            outResult[QStringLiteral("warnings")] =
+                    QJsonArray{ layoutPageGrowthWarning(merged, mergeGrownFrom) };
         return true;
     }
 
@@ -5202,16 +5236,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         ml->takeLayoutPageGrowth(); // forget a widening made before this call
         {
             // この配置の間だけ、収まらない格子のためにページを広げてよい（warnings で知らせる）。
-            struct PageGrowthScope
-            {
-                MultiLayer *m;
-                bool prev;
-                explicit PageGrowthScope(MultiLayer *ml_) : m(ml_), prev(ml_->allowPageGrowthForLayout())
-                {
-                    m->setAllowPageGrowthForLayout(true);
-                }
-                ~PageGrowthScope() { m->setAllowPageGrowthForLayout(prev); }
-            } growthScope(ml);
+            LayoutPageGrowthScope growthScope(ml);
             ml->arrangeLayers(fitGrid && !(hasExplicitRows || hasExplicitCols), false);
             if (ml->pageViewMode() && !fitGrid)
                 ml->fitLayersToPage();
@@ -5221,17 +5246,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         QJsonArray arrangeWarnings;
-        if (grownFrom.isValid()) {
-            arrangeWarnings.append(
-                    QStringLiteral("The %1 x %2 panels did not fit the %3 x %4 page; the page was "
-                                   "enlarged to %5 x %6 so every panel stays on it.")
-                            .arg(ml->getRows())
-                            .arg(ml->getCols())
-                            .arg(grownFrom.width(), 0, 'g', 6)
-                            .arg(grownFrom.height(), 0, 'g', 6)
-                            .arg(ml->pageWidthPhysical(), 0, 'g', 6)
-                            .arg(ml->pageHeightPhysical(), 0, 'g', 6));
-        }
+        if (grownFrom.isValid())
+            arrangeWarnings.append(layoutPageGrowthWarning(ml, grownFrom));
         for (Graph *lg : ml->layersList()) {
             if (!lg || lg->linkedParentLayer() || ml->isInsetLayer(lg) || !ml->canvasWidget())
                 continue;

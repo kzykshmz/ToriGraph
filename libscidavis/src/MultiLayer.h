@@ -211,6 +211,9 @@ public:
     //! it on; page size changes, presets, rescaling and window resizes never enlarge the page).
     void setAllowPageGrowthForLayout(bool on) { d_allow_page_growth_for_layout = on; }
     bool allowPageGrowthForLayout() const { return d_allow_page_growth_for_layout; }
+    //! One status-bar line saying the page was enlarged from @p from (in the page unit) to the
+    //! current page size so that every panel fits.
+    QString layoutPageGrowthMessage(const QSizeF &from) const;
     void fitLayersToPage();
     void syncChildOverlayAndInsetGeometries();
     void showPageSetupDialog();
@@ -583,6 +586,32 @@ private:
     int d_panel_label_font_pt = 0;
     QWidget *d_drop_zone_overlay = nullptr;
     QToolButton *d_quick_columns_btn = nullptr;
+};
+
+//! While alive, arrangeLayers on @p ml may enlarge a page that cannot hold the grid even at the
+//! minimum plot-area size; the previous permission is restored on destruction. Only layouts the
+//! user asks for explicitly open one (graph.arrange_layers, the Arrange Layers dialog without a
+//! fixed canvas size, the final layout of a graph merge, graph.add_layer re-arranging the grid).
+class LayoutPageGrowthScope
+{
+public:
+    explicit LayoutPageGrowthScope(MultiLayer *ml)
+        : d_ml(ml), d_prev(ml ? ml->allowPageGrowthForLayout() : false)
+    {
+        if (d_ml)
+            d_ml->setAllowPageGrowthForLayout(true);
+    }
+    ~LayoutPageGrowthScope()
+    {
+        if (d_ml)
+            d_ml->setAllowPageGrowthForLayout(d_prev);
+    }
+    LayoutPageGrowthScope(const LayoutPageGrowthScope &) = delete;
+    LayoutPageGrowthScope &operator=(const LayoutPageGrowthScope &) = delete;
+
+private:
+    QPointer<MultiLayer> d_ml;
+    bool d_prev;
 };
 
 //! Button with layer number

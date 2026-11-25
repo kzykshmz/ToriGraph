@@ -47,6 +47,7 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QStatusBar>
 #include <cmath>
 
 namespace {
@@ -781,43 +782,62 @@ void LayerDialog::update()
         }
     }
 
-    if (!fitBox->isChecked()) {
-        multi_layer->setCols(cols);
-        multi_layer->setRows(rows);
-    }
-
-    multi_layer->setKeepAspectRatio(keepAspectBox->isChecked());
-    if (GroupCanvasSize->isChecked()) {
-        multi_layer->setLayerCanvasSize(boxCanvasWidth->value(), boxCanvasHeight->value());
-        if (boxCanvasWidth->value() > 0 && boxCanvasHeight->value() > 0) {
-            QSignalBlocker blocker(customAspectBox);
-            customAspectBox->setValue((double)boxCanvasWidth->value()
-                                      / (double)boxCanvasHeight->value());
-        }
-    } else if (keepAspectBox->isChecked() && customAspectBox->value() > 0.05) {
-        multi_layer->setTargetAspectRatio(customAspectBox->value());
-    }
-
-    multi_layer->setAlignement(alignHorBox->currentIndex(), alignVertBox->currentIndex());
-
-    multi_layer->setMargins(boxLeftSpace->value(), boxRightSpace->value(), boxTopSpace->value(),
-                            boxBottomSpace->value());
-
-    multi_layer->setSpacing(boxRowsGap->value(), boxColsGap->value());
-
-    // Apply the overlay/link settings of the target layer BEFORE arranging: a layer that gets an
-    // overlay parent no longer occupies a grid cell, and arrangeLayers() has to know that.
+    // 配置の適用は利用者が求めた配置なので、収まらない格子にはページを広げてよい（ステータスバーで
+    // 知らせる）。setKeepAspectRatio / setTargetAspectRatio も途中で並べ直すため、許可の範囲は
+    // 設定の反映から最後の arrangeLayers までとし、余白・間隔・重ね合わせ・行列数を先に入れて
+    // 途中の並べ直しも最終の格子で行う（許可のない途中の並べ直しで 50 px に潰れると目盛りが
+    // 減り、最後の配置が「収まった」と判定されてしまう）。キャンバス寸法を固定したとき
+    // （GroupCanvasSize）はページでなくウィンドウを合わせるので広げない。
+    multi_layer->takeLayoutPageGrowth();
     const int targetNum = targetLayerBox->currentData().toInt();
-    if (Graph *targetG = multi_layer->layer(targetNum)) {
-        const int parentNum = parentLayerBox->currentData().toInt();
-        Graph *parentG = (parentNum > 0 && parentNum != targetNum) ? multi_layer->layer(parentNum)
-                                                                   : nullptr;
-        targetG->setLinkedParentLayer(parentG, xLinkModeBox->currentData().toInt(),
-                                      xFormulaEdit->text(), yLinkModeBox->currentData().toInt(),
-                                      yFormulaEdit->text());
-    }
+    {
+        LayoutPageGrowthScope growthScope(GroupCanvasSize->isChecked() ? nullptr : multi_layer);
 
-    multi_layer->arrangeLayers(fitBox->isChecked(), GroupCanvasSize->isChecked());
+        multi_layer->setAlignement(alignHorBox->currentIndex(), alignVertBox->currentIndex());
+
+        multi_layer->setMargins(boxLeftSpace->value(), boxRightSpace->value(),
+                                boxTopSpace->value(), boxBottomSpace->value());
+
+        multi_layer->setSpacing(boxRowsGap->value(), boxColsGap->value());
+
+        // Apply the overlay/link settings of the target layer BEFORE arranging: a layer that gets
+        // an overlay parent no longer occupies a grid cell, and arrangeLayers() has to know that.
+        if (Graph *targetG = multi_layer->layer(targetNum)) {
+            const int parentNum = parentLayerBox->currentData().toInt();
+            Graph *parentG = (parentNum > 0 && parentNum != targetNum)
+                    ? multi_layer->layer(parentNum)
+                    : nullptr;
+            targetG->setLinkedParentLayer(parentG, xLinkModeBox->currentData().toInt(),
+                                          xFormulaEdit->text(), yLinkModeBox->currentData().toInt(),
+                                          yFormulaEdit->text());
+        }
+
+        if (!fitBox->isChecked()) {
+            multi_layer->setCols(cols);
+            multi_layer->setRows(rows);
+        } else { // the grid arrangeLayers(true, ...) will choose, already for the steps below
+            int bestRows = multi_layer->getRows();
+            int bestCols = multi_layer->getCols();
+            multi_layer->findBestLayout(bestRows, bestCols);
+            multi_layer->setRows(bestRows);
+            multi_layer->setCols(bestCols);
+        }
+
+        multi_layer->setKeepAspectRatio(keepAspectBox->isChecked());
+        if (GroupCanvasSize->isChecked()) {
+            multi_layer->setLayerCanvasSize(boxCanvasWidth->value(), boxCanvasHeight->value());
+            if (boxCanvasWidth->value() > 0 && boxCanvasHeight->value() > 0) {
+                QSignalBlocker blocker(customAspectBox);
+                customAspectBox->setValue((double)boxCanvasWidth->value()
+                                          / (double)boxCanvasHeight->value());
+            }
+        } else if (keepAspectBox->isChecked() && customAspectBox->value() > 0.05) {
+            multi_layer->setTargetAspectRatio(customAspectBox->value());
+        }
+
+        multi_layer->arrangeLayers(fitBox->isChecked(), GroupCanvasSize->isChecked());
+    }
+    const QSizeF grownFrom = multi_layer->takeLayoutPageGrowth();
 
     if (!GroupCanvasSize->isChecked()) { // show new layer canvas size
         QSignalBlocker bW(boxCanvasWidth);
@@ -857,6 +877,12 @@ void LayerDialog::update()
 
     if (mlGuard && !beforeSnap.isEmpty())
         mlGuard->pushUndoSnapshot(tr("Arrange Layers"), beforeSnap);
+
+    if (mlGuard && grownFrom.isValid()) {
+        if (auto *app = qobject_cast<ApplicationWindow *>(this->parent()))
+            if (QStatusBar *sb = app->statusBar())
+                sb->showMessage(mlGuard->layoutPageGrowthMessage(grownFrom), 10000);
+    }
 }
 
 void LayerDialog::accept()

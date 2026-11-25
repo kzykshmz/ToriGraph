@@ -38,8 +38,10 @@
 //        reopen; without x_col the X still comes from the table's X designation
 //   102j a linear axis with "10^x" (Superscripts) labels keeps them and its preset ticks
 //        through undo / redo and save -> reopen (<ToriAxisTickStep> no longer resets them)
-//   102c (page) only graph.arrange_layers enlarges the page: set_page_size(85 mm), the
-//        journal_2col_175mm preset and a short aspect-locked 1 x 1 page keep their size
+//   102c (page) only explicit layouts enlarge the page (arrange_layers, the Arrange Layers
+//        dialog, merge_graphs, add_layer; each panel stays on the page with a usable plot
+//        area): set_page_size(85 mm), the journal_2col_175mm preset and a short
+//        aspect-locked 1 x 1 page keep their size
 //   102b (canvas) the slide_28pt plot area and axis label gaps, and the exported PNG, stay the
 //        same after save -> reopen
 // Every check is evaluated (failures are counted) so one run reports all regressions.
@@ -579,14 +581,148 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
                                                    << " px");
             }
 
-            // Only graph.arrange_layers may enlarge the page. An explicit page size, a preset
-            // with its own page size and a short 1 x 1 page with a locked 3:1 aspect keep the
-            // requested size.
+            // Every layout the user asks for explicitly may enlarge the page as arrange_layers
+            // does: the Arrange Layers dialog (without a fixed canvas size), the final layout of
+            // graph.merge_graphs and graph.add_layer re-arranging the grid.
+            auto checkPanels = [&](MultiLayer *ml, const std::string &label) {
+                if (!ml)
+                    return;
+                const QRect page = ml->canvasWidget() ? ml->canvasWidget()->rect() : QRect();
+                int minCanvas = 1 << 30;
+                bool inside = true;
+                for (Graph *lg : ml->layersList()) {
+                    Plot *p = lg->plotWidget();
+                    p->updateLayout();
+                    const QRect cr = p->plotLayout()->canvasRect();
+                    minCanvas = qMin(minCanvas, qMin(cr.width(), cr.height()));
+                    if (!page.contains(lg->geometry()))
+                        inside = false;
+                }
+                std::cout << "[INFO] 102c: " << label << " " << ml->getRows() << " x "
+                          << ml->getCols() << " page " << ml->pageWidthPhysical() << "x"
+                          << ml->pageHeightPhysical() << ", smallest plot area " << minCanvas
+                          << " px\n";
+                CHECK102(inside, "102c: " << label << " a panel lies off the page");
+                CHECK102(minCanvas >= 60,
+                         "102c: " << label << " plot area squashed to " << minCanvas << " px");
+            };
+            auto plotOne = [&](const QString &gname, const char *ycol) {
+                return Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                           QJsonObject{ { "table", "T102L" },
+                                                        { "x_col", "X" },
+                                                        { "y_cols", QJsonArray{ ycol } },
+                                                        { "graph_name", gname } }));
+            };
+            // (dialog) the Apply path of LayerDialog with a 1 x 3 grid, without showing it
+            {
+                CHECK102(plotOne(QStringLiteral("G102D1x3"), "A"), "102c: plot.xy G102D1x3");
+                const char *dys[] = { "B", "C" };
+                for (int i = 1; i < 3; ++i) {
+                    rpc.call(QStringLiteral("graph.add_layer"),
+                             QJsonObject{ { "graph", "G102D1x3" } });
+                    rpc.call(QStringLiteral("plot.add_curve"),
+                             QJsonObject{ { "graph", "G102D1x3" },
+                                          { "table", "T102L" },
+                                          { "x_col", "X" },
+                                          { "y_col", dys[i - 1] },
+                                          { "layer", i } });
+                }
+                auto *mld = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102D1x3")));
+                CHECK102(mld && mld->layers() == 3, "102c: G102D1x3 layers");
+                if (mld && mld->layers() == 3) {
+                    const double pw0 = mld->pageWidthPhysical();
+                    mld->setRows(1);
+                    mld->setCols(3);
+                    w->statusBar()->clearMessage();
+                    {
+                        LayerDialog dlg(w);
+                        dlg.setMultiLayer(mld);
+                        QMetaObject::invokeMethod(&dlg, "update", Qt::DirectConnection);
+                        CHECK102(!dlg.property("lastUpdateAborted").toBool(),
+                                 "102c: LayerDialog update aborted");
+                    }
+                    CHECK102(mld->getRows() == 1 && mld->getCols() == 3,
+                             "102c: LayerDialog grid " << mld->getRows() << " x " << mld->getCols());
+                    CHECK102(mld->pageWidthPhysical() > pw0 + 1e-6,
+                             "102c: LayerDialog 1 x 3 did not widen the page (" << pw0 << ")");
+                    CHECK102(!w->statusBar()->currentMessage().isEmpty(),
+                             "102c: LayerDialog widened the page without a status bar message");
+                    std::cout << "[INFO] 102c: LayerDialog status: "
+                              << w->statusBar()->currentMessage().toStdString() << "\n";
+                    CHECK102(!mld->allowPageGrowthForLayout(),
+                             "102c: LayerDialog left page growth switched on");
+                    checkPanels(mld, "LayerDialog G102D1x3");
+                }
+            }
+            // (merge) graph.merge_graphs of three graphs lays them out 1 x 3
+            {
+                bool made = true;
+                const char *ys[] = { "A", "B", "C" };
+                QJsonArray srcs;
+                for (int i = 0; i < 3; ++i) {
+                    const QString gname = QStringLiteral("G102M%1").arg(i + 1);
+                    made = plotOne(gname, ys[i]) && made;
+                    srcs.append(gname);
+                }
+                CHECK102(made, "102c: plot.xy G102M*");
+                const QJsonObject r = rpc.call(QStringLiteral("graph.merge_graphs"),
+                                               QJsonObject{ { "graphs", srcs },
+                                                            { "graph_name", "G102Merged" } });
+                CHECK102(Rpc102::ok(r), "102c: merge_graphs");
+                auto *mlm = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102Merged")));
+                CHECK102(mlm && mlm->layers() == 3 && mlm->getRows() == 1 && mlm->getCols() == 3,
+                         "102c: merged graph is not 1 x 3");
+                const QJsonArray warns =
+                        Rpc102::result(r).value(QStringLiteral("warnings")).toArray();
+                CHECK102(!warns.isEmpty(), "102c: merge_graphs 1 x 3 gave no page warning");
+                if (mlm) {
+                    CHECK102(!mlm->allowPageGrowthForLayout(),
+                             "102c: merge_graphs left page growth switched on");
+                    checkPanels(mlm, "merge_graphs G102Merged");
+                }
+            }
+            // (add_layer) graph.add_layer always re-arranges with the automatic grid (3 layers
+            // -> 2 x 2, never 1 x 3), so a short 170 x 40 mm page is used to make the grid
+            // overflow: adding the layers must enlarge the page and report it in warnings.
+            {
+                CHECK102(plotOne(QStringLiteral("G102L3"), "A"), "102c: plot.xy G102L3");
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.set_page_size"),
+                                             QJsonObject{ { "graph", "G102L3" },
+                                                          { "width", 170 },
+                                                          { "height", 40 },
+                                                          { "unit", "mm" } })),
+                         "102c: set_page_size G102L3");
+                QJsonObject r;
+                for (int i = 1; i < 3; ++i)
+                    r = rpc.call(QStringLiteral("graph.add_layer"),
+                                 QJsonObject{ { "graph", "G102L3" } });
+                auto *mla = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102L3")));
+                CHECK102(mla && mla->layers() == 3, "102c: G102L3 layers");
+                if (mla) {
+                    const bool grown = mla->pageWidthPhysical() > 170.0 + 1e-6
+                            || mla->pageHeightPhysical() > 40.0 + 1e-6;
+                    const QJsonArray warns =
+                            Rpc102::result(r).value(QStringLiteral("warnings")).toArray();
+                    CHECK102(grown && !warns.isEmpty(),
+                             "102c: add_layer did not enlarge the 170 x 40 mm page / no warning "
+                             "(warnings " << warns.size() << ")");
+                    CHECK102(!mla->allowPageGrowthForLayout(),
+                             "102c: add_layer left page growth switched on");
+                    checkPanels(mla, "add_layer G102L3");
+                }
+            }
+
+            // A page size, a preset with its own page size and a short 1 x 1 page with a locked
+            // 3:1 aspect never enlarge the page: they keep the requested size.
             auto pageIs = [](MultiLayer *ml, double wv, double hv) {
                 return ml && std::fabs(ml->pageWidthPhysical() - wv) < 1e-6
                         && std::fabs(ml->pageHeightPhysical() - hv) < 1e-6;
             };
             if (auto *ml3 = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102A1x3")))) {
+                // set_page_size(85 x 60 mm) on the page arrange_layers widened for 1 x 3 gives
+                // exactly 85 x 60 mm. The three panels then no longer fit (they are squashed to
+                // the 50 px floor and the right one may run off the page): by design an explicit
+                // page size wins over keeping every panel on the page, so that is not checked.
                 CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.set_page_size"),
                                              QJsonObject{ { "graph", "G102A1x3" },
                                                           { "width", 85 },

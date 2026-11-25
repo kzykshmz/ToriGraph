@@ -612,8 +612,9 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             l_canvas_height = qMax(50, availH);
             gridOverflows = (availW < 50 || availH < 50);
         }
-        // ページを広げてよいのは graph.arrange_layers のように明示的に許可されたときだけ
-        // （setAllowPageGrowthForLayout）。ページ寸法の指定・プリセット・縦横比固定の尺度変更・
+        // ページを広げてよいのは利用者が配置をはっきり求めたときだけ（LayoutPageGrowthScope:
+        // graph.arrange_layers、レイヤー配置ダイアログ、グラフの結合、graph.add_layer の再配置）。
+        // ページ寸法の指定・プリセット・縦横比固定の尺度変更・
         // ウィンドウのリサイズから来た再配置では、従来どおり 50 px の下限だけで指定のページに収める。
         if (!d_allow_page_growth_for_layout)
             gridOverflows = false;
@@ -837,6 +838,22 @@ QSizeF MultiLayer::takeLayoutPageGrowth()
     const QSizeF from = d_layout_page_grown_from;
     d_layout_page_grown_from = QSizeF();
     return from;
+}
+
+QString MultiLayer::layoutPageGrowthMessage(const QSizeF &from) const
+{
+    const QString unit = (d_page_unit == UnitMm)
+            ? QStringLiteral("mm")
+            : ((d_page_unit == UnitCm)
+                       ? QStringLiteral("cm")
+                       : ((d_page_unit == UnitInch) ? QStringLiteral("in") : QStringLiteral("px")));
+    return tr("The panels did not fit the %1 x %2 %3 page, so the page was enlarged to %4 x %5 "
+              "%3.")
+            .arg(from.width(), 0, 'g', 6)
+            .arg(from.height(), 0, 'g', 6)
+            .arg(unit)
+            .arg(d_page_width_val, 0, 'g', 6)
+            .arg(d_page_height_val, 0, 'g', 6);
 }
 
 void MultiLayer::setCols(int c)
