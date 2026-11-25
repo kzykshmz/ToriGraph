@@ -1,6 +1,7 @@
 #include "ole_test_common.h"
 #include "PythonAutomationServer.h"
 #include "NonLinearFit.h"
+#include "Interpolation.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -40,6 +41,11 @@
 //        solver state, convergence_message and notes.
 //   106f analysis.fit_nonlinear bounds with lower > upper were swapped silently; they are an
 //        invalid-params error naming the parameter.
+//   106g a curve with a repeated X (x = 0, 0, 1, ..., 10) or an X out of order outside the
+//        range [2, 8] failed in Analysis > Interpolate (every point was taken, the repeated X
+//        is an error); the interpolant is built from the points in the range and one point on
+//        each side then (GUI and curvemath.interpolate alike). A repeated X in that window,
+//        or without a range, stays an error.
 // =============================================================================
 namespace {
 
@@ -697,6 +703,109 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                 { "bounds", QJsonObject{ { "t", QJsonArray{ 1, 1 } } } } });
         EXPECT106(!okResp.contains(QStringLiteral("error")),
                   "106f: equal bounds (t held at 1) must still be accepted");
+    }
+
+    // -------------------------------------------------------------------------
+    // 106g: a repeated X (or X out of order) outside the range: the interpolant is built from the
+    // points in the range and one point on each side (GUI Interpolation and RPC alike)
+    // -------------------------------------------------------------------------
+    {
+        struct GCase
+        {
+            const char *label;
+            std::vector<double> x;
+            double lo, hi;
+            int method; // Interpolation::Linear / Cubic
+            bool ok;
+            std::vector<double> wx; // window the interpolant must go through (ok cases)
+        };
+        std::vector<double> dupOut{ 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        std::vector<double> dupIn{ 0, 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10 };
+        std::vector<double> unordered{ 3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10 };
+        const std::vector<double> win19{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+        const std::vector<double> win410{ 4, 5, 6, 7, 8, 9, 10 };
+        const GCase gcases[] = {
+            { "dup x=0, linear [2, 8]", dupOut, 2.0, 8.0, Interpolation::Linear, true, win19 },
+            { "dup x=0, cubic [2, 8]", dupOut, 2.0, 8.0, Interpolation::Cubic, true, win19 },
+            { "dup x=5 inside, linear [2, 8]", dupIn, 2.0, 8.0, Interpolation::Linear, false, {} },
+            { "dup x=0, whole range", dupOut, 0.0, 10.0, Interpolation::Linear, false, {} },
+            { "x=3 first, cubic [5, 9]", unordered, 5.0, 9.0, Interpolation::Cubic, true, win410 },
+        };
+        int gNo = 0;
+        for (const GCase &c : gcases) {
+            std::vector<double> y;
+            for (size_t i = 0; i < c.x.size(); ++i)
+                y.push_back(std::sin(0.7 * c.x[i]) + 0.1 * double(i)); // repeated X: other Y
+            const QString gname = plotXY(c.x, y);
+            MultiLayer *gml = qobject_cast<MultiLayer *>(w->window(gname));
+            Graph *g = gml ? gml->activeGraph() : nullptr;
+            EXPECT106(g != nullptr, "106g: " << c.label << ": graph not created");
+            if (!g)
+                continue;
+            ++gNo;
+            const QString title = g->curve(0)->title().text();
+            std::vector<double> wy;
+            for (double xv : c.wx) {
+                for (size_t i = 0; i < c.x.size(); ++i)
+                    if (c.x[i] == xv) {
+                        wy.push_back(y[i]);
+                        break;
+                    }
+            }
+            auto refAt = [&](double xe) {
+                return (c.method == Interpolation::Linear) ? linearInterp106(c.wx, wy, xe)
+                                                           : naturalSpline106(c.wx, wy, xe);
+            };
+            auto lastCurveWorst = [&](int pts) {
+                QwtPlotCurve *oc = g->curve(g->curves() - 1);
+                if (!oc || int(oc->dataSize()) != pts)
+                    return nan;
+                double worst = 0.0;
+                for (int i = 0; i < pts; ++i)
+                    worst = std::max(worst, std::fabs(oc->y(i) - refAt(oc->x(i))));
+                return worst;
+            };
+            // GUI: Analysis > Interpolate
+            {
+                const int before = g->curves();
+                Interpolation gi(w, g, title, c.lo, c.hi, c.method);
+                gi.setOutputPoints(13);
+                const bool ran = !gi.error() && gi.run() && g->curves() > before;
+                const double worst = ran ? lastCurveWorst(13) : nan;
+                std::cout << "[INFO] 106g GUI " << c.label << ": ran " << ran << ", "
+                          << gi.dataSize() << " points used, worst " << worst << "\n";
+                if (c.ok)
+                    EXPECT106(ran && int(gi.dataSize()) == int(c.wx.size()) && worst < 1e-9,
+                              "106g: GUI " << c.label << " must interpolate through the range "
+                                           << "and one point on each side");
+                else
+                    EXPECT106(!ran, "106g: GUI " << c.label << " must stay an error");
+            }
+            // RPC: curvemath.interpolate
+            {
+                const int before = g->curves();
+                const QJsonObject resp = rpc(
+                        QStringLiteral("curvemath.interpolate"),
+                        QJsonObject{ { "graph", gname },
+                                     { "curve", 0 },
+                                     { "method",
+                                       c.method == Interpolation::Linear ? "linear" : "cubic" },
+                                     { "points", 13 },
+                                     { "x_min", c.lo },
+                                     { "x_max", c.hi } });
+                const bool ran = result(resp).value("ok").toBool() && g->curves() > before;
+                const double worst = ran ? lastCurveWorst(13) : nan;
+                std::cout << "[INFO] 106g RPC " << c.label << ": ok " << ran << ", worst "
+                          << worst << ", error '" << errMsg(resp).toStdString() << "'\n";
+                if (c.ok)
+                    EXPECT106(ran && worst < 1e-9,
+                              "106g: RPC " << c.label << " must interpolate as the GUI does");
+                else
+                    EXPECT106(errCode(resp) == -32602,
+                              "106g: RPC " << c.label << " must stay an invalid-params error");
+            }
+        }
+        EXPECT106(gNo == int(sizeof(gcases) / sizeof(gcases[0])), "106g: graphs missing");
     }
 #undef EXPECT106
 

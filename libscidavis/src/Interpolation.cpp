@@ -93,9 +93,12 @@ void Interpolation::setDataCurve(int curve, double start, double end)
     d_range_clipped = false;
     // The interpolant goes through every point of the curve: building it from the points inside
     // [start, end] only would change the spline (and leave nothing to interpolate in a gap
-    // between two points). Filter::setDataCurve sets d_from / d_to to the data range.
+    // between two points). Filter::setDataCurve sets d_from / d_to to the data range. A repeated
+    // X is checked below, on the points the interpolant is built from.
+    d_defer_duplicate_check = true;
     Filter::setDataCurve(curve, -std::numeric_limits<double>::infinity(),
                          std::numeric_limits<double>::infinity());
+    d_defer_duplicate_check = false;
     if (d_init_err)
         return;
     d_data_x_min = d_from;
@@ -118,6 +121,36 @@ void Interpolation::setDataCurve(int curve, double start, double end)
     d_range_clipped = (from > start) || (to < end);
     d_from = from;
     d_to = to;
+
+    // d_x is sorted. When the curve repeats an X or its X are out of order (a measurement that
+    // starts over, "0, 0, 1, ..."), the interpolant is built from the points in [from, to] and
+    // one point on each side of it, as before the whole curve was taken: such points outside the
+    // range do not stop the interpolation. A neighbour whose X is repeated is left out (that side
+    // ends at the range); a repeated X inside the window is still an error.
+    const size_t n = d_x.size();
+    bool repeated = false;
+    for (size_t i = 1; i < n && !repeated; ++i)
+        repeated = !(d_x[i - 1] < d_x[i]);
+    bool increasing = true, decreasing = true;
+    for (size_t i = 1; i < d_indices.size(); ++i) {
+        if (!(d_indices[i - 1] < d_indices[i]))
+            increasing = false;
+        if (!(d_indices[i - 1] > d_indices[i]))
+            decreasing = false;
+    }
+    if (repeated || !(increasing || decreasing)) {
+        size_t lo = size_t(std::lower_bound(d_x.cbegin(), d_x.cend(), d_from) - d_x.cbegin());
+        size_t hi = size_t(std::upper_bound(d_x.cbegin(), d_x.cend(), d_to) - d_x.cbegin());
+        if (lo > 0 && (lo < 2 || d_x[lo - 2] < d_x[lo - 1]))
+            --lo;
+        if (hi < n && (hi + 1 >= n || d_x[hi] < d_x[hi + 1]))
+            ++hi;
+        d_x = std::vector<double>(d_x.begin() + lo, d_x.begin() + hi);
+        d_y = std::vector<double>(d_y.begin() + lo, d_y.begin() + hi);
+        d_indices = std::vector<size_t>(d_indices.begin() + lo, d_indices.begin() + hi);
+    }
+    if (!isDataAcceptable())
+        d_init_err = true;
 }
 
 void Interpolation::setMethod(int m)
@@ -215,7 +248,11 @@ bool Interpolation::isDataAcceptable() const
             return false;
     }
 
-    // GSL interpolation routines fail on duplicate or non-strictly-monotonic x values
+    // GSL interpolation routines fail on duplicate or non-strictly-monotonic x values. While the
+    // whole curve is read (setDataCurve), they are checked on the points kept for the
+    // interpolant afterwards.
+    if (d_defer_duplicate_check)
+        return true;
     for (size_t i = 1; i < d_x.size(); i++) {
         if (!(d_x[i - 1] < d_x[i])) {
             if (!isSilentOrNonInteractive()

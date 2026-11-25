@@ -795,8 +795,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         double dataXMin = 0.0;
         double dataXMax = 0.0;
+        std::vector<double> xs;
         {
-            std::vector<double> xs, ys;
+            std::vector<double> ys;
             extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xs, ys);
             if (static_cast<int>(xs.size()) < minPts) {
                 throwInvalidParams(
@@ -806,18 +807,6 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             const auto mm = std::minmax_element(xs.cbegin(), xs.cend());
             dataXMin = *mm.first;
             dataXMax = *mm.second;
-            bool inc = true, dec = true;
-            for (size_t k = 1; k < xs.size(); ++k) {
-                const double dx = xs[k] - xs[k - 1];
-                if (!(dx > 1e-15))
-                    inc = false;
-                if (!(dx < -1e-15))
-                    dec = false;
-            }
-            if (!inc && !dec) {
-                throwInvalidParams(QStringLiteral(
-                        "curvemath.interpolate requires strictly monotonic X values without duplicates."));
-            }
         }
         const int outPts = parseBoundedInt(params, QStringLiteral("points"), 200, 2, 1000000);
         const QJsonValue xMinVal = params.value(QStringLiteral("x_min"));
@@ -852,6 +841,46 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                 .arg(interpXMax, 0, 'g', 10)
                                 .arg(dataXMin, 0, 'g', 10)
                                 .arg(dataXMax, 0, 'g', 10));
+            }
+        }
+        // The X must be strictly monotonic without a repeated value over the points the
+        // interpolant is built from: the points in the range and one point on each side of it
+        // (Interpolation::setDataCurve takes only those when the curve repeats an X or has its
+        // X out of order elsewhere; a neighbour whose X is repeated is left out). Without a
+        // range, that is the whole curve.
+        {
+            const double from = std::max(interpXMin, dataXMin);
+            const double to = std::min(interpXMax, dataXMax);
+            double below = -std::numeric_limits<double>::infinity();
+            double above = std::numeric_limits<double>::infinity();
+            for (double xv : xs) {
+                if (xv < from)
+                    below = std::max(below, xv);
+                if (xv > to)
+                    above = std::min(above, xv);
+            }
+            const auto count = [&](double v) { return std::count(xs.cbegin(), xs.cend(), v); };
+            const double winLo = (std::isfinite(below) && count(below) == 1) ? below : from;
+            const double winHi = (std::isfinite(above) && count(above) == 1) ? above : to;
+            bool inc = true, dec = true, first = true;
+            double prev = 0.0;
+            for (double xv : xs) {
+                if (xv < winLo || xv > winHi)
+                    continue;
+                if (!first) {
+                    const double dx = xv - prev;
+                    if (!(dx > 1e-15))
+                        inc = false;
+                    if (!(dx < -1e-15))
+                        dec = false;
+                }
+                first = false;
+                prev = xv;
+            }
+            if (!inc && !dec) {
+                throwInvalidParams(QStringLiteral(
+                        "curvemath.interpolate requires strictly monotonic X values without "
+                        "duplicates (over the range and one point on each side of it)."));
             }
         }
         const int curvesBefore = g->curves();
