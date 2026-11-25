@@ -3698,6 +3698,8 @@ void Fit::insertFitFunctionCurve(const QString &name, std::vector<double> &x,
     formula += "\n";
     formula += d_formula;
     c->setFormula(formula);
+    // フィットした曲線と同じ軸に付ける（「データと同じ X」の addResultCurve と同じ扱い）。
+    attachToSourceAxes(c);
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->addFitCurve(c);
 }
@@ -4430,6 +4432,7 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         c->setData(Xb.data(), Yb.data(), int(Xb.size()));
         if (!Xb.empty())
             c->setRange(Xb.front(), Xb.back());
+        attachToSourceAxes(c);
         d_graph->insertPlotItem(c, Graph::Line);
         d_graph->addFitCurve(c);
     };
@@ -4451,6 +4454,7 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         d_graph->removeShadedBandByTitle(predBandTitle);
         if (QwtPlotItem *band = d_graph->addShadedBand(qX, qLo, qHi, QColor(255, 140, 0, 30),
                                                        predBandTitle)) {
+            attachToSourceAxes(band);
             band->setZ(0.8);
             band->setItemAttribute(QwtPlotItem::Legend, false);
         }
@@ -4469,6 +4473,7 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         d_graph->removeShadedBandByTitle(confBandTitle);
         if (QwtPlotItem *band = d_graph->addShadedBand(qX, qLo, qHi, QColor(205, 35, 45, 42),
                                                        confBandTitle)) {
+            attachToSourceAxes(band);
             band->setZ(1.0);
             band->setItemAttribute(QwtPlotItem::Legend, false);
         }

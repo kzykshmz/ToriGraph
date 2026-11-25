@@ -341,6 +341,17 @@ void Filter::output()
 }
 
 
+void Filter::attachToSourceAxes(QwtPlotItem *item, const QwtPlotCurve *source) const
+{
+    if (!source)
+        source = d_curve;
+    if (!item || !source || !d_graph)
+        return;
+    // d_curve は別の層の曲線や消えた曲線のこともあるので、この層にあるときだけ合わせる。
+    if (d_graph->curveIndex(const_cast<QwtPlotCurve *>(source)) < 0)
+        return;
+    item->setAxis(source->xAxis(), source->yAxis());
+}
 
 QwtPlotCurve *Filter::addResultCurve(const std::vector<double> &x, const std::vector<double> &y)
 {
@@ -373,8 +384,7 @@ QwtPlotCurve *Filter::addResultCurve(const std::vector<double> &x, const std::ve
     c->setPen(QPen(d_curveColor, 1));
     // 結果の曲線は元の曲線と同じ軸に付ける。右軸の曲線の積分などが左軸に付くと、左軸の範囲が
     // 広がって左の曲線が潰れていた。
-    if (d_curve && d_graph->curveIndex(d_curve) >= 0)
-        c->setAxis(d_curve->xAxis(), d_curve->yAxis());
+    attachToSourceAxes(c);
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->updatePlot();
 

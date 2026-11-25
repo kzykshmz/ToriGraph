@@ -1972,6 +1972,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                         QStringLiteral("x"), QList<double>() << xMin << xMax, 200,
                                         fittedTitle)) {
                     if (QwtPlotCurve *fc = g->curve(g->curves() - 1)) {
+                        // フィットした曲線と同じ軸に付ける（右軸の曲線が左軸の範囲を変えないように）。
+                        if (QwtPlotCurve *src = g->curve(curveTitle))
+                            fc->setAxis(src->xAxis(), src->yAxis());
                         QPen pen(QColor(QStringLiteral("#D55E00")));
                         pen.setWidthF(1.5);
                         fc->setPen(pen);
@@ -2323,6 +2326,11 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                     const int fci = g->curves() - 1;
                     if (fci >= 0)
                         g->setCurvePen(fci, QPen(QColor(213, 94, 0), 2.0, Qt::SolidLine));
+                    // 当てはめた曲線と同じ軸に付ける。
+                    QwtPlotCurve *src = g->curve(curveTitle);
+                    QwtPlotCurve *fcc = (fci >= 0) ? g->curve(fci) : nullptr;
+                    if (src && fcc && fcc != src)
+                        fcc->setAxis(src->xAxis(), src->yAxis());
                 }
             }
         }

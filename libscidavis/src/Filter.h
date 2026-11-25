@@ -112,6 +112,11 @@ protected:
     //! Adds the result curve to the target output plot window. Creates a hidden table and frees the input data from memory.
     QwtPlotCurve *addResultCurve(const std::vector<double> &x, const std::vector<double> &y);
 
+    //! Puts a result item on the axes of the source curve ( source, or d_curve when null) when
+    //! that curve lies on d_graph, so a result of a right- or top-axis curve does not land on the
+    //! left/bottom axes and rescale them. Call it before Graph::insertPlotItem.
+    void attachToSourceAxes(QwtPlotItem *item, const QwtPlotCurve *source = nullptr) const;
+
     //! Performs checks and returns the index of the source data curve if OK, -1 otherwise
     int curveIndex(const QString &curveTitle, Graph *const g);
 

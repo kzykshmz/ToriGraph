@@ -11661,19 +11661,22 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     const QString beforeSnap = srcML ? srcML->captureUndoSnapshot() : QString();
 
     applyArialToMatSciGraph(targetGraph);
+    // 回折パターンの曲線が付いている縦軸（2 軸グラフの右軸のこともある）。ラベルの余白はこの軸で取る。
+    const int patternYAxis = (targetGraph->curveIndex(srcCurve) >= 0) ? srcCurve->yAxis()
+                                                                       : int(QwtPlot::yLeft);
     if (Plot *pw = targetGraph->plotWidget()) {
         double maxApexRaw = *std::max_element(yRaw.begin(), yRaw.end());
         for (const InternalPeak &ipk : pks)
             maxApexRaw = std::max(maxApexRaw, ipk.rawApexY);
 
-        const QwtScaleDiv *yDiv = pw->axisScaleDiv(QwtPlot::yLeft);
+        const QwtScaleDiv *yDiv = pw->axisScaleDiv(patternYAxis);
         const double curYLo = yDiv ? std::min(yDiv->lowerBound(), yDiv->upperBound()) : 0.0;
         const double curYHi = yDiv ? std::max(yDiv->lowerBound(), yDiv->upperBound()) : maxApexRaw;
         const bool hasAnyHkl = std::any_of(pks.begin(), pks.end(), [](const InternalPeak &ipk) {
             return !ipk.pub.hklLabel.isEmpty();
         });
         if (hasAnyHkl && curYHi < curYLo + 1.24 * (maxApexRaw - curYLo)) {
-            targetGraph->setScale(QwtPlot::yLeft, curYLo,
+            targetGraph->setScale(patternYAxis, curYLo,
                                   curYLo + 1.25 * std::max(1.0, maxApexRaw - curYLo));
         }
 
@@ -11745,7 +11748,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                     pins.append({ foundId, ipk.pub.twoThetaDeg, ipk.rawApexY, ipk.pub.hklLabel });
             }
 
-            auto syncHklPins = [gPtr = QPointer<Graph>(targetGraph), pins]() {
+            auto syncHklPins = [gPtr = QPointer<Graph>(targetGraph), pins, patternYAxis]() {
                 if (!gPtr || !gPtr->plotWidget() || !gPtr->plotWidget()->canvas())
                     return;
                 Plot *plotW = gPtr->plotWidget();
@@ -11753,7 +11756,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 if (cw <= 24)
                     return;
                 const QwtScaleMap xMap = plotW->canvasMap(QwtPlot::xBottom);
-                const QwtScaleMap yMap = plotW->canvasMap(QwtPlot::yLeft);
+                const QwtScaleMap yMap = plotW->canvasMap(patternYAxis);
                 QVector<QRectF> placedRects;
                 placedRects.reserve(pins.size());
 

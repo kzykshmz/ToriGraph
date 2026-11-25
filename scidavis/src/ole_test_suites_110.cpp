@@ -28,11 +28,20 @@
 //        the integral on the right axis (it went on the left axis and widened its range, which
 //        squashed the left curve); the left axis range is kept; the integral of a left-axis
 //        curve stays on the left; the axis survives save -> reopen
+//   110e fits of the right-axis curve of a double-Y graph: analysis.fit_nonlinear with the
+//        default "uniform X" output (a function curve) and confidence / prediction bands, and
+//        analysis.analyze_peaks with component curves, put every result curve on the right axis
+//        (the fit curve, the bands and the peak curves went on the left axis and changed its
+//        range; only the "same X as the data" output followed the source curve); the left axis
+//        range is kept; the axes survive save -> reopen
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
 
 int g110Failures = 0;
+
+// rtti of Graph's shaded band item (the fill of a fit's confidence / prediction band)
+constexpr int kShadedBandRtti110 = QwtPlotItem::Rtti_PlotUserItem + 43;
 
 #define CHECK110(cond, msg)                                                                     \
     do {                                                                                        \
@@ -258,7 +267,8 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
     const QString kTemp = QStringLiteral("温度"); // 温度
     const QString kSig = QStringLiteral("信号"); // 信号
 
-    Range110 aX, aY, dY, dR;
+    Range110 aX, aY, dY, dR, fLeft;
+    int fCurves = 0, fBands = 0;
     QString bTitleX, bTitleY;
 
     {
@@ -416,6 +426,101 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
             QwtPlotCurve *il = g->curves() == 4 ? g->curve(3) : nullptr;
             CHECK110(Rpc110::ok(rl) && il && il->yAxis() == QwtPlot::yLeft,
                      "110d: the integral of the left-axis curve is not on the left axis");
+        }
+
+        // ---- 110e: fit / band / peak curves of a right-axis curve go on the right axis -----------
+        {
+            QVector<double> xs, yl, yr;
+            for (int i = 0; i <= 300; ++i) {
+                const double x = 10.0 * i / 300.0;
+                xs << x;
+                yl << 500.0 + 20.0 * std::sin(x);
+                // two peaks plus a little deterministic ripple, so the fit residual is not zero
+                yr << 10.0 + 40.0 * std::exp(-std::pow(x - 3.5, 2) / (2.0 * 0.4 * 0.4))
+                                + 25.0 * std::exp(-std::pow(x - 6.5, 2) / (2.0 * 0.5 * 0.5))
+                                + 0.3 * std::sin(7.0 * x);
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T110F"), { "x", "yl", "yr" },
+                                     { toJson110(xs), toJson110(yl), toJson110(yr) }),
+                       "110e: table T110F");
+            CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("plot.double_y"),
+                                           QJsonObject{ { "table", "T110F" },
+                                                        { "x_col", "x" },
+                                                        { "y_left_col", "yl" },
+                                                        { "y_right_col", "yr" },
+                                                        { "graph_name", "G110F" } })),
+                       "110e: plot.double_y G110F");
+            const QString gF = QStringLiteral("G110F");
+            Graph *g = layer110(w, gF);
+            CHECK_COND(g && g->curves() == 2 && g->curve(1)
+                               && g->curve(1)->yAxis() == QwtPlot::yRight,
+                       "110e: G110F curve 1 is not on the right axis");
+            const Range110 ly0 = range110(rpc, gF, "y");
+            auto checkAddedOnRight = [&](int from, const char *what) {
+                for (int i = from; i < g->curves(); ++i) {
+                    QwtPlotCurve *c = g->curve(i);
+                    CHECK110(c && c->yAxis() == QwtPlot::yRight && c->xAxis() == QwtPlot::xBottom,
+                             "110e: " << what << ": curve " << i << " '"
+                                      << (c ? c->title().text().toStdString() : std::string())
+                                      << "' is on axes " << (c ? c->xAxis() : -1) << "/"
+                                      << (c ? c->yAxis() : -1) << " (want xBottom/yRight)");
+                }
+                int bands = 0;
+                for (QwtPlotItem *it : g->plotWidget()->itemList()) {
+                    if (it->rtti() != kShadedBandRtti110)
+                        continue;
+                    ++bands;
+                    CHECK110(it->yAxis() == QwtPlot::yRight && it->xAxis() == QwtPlot::xBottom,
+                             "110e: " << what << ": shaded band '"
+                                      << it->title().text().toStdString() << "' is on axes "
+                                      << it->xAxis() << "/" << it->yAxis()
+                                      << " (want xBottom/yRight)");
+                }
+                fBands = bands;
+                const Range110 ly = range110(rpc, gF, "y");
+                std::cout << "[INFO] 110e: after " << what << " (" << bands << " shaded bands)" << ": " << g->curves()
+                          << " curves, left y " << ly0.str() << " -> " << ly.str() << ", right "
+                          << range110(rpc, gF, "right").str() << "\n";
+                CHECK110(ly == ly0, "110e: " << what << " changed the left axis " << ly0.str()
+                                             << " -> " << ly.str());
+            };
+
+            const int before = g->curves();
+            const QJsonObject rf = rpc.call(
+                    QStringLiteral("analysis.fit_nonlinear"),
+                    QJsonObject{ { "graph", gF },
+                                 { "curve", 1 },
+                                 { "formula", "y0+A*exp(-(x-xc)^2/(2*w^2))" },
+                                 { "param_names", QJsonArray{ "y0", "A", "xc", "w" } },
+                                 { "init_params",
+                                   QJsonObject{ { "y0", 10.0 }, { "A", 35.0 }, { "xc", 3.4 }, { "w", 0.5 } } },
+                                 { "x_min", 2.0 },
+                                 { "x_max", 5.0 },
+                                 { "conf_band", true },
+                                 { "pred_band", true } });
+            // the fit curve and two curves for each band
+            CHECK110(Rpc110::ok(rf) && g->curves() >= before + 5,
+                     "110e: fit_nonlinear with bands added " << (g->curves() - before)
+                                                             << " curves (want >= 5)");
+            checkAddedOnRight(before, "fit_nonlinear + bands");
+            CHECK110(fBands == 2, "110e: fit_nonlinear made " << fBands
+                                                          << " shaded bands (want 2)");
+
+            const int beforePk = g->curves();
+            const QJsonObject rp = rpc.call(QStringLiteral("analysis.analyze_peaks"),
+                                            QJsonObject{ { "graph", gF },
+                                                         { "curve", 1 },
+                                                         { "profile", "Gaussian" },
+                                                         { "num_peaks", 2 },
+                                                         { "baseline", "constant" },
+                                                         { "plot_components", true } });
+            // the sum curve and one curve per peak
+            CHECK110(Rpc110::ok(rp) && g->curves() >= beforePk + 3,
+                     "110e: analyze_peaks added " << (g->curves() - beforePk)
+                                                  << " curves (want >= 3)");
+            checkAddedOnRight(beforePk, "analyze_peaks");
+            fLeft = ly0;
+            fCurves = g->curves();
         }
 
         // ---- 110b: subtract_line keeps the automatic axis titles -----------------------------
@@ -603,6 +708,32 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
         CHECK110(gr && gr->curves() >= 3 && gr->curve(2)
                          && gr->curve(2)->yAxis() == QwtPlot::yRight,
                  "110d-reopen: the integral of the right-axis curve left the right axis");
+
+        Graph *gf = layer110(rd, QStringLiteral("G110F"));
+        CHECK110(gf && gf->curves() == fCurves,
+                 "110e-reopen: G110F has " << (gf ? gf->curves() : -1) << " curves (want "
+                                           << fCurves << ")");
+        for (int i = 1; gf && i < gf->curves(); ++i) {
+            QwtPlotCurve *c = gf->curve(i);
+            CHECK110(c && c->yAxis() == QwtPlot::yRight,
+                     "110e-reopen: curve " << i << " '"
+                                           << (c ? c->title().text().toStdString() : std::string())
+                                           << "' left the right axis");
+        }
+        int reBands = 0;
+        for (QwtPlotItem *it : gf ? gf->plotWidget()->itemList() : QwtPlotItemList()) {
+            if (it->rtti() != kShadedBandRtti110)
+                continue;
+            ++reBands;
+            CHECK110(it->yAxis() == QwtPlot::yRight,
+                     "110e-reopen: shaded band '" << it->title().text().toStdString()
+                                                  << "' left the right axis");
+        }
+        CHECK110(reBands == fBands,
+                 "110e-reopen: " << reBands << " shaded bands (want " << fBands << ")");
+        const Range110 fl1 = range110(rpc, QStringLiteral("G110F"), "y");
+        CHECK110(fl1 == fLeft,
+                 "110e-reopen: G110F left axis " << fLeft.str() << " -> " << fl1.str());
 
         const QString tx =
                 rpc.axis(QStringLiteral("G110B"), "x").value(QStringLiteral("title")).toString();

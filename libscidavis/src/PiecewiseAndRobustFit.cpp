@@ -241,6 +241,7 @@ static void insertArialSummaryBox(Graph *g, const QString &text)
 static QwtPlotCurve *addFittedLineToGraph(ApplicationWindow *app, Graph *g, const QString &baseName,
                                           const std::vector<double> &gx,
                                           const std::vector<double> &gy, const QColor &penColor,
+                                          const QwtPlotCurve *source,
                                           const QString &formulaDesc = QString())
 {
     if (!app || !g || gx.size() < 2 || gy.size() != gx.size())
@@ -253,6 +254,9 @@ static QwtPlotCurve *addFittedLineToGraph(ApplicationWindow *app, Graph *g, cons
     fc->setRange(gx.front(), gx.back());
     if (!formulaDesc.isEmpty())
         fc->setFormula(formulaDesc);
+    // フィットした曲線と同じ軸に付ける（右軸の曲線のフィットが左軸に付いて範囲を変えないように）。
+    if (source && g->curveIndex(const_cast<QwtPlotCurve *>(source)) >= 0)
+        fc->setAxis(source->xAxis(), source->yAxis());
     g->insertPlotItem(fc, Graph::Line);
     g->addFitCurve(fc);
     g->replot();
@@ -1234,7 +1238,7 @@ PiecewiseAndRobustFit::fitPiecewiseLinear(ApplicationWindow *app, Graph *g,
         return res;
 
     res.fittedCurve = addFittedLineToGraph(app, g, QStringLiteral("PiecewiseFit"), gx, gy,
-                                           QColor(215, 25, 28));
+                                           QColor(215, 25, 28), curve);
 
     if (annotateGraph) {
         QStringList lines;
@@ -1351,7 +1355,7 @@ PiecewiseAndRobustFit::fitRobustOrQuantileLinear(ApplicationWindow *app, Graph *
     }
 
     res.fittedCurve = addFittedLineToGraph(app, g, methodTag + QStringLiteral("_Fit"), gx, gy,
-                                           QColor(0, 114, 178));
+                                           QColor(0, 114, 178), curve);
 
     if (annotateGraph) {
         QStringList lines;

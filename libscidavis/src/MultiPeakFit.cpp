@@ -2441,6 +2441,7 @@ void MultiPeakFit::insertPeakFunctionCurve(std::vector<double> &x, std::vector<d
                            .arg(instancePeakFormula(peak + 1, peakProfileAt(peak)));
         c->setFormula(formula);
     }
+    attachToSourceAxes(c);
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->addFitCurve(c);
 }
@@ -2594,6 +2595,7 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
         else
             c->setPen(QPen(d_curveColor, 1));
         c->setData(X.data(), Y.data(), d_points);
+        attachToSourceAxes(c);
         d_graph->insertPlotItem(c, Graph::Line);
         d_graph->addFitCurve(c);
 
@@ -2606,6 +2608,7 @@ void MultiPeakFit::generateFitCurve(const vector<double> &par)
                 c = new DataCurve(t, tableName + "_" + columns.at(0)->name(), label);
                 c->setPen(QPen(resolvedPeakComponentColor(i), 2, Qt::DashLine));
                 c->setData(X.data(), Y.data(), d_points);
+                attachToSourceAxes(c);
                 d_graph->insertPlotItem(c, Graph::Line);
                 d_graph->addFitCurve(c);
             }
@@ -3304,6 +3307,7 @@ PlotCurve *MultiPeakFit::insertBaselineCurve()
     c->setData(d_x.data(), base.data(), int(d_x.size()));
     c->setRange(d_x.front(), d_x.back());
     c->setFormula(QString());
+    attachToSourceAxes(c);
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->addFitCurve(c);
     d_graph->replot();

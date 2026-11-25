@@ -2112,6 +2112,9 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 fc->setData(xg.data(), yg.data(), nGrid);
                 fc->setRange(x0, x1);
                 fc->setFormula(exprLine);
+                // 各データ曲線と同じ軸に付ける（右軸の曲線のフィットが左軸に付かないように）。
+                if (QwtPlotCurve *src = d_graph->curve(curveTitles[m]))
+                    attachToSourceAxes(fc, src);
                 d_graph->insertPlotItem(fc, Graph::Line);
                 d_graph->addFitCurve(fc);
             }
@@ -2727,6 +2730,7 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
                 fc->setData(cx.data(), cy.data(), ch.size());
                 fc->setRange(xMin, xMax);
                 fc->setFormula(normExpr + " = 0");
+                attachToSourceAxes(fc);
                 d_graph->insertPlotItem(fc, Graph::Line);
                 d_graph->addFitCurve(fc);
             }

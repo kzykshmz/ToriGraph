@@ -1071,13 +1071,21 @@ QString Graph::saveToString(bool saveAsTemplate)
                     ylStr << QString::number(bs.yLow[k], 'g', 12);
                     yhStr << QString::number(bs.yHigh[k], 'g', 12);
                 }
+                // The axes of the band (a fit of a right-axis curve shades on the right axis);
+                // written only when they are not the default bottom / left.
+                const int bxAxis = bs.item ? bs.item->xAxis() : int(QwtPlot::xBottom);
+                const int byAxis = bs.item ? bs.item->yAxis() : int(QwtPlot::yLeft);
+                const QString axesAttr = (bxAxis == QwtPlot::xBottom && byAxis == QwtPlot::yLeft)
+                        ? QString()
+                        : QStringLiteral(" xaxis=\"%1\" yaxis=\"%2\"").arg(bxAxis).arg(byAxis);
                 s += QString("<ToriRefLine kind=\"band\" color=\"%1\" title=\"%2\" x=\"%3\" "
-                             "yLow=\"%4\" yHigh=\"%5\"/>\n")
+                             "yLow=\"%4\" yHigh=\"%5\"")
                              .arg(bs.fillColor.name(QColor::HexArgb))
                              .arg(escAttr(bs.title))
                              .arg(xStr.join(","))
                              .arg(ylStr.join(","))
-                             .arg(yhStr.join(","));
+                             .arg(yhStr.join(","))
+                        + axesAttr + QStringLiteral("/>\n");
             }
 
             // E11: error bands and colour-mapped scatter symbols (restored after the curves)
@@ -1762,7 +1770,9 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         setReferenceLines(g->referenceLines());
 
     for (const ShadedBandSpec &bs : g->d_shaded_bands) {
-        addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title);
+        QwtPlotItem *band = addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title);
+        if (band && bs.item)
+            band->setAxis(bs.item->xAxis(), bs.item->yAxis());
     }
     if (g->d_point_colorbar_active)
         syncPointColorBar();
@@ -2402,7 +2412,14 @@ bool Graph::restorePhase5Tag(const QString &line)
                 QColor col(attrs.value("color", "#371e66b8"));
                 if (!col.isValid())
                     col = QColor(30, 102, 184, 55);
-                addShadedBand(xv, ylv, yhv, col, attrs.value("title"));
+                QwtPlotItem *band = addShadedBand(xv, ylv, yhv, col, attrs.value("title"));
+                if (band && (attrs.contains("xaxis") || attrs.contains("yaxis"))) {
+                    const int bxAxis = attrs.value("xaxis", "2").toInt();
+                    const int byAxis = attrs.value("yaxis", "0").toInt();
+                    if (bxAxis >= 0 && bxAxis < QwtPlot::axisCnt && byAxis >= 0
+                        && byAxis < QwtPlot::axisCnt)
+                        band->setAxis(bxAxis, byAxis);
+                }
             }
             return true;
         }
