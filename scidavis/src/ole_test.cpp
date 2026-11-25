@@ -51,6 +51,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 78, "runSuite78ZeroBaseUxAndQualityGate", &runSuite78ZeroBaseUxAndQualityGate },
     { 79, "runSuite79ZeroBaseOverhaulV2Gate", &runSuite79ZeroBaseOverhaulV2Gate },
     { 80, "runSuite80Round4P0P1RegressionGate", &runSuite80Round4P0P1RegressionGate },
+    { 81, "runSuite81NumericalTransformCorrectness", &runSuite81NumericalTransformCorrectness },
 };
 
 static const ModularSuiteEntry *findModularSuite(int id)
@@ -165,7 +166,7 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                 const int sid = part.trimmed().toInt(&ok);
                 if (!ok || !findModularSuite(sid)) {
                     std::cerr << "[FAIL] Unknown modular suite id in " << a.toStdString()
-                              << " (use --list-suites to inspect valid IDs 36..80)\n";
+                              << " (use --list-suites to inspect valid IDs 36..81)\n";
                     mw->savedProject();
                     mw->setOleEmbeddedMode(true);
                     delete mw;

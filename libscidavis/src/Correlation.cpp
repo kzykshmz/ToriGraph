@@ -67,8 +67,10 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
     }
 
     unsigned rows = d_table->numRows();
+    // Zero-pad to at least 2*rows so the circular correlation computed via FFT equals the
+    // linear one for every lag written by addResultCurve (|lag| <= rows/2 < rows).
     size_t td_n = 16; // tmp number of points
-    while (td_n < rows)
+    while (td_n < 2 * size_t(rows))
         td_n *= 2;
 
     try {
@@ -95,10 +97,13 @@ void Correlation::output()
     // calculate the FFTs of the two functions
     if (gsl_fft_real_radix2_transform(d_x.data(), 1, d_x.size()) == 0
         && gsl_fft_real_radix2_transform(d_y.data(), 1, d_x.size()) == 0) {
-        // multiply the FFT by its complex conjugate
-        for (unsigned i = 0; i < d_x.size() / 2; i++) {
-            if (i == 0 || i == (d_x.size() / 2) - 1)
-                d_x[i] *= d_x[i];
+        // multiply conj(FFT(x)) by FFT(y). GSL radix-2 halfcomplex layout: [0] = Re(0),
+        // [k] = Re(k) and [n-k] = Im(k) for 1 <= k < n/2, [n/2] = Re(n/2); only k = 0 and
+        // k = n/2 (Nyquist) are purely real.
+        const unsigned nh = unsigned(d_x.size() / 2);
+        for (unsigned i = 0; i <= nh; i++) {
+            if (i == 0 || i == nh)
+                d_x[i] *= d_y[i];
             else {
                 int ni = d_x.size() - i;
                 double dReal = d_x[i] * d_y[i] + d_x[ni] * d_y[ni];

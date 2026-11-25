@@ -165,16 +165,20 @@ void Convolution::convlv(double *sig, int n, double *dres, int m, int sign)
         res[n - m2 + i] = dres[i];
     }
 
-    if (m2 % 2 == 1)
+    // m is odd (enforced in setDataFromTable): the last coefficient is lag +m2.
+    if (m % 2 == 1)
         res[m2] = dres[m - 1];
 
     // calculate ffts
     gsl_fft_real_radix2_transform(res, 1, n);
     gsl_fft_real_radix2_transform(sig, 1, n);
 
+    // GSL radix-2 halfcomplex layout: [0] = Re(0), [k] = Re(k) and [n-k] = Im(k) for
+    // 1 <= k < n/2, [n/2] = Re(n/2). Only k = 0 and k = n/2 (Nyquist) are purely real.
     double re, im, size;
-    for (i = 0; i < n / 2; i++) { // multiply/divide both ffts
-        if (i == 0 || i == n / 2 - 1) {
+    const int nh = n / 2;
+    for (i = 0; i <= nh; i++) { // multiply/divide both ffts
+        if (i == 0 || i == nh) {
             if (sign == 1)
                 sig[i] = res[i] * sig[i];
             else

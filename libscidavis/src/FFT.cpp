@@ -196,7 +196,9 @@ QList<Column *> FFT::fftTable()
         return QList<Column *>();
     }
 
-    const double safeSampling = (std::isfinite(d_sampling) && d_sampling > 0.0) ? d_sampling : 1.0;
+    // A negative interval (X in descending order) describes the same grid step.
+    const double absSampling = std::fabs(d_sampling);
+    const double safeSampling = (std::isfinite(absSampling) && absSampling > 0.0) ? absSampling : 1.0;
     double df = 1.0 / (static_cast<double>(d_x.size()) * safeSampling); // frequency sampling
     double aMax = 0.0; // max amplitude
     QList<Column *> columns;

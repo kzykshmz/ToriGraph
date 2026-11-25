@@ -220,7 +220,9 @@ void SmoothFilter::smoothFFT(std::vector<double>& x, std::vector<double>&  y)
     gsl_fft_real_transform(y.data(), 1, d_y.size(), real, work); // FFT forward
     gsl_fft_real_wavetable_free(real);
 
-    double df = 1.0 / (double)(x[1] - x[0]);
+    // Use the magnitude of the step: with X in descending order x[1]-x[0] < 0 would flip the
+    // cutoff test below and turn the low-pass into a high-pass.
+    double df = 1.0 / std::fabs(x[1] - x[0]);
     double lf = df / (double)d_right_points; // frequency cutoff
     df = 0.5 * df / (double)d_x.size();
 
