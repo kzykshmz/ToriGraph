@@ -2711,6 +2711,12 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
     WAIT_CURSOR;
     beginMacro(tr("%1: sort column(s)").arg(name()));
 
+    // Every column is rewritten with the same row permutation. If a formula column were
+    // recalculated as soon as one of its source columns is rewritten, it would already hold
+    // the sorted order and then be permuted a second time when its own turn comes. Defer the
+    // automatic dependent-column recalculation until all columns are permuted, then request it
+    // once (still inside the macro, so Undo/Redo treat sort + recalculation as one step).
+    ++d_formula_recalc_defer_depth;
     QSet<Column *> visited;
     if (leading == nullptr) {
         for (Column *col : cols) {
@@ -2732,6 +2738,25 @@ void Table::sortColumns(Column *leading, QList<Column *> cols, bool ascending)
                 continue;
             visited.insert(col);
             applySortPermutation(col, perm);
+        }
+    }
+    --d_formula_recalc_defer_depth;
+    if (d_formula_recalc_defer_depth == 0) {
+        QVector<int> touched;
+        for (Column *col : visited) {
+            const int idx = columnIndex(col);
+            if (idx >= 0)
+                touched.append(idx);
+        }
+        std::sort(touched.begin(), touched.end());
+        const int lastRow = qMax(0, rowCount() - 1);
+        // One dataChanged() per contiguous run of sorted columns (normally a single run).
+        for (int k = 0; k < touched.size();) {
+            int end = k;
+            while (end + 1 < touched.size() && touched.at(end + 1) == touched.at(end) + 1)
+                ++end;
+            emit dataChanged(0, touched.at(k), lastRow, touched.at(end));
+            k = end + 1;
         }
     }
     endMacro();

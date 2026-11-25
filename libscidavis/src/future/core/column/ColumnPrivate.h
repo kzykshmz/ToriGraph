@@ -176,9 +176,23 @@ public:
     //! \name IntervalAttribute related functions
     //@{
     //! Return whether a certain row contains an invalid value
-    bool isInvalid(int row) const { return d_validity.isSet(row); }
+    /** Rows outside the stored data (negative, or at/after rowCount(), e.g. table rows added by
+     * a resize or a longer neighbouring column) hold no value and are therefore invalid (empty),
+     * like AbstractColumn::isInvalid(). Treating them as valid made readers, statistics and
+     * formulas see a phantom 0 there. */
+    bool isInvalid(int row) const
+    {
+        return row < 0 || row >= rowCount() || d_validity.isSet(row);
+    }
     //! Return whether a certain interval of rows contains only invalid values
-    bool isInvalid(Interval<int> i) const { return d_validity.isSet(i); }
+    bool isInvalid(Interval<int> i) const
+    {
+        const int n = rowCount();
+        if (i.end() < 0 || i.start() >= n)
+            return true; // entirely outside the stored data
+        const Interval<int> inside(qMax(0, i.start()), qMin(n - 1, i.end()));
+        return d_validity.isSet(inside);
+    }
     //! Return all intervals of invalid rows
     QList<Interval<int>> invalidIntervals() const { return d_validity.intervals(); }
     //! Return whether a certain row is masked

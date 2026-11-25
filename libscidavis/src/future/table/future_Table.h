@@ -355,6 +355,11 @@ public:
     int columnWidth(int col) const;
     void setAutoRecalcFormulas(bool on);
     bool autoRecalcFormulas() const { return d_auto_recalc_formulas; }
+    //! True while a multi-column operation (e.g. sortColumns()) rewrites several columns and
+    //! dependent formula columns must not be recalculated after each single column.
+    /** The owning ::Table checks this before its automatic dependent-column recalculation; the
+     * operation emits dataChanged() once for the touched columns when it is done. */
+    bool isFormulaRecalcDeferred() const { return d_formula_recalc_defer_depth > 0; }
 
     //! Generate \a count non-colliding sequential column names ("1", "2", ... after existing ones).
     QStringList nextSequentialColumnNames(int count) const;
@@ -633,6 +638,7 @@ public:
 private:
     Private d_table_private;
     bool d_auto_recalc_formulas = true;
+    int d_formula_recalc_defer_depth = 0;
     QString d_import_source_path;
     QString d_import_source_sheet;
     QString d_import_source_separator;

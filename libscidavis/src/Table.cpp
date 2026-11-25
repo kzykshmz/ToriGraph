@@ -1577,6 +1577,10 @@ void Table::scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount)
         || !scriptEnv) {
         return;
     }
+    // A multi-column rewrite (sortColumns) is in progress: the table emits dataChanged() once
+    // for all touched columns when it is finished, which brings us back here.
+    if (d_future_table->isFormulaRecalcDeferred())
+        return;
 
     QUndoStack *us = d_future_table->undoStack();
     const Project *proj = d_future_table->project();
