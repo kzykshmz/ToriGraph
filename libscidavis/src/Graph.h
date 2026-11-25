@@ -285,6 +285,12 @@ public:
     struct TakenCurve
     {
         QwtPlotItem *item = nullptr;
+        //! Its curve key in the layer: the one it had when taken, which it gets back when put
+        //! back. Keys are never given to another item, so key and address together identify it
+        //! even after it was deleted and a new curve got the same address.
+        int key = -1;
+        //! For error bars, the key of the curve they hang on (-1 if none).
+        int masterKey = -1;
         int type = 0;
         int index = -1; //!< its index when it was taken
         QString legendLine; //!< its legend line (with \c{index+1}), empty if none
@@ -293,9 +299,9 @@ public:
     struct TakenCurves
     {
         QList<TakenCurve> curves; //!< in the layer's order
-        //! Every item of the layer just before the take, in order; only compared, never used,
-        //! to put each curve back after the item that preceded it.
-        QList<QwtPlotItem *> order;
+        //! The curve keys of the layer just before the take, in order, to put each curve back
+        //! after the item that preceded it.
+        QList<int> order;
         bool out = false;
     };
     //! Takes out the curves removeCurves() would remove for any of \a names, with the error
@@ -1218,6 +1224,8 @@ signals:
 private:
     //! The title/plot association test of removeCurves() for one curve.
     bool curveUsesColumn(int index, const QString &s);
+    //! The index of the curve with this key if it is \a item, else -1.
+    int curveIndexOfKey(int key, const QwtPlotItem *item) const;
     //! removeCurve(index), or with \a deleteItem false takes the item out and returns it.
     QwtPlotItem *removeCurveAt(int index, bool deleteItem);
     //! Takes \a items out of the layer into \a tc (see takeCurvesUsingColumns()).

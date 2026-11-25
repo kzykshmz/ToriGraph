@@ -7,6 +7,7 @@
 #include <QUndoStack>
 
 #include <cmath>
+#include <vector>
 
 // =============================================================================
 // Suite 111: dual-Y legend headroom and curves of a removed column (JSON-RPC path).
@@ -23,6 +24,10 @@
 //        added after the removal stay, the legend gets the lines back in order, the error bars
 //        hang on their curve again, a layer deleted meanwhile is skipped; removing only the
 //        error column takes and restores only the error bars
+//   111d a curve is known by its key as well as its address: after only the error column was
+//        removed, the user deletes the error bars' curve and a new curve comes (if possible at
+//        the same address); the table's Undo does not hang the error bars on it. A restored
+//        curve the user deletes, followed by a new one: the table's Redo leaves the new one
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -485,6 +490,89 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(!isErr(r) && !errLinked(g0) && g0->curves() == 3, "111c: remove e1: " << layerSig(g0));
         CHECK_COND(undoV(true) && errLinked(g0) && layerSig(g0) == sigU,
                    "111c: undo remove e1: " << layerSig(g0));
+
+        // ---- 111d: a curve deleted meanwhile is not mistaken for a new one at its address ----
+        // A new W111 curve put into layer 0, preferably at the address a deleted curve had:
+        // DataCurves are allocated (and kept until the end) until one gets that address.
+        int reuseHits = 0;
+        auto addCurveAt = [&](const void *addr) -> DataCurve * {
+            std::vector<DataCurve *> spare;
+            DataCurve *hit = nullptr;
+            for (int i = 0; i < 20000 && !hit; ++i) {
+                auto *c = new DataCurve(t2, QString::fromLatin1("W111_xx"),
+                                        QString::fromLatin1("W111_yy"), 0, 2);
+                if (static_cast<const void *>(c) == addr)
+                    hit = c;
+                else
+                    spare.push_back(c);
+            }
+            if (hit) {
+                ++reuseHits;
+            } else {
+                hit = spare.back();
+                spare.pop_back();
+            }
+            for (DataCurve *c : spare)
+                delete c;
+            g0->insertPlotItem(hit, Graph::LineSymbols);
+            hit->loadData();
+            g0->replot();
+            return hit;
+        };
+        auto indexOfTitle = [&](const char *title) {
+            for (int i = 0; i < g0->curves(); ++i) {
+                QwtPlotCurve *c = g0->curve(i);
+                if (c && c->title().text() == QLatin1String(title)
+                    && !dynamic_cast<QwtErrorPlotCurve *>(c))
+                    return i;
+            }
+            return -1;
+        };
+        auto errorBarsIn = [&](Graph *g) {
+            int n = 0;
+            for (int i = 0; i < g->curves(); ++i)
+                n += dynamic_cast<QwtErrorPlotCurve *>(g->curve(i)) ? 1 : 0;
+            return n;
+        };
+
+        // the error column goes (its error bars are held), then the user deletes y1 and a new
+        // curve comes: the table's Undo must not hang the error bars on the new curve
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "V111" }, { "col", "e1" } });
+        CHECK_COND(!isErr(r) && errorBarsIn(g0) == 0, "111d: remove e1: " << layerSig(g0));
+        const int iY1 = indexOfTitle("V111_y1");
+        CHECK_COND(iY1 >= 0, "111d: y1 not in layer 0: " << layerSig(g0));
+        const void *y1Addr = g0->curve(iY1);
+        g0->removeCurve(iY1);
+        DataCurve *n1 = addCurveAt(y1Addr);
+        const bool reused1 = static_cast<const void *>(n1) == y1Addr;
+        CHECK_COND(undoV(true), "111d: undo remove e1 after deleting y1");
+        CHECK_COND(t->numCols() == 4, "111d: e1 not back");
+        std::cout << "[INFO] 111d: after undo " << layerSig(g0) << " (address reused: "
+                  << (reused1 ? "yes" : "no") << ")\n";
+        CHECK_COND(errorBarsIn(g0) == 0 && n1->errorBarsList().isEmpty(),
+                   "111d: error bars of the deleted y1 came back on another curve: " << layerSig(g0));
+
+        // y2 goes and comes back with Undo; the user deletes it and a new curve comes: the
+        // table's Redo must not take the new curve out
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "V111" }, { "col", "y2" } });
+        CHECK_COND(!isErr(r) && indexOfTitle("V111_y2") < 0, "111d: remove y2: " << layerSig(g0));
+        CHECK_COND(undoV(true) && indexOfTitle("V111_y2") >= 0, "111d: undo remove y2: " << layerSig(g0));
+        const int iY2 = indexOfTitle("V111_y2");
+        const void *y2Addr = g0->curve(iY2);
+        g0->removeCurve(iY2);
+        DataCurve *n2 = addCurveAt(y2Addr);
+        const bool reused2 = static_cast<const void *>(n2) == y2Addr;
+        const int nBefore = g0->curves();
+        CHECK_COND(undoV(false), "111d: redo remove y2");
+        std::cout << "[INFO] 111d: after redo " << layerSig(g0) << " (address reused: "
+                  << (reused2 ? "yes" : "no") << ")\n";
+        CHECK_COND(t->numCols() == 3 && g0->curves() == nBefore && g0->plotItemIndex(n2) >= 0
+                           && g0->plotItemIndex(n1) >= 0,
+                   "111d: redo took out a curve the user added: " << layerSig(g0));
+        CHECK_COND(undoV(true) && t->numCols() == 4 && g0->curves() == nBefore
+                           && g0->plotItemIndex(n2) >= 0,
+                   "111d: undo after redo: " << layerSig(g0));
+        std::cout << "[INFO] 111d: address reuse reproduced " << reuseHits << "/2\n";
     }
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";

@@ -1835,17 +1835,21 @@ int Plot::insertMarker(QwtPlotMarker *m)
     return marker_key;
 }
 
-int Plot::insertCurve(QwtPlotItem *c)
+int Plot::insertCurve(QwtPlotItem *c, int key)
 {
-    curve_key++;
-    if (!d_curves.contains(curve_key))
-        d_curves.insert(curve_key, c);
+    if (key > 0 && key <= curve_key && !d_curves.contains(key)) {
+        d_curves.insert(key, c);
+    } else {
+        key = ++curve_key;
+        if (!d_curves.contains(key))
+            d_curves.insert(key, c);
+    }
     if (c->rtti() != QwtPlotItem::Rtti_PlotSpectrogram)
         ((QwtPlotCurve *)c)->setPaintAttribute(QwtPlotCurve::PaintFiltered);
 
     c->setRenderHint(QwtPlotItem::RenderAntialiased, ((Graph *)parent())->antialiasing());
     c->attach(this);
-    return curve_key;
+    return key;
 }
 
 void Plot::removeCurve(int index)

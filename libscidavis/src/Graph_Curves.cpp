@@ -1654,12 +1654,20 @@ Graph::TakenCurves Graph::takeCurvesUsingColumns(const QStringList &names)
     return tc;
 }
 
+int Graph::curveIndexOfKey(int key, const QwtPlotItem *item) const
+{
+    if (key < 0 || !item || d_plot->plotItem(key) != item)
+        return -1;
+    const int idx = c_keys.indexOf(key);
+    return (idx >= 0 && idx < n_curves) ? idx : -1;
+}
+
 void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
 {
     tc.curves.clear();
     tc.order.clear();
-    for (int i = 0; i < n_curves; ++i)
-        tc.order << plotItem(i);
+    for (int i = 0; i < n_curves && i < c_keys.size(); ++i)
+        tc.order << c_keys[i];
 
     QList<QPair<int, QwtPlotItem *>> byIndex;
     for (QwtPlotItem *it : items) {
@@ -1672,6 +1680,16 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
                   return a.first < b.first;
               });
 
+    // The key of each error bars' curve, read while every item is still in the layer: a curve
+    // freed later can leave its address to a new one, but its key is never given out again.
+    QHash<QwtPlotItem *, int> masterKeys;
+    for (const auto &bi : byIndex) {
+        if (QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(bi.second)) {
+            const int mi = er->masterCurve() ? plotItemIndex(er->masterCurve()) : -1;
+            masterKeys.insert(bi.second, mi >= 0 ? c_keys[mi] : -1);
+        }
+    }
+
     // From the last one down, so the indices and legend numbers of the rest stay valid.
     for (int k = byIndex.size() - 1; k >= 0; --k) {
         QwtPlotItem *it = byIndex[k].second;
@@ -1680,6 +1698,8 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
             continue;
         TakenCurve t;
         t.item = it;
+        t.key = c_keys[idx];
+        t.masterKey = masterKeys.value(it, -1);
         t.type = c_type[idx];
         t.index = idx;
         t.fitCurve = d_fit_curves.contains(dynamic_cast<QwtPlotCurve *>(it));
@@ -1716,12 +1736,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
         return;
     tc.out = false;
 
-    auto isTaken = [&](const QwtPlotItem *it) {
-        return std::any_of(tc.curves.cbegin(), tc.curves.cend(),
-                           [&](const TakenCurve &o) { return o.item == it; });
-    };
-
-    QList<QwtPlotItem *> restored;
+    QList<QPair<int, QwtPlotItem *>> restored; // key, item
     // the curves first, then the error bars, which need their curve back in the layer
     for (int pass = 0; pass < 2; ++pass) {
         for (TakenCurve &t : tc.curves) {
@@ -1730,21 +1745,24 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             QwtErrorPlotCurve *er = (t.type == ErrorBars)
                     ? dynamic_cast<QwtErrorPlotCurve *>(t.item)
                     : nullptr;
+            // Its curve must be the very one it hung on: the same key and the same object. The
+            // address alone is not enough, since a curve deleted meanwhile can leave it to a new
+            // one (a curve taken with it comes back first, under its own key).
             DataCurve *master = er ? er->masterCurve() : nullptr;
-            if (t.type == ErrorBars && (!master || plotItemIndex(master) < 0)) {
+            if (t.type == ErrorBars && (!master || curveIndexOfKey(t.masterKey, master) < 0)) {
                 // its curve is no longer in this layer: nothing to attach the error bars to
-                if (!master || !isTaken(master)) {
-                    delete t.item;
-                    t.item = nullptr;
-                }
+                delete t.item;
+                t.item = nullptr;
                 continue;
             }
 
             // after the item that preceded it when it was taken, if that one is still here
+            // (keys are never given to another item, so a key found is that same item)
             int pos = 0;
-            for (int p = tc.order.indexOf(t.item) - 1; p >= 0; --p) {
-                const int cur = plotItemIndex(tc.order.at(p));
-                if (cur >= 0) {
+            for (int p = tc.order.indexOf(t.key) - 1; p >= 0; --p) {
+                const int k = tc.order.at(p);
+                const int cur = d_plot->plotItem(k) ? c_keys.indexOf(k) : -1;
+                if (cur >= 0 && cur < n_curves) {
                     pos = cur + 1;
                     break;
                 }
@@ -1801,7 +1819,10 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
                 && d_selection.primaryId >= pos)
                 d_selection.primaryId++;
 
-            const int key = d_plot->insertCurve(t.item);
+            // back under its own key, so that it is known by that key again (retakeCurves(),
+            // the error bars of other taken sets that hang on it)
+            const int key = d_plot->insertCurve(t.item, t.key);
+            t.key = key;
             c_keys.insert(pos, key);
             c_type.insert(pos, t.type);
             ++n_curves;
@@ -1810,15 +1831,16 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
                     d_fit_curves << fc;
             if (er && !master->errorBarsList().contains(er))
                 master->addErrorBars(er);
-            restored << t.item;
+            restored << qMakePair(key, t.item);
         }
     }
 
     syncCurveZOrder();
     // The columns are back: read their present values. loadData() may drop a curve that has
     // no valid point left, so each one is looked up again first.
-    for (QwtPlotItem *it : restored) {
-        if (plotItemIndex(it) < 0)
+    for (const auto &ri : restored) {
+        QwtPlotItem *it = ri.second;
+        if (curveIndexOfKey(ri.first, it) < 0)
             continue;
         if (QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(it))
             er->loadData();
@@ -1836,8 +1858,10 @@ void Graph::retakeCurves(TakenCurves &tc)
     if (tc.out)
         return;
     QList<QwtPlotItem *> items;
+    // Only a curve still under the key it was put back with: one the user has deleted since
+    // may have left its address to a new curve, which must stay.
     for (const TakenCurve &t : tc.curves) {
-        if (t.item && plotItemIndex(t.item) >= 0)
+        if (t.item && curveIndexOfKey(t.key, t.item) >= 0)
             items << t.item;
     }
     tc.curves.clear();

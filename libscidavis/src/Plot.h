@@ -59,7 +59,9 @@ public:
     QList<int> curveKeys() { return d_curves.keys(); };
     QList<QwtPlotItem *> curvesList() { return d_curves.values(); };
 
-    int insertCurve(QwtPlotItem *c);
+    //! Adds \a c under a new key, or under \a key if this plot gave that key out before and no
+    //! item holds it now (a curve taken out with takeCurve() coming back under its own key).
+    int insertCurve(QwtPlotItem *c, int key = -1);
     void removeCurve(int index);
     //! Detaches the item with this key and hands it to the caller (removeCurve() deletes it).
     QwtPlotItem *takeCurve(int index);
