@@ -3699,6 +3699,8 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         // to_index は動かした後に曲線が実際にある位置（誤差棒の組を越えると、指定と違うことがある）
         const int actualIdx = movedItem ? g->plotItemIndex(movedItem) : -1;
         outResult[QStringLiteral("ok")] = moved;
+        // 動かす先がない（最上段で up など）ときは ok のまま moved false。Undo の段も積まない。
+        outResult[QStringLiteral("moved")] = moved && fromIdx != toIdx;
         outResult[QStringLiteral("from_index")] = fromIdx;
         outResult[QStringLiteral("to_index")] = actualIdx >= 0 ? actualIdx : fromIdx;
         outResult[QStringLiteral("curves")] = toJsonArray(g->plotItemsList());

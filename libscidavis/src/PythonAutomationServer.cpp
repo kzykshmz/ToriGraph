@@ -1633,7 +1633,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str*; visible:bool=true; layer:int=null",
       "g.set_curve_visible(0, False)" },
     { "graph.move_curve", "graph", "GraphProxy.move_curve(curve, direction='up', *, layer=None)",
-      "Reorder curve Z-order (index 0 is drawn first, at the bottom). A curve moves together with its error bars: 'up' / 'down' swap it with the neighbouring curve, 'top' / 'bottom' put it above / below all curves; other curves keep their order. The result's to_index is the index the curve has afterwards; curve numbers are the indices graph.get_info lists.",
+      "Reorder curve Z-order (index 0 is drawn first, at the bottom). A curve moves together with its error bars: 'up' / 'down' swap it with the neighbouring curve, 'top' / 'bottom' put it above / below all curves; other curves keep their order. The result's to_index is the index the curve has afterwards and moved tells whether the order changed (ok true, moved false: nowhere to move, e.g. 'up' on the top curve); curve numbers are the indices graph.get_info lists.",
       "graph:str=''; curve:int|str*; direction:str='up'[up|down|top|bottom]; layer:int=null",
       "g.move_curve(1, 'top')" },
     { "graph.set_stack_offsets", "graph", "GraphProxy.set_stack_offsets(mode=None, y_offset_pct=15.0, x_offset_pct=0.0, normalize=False, layer=None, *, y_offset=None, x_offset=None, auto_waterfall=None, reset=False)",
@@ -2946,6 +2946,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
     bool emittedBasePlot = false;
     bool l0HandledAllCurves = false;
     int firstEmittedCurveOnL0 = -1;
+    const QwtPlotItem *l0EmittedSpectrogram = nullptr; // heatmap made by the base plot of layer 0
     QSet<int> preCreatedPrimaryLayers;
     QSet<QPair<int, int>> preHandledLayerCurves;
     const QString l0LayerKw =
@@ -2965,6 +2966,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                       pyEscapeStr(ml->name()));
                 emitSpectrogramColorbar(sp, l0LayerKw);
                 emittedBasePlot = true;
+                l0EmittedSpectrogram = sp;
             }
         }
     }
@@ -3520,6 +3522,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         const QString layerKw =
                 (layers.size() > 1) ? QStringLiteral(", layer=%1").arg(li) : QString();
 
+        const QwtPlotItem *emittedSpectrogram = (li == 0) ? l0EmittedSpectrogram : nullptr;
         // Non-L0 PoleFigure / Spectrogram / BoxCurve / Violin reproduction
         if (li >= 1 && !isInset) {
             bool layerHandledSpec = false;
@@ -3535,6 +3538,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                               pyEscapeStr(spectrogramStyleStr(sp)))
                                          .arg(li);
                         emitSpectrogramColorbar(sp, layerKw);
+                        emittedSpectrogram = sp;
                     }
                 }
             }
@@ -3588,7 +3592,26 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         }
 
         // Additional curves on this layer (skip inset auto-cloned curves)
-        int nonErrIdx = 0;
+        //
+        // The curve numbers of the emitted calls are the indices the curves have in the replayed
+        // layer (graph.get_info's index, which the RPCs take): the heatmap made by the base plot
+        // is item 0, then the curves the base plot made, then each curve added below followed by
+        // the error bands / error bars added for it. replayItems follows that order. (The number
+        // used to skip heatmaps and error bars, so on a heatmap layer or after a curve with error
+        // bars the replayed script styled another curve or put the error bars on it.)
+        QList<const QwtPlotItem *> replayItems;
+        if (emittedSpectrogram)
+            replayItems << emittedSpectrogram;
+        auto presentBeforeLoop = [&](int ci) {
+            return (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
+                    || preHandledLayerCurves.contains(qMakePair(li, ci));
+        };
+        for (int ci = 0; !isInset && ci < lg->curves(); ++ci) {
+            QwtPlotCurve *c = lg->curve(ci);
+            if (c && lg->curveType(ci) != Graph::ErrorBars
+                && !dynamic_cast<QwtErrorPlotCurve *>(c) && presentBeforeLoop(ci))
+                replayItems << c;
+        }
         if (!isInset) {
             for (int ci = 0; ci < lg->curves(); ++ci) {
                 QwtPlotCurve *c = lg->curve(ci);
@@ -3605,8 +3628,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 auto *dc = dynamic_cast<DataCurve *>(c);
                 auto *fc = dynamic_cast<FunctionCurve *>(c);
                 auto *pc = dynamic_cast<PlotCurve *>(c);
-                bool curvePresent = (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
-                        || preHandledLayerCurves.contains(qMakePair(li, ci));
+                bool curvePresent = presentBeforeLoop(ci);
+                const bool addedHere = !curvePresent;
                 if (!curvePresent) {
                     if (dc && dc->hasPointColorMap() && emitColorScatterCurve(dc, li, false)) {
                         curvePresent = true;
@@ -3655,10 +3678,12 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 }
                 if (!curvePresent)
                     continue;
-                if (isPieOrHist) {
-                    ++nonErrIdx;
+                if (addedHere)
+                    replayItems << c;
+                // this curve's index in the replayed layer
+                const int replayIdx = std::max(0, int(replayItems.indexOf(c)));
+                if (isPieOrHist)
                     continue;
-                }
 
                 const double lw = c->pen().widthF() > 0.0 ? c->pen().widthF()
                                                           : double(std::max(1, c->pen().width()));
@@ -3676,13 +3701,13 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                         boxStyleExtra = QStringLiteral(", fill_area=False");
                     }
                     lines << QStringLiteral("g.set_curve_style(%1, color=%2, lw=%3%4%5)")
-                                     .arg(nonErrIdx)
+                                     .arg(replayIdx)
                                      .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
                                           pyFormatNum(lw), boxStyleExtra, layerKw);
                 } else if (dc && dc->hasPointColorMap()) {
                     lines << QStringLiteral(
                                      "g.set_curve_style(%1, marker=%2, ms=%3, symbol_skip=%4%5)")
-                                     .arg(nonErrIdx)
+                                     .arg(replayIdx)
                                      .arg(pyEscapeStr(symStyleStr(c->symbol().style())))
                                      .arg(std::max(1, c->symbol().size().width()))
                                      .arg(skip)
@@ -3690,7 +3715,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 } else {
                     lines << QStringLiteral(
                                      "g.set_curve_style(%1, color=%2, lw=%3, ls=%4, marker=%5, ms=%6, symbol_hollow=%7, symbol_skip=%8%9)")
-                                     .arg(nonErrIdx)
+                                     .arg(replayIdx)
                                      .arg(pyEscapeStr(c->pen().color().name(QColor::HexRgb)),
                                           pyFormatNum(lw), pyEscapeStr(penStyleStr(c->pen().style())),
                                           pyEscapeStr(symStyleStr(c->symbol().style())))
@@ -3703,7 +3728,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 }
                 if (!lg->isCurveVisible(ci)) {
                     lines << QStringLiteral("g.set_curve_visible(%1, False%2)")
-                                     .arg(nonErrIdx)
+                                     .arg(replayIdx)
                                      .arg(layerKw);
                 }
                 if (dc) {
@@ -3712,6 +3737,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                     QString bandPlus, bandMinus, bandBoth;
                     Table *bandTable = nullptr;
                     int bandAlpha = 64;
+                    QList<const QwtPlotItem *> bandItems;
                     for (DataCurve *ebBase : dc->errorBarsList()) {
                         auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase);
                         if (!ec || !ec->isBand() || !ec->table()
@@ -3723,6 +3749,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                         const QString eLbl = ec->table()->colLabel(eIdx);
                         bandTable = ec->table();
                         bandAlpha = ec->bandAlpha();
+                        bandItems << ec;
                         if (ec->plusSide() && !ec->minusSide())
                             bandPlus = eLbl;
                         else if (ec->minusSide() && !ec->plusSide())
@@ -3736,7 +3763,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                         if (!bandBoth.isEmpty()) {
                             lines << QStringLiteral(
                                              "g.add_error_band(%1, %2, table=%3.name, alpha=%4%5)")
-                                             .arg(nonErrIdx)
+                                             .arg(replayIdx)
                                              .arg(pyEscapeStr(bandBoth), bandTblArg)
                                              .arg(bandAlpha)
                                              .arg(layerKw);
@@ -3746,12 +3773,13 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                             const QString minusLbl = bandMinus.isEmpty() ? bandPlus : bandMinus;
                             lines << QStringLiteral(
                                              "g.add_error_band(%1, %2, err_minus=%3, table=%4.name, alpha=%5%6)")
-                                             .arg(nonErrIdx)
+                                             .arg(replayIdx)
                                              .arg(pyEscapeStr(plusLbl), pyEscapeStr(minusLbl),
                                                   bandTblArg)
                                              .arg(bandAlpha)
                                              .arg(layerKw);
                         }
+                        replayItems << bandItems;
                     }
                     for (DataCurve *ebBase : dc->errorBarsList()) {
                         if (auto *ec = dynamic_cast<QwtErrorPlotCurve *>(ebBase)) {
@@ -3767,15 +3795,15 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                                     lines << QStringLiteral(
                                                      "g.add_error_bars(%1, curve=%2, table=%3.name, direction=%4%5)")
                                                      .arg(pyEscapeStr(eLbl))
-                                                     .arg(nonErrIdx)
+                                                     .arg(replayIdx)
                                                      .arg(tblVarMap.value(et), pyEscapeStr(dir),
                                                           layerKw);
+                                    replayItems << ec;
                                 }
                             }
                         }
                     }
                 }
-                ++nonErrIdx;
             }
         }
 

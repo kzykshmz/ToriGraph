@@ -45,6 +45,11 @@
 //   107j curve numbers on a layer with a heatmap: the index that graph.get_info lists names the
 //        same curve in set_curve_style, plot.remove_curve, plot.add_error_bars,
 //        graph.add_error_band and the fits; the heatmap's number is an error, not the next curve
+//   107k to_python_script numbers the curves as they will be in the replayed layer (the index
+//        the RPCs take): on a heatmap layer, and on a layer where error bars come before a curve
+//        added later, replaying the script's plot / style / error-bar calls in a new project
+//        gives every curve its colour and error bars (they used to go to the heatmap's number,
+//        the error bars or the previous curve); graph.move_curve says moved false (107i)
 // =============================================================================
 
 namespace {
@@ -1185,6 +1190,16 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
                       << r.value(QLatin1String("to_index")).toInt(-99) << "\n";
             CHECK107(Rpc107::ok(resp) && r.value(QLatin1String("ok")).toBool(),
                      "107i: " << what << " failed");
+            // moved tells whether the order changed (false when there is nowhere to move)
+            const bool expectMoved = after != before;
+            CHECK107(r.value(QLatin1String("moved")).isBool()
+                             && r.value(QLatin1String("moved")).toBool() == expectMoved,
+                     "107i: " << what << " returned moved "
+                              << (r.contains(QLatin1String("moved"))
+                                          ? (r.value(QLatin1String("moved")).toBool() ? "true"
+                                                                                      : "false")
+                                          : "(missing)")
+                              << ", expected " << (expectMoved ? "true" : "false"));
             CHECK107(after == QLatin1String(c.expected),
                      "107i: " << what << " gave [" << after.toStdString() << "], expected ["
                               << c.expected << "]");
@@ -1343,6 +1358,212 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
                  "107j: remove_curve(curve=" << iF2 << ") failed");
         CHECK107(indexOf(g, f2) < 0 && indexOf(g, f1) >= 0 && indexOf(g, dataTitle) >= 0,
                  "107j: remove_curve(curve=" << iF2 << ") left " << titlesOf(g));
+    }
+
+    // ---- 107k: to_python_script's curve numbers are the replayed layer's indices --------------
+    {
+        QJsonArray xs, ys, zs, ws, es, fs;
+        for (int i = 1; i <= 5; ++i) {
+            xs.append(i);
+            ys.append(2.0 * i);
+            zs.append(double(i) * i);
+            ws.append(10.0 - i);
+            es.append(0.3);
+            fs.append(0.6);
+        }
+        auto makeData = [&](Rpc107 &rpc) {
+            return rpc.makeTable(QStringLiteral("T107K"), { "x", "y", "z", "w", "e", "f" },
+                                 { xs, ys, zs, ws, es, fs })
+                    && Rpc107::ok(rpc.call(QStringLiteral("matrix.create"),
+                                           QJsonObject{ { "rows", 5 }, { "cols", 5 }, { "name", "M107K" } }))
+                    && Rpc107::ok(rpc.call(QStringLiteral("matrix.set_formula"),
+                                           QJsonObject{ { "matrix", "M107K" }, { "formula", "x+y" } }));
+        };
+        // what a replay has to reproduce: each curve's colour and which curve has which error bars
+        auto signature = [](Graph *lg) {
+            QStringList out;
+            if (!lg)
+                return out;
+            for (int i = 0; i < lg->curves(); ++i) {
+                QwtPlotCurve *c = lg->curve(i);
+                if (!c)
+                    continue;
+                if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(c))
+                    out << QStringLiteral("error bars %1 on %2")
+                                    .arg(er->title().text(),
+                                         er->masterCurve() ? er->masterCurve()->title().text()
+                                                           : QStringLiteral("?"));
+                else
+                    out << QStringLiteral("%1 %2").arg(c->title().text(), c->pen().color().name());
+            }
+            out.sort();
+            return out;
+        };
+        auto mlNamed = [](ApplicationWindow *app, const QString &name) -> MultiLayer * {
+            for (MyWidget *mw2 : app->windowsList())
+                if (auto *m = qobject_cast<MultiLayer *>(mw2))
+                    if (m->name() == name)
+                        return m;
+            return nullptr;
+        };
+
+        AppWinGuard107 w(new ApplicationWindow());
+        Rpc107 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr && makeData(rpc), "107k: data");
+        auto style = [&](const char *graph, const QString &curve, const char *color) {
+            return Rpc107::ok(rpc.call(QStringLiteral("graph.set_curve_style"),
+                                       QJsonObject{ { "graph", graph }, { "curve", curve }, { "color", color } }));
+        };
+        auto addCurve = [&](const char *graph, const char *y) {
+            return Rpc107::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                       QJsonObject{ { "graph", graph },
+                                                    { "table", "T107K" },
+                                                    { "x_col", "x" },
+                                                    { "y_col", y } }));
+        };
+        auto addBars = [&](const char *graph, const char *curve, const char *err) {
+            return Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                       QJsonObject{ { "graph", graph }, { "curve", curve }, { "err_col", err } }));
+        };
+        // HM107K: [heatmap, F1, y, z, err(y)]
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("plot.matrix"),
+                                       QJsonObject{ { "matrix", "M107K" }, { "graph_name", "HM107K" } }))
+                           && Rpc107::ok(rpc.call(QStringLiteral("plot.function"),
+                                                  QJsonObject{ { "graph", "HM107K" },
+                                                               { "formula", "x" },
+                                                               { "x_min", 0.0 },
+                                                               { "x_max", 4.0 } }))
+                           && addCurve("HM107K", "y") && addBars("HM107K", "y", "e")
+                           && addCurve("HM107K", "z"),
+                   "107k: heatmap graph");
+        Graph *hm = layer107(w, QStringLiteral("HM107K"));
+        CHECK_COND(hm && hm->curves() == 5 && hm->curve(1), "107k: heatmap graph items");
+        CHECK_COND(style("HM107K", hm->curve(1)->title().text(), "#ff0000")
+                           && style("HM107K", QStringLiteral("T107K_y"), "#00aa00")
+                           && style("HM107K", QStringLiteral("T107K_z"), "#0000ff"),
+                   "107k: heatmap graph colours");
+        // EB107K: [y, err(y), z, w, err(w)]
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                       QJsonObject{ { "table", "T107K" },
+                                                    { "x_col", "x" },
+                                                    { "y_cols", QJsonArray{ "y" } },
+                                                    { "graph_name", "EB107K" } }))
+                           && addBars("EB107K", "y", "e") && addCurve("EB107K", "z")
+                           && addCurve("EB107K", "w") && addBars("EB107K", "w", "f")
+                           && style("EB107K", QStringLiteral("T107K_y"), "#aa0000")
+                           && style("EB107K", QStringLiteral("T107K_z"), "#00aa00")
+                           && style("EB107K", QStringLiteral("T107K_w"), "#0000aa"),
+                   "107k: error-bar graph");
+
+        for (const char *graph : { "HM107K", "EB107K" }) {
+            const QString gname = QString::fromLatin1(graph);
+            MultiLayer *ml = mlNamed(w, gname);
+            CHECK_COND(ml, "107k: " << graph << " window");
+            const QStringList want = signature(layer107(w, gname));
+            const QString code =
+                    PythonAutomationServer::generatePythonScriptForWindow(w, ml, true, "inline");
+
+            // replay the script's plot / style / error-bar calls in a new project
+            AppWinGuard107 w2(new ApplicationWindow());
+            Rpc107 rp2;
+            rp2.srv = w2->pythonAutomationServer();
+            CHECK_COND(rp2.srv != nullptr && makeData(rp2), "107k: replay data");
+            static const QRegularExpression rxVar(
+                    QStringLiteral("^(\\w+) = app\\.create_(?:table|matrix)\\(.*name='([^']*)'"));
+            static const QRegularExpression rxMatrix(QStringLiteral(
+                    "^g = app\\.plot_matrix\\((\\w+)\\.name, style='([^']*)', graph_name='([^']*)'\\)"));
+            static const QRegularExpression rxXy(QStringLiteral(
+                    "^g = app\\.plot_xy\\((\\w+)\\.name, x_col='([^']*)', y_cols=\\['([^']*)'\\], "
+                    "style='([^']*)', graph_name='([^']*)'\\)"));
+            static const QRegularExpression rxAddCurve(QStringLiteral(
+                    "^g\\.add_curve\\((\\w+)\\.name, '([^']*)', x_col='([^']*)', style='([^']*)', "
+                    "right_axis=(True|False)\\)"));
+            static const QRegularExpression rxFunction(QStringLiteral(
+                    "^app\\.call\\('plot\\.function', graph=g\\.name, layer=\\d+, formula='([^']*)', "
+                    "variable='([^']*)', x_min=([^,]+), x_max=([^,]+), points=(\\d+), type='([^']*)', "
+                    "title='([^']*)'\\)"));
+            static const QRegularExpression rxStyle(
+                    QStringLiteral("^g\\.set_curve_style\\((\\d+), color='(#[0-9a-fA-F]{6})'"));
+            static const QRegularExpression rxBars(QStringLiteral(
+                    "^g\\.add_error_bars\\('([^']*)', curve=(\\d+), table=(\\w+)\\.name, "
+                    "direction='([xy])'\\)"));
+            QMap<QString, QString> varName;
+            QString gReplay;
+            QStringList replayErrors;
+            int replayed = 0;
+            auto run = [&](const QString &line, const QString &method, const QJsonObject &p) {
+                ++replayed;
+                if (!Rpc107::ok(rp2.call(method, p)))
+                    replayErrors << line;
+            };
+            for (const QString &raw : code.split(QLatin1Char('\n'))) {
+                const QString line = raw.trimmed();
+                QRegularExpressionMatch m;
+                if ((m = rxVar.match(line)).hasMatch()) {
+                    varName[m.captured(1)] = m.captured(2);
+                } else if ((m = rxMatrix.match(line)).hasMatch()) {
+                    gReplay = m.captured(3);
+                    run(line, QStringLiteral("plot.matrix"),
+                        QJsonObject{ { "matrix", varName.value(m.captured(1)) },
+                                     { "style", m.captured(2) },
+                                     { "graph_name", gReplay } });
+                } else if ((m = rxXy.match(line)).hasMatch()) {
+                    gReplay = m.captured(5);
+                    run(line, QStringLiteral("plot.xy"),
+                        QJsonObject{ { "table", varName.value(m.captured(1)) },
+                                     { "x_col", m.captured(2) },
+                                     { "y_cols", QJsonArray{ m.captured(3) } },
+                                     { "style", m.captured(4) },
+                                     { "graph_name", gReplay } });
+                } else if ((m = rxAddCurve.match(line)).hasMatch()) {
+                    run(line, QStringLiteral("plot.add_curve"),
+                        QJsonObject{ { "graph", gReplay },
+                                     { "table", varName.value(m.captured(1)) },
+                                     { "y_col", m.captured(2) },
+                                     { "x_col", m.captured(3) },
+                                     { "style", m.captured(4) },
+                                     { "right_axis", m.captured(5) == QLatin1String("True") } });
+                } else if ((m = rxFunction.match(line)).hasMatch()) {
+                    run(line, QStringLiteral("plot.function"),
+                        QJsonObject{ { "graph", gReplay },
+                                     { "formula", m.captured(1) },
+                                     { "variable", m.captured(2) },
+                                     { "x_min", m.captured(3).toDouble() },
+                                     { "x_max", m.captured(4).toDouble() },
+                                     { "points", m.captured(5).toInt() },
+                                     { "type", m.captured(6) },
+                                     { "title", m.captured(7) } });
+                } else if ((m = rxStyle.match(line)).hasMatch()) {
+                    run(line, QStringLiteral("graph.set_curve_style"),
+                        QJsonObject{ { "graph", gReplay },
+                                     { "curve", m.captured(1).toInt() },
+                                     { "color", m.captured(2) } });
+                } else if ((m = rxBars.match(line)).hasMatch()) {
+                    run(line, QStringLiteral("plot.add_error_bars"),
+                        QJsonObject{ { "graph", gReplay },
+                                     { "err_col", m.captured(1) },
+                                     { "curve", m.captured(2).toInt() },
+                                     { "table", varName.value(m.captured(3)) },
+                                     { "direction", m.captured(4) } });
+                }
+            }
+            const QStringList got = signature(layer107(w2, gname));
+            std::cout << "[INFO] 107k: " << graph << ": replayed " << replayed << " calls; original ["
+                      << want.join(QStringLiteral("; ")).toStdString() << "], replay ["
+                      << got.join(QStringLiteral("; ")).toStdString() << "]\n";
+            CHECK107(replayed >= 5, "107k: " << graph << ": only " << replayed
+                                             << " calls of the script were replayed:\n"
+                                             << code.toStdString());
+            CHECK107(replayErrors.isEmpty(),
+                     "107k: " << graph << ": replayed calls failed: "
+                              << replayErrors.join(QStringLiteral(" | ")).toStdString());
+            CHECK107(got == want, "107k: " << graph << ": the replay gives ["
+                                           << got.join(QStringLiteral("; ")).toStdString()
+                                           << "], the original is ["
+                                           << want.join(QStringLiteral("; ")).toStdString()
+                                           << "]\n" << code.toStdString());
+        }
     }
 
     if (g107Failures > 0) {
