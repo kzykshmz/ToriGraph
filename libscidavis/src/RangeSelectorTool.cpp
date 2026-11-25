@@ -117,6 +117,22 @@ RangeSelectorTool::~RangeSelectorTool()
     d_graph->plotWidget()->replot();
 }
 
+namespace {
+// Equality of two abscissae with a relative and an absolute tolerance. qFuzzyCompare alone is
+// purely relative and fails whenever one side is (close to) zero.
+bool sameAbscissa(double a, double b, double scale)
+{
+    if (a == b)
+        return true;
+    if (!std::isfinite(a) || !std::isfinite(b))
+        return false;
+    const double diff = std::fabs(a - b);
+    const double rel = 1e-12 * qMax(std::fabs(a), std::fabs(b));
+    const double absTol = 1e-12 * scale;
+    return diff <= qMax(rel, absTol);
+}
+} // namespace
+
 void RangeSelectorTool::pointSelected(const QPoint &pos)
 {
     int dist, point;
@@ -124,6 +140,11 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
     if (curve_key < 0 || dist >= 10) // 10 pixels tolerance
         return;
     QwtPlotCurve *curve = (QwtPlotCurve *)d_graph->plotWidget()->curve(curve_key);
+    selectCurvePoint(curve, point);
+}
+
+void RangeSelectorTool::selectCurvePoint(QwtPlotCurve *curve, int point)
+{
     if (!curve || curve->dataSize() <= 0 || point < 0 || point >= curve->dataSize())
         return;
 
@@ -133,6 +154,9 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
         // try to be intelligent about selecting the inactive point
         double min_x = curve->data().boundingRect().left();
         double max_x = curve->data().boundingRect().right();
+        const double scale = qMax(std::fabs(min_x), std::fabs(max_x)) > 0.0
+                ? qMax(std::fabs(min_x), std::fabs(max_x))
+                : 1.0;
         int n = curve->dataSize();
         d_inactive_point = (point == 0 && n > 1) ? (n - 1) : 0;
         double second_x;
@@ -146,11 +170,11 @@ void RangeSelectorTool::pointSelected(const QPoint &pos)
             second_x = min_x;
         if (second_x == max_x) { // start at selected point and try larger indices first
             for (int i = 0; i < n; ++i)
-                if (qFuzzyCompare(curve->x((i + point) % n), max_x))
+                if (sameAbscissa(curve->x((i + point) % n), max_x, scale))
                     d_inactive_point = (i + point) % n;
         } else { // start at selected point and try smaller indices first
             for (int i = n - 1; i >= 0; --i)
-                if (qFuzzyCompare(curve->x((i + point) % n), max_x))
+                if (sameAbscissa(curve->x((i + point) % n), min_x, scale))
                     d_inactive_point = (i + point) % n;
         }
         d_selected_curve = curve;

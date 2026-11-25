@@ -170,7 +170,10 @@ void DataPickerTool::setSelection(QwtPlotCurve *curve, int point_index)
         int row = dc ? dc->tableRow(d_selected_point) : -1;
         Table *t = dc ? dc->table() : nullptr;
 
-        if (dc && (d_mode == Mask || d_mode == Unmask)) {
+        if (dc && (d_mode == Mask || d_mode == Unmask) && row < 0) {
+            emit statusText(tr("This data point does not correspond to a single table row and "
+                               "cannot be edited."));
+        } else if (dc && (d_mode == Mask || d_mode == Unmask)) {
             const bool doMask = (d_mode == Mask);
             MultiLayer *ml = d_graph ? d_graph->multiLayerParent() : nullptr;
             if (ml && ml->undoStack()) {
@@ -449,6 +452,11 @@ void DataPickerTool::removePoint()
 
     int col = t->colIndex(d_selected_curve->title().text());
     int row = dc->tableRow(d_selected_point);
+    if (row < 0) {
+        emit statusText(tr("This data point does not correspond to a single table row and "
+                           "cannot be edited."));
+        return;
+    }
     if (col >= 0 && t->column(col) && row >= 0 && row < t->numRows()
         && t->columnType(col) == SciDAVis::ColumnMode::Numeric) {
         QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
@@ -498,7 +506,9 @@ void DataPickerTool::move(const QPoint &point)
         d_graph->replot();
 
         DataCurve *dc = dynamic_cast<DataCurve *>(d_selected_curve);
-        int row = dc ? dc->tableRow(d_selected_point) : d_selected_point;
+        int row = dc ? dc->tableRow(d_selected_point) : -1;
+        if (row < 0)
+            row = d_selected_point;
         const int decDigits = d_app ? d_app->d_decimal_digits : 6;
         emit statusText(QString("%1[%2]: x=%3; y=%4")
                                 .arg(d_selected_curve->title().text())
@@ -517,46 +527,80 @@ bool DataPickerTool::end(bool ok)
         d_selection_marker.detach();
     }
     if (d_mode == Move && d_selected_curve) {
-        const PlotCurve *pc = dynamic_cast<const PlotCurve *>(d_selected_curve);
-        if (pc && pc->type() == Graph::Function) {
-            if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
-                QMessageBox::critical(d_graph, tr("Move point error"),
-                                      tr("Sorry, but moving points of a function is not possible."));
-            }
-            return QwtPlotPicker::end(ok);
-        }
-        DataCurve *dc = dynamic_cast<DataCurve *>(d_selected_curve);
-        Table *t = dc ? dc->table() : nullptr;
-        if (!dc || !t)
-            return QwtPlotPicker::end(ok);
-        double new_x_val = d_graph->plotWidget()->invTransform(d_selected_curve->xAxis(),
-                                                               d_move_target_pos.x());
-        double new_y_val = d_graph->plotWidget()->invTransform(d_selected_curve->yAxis(),
-                                                               d_move_target_pos.y());
-        int row = dc->tableRow(d_selected_point);
-        int xcol = t->colIndex(dc->xColumnName());
-        int ycol = t->colIndex(d_selected_curve->title().text());
-        if (row >= 0 && row < t->numRows() && xcol >= 0 && ycol >= 0 && t->column(xcol)
-            && t->column(ycol) && t->columnType(xcol) == SciDAVis::ColumnMode::Numeric
-            && t->columnType(ycol) == SciDAVis::ColumnMode::Numeric) {
-            QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
-            if (undoStack)
-                undoStack->beginMacro(tr("Move Data Point"));
-            t->column(xcol)->setValueAt(row, new_x_val);
-            t->column(ycol)->setValueAt(row, new_y_val);
-            if (undoStack)
-                undoStack->endMacro();
-            if (d_app) {
-                d_app->updateCurves(t, d_selected_curve->title().text());
-                d_app->modifiedProject();
-            }
-        } else if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
-            QMessageBox::warning(d_graph, tr("Warning"),
-                                 tr("This operation cannot be performed on curves plotted from "
-                                    "columns having a non-numerical format."));
-        }
+        const double new_x_val = d_graph->plotWidget()->invTransform(d_selected_curve->xAxis(),
+                                                                     d_move_target_pos.x());
+        const double new_y_val = d_graph->plotWidget()->invTransform(d_selected_curve->yAxis(),
+                                                                     d_move_target_pos.y());
+        movePointTo(new_x_val, new_y_val);
     }
     return QwtPlotPicker::end(ok);
+}
+
+void DataPickerTool::selectPoint(QwtPlotCurve *curve, int point_index)
+{
+    setSelection(curve, point_index);
+}
+
+bool DataPickerTool::movePointTo(double new_x_val, double new_y_val)
+{
+    if (!d_selected_curve || !d_graph || d_graph->curveIndex(d_selected_curve) < 0)
+        return false;
+    const PlotCurve *pc = dynamic_cast<const PlotCurve *>(d_selected_curve);
+    if (pc && pc->type() == Graph::Function) {
+        if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
+            QMessageBox::critical(d_graph, tr("Move point error"),
+                                  tr("Sorry, but moving points of a function is not possible."));
+        }
+        return false;
+    }
+    DataCurve *dc = dynamic_cast<DataCurve *>(d_selected_curve);
+    Table *t = dc ? dc->table() : nullptr;
+    if (!dc || !t)
+        return false;
+    int row = dc->tableRow(d_selected_point);
+    if (row < 0) {
+        // Box plots, histograms...: the point is not one table row, nothing to write back.
+        emit statusText(tr("This data point does not correspond to a single table row and "
+                           "cannot be edited."));
+        return false;
+    }
+    // The curve shows its data with the stack offset (and possibly 0-1 normalisation) applied;
+    // the table holds the original values.
+    double raw_x = 0.0;
+    double raw_y = 0.0;
+    if (!dc->displayToRaw(new_x_val, new_y_val, &raw_x, &raw_y)) {
+        emit statusText(tr("This data point cannot be moved: the original values of the 0-1 "
+                           "normalized curve cannot be recovered."));
+        return false;
+    }
+    // Horizontal bars plot the Y column along the x axis and the X column along the y axis.
+    const bool swapped = (dc->type() == Graph::HorizontalBars);
+    const double xColValue = swapped ? raw_y : raw_x;
+    const double yColValue = swapped ? raw_x : raw_y;
+    int xcol = t->colIndex(dc->xColumnName());
+    int ycol = t->colIndex(d_selected_curve->title().text());
+    if (row < t->numRows() && xcol >= 0 && ycol >= 0 && t->column(xcol) && t->column(ycol)
+        && t->columnType(xcol) == SciDAVis::ColumnMode::Numeric
+        && t->columnType(ycol) == SciDAVis::ColumnMode::Numeric) {
+        QUndoStack *undoStack = resolveProjectUndoStack(d_app, t);
+        if (undoStack)
+            undoStack->beginMacro(tr("Move Data Point"));
+        t->column(xcol)->setValueAt(row, xColValue);
+        t->column(ycol)->setValueAt(row, yColValue);
+        if (undoStack)
+            undoStack->endMacro();
+        if (d_app) {
+            d_app->updateCurves(t, d_selected_curve->title().text());
+            d_app->modifiedProject();
+        }
+        return true;
+    }
+    if (!ApplicationWindow::isNonInteractiveContext(d_graph)) {
+        QMessageBox::warning(d_graph, tr("Warning"),
+                             tr("This operation cannot be performed on curves plotted from "
+                                "columns having a non-numerical format."));
+    }
+    return false;
 }
 
 void DataPickerTool::moveBy(int dx, int dy)

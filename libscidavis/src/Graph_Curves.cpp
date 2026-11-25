@@ -206,9 +206,13 @@ QString Graph::selectedCurveTitle()
 void Graph::updateCurvesData(Table *w, const QString &colName)
 {
     int updated_curves = 0;
-    QList<PlotCurve *> to_remove; // curves which changed too much to be kept
-    for (int i = 0; i < n_curves && i < c_keys.size(); i++) {
-        QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
+    // Updating a curve may remove it (and its error bars) from the graph, which shifts the
+    // positions in c_keys; walk a snapshot of the (never reused) curve keys instead, so no
+    // curve is skipped and removed ones are simply not found any more.
+    const QVector<int> keys = c_keys.mid(0, qMin(n_curves, c_keys.size()));
+    QList<int> to_remove; // keys of curves which changed too much to be kept
+    for (int key : keys) {
+        QwtPlotItem *it = d_plot->plotItem(key);
         if (!it)
             continue;
         if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
@@ -244,14 +248,17 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                 || (colType == SciDAVis::ColumnMode::DateTime
                     && ((atype != AxisType::Time) && (atype != AxisType::Date)
                         && (atype != AxisType::DateTime))))
-                to_remove << c;
+                to_remove << key;
             else if (c->updateData(w, colName))
                 updated_curves++;
         } else if (c->updateData(w, colName))
             updated_curves++;
     }
-    foreach (PlotCurve *c, to_remove) {
-        removeCurve(curveIndex(c));
+    foreach (int key, to_remove) {
+        const int idx = d_plot->plotItem(key) ? c_keys.indexOf(key) : -1;
+        if (idx < 0)
+            continue;
+        removeCurve(idx);
         updated_curves++;
     }
     if (updated_curves) {
@@ -2917,7 +2924,7 @@ void Graph::applyYOffsetStack(double offsetStep, bool autoOffset)
         if (dc) {
             for (DataCurve *eb : dc->errorBarsList()) {
                 if (eb)
-                    eb->setData(xVals.constData(), yVals.constData(), n);
+                    eb->loadData(); // follows the shifted points, keeps errors per table row
             }
         }
     }
@@ -3848,15 +3855,9 @@ void Graph::setStackOffsets(int mode, double yGapPct, double xGapPct, bool norma
         pc->setStackOffset(dx, dy);
 
         if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
-            const int n = dc->dataSize();
-            QVector<double> xv(n), yv(n);
-            for (int j = 0; j < n; ++j) {
-                xv[j] = dc->x(j);
-                yv[j] = dc->y(j);
-            }
             for (DataCurve *eb : dc->errorBarsList()) {
                 if (eb)
-                    eb->setData(xv.constData(), yv.constData(), n);
+                    eb->loadData();
             }
         }
     }
@@ -3936,15 +3937,9 @@ void Graph::resetStackOffsets()
             pc->setStackOffset(0.0, 0.0);
             changed = true;
             if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
-                const int n = dc->dataSize();
-                QVector<double> xv(n), yv(n);
-                for (int j = 0; j < n; ++j) {
-                    xv[j] = dc->x(j);
-                    yv[j] = dc->y(j);
-                }
                 for (DataCurve *eb : dc->errorBarsList()) {
                     if (eb)
-                        eb->setData(xv.constData(), yv.constData(), n);
+                        eb->loadData();
                 }
             }
         }

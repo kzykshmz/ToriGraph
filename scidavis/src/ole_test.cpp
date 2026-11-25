@@ -59,6 +59,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 86, "runSuite86AxisScaleCorrectness", &runSuite86AxisScaleCorrectness },
     { 87, "runSuite87Graph3DMatrixOrientation", &runSuite87Graph3DMatrixOrientation },
     { 88, "runSuite88ExportAndFftSampling", &runSuite88ExportAndFftSampling },
+    { 89, "runSuite89CurveDataMapping", &runSuite89CurveDataMapping },
     { 90, "runSuite90FftWindowTeardown", &runSuite90FftWindowTeardown },
 };
 
@@ -5543,6 +5544,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite88ExportAndFftSampling(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite89CurveDataMapping(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite90FftWindowTeardown(mw) != 0)

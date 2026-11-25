@@ -49,6 +49,9 @@ public:
 
     virtual bool loadData();
     void initData(const QVector<double> &Y, int size);
+    //! The points are histogram bins, not table rows: no point maps to a row (point editing
+    //! tools must not write to the table).
+    int tableRow(int) const override { return -1; }
 
     double mean() { return d_mean; };
     double standardDeviation() { return d_standard_deviation; };

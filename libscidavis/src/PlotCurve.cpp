@@ -97,10 +97,15 @@ void DataCurve::setRowRange(int startRow, int endRow)
     d_start_row = startRow;
     d_end_row = endRow;
 
-    loadData();
+    // As in SciDAVis, the error bars take over the new row range. Their points follow this
+    // curve's point -> row mapping, so loadData() below reloads them once more after this
+    // curve's own data. The error bars are updated first because loadData() may remove (and
+    // delete) this curve when the new range holds no valid point.
+    const QList<DataCurve *> bars = d_error_bars;
+    foreach (DataCurve *c, bars)
+        c->setRowRange(startRow, endRow);
 
-    foreach (DataCurve *c, d_error_bars)
-        c->loadData();
+    loadData();
 }
 
 void DataCurve::setFullRange()
@@ -110,10 +115,12 @@ void DataCurve::setFullRange()
     d_start_row = 0;
     d_end_row = d_table->numRows() - 1;
 
-    loadData();
+    // See setRowRange(): error bars first, then this curve (which reloads them again).
+    const QList<DataCurve *> bars = d_error_bars;
+    foreach (DataCurve *c, bars)
+        c->setFullRange();
 
-    foreach (DataCurve *c, d_error_bars)
-        c->loadData();
+    loadData();
 }
 
 bool DataCurve::isFullRange()
@@ -369,10 +376,12 @@ bool DataCurve::loadData()
         d_raw_y_backup = points[1];
     setData(points[0].data(), points[1].data(), points[0].size());
     if (d_norm01 || std::fabs(d_stack_dx) > 0.0 || std::fabs(d_stack_dy) > 0.0) {
-        applyStackTransformToCurrentData();
+        applyStackTransformToCurrentData(); // also reloads the error bars
     } else {
+        // Error bars follow this curve's points and row mapping (rows with an invalid Y drop
+        // out here, so their error values must be re-read rather than kept by position).
         foreach (DataCurve *c, d_error_bars)
-            c->setData(points[0].data(), points[1].data(), points[0].size());
+            c->loadData();
     }
 
     return true;
@@ -794,7 +803,7 @@ void PlotCurve::setStackOffset(double dx, double dy)
     if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
         foreach (DataCurve *err, dc->errorBarsList()) {
             if (err)
-                err->setData(xs.data(), ys.data(), n);
+                err->loadData(); // takes this curve's transformed points and scales the errors
         }
     }
 }
@@ -844,7 +853,7 @@ void PlotCurve::setStackNormalize01(bool normalize)
         if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
             foreach (DataCurve *err, dc->errorBarsList()) {
                 if (err)
-                    err->setData(xs.data(), ys.data(), n);
+                    err->loadData();
             }
         }
     }
@@ -895,9 +904,53 @@ void PlotCurve::applyStackTransformToCurrentData()
     if (DataCurve *dc = dynamic_cast<DataCurve *>(this)) {
         foreach (DataCurve *err, dc->errorBarsList()) {
             if (err)
-                err->setData(xs.data(), ys.data(), n);
+                err->loadData(); // takes this curve's transformed points and scales the errors
         }
     }
+}
+
+bool PlotCurve::stackNormalizeRange(double *minY, double *span) const
+{
+    if (!d_norm01 || d_raw_y_backup.isEmpty() || d_raw_y_backup.size() != dataSize())
+        return false;
+    // Same range as applyStackTransformToCurrentData() normalises with.
+    double lo = 1e300;
+    double hi = -1e300;
+    for (double v : d_raw_y_backup) {
+        if (std::isfinite(v)) {
+            if (v < lo)
+                lo = v;
+            if (v > hi)
+                hi = v;
+        }
+    }
+    if (!(hi >= lo))
+        return false;
+    if (minY)
+        *minY = lo;
+    if (span)
+        *span = (hi > lo) ? (hi - lo) : 0.0;
+    return true;
+}
+
+bool PlotCurve::displayToRaw(double dispX, double dispY, double *rawX, double *rawY) const
+{
+    const double rx = dispX - d_applied_dx;
+    double ry = dispY - d_applied_dy;
+    if (d_norm01) {
+        double lo = 0.0;
+        double span = 0.0;
+        if (!stackNormalizeRange(&lo, &span) || !(span > 1e-300))
+            return false;
+        ry = ry * span + lo;
+    }
+    if (!std::isfinite(rx) || !std::isfinite(ry))
+        return false;
+    if (rawX)
+        *rawX = rx;
+    if (rawY)
+        *rawY = ry;
+    return true;
 }
 
 void PlotCurve::setSymbolSkip(int everyN)

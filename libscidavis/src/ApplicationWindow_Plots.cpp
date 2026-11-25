@@ -4808,15 +4808,9 @@ void ApplicationWindow::showStackOffsetsDialog()
 
     auto syncCurveErrorBars = [](PlotCurve *pc) {
         if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
-            const int n = dc->dataSize();
-            QVector<double> xv(n), yv(n);
-            for (int j = 0; j < n; ++j) {
-                xv[j] = dc->x(j);
-                yv[j] = dc->y(j);
-            }
             for (DataCurve *eb : dc->errorBarsList()) {
                 if (eb)
-                    eb->setData(xv.constData(), yv.constData(), n);
+                    eb->loadData(); // master's transformed points, errors per table row
             }
         }
     };

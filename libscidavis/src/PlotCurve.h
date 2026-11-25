@@ -63,6 +63,14 @@ public:
     void setStackNormalize01(bool normalize);
     bool stackNormalize01() const { return d_norm01; }
     void applyStackTransformToCurrentData();
+    //! While 0-1 normalisation is active: minimum and span of the raw (untransformed) Y values
+    //! the normalisation maps to 0..1. Returns false when normalisation is off or its source
+    //! values are not available.
+    bool stackNormalizeRange(double *minY, double *span) const;
+    //! Maps a point in plot (displayed) coordinates back to the curve's own data coordinates,
+    //! undoing the stack offset and, for a normalised curve, the 0-1 scaling. Returns false when
+    //! the scaling cannot be undone (no raw range, or all raw Y values equal).
+    bool displayToRaw(double dispX, double dispY, double *rawX, double *rawY) const;
 
     using QwtPlotCurve::draw;
     void draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
@@ -155,8 +163,19 @@ public:
     virtual bool loadData();
     QList<QVector<double>> convertData(const QList<Column *> &cols, const QList<int> &axes) const;
 
-    //! Returns the row index in the data source table corresponding to the data point index.
-    int tableRow(int point) const;
+    //! Returns the row index in the data source table corresponding to the data point index,
+    //! or -1 when the point does not correspond to a single table row.
+    virtual int tableRow(int point) const;
+    //! Point index -> table row mapping built by the last data load.
+    const QVector<int> &rowMapping() const { return d_index_to_row; }
+    //! Sets the point index -> table row mapping (for curves whose data are not loaded through
+    //! convertData(), e.g. copies or vector curves).
+    void setRowMapping(const QVector<int> &rows,
+                       const QVector<int> &gapBefore = QVector<int>())
+    {
+        d_index_to_row = rows;
+        d_gap_before_indices = gapBefore;
+    }
 
     bool isPointMasked(int point) const;
     bool hasAnyMaskedPoints() const;

@@ -36,6 +36,7 @@
 #include <QPainter>
 #include <QLocale>
 #include <cmath>
+#include <limits>
 
 QwtErrorPlotCurve::QwtErrorPlotCurve(int orientation, Table *t, const QString &name)
     : DataCurve(t, QString(), name), d_master_curve(NULL)
@@ -401,44 +402,43 @@ void QwtErrorPlotCurve::setColor(const QColor &c)
 
 QwtDoubleRect QwtErrorPlotCurve::boundingRect() const
 {
-    QwtDoubleRect rect = QwtPlotCurve::boundingRect();
-
-    int size = dataSize();
-
-    QwtArray<double> X(size), Y(size), min(size), max(size);
+    // Points whose error cell is empty carry a NaN error (they stay aligned with the master
+    // curve's points); they contribute only their own position.
+    const int size = qMin(dataSize(), int(err.size()));
+    bool any = false;
+    double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+    auto take = [&](double vx, double vy) {
+        if (!std::isfinite(vx) || !std::isfinite(vy))
+            return;
+        if (!any) {
+            x0 = x1 = vx;
+            y0 = y1 = vy;
+            any = true;
+            return;
+        }
+        x0 = qMin(x0, vx);
+        x1 = qMax(x1, vx);
+        y0 = qMin(y0, vy);
+        y1 = qMax(y1, vy);
+    };
     for (int i = 0; i < size; i++) {
-        X[i] = x(i);
-        Y[i] = y(i);
+        const double vx = x(i);
+        const double vy = y(i);
+        take(vx, vy);
+        const double e = err[i];
+        if (!std::isfinite(e))
+            continue;
         if (type == Vertical) {
-            min[i] = y(i) - err[i];
-            max[i] = y(i) + err[i];
+            take(vx, vy - e);
+            take(vx, vy + e);
         } else {
-            min[i] = x(i) - err[i];
-            max[i] = x(i) + err[i];
+            take(vx - e, vy);
+            take(vx + e, vy);
         }
     }
-
-    QwtArrayData *erMin, *erMax;
-    if (type == Vertical) {
-        erMin = new QwtArrayData(X, min);
-        erMax = new QwtArrayData(X, max);
-    } else {
-        erMin = new QwtArrayData(min, Y);
-        erMax = new QwtArrayData(max, Y);
-    }
-
-    QwtDoubleRect minrect = erMin->boundingRect();
-    QwtDoubleRect maxrect = erMax->boundingRect();
-
-    rect.setTop(qMin(minrect.top(), maxrect.top()));
-    rect.setBottom(qMax(minrect.bottom(), maxrect.bottom()));
-    rect.setLeft(qMin(minrect.left(), maxrect.left()));
-    rect.setRight(qMax(minrect.right(), maxrect.right()));
-
-    delete erMin;
-    delete erMax;
-
-    return rect;
+    if (!any)
+        return QwtPlotCurve::boundingRect();
+    return QwtDoubleRect(QPointF(x0, y0), QPointF(x1, y1));
 }
 
 void QwtErrorPlotCurve::setMasterCurve(DataCurve *c)
@@ -460,30 +460,70 @@ bool QwtErrorPlotCurve::loadData()
     if (!d_master_curve)
         return false;
     Table *mt = d_master_curve->table();
-    if (!mt)
+    if (!mt || !d_table)
         return false;
     Column *x = mt->column(d_master_curve->xColumnName());
     Column *y = mt->column(d_master_curve->title().text());
 
-    Column *err = d_table->column(title().text());
+    Column *errCol = d_table->column(title().text());
 
-    if (!x || !y || !err) {
+    if (!x || !y || !errCol) {
         remove();
         return false;
     }
 
-    QList<QVector<double>> data = convertData(
-            d_master_curve->type() == Graph::HorizontalBars ? (QList<Column *>() << y << x << err)
-                                                            : (QList<Column *>() << x << y << err),
-            QList<int>() << xAxis() << yAxis() << (type == Horizontal ? xAxis() : yAxis()));
+    // One error value per point of the master curve, taken from the table row that point came
+    // from: the master drops rows with an invalid X or Y, so reading the error column by
+    // position would shift the errors. The bar positions are the master's plotted points, i.e.
+    // with its stack offset / 0-1 normalisation already applied; the error length only follows
+    // the normalisation's scale factor (along the master's Y data).
+    const int n = d_master_curve->dataSize();
+    double normMin = 0.0;
+    double normSpan = 0.0;
+    double errScale = 1.0;
+    if (type == Vertical && d_master_curve->stackNormalizeRange(&normMin, &normSpan))
+        errScale = (normSpan > 1e-300) ? (1.0 / normSpan) : 0.0;
 
-    if (data.isEmpty() || data[0].size() == 0) {
+    QVector<double> xs(n), ys(n);
+    QwtArray<double> es(n);
+    QVector<int> rows(n);
+    int finiteErrors = 0;
+    for (int i = 0; i < n; ++i) {
+        xs[i] = d_master_curve->x(i);
+        ys[i] = d_master_curve->y(i);
+        const int row = d_master_curve->tableRow(i);
+        rows[i] = row;
+        double e = std::numeric_limits<double>::quiet_NaN();
+        if (row >= 0 && row < errCol->rowCount() && !errCol->isInvalid(row)) {
+            switch (errCol->columnMode()) {
+            case SciDAVis::ColumnMode::Text:
+                e = double(row + 1);
+                break;
+            case SciDAVis::ColumnMode::DateTime:
+                e = errCol->dateTimeAt(row).toMSecsSinceEpoch() / 86400000. + 2440587.5;
+                break;
+            default:
+                e = errCol->valueAt(row);
+                break;
+            }
+        }
+        if (std::isfinite(e)) {
+            e *= errScale;
+            ++finiteErrors;
+        } else {
+            e = std::numeric_limits<double>::quiet_NaN();
+        }
+        es[i] = e;
+    }
+
+    if (n <= 0 || finiteErrors == 0) {
         remove();
         return false;
     }
 
-    setData(data[0].data(), data[1].data(), data[0].size());
-    setErrors(data[2]);
+    setData(xs.data(), ys.data(), n);
+    setErrors(es);
+    setRowMapping(rows, d_master_curve->gapBeforeIndices());
 
     return true;
 }

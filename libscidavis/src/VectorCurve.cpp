@@ -540,6 +540,7 @@ bool VectorCurve::loadData()
         vectorEnd = nullptr;
         const double dummy = 0.0;
         setData(&dummy, &dummy, 0);
+        setRowMapping(QVector<int>());
         foreach (DataCurve *c, d_error_bars) {
             if (c)
                 c->setData(&dummy, &dummy, 0);
@@ -584,6 +585,7 @@ bool VectorCurve::loadData()
 
     const int maxRows = endRow - startRow + 1;
     QVector<double> X(maxRows), Y(maxRows), X2(maxRows), Y2(maxRows);
+    QVector<int> rows(maxRows);
     int size = 0;
     for (int i = startRow; i <= endRow; ++i) {
         double vx = 0.0, vy = 0.0, vx2 = 0.0, vy2 = 0.0;
@@ -600,6 +602,7 @@ bool VectorCurve::loadData()
         Y[size] = vy;
         X2[size] = vx2;
         Y2[size] = vy2;
+        rows[size] = i; // point -> table row (rows with an invalid cell are skipped)
         ++size;
     }
 
@@ -612,12 +615,14 @@ bool VectorCurve::loadData()
     Y.resize(size);
     X2.resize(size);
     Y2.resize(size);
+    rows.resize(size);
     setData(X.data(), Y.data(), size);
+    setRowMapping(rows);
+    setVectorEnd(X2, Y2);
     foreach (DataCurve *c, d_error_bars) {
         if (c)
-            c->setData(X.data(), Y.data(), size);
+            c->loadData();
     }
-    setVectorEnd(X2, Y2);
 
     return true;
 }

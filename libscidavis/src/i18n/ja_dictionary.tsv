@@ -4619,6 +4619,8 @@ Third Order ...	三次...
 Third decay time (t3)	第3減衰時定数 (t3)
 Third-Order (Three-Phase) Exponential Decay	3次 (3相) 指数減衰関数
 Third-Order Cubic Polynomial	3次多項式
+This data point cannot be moved: the original values of the 0-1 normalized curve cannot be recovered.	このデータ点は移動できません。0-1 に正規化した曲線の元の値を復元できません。
+This data point does not correspond to a single table row and cannot be edited.	このデータ点はワークシートの1行に対応していないため、編集できません。
 This feature is not available for user defined function curves!	この機能はユーザー定義関数曲線には使用できません。
 This functionality is not available for pie plots!	この機能は円グラフでは使用できません。
 This kind of curve is not handled by SciDAVis!	この種類の曲線はサポートされていません。

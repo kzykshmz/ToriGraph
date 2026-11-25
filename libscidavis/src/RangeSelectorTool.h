@@ -68,6 +68,10 @@ public:
     QwtPlotCurve *selectedCurve() const { return d_selected_curve; }
     //! Caller is responsible for replot.
     void setSelectedCurve(QwtPlotCurve *curve);
+    //! What a click on point  point of  curve does (pointSelected() after hit-testing).
+    void selectCurvePoint(QwtPlotCurve *curve, int point);
+    int activePoint() const { return d_active_point; }
+    int inactivePoint() const { return d_inactive_point; }
 
 public slots:
     virtual void pointSelected(const QPoint &point);

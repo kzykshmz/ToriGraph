@@ -54,6 +54,13 @@ public:
     virtual bool eventFilter(QObject *obj, QEvent *event);
     bool keyEventFilter(QKeyEvent *ke);
     QwtPlotCurve *selectedCurve() const { return d_selected_curve; }
+    int selectedPoint() const { return d_selected_point; }
+    //! Selects point  point_index of  curve as a click on it would.
+    void selectPoint(QwtPlotCurve *curve, int point_index);
+    //! Move mode: writes the selected point, moved to ( new_x_val,  new_y_val) in plot
+    //! coordinates, back to its table row (undoing stack offset / normalisation, X/Y swapped
+    //! for horizontal bars). Returns false when nothing was written.
+    bool movePointTo(double new_x_val, double new_y_val);
 signals:
     /*! Emitted whenever a new message should be presented to the user.
      *

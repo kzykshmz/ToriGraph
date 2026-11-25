@@ -82,6 +82,9 @@ public:
     bool showDataPoints() const { return d_show_data_points; }
 
     virtual bool loadData();
+    //! The points are the sorted values of the column, not one point per table row, so no
+    //! point maps to a row (point editing tools must not write to the table).
+    int tableRow(int) const override { return -1; }
 
 private:
     void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap, int from,

@@ -1428,8 +1428,15 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
                 c_type[dstIdx] = (!cv && style != Function) ? int(Function) : g->curveType(i);
                 srcToDstIdx[i] = dstIdx;
 
-                if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars)
+                if (c_type[dstIdx] != Box && c_type[dstIdx] != ErrorBars) {
                     c->setData(x.data(), y.data(), n);
+                    // The copied points keep their table rows (rows with invalid cells were
+                    // skipped), so error bars, masks and the data picker map them correctly.
+                    if (DataCurve *dstDc = dynamic_cast<DataCurve *>(c)) {
+                        if (cv && cv->rowMapping().size() == n)
+                            dstDc->setRowMapping(cv->rowMapping(), cv->gapBeforeIndices());
+                    }
+                }
 
                 c->setPen(srcPc->pen());
                 c->setBrush(srcPc->brush());

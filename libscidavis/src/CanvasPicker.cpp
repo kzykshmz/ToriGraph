@@ -781,7 +781,8 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
             g->setCurrentSelection({ kind, cIdx, point });
             if (hitCurve && point >= 0 && point < hitCurve->dataSize()) {
                 const DataCurve *dc = dynamic_cast<const DataCurve *>(hitCurve);
-                const int rowOneBased = (dc ? dc->tableRow(point) : point) + 1;
+                const int tblRow = dc ? dc->tableRow(point) : -1;
+                const int rowOneBased = (tblRow >= 0 ? tblRow : point) + 1;
                 QString dispLabel = (cIdx >= 0) ? g->resolvedAutoCurveLabel(cIdx) : QString();
                 if (dispLabel.isEmpty())
                     dispLabel = hitCurve->title().text();
@@ -1527,8 +1528,8 @@ void CanvasPicker::showPendingHoverTooltip()
     if (!swatch.isValid() || swatch.alpha() == 0)
         swatch = QColor(30, 102, 184);
 
-    const int rowOneBased =
-            (dc ? dc->tableRow(d_hover_pending_point) : d_hover_pending_point) + 1;
+    const int hoverTblRow = dc ? dc->tableRow(d_hover_pending_point) : -1;
+    const int rowOneBased = (hoverTblRow >= 0 ? hoverTblRow : d_hover_pending_point) + 1;
     const double xv = c->x(d_hover_pending_point);
     const double yv = c->y(d_hover_pending_point);
 
@@ -1595,7 +1596,8 @@ void CanvasPicker::updatePassiveHoverReadout(const QPoint &canvasPos)
 
     if (bestCurve && bestPoint >= 0 && vDist <= 14) {
         const DataCurve *dc = dynamic_cast<const DataCurve *>(bestCurve);
-        const int rowOneBased = (dc ? dc->tableRow(bestPoint) : bestPoint) + 1;
+        const int bestTblRow = dc ? dc->tableRow(bestPoint) : -1;
+        const int rowOneBased = (bestTblRow >= 0 ? bestTblRow : bestPoint) + 1;
         const int cIdx = g->curveIndex(const_cast<QwtPlotCurve *>(bestCurve));
         QString dispLabel = (cIdx >= 0) ? g->resolvedAutoCurveLabel(cIdx) : QString();
         if (dispLabel.isEmpty())
