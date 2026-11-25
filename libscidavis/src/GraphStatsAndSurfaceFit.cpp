@@ -2581,7 +2581,10 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             if (readNumericColumnCell(col, r, v))
                 gd.vals.push_back(v);
         }
-        if (gd.vals.size() < 2)
+        // A group of one value enters the ANOVA (it adds to the between-group sum of squares
+        // and to N - k, not to the within-group one), as in the textbook test; it used to be
+        // dropped without a word.
+        if (gd.vals.empty())
             continue;
         const size_t nk = gd.vals.size();
         gd.mean = std::accumulate(gd.vals.begin(), gd.vals.end(), 0.0) / static_cast<double>(nk);
@@ -2594,13 +2597,20 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
             gd.minV = std::min(gd.minV, v);
             gd.maxV = std::max(gd.maxV, v);
         }
-        gd.var = ss / static_cast<double>(nk - 1);
+        gd.var = (nk > 1) ? ss / static_cast<double>(nk - 1) : 0.0;
         groups.push_back(std::move(gd));
     }
 
     const int K = static_cast<int>(groups.size());
     if (K < 2)
         return nullptr;
+    {
+        size_t nAll = 0;
+        for (const GroupData &g : groups)
+            nAll += g.vals.size();
+        if (nAll <= static_cast<size_t>(K))
+            return nullptr; // every group has one value: no within-group degrees of freedom
+    }
 
     // One-Way ANOVA
     size_t totalN = 0;
@@ -2736,8 +2746,12 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                 const GroupData &gj = groups[static_cast<size_t>(j)];
                 const double ni = static_cast<double>(gi.vals.size());
                 const double nj = static_cast<double>(gj.vals.size());
-                const double vi = gi.var / ni;
-                const double vj = gj.var / nj;
+                // A group of one value has no variance of its own: Welch / Games-Howell take the
+                // pooled within-group variance for it, with its N - k degrees of freedom.
+                const double vi = ((ni > 1.0) ? gi.var : msWithin) / ni;
+                const double vj = ((nj > 1.0) ? gj.var : msWithin) / nj;
+                const double dfi = (ni > 1.0) ? ni - 1.0 : df2;
+                const double dfj = (nj > 1.0) ? nj - 1.0 : df2;
                 const double vSum = vi + vj;
 
                 PairResult pr;
@@ -2761,7 +2775,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                         pr.pAdj = 0.0;
                     }
                 } else if (posthocMode == PostHocMode::GamesHowell) {
-                    const double denom = (vi * vi) / (ni - 1.0) + (vj * vj) / (nj - 1.0);
+                    const double denom = (vi * vi) / dfi + (vj * vj) / dfj;
                     const double dfWelch =
                             (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                     pr.dfNum = static_cast<double>(K);
@@ -2782,7 +2796,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                     pr.dfDen = df2;
                     if (vSum > 1e-30) {
                         pr.statVal = pr.meanDiff / std::sqrt(vSum);
-                        const double denom = (vi * vi) / (ni - 1.0) + (vj * vj) / (nj - 1.0);
+                        const double denom = (vi * vi) / dfi + (vj * vj) / dfj;
                         pr.dfNum = (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                         pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), pr.dfNum),
                                              0.0, 1.0);
@@ -6514,7 +6528,11 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     const double sResid = hasSe
             ? std::sqrt(std::max(0.0, rss / static_cast<double>(residDf)))
             : 0.0;
-    double betaSE = hasSe ? (sResid / std::sqrt(suu)) : 0.0;
+    // No residual degrees of freedom (2 points for the 2-parameter line, 3 for the 3-parameter
+    // one): the standard errors are undefined, not 0 (they were reported as 0, i.e. exact).
+    // NaN goes out as null, as the Arrhenius Ea SE of 2 points does.
+    constexpr double kNoSe = std::numeric_limits<double>::quiet_NaN();
+    double betaSE = hasSe ? (sResid / std::sqrt(suu)) : kNoSe;
 
     const double lnSigma0 = -interceptA / betaM;
     const double sigma0 = std::exp(std::clamp(lnSigma0, -500.0, 500.0));
@@ -6522,7 +6540,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
             ? ((sResid / std::fabs(betaM))
                * std::sqrt(1.0 / static_cast<double>(mFail)
                            + ((lnSigma0 - meanU) * (lnSigma0 - meanU)) / suu))
-            : 0.0;
+            : kNoSe;
 
     // Right-censored Newton-Raphson Maximum Likelihood Estimator (JIS R 1625 / ISO 20501)
     double mleM = betaM;
@@ -6911,6 +6929,10 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
             const QString fitQual = (res.usedMle && std::isfinite(res.logLikelihood))
                     ? QStringLiteral("ln <i>L</i> = %1").arg(res.logLikelihood, 0, 'f', 2)
                     : QStringLiteral("<i>R</i><sup>2</sup> = %1").arg(res.rSquare, 0, 'f', 4);
+            // An undefined standard error (no residual degrees of freedom) reads N/A.
+            auto seText = [](double v, char fmt, int prec) {
+                return std::isfinite(v) ? QString::number(v, fmt, prec) : QStringLiteral("N/A");
+            };
             QString summary;
             if (usedThreeParam) {
                 summary = QStringLiteral(
@@ -6920,9 +6942,9 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                         "%8 (<i>n</i> = %9, cens = %10)")
                         .arg(estTag)
                         .arg(res.modulusM, 0, 'f', 2)
-                        .arg(res.modulusMSE, 0, 'f', 2)
+                        .arg(seText(res.modulusMSE, 'f', 2))
                         .arg(res.scaleSigma0, 0, 'g', 4)
-                        .arg(res.scaleSigma0SE, 0, 'g', 3)
+                        .arg(seText(res.scaleSigma0SE, 'g', 3))
                         .arg(res.thresholdGamma, 0, 'g', 4)
                         .arg(res.b10Life, 0, 'g', 4)
                         .arg(fitQual)
@@ -6937,9 +6959,9 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                         "%8 (<i>n</i> = %9%11)")
                         .arg(estTag)
                         .arg(res.modulusM, 0, 'f', 2)
-                        .arg(res.modulusMSE, 0, 'f', 2)
+                        .arg(seText(res.modulusMSE, 'f', 2))
                         .arg(res.scaleSigma0, 0, 'g', 4)
-                        .arg(res.scaleSigma0SE, 0, 'g', 3)
+                        .arg(seText(res.scaleSigma0SE, 'g', 3))
                         .arg(res.b10Life, 0, 'g', 4)
                         .arg(res.b50Life, 0, 'g', 4)
                         .arg(fitQual)
@@ -7207,8 +7229,10 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
 {
     registerPhase5StatsTranslationsOnce();
     NonparamResult res;
-    if (!srcTable || colNames.size() < 2)
+    if (!srcTable || colNames.size() < 2) {
+        res.message = QObject::tr("At least 2 columns are needed.");
         return res;
+    }
 
     // Special paired path for Wilcoxon Signed-Rank
     if (method == TestWilcoxonSignedRank) {
@@ -7227,8 +7251,12 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
                 allVals.push_back(vb);
             }
         }
-        if (diffs.size() < 2)
+        if (diffs.size() < 2) {
+            res.message = QObject::tr(
+                    "Wilcoxon Signed-Rank needs at least 2 rows with values in both columns (%1 found).")
+                                  .arg(int(diffs.size()));
             return res;
+        }
 
         double wStat = 0.0, pVal = 1.0;
         evalWilcoxonSignedRank(diffs, wStat, pVal);
@@ -7319,7 +7347,10 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             if (readNumericColumnCell(col, r, v))
                 gs.vals.push_back(v);
         }
-        if (gs.vals.size() < 2)
+        // A group of one value has a rank (Mann-Whitney, Kruskal-Wallis): it is kept, as in
+        // the textbook tests. It used to be dropped without a word (A(5), B(5), C(1) gave the
+        // H of A and B alone).
+        if (gs.vals.empty())
             continue;
         gs.mean = std::accumulate(gs.vals.begin(), gs.vals.end(), 0.0)
                 / static_cast<double>(gs.vals.size());
@@ -7332,13 +7363,17 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
             gs.minV = std::min(gs.minV, v);
             gs.maxV = std::max(gs.maxV, v);
         }
-        gs.var = ss / static_cast<double>(gs.vals.size() - 1);
+        gs.var = (gs.vals.size() > 1) ? ss / static_cast<double>(gs.vals.size() - 1) : 0.0;
         groups.push_back(std::move(gs));
     }
 
     const int K = static_cast<int>(groups.size());
-    if (K < 2)
+    if (K < 2) {
+        res.message = QObject::tr(
+                "At least 2 groups with valid numeric values are needed (%1 found).")
+                              .arg(K);
         return res;
+    }
 
     double yMinAll = groups.front().minV;
     double yMaxAll = groups.front().maxV;
@@ -7556,8 +7591,11 @@ GraphStatsAndSurfaceFit::NonparamResult GraphStatsAndSurfaceFit::runNonparametri
         }
     }
     const size_t N = pooled.size();
-    if (N < 3)
+    if (N < 3) {
+        res.message = QObject::tr(
+                "Kruskal-Wallis needs at least 3 values in all (%1 found).").arg(int(N));
         return res;
+    }
 
     std::vector<double> ranks;
     double tieSum = 0.0;

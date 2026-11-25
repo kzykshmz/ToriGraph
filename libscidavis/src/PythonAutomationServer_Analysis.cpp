@@ -3130,6 +3130,11 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             outResult[QStringLiteral("curve_count")] = g->curves();
             if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
                 outResult[QStringLiteral("output_curve")] = g->curve(g->curves() - 1)->title().text();
+            // The kernel works on the point index: say so when X is not equally spaced or not
+            // monotonic (as the other smoothers and differentiate do).
+            const QString gaussNotice = SmoothFilter::indexSmoothingXNotice(xs, QString());
+            if (!gaussNotice.isEmpty())
+                outResult[QStringLiteral("notice")] = gaussNotice;
             return true;
         }
 
@@ -3189,6 +3194,10 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         enforceArialGraphFonts(g);
         g->replot();
         outResult[QStringLiteral("ok")] = ok;
+        // How X was treated (not equally spaced / not monotonic): it only went to the results
+        // log before; differentiate returns its notice in the result, and so does smooth now.
+        if (!sf.xHandlingNotice().isEmpty())
+            outResult[QStringLiteral("notice")] = sf.xHandlingNotice();
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("curve_count")] = g->curves();
         if (g->curves() > curvesBefore && g->curve(g->curves() - 1))

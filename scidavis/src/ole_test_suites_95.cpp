@@ -17,7 +17,8 @@
 //       fitted centre leaves the X range of the data (surplus peak_count)
 //   95e a parameter starting at exactly 0 (xc of a rocking curve, x = -0.05..0.05 deg, FWHM
 //       0.003 deg, 1e6 counts) moves to the true value with the right standard error
-//   95f one outlier under an upward peak does not make it a dip (initial xc at the maximum)
+//   95f one outlier under an upward peak does not make it a dip (initial xc at the maximum);
+//       95f2 a dip or peak only 1-2 points wide is still told apart (no k-th value there)
 //   95g a peak cut at the end of the data, a centre outside the data given by the user and
 //       the tail of a neighbour in a fit range are not pinned to the end of the range
 
@@ -529,6 +530,40 @@ int runSuite95FitDataDriven(ApplicationWindow *mw)
             CHECK_COND(NonLinearFitProbe95::looksLikeDip(yd), "95f: the 95c dip is no longer a dip");
             yd[80] = 9.0;
             CHECK_COND(NonLinearFitProbe95::looksLikeDip(yd), "95f: one spike above a dip made it a peak");
+        }
+        // 95f2: dips and peaks only 1-2 points wide. The k-th smallest / largest value lost
+        // them and the decision fell to the noise (or, at n = 5, to the median).
+        {
+            std::vector<double> w2(20, 10.0);
+            w2[9] = 2.0;
+            w2[10] = 3.0;
+            CHECK_COND(NonLinearFitProbe95::looksLikeDip(w2), "95f2: [10]*9+[2,3]+[10]*9 not a dip");
+            CHECK_COND(NonLinearFitProbe95::looksLikeDip({ 10.0, 9.0, 2.0, 9.0, 10.0 }),
+                       "95f2: [10, 9, 2, 9, 10] not a dip");
+            CHECK_COND(!NonLinearFitProbe95::looksLikeDip({ 2.0, 3.0, 10.0, 3.0, 2.0 }),
+                       "95f2: [2, 3, 10, 3, 2] taken as a dip");
+            // An upward peak of FWHM 1 point among 20 noisy points (sigma 5, +400) is never a
+            // dip (9.5 % of such cases were), and the mirrored dip always is.
+            std::mt19937 rngW(9512);
+            std::normal_distribution<double> nW(0.0, 5.0);
+            std::uniform_real_distribution<double> uW(-0.5, 0.5);
+            int upAsDip = 0, dipMissed = 0;
+            for (int trial = 0; trial < 400; ++trial) {
+                const double c = 9.5 + uW(rngW);
+                std::vector<double> up(20), dn(20);
+                for (int i = 0; i < 20; ++i) {
+                    const double g = 400.0 * std::exp(-4.0 * std::log(2.0) * (i - c) * (i - c));
+                    up[size_t(i)] = 1000.0 + nW(rngW) + g;
+                    dn[size_t(i)] = 1000.0 + nW(rngW) - g;
+                }
+                upAsDip += NonLinearFitProbe95::looksLikeDip(up) ? 1 : 0;
+                dipMissed += NonLinearFitProbe95::looksLikeDip(dn) ? 0 : 1;
+            }
+            std::cout << "[INFO] 95f2 FWHM 1 point, 400 trials: peak taken as dip " << upAsDip
+                      << ", dip missed " << dipMissed << "\n";
+            CHECK_COND(upAsDip == 0 && dipMissed == 0,
+                       "95f2: FWHM 1 point: " << upAsDip << " peaks taken as dips, " << dipMissed
+                                              << " dips missed (of 400)");
         }
 
         std::vector<double> yo = y;

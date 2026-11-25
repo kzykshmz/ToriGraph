@@ -1108,6 +1108,61 @@ double CurveMathTools::findYFromX(Graph *g, const QString &curveTitle, double ta
     return yVal;
 }
 
+int CurveMathTools::countXTurns(Graph *g, const QString &curveTitle, int *nPoints)
+{
+    if (nPoints)
+        *nPoints = 0;
+    std::vector<double> xs, ys;
+    if (!g || !extractUnmaskedCurvePoints(g, curveTitle, xs, ys, false, false))
+        return 0;
+    if (nPoints)
+        *nPoints = int(xs.size());
+    int nTurns = 0;
+    int prevSign = 0;
+    for (size_t i = 1; i < xs.size(); ++i) {
+        const double dx = xs[i] - xs[i - 1];
+        const int sign = (dx > 0.0) ? 1 : (dx < 0.0 ? -1 : 0);
+        if (sign == 0)
+            continue;
+        if (prevSign != 0 && sign != prevSign)
+            ++nTurns;
+        prevSign = sign;
+    }
+    return nTurns;
+}
+
+QVector<double> CurveMathTools::findYValuesFromX(Graph *g, const QString &curveTitle,
+                                                 double targetX)
+{
+    QVector<double> values;
+    if (!g || !std::isfinite(targetX))
+        return values;
+    std::vector<double> xs, ys;
+    if (!extractUnmaskedCurvePoints(g, curveTitle, xs, ys, false, false) || xs.empty())
+        return values;
+    const auto xMM = std::minmax_element(xs.begin(), xs.end());
+    const double rawSpanX = *xMM.second - *xMM.first;
+    const double scaleX = std::max(std::fabs(*xMM.first), std::fabs(*xMM.second));
+    const double tolX = 1e-11 * ((rawSpanX > 0.0) ? rawSpanX : std::max(1e-300, scaleX));
+    // A sample at targetX gives its own Y once (a turning point is shared by both branches);
+    // otherwise every row segment that spans targetX gives one interpolated value.
+    for (size_t i = 0; i < xs.size(); ++i) {
+        if (std::fabs(xs[i] - targetX) <= tolX) {
+            values.append(ys[i]);
+            continue;
+        }
+        if (i + 1 >= xs.size() || std::fabs(xs[i + 1] - targetX) <= tolX)
+            continue;
+        const double x0 = xs[i];
+        const double x1 = xs[i + 1];
+        if ((x0 < targetX && targetX < x1) || (x1 < targetX && targetX < x0)) {
+            const double t = (targetX - x0) / (x1 - x0);
+            values.append(ys[i] + t * (ys[i + 1] - ys[i]));
+        }
+    }
+    return values;
+}
+
 double CurveMathTools::polygonArea(Graph *g, const QString &curveTitle, bool mathematicalSigned)
 {
     if (!g)
@@ -10541,22 +10596,42 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     //    noise, which is larger on the peaks than on the background).
     // Flat runs (a background clipped to 0, a constant one) say nothing about the noise and
     // are left out; without enough samples the local estimate is used as it is.
+    // The "background" samples also hold the reflections weaker than 3.5 % of the tallest one.
+    // A noise-free pattern of a low-symmetry or multi-phase sample has dozens of them, and their
+    // maxima and minima pushed the extrema count over 10 % (17 % with 50 weak reflections at a
+    // 0.1 deg step), so the pattern was taken as noisy and the noise tests dropped weak peaks
+    // again. Noise flips the slope on almost every sample: 3 extrema in a row (a zigzag of 5
+    // samples) make up ~25 % of white noise (and at least 12 % even with a noise of 1e-5 of the
+    // peak on steep flanks), but under 1 % of the noise-free patterns, whose weak peaks are
+    // separate hills. So up to 25 % extrema still count as noise-free when there are (almost)
+    // no zigzags; noise gives 36-70 % extrema.
     bool noiseFree = false;
     double bgNoiseSigma = std::numeric_limits<double>::infinity();
     {
+        auto isExtremum = [&](int k) {
+            if (k < 1 || k > N - 2)
+                return false;
+            return (yRaw[size_t(k)] - yRaw[size_t(k - 1)]) * (yRaw[size_t(k + 1)] - yRaw[size_t(k)])
+                    < 0.0;
+        };
         noiseBuf.clear();
         int nExtrema = 0;
+        int nZigzag = 0;
         for (int k = 1; k < N - 1; ++k) {
             const double dPrev = yRaw[size_t(k)] - yRaw[size_t(k - 1)];
             const double dNext = yRaw[size_t(k + 1)] - yRaw[size_t(k)];
             if (ySmooth[size_t(k)] >= 0.035 * maxNet || dPrev == 0.0 || dNext == 0.0)
                 continue;
             noiseBuf.push_back(residual(k));
-            if (dPrev * dNext < 0.0)
+            if (dPrev * dNext < 0.0) {
                 ++nExtrema;
+                if (isExtremum(k - 1) && isExtremum(k + 1))
+                    ++nZigzag;
+            }
         }
         if (noiseBuf.size() >= 20) {
-            noiseFree = nExtrema < 0.1 * double(noiseBuf.size());
+            const double nBg = double(noiseBuf.size());
+            noiseFree = nExtrema < 0.1 * nBg || (nExtrema < 0.25 * nBg && nZigzag < 0.02 * nBg);
             bgNoiseSigma = madSigmaOfBuf();
         }
     }
@@ -10767,6 +10842,13 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             }
         }
 
+        // On a pattern with noise the width is fitted by least squares (see below), not taken
+        // from the raw half-maximum crossings.
+        const double sigmaPk = noiseFree ? 0.0 : localNoiseSigma(pkIdx);
+        const bool noisyPeak = sigmaPk > 0.0;
+        const double xApex3 = xApex;
+        const double hApex3 = hApex;
+
         const double halfH = 0.5 * hApex;
         bool hasLeft = false, hasRight = false;
         double xLeft = xApex - avgStep;
@@ -10817,7 +10899,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         }
         double fwhmObs = fwhm0;
         double bestEta = 0.5;
-        if (corePts.size() >= 5) {
+        if (!noisyPeak && corePts.size() >= 5) {
             // The centre is refined together with width, shape and height. The 3-point apex
             // above follows the noise of the top samples: on counting-noise data it sat 0.08 deg
             // (0.15 FWHM) off the (222) centre, and the profile pinned there came out 24 % too
@@ -10901,6 +10983,214 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             fwhmObs = bestW;
             hApex = bestH;
             xApex = bestX;
+        }
+
+        // Noisy pattern: the half-maximum search above walks the raw net intensity and gives up
+        // as soon as a sample is 8 % above its neighbour. With counting noise (sigma 17-28 on
+        // weak reflections of 120-370 counts) that happened on the first wiggle, no crossing
+        // was found, the width fell back to 2 steps (0.02-0.05 deg) and the profile refinement,
+        // confined to 0.72-1.28 of that start, could not recover: (220)-(222) of Al came out
+        // 10-25 times too narrow and W-H gave 10-318 nm with no microstrain. The core points
+        // were also chosen by their noisy intensity (>= 0.28 of the apex), which keeps the
+        // samples that noise lifted and drops those it lowered (+5-12 % on the widths that did
+        // not collapse), and the profile had no offset for the background that SNIP leaves
+        // under noisy data.
+        // So, with noise: (1) the half-maximum crossings are searched on a moving average and a
+        // rise only ends the search when it exceeds 4 sigma of that average (a neighbour, not
+        // noise); without a crossing the start width comes from the curvature at the apex.
+        // (2) Pseudo-Voigt + constant is fitted by least squares to every sample within
+        // +-2 widths (bounded by the valleys towards the neighbouring peaks), the window
+        // following the width, with the width free within 0.4-2.5 of the start. On 16 Al
+        // patterns with Poisson noise (background 300-800) the widths agree with a weighted
+        // Gauss + constant fit to 1.6 % rms (at most 7 %). Noise-free data keep the path above.
+        if (noisyPeak) {
+            // Window limits: +-promSpan, and the lowest point towards each neighbouring peak.
+            int kMin = std::max(0, pkIdx - promSpan);
+            int kMax = std::min(N - 1, pkIdx + promSpan);
+            const auto itSel = std::lower_bound(selIdx.begin(), selIdx.end(), ip);
+            if (itSel != selIdx.end() && itSel != selIdx.begin()) {
+                const int prev = *(itSel - 1);
+                int arg = pkIdx;
+                for (int k = pkIdx - 1; k > prev; --k) {
+                    if (ySmooth[size_t(k)] < ySmooth[size_t(arg)])
+                        arg = k;
+                }
+                kMin = std::max(kMin, arg);
+            }
+            if (itSel != selIdx.end() && itSel + 1 != selIdx.end()) {
+                const int next = *(itSel + 1);
+                int arg = pkIdx;
+                for (int k = pkIdx + 1; k < next; ++k) {
+                    if (ySmooth[size_t(k)] < ySmooth[size_t(arg)])
+                        arg = k;
+                }
+                kMax = std::min(kMax, arg);
+            }
+
+            // (1) Start width: half-maximum crossings of a moving average over +-0.02 deg.
+            const int mAvg = std::clamp(static_cast<int>(std::llround(0.02 / avgStep)), 0, 3);
+            auto prof = [&](int k) {
+                const int lo = std::max(0, k - mAvg);
+                const int hi = std::min(N - 1, k + mAvg);
+                double s = 0.0;
+                for (int j = lo; j <= hi; ++j)
+                    s += yNet[size_t(j)];
+                return s / double(hi - lo + 1);
+            };
+            const double hP = prof(pkIdx);
+            const double halfP = 0.5 * hP;
+            const double tolP = 4.0 * sigmaPk / std::sqrt(2.0 * mAvg + 1.0);
+            auto crossing = [&](int dir, double &xOut) -> bool {
+                double runMin = hP;
+                for (int s = 1;; ++s) {
+                    const int k0 = pkIdx + dir * (s - 1);
+                    const int k1 = pkIdx + dir * s;
+                    if (k1 < kMin || k1 > kMax)
+                        return false;
+                    const double p0 = prof(k0);
+                    const double p1 = prof(k1);
+                    if (p1 <= halfP && p0 >= halfP) {
+                        const double dy = p0 - p1;
+                        const double frac = (dy > 1e-12) ? ((p0 - halfP) / dy) : 0.5;
+                        xOut = ttGrid[size_t(k0)] + frac * (ttGrid[size_t(k1)] - ttGrid[size_t(k0)]);
+                        return true;
+                    }
+                    runMin = std::min(runMin, p0);
+                    if (p0 < 0.75 * hP && p1 > runMin + tolP)
+                        return false;
+                }
+            };
+            double xL = xApex3, xR = xApex3;
+            const bool hasL = hP > 0.0 && crossing(-1, xL);
+            const bool hasR = hP > 0.0 && crossing(+1, xR);
+            double w0 = 2.0 * avgStep;
+            if (hasL && hasR) {
+                w0 = xR - xL;
+            } else if (hasL) {
+                w0 = 2.0 * (xApex3 - xL);
+            } else if (hasR) {
+                w0 = 2.0 * (xR - xApex3);
+            } else {
+                // Curvature at the apex: a Gaussian has y'' / y = -8 ln 2 / FWHM^2 there.
+                const int q = mAvg + 1;
+                if (pkIdx - q >= 0 && pkIdx + q < N && hP > 0.0) {
+                    const double h = q * avgStep;
+                    const double d2 = (prof(pkIdx - q) - 2.0 * hP + prof(pkIdx + q)) / (h * h);
+                    if (d2 < 0.0)
+                        w0 = std::sqrt(8.0 * M_LN2 * hP / -d2);
+                }
+            }
+            w0 = std::clamp(w0, 2.0 * avgStep, std::max(2.0 * avgStep, (kMax - kMin) * avgStep));
+
+            // (2) Least-squares pseudo-Voigt + constant on the net intensity. Height and offset
+            // are linear and solved exactly for each trial of width, shape and centre.
+            int lo = pkIdx, hi = pkIdx;
+            auto setWindow = [&](double xc, double w) {
+                lo = pkIdx;
+                hi = pkIdx;
+                while (lo > kMin && ttGrid[size_t(lo - 1)] >= xc - 2.0 * w)
+                    --lo;
+                while (hi < kMax && ttGrid[size_t(hi + 1)] <= xc + 2.0 * w)
+                    ++hi;
+            };
+            auto evalFit = [&](double wT, double etaT, double xT, double *hOut) -> double {
+                const double halfW = std::max(1e-9, 0.5 * wT);
+                double n = 0.0, sf = 0.0, sff = 0.0, sy = 0.0, sfy = 0.0;
+                for (int k = lo; k <= hi; ++k) {
+                    const double u = (ttGrid[size_t(k)] - xT) / halfW;
+                    const double u2 = u * u;
+                    const double f = etaT / (1.0 + u2) + (1.0 - etaT) * std::exp(-M_LN2 * u2);
+                    const double y = yNet[size_t(k)];
+                    n += 1.0;
+                    sf += f;
+                    sff += f * f;
+                    sy += y;
+                    sfy += f * y;
+                }
+                const double det = n * sff - sf * sf;
+                if (n < 5.0 || !(det > 1e-12 * n * sff))
+                    return std::numeric_limits<double>::infinity();
+                const double hT = (n * sfy - sf * sy) / det;
+                if (!(hT > 0.0))
+                    return std::numeric_limits<double>::infinity();
+                const double bT = (sy - hT * sf) / n;
+                double rss = 0.0;
+                for (int k = lo; k <= hi; ++k) {
+                    const double u = (ttGrid[size_t(k)] - xT) / halfW;
+                    const double u2 = u * u;
+                    const double f = etaT / (1.0 + u2) + (1.0 - etaT) * std::exp(-M_LN2 * u2);
+                    const double r = yNet[size_t(k)] - hT * f - bT;
+                    rss += r * r;
+                }
+                if (hOut)
+                    *hOut = hT;
+                return rss;
+            };
+            // The centre moves as far as noise can have moved the apex (as above).
+            const double halfL = hasL ? xApex3 - xL : w0;
+            const double halfR = hasR ? xR - xApex3 : w0;
+            const double shiftWidth = std::max(0.0, std::min(w0, 2.0 * std::min(halfL, halfR)));
+            const double maxShift =
+                    shiftWidth * std::min(0.3, 15.0 * sigmaPk / std::max(hApex3, 1e-12));
+            const double xLo = (halfL > 3.0 * halfR) ? xApex3 : xApex3 - maxShift;
+            const double xHi = (halfR > 3.0 * halfL) ? xApex3 : xApex3 + maxShift;
+            const double wLo = std::max(0.5 * avgStep, 0.4 * w0);
+            const double wHi = 2.5 * w0;
+            double w = w0, eta = 0.5, xc = xApex3, hFit = hApex3;
+            bool fitted = false;
+            for (int outer = 0; outer < 3; ++outer) {
+                setWindow(xc, w);
+                double best = evalFit(w, eta, xc, &hFit);
+                if (!std::isfinite(best))
+                    break;
+                fitted = true;
+                double stepW = 0.12 * w;
+                double stepEta = 0.20;
+                double stepX = std::min(0.10 * w, maxShift);
+                for (int it = 0; it < 30; ++it) {
+                    for (int dir : { -1, 1 }) {
+                        const double cand = std::clamp(w + dir * stepW, wLo, wHi);
+                        double hT = 0.0;
+                        const double r = evalFit(cand, eta, xc, &hT);
+                        if (r < best) {
+                            best = r;
+                            w = cand;
+                            hFit = hT;
+                        }
+                    }
+                    for (int dir : { -1, 1 }) {
+                        const double cand = std::clamp(eta + dir * stepEta, 0.0, 1.0);
+                        double hT = 0.0;
+                        const double r = evalFit(w, cand, xc, &hT);
+                        if (r < best) {
+                            best = r;
+                            eta = cand;
+                            hFit = hT;
+                        }
+                    }
+                    for (int dir : { -1, 1 }) {
+                        const double cand = std::clamp(xc + dir * stepX, xLo, xHi);
+                        double hT = 0.0;
+                        const double r = evalFit(w, eta, cand, &hT);
+                        if (r < best) {
+                            best = r;
+                            xc = cand;
+                            hFit = hT;
+                        }
+                    }
+                    stepW *= 0.7;
+                    stepEta *= 0.7;
+                    stepX *= 0.7;
+                }
+            }
+            if (fitted) {
+                fwhmObs = w;
+                bestEta = eta;
+                hApex = hFit;
+                xApex = xc;
+            } else {
+                fwhmObs = w0;
+            }
         }
 
         const double thRad = 0.5 * xApex * (M_PI / 180.0);

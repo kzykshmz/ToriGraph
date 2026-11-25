@@ -82,9 +82,36 @@ void registerSmoothNoticeTranslationsOnce()
         "X が等間隔ではありません (刻みのずれ最大 %1 %)。%2 は X 値ではなく点番号で処理するため、X 方向の窓幅が場所によって変わります。");
     reg("FFT smoothing assumes equal X spacing; the spacing of the first two points was used.",
         "FFT 平滑化は X の等間隔を前提とし、先頭 2 点の間隔を使いました。");
+    reg("Gaussian smoothing", "ガウス平滑化");
 }
 
 } // namespace
+
+QString SmoothFilter::indexSmoothingXNotice(const std::vector<double> &x, const QString &methodName)
+{
+    registerSmoothNoticeTranslationsOnce();
+    const size_t n = x.size();
+    if (n < 3)
+        return QString();
+    const double meanStep = (x[n - 1] - x[0]) / double(n - 1);
+    bool monotonic = true;
+    double maxDevPct = 0.0;
+    for (size_t i = 1; i < n; ++i) {
+        const double dx = x[i] - x[i - 1];
+        if (!(dx * meanStep > 0.0))
+            monotonic = false;
+        if (std::fabs(meanStep) > 0.0)
+            maxDevPct = std::max(maxDevPct, 100.0 * std::fabs(dx - meanStep) / std::fabs(meanStep));
+    }
+    const QString name = methodName.isEmpty() ? tr("Gaussian smoothing") : methodName;
+    if (!monotonic)
+        return tr("X is not monotonic; %1 used the point order, not the X values.").arg(name);
+    if (maxDevPct > 0.1) {
+        return tr("X is not equally spaced (largest step deviation %1 %); %2 uses the point index, not the X values, so the window width varies along X.")
+                .arg(QString::number(maxDevPct, 'g', 3), name);
+    }
+    return QString();
+}
 
 QString SmoothFilter::logInfo()
 {

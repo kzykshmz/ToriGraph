@@ -670,5 +670,6 @@ int runSuite96XrdPeaksAndUnsortedDiff(ApplicationWindow *mw);
 int runSuite97PlotDataFidelity(ApplicationWindow *mw);
 int runSuite98RpcImportRobustness(ApplicationWindow *mw);
 int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw);
+int runSuite100NumericsRound2(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

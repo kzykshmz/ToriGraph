@@ -924,11 +924,44 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
         if (params.contains(QStringLiteral("x")) && !params.value(QStringLiteral("x")).isNull()) {
+            const double xq = params.value(QStringLiteral("x")).toDouble();
+            // X that goes out and back (loading/unloading, hysteresis, CV): sorting by X and
+            // averaging equal X mixed the branches and returned a value on neither of them.
+            // Each branch's value is returned instead, in row order, as findXFromY does for Y;
+            // 'y' holds a value only when one branch reaches x. Many changes of direction
+            // (more than one per 4 points, as for differentiate) are rows in no particular
+            // order: those are sorted by X as before, with a notice.
+            int nPts = 0;
+            const int nTurns = CurveMathTools::countXTurns(g, curveTitle, &nPts);
+            if (nTurns > 0 && 4 * nTurns <= nPts) {
+                const QVector<double> ysAt = CurveMathTools::findYValuesFromX(g, curveTitle, xq);
+                outResult[QStringLiteral("ok")] = !ysAt.isEmpty();
+                outResult[QStringLiteral("y")] =
+                        (ysAt.size() == 1) ? safeJsonDouble(ysAt.first()) : QJsonValue::Null;
+                outResult[QStringLiteral("y_values")] = toJsonArray(ysAt);
+                outResult[QStringLiteral("notice")] =
+                        QStringLiteral("X turns back %1 time(s); the curve has %2 value(s) at x = %3, "
+                                       "one per branch in row order (y_values)%4.")
+                                .arg(nTurns)
+                                .arg(ysAt.size())
+                                .arg(xq, 0, 'g', 10)
+                                .arg(ysAt.size() > 1 ? QStringLiteral("; 'y' is null because "
+                                                                      "the value is not unique")
+                                                     : QString());
+                return true;
+            }
             bool ok = false;
-            const double yVal = CurveMathTools::findYFromX(
-                    g, curveTitle, params.value(QStringLiteral("x")).toDouble(), &ok);
+            const double yVal = CurveMathTools::findYFromX(g, curveTitle, xq, &ok);
             outResult[QStringLiteral("ok")] = ok;
             outResult[QStringLiteral("y")] = ok ? safeJsonDouble(yVal) : QJsonValue::Null;
+            if (nTurns > 0) {
+                outResult[QStringLiteral("notice")] =
+                        QStringLiteral("X is not in order (%1 changes of direction in %2 points); "
+                                       "the points were sorted by X (equal X averaged) before "
+                                       "interpolating.")
+                                .arg(nTurns)
+                                .arg(nPts);
+            }
             return true;
         }
         if (params.contains(QStringLiteral("y")) && !params.value(QStringLiteral("y")).isNull()) {
@@ -1386,11 +1419,123 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                    : QJsonValue(0));
                 const int tCol = resolveColumnIndex(t, tAxisSpec, true);
                 Column *tc = t->column(tCol);
+                // Peak temperature of a spectrum. The largest sample is the peak only without
+                // noise: with 2 % noise at a 1 K step it wandered by up to 3.4 K and Ea came out
+                // 91 kJ/mol instead of 100. With noise (the slope changes sign on more than 5 %
+                // of the samples) a parabola is fitted by least squares to the samples around
+                // the maximum of a 5-point moving average down to 80 % of the peak height (lower,
+                // down to 50 %, when the noise is larger than 4 % of the height), and its vertex
+                // is the peak temperature. Noise-free spectra keep the largest sample as before.
+                auto spectrumPeakT = [](std::vector<std::pair<double, double>> pts) -> double {
+                    const int n = int(pts.size());
+                    if (n == 0)
+                        return std::numeric_limits<double>::quiet_NaN();
+                    std::stable_sort(pts.begin(), pts.end(),
+                                     [](const std::pair<double, double> &a,
+                                        const std::pair<double, double> &b) {
+                                         return a.first < b.first;
+                                     });
+                    int iMax = 0;
+                    for (int k = 1; k < n; ++k) {
+                        if (pts[size_t(k)].second > pts[size_t(iMax)].second)
+                            iMax = k;
+                    }
+                    const double tArgmax = pts[size_t(iMax)].first;
+                    if (n < 7)
+                        return tArgmax;
+                    int nTurns = 0;
+                    int prevSign = 0;
+                    for (int k = 1; k < n; ++k) {
+                        const double dy = pts[size_t(k)].second - pts[size_t(k - 1)].second;
+                        const int sign = (dy > 0.0) ? 1 : (dy < 0.0 ? -1 : 0);
+                        if (sign == 0)
+                            continue;
+                        if (prevSign != 0 && sign != prevSign)
+                            ++nTurns;
+                        prevSign = sign;
+                    }
+                    if (nTurns < std::max(3.0, 0.05 * n))
+                        return tArgmax;
+                    // Noise: robust spread of the second-difference residual.
+                    std::vector<double> res2;
+                    res2.reserve(size_t(n));
+                    for (int k = 1; k + 1 < n; ++k) {
+                        res2.push_back(pts[size_t(k)].second
+                                       - 0.5 * (pts[size_t(k - 1)].second + pts[size_t(k + 1)].second));
+                    }
+                    auto median = [](std::vector<double> v) {
+                        auto mid = v.begin() + v.size() / 2;
+                        std::nth_element(v.begin(), mid, v.end());
+                        return *mid;
+                    };
+                    const double med = median(res2);
+                    for (double &v : res2)
+                        v = std::fabs(v - med);
+                    const double sigma = 1.4826 * median(res2) / std::sqrt(1.5);
+                    const int m = 2;
+                    std::vector<double> sm(static_cast<size_t>(n), 0.0);
+                    for (int k = 0; k < n; ++k) {
+                        const int lo = std::max(0, k - m);
+                        const int hi = std::min(n - 1, k + m);
+                        double s = 0.0;
+                        for (int j = lo; j <= hi; ++j)
+                            s += pts[size_t(j)].second;
+                        sm[size_t(k)] = s / double(hi - lo + 1);
+                    }
+                    const int i0 = int(std::max_element(sm.begin(), sm.end()) - sm.begin());
+                    const double base = *std::min_element(sm.begin(), sm.end());
+                    const double amp = sm[size_t(i0)] - base;
+                    if (!(amp > 0.0))
+                        return tArgmax;
+                    const double drop = std::clamp(5.0 * sigma / amp, 0.2, 0.5);
+                    const double level = base + (1.0 - drop) * amp;
+                    int lo = i0, hi = i0;
+                    while (lo > 0 && sm[size_t(lo - 1)] >= level)
+                        --lo;
+                    while (hi < n - 1 && sm[size_t(hi + 1)] >= level)
+                        ++hi;
+                    lo = std::max(0, std::min(lo, i0 - 2));
+                    hi = std::min(n - 1, std::max(hi, i0 + 2));
+                    if (hi - lo + 1 < 5)
+                        return tArgmax;
+                    // y = a u^2 + b u + c with u = T - T(i0), least squares.
+                    const double t0 = pts[size_t(i0)].first;
+                    double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, sy = 0, suy = 0, su2y = 0;
+                    for (int k = lo; k <= hi; ++k) {
+                        const double u = pts[size_t(k)].first - t0;
+                        const double y = pts[size_t(k)].second;
+                        const double u2 = u * u;
+                        s0 += 1.0;
+                        s1 += u;
+                        s2 += u2;
+                        s3 += u2 * u;
+                        s4 += u2 * u2;
+                        sy += y;
+                        suy += u * y;
+                        su2y += u2 * y;
+                    }
+                    // Cramer's rule on the normal equations [s4 s3 s2; s3 s2 s1; s2 s1 s0].
+                    const double det = s4 * (s2 * s0 - s1 * s1) - s3 * (s3 * s0 - s1 * s2)
+                            + s2 * (s3 * s1 - s2 * s2);
+                    if (!(std::fabs(det) > 0.0))
+                        return t0;
+                    const double a = (su2y * (s2 * s0 - s1 * s1) - s3 * (suy * s0 - s1 * sy)
+                                      + s2 * (suy * s1 - s2 * sy))
+                            / det;
+                    const double b = (s4 * (suy * s0 - s1 * sy) - su2y * (s3 * s0 - s1 * s2)
+                                      + s2 * (s3 * sy - suy * s2))
+                            / det;
+                    if (!(a < 0.0))
+                        return t0;
+                    const double uv = -b / (2.0 * a);
+                    const double uLo = pts[size_t(lo)].first - t0;
+                    const double uHi = pts[size_t(hi)].first - t0;
+                    return (uv >= uLo && uv <= uHi) ? t0 + uv : t0;
+                };
                 for (int i = 0; i < ra.size(); ++i) {
                     const int yIdx = resolveColumnIndex(t, ya[i], true);
                     Column *yc = t->column(yIdx);
-                    double bestY = -std::numeric_limits<double>::infinity();
-                    double bestT = std::numeric_limits<double>::quiet_NaN();
+                    std::vector<std::pair<double, double>> specPts;
                     for (int r = 0; r < t->numRows(); ++r) {
                         if (!tc || !yc || tc->isInvalid(r) || tc->isMasked(r) || yc->isInvalid(r)
                             || yc->isMasked(r))
@@ -1398,11 +1543,11 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         const double tv = t->cell(r, tCol);
                         const double yv = t->cell(r, yIdx);
                         if (std::isfinite(tv) && std::isfinite(yv) && tv >= tempMinFilter
-                            && tv <= tempMaxFilter && yv > bestY) {
-                            bestY = yv;
-                            bestT = tv;
+                            && tv <= tempMaxFilter) {
+                            specPts.emplace_back(tv, yv);
                         }
                     }
+                    const double bestT = spectrumPeakT(std::move(specPts));
                     if (std::isfinite(bestT)) {
                         rates.append(parseFiniteCoordDouble(ra[i], QStringLiteral("heating_rates"),
                                                             1e12));
@@ -2495,7 +2640,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             .arg(rawPh));
         }
 
-        // Collect valid unmasked groups with >= 2 finite observations first
+        // Collect the groups with at least one valid unmasked finite value. A group of one value
+        // enters the ANOVA as in the textbook test (between-group sum of squares, N - k); it
+        // used to be dropped without a word (A(5), B(5), C(1) gave F of A and B alone).
         struct AnovaGroupData
         {
             QString label;
@@ -2516,13 +2663,12 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         gv.push_back(v);
                 }
             }
-            // Only include groups with >= 2 valid observations so singletons never corrupt df1/df2
-            if (gv.size() >= 2) {
+            if (!gv.empty()) {
                 const double m = std::accumulate(gv.begin(), gv.end(), 0.0) / double(gv.size());
                 double ss = 0.0;
                 for (double v : gv)
                     ss += (v - m) * (v - m);
-                const double s2 = ss / double(gv.size() - 1);
+                const double s2 = (gv.size() > 1) ? ss / double(gv.size() - 1) : 0.0;
                 for (double v : gv)
                     grandSum += v;
                 N += static_cast<int>(gv.size());
@@ -2531,7 +2677,19 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         if (groups.size() < 2) {
             throwInvalidParams(QStringLiteral(
-                    "One-way ANOVA requires at least 2 groups each having >= 2 valid unmasked numeric values."));
+                    "One-way ANOVA requires at least 2 groups with valid unmasked numeric values."));
+        }
+        if (N <= static_cast<int>(groups.size())) {
+            throwInvalidParams(
+                    QStringLiteral("One-way ANOVA has no within-group degrees of freedom: all %1 "
+                                   "groups have a single value (N - k = 0). At least one group "
+                                   "needs 2 or more values.")
+                            .arg(groups.size()));
+        }
+        QStringList singletonGroups;
+        for (const auto &gItem : groups) {
+            if (gItem.vals.size() == 1)
+                singletonGroups << gItem.label;
         }
 
         int controlIdx = 0;
@@ -2779,11 +2937,15 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         comps.push_back({ ga.label, gb.label, diff, seQ, qStat, double(df2), pRaw,
                                           pAdj });
                     } else if (canonicalPosthoc == QStringLiteral("games_howell")) {
-                        const double va = ga.var / na;
-                        const double vb = gb.var / nb;
+                        // A group of one value has no variance of its own: the pooled
+                        // within-group variance stands in, with its N - k degrees of freedom.
+                        const double va = ((na > 1.0) ? ga.var : msw) / na;
+                        const double vb = ((nb > 1.0) ? gb.var : msw) / nb;
+                        const double dfa = (na > 1.0) ? na - 1.0 : double(df2);
+                        const double dfb = (nb > 1.0) ? nb - 1.0 : double(df2);
                         const double vSum = va + vb;
                         const double seQ = (vSum > 0.0) ? std::sqrt(0.5 * vSum) : 0.0;
-                        const double denom = (va * va) / (na - 1.0) + (vb * vb) / (nb - 1.0);
+                        const double denom = (va * va) / dfa + (vb * vb) / dfb;
                         const double dfW = (denom > 0.0) ? ((vSum * vSum) / denom) : (na + nb - 2.0);
                         const double qStat = (seQ > 0.0) ? (std::abs(diff) / seQ) : 0.0;
                         const double tStat = qStat / std::sqrt(2.0);
@@ -2795,12 +2957,15 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                 : pRaw;
                         comps.push_back({ ga.label, gb.label, diff, seQ, qStat, dfW, pRaw, pAdj });
                     } else {
-                        // Welch t-test + Holm-Bonferroni step-down adjustment
-                        const double va = ga.var / na;
-                        const double vb = gb.var / nb;
+                        // Welch t-test + Holm-Bonferroni step-down adjustment (a group of one
+                        // value: pooled within-group variance, N - k degrees of freedom)
+                        const double va = ((na > 1.0) ? ga.var : msw) / na;
+                        const double vb = ((nb > 1.0) ? gb.var : msw) / nb;
+                        const double dfa = (na > 1.0) ? na - 1.0 : double(df2);
+                        const double dfb = (nb > 1.0) ? nb - 1.0 : double(df2);
                         const double vSum = va + vb;
                         const double seW = (vSum > 0.0) ? std::sqrt(vSum) : 0.0;
-                        const double denom = (va * va) / (na - 1.0) + (vb * vb) / (nb - 1.0);
+                        const double denom = (va * va) / dfa + (vb * vb) / dfb;
                         const double dfW = (denom > 0.0) ? ((vSum * vSum) / denom) : (na + nb - 2.0);
                         const double tStat = (seW > 0.0) ? (std::abs(diff) / seW) : 0.0;
                         const double pRaw = (seW > 0.0 && dfW > 0.0)
@@ -2851,6 +3016,18 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         outResult[QStringLiteral("p_value")] = safeJsonDouble(pVal);
         outResult[QStringLiteral("df_between")] = df1;
         outResult[QStringLiteral("df_within")] = df2;
+        if (!singletonGroups.isEmpty()) {
+            outResult[QStringLiteral("notice")] =
+                    QStringLiteral("Group(s) %1 have a single value: they enter the ANOVA (N - k) "
+                                   "but not the within-group variance%2.")
+                            .arg(singletonGroups.join(QStringLiteral(", ")))
+                            .arg((canonicalPosthoc == QStringLiteral("holm")
+                                  || canonicalPosthoc == QStringLiteral("games_howell"))
+                                         ? QStringLiteral("; in the Welch / Games-Howell "
+                                                          "comparisons their variance is the "
+                                                          "pooled within-group variance")
+                                         : QString());
+        }
         outResult[QStringLiteral("comparisons")] = compArr;
         outResult[QStringLiteral("table")] = repTbl->name();
         outResult[QStringLiteral("report")] = extractTableAsJson(repTbl);
@@ -3023,6 +3200,11 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         outResult[QStringLiteral("ok")] = np.valid;
         outResult[QStringLiteral("test")] = np.chosenTestName;
+        if (!np.valid) {
+            outResult[QStringLiteral("message")] = np.message.isEmpty()
+                    ? QStringLiteral("The nonparametric test could not be run on these columns.")
+                    : np.message;
+        }
         outResult[QStringLiteral("statistic")] = safeJsonDouble(np.statistic);
         outResult[QStringLiteral("p_value")] = safeJsonDouble(np.pValue);
         if (annMl && annG)
@@ -3901,6 +4083,36 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
             return cnt;
         };
+        // A column that does not vary over the rows a pair has in common (a constant column)
+        // has no correlation: r and p are null, not r = 0 and p = 1 (the heatmap matrix keeps 0
+        // as its colour). p is also null when fewer than 3 rows leave no degrees of freedom.
+        auto pairVaries = [&](int idxA, int idxB) -> bool {
+            if (idxA < 0 || idxA >= colIdxs.size() || idxB < 0 || idxB >= colIdxs.size())
+                return false;
+            Column *cA = t->column(colIdxs[idxA]);
+            Column *cB = t->column(colIdxs[idxB]);
+            if (!cA || !cB)
+                return false;
+            bool first = true, variesA = false, variesB = false;
+            double a0 = 0.0, b0 = 0.0;
+            for (int r = 0; r < t->numRows(); ++r) {
+                if (cA->isInvalid(r) || cA->isMasked(r) || cB->isInvalid(r) || cB->isMasked(r))
+                    continue;
+                const double a = t->cell(r, colIdxs[idxA]);
+                const double b = t->cell(r, colIdxs[idxB]);
+                if (!std::isfinite(a) || !std::isfinite(b))
+                    continue;
+                if (first) {
+                    a0 = a;
+                    b0 = b;
+                    first = false;
+                } else {
+                    variesA = variesA || a != a0;
+                    variesB = variesB || b != b0;
+                }
+            }
+            return variesA && variesB;
+        };
         QJsonArray rRows, pRows;
         if (corrM) {
             const int k = corrM->numRows();
@@ -3908,13 +4120,18 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 QJsonArray rRow, pRow;
                 for (int j = 0; j < corrM->numCols(); ++j) {
                     const double rv = corrM->cell(i, j);
+                    if (!pairVaries(i, j)) {
+                        rRow.append(QJsonValue::Null);
+                        pRow.append(QJsonValue::Null);
+                        continue;
+                    }
                     rRow.append(safeJsonDouble(rv));
                     if (i == j) {
                         pRow.append(0.0);
                     } else {
                         const int nij = countPairwiseValid(i, j);
                         if (nij < 3 || !std::isfinite(rv)) {
-                            pRow.append(1.0);
+                            pRow.append(QJsonValue::Null);
                         } else {
                             const double df = double(nij - 2);
                             const double rSafe = std::clamp(rv, -0.9999999, 0.9999999);

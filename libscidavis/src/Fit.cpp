@@ -2075,16 +2075,8 @@ bool Fit::dataLooksLikeDip(const std::vector<double> &y)
     const size_t n = v.size();
     if (n < 3)
         return false;
-    // The extremes are the k-th smallest / largest values (k = 3 .. 5, growing with the point
-    // count), not the single lowest / highest point: one or two outliers (dropped readings at 0
-    // under a peak of +400 on a baseline of 1000) must not turn an upward peak into a dip. A
-    // real peak or dip spans several points and keeps most of its depth in the k-th value.
     std::vector<double> sorted = v;
     std::sort(sorted.begin(), sorted.end());
-    const size_t kExt = std::min<size_t>(std::max<size_t>(3, n / 50), 5);
-    const size_t kIdx = std::min(kExt, n / 2) - 1;
-    const double yMin = sorted[kIdx];
-    const double yMax = sorted[n - 1 - kIdx];
 
     // Baseline 1: the end points (mean of the first and last 5 %, at least one point each).
     const size_t k = std::max<size_t>(1, n / 20);
@@ -2095,6 +2087,31 @@ bool Fit::dataLooksLikeDip(const std::vector<double> &y)
 
     // Baseline 2: the median.
     const double median = sorted[n / 2];
+
+    // The extremes. One or two outliers (dropped readings at 0 under a peak of +400 on a
+    // baseline of 1000) must not turn an upward peak into a dip, so the k-th smallest / largest
+    // values are used (k = 3 .. 5, growing with the point count, at most a quarter of the
+    // points): a peak or dip several points wide keeps most of its depth there. But a peak or
+    // dip only 1-2 points wide has no depth left at the k-th value, and the decision fell to the
+    // noise ([10]*9 + [2, 3] + [10]*9 and [10, 9, 2, 9, 10] were not dips; at n = 5-7 k reached
+    // the median; an upward peak of FWHM 1 point among 20 was a dip in 9.5 % of noisy cases).
+    // So the k-th values are used only when they still show a feature clearly above the noise
+    // (5 sigma, sigma from the median absolute difference of neighbours); otherwise the feature
+    // is that narrow one and the true lowest / highest values decide.
+    const size_t kExt = std::min<size_t>(std::max<size_t>(3, n / 50), 5);
+    const size_t kIdx = std::min(kExt - 1, (n - 1) / 4);
+    std::vector<double> absDiff;
+    absDiff.reserve(n - 1);
+    for (size_t i = 0; i + 1 < n; ++i)
+        absDiff.push_back(std::fabs(v[i + 1] - v[i]));
+    std::nth_element(absDiff.begin(), absDiff.begin() + (n - 1) / 2, absDiff.end());
+    // Median |difference| of two independent normal samples is 0.954 sigma.
+    const double sigma = absDiff[(n - 1) / 2] / 0.954;
+    const double yMinK = sorted[kIdx];
+    const double yMaxK = sorted[n - 1 - kIdx];
+    const bool useK = kIdx > 0 && std::max(median - yMinK, yMaxK - median) > 5.0 * sigma;
+    const double yMin = useK ? yMinK : sorted.front();
+    const double yMax = useK ? yMaxK : sorted.back();
 
     // A dip only when both baselines agree, so that a broad peak whose median lies high on
     // the peak (end points still low) keeps the usual upward guess.

@@ -32,6 +32,8 @@
 #include "Filter.h"
 #include <gsl/gsl_matrix_double.h>
 
+#include <vector>
+
 class SmoothFilter : public Filter
 {
     Q_OBJECT
@@ -68,6 +70,10 @@ public:
 
     //! Notice about how X was treated (non-uniform / non-monotonic spacing); empty if none.
     QString xHandlingNotice() const { return d_notice; }
+
+    //! The same notice for a smoother that works on the point index (e.g. the Gaussian kernel of
+    //! signal.smooth): non-monotonic or unequally spaced X; empty if X is equally spaced.
+    static QString indexSmoothingXNotice(const std::vector<double> &x, const QString &methodName);
 
 protected:
     QString logInfo() override;

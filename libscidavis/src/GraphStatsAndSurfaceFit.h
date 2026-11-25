@@ -133,6 +133,7 @@ public:
         double statistic = 0.0; // U, W, H, or F/t
         double pValue = 1.0;
         Table *reportTable = nullptr;
+        QString message; // why the test could not be run (valid == false)
     };
     struct KMeansResult {
         bool valid = false;

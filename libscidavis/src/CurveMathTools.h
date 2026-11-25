@@ -66,6 +66,11 @@ public:
                                                    Table **outTable = nullptr);
     static QVector<double> findXFromY(Graph *g, const QString &curveTitle, double targetY);
     static double findYFromX(Graph *g, const QString &curveTitle, double targetX, bool *ok = nullptr);
+    //! Changes of direction of X in row order (0: monotonic). *nPoints gets the point count.
+    static int countXTurns(Graph *g, const QString &curveTitle, int *nPoints = nullptr);
+    //! Y at targetX on every branch of a curve whose X goes out and back, in row order
+    //! (linear interpolation within each row segment, like findXFromY).
+    static QVector<double> findYValuesFromX(Graph *g, const QString &curveTitle, double targetX);
     static double polygonArea(Graph *g, const QString &curveTitle, bool mathematicalSigned = false);
     static double curveArcLength(Graph *g, const QString &curveTitle);
 
