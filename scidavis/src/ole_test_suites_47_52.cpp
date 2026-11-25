@@ -3202,8 +3202,17 @@ int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
 
             tRem->askOnCloseEvent(false);
             w50->closeWindow(tRem);
-            CHECK_COND(tblCloseDeleted == 1 && gRem->curves() == 0,
-                       "Suite 50k(a): closing Table before Graph leaked DataCurve!");
+            // Closing the table removes it with an undo step, and the curves that used its
+            // columns are held for that step (Undo puts them back, 2c213ec1): they leave the
+            // graph now and are deleted once, when the step leaves the undo stack.
+            CHECK_COND(gRem->curves() == 0 && tblCloseDeleted == 0,
+                       "Suite 50k(a): closing Table did not take its curves out of the graph "
+                       "for the undo step (curves " << gRem->curves() << ", deleted "
+                                                    << tblCloseDeleted << ")");
+            w50->project()->undoStack()->clear();
+            CHECK_COND(tblCloseDeleted == 1,
+                       "Suite 50k(a): clearing the undo stack after closing the Table leaked "
+                       "DataCurve (deleted " << tblCloseDeleted << ")");
             mlRem->askOnCloseEvent(false);
             w50->closeWindow(mlRem);
 
