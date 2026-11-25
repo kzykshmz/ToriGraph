@@ -133,6 +133,7 @@
 #include <qwt_color_map.h>
 
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 
 #include <math.h>
@@ -265,6 +266,7 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                     if (!isToriAxisUserLocked(d_plot, i))
                         d_plot->setAxisAutoScale(i);
                 }
+                applyLogAutoScalePositiveRange();
             }
             if (d_linked_parent)
                 syncLinkedAxesFromParent();
@@ -1477,29 +1479,38 @@ void Graph::updateScale()
 
 void Graph::updateScale(const MarkerAxisState &axesBefore)
 {
-    const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(QwtPlot::xBottom);
-    QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
+    // With autoscale off, freeze the current xBottom/yLeft ranges. The step handed back to
+    // setAxisScale() is only meaningful for a uniform linear scale: a log engine reads it in
+    // decades (1..1e4 would get step 9), and break / formula-linked / custom-tick / probability
+    // axes have non-uniform majors. Those keep their current ScaleDiv unchanged.
+    auto freezeAxis = [this](int axis) {
+        const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(axis);
+        if (!scDiv)
+            return;
+        const QwtScaleDiv keep = *scDiv;
+        const double lo = keep.lowerBound();
+        const double hi = keep.upperBound();
+        bool uniformLinear = !d_axis_breaks[axis].enabled && !d_weibull_prob_axis[axis]
+                && d_custom_tick_positions[axis].isEmpty();
+        if (uniformLinear) {
+            const QwtScaleEngine *se = d_plot->axisScaleEngine(axis);
+            std::unique_ptr<QwtScaleTransformation> xf(se ? se->transformation() : nullptr);
+            uniformLinear = xf && xf->type() == QwtScaleTransformation::Linear;
+        }
+        if (!uniformLinear) {
+            d_plot->setAxisScale(axis, lo, hi, 0.0);
+            d_plot->setAxisScaleDiv(axis, keep);
+            return;
+        }
+        const QwtValueList lst = keep.ticks(QwtScaleDiv::MajorTick);
+        const double step = (lst.count() >= 2) ? fabs(lst[1] - lst[0]) : 0.0;
+        d_plot->setAxisScale(axis, lo, hi, step);
+    };
 
-    double step = (lst.count() >= 2) ? fabs(lst[1] - lst[0]) : 0.0;
-
-    if (!m_autoscale)
-#if QWT_VERSION >= 0x050200
-        d_plot->setAxisScale(QwtPlot::xBottom, scDiv->lowerBound(), scDiv->upperBound(), step);
-#else
-        d_plot->setAxisScale(QwtPlot::xBottom, scDiv->lBound(), scDiv->hBound(), step);
-#endif
-
-    scDiv = d_plot->axisScaleDiv(QwtPlot::yLeft);
-    lst = scDiv->ticks(QwtScaleDiv::MajorTick);
-
-    step = (lst.count() >= 2) ? fabs(lst[1] - lst[0]) : 0.0;
-
-    if (!m_autoscale)
-#if QWT_VERSION >= 0x050200
-        d_plot->setAxisScale(QwtPlot::yLeft, scDiv->lowerBound(), scDiv->upperBound(), step);
-#else
-        d_plot->setAxisScale(QwtPlot::yLeft, scDiv->lBound(), scDiv->hBound(), step);
-#endif
+    if (!m_autoscale) {
+        freezeAxis(QwtPlot::xBottom);
+        freezeAxis(QwtPlot::yLeft);
+    }
 
     d_plot->updateAxes();
     updateSecondaryAxis(QwtPlot::xTop);

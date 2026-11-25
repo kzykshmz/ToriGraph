@@ -1277,5 +1277,6 @@ private:
     bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
     bool isAuxiliaryOrFitCurve(const QwtPlotCurve *pc, bool skipHiddenTables = true) const;
     void applyZeroSnapOnAutoAxes();
+    void applyLogAutoScalePositiveRange();
 };
 #endif // GRAPH_H

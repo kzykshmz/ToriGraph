@@ -505,10 +505,10 @@ QwtText ScaleDraw::label(double value) const
         stripNegativeZeroString(num);
     } else {
         bool formattedLinear = false;
+        QVector<double> tMaj; // transformed, sorted major tick values (linear axes only)
         if (!isLog10) {
             const QwtValueList maj = scDiv.ticks(QwtScaleDiv::MajorTick);
             if (maj.size() >= 2) {
-                QVector<double> tMaj;
                 tMaj.reserve(maj.size());
                 double maxAbsMaj = 0.0;
                 for (int i = 0; i < maj.size(); ++i) {
@@ -570,16 +570,67 @@ QwtText ScaleDraw::label(double value) const
         }
 
         if (!formattedLinear) {
-            if (v == 0.0) {
-                num = QStringLiteral("0");
-            } else if (std::fabs(v) >= 1.0 && std::fabs(v) <= 99999.5
-                       && std::fabs(v - std::round(v)) <= 1e-7 * std::fabs(v)) {
-                num = cLoc.toString(std::round(v), 'f', 0);
-                stripNegativeZeroString(num);
-            } else {
-                num = cLoc.toString(v, 'g', qMax(1, d_prec));
-                stripNegativeZeroString(num);
+            auto formatAuto = [&cLoc](double x, int prec) -> QString {
+                QString s;
+                if (x == 0.0) {
+                    s = QStringLiteral("0");
+                } else if (std::fabs(x) >= 1.0 && std::fabs(x) <= 99999.5
+                           && std::fabs(x - std::round(x)) <= 1e-7 * std::fabs(x)) {
+                    s = cLoc.toString(std::round(x), 'f', 0);
+                    stripNegativeZeroString(s);
+                } else {
+                    s = cLoc.toString(x, 'g', qMax(1, prec));
+                    stripNegativeZeroString(s);
+                }
+                return s;
+            };
+
+            // Neighbouring major ticks must not share a label (101300/101320/101340 all became
+            // "1.013e+05"; 1.00000/1.00005/1.00010 all became "1"). If this label equals a
+            // neighbour's at the configured precision, raise the significant digits to what the
+            // local tick spacing needs. Labels that are already distinct are left untouched.
+            int prec = d_prec;
+            int idx = -1;
+            for (int i = 0; tMaj.size() >= 2 && i < tMaj.size(); ++i) {
+                const double gap = (i + 1 < tMaj.size()) ? (tMaj[i + 1] - tMaj[i])
+                                                         : (tMaj[i] - tMaj[i - 1]);
+                if (std::fabs(tMaj[i] - v) <= 1e-6 * std::fabs(gap)) {
+                    idx = i;
+                    break;
+                }
             }
+            if (idx >= 0) {
+                QVector<double> nb;
+                if (idx > 0)
+                    nb.append(tMaj[idx - 1]);
+                if (idx + 1 < tMaj.size())
+                    nb.append(tMaj[idx + 1]);
+                auto collides = [&](int p) {
+                    const QString self = formatAuto(v, p);
+                    for (double x : nb) {
+                        if (formatAuto(x, p) == self)
+                            return true;
+                    }
+                    return false;
+                };
+                if (collides(prec)) {
+                    double minGap = 1e300;
+                    double maxAbs = std::fabs(v);
+                    for (double x : nb) {
+                        if (std::fabs(x - v) > 0.0)
+                            minGap = qMin(minGap, std::fabs(x - v));
+                        maxAbs = qMax(maxAbs, std::fabs(x));
+                    }
+                    int need = prec + 1;
+                    if (minGap < 1e300 && maxAbs > 0.0)
+                        need = int(std::ceil(std::log10(maxAbs / minGap))) + 1;
+                    int p = qMin(15, qMax(prec + 1, need));
+                    while (p < 15 && collides(p))
+                        ++p;
+                    prec = p;
+                }
+            }
+            num = formatAuto(v, prec);
         }
     }
 

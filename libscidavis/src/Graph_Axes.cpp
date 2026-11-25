@@ -326,16 +326,41 @@ private:
 class FormulaLinkedScaleTransformation : public QwtScaleTransformation
 {
 public:
-    FormulaLinkedScaleTransformation(const QVector<double> &xp, const QVector<double> &uc)
+    // xp/uc: monotone lookup table parent x -> child u. parentLo/parentHi: the parent axis range
+    // the child axis really spans. They differ from the table ends when the table had to start
+    // at a safe x (e.g. 1e7/x with a parent range starting at 0); positions are then still
+    // measured against the real parent range.
+    FormulaLinkedScaleTransformation(const QVector<double> &xp, const QVector<double> &uc,
+                                     double parentLo = std::numeric_limits<double>::quiet_NaN(),
+                                     double parentHi = std::numeric_limits<double>::quiet_NaN())
         : QwtScaleTransformation(QwtScaleTransformation::Other), d_xp(xp), d_uc(uc)
     {
+        d_parentLo = std::isfinite(parentLo) ? parentLo : (xp.isEmpty() ? 0.0 : xp.first());
+        d_parentHi = std::isfinite(parentHi) ? parentHi : (xp.isEmpty() ? 0.0 : xp.last());
     }
 
     FormulaLinkedScaleTransformation(const FormulaLinkedScaleTransformation &other)
         : QwtScaleTransformation(QwtScaleTransformation::Other),
           d_xp(other.d_xp),
-          d_uc(other.d_uc)
+          d_uc(other.d_uc),
+          d_parentLo(other.d_parentLo),
+          d_parentHi(other.d_parentHi)
     {
+    }
+
+    //! Parent x for a child scale bound s. The child scale bounds are the table ends; the table
+    //! start may be a substitute (safe) x, so map those ends onto the real parent range.
+    double parentXAtScaleBound(double s) const
+    {
+        const double xp = invertUToParentX(s);
+        if (d_xp.size() < 2)
+            return xp;
+        const double tol = 1e-9 * qMax(std::fabs(d_xp.last() - d_xp.first()), 1e-300);
+        if (std::fabs(xp - d_xp.first()) <= tol)
+            return d_parentLo;
+        if (std::fabs(xp - d_xp.last()) <= tol)
+            return d_parentHi;
+        return xp;
     }
 
     QwtScaleTransformation *copy() const override
@@ -438,8 +463,8 @@ public:
     {
         if (!std::isfinite(u))
             return std::numeric_limits<double>::quiet_NaN();
-        const double xpAtS1 = invertUToParentX(s1);
-        const double xpAtS2 = invertUToParentX(s2);
+        const double xpAtS1 = parentXAtScaleBound(s1);
+        const double xpAtS2 = parentXAtScaleBound(s2);
         const double denom = xpAtS2 - xpAtS1;
         if (qAbs(denom) <= 1e-300)
             return p1Px;
@@ -454,8 +479,8 @@ public:
             return std::numeric_limits<double>::quiet_NaN();
         if (qAbs(p2Px - p1Px) <= 1e-15)
             return s1;
-        const double xpAtS1 = invertUToParentX(s1);
-        const double xpAtS2 = invertUToParentX(s2);
+        const double xpAtS1 = parentXAtScaleBound(s1);
+        const double xpAtS2 = parentXAtScaleBound(s2);
         const double t = (px - p1Px) / (p2Px - p1Px);
         const double xp = xpAtS1 + t * (xpAtS2 - xpAtS1);
         return evalFromParentX(xp);
@@ -464,19 +489,23 @@ public:
 private:
     QVector<double> d_xp;
     QVector<double> d_uc;
+    double d_parentLo = 0.0;
+    double d_parentHi = 0.0;
 };
 
 class FormulaLinkedScaleEngine : public QwtLinearScaleEngine
 {
 public:
-    FormulaLinkedScaleEngine(const QVector<double> &xp, const QVector<double> &uc)
-        : d_xp(xp), d_uc(uc)
+    FormulaLinkedScaleEngine(const QVector<double> &xp, const QVector<double> &uc,
+                             double parentLo = std::numeric_limits<double>::quiet_NaN(),
+                             double parentHi = std::numeric_limits<double>::quiet_NaN())
+        : d_xp(xp), d_uc(uc), d_parentLo(parentLo), d_parentHi(parentHi)
     {
     }
 
     QwtScaleTransformation *transformation() const override
     {
-        return new FormulaLinkedScaleTransformation(d_xp, d_uc);
+        return new FormulaLinkedScaleTransformation(d_xp, d_uc, d_parentLo, d_parentHi);
     }
 
     QwtScaleDiv divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
@@ -489,9 +518,9 @@ public:
         const int maxMaj = qBound(2, maxMajSteps, 6);
 
         if (span > 1e-30 && stepSize <= 0.0 && d_xp.size() >= 2 && d_uc.size() >= 2) {
-            const FormulaLinkedScaleTransformation tf(d_xp, d_uc);
-            const double xp0 = tf.invertUToParentX(lo);
-            const double xp1 = tf.invertUToParentX(hi);
+            const FormulaLinkedScaleTransformation tf(d_xp, d_uc, d_parentLo, d_parentHi);
+            const double xp0 = tf.parentXAtScaleBound(lo);
+            const double xp1 = tf.parentXAtScaleBound(hi);
             const double xpSpan = xp1 - xp0;
             if (std::isfinite(xpSpan) && std::fabs(xpSpan) > 1e-30) {
                 double minDx = 1e300;
@@ -688,6 +717,8 @@ public:
 private:
     QVector<double> d_xp;
     QVector<double> d_uc;
+    double d_parentLo;
+    double d_parentHi;
 };
 
 } // namespace
@@ -719,6 +750,18 @@ QwtScaleDiv PiecewiseBreakScaleEngine::divideScale(double x1, double x2, int max
         const int maj1 = qMax(1, qRound(qMax(2, maxMajSteps) * pos));
         const int maj2 = qMax(1, qMax(2, maxMajSteps) - maj1);
 
+        // Per-side step guard: a tiny user step (e.g. 0.001 over 0..100) would create tens of
+        // thousands of major ticks and freeze the O(n^2) label layout. Above 2000 ticks per side
+        // the step falls back to automatic (0). Log sides count decades.
+        auto boundedSideStep = [](double s, double a, double b, bool isLog) -> double {
+            if (!std::isfinite(s) || !(s > 0.0))
+                return 0.0;
+            const double span = isLog ? std::log10(b / a) : (b - a);
+            if (!std::isfinite(span) || std::fabs(span) / s > 2000.0)
+                return 0.0;
+            return s;
+        };
+
         QwtScaleDiv div1;
         const bool logBefore = d_spec.log10Before && lo > 0.0 && bf > lo;
         if (logBefore) {
@@ -727,11 +770,13 @@ QwtScaleDiv PiecewiseBreakScaleEngine::divideScale(double x1, double x2, int max
             const int minBefore = (maxMinSteps >= 1) ? qMax(9, maxMinSteps) : 0;
             QwtLog10ScaleEngine le1;
             div1 = le1.divideScale(lo, bf, majBefore, minBefore,
-                                   d_spec.stepBefore > 0.0 ? d_spec.stepBefore : 0.0);
+                                   boundedSideStep(d_spec.stepBefore, lo, bf, true));
         } else {
             QwtLinearScaleEngine le1;
-            div1 = le1.divideScale(lo, bf, maj1, maxMinSteps,
-                                   d_spec.stepBefore > 0.0 ? d_spec.stepBefore : stepSize);
+            div1 = le1.divideScale(
+                    lo, bf, maj1, maxMinSteps,
+                    boundedSideStep(d_spec.stepBefore > 0.0 ? d_spec.stepBefore : stepSize, lo,
+                                    bf, false));
             if (maxMinSteps == 2)
                 ensureLinearHalfStepMinorTicks(div1);
         }
@@ -744,11 +789,13 @@ QwtScaleDiv PiecewiseBreakScaleEngine::divideScale(double x1, double x2, int max
             const int minAfter = (maxMinSteps >= 1) ? qMax(9, maxMinSteps) : 0;
             QwtLog10ScaleEngine le2;
             div2 = le2.divideScale(bt, hi, majAfter, minAfter,
-                                   d_spec.stepAfter > 0.0 ? d_spec.stepAfter : 0.0);
+                                   boundedSideStep(d_spec.stepAfter, bt, hi, true));
         } else {
             QwtLinearScaleEngine le2;
-            div2 = le2.divideScale(bt, hi, maj2, maxMinSteps,
-                                   d_spec.stepAfter > 0.0 ? d_spec.stepAfter : stepSize);
+            div2 = le2.divideScale(
+                    bt, hi, maj2, maxMinSteps,
+                    boundedSideStep(d_spec.stepAfter > 0.0 ? d_spec.stepAfter : stepSize, bt, hi,
+                                    false));
             if (maxMinSteps == 2)
                 ensureLinearHalfStepMinorTicks(div2);
         }
@@ -2710,10 +2757,98 @@ void Graph::cancelInlineScaleEditor()
         scalePicker->cancelInlineScaleEditor();
 }
 
+void Graph::applyLogAutoScalePositiveRange()
+{
+    if (!d_plot || isPiePlot() || isTernaryPlot())
+        return;
+
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        if (isToriAxisUserLocked(d_plot, a) || !d_plot->axisAutoScale(a)
+            || d_axis_breaks[a].enabled || hasColorScaleOnAxis(a)) {
+            continue;
+        }
+        QwtScaleEngine *se = d_plot->axisScaleEngine(a);
+        if (!se || !Plot::isLog10ScaleEngine(se))
+            continue;
+
+        // Same item set as QwtPlot::updateAxes(): every AutoScale item attached to this axis.
+        const bool isX = (a == QwtPlot::xBottom || a == QwtPlot::xTop);
+        bool hasNonPositive = false;
+        double posLo = std::numeric_limits<double>::infinity();
+        double posHi = 0.0;
+        auto considerPos = [&](double v) {
+            if (std::isfinite(v) && v > 0.0) {
+                posLo = qMin(posLo, v);
+                posHi = qMax(posHi, v);
+            }
+        };
+        const QwtPlotItemList items = d_plot->itemList();
+        for (QwtPlotItem *it : items) {
+            if (!it || !it->testItemAttribute(QwtPlotItem::AutoScale))
+                continue;
+            if ((isX && it->xAxis() != a) || (!isX && it->yAxis() != a))
+                continue;
+            const QwtDoubleRect r = it->boundingRect();
+            const double lo = isX ? qMin(r.left(), r.right()) : qMin(r.top(), r.bottom());
+            const double hi = isX ? qMax(r.left(), r.right()) : qMax(r.top(), r.bottom());
+            if (!(lo <= hi))
+                continue;
+            if (lo > 0.0) {
+                considerPos(lo);
+                considerPos(hi);
+                continue;
+            }
+            hasNonPositive = true;
+            QwtPlotCurve *cv = dynamic_cast<QwtPlotCurve *>(it);
+            if (!cv) {
+                considerPos(hi);
+                continue;
+            }
+            auto *eb = dynamic_cast<QwtErrorPlotCurve *>(cv);
+            const int n = cv->dataSize();
+            for (int k = 0; k < n; ++k) {
+                const double base = isX ? cv->x(k) : cv->y(k);
+                considerPos(base);
+                if (eb) {
+                    const double err = eb->errorValue(k);
+                    if (std::isfinite(err)) {
+                        if (eb->minusSide())
+                            considerPos(base - err);
+                        if (eb->plusSide())
+                            considerPos(base + err);
+                    }
+                }
+            }
+        }
+
+        auto *pe = dynamic_cast<PositiveLog10AutoScaleEngine *>(se);
+        if (!hasNonPositive || !(posLo > 0.0) || !std::isfinite(posLo)) {
+            // All data positive (or nothing positive at all): keep Qwt's default behaviour.
+            if (pe)
+                pe->clearPositiveRange();
+            continue;
+        }
+        if (!pe) {
+            pe = new PositiveLog10AutoScaleEngine();
+            pe->setAttributes(se->attributes());
+            pe->setReference(se->reference());
+            pe->setMargins(se->lowerMargin(), se->upperMargin());
+            pe->setPositiveRange(posLo, posHi);
+            d_plot->setAxisScaleEngine(a, pe); // deletes the previous engine
+        } else {
+            pe->setPositiveRange(posLo, posHi);
+        }
+    }
+}
+
 void Graph::applyZeroSnapOnAutoAxes()
 {
     if (!d_plot || isPiePlot() || isTernaryPlot())
         return;
+
+    // Log axes: autoscale over the strictly positive data only (0/negative values would drag
+    // the lower bound to Qwt's LOG_MIN = 1e-100).
+    applyLogAutoScalePositiveRange();
 
     for (int a = 0; a < QwtPlot::axisCnt; ++a) {
         if (isToriAxisUserLocked(d_plot, a) || !d_plot->axisAutoScale(a)
@@ -2836,9 +2971,23 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
             end += 1.0;
         }
     }
-    if (!std::isfinite(step) || step < 0.0
-        || (step > 0.0 && std::fabs(end - start) / step > 2000.0)) {
+    if (!std::isfinite(step) || step < 0.0) {
         step = 0.0;
+    } else if (step > 0.0) {
+        // Tick-count guard. On a log axis the step is in decades, so count decades instead of
+        // the linear width (1..1e4 with step = 1 is 4 ticks, not 9999). A non-positive log
+        // bound is clamped by the engine itself, so the guard is not applied there.
+        double nSteps = 0.0;
+        if (type) {
+            const double lo = qMin(start, end);
+            const double hi = qMax(start, end);
+            if (lo > 0.0)
+                nSteps = std::fabs(std::log10(hi / lo)) / step;
+        } else {
+            nSteps = std::fabs(end - start) / step;
+        }
+        if (!std::isfinite(nSteps) || nSteps > 2000.0)
+            step = 0.0;
     }
     majorTicks = qBound(1, majorTicks, 100);
     minorTicks = qBound(0, minorTicks, 50);
@@ -3885,7 +4034,8 @@ void Graph::syncLinkedAxesFromParent()
 
         auto applyFormulaAxis = [&](int targetAxis) {
             QwtScaleEngine *se = isMonotone
-                    ? static_cast<QwtScaleEngine *>(new FormulaLinkedScaleEngine(xpTable, ucTable))
+                    ? static_cast<QwtScaleEngine *>(
+                              new FormulaLinkedScaleEngine(xpTable, ucTable, pLo, pHi))
                     : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
             if (shouldInvert)
                 se->setAttribute(QwtScaleEngine::Inverted, true);

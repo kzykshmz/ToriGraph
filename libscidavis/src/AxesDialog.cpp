@@ -383,6 +383,84 @@ double evalAxisScalarOrEmptyFallback(const QString &raw, double fallback, bool *
     return ok ? val : fallback;
 }
 
+// Scale-tab start/end text <-> axis value for date/time axes. Each ScaleDraw reads the value
+// differently: Time = milliseconds after the origin time (TimeScaleDraw), Date = days after the
+// origin date (DateScaleDraw; a QDate Julian day when the origin is invalid), DateTime = absolute
+// Julian day (DateTimeScaleDraw). The origin is parsed from the axis format info the same way
+// Graph::setLabelsDateTimeFormat() does. Time and Date are converted in UTC so that no daylight
+// saving shift enters the round trip; DateTime keeps its local-time conversion.
+const QString kScaleDateTimeTextFormat = QStringLiteral("yyyy-MM-dd hh:mm:ss");
+constexpr double kScaleMsPerDay = 86400000.0;
+constexpr double kScaleJulianUnixEpoch = 2440587.5;
+
+// Frame (value 0) of a Time/Date axis. *julian is set when a Date axis has no valid origin.
+QDateTime dateTimeAxisZero(Graph::AxisType type, const QString &formatInfo, bool *julian)
+{
+    *julian = false;
+    const QString originText = formatInfo.section(QLatin1Char(';'), 0, 0);
+    if (type == Graph::AxisType::Time) {
+        QTime t = originText.isEmpty() ? QTime(12, 0, 0, 0) : QTime::fromString(originText.right(8));
+        if (!t.isValid())
+            t = QTime(0, 0, 0);
+        return QDateTime(QDate(1970, 1, 1), t, Qt::UTC);
+    }
+    const QDate d = QDate::fromString(originText.left(10), QStringLiteral("yyyy-MM-dd"));
+    if (d.isValid())
+        return QDateTime(d, QTime(0, 0, 0), Qt::UTC);
+    *julian = true;
+    return QDateTime();
+}
+
+QString dateTimeAxisValueToText(Graph::AxisType type, const QString &formatInfo, double v)
+{
+    if (!std::isfinite(v))
+        return QString();
+    if (type == Graph::AxisType::Time || type == Graph::AxisType::Date) {
+        bool julian = false;
+        const QDateTime zero = dateTimeAxisZero(type, formatInfo, &julian);
+        if (type == Graph::AxisType::Time) {
+            if (std::fabs(v) > 1e17)
+                return QString();
+            return zero.addMSecs(qint64(std::llround(v))).toString(kScaleDateTimeTextFormat);
+        }
+        if (std::fabs(v) > 1e11)
+            return QString();
+        if (!julian)
+            return zero.addMSecs(qint64(std::llround(v * kScaleMsPerDay)))
+                    .toString(kScaleDateTimeTextFormat);
+        const double day = std::floor(v);
+        const QDateTime dayStart(QDate::fromJulianDay(qint64(day)), QTime(0, 0, 0), Qt::UTC);
+        return dayStart.addMSecs(qint64(std::llround((v - day) * kScaleMsPerDay)))
+                .toString(kScaleDateTimeTextFormat);
+    }
+    return QDateTime::fromMSecsSinceEpoch(
+                   qint64(std::llround((v - kScaleJulianUnixEpoch) * kScaleMsPerDay)))
+            .toString(kScaleDateTimeTextFormat);
+}
+
+bool dateTimeAxisTextToValue(Graph::AxisType type, const QString &formatInfo, const QString &text,
+                             double *out)
+{
+    QDateTime dt = QDateTime::fromString(text.trimmed(), kScaleDateTimeTextFormat);
+    if (!dt.isValid())
+        return false;
+    if (type != Graph::AxisType::Time && type != Graph::AxisType::Date) {
+        *out = dt.toMSecsSinceEpoch() / kScaleMsPerDay + kScaleJulianUnixEpoch;
+        return true;
+    }
+    dt = QDateTime(dt.date(), dt.time(), Qt::UTC);
+    bool julian = false;
+    const QDateTime zero = dateTimeAxisZero(type, formatInfo, &julian);
+    if (type == Graph::AxisType::Time)
+        *out = double(zero.msecsTo(dt));
+    else if (!julian)
+        *out = double(zero.msecsTo(dt)) / kScaleMsPerDay;
+    else
+        *out = double(dt.date().toJulianDay())
+                + double(QTime(0, 0, 0).msecsTo(dt.time())) / kScaleMsPerDay;
+    return true;
+}
+
 } // namespace
 
 AxesDialog::AxesDialog()
@@ -2215,8 +2293,8 @@ bool AxesDialog::updatePlot()
                                                                 : axesType.value(a, Graph::AxisType::Numeric);
             if (aType == Graph::AxisType::Time || aType == Graph::AxisType::Date
                 || aType == Graph::AxisType::DateTime) {
-                QDateTime qdt = QDateTime::fromString(st.start.trimmed(), "yyyy-MM-dd hh:mm:ss");
-                if (!qdt.isValid()) {
+                double dtVal = 0.0;
+                if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.start, &dtVal)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
@@ -2227,9 +2305,8 @@ bool AxesDialog::updatePlot()
                     boxStart->setFocus();
                     return false;
                 }
-                from = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
-                qdt = QDateTime::fromString(st.end.trimmed(), "yyyy-MM-dd hh:mm:ss");
-                if (!qdt.isValid()) {
+                from = QString::number(dtVal, 'f', 16);
+                if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.end, &dtVal)) {
                     generalDialog.setCurrentWidget(scalesPage);
                     axesList->setCurrentRow(r);
                     QMessageBox::critical(
@@ -2240,7 +2317,7 @@ bool AxesDialog::updatePlot()
                     boxEnd->setFocus();
                     return false;
                 }
-                to = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
+                to = QString::number(dtVal, 'f', 16);
             }
             double startVal = 0.0, endVal = 0.0;
             QString exprErr;
@@ -2732,10 +2809,8 @@ void AxesDialog::updateScale()
     case Graph::AxisType::Time:
     case Graph::AxisType::Date:
     case Graph::AxisType::DateTime: {
-        QDateTime qdt = QDateTime::fromMSecsSinceEpoch(round((astart - 2440587.5) * 86400000.));
-        boxStart->setText(qdt.toString("yyyy-MM-dd hh:mm:ss"));
-        qdt = QDateTime::fromMSecsSinceEpoch(round((aend - 2440587.5) * 86400000.));
-        boxEnd->setText(qdt.toString("yyyy-MM-dd hh:mm:ss"));
+        boxStart->setText(dateTimeAxisValueToText(aType, formatInfo.value(a), astart));
+        boxEnd->setText(dateTimeAxisValueToText(aType, formatInfo.value(a), aend));
         break;
     }
     default: {
@@ -4290,14 +4365,13 @@ bool AxesDialog::commitScaleRow(int row)
     case Graph::AxisType::Time:
     case Graph::AxisType::Date:
     case Graph::AxisType::DateTime: {
-        QDateTime qdt = QDateTime::fromString(st.start.trimmed(), "yyyy-MM-dd hh:mm:ss");
-        if (!qdt.isValid())
+        double dtVal = 0.0;
+        if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.start, &dtVal))
             return false;
-        from = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
-        qdt = QDateTime::fromString(st.end.trimmed(), "yyyy-MM-dd hh:mm:ss");
-        if (!qdt.isValid())
+        from = QString::number(dtVal, 'f', 16);
+        if (!dateTimeAxisTextToValue(aType, formatInfo.value(a), st.end, &dtVal))
             return false;
-        to = QString::number(qdt.toMSecsSinceEpoch() / 86400000. + 2440587.5, 'f', 16);
+        to = QString::number(dtVal, 'f', 16);
         break;
     }
     default:

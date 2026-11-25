@@ -222,6 +222,42 @@ private:
     Graph::AxisBreakSpec d_spec;
 };
 
+//! Log10 engine for auto-scaled axes whose data contain zero or negative values.
+//! QwtLog10ScaleEngine::autoScale clamps a non-positive lower bound to LOG_MIN (1e-100), which
+//! stretches the axis over ~100 decades. Graph::applyLogAutoScalePositiveRange() installs this
+//! engine with the range of the strictly positive data so that autoscaling only uses those.
+class PositiveLog10AutoScaleEngine : public QwtLog10ScaleEngine
+{
+public:
+    void setPositiveRange(double lo, double hi)
+    {
+        d_posLo = lo;
+        d_posHi = hi;
+    }
+    void clearPositiveRange() { d_posLo = d_posHi = 0.0; }
+
+    void autoScale(int maxSteps, double &x1, double &x2, double &stepSize) const override
+    {
+        if (d_posLo > 0.0 && d_posHi >= d_posLo && std::isfinite(d_posHi)) {
+            double lo = qMin(x1, x2);
+            double hi = qMax(x1, x2);
+            if (!(lo > 0.0) || !std::isfinite(lo))
+                lo = d_posLo;
+            if (!(hi > 0.0) || !std::isfinite(hi))
+                hi = d_posHi;
+            if (hi < lo)
+                hi = lo;
+            x1 = lo;
+            x2 = hi;
+        }
+        QwtLog10ScaleEngine::autoScale(maxSteps, x1, x2, stepSize);
+    }
+
+private:
+    double d_posLo = 0.0;
+    double d_posHi = 0.0;
+};
+
 class TernaryDiagramItem : public QwtPlotItem
 {
 public:
