@@ -202,16 +202,21 @@ static double computeR2(const std::vector<double> &yObs, const std::vector<doubl
 
     double rss = 0.0;
     double tss = 0.0;
+    double sumSq = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const double r = yObs[i] - yHat[i];
         const double d = yObs[i] - meanY;
         rss += r * r;
         tss += d * d;
+        sumSq += yObs[i] * yObs[i];
     }
-    if (tss <= 1e-30)
-        return (rss <= 1e-24) ? 1.0 : 0.0;
+    // "= 0" relative to the size of the data: rss <= 1e-24 made every fit to data of size 1e-22
+    // perfect (r2 = 1)
+    const bool rssZero = Fit::sumOfSquaresNegligible(rss, sumSq);
+    if (Fit::sumOfSquaresNegligible(tss, sumSq))
+        return rssZero ? 1.0 : 0.0;
     double r2 = 1.0 - (rss / tss);
-    if (r2 < 0.0 && rss <= 1e-24)
+    if (r2 < 0.0 && rssZero)
         r2 = 1.0;
     return r2;
 }
@@ -486,7 +491,9 @@ static bool runLmSolver(int modelType, const std::vector<double> &x, const std::
                 hitLimit = false;
                 break;
             }
-            if (gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8) == GSL_SUCCESS) {
+            // Relative step test (Fit::lmStepConverged): the absolute part 1e-8 alone took any
+            // step of parameters of size 1e-22 (y of that size) for convergence.
+            if (Fit::lmStepConverged(solver, solver->dx, solver->x, 1e-8)) {
                 deltaConverged = true;
                 hitLimit = false;
                 break;

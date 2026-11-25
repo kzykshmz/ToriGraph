@@ -2,6 +2,8 @@
 #include "PythonAutomationServer.h"
 #include "NonLinearFit.h"
 #include "Interpolation.h"
+#include "GraphStatsAndSurfaceFit.h"
+#include "OriginGadgets.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -51,6 +53,13 @@
 //        step test passed for any step of such small parameters. The single, global and
 //        implicit ODR fits now give the linear least squares line there and at 1e+20. A
 //        negative r2 (a fit further from the data than their mean) is noted.
+//   106i the surface fit (Custom2D a*x+b*y+c from a = b = c = 1) stopped "converged" on the
+//        absolute step test 1e-8 at data of size 1e-22 / 1e-30, and r2 was undefined for
+//        tss < 1e-30; it gives the least squares plane and its r2 now (and at 1e+20).
+//   106j the ROI quick fit gadget (Gauss): the same step test, and r2 = 1 for rss <= 1e-24;
+//        at size 1e-22 and 1e+20 it equals the fit at size 1.
+//   106k Curve_R2 / Global_R2 of the global fit were blank for tss < 1e-30 (data of size
+//        1e-22); constant data stay undefined unless the model reproduces them (R2 = 1).
 // =============================================================================
 namespace {
 
@@ -969,6 +978,246 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                       << notes.toStdString() << "'\n";
             EXPECT106(num(r.value("r2")) < 0.0 && notes.contains(QLatin1String("R^2")),
                       "106h: a negative r2 must be explained in the notes");
+        }
+
+        // 106i: the surface fit (analysis.fit_surface_3d, Analysis > Surface Fit) stopped on the
+        // same absolute step test (1e-8). Custom "a*x+b*y+c" starts at a = b = c = 1; on data of
+        // size 1e-22 / 1e-30 it must reach the linear least squares plane, at 1e+20 as well, and
+        // r2 (0 < tss < 1e-30 was undefined) must be that of the plane.
+        {
+            std::vector<double> sx, sy, sBase;
+            SplitMix106 rng(31);
+            for (int i = 0; i < 9; ++i) {
+                for (int j = 0; j < 9; ++j) {
+                    const double xv = 0.5 * i, yv = 0.4 * j;
+                    sx.push_back(xv);
+                    sy.push_back(yv);
+                    sBase.push_back(1.5 * xv - 0.8 * yv + 2.0 + 0.3 * std::sin(1.7 * xv * yv)
+                                    + 0.05 * rng.gauss());
+                }
+            }
+            for (double sc : { 1e-22, 1e-30, 1e+20 }) {
+                std::vector<double> sz;
+                for (double v : sBase)
+                    sz.push_back(sc * v);
+                // normal equations of z = a x + b y + c
+                double A[3][4] = {};
+                for (size_t i = 0; i < sz.size(); ++i) {
+                    const double row[3] = { sx[i], sy[i], 1.0 };
+                    for (int r = 0; r < 3; ++r) {
+                        for (int c = 0; c < 3; ++c)
+                            A[r][c] += row[r] * row[c];
+                        A[r][3] += row[r] * sz[i];
+                    }
+                }
+                for (int k = 0; k < 3; ++k)
+                    for (int r = k + 1; r < 3; ++r) {
+                        const double f = A[r][k] / A[k][k];
+                        for (int c = k; c < 4; ++c)
+                            A[r][c] -= f * A[k][c];
+                    }
+                double ref[3];
+                for (int k = 2; k >= 0; --k) {
+                    double s = A[k][3];
+                    for (int c = k + 1; c < 3; ++c)
+                        s -= A[k][c] * ref[c];
+                    ref[k] = s / A[k][k];
+                }
+                double mz = 0.0;
+                for (double v : sz)
+                    mz += v;
+                mz /= double(sz.size());
+                double rss = 0.0, tss = 0.0;
+                for (size_t i = 0; i < sz.size(); ++i) {
+                    const double e = sz[i] - (ref[0] * sx[i] + ref[1] * sy[i] + ref[2]);
+                    rss += e * e;
+                    tss += (sz[i] - mz) * (sz[i] - mz);
+                }
+                const double r2Ref = 1.0 - rss / tss;
+
+                const QString tName = QStringLiteral("T106_S%1").arg(++tableNo);
+                Table *t = w->newTable(int(sz.size()), 3, tName, tName);
+                EXPECT106(t != nullptr, "106i: table not created");
+                if (!t)
+                    continue;
+                t->setColName(0, QStringLiteral("X"));
+                t->setColName(1, QStringLiteral("Y"));
+                t->setColName(2, QStringLiteral("Z"));
+                for (int i = 0; i < int(sz.size()); ++i) {
+                    t->setCell(i, 0, sx[size_t(i)]);
+                    t->setCell(i, 1, sy[size_t(i)]);
+                    t->setCell(i, 2, sz[size_t(i)]);
+                }
+                const GraphStatsAndSurfaceFit::SurfaceFitResult sf =
+                        GraphStatsAndSurfaceFit::fitSurfaceXYZ(
+                                w, t, QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Z"),
+                                GraphStatsAndSurfaceFit::Custom2D, QStringLiteral("a*x+b*y+c"), 8);
+                auto pv = [&](const char *nm) {
+                    const int k = sf.paramNames.indexOf(QLatin1String(nm));
+                    return (k >= 0 && k < sf.params.size()) ? sf.params[k] : nan;
+                };
+                std::cout << "[INFO] 106i surface scale " << sc << ": converged " << sf.converged
+                          << " (" << sf.convergenceNote.toStdString() << "), a " << pv("a")
+                          << " b " << pv("b") << " c " << pv("c") << " (ref " << ref[0] << " "
+                          << ref[1] << " " << ref[2] << "), r2 " << sf.rSquare << " (ref "
+                          << r2Ref << ")\n";
+                EXPECT106(sf.converged && relClose(pv("a"), ref[0], 1e-6)
+                                  && relClose(pv("b"), ref[1], 1e-6)
+                                  && relClose(pv("c"), ref[2], 1e-6)
+                                  && std::fabs(sf.rSquare - r2Ref) < 1e-6,
+                          "106i: surface scale " << sc
+                                                 << ": must give the least squares plane and r2");
+            }
+        }
+
+        // 106j: the ROI quick fit gadget (Gauss) stopped on the absolute step test 1e-8 too, and
+        // its r2 was 1 whenever rss <= 1e-24. On data of size 1e-22 and 1e+20 it must give the
+        // centre, FWHM and r2 of the same data at size 1, and the amplitude scaled.
+        {
+            std::vector<double> gy0;
+            SplitMix106 rng(41);
+            for (double xv : hx)
+                gy0.push_back(0.2 + 3.0 * std::exp(-2.0 * std::pow((xv - 4.2) / 1.1, 2))
+                              + 0.03 * rng.gauss());
+            struct QF
+            {
+                bool conv = false;
+                double r2 = nan, xc = nan, fwhm = nan, amp = nan;
+            };
+            auto quickGauss = [&](double sc) {
+                QF q;
+                std::vector<double> yy;
+                for (double v : gy0)
+                    yy.push_back(sc * v);
+                const QString gname = plotXY(hx, yy);
+                MultiLayer *gml = qobject_cast<MultiLayer *>(w->window(gname));
+                Graph *g = gml ? gml->activeGraph() : nullptr;
+                if (!g)
+                    return q;
+                RoiGadgetTool *roi = RoiGadgetTool::attachGadget(w, g, RoiGadgetTool::QuickFit);
+                if (!roi)
+                    return q;
+                roi->setTargetCurve(g->curve(0)->title().text());
+                roi->setQuickFitModel(RoiGadgetTool::FitGauss);
+                roi->setRoiRect(QRectF(-1.0, -sc, 12.0, 10.0 * sc));
+                Table *ot = roi->createOutputTable();
+                if (ot) {
+                    for (int r = 0; r < ot->numRows(); ++r) {
+                        const QString m = ot->text(r, 0);
+                        const double v = ot->cell(r, 1);
+                        if (m == QLatin1String("R2"))
+                            q.r2 = v;
+                        else if (m == QLatin1String("xc"))
+                            q.xc = v;
+                        else if (m == QLatin1String("FWHM"))
+                            q.fwhm = v;
+                        else if (m == QLatin1String("Amplitude"))
+                            q.amp = v;
+                        else if (m == QLatin1String("Converged"))
+                            q.conv = (v == 1.0);
+                    }
+                }
+                RoiGadgetTool::clearGadget(g);
+                return q;
+            };
+            const QF ref = quickGauss(1.0);
+            EXPECT106(ref.conv && ref.r2 > 0.99, "106j: quick Gauss at size 1 must converge");
+            for (double sc : { 1e-22, 1e+20 }) {
+                const QF q = quickGauss(sc);
+                std::cout << "[INFO] 106j quick Gauss scale " << sc << ": converged " << q.conv
+                          << ", r2 " << q.r2 << " (size 1: " << ref.r2 << "), xc " << q.xc
+                          << " (" << ref.xc << "), FWHM " << q.fwhm << " (" << ref.fwhm
+                          << "), amplitude " << q.amp << " (" << ref.amp * sc << ")\n";
+                EXPECT106(q.conv && std::fabs(q.r2 - ref.r2) < 1e-6
+                                  && relClose(q.xc, ref.xc, 1e-6)
+                                  && relClose(q.fwhm, ref.fwhm, 1e-5)
+                                  && relClose(q.amp, ref.amp * sc, 1e-5),
+                          "106j: quick Gauss scale " << sc << ": must equal the fit at size 1");
+            }
+        }
+
+        // 106k: Curve_R2 / Global_R2 of the global fit summary were undefined (blank) when
+        // tss < 1e-30, i.e. for every curve of size 1e-22. Constant data (tss exactly 0) stay
+        // undefined unless the model reproduces them.
+        {
+            struct KCase
+            {
+                double sc;
+                bool constant;
+                const char *formula;
+            };
+            const KCase kcases[] = { { 1e-22, false, "a*x+b" },
+                                     { 1.0, true, "a*x+b" },
+                                     { 1.0, true, "a*exp(x/20)" },
+                                     { 1e-22, true, "a*exp(x/20)" } };
+            for (const KCase &kc : kcases) {
+                std::vector<double> y1, y2;
+                for (size_t i = 0; i < hBase.size(); ++i) {
+                    y1.push_back(kc.sc * (kc.constant ? 3.0 : hBase[i]));
+                    y2.push_back(kc.sc * (kc.constant ? 3.0 : 0.7 * hBase[i] + 0.3));
+                }
+                const QString tName = QStringLiteral("T106_K%1").arg(++tableNo);
+                Table *t = w->newTable(int(hx.size()), 3, tName, tName);
+                EXPECT106(t != nullptr, "106k: table not created");
+                if (!t)
+                    continue;
+                for (int i = 0; i < int(hx.size()); ++i) {
+                    t->setCell(i, 0, hx[size_t(i)]);
+                    t->setCell(i, 1, y1[size_t(i)]);
+                    t->setCell(i, 2, y2[size_t(i)]);
+                }
+                MultiLayer *gml = w->multilayerPlot(
+                        t, QStringList() << t->colName(1) << t->colName(2), Graph::Line);
+                QCoreApplication::processEvents();
+                Graph *gg = gml ? gml->activeGraph() : nullptr;
+                EXPECT106(gg && gg->curves() == 2, "106k: graph not created");
+                if (!gg || gg->curves() != 2)
+                    continue;
+                const QString f = QString::fromLatin1(kc.formula);
+                const QStringList pn = f.contains(QLatin1String("b")) ? QStringList{ "a", "b" }
+                                                                      : QStringList{ "a" };
+                NonLinearFit nlf(w, gg);
+                nlf.setSilent(true);
+                nlf.setParametersList(pn);
+                nlf.setFormula(f);
+                Table *sum = nullptr;
+                const bool ok = nlf.fitGlobal(
+                        QStringList{ gg->curve(0)->title().text(), gg->curve(1)->title().text() },
+                        QVector<bool>(pn.size(), false), &sum);
+                std::vector<double> curveR2;
+                double globalR2 = nan;
+                if (sum) {
+                    for (int r = 0; r < sum->numRows(); r += pn.size()) {
+                        curveR2.push_back(sum->column(5)->isInvalid(r) ? nan : sum->cell(r, 5));
+                        globalR2 = sum->column(6)->isInvalid(r) ? nan : sum->cell(r, 6);
+                    }
+                }
+                std::cout << "[INFO] 106k global " << kc.formula << " scale " << kc.sc
+                          << (kc.constant ? " constant" : "") << ": ok " << ok << ", Curve_R2";
+                for (double v : curveR2)
+                    std::cout << " " << v;
+                std::cout << ", Global_R2 " << globalR2 << "\n";
+                EXPECT106(ok && curveR2.size() == 2, "106k: summary table missing");
+                if (curveR2.size() != 2)
+                    continue;
+                if (!kc.constant) {
+                    double a1, b1, r21, a2, b2, r22;
+                    lineFit(hx, y1, a1, b1, r21);
+                    lineFit(hx, y2, a2, b2, r22);
+                    EXPECT106(std::fabs(curveR2[0] - r21) < 1e-6 && std::fabs(curveR2[1] - r22) < 1e-6
+                                      && globalR2 > std::min(r21, r22) - 1e-6
+                                      && globalR2 < std::max(r21, r22) + 1e-6,
+                              "106k: Curve_R2 / Global_R2 at scale " << kc.sc
+                                                                     << " must be those of the lines");
+                } else if (pn.size() == 2) {
+                    EXPECT106(curveR2[0] == 1.0 && curveR2[1] == 1.0 && globalR2 == 1.0,
+                              "106k: constant data reproduced by the model: R2 = 1");
+                } else {
+                    EXPECT106(std::isnan(curveR2[0]) && std::isnan(curveR2[1])
+                                      && std::isnan(globalR2),
+                              "106k: constant data not reproduced by the model: R2 undefined");
+                }
+            }
         }
     }
 #undef EXPECT106

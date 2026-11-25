@@ -1256,10 +1256,12 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
                 status = GSL_EDOM;
                 break;
             }
-            int deltaStatus = gsl_multifit_test_delta(solver->dx, solver->x, 1e-8, 1e-8);
             if (status != GSL_SUCCESS && status != GSL_CONTINUE)
                 break;
-            if (deltaStatus == GSL_SUCCESS) {
+            // Relative step test (Fit::lmStepConverged): the absolute part 1e-8 of
+            // gsl_multifit_test_delta alone took any step of parameters of size 1e-22 for
+            // convergence.
+            if (Fit::lmStepConverged(solver, solver->dx, solver->x, 1e-8)) {
                 status = GSL_SUCCESS;
                 deltaConverged = true;
                 break;
@@ -1310,6 +1312,7 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     double rss = 0.0;
     const double meanZ = std::accumulate(ctx.z.begin(), ctx.z.end(), 0.0) / static_cast<double>(n);
     double tss = 0.0;
+    double sumSqZ = 0.0;
     bool allEvalFinite = !ctx.evalFailed;
     for (size_t i = 0; i < n; ++i) {
         double zHat = ctx.evalPoint(ctx.x[i], ctx.y[i], bestP.data());
@@ -1321,6 +1324,7 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
         rss += r * r;
         double dz = ctx.z[i] - meanZ;
         tss += dz * dz;
+        sumSqZ += ctx.z[i] * ctx.z[i];
     }
 
     if (!allEvalFinite || !std::isfinite(rss)) {
@@ -1337,7 +1341,11 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
         return out;
     }
 
-    const bool nonTrivialJacobian = (jacMaxAbs > 1e-30) || (rss <= 1e-24);
+    // "tss = 0" / "rss = 0" relative to the size of the data (1e-30 / 1e-24 made every surface
+    // of size 1e-22 a perfect fit)
+    const bool tssZero = Fit::sumOfSquaresNegligible(tss, sumSqZ);
+    const bool rssZero = Fit::sumOfSquaresNegligible(rss, sumSqZ);
+    const bool nonTrivialJacobian = (jacMaxAbs > 1e-30) || rssZero;
     bool noProgress = false;
     if ((status == GSL_ETOLF || status == GSL_ETOLX || status == GSL_ETOLG) && nonTrivialJacobian) {
         status = GSL_SUCCESS;
@@ -1354,12 +1362,10 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
     const bool hasDof = (n > p);
     const double dof = hasDof ? static_cast<double>(n - p) : 0.0;
     out.reducedChi2 = hasDof ? (rss / dof) : nanVal;
-    out.rSquare = (tss > 1e-30)
-            ? std::max(0.0, 1.0 - rss / tss)
-            : ((rss <= 1e-30) ? 1.0 : nanVal);
+    out.rSquare = !tssZero ? std::max(0.0, 1.0 - rss / tss) : (rssZero ? 1.0 : nanVal);
     out.adjRSquare = hasDof
             ? (std::isfinite(out.rSquare)
-                       ? ((tss > 1e-30)
+                       ? (!tssZero
                                   ? (1.0 - (1.0 - out.rSquare) * static_cast<double>(n - 1) / dof)
                                   : out.rSquare)
                        : nanVal)
@@ -2121,8 +2127,8 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             if (gsl_multifit_fdfsolver_set(s, &fdf, pInit) == GSL_SUCCESS) {
                 for (int it = 0; it < 120; ++it) {
                     int st = gsl_multifit_fdfsolver_iterate(s);
-                    if (gsl_multifit_test_delta(s->dx, s->x, 1e-6, 1e-6) == GSL_SUCCESS
-                        || (st != GSL_SUCCESS && st != GSL_CONTINUE))
+                    if ((st != GSL_SUCCESS && st != GSL_CONTINUE)
+                        || Fit::lmStepConverged(s, s->dx, s->x, 1e-6))
                         break;
                 }
                 double fitA = gsl_vector_get(s->x, 1);

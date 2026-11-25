@@ -2046,6 +2046,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
     std::vector<double> curveR2(size_t(M), nanVal);
     double tss_total = 0.0;
     double unwt_rss_total = 0.0;
+    double sumSqY_total = 0.0;
     size_t r2ActiveTotal = 0;
     bool allEvalOk = true;
     for (int m = 0; m < M; ++m) {
@@ -2066,7 +2067,7 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             }
             if (nActiveM > 0) {
                 const double meanY = sumY / double(nActiveM);
-                double tss_m = 0.0, rss_m = 0.0;
+                double tss_m = 0.0, rss_m = 0.0, sumSqY_m = 0.0;
                 for (size_t i = 0; i < yv.size(); ++i) {
                     const double s = sv[i];
                     if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
@@ -2075,12 +2076,16 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                     double dr = yv[i] - yhat[i];
                     tss_m += dt * dt;
                     rss_m += dr * dr;
+                    sumSqY_m += yv[i] * yv[i];
                 }
-                curveR2[size_t(m)] = (tss_m > 1e-30)
+                // "tss = 0" relative to the size of the data, not below 1e-30 (every curve of
+                // size 1e-22 had no R^2)
+                curveR2[size_t(m)] = !sumOfSquaresNegligible(tss_m, sumSqY_m)
                         ? (1.0 - rss_m / tss_m)
-                        : ((rss_m <= 1e-30) ? 1.0 : nanVal);
+                        : (sumOfSquaresNegligible(rss_m, sumSqY_m) ? 1.0 : nanVal);
                 tss_total += tss_m;
                 unwt_rss_total += rss_m;
+                sumSqY_total += sumSqY_m;
                 r2ActiveTotal += nActiveM;
             } else {
                 allEvalOk = false;
@@ -2116,8 +2121,9 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
         d_graph->replot();
 
     double globalR2 = (allEvalOk && r2ActiveTotal > 0)
-            ? ((tss_total > 1e-30) ? (1.0 - unwt_rss_total / tss_total)
-                                   : ((unwt_rss_total <= 1e-30) ? 1.0 : nanVal))
+            ? (!sumOfSquaresNegligible(tss_total, sumSqY_total)
+                       ? (1.0 - unwt_rss_total / tss_total)
+                       : (sumOfSquaresNegligible(unwt_rss_total, sumSqY_total) ? 1.0 : nanVal))
             : nanVal;
 
     // Store curve 0 state & global diagnostics (total active points, global free parameters,

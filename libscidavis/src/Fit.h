@@ -220,6 +220,14 @@ public:
     static bool lmStepConverged(gsl_multifit_fdfsolver *s, const gsl_vector *dx,
                                 const gsl_vector *x, double tol,
                                 const std::vector<int> *kktSigns = nullptr);
+    //! True when a sum of squares ss (tss or rss of an R^2) is 0 at the precision of data whose
+    //! values square-sum to sumSqY (relative 1e-14 in the values, about the rounding of their
+    //! mean), whatever the size of the data. An absolute bound such as 1e-30 made R^2 undefined
+    //! (or 1) for every data set of size 1e-22.
+    static bool sumOfSquaresNegligible(double ss, double sumSqY)
+    {
+        return ss >= 0.0 && ss <= 1e-28 * sumSqY;
+    }
     //! Value reported for a parameter in the box [lo, hi] (either side may be infinite): within
     //! a small tolerance of a finite bound it is the bound. Shared by the single-curve, global
     //! and implicit fits, so they agree on which parameters sit on a bound.
