@@ -22,6 +22,12 @@
 //   97f 2-row layout: set_panel_labels keeps panel heights and axis ranges, and save -> reopen
 //       keeps the ranges and major ticks
 //   97g 3D x/y/z scale keeps full precision across save -> reopen
+//   97h a curve label is kept by the curve itself: legend rebuilds (mini toolbar, fit,
+//       set_legend reconstruct), curve add / remove, hiding and showing the legend, undo,
+//       duplicating the graph and save -> reopen; curve="<label>" resolves the curve in RPC;
+//       a label given while there is no legend shows up when the legend is shown
+//   97i 2-row layout: outside panel labels lie inside the page, above their canvas and clear of
+//       the axis band of the panel above (panel heights / axis ranges: 97f)
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -129,6 +135,73 @@ bool legendInsideLayer97(Graph *g, QString *why)
                    .arg(plotInCanvas.width())
                    .arg(plotInCanvas.height());
     return lr.isValid() && plotInCanvas.contains(lr);
+}
+
+bool legendHas97(Graph *g, const QString &line)
+{
+    return g && g->legend() && g->legend()->text().split(QLatin1Char('\n')).contains(line);
+}
+
+std::string legendText97(Graph *g)
+{
+    return (g && g->legend()) ? g->legend()->text().toStdString() : std::string("<none>");
+}
+
+// Outside panel labels: every label lies inside the page, above its own canvas, and clear of
+// the bottom axis band (tick labels / axis title) of the panel above it.
+bool panelLabelsClear97(MultiLayer *ml, QString *why)
+{
+    const QVector<MultiLayer::PanelLabelBox> boxes =
+            ml ? ml->panelLabelBoxes() : QVector<MultiLayer::PanelLabelBox>();
+    QWidget *page = ml ? ml->canvasWidget() : nullptr;
+    if (boxes.size() < 2 || !page) {
+        *why = QStringLiteral("%1 label boxes").arg(boxes.size());
+        return false;
+    }
+    const QRect pageRect = page->rect();
+    QStringList bad;
+    for (int i = 0; i < boxes.size(); ++i) {
+        const MultiLayer::PanelLabelBox &pb = boxes[i];
+        Plot *p = pb.graph->plotWidget();
+        p->updateLayout();
+        const QRect canvasRect = p->plotLayout()->canvasRect().translated(pb.graph->pos());
+        // The 4 px padding around the glyphs may touch the page edge; the glyphs may not.
+        const QRect glyphs = pb.box.adjusted(4, 4, -4, -4);
+        if (!pageRect.contains(glyphs))
+            bad << QStringLiteral("label %1 (%2,%3 %4x%5) outside page %6x%7")
+                            .arg(i)
+                            .arg(glyphs.x())
+                            .arg(glyphs.y())
+                            .arg(glyphs.width())
+                            .arg(glyphs.height())
+                            .arg(pageRect.width())
+                            .arg(pageRect.height());
+        if (glyphs.bottom() >= canvasRect.top())
+            bad << QStringLiteral("label %1 bottom %2 not above its canvas top %3")
+                            .arg(i)
+                            .arg(glyphs.bottom())
+                            .arg(canvasRect.top());
+        for (int j = 0; j < boxes.size(); ++j) {
+            if (boxes[j].row != pb.row - 1)
+                continue;
+            Graph *up = boxes[j].graph;
+            Plot *up_p = up->plotWidget();
+            up_p->updateLayout();
+            const QRect upCanvas = up_p->plotLayout()->canvasRect().translated(up->pos());
+            const QRect band(up->x(), upCanvas.bottom() + 1, up->width(),
+                             up->geometry().bottom() - upCanvas.bottom());
+            if (band.intersects(pb.box))
+                bad << QStringLiteral("label %1 (top %2) overlaps the axis band of panel %3 "
+                                      "(%4..%5)")
+                                .arg(i)
+                                .arg(pb.box.top())
+                                .arg(j)
+                                .arg(band.top())
+                                .arg(band.bottom());
+        }
+    }
+    *why = bad.join(QStringLiteral("; "));
+    return bad.isEmpty();
 }
 
 QString plainTitle97(Graph *g, int axis)
@@ -322,6 +395,149 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
                     "97a: plot.add_curve label= missing from the legend");
         }
 
+        // ---- 97h: curve labels survive legend rebuilds, curve edits, undo and copies ----------
+        {
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "A", "B" } },
+                                        { "graph_name", "G97LR" } })),
+                    "97h: plot.xy failed");
+            CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                           QJsonObject{ { "graph", "G97LR" },
+                                        { "curve", 0 },
+                                        { "label", "Sample A" } })),
+                    "97h: label on curve 0 failed");
+            auto *ml = qobject_cast<MultiLayer *>(findWindow97(w, QStringLiteral("G97LR")));
+            Graph *g = firstLayer97(w, QStringLiteral("G97LR"));
+            CHECK97(ml && g && g->curves() == 2, "97h: G97LR should have 2 curves");
+            if (ml && g && g->curves() == 2) {
+                CHECK97(g->curveCustomLabel(0) == QLatin1String("Sample A")
+                                && g->curve(0)->title().text() == QLatin1String("T97_A"),
+                        "97h: label not kept on the curve (custom '"
+                                << g->curveCustomLabel(0).toStdString() << "', title '"
+                                << g->curve(0)->title().text().toStdString() << "')");
+                // Mini toolbar colour / width / symbol changes rebuild the legend.
+                CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                               QJsonObject{ { "graph", "G97LR" },
+                                            { "curve", 0 },
+                                            { "color", "#ff0000" } })),
+                        "97h: colour change failed");
+                g->reconstructLegend();
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A")),
+                        "97h: label lost by reconstructLegend: " << legendText97(g));
+                // Adding a fit curve rewrites the legend from legendText().
+                CHECK97(g->legendText().contains(QStringLiteral("\\c{1}Sample A")),
+                        "97h: legendText() ignores the label: " << g->legendText().toStdString());
+                CHECK97(ok(rpc(QStringLiteral("graph.set_legend"),
+                               QJsonObject{ { "graph", "G97LR" }, { "reconstruct", true } })),
+                        "97h: set_legend reconstruct failed");
+                g = firstLayer97(w, QStringLiteral("G97LR"));
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A")),
+                        "97h: label lost by set_legend(reconstruct): " << legendText97(g));
+                // Curve add / remove (CurvesDialog): the label follows its curve.
+                CHECK97(ok(rpc(QStringLiteral("plot.add_curve"),
+                               QJsonObject{ { "graph", "G97LR" },
+                                            { "table", "T97" },
+                                            { "x_col", "X" },
+                                            { "y_col", "C" },
+                                            { "label", "Sample C" } })),
+                        "97h: add_curve C failed");
+                CHECK97(ok(rpc(QStringLiteral("plot.remove_curve"),
+                               QJsonObject{ { "graph", "G97LR" }, { "curve", 1 } })),
+                        "97h: remove_curve B failed");
+                g = firstLayer97(w, QStringLiteral("G97LR"));
+                CHECK97(g && g->curves() == 2, "97h: G97LR should have 2 curves after remove");
+                if (g && g->curves() == 2) {
+                    g->reconstructLegend();
+                    CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A"))
+                                    && legendHas97(g, QStringLiteral("\\c{2}Sample C")),
+                            "97h: labels not renumbered after removing a curve: "
+                                    << legendText97(g));
+                    CHECK97(g->curve(1)->title().text() == QLatin1String("T97_C"),
+                            "97h: curve 1 should be T97_C");
+                }
+                // curve="label" resolves the curve in RPC calls.
+                CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                               QJsonObject{ { "graph", "G97LR" },
+                                            { "curve", "Sample C" },
+                                            { "color", "#00ff00" } })),
+                        "97h: curve=\"Sample C\" not resolved");
+                g = firstLayer97(w, QStringLiteral("G97LR"));
+                CHECK97(g && g->curves() == 2
+                                && g->curve(1)->pen().color() == QColor(QStringLiteral("#00ff00")),
+                        "97h: curve=\"Sample C\" styled the wrong curve");
+                // Hide -> show the legend.
+                CHECK97(ok(rpc(QStringLiteral("graph.set_legend"),
+                               QJsonObject{ { "graph", "G97LR" }, { "visible", false } })),
+                        "97h: hiding the legend failed");
+                CHECK97(ok(rpc(QStringLiteral("graph.set_legend"),
+                               QJsonObject{ { "graph", "G97LR" },
+                                            { "visible", true },
+                                            { "reconstruct", true } })),
+                        "97h: showing the legend failed");
+                g = firstLayer97(w, QStringLiteral("G97LR"));
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A"))
+                                && legendHas97(g, QStringLiteral("\\c{2}Sample C")),
+                        "97h: labels lost by hiding / showing the legend: " << legendText97(g));
+                // Undo snapshot restore keeps the labels.
+                CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                               QJsonObject{ { "graph", "G97LR" },
+                                            { "curve", 0 },
+                                            { "line_width", 3 } })),
+                        "97h: width change failed");
+                CHECK97(ml->undoStack() && ml->undoStack()->canUndo(), "97h: nothing to undo");
+                if (ml->undoStack() && ml->undoStack()->canUndo())
+                    ml->undoStack()->undo();
+                QCoreApplication::processEvents();
+                g = firstLayer97(w, QStringLiteral("G97LR"));
+                CHECK97(g && g->curves() == 2 && g->curveCustomLabel(0) == QLatin1String("Sample A")
+                                && g->curveCustomLabel(1) == QLatin1String("Sample C"),
+                        "97h: labels lost by undo");
+                if (g) {
+                    g->reconstructLegend();
+                    CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A")),
+                            "97h: label lost after undo + reconstruct: " << legendText97(g));
+                }
+                // Duplicating the graph window (Graph::copy).
+                auto *dup = qobject_cast<MultiLayer *>(w->clone(ml));
+                QCoreApplication::processEvents();
+                Graph *dg = (dup && !dup->layersList().isEmpty()) ? dup->layersList().first()
+                                                                  : nullptr;
+                CHECK97(dg && dg->curves() == 2
+                                && dg->curveCustomLabel(0) == QLatin1String("Sample A")
+                                && dg->curveCustomLabel(1) == QLatin1String("Sample C"),
+                        "97h: labels lost by duplicating the graph");
+                if (dg) {
+                    dg->reconstructLegend();
+                    CHECK97(legendHas97(dg, QStringLiteral("\\c{1}Sample A")),
+                            "97h: duplicate legend lost the label: " << legendText97(dg));
+                }
+                if (dup) {
+                    dup->askOnCloseEvent(false);
+                    dup->close();
+                    QCoreApplication::processEvents();
+                }
+            }
+            // A label given while the graph has no legend is kept for when it is shown.
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "A" } },
+                                        { "graph_name", "G97NL" },
+                                        { "legend", false },
+                                        { "label", "NoLeg" } })),
+                    "97h: plot.xy legend=false label= failed");
+            CHECK97(ok(rpc(QStringLiteral("graph.set_legend"),
+                           QJsonObject{ { "graph", "G97NL" },
+                                        { "visible", true },
+                                        { "reconstruct", true } })),
+                    "97h: showing the G97NL legend failed");
+            Graph *gn = firstLayer97(w, QStringLiteral("G97NL"));
+            CHECK97(legendHas97(gn, QStringLiteral("\\c{1}NoLeg")),
+                    "97h: label given without a legend is lost: " << legendText97(gn));
+        }
+
         // ---- 97b: colour-mapped scatter ------------------------------------------------------
         {
             QJsonArray cx, cy, cz;
@@ -501,6 +717,25 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
                             "97f: layer " << k << " axis changed by panel labels: "
                                           << describe97(before[k]) << " -> " << describe97(after));
                 }
+                // 97i: the outside labels have room: inside the page, above their canvas, clear
+                // of the upper panel's bottom axis band.
+                QString why;
+                CHECK97(panelLabelsClear97(ml, &why), "97i: panel labels: " << why.toStdString());
+                for (const MultiLayer::PanelLabelBox &pb : ml->panelLabelBoxes())
+                    std::cout << "[INFO] 97i: label row " << pb.row << " box (" << pb.box.x()
+                              << "," << pb.box.y() << " " << pb.box.width() << "x"
+                              << pb.box.height() << "), panel y " << pb.graph->y() << " h "
+                              << pb.graph->height() << "\n";
+                // Setting them again (or with the same options) does not move anything further.
+                QList<QRect> geo;
+                for (Graph *lg : ml->layersList())
+                    geo << lg->geometry();
+                CHECK97(ok(rpc(QStringLiteral("graph.set_panel_labels"),
+                               QJsonObject{ { "graph", "G97M" }, { "enabled", true } })),
+                        "97i: second set_panel_labels failed");
+                for (int k = 0; k < ml->layersList().size() && k < geo.size(); ++k)
+                    CHECK97(ml->layersList().at(k)->geometry() == geo[k],
+                            "97i: layer " << k << " moved by a repeated set_panel_labels");
             }
         }
 
@@ -538,6 +773,30 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
             CHECK97(g1 && g1->curves() == 1, "97a-reopen: plot.xy label= curve lost");
             Graph *g2 = firstLayer97(rd, QStringLiteral("G97Lbl2"));
             CHECK97(g2 && g2->curves() == 2, "97a-reopen: plot.add_curve label= curve lost");
+            if (g && g->curves() == 2) {
+                CHECK97(g->curveCustomLabel(0) == QLatin1String("Sample A"),
+                        "97a-reopen: curve label not restored ('"
+                                << g->curveCustomLabel(0).toStdString() << "')");
+                g->reconstructLegend();
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A")),
+                        "97a-reopen: label lost by reconstructLegend: " << legendText97(g));
+            }
+        }
+        // 97h
+        {
+            Graph *g = firstLayer97(rd, QStringLiteral("G97LR"));
+            CHECK97(g && g->curves() == 2 && g->curveCustomLabel(0) == QLatin1String("Sample A")
+                            && g->curveCustomLabel(1) == QLatin1String("Sample C"),
+                    "97h-reopen: curve labels not restored");
+            if (g) {
+                g->reconstructLegend();
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}Sample A"))
+                                && legendHas97(g, QStringLiteral("\\c{2}Sample C")),
+                        "97h-reopen: labels lost by reconstructLegend: " << legendText97(g));
+            }
+            Graph *gn = firstLayer97(rd, QStringLiteral("G97NL"));
+            CHECK97(gn && gn->curveCustomLabel(0) == QLatin1String("NoLeg"),
+                    "97h-reopen: G97NL label not restored");
         }
         // 97b
         {
@@ -577,6 +836,9 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
                                                  << describe97(panelAfterLabels[k]) << " -> "
                                                  << describe97(re));
                 }
+                QString why;
+                CHECK97(panelLabelsClear97(ml, &why),
+                        "97i-reopen: panel labels: " << why.toStdString());
             }
         }
         // 97g

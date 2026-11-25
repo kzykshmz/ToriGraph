@@ -4921,7 +4921,7 @@ void ApplicationWindow::mergeOpenGraphsDialog()
     merged->setPanelLabels(chkPanelLabels->isChecked(),
                            panelPosCombo->currentIndex() == 1 ? MultiLayer::PanelInsideTopLeft
                                                               : MultiLayer::PanelOutsideTopLeft,
-                           QStringLiteral("(%a)"), 0);
+                           QStringLiteral("(%a)"), 0, false); // re-arranged below
 
     for (Graph *lg : merged->layersList()) {
         if (!lg)

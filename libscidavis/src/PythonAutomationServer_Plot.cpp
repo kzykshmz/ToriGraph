@@ -1833,9 +1833,10 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
             // 表に結び付いた曲線（DataCurve）のタイトルは Y 列の結び付き
             // （yColumnName() == title()）なので書き換えない。書き換えると保存で Y 列名の
             // 代わりにラベルが書かれ、開き直しで曲線が消え、表の編集にも追従しなくなる。
-            // ラベルは凡例の文字列（下の \c{n} 行）だけで持つ。
+            // ラベルは曲線の独自ラベルとして持たせ（凡例の作り直し・保存・複製でも残る）、
+            // 今の凡例の \c{n} 行にも書く。
             if (QwtPlotCurve *cur = g->curve(cIdx)) {
-                if (!dynamic_cast<DataCurve *>(cur))
+                if (!g->setCurveCustomLabel(cIdx, customLbl) && !dynamic_cast<DataCurve *>(cur))
                     cur->setTitle(customLbl);
             }
             if (Legend *leg = g->legend()) {
@@ -5030,7 +5031,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                  || plPlaceStr == QStringLiteral("inside_top_left"))
                 ? MultiLayer::PanelInsideTopLeft
                 : MultiLayer::PanelOutsideTopLeft;
-        merged->setPanelLabels(panelLabels, plPlace, QStringLiteral("(%a)"), 0);
+        // 直後に並べ直す（上余白はそこで取る）ので、ここではパネルを動かさない。
+        merged->setPanelLabels(panelLabels, plPlace, QStringLiteral("(%a)"), 0, false);
 
         for (Graph *lg : merged->layersList()) {
             if (!lg)

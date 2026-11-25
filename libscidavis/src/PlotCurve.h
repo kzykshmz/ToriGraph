@@ -231,6 +231,12 @@ public:
 
     void setVisible(bool on);
 
+    //! 利用者が付けた凡例ラベル（空なら表の列から自動で作る）。曲線のタイトルは Y 列の
+    //! 結び付き（yColumnName()）なので、ラベルはそれとは別にここで持つ。曲線と一緒に
+    //! 動くので、曲線の削除・並べ替えで番号を付け直す必要はない。
+    QString customLabel() const { return d_custom_label; }
+    void setCustomLabel(const QString &label) { d_custom_label = label; }
+
     bool hasSelectedLabels();
     void setLabelsSelected(bool on = true);
 
@@ -292,6 +298,7 @@ private:
      */
     mutable QVector<int> d_index_to_row;
     mutable QVector<int> d_gap_before_indices;
+    QString d_custom_label;
     bool validCurveType();
 };
 #endif

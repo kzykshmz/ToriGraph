@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include <QVector>
 #include <QSet>
+#include <QHash>
 #include <QWidgetList>
 #include <QPrinter>
 #include <QPrintDialog>
@@ -2531,7 +2532,7 @@ void MultiLayer::notifyOleDirtyIfEmbedded()
 }
 
 void MultiLayer::setPanelLabels(bool enabled, PanelLabelPlacement placement,
-                                const QString &pattern, int fontPt)
+                                const QString &pattern, int fontPt, bool makeRoom)
 {
     const bool layoutChanged =
             (d_panel_labels_enabled != enabled || d_panel_label_placement != placement);
@@ -2548,16 +2549,156 @@ void MultiLayer::setPanelLabels(bool enabled, PanelLabelPlacement placement,
         && d_keep_aspect_ratio && qFuzzyCompare(d_target_aspect_ratio, 1.0)) {
         applySquareCanvasFrame70Percent();
     }
+    // 外側のラベルは、並べたときの上余白・行間に収まらないと画面ではページ上端から切れ、
+    // 下段のラベルは上段の下軸の目盛り・軸題に重なる。足りないときだけパネルを下へずらし
+    // （大きさは変えないので軸範囲も変わらない）、はみ出す分だけページを広げる。
+    if (makeRoom)
+        makeRoomForOutsidePanelLabels();
 
     syncCanvasOverlayVisibility();
     repositionCanvasStatusPill();
     emit modifiedPlot();
 }
 
+void MultiLayer::makeRoomForOutsidePanelLabels()
+{
+    if (!d_panel_labels_enabled || d_panel_label_placement != PanelOutsideTopLeft || graphs <= 0
+        || d_is_restoring_snapshot || (rows <= 1 && cols <= 1)) {
+        return;
+    }
+    const QVector<PanelLabelBox> boxes = panelLabelBoxes();
+    if (boxes.isEmpty())
+        return;
+
+    // Rows in the order the labels number the panels (the same grouping panelLabelBoxes() uses
+    // to align the labels of one row).
+    const int effCols = qMax(1, cols);
+    QMap<int, QList<Graph *>> rowGraphs;
+    int panelIdx = 0;
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr || !gr->plotWidget() || gr->linkedParentLayer() || d_inset_specs.contains(gr))
+            continue;
+        const int row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
+        rowGraphs[row].append(gr);
+        ++panelIdx;
+    }
+    QMap<int, int> rowLabelTop;
+    for (const PanelLabelBox &pb : boxes) {
+        rowLabelTop[pb.row] = rowLabelTop.contains(pb.row) ? qMin(rowLabelTop[pb.row], pb.box.top())
+                                                           : pb.box.top();
+    }
+
+    // Each row's labels must start inside the page and below the bottom edge of the row above
+    // (its plot widgets hold the bottom axis band: tick labels and axis title).
+    const int kGap = 2;
+    QHash<Graph *, int> shiftOf;
+    int cumShift = 0;
+    bool havePrev = false;
+    int prevRowBottom = 0;
+    int maxBottomBefore = std::numeric_limits<int>::min();
+    for (auto it = rowGraphs.constBegin(); it != rowGraphs.constEnd(); ++it) {
+        int rowBottom = std::numeric_limits<int>::min();
+        for (Graph *gr : it.value()) {
+            rowBottom = qMax(rowBottom, gr->geometry().bottom());
+            maxBottomBefore = qMax(maxBottomBefore, gr->geometry().bottom());
+        }
+        if (rowLabelTop.contains(it.key())) {
+            const int labelTop = rowLabelTop.value(it.key()) + cumShift;
+            int needTop = 0;
+            if (havePrev)
+                needTop = qMax(needTop, prevRowBottom + 1 + kGap);
+            cumShift += qMax(0, needTop - labelTop);
+        }
+        for (Graph *gr : it.value())
+            shiftOf.insert(gr, cumShift);
+        prevRowBottom = rowBottom + cumShift;
+        havePrev = true;
+    }
+    if (cumShift <= 0)
+        return;
+
+    QVector<bool> savedIgnore(graphsList.count(), false);
+    for (int i = 0; i < graphsList.count(); ++i) {
+        if (Graph *gr = qobject_cast<Graph *>(graphsList.at(i))) {
+            savedIgnore[i] = gr->ignoresResizeEvents();
+            gr->setIgnoreResizeEvents(true);
+        }
+    }
+
+    int maxBottomAfter = std::numeric_limits<int>::min();
+    for (auto it = shiftOf.constBegin(); it != shiftOf.constEnd(); ++it) {
+        Graph *gr = it.key();
+        if (it.value() > 0)
+            gr->move(gr->pos() + QPoint(0, it.value()));
+        maxBottomAfter = qMax(maxBottomAfter, gr->geometry().bottom());
+    }
+
+    // Grow the page only by what the panels now overflow, keeping the bottom margin the
+    // layout had (up to bottom_margin).
+    const int curH = (canvas && canvas->height() > 0)
+            ? canvas->height()
+            : qRound(d_base_page_px.height() * d_page_zoom);
+    const int slackBefore = qMax(0, curH - 1 - maxBottomBefore);
+    const int keepSlack = qMin(slackBefore, qMax(4, bottom_margin));
+    const int needH = maxBottomAfter + 1 + keepSlack;
+    if (needH > curH) {
+        const double zoom = (d_page_zoom > 1e-6) ? d_page_zoom : 1.0;
+        const int curW = (canvas && canvas->width() > 0)
+                ? canvas->width()
+                : qRound(d_base_page_px.width() * zoom);
+        const QSize newCanvasSize(curW, needH);
+        d_base_page_px.setHeight(
+                qMax(d_base_page_px.height(), qMax(80, int(std::ceil(needH / zoom)))));
+        graph_height = d_base_page_px.height();
+        switch (d_page_unit) {
+        case UnitPx:
+            d_page_height_val = d_base_page_px.height();
+            break;
+        case UnitMm:
+            d_page_height_val = (double(d_base_page_px.height()) / 96.0) * 25.4;
+            break;
+        case UnitCm:
+            d_page_height_val = (double(d_base_page_px.height()) / 96.0) * 2.54;
+            break;
+        case UnitInch:
+            d_page_height_val = double(d_base_page_px.height()) / 96.0;
+            break;
+        }
+        const bool prevSuppress = d_suppress_canvas_resize_layout;
+        d_suppress_canvas_resize_layout = true;
+        lastSize = newCanvasSize;
+        syncMultiLayerPageHost(this, widget(), canvas, d_page_unit, d_page_view_mode,
+                               d_base_page_px, d_page_zoom, d_page_bg_color);
+        const bool freePx =
+                (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4);
+        if (freePx && canvas && canvas->height() < needH)
+            canvas->resize(newCanvasSize);
+        resizeMultiLayerSubWindowForCanvas(this, widget(), d_layer_pill_frame,
+                                           newCanvasSize.width(), newCanvasSize.height(), freePx);
+        d_suppress_canvas_resize_layout = prevSuppress;
+        lastSize = canvas ? canvas->size() : newCanvasSize;
+    }
+
+    syncChildOverlayAndInsetGeometries();
+    for (int i = 0; i < graphsList.count(); ++i) {
+        if (Graph *gr = qobject_cast<Graph *>(graphsList.at(i)))
+            gr->setIgnoreResizeEvents(savedIgnore[i]);
+    }
+}
+
 QRect MultiLayer::panelLabelsBoundingRect() const
 {
+    QRect bounds;
+    for (const PanelLabelBox &pb : panelLabelBoxes())
+        bounds = bounds.isEmpty() ? pb.box : bounds.united(pb.box);
+    return bounds;
+}
+
+QVector<MultiLayer::PanelLabelBox> MultiLayer::panelLabelBoxes() const
+{
     if (!d_panel_labels_enabled || graphsList.isEmpty())
-        return QRect();
+        return {};
 
     auto segIntersectsBox = [](const QLineF &seg, const QRectF &box) -> bool {
         if (box.isEmpty())
@@ -2847,12 +2988,16 @@ QRect MultiLayer::panelLabelsBoundingRect() const
         }
     }
 
-    QRect bounds;
+    QVector<PanelLabelBox> boxes;
+    boxes.reserve(panels.size());
     for (const PanelInfo &pi : panels) {
-        const QRect glyphBox(pi.cx - 4, pi.cy - pi.ascent - 4, pi.textW + 8, pi.height + 8);
-        bounds = bounds.isEmpty() ? glyphBox : bounds.united(glyphBox);
+        PanelLabelBox pb;
+        pb.graph = pi.gr;
+        pb.row = pi.row;
+        pb.box = QRect(pi.cx - 4, pi.cy - pi.ascent - 4, pi.textW + 8, pi.height + 8);
+        boxes.append(pb);
     }
-    return bounds;
+    return boxes;
 }
 
 void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) const

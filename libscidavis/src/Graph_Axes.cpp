@@ -1991,7 +1991,54 @@ bool Graph::isAuxiliaryOrFitCurve(const QwtPlotCurve *pc, bool skipHiddenTables)
     return false;
 }
 
+QString Graph::curveCustomLabel(int curveIndex) const
+{
+    if (curveIndex < 0 || curveIndex >= n_curves)
+        return QString();
+    const DataCurve *dc = dynamic_cast<const DataCurve *>(curve(curveIndex));
+    return dc ? dc->customLabel() : QString();
+}
+
+bool Graph::setCurveCustomLabel(int curveIndex, const QString &label)
+{
+    if (curveIndex < 0 || curveIndex >= n_curves)
+        return false;
+    DataCurve *dc = dynamic_cast<DataCurve *>(curve(curveIndex));
+    if (!dc || !dc->table())
+        return false;
+    dc->setCustomLabel(label.trimmed());
+    return true;
+}
+
+int Graph::curveIndexByCustomLabel(const QString &label) const
+{
+    const QString want = label.trimmed();
+    if (want.isEmpty())
+        return -1;
+    for (const Qt::CaseSensitivity cs : { Qt::CaseSensitive, Qt::CaseInsensitive }) {
+        for (int i = 0; i < n_curves; ++i) {
+            const DataCurve *dc = dynamic_cast<const DataCurve *>(curve(i));
+            if (dc && !dc->customLabel().isEmpty()
+                && dc->customLabel().compare(want, cs) == 0) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
 QString Graph::resolvedAutoCurveLabel(int curveIndex) const
+{
+    // 利用者が付けたラベル（RPC の label=）は曲線のタイトル（Y 列の結び付き）とは別に
+    // 曲線が持つ。凡例の作り直し・フィットの追加・曲線の追加と削除で列名に戻らないよう、
+    // 列から作る自動ラベルより優先する。
+    const QString custom = curveCustomLabel(curveIndex);
+    if (!custom.isEmpty())
+        return custom;
+    return columnCurveLabel(curveIndex);
+}
+
+QString Graph::columnCurveLabel(int curveIndex) const
 {
     if (curveIndex < 0 || curveIndex >= n_curves)
         return QString();

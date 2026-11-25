@@ -1118,10 +1118,20 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
                 lines.append(newLine);
 
             const QString updated = lines.join(QStringLiteral("\n"));
-            if (curLeg->text() == updated)
+            // 曲線が独自ラベル（RPC の label=）を持つなら、凡例の作り直しで古いラベルに
+            // 戻らないよう、そのラベルも書き換える。列から作る名前に戻したときは外す。
+            const QString prevCustom = gp->curveCustomLabel(ci);
+            QString nextCustom = prevCustom;
+            if (!prevCustom.isEmpty())
+                nextCustom = (normLbl.trimmed() == gp->columnCurveLabel(ci).trimmed())
+                        ? QString()
+                        : normLbl.trimmed();
+            if (curLeg->text() == updated && nextCustom == prevCustom)
                 return;
 
             const QString before = d_target_ml->captureUndoSnapshot();
+            if (nextCustom != prevCustom)
+                gp->setCurveCustomLabel(ci, nextCustom);
             curLeg->setText(updated);
             gp->replot();
             emit gp->modifiedGraph();
@@ -1153,7 +1163,8 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
             if (!gp || ci < 0 || ci >= gp->curves())
                 return;
             QwtPlotCurve *c = gp->curve(ci);
-            QString resetLbl = gp->resolvedAutoCurveLabel(ci).trimmed();
+            // 自動の曲線名（列から作る名前）に戻す。独自ラベルは commitCurveLabel が外す。
+            QString resetLbl = gp->columnCurveLabel(ci).trimmed();
             if (resetLbl.isEmpty() && c)
                 resetLbl = c->title().text().trimmed();
             syncLineEditClean(edit, resetLbl);

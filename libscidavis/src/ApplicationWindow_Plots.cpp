@@ -1727,7 +1727,9 @@ static void disambiguateMultiTableLegendLabels(Graph *ag)
         if (curLbl.isEmpty())
             continue;
         // Only disambiguate automatic column-based labels (leave user-typed custom text intact)
-        const QString autoLbl = ag->resolvedAutoCurveLabel(ci).trimmed();
+        if (!ag->curveCustomLabel(ci).isEmpty())
+            continue;
+        const QString autoLbl = ag->columnCurveLabel(ci).trimmed();
         Column *yc = dc->table()->column(dc->table()->colIndex(dc->yColumnName()));
         const QString shortLbl = yc ? yc->name().trimmed() : QString();
         const QString longLbl = yc ? yc->longName().trimmed() : QString();

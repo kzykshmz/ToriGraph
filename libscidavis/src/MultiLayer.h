@@ -264,11 +264,24 @@ public:
     void remapUndoSnapshotsForColRename(const QString &oldColName, const QString &newColName);
     void remapUndoSnapshotsForMatrixRename(const QString &oldName, const QString &newName);
 
+    //!  makeRoom: for outside labels on a multi-panel layout, move panels down (and grow the
+    //! page) when the existing top margin / row gap cannot hold the labels. Callers that
+    //! re-arrange the layers right afterwards pass false.
     void setPanelLabels(bool enabled, PanelLabelPlacement placement = PanelOutsideTopLeft,
-                        const QString &pattern = QString("(%a)"), int fontPt = 0);
+                        const QString &pattern = QString("(%a)"), int fontPt = 0,
+                        bool makeRoom = true);
     bool hasPanelLabels() const { return d_panel_labels_enabled; }
     bool panelLabelsEnabled() const { return d_panel_labels_enabled; }
     QRect panelLabelsBoundingRect() const;
+    struct PanelLabelBox
+    {
+        Graph *graph = nullptr;
+        int row = 0; //!< row in the panel grid (label numbering order / cols)
+        QRect box;   //!< glyph box in canvas pixels, as panelLabelsBoundingRect() unites them
+    };
+    //! The panel labels, one per labelled primary panel, in layer order. Empty when panel
+    //! labels are off.
+    QVector<PanelLabelBox> panelLabelBoxes() const;
     PanelLabelPlacement panelLabelPlacement() const { return d_panel_label_placement; }
     QString panelLabelPattern() const { return d_panel_label_pattern; }
     int panelLabelFontPt() const { return d_panel_label_font_pt; }
@@ -486,6 +499,10 @@ private:
     void openCanvasStatusQuickMenu();
     void openQuickLayerColumnsPopup();
     void drawPanelLabels(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
+    //! Outside panel labels on a multi-panel layout: moves rows of panels down (keeping every
+    //! panel's size, so no axis range changes) and grows the page when a label would leave the
+    //! page top or overlap the axis band of the panel above.
+    void makeRoomForOutsidePanelLabels();
     void drawInsetConnectors(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
     void syncCanvasOverlayVisibility();
     QList<Graph *> orderedLayersForRender() const;

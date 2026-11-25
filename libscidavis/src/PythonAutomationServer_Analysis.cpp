@@ -666,6 +666,11 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                     }
                 }
             }
+            // 曲線の独自ラベル（label= で付けた凡例の名前）。タイトルは Y 列のままなので、
+            // ラベルで指定されたら、その曲線のタイトルを返す。
+            const int byLabel = g->curveIndexByCustomLabel(want);
+            if (byLabel >= 0 && g->curve(byLabel))
+                return g->curve(byLabel)->title().text();
             for (int ci = 0; ci < g->curves(); ++ci) {
                 QwtPlotCurve *pc = g->curve(ci);
                 if (!pc)

@@ -1092,6 +1092,21 @@ QString Graph::saveToString(bool saveAsTemplate)
                         + attr("cb", QString::number(pm.showColorBar ? 1 : 0))
                         + attr("title", pm.colorBarTitle) + QStringLiteral("/>\n");
             }
+
+            // 曲線の独自ラベル（凡例の作り直しでも列名に戻らないよう曲線が持つ）。曲線の
+            // 番号 idx で付け直し、x/y は番号がずれたとき（曲線が読めなかったとき）の照合用。
+            // 古いファイルにはこの行が無く、そのときは凡例の文字列だけが残る。
+            for (int i = 0; i < n_curves && i < c_keys.size() && i < c_type.size(); ++i) {
+                if (c_type[i] == ErrorBars)
+                    continue;
+                auto *dc = dynamic_cast<DataCurve *>(d_plot->plotItem(c_keys[i]));
+                if (!dc || dc->customLabel().isEmpty())
+                    continue;
+                s += QStringLiteral("<ToriCurveLabel") + attr("idx", QString::number(i))
+                        + attr("n", QString::number(n_curves)) + attr("x", dc->xColumnName())
+                        + attr("y", dc->title().text()) + attr("label", dc->customLabel())
+                        + QStringLiteral("/>\n");
+            }
         }
 
         if (d_linked_parent) {
@@ -1461,6 +1476,10 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
                 if (cv && cv->hasPointColorMap()) {
                     if (DataCurve *dcDst = dynamic_cast<DataCurve *>(c))
                         dcDst->setPointColorMap(cv->pointColorMap());
+                }
+                if (cv && !cv->customLabel().isEmpty()) {
+                    if (DataCurve *dcDst = dynamic_cast<DataCurve *>(c))
+                        dcDst->setCustomLabel(cv->customLabel());
                 }
 
                 QList<QwtPlotCurve *> lst = g->fitCurvesList();
@@ -2189,6 +2208,40 @@ bool Graph::restorePhase5Tag(const QString &line)
             break;
         }
         syncCurveZOrder();
+        return true;
+    }
+
+    if (s.startsWith("<ToriCurveLabel")) {
+        const QString label = attrs.value("label").trimmed();
+        if (label.isEmpty())
+            return true;
+        const int idx = attrs.value("idx", "-1").toInt();
+        const int savedN = attrs.value("n", "-1").toInt();
+        const QString xName = attrs.value("x");
+        const QString yName = attrs.value("y");
+        auto boundTo = [&](int i, bool needNames) -> DataCurve * {
+            if (i < 0 || i >= n_curves || i >= c_keys.size() || i >= c_type.size()
+                || c_type[i] == ErrorBars)
+                return nullptr;
+            auto *dc = dynamic_cast<DataCurve *>(d_plot->plotItem(c_keys[i]));
+            if (!dc || !dc->table())
+                return nullptr;
+            if (needNames && (dc->title().text() != yName || dc->xColumnName() != xName))
+                return nullptr;
+            return dc;
+        };
+        // 同じ番号の曲線（列名が一致するか、曲線の数が保存時と同じなら列の改名後でも）。
+        DataCurve *target = boundTo(idx, true);
+        if (!target && savedN == n_curves)
+            target = boundTo(idx, false);
+        // 曲線の数が変わった（読めなかった曲線がある）ときは列名で探す。
+        for (int i = 0; !target && i < n_curves; ++i) {
+            DataCurve *dc = boundTo(i, true);
+            if (dc && dc->customLabel().isEmpty())
+                target = dc;
+        }
+        if (target)
+            target->setCustomLabel(label);
         return true;
     }
 

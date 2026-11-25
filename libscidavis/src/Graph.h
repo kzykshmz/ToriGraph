@@ -318,7 +318,21 @@ public slots:
     void setCurveType(int curve, CurveType type, bool update = true);
     void setCurveFullRange(int curveIndex);
     void setCurveAxes(int curveIndex, int xAxis, int yAxis);
+    //! The legend label of a curve: the user's own label (curveCustomLabel()) when set,
+    //! otherwise the label built from the table column (columnCurveLabel()).
     QString resolvedAutoCurveLabel(int curveIndex) const;
+    //! The label built from the curve's table column (long name / comment / short name),
+    //! ignoring any user label.
+    QString columnCurveLabel(int curveIndex) const;
+    //! User label of a table curve (DataCurve); empty when none is set.
+    QString curveCustomLabel(int curveIndex) const;
+    //! Sets (or, with an empty string, clears) the user label of a table curve. The curve
+    //! title, i.e. its Y column binding, is left alone. Returns false for curves that are not
+    //! bound to a table.
+    bool setCurveCustomLabel(int curveIndex, const QString &label);
+    //! Index of the first table curve whose user label is  label (exact match first, then
+    //! case-insensitive), or -1.
+    int curveIndexByCustomLabel(const QString &label) const;
 
     //! \name Output: Copy/Export/Print
     //@{
