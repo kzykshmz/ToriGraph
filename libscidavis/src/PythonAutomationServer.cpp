@@ -1191,10 +1191,10 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "app.recalculate", "app", "Session.recalculate()",
       "Evaluate all dirty column formulas and registered analysis links.", "", "app.recalculate()" },
     { "app.undo", "app", "Session.undo(window=None, *, graph=None, table=None, matrix=None)",
-      "Undo the last operation on the given graph/table/matrix window. Without a window: undo on the stack the last RPC changed (that graph, or the project stack of tables and matrices; RPCs that change nothing, such as reads, do not count), not on the active window; app.activate_window also selects it. When that stack has nothing to undo, the active window or the most recently modified stack is used.",
+      "Undo the last operation on the given graph/table/matrix window. Without a window: undo the latest step the RPCs made, across the graphs' stacks and the project stack of tables and matrices (RPCs that change nothing, such as reads, do not count), not on the active window; repeated calls go back through the steps in the order they were made, from one graph to another. app.activate_window selects its window's stack instead. When no such step is left, the active window or the most recently modified stack is used.",
       "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.undo(table=tbl)" },
     { "app.redo", "app", "Session.redo(window=None, *, graph=None, table=None, matrix=None)",
-      "Redo the last undone operation on the given graph/table/matrix window. Without a window: redo on the stack the last RPC changed or undid (as app.undo); when it has nothing to redo, the active window or the most recently modified stack is used.",
+      "Redo the last undone operation on the given graph/table/matrix window. Without a window: redo the steps undone since the last new change, forward in the reverse order of the undos (as app.undo); when none is left, the stack the last RPC changed or undid, then the active window or the most recently modified stack is used.",
       "window:str=''; graph:str=''; table:str=''; matrix:str=''", "app.redo(table=tbl)" },
     { "app.set_focus_hud", "app", "Session.set_focus_hud(enabled=None)",
       "Enable, disable, or toggle the floating canvas Focus HUD.", "enabled:bool=true",
@@ -5037,21 +5037,32 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
     // that change nothing (reads, copy_format, ...) keep the previous target, and graph RPCs do
     // not make their graph the MDI active window, so the active window is not a usable guide.
     // indexChanged is also emitted when a pushed command merges into the previous one.
+    // The steps themselves go into a log across all stacks (one entry per Undo step an RPC
+    // pushed, oldest first), so that app.undo without a target can go back through the steps in
+    // the order they were made, from one stack to another (two graphs edited in turn), and
+    // app.redo forward again. Undoing a step (with or without a target) moves its entry to the
+    // redo log, redoing moves it back; a new change ends the redo log.
     struct UndoTargetWatch
     {
         ApplicationWindow *app;
         const QString &method;
         QString &domain;
         QString &graphName;
+        QList<QPointer<QUndoStack>> &undoLog;
+        QList<QPointer<QUndoStack>> &redoLog;
+        bool &windowChosen;
         QUndoStack *projStack = nullptr;
         QUndoStack *firstStack = nullptr;
         QUndoStack *lastStack = nullptr;
         QPointer<MultiLayer> firstGraph, lastGraph;
         QSet<MultiLayer *> graphsBefore;
         QVector<QMetaObject::Connection> conns;
+        QHash<QUndoStack *, int> indexBefore;
+        QVector<QPointer<QUndoStack>> moved; // in the order they first moved
 
-        UndoTargetWatch(ApplicationWindow *a, const QString &m, QString &d, QString &g)
-            : app(a), method(m), domain(d), graphName(g)
+        UndoTargetWatch(ApplicationWindow *a, const QString &m, QString &d, QString &g,
+                        QList<QPointer<QUndoStack>> &ul, QList<QPointer<QUndoStack>> &rl, bool &wc)
+            : app(a), method(m), domain(d), graphName(g), undoLog(ul), redoLog(rl), windowChosen(wc)
         {
             if (!app)
                 return;
@@ -5068,6 +5079,7 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
         {
             if (!us)
                 return;
+            indexBefore.insert(us, us->index());
             QPointer<MultiLayer> mlp(ml);
             conns.append(QObject::connect(us, &QUndoStack::indexChanged, [this, us, mlp](int) {
                 if (!firstStack) {
@@ -5076,7 +5088,87 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                 }
                 lastStack = us;
                 lastGraph = mlp;
+                bool seen = false;
+                for (const QPointer<QUndoStack> &p : moved)
+                    seen = seen || p.data() == us;
+                if (!seen)
+                    moved.append(QPointer<QUndoStack>(us));
             }));
+        }
+        // takes the last entry of us out of log (false if there is none)
+        static bool takeLast(QList<QPointer<QUndoStack>> &log, QUndoStack *us)
+        {
+            for (int i = log.size() - 1; i >= 0; --i) {
+                if (log.at(i).data() == us) {
+                    log.removeAt(i);
+                    return true;
+                }
+            }
+            return false;
+        }
+        void updateLogs()
+        {
+            const bool redoCall = method == QStringLiteral("app.redo");
+            const bool stepCall = redoCall || method == QStringLiteral("app.undo");
+            bool newChange = false;
+            for (const QPointer<QUndoStack> &p : moved) {
+                QUndoStack *us = p.data();
+                if (!us)
+                    continue;
+                const int delta = us->index() - indexBefore.value(us, us->index());
+                if (delta == 0 && !stepCall && us->index() > 0) {
+                    // a new change merged into the stack's last step (e.g. a column set twice):
+                    // that step is now the latest one
+                    takeLast(undoLog, us);
+                    undoLog.append(QPointer<QUndoStack>(us));
+                    newChange = true;
+                    continue;
+                }
+                for (int k = 0; k < -delta; ++k) { // undone
+                    takeLast(undoLog, us);
+                    redoLog.append(QPointer<QUndoStack>(us));
+                }
+                for (int k = 0; k < delta; ++k) { // redone, or a new step
+                    // app.undo / app.redo only log the steps they redid (a stack that moved
+                    // up as a side effect of refreshing the graphs is not a step of the user's)
+                    if (redoCall) {
+                        if (takeLast(redoLog, us))
+                            undoLog.append(QPointer<QUndoStack>(us));
+                    } else if (!stepCall) {
+                        newChange = true;
+                        undoLog.append(QPointer<QUndoStack>(us));
+                    }
+                }
+            }
+            // a graph created by this RPC that already holds Undo steps
+            if (app) {
+                for (MyWidget *w : app->windowsList()) {
+                    auto *nml = qobject_cast<MultiLayer *>(w);
+                    if (nml && !graphsBefore.contains(nml) && nml->undoStack()) {
+                        for (int k = 0; k < nml->undoStack()->index(); ++k) {
+                            undoLog.append(QPointer<QUndoStack>(nml->undoStack()));
+                            newChange = true;
+                        }
+                    }
+                }
+            }
+            if (newChange)
+                redoLog.clear();
+            // deleted stacks drop out; the log keeps the latest steps
+            for (QList<QPointer<QUndoStack>> *log : { &undoLog, &redoLog }) {
+                for (int i = log->size() - 1; i >= 0; --i) {
+                    if (log->at(i).isNull())
+                        log->removeAt(i);
+                }
+                while (log->size() > 5000)
+                    log->removeFirst();
+            }
+            // app.activate_window chooses its window until the next new change (its own
+            // app.undo / app.redo keep it)
+            if (method == QStringLiteral("app.activate_window"))
+                windowChosen = true;
+            else if (!moved.isEmpty() && !stepCall)
+                windowChosen = false;
         }
         ~UndoTargetWatch()
         {
@@ -5086,8 +5178,12 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
                 || method == QStringLiteral("app.open_project")) {
                 domain.clear();
                 graphName.clear();
+                undoLog.clear();
+                redoLog.clear();
+                windowChosen = false;
                 return;
             }
+            updateLogs();
             // app.undo / app.redo: the stack they stepped is the first one that moved (refreshing
             // the graphs afterwards must not redirect the next call).
             const bool stepCall =
@@ -5117,7 +5213,8 @@ QJsonObject PythonAutomationServer::dispatchMethod(const QString &method,
         }
         UndoTargetWatch(const UndoTargetWatch &) = delete;
         UndoTargetWatch &operator=(const UndoTargetWatch &) = delete;
-    } undoTargetWatch(d_app, method, d_last_undo_domain, d_last_undo_graph);
+    } undoTargetWatch(d_app, method, d_last_undo_domain, d_last_undo_graph, d_undo_log,
+                      d_redo_log, d_undo_window_chosen);
 
     QJsonObject result;
     if (dispatchCoreAndGraphMethod(this, d_app, d_focus_hud_fallback, d_workspace_mode_fallback,

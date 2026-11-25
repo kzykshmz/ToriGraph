@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QHostAddress>
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QPointer>
 #include <QSet>
@@ -39,6 +40,7 @@ class QPushButton;
 class QTcpServer;
 class QTcpSocket;
 class QTextDecoder;
+class QUndoStack;
 
 class PythonAutomationServer : public QObject
 {
@@ -74,6 +76,17 @@ public:
 
     // Optional hook for ApplicationWindow UI state (focus HUD, workspace mode, auto-updater, etc.)
     void setCustomCommandHook(CustomCommandHook hook);
+
+    //! Undo steps that RPCs made, across the project's stack and the graphs' stacks: one entry
+    //! (the stack) per step, oldest first. app.undo without a target goes back through them in
+    //! that order, from one stack to the next. Deleted stacks drop out.
+    const QList<QPointer<QUndoStack>> &rpcUndoLog() const { return d_undo_log; }
+    //! Steps undone since the last new change, the last undone last: app.redo without a target
+    //! goes forward through them (a new change ends them, as in one Undo stack).
+    const QList<QPointer<QUndoStack>> &rpcRedoLog() const { return d_redo_log; }
+    //! true while app.activate_window was the last RPC that touched the Undo routing: its window
+    //! decides app.undo / app.redo without a target, not the step log.
+    bool rpcUndoWindowChosen() const { return d_undo_window_chosen; }
 
     static QStringList supportedMethods();
     //! Resolves a palette name given to graph.apply_palette (exact name, alias, prefix, word
@@ -137,6 +150,9 @@ private:
     QString d_workspace_mode_fallback = QStringLiteral("mdi");
     QString d_last_undo_domain;
     QString d_last_undo_graph;
+    QList<QPointer<QUndoStack>> d_undo_log;
+    QList<QPointer<QUndoStack>> d_redo_log;
+    bool d_undo_window_chosen = false;
 };
 
 class PythonConsoleDialog : public QDialog

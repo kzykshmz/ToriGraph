@@ -10,11 +10,14 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QUndoStack>
 #include <QXmlStreamWriter>
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
+#include <vector>
 
 // =============================================================================
 // Suite 109: worksheet formulas and masks, data-driven review findings (JSON-RPC path).
@@ -44,6 +47,10 @@
 //        entered into the active worksheet (the data went NaN and the curve was lost); after a
 //        table edit they undo the table even when the graph is the active window and a graph
 //        RPC that changes nothing (copy_format) came in between
+//   109e2 two graphs edited in turn (3 steps each): app.undo without a window goes back through
+//        the steps in the order they were made, from G2 to G1 and back, and leaves the table (it
+//        used to stay on G2 and then undo the table's data entry, although G1 still had steps);
+//        app.redo goes forward the same way; a new change ends the redo of the other graph
 //   109f reading columns with about 1 % empty cells scattered over the rows (numeric, text and
 //        date/time, 100000 rows each) takes about as long as without them (each row used to scan
 //        all empty cells read so far: 6.6 s for one numeric column); rows out of order, gaps
@@ -798,6 +805,160 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                                          << q(columnValues("U109", "2")));
         CHECK_COND(layerCount() == layersBefore, "109e: app.undo after the table edit changed the graph");
         std::cout << "[PASS] 109e: app.undo / app.redo without a window follow the last RPC's target\n";
+    }
+
+    // ---- 109e2: two graphs edited in turn: app.undo walks back through both before the table ----
+    {
+        Table *t = w109->newTable(QStringLiteral("D109"), 5, 3);
+        CHECK_COND(t != nullptr, "109e2: table D109");
+        QJsonObject r = rpc(QStringLiteral("table.set_column_data"),
+                            QJsonObject{ { "table", "D109" }, { "col", "1" }, { "data", numbers({ 1, 2, 3, 4, 5 }) } });
+        CHECK_COND(!isErr(r), "109e2: set column 1: " << errText(r));
+        r = rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject{ { "table", "D109" }, { "col", "2" }, { "data", numbers({ 2, 4, 6, 8, 10 }) } });
+        CHECK_COND(!isErr(r), "109e2: set column 2: " << errText(r));
+        r = rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject{ { "table", "D109" }, { "col", "3" }, { "data", numbers({ 5, 3, 4, 1, 2 }) } });
+        CHECK_COND(!isErr(r), "109e2: set column 3: " << errText(r));
+        r = rpc(QStringLiteral("plot.xy"),
+                QJsonObject{ { "table", "D109" }, { "x_col", "1" }, { "y_cols", QJsonArray{ "2" } },
+                             { "graph_name", "GA109" } });
+        CHECK_COND(!isErr(r), "109e2: plot GA109: " << errText(r));
+        r = rpc(QStringLiteral("plot.xy"),
+                QJsonObject{ { "table", "D109" }, { "x_col", "1" }, { "y_cols", QJsonArray{ "3" } },
+                             { "graph_name", "GB109" } });
+        CHECK_COND(!isErr(r), "109e2: plot GB109: " << errText(r));
+        MultiLayer *g1 = nullptr;
+        MultiLayer *g2 = nullptr;
+        for (MyWidget *mw : w109->windowsList()) {
+            if (mw && mw->name() == QLatin1String("GA109"))
+                g1 = qobject_cast<MultiLayer *>(mw);
+            if (mw && mw->name() == QLatin1String("GB109"))
+                g2 = qobject_cast<MultiLayer *>(mw);
+        }
+        CHECK_COND(g1 && g2 && g1->undoStack() && g2->undoStack() && t->d_future_table
+                           && t->d_future_table->undoStack(),
+                   "109e2: graphs and stacks");
+        QUndoStack *s1 = g1->undoStack();
+        QUndoStack *s2 = g2->undoStack();
+        QUndoStack *sp = t->d_future_table->undoStack();
+        // layers, and the X / Y range of layer 0 (what the six operations below change)
+        auto info = [&](const char *g) {
+            const QJsonArray layers = res(rpc(QStringLiteral("graph.get_info"), QJsonObject{ { "graph", g } }))
+                                              .value(QStringLiteral("layers"))
+                                              .toArray();
+            const QJsonObject axes = layers.at(0).toObject().value(QStringLiteral("axes")).toObject();
+            std::string sig = std::to_string(layers.size());
+            for (const char *a : { "x", "y" }) {
+                const QJsonObject ax = axes.value(QLatin1String(a)).toObject();
+                sig += std::string(" ") + a + " " + std::to_string(ax.value(QStringLiteral("min")).toDouble())
+                        + ".." + std::to_string(ax.value(QStringLiteral("max")).toDouble());
+            }
+            return sig;
+        };
+        auto dataOk = [&]() {
+            const QVector<double> y = columnValues("D109", "2");
+            const QVector<double> s = columnValues("D109", "3");
+            return y.size() == 5 && s.size() == 5
+                    && std::none_of(y.begin(), y.end(), [](double v) { return std::isnan(v); })
+                    && std::none_of(s.begin(), s.end(), [](double v) { return std::isnan(v); })
+                    && sameValues(y, { 2, 4, 6, 8, 10 }) && sameValues(s, { 5, 3, 4, 1, 2 });
+        };
+
+        // six graph operations, G1 and G2 in turn; each is one step on its graph's stack
+        struct Op
+        {
+            const char *graph;
+            QString method;
+            QJsonObject params;
+        };
+        const QVector<Op> ops = {
+            { "GA109", QStringLiteral("graph.set_axis"),
+              QJsonObject{ { "graph", "GA109" }, { "axis", "x" }, { "min", 0 }, { "max", 15 } } },
+            { "GB109", QStringLiteral("graph.set_axis"),
+              QJsonObject{ { "graph", "GB109" }, { "axis", "x" }, { "min", 0 }, { "max", 25 } } },
+            { "GA109", QStringLiteral("graph.add_layer"), QJsonObject{ { "graph", "GA109" } } },
+            { "GB109", QStringLiteral("graph.add_layer"), QJsonObject{ { "graph", "GB109" } } },
+            { "GA109", QStringLiteral("graph.set_axis"),
+              QJsonObject{ { "graph", "GA109" }, { "axis", "y" }, { "min", -5 }, { "max", 50 }, { "layer", 0 } } },
+            { "GB109", QStringLiteral("graph.set_axis"),
+              QJsonObject{ { "graph", "GB109" }, { "axis", "y" }, { "min", -5 }, { "max", 60 }, { "layer", 0 } } },
+        };
+        std::vector<std::string> snap1{ info("GA109") }, snap2{ info("GB109") };
+        const int i1 = s1->index(), i2 = s2->index(), ip = sp->index();
+        for (const Op &op : ops) {
+            QUndoStack *us = (QLatin1String(op.graph) == QLatin1String("GA109")) ? s1 : s2;
+            const int before = us->index();
+            r = rpc(op.method, op.params);
+            CHECK_COND(!isErr(r) && us->index() == before + 1,
+                       "109e2: " << op.method.toStdString() << " on " << op.graph << ": " << errText(r)
+                                 << " (stack " << before << " -> " << us->index() << ")");
+            snap1.push_back(info("GA109"));
+            snap2.push_back(info("GB109"));
+        }
+        CHECK_COND(s1->index() == i1 + 3 && s2->index() == i2 + 3 && sp->index() == ip,
+                   "109e2: setup stacks " << s1->index() << "/" << s2->index() << "/" << sp->index());
+
+        // steps of each graph among the first n operations
+        auto stepsOf = [&](const char *g, int n) {
+            int c = 0;
+            for (int j = 0; j < n; ++j)
+                c += (QLatin1String(ops.at(j).graph) == QLatin1String(g)) ? 1 : 0;
+            return c;
+        };
+        // app.undo (no window) x6: the operations backwards, G2, G1, G2, ...; the table stays
+        for (int k = 1; k <= 6; ++k) {
+            r = rpc(QStringLiteral("app.undo"), QJsonObject{});
+            CHECK_COND(!isErr(r), "109e2: app.undo " << k << ": " << errText(r));
+            const int want1 = i1 + stepsOf("GA109", 6 - k);
+            const int want2 = i2 + stepsOf("GB109", 6 - k);
+            std::cout << "[INFO] 109e2: app.undo " << k << ": G1 " << s1->index() << " G2 " << s2->index()
+                      << " table " << sp->index() << " (graph "
+                      << res(r).value(QStringLiteral("graph")).toString().toStdString() << ")\n";
+            CHECK_COND(s1->index() == want1 && s2->index() == want2 && sp->index() == ip && dataOk(),
+                       "109e2: app.undo " << k << " stepped the wrong stack: G1 " << s1->index() << " (want "
+                                          << want1 << ") G2 " << s2->index() << " (want " << want2
+                                          << ") table " << sp->index() << " (want " << ip << ")");
+            CHECK_COND(res(r).value(QStringLiteral("can_undo")).toBool(),
+                       "109e2: app.undo " << k << ": can_undo false (G1 or the table can still undo)");
+        }
+        CHECK_COND(info("GA109") == snap1.front() && info("GB109") == snap2.front(),
+                   "109e2: undoing all six steps did not restore both graphs: " << info("GA109") << " / "
+                           << info("GB109") << ", expected " << snap1.front() << " / " << snap2.front());
+
+        // app.redo x6: the operations forward again; the table stays
+        for (int k = 1; k <= 6; ++k) {
+            r = rpc(QStringLiteral("app.redo"), QJsonObject{});
+            CHECK_COND(!isErr(r), "109e2: app.redo " << k << ": " << errText(r));
+            const int want1 = i1 + stepsOf("GA109", k);
+            const int want2 = i2 + stepsOf("GB109", k);
+            CHECK_COND(s1->index() == want1 && s2->index() == want2 && sp->index() == ip && dataOk(),
+                       "109e2: app.redo " << k << " stepped the wrong stack: G1 " << s1->index() << " (want "
+                                          << want1 << ") G2 " << s2->index() << " (want " << want2
+                                          << ") table " << sp->index());
+            CHECK_COND(res(r).value(QStringLiteral("can_redo")).toBool() == (k < 6),
+                       "109e2: app.redo " << k << ": can_redo "
+                                          << res(r).value(QStringLiteral("can_redo")).toBool());
+        }
+        CHECK_COND(info("GA109") == snap1.back() && info("GB109") == snap2.back(),
+                   "109e2: redoing all six steps did not give back both graphs: " << info("GA109") << " / "
+                           << info("GB109") << ", expected " << snap1.back() << " / " << snap2.back());
+
+        // a new change after some undos ends the redo of the other graph (as in one stack)
+        r = rpc(QStringLiteral("app.undo"), QJsonObject{}); // G2's last step
+        CHECK_COND(!isErr(r) && s2->index() == i2 + 2, "109e2: undo G2 once more: " << s2->index());
+        // (the next app.undo would take G1's last step: the steps are undone across the graphs)
+        r = rpc(QStringLiteral("graph.set_axis"),
+                QJsonObject{ { "graph", "GA109" }, { "axis", "x" }, { "min", 0 }, { "max", 17 } });
+        CHECK_COND(!isErr(r) && s1->index() == i1 + 4, "109e2: new change on G1: " << errText(r));
+        // (G1 is the active window, so the active-window fallback has nothing to redo either)
+        w109->activateSubWindow(g1);
+        QCoreApplication::processEvents();
+        r = rpc(QStringLiteral("app.redo"), QJsonObject{});
+        CHECK_COND(!isErr(r) && s2->index() == i2 + 2 && s1->index() == i1 + 4 && sp->index() == ip,
+                   "109e2: app.redo after a new change redid an older step: G1 " << s1->index() << " G2 "
+                                                                               << s2->index());
+        std::cout << "[PASS] 109e2: app.undo / app.redo go through both graphs' steps in order, not the table\n";
     }
 
     // ---- 109f: reading columns with scattered empty cells ----

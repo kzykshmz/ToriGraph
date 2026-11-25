@@ -4354,12 +4354,43 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const int mlIdxBefore =
                 (fallbackMl && fallbackMl->undoStack()) ? fallbackMl->undoStack()->index() : -1;
 
-        // No target given: step the stack that the last RPC changed (recorded by
-        // PythonAutomationServer::dispatchMethod), not the MDI active window's. Graph RPCs do not
-        // activate their graph, so the active window is often the worksheet whose data entry
-        // would be undone instead (the curves then lost their data). Only when nothing is
-        // recorded, or the recorded stack has nothing to undo / redo, the active window and the
-        // most recently modified stack below decide.
+        // No target given: go back (forward) through the Undo steps the RPCs made, in the order
+        // they were made across the project's stack and the graphs' stacks (logged by
+        // PythonAutomationServer::dispatchMethod): two graphs edited in turn are undone back
+        // through both, one step at a time, and redo walks forward again. Not the MDI active
+        // window's stack: graph RPCs do not activate their graph, so the active window is often
+        // the worksheet whose data entry would be undone instead (the curves then lost their
+        // data). After app.activate_window, or when no logged step can be undone / redone, the
+        // stack the last RPC changed decides, then the active window and the most recently
+        // modified stack below.
+        // the graph whose stack this is (null for the project's stack or a stack no window holds)
+        auto graphOfStack = [&](QUndoStack *us) -> MultiLayer * {
+            for (MyWidget *w : d_app->windowsList()) {
+                auto *ml = qobject_cast<MultiLayer *>(w);
+                if (ml && ml->undoStack() == us)
+                    return ml;
+            }
+            return nullptr;
+        };
+        // the stack of the latest logged step that can be undone (redone), if any
+        auto loggedStack = [&](bool undo, MultiLayer **mlOut) -> QUndoStack * {
+            if (!server)
+                return nullptr;
+            const QList<QPointer<QUndoStack>> &log = undo ? server->rpcUndoLog() : server->rpcRedoLog();
+            for (int i = log.size() - 1; i >= 0; --i) {
+                QUndoStack *us = log.at(i).data();
+                if (!us || !(undo ? us->canUndo() : us->canRedo()))
+                    continue;
+                // the project's stack (shared by the tables and matrices) or a graph's
+                MultiLayer *ml = graphOfStack(us);
+                if (!ml && us != projStack)
+                    continue;
+                if (mlOut)
+                    *mlOut = ml;
+                return us;
+            }
+            return nullptr;
+        };
         {
             QUndoStack *recorded = nullptr;
             MultiLayer *recordedMl = nullptr;
@@ -4371,6 +4402,13 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 }
             } else if (lastUndoDomain == QStringLiteral("project")) {
                 recorded = projStack;
+            }
+            if (!(server && server->rpcUndoWindowChosen())) {
+                MultiLayer *loggedMl = nullptr;
+                if (QUndoStack *logged = loggedStack(isUndo, &loggedMl)) {
+                    recorded = logged;
+                    recordedMl = loggedMl;
+                }
             }
             if (recorded && (isUndo ? recorded->canUndo() : recorded->canRedo())) {
                 {
@@ -4390,10 +4428,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     outResult[QStringLiteral("graph")] = recordedMl->name();
                     outResult[QStringLiteral("window")] = recordedMl->name();
                 }
-                outResult[QStringLiteral("can_undo")] =
-                        recorded->canUndo() || (other && other->canUndo());
-                outResult[QStringLiteral("can_redo")] =
-                        recorded->canRedo() || (other && other->canRedo());
+                outResult[QStringLiteral("can_undo")] = recorded->canUndo()
+                        || (other && other->canUndo()) || loggedStack(true, nullptr) != nullptr;
+                outResult[QStringLiteral("can_redo")] = recorded->canRedo()
+                        || (other && other->canRedo()) || loggedStack(false, nullptr) != nullptr;
                 return true;
             }
         }

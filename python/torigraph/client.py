@@ -3920,10 +3920,12 @@ class Session:
         """Undo the last operation.
 
         With ``window`` / ``graph`` / ``table`` / ``matrix``: on that window's Undo stack.
-        Without: on the stack the last call changed (that graph, or the project stack shared
-        by tables and matrices); calls that change nothing, such as reads, do not count, and
-        the active window does not decide it (``activate_window`` does). When that stack has
-        nothing left to undo, the active window or the most recently modified stack is used.
+        Without: the latest step the calls made, across the graphs' stacks and the project
+        stack shared by tables and matrices; calls that change nothing, such as reads, do not
+        count, and the active window does not decide it (``activate_window`` does). Repeated
+        calls go back through the steps in the order they were made, from one graph to another
+        (two graphs edited in turn are undone back through both). When no such step is left,
+        the active window or the most recently modified stack is used.
         """
         win_name: Optional[str] = None
         if isinstance(window, GraphProxy) and graph is None:
@@ -3953,9 +3955,10 @@ class Session:
         """Redo the last undone operation.
 
         With ``window`` / ``graph`` / ``table`` / ``matrix``: on that window's Undo stack.
-        Without: on the stack the last call changed or undid (as :meth:`undo`). When that
-        stack has nothing left to redo, the active window or the most recently modified stack
-        is used.
+        Without: the steps undone since the last new change, forward in the reverse order of
+        the undos (as :meth:`undo`; a new change ends them, as in one Undo stack). When none is
+        left, the stack the last call changed or undid, then the active window or the most
+        recently modified stack is used.
         """
         win_name: Optional[str] = None
         if isinstance(window, GraphProxy) and graph is None:
