@@ -2020,6 +2020,24 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
     if (!it)
         return nullptr;
 
+    // The error bars of a data curve go first, each with its own legend number, and the curve's
+    // index is read again after them. Removing the curve's legend line first moved the numbers
+    // after it up, and the error bars, removed afterwards under their old index, then took the
+    // line of the next curve (y with error bars and w: w lost its legend line).
+    if (deleteItem && it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (pc && pc->type() != ErrorBars && pc->type() != Function) {
+            if (DataCurve *dc = dynamic_cast<DataCurve *>(pc)) {
+                if (!dc->errorBarsList().isEmpty()) {
+                    dc->clearErrorBars();
+                    index = plotItemIndex(it);
+                    if (index < 0 || index >= n_curves)
+                        return nullptr;
+                }
+            }
+        }
+    }
+
     removeLegendItem(index);
 
     if (it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {

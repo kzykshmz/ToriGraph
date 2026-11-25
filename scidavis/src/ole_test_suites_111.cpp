@@ -1722,6 +1722,35 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
                    "111l: remove the error bars (no line for y)");
         expect("no line for y, error bars removed", QStringLiteral("\\c{2}w\n"));
         CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (no y)");
+        // (5b) empty lines the user put into the legend stay when the error bars go
+        const QString blanks = QStringLiteral("My samples\n\n\\c{1}y\n\n\\c{3}w\n");
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", blanks } }),
+                   "111l: legend with empty lines");
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 1 } }),
+                   "111l: remove the error bars (empty lines)");
+        expect("empty lines, error bars removed", QStringLiteral("My samples\n\n\\c{1}y\n\n\\c{2}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (empty lines)");
+        // (5c) an Origin-style legend (\l(n) %(n)): the line of the removed curve goes, the
+        //      others move up, no line is given twice
+        const QString originStyle = QStringLiteral("\\l(1) %(1)\n\\l(3) %(3)\n");
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", originStyle } }),
+                   "111l: Origin-style legend");
+        CHECK_COND(call("table.remove_column", QJsonObject{ { "table", t }, { "col", "w" } }),
+                   "111l: remove column w (Origin-style legend)");
+        expect("Origin-style legend, column w removed", QStringLiteral("\\l(1) %(1)\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111l: undo w (Origin-style)");
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 0 } }),
+                   "111l: remove y (Origin-style legend)");
+        // y goes with its error bars: w is the only item left and takes number 1
+        expect("Origin-style legend, y removed", QStringLiteral("\\l(1) %(1)\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (Origin-style)");
+        // the same with \c{n}: w keeps its line (it lost it to the error bars' old number)
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", init } }),
+                   "111l: legend back before removing y");
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 0 } }),
+                   "111l: remove y");
+        expect("y with its error bars removed", QStringLiteral("\\c{1}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (Origin-style)");
         CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", init } }),
                    "111l: legend back");
         // (6) a column used by error bars and by a curve, with a fit curve after them: every

@@ -825,17 +825,19 @@ void Graph::removeLegendCurveNumber(int index)
     if (!mrk)
         return;
 
-    QString text = mrk->text();
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList items = text.split("\n", Qt::SkipEmptyParts);
-#else
-    QStringList items = text.split("\n", QString::SkipEmptyParts);
-#endif
-
-    QStringList l = items.filter("\\c{" + QString::number(index + 1) + "}");
-    if (!l.isEmpty())
-        items.removeAll(l[0]); // remove the corresponding legend string
-    text = items.join("\n") + "\n";
+    const QString before = mrk->text();
+    // Empty lines the user put into the legend stay: the text is split with them and only the
+    // line of the removed item goes. That line is the first one whose symbol token is the item's
+    // number, written as \c{n} or as the Origin-style \l(n) (Legend draws both).
+    QStringList items = before.split(QLatin1Char('\n'));
+    const QRegularExpression lineRx(QStringLiteral(R"(\\c\{%1\}|\\l\(%1\))").arg(index + 1));
+    for (int i = 0; i < items.size(); ++i) {
+        if (lineRx.match(items.at(i)).hasMatch()) {
+            items.removeAt(i);
+            break;
+        }
+    }
+    QString text = items.join(QLatin1Char('\n'));
 
     // the numbers of the items after it (\c{n}, \l(n), %(n)) move down by one; lines that are
     // not a curve's keep their text
@@ -858,7 +860,8 @@ void Graph::removeLegendCurveNumber(int index)
         text = remapLegendCurveTokens(text, oldToNew);
     }
 
-    mrk->setText(text);
+    if (text != before)
+        mrk->setText(text);
 }
 
 void Graph::addLegendItem(const QString &colName)
