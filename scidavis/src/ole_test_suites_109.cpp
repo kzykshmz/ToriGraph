@@ -66,6 +66,9 @@
 //   109h workbook.create with a name follows the same rule: the name of another window is an
 //        error and makes no workbook (it used to be taken); the name of a worksheet the workbook
 //        is made from and the default names (no name given) are kept
+//   109i app.rename_window (and ApplicationWindow::renameWindow of the dialog) refuses the name
+//        of a workbook for a table, graph or matrix (it used to be taken); a worksheet may take
+//        the name of its own workbook
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -1373,6 +1376,47 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                    "109h: workbooks after the allowed creations: "
                            << bookNames().join(QStringLiteral(", ")).toStdString());
         std::cout << "[PASS] 109h: workbook.create refuses the names of other windows\n";
+
+        // ---- 109i: app.rename_window refuses the name of a workbook ----
+        // (the other way round of 109g / 109h: a table, graph or matrix took the name of a
+        // workbook, which then answered to the same name as that window)
+        for (const char *win : { "T109G", "G109G", "M109G" }) {
+            const QJsonObject r = rpc(QStringLiteral("app.rename_window"),
+                                      QJsonObject{ { "old_name", win }, { "new_name", "WB109G2" } });
+            std::cout << "[INFO] 109i: app.rename_window " << win << " -> WB109G2: "
+                      << (isErr(r) ? errText(r) : std::string("accepted")) << "\n";
+            CHECK_COND(isErr(r), "109i: app.rename_window gave " << win
+                                                                 << " the name of the workbook WB109G2");
+            CHECK_COND(w109->window(QString::fromLatin1(win)) != nullptr,
+                       "109i: the refused rename of " << win << " changed its name");
+        }
+        // the dialog and the project explorer go through ApplicationWindow::renameWindow
+        MyWidget *t109g = w109->window(QStringLiteral("T109G"));
+        CHECK_COND(t109g && !w109->renameWindow(t109g, QStringLiteral("WB109G2"))
+                           && t109g->name() == QStringLiteral("T109G"),
+                   "109i: renameWindow gave T109G the name of the workbook WB109G2");
+        // a worksheet may take the name of its own workbook (as the workbook may take the name of
+        // its own worksheet, 109g)
+        QString sheetOfWb;
+        {
+            const QJsonArray books = res(rpc(QString::fromLatin1("workbook.list"), QJsonObject{}))
+                                             .value(QString::fromLatin1("workbooks"))
+                                             .toArray();
+            for (const QJsonValue &v : books) {
+                const QJsonObject b = v.toObject();
+                if (b.value(QStringLiteral("name")).toString() == QStringLiteral("WB109G2")) {
+                    const QJsonArray sheets = b.value(QStringLiteral("sheets")).toArray();
+                    if (!sheets.isEmpty())
+                        sheetOfWb = sheets.at(0).toObject().value(QStringLiteral("table")).toString();
+                }
+            }
+        }
+        CHECK_COND(!sheetOfWb.isEmpty(), "109i: no worksheet in WB109G2");
+        const QJsonObject own = rpc(QStringLiteral("app.rename_window"),
+                                    QJsonObject{ { "old_name", sheetOfWb }, { "new_name", "WB109G2" } });
+        CHECK_COND(!isErr(own), "109i: a worksheet of WB109G2 could not take the name of its workbook: "
+                                        << errText(own));
+        std::cout << "[PASS] 109i: app.rename_window refuses the names of workbooks\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

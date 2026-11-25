@@ -1718,7 +1718,13 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
 
     newName.replace("_", "-");
 
-    while (alreadyUsedName(newName)) {
+    // A workbook answers to its name like a window: no window takes it, except a worksheet of
+    // that workbook (as a workbook may take the name of its own worksheet).
+    bool bookNameTaken = false;
+    if (WorkbookManager *wm = WorkbookManager::existing(this))
+        bookNameTaken = wm->bookNames().contains(newName) && wm->bookOf(w) != newName;
+
+    while (alreadyUsedName(newName) || bookNameTaken) {
         if (!nonInteractive) {
             QMessageBox::critical(this, tr("Error"),
                                   tr("Name <b>%1</b> already exists!").arg(newName) + "<p>"
