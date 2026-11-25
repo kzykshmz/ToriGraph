@@ -543,6 +543,61 @@ void ColumnSetMaskedCmd::undo()
 ///////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////
+// class ColumnReplaceValidityCmd / ColumnReplaceMaskingCmd
+///////////////////////////////////////////////////////////////////////////
+ColumnReplaceValidityCmd::ColumnReplaceValidityCmd(Column::Private *col,
+                                                   const IntervalAttribute<bool> &validity,
+                                                   QUndoCommand *parent)
+    : QUndoCommand(parent), d_col(col), d_new_validity(validity), d_copied(false)
+{
+    setText(QObject::tr("%1: mark cells invalid").arg(col->name()));
+}
+
+ColumnReplaceValidityCmd::~ColumnReplaceValidityCmd() { }
+
+void ColumnReplaceValidityCmd::redo()
+{
+    if (!d_copied) {
+        d_old_validity = d_col->validityAttribute();
+        d_copied = true;
+    }
+    d_col->replaceData(d_col->dataPointer(), d_new_validity);
+}
+
+void ColumnReplaceValidityCmd::undo()
+{
+    d_col->replaceData(d_col->dataPointer(), d_old_validity);
+}
+
+ColumnReplaceMaskingCmd::ColumnReplaceMaskingCmd(Column::Private *col,
+                                                 const IntervalAttribute<bool> &masking,
+                                                 QUndoCommand *parent)
+    : QUndoCommand(parent), d_col(col), d_new_masking(masking), d_copied(false)
+{
+    setText(QObject::tr("%1: mask cells").arg(col->name()));
+}
+
+ColumnReplaceMaskingCmd::~ColumnReplaceMaskingCmd() { }
+
+void ColumnReplaceMaskingCmd::redo()
+{
+    if (!d_copied) {
+        d_old_masking = d_col->maskingAttribute();
+        d_copied = true;
+    }
+    d_col->replaceMasking(d_new_masking);
+}
+
+void ColumnReplaceMaskingCmd::undo()
+{
+    d_col->replaceMasking(d_old_masking);
+}
+
+///////////////////////////////////////////////////////////////////////////
+// end of class ColumnReplaceValidityCmd / ColumnReplaceMaskingCmd
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
 // class ColumnSetFormulaCmd
 ///////////////////////////////////////////////////////////////////////////
 ColumnSetFormulaCmd::ColumnSetFormulaCmd(Column::Private *col, Interval<int> interval,

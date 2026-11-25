@@ -2669,6 +2669,42 @@ void applyContiguousTrueRuns(const QVector<bool> &flags, Setter setter)
     }
 }
 
+//! One flag per row 0..n-1 from a list of intervals. isInvalid(row) / isMasked(row) scan every
+//! interval, so asking them row by row took rows x intervals steps.
+QVector<bool> rowFlagsFromIntervals(const QList<Interval<int>> &intervals, int n)
+{
+    QVector<bool> flags(qMax(0, n), false);
+    for (const Interval<int> &iv : intervals) {
+        const int last = qMin(n - 1, iv.end());
+        for (int k = qMax(0, iv.start()); k <= last; ++k)
+            flags[k] = true;
+    }
+    return flags;
+}
+
+//! The runs of true flags, followed by the parts of `old` from row `bound` on (rows the sort
+//! does not rewrite keep their state)
+QList<Interval<int>> intervalsAfterSort(const QVector<bool> &flags, const QList<Interval<int>> &old,
+                                        int bound)
+{
+    QList<Interval<int>> out;
+    applyContiguousTrueRuns(flags, [&out](Interval<int> iv) { out.append(iv); });
+    QList<Interval<int>> beyond;
+    for (const Interval<int> &iv : old) {
+        if (iv.end() >= bound)
+            beyond.append(Interval<int>(qMax(bound, iv.start()), iv.end()));
+    }
+    std::sort(beyond.begin(), beyond.end(),
+              [](const Interval<int> &a, const Interval<int> &b) { return a.start() < b.start(); });
+    for (const Interval<int> &iv : beyond) {
+        if (!out.isEmpty() && out.last().end() + 1 >= iv.start())
+            out.last().setEnd(qMax(out.last().end(), iv.end()));
+        else
+            out.append(iv);
+    }
+    return out;
+}
+
 struct SortComparators
 {
     static bool doubleLess(const QPair<double, int> &a, const QPair<double, int> &b)
@@ -2749,26 +2785,27 @@ QVector<int> buildSortPermutation(const Column *keyCol, int rows, bool ascending
     if (!keyCol || rows <= 0)
         return QVector<int>();
     const int keyRows = keyCol->rowCount();
+    const QVector<bool> keyInvalid = rowFlagsFromIntervals(keyCol->invalidIntervals(), keyRows);
     switch (keyCol->dataType()) {
     case SciDAVis::TypeDouble:
         return buildTypedSortPermutation<double>(
                 rows, ascending ? SortComparators::doubleLess : SortComparators::doubleGreater,
-                [keyCol, keyRows](int r) {
-                    return (r >= keyRows || keyCol->isInvalid(r))
+                [keyCol, keyRows, &keyInvalid](int r) {
+                    return (r >= keyRows || keyInvalid.at(r))
                             ? std::numeric_limits<double>::quiet_NaN()
                             : keyCol->valueAt(r);
                 });
     case SciDAVis::TypeQString:
         return buildTypedSortPermutation<QString>(
                 rows, ascending ? SortComparators::stringLess : SortComparators::stringGreater,
-                [keyCol, keyRows](int r) {
-                    return (r >= keyRows || keyCol->isInvalid(r)) ? QString() : keyCol->textAt(r);
+                [keyCol, keyRows, &keyInvalid](int r) {
+                    return (r >= keyRows || keyInvalid.at(r)) ? QString() : keyCol->textAt(r);
                 });
     case SciDAVis::TypeQDateTime:
         return buildTypedSortPermutation<QDateTime>(
                 rows, ascending ? SortComparators::dateTimeLess : SortComparators::dateTimeGreater,
-                [keyCol, keyRows](int r) {
-                    return (r >= keyRows || keyCol->isInvalid(r)) ? QDateTime()
+                [keyCol, keyRows, &keyInvalid](int r) {
+                    return (r >= keyRows || keyInvalid.at(r)) ? QDateTime()
                                                                   : keyCol->dateTimeAt(r);
                 });
     default:
@@ -2804,14 +2841,17 @@ void applySortPermutation(Column *col, const QVector<int> &perm)
     if (!changed)
         return;
 
+    const QVector<bool> oldInvalid = rowFlagsFromIntervals(col->invalidIntervals(), oldRows);
+    const QList<Interval<int>> oldMasks = col->maskedIntervals();
+    const QVector<bool> oldMasked = rowFlagsFromIntervals(oldMasks, oldRows);
     QVector<bool> newInvalid(outRows, false);
     QVector<bool> newMasked(outRows, false);
     bool anyNewMasked = false;
     for (int k = 0; k < outRows; ++k) {
         const int src = perm.at(k);
         const bool inRange = (src >= 0 && src < oldRows);
-        newInvalid[k] = !inRange || col->isInvalid(src);
-        const bool masked = inRange && col->isMasked(src);
+        newInvalid[k] = !inRange || oldInvalid.at(src);
+        const bool masked = inRange && oldMasked.at(src);
         newMasked[k] = masked;
         if (masked)
             anyNewMasked = true;
@@ -2823,7 +2863,6 @@ void applySortPermutation(Column *col, const QVector<int> &perm)
         for (int k = 0; k < outRows; ++k)
             sorted[k] = newInvalid.at(k) ? 0.0 : col->valueAt(perm.at(k));
         col->replaceValues(0, sorted);
-        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
         break;
     }
     case SciDAVis::TypeQString: {
@@ -2832,7 +2871,6 @@ void applySortPermutation(Column *col, const QVector<int> &perm)
         for (int k = 0; k < outRows; ++k)
             sorted.append(newInvalid.at(k) ? QString() : col->textAt(perm.at(k)));
         col->replaceTexts(0, sorted);
-        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
         break;
     }
     case SciDAVis::TypeQDateTime: {
@@ -2845,19 +2883,24 @@ void applySortPermutation(Column *col, const QVector<int> &perm)
             sorted.append(dt);
         }
         col->replaceDateTimes(0, sorted);
-        applyContiguousTrueRuns(newInvalid, [col](Interval<int> iv) { col->setInvalid(iv, true); });
         break;
     }
     default:
         return;
     }
 
-    // Remap masks in the same macro instead of passing isMasked() bool as row index.
-    const bool hadMasks = !col->maskedIntervals().isEmpty();
-    if (hadMasks || anyNewMasked) {
-        col->setMasked(Interval<int>(0, qMax(oldRows, outRows) - 1), false);
-        applyContiguousTrueRuns(newMasked, [col](Interval<int> iv) { col->setMasked(iv, true); });
-    }
+    // The empty cells and the masks of the sorted rows are set with one command per column
+    // each, in the same macro. One setInvalid() / setMasked() per run of rows copied the whole
+    // interval list for each command (and Undo restored it as often): sort and Undo grew with
+    // the square of the rows when the sort scattered the masked rows (96 s and over 120 s for
+    // 100000 rows with 50000 masked). Rows 0..outRows-1 were rewritten above; the rows the
+    // sort does not rewrite keep their state.
+    if (newInvalid.contains(true))
+        col->replaceInvalidIntervals(
+                intervalsAfterSort(newInvalid, col->invalidIntervals(), outRows));
+    if (!oldMasks.isEmpty() || anyNewMasked)
+        col->replaceMaskedIntervals(
+                intervalsAfterSort(newMasked, oldMasks, qMax(oldRows, outRows)));
 }
 
 } // namespace

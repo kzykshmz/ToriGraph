@@ -3,9 +3,11 @@
 #include "future/table/future_Table.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 
+#include <algorithm>
 #include <cmath>
 
 // =============================================================================
@@ -22,6 +24,12 @@
 //        whole formula column), the formula values stay, Undo / Redo restore the masks, and a
 //        data change still recalculates the formula column; masking a GUI selection (runs of
 //        rows) is one Undo step
+//   109d sorting a table of 100000 rows x 20 columns whose column 1 has 50000 masked rows
+//        (scattered over the rows by the sort) and 1 % empty cells, with a formula column:
+//        sort, Undo and Redo take seconds at most (one mask command per masked run of rows
+//        made them grow with the square of the rows: 96 s to sort, Undo over 120 s); masks
+//        and empty cells move with their rows, the formula column stays consistent, and
+//        Undo / Redo restore the exact masks and values
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -390,6 +398,164 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(c2->maskedIntervals().isEmpty(), "109c: Undo of the GUI mask");
         t->deselectAll();
         std::cout << "[PASS] 109c: masking rows read by a formula column is fast and undoable\n";
+    }
+
+    // ---- 109d: sorting a large table with scattered masks, Undo and Redo ----
+    {
+        const int N = 100000;
+        const int C = 20;
+        Table *t = w109->newTable(QStringLiteral("S109"), N, C);
+        CHECK_COND(t != nullptr && t->numRows() == N && t->numCols() == C, "109d: table S109");
+        quint32 seed = 12345u;
+        auto nextRand = [&seed]() {
+            seed = seed * 1664525u + 1013904223u;
+            return seed;
+        };
+        // random values with about 1 % empty cells; the key (column 2) values are distinct and
+        // in random order, so the sort scatters the masked rows 1001..51000 of column 1
+        QVector<int> keyOrder(N);
+        for (int k = 0; k < N; ++k)
+            keyOrder[k] = k;
+        for (int k = N - 1; k > 0; --k)
+            std::swap(keyOrder[k], keyOrder[int((nextRand() >> 8) % quint32(k + 1))]);
+        for (int c = 0; c < C - 1; ++c) {
+            QJsonArray arr;
+            for (int k = 0; k < N; ++k) {
+                if ((nextRand() >> 8) % 100 == 0) {
+                    arr.append(QJsonValue(QJsonValue::Null));
+                } else {
+                    const double v = (c == 1) ? double(keyOrder.at(k)) * 0.5
+                                              : double((nextRand() >> 8) % 1000000) * 1e-3;
+                    arr.append(v);
+                }
+            }
+            const QJsonObject r = rpc(QStringLiteral("table.set_column_data"),
+                                      QJsonObject{ { "table", "S109" }, { "col", c }, { "data", arr } });
+            CHECK_COND(!isErr(r), "109d: set column " << c << ": " << errText(r));
+        }
+        QJsonObject r = rpc(QStringLiteral("table.set_formula"),
+                            QJsonObject{ { "table", "S109" },
+                                         { "col", C - 1 },
+                                         { "formula", "col(\"1\")*2+col(\"2\")" } });
+        CHECK_COND(res(r).value(QStringLiteral("ok")).toBool(), "109d: set_formula: " << errText(r));
+        r = rpc(QStringLiteral("table.mask_rows"),
+                QJsonObject{ { "table", "S109" }, { "col", 0 }, { "start_row", 1000 }, { "end_row", 50999 } });
+        CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == 50000,
+                   "109d: mask_rows: " << errText(r));
+
+        // per-row flags from the interval lists (isMasked(row) scans every interval)
+        auto expand = [](const QList<Interval<int>> &ivs, int n) {
+            QVector<bool> f(n, false);
+            for (const Interval<int> &iv : ivs)
+                for (int k = qMax(0, iv.start()); k <= qMin(n - 1, iv.end()); ++k)
+                    f[k] = true;
+            return f;
+        };
+        struct Snap
+        {
+            QVector<QVector<double>> values; // NaN = empty
+            QList<Interval<int>> masks0;
+        };
+        auto snapshot = [&]() {
+            Snap s;
+            for (int c = 0; c < C; ++c) {
+                Column *col = t->column(c);
+                const QVector<bool> inv = expand(col->invalidIntervals(), N);
+                QVector<double> v(N);
+                for (int k = 0; k < N; ++k)
+                    v[k] = inv.at(k) ? std::nan("") : col->valueAt(k);
+                s.values.append(v);
+            }
+            s.masks0 = t->column(0)->maskedIntervals();
+            return s;
+        };
+        auto sameDouble = [](double a, double b) {
+            return (std::isnan(a) && std::isnan(b)) || (!std::isnan(a) && !std::isnan(b) && a == b);
+        };
+        auto sameSnap = [&](const Snap &a, const Snap &b, std::string *why) {
+            for (int c = 0; c < C; ++c)
+                for (int k = 0; k < N; ++k)
+                    if (!sameDouble(a.values.at(c).at(k), b.values.at(c).at(k))) {
+                        *why = "column " + std::to_string(c + 1) + " row " + std::to_string(k);
+                        return false;
+                    }
+            if (expand(a.masks0, N) != expand(b.masks0, N)) {
+                *why = "masks of column 1";
+                return false;
+            }
+            return true;
+        };
+        const Snap before = snapshot();
+        QHash<double, int> rowOfKey; // row of each key value before the sort
+        for (int k = 0; k < N; ++k)
+            if (!std::isnan(before.values.at(1).at(k)))
+                rowOfKey.insert(before.values.at(1).at(k), k);
+        const QVector<bool> maskedBefore = expand(before.masks0, N);
+
+        QElapsedTimer timer;
+        timer.start();
+        r = rpc(QStringLiteral("table.sort"),
+                QJsonObject{ { "table", "S109" }, { "by", 1 }, { "ascending", false } });
+        const qint64 msSort = timer.elapsed();
+        CHECK_COND(!isErr(r), "109d: sort: " << errText(r));
+        // (one Undo step: the single app.undo below restores the whole table)
+        const Snap sorted = snapshot();
+        std::cout << "[INFO] 109d: sort 100000 x 20 with 50000 masked rows: " << msSort << " ms, "
+                  << sorted.masks0.size() << " masked runs after the sort\n";
+
+        // key column descending with the empty cells at the end; values and masks moved with
+        // their rows; the formula column matches its sources row by row
+        const QVector<bool> maskedSorted = expand(sorted.masks0, N);
+        int maskedCount = 0;
+        for (bool m : maskedSorted)
+            maskedCount += m ? 1 : 0;
+        CHECK_COND(maskedCount == 50000, "109d: masked rows after the sort: " << maskedCount);
+        int validKeys = 0;
+        for (int k = 0; k < N; ++k) {
+            const double key = sorted.values.at(1).at(k);
+            if (std::isnan(key)) {
+                for (int j = k; j < N; ++j)
+                    CHECK_COND(std::isnan(sorted.values.at(1).at(j)),
+                               "109d: an empty key cell is not at the end (row " << j << ")");
+                break;
+            }
+            ++validKeys;
+            if (k > 0)
+                CHECK_COND(key <= sorted.values.at(1).at(k - 1), "109d: not descending at row " << k);
+            const int src = rowOfKey.value(key, -1);
+            CHECK_COND(src >= 0, "109d: unknown key at row " << k);
+            CHECK_COND(sameDouble(sorted.values.at(0).at(k), before.values.at(0).at(src))
+                               && sameDouble(sorted.values.at(5).at(k), before.values.at(5).at(src)),
+                       "109d: row " << k << " does not carry the values of row " << src);
+            CHECK_COND(maskedSorted.at(k) == maskedBefore.at(src),
+                       "109d: the mask of row " << src << " did not move with it to row " << k);
+            const double a = sorted.values.at(0).at(k);
+            const double f = sorted.values.at(C - 1).at(k);
+            if (!std::isnan(a))
+                CHECK_COND(std::fabs(a * 2 + key - f) <= 1e-9 * std::fabs(f) + 1e-9,
+                           "109d: formula column inconsistent at row " << k);
+        }
+        CHECK_COND(validKeys == rowOfKey.size(), "109d: key cells lost: " << validKeys);
+        CHECK_COND(msSort < 5000 * kTestTimingScale, "109d: sort took " << msSort << " ms");
+
+        timer.restart();
+        CHECK_COND(!isErr(rpc(QStringLiteral("app.undo"), QJsonObject{ { "table", "S109" } })),
+                   "109d: undo sort");
+        const qint64 msUndo = timer.elapsed();
+        std::string why;
+        CHECK_COND(sameSnap(snapshot(), before, &why), "109d: Undo did not restore the table: " << why);
+        CHECK_COND(t->column(0)->maskedIntervals().size() == 1, "109d: Undo: the masks are not one run");
+        timer.restart();
+        CHECK_COND(!isErr(rpc(QStringLiteral("app.redo"), QJsonObject{ { "table", "S109" } })),
+                   "109d: redo sort");
+        const qint64 msRedo = timer.elapsed();
+        CHECK_COND(sameSnap(snapshot(), sorted, &why), "109d: Redo did not restore the sort: " << why);
+        std::cout << "[INFO] 109d: Undo " << msUndo << " ms, Redo " << msRedo << " ms\n";
+        CHECK_COND(msUndo < 5000 * kTestTimingScale && msRedo < 5000 * kTestTimingScale,
+                   "109d: Undo " << msUndo << " ms / Redo " << msRedo << " ms");
+        CHECK_COND(!isErr(rpc(QStringLiteral("app.undo"), QJsonObject{ { "table", "S109" } })),
+                   "109d: undo the sort again");
+        std::cout << "[PASS] 109d: sorting a large table with scattered masks is fast and undoable\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

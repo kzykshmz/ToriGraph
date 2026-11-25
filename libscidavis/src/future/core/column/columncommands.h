@@ -487,6 +487,52 @@ private:
 ///////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////
+// class ColumnReplaceValidityCmd / ColumnReplaceMaskingCmd
+///////////////////////////////////////////////////////////////////////////
+//! Replace all invalid intervals of a column at once
+class ColumnReplaceValidityCmd : public QUndoCommand
+{
+public:
+    ColumnReplaceValidityCmd(Column::Private *col, const IntervalAttribute<bool> &validity,
+                             QUndoCommand *parent = 0);
+    ~ColumnReplaceValidityCmd();
+
+    virtual void redo();
+    virtual void undo();
+
+private:
+    Column::Private *d_col;
+    //! The new invalid intervals
+    IntervalAttribute<bool> d_new_validity;
+    //! The invalid intervals before the first redo()
+    IntervalAttribute<bool> d_old_validity;
+    bool d_copied;
+};
+
+//! Replace all masked intervals of a column at once
+class ColumnReplaceMaskingCmd : public QUndoCommand
+{
+public:
+    ColumnReplaceMaskingCmd(Column::Private *col, const IntervalAttribute<bool> &masking,
+                            QUndoCommand *parent = 0);
+    ~ColumnReplaceMaskingCmd();
+
+    virtual void redo();
+    virtual void undo();
+
+private:
+    Column::Private *d_col;
+    //! The new masked intervals
+    IntervalAttribute<bool> d_new_masking;
+    //! The masked intervals before the first redo()
+    IntervalAttribute<bool> d_old_masking;
+    bool d_copied;
+};
+///////////////////////////////////////////////////////////////////////////
+// end of class ColumnReplaceValidityCmd / ColumnReplaceMaskingCmd
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
 // class ColumnSetFormulaCmd
 ///////////////////////////////////////////////////////////////////////////
 //! Set the formula for a given interval

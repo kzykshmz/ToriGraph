@@ -219,6 +219,14 @@ public:
     void setMasked(Interval<int> i, bool mask = true);
     //! Overloaded function for convenience
     void setMasked(int row, bool mask = true);
+    //! Replace all invalid intervals by the given ones in one Undo step
+    /**
+     * One command for any number of intervals: setInvalid() per interval copies the whole
+     * validity attribute for each command, which grows with the square of the intervals.
+     */
+    void replaceInvalidIntervals(const QList<Interval<int>> &intervals);
+    //! Replace all masked intervals by the given ones in one Undo step (see replaceInvalidIntervals)
+    void replaceMaskedIntervals(const QList<Interval<int>> &intervals);
     //@}
 
     //! \name Formula related functions

@@ -324,6 +324,16 @@ void Column::setMasked(int row, bool mask)
     setMasked(Interval<int>(row, row), mask);
 }
 
+void Column::replaceInvalidIntervals(const QList<Interval<int>> &intervals)
+{
+    exec(new ColumnReplaceValidityCmd(d_column_private, IntervalAttribute<bool>(intervals)));
+}
+
+void Column::replaceMaskedIntervals(const QList<Interval<int>> &intervals)
+{
+    exec(new ColumnReplaceMaskingCmd(d_column_private, IntervalAttribute<bool>(intervals)));
+}
+
 void Column::setFormula(Interval<int> i, QString formula)
 {
     exec(new ColumnSetFormulaCmd(d_column_private, i, formula));
