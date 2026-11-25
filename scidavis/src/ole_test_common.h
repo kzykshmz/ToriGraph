@@ -677,5 +677,6 @@ int runSuite103ImportRound2(ApplicationWindow *mw);
 int runSuite104ImportRound3(ApplicationWindow *mw);
 int runSuite105RpcImportColumnTypes(ApplicationWindow *mw);
 int runSuite107PlotFixesRound3(ApplicationWindow *mw);
+int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

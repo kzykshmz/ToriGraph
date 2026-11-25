@@ -360,6 +360,11 @@ public:
     /** The owning ::Table checks this before its automatic dependent-column recalculation; the
      * operation emits dataChanged() once for the touched columns when it is done. */
     bool isFormulaRecalcDeferred() const { return d_formula_recalc_defer_depth > 0; }
+    //! True while a column reports a change of its masked rows.
+    /** Formulas read cell values whether or not the rows are masked, so the owning ::Table
+     * skips its automatic dependent-column recalculation for such a change (the view, plots
+     * and analysis still get dataChanged()). */
+    bool isMaskingChangeInProgress() const { return d_masking_change_depth > 0; }
 
     //! Generate \a count non-colliding sequential column names ("1", "2", ... after existing ones).
     QStringList nextSequentialColumnNames(int count) const;
@@ -398,6 +403,7 @@ private slots:
     void handleModeChange(const AbstractColumn *col);
     void handlePlotDesignationChange(const AbstractColumn *col);
     void handleDataChange(const AbstractColumn *col);
+    void handleMaskingChange(const AbstractColumn *col);
     void handleRowsAboutToBeInserted(const AbstractColumn *col, int before, int count);
     void handleRowsInserted(const AbstractColumn *col, int before, int count);
     void handleRowsAboutToBeRemoved(const AbstractColumn *col, int first, int count);
@@ -652,6 +658,7 @@ private:
     Private d_table_private;
     bool d_auto_recalc_formulas = true;
     int d_formula_recalc_defer_depth = 0;
+    int d_masking_change_depth = 0;
     QString d_import_source_path;
     QString d_import_source_sheet;
     QString d_import_source_separator;

@@ -77,6 +77,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 104, "runSuite104ImportRound3", &runSuite104ImportRound3 },
     { 105, "runSuite105RpcImportColumnTypes", &runSuite105RpcImportColumnTypes },
     { 107, "runSuite107PlotFixesRound3", &runSuite107PlotFixesRound3 },
+    { 109, "runSuite109WorksheetFormulaRefsAndMasks", &runSuite109WorksheetFormulaRefsAndMasks },
 };
 
 static const ModularSuiteEntry *findModularSuite(int id)
@@ -191,7 +192,7 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
                 const int sid = part.trimmed().toInt(&ok);
                 if (!ok || !findModularSuite(sid)) {
                     std::cerr << "[FAIL] Unknown modular suite id in " << a.toStdString()
-                              << " (use --list-suites to inspect valid IDs 36..107)\n";
+                              << " (use --list-suites to inspect valid IDs 36..109)\n";
                     mw->savedProject();
                     mw->setOleEmbeddedMode(true);
                     delete mw;
@@ -5614,6 +5615,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite107PlotFixesRound3(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite109WorksheetFormulaRefsAndMasks(mw) != 0)
         return 1;
     mw->savedProject();
     std::cout << "[PASS] All 53 ToriGraph OriginPro Parity, Phase 12 .opju Importer/Graph-Math/Modern-UI Gate, Campaign 6 Final End-to-End Invariants, Mega-Wave 1..6 Specialty Plots/MatSci/Autonomy/Undo/Perf, Phase 6/7/8/B Full-Width Ribbon & Dock Layout, Caption Visibility, Worksheet Quick Bar, Graph Inspector & Direct Canvas UX, 600-DPI Non-Cosmetic Render & Lossless PNG/PDF Export, Lab CSV/Shift-JIS/Rigaku .ras Importer, Tensile 0.2% Proof Stress & Non-Bold Arial Arrhenius, Nonlinear Linked Scales & Locale-Free Ticks, Dual EMF+ Translucent Pills, Python JSON-RPC 2.0 Automation, Japanese Zero-Miss Localization, and OLE EMF+ Anti-Aliased Vector suites passed!\n";

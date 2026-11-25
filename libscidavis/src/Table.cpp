@@ -1606,6 +1606,9 @@ void Table::scheduleOrRunDependentRecalc(int changedFirstCol, int changedCount)
     // for all touched columns when it is finished, which brings us back here.
     if (d_future_table->isFormulaRecalcDeferred())
         return;
+    // Masking rows does not change any formula result (formulas read masked cells too).
+    if (d_future_table->isMaskingChangeInProgress())
+        return;
 
     QUndoStack *us = d_future_table->undoStack();
     const Project *proj = d_future_table->project();

@@ -266,22 +266,51 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
             if (!col->longName().isEmpty() && col->longName() == name)
                 return col;
         }
-        bool allUpperAlpha = true;
-        int alphaIdx = 0;
-        for (int k = 0; k < name.size(); ++k) {
-            const QChar ch = name.at(k);
-            if (ch < QLatin1Char('A') || ch > QLatin1Char('Z')) {
-                allUpperAlpha = false;
-                break;
+        auto isUpperAlphaName = [](const QString &s) {
+            if (s.isEmpty())
+                return false;
+            for (const QChar ch : s)
+                if (ch < QLatin1Char('A') || ch > QLatin1Char('Z'))
+                    return false;
+            return true;
+        };
+        auto isDigitName = [](const QString &s) {
+            if (s.isEmpty())
+                return false;
+            for (const QChar ch : s)
+                if (ch < QLatin1Char('0') || ch > QLatin1Char('9'))
+                    return false;
+            return true;
+        };
+        // A table that names its columns with letters ("A", "B", ...) or numbers ("1", "2", ...,
+        // the default names) uses that style as names. A reference in the same style that matches
+        // no column then names a column that is gone (removed, or renamed without the formula
+        // following), and reading the column now at that position would silently give the
+        // values of another column. The positional reading only applies when no column of the
+        // table is named in the style of the reference.
+        auto tableHasColumnNamed = [this](bool (*styleOf)(const QString &)) {
+            for (int i = 0; i < columnCount(); i++) {
+                const Column *col = d_table_private.column(i);
+                if (col && styleOf(col->name()))
+                    return true;
             }
-            alphaIdx = alphaIdx * 26 + (ch.unicode() - QLatin1Char('A').unicode() + 1);
+            return false;
+        };
+        if (isUpperAlphaName(name) && !tableHasColumnNamed(isUpperAlphaName)) {
+            int alphaIdx = 0;
+            for (const QChar ch : name) {
+                alphaIdx = alphaIdx * 26 + (ch.unicode() - QLatin1Char('A').unicode() + 1);
+                if (alphaIdx > columnCount())
+                    break;
+            }
+            if (alphaIdx >= 1 && alphaIdx <= columnCount())
+                return d_table_private.column(alphaIdx - 1);
         }
-        if (allUpperAlpha && alphaIdx >= 1 && alphaIdx <= columnCount())
-            return d_table_private.column(alphaIdx - 1);
 
         bool okNum = false;
         const int oneBased = name.toInt(&okNum);
-        if (okNum && oneBased >= 1 && oneBased <= columnCount())
+        if (okNum && oneBased >= 1 && oneBased <= columnCount()
+            && !tableHasColumnNamed(isDigitName))
             return d_table_private.column(oneBased - 1);
     }
 
@@ -907,9 +936,16 @@ void Table::maskSelection()
     QList<Column *> list = d_view->selectedColumns();
     foreach (Column *col_ptr, list) {
         int col = columnIndex(col_ptr);
-        for (int row = first; row <= last; row++)
-            if (d_view->isCellSelected(row, col))
-                col_ptr->setMasked(row);
+        // one setMasked(Interval) per run of selected rows, not one command per row
+        for (int row = first; row <= last; row++) {
+            if (!d_view->isCellSelected(row, col))
+                continue;
+            int runEnd = row;
+            while (runEnd < last && d_view->isCellSelected(runEnd + 1, col))
+                ++runEnd;
+            col_ptr->setMasked(Interval<int>(row, runEnd), true);
+            row = runEnd;
+        }
     }
     endMacro();
     RESET_CURSOR;
@@ -929,9 +965,16 @@ void Table::unmaskSelection()
     QList<Column *> list = d_view->selectedColumns();
     foreach (Column *col_ptr, list) {
         int col = columnIndex(col_ptr);
-        for (int row = first; row <= last; row++)
-            if (d_view->isCellSelected(row, col))
-                col_ptr->setMasked(row, false);
+        // one setMasked(Interval) per run of selected rows, not one command per row
+        for (int row = first; row <= last; row++) {
+            if (!d_view->isCellSelected(row, col))
+                continue;
+            int runEnd = row;
+            while (runEnd < last && d_view->isCellSelected(runEnd + 1, col))
+                ++runEnd;
+            col_ptr->setMasked(Interval<int>(row, runEnd), false);
+            row = runEnd;
+        }
     }
     endMacro();
     RESET_CURSOR;
@@ -2911,6 +2954,17 @@ void Table::handleDataChange(const AbstractColumn *col)
     }
 }
 
+void Table::handleMaskingChange(const AbstractColumn *col)
+{
+    // Masked rows are left out of plots, fits and statistics, but formulas read the cell values
+    // whether or not a row is masked: dependent formula columns keep their values. Marking the
+    // change lets the owning ::Table skip its dependent-column recalculation, which otherwise
+    // ran once per masked row (setMasked() of one row at a time inside a macro).
+    ++d_masking_change_depth;
+    handleDataChange(col);
+    --d_masking_change_depth;
+}
+
 void Table::handleRowsAboutToBeInserted(const AbstractColumn *col, int before, int count)
 {
     int new_size = col->rowCount() + count;
@@ -2971,7 +3025,7 @@ void Table::connectColumn(const Column *col)
     connect(col, SIGNAL(rowsRemoved(const AbstractColumn *, int, int)), this,
             SLOT(handleRowsRemoved(const AbstractColumn *, int, int)), Qt::UniqueConnection);
     connect(col, SIGNAL(maskingChanged(const AbstractColumn *)), this,
-            SLOT(handleDataChange(const AbstractColumn *)), Qt::UniqueConnection);
+            SLOT(handleMaskingChange(const AbstractColumn *)), Qt::UniqueConnection);
 }
 
 void Table::disconnectColumn(const Column *col)

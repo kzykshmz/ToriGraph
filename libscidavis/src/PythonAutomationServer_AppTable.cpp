@@ -5845,21 +5845,41 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         bool macroStarted = false;
         int actualChanged = 0;
         QSet<int> dirtyCols;
+        // Change runs of consecutive rows with one setMasked(Interval) each instead of one
+        // command (and one view/plot update) per row; a row listed twice counts once.
+        QVector<int> sortedRows = rowsToChange;
+        std::sort(sortedRows.begin(), sortedRows.end());
+        sortedRows.erase(std::unique(sortedRows.begin(), sortedRows.end()), sortedRows.end());
         for (int c : targetCols) {
             if (Column *col = t->column(c)) {
                 bool colChanged = false;
-                for (int r : rowsToChange) {
+                int runStart = -1;
+                int runEnd = -1;
+                auto flushRun = [&]() {
+                    if (runStart < 0)
+                        return;
+                    if (!macroStarted && t->d_future_table) {
+                        t->d_future_table->beginMacro(QStringLiteral("%1: mask").arg(t->name()));
+                        macroStarted = true;
+                    }
+                    col->setMasked(Interval<int>(runStart, runEnd), maskFlag);
+                    runStart = runEnd = -1;
+                };
+                for (int r : sortedRows) {
                     if (col->isMasked(r) != maskFlag) {
-                        if (!macroStarted && t->d_future_table) {
-                            t->d_future_table->beginMacro(
-                                    QStringLiteral("%1: mask").arg(t->name()));
-                            macroStarted = true;
+                        if (runStart >= 0 && r == runEnd + 1) {
+                            runEnd = r;
+                        } else {
+                            flushRun();
+                            runStart = runEnd = r;
                         }
-                        col->setMasked(r, maskFlag);
                         colChanged = true;
                         ++actualChanged;
+                    } else {
+                        flushRun();
                     }
                 }
+                flushRun();
                 if (colChanged)
                     dirtyCols.insert(c);
             }
