@@ -305,6 +305,13 @@ public:
         //! The curve keys of the layer just before the take, in order, to put each curve back
         //! after the item that preceded it.
         QList<int> order;
+        //! The legend text just before and just after the take, and the number of curves left:
+        //! if the layer still has that legend and that many curves when they come back, the
+        //! legend gets its text from before the take back as it was (removing a legend line also
+        //! drops its empty lines, which putting the line back cannot know about).
+        QString legendBefore;
+        QString legendAfter;
+        int curvesAfter = -1;
         bool out = false;
     };
     //! Takes out the curves removeCurves() would remove for any of \a names, with the error

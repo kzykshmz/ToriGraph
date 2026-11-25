@@ -57,6 +57,9 @@
 //        a rebuilt layer keeps its place in the curve order; after the layer before it is
 //        deleted and that undone, it goes back to its own layer; after the user deletes its
 //        layer, it does not go into another one
+//   111j the legend gets its text back as it was when the curves come back: an empty line in it
+//        (left by removing the last curve and adding another, or typed by the user) used to be
+//        dropped by the Undo of a column removal or of a table deletion
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -1445,6 +1448,96 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
     }
     CHECK_COND(fails111i == 0, "111i: " << fails111i << " case(s) failed");
     std::cout << "[PASS] 111i: held curves follow their layer through the graph's Undo / Redo\n";
+
+    // ---- 111j: the legend text comes back as it was, empty lines included ----
+    {
+        int fails111j = 0;
+        Table *t = w111->newTable(QString::fromLatin1("LT111"), 4, 4);
+        CHECK_COND(t && t->d_future_table, "111j: table LT111");
+        const char *lc[] = { "x", "a", "b", "d" };
+        for (int c = 0; c < 4; ++c)
+            t->setColName(c, QString::fromLatin1(lc[c]));
+        CHECK_COND(setCol("LT111", "x", { 1, 2, 3, 4 }) && setCol("LT111", "a", { 1, 4, 9, 16 })
+                           && setCol("LT111", "b", { 2, 3, 2, 3 }) && setCol("LT111", "d", { 2, 3, 4, 5 }),
+                   "111j: fill LT111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "LT111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "a" } }, { "graph_name", "LG111" } });
+        CHECK_COND(!isErr(r), "111j: plot LG111: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_legend"), QJsonObject{ { "graph", "LG111" }, { "visible", true } });
+        CHECK_COND(!isErr(r), "111j: legend: " << errText(r));
+        MultiLayer *lml = findGraph(w111, "LG111");
+        CHECK_COND(lml && !lml->layersList().isEmpty(), "111j: LG111");
+        auto legendText = [&]() {
+            Graph *g = lml->layersList().at(0);
+            return g->legend() ? g->legend()->text().toStdString() : std::string("(none)");
+        };
+        auto shown = [](std::string s) {
+            std::string o;
+            for (char ch : s)
+                o += (ch == '\n') ? std::string("\\n") : std::string(1, ch);
+            return o;
+        };
+        QUndoStack *ps = t->d_future_table->undoStack();
+
+        // (1) the last curve removed, another added: the legend starts with an empty line
+        r = rpc(QString::fromLatin1("plot.remove_curve"), QJsonObject{ { "graph", "LG111" }, { "curve", 0 } });
+        CHECK_COND(!isErr(r), "111j: remove curve a: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "LG111" }, { "table", "LT111" }, { "x_col", "x" }, { "y_col", "d" } });
+        CHECK_COND(!isErr(r), "111j: add curve d: " << errText(r));
+        const std::string l1 = legendText();
+        std::cout << "[INFO] 111j: legend with d: " << shown(l1) << "\n";
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "LT111" }, { "col", "d" } });
+        CHECK_COND(!isErr(r) && lml->layersList().at(0)->curves() == 0, "111j: remove d: " << errText(r));
+        CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"), QJsonObject{ { "table", "LT111" } })),
+                   "111j: undo remove d");
+        std::cout << "[INFO] 111j: d back: " << shown(legendText()) << "\n";
+        if (legendText() != l1) {
+            std::cerr << "[FAIL] 111j (1): legend after the column's Undo " << shown(legendText())
+                      << " expected " << shown(l1) << std::endl;
+            ++fails111j;
+        }
+
+        // (2) an empty line the user typed between two lines: the column's Undo and the table
+        //     deletion's Undo keep it
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "LG111" }, { "table", "LT111" }, { "x_col", "x" }, { "y_col", "b" } });
+        CHECK_COND(!isErr(r) && lml->layersList().at(0)->curves() == 2, "111j: add curve b: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_legend"),
+                QJsonObject{ { "graph", "LG111" }, { "text", "\\c{1}d\n\n\\c{2}b\n" } });
+        CHECK_COND(!isErr(r), "111j: legend text: " << errText(r));
+        const std::string l2 = legendText();
+        std::cout << "[INFO] 111j: legend typed: " << shown(l2) << "\n";
+        CHECK_COND(l2.find("\n\n") != std::string::npos, "111j: typed legend: " << shown(l2));
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "LT111" }, { "col", "b" } });
+        CHECK_COND(!isErr(r) && lml->layersList().at(0)->curves() == 1, "111j: remove b: " << errText(r));
+        CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"), QJsonObject{ { "table", "LT111" } })),
+                   "111j: undo remove b");
+        if (legendText() != l2) {
+            std::cerr << "[FAIL] 111j (2): legend after the column's Undo " << shown(legendText())
+                      << " expected " << shown(l2) << std::endl;
+            ++fails111j;
+        }
+        r = rpc(QString::fromLatin1("graph.set_legend"),
+                QJsonObject{ { "graph", "LG111" }, { "text", "\\c{1}d\n\n\\c{2}b\n" } });
+        CHECK_COND(!isErr(r) && legendText() == l2, "111j: legend text again: " << errText(r));
+        w111->closeWindow(t);
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QString::fromLatin1("LT111")) == nullptr
+                           && lml->layersList().at(0)->curves() == 0,
+                   "111j: deleting LT111");
+        ps->undo();
+        QCoreApplication::processEvents();
+        std::cout << "[INFO] 111j: LT111 back: " << shown(legendText()) << "\n";
+        if (w111->table(QString::fromLatin1("LT111")) == nullptr || legendText() != l2) {
+            std::cerr << "[FAIL] 111j (3): legend after the table deletion's Undo " << shown(legendText())
+                      << " expected " << shown(l2) << std::endl;
+            ++fails111j;
+        }
+        CHECK_COND(fails111j == 0, "111j: " << fails111j << " case(s) failed");
+    }
+    std::cout << "[PASS] 111j: the legend text comes back as it was\n";
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";
     return 0;

@@ -1675,6 +1675,10 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
     tc.order.clear();
     for (int i = 0; i < n_curves && i < c_keys.size(); ++i)
         tc.order << c_keys[i];
+    Legend *legBefore = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
+    tc.legendBefore = legBefore ? legBefore->text() : QString();
+    tc.legendAfter.clear();
+    tc.curvesAfter = -1;
 
     QList<QPair<int, QwtPlotItem *>> byIndex;
     for (QwtPlotItem *it : items) {
@@ -1734,6 +1738,10 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
             tc.curves.prepend(t);
     }
     tc.out = !tc.curves.isEmpty();
+    if (legBefore && legendMarkerID >= 0 && d_plot->marker(legendMarkerID) == legBefore) {
+        tc.legendAfter = legBefore->text();
+        tc.curvesAfter = n_curves;
+    }
     d_plot->replot();
 }
 
@@ -1791,6 +1799,11 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
     // keys a curve could not get back (taken by another item): its error bars find it under the
     // new one
     QHash<int, int> rekeyed;
+    // the legend as the take left it, with as many curves: if every curve goes back to its
+    // place, the legend text from before the take is put back as it was
+    Legend *legNow = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
+    bool legendAsBefore = legNow && tc.curvesAfter >= 0 && n_curves == tc.curvesAfter
+            && legNow->text() == tc.legendAfter;
     // the curves first, then the error bars, which need their curve back in the layer
     for (int pass = 0; pass < 2; ++pass) {
         for (TakenCurve &t : tc.curves) {
@@ -1808,6 +1821,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             // the layer with it (a rebuilt layer keeps the keys, and a key is never given to
             // another curve). That one stays (and reads its columns below); the held copy goes.
             if (QwtPlotItem *here = d_plot->plotItem(t.key)) {
+                legendAsBefore = false;
                 unlinkFromHeldCurve();
                 recreated << t.item;
                 t.item = nullptr;
@@ -1827,6 +1841,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             }
             if (t.type == ErrorBars && (!er || !master)) {
                 // its curve is no longer in this layer: nothing to attach the error bars to
+                legendAsBefore = false;
                 unlinkFromHeldCurve();
                 delete t.item;
                 t.item = nullptr;
@@ -1849,6 +1864,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
                 }
             }
             pos = qBound(0, pos, n_curves);
+            legendAsBefore = legendAsBefore && pos == t.index;
 
             // shift the curve numbers in the legend and the per-index state from pos on
             Legend *leg =
@@ -1918,6 +1934,9 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
         }
     }
     qDeleteAll(recreated);
+    if (legendAsBefore && legendMarkerID >= 0 && d_plot->marker(legendMarkerID) == legNow
+        && legNow->text() != tc.legendBefore)
+        legNow->setText(tc.legendBefore);
 
     syncCurveZOrder();
     // The columns are back: read their present values. loadData() drops a curve whose column
