@@ -931,9 +931,57 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             // 'y' holds a value only when one branch reaches x. Many changes of direction
             // (more than one per 4 points, as for differentiate) are rows in no particular
             // order: those are sorted by X as before, with a notice.
+            // A step back of X counts as a turn only when X travels back from its furthest point
+            // by more than 8 times its noise (robust spread of the second difference of X) and
+            // more than 1 % of the X range: an almost monotonic X with noise (x = 0.01 i +
+            // N(0, 0.005), 1000 points) steps back ~170 times, was taken for branches, and
+            // ~2 % of x gave several values and 'y' null. Such a curve is one branch, sorted.
             int nPts = 0;
             const int nTurns = CurveMathTools::countXTurns(g, curveTitle, &nPts);
+            int nBranchTurns = nTurns;
+            double xNoise = 0.0;
             if (nTurns > 0 && 4 * nTurns <= nPts) {
+                std::vector<double> xr, yr;
+                extractValidUnmaskedCurveXY(g->curve(g->curveIndex(curveTitle)), xr, yr);
+                if (xr.size() >= 3) {
+                    std::vector<double> d2;
+                    d2.reserve(xr.size());
+                    for (size_t i = 1; i + 1 < xr.size(); ++i)
+                        d2.push_back(xr[i] - 0.5 * (xr[i - 1] + xr[i + 1]));
+                    auto median = [](std::vector<double> v) {
+                        auto mid = v.begin() + v.size() / 2;
+                        std::nth_element(v.begin(), mid, v.end());
+                        return *mid;
+                    };
+                    const double med = median(d2);
+                    for (double &v : d2)
+                        v = std::fabs(v - med);
+                    xNoise = 1.4826 * median(d2) / std::sqrt(1.5);
+                    const auto mm = std::minmax_element(xr.begin(), xr.end());
+                    const double thr = std::max(8.0 * xNoise, 0.01 * (*mm.second - *mm.first));
+                    // Direction 0 until X has left the start by more than thr; then the furthest
+                    // X in the current direction, and a turn when X is thr back from it.
+                    int dir = 0;
+                    double ext = xr.front();
+                    nBranchTurns = 0;
+                    for (size_t i = 1; i < xr.size(); ++i) {
+                        const double v = xr[i];
+                        if (dir == 0) {
+                            if (std::fabs(v - xr.front()) > thr) {
+                                dir = (v > xr.front()) ? 1 : -1;
+                                ext = v;
+                            }
+                        } else if (dir * (v - ext) >= 0.0) {
+                            ext = v;
+                        } else if (std::fabs(v - ext) > thr) {
+                            ++nBranchTurns;
+                            dir = -dir;
+                            ext = v;
+                        }
+                    }
+                }
+            }
+            if (nBranchTurns > 0 && 4 * nTurns <= nPts) {
                 const QVector<double> ysAt = CurveMathTools::findYValuesFromX(g, curveTitle, xq);
                 outResult[QStringLiteral("ok")] = !ysAt.isEmpty();
                 outResult[QStringLiteral("y")] =
@@ -942,7 +990,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 outResult[QStringLiteral("notice")] =
                         QStringLiteral("X turns back %1 time(s); the curve has %2 value(s) at x = %3, "
                                        "one per branch in row order (y_values)%4.")
-                                .arg(nTurns)
+                                .arg(nBranchTurns)
                                 .arg(ysAt.size())
                                 .arg(xq, 0, 'g', 10)
                                 .arg(ysAt.size() > 1 ? QStringLiteral("; 'y' is null because "
@@ -954,7 +1002,16 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             const double yVal = CurveMathTools::findYFromX(g, curveTitle, xq, &ok);
             outResult[QStringLiteral("ok")] = ok;
             outResult[QStringLiteral("y")] = ok ? safeJsonDouble(yVal) : QJsonValue::Null;
-            if (nTurns > 0) {
+            if (nTurns > 0 && 4 * nTurns <= nPts) {
+                outResult[QStringLiteral("notice")] =
+                        QStringLiteral("X steps back %1 time(s) in %2 points, each time by no more "
+                                       "than its noise (%3) or 1 % of the X range; the curve was "
+                                       "taken as one branch and the points were sorted by X "
+                                       "(equal X averaged) before interpolating.")
+                                .arg(nTurns)
+                                .arg(nPts)
+                                .arg(xNoise, 0, 'g', 4);
+            } else if (nTurns > 0) {
                 outResult[QStringLiteral("notice")] =
                         QStringLiteral("X is not in order (%1 changes of direction in %2 points); "
                                        "the points were sorted by X (equal X averaged) before "
@@ -1421,11 +1478,18 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 Column *tc = t->column(tCol);
                 // Peak temperature of a spectrum. The largest sample is the peak only without
                 // noise: with 2 % noise at a 1 K step it wandered by up to 3.4 K and Ea came out
-                // 91 kJ/mol instead of 100. With noise (the slope changes sign on more than 5 %
-                // of the samples) a parabola is fitted by least squares to the samples around
-                // the maximum of a 5-point moving average down to 80 % of the peak height (lower,
-                // down to 50 %, when the noise is larger than 4 % of the height), and its vertex
-                // is the peak temperature. Noise-free spectra keep the largest sample as before.
+                // 91 kJ/mol instead of 100. With noise a parabola is fitted by least squares to
+                // the samples around the maximum of a 5-point moving average near the largest
+                // sample, down to 80 % of the peak height (lower, down to 50 %, when the noise is
+                // larger than 4 % of the height), and its vertex is the peak temperature.
+                // Noise-free spectra keep the largest sample as before.
+                // Noise is told by zigzags (the slope changes sign at two neighbouring samples),
+                // not by the number of changes of sign: the maxima and minima of a noise-free
+                // spectrum with two peaks (3 changes in 50 samples) counted as noise, and the
+                // moving average, which flattens a narrow peak, moved the result from the
+                // narrow 430 K peak to a broad one at 470 K. A zigzag needs a peak or valley one
+                // sample wide, which only noise makes. The moving-average maximum is also only
+                // looked for within 7 samples of the largest sample.
                 auto spectrumPeakT = [](std::vector<std::pair<double, double>> pts) -> double {
                     const int n = int(pts.size());
                     if (n == 0)
@@ -1443,18 +1507,23 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                     const double tArgmax = pts[size_t(iMax)].first;
                     if (n < 7)
                         return tArgmax;
-                    int nTurns = 0;
+                    int nZigzags = 0;
                     int prevSign = 0;
+                    int prevTurnAt = -10;
                     for (int k = 1; k < n; ++k) {
                         const double dy = pts[size_t(k)].second - pts[size_t(k - 1)].second;
                         const int sign = (dy > 0.0) ? 1 : (dy < 0.0 ? -1 : 0);
                         if (sign == 0)
                             continue;
-                        if (prevSign != 0 && sign != prevSign)
-                            ++nTurns;
+                        if (prevSign != 0 && sign != prevSign) {
+                            // Extremum at sample k - 1; a zigzag when the previous one was at k - 2.
+                            if (prevTurnAt == k - 2)
+                                ++nZigzags;
+                            prevTurnAt = k - 1;
+                        }
                         prevSign = sign;
                     }
-                    if (nTurns < std::max(3.0, 0.05 * n))
+                    if (nZigzags < std::max(2.0, 0.02 * n))
                         return tArgmax;
                     // Noise: robust spread of the second-difference residual.
                     std::vector<double> res2;
@@ -1482,7 +1551,10 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             s += pts[size_t(j)].second;
                         sm[size_t(k)] = s / double(hi - lo + 1);
                     }
-                    const int i0 = int(std::max_element(sm.begin(), sm.end()) - sm.begin());
+                    const int wLo = std::max(0, iMax - 7);
+                    const int wHi = std::min(n - 1, iMax + 7);
+                    const int i0 = int(std::max_element(sm.begin() + wLo, sm.begin() + wHi + 1)
+                                       - sm.begin());
                     const double base = *std::min_element(sm.begin(), sm.end());
                     const double amp = sm[size_t(i0)] - base;
                     if (!(amp > 0.0))
@@ -2786,6 +2858,23 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
         }
 
+        // Satterthwaite denominator sum(v^2 / df) of the Welch / Games-Howell variance va + vb.
+        // A group of one value has no variance of its own and takes the pooled within-group
+        // variance (N - k degrees of freedom). When both groups have one value they share that
+        // one estimate, so its two parts are a single term with N - k degrees of freedom: as two
+        // independent terms they gave 2 (N - k) and too small a p (A = [10], B = [13],
+        // C = [1..5]: df 8, p 0.217 instead of the pooled t with df 4, p 0.251; at t = 4,
+        // p 0.0039 instead of 0.016).
+        auto welchSatterthwaiteDenom = [](double va, double na, double vb, double nb,
+                                          double dfPool) -> double {
+            const double vOwnA = (na > 1.0) ? va : 0.0;
+            const double vOwnB = (nb > 1.0) ? vb : 0.0;
+            const double vPool = va + vb - vOwnA - vOwnB;
+            return ((na > 1.0) ? vOwnA * vOwnA / (na - 1.0) : 0.0)
+                    + ((nb > 1.0) ? vOwnB * vOwnB / (nb - 1.0) : 0.0)
+                    + ((vPool > 0.0 && dfPool > 0.0) ? vPool * vPool / dfPool : 0.0);
+        };
+
         // Studentized Range upper-tail probability P(Q_{k, nu} >= q) via Hartley-Tukey quadrature
         auto studentizedRangeP = [](double q, int k, double nu) -> double {
             if (!(q > 0.0) || k < 2 || !(nu > 0.0))
@@ -2937,15 +3026,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         comps.push_back({ ga.label, gb.label, diff, seQ, qStat, double(df2), pRaw,
                                           pAdj });
                     } else if (canonicalPosthoc == QStringLiteral("games_howell")) {
-                        // A group of one value has no variance of its own: the pooled
-                        // within-group variance stands in, with its N - k degrees of freedom.
+                        // A group of one value: pooled within-group variance (see
+                        // welchSatterthwaiteDenom for its degrees of freedom).
                         const double va = ((na > 1.0) ? ga.var : msw) / na;
                         const double vb = ((nb > 1.0) ? gb.var : msw) / nb;
-                        const double dfa = (na > 1.0) ? na - 1.0 : double(df2);
-                        const double dfb = (nb > 1.0) ? nb - 1.0 : double(df2);
                         const double vSum = va + vb;
+                        const double denom = welchSatterthwaiteDenom(va, na, vb, nb, double(df2));
                         const double seQ = (vSum > 0.0) ? std::sqrt(0.5 * vSum) : 0.0;
-                        const double denom = (va * va) / dfa + (vb * vb) / dfb;
                         const double dfW = (denom > 0.0) ? ((vSum * vSum) / denom) : (na + nb - 2.0);
                         const double qStat = (seQ > 0.0) ? (std::abs(diff) / seQ) : 0.0;
                         const double tStat = qStat / std::sqrt(2.0);
@@ -2961,11 +3048,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                         // value: pooled within-group variance, N - k degrees of freedom)
                         const double va = ((na > 1.0) ? ga.var : msw) / na;
                         const double vb = ((nb > 1.0) ? gb.var : msw) / nb;
-                        const double dfa = (na > 1.0) ? na - 1.0 : double(df2);
-                        const double dfb = (nb > 1.0) ? nb - 1.0 : double(df2);
                         const double vSum = va + vb;
+                        const double denom = welchSatterthwaiteDenom(va, na, vb, nb, double(df2));
                         const double seW = (vSum > 0.0) ? std::sqrt(vSum) : 0.0;
-                        const double denom = (va * va) / dfa + (vb * vb) / dfb;
                         const double dfW = (denom > 0.0) ? ((vSum * vSum) / denom) : (na + nb - 2.0);
                         const double tStat = (seW > 0.0) ? (std::abs(diff) / seW) : 0.0;
                         const double pRaw = (seW > 0.0 && dfW > 0.0)

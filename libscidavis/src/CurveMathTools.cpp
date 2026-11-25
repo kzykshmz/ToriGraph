@@ -10810,7 +10810,68 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
     std::vector<InternalPeak> pks;
     pks.reserve(selIdx.size());
 
-    for (int ip : selIdx) {
+    // Ka2 left in a pattern with noise (strip_kalpha2 off, the default of the RPC and the SDK):
+    // the doublet is merged into one peak, and the least-squares profile below (+-2 widths)
+    // took Ka2 into a single pseudo-Voigt + constant. The constant rose and the width came out
+    // 0.75-1.8 times the Ka1 width (0.79 times for FWHM 0.1 deg and a 0.16 deg split), which
+    // broke W-H. So each peak is also fitted as a Ka1 + Ka2 doublet (Ka2 at the angle given by
+    // lambda(Ka2) / lambda(Ka1), half the Ka1 height, same width and shape). Whether Ka2 is
+    // there is a property of the tube and the optics, so it is decided once for the pattern:
+    // a first pass over the peaks takes, for each, the drop of chi^2 (on a common window, see
+    // below) from the single profile to the doublet; the doublet is used when the sum of the
+    // drops exceeds 10 + 2 per peak, leaving out the largest and the smallest drop when there
+    // are 4 peaks or more (one fit stuck in a poor minimum gave thousands of either sign).
+    // On broad peaks (split 0.3-0.5 FWHM) the two shapes are hard to tell apart: on Al
+    // Ka1-only patterns with counting noise the sum stayed at least 10 below the threshold
+    // (48 patterns, 5 peaks; 27-49 below at 10000 counts), while a doublet at 10000 counts
+    // was 6-26 above and a resolved doublet thousands (simulated with this fit). Below the
+    // threshold the single profile is kept as before. Noise-free patterns, stripped patterns
+    // and unknown anodes are not affected.
+    const bool ka2Candidate = !noiseFree && mergeKaDoublets && !doStripKAlpha2;
+    const double ka2LambdaRatio = mergeKaDoublets ? anodeLines.kAlpha2 / anodeLines.kAlpha1 : 1.0;
+    auto ka2TwoTheta = [&](double tt1) {
+        const double s2 = std::sin(0.5 * tt1 * (M_PI / 180.0)) * ka2LambdaRatio;
+        return (s2 > 0.0 && s2 < 1.0) ? 2.0 * std::asin(s2) * (180.0 / M_PI) : tt1;
+    };
+    std::vector<double> ka2Drops;
+    bool useKa2Doublet = false;
+    // (peak, decision pass): the decision pass visits every peak first and only fits.
+    std::vector<std::pair<int, bool>> peakVisits;
+    if (ka2Candidate) {
+        for (int ip : selIdx)
+            peakVisits.emplace_back(ip, true);
+    }
+    for (int ip : selIdx)
+        peakVisits.emplace_back(ip, false);
+    bool ka2Decided = !ka2Candidate;
+
+    for (const auto &visit : peakVisits) {
+        const int ip = visit.first;
+        const bool ka2Decide = visit.second;
+        if (!ka2Decide && !ka2Decided) {
+            ka2Decided = true;
+            std::sort(ka2Drops.begin(), ka2Drops.end());
+            const size_t trim = (ka2Drops.size() >= 4) ? 1 : 0;
+            double dropSum = 0.0;
+            int dropCount = 0;
+            for (size_t k = trim; k + trim < ka2Drops.size(); ++k) {
+                dropSum += ka2Drops[k];
+                ++dropCount;
+            }
+            useKa2Doublet = dropCount > 0 && dropSum > 10.0 + 2.0 * dropCount;
+            if (useKa2Doublet) {
+                res.notes << QObject::tr(
+                        "K\u03B12 was not stripped and the pattern has noise: each peak was fitted as a %1 K\u03B11 + K\u03B12 doublet (I(K\u03B12)/I(K\u03B11) = 0.5), so widths and positions are those of K\u03B11.")
+                                     .arg(anodeLines.anode);
+                if (anodeMatchedAvg) {
+                    effLambda = anodeLines.kAlpha1;
+                    res.wavelengthAngstrom = anodeLines.kAlpha1;
+                    res.notes << QObject::tr(
+                            "The peak positions are those of K\u03B11, so d-spacings use \u03BB(K\u03B11) = %1 \u00C5 instead of the K\u03B1 average.")
+                                         .arg(anodeLines.kAlpha1, 0, 'f', 6);
+                }
+            }
+        }
         // Snap ip to local maximum of un-smoothed yNet within +-1 sample
         int pkIdx = ip;
         if (pkIdx > 1 && yNet[size_t(pkIdx - 1)] > yNet[size_t(pkIdx)])
@@ -11083,23 +11144,37 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             w0 = std::clamp(w0, 2.0 * avgStep, std::max(2.0 * avgStep, (kMax - kMin) * avgStep));
 
             // (2) Least-squares pseudo-Voigt + constant on the net intensity. Height and offset
-            // are linear and solved exactly for each trial of width, shape and centre.
+            // are linear and solved exactly for each trial of width, shape and centre. With
+            // ka2Weight > 0 the profile is the Ka1 + Ka2 doublet (see ka2Candidate above) and
+            // the window reaches 2 widths beyond Ka2.
+            double ka2Weight = 0.0;
             int lo = pkIdx, hi = pkIdx;
             auto setWindow = [&](double xc, double w) {
                 lo = pkIdx;
                 hi = pkIdx;
+                const double xTop = (ka2Weight > 0.0) ? ka2TwoTheta(xc) : xc;
                 while (lo > kMin && ttGrid[size_t(lo - 1)] >= xc - 2.0 * w)
                     --lo;
-                while (hi < kMax && ttGrid[size_t(hi + 1)] <= xc + 2.0 * w)
+                while (hi < kMax && ttGrid[size_t(hi + 1)] <= xTop + 2.0 * w)
                     ++hi;
             };
             auto evalFit = [&](double wT, double etaT, double xT, double *hOut) -> double {
                 const double halfW = std::max(1e-9, 0.5 * wT);
+                const double xT2 = (ka2Weight > 0.0) ? ka2TwoTheta(xT) : xT;
+                auto profile = [&](double x) {
+                    const double u = (x - xT) / halfW;
+                    const double u2 = u * u;
+                    double f = etaT / (1.0 + u2) + (1.0 - etaT) * std::exp(-M_LN2 * u2);
+                    if (ka2Weight > 0.0) {
+                        const double v = (x - xT2) / halfW;
+                        const double v2 = v * v;
+                        f += ka2Weight * (etaT / (1.0 + v2) + (1.0 - etaT) * std::exp(-M_LN2 * v2));
+                    }
+                    return f;
+                };
                 double n = 0.0, sf = 0.0, sff = 0.0, sy = 0.0, sfy = 0.0;
                 for (int k = lo; k <= hi; ++k) {
-                    const double u = (ttGrid[size_t(k)] - xT) / halfW;
-                    const double u2 = u * u;
-                    const double f = etaT / (1.0 + u2) + (1.0 - etaT) * std::exp(-M_LN2 * u2);
+                    const double f = profile(ttGrid[size_t(k)]);
                     const double y = yNet[size_t(k)];
                     n += 1.0;
                     sf += f;
@@ -11116,10 +11191,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 const double bT = (sy - hT * sf) / n;
                 double rss = 0.0;
                 for (int k = lo; k <= hi; ++k) {
-                    const double u = (ttGrid[size_t(k)] - xT) / halfW;
-                    const double u2 = u * u;
-                    const double f = etaT / (1.0 + u2) + (1.0 - etaT) * std::exp(-M_LN2 * u2);
-                    const double r = yNet[size_t(k)] - hT * f - bT;
+                    const double r = yNet[size_t(k)] - hT * profile(ttGrid[size_t(k)]) - bT;
                     rss += r * r;
                 }
                 if (hOut)
@@ -11136,62 +11208,117 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             const double xHi = (halfR > 3.0 * halfL) ? xApex3 : xApex3 + maxShift;
             const double wLo = std::max(0.5 * avgStep, 0.4 * w0);
             const double wHi = 2.5 * w0;
-            double w = w0, eta = 0.5, xc = xApex3, hFit = hApex3;
-            bool fitted = false;
-            for (int outer = 0; outer < 3; ++outer) {
-                setWindow(xc, w);
-                double best = evalFit(w, eta, xc, &hFit);
-                if (!std::isfinite(best))
-                    break;
-                fitted = true;
-                double stepW = 0.12 * w;
-                double stepEta = 0.20;
-                double stepX = std::min(0.10 * w, maxShift);
-                for (int it = 0; it < 30; ++it) {
-                    for (int dir : { -1, 1 }) {
-                        const double cand = std::clamp(w + dir * stepW, wLo, wHi);
-                        double hT = 0.0;
-                        const double r = evalFit(cand, eta, xc, &hT);
-                        if (r < best) {
-                            best = r;
-                            w = cand;
-                            hFit = hT;
+            struct ProfileFit
+            {
+                double w, eta, xc, h;
+                bool fitted;
+            };
+            // The apex of a doublet lies up to a third of the Ka1-Ka2 split above Ka1
+            // (overlapping lines merge at their 2:1 centroid), so the Ka1 centre of the doublet
+            // may move that much further down; within the noise bound alone it was pinned near
+            // the apex and the doublet could not fit (strong Ka1-only and doublet patterns
+            // alike). For the decision both profiles get that extra room on both sides, so that
+            // neither wins only by having more of it.
+            const double ka2Pull = ka2Candidate ? (ka2TwoTheta(xApex3) - xApex3) / 3.0 : 0.0;
+            auto runFit = [&](double weightKa2, double pullDown, double pullUp) -> ProfileFit {
+                ka2Weight = weightKa2;
+                const double sepPull = std::max(pullDown, pullUp);
+                const double xLoFit = xLo - pullDown;
+                const double xHiFit = xHi + pullUp;
+                double w = w0, eta = 0.5, xc = xApex3, hFit = hApex3;
+                bool fitted = false;
+                for (int outer = 0; outer < 3; ++outer) {
+                    setWindow(xc, w);
+                    double best = evalFit(w, eta, xc, &hFit);
+                    if (!std::isfinite(best))
+                        break;
+                    fitted = true;
+                    double stepW = 0.12 * w;
+                    double stepEta = 0.20;
+                    double stepX = std::min(0.10 * w, maxShift + sepPull);
+                    for (int it = 0; it < 30; ++it) {
+                        for (int dir : { -1, 1 }) {
+                            const double cand = std::clamp(w + dir * stepW, wLo, wHi);
+                            double hT = 0.0;
+                            const double r = evalFit(cand, eta, xc, &hT);
+                            if (r < best) {
+                                best = r;
+                                w = cand;
+                                hFit = hT;
+                            }
                         }
-                    }
-                    for (int dir : { -1, 1 }) {
-                        const double cand = std::clamp(eta + dir * stepEta, 0.0, 1.0);
-                        double hT = 0.0;
-                        const double r = evalFit(w, cand, xc, &hT);
-                        if (r < best) {
-                            best = r;
-                            eta = cand;
-                            hFit = hT;
+                        for (int dir : { -1, 1 }) {
+                            const double cand = std::clamp(eta + dir * stepEta, 0.0, 1.0);
+                            double hT = 0.0;
+                            const double r = evalFit(w, cand, xc, &hT);
+                            if (r < best) {
+                                best = r;
+                                eta = cand;
+                                hFit = hT;
+                            }
                         }
-                    }
-                    for (int dir : { -1, 1 }) {
-                        const double cand = std::clamp(xc + dir * stepX, xLo, xHi);
-                        double hT = 0.0;
-                        const double r = evalFit(w, eta, cand, &hT);
-                        if (r < best) {
-                            best = r;
-                            xc = cand;
-                            hFit = hT;
+                        for (int dir : { -1, 1 }) {
+                            const double cand = std::clamp(xc + dir * stepX, xLoFit, xHiFit);
+                            double hT = 0.0;
+                            const double r = evalFit(w, eta, cand, &hT);
+                            if (r < best) {
+                                best = r;
+                                xc = cand;
+                                hFit = hT;
+                            }
                         }
+                        stepW *= 0.7;
+                        stepEta *= 0.7;
+                        stepX *= 0.7;
                     }
-                    stepW *= 0.7;
-                    stepEta *= 0.7;
-                    stepX *= 0.7;
+                }
+                return ProfileFit{ w, eta, xc, hFit, fitted };
+            };
+            if (ka2Decide) {
+                // Both profiles, compared on one window that holds both (2 widths beyond Ka2).
+                const ProfileFit f1 = runFit(0.0, ka2Pull, ka2Pull);
+                const ProfileFit f2 = runFit(0.5, ka2Pull, ka2Pull);
+                if (f1.fitted && f2.fitted) {
+                    const double xA = std::min(f1.xc - 2.0 * f1.w, f2.xc - 2.0 * f2.w);
+                    const double xB =
+                            std::max(f1.xc + 2.0 * f1.w, ka2TwoTheta(f2.xc) + 2.0 * f2.w);
+                    lo = pkIdx;
+                    hi = pkIdx;
+                    while (lo > kMin && ttGrid[size_t(lo - 1)] >= xA)
+                        --lo;
+                    while (hi < kMax && ttGrid[size_t(hi + 1)] <= xB)
+                        ++hi;
+                    ka2Weight = 0.0;
+                    const double rss1 = evalFit(f1.w, f1.eta, f1.xc, nullptr);
+                    ka2Weight = 0.5;
+                    const double rss2 = evalFit(f2.w, f2.eta, f2.xc, nullptr);
+                    // chi^2 with the variance taken from the better fit's residual (5 fitted
+                    // parameters): equal to RSS / sigma^2 when that fit is good, smaller when
+                    // a neighbour inside the window leaves both fits poor. With RSS / sigma^2
+                    // a strong peak with a weak neighbour 1.7 FWHM away (Suite 96f) dropped by
+                    // ~500 for the doublet (its Ka2 took up part of the neighbour) and the
+                    // pattern was taken for a doublet.
+                    const double rssMin = std::min(rss1, rss2);
+                    const double dof = std::max(1.0, double(hi - lo + 1) - 5.0);
+                    if (std::isfinite(rss1) && std::isfinite(rss2) && rssMin > 0.0) {
+                        ka2Drops.push_back((rss1 - rss2) / (rssMin / dof));
+                    }
+                }
+            } else {
+                const ProfileFit f =
+                        useKa2Doublet ? runFit(0.5, ka2Pull, 0.0) : runFit(0.0, 0.0, 0.0);
+                if (f.fitted) {
+                    fwhmObs = f.w;
+                    bestEta = f.eta;
+                    hApex = f.h;
+                    xApex = f.xc;
+                } else {
+                    fwhmObs = w0;
                 }
             }
-            if (fitted) {
-                fwhmObs = w;
-                bestEta = eta;
-                hApex = hFit;
-                xApex = xc;
-            } else {
-                fwhmObs = w0;
-            }
         }
+        if (ka2Decide)
+            continue;
 
         const double thRad = 0.5 * xApex * (M_PI / 180.0);
         const double sinTh = std::sin(thRad);

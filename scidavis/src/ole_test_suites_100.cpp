@@ -35,6 +35,16 @@
 //        (it only went to the results log), also for the 'gaussian' kernel.
 //   100g undefined statistics are null: Weibull beta_se / eta_se without residual degrees of
 //        freedom (n = 2, 3-parameter n = 3), and the correlation of a constant column.
+//   100h XRD with counting noise and Cu Ka2 not stripped (the default): Ka2 was taken into the
+//        single-profile least-squares window and the widths came out 0.75-1.8 times the Ka1
+//        width. The doublet is now fitted: widths within 10 % of Ka1, W-H near the truth.
+//   100i Welch / Games-Howell between two groups of one value: the pooled variance was counted
+//        as two independent terms (df 2 (N - k) = 8, p 0.217); now df N - k = 4, p 0.2508.
+//   100j Kissinger spectra with a narrow and a broad peak and no noise (2 K step, 50-60
+//        points): the extrema were taken for noise and the moving average moved the peak from
+//        430 K to the broad one at 470 K; now the largest sample (and with noise, near it).
+//   100k lookup_xy on an almost monotonic X with noise (x = 0.01 i + N(0, 0.005), 1000 points)
+//        was taken for branches (~2 % of x gave y null); now sorted and one value.
 // Noise comes from a fixed splitmix64 + Box-Muller generator (identical on every platform).
 // =============================================================================
 namespace {
@@ -91,6 +101,45 @@ void alPattern100(double bg, double scale, double step, uint64_t seed, std::vect
         for (size_t i = 0; i < tt.size(); ++i) {
             const double u = (tt[i] - c) / sig;
             y[i] += scale / m * std::exp(-0.5 * u * u);
+        }
+    }
+    SplitMix100 rng(seed);
+    for (double &v : y)
+        v = std::max(0.0, std::round(v + std::sqrt(v) * rng.gauss()));
+}
+
+// Al with Cu Ka1 + Ka2 (Ka2 at lambda 1.544426, half the height, same width) on a flat
+// background, Gaussian profiles of crystallite size dNm and microstrain eps, 30..85 deg, the
+// same counting-like noise. truthFwhm is the Ka1 width.
+void alPatternKa2_100(double bg, double scale, double step, uint64_t seed, double dNm, double eps,
+                      std::vector<double> &tt, std::vector<double> &y, double truthCentre[5],
+                      double truthFwhm[5])
+{
+    tt.clear();
+    for (int i = 0;; ++i) {
+        const double v = 30.0 + step * i;
+        if (v >= 85.0 - 1e-9)
+            break;
+        tt.push_back(v);
+    }
+    y.assign(tt.size(), bg);
+    for (int r = 0; r < 5; ++r) {
+        const int m = kHkl100[r][0] * kHkl100[r][0] + kHkl100[r][1] * kHkl100[r][1]
+                + kHkl100[r][2] * kHkl100[r][2];
+        const double d = kA100 / std::sqrt(double(m));
+        const double th = std::asin(kLam100 / (2.0 * d));
+        const double th2 = std::asin(1.544426 / (2.0 * d));
+        const double fw = (0.9 * kLam100 / (dNm * 10.0 * std::cos(th)) + 4.0 * eps * std::tan(th))
+                * 180.0 / M_PI;
+        const double c = 2.0 * th * 180.0 / M_PI;
+        const double c2 = 2.0 * th2 * 180.0 / M_PI;
+        truthCentre[r] = c;
+        truthFwhm[r] = fw;
+        const double sig = fw / 2.3548200450309493;
+        for (size_t i = 0; i < tt.size(); ++i) {
+            const double u = (tt[i] - c) / sig;
+            const double u2 = (tt[i] - c2) / sig;
+            y[i] += scale / m * (std::exp(-0.5 * u * u) + 0.5 * std::exp(-0.5 * u2 * u2));
         }
     }
     SplitMix100 rng(seed);
@@ -689,6 +738,205 @@ int runSuite100NumericsRound2(ApplicationWindow *mw)
                                && R.at(2).toArray().at(i).isNull(),
                        "100g: r / p with the constant column c must be null (were r = 0, p = 1)");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // 100h: noisy XRD with Ka2 left in (strip_kalpha2 off)
+    // -------------------------------------------------------------------------
+    {
+        // D = 150 nm, eps = 0.0005: Ka1 FWHM 0.096-0.17 deg, Ka1-Ka2 split 0.10-0.25 deg.
+        double sumD = 0.0, sumEps = 0.0;
+        const uint64_t seeds[] = { 31, 32, 33, 34 };
+        for (uint64_t seed : seeds) {
+            std::vector<double> tt, y;
+            double cTrue[5], wTrue[5];
+            alPatternKa2_100(400.0, 9000.0, 0.02, seed, 150.0, 0.0005, tt, y, cTrue, wTrue);
+            const QJsonObject res = xrd(tt, y);
+            const QJsonArray peaks = res.value(QStringLiteral("peaks")).toArray();
+            const double whD = num(res.value(QStringLiteral("wh_size_nm")));
+            const double whEps = num(res.value(QStringLiteral("wh_microstrain")));
+            std::cout << "[INFO] 100h Ka2 seed " << seed << ": W-H D=" << whD << " eps=" << whEps
+                      << " FWHM/true:";
+            for (int r = 0; r < peaks.size() && r < 5; ++r)
+                std::cout << " " << peaks.at(r).toObject().value("fwhm_deg").toDouble() / wTrue[r];
+            std::cout << "\n";
+            CHECK_COND(peaks.size() == 5, "100h: expected the 5 Al reflections, got " << peaks.size());
+            for (int r = 0; r < 5 && r < peaks.size(); ++r) {
+                const QJsonObject o = peaks.at(r).toObject();
+                const double t = o.value(QStringLiteral("two_theta_deg")).toDouble();
+                const double fw = o.value(QStringLiteral("fwhm_deg")).toDouble();
+                CHECK_COND(std::fabs(t - cTrue[r]) < 0.03,
+                           "100h: peak " << r << " at " << t << ", Ka1 at " << cTrue[r]);
+                CHECK_COND(std::fabs(fw / wTrue[r] - 1.0) < 0.10,
+                           "100h: seed " << seed << " peak " << r << " FWHM " << fw
+                                         << " deg, Ka1 truth " << wTrue[r]
+                                         << " (0.75-1.8 times before)");
+            }
+            CHECK_COND(std::isfinite(whD) && std::fabs(whD / 150.0 - 1.0) < 0.30,
+                       "100h: W-H size " << whD << " nm, truth 150 nm");
+            CHECK_COND(std::isfinite(whEps) && std::fabs(whEps / 0.0005 - 1.0) < 0.40,
+                       "100h: W-H microstrain " << whEps << ", truth 0.0005");
+            sumD += whD;
+            sumEps += whEps;
+        }
+        std::cout << "[INFO] 100h mean W-H D=" << sumD / 4.0 << " eps=" << sumEps / 4.0 << "\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 100i: Welch / Games-Howell between two groups of one value
+    // -------------------------------------------------------------------------
+    {
+        // A = [10], B = [13], C = [1..5]: N - k = 4, MS within 2.5. A vs B: t = 3 / sqrt(5),
+        // df 4, p = 0.250815 (df 8 gave 0.216547). A vs C keeps its Welch df 5.538.
+        const QString t = makeTable(QStringList() << "A" << "B" << "C",
+                                    { { 10.0, nan, nan, nan, nan },
+                                      { 13.0, nan, nan, nan, nan },
+                                      { 1.0, 2.0, 3.0, 4.0, 5.0 } });
+        for (const char *ph : { "holm", "games_howell" }) {
+            const QJsonObject resp = rpc(QStringLiteral("stats.anova_oneway"),
+                                         QJsonObject{ { "table", t },
+                                                      { "cols", QJsonArray{ "A", "B", "C" } },
+                                                      { "posthoc", ph } });
+            CHECK_COND(!resp.contains("error"), "100i: ANOVA (" << ph << ") failed: "
+                                                                 << errMsg(resp).toStdString());
+            const QJsonObject r = resp.value("result").toObject();
+            bool seenAB = false, seenAC = false;
+            for (const QJsonValue &cv : r.value("comparisons").toArray()) {
+                const QJsonObject c = cv.toObject();
+                const QString a = c.value("group_a").toString(), b = c.value("group_b").toString();
+                const double df = num(c.value("df")), pRaw = num(c.value("p_raw"));
+                std::cout << "[INFO] 100i " << ph << " " << a.toStdString() << " vs "
+                          << b.toStdString() << ": df=" << df << " p_raw=" << pRaw
+                          << " p_adj=" << num(c.value("p_adj")) << "\n";
+                if (a == QLatin1String("A") && b == QLatin1String("B")) {
+                    seenAB = true;
+                    CHECK_COND(std::fabs(df - 4.0) < 1e-9 && std::fabs(pRaw - 0.250815360) < 1e-6
+                                       && c.value("p_adj").isDouble(),
+                               "100i: " << ph << " A(1) vs B(1) must use df N - k = 4, p 0.2508 "
+                                        << "(got df " << df << ", p " << pRaw << ")");
+                } else if (a == QLatin1String("A") && b == QLatin1String("C")) {
+                    seenAC = true;
+                    CHECK_COND(std::fabs(df - 9.0 / 1.625) < 1e-9
+                                       && std::fabs(pRaw - 0.008021066) < 1e-6,
+                               "100i: " << ph << " A(1) vs C(5) df " << df << " p " << pRaw
+                                        << ", expected 5.538 / 0.00802");
+                }
+            }
+            CHECK_COND(seenAB && seenAC, "100i: " << ph << " comparisons missing");
+            // The report table (GraphStatsAndSurfaceFit) has the same degrees of freedom.
+            bool repAB = false;
+            for (const QJsonValue &rv : r.value("report").toObject().value("data").toArray()) {
+                const QJsonObject row = rv.toObject();
+                if (row.value("Comparison").toString() != QLatin1String("A vs B"))
+                    continue;
+                repAB = true;
+                const double dfRep = num(row.value(QLatin1String(ph) == QLatin1String("holm")
+                                                           ? "df1"
+                                                           : "df2"));
+                CHECK_COND(std::fabs(dfRep - 4.0) < 1e-9
+                                   && std::fabs(num(row.value("p_value")) - 0.250815360) < 1e-6,
+                           "100i: report " << ph << " A vs B df " << dfRep << " p "
+                                           << num(row.value("p_value")) << ", expected 4 / 0.2508");
+            }
+            CHECK_COND(repAB, "100i: report row 'A vs B' missing (" << ph << ")");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 100j: Kissinger spectra with a narrow and a broad peak
+    // -------------------------------------------------------------------------
+    {
+        auto gauss = [](double x, double c, double s) {
+            const double u = (x - c) / s;
+            return std::exp(-0.5 * u * u);
+        };
+        const double narrow[3] = { 430.0, 436.0, 442.0 }; // on the 2 K grid
+        for (double tEnd : { 500.0, 520.0 }) {
+            for (double noise : { 0.0, 0.02 }) {
+                std::vector<double> T;
+                for (double v = 400.0; v < tEnd - 1e-9; v += 2.0)
+                    T.push_back(v);
+                SplitMix100 rng(77);
+                std::vector<std::vector<double>> spec(3);
+                for (int j = 0; j < 3; ++j) {
+                    for (double v : T) {
+                        spec[size_t(j)].push_back(gauss(v, narrow[j], 2.55)
+                                                  + 0.9 * gauss(v, narrow[j] + 40.0, 12.7)
+                                                  + noise * rng.gauss());
+                    }
+                }
+                const QString t = makeTable(QStringList() << "T" << "r5" << "r10" << "r20",
+                                            { T, spec[0], spec[1], spec[2] });
+                const QJsonObject r =
+                        rpc(QStringLiteral("curvemath.kissinger"),
+                            QJsonObject{ { "table", t },
+                                         { "heating_rates", QJsonArray{ 5, 10, 20 } },
+                                         { "temp_col", "T" },
+                                         { "y_cols", QJsonArray{ "r5", "r10", "r20" } },
+                                         { "temp_in_celsius", false },
+                                         { "plot", false } })
+                                .value(QStringLiteral("result"))
+                                .toObject();
+                const QJsonArray tp = r.value("peak_temps_k").toArray();
+                std::cout << "[INFO] 100j " << T.size() << " points, noise " << noise << ": Tp";
+                for (const QJsonValue &v : tp)
+                    std::cout << " " << v.toDouble();
+                std::cout << "\n";
+                CHECK_COND(tp.size() == 3, "100j: Kissinger failed");
+                // The result lists the peaks by heating rate (heating_rates_k_min).
+                const QJsonArray rr = r.value("heating_rates_k_min").toArray();
+                const double rateOf[3] = { 5.0, 10.0, 20.0 };
+                for (int j = 0; j < 3; ++j) {
+                    double tPk = nan;
+                    for (int i = 0; i < rr.size() && i < tp.size(); ++i) {
+                        if (std::fabs(rr.at(i).toDouble() - rateOf[j]) < 1e-9)
+                            tPk = tp.at(i).toDouble();
+                    }
+                    const double tol = (noise > 0.0) ? 1.0 : 1e-9;
+                    CHECK_COND(std::fabs(tPk - narrow[j]) < tol,
+                               "100j: " << T.size() << " points, noise " << noise << ": peak "
+                                        << tPk << " K, the narrow peak is at " << narrow[j]
+                                        << " K (470 K before)");
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 100k: lookup_xy on an almost monotonic X with noise
+    // -------------------------------------------------------------------------
+    {
+        SplitMix100 rng(91);
+        std::vector<double> x, y;
+        for (int i = 0; i < 1000; ++i) {
+            x.push_back(0.01 * i + 0.005 * rng.gauss());
+            y.push_back(2.0 * x.back() + 1.0);
+        }
+        const QString g = plotXY(x, y);
+        CHECK_COND(!g.isEmpty(), "100k: plot setup failed");
+        int nullY = 0;
+        double worst = 0.0;
+        QString notice;
+        for (int q = 0; q <= 180; ++q) {
+            const double xq = 0.5 + 0.05 * q + 0.0013;
+            const QJsonObject r = rpc(QStringLiteral("curvemath.lookup_xy"),
+                                      QJsonObject{ { "graph", g }, { "curve", 0 }, { "x", xq } })
+                                          .value(QStringLiteral("result"))
+                                          .toObject();
+            if (!r.value("ok").toBool() || !r.value("y").isDouble()) {
+                ++nullY;
+                continue;
+            }
+            worst = std::max(worst, std::fabs(r.value("y").toDouble() - (2.0 * xq + 1.0)));
+            notice = r.value("notice").toString();
+        }
+        std::cout << "[INFO] 100k noisy X: " << nullY << " of 181 without y, worst |dy| " << worst
+                  << ", notice: " << notice.toStdString() << "\n";
+        CHECK_COND(nullY == 0 && worst < 1e-9,
+                   "100k: an almost monotonic X with noise must give one y everywhere ("
+                           << nullY << " of 181 were null)");
+        CHECK_COND(notice.contains(QLatin1String("one branch")),
+                   "100k: the notice must say the curve was taken as one branch");
     }
 
     w.reset();

@@ -2747,12 +2747,21 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                 const double ni = static_cast<double>(gi.vals.size());
                 const double nj = static_cast<double>(gj.vals.size());
                 // A group of one value has no variance of its own: Welch / Games-Howell take the
-                // pooled within-group variance for it, with its N - k degrees of freedom.
+                // pooled within-group variance for it, with its N - k degrees of freedom. When
+                // both groups have one value they share that one estimate, so its two parts form
+                // a single Satterthwaite term with N - k degrees of freedom (as two independent
+                // terms they gave 2 (N - k), and p came out too small: A = [10], B = [13],
+                // C = [1..5] gave df 8, p 0.217 instead of the pooled t with df 4, p 0.251; at
+                // t = 4 that is p 0.0039 instead of 0.016).
                 const double vi = ((ni > 1.0) ? gi.var : msWithin) / ni;
                 const double vj = ((nj > 1.0) ? gj.var : msWithin) / nj;
-                const double dfi = (ni > 1.0) ? ni - 1.0 : df2;
-                const double dfj = (nj > 1.0) ? nj - 1.0 : df2;
+                const double vOwn_i = (ni > 1.0) ? vi : 0.0;
+                const double vOwn_j = (nj > 1.0) ? vj : 0.0;
+                const double vPool = vi + vj - vOwn_i - vOwn_j;
                 const double vSum = vi + vj;
+                const double welchDenom = ((ni > 1.0) ? vOwn_i * vOwn_i / (ni - 1.0) : 0.0)
+                        + ((nj > 1.0) ? vOwn_j * vOwn_j / (nj - 1.0) : 0.0)
+                        + ((vPool > 0.0 && df2 > 0.0) ? vPool * vPool / df2 : 0.0);
 
                 PairResult pr;
                 pr.i = i;
@@ -2775,7 +2784,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                         pr.pAdj = 0.0;
                     }
                 } else if (posthocMode == PostHocMode::GamesHowell) {
-                    const double denom = (vi * vi) / dfi + (vj * vj) / dfj;
+                    const double denom = welchDenom;
                     const double dfWelch =
                             (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                     pr.dfNum = static_cast<double>(K);
@@ -2796,7 +2805,7 @@ Table *GraphStatsAndSurfaceFit::runGroupComparisonAndAnnotate(ApplicationWindow 
                     pr.dfDen = df2;
                     if (vSum > 1e-30) {
                         pr.statVal = pr.meanDiff / std::sqrt(vSum);
-                        const double denom = (vi * vi) / dfi + (vj * vj) / dfj;
+                        const double denom = welchDenom;
                         pr.dfNum = (denom > 1e-30) ? ((vSum * vSum) / denom) : (ni + nj - 2.0);
                         pr.pRaw = std::clamp(2.0 * gsl_cdf_tdist_Q(std::abs(pr.statVal), pr.dfNum),
                                              0.0, 1.0);
