@@ -41,7 +41,7 @@
 //        entered into the active worksheet (the data went NaN and the curve was lost); after a
 //        table edit they undo the table even when the graph is the active window and a graph
 //        RPC that changes nothing (copy_format) came in between
-//   109e reading columns with about 1 % empty cells scattered over the rows (numeric, text and
+//   109f reading columns with about 1 % empty cells scattered over the rows (numeric, text and
 //        date/time, 100000 rows each) takes about as long as without them (each row used to scan
 //        all empty cells read so far: 6.6 s for one numeric column); rows out of order, gaps
 //        and repeated rows read as before; a project with a 20000 x 20 table with empty cells,
@@ -689,7 +689,7 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         std::cout << "[PASS] 109e: app.undo / app.redo without a window follow the last RPC's target\n";
     }
 
-    // ---- 109e: reading columns with scattered empty cells ----
+    // ---- 109f: reading columns with scattered empty cells ----
     {
         auto saveCol = [](const Column *col) {
             QByteArray bytes;
@@ -759,7 +759,7 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
             src.replaceInvalidIntervals(holes);
             const QVector<bool> srcInvalid = invalidFlags(&src);
             CHECK_COND(src.rowCount() == N && srcInvalid.count(true) == holes.size(),
-                       "109e: source column " << int(mode) << " has " << srcInvalid.count(true)
+                       "109f: source column " << int(mode) << " has " << srcInvalid.count(true)
                                               << " empty cells, expected " << holes.size());
             const QByteArray xml = saveCol(&src);
             timer.start();
@@ -767,32 +767,32 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
             std::unique_ptr<Column> dst = loadCol(xml, mode, &ok);
             const qint64 ms = timer.elapsed();
             msRead[m][withHoles ? 0 : 1] = ms;
-            std::cout << "[INFO] 109e: reading a column (mode " << int(mode) << ") of " << N
+            std::cout << "[INFO] 109f: reading a column (mode " << int(mode) << ") of " << N
                       << " rows with " << holes.size() << " scattered empty cells: " << ms << " ms\n";
-            CHECK_COND(ok, "109e: loading column mode " << int(mode) << " failed");
-            CHECK_COND(dst->rowCount() == N, "109e: " << dst->rowCount() << " rows after loading");
+            CHECK_COND(ok, "109f: loading column mode " << int(mode) << " failed");
+            CHECK_COND(dst->rowCount() == N, "109f: " << dst->rowCount() << " rows after loading");
             CHECK_COND(invalidFlags(dst.get()) == srcInvalid,
-                       "109e: empty cells differ after loading (mode " << int(mode) << ")");
+                       "109f: empty cells differ after loading (mode " << int(mode) << ")");
             for (int k = 0; k < N; ++k) {
                 if (srcInvalid.at(k))
                     continue;
                 if (mode == SciDAVis::ColumnMode::Numeric)
-                    CHECK_COND(dst->valueAt(k) == src.valueAt(k), "109e: value of row " << k);
+                    CHECK_COND(dst->valueAt(k) == src.valueAt(k), "109f: value of row " << k);
                 else if (mode == SciDAVis::ColumnMode::Text)
-                    CHECK_COND(dst->textAt(k) == src.textAt(k), "109e: text of row " << k);
+                    CHECK_COND(dst->textAt(k) == src.textAt(k), "109f: text of row " << k);
                 else
-                    CHECK_COND(dst->dateTimeAt(k) == src.dateTimeAt(k), "109e: date of row " << k);
+                    CHECK_COND(dst->dateTimeAt(k) == src.dateTimeAt(k), "109f: date of row " << k);
             }
         }
         // the empty cells add little to the time of reading the column (date/time cells take
         // longer to parse in any case)
         for (int m = 0; m < 3; ++m)
             CHECK_COND(msRead[m][0] < 2 * msRead[m][1] + 500 * kTestTimingScale,
-                       "109e: reading a column (mode " << int(modes[m]) << ") with empty cells took "
+                       "109f: reading a column (mode " << int(modes[m]) << ") with empty cells took "
                                                        << msRead[m][0] << " ms, without "
                                                        << msRead[m][1] << " ms");
         CHECK_COND(msRead[0][0] + msRead[1][0] < 2000 * kTestTimingScale,
-                   "109e: reading the numeric and text columns with empty cells took "
+                   "109f: reading the numeric and text columns with empty cells took "
                            << msRead[0][0] + msRead[1][0] << " ms");
 
         // (2) rows out of order, a gap and a repeated row read as before: the gap is empty, the
@@ -808,17 +808,17 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                     "<row type=\"TypeDouble\" index=\"4\" invalid=\"yes\">4</row>"
                     "<row type=\"TypeDouble\" index=\"4\" invalid=\"no\">44</row>";
             const int end = xml.lastIndexOf("</column>");
-            CHECK_COND(end > 0, "109e: no </column> in the saved XML");
+            CHECK_COND(end > 0, "109f: no </column> in the saved XML");
             xml.insert(end, rows);
             bool ok = false;
             std::unique_ptr<Column> dst = loadCol(xml, SciDAVis::ColumnMode::Numeric, &ok);
-            CHECK_COND(ok && dst->rowCount() == 6, "109e: hand-written rows: " << dst->rowCount());
+            CHECK_COND(ok && dst->rowCount() == 6, "109f: hand-written rows: " << dst->rowCount());
             const QVector<bool> inv = invalidFlags(dst.get());
             CHECK_COND(inv == QVector<bool>({ false, true, true, false, false, false }),
-                       "109e: empty cells of the hand-written rows");
+                       "109f: empty cells of the hand-written rows");
             CHECK_COND(dst->valueAt(0) == 1.0 && dst->valueAt(3) == 3.0 && dst->valueAt(4) == 44.0
                                && dst->valueAt(5) == 5.0,
-                       "109e: values of the hand-written rows");
+                       "109f: values of the hand-written rows");
         }
 
         // (3) a project with a table of 20000 rows x 20 columns and 1 % empty cells, masks, a
@@ -829,9 +829,9 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
             const int C = 20;
             // an empty project first: the saved project holds only this table
             QJsonObject r = rpc(QStringLiteral("app.new_project"), QJsonObject{ { "force", true } });
-            CHECK_COND(!isErr(r), "109e: new_project: " << errText(r));
+            CHECK_COND(!isErr(r), "109f: new_project: " << errText(r));
             Table *t = w109->newTable(QStringLiteral("O109"), R, C);
-            CHECK_COND(t != nullptr && t->numRows() == R && t->numCols() == C, "109e: table O109");
+            CHECK_COND(t != nullptr && t->numRows() == R && t->numCols() == C, "109f: table O109");
             for (int c = 0; c < C; ++c) {
                 Column *col = t->column(c);
                 if (c == 17)
@@ -867,7 +867,7 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                     QJsonObject{ { "table", "O109" },
                                  { "col", C - 1 },
                                  { "formula", "col(\"1\")*2+col(\"2\")" } });
-            CHECK_COND(res(r).value(QStringLiteral("ok")).toBool(), "109e: set_formula: " << errText(r));
+            CHECK_COND(res(r).value(QStringLiteral("ok")).toBool(), "109f: set_formula: " << errText(r));
 
             struct ColSnap
             {
@@ -899,43 +899,43 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
             };
             const QVector<ColSnap> before = snapshot(t);
             CHECK_COND(before.at(5).cells.at(0).contains(QLatin1Char('e')),
-                       "109e: number format of column 6 not applied: "
+                       "109f: number format of column 6 not applied: "
                                << before.at(5).cells.at(0).toStdString());
 
             QTemporaryDir tmp;
-            CHECK_COND(tmp.isValid(), "109e: no temporary directory");
+            CHECK_COND(tmp.isValid(), "109f: no temporary directory");
             const QString path = tmp.filePath(QStringLiteral("open109.sciprj"));
             r = rpc(QStringLiteral("app.save_project"), QJsonObject{ { "path", path } });
             CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
-                       "109e: save_project: " << errText(r));
+                       "109f: save_project: " << errText(r));
             timer.start();
             r = rpc(QStringLiteral("app.open_project"), QJsonObject{ { "path", path }, { "force", true } });
             const qint64 msOpen = timer.elapsed();
             CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
-                       "109e: open_project: " << errText(r));
-            std::cout << "[INFO] 109e: opening a project with a table of " << R << " x " << C
+                       "109f: open_project: " << errText(r));
+            std::cout << "[INFO] 109f: opening a project with a table of " << R << " x " << C
                       << " with 1 % empty cells took " << msOpen << " ms\n";
             Table *lt = w109->table(QStringLiteral("O109"));
             CHECK_COND(lt != nullptr && lt->numRows() == R && lt->numCols() == C,
-                       "109e: table O109 after opening");
+                       "109f: table O109 after opening");
             const QVector<ColSnap> after = snapshot(lt);
             for (int c = 0; c < C; ++c) {
                 const ColSnap &a = before.at(c);
                 const ColSnap &b = after.at(c);
-                CHECK_COND(a.mode == b.mode, "109e: column " << c + 1 << " mode changed");
-                CHECK_COND(a.invalid == b.invalid, "109e: column " << c + 1 << " empty cells changed");
-                CHECK_COND(a.cells == b.cells, "109e: column " << c + 1 << " cell texts changed");
-                CHECK_COND(a.values == b.values, "109e: column " << c + 1 << " values changed");
+                CHECK_COND(a.mode == b.mode, "109f: column " << c + 1 << " mode changed");
+                CHECK_COND(a.invalid == b.invalid, "109f: column " << c + 1 << " empty cells changed");
+                CHECK_COND(a.cells == b.cells, "109f: column " << c + 1 << " cell texts changed");
+                CHECK_COND(a.values == b.values, "109f: column " << c + 1 << " values changed");
                 CHECK_COND(a.masks.size() == b.masks.size(),
-                           "109e: column " << c + 1 << " masks changed");
+                           "109f: column " << c + 1 << " masks changed");
                 for (const Interval<int> &iv : a.masks)
-                    CHECK_COND(b.masks.contains(iv), "109e: column " << c + 1 << " lost the mask "
+                    CHECK_COND(b.masks.contains(iv), "109f: column " << c + 1 << " lost the mask "
                                                                      << iv.toString().toStdString());
-                CHECK_COND(a.formula == b.formula, "109e: column " << c + 1 << " formula changed");
+                CHECK_COND(a.formula == b.formula, "109f: column " << c + 1 << " formula changed");
             }
-            CHECK_COND(msOpen < 8000 * kTestTimingScale, "109e: opening took " << msOpen << " ms");
+            CHECK_COND(msOpen < 8000 * kTestTimingScale, "109f: opening took " << msOpen << " ms");
         }
-        std::cout << "[PASS] 109e: columns with scattered empty cells are read quickly and unchanged\n";
+        std::cout << "[PASS] 109f: columns with scattered empty cells are read quickly and unchanged\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";
