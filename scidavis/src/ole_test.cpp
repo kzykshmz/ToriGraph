@@ -81,6 +81,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 108, "runSuite108PlotGeometryCloneRoundTrip", &runSuite108PlotGeometryCloneRoundTrip },
     { 109, "runSuite109WorksheetFormulaRefsAndMasks", &runSuite109WorksheetFormulaRefsAndMasks },
     { 110, "runSuite110CurveMathKeepsGraphAndColumns", &runSuite110CurveMathKeepsGraphAndColumns },
+    { 111, "runSuite111DualYHeadroomAndRemovedColumnUndo", &runSuite111DualYHeadroomAndRemovedColumnUndo },
     { 112, "runSuite112HeatmapHolesAndHistogramBins", &runSuite112HeatmapHolesAndHistogramBins },
 };
 
@@ -5631,6 +5632,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite110CurveMathKeepsGraphAndColumns(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite111DualYHeadroomAndRemovedColumnUndo(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite112HeatmapHolesAndHistogramBins(mw) != 0)
