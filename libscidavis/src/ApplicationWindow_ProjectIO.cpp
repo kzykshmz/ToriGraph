@@ -477,6 +477,85 @@ static void activateExistingProjectWindow(ApplicationWindow *aw)
     aw->activateWindow();
 }
 
+// A project file is read in two passes over the same QTextStream: the first builds folders,
+// tables, matrices and notes, the second graphs, 3D plots and the results log. Each pass skips
+// the bodies of its own blocks but not those of the other pass, so a body line starting with
+// "<folder>" or equal to "</folder>" (note text, results log) looks like a folder marker to the
+// pass that does not skip it, and counting markers puts later windows into the wrong folder.
+// The first pass therefore also skips the second pass's blocks (this function) and records,
+// for every genuine marker, the folder it makes current keyed by the stream position right
+// after the marker line; the second pass follows only the markers found at those positions.
+//
+// Skips the body of a <multiLayer>, <SurfacePlot> or <log> block whose opening line `opening`
+// has just been read, with the same end-of-block rules as the second pass.
+static void skipSecondPassProjectBlock(QTextStream &t, const QString &opening)
+{
+    QString s = opening;
+    if (s == QLatin1String("<multiLayer>")) {
+        while (s != QLatin1String("</multiLayer>") && !t.atEnd()) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+            if (s.left(7) == QLatin1String("<graph>")) {
+                while (s != QLatin1String("</graph>") && !t.atEnd()) {
+                    s = t.readLine();
+                    if (s.isNull())
+                        return;
+                }
+            }
+        }
+    } else if (s == QLatin1String("<SurfacePlot>")) {
+        while (s != QLatin1String("</SurfacePlot>") && !t.atEnd()) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+        }
+    } else if (s.left(5) == QLatin1String("<log>") && !s.contains(QLatin1String("</log>"))) {
+        do {
+            s = t.readLine();
+        } while (!s.isNull() && s != QLatin1String("</log>")
+                 && !s.endsWith(QLatin1String("</log>")) && !t.atEnd());
+    }
+}
+
+static bool isSecondPassProjectBlockStart(const QString &s)
+{
+    return s == QLatin1String("<multiLayer>") || s == QLatin1String("<SurfacePlot>")
+            || s.left(5) == QLatin1String("<log>");
+}
+
+// Second pass: applies the folder marker line `s` (a "<folder>..." or "</folder>" line just
+// read from `t`) using the folders recorded by the first pass (see skipSecondPassProjectBlock).
+// A line at a position the first pass did not record is body text of a block the first pass
+// skipped (note, table, ...) and is ignored. Without usable positions the folder is looked up
+// by name as before.
+static void applySecondPassFolderMarker(QTextStream &t, const QString &s,
+                                        const QHash<qint64, QPointer<Folder>> &folderAtMarker,
+                                        bool markerKeysValid, Folder *&currentFolder,
+                                        Folder *rootFolder)
+{
+    const bool opening = s.left(8) == QLatin1String("<folder>");
+    const qint64 key = markerKeysValid ? t.pos() : qint64(-1);
+    if (key >= 0) {
+        const auto it = folderAtMarker.constFind(key);
+        if (it == folderAtMarker.constEnd())
+            return; // not a marker for the first pass: body text of a skipped block
+        if (Folder *f = it.value().data()) {
+            currentFolder = f;
+            return;
+        }
+    }
+    if (opening) {
+        const QStringList list = s.split(QLatin1Char('\t'));
+        Folder *sub = (list.count() >= 2) ? currentFolder->findSubfolder(list[1]) : nullptr;
+        if (sub)
+            currentFolder = sub;
+    } else {
+        Folder *parent = static_cast<Folder *>(currentFolder->parent());
+        currentFolder = parent ? parent : rootFolder;
+    }
+}
+
 void ApplicationWindow::open()
 {
     if (isNonInteractiveContext(this))
@@ -1392,10 +1471,19 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     item->folder()->setName(fi.baseName());
 
     bool truncatedProject = false;
-    // Folders created by the first pass, in <folder> order. The second pass walks the same
-    // lines and must re-enter exactly these folders: looking them up by name would send the
-    // windows of a second same-named sibling folder into the first one.
-    QList<QPointer<Folder>> loadedFolders;
+    // Folder made current by each genuine <folder> / </folder> line of the first pass, keyed by
+    // the stream position after that line (see skipSecondPassProjectBlock). The second pass
+    // re-enters exactly these folders: looking them up by name would send the windows of a
+    // second same-named sibling folder into the first one.
+    QHash<qint64, QPointer<Folder>> folderAtMarker;
+    bool markerKeysValid = true;
+    auto recordFolderMarker = [&t, &folderAtMarker, &markerKeysValid](Folder *f) {
+        const qint64 key = t.pos();
+        if (key < 0)
+            markerKeysValid = false;
+        else
+            folderAtMarker.insert(key, QPointer<Folder>(f));
+    };
     // process tables and matrix information
     while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
@@ -1418,9 +1506,9 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
             FolderListItem *fli = new FolderListItem(current_folder->folderListItem(), &f);
             fli->setText(0, list[1]);
             f.setFolderListItem(fli);
-            loadedFolders.append(QPointer<Folder>(&f));
 
             current_folder = &f;
+            recordFolderMarker(&f);
         } else if (s == "<table>") {
             ++aux;
             openTable(this, t);
@@ -1494,6 +1582,9 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
                 current_folder = projectFolder();
             else
                 current_folder = parent;
+            recordFolderMarker(current_folder);
+        } else if (isSecondPassProjectBlockStart(s)) {
+            skipSecondPassProjectBlock(t, s);
         }
     }
 
@@ -1509,21 +1600,13 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     current_folder = projectFolder();
 
     MultiLayer *plot = 0;
-    int folderIndex = 0;
     while (!t.atEnd() && !wasProgressCanceled()) {
         s = t.readLine(1048576); // workaround for safely reading very big lines
         if (s.isNull())
             break;
-        if (s.left(8) == "<folder>") {
-            list = s.split("\t");
-            Folder *sub = nullptr;
-            if (folderIndex < loadedFolders.size())
-                sub = loadedFolders.at(folderIndex).data();
-            else if (list.count() >= 2)
-                sub = current_folder->findSubfolder(list[1]);
-            ++folderIndex;
-            if (sub)
-                current_folder = sub;
+        if (s.left(8) == "<folder>" || s == "</folder>") {
+            applySecondPassFolderMarker(t, s, folderAtMarker, markerKeysValid, current_folder,
+                                        projectFolder());
         } else if (s == "<multiLayer>") { // process multilayers information
             ++aux;
 
@@ -1646,12 +1729,6 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
             }
             openSurfacePlot(this, list);
             updateProgressStep(aux);
-        } else if (s == "</folder>") {
-            Folder *parent = (Folder *)current_folder->parent();
-            if (!parent)
-                current_folder = projectFolder();
-            else
-                current_folder = parent;
         } else if (s.left(5) == "<log>") { // process analysis information
             if (s.contains(QLatin1String("</log>"))) {
                 logInfo += s.mid(5).section(QLatin1String("</log>"), 0, 0);
@@ -4660,8 +4737,17 @@ void ApplicationWindow::appendProject(const QString &fn)
             t.readLine();
 
         bool truncatedProject = false;
-        // Folders created by the first pass, in <folder> order (see openProject).
-        QList<QPointer<Folder>> appendedFolders;
+        // Folder made current by each genuine <folder> / </folder> line of the first pass, keyed
+        // by the stream position after that line (see skipSecondPassProjectBlock / openProject).
+        QHash<qint64, QPointer<Folder>> folderAtMarker;
+        bool markerKeysValid = true;
+        auto recordFolderMarker = [&t, &folderAtMarker, &markerKeysValid](Folder *f) {
+            const qint64 key = t.pos();
+            if (key < 0)
+                markerKeysValid = false;
+            else
+                folderAtMarker.insert(key, QPointer<Folder>(f));
+        };
         // process tables and matrix information
         while (!t.atEnd()) {
             s = t.readLine(1048576); // workaround for safely reading very big lines
@@ -4681,9 +4767,9 @@ void ApplicationWindow::appendProject(const QString &fn)
                 FolderListItem *fli = new FolderListItem(current_folder->folderListItem(), &f);
                 fli->setText(0, lst[1]);
                 f.setFolderListItem(fli);
-                appendedFolders.append(QPointer<Folder>(&f));
 
                 current_folder = &f;
+                recordFolderMarker(&f);
             } else if (s == "<table>") {
                 openTable(this, t);
                 if (property("_tg_load_truncated").toBool()) {
@@ -4754,6 +4840,9 @@ void ApplicationWindow::appendProject(const QString &fn)
                     current_folder = projectFolder();
                 else
                     current_folder = parent;
+                recordFolderMarker(current_folder);
+            } else if (isSecondPassProjectBlockStart(s)) {
+                skipSecondPassProjectBlock(t, s);
             }
         }
 
@@ -4762,21 +4851,13 @@ void ApplicationWindow::appendProject(const QString &fn)
             t.seek(0);
 
             MultiLayer *plot = 0;
-            int folderIndex = 0;
             while (!t.atEnd()) {
                 s = t.readLine(1048576); // workaround for safely reading very big lines
                 if (s.isNull())
                     break;
-                if (s.left(8) == "<folder>") {
-                    lst = s.split("\t");
-                    Folder *sub = nullptr;
-                    if (folderIndex < appendedFolders.size())
-                        sub = appendedFolders.at(folderIndex).data();
-                    else if (lst.size() >= 2)
-                        sub = current_folder->findSubfolder(lst[1]);
-                    ++folderIndex;
-                    if (sub)
-                        current_folder = sub;
+                if (s.left(8) == "<folder>" || s == "</folder>") {
+                    applySecondPassFolderMarker(t, s, folderAtMarker, markerKeysValid,
+                                                current_folder, projectFolder());
                 } else if (s == "<multiLayer>") { // process multilayers information
                     s = t.readLine();
                     QStringList graph = s.split("\t");
@@ -4873,12 +4954,10 @@ void ApplicationWindow::appendProject(const QString &fn)
                         break;
                     }
                     openSurfacePlot(this, lst);
-                } else if (s == "</folder>") {
-                    Folder *parent = (Folder *)current_folder->parent();
-                    if (!parent)
-                        current_folder = projectFolder();
-                    else
-                        current_folder = parent;
+                } else if (s.left(5) == QLatin1String("<log>")) {
+                    // The results log is not restored when appending, but its lines must not be
+                    // taken for folder markers or window blocks.
+                    skipSecondPassProjectBlock(t, s);
                 }
             }
         }

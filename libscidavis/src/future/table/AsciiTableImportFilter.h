@@ -91,6 +91,8 @@ public:
         int rasBlocks = 0; //!< number of *RAS_INT_START blocks (Rigaku .ras)
         int invalidChars = 0; //!< characters that could not be decoded with the chosen encoding
         QString preamble; //!< metadata lines above the data (kept as the table comment)
+        //! Non-empty when the file was refused because of its size (translated reason).
+        QString refusal;
     };
     //! Text encoding / unit-row choice of the import dialog. New filters start with these
     //! values so that every import path (new worksheet, append, overwrite) honours the dialog.
@@ -102,6 +104,11 @@ public:
 
     //! Report of the most recent import done by this filter in this process.
     static ImportReport lastImportReport();
+    //! Regression-test hook: replaces the size limits of a text import (a value <= 0 restores
+    //! the built-in default). maxColumns: widest accepted line; outlierCells: cell count above
+    //! which a width reached by only a few lines is refused; maxCells: absolute cell count.
+    static void setImportSizeLimitsForTesting(int maxColumns, qint64 outlierCells,
+                                              qint64 maxCells);
     //! Short human-readable summary of an ImportReport (translated).
     static QString describeImportReport(const ImportReport &report);
     //! Import for drag & drop: fixed defaults (independent of the last dialog settings),

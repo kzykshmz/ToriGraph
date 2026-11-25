@@ -9,6 +9,9 @@
 //   83e XLSX data-start detection is linear (string ID column + text in the last row)
 //   83f a line with a huge number of fields is refused instead of ending in bad_alloc
 //   83g re-import from source keeps the numeric locale (also after save / reopen)
+//   83h overwrite [A,B,C] with a [C,A] file gives [C,A] (surplus columns removed before rename)
+//   83i size limit: long narrow files (also with one wide annotation line) are read; a width
+//       reached by a few outlier lines is refused with its own message
 // =========================================================================================
 namespace {
 bool suite83Write(const QString &path, const QByteArray &bytes)
@@ -276,6 +279,11 @@ int runSuite83ImportRobustness(ApplicationWindow *mw)
         std::unique_ptr<future::Table> t(suite83Import(fWide, QStringLiteral(","), QLocale::c()));
         CHECK_COND(!t, "83f: 70000-field line was imported (" << (t ? t->columnCount() : 0)
                                                               << " columns)");
+        CHECK_COND(AsciiTableImportFilter::lastImportReport().refusal.contains(
+                           QStringLiteral("70000 fields")),
+                   "83f: no column-limit reason: '"
+                           << AsciiTableImportFilter::lastImportReport().refusal.toStdString()
+                           << "'");
 
         // 20000 fields x 6000 rows = 1.2e8 cells (over the cell limit, under the column limit)
         QByteArray tall = "a,b\n1";
@@ -288,6 +296,11 @@ int runSuite83ImportRobustness(ApplicationWindow *mw)
         CHECK_COND(suite83Write(fTall, tall), "83f: write tall");
         std::unique_ptr<future::Table> t2(suite83Import(fTall, QStringLiteral(","), QLocale::c()));
         CHECK_COND(!t2, "83f: 1.2e8-cell import was not refused");
+        CHECK_COND(AsciiTableImportFilter::lastImportReport().refusal.contains(
+                           QStringLiteral("far more fields")),
+                   "83f: no outlier reason: '"
+                           << AsciiTableImportFilter::lastImportReport().refusal.toStdString()
+                           << "'");
 
         // through the GUI path: error recorded, worksheet untouched
         Table *keep = w83->newTable("Wide83", 2, 2);
@@ -299,6 +312,12 @@ int runSuite83ImportRobustness(ApplicationWindow *mw)
         CHECK_COND(!w83->property("torigraph_last_import_error").toString().isEmpty()
                            && keep->numCols() == 2 && keep->cell(0, 0) == 9.0,
                    "83f: refused wide file not reported / changed the worksheet");
+        CHECK_COND(w83->property("torigraph_last_import_error")
+                           .toString()
+                           .contains(QStringLiteral("at most 65536 columns")),
+                   "83f: GUI error does not name the column limit: '"
+                           << w83->property("torigraph_last_import_error").toString().toStdString()
+                           << "'");
     }
 
     // ---- 83g: re-import from source keeps the German decimal mark
@@ -357,6 +376,141 @@ int runSuite83ImportRobustness(ApplicationWindow *mw)
         CHECK_COND(found, "83g: numeric locale lost after save / reopen");
         CHECK_COND(reOk, "83g: re-import after reopening did not use the German decimal mark");
         CHECK_COND(otherEmpty, "83g: C-locale import got a numeric locale after reopening");
+    }
+
+    // ---- 83h: overwrite [A,B,C] with a [C,A] file: the surplus column "C" is removed before
+    //      the rename, so the result is [C,A] and not [C 1,A]
+    {
+        const QString fABC = tmp83.filePath("abc83.csv");
+        const QString fCA = tmp83.filePath("ca83.csv");
+        CHECK_COND(suite83Write(fABC, "A,B,C\n1,2,3\n4,5,6\n")
+                           && suite83Write(fCA, "C,A\n7,8\n9,10\n"),
+                   "83h: write");
+        auto names = [](Table *t) {
+            QStringList n;
+            for (int c = 0; c < t->numCols(); ++c)
+                n << t->column(c)->name();
+            return n.join(',').toStdString();
+        };
+        Table *t = w83->newTable("Drop83", 2, 2);
+        CHECK_COND(t, "83h: newTable");
+        w83->d_workspace.setActiveSubWindow(t);
+        w83->importASCII(QStringList() << fABC, ImportASCIIDialog::Overwrite, ",", 0, true, true,
+                         false, true, QLocale::c());
+        CHECK_COND(t->numCols() == 3 && t->column(2)->name() == "C",
+                   "83h: [A,B,C] precondition: " << names(t));
+        w83->d_workspace.setActiveSubWindow(t);
+        w83->importASCII(QStringList() << fCA, ImportASCIIDialog::Overwrite, ",", 0, true, true,
+                         false, true, QLocale::c());
+        CHECK_COND(t->numCols() == 2 && t->column(0)->name() == "C" && t->column(1)->name() == "A",
+                   "83h: overwrite [A,B,C] with [C,A] gave [" << names(t) << "]");
+        CHECK_COND(t->cell(0, 0) == 7.0 && t->cell(1, 1) == 10.0, "83h: overwrite values");
+
+        // the same through Table::importASCII (scripting interface)
+        Table *t2 = w83->newTable("Drop83b", 2, 2);
+        CHECK_COND(t2, "83h: newTable 2");
+        t2->importASCII(fABC, ",", 0, true, true, false, false);
+        CHECK_COND(t2->numCols() == 3 && t2->column(2)->name() == "C",
+                   "83h: Table::importASCII [A,B,C] precondition: " << names(t2));
+        t2->importASCII(fCA, ",", 0, true, true, false, false);
+        CHECK_COND(t2->numCols() == 2 && t2->column(0)->name() == "C"
+                           && t2->column(1)->name() == "A",
+                   "83h: Table::importASCII [A,B,C] -> [C,A] gave [" << names(t2) << "]");
+    }
+
+    // ---- 83i: size limits, exercised with small thresholds (same decision as the defaults,
+    //      where the outlier test starts at 1e8 cells: e.g. 2 columns x 6e7 lines, or 3 columns
+    //      x 1e7 lines plus one wide annotation line, must still be read)
+    {
+        struct LimitGuard83
+        {
+            ~LimitGuard83() { AsciiTableImportFilter::setImportSizeLimitsForTesting(0, 0, 0); }
+        } limitGuard83;
+        AsciiTableImportFilter::setImportSizeLimitsForTesting(0, 1000, 0);
+
+        // 2 columns x 1000 lines = 2000 cells: over the outlier threshold, but no outlier
+        QByteArray narrow = "x,y\n";
+        for (int r = 0; r < 1000; ++r)
+            narrow += QByteArray::number(r) + "," + QByteArray::number(2 * r) + "\n";
+        const QString fNarrow = tmp83.filePath("narrow83.csv");
+        CHECK_COND(suite83Write(fNarrow, narrow), "83i: write narrow");
+        std::unique_ptr<future::Table> tn(suite83Import(fNarrow, QStringLiteral(","), QLocale::c()));
+        CHECK_COND(tn && tn->columnCount() == 2 && tn->rowCount() == 1000,
+                   "83i: long two-column file refused or truncated (refusal '"
+                           << AsciiTableImportFilter::lastImportReport().refusal.toStdString()
+                           << "')");
+
+        // 3 columns x 1000 lines + one 11-field annotation line: 11 x 1001 cells, 11 < 16 x 3
+        QByteArray annotated = "x,y,z\n";
+        for (int r = 0; r < 500; ++r)
+            annotated += QByteArray::number(r) + ",1,2\n";
+        annotated += "1,2,3,4,5,6,7,8,9,10,11\n";
+        for (int r = 500; r < 1000; ++r)
+            annotated += QByteArray::number(r) + ",1,2\n";
+        const QString fAnn = tmp83.filePath("annotated83.csv");
+        CHECK_COND(suite83Write(fAnn, annotated), "83i: write annotated");
+        std::unique_ptr<future::Table> ta(suite83Import(fAnn, QStringLiteral(","), QLocale::c()));
+        CHECK_COND(ta && ta->columnCount() == 11 && ta->rowCount() == 1001
+                           && ta->column(0)->valueAt(1000) == 999.0,
+                   "83i: narrow file with one wide line refused or changed (refusal '"
+                           << AsciiTableImportFilter::lastImportReport().refusal.toStdString()
+                           << "')");
+
+        // 2 columns x 1000 lines + one 100-field line (< 1 % of the lines, > 16 x 2): refused
+        QByteArray outlier = "x,y\n1";
+        for (int i = 1; i < 100; ++i)
+            outlier += ",1";
+        outlier += "\n";
+        for (int r = 0; r < 1000; ++r)
+            outlier += "1,2\n";
+        const QString fOut = tmp83.filePath("outlier83.csv");
+        CHECK_COND(suite83Write(fOut, outlier), "83i: write outlier");
+        std::unique_ptr<future::Table> to(suite83Import(fOut, QStringLiteral(","), QLocale::c()));
+        const QString reason = AsciiTableImportFilter::lastImportReport().refusal;
+        CHECK_COND(!to, "83i: outlier width was imported (" << (to ? to->columnCount() : 0)
+                                                            << " columns)");
+        CHECK_COND(reason.contains(QStringLiteral("far more fields"))
+                           && reason.contains(QStringLiteral("up to 100"))
+                           && reason.contains(QStringLiteral("typically 2")),
+                   "83i: outlier reason '" << reason.toStdString() << "'");
+
+        // GUI paths report that reason instead of "could not parse"
+        Table *keep = w83->newTable("Out83", 2, 2);
+        keep->setCell(0, 0, 9.0);
+        w83->d_workspace.setActiveSubWindow(keep);
+        w83->setProperty("torigraph_last_import_error", QVariant());
+        w83->importASCII(QStringList() << fOut, ImportASCIIDialog::Overwrite, ",", 0, true, true,
+                         false, true, QLocale::c());
+        const QString guiErr = w83->property("torigraph_last_import_error").toString();
+        CHECK_COND(guiErr.contains(QStringLiteral("far more fields"))
+                           && !guiErr.contains(QStringLiteral("Could not parse any columns"))
+                           && keep->numCols() == 2 && keep->cell(0, 0) == 9.0,
+                   "83i: overwrite error '" << guiErr.toStdString() << "'");
+        w83->setProperty("torigraph_last_import_error", QVariant());
+        const int windowsBefore = w83->windowsList().size();
+        w83->importASCII(QStringList() << fOut, ImportASCIIDialog::NewTables, ",", 0, true, true,
+                         false, true, QLocale::c());
+        const QString newErr = w83->property("torigraph_last_import_error").toString();
+        CHECK_COND(newErr.contains(QStringLiteral("far more fields"))
+                           && w83->windowsList().size() == windowsBefore,
+                   "83i: new-table error '" << newErr.toStdString() << "'");
+
+        // absolute bound
+        AsciiTableImportFilter::setImportSizeLimitsForTesting(0, 0, 1500);
+        std::unique_ptr<future::Table> th(suite83Import(fNarrow, QStringLiteral(","), QLocale::c()));
+        CHECK_COND(!th
+                           && AsciiTableImportFilter::lastImportReport().refusal.contains(
+                                   QStringLiteral("too large")),
+                   "83i: absolute cell bound not applied ('"
+                           << AsciiTableImportFilter::lastImportReport().refusal.toStdString()
+                           << "')");
+
+        // defaults restored: the annotated file reads, no refusal left behind
+        AsciiTableImportFilter::setImportSizeLimitsForTesting(0, 0, 0);
+        std::unique_ptr<future::Table> td(suite83Import(fAnn, QStringLiteral(","), QLocale::c()));
+        CHECK_COND(td && td->columnCount() == 11
+                           && AsciiTableImportFilter::lastImportReport().refusal.isEmpty(),
+                   "83i: default limits");
     }
 
     std::cout << "[INFO] Suite 83 Import Robustness passed!\n";

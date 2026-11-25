@@ -36,6 +36,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QLocale>
 #include <QRegularExpression>
 #include <QSet>
@@ -82,11 +83,24 @@ QString g_dialogEncoding;
 int g_dialogUnitsRow = -1;
 AsciiTableImportFilter::ImportReport g_lastImportReport;
 
-// Upper bounds of one text import (checked before the column buffers are allocated). Same
-// order as XlsxImport's kMaxCols / kMaxTotalCells; a bit larger because big instrument logs are
-// usually exchanged as text (1e8 numeric cells = 800 MB of doubles).
+// Upper bounds of one text import, checked before the column buffers (widest line x data
+// lines) are allocated. A few malformed lines with far more fields than the rest would
+// otherwise allocate mostly padding and end in bad_alloc, while long two- or three-column
+// instrument logs (tens of millions of lines) must still be read.
+//  - kMaxAsciiImportColumns: widest line accepted (same order as XlsxImport's kMaxCols).
+//  - Above kAsciiImportOutlierCells cells (1e8 doubles = 800 MB), the file is refused when its
+//    width comes from outlier lines only: lines with more than kAsciiImportOutlierFactor times
+//    the median number of fields that make up less than 1 % of the lines.
+//  - kMaxAsciiImportCells: absolute bound (2^31 cells = 16 GiB of doubles). A rectangular file
+//    that fits the int-sized text buffer never reaches it, since every cell takes at least one
+//    character.
 constexpr int kMaxAsciiImportColumns = 65536;
-constexpr qint64 kMaxAsciiImportCells = 100000000LL;
+constexpr qint64 kAsciiImportOutlierCells = 100000000LL;
+constexpr int kAsciiImportOutlierFactor = 16;
+constexpr qint64 kMaxAsciiImportCells = qint64(1) << 31;
+int g_maxImportColumns = kMaxAsciiImportColumns;
+qint64 g_importOutlierCells = kAsciiImportOutlierCells;
+qint64 g_maxImportCells = kMaxAsciiImportCells;
 
 void attachStdDisplayFormat(Column *col)
 {
@@ -145,6 +159,17 @@ void registerImportJapaneseStrings()
         reg("text/date", "文字列・日時");
         reg("These columns could not be imported from %1: %2",
             "%1 から次の列を読み込めませんでした: %2");
+        reg("A line of the file has %1 fields, but at most %2 columns can be imported. Check "
+            "the column separator.",
+            "ファイルに %1 個の項目を持つ行がありますが、読み込める列は %2 列までです。"
+            "区切り文字を確認してください。");
+        reg("%1 line(s) of the file have far more fields (up to %2) than the other lines "
+            "(typically %3), which would make a table of %4 rows x %2 columns. Check the column "
+            "separator or remove those lines.",
+            "ファイルの %1 行だけが他の行（通常 %3 項目）よりはるかに多い項目（最大 %2）を持つため、"
+            "%4 行 × %2 列の表が必要になります。区切り文字を確認するか、その行を削除してください。");
+        reg("The file is too large to import: %1 rows x %2 columns (at most %3 cells).",
+            "ファイルが大きすぎるため読み込めません: %1 行 × %2 列（上限 %3 セル）。");
     });
 }
 
@@ -3481,6 +3506,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             ++skippedNonBlankLines;
     }
     int dataRowCount = std::max(0, previewRecords.size() - fileHeaderLinesConsumed);
+    // Number of fields per line (header and data lines that make up maxCols), for the outlier
+    // test below: narrow widths in a plain array (the hot path), the rare wide ones in a hash.
+    constexpr int kWidthHistSmall = 256;
+    QVector<qint64> widthHistSmall(kWidthHistSmall + 1, 0);
+    QHash<int, qint64> widthHistLarge;
+    qint64 *const widthHist = widthHistSmall.data();
+    for (const QVector<LabCsvCell> &rec : previewRecords) {
+        if (rec.size() <= kWidthHistSmall)
+            ++widthHist[rec.size()];
+        else
+            ++widthHistLarge[rec.size()];
+    }
     {
         int countPos = scanPos;
         bool seenCountData = step4SeenData || allowAlphaAtDataStart;
@@ -3494,7 +3531,12 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 continue;
             if (!seenCountData && rowHasRealNumericData(rowSpans))
                 seenCountData = true;
-            maxCols = std::max(maxCols, rowSpans.size());
+            const int w = rowSpans.size();
+            maxCols = std::max(maxCols, w);
+            if (w <= kWidthHistSmall)
+                ++widthHist[w];
+            else
+                ++widthHistLarge[w];
             ++dataRowCount;
         }
     }
@@ -3502,14 +3544,69 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
 
     // One malformed line with a huge number of fields would make maxCols x dataRowCount buffers
     // (and as many Column objects) below and end in bad_alloc. Refuse such a file before any
-    // allocation, like XlsxImport (kMaxCols / kMaxTotalCells); nullptr = "could not parse".
-    if (maxCols > kMaxAsciiImportColumns
-        || qint64(maxCols) * qint64(std::max(1, dataRowCount)) > kMaxAsciiImportCells) {
-        qWarning("ASCII import refused: %d columns x %d rows exceeds the import limit "
-                 "(%d columns, %lld cells)",
-                 maxCols, dataRowCount, kMaxAsciiImportColumns,
-                 static_cast<long long>(kMaxAsciiImportCells));
-        return nullptr;
+    // allocation (see kAsciiImportOutlierCells); the reason goes to the import report.
+    {
+        const qint64 cells = qint64(maxCols) * qint64(std::max(1, dataRowCount));
+        QString refusal;
+        if (maxCols > g_maxImportColumns) {
+            refusal = QObject::tr("A line of the file has %1 fields, but at most %2 columns can "
+                                  "be imported. Check the column separator.")
+                              .arg(maxCols)
+                              .arg(g_maxImportColumns);
+        } else if (cells > g_importOutlierCells) {
+            // widths in ascending order with their line counts
+            QVector<QPair<int, qint64>> widths;
+            for (int w = 0; w <= kWidthHistSmall; ++w) {
+                if (widthHist[w] > 0)
+                    widths.append(qMakePair(w, widthHist[w]));
+            }
+            QList<int> largeWidths = widthHistLarge.keys();
+            std::sort(largeWidths.begin(), largeWidths.end());
+            for (int w : largeWidths)
+                widths.append(qMakePair(w, widthHistLarge.value(w)));
+            qint64 lines = 0;
+            for (const auto &wc : widths)
+                lines += wc.second;
+            int medianWidth = maxCols;
+            qint64 cumulative = 0;
+            for (const auto &wc : widths) {
+                cumulative += wc.second;
+                if (2 * cumulative >= lines) {
+                    medianWidth = wc.first;
+                    break;
+                }
+            }
+            const qint64 outlierWidth =
+                    qint64(std::max(1, medianWidth)) * kAsciiImportOutlierFactor;
+            qint64 outlierLines = 0;
+            for (const auto &wc : widths) {
+                if (wc.first > outlierWidth)
+                    outlierLines += wc.second;
+            }
+            if (lines > 0 && maxCols > outlierWidth && outlierLines * 100 < lines) {
+                refusal = QObject::tr("%1 line(s) of the file have far more fields (up to %2) "
+                                      "than the other lines (typically %3), which would make a "
+                                      "table of %4 rows x %2 columns. Check the column separator "
+                                      "or remove those lines.")
+                                  .arg(outlierLines)
+                                  .arg(maxCols)
+                                  .arg(medianWidth)
+                                  .arg(dataRowCount);
+            }
+        }
+        if (refusal.isEmpty() && cells > g_maxImportCells) {
+            refusal = QObject::tr("The file is too large to import: %1 rows x %2 columns (at most "
+                                  "%3 cells).")
+                              .arg(dataRowCount)
+                              .arg(maxCols)
+                              .arg(g_maxImportCells);
+        }
+        if (!refusal.isEmpty()) {
+            qWarning("ASCII import refused: %d columns x %d rows: %s", maxCols, dataRowCount,
+                     qPrintable(refusal));
+            g_lastImportReport.refusal = refusal;
+            return nullptr;
+        }
     }
 
     // 5. Stream directly into pre-allocated column buffers (0 intermediate Cell matrix!)
@@ -4145,6 +4242,14 @@ future::Table *AsciiTableImportFilter::importVaspTextData(const QByteArray &rawB
 AsciiTableImportFilter::ImportReport AsciiTableImportFilter::lastImportReport()
 {
     return g_lastImportReport;
+}
+
+void AsciiTableImportFilter::setImportSizeLimitsForTesting(int maxColumns, qint64 outlierCells,
+                                                           qint64 maxCells)
+{
+    g_maxImportColumns = maxColumns > 0 ? maxColumns : kMaxAsciiImportColumns;
+    g_importOutlierCells = outlierCells > 0 ? outlierCells : kAsciiImportOutlierCells;
+    g_maxImportCells = maxCells > 0 ? maxCells : kMaxAsciiImportCells;
 }
 
 QString AsciiTableImportFilter::describeImportReport(const ImportReport &r)

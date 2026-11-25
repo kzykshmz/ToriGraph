@@ -1185,9 +1185,15 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
         // An empty file (0 bytes, blanks or '#' comments only) parses into a table without
         // columns; overwriting with it would delete the imported columns of the worksheet.
         if (!temp || temp->columnCount() == 0) {
-            const QString msg = openErr.isEmpty()
-                    ? tr("Could not parse any columns from \"%1\".").arg(QFileInfo(file).fileName())
-                    : tr("Could not open \"%1\": %2").arg(QFileInfo(file).fileName(), openErr);
+            // A file refused for its size (a few lines with a huge number of fields) says why.
+            const QString refusal =
+                    openErr.isEmpty() ? AsciiTableImportFilter::lastImportReport().refusal
+                                      : QString();
+            const QString msg = !openErr.isEmpty()
+                    ? tr("Could not open \"%1\": %2").arg(QFileInfo(file).fileName(), openErr)
+                    : !refusal.isEmpty()
+                    ? QStringLiteral("%1: %2").arg(QFileInfo(file).fileName(), refusal)
+                    : tr("Could not parse any columns from \"%1\".").arg(QFileInfo(file).fileName());
             setProperty("torigraph_last_import_error", msg);
             if (!isNonInteractiveContext(this))
                 QMessageBox::warning(this, tr("ASCII Import Failed"), msg);
@@ -1346,6 +1352,12 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (local_rename_columns)
                     targetNames[col] = src_col->name();
             }
+            // Drop the surplus imported columns before renaming: a header that moved left
+            // (e.g. [A,B,C] overwritten by [C,A]) would otherwise collide with the old column
+            // "C" that is about to be removed and come out as "C 1".
+            if (importedSpan > temp->columnCount())
+                table->d_future_table->removeColumns(temp->columnCount(),
+                                                     importedSpan - temp->columnCount());
             renameImportedColumnsViaTemp(table->d_future_table, targetNames);
             if (temp->columnCount() > common) {
                 QList<Column *> extraCols;
@@ -1370,9 +1382,6 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
                 if (!extraCols.isEmpty())
                     table->d_future_table->insertColumns(common, extraCols);
-            } else if (importedSpan > temp->columnCount()) {
-                table->d_future_table->removeColumns(temp->columnCount(),
-                                                     importedSpan - temp->columnCount());
             }
             if (table->d_future_table) {
                 table->d_future_table->setImportSource(

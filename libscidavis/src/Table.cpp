@@ -269,6 +269,9 @@ Table::Table(ScriptingEnv *env, const QString &fname, const QString &sep, int ig
             d_import_failed = true;
             d_last_import_error = tr("Could not parse data from file: %1")
                                           .arg(QDir::toNativeSeparators(fname));
+            const QString refusal = AsciiTableImportFilter::lastImportReport().refusal;
+            if (!refusal.isEmpty())
+                d_last_import_error += QStringLiteral("\n") + refusal;
             qWarning("%s", qPrintable(d_last_import_error));
             if (!ApplicationWindow::isNonInteractiveContext(parent))
                 QMessageBox::warning(parent, tr("Import failed"), d_last_import_error);
@@ -2246,10 +2249,12 @@ bool Table::reimportFromSource()
                 static_cast<future::Table *>(filter.importAspect(file)));
         if (!imported) {
             if (!ApplicationWindow::isNonInteractiveContext(this)) {
-                QMessageBox::warning(
-                        this, tr("Import failed"),
-                        tr("Could not parse data from file: %1")
-                                .arg(QDir::toNativeSeparators(path)));
+                QString msg = tr("Could not parse data from file: %1")
+                                      .arg(QDir::toNativeSeparators(path));
+                const QString refusal = AsciiTableImportFilter::lastImportReport().refusal;
+                if (!refusal.isEmpty())
+                    msg += QStringLiteral("\n") + refusal;
+                QMessageBox::warning(this, tr("Import failed"), msg);
             }
             return false;
         }
@@ -5063,6 +5068,9 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
             d_import_failed = true;
             d_last_import_error = tr("Could not parse data from file: %1")
                                           .arg(QDir::toNativeSeparators(fname));
+            const QString refusal = AsciiTableImportFilter::lastImportReport().refusal;
+            if (!refusal.isEmpty())
+                d_last_import_error += QStringLiteral("\n") + refusal;
             return;
         }
         d_import_failed = false;
@@ -5092,6 +5100,10 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
             if (renameCols)
                 targetNames[i] = src->name();
         }
+        // Remove the surplus imported columns first, so that a header moving left ([A,B,C] ->
+        // [C,A]) does not collide with the old column "C" during the rename below.
+        if (importedSpan > overwritten_cols)
+            d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
         if (renameCols) {
             int tmpIdx = 0;
             for (int i = 0; i < overwritten_cols; i++) {
@@ -5112,8 +5124,6 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
                 dst->setName(targetNames[i]);
             }
         }
-        if (importedSpan > overwritten_cols)
-            d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
         String2DoubleFilter *numFilter = nullptr;
         QList<Column *> extraCols;
         for (int i = overwritten_cols; i < temp->columnCount(); i++) {

@@ -16,6 +16,8 @@
 //   84d  empty <note>/<matrix>/<TableStatistics>/<spectrogram> blocks do not crash the
 //        loader; unrecoverable ones are reported as a truncated project
 //   84e  table template comments with tab/line break do not cut off later columns
+//   84f  "<folder>" / "</folder>" lines inside a note body or the results log do not move
+//        windows into another folder or create folders (open, append, .gz)
 // =============================================================================
 
 namespace {
@@ -494,6 +496,149 @@ int runSuite84ProjectSerializationFidelity(ApplicationWindow *mw)
                            && t2->column(2)->comment() == QLatin1String("third"),
                    "84e: later comments lost: '" << t2->column(1)->comment().toStdString() << "', '"
                                                  << t2->column(2)->comment().toStdString() << "'");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 84f: folder marker lines inside a note body or the results log are text, not folders.
+    //      The two loader passes skip different blocks; matching folders by <folder> line
+    //      count shifted every later window by one when such a line appeared in a note
+    //      (second pass) or in the log (first pass).
+    // ---------------------------------------------------------------------------------------
+    {
+        const QString prjF = tmp84.filePath(QStringLiteral("markers84f.sciprj"));
+        const QString noteText = QStringLiteral(
+                "日本語のメモ（UTF-8 の多バイト文字）\n"
+                "<folder>\tDup84f\tfake\tfake\n"
+                "</folder>\n"
+                "<folder>\tOther84f\tfake\tfake\n"
+                "end of note");
+        {
+            AppWinGuard84 src(new ApplicationWindow());
+            Folder *root = src->projectFolder();
+            CHECK_COND(root != nullptr, "84f: source project folder missing");
+            QList<Folder *> made;
+            for (int i = 0; i < 3; ++i) {
+                src->changeFolder(root, true);
+                src->addFolder();
+                made << root->folders().value(root->folders().size() - 1);
+            }
+            CHECK_COND(made[0] && made[1] && made[2], "84f: addFolder failed");
+            made[0]->setName(QStringLiteral("Dup84f"));
+            made[1]->setName(QStringLiteral("Dup84f"));
+            made[2]->setName(QStringLiteral("Other84f"));
+
+            // first Dup84f: the note comes first, so its body precedes the graph in the file
+            src->changeFolder(made[0], true);
+            Note *n = src->newNote(QStringLiteral("N84fA"));
+            CHECK_COND(n != nullptr, "84f: note creation failed");
+            n->textWidget()->setPlainText(noteText);
+            Table *tA = src->newTable(QStringLiteral("T84fA"), 3, 2);
+            CHECK_COND(tA != nullptr, "84f: table A creation failed");
+            for (int r = 0; r < 3; ++r) {
+                tA->setCell(r, 0, r);
+                tA->setCell(r, 1, r + 1);
+            }
+            MultiLayer *gA = src->multilayerPlot(tA, QStringList() << tA->colName(1),
+                                                 Graph::LineSymbols);
+            CHECK_COND(gA != nullptr, "84f: graph A creation failed");
+            gA->setName(QStringLiteral("G84fA"));
+
+            src->changeFolder(made[1], true);
+            Table *tB = src->newTable(QStringLiteral("T84fB"), 3, 2);
+            CHECK_COND(tB != nullptr, "84f: table B creation failed");
+            for (int r = 0; r < 3; ++r) {
+                tB->setCell(r, 0, r);
+                tB->setCell(r, 1, 2 * r);
+            }
+            MultiLayer *gB = src->multilayerPlot(tB, QStringList() << tB->colName(1),
+                                                 Graph::LineSymbols);
+            CHECK_COND(gB != nullptr, "84f: graph B creation failed");
+            gB->setName(QStringLiteral("G84fB"));
+
+            src->changeFolder(made[2], true);
+            MultiLayer *gO = src->newGraph(QStringLiteral("G84fO"));
+            CHECK_COND(gO != nullptr, "84f: graph O creation failed");
+            gO->setName(QStringLiteral("G84fO"));
+
+            src->changeFolder(root, true);
+            src->logInfo = QStringLiteral("fit log line\n<folder>\tGhost84f\tfake\tfake\n"
+                                          "</folder>\nlast log line\n");
+            CHECK_COND(src->saveFolder(src->projectFolder(), prjF), "84f: saving failed");
+        }
+        const QString savedF = readText84(prjF);
+        CHECK_COND(savedF.contains(QStringLiteral("\n<folder>\tDup84f\tfake\tfake\n"))
+                           && savedF.contains(QStringLiteral("\n<folder>\tGhost84f\tfake\tfake\n")),
+                   "84f: the fake folder lines were not written verbatim (test premise)");
+
+        std::function<bool(Folder *, const QString &)> hasFolderNamed =
+                [&](Folder *f, const QString &name) -> bool {
+            if (!f)
+                return false;
+            for (Folder *c : f->folders())
+                if (c->name() == name || hasFolderNamed(c, name))
+                    return true;
+            return false;
+        };
+        auto checkMarkers = [&](ApplicationWindow *app, const char *tag) -> int {
+            Folder *parent = findDupParent84(app->projectFolder(), QStringLiteral("Dup84f"));
+            CHECK_COND(parent != nullptr, tag << ": the two Dup84f folders did not come back");
+            QList<Folder *> dups;
+            Folder *other = nullptr;
+            for (Folder *c : parent->folders()) {
+                if (c->name() == QLatin1String("Dup84f"))
+                    dups << c;
+                else if (c->name() == QLatin1String("Other84f"))
+                    other = c;
+            }
+            CHECK_COND(dups.size() == 2 && other != nullptr && parent->folders().size() == 3,
+                       tag << ": folders " << parent->subfolders().join(',').toStdString());
+            const QStringList a = windowNames84(dups[0]);
+            const QStringList b = windowNames84(dups[1]);
+            const QStringList o = windowNames84(other);
+            CHECK_COND(a.contains(QStringLiteral("N84fA")) && a.contains(QStringLiteral("T84fA"))
+                               && a.contains(QStringLiteral("G84fA")) && a.size() == 3,
+                       tag << ": first Dup84f holds " << a.join(',').toStdString());
+            CHECK_COND(b.contains(QStringLiteral("T84fB")) && b.contains(QStringLiteral("G84fB"))
+                               && b.size() == 2,
+                       tag << ": second Dup84f holds " << b.join(',').toStdString());
+            CHECK_COND(o == QStringList() << QStringLiteral("G84fO"),
+                       tag << ": Other84f holds " << o.join(',').toStdString());
+            CHECK_COND(!hasFolderNamed(app->projectFolder(), QStringLiteral("Ghost84f")),
+                       tag << ": a folder was created from a results-log line");
+            Note *n = qobject_cast<Note *>(findWindow84(app, QStringLiteral("N84fA")));
+            CHECK_COND(n && n->text().trimmed() == noteText,
+                       tag << ": note text changed: '"
+                           << (n ? n->text().toStdString() : std::string("(missing)")) << "'");
+            return 0;
+        };
+
+        {
+            AppWinGuard84 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(prjF), "84f: reopening failed");
+            if (checkMarkers(rd, "84f-open") != 0)
+                return 1;
+        }
+        {
+            AppWinGuard84 ap(new ApplicationWindow());
+            ap->setProperty("torigraph_last_append_ok", QVariant());
+            ap->appendProject(prjF);
+            CHECK_COND(ap->property("torigraph_last_append_ok").toBool(),
+                       "84f-append: appendProject failed");
+            if (checkMarkers(ap, "84f-append") != 0)
+                return 1;
+        }
+        // compressed project: the same position matching through the decompressed stream
+        {
+            AppWinGuard84 gz(new ApplicationWindow());
+            CHECK_COND(gz->loadProject(prjF), "84f-gz: reopening for the .gz copy failed");
+            const QString prjGz = tmp84.filePath(QStringLiteral("markers84f.sciprj.gz"));
+            CHECK_COND(gz->writeProjectFile(gz->projectFolder(), prjGz),
+                       "84f-gz: saving compressed failed");
+            AppWinGuard84 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(prjGz), "84f-gz: reopening the compressed project failed");
+            if (checkMarkers(rd, "84f-gz") != 0)
+                return 1;
+        }
     }
 
     std::cout << "[PASS] Suite 84 passed.\n";
