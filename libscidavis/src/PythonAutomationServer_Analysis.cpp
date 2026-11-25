@@ -813,10 +813,13 @@ void resolveGraphAndCurveOrAutoPlot(ApplicationWindow *app, const QJsonObject &p
         && (params.contains(QStringLiteral("table")) || params.contains(QStringLiteral("y_col")))) {
         Table *t = resolveTable(app, params, QStringLiteral("table"), true);
         int xIdx = -1;
-        if (params.contains(QStringLiteral("x_col")) && !params.value(QStringLiteral("x_col")).isNull()) {
+        // x_col を名指ししたら、その列と y_col の組で曲線を探す／作る。列の X 指定は書き換えない
+        // （以前は X 指定に書き換えたまま残し、しかも作図は y の左の X 列と組にしていたので、
+        // 別の X でフィットしていた）。
+        const bool explicitX = params.contains(QStringLiteral("x_col"))
+                && !params.value(QStringLiteral("x_col")).isNull();
+        if (explicitX) {
             xIdx = resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true);
-            if (t->colPlotDesignation(xIdx) != SciDAVis::X)
-                t->setColPlotDesignation(xIdx, SciDAVis::X);
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
                 if (t->colPlotDesignation(c) == SciDAVis::X) {
@@ -847,12 +850,22 @@ void resolveGraphAndCurveOrAutoPlot(ApplicationWindow *app, const QJsonObject &p
 
         // Reuse an existing curve for this exact column if already plotted, unless auto_plot=true
         const QString wantColFull = fullColumnName(t, yIdx);
+        const QString wantXFull = explicitX ? fullColumnName(t, xIdx) : QString();
+        // 呼び出し側は曲線をタイトル（Y 列）で引き直す（層の中で最初に一致した曲線になる）ので、
+        // x_col を名指ししたときは、その最初の曲線の X 列も一致する層だけを使い回す。
+        auto matchesX = [&](Graph *lg, int ci) {
+            if (!explicitX)
+                return true;
+            const auto *dc = dynamic_cast<const DataCurve *>(lg->curve(ci));
+            return dc && dc->table() == t && dc->xColumnName() == wantXFull;
+        };
         if (!params.value(QStringLiteral("new_graph")).toBool(false)) {
             for (MyWidget *mw : app->windowsList()) {
                 if (mw && mw->inherits("MultiLayer")) {
                     auto *candMl = static_cast<MultiLayer *>(mw);
                     for (Graph *lg : candMl->layersList()) {
-                        if (lg && lg->curveIndex(wantColFull) >= 0) {
+                        const int ci = lg ? lg->curveIndex(wantColFull) : -1;
+                        if (ci >= 0 && matchesX(lg, ci)) {
                             outMl = candMl;
                             outGraph = lg;
                             outCurveTitle = wantColFull;
@@ -865,7 +878,7 @@ void resolveGraphAndCurveOrAutoPlot(ApplicationWindow *app, const QJsonObject &p
 
         QStringList yCols;
         yCols << wantColFull;
-        outMl = app->multilayerPlot(t, yCols, Graph::LineSymbols, 0, t->numRows() - 1);
+        outMl = app->multilayerPlot(t, yCols, Graph::LineSymbols, 0, t->numRows() - 1, wantXFull);
         if (!outMl)
             throwRpcRuntime(QStringLiteral("Failed to create plot from table '%1'.").arg(t->name()));
         outGraph = resolveGraphLayer(outMl, params, true);
