@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QTemporaryDir>
+#include <QTimeZone>
 #include <QUndoStack>
 #include <QXmlStreamWriter>
 
@@ -27,6 +28,12 @@
 //   101c date/time text: fractions of a second with 1-2 digits and a decimal comma, a leap
 //        second (23:59:60 -> 23:59:59.999), a 12-hour clock with am / pm; a date with a time
 //        part that cannot be read is invalid (was the date at 00:00); a date alone is still 00:00.
+//        Only the word after the date is the time (with am / pm after it): words after the time
+//        ("10:00:00 UTC", "10:00 JST") and notes in parentheses ("2024/01/02 (Tue)") are dropped
+//        as before. A space-separated date and time with seconds takes a zone offset like 'T'
+//        (Python's str(datetime), pandas): "2024-01-02 09:00:00+09:00", "...Z"; without seconds
+//        "2024-01-02 09:00-10:30" stays a time range (invalid). A number that gives a clock time
+//        skipped when DST starts (02:30 on 2024-03-10 in New York) is not an empty cell.
 //   101d date/time <-> number without the PC's time zone: 2024-03-01 00:00 is 19783, 0 is
 //        1970-01-01 00:00; the base is saved as wall-clock time ("base_wall"), and files written
 //        before it (base 0, or an instant in the PC's zone) load to the same clock time.
@@ -354,6 +361,152 @@ int runSuite101WorksheetRound2(ApplicationWindow *mw)
                    "101c: RPC '2024-03-01 25:00' -> " << dt101(rc->dateTimeAt(1)).toStdString());
         std::cout << "[PASS] 101c: short fractions, decimal comma, leap second, unreadable time "
                      "parts are invalid\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 101c-2: words after the time, notes in parentheses, offsets after a space, DST gap
+    // -------------------------------------------------------------------------
+    {
+        const QDate d0102(2024, 1, 2);
+        struct TextCase
+        {
+            const char *text;
+            QDateTime expected; // invalid: must be invalid
+        };
+        // 11ec0d80 read every word after the date as the time and made these invalid; the
+        // parser before it read the second word only
+        const std::vector<TextCase> cases = {
+            { "2024-01-02 10:00:00 UTC", QDateTime(d0102, QTime(10, 0)) },
+            { "2024-01-02 10:00 JST", QDateTime(d0102, QTime(10, 0)) },
+            { "2024-01-02 10:00:00 Z", QDateTime(d0102, QTime(10, 0)) },
+            { "2024/01/02 (\xe7\x81\xab)", QDateTime(d0102, QTime(0, 0)) },
+            { "2024/01/02 (Tue) 10:00", QDateTime(d0102, QTime(10, 0)) },
+            { "2024/01/02 \xef\xbc\x88\xe7\x81\xab\xef\xbc\x89", QDateTime(d0102, QTime(0, 0)) },
+            { "2024-01-02 10:00 pm", QDateTime(d0102, QTime(22, 0)) },
+            { "2024-01-02 10:00 p.m. JST", QDateTime(d0102, QTime(22, 0)) },
+            { "2024-01-02, 10:00:00 UTC", QDateTime(d0102, QTime(10, 0)) },
+            { "2024-01-02 25:00 UTC", QDateTime() },
+            { "2024-01-02 abc 10:00", QDateTime() },
+            { "2024-01-02 09:00-10:30", QDateTime() },
+            { "2024-01-02 09:00-10:30 JST", QDateTime() },
+        };
+        QStringList texts;
+        for (const TextCase &c : cases)
+            texts << QString::fromUtf8(c.text);
+        Column *col = convertTexts(QStringLiteral("T101Words"), texts, SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(col != nullptr, "101c-2: text -> date/time conversion failed");
+        for (int i = 0; i < int(cases.size()); ++i) {
+            const bool gotValid = !col->isInvalid(i) && col->dateTimeAt(i).isValid();
+            const QDateTime &exp = cases[size_t(i)].expected;
+            if (!exp.isValid()) {
+                CHECK_COND(!gotValid, "101c-2: '" << cases[size_t(i)].text << "' -> "
+                                                  << dt101(col->dateTimeAt(i)).toStdString()
+                                                  << ", expected invalid");
+                continue;
+            }
+            CHECK_COND(gotValid && col->dateTimeAt(i) == exp,
+                       "101c-2: '" << cases[size_t(i)].text << "' -> "
+                                   << (gotValid ? dt101(col->dateTimeAt(i)).toStdString()
+                                                : std::string("<invalid>"))
+                                   << ", expected " << dt101(exp).toStdString());
+        }
+
+        // a space-separated date and time with seconds takes an offset ("+09:00" first: the
+        // offset of the column; "Z" values move to it); without seconds it is a time range
+        const QStringList offsetTexts = { QStringLiteral("2024-01-02 09:00:00+09:00"),
+                                          QStringLiteral("2024-01-02 09:00:00.123456+09:00"),
+                                          QStringLiteral("2024-01-02 00:00:00Z"),
+                                          QStringLiteral("2024-01-01 15:30:00Z"),
+                                          QStringLiteral("2024-01-02 09:00:00 +09:00"),
+                                          QStringLiteral("2024-01-02 09:00-10:30"),
+                                          QStringLiteral("09:00:00+09:00") };
+        const QDateTime offsetExpected[] = { QDateTime(d0102, QTime(9, 0)),
+                                             QDateTime(d0102, QTime(9, 0, 0, 123)),
+                                             QDateTime(d0102, QTime(9, 0)),
+                                             QDateTime(d0102, QTime(0, 30)),
+                                             QDateTime(d0102, QTime(9, 0)),
+                                             QDateTime(),
+                                             QDateTime() };
+        Column *oc = convertTexts(QStringLiteral("T101Offset"), offsetTexts,
+                                  SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(oc != nullptr, "101c-2: conversion of the offset texts failed");
+        for (int i = 0; i < offsetTexts.size(); ++i) {
+            const bool gotValid = !oc->isInvalid(i) && oc->dateTimeAt(i).isValid();
+            if (!offsetExpected[i].isValid()) {
+                CHECK_COND(!gotValid, "101c-2: '" << offsetTexts[i].toStdString() << "' -> "
+                                                  << dt101(oc->dateTimeAt(i)).toStdString()
+                                                  << ", expected invalid");
+                continue;
+            }
+            CHECK_COND(gotValid && oc->dateTimeAt(i) == offsetExpected[i],
+                       "101c-2: '" << offsetTexts[i].toStdString() << "' -> "
+                                   << (gotValid ? dt101(oc->dateTimeAt(i)).toStdString()
+                                                : std::string("<invalid>"))
+                                   << ", expected " << dt101(offsetExpected[i]).toStdString());
+        }
+        CHECK_COND(oc->dateTimeAt(0) == oc->dateTimeAt(2),
+                   "101c-2: 09:00:00+09:00 and 00:00:00Z are not the same time");
+
+        // number -> date/time at a clock time skipped when DST starts. Qt 5 makes a date/time in
+        // the gap invalid; the cell used to be empty. The PC's zone cannot be switched here (TZ
+        // gives the C runtime "EST5EDT" without DST on Windows), so the shared helper is checked
+        // in New York's zone, and the real local path wherever the PC's zone has a gap.
+        {
+            const QTimeZone ny(QByteArrayLiteral("America/New_York"));
+            CHECK_COND(ny.isValid(), "101c-2: no America/New_York time zone");
+            const QDate gapDay(2024, 3, 10);
+            const bool qtInvalid = !QDateTime(gapDay, QTime(2, 30), ny).isValid();
+            std::cout << "[INFO] 101c-2: QDateTime(2024-03-10 02:30, America/New_York) is "
+                      << (qtInvalid ? "invalid (in the DST gap)" : "valid") << "\n";
+            const QDateTime got = NumericDateTimeBaseFilter::wallClockInZone(
+                    QDateTime(gapDay, QTime(2, 30), Qt::UTC), ny);
+            CHECK_COND(got.isValid() && got == QDateTime(gapDay, QTime(3, 30), ny)
+                               && got.toTimeZone(ny).time() == QTime(3, 30),
+                       "101c-2: 02:30 in the New York DST gap -> " << dt101(got).toStdString());
+            // clock times next to the gap and on other days are not moved
+            const QTime around[] = { QTime(1, 30), QTime(1, 59, 59, 999), QTime(3, 0), QTime(3, 30) };
+            for (const QTime &tm : around) {
+                const QDateTime g = NumericDateTimeBaseFilter::wallClockInZone(
+                        QDateTime(gapDay, tm, Qt::UTC), ny);
+                CHECK_COND(g.isValid() && g.toTimeZone(ny).time() == tm
+                                   && g.toTimeZone(ny).date() == gapDay,
+                           "101c-2: " << tm.toString().toStdString() << " next to the gap -> "
+                                      << dt101(g.toTimeZone(ny)).toStdString());
+            }
+            // the hour repeated when DST ends (2024-11-03 01:30) exists: kept as written
+            const QDateTime back = NumericDateTimeBaseFilter::wallClockInZone(
+                    QDateTime(QDate(2024, 11, 3), QTime(1, 30), Qt::UTC), ny);
+            CHECK_COND(back.isValid() && back.toTimeZone(ny).time() == QTime(1, 30),
+                       "101c-2: 01:30 when DST ends -> " << dt101(back).toStdString());
+
+            // the PC's own zone: the first clock time of 2024 at hh:30 that does not exist
+            QDateTime localGap;
+            for (QDate d(2024, 1, 1); d.year() == 2024 && !localGap.isValid(); d = d.addDays(1))
+                for (int h = 0; h < 24; ++h)
+                    if (!QDateTime(d, QTime(h, 30)).isValid()) {
+                        localGap = QDateTime(d, QTime(h, 30), Qt::UTC);
+                        break;
+                    }
+            if (!localGap.isValid()) {
+                std::cout << "[INFO] 101c-2: the PC's zone has no DST gap in 2024; "
+                             "makeDateTime checked through the helper above only\n";
+            } else {
+                NumericDateTimeBaseFilter f(NumericDateTimeBaseFilter::UnitInterval::Day);
+                const double v = double(QDate(1970, 1, 1).daysTo(localGap.date()))
+                        + localGap.time().msecsSinceStartOfDay() / 86400000.0;
+                const QDateTime cell = f.makeDateTime(v);
+                std::cout << "[INFO] 101c-2: local DST gap " << dt101(localGap).toStdString()
+                          << " -> " << dt101(cell).toStdString() << "\n";
+                CHECK_COND(cell.isValid() && cell > QDateTime(localGap.date(), QTime(0, 0)),
+                           "101c-2: number in the PC's DST gap gave an empty cell");
+            }
+            // the usual case is unchanged: an existing local clock time as written
+            NumericDateTimeBaseFilter f(NumericDateTimeBaseFilter::UnitInterval::Day);
+            CHECK_COND(f.makeDateTime(19783.5) == QDateTime(QDate(2024, 3, 1), QTime(12, 0)),
+                       "101c-2: 19783.5 -> " << dt101(f.makeDateTime(19783.5)).toStdString());
+        }
+        std::cout << "[PASS] 101c-2: words after the time, notes in parentheses, offsets after a "
+                     "space with seconds, DST gap\n";
     }
 
     // -------------------------------------------------------------------------

@@ -50,14 +50,16 @@ struct IsoDateTime
 //! the basic form "20231231T235959", and a time of day with more than three decimals.
 //!
 //! Only strings the older fallback below cannot read are taken here: a 'T' between date and
-//! time, a time zone designator after a date and 'T', or a fraction of a second (any number of
+//! time, a time zone designator after a date, or a fraction of a second (any number of
 //! digits, "." or ","; the fallback reads exactly three digits after "."). A date and time
-//! separated by a space without a fraction keeps its old parsing.
+//! separated by a space without a fraction or zone keeps its old parsing.
 //!
-//! A zone designator is read only after a date and 'T' (or in the basic form). After a time of
-//! day alone or a space-separated date and time, "+hh:mm" / "-hh:mm" is far more likely a time
-//! range ("09:00-17:00", "2024-01-02 09:00-10:30") and is left to the older parsing, which
-//! rejects it.
+//! A zone designator is read only after a date and 'T' (or in the basic form), or after a date
+//! and a time with seconds separated by a space: "2024-01-02 09:00:00+09:00",
+//! "2024-01-02 09:00:00.123456+09:00" and "2024-01-02 09:00:00Z" are what Python's
+//! str(datetime) and pandas write. After a time of day alone or a space-separated date and a
+//! time without seconds, "+hh:mm" / "-hh:mm" is far more likely a time range ("09:00-17:00",
+//! "2024-01-02 09:00-10:30") and is left to the older parsing, which rejects it.
 //!
 //! Time zones: date/time columns hold wall-clock times without a zone (QDateTime in local time
 //! built from date and time fields; the numeric conversions use those fields). The offset is
@@ -84,7 +86,8 @@ IsoDateTime parseIso8601DateTime(const QString &input)
     const bool sepIsT = m.captured(4).compare(QStringLiteral("T"), Qt::CaseInsensitive) == 0;
     const QString fraction = m.captured(8);
     const QString zone = m.captured(9);
-    if (!zone.isEmpty() && !(hasDate && sepIsT))
+    const bool hasSeconds = !m.captured(7).isEmpty();
+    if (!zone.isEmpty() && !(hasDate && (sepIsT || hasSeconds)))
         return out; // "09:00-17:00", "2024-01-02 09:00-10:30": not a zone, the older formats decide
     if (!sepIsT && zone.isEmpty() && fraction.isEmpty())
         return out; // the older formats read this one
@@ -108,7 +111,7 @@ IsoDateTime parseIso8601DateTime(const QString &input)
         if (!date.isValid())
             return out;
     }
-    const int seconds = m.captured(7).isEmpty() ? 0 : m.captured(7).toInt();
+    const int seconds = hasSeconds ? m.captured(7).toInt() : 0;
     // a leap second (23:59:60) is kept on its own day as the last millisecond before the next
     // second (23:59:59.999), so that it still sorts between 23:59:59 and the next day's 00:00
     const bool leapSecond = (seconds == 60);
@@ -248,10 +251,34 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
 
     QDate date_result;
     const QString date_string = strings.at(0).trimmed();
-    // everything after the date is the time ("10:00 pm" too)
-    const bool hasTimePart = strings.size() > 1;
-    const QString time_string = hasTimePart ? strings.mid(1).join(QLatin1Char(' ')).trimmed()
-                                            : date_string;
+    // The words after the date. A word in parentheses is a note, not a time: the day of the week
+    // in "2024/01/02 (Tue)" or "2024/01/02 (Tue) 10:00", also in full-width parentheses.
+    QStringList words;
+    for (int i = 1; i < strings.size(); ++i) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        const QStringList parts = strings.at(i).split(" ", Qt::SkipEmptyParts);
+#else
+        const QStringList parts = strings.at(i).split(" ", QString::SkipEmptyParts);
+#endif
+        for (const QString &word : parts) {
+            const bool note = (word.startsWith(QLatin1Char('(')) && word.endsWith(QLatin1Char(')')))
+                    || (word.startsWith(QChar(0xFF08)) && word.endsWith(QChar(0xFF09)));
+            if (!note)
+                words << word;
+        }
+    }
+    // The time is the first word after the date, with the next word when that is am / pm
+    // ("10:00 pm", "10:00:00.5 p.m."). Words after the time are dropped as before, e.g. a zone
+    // name the conversion cannot use ("2024-01-02 10:00:00 UTC", "2024-01-02 10:00 JST"): the
+    // clock time as written is kept.
+    const bool hasTimePart = !words.isEmpty();
+    QString time_string = date_string;
+    if (hasTimePart) {
+        time_string = words.at(0);
+        static const QRegularExpression ampmWord(QStringLiteral("^[AaPp]\\.?[Mm]\\.?$"));
+        if (words.size() > 1 && ampmWord.match(words.at(1)).hasMatch())
+            time_string += QLatin1Char(' ') + words.at(1);
+    }
 
     // try to find a valid date
     for (const auto& format : date_formats) {

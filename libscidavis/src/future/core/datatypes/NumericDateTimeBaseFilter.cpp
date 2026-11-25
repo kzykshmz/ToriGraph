@@ -27,6 +27,7 @@
  ***************************************************************************/
 
 #include "NumericDateTimeBaseFilter.h"
+#include <QTimeZone>
 #include <math.h>
 
 // 1970-01-01 00:00 as wall-clock time. It used to be QDateTime::fromMSecsSinceEpoch(0), the epoch
@@ -207,5 +208,41 @@ QDateTime NumericDateTimeBaseFilter::makeDateTime(double input_value) const
     // add the residual difference in dates as milliseconds; back to the local wall-clock time the
     // cells of a date/time column hold
     dateTime = dateTime.addMSecs(residual);
-    return QDateTime(dateTime.date(), dateTime.time());
+    return localWallClock(dateTime);
+}
+
+namespace {
+//! The clock time `wall` (its date and time fields) in a zone, built by `make(date, time)`. A clock
+//! time that does not exist there falls in the hour skipped when DST starts (02:00-02:59 on the
+//! day clocks go forward in New York); Qt 5 makes such a date/time invalid, which left an empty
+//! cell. It is read with the offset in force before the gap instead, i.e. moved forward by the
+//! gap (02:30 -> 03:30), as the clock on the wall would show.
+template<typename Make, typename FromMSecs>
+QDateTime existingClockTime(const QDateTime &wall, Make make, FromMSecs fromMSecs)
+{
+    const QDateTime dt = make(wall.date(), wall.time());
+    if (dt.isValid() || !wall.isValid())
+        return dt;
+    const qint64 wallMSecs = QDateTime(wall.date(), wall.time(), Qt::UTC).toMSecsSinceEpoch();
+    for (int days = 1; days <= 3; ++days) {
+        const QDateTime before = make(wall.date().addDays(-days), wall.time());
+        if (before.isValid())
+            return fromMSecs(wallMSecs - qint64(before.offsetFromUtc()) * 1000);
+    }
+    return fromMSecs(wallMSecs);
+}
+} // namespace
+
+QDateTime NumericDateTimeBaseFilter::localWallClock(const QDateTime &wall)
+{
+    return existingClockTime(
+            wall, [](const QDate &d, const QTime &t) { return QDateTime(d, t); },
+            [](qint64 msecs) { return QDateTime::fromMSecsSinceEpoch(msecs); });
+}
+
+QDateTime NumericDateTimeBaseFilter::wallClockInZone(const QDateTime &wall, const QTimeZone &zone)
+{
+    return existingClockTime(
+            wall, [&zone](const QDate &d, const QTime &t) { return QDateTime(d, t, zone); },
+            [&zone](qint64 msecs) { return QDateTime::fromMSecsSinceEpoch(msecs, zone); });
 }

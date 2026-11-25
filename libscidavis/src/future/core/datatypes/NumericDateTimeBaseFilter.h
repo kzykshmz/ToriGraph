@@ -33,6 +33,8 @@
 #include <QDate>
 #include <QTime>
 
+class QTimeZone;
+
 /**
  * \brief Base for conversion filters double <-> QDateTime.
  * This class is intended to hold all logic for conversion between double to QDateTime and vice
@@ -63,10 +65,7 @@ public:
 
     UnitInterval getUnitInterval() const { return m_unit_interval; }
     //! The base date/time as wall-clock time in the PC's zone (like the cells of a column).
-    QDateTime getBaseDateTime() const
-    {
-        return QDateTime(m_date_time_0.date(), m_date_time_0.time());
-    }
+    QDateTime getBaseDateTime() const { return localWallClock(m_date_time_0); }
 
     // Date/time columns hold wall-clock times without a zone. The conversions therefore work on
     // the date and time fields (as if they were UTC), never on the instant in the PC's zone: with
@@ -77,6 +76,14 @@ public:
     double offsetToDouble(const QDateTime &m_offset) const;
     // convert the given numerical offset to DateTime wrt unit and base date
     QDateTime makeDateTime(double input_value) const;
+
+    //! The wall-clock time `wall` (its date and time fields) as a local date/time, the form the
+    //! cells of a date/time column hold. A clock time that does not exist locally (skipped when
+    //! DST starts) is moved forward by the gap instead of becoming invalid (an empty cell).
+    static QDateTime localWallClock(const QDateTime &wall);
+    //! The same in the time zone `zone` (localWallClock() uses the PC's zone); lets the DST gap
+    //! be checked on a PC whose own zone has none.
+    static QDateTime wallClockInZone(const QDateTime &wall, const QTimeZone &zone);
 
 protected:
     //! `dt`'s date and time fields as a Qt::UTC date/time (the zone-free wall-clock time).

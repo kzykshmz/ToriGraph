@@ -35,9 +35,11 @@
 //   99f automatic recalculation still finds formula columns after the formula scan was
 //       cached: a formula set after a write, a formula in another table, a removed column
 //       before the formula column, and a cleared formula.
-//   99g time zones: "+hh:mm" after a time alone or a space-separated date and time is a time
-//       range, not a zone ("09:00-17:00", "2024-01-02 09:00-10:30" are invalid: since Suite 101
-//       a time part that cannot be read no longer gives the date at 00:00); a
+//   99g time zones: "+hh:mm" after a time alone or a space-separated date and a time without
+//       seconds is a time range, not a zone ("09:00-17:00", "2024-01-02 09:00-10:30" are invalid:
+//       since Suite 101 a time part that cannot be read no longer gives the date at 00:00); after
+//       a space-separated date and a time with seconds it is a zone like after 'T'
+//       ("2024-01-02 03:04:05+09:00", "2024-01-02 12:00:00Z", Python's str(datetime)); a
 //       column written in one offset keeps the times as written; a column mixing "Z" and
 //       "+09:00" puts the same instant at the same time (converted to the first offset, also for
 //       values typed in later) and sorts by instant; values without a zone are not converted.
@@ -591,13 +593,15 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
     // -------------------------------------------------------------------------
     {
         const QString defaultFormat = QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz");
-        // "+hh:mm" / "-hh:mm" / "Z" without a date and 'T' in front: never a zone; the time part
-        // cannot be read, so the value is invalid (the old parser gave the date at 00:00)
+        // "+hh:mm" / "-hh:mm" / "Z" after a time alone or a date and a time without seconds:
+        // never a zone; the time part cannot be read, so the value is invalid (the old parser
+        // gave the date at 00:00). "2024-01-02 03:04:05+09:00" and "2024-01-02 12:00:00Z" were
+        // here too: a date and a time with seconds before the offset is what Python's
+        // str(datetime) and pandas write, and is read as a zone now (checked below)
         const QStringList rangeTexts = { QStringLiteral("09:00-17:00"),
                                          QStringLiteral("2024-01-02 09:00-10:30"),
-                                         QStringLiteral("2024-01-02 03:04:05+09:00"),
                                          QStringLiteral("12:00Z"),
-                                         QStringLiteral("2024-01-02 12:00:00Z") };
+                                         QStringLiteral("2024-01-02 12:00Z") };
         Column *rc = convertTexts(QStringLiteral("T99Range"), rangeTexts,
                                   SciDAVis::ColumnMode::DateTime);
         CHECK_COND(rc != nullptr, "99g: conversion of the range texts failed");
@@ -618,6 +622,19 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
                    "99g: '09:00-17:00' is not invalid");
         CHECK_COND(rc->isInvalid(1) || rc->dateTimeAt(1).time() != QTime(9, 0),
                    "99g: '2024-01-02 09:00-10:30' was read as 09:00 in a zone");
+        // a space-separated date and a time with seconds: the offset is a zone ("+09:00" first,
+        // so "12:00:00Z" moves to 21:00 like "...T12:00:00Z" would)
+        const QStringList spaceZoneTexts = { QStringLiteral("2024-01-02 03:04:05+09:00"),
+                                             QStringLiteral("2024-01-02 12:00:00Z") };
+        Column *sz = convertTexts(QStringLiteral("T99SpaceZone"), spaceZoneTexts,
+                                  SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(sz != nullptr && !sz->isInvalid(0) && !sz->isInvalid(1)
+                           && sz->dateTimeAt(0) == QDateTime(QDate(2024, 1, 2), QTime(3, 4, 5))
+                           && sz->dateTimeAt(1) == QDateTime(QDate(2024, 1, 2), QTime(21, 0)),
+                   "99g: space-separated offsets -> "
+                           << (sz ? dtText(sz->dateTimeAt(0)).toStdString() : std::string("?"))
+                           << ", "
+                           << (sz ? dtText(sz->dateTimeAt(1)).toStdString() : std::string("?")));
 
         // a column in a single offset keeps the clock times as written ('T' and basic form);
         // a value without a zone is a clock time in that offset
