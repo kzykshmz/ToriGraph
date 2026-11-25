@@ -1425,6 +1425,19 @@ bool isMissingNumericSentinel(const QString &trimmed)
             || AsciiTableImportFilter::isOverflowNumberToken(trimmed);
 }
 
+//! Missing value of a numeric column in the text import, the same test as the GUI import
+//! (AsciiTableImportFilter): the missing / Excel error tokens it shares ("", "-", "--", "N.D.",
+//! "ND", "#N/A", "#DIV/0!", ..., also when quoted), "none", and unless quoted "inf" /
+//! "infinity" and numbers that overflow a double ("1e400").
+bool isImportMissingNumericCell(const QString &trimmed, bool wasQuoted)
+{
+    if (AsciiTableImportFilter::isMissingDataToken(trimmed))
+        return true;
+    if (!wasQuoted)
+        return isMissingNumericSentinel(trimmed);
+    return trimmed.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
+}
+
 int countUnquotedImportChar(const QString &line, QChar ch)
 {
     int n = 0;
@@ -1921,11 +1934,16 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         bool useText = !convertNumeric;
         bool anyQuoted = false;
         bool anyFiniteNumber = false;
-        bool anyNonEmptySentinel = false;
         QVector<qreal> parsedNums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
         QVector<int> invalidRows;
 
+        // Column type as the GUI import decides it (AsciiTableImportFilter::importLabTextData):
+        // missing tokens are empty cells; a few stray non-numeric cells ("OVER", a repeated
+        // header line) are invalid cells of a numeric column when at least 5 cells and 90 % of
+        // the non-missing cells are numbers; otherwise the column is text.
         if (convertNumeric) {
+            int validNumCount = 0;
+            int strayNonNumCount = 0;
             for (int r = 0; r < dataRowCount; ++r) {
                 const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
                 const QString valStr = (c < rec.size()) ? rec[c].value : QString();
@@ -1937,22 +1955,34 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                     invalidRows.append(r);
                     continue;
                 }
-                if (!wasQuoted && isMissingNumericSentinel(trimmed)) {
+                if (isImportMissingNumericCell(trimmed, wasQuoted)) {
                     invalidRows.append(r);
-                    anyNonEmptySentinel = true;
                     continue;
                 }
                 double numVal = 0.0;
                 if (parseImportNumber(trimmed, decimalComma, numVal)) {
                     parsedNums[r] = numVal;
                     anyFiniteNumber = true;
+                    ++validNumCount;
                 } else {
-                    useText = true;
-                    break;
+                    ++strayNonNumCount;
+                    const int maxRemainingNum = validNumCount + (dataRowCount - r - 1);
+                    if (maxRemainingNum < 5
+                        || qint64(maxRemainingNum) < qint64(strayNonNumCount) * 9) {
+                        useText = true;
+                        break;
+                    }
+                    invalidRows.append(r);
                 }
             }
-            if (!useText && !anyFiniteNumber && (anyQuoted || anyNonEmptySentinel))
-                useText = true;
+            if (!useText) {
+                const bool enoughForNumeric = (strayNonNumCount == 0)
+                        || (validNumCount >= 5
+                            && qint64(validNumCount) * 10
+                                    >= qint64(validNumCount + strayNonNumCount) * 9);
+                if (!enoughForNumeric || (anyQuoted && !anyFiniteNumber))
+                    useText = true;
+            }
         }
 
         if (useText) {
@@ -3453,7 +3483,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             for (const ParsedCsvCell &cell : records[0]) {
                 const QString tok = cell.value.trimmed();
                 // missing values ("NaN 1") are data cells like the empty ones
-                if (tok.isEmpty() || (!cell.quoted && isMissingNumericSentinel(tok)))
+                if (tok.isEmpty() || (!cell.quoted && isImportMissingNumericCell(tok, false)))
                     continue;
                 double dv = 0.0;
                 if (!cell.quoted && parseImportNumber(tok, decimalComma, dv)) {
