@@ -6,6 +6,8 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QUndoStack>
 
@@ -60,6 +62,11 @@
 //   111j the legend gets its text back as it was when the curves come back: an empty line in it
 //        (left by removing the last curve and adding another, or typed by the user) used to be
 //        dropped by the Undo of a column removal or of a table deletion
+//   111l removing error bars (curve or column) moves the legend numbers after them up (\c{3}w
+//        stayed with two curves), removing the last curve removes its line also when the legend
+//        has fewer lines than curves; a line that is not a curve's and a curve without a line
+//        stay as they are; a column used by a curve and by error bars, with a fit curve after
+//        them, leaves each number once and within the curves
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -1538,6 +1545,136 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(fails111j == 0, "111j: " << fails111j << " case(s) failed");
     }
     std::cout << "[PASS] 111j: the legend text comes back as it was\n";
+
+    auto shownText = [](const QString &s) {
+        std::string o;
+        for (QChar ch : s)
+            o += (ch == QLatin1Char('\n')) ? std::string("\\n") : QString(ch).toStdString();
+        return o;
+    };
+    auto legendOf = [&](const char *graph) {
+        MultiLayer *ml = findGraph(w111, graph);
+        Graph *g = (ml && !ml->layersList().isEmpty()) ? ml->layersList().at(0) : nullptr;
+        return (g && g->legend()) ? g->legend()->text() : QStringLiteral("(none)");
+    };
+    auto curvesOf = [&](const char *graph) {
+        MultiLayer *ml = findGraph(w111, graph);
+        Graph *g = (ml && !ml->layersList().isEmpty()) ? ml->layersList().at(0) : nullptr;
+        return g ? g->curves() : -1;
+    };
+    auto call = [&](const char *method, const QJsonObject &params) {
+        const QJsonObject r = rpc(QString::fromLatin1(method), params);
+        if (isErr(r))
+            std::cerr << "[INFO] " << method << ": " << errText(r) << "\n";
+        return !isErr(r);
+    };
+
+    // ---- 111l: the legend numbers after removed error bars move up ----
+    // y, error bars e of y, w: the legend is \c{1}y\n\c{3}w (the error bars take number 2).
+    // Removing the error bars (curve or column) left \c{3}w with two curves, and removing w left
+    // its line, since a curve number at or past the number of legend lines was not looked for.
+    {
+        int fails111l = 0;
+        const char *t = "NT111";
+        const char *gname = "NG111";
+        Table *nt = w111->newTable(QString::fromLatin1(t), 6, 4);
+        CHECK_COND(nt, "111l: table NT111");
+        const char *nc[] = { "x", "y", "e", "w" };
+        for (int c = 0; c < 4; ++c)
+            nt->setColName(c, QString::fromLatin1(nc[c]));
+        CHECK_COND(setCol(t, "x", { 1, 2, 3, 4, 5, 6 }) && setCol(t, "y", { 2, 4.2, 6, 8.1, 10, 12.3 })
+                           && setCol(t, "e", { 0.5, 0.6, 0.4, 0.5, 0.7, 0.5 })
+                           && setCol(t, "w", { 2, 3, 4, 5, 6, 7 }),
+                   "111l: fill NT111");
+        CHECK_COND(call("plot.xy", QJsonObject{ { "table", t }, { "x_col", "x" },
+                                                { "y_cols", QJsonArray{ "y" } }, { "graph_name", gname } })
+                           && call("graph.set_legend", QJsonObject{ { "graph", gname }, { "visible", true } })
+                           && call("plot.add_error_bars", QJsonObject{ { "graph", gname }, { "err_col", "e" },
+                                                                       { "curve", "NT111_y" } })
+                           && call("plot.add_curve", QJsonObject{ { "graph", gname }, { "table", t },
+                                                                  { "x_col", "x" }, { "y_col", "w" } }),
+                   "111l: graph NG111");
+        const QString init = legendOf(gname);
+        CHECK_COND(init == QStringLiteral("\\c{1}y\n\\c{3}w\n") && curvesOf(gname) == 3,
+                   "111l: legend of NG111: " << shownText(init));
+        auto expect = [&](const char *what, const QString &want) {
+            std::cout << "[INFO] 111l: " << what << ": " << shownText(legendOf(gname)) << "\n";
+            if (legendOf(gname) != want) {
+                std::cerr << "[FAIL] 111l: " << what << ": legend " << shownText(legendOf(gname))
+                          << " expected " << shownText(want) << std::endl;
+                ++fails111l;
+            }
+        };
+        // (1) the error bars removed as a curve, (2) through their column, (3) w through its column
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 1 } }),
+                   "111l: remove the error bars");
+        expect("error bars removed", QStringLiteral("\\c{1}y\n\\c{2}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo");
+        expect("error bars back", init);
+        CHECK_COND(call("table.remove_column", QJsonObject{ { "table", t }, { "col", "e" } }),
+                   "111l: remove column e");
+        expect("column e removed", QStringLiteral("\\c{1}y\n\\c{2}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111l: undo e");
+        expect("column e back", init);
+        CHECK_COND(call("table.remove_column", QJsonObject{ { "table", t }, { "col", "w" } }),
+                   "111l: remove column w");
+        expect("column w removed", QStringLiteral("\\c{1}y\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111l: undo w");
+        expect("column w back", init);
+        // (4) a legend typed by the user with a line that is not a curve's, (5) without a line
+        //     for y: only the numbers move
+        const QString typed = QStringLiteral("Data\n\\c{1}y\n\\c{3}w\n");
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", typed } }),
+                   "111l: typed legend");
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 1 } }),
+                   "111l: remove the error bars (typed legend)");
+        expect("typed legend, error bars removed", QStringLiteral("Data\n\\c{1}y\n\\c{2}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (typed)");
+        expect("typed legend, error bars back", typed);
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", "\\c{3}w\n" } }),
+                   "111l: legend without y");
+        CHECK_COND(call("plot.remove_curve", QJsonObject{ { "graph", gname }, { "curve", 1 } }),
+                   "111l: remove the error bars (no line for y)");
+        expect("no line for y, error bars removed", QStringLiteral("\\c{2}w\n"));
+        CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111l: graph undo (no y)");
+        CHECK_COND(call("graph.set_legend", QJsonObject{ { "graph", gname }, { "text", init } }),
+                   "111l: legend back");
+        // (6) a column used by error bars and by a curve, with a fit curve after them: every
+        //     number stays within the curves and none is given twice, and Undo puts it back
+        CHECK_COND(call("plot.add_curve", QJsonObject{ { "graph", gname }, { "table", t },
+                                                       { "x_col", "x" }, { "y_col", "e" } })
+                           && call("analysis.fit_linear", QJsonObject{ { "graph", gname }, { "curve", "NT111_y" } }),
+                   "111l: curve e and a fit");
+        const QString withFit = legendOf(gname);
+        const int curvesWithFit = curvesOf(gname);
+        CHECK_COND(curvesWithFit == 5, "111l: curves with the fit: " << curvesWithFit);
+        auto numbersValid = [&](const QString &text, int nCurves) {
+            QSet<int> seen;
+            static const QRegularExpression rx(QStringLiteral(R"(\\c\{(\d+)\})"));
+            QRegularExpressionMatchIterator it = rx.globalMatch(text);
+            while (it.hasNext()) {
+                const int n = it.next().captured(1).toInt();
+                if (n < 1 || n > nCurves || seen.contains(n))
+                    return false;
+                seen.insert(n);
+            }
+            return true;
+        };
+        CHECK_COND(numbersValid(withFit, curvesWithFit), "111l: legend with the fit: " << shownText(withFit));
+        CHECK_COND(call("table.remove_column", QJsonObject{ { "table", t }, { "col", "e" } }),
+                   "111l: remove column e (fit)");
+        std::cout << "[INFO] 111l: e removed with the fit: " << shownText(legendOf(gname)) << "\n";
+        if (curvesOf(gname) != 3 || !numbersValid(legendOf(gname), 3)
+            || legendOf(gname).count(QStringLiteral("\\c{")) != 3) {
+            std::cerr << "[FAIL] 111l: e removed with the fit: legend " << shownText(legendOf(gname))
+                      << " for " << curvesOf(gname) << " curves" << std::endl;
+            ++fails111l;
+        }
+        CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111l: undo e (fit)");
+        expect("e back with the fit", withFit);
+        CHECK_COND(fails111l == 0, "111l: " << fails111l << " case(s) failed");
+    }
+    std::cout << "[PASS] 111l: the legend numbers after removed error bars move up\n";
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";
     return 0;

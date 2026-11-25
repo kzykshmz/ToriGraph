@@ -549,6 +549,10 @@ public slots:
 
     void removeLegend();
     void removeLegendItem(int index);
+    //! Removes the legend line of item \a index (the line with \c{index+1}), if there is one,
+    //! and moves the item numbers after it down by one. The layer's items are not touched: for
+    //! an item that is (being) removed, or one a rebuilt layer could not read.
+    void removeLegendCurveNumber(int index);
     void addLegendItem(const QString &colName);
     void insertLegend(const QStringList &lst, int fileVersion);
     Legend *legend();

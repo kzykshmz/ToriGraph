@@ -799,7 +799,7 @@ long Graph::insertTextMarker(Legend *mrk)
 
 void Graph::removeLegendItem(int index)
 {
-    if (legendMarkerID < 0 || c_type[index] == ErrorBars)
+    if (legendMarkerID < 0 || index < 0)
         return;
 
     Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
@@ -811,6 +811,20 @@ void Graph::removeLegendItem(int index)
         return;
     }
 
+    // Error bars have a number of their own (\c{n} counts every item of the layer) but no line:
+    // the numbers after them move up as well. A curve number past the number of lines is looked
+    // for too (a legend line can be missing, and error bars take numbers without lines).
+    removeLegendCurveNumber(index);
+}
+
+void Graph::removeLegendCurveNumber(int index)
+{
+    if (legendMarkerID < 0 || index < 0)
+        return;
+    Legend *mrk = (Legend *)d_plot->marker(legendMarkerID);
+    if (!mrk)
+        return;
+
     QString text = mrk->text();
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
     QStringList items = text.split("\n", Qt::SkipEmptyParts);
@@ -818,24 +832,30 @@ void Graph::removeLegendItem(int index)
     QStringList items = text.split("\n", QString::SkipEmptyParts);
 #endif
 
-    if (index >= (int)items.count())
-        return;
-
     QStringList l = items.filter("\\c{" + QString::number(index + 1) + "}");
     if (!l.isEmpty())
         items.removeAll(l[0]); // remove the corresponding legend string
     text = items.join("\n") + "\n";
 
-    QRegExp itemCmd("\\\\c\\{(\\d+)\\}");
-    int pos = 0;
-    while ((pos = itemCmd.indexIn(text, pos)) != -1) {
-        int nr = itemCmd.cap(1).toInt();
-        if (nr > index) {
-            QString subst = QString("\\c{") + QString::number(nr - 1) + "}";
-            text.replace(pos, itemCmd.matchedLength(), subst);
-            pos += subst.length();
-        } else
-            pos += itemCmd.matchedLength();
+    // the numbers of the items after it (\c{n}, \l(n), %(n)) move down by one; lines that are
+    // not a curve's keep their text
+    static const QRegularExpression numberRx(
+            QStringLiteral(R"(\\c\{(\d+)\}|\\l\((\d+)\)|%\((\d+)\))"));
+    int highest = 0;
+    QRegularExpressionMatchIterator it = numberRx.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        for (int cap = 1; cap <= 3; ++cap) {
+            if (!m.captured(cap).isEmpty())
+                highest = qMax(highest, m.captured(cap).toInt());
+        }
+    }
+    if (highest > index + 1) {
+        QVector<int> oldToNew(highest);
+        for (int i = 0; i < highest; ++i)
+            oldToNew[i] = (i <= index) ? i : i - 1;
+        oldToNew[index] = -1; // a number of the removed item left on another line stays
+        text = remapLegendCurveTokens(text, oldToNew);
     }
 
     mrk->setText(text);
