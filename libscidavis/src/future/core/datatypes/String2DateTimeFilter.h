@@ -61,6 +61,23 @@ public:
      */
     QString format() const { return d_format; }
 
+    //! \name UTC offset of the date/time values of the column
+    //! The first ISO 8601 value with a zone designator ("Z", "+09:00", ...) that this filter
+    //! reads fixes the offset; a later value in another offset is converted to it, so the same
+    //! instant gets the same wall-clock time. Values without a designator are wall-clock times in
+    //! that offset and are not converted.
+    //@{
+    bool hasZoneOffset() const { return d_has_zone_offset; }
+    //! Offset east of UTC in seconds (meaningful if hasZoneOffset())
+    int zoneOffsetSeconds() const { return d_zone_offset_secs; }
+    //! Take over the offset of another filter (the converter of a column type change)
+    void copyZoneOffset(const String2DateTimeFilter &other)
+    {
+        d_has_zone_offset = other.d_has_zone_offset;
+        d_zone_offset_secs = other.d_zone_offset_secs;
+    }
+    //@}
+
     //! Return the data type of the column
     virtual SciDAVis::ColumnDataType dataType() const { return SciDAVis::TypeQDateTime; }
 
@@ -77,6 +94,10 @@ private:
     friend class String2DateTimeFilterSetFormatCmd;
     //! The format string.
     QString d_format;
+    //! Whether d_zone_offset_secs was fixed by a value with a zone designator
+    mutable bool d_has_zone_offset = false;
+    //! UTC offset (seconds east) of the first value with a zone designator
+    mutable int d_zone_offset_secs = 0;
 
     static const QStringList date_formats;
     static const QStringList time_formats;

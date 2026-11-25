@@ -34,19 +34,36 @@
 #include <QXmlStreamWriter>
 
 namespace {
+//! A date and time read by parseIso8601DateTime()
+struct IsoDateTime
+{
+    //! wall-clock time as written (Qt::UTC, so that adding seconds ignores the PC's DST)
+    QDateTime wall;
+    //! a zone designator was given
+    bool hasZone = false;
+    //! offset east of UTC in seconds ("Z": 0)
+    int offsetSecs = 0;
+};
+
 //! ISO 8601 date and time as written by Python's datetime.isoformat() and most loggers:
 //! "2023-12-31T23:59:59", "...T23:59:59.123456", "...T23:59:59Z", "...T23:59:59+09:00",
 //! the basic form "20231231T235959", and a time of day with more than three decimals.
 //!
 //! Only strings the older fallback below cannot read are taken here: a 'T' between date and
-//! time, a time zone designator, or a fraction of a second longer than milliseconds. A date and
-//! time separated by a space keeps its old parsing.
+//! time, a time zone designator after a date and 'T', or a fraction of a second longer than
+//! milliseconds. A date and time separated by a space keeps its old parsing.
+//!
+//! A zone designator is read only after a date and 'T' (or in the basic form). After a time of
+//! day alone or a space-separated date and time, "+hh:mm" / "-hh:mm" is far more likely a time
+//! range ("09:00-17:00", "2024-01-02 09:00-10:30") and is left to the older parsing, which
+//! rejects it.
 //!
 //! Time zones: date/time columns hold wall-clock times without a zone (QDateTime in local time
-//! built from date and time fields; the numeric conversions use those fields), so the clock time
-//! written in the string is kept and the designator is checked but not applied. Converting to the
-//! PC's zone would make the same file show other times on another PC.
-QDateTime parseIso8601DateTime(const QString &input)
+//! built from date and time fields; the numeric conversions use those fields). The offset is
+//! therefore not applied against the PC's zone (the same file would show other times on another
+//! PC); String2DateTimeFilter::dateTimeAt() keeps the clock time as written and only converts
+//! values whose offset differs from the first offset of the column.
+IsoDateTime parseIso8601DateTime(const QString &input)
 {
     static const QRegularExpression extended(QStringLiteral(
             "^(?:(\\d{4})-(\\d{1,2})-(\\d{1,2})([Tt ]))?"
@@ -55,43 +72,53 @@ QDateTime parseIso8601DateTime(const QString &input)
     static const QRegularExpression basic(QStringLiteral(
             "^(\\d{4})(\\d{2})(\\d{2})([Tt])(\\d{2})(\\d{2})(?:(\\d{2})(?:[.,](\\d+))?)?"
             "([Zz]|[+-]\\d{2}(?::?\\d{2})?)?$"));
+    IsoDateTime out;
     QRegularExpressionMatch m = extended.match(input);
     if (!m.hasMatch())
         m = basic.match(input);
     if (!m.hasMatch())
-        return QDateTime();
+        return out;
 
     const bool hasDate = !m.captured(1).isEmpty();
     const bool sepIsT = m.captured(4).compare(QStringLiteral("T"), Qt::CaseInsensitive) == 0;
     const QString fraction = m.captured(8);
     const QString zone = m.captured(9);
+    if (!zone.isEmpty() && !(hasDate && sepIsT))
+        return out; // "09:00-17:00", "2024-01-02 09:00-10:30": not a zone, the older formats decide
     if (!sepIsT && zone.isEmpty() && fraction.size() <= 3)
-        return QDateTime(); // the older formats read this one
+        return out; // the older formats read this one
 
-    if (!zone.isEmpty() && zone.compare(QStringLiteral("Z"), Qt::CaseInsensitive) != 0) {
-        const int zoneHours = zone.mid(1, 2).toInt();
-        const int zoneMinutes = zone.size() > 3 ? zone.right(2).toInt() : 0;
-        if (zoneHours > 23 || zoneMinutes > 59)
-            return QDateTime();
+    if (!zone.isEmpty()) {
+        out.hasZone = true;
+        if (zone.compare(QStringLiteral("Z"), Qt::CaseInsensitive) != 0) {
+            const int zoneHours = zone.mid(1, 2).toInt();
+            const int zoneMinutes = zone.size() > 3 ? zone.right(2).toInt() : 0;
+            if (zoneHours > 23 || zoneMinutes > 59)
+                return out;
+            out.offsetSecs = (zoneHours * 60 + zoneMinutes) * 60;
+            if (zone.startsWith(QLatin1Char('-')))
+                out.offsetSecs = -out.offsetSecs;
+        }
     }
 
     QDate date(1900, 1, 1); // a time of day alone: the date the older fallback uses
     if (hasDate) {
         date = QDate(m.captured(1).toInt(), m.captured(2).toInt(), m.captured(3).toInt());
         if (!date.isValid())
-            return QDateTime();
+            return out;
     }
     const QTime time(m.captured(5).toInt(), m.captured(6).toInt(),
                      m.captured(7).isEmpty() ? 0 : m.captured(7).toInt());
     if (!time.isValid())
-        return QDateTime();
-    QDateTime result(date, time);
+        return out;
+    QDateTime result(date, time, Qt::UTC);
     if (!fraction.isEmpty()) {
         // fraction of a second -> milliseconds, rounded (".5" is 500 ms, ".123456" is 123 ms)
         const qint64 msecs = qRound64((QStringLiteral("0.") + fraction).toDouble() * 1000.0);
         result = result.addMSecs(msecs);
     }
-    return result;
+    out.wall = result;
+    return out;
 }
 } // namespace
 
@@ -125,9 +152,23 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
         return result;
 
     // ISO 8601 with 'T', a time zone or sub-millisecond digits (see parseIso8601DateTime)
-    const QDateTime iso = parseIso8601DateTime(input_value.trimmed());
-    if (iso.isValid())
-        return iso;
+    const IsoDateTime iso = parseIso8601DateTime(input_value.trimmed());
+    if (iso.wall.isValid()) {
+        QDateTime wall = iso.wall;
+        if (iso.hasZone) {
+            // The first offset seen fixes the offset of the column; a value written in another
+            // offset is moved to it so that the same instant gets the same clock time and the
+            // column sorts by instant ("...T15:00:00Z" and "...T00:00:00+09:00" of the next day
+            // are one instant). A column with a single offset keeps the times as written.
+            if (!d_has_zone_offset) {
+                d_has_zone_offset = true;
+                d_zone_offset_secs = iso.offsetSecs;
+            } else if (iso.offsetSecs != d_zone_offset_secs) {
+                wall = wall.addSecs(d_zone_offset_secs - iso.offsetSecs);
+            }
+        }
+        return QDateTime(wall.date(), wall.time()); // local wall-clock time like the other paths
+    }
 
         // fallback:
         // try other format strings built from date_formats and time_formats

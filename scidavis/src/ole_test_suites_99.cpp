@@ -10,12 +10,15 @@
 #include <QTextStream>
 #include <QUndoStack>
 
+#include <functional>
+
 // =============================================================================
 // Suite 99: date/time text parsing and wide tables.
 //   99a text -> date/time conversion (Column > Type and the RPC writes use the same input
 //       filter): ISO 8601 with 'T' (Python datetime.isoformat()), fractions of a second up to
-//       microseconds, 'Z' / +09:00 / -05:30 zones (the written clock time is kept), the basic
-//       form 20240102T030405; impossible dates and times stay invalid; every format read before
+//       microseconds, 'Z' / +09:00 / -05:30 zones after a date and 'T' (converted to the first
+//       offset of the column), the basic form 20240102T030405; impossible dates and times stay
+//       invalid; every format read before
 //       (space-separated, date only, time only, German/European dates, yyyyMMdd, a short
 //       fraction) gives exactly the result of the old parser.
 //   99b the same through JSON-RPC: add_column(mode=datetime) and set_cell on a date/time
@@ -32,6 +35,15 @@
 //   99f automatic recalculation still finds formula columns after the formula scan was
 //       cached: a formula set after a write, a formula in another table, a removed column
 //       before the formula column, and a cleared formula.
+//   99g time zones: "+hh:mm" after a time alone or a space-separated date and time is a time
+//       range, not a zone ("09:00-17:00", "2024-01-02 09:00-10:30" keep the old result); a
+//       column written in one offset keeps the times as written; a column mixing "Z" and
+//       "+09:00" puts the same instant at the same time (converted to the first offset, also for
+//       values typed in later) and sorts by instant; values without a zone are not converted.
+//   99h header labels after the numbering mode changes with the last column: removing the
+//       last X column (column removal, column count shrink, Undo of an appended X column) turns
+//       "[X1] [Y1] [X2]" back into "[X] [Y]", and a later rename keeps it; designation changes
+//       (X/Y/Z/errors), insert, remove, move and Undo/Redo give the labels of a full rebuild.
 // =============================================================================
 
 namespace {
@@ -189,11 +201,11 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
             { "2023-12-31T23:59:59.123456", QDateTime(d1231, QTime(23, 59, 59, 123)) },
             { "2023-12-31T23:59:59.5", QDateTime(d1231, QTime(23, 59, 59, 500)) },
             { "2023-12-31T23:59:59,25", QDateTime(d1231, QTime(23, 59, 59, 250)) },
+            // the first zone ("Z") fixes the offset of the column; other offsets convert to it
             { "2024-01-02T03:04:05Z", QDateTime(d0102, QTime(3, 4, 5)) },
-            { "2024-01-02T03:04:05+09:00", QDateTime(d0102, QTime(3, 4, 5)) },
-            { "2024-01-02T03:04:05.250-05:30", QDateTime(d0102, QTime(3, 4, 5, 250)) },
-            { "2024-01-02T03:04:05+0900", QDateTime(d0102, QTime(3, 4, 5)) },
-            { "2024-01-02 03:04:05+09:00", QDateTime(d0102, QTime(3, 4, 5)) },
+            { "2024-01-02T03:04:05+09:00", QDateTime(QDate(2024, 1, 1), QTime(18, 4, 5)) },
+            { "2024-01-02T03:04:05.250-05:30", QDateTime(d0102, QTime(8, 34, 5, 250)) },
+            { "2024-01-02T03:04:05+0900", QDateTime(QDate(2024, 1, 1), QTime(18, 4, 5)) },
             { "2024-01-02 03:04:05.123456", QDateTime(d0102, QTime(3, 4, 5, 123)) },
             { "20240102T030405", QDateTime(d0102, QTime(3, 4, 5)) },
             { "20240102T030405Z", QDateTime(d0102, QTime(3, 4, 5)) },
@@ -284,6 +296,7 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
         CHECK_COND(!col->isInvalid(3)
                            && col->dateTimeAt(3) == QDateTime(QDate(2024, 3, 1), QTime(10, 0, 0)),
                    "99b: space-separated value changed");
+        // the column was written in +09:00 (row 1), so a later "Z" value is moved to +09:00
         r = rpc(QStringLiteral("table.set_cell"),
                 QJsonObject{ { "table", "T99Rpc" }, { "col", "When" }, { "row", 2 },
                              { "value", "2025-06-30T08:15:30Z" } });
@@ -291,7 +304,7 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
         col = t->column(c);
         CHECK_COND(col->columnMode() == SciDAVis::ColumnMode::DateTime && !col->isInvalid(2)
                            && col->dateTimeAt(2)
-                                   == QDateTime(QDate(2025, 6, 30), QTime(8, 15, 30)),
+                                   == QDateTime(QDate(2025, 6, 30), QTime(17, 15, 30)),
                    "99b: set_cell with an ISO value: " << dtText(col->dateTimeAt(2)).toStdString());
         std::cout << "[PASS] 99b: RPC add_column / set_cell read ISO 8601\n";
     }
@@ -569,6 +582,369 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
         CHECK_COND(t->cell(2, 1) == before || (std::isnan(before) && std::isnan(t->cell(2, 1))),
                    "99f: column with a cleared formula was recalculated");
         std::cout << "[PASS] 99f: dependent recalculation with the cached formula scan\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 99g: time zones (ranges are not zones, single offset kept, mixed offsets converted)
+    // -------------------------------------------------------------------------
+    {
+        const QString defaultFormat = QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz");
+        // "+hh:mm" / "-hh:mm" / "Z" without a date and 'T' in front: the old result, never a zone
+        const QStringList rangeTexts = { QStringLiteral("09:00-17:00"),
+                                         QStringLiteral("2024-01-02 09:00-10:30"),
+                                         QStringLiteral("2024-01-02 03:04:05+09:00"),
+                                         QStringLiteral("12:00Z"),
+                                         QStringLiteral("2024-01-02 12:00:00Z") };
+        Column *rc = convertTexts(QStringLiteral("T99Range"), rangeTexts,
+                                  SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(rc != nullptr, "99g: conversion of the range texts failed");
+        for (int i = 0; i < rangeTexts.size(); ++i) {
+            const QDateTime legacy = legacyDateTimeParse(rangeTexts[i], defaultFormat);
+            const bool gotValid = !rc->isInvalid(i) && rc->dateTimeAt(i).isValid();
+            std::cout << "[INFO] 99g: '" << rangeTexts[i].toStdString() << "' -> "
+                      << (gotValid ? dtText(rc->dateTimeAt(i)).toStdString()
+                                   : std::string("<invalid>"))
+                      << " (old parser: " << dtText(legacy).toStdString() << ")\n";
+            CHECK_COND(gotValid == legacy.isValid() && (!gotValid || rc->dateTimeAt(i) == legacy),
+                       "99g: '" << rangeTexts[i].toStdString() << "' -> "
+                                << (gotValid ? dtText(rc->dateTimeAt(i)).toStdString()
+                                             : std::string("<invalid>"))
+                                << ", the old parser gave " << dtText(legacy).toStdString());
+        }
+        CHECK_COND(rc->isInvalid(0) || !rc->dateTimeAt(0).isValid(),
+                   "99g: '09:00-17:00' is not invalid");
+        CHECK_COND(rc->isInvalid(1) || rc->dateTimeAt(1).time() != QTime(9, 0),
+                   "99g: '2024-01-02 09:00-10:30' was read as 09:00 in a zone");
+
+        // a column in a single offset keeps the clock times as written ('T' and basic form);
+        // a value without a zone is a clock time in that offset
+        const QStringList jstTexts = { QStringLiteral("2024-01-02T03:04:05+09:00"),
+                                       QStringLiteral("2024-01-02T23:30:00+0900"),
+                                       QStringLiteral("20240103T010203+09"),
+                                       QStringLiteral("2024-01-03T12:00:00") };
+        const QDateTime jstExpected[] = { QDateTime(QDate(2024, 1, 2), QTime(3, 4, 5)),
+                                          QDateTime(QDate(2024, 1, 2), QTime(23, 30, 0)),
+                                          QDateTime(QDate(2024, 1, 3), QTime(1, 2, 3)),
+                                          QDateTime(QDate(2024, 1, 3), QTime(12, 0, 0)) };
+        Column *jc = convertTexts(QStringLiteral("T99Jst"), jstTexts, SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(jc != nullptr, "99g: conversion of the +09:00 column failed");
+        for (int i = 0; i < jstTexts.size(); ++i)
+            CHECK_COND(!jc->isInvalid(i) && jc->dateTimeAt(i) == jstExpected[i],
+                       "99g: single-offset '" << jstTexts[i].toStdString() << "' -> "
+                                              << dtText(jc->dateTimeAt(i)).toStdString());
+        const QStringList estTexts = { QStringLiteral("2024-01-02T03:04:05.250-05:30"),
+                                       QStringLiteral("2024-01-02T23:00:00-05:30") };
+        Column *ec = convertTexts(QStringLiteral("T99Est"), estTexts, SciDAVis::ColumnMode::DateTime);
+        CHECK_COND(ec != nullptr && !ec->isInvalid(0) && !ec->isInvalid(1)
+                           && ec->dateTimeAt(0) == QDateTime(QDate(2024, 1, 2), QTime(3, 4, 5, 250))
+                           && ec->dateTimeAt(1) == QDateTime(QDate(2024, 1, 2), QTime(23, 0, 0)),
+                   "99g: single-offset -05:30 column changed");
+
+        // a column mixing offsets: the first one ("Z") is the offset of the column
+        Table *t = w99->newTable(6, 2, QStringLiteral("T99Mix"), QStringLiteral("Mix99"));
+        CHECK_COND(t != nullptr, "99g: newTable failed");
+        Column *mc = t->column(0);
+        Column *tag = t->column(1);
+        const QStringList mixTexts = { QStringLiteral("2024-01-01T15:00:00Z"),
+                                       QStringLiteral("2024-01-02T00:00:00+09:00"),
+                                       QStringLiteral("2024-01-01T16:00:00Z"),
+                                       QStringLiteral("2024-01-01T23:30:00+09:00"),
+                                       QStringLiteral("2024-01-01T20:00:00"),
+                                       QString() };
+        mc->setColumnMode(SciDAVis::ColumnMode::Text);
+        mc->replaceTexts(0, mixTexts);
+        tag->setColumnMode(SciDAVis::ColumnMode::Text);
+        tag->replaceTexts(0, QStringList{ QStringLiteral("a"), QStringLiteral("b"),
+                                          QStringLiteral("c"), QStringLiteral("d"),
+                                          QStringLiteral("e"), QStringLiteral("f") });
+        mc->setColumnMode(SciDAVis::ColumnMode::DateTime);
+        QCoreApplication::processEvents();
+        CHECK_COND(mc->columnMode() == SciDAVis::ColumnMode::DateTime,
+                   "99g: mixed column not converted");
+        const QDate d0101(2024, 1, 1);
+        const QDateTime mixExpected[] = { QDateTime(d0101, QTime(15, 0)),
+                                          QDateTime(d0101, QTime(15, 0)),
+                                          QDateTime(d0101, QTime(16, 0)),
+                                          QDateTime(d0101, QTime(14, 30)),
+                                          QDateTime(d0101, QTime(20, 0)) };
+        for (int i = 0; i < 5; ++i)
+            CHECK_COND(!mc->isInvalid(i) && mc->dateTimeAt(i) == mixExpected[i],
+                       "99g: mixed-offset '" << mixTexts[i].toStdString() << "' -> "
+                                             << dtText(mc->dateTimeAt(i)).toStdString()
+                                             << ", expected "
+                                             << dtText(mixExpected[i]).toStdString());
+        CHECK_COND(mc->dateTimeAt(0) == mc->dateTimeAt(1),
+                   "99g: 15:00Z and 00:00+09:00 of the next day are not the same time");
+        // a value typed in later (the GUI cell edit path) uses the offset of the column too
+        mc->asStringColumn()->setTextAt(5, QStringLiteral("2024-01-02T01:00:00+09:00"));
+        CHECK_COND(!mc->isInvalid(5) && mc->dateTimeAt(5) == QDateTime(d0101, QTime(16, 0)),
+                   "99g: typed +09:00 value in a Z column -> "
+                           << dtText(mc->dateTimeAt(5)).toStdString());
+        // sorting by the date/time column orders by instant: d 14:30, a b 15:00, c f 16:00, e 20:00
+        t->d_future_table->sortColumns(mc, QList<Column *>() << mc << tag, true);
+        QCoreApplication::processEvents();
+        QStringList order;
+        for (int i = 0; i < 6; ++i)
+            order << tag->textAt(i);
+        // equal times may come in either order
+        QStringList mid1 = order.mid(1, 2);
+        QStringList mid2 = order.mid(3, 2);
+        mid1.sort();
+        mid2.sort();
+        const bool sortedOk = order.at(0) == QStringLiteral("d") && order.at(5) == QStringLiteral("e")
+                && mid1.join(QString()) == QStringLiteral("ab")
+                && mid2.join(QString()) == QStringLiteral("cf");
+        CHECK_COND(sortedOk, "99g: sorted order " << order.join(QLatin1Char(' ')).toStdString());
+        std::cout << "[PASS] 99g: time ranges are not zones, single offset kept, mixed offsets "
+                     "converted to the first one\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 99h: header labels when the numbering mode changes with the last column
+    // -------------------------------------------------------------------------
+    {
+        auto labelsOf = [](Table *t) {
+            QStringList l;
+            for (int c = 0; c < t->numCols(); ++c)
+                l << t->d_future_table->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString();
+            return l.join(QLatin1Char(' '));
+        };
+        // the labels a full rebuild gives (the numbering of the code before the incremental
+        // update)
+        auto rebuiltOf = [](Table *t) {
+            int nx = 0;
+            for (int c = 0; c < t->numCols(); ++c)
+                if (t->column(c)->plotDesignation() == SciDAVis::X)
+                    ++nx;
+            QStringList l;
+            int x = 0;
+            for (int c = 0; c < t->numCols(); ++c) {
+                const SciDAVis::PlotDesignation pd = t->column(c)->plotDesignation();
+                QString suffix;
+                switch (pd) {
+                case SciDAVis::X:
+                    suffix = QStringLiteral("X");
+                    break;
+                case SciDAVis::Y:
+                    suffix = QStringLiteral("Y");
+                    break;
+                case SciDAVis::Z:
+                    suffix = QStringLiteral("Z");
+                    break;
+                case SciDAVis::xErr:
+                    suffix = QStringLiteral("xEr");
+                    break;
+                case SciDAVis::yErr:
+                    suffix = QStringLiteral("yEr");
+                    break;
+                default:
+                    break;
+                }
+                if (pd == SciDAVis::X && nx > 1)
+                    suffix += QString::number(++x);
+                else if (!suffix.isEmpty() && nx > 1 && x > 0)
+                    suffix += QString::number(x);
+                l << (suffix.isEmpty() ? t->column(c)->name()
+                                       : t->column(c)->name() + QLatin1Char('[') + suffix
+                                               + QLatin1Char(']'));
+            }
+            return l.join(QLatin1Char(' '));
+        };
+        // the labels match a full rebuild, also after renaming each column (a rename relabels
+        // one column with the cached numbering mode)
+        auto checkLabels = [&](Table *t, const char *step) -> bool {
+            if (labelsOf(t) != rebuiltOf(t)) {
+                std::cerr << "[FAIL] 99h: " << step << ": " << labelsOf(t).toStdString()
+                          << " (full rebuild: " << rebuiltOf(t).toStdString() << ")\n";
+                return false;
+            }
+            for (int c = 0; c < t->numCols(); ++c) {
+                const QString old = t->column(c)->name();
+                t->column(c)->setName(old + QStringLiteral("r"));
+                const bool ok = labelsOf(t) == rebuiltOf(t);
+                if (!ok)
+                    std::cerr << "[FAIL] 99h: " << step << ", rename of column " << c << ": "
+                              << labelsOf(t).toStdString() << " (full rebuild: "
+                              << rebuiltOf(t).toStdString() << ")\n";
+                t->column(c)->setName(old);
+                if (!ok)
+                    return false;
+            }
+            return labelsOf(t) == rebuiltOf(t);
+        };
+        auto makeAbc = [&](const QString &name) -> Table * {
+            Table *t = w99->newTable(3, 3, name, name);
+            if (!t)
+                return nullptr;
+            t->column(0)->setName(QStringLiteral("A"));
+            t->column(1)->setName(QStringLiteral("B"));
+            t->column(2)->setName(QStringLiteral("C"));
+            t->setColPlotDesignation(0, SciDAVis::X);
+            t->setColPlotDesignation(1, SciDAVis::Y);
+            t->setColPlotDesignation(2, SciDAVis::X);
+            QCoreApplication::processEvents();
+            return t;
+        };
+
+        // removal of the last column (the GUI column removal), its Undo / Redo, then a rename
+        Table *t1 = makeAbc(QStringLiteral("T99HdrA"));
+        CHECK_COND(t1 != nullptr, "99h: newTable failed");
+        CHECK_COND(labelsOf(t1) == QStringLiteral("A[X1] B[Y1] C[X2]"),
+                   "99h: initial labels " << labelsOf(t1).toStdString());
+        t1->removeCol(QStringList() << QStringLiteral("C"));
+        QCoreApplication::processEvents();
+        CHECK_COND(t1->numCols() == 2, "99h: removal of C failed");
+        CHECK_COND(labelsOf(t1) == QStringLiteral("A[X] B[Y]"),
+                   "99h: after removing the last X column " << labelsOf(t1).toStdString());
+        QUndoStack *us1 = t1->d_future_table->undoStack();
+        us1->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(t1->numCols() == 3 && labelsOf(t1) == QStringLiteral("A[X1] B[Y1] C[X2]"),
+                   "99h: undo of the removal " << labelsOf(t1).toStdString());
+        us1->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(t1->numCols() == 2 && labelsOf(t1) == QStringLiteral("A[X] B[Y]"),
+                   "99h: redo of the removal " << labelsOf(t1).toStdString());
+        t1->column(1)->setName(QStringLiteral("Q"));
+        CHECK_COND(labelsOf(t1) == QStringLiteral("A[X] Q[Y]"),
+                   "99h: rename after removing the last X column " << labelsOf(t1).toStdString());
+        CHECK_COND(checkLabels(t1, "remove last column"), "99h: remove last column");
+
+        // column count shrink
+        Table *t2 = makeAbc(QStringLiteral("T99HdrB"));
+        CHECK_COND(t2 != nullptr, "99h: newTable failed");
+        t2->setNumCols(2);
+        QCoreApplication::processEvents();
+        CHECK_COND(t2->numCols() == 2 && labelsOf(t2) == QStringLiteral("A[X] B[Y]"),
+                   "99h: after setNumCols(2) " << labelsOf(t2).toStdString());
+        t2->column(1)->setName(QStringLiteral("Q"));
+        CHECK_COND(labelsOf(t2) == QStringLiteral("A[X] Q[Y]"),
+                   "99h: rename after setNumCols(2) " << labelsOf(t2).toStdString());
+        CHECK_COND(checkLabels(t2, "column count shrink"), "99h: column count shrink");
+
+        // Undo / Redo of an X column appended at the end
+        Table *t3 = w99->newTable(3, 2, QStringLiteral("T99HdrC"), QStringLiteral("T99HdrC"));
+        CHECK_COND(t3 != nullptr, "99h: newTable failed");
+        t3->column(0)->setName(QStringLiteral("A"));
+        t3->column(1)->setName(QStringLiteral("B"));
+        QUndoStack *us3 = t3->d_future_table->undoStack();
+        Column *cx = new Column(QStringLiteral("C"), SciDAVis::ColumnMode::Numeric);
+        cx->setPlotDesignation(SciDAVis::X);
+        t3->d_future_table->appendColumns(QList<Column *>() << cx);
+        QCoreApplication::processEvents();
+        CHECK_COND(labelsOf(t3) == QStringLiteral("A[X1] B[Y1] C[X2]"),
+                   "99h: appended X column " << labelsOf(t3).toStdString());
+        us3->undo();
+        QCoreApplication::processEvents();
+        CHECK_COND(t3->numCols() == 2 && labelsOf(t3) == QStringLiteral("A[X] B[Y]"),
+                   "99h: undo of the appended X column " << labelsOf(t3).toStdString());
+        us3->redo();
+        QCoreApplication::processEvents();
+        CHECK_COND(labelsOf(t3) == QStringLiteral("A[X1] B[Y1] C[X2]"),
+                   "99h: redo of the appended X column " << labelsOf(t3).toStdString());
+        us3->undo();
+        QCoreApplication::processEvents();
+        t3->column(1)->setName(QStringLiteral("Q"));
+        CHECK_COND(labelsOf(t3) == QStringLiteral("A[X] Q[Y]"),
+                   "99h: rename after the undo " << labelsOf(t3).toStdString());
+        CHECK_COND(checkLabels(t3, "undo of an appended X column"), "99h: undo of appended X");
+
+        // a sweep of designation changes, inserts, removals, moves and Undo / Redo
+        Table *t4 = w99->newTable(3, 6, QStringLiteral("T99HdrD"), QStringLiteral("T99HdrD"));
+        CHECK_COND(t4 != nullptr, "99h: newTable failed");
+        QUndoStack *us4 = t4->d_future_table->undoStack();
+        struct Step
+        {
+            const char *what;
+            std::function<void()> run;
+            bool probe; // rename each column and undo it (not before a redo: it ends the redo branch)
+        };
+        // rename each column and undo the rename: both relabel one column with the cached
+        // numbering mode
+        auto renameProbe = [&](Table *t, const char *step) -> bool {
+            QUndoStack *us = t->d_future_table->undoStack();
+            for (int c = 0; c < t->numCols(); ++c) {
+                const QString old = t->column(c)->name();
+                t->column(c)->setName(old + QStringLiteral("r"));
+                const QString renamedLabels = labelsOf(t);
+                const QString renamedRebuilt = rebuiltOf(t);
+                bool ok = renamedLabels == renamedRebuilt;
+                us->undo();
+                ok = ok && t->column(c)->name() == old && labelsOf(t) == rebuiltOf(t);
+                if (!ok) {
+                    std::cerr << "[FAIL] 99h: " << step << ", rename of column " << c
+                              << ": renamed " << renamedLabels.toStdString() << " (full rebuild: "
+                              << renamedRebuilt.toStdString() << "), name after undo "
+                              << t->column(c)->name().toStdString() << ", labels "
+                              << labelsOf(t).toStdString() << " (full rebuild: "
+                              << rebuiltOf(t).toStdString() << ")\n";
+                    return false;
+                }
+            }
+            return true;
+        };
+        const std::vector<Step> steps = {
+            { "col 3 -> X", [&] { t4->setColPlotDesignation(3, SciDAVis::X); }, true },
+            { "col 1 -> Z", [&] { t4->setColPlotDesignation(1, SciDAVis::Z); }, true },
+            { "col 4 -> xErr", [&] { t4->setColPlotDesignation(4, SciDAVis::xErr); }, true },
+            { "col 5 -> yErr", [&] { t4->setColPlotDesignation(5, SciDAVis::yErr); }, true },
+            { "col 2 -> none", [&] { t4->setColPlotDesignation(2, SciDAVis::noDesignation); }, true },
+            { "undo", [&] { us4->undo(); }, false },
+            { "redo", [&] { us4->redo(); }, true },
+            { "col 3 -> Y (one X)", [&] { t4->setColPlotDesignation(3, SciDAVis::Y); }, true },
+            { "undo (two X)", [&] { us4->undo(); }, false },
+            { "redo (one X)", [&] { us4->redo(); }, true },
+            { "undo again (two X)", [&] { us4->undo(); }, true },
+            { "move X col 3 -> 5", [&] { t4->d_future_table->moveColumn(3, 5); }, true },
+            // no rename probe here: the Undo of a column move leaves the moved column
+            // disconnected from the table (AspectChildMoveCmd::undo runs after the
+            // reconnecting TableMoveColumnCmd::undo), so a rename of it does not reach the
+            // header at all. That predates the incremental header update; the next move
+            // reconnects the column.
+            { "undo move", [&] { us4->undo(); }, false },
+            { "move X col 3 -> 0", [&] { t4->d_future_table->moveColumn(3, 0); }, true },
+            { "insert X at 2",
+              [&] {
+                  Column *c = new Column(QStringLiteral("N"), SciDAVis::ColumnMode::Numeric);
+                  c->setPlotDesignation(SciDAVis::X);
+                  t4->d_future_table->insertColumns(2, QList<Column *>() << c);
+              }, true },
+            { "remove first", [&] { t4->d_future_table->removeColumns(0, 1); }, true },
+            { "undo remove", [&] { us4->undo(); }, true },
+            { "remove last two",
+              [&] { t4->d_future_table->removeColumns(t4->numCols() - 2, 2); }, true },
+            { "append X at the end",
+              [&] {
+                  Column *c = new Column(QStringLiteral("E"), SciDAVis::ColumnMode::Numeric);
+                  c->setPlotDesignation(SciDAVis::X);
+                  t4->d_future_table->appendColumns(QList<Column *>() << c);
+              }, true },
+            { "remove the X columns but the first",
+              [&] {
+                  for (int c = t4->numCols() - 1; c >= 0; --c)
+                      if (t4->column(c)->plotDesignation() == SciDAVis::X
+                          && t4->d_future_table->columnCount(SciDAVis::X) > 1)
+                          t4->d_future_table->removeColumns(c, 1);
+              }, true },
+            { "undo", [&] { us4->undo(); }, false },
+            { "redo", [&] { us4->redo(); }, true },
+            { "shrink to 1", [&] { t4->setNumCols(1); }, true },
+            { "undo shrink", [&] { us4->undo(); }, false },
+            { "redo shrink", [&] { us4->redo(); }, true },
+            { "undo shrink again", [&] { us4->undo(); }, true },
+        };
+        for (const Step &st : steps) {
+            st.run();
+            QCoreApplication::processEvents();
+            CHECK_COND(labelsOf(t4) == rebuiltOf(t4),
+                       "99h: " << st.what << ": " << labelsOf(t4).toStdString()
+                               << " (full rebuild: " << rebuiltOf(t4).toStdString() << ")");
+            if (st.probe)
+                CHECK_COND(renameProbe(t4, st.what), "99h: rename after " << st.what);
+        }
+        CHECK_COND(checkLabels(t4, "after the sweep"), "99h: sweep");
+        std::cout << "[PASS] 99h: header numbering after removing the last X column and through "
+                     "designation / insert / remove / move / Undo / Redo\n";
     }
 
     std::cout << "[PASS] Suite 99 passed.\n";

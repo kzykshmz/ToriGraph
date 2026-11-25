@@ -3377,16 +3377,31 @@ void Table::Private::updateVerticalHeader(int start_row)
 
 void Table::Private::updateHorizontalHeader(int start_col, int end_col, bool only_range)
 {
-    if (start_col > end_col)
-        return;
+    // A name or type change (only_range) leaves the designations, and so the numbering mode,
+    // as they are. Every other change (a designation, the insertion, removal, replacement or
+    // move of columns and their undo/redo) comes here without only_range and recounts the X
+    // columns, so the cached mode is right whenever d_header_labels_valid is set.
+    const bool multi_x = (only_range && d_header_labels_valid) ? d_header_multi_x
+                                                               : numColsWithPD(SciDAVis::X) > 1;
+    const bool mode_changed = !d_header_labels_valid || multi_x != d_header_multi_x;
+    if (start_col > end_col) {
+        // No column left at or after start_col (the last columns were removed), but the
+        // numbering of the others may still change: "A[X1] B[Y1] C[X2]" without C is
+        // "A[X] B[Y]".
+        if (only_range || !mode_changed)
+            return;
+        if (d_column_count <= 0) {
+            d_header_labels_valid = true;
+            d_header_multi_x = multi_x;
+            return;
+        }
+        start_col = 0;
+        end_col = d_column_count - 1;
+    }
 
     while (d_horizontal_header_data.size() < d_column_count)
         d_horizontal_header_data << QString();
 
-    // A name or type change (only_range) leaves the designations, and so the numbering mode,
-    // as they are; a designation change arrives through handlePlotDesignationChange().
-    const bool multi_x = (only_range && d_header_labels_valid) ? d_header_multi_x
-                                                               : numColsWithPD(SciDAVis::X) > 1;
     // The label of column i depends on its own name and designation and, with several X
     // columns, on the number of X columns up to i. Labels left of start_col therefore stay
     // valid unless the numbering mode changed; rebuilding every label on each column change
@@ -3442,7 +3457,10 @@ void Table::Private::updateHorizontalHeader(int start_col, int end_col, bool onl
         d_header_labels_valid = true;
         d_header_multi_x = multi_x;
     }
-    emit d_owner.headerDataChanged(Qt::Horizontal, start_col, end_col);
+    if (from < start_col) // the numbering mode changed: every label was rebuilt
+        emit d_owner.headerDataChanged(Qt::Horizontal, 0, qMax(end_col, to));
+    else
+        emit d_owner.headerDataChanged(Qt::Horizontal, start_col, end_col);
 }
 
 void Table::Private::composeColumnHeader(int col, const QString &label)

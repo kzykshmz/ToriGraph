@@ -430,6 +430,12 @@ void Column::Private::setColumnMode(SciDAVis::ColumnMode new_mode, AbstractFilte
         // copy the filtered, i.e. converted, column
         converter->input(0, temp_col.data());
         copy(converter->output(0));
+        // Text -> date/time: values typed or written into the column later are converted to the
+        // UTC offset the converted text was written in (see String2DateTimeFilter)
+        auto text_converter = dynamic_cast<String2DateTimeFilter *>(converter);
+        auto date_time_input = dynamic_cast<String2DateTimeFilter *>(d_input_filter);
+        if (text_converter && date_time_input && text_converter->hasZoneOffset())
+            date_time_input->copyZoneOffset(*text_converter);
     }
 
     emit d_owner->modeChanged(d_owner);
