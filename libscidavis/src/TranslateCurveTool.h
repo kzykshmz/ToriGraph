@@ -58,6 +58,12 @@ public:
                        const QObject *status_target = NULL, const char *status_slot = "");
     ~TranslateCurveTool() override;
     virtual RTTI rtti() const { return TranslateCurve; }
+    //! Phase 3 without the mouse: shifts \a curve by \a delta (plot coordinates) along the
+    //! tool's direction, writing each point's original (un-offset / un-normalised) value back to
+    //! the table row it came from. Returns false, leaving the table untouched, when nothing can
+    //! be written (no point has a table row, e.g. box plots and histograms) or the original
+    //! values cannot be recovered.
+    bool translateCurve(QwtPlotCurve *curve, double delta);
 signals:
     /*!\brief Emitted whenever a new message should be presented to the user.
      *

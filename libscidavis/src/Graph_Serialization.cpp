@@ -2054,16 +2054,28 @@ bool Graph::restorePhase5Tag(const QString &line)
         }
         const QString stackOffsets = attrs.value("stackOffsets");
         if (!stackOffsets.isEmpty()) {
+            // The saved indices refer to the curve order at save time. Applying an offset
+            // reloads the curve's error bars, which may remove one of them and shift the curve
+            // indices; resolve every index to its (never reused) curve key first.
+            QList<QPair<int, QStringList>> pending;
             for (const QString &entry : stackOffsets.split(';', Qt::SkipEmptyParts)) {
                 const QStringList kv = entry.split(':');
                 if (kv.size() == 2) {
-                    const int ci = kv[0].toInt();
-                    const QStringList vals = kv[1].split(',');
-                    PlotCurve *pc = dynamic_cast<PlotCurve *>(curve(ci));
-                    if (pc && vals.size() >= 3) {
-                        pc->setStackNormalize01(vals[2].toInt() != 0);
-                        pc->setStackOffset(vals[0].toDouble(), vals[1].toDouble());
-                    }
+                    bool okIdx = false;
+                    const int ci = kv[0].toInt(&okIdx);
+                    if (okIdx && ci >= 0 && ci < n_curves && ci < c_keys.size())
+                        pending.append(qMakePair(c_keys[ci], kv[1].split(',')));
+                }
+            }
+            for (const QPair<int, QStringList> &p : pending) {
+                const int ci = curveIndex(long(p.first));
+                if (ci < 0)
+                    continue;
+                const QStringList &vals = p.second;
+                PlotCurve *pc = dynamic_cast<PlotCurve *>(curve(ci));
+                if (pc && vals.size() >= 3) {
+                    pc->setStackNormalize01(vals[2].toInt() != 0);
+                    pc->setStackOffset(vals[0].toDouble(), vals[1].toDouble());
                 }
             }
         }

@@ -263,7 +263,8 @@ void RangeSelectorTool::emitStatusText()
                         .arg(d_active_marker.xValue() > d_inactive_marker.xValue() ? tr("Right")
                                                                                    : tr("Left"))
                         .arg(d_selected_curve->title().text())
-                        .arg(row + 1)
+                        // Box plots / histograms: no table row, show the point number instead.
+                        .arg(row >= 0 ? row + 1 : d_active_point + 1)
                         .arg(xStr)
                         .arg(yStr));
     }

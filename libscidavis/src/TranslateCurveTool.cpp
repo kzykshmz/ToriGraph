@@ -42,6 +42,7 @@
 #include "core/Project.h"
 #include "core/column/Column.h"
 
+#include <cmath>
 #include <stdexcept>
 using namespace std;
 
@@ -101,90 +102,104 @@ void TranslateCurveTool::selectDestination(const QwtDoublePoint &point)
     }
 
     // Phase 3: execute the translation
+    const double d = (d_dir == Horizontal) ? point.x() - d_curve_point.x()
+                                           : point.y() - d_curve_point.y();
+    translateCurve(d_selected_curve, d);
+    d_graph->setActiveTool(NULL);
+    // attention: I'm now deleted. Maybe there is a cleaner solution...*/
+}
 
-    if (((PlotCurve *)d_selected_curve)->type() == Graph::Function) {
+bool TranslateCurveTool::translateCurve(QwtPlotCurve *curve, double delta)
+{
+    if (!d_graph || !curve || d_graph->curveIndex(curve) < 0 || !std::isfinite(delta))
+        return false;
+
+    PlotCurve *pc = dynamic_cast<PlotCurve *>(curve);
+    if (pc && pc->type() == Graph::Function) {
         if (d_dir == Horizontal) {
             if (!ApplicationWindow::isNonInteractiveContext(d_graph))
                 QMessageBox::warning(d_graph, tr("Warning"),
                                      tr("This operation cannot be performed on function curves."));
-        } else {
-            FunctionCurve *func = (FunctionCurve *)d_selected_curve;
-            if (func->functionType() == FunctionCurve::Normal && !func->formulas().isEmpty()) {
-                QString formula = func->formulas().first();
-                double d = point.y() - d_curve_point.y();
-                if (d > 0)
-                    func->setFormula(formula + "+" + QString::number(d, 'g', 15));
-                else
-                    func->setFormula(formula + QString::number(d, 'g', 15));
-                func->loadData();
-            }
+            return false;
         }
-        d_graph->setActiveTool(NULL);
-        return;
-    } else {
-        DataCurve *c = dynamic_cast<DataCurve *>(d_selected_curve);
-        if (!c || !d_app) {
-            d_graph->setActiveTool(NULL);
-            return;
-        }
-        double d;
-        QString col_name;
-        switch (d_dir) {
-        case Vertical: {
-            col_name = c->title().text();
-            d = point.y() - d_curve_point.y();
-            break;
-        }
-        case Horizontal: {
-            col_name = c->xColumnName();
-            d = point.x() - d_curve_point.x();
-            break;
-        }
-        default:
-            throw runtime_error("Invalid direction");
-        }
-        Table *tab = d_app->table(col_name);
-        if (!tab) {
-            d_graph->setActiveTool(NULL);
-            return;
-        }
-        int col = tab->colIndex(col_name);
-        if (col < 0 || !tab->column(col)) {
-            d_graph->setActiveTool(NULL);
-            return;
-        }
-        if (tab->columnType(col) != SciDAVis::ColumnMode::Numeric) {
-            if (!ApplicationWindow::isNonInteractiveContext(d_graph))
-                QMessageBox::warning(d_graph, tr("Warning"),
-                                     tr("This operation cannot be performed on curves plotted from "
-                                        "columns having a non-numerical format."));
-            d_graph->setActiveTool(NULL);
-            return;
-        }
-
-        const int row_start = qMax(0, c->tableRow(0));
-        const int row_end = qMin(tab->column(col)->rowCount(), row_start + c->dataSize());
-        QUndoStack *undoStack = (d_app && d_app->project() && d_app->project()->undoStack())
-                ? d_app->project()->undoStack()
-                : (tab->d_future_table ? tab->d_future_table->undoStack() : nullptr);
-        if (undoStack) {
-            undoStack->beginMacro(d_dir == Horizontal ? tr("Translate Curve Horizontally")
-                                                      : tr("Translate Curve Vertically"));
-        }
-        for (int i = row_start; i < row_end; i++) {
-            const int ptIdx = i - row_start;
-            if (!tab->column(col)->isInvalid(i) && ptIdx >= 0 && ptIdx < d_selected_curve->dataSize())
-                tab->column(col)->setValueAt(
-                        i,
-                        (d_dir == Horizontal ? d_selected_curve->x(ptIdx)
-                                             : d_selected_curve->y(ptIdx))
-                                + d);
-        }
-        if (undoStack)
-            undoStack->endMacro();
-        d_app->updateCurves(tab, col_name);
-        d_app->modifiedProject();
-        d_graph->setActiveTool(NULL);
-        // attention: I'm now deleted. Maybe there is a cleaner solution...*/
+        FunctionCurve *func = (FunctionCurve *)curve;
+        if (func->functionType() != FunctionCurve::Normal || func->formulas().isEmpty())
+            return false;
+        QString formula = func->formulas().first();
+        if (delta > 0)
+            func->setFormula(formula + "+" + QString::number(delta, 'g', 15));
+        else
+            func->setFormula(formula + QString::number(delta, 'g', 15));
+        func->loadData();
+        return true;
     }
+
+    DataCurve *c = dynamic_cast<DataCurve *>(curve);
+    if (!c || !d_app)
+        return false;
+    // Horizontal bars plot the Y column along the x axis and the X column along the y axis.
+    const bool swapped = (c->type() == Graph::HorizontalBars);
+    const bool alongDisplayX = (d_dir == Horizontal);
+    const bool writesYColumn = (alongDisplayX == swapped);
+    const QString col_name = writesYColumn ? c->title().text() : c->xColumnName();
+    Table *tab = c->table();
+    if (!tab)
+        tab = d_app->table(col_name);
+    if (!tab)
+        return false;
+    int col = tab->colIndex(col_name);
+    if (col < 0 || !tab->column(col))
+        return false;
+    if (tab->columnType(col) != SciDAVis::ColumnMode::Numeric) {
+        if (!ApplicationWindow::isNonInteractiveContext(d_graph))
+            QMessageBox::warning(d_graph, tr("Warning"),
+                                 tr("This operation cannot be performed on curves plotted from "
+                                    "columns having a non-numerical format."));
+        return false;
+    }
+
+    // Each point goes back to the table row it came from (rows with an invalid X or Y are not
+    // points of the curve), and the curve shows its data with the stack offset (and possibly the
+    // 0-1 normalisation) applied while the table holds the original values. All new values are
+    // computed before the first write, so a refused translation leaves the table untouched.
+    Column *column = tab->column(col);
+    const int n = curve->dataSize();
+    QVector<QPair<int, double>> writes;
+    writes.reserve(n);
+    for (int pt = 0; pt < n; ++pt) {
+        const int row = c->tableRow(pt);
+        if (row < 0 || row >= column->rowCount() || column->isInvalid(row))
+            continue;
+        const double dispX = curve->x(pt) + (alongDisplayX ? delta : 0.0);
+        const double dispY = curve->y(pt) + (alongDisplayX ? 0.0 : delta);
+        double rawX = 0.0;
+        double rawY = 0.0;
+        if (!c->displayToRaw(dispX, dispY, &rawX, &rawY)) {
+            emit statusText(tr("This data point cannot be moved: the original values of the 0-1 "
+                               "normalized curve cannot be recovered."));
+            return false;
+        }
+        writes.append(qMakePair(row, alongDisplayX ? rawX : rawY));
+    }
+    if (writes.isEmpty()) {
+        // Box plots, histograms...: the points are not table rows, nothing to write back.
+        emit statusText(tr("This data point does not correspond to a single table row and "
+                           "cannot be edited."));
+        return false;
+    }
+
+    QUndoStack *undoStack = (d_app->project() && d_app->project()->undoStack())
+            ? d_app->project()->undoStack()
+            : (tab->d_future_table ? tab->d_future_table->undoStack() : nullptr);
+    if (undoStack) {
+        undoStack->beginMacro(d_dir == Horizontal ? tr("Translate Curve Horizontally")
+                                                  : tr("Translate Curve Vertically"));
+    }
+    for (const QPair<int, double> &w : writes)
+        column->setValueAt(w.first, w.second);
+    if (undoStack)
+        undoStack->endMacro();
+    d_app->updateCurves(tab, col_name);
+    d_app->modifiedProject();
+    return true;
 }

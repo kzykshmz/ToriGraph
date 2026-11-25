@@ -789,6 +789,14 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     ApplicationWindow *app = (ApplicationWindow *)parent();
     DataCurve *dc = dynamic_cast<DataCurve *>(d_curve);
 
+    // As in Fit::computeWeightsVector(): a non-finite or non-positive error (e.g. an empty error
+    // cell) does not get a tiny made-up sigma, which would give that point a huge weight and let
+    // it dominate the regression; the point is left out of the fit instead (NaN marks it).
+    auto validSigma = [](double v) -> double {
+        return (std::isfinite(v) && v > 0.0 && v < 1e140) ? v
+                                                           : std::numeric_limits<double>::quiet_NaN();
+    };
+
     auto resolveErrors = [&](const QString &colSpec, bool wantXErr, std::vector<double> &sigmaOut,
                              bool &explicitFound) {
         sigmaOut.assign(n, 1.0);
@@ -860,7 +868,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                                                                   : 0.0;
                     if (std::isfinite(v) && v > 0.0)
                         anyPos = true;
-                    sigmaOut[i] = (std::isfinite(v) && v > 1e-15) ? v : 1e-12;
+                    sigmaOut[i] = validSigma(v);
                 }
                 if (anyPos) {
                     explicitFound = true;
@@ -880,7 +888,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                         double v = std::abs(er->errorValue(int(d_indices[i])));
                         if (std::isfinite(v) && v > 0.0)
                             anyPos = true;
-                        sigmaOut[i] = (std::isfinite(v) && v > 1e-15) ? v : 1e-12;
+                        sigmaOut[i] = validSigma(v);
                     }
                     if (anyPos) {
                         explicitFound = true;
@@ -897,19 +905,31 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     resolveErrors(xErrColName, true, sx, hasExplicitX);
     resolveErrors(yErrColName, false, sy, hasExplicitY);
 
-    std::vector<double> wx(n), wy(n);
+    // Points without a usable error are not part of the fit (see validSigma above).
+    std::vector<double> xs, ys, wx, wy;
+    xs.reserve(n);
+    ys.reserve(n);
+    wx.reserve(n);
+    wy.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        wx[i] = 1.0 / (sx[i] * sx[i]);
-        wy[i] = 1.0 / (sy[i] * sy[i]);
+        if (!std::isfinite(sx[i]) || !std::isfinite(sy[i]))
+            continue;
+        xs.push_back(d_x[i]);
+        ys.push_back(d_y[i]);
+        wx.push_back(1.0 / (sx[i] * sx[i]));
+        wy.push_back(1.0 / (sy[i] * sy[i]));
     }
+    const size_t m = xs.size();
+    if (m < 2)
+        return false;
 
     // Orthogonal / Deming initial slope estimate
-    double mx0 = std::accumulate(d_x.begin(), d_x.end(), 0.0) / double(n);
-    double my0 = std::accumulate(d_y.begin(), d_y.end(), 0.0) / double(n);
+    double mx0 = std::accumulate(xs.begin(), xs.end(), 0.0) / double(m);
+    double my0 = std::accumulate(ys.begin(), ys.end(), 0.0) / double(m);
     double sxx = 0.0, syy = 0.0, sxy = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        double dx = d_x[i] - mx0;
-        double dy = d_y[i] - my0;
+    for (size_t i = 0; i < m; ++i) {
+        double dx = xs[i] - mx0;
+        double dy = ys[i] - my0;
         sxx += dx * dx;
         syy += dy * dy;
         sxy += dx * dy;
@@ -920,19 +940,19 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     else if (sxx > 1e-30)
         b = sxy / sxx;
 
-    std::vector<double> W(n), U(n), V(n), beta(n);
+    std::vector<double> W(m), U(m), V(m), beta(m);
     double Xbar = mx0, Ybar = my0;
 
     // York (1966 / 2004) exact iterative total least-squares solver
     const int maxIter = 500;
     for (int iter = 0; iter < maxIter; ++iter) {
         double sumW = 0.0, sumWX = 0.0, sumWY = 0.0;
-        for (size_t i = 0; i < n; ++i) {
+        for (size_t i = 0; i < m; ++i) {
             double denom = wx[i] + b * b * wy[i];
             W[i] = (denom > 1e-300) ? ((wx[i] * wy[i]) / denom) : 0.0;
             sumW += W[i];
-            sumWX += W[i] * d_x[i];
-            sumWY += W[i] * d_y[i];
+            sumWX += W[i] * xs[i];
+            sumWY += W[i] * ys[i];
         }
         if (sumW <= 0.0)
             return false;
@@ -941,9 +961,9 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
         Ybar = sumWY / sumW;
 
         double num = 0.0, den = 0.0;
-        for (size_t i = 0; i < n; ++i) {
-            U[i] = d_x[i] - Xbar;
-            V[i] = d_y[i] - Ybar;
+        for (size_t i = 0; i < m; ++i) {
+            U[i] = xs[i] - Xbar;
+            V[i] = ys[i] - Ybar;
             beta[i] = W[i] * (U[i] / wy[i] + b * V[i] / wx[i]);
             num += W[i] * beta[i] * V[i];
             den += W[i] * beta[i] * U[i];
@@ -963,12 +983,12 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     // Final pass at converged slope b for exact York (2004) intercept & standard errors
     double sumW = 0.0, sumWX = 0.0, sumWY = 0.0;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < m; ++i) {
         double denom = wx[i] + b * b * wy[i];
         W[i] = (denom > 1e-300) ? ((wx[i] * wy[i]) / denom) : 0.0;
         sumW += W[i];
-        sumWX += W[i] * d_x[i];
-        sumWY += W[i] * d_y[i];
+        sumWX += W[i] * xs[i];
+        sumWY += W[i] * ys[i];
     }
     if (sumW <= 0.0)
         return false;
@@ -977,11 +997,11 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     Ybar = sumWY / sumW;
     double a = Ybar - b * Xbar;
 
-    std::vector<double> x_adj(n);
+    std::vector<double> x_adj(m);
     double sumWxAdj = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        U[i] = d_x[i] - Xbar;
-        V[i] = d_y[i] - Ybar;
+    for (size_t i = 0; i < m; ++i) {
+        U[i] = xs[i] - Xbar;
+        V[i] = ys[i] - Ybar;
         beta[i] = W[i] * (U[i] / wy[i] + b * V[i] / wx[i]);
         x_adj[i] = Xbar + beta[i];
         sumWxAdj += W[i] * x_adj[i];
@@ -991,12 +1011,12 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     double sumWu2 = 0.0;
     double S = 0.0;
     double S_tot = 0.0;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < m; ++i) {
         double ui = x_adj[i] - x_adj_bar;
         sumWu2 += W[i] * ui * ui;
-        double resid = d_y[i] - b * d_x[i] - a;
+        double resid = ys[i] - b * xs[i] - a;
         S += W[i] * resid * resid;
-        double dyBar = d_y[i] - Ybar;
+        double dyBar = ys[i] - Ybar;
         S_tot += W[i] * dyBar * dyBar;
     }
 
@@ -1015,6 +1035,12 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     gsl_matrix_set(covar, 1, 1, var_b);
 
     chi_2 = S;
+    // Left-out points do not count towards the degrees of freedom either.
+    d_has_custom_dof = (m < n);
+    if (d_has_custom_dof) {
+        d_custom_n_points = int(m);
+        d_custom_p_free = 2;
+    }
     const double covScale = effectiveCovarScale();
 
     d_york_slope = b;
@@ -1032,7 +1058,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     d_custom_rss = 0.0;
     d_convergence = Converged;
     d_fit_notes.clear();
-    setStraightLinePearson(d_x, d_y);
+    setStraightLinePearson(xs, ys);
     d_results.resize(2);
     d_results[0] = a;
     d_results[1] = b;

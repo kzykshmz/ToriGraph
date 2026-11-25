@@ -2393,7 +2393,15 @@ bool Table::reimportFromSource()
                 if (!g)
                     continue;
                 bool graphUpdated = false;
-                for (int ci = 0; ci < g->curves(); ++ci) {
+                // setFullRange() reloads the curve's error bars, which may remove a curve and
+                // shift the indices; walk a snapshot of the (never reused) curve keys instead.
+                QVector<long> keys;
+                for (int ci = 0; ci < g->curves(); ++ci)
+                    keys.append(g->curveKey(ci));
+                for (long key : keys) {
+                    const int ci = g->curveIndex(key);
+                    if (ci < 0)
+                        continue;
                     DataCurve *dc = dynamic_cast<DataCurve *>(g->curve(ci));
                     if (!dc || dc->table() != this)
                         continue;

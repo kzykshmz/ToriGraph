@@ -2553,6 +2553,23 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
         if (!srcYCol)
             return false;
 
+        // Box plots / histograms show values that are not table rows (quartiles, bins...):
+        // there is no row to write a point back to, neither in place nor in a new column.
+        bool anyRow = false;
+        for (int pt = 0; pt < dc->dataSize() && !anyRow; ++pt)
+            anyRow = (dc->tableRow(pt) >= 0);
+        if (!anyRow) {
+            if (st->app->statusBar()) {
+                st->app->statusBar()->showMessage(
+                        ApplicationWindow::tr("The points of curve \"%1\" do not correspond to "
+                                              "worksheet rows; the result cannot be written to "
+                                              "the worksheet.")
+                                .arg(curveName),
+                        8000);
+            }
+            return false;
+        }
+
         if (overwriteSource) {
             if (!ApplicationWindow::isNonInteractiveContext(st->app.data())) {
                 if (QMessageBox::question(
@@ -2570,9 +2587,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
             }
             t->d_future_table->beginMacro(ApplicationWindow::tr("Subtract Baseline"));
             for (int pt = 0; pt < dc->dataSize(); ++pt) {
-                int row = dc->tableRow(pt);
-                if (row < 0)
-                    row = dc->startRow() + pt;
+                const int row = dc->tableRow(pt); // -1: the point is not a table row
                 if (row < 0 || row >= t->numRows())
                     continue;
                 if ((xCol && xCol->isMasked(row)) || srcYCol->isMasked(row))
@@ -2618,9 +2633,7 @@ void ApplicationWindow::showPeakAnalyzerDialog(int defaultProfile)
         if (t->numRows() > 0)
             outCol->setValueAt(t->numRows() - 1, std::numeric_limits<double>::quiet_NaN());
         for (int pt = 0; pt < dc->dataSize(); ++pt) {
-            int row = dc->tableRow(pt);
-            if (row < 0)
-                row = dc->startRow() + pt;
+            const int row = dc->tableRow(pt); // -1: the point is not a table row
             if (row < 0 || row >= t->numRows())
                 continue;
             if ((xCol && xCol->isMasked(row)) || srcYCol->isMasked(row))

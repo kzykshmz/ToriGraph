@@ -487,7 +487,6 @@ bool QwtErrorPlotCurve::loadData()
     QVector<double> xs(n), ys(n);
     QwtArray<double> es(n);
     QVector<int> rows(n);
-    int finiteErrors = 0;
     for (int i = 0; i < n; ++i) {
         xs[i] = d_master_curve->x(i);
         ys[i] = d_master_curve->y(i);
@@ -509,18 +508,16 @@ bool QwtErrorPlotCurve::loadData()
         }
         if (std::isfinite(e)) {
             e *= errScale;
-            ++finiteErrors;
         } else {
             e = std::numeric_limits<double>::quiet_NaN();
         }
         es[i] = e;
     }
 
-    if (n <= 0 || finiteErrors == 0) {
-        remove();
-        return false;
-    }
-
+    // Only missing columns remove the error bars (above). A master curve without points, or
+    // points whose error cells are all empty, keeps the error curve with NaN errors: reloading
+    // the master (row range, stack offset, column edit) must not delete the bars for good, and
+    // they show again as soon as the master's points have error values.
     setData(xs.data(), ys.data(), n);
     setErrors(es);
     setRowMapping(rows, d_master_curve->gapBeforeIndices());

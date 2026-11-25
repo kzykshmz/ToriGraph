@@ -1,6 +1,15 @@
 #include "ole_test_common.h"
 #include "RangeSelectorTool.h"
+#include "TranslateCurveTool.h"
 #include "VectorCurve.h"
+
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QStatusBar>
+#include <QTimer>
 
 #include <cmath>
 #include <memory>
@@ -17,6 +26,12 @@
 //   89f box / histogram points map to no table row (-1); Move refuses them; vector curves map
 //       their points to the rows they came from
 //   89g Graph::updateCurvesData does not skip a curve when the previous one is removed
+//   89h error bars survive master reloads that leave no finite error (row range, stack offset)
+//   89i TranslateCurveTool writes each point back to its own row, in original coordinates;
+//       box plots are refused
+//   89j RangeSelectorTool status shows the point number for box plots (no table row)
+//   89k baseline subtraction / Subtract Straight Line do not write histogram bins to the table
+//   89l York (Deming) fit leaves out points whose associated error cell is empty
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -87,6 +102,17 @@ double suite89Cell(Table *t, int col, int row)
     return (t && t->column(col) && !t->column(col)->isInvalid(row)) ? t->column(col)->valueAt(row)
                                                                       : std::nan("");
 }
+
+// Silent York fit without a fit curve on the graph.
+class Suite89LinearFit : public LinearFit
+{
+public:
+    Suite89LinearFit(ApplicationWindow *app, Graph *g) : LinearFit(app, g)
+    {
+        d_silent = true;
+        d_suppress_curve_output = true;
+    }
+};
 
 } // namespace
 
@@ -410,6 +436,315 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
                 "89g: both curves must be removed when the X column is cleared, "
                         << g2->curves() << " left");
         suite89Close(ml2);
+    }
+
+    // ------------------------------------------------ 89h: error bars survive master reloads
+    {
+        // Errors only in rows 6..10: showing rows 1..5 leaves no finite error on the master's
+        // points, which must not delete the error bars.
+        const double nan = std::nan("");
+        Table *t = suite89Table(mw, "S89ErrKeep", { { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 },
+                                                    { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 },
+                                                    { nan, nan, nan, nan, nan, 6, 7, 8, 9, 10 } });
+        MultiLayer *ml = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        CHECK_COND(g != nullptr, "89h: graph");
+        CHECK_COND(g->addErrorBars(t->colName(1), t, t->colName(2), QwtErrorPlotCurve::Vertical),
+                   "89h: addErrorBars");
+        DataCurve *m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m && suite89ErrorBars(m), "89h: master / error bar curve");
+        m->setRowRange(0, 4);
+        QwtErrorPlotCurve *eb = suite89ErrorBars(m);
+        std::cout << "[INFO] 89h rows 1..5: " << g->curves() << " curve(s), error bars "
+                  << (eb ? "kept" : "removed") << ", error points " << (eb ? eb->dataSize() : -1)
+                  << "\n";
+        CHECK89(eb && g->curves() == 2 && eb->dataSize() == 5,
+                "89h: error bars must stay when rows 1..5 have no error value ("
+                        << g->curves() << " curves)");
+        m->setFullRange();
+        eb = suite89ErrorBars(m);
+        std::cout << "[INFO] 89h rows 1..10: error points " << (eb ? eb->dataSize() : -1)
+                  << ", error of point 7 = " << (eb ? eb->errorValue(7) : nan) << "\n";
+        CHECK89(eb && eb->dataSize() == 10 && !std::isfinite(eb->errorValue(0))
+                        && near89(eb->errorValue(7), 8.0) && near89(eb->y(7), 8.0),
+                "89h: back to rows 1..10 the errors of rows 6..10 must show again");
+        suite89Close(ml);
+
+        // Error bars on an all-empty error column, then a stack offset on the master.
+        Table *t2 = suite89Table(mw, "S89ErrEmpty", { { 1, 2, 3, 4, 5 },
+                                                      { 10, 20, 30, 40, 50 },
+                                                      { nan, nan, nan, nan, nan } });
+        MultiLayer *ml2 = nullptr;
+        Graph *g2 = suite89Plot(mw, t2, QStringList() << t2->colName(1), Graph::LineSymbols, &ml2);
+        CHECK_COND(g2 != nullptr, "89h: second graph");
+        CHECK_COND(g2->addErrorBars(t2->colName(1), t2, t2->colName(2),
+                                    QwtErrorPlotCurve::Vertical),
+                   "89h: addErrorBars on an empty column");
+        DataCurve *m2 = dynamic_cast<DataCurve *>(g2->curve(0));
+        CHECK_COND(m2 && suite89ErrorBars(m2), "89h: master / empty error bar curve");
+        m2->setStackOffset(0.0, 100.0);
+        QwtErrorPlotCurve *eb2 = suite89ErrorBars(m2);
+        CHECK89(eb2 && g2->curves() == 2,
+                "89h: offset on a curve with empty error bars removed them (" << g2->curves()
+                                                                               << " curves)");
+        t2->blockSignals(true);
+        t2->column(2)->setValueAt(0, 3.0);
+        t2->blockSignals(false);
+        g2->updateCurvesData(t2, t2->colName(2));
+        eb2 = suite89ErrorBars(m2);
+        std::cout << "[INFO] 89h empty column filled: bar y0=" << (eb2 ? eb2->y(0) : nan)
+                  << ", err0=" << (eb2 ? eb2->errorValue(0) : nan) << "\n";
+        CHECK89(eb2 && near89(eb2->errorValue(0), 3.0) && near89(eb2->y(0), 110.0),
+                "89h: error entered later must show on the shifted point");
+        suite89Close(ml2);
+    }
+
+    // ------------------------------------------------ 89i: TranslateCurveTool rows and offsets
+    {
+        const double nan = std::nan("");
+        Table *t = suite89Table(mw, "S89Trans", { { 1, 2, 3, 4, 5 }, { 10, 20, nan, 40, 50 } });
+        MultiLayer *ml = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        CHECK_COND(g != nullptr, "89i: graph");
+        DataCurve *m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m != nullptr && m->dataSize() == 4, "89i: curve with 4 points");
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(g, mw, TranslateCurveTool::Vertical));
+            const bool ok = tool->translateCurve(m, 5.0);
+            std::cout << "[INFO] 89i vertical +5: Y = " << suite89Cell(t, 1, 0) << ", "
+                      << suite89Cell(t, 1, 1) << ", " << suite89Cell(t, 1, 2) << ", "
+                      << suite89Cell(t, 1, 3) << ", " << suite89Cell(t, 1, 4) << "\n";
+            CHECK89(ok && near89(suite89Cell(t, 1, 0), 15.0) && near89(suite89Cell(t, 1, 1), 25.0)
+                            && !std::isfinite(suite89Cell(t, 1, 2))
+                            && near89(suite89Cell(t, 1, 3), 45.0)
+                            && near89(suite89Cell(t, 1, 4), 55.0),
+                    "89i: translating a curve with an empty Y3 must shift rows 1,2,4,5 by 5");
+        }
+        m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m != nullptr, "89i: curve after translation");
+        m->setStackOffset(2.0, 100.0);
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(g, mw, TranslateCurveTool::Vertical));
+            const bool ok = tool->translateCurve(m, 5.0);
+            std::cout << "[INFO] 89i offset curve vertical +5: Y1 = " << suite89Cell(t, 1, 0)
+                      << ", Y5 = " << suite89Cell(t, 1, 4) << "\n";
+            CHECK89(ok && near89(suite89Cell(t, 1, 0), 20.0) && near89(suite89Cell(t, 1, 3), 50.0)
+                            && near89(suite89Cell(t, 1, 4), 60.0)
+                            && !std::isfinite(suite89Cell(t, 1, 2)),
+                    "89i: offset curve must get original values + 5, got Y1="
+                            << suite89Cell(t, 1, 0) << " Y5=" << suite89Cell(t, 1, 4));
+        }
+        m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m != nullptr, "89i: curve after second translation");
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(g, mw, TranslateCurveTool::Horizontal));
+            const bool ok = tool->translateCurve(m, 1.0);
+            std::cout << "[INFO] 89i offset curve horizontal +1: X = " << suite89Cell(t, 0, 0)
+                      << ", " << suite89Cell(t, 0, 1) << ", " << suite89Cell(t, 0, 2) << ", "
+                      << suite89Cell(t, 0, 3) << ", " << suite89Cell(t, 0, 4) << "\n";
+            CHECK89(ok && near89(suite89Cell(t, 0, 0), 2.0) && near89(suite89Cell(t, 0, 1), 3.0)
+                            && near89(suite89Cell(t, 0, 2), 3.0)
+                            && near89(suite89Cell(t, 0, 3), 5.0)
+                            && near89(suite89Cell(t, 0, 4), 6.0),
+                    "89i: horizontal translation must shift X of rows 1,2,4,5 by 1 (row 3 kept)");
+        }
+        suite89Close(ml);
+
+        Table *tb = suite89Table(mw, "S89TransBox", { { 1, 2, 3, 4, 5 }, { 50, 10, 40, 20, 30 } });
+        MultiLayer *mlb = nullptr;
+        Graph *gb = suite89Plot(mw, tb, QStringList() << tb->colName(1), Graph::Box, &mlb);
+        CHECK_COND(gb != nullptr, "89i: box graph");
+        BoxCurve *box = nullptr;
+        for (int i = 0; i < gb->curves() && !box; ++i)
+            box = dynamic_cast<BoxCurve *>(gb->curve(i));
+        CHECK_COND(box != nullptr, "89i: box curve");
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(gb, mw, TranslateCurveTool::Vertical));
+            QString status;
+            QObject::connect(tool.get(), &TranslateCurveTool::statusText,
+                             [&status](const QString &s) { status = s; });
+            const bool ok = tool->translateCurve(box, 7.0);
+            bool unchanged = true;
+            const double orig[] = { 50, 10, 40, 20, 30 };
+            for (int r = 0; r < 5; ++r)
+                unchanged = unchanged && near89(suite89Cell(tb, 1, r), orig[r])
+                        && near89(suite89Cell(tb, 0, r), double(r + 1));
+            std::cout << "[INFO] 89i box translation: ok=" << ok << ", status \""
+                      << status.toStdString() << "\"\n";
+            CHECK89(!ok && unchanged && !status.isEmpty(),
+                    "89i: translating a box plot must be refused without touching the table");
+        }
+        suite89Close(mlb);
+    }
+
+    // ------------------------------------------------ 89j: range selector status on box plots
+    {
+        Table *t = suite89Table(mw, "S89RangeBox", { { 1, 2, 3, 4, 5 }, { 50, 10, 40, 20, 30 } });
+        MultiLayer *ml = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::Box, &ml);
+        CHECK_COND(g != nullptr, "89j: box graph");
+        BoxCurve *box = nullptr;
+        for (int i = 0; i < g->curves() && !box; ++i)
+            box = dynamic_cast<BoxCurve *>(g->curve(i));
+        CHECK_COND(box != nullptr && box->dataSize() == 5, "89j: box curve");
+        std::unique_ptr<RangeSelectorTool> rs(new RangeSelectorTool(g));
+        QString status;
+        QObject::connect(rs.get(), &RangeSelectorTool::statusText,
+                         [&status](const QString &s) { status = s; });
+        rs->setSelectedCurve(nullptr);
+        rs->selectCurvePoint(box, 2);
+        const QString expected = box->title().text() + QStringLiteral("[3]");
+        std::cout << "[INFO] 89j box status: \"" << status.toStdString() << "\"\n";
+        CHECK89(status.contains(expected),
+                "89j: status must name point 3 of the box plot, got \"" << status.toStdString()
+                                                                      << "\"");
+        rs.reset();
+        suite89Close(ml);
+    }
+
+    // ------------------------------------------------ 89k: histogram bins are not table rows
+    {
+        const std::vector<double> ys = { 1, 2, 2, 3, 3, 3 };
+        Table *th = suite89Table(mw, "S89HistW", { { 1, 2, 3, 4, 5, 6 }, ys });
+        MultiLayer *mlh = nullptr;
+        Graph *gh = suite89Plot(mw, th, QStringList() << th->colName(1), Graph::Histogram, &mlh);
+        CHECK_COND(gh != nullptr, "89k: histogram graph");
+        QwtHistogram *hist = nullptr;
+        for (int i = 0; i < gh->curves() && !hist; ++i)
+            hist = dynamic_cast<QwtHistogram *>(gh->curve(i));
+        CHECK_COND(hist != nullptr && hist->dataSize() > 0, "89k: histogram curve");
+        const QString histTitle = hist->title().text();
+        auto tableUnchanged = [&]() {
+            if (th->numCols() != 2)
+                return false;
+            for (int r = 0; r < int(ys.size()); ++r) {
+                if (!near89(suite89Cell(th, 1, r), ys[size_t(r)])
+                    || !near89(suite89Cell(th, 0, r), double(r + 1)))
+                    return false;
+            }
+            return true;
+        };
+
+        QwtPlotCurve *res = CurveMathTools::subtractStraightLine(
+                mw, gh, histTitle, QPointF(0.0, 0.5), QPointF(10.0, 0.5), true);
+        std::cout << "[INFO] 89k Subtract Straight Line in place on a histogram: "
+                  << (res ? "done" : "refused") << "\n";
+        CHECK89(res == nullptr && tableUnchanged(),
+                "89k: Subtract Straight Line (in place) must not write histogram bins");
+
+        // Peak Analyzer "Subtract Baseline Now" with "overwrite" (needs the interactive dialog).
+        {
+            MultiPeakFit probeFit(mw, gh, MultiPeakFit::Gauss, 1);
+            probeFit.setSilent(true);
+            CHECK89(probeFit.setDataFromCurve(histTitle),
+                    "89k: the baseline subtraction must reach the histogram's data");
+        }
+        qApp->setProperty("torigraph_noninteractive", false);
+        mw->activateSubWindow(mlh);
+        QApplication::processEvents();
+        if (mw->statusBar())
+            mw->statusBar()->clearMessage();
+        bool askedOverwrite = false;
+        QTimer boxProbe;
+        QObject::connect(&boxProbe, &QTimer::timeout, [&]() {
+            if (QMessageBox *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                askedOverwrite = true;
+                if (QAbstractButton *yes = mb->button(QMessageBox::Yes))
+                    yes->click();
+                else
+                    mb->reject();
+            }
+        });
+        boxProbe.start(20);
+        mw->showPeakAnalyzerDialog(0);
+        QDialog *peakDlg = nullptr;
+        for (QDialog *d : mw->findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) {
+            if (d && d->isVisible())
+                peakDlg = d;
+        }
+        bool clicked = false;
+        if (peakDlg) {
+            for (QComboBox *cb : peakDlg->findChildren<QComboBox *>()) {
+                const int idx = cb->findText(histTitle);
+                if (idx >= 0) {
+                    cb->setCurrentIndex(idx);
+                    break;
+                }
+            }
+            const QString overwriteText =
+                    ApplicationWindow::tr("Overwrite original data column (destructive)");
+            for (QCheckBox *cbx : peakDlg->findChildren<QCheckBox *>()) {
+                if (cbx->text() == overwriteText)
+                    cbx->setChecked(true);
+            }
+            const QString subtractText = ApplicationWindow::tr("Subtract Baseline Now");
+            for (QPushButton *pb : peakDlg->findChildren<QPushButton *>()) {
+                if (pb->text() == subtractText) {
+                    pb->click();
+                    clicked = true;
+                    break;
+                }
+            }
+        }
+        QApplication::processEvents();
+        boxProbe.stop();
+        const QString msg = mw->statusBar() ? mw->statusBar()->currentMessage() : QString();
+        std::cout << "[INFO] 89k Peak Analyzer subtract baseline (overwrite) on a histogram: "
+                  << "dialog " << (peakDlg ? "open" : "missing") << ", clicked " << clicked
+                  << ", asked " << askedOverwrite << ", status \"" << msg.toStdString() << "\"\n";
+        CHECK89(peakDlg && clicked, "89k: Peak Analyzer dialog / Subtract Baseline Now button");
+        CHECK89(!askedOverwrite && tableUnchanged() && msg.contains(histTitle),
+                "89k: baseline subtraction must refuse to write histogram bins to the table");
+        if (peakDlg)
+            peakDlg->close();
+        QApplication::processEvents();
+        qApp->setProperty("torigraph_noninteractive", true);
+        suite89Close(mlh);
+    }
+
+    // ------------------------------------------------ 89l: York fit and empty error cells
+    {
+        // y = 2x + 1 except row 4, an outlier whose error cell is empty: it must be left out
+        // instead of getting a tiny sigma that pins the line to it.
+        const double nan = std::nan("");
+        Table *t = suite89Table(mw, "S89York", { { 1, 2, 3, 4, 5, 6 },
+                                                 { 3.1, 4.9, 7.2, 30.0, 10.8, 13.1 },
+                                                 { 0.2, 0.3, 0.2, nan, 0.4, 0.3 } });
+        Table *tr = suite89Table(mw, "S89YorkRef", { { 1, 2, 3, 5, 6 },
+                                                     { 3.1, 4.9, 7.2, 10.8, 13.1 },
+                                                     { 0.2, 0.3, 0.2, 0.4, 0.3 } });
+        MultiLayer *ml = nullptr;
+        MultiLayer *mlr = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        Graph *gr = suite89Plot(mw, tr, QStringList() << tr->colName(1), Graph::LineSymbols, &mlr);
+        CHECK_COND(g != nullptr && gr != nullptr, "89l: graphs");
+        CHECK_COND(g->addErrorBars(t->colName(1), t, t->colName(2), QwtErrorPlotCurve::Vertical),
+                   "89l: addErrorBars");
+        CHECK_COND(gr->addErrorBars(tr->colName(1), tr, tr->colName(2),
+                                    QwtErrorPlotCurve::Vertical),
+                   "89l: reference addErrorBars");
+        Suite89LinearFit fit(mw, g);
+        Suite89LinearFit ref(mw, gr);
+        const bool okData = fit.setDataFromCurve(t->colName(1), g)
+                && ref.setDataFromCurve(tr->colName(1), gr);
+        CHECK_COND(okData, "89l: fit data");
+        const bool ok = fit.fitWithXYErrors(QString(), QString());
+        const bool okRef = ref.fitWithXYErrors(QString(), QString());
+        std::cout << "[INFO] 89l York with empty error cell: slope " << fit.yorkSlope()
+                  << ", intercept " << fit.yorkIntercept() << "; without the row: slope "
+                  << ref.yorkSlope() << ", intercept " << ref.yorkIntercept() << "\n";
+        CHECK89(ok && okRef && near89(fit.yorkSlope(), ref.yorkSlope(), 1e-9)
+                        && near89(fit.yorkIntercept(), ref.yorkIntercept(), 1e-9),
+                "89l: the point with an empty error must be left out of the York fit (slope "
+                        << fit.yorkSlope() << " vs " << ref.yorkSlope() << ")");
+        CHECK89(near89(fit.yorkSlope(), 2.0, 0.05),
+                "89l: York slope must stay near 2, got " << fit.yorkSlope());
+        suite89Close(ml);
+        suite89Close(mlr);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);

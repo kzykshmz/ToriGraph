@@ -51,6 +51,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QStatusBar>
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -489,16 +490,29 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
         Column *xCol = (tbl && dc) ? tbl->column(dc->xColumnName()) : nullptr;
         Column *yCol = (tbl && dc) ? tbl->column(dc->yColumnName()) : nullptr;
         if (dc && tbl && yCol) {
+            const int n = dc->dataSize();
+            // Box plots / histograms show values that are not table rows (quartiles, bins...):
+            // nothing can be written back in place.
+            bool anyRow = false;
+            for (int i = 0; i < n && !anyRow; ++i)
+                anyRow = (dc->tableRow(i) >= 0);
+            if (!anyRow) {
+                if (app->statusBar()) {
+                    app->statusBar()->showMessage(
+                            trMath("The points of curve \"%1\" do not correspond to worksheet "
+                                   "rows; the result cannot be written to the worksheet.")
+                                    .arg(curveTitle),
+                            8000);
+                }
+                return nullptr;
+            }
             MultiLayer *ml = g->multiLayerParent();
             const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
             future::Table *ft = tbl->d_future_table;
             if (ft)
                 ft->beginMacro(trMath("Subtract Straight Line"));
-            const int n = dc->dataSize();
             for (int i = 0; i < n; ++i) {
-                int row = dc->tableRow(i);
-                if (row < 0 && n == yCol->rowCount())
-                    row = i;
+                const int row = dc->tableRow(i); // -1: the point is not a table row
                 if (row < 0 || row >= yCol->rowCount())
                     continue;
                 if ((xCol && xCol->isMasked(row)) || yCol->isMasked(row))
