@@ -644,6 +644,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const QString legBefore = leg ? leg->text() : QString();
 
         RpcIntegration integ(d_app, g);
+        // plot_curve=false は面積を返すだけ。積分曲線を一時的に足して消すと、その間に自動
+        // スケールが掛かって軸範囲（2 軸なら左軸も）が変わったまま残るので、曲線を作らない。
+        integ.setPlotResult(plotCurve);
         bool okData = false;
         if (hasRange)
             okData = integ.setDataFromCurve(curveTitle, xMin, xMax, g);
@@ -660,11 +663,14 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
 
         QString outCurveTitle;
         if (!plotCurve) {
-            while (g->curves() > curvesBefore)
-                g->removeCurve(g->curves() - 1);
-            if (leg)
-                leg->setText(legBefore);
-            g->replot();
+            // 曲線は作っていないはずだが、念のため増えた分だけ戻す（増えていなければ何もしない）。
+            if (g->curves() > curvesBefore) {
+                while (g->curves() > curvesBefore)
+                    g->removeCurve(g->curves() - 1);
+                if (leg)
+                    leg->setText(legBefore);
+                g->replot();
+            }
         } else {
             sanitizeGraphFunctionCurves(d_app, g);
             enforceArialGraphFonts(g);

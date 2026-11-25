@@ -86,7 +86,8 @@ double Integration::trapezoid()
 
     result.push_back(sum);
     d_points = int(d_x.size());
-    addResultCurve(d_x, result);
+    if (d_plot_result)
+        addResultCurve(d_x, result);
     return sum;
 }
 

@@ -53,6 +53,9 @@ public:
     };
 
     double result() { return d_result; }
+    //! false: compute the area only, without adding the integral curve (and its hidden table)
+    //! to the graph, so the graph (curves, legend, axis ranges) stays as it was.
+    void setPlotResult(bool on) { d_plot_result = on; }
 
 protected:
     bool isDataAcceptable() const override;
@@ -67,6 +70,7 @@ private:
     InterpolationMethod d_method;
 
     double d_result;
+    bool d_plot_result = true;
 };
 
 #endif
