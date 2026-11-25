@@ -33,6 +33,12 @@
 //        automatic Y title "Counts" ("度数") after undo -> redo and save -> reopen (the kind
 //        of the title was taken from the first curve, the function curve, so it became the
 //        column name "y")
+//   112f closing a matrix (app.close_window) and app.undo without a window brings back its
+//        heatmap and contour map with their look (palette, levels, contour pen, colour bar and
+//        its title and range) at their place in the layer; app.redo takes them again, a second
+//        app.undo brings them back; once the Undo steps are dropped the held spectrograms are
+//        deleted with the matrix (they used to be deleted on closing, so Undo brought only the
+//        matrix)
 // =============================================================================
 
 namespace {
@@ -790,6 +796,178 @@ int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw)
                                            << "'");
             }
         }
+    }
+
+    // ---- 112f: closing a matrix keeps its heatmap / contour for Undo -----------------------
+    {
+        AppWinGuard112 w(new ApplicationWindow());
+        Rpc112 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "112f: pythonAutomationServer null");
+        CHECK112(Rpc112::ok(rpc.call(
+                         QStringLiteral("matrix.create"),
+                         QJsonObject { { "rows", 10 }, { "cols", 10 }, { "name", "M112E" } })),
+                 "112f: matrix.create");
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("matrix.set_formula"),
+                                     QJsonObject { { "matrix", "M112E" }, { "formula", "x+y" } })),
+                 "112f: matrix.set_formula");
+        CHECK112(Rpc112::ok(rpc.call(
+                         QStringLiteral("plot.matrix"),
+                         QJsonObject { { "matrix", "M112E" }, { "graph_name", "G112EH" } })),
+                 "112f: plot.matrix heatmap");
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("plot.matrix"),
+                                     QJsonObject { { "matrix", "M112E" },
+                                                   { "style", "contour" },
+                                                   { "graph_name", "G112EC" } })),
+                 "112f: plot.matrix contour");
+        // a line curve after the heatmap (its place in the layer must stay)
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("table.create"),
+                                     QJsonObject { { "rows", 3 },
+                                                   { "cols", 2 },
+                                                   { "name", "T112E" },
+                                                   { "col_names", QJsonArray { "x", "y" } } }))
+                         && Rpc112::ok(rpc.call(
+                                 QStringLiteral("table.set_data_dict"),
+                                 QJsonObject { { "table", "T112E" },
+                                               { "data",
+                                                 QJsonObject { { "x", QJsonArray { 1, 2, 3 } },
+                                                               { "y", QJsonArray { 1, 4, 2 } } } },
+                                               { "column_order", QJsonArray { "x", "y" } } })),
+                 "112f: table T112E");
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                     QJsonObject { { "graph", "G112EH" },
+                                                   { "table", "T112E" },
+                                                   { "x_col", "x" },
+                                                   { "y_col", "y" } })),
+                 "112f: plot.add_curve");
+        auto layerOf = [&](const QString &graph) -> Graph * {
+            auto *ml = qobject_cast<MultiLayer *>(findWindow112(w, graph));
+            return (ml && !ml->layersList().isEmpty()) ? ml->layersList().first() : nullptr;
+        };
+        Graph *gh = layerOf(QStringLiteral("G112EH"));
+        Graph *gc = layerOf(QStringLiteral("G112EC"));
+        CHECK_COND(gh && gc, "112f: graphs");
+        // a look of its own: palette, reversed, levels, colour bar title, contour pen
+        Spectrogram *sh = nullptr, *sc = nullptr;
+        for (int i = 0; i < gh->curves(); ++i)
+            if (!sh)
+                sh = dynamic_cast<Spectrogram *>(gh->plotItem(i));
+        for (int i = 0; i < gc->curves(); ++i)
+            if (!sc)
+                sc = dynamic_cast<Spectrogram *>(gc->plotItem(i));
+        CHECK_COND(sh && sc, "112f: spectrograms");
+        sh->setColorMapPreset(Spectrogram::PresetMagma, true);
+        sh->setLevelsNumber(7);
+        sh->setColorBarTitle(QStringLiteral("z 112f"));
+        sc->setLevelsNumber(9);
+        sc->setDefaultContourPen(QPen(QColor(200, 30, 30), 2.0));
+        gh->replot();
+        gc->replot();
+        // the layer as the user sees it: each item (type, spectrogram look), colour bar, legend
+        auto sig = [](Graph *g) {
+            std::string s;
+            for (int i = 0; i < g->curves(); ++i) {
+                QwtPlotItem *it = g->plotItem(i);
+                s += std::to_string(g->curveType(i)) + ":";
+                if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                    s += "sp("
+                            + (sp->matrix() ? sp->matrix()->name().toStdString() : std::string("-"))
+                            + ",p" + std::to_string(int(sp->colorMapPreset())) + ",r"
+                            + std::to_string(int(sp->reversePalette())) + ",l"
+                            + std::to_string(sp->levels()) + ",img"
+                            + std::to_string(
+                                    int(sp->testDisplayMode(QwtPlotSpectrogram::ImageMode)))
+                            + ",cnt"
+                            + std::to_string(
+                                    int(sp->testDisplayMode(QwtPlotSpectrogram::ContourMode)))
+                            + ",pen" + sp->defaultContourPen().color().name().toStdString() + ",bar"
+                            + std::to_string(int(sp->hasColorScale())) + ",t"
+                            + sp->colorBarTitle().toStdString() + ")";
+                } else if (it) {
+                    s += it->title().text().toStdString();
+                }
+                s += ";";
+            }
+            const QwtScaleDiv *zd = g->plotWidget()->axisScaleDiv(QwtPlot::yRight);
+            if (zd)
+                s += "z" + std::to_string(zd->lowerBound()) + ".."
+                        + std::to_string(zd->upperBound());
+            return s + "|" + (g->legend() ? g->legend()->text().toStdString() : std::string());
+        };
+        auto spCount = [](Graph *g) {
+            int n = 0;
+            for (int i = 0; i < g->curves(); ++i)
+                n += dynamic_cast<Spectrogram *>(g->plotItem(i)) ? 1 : 0;
+            return n;
+        };
+        const std::string h0 = sig(gh), c0 = sig(gc);
+        std::cout << "[INFO] 112f before: " << h0 << " / " << c0 << "\n";
+        CHECK112(h0.find(",bar1,") != std::string::npos,
+                 "112f: the heatmap has no colour bar: " << h0);
+        Matrix *m = w->matrix(QStringLiteral("M112E"));
+        CHECK_COND(m && m->d_future_matrix && m->d_future_matrix->undoStack(),
+                   "112f: matrix M112E");
+        QUndoStack *ps = m->d_future_matrix->undoStack();
+        QPointer<future::Matrix> fm(m->d_future_matrix.data());
+
+        auto close = [&](const char *when) {
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.close_window"),
+                                         QJsonObject { { "name", "M112E" } })),
+                     "112f: app.close_window " << when);
+            std::cout << "[INFO] 112f closed (" << when << "): " << sig(gh) << " / " << sig(gc)
+                      << "\n";
+            CHECK112(w->matrix(QStringLiteral("M112E")) == nullptr && spCount(gh) == 0
+                             && spCount(gc) == 0,
+                     "112f: closing M112E (" << when << ") left a spectrogram: " << sig(gh) << " / "
+                                             << sig(gc));
+        };
+        auto expectBack = [&](const char *when) {
+            const std::string h = sig(gh), c = sig(gc);
+            std::cout << "[INFO] 112f " << when << ": " << h << " / " << c << "\n";
+            CHECK112(w->matrix(QStringLiteral("M112E")) != nullptr,
+                     "112f: " << when << ": no matrix");
+            CHECK112(h == h0 && c == c0,
+                     "112f: " << when << ": " << h << " / " << c << " expected " << h0 << " / "
+                              << c0);
+            CHECK112(spCount(gh) == 1 && gh->plotItem(0) == sh && spCount(gc) == 1
+                             && gc->plotItem(0) == sc,
+                     "112f: " << when << ": not the spectrograms that were held");
+        };
+        close("first");
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.undo"), QJsonObject {})),
+                 "112f: app.undo");
+        expectBack("after app.undo");
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.redo"), QJsonObject {})),
+                 "112f: app.redo");
+        std::cout << "[INFO] 112f after app.redo: " << sig(gh) << " / " << sig(gc) << "\n";
+        CHECK112(w->matrix(QStringLiteral("M112E")) == nullptr && spCount(gh) == 0
+                         && spCount(gc) == 0,
+                 "112f: app.redo did not close M112E with its spectrograms: " << sig(gh));
+        CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.undo"), QJsonObject {})),
+                 "112f: app.undo 2");
+        expectBack("after the second app.undo");
+        gh->replot();
+        gc->replot();
+
+        // closed again and the Undo steps dropped: the held spectrograms go with the matrix
+        close("second");
+        QPointer<QObject> held = fm
+                ? fm->findChild<QObject *>(QStringLiteral("_tg_held_removed_curves"),
+                                           Qt::FindDirectChildrenOnly)
+                : nullptr;
+        CHECK112(!held.isNull(), "112f: the closed matrix does not hold its spectrograms");
+        ps->clear();
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        std::cout << "[INFO] 112f after clearing the Undo stack: matrix "
+                  << (fm ? "alive" : "deleted") << ", holder " << (held ? "alive" : "deleted")
+                  << "\n";
+        CHECK112(fm.isNull() && held.isNull(),
+                 "112f: clearing the Undo stack kept the held spectrograms");
+        CHECK112(spCount(gh) == 0 && spCount(gc) == 0 && gh->curves() == 1,
+                 "112f: after clearing the Undo stack: " << sig(gh));
+        gh->replot();
+        gc->replot();
     }
 
     if (g112Failures > 0) {

@@ -5280,8 +5280,10 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
     AbstractAspect *aspect = parent->child(index);
     ::future::Matrix *matrix = qobject_cast<::future::Matrix *>(aspect);
     if (matrix) {
-        if (Matrix *mtxView = static_cast<Matrix *>(matrix->view()))
+        if (Matrix *mtxView = static_cast<Matrix *>(matrix->view())) {
             initMatrix(mtxView);
+            restoreCurvesOfReaddedTable(nullptr); // its heat maps and contours, if kept
+        }
         return;
     }
     ::future::Table *table = qobject_cast<::future::Table *>(aspect);

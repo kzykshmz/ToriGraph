@@ -1661,6 +1661,22 @@ Graph::TakenCurves Graph::takeCurvesUsingColumns(const QStringList &names)
     return tc;
 }
 
+Graph::TakenCurves Graph::takeSpectrogramsOfMatrix(const Matrix *m)
+{
+    TakenCurves tc;
+    if (!m)
+        return tc;
+    QList<QwtPlotItem *> items;
+    for (int i = 0; i < n_curves; ++i) {
+        auto *sp = dynamic_cast<Spectrogram *>(plotItem(i));
+        if (sp && sp->matrix() == m)
+            items << sp;
+    }
+    if (!items.isEmpty())
+        takeCurveItems(items, tc);
+    return tc;
+}
+
 int Graph::curveIndexOfKey(int key, const QwtPlotItem *item) const
 {
     if (key < 0 || !item || d_plot->plotItem(key) != item)
@@ -1714,6 +1730,8 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
         t.type = c_type[idx];
         t.index = idx;
         t.fitCurve = d_fit_curves.contains(dynamic_cast<QwtPlotCurve *>(it));
+        if (auto *sp = dynamic_cast<Spectrogram *>(it))
+            t.colorBar = sp->hasColorScale(); // taking it out hides the colour bar
         Legend *leg = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
         if (leg && t.type != ErrorBars && !isPiePlot()) {
             // the line removeLegendCurveNumber() takes out: \c{n} or the Origin-style \l(n)
@@ -1794,6 +1812,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
     // held curves the layer has again (deleted at the end, after their error bars are seen to)
     QList<QwtPlotItem *> recreated;
     QList<QPair<int, QwtPlotItem *>> restored; // key, item
+    QSet<QwtPlotItem *> colorBars; // restored spectrograms that showed their colour bar
     // keys a curve could not get back (taken by another item): its error bars find it under the
     // new one
     QHash<int, int> rekeyed;
@@ -1939,6 +1958,8 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
                     d_fit_curves << fc;
             if (er && !master->errorBarsList().contains(er))
                 master->addErrorBars(er);
+            if (t.colorBar)
+                colorBars.insert(t.item);
             restored << qMakePair(key, t.item);
         }
     }
@@ -1959,6 +1980,13 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
         else if (DataCurve *dc = dynamic_cast<DataCurve *>(it)) {
             if (dc->type() != Function)
                 dc->loadData();
+        } else if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+            // its colour bar, hidden when it was taken out, with its colours and range
+            if (colorBars.contains(it)) {
+                if (QwtScaleWidget *sw = d_plot->axisWidget(sp->colorScaleAxis()))
+                    sw->setColorBarEnabled(true);
+            }
+            sp->syncColorScale();
         }
     }
     d_plot->replot();

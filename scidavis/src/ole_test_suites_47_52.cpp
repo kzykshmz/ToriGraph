@@ -3237,8 +3237,18 @@ int runSuite50MegaWave1PlotsMatSciAutonomyUndoPerf(ApplicationWindow *mw)
                 if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram)
                     ++remainingSpecItems;
             }
-            CHECK_COND(mtxCloseDeleted == 1 && gHm->curves() == 0 && remainingSpecItems == 0,
-                       "Suite 50k(a): closing Matrix before Heatmap leaked Spectrogram!");
+            // Like a table's curves, the spectrograms of a closed matrix are held for its undo
+            // step (Undo puts them back): they leave the graph now and are deleted once, when
+            // the step leaves the undo stack.
+            CHECK_COND(mtxCloseDeleted == 0 && gHm->curves() == 0 && remainingSpecItems == 0,
+                       "Suite 50k(a): closing Matrix did not take its spectrograms out of the "
+                       "graph for the undo step (curves " << gHm->curves() << ", items "
+                                                          << remainingSpecItems << ", deleted "
+                                                          << mtxCloseDeleted << ")");
+            w50->project()->undoStack()->clear();
+            CHECK_COND(mtxCloseDeleted == 1,
+                       "Suite 50k(a): clearing the undo stack after closing the Matrix leaked "
+                       "Spectrogram (deleted " << mtxCloseDeleted << ")");
             mlHm->askOnCloseEvent(false);
             w50->closeWindow(mlHm);
         }

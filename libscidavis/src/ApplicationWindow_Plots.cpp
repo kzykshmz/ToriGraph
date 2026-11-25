@@ -105,6 +105,7 @@
 #include "core/datatypes/Double2StringFilter.h"
 #include "lib/XmlStreamReader.h"
 #include "table/future_Table.h"
+#include "matrix/future_Matrix.h"
 #include "table/AsciiTableImportFilter.h"
 
 // TODO: move tool-specific code to an extension manager
@@ -1123,6 +1124,10 @@ void ApplicationWindow::remove3DMatrixPlots(Matrix *m)
         }
     }
 
+    // the heat maps, contours and images of the matrix are kept with it (not deleted), so that
+    // the matrix's return (Undo) puts them back in place with their look
+    takeSpectrogramsOfRemovedMatrix(m, windows);
+
     for (MyWidget *w : windows) {
         if (!w)
             continue;
@@ -1135,14 +1140,7 @@ void ApplicationWindow::remove3DMatrixPlots(Matrix *m)
                 if (!g)
                     continue;
                 bool removedAny = false;
-                for (int i = g->curves() - 1; i >= 0; --i) {
-                    QwtPlotItem *pi = g->plotItem(i);
-                    Spectrogram *sp = dynamic_cast<Spectrogram *>(pi);
-                    if (sp && sp->matrix() == m) {
-                        g->removeCurve(i);
-                        removedAny = true;
-                    }
-                }
+                // a spectrogram on the plot that is not one of the layer's curves
                 if (Plot *pw = g->plotWidget()) {
                     const QwtPlotItemList directItems = pw->itemList();
                     for (QwtPlotItem *it : directItems) {
@@ -2551,6 +2549,8 @@ public:
         //! the table each curve reads (error bars: their error column's), which may be deleted
         //! for good while the curves are held (its step dropped off the Undo stack)
         QHash<QwtPlotItem *, QPointer<Table>> tables;
+        //! the matrix each spectrogram (heat map, contour, image) shows, likewise
+        QHash<QwtPlotItem *, QPointer<future::Matrix>> matrices;
     };
     QList<Layer> layers;
 };
@@ -2560,6 +2560,14 @@ QObject *heldCurvesOwner(Table *t)
     if (!t)
         return nullptr;
     return t->d_future_table ? static_cast<QObject *>(t->d_future_table) : static_cast<QObject *>(t);
+}
+
+QObject *heldCurvesOwner(Matrix *m)
+{
+    if (!m)
+        return nullptr;
+    return m->d_future_matrix ? static_cast<QObject *>(m->d_future_matrix.data())
+                              : static_cast<QObject *>(m);
 }
 
 //! The tables and columns that hold curves (few, usually none): a re-added table or column
@@ -2606,6 +2614,40 @@ void takeCurvesInto(const QList<MyWidget *> &windows, QObject *owner, const QStr
     }
 }
 
+//! Takes the spectrograms of matrix \a m out of every 2D layer into the holder of \a owner.
+void takeSpectrogramsInto(const QList<MyWidget *> &windows, QObject *owner, Matrix *m)
+{
+    if (!owner || !m)
+        return;
+    HeldRemovedCurves *held = HeldRemovedCurves::of(owner);
+    for (MyWidget *w : windows) {
+        if (!w || !w->inherits("MultiLayer"))
+            continue;
+        auto *ml = static_cast<MultiLayer *>(w);
+        const QWidgetList layers = ml->graphPtrs();
+        for (QWidget *lw : layers) {
+            auto *g = static_cast<Graph *>(lw);
+            if (!g)
+                continue;
+            Graph::TakenCurves taken = g->takeSpectrogramsOfMatrix(m);
+            if (!taken.out)
+                continue;
+            if (!held) {
+                held = new HeldRemovedCurves(owner);
+                heldCurvesOwners().append(QPointer<QObject>(owner));
+            }
+            HeldRemovedCurves::Layer l;
+            l.graph = g;
+            l.window = ml;
+            l.layerId = g->layerId();
+            l.taken = taken;
+            for (const Graph::TakenCurve &tc : taken.curves)
+                l.matrices.insert(tc.item, QPointer<future::Matrix>(m->d_future_matrix.data()));
+            held->layers.append(l);
+        }
+    }
+}
+
 //! Deletes the held curves in \a items, with the error bars of those curves (first, unlinked
 //! from a held curve that stays; a curve not held may be gone with a rebuilt layer, and it was
 //! unlinked from them when they were taken).
@@ -2632,6 +2674,7 @@ void deleteHeldCurves(HeldRemovedCurves::Layer &l, QSet<QwtPlotItem *> items)
                 && !items.contains(er->masterCurve()))
                 er->masterCurve()->removeErrorBars(er);
             l.tables.remove(tc.item);
+            l.matrices.remove(tc.item);
             delete tc.item;
             tc.item = nullptr;
         }
@@ -2645,6 +2688,8 @@ void dropCurvesOfDeletedTables(HeldRemovedCurves *held)
         QSet<QwtPlotItem *> dead;
         for (const Graph::TakenCurve &tc : l.taken.curves) {
             if (tc.item && l.tables.contains(tc.item) && l.tables.value(tc.item).isNull())
+                dead.insert(tc.item);
+            if (tc.item && l.matrices.contains(tc.item) && l.matrices.value(tc.item).isNull())
                 dead.insert(tc.item);
         }
         if (!dead.isEmpty())
@@ -2662,6 +2707,13 @@ bool heldCurvesColumnsBack(const HeldRemovedCurves *held)
     };
     for (const HeldRemovedCurves::Layer &l : held->layers) {
         for (const Graph::TakenCurve &tc : l.taken.curves) {
+            if (tc.item && l.matrices.contains(tc.item)) {
+                // a spectrogram: its matrix back in the project, with its window
+                future::Matrix *fm = l.matrices.value(tc.item).data();
+                if (!fm || !fm->parentAspect() || !fm->view())
+                    return false;
+                continue;
+            }
             auto *dc = dynamic_cast<DataCurve *>(tc.item);
             if (!dc)
                 continue;
@@ -2722,6 +2774,14 @@ void restoreHeldCurves(QObject *owner)
             if (!dup.isEmpty())
                 deleteHeldCurves(l, dup);
         }
+        // a spectrogram shows the matrix's window as it is now
+        for (const Graph::TakenCurve &tc : l.taken.curves) {
+            auto *sp = dynamic_cast<Spectrogram *>(tc.item);
+            future::Matrix *fm = l.matrices.value(tc.item).data();
+            auto *view = fm ? static_cast<Matrix *>(fm->view()) : nullptr;
+            if (g && sp && view && sp->matrix() != view)
+                sp->updateData(view);
+        }
         // a layer deleted meanwhile (by the user, or not found again) is skipped: its curves
         // are deleted with the holder
         if (g)
@@ -2740,6 +2800,11 @@ void ApplicationWindow::takeCurvesOfRemovedTable(Table *t)
     for (int i = 0; i < t->numCols(); ++i)
         names << t->colName(i);
     takeCurvesInto(windowsList(), heldCurvesOwner(t), names);
+}
+
+void ApplicationWindow::takeSpectrogramsOfRemovedMatrix(Matrix *m, const QList<MyWidget *> &windows)
+{
+    takeSpectrogramsInto(windows, heldCurvesOwner(m), m);
 }
 
 void ApplicationWindow::takeCurvesOfRemovedColumn(Table *t, const QString &name)

@@ -298,6 +298,8 @@ public:
         int index = -1; //!< its index when it was taken
         QString legendLine; //!< its legend line (with \c{index+1}), empty if none
         bool fitCurve = false;
+        //! For a spectrogram, whether its colour bar was shown (taking it out hides the bar).
+        bool colorBar = false;
     };
     struct TakenCurves
     {
@@ -317,6 +319,9 @@ public:
     //! Takes out the curves removeCurves() would remove for any of \a names, with the error
     //! bars of those curves, keeping them whole (style, error bar links, legend line).
     TakenCurves takeCurvesUsingColumns(const QStringList &names);
+    //! Takes out the spectrograms (heat map, contour, image) of matrix \a m, as
+    //! takeCurvesUsingColumns() does for the curves of columns.
+    TakenCurves takeSpectrogramsOfMatrix(const Matrix *m);
     //! Puts the taken curves back, each after the item that preceded it (if still here) and
     //! with its legend line; the rest of the layer stays as it is now.
     void restoreTakenCurves(TakenCurves &tc);

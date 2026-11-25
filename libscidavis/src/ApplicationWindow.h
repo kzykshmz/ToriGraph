@@ -596,7 +596,12 @@ public slots:
     //! itself (removeCurvesOfColumnsWithUndo()): e.g. Undo of the step that added the column. The
     //! curves are kept with the column and come back when it does.
     void takeCurvesOfRemovedColumn(Table *t, const QString &name);
-    //! Puts back the curves kept for \a t and its columns whose columns are all back.
+    //! The same for the spectrograms (heat map, contour, image) of matrix \a m in the 2D layers
+    //! of \a windows: kept with the matrix, they come back with it (with their look and colour
+    //! bar) and are deleted with it.
+    void takeSpectrogramsOfRemovedMatrix(Matrix *m, const QList<MyWidget *> &windows);
+    //! Puts back the curves kept for \a t and its columns whose columns are all back, and the
+    //! spectrograms kept for a matrix that is back (\a t may be null: every holder is looked at).
     void restoreCurvesOfReaddedTable(Table *t);
     QStringList dependingPlots(const QString &caption);
     QStringList depending3DPlots(Matrix *m);
