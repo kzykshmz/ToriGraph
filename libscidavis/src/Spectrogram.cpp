@@ -932,6 +932,14 @@ int Spectrogram::dataFlags() const
     return f;
 }
 
+bool Spectrogram::drawsMissingCellsTransparent() const
+{
+    if (d_mask_invalid || d_log_color)
+        return true;
+    const MatrixData *md = dynamic_cast<const MatrixData *>(&data());
+    return md && md->hasUnfilledCells();
+}
+
 void Spectrogram::rebuildData()
 {
     if (!d_matrix)
@@ -996,7 +1004,7 @@ void Spectrogram::syncColorAxisEngine()
 QImage Spectrogram::renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                                 const QwtDoubleRect &area) const
 {
-    if (!(d_mask_invalid || d_log_color) || colorMap().format() != QwtColorMap::RGB)
+    if (!drawsMissingCellsTransparent() || colorMap().format() != QwtColorMap::RGB)
         return QwtPlotSpectrogram::renderImage(xMap, yMap, area);
     if (area.isEmpty())
         return QImage();
@@ -1057,7 +1065,7 @@ QImage Spectrogram::renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap
 QwtRasterData::ContourLines Spectrogram::renderContourLines(const QwtDoubleRect &rect,
                                                             const QSize &raster) const
 {
-    if (!(d_mask_invalid || d_log_color))
+    if (!drawsMissingCellsTransparent())
         return QwtPlotSpectrogram::renderContourLines(rect, raster);
     int flags = QwtRasterData::IgnoreOutOfRange;
     if (testConrecAttribute(QwtRasterData::IgnoreAllVerticesOnLevel))
@@ -1101,7 +1109,7 @@ double MatrixData::value(double x, double y) const
     const double z10 = d_data[r1 * n_cols + c0];
     const double z11 = d_data[r1 * n_cols + c1];
 
-    if ((d_flags & (FlagMaskInvalid | FlagLog10))
+    if (((d_flags & (FlagMaskInvalid | FlagLog10)) || d_has_unfilled)
         && !(std::isfinite(z00) && std::isfinite(z01) && std::isfinite(z10)
              && std::isfinite(z11))) {
         // next to a missing cell: the nearest cell decides (keeps the measured edge sharp)

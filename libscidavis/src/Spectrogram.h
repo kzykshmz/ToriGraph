@@ -134,6 +134,9 @@ protected:
     QwtRasterData::ContourLines renderContourLines(const QwtDoubleRect &rect,
                                                    const QSize &raster) const override;
     int dataFlags() const;
+    //! True when missing cells must stay transparent (mask / log options, or a block of
+    //! missing cells too large to fill from finite neighbours).
+    bool drawsMissingCellsTransparent() const;
     void rebuildData();
     void syncColorAxisEngine();
 
@@ -232,7 +235,15 @@ public:
                             }
                         }
                     }
-                    val = (cnt > 0) ? (av / double(cnt)) : 0.0;
+                    if (cnt == 0) {
+                        // no finite neighbour (a block of 3x3 or more missing cells): keep it
+                        // missing (transparent, no contour) instead of inventing a 0 that
+                        // would also stretch the colour range
+                        d_data[rowOff + j] = std::numeric_limits<double>::quiet_NaN();
+                        d_has_unfilled = true;
+                        continue;
+                    }
+                    val = av / double(cnt);
                 }
                 d_data[rowOff + j] = val;
                 min_z = std::min(min_z, val);
@@ -292,6 +303,9 @@ public:
 
     int flags() const { return d_flags; }
 
+    //! Some missing cells had no finite neighbour and stay NaN in the default (unmasked) mode.
+    bool hasUnfilledCells() const { return d_has_unfilled; }
+
     QwtDoubleInterval rawRange() const { return QwtDoubleInterval(min_z, max_z); }
 
     virtual QSize rasterHint(const QwtDoubleRect &) const override
@@ -325,6 +339,7 @@ private:
     double d_custom_min = 0.0;
     double d_custom_max = 1.0;
     int d_flags = 0;
+    bool d_has_unfilled = false;
 };
 
 #endif
