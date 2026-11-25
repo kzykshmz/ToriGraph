@@ -421,11 +421,13 @@ QString translateJapaneseFitLabelToEnglish(QString s)
 {
     if (!containsJapaneseChars(s))
         return s;
+    // The Japanese "nonlinear fit" label contains the "linear fit" one: replace the longer label
+    // first, or it became "<non>Linear Fit".
+    s.replace(QStringLiteral("\u975e\u7dda\u5f62\u30d5\u30a3\u30c3\u30c8"),
+              QStringLiteral("Nonlinear Fit"));
     s.replace(QStringLiteral("\u7dda\u5f62\u30d5\u30a3\u30c3\u30c8"), QStringLiteral("Linear Fit"));
     s.replace(QStringLiteral("\u591a\u9805\u5f0f\u30d5\u30a3\u30c3\u30c8"),
               QStringLiteral("Polynomial Fit"));
-    s.replace(QStringLiteral("\u975e\u7dda\u5f62\u30d5\u30a3\u30c3\u30c8"),
-              QStringLiteral("Nonlinear Fit"));
     s.replace(QStringLiteral("\u30ac\u30a6\u30b9\u30d5\u30a3\u30c3\u30c8"),
               QStringLiteral("Gaussian Fit"));
     s.replace(QStringLiteral("\u30ed\u30fc\u30ec\u30f3\u30c4\u30d5\u30a3\u30c3\u30c8"),
