@@ -29,6 +29,10 @@
 //        date/time, month and numeric columns; a non-number turns a numeric column into text
 //        without losing its other rows); a one-line paste without tab is one cell; one Undo
 //        restores the table; empty default columns still take the type of the pasted data
+//   105f paste_tsv into a numeric column with data keeps it numeric when 90 % of the pasted
+//        values are numbers (one "OVER" in 100 is an invalid cell); a column that becomes text
+//        keeps its numbers exactly (round-trip digits, not the 6-digit display); set_cell of
+//        "N.D." / "ND" / "#N/A" is a missing value of the numeric column as in the import
 // =============================================================================
 
 namespace {
@@ -478,6 +482,92 @@ int runSuite105RpcImportColumnTypes(ApplicationWindow *mw)
                     && t->column(2)->columnMode() == SciDAVis::ColumnMode::Numeric
                     && t->text(1, 0) == QStringLiteral("B");
             EXPECT105(ok, "105e6: paste into empty default / new columns decides their type");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 105f: paste_tsv into a numeric column with data uses the 90 % rule; a column that does
+    // become text keeps its numbers exactly; set_cell reads the import's missing tokens
+    // -------------------------------------------------------------------------
+    {
+        // values that need all 17 digits (1/3, 2/3, ...): a 6-digit display would cut them
+        auto exact = [](int r) { return (r + 1) / 3.0 + 1000.0; };
+        auto makeNumeric = [&](const QString &name, int rows, int filled) -> Table * {
+            Table *t = w105->newTable(rows, 1, name, name);
+            if (!t)
+                return nullptr;
+            for (int r = 0; r < filled; ++r)
+                t->setCell(r, 0, exact(r));
+            return t;
+        };
+        // 200 numbers, then 100 pasted values of which one is "OVER": still numeric
+        {
+            Table *t = makeNumeric(QStringLiteral("F105a"), 300, 200);
+            QStringList lines;
+            for (int k = 0; k < 100; ++k)
+                lines << ((k == 37) ? QStringLiteral("OVER") : QString::number(5000 + k));
+            const QJsonObject r = rpc(QStringLiteral("table.paste_tsv"),
+                                      QJsonObject { { "table", "F105a" },
+                                                    { "text", lines.join(QLatin1Char('\n')) },
+                                                    { "header", false },
+                                                    { "start_row", 200 },
+                                                    { "start_col", 0 } });
+            Column *c = t ? t->column(0) : nullptr;
+            bool kept = c && !rpcIsError105(r)
+                    && c->columnMode() == SciDAVis::ColumnMode::Numeric;
+            for (int row = 0; kept && row < 200; ++row)
+                kept = !c->isInvalid(row) && c->valueAt(row) == exact(row);
+            for (int k = 0; kept && k < 100; ++k)
+                kept = (k == 37) ? c->isInvalid(200 + k)
+                                 : (!c->isInvalid(200 + k) && c->valueAt(200 + k) == 5000 + k);
+            std::cout << "    105f1 mode " << (c ? int(c->columnMode()) : -1) << ", row 0 '"
+                      << (t ? t->text(0, 0).toStdString() : std::string()) << "'\n";
+            EXPECT105(kept, "105f1: one unreadable value in 100 pasted keeps the numeric column "
+                            "(the cell is invalid, the other rows keep their values)");
+        }
+        // too many unreadable values: the column becomes text, its numbers written exactly
+        {
+            Table *t = makeNumeric(QStringLiteral("F105b"), 20, 10);
+            const QJsonObject r = rpc(QStringLiteral("table.paste_tsv"),
+                                      QJsonObject { { "table", "F105b" },
+                                                    { "text", "1\nx\ny\n4\nz" },
+                                                    { "header", false },
+                                                    { "start_row", 10 },
+                                                    { "start_col", 0 } });
+            Column *c = t ? t->column(0) : nullptr;
+            bool ok = c && !rpcIsError105(r) && c->columnMode() == SciDAVis::ColumnMode::Text;
+            for (int row = 0; ok && row < 10; ++row) {
+                bool conv = false;
+                const double v = c->textAt(row).toDouble(&conv);
+                ok = conv && v == exact(row);
+            }
+            ok = ok && c->textAt(11) == QStringLiteral("x") && c->textAt(13) == QStringLiteral("4");
+            std::cout << "    105f2 mode " << (c ? int(c->columnMode()) : -1) << ", row 0 '"
+                      << (c ? c->textAt(0).toStdString() : std::string()) << "'\n";
+            EXPECT105(ok, "105f2: a numeric column turned into text keeps its numbers exactly");
+        }
+        // set_cell with a missing token of the import ("N.D.", "ND", "#N/A") into a numeric
+        // column: an invalid cell, the column stays numeric (as paste_tsv / the import read it)
+        {
+            Table *t = makeNumeric(QStringLiteral("F105c"), 10, 10);
+            bool ok = t != nullptr;
+            int row = 2;
+            for (const char *tok : { "N.D.", "ND", "#N/A" }) {
+                const QJsonObject r =
+                        rpc(QStringLiteral("table.set_cell"),
+                            QJsonObject { { "table", "F105c" }, { "row", row }, { "col", 0 },
+                                          { "value", QString::fromLatin1(tok) } });
+                Column *c = t ? t->column(0) : nullptr;
+                const bool okTok = c && !rpcIsError105(r)
+                        && c->columnMode() == SciDAVis::ColumnMode::Numeric && c->isInvalid(row)
+                        && c->valueAt(0) == exact(0);
+                if (!okTok)
+                    std::cerr << "    105f3 set_cell '" << tok << "': mode "
+                              << (c ? int(c->columnMode()) : -1) << "\n";
+                ok = ok && okTok;
+                ++row;
+            }
+            EXPECT105(ok, "105f3: set_cell of an import missing token is a missing value");
         }
     }
 

@@ -1438,6 +1438,37 @@ bool isImportMissingNumericCell(const QString &trimmed, bool wasQuoted)
     return trimmed.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
 }
 
+//! Turns a numeric column into a text column (table.paste_tsv / table.set_cell of a value that
+//! is not a number) with its numbers written exactly: the shortest text that reads back as the
+//! same double (at most 17 digits), not the column's display format, whose 6 digits would cut
+//! 1000.3333333333334 to 1000.33. Invalid cells stay invalid.
+void convertNumericColumnToTextExactly(Column *col)
+{
+    if (!col || col->columnMode() != SciDAVis::ColumnMode::Numeric)
+        return;
+    const int rows = col->rowCount();
+    QStringList texts;
+    texts.reserve(rows);
+    QVector<Interval<int>> invalid;
+    for (int r = 0; r < rows; ++r) {
+        if (col->isInvalid(r)) {
+            texts << QString();
+            if (!invalid.isEmpty() && invalid.last().end() == r - 1)
+                invalid.last().setEnd(r);
+            else
+                invalid << Interval<int>(r, r);
+        } else {
+            texts << QString::number(col->valueAt(r), 'g', QLocale::FloatingPointShortest);
+        }
+    }
+    col->setColumnMode(SciDAVis::ColumnMode::Text);
+    if (rows > 0) {
+        col->replaceTexts(0, texts);
+        for (const Interval<int> &iv : invalid)
+            col->setInvalid(iv, true);
+    }
+}
+
 int countUnquotedImportChar(const QString &line, QChar ch)
 {
     int n = 0;
@@ -1935,8 +1966,9 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         // table.paste_tsv into a column that existed before: the column keeps its type, as
         // table.set_cell does, so the rows that are not pasted over keep their data. Text
         // columns take the texts; date/time, month and day columns read them through their
-        // input filter; numeric columns take numbers and missing values, and become text
-        // columns (their numbers kept as text) when a pasted cell is not a number. Default
+        // input filter; numeric columns take numbers and missing values, a few values that are
+        // not numbers as invalid cells (the import's 90 % rule), and become text columns (their
+        // numbers kept exactly as text) when more of the pasted values are not numbers. Default
         // empty numeric columns and columns added by the paste take the type of the data.
         bool keepType = false;
         if (keepExistingColumnTypes && convertNumeric && dstCol < colsBeforeImport) {
@@ -1958,29 +1990,40 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                 texts.append((c < rec.size()) ? rec[c].value : QString());
             }
             if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                // The pasted values decide as in the import (the 90 % rule below): a few values
+                // that are not numbers ("OVER") are invalid cells of the numeric column.
                 QVector<qreal> nums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
-                QVector<int> missingRows;
-                bool allNumeric = true;
-                for (int r = 0; allNumeric && r < dataRowCount; ++r) {
+                QVector<int> invalidRows;
+                int validNum = 0, strayNonNum = 0;
+                for (int r = 0; r < dataRowCount; ++r) {
                     const QString trimmed = texts[r].trimmed();
                     const bool wasQuoted = (c < records[dataStartIdx + r].size())
                             && records[dataStartIdx + r][c].quoted;
-                    if (trimmed.isEmpty() || isImportMissingNumericCell(trimmed, wasQuoted))
-                        missingRows.append(r);
-                    else if (!parseImportNumber(trimmed, decimalComma, nums[r]))
-                        allNumeric = false;
+                    if (trimmed.isEmpty() || isImportMissingNumericCell(trimmed, wasQuoted)) {
+                        invalidRows.append(r);
+                    } else if (parseImportNumber(trimmed, decimalComma, nums[r])) {
+                        ++validNum;
+                    } else {
+                        nums[r] = std::numeric_limits<double>::quiet_NaN();
+                        invalidRows.append(r);
+                        ++strayNonNum;
+                    }
                 }
-                if (allNumeric) {
+                const bool staysNumeric = strayNonNum == 0
+                        || (validNum >= 5
+                            && qint64(validNum) * 10 >= qint64(validNum + strayNonNum) * 9);
+                if (staysNumeric) {
                     if (dataRowCount > 0) {
                         col->setInvalid(
                                 Interval<int>(startRowOffset, startRowOffset + dataRowCount - 1),
                                 false);
                         col->replaceValues(startRowOffset, nums);
-                        for (int r : missingRows)
+                        for (int r : invalidRows)
                             col->setInvalid(startRowOffset + r, true);
                     }
                 } else {
-                    col->setColumnMode(SciDAVis::ColumnMode::Text);
+                    // the rows that are not pasted over keep their numbers exactly
+                    convertNumericColumnToTextExactly(col);
                     if (dataRowCount > 0)
                         col->replaceTexts(startRowOffset, texts);
                 }
@@ -5682,7 +5725,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                                                : QString::number(val.toDouble(), 'g', 15));
         } else if (val.isString()) {
             const QString sTrim = val.toString().trimmed();
-            if (isMissingNumericSentinel(sTrim)) {
+            // the missing / Excel error tokens of the text import and table.paste_tsv ("N.D.",
+            // "ND", "#N/A", "-", "NaN", ...) are a missing value of the numeric column
+            if (isImportMissingNumericCell(sTrim, false)) {
                 t->clearCell(row, colIdx);
             } else {
                 bool ok = false;
@@ -5690,8 +5735,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 if (ok && std::isfinite(d)) {
                     t->setCell(row, colIdx, d);
                 } else {
-                    if (col && col->columnMode() != SciDAVis::ColumnMode::Text)
-                        col->setColumnMode(SciDAVis::ColumnMode::Text);
+                    // a numeric column becomes text, its other rows keep their numbers exactly
+                    convertNumericColumnToTextExactly(col);
                     t->setText(row, colIdx, val.toString());
                 }
             }
