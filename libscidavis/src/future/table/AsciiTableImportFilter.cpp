@@ -2972,10 +2972,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     const SplitLineResult srPrev1 = splitLineEx(prev1, bestSep);
                     int p1Num = 0, p1Txt = 0;
                     rowStats(srPrev1.parts, p1Num, p1Txt);
-                    // The outlier sits in a value column. Above a start row accepted through its
-                    // missing cells, a row that starts with a name over the numeric first column
-                    // ("Month,2024" under "Operator,Tanaka", above "1,") is a mixed header with a
-                    // preamble line above it, not a data row.
+                    // The outlier sits in a value column ("0, <0.01", "0, OVER"). A row that
+                    // starts with a name over a first column that holds only numbers further
+                    // down ("Month,2024" under "Operator,Tanaka", above "1,100" or "1,") is a
+                    // mixed header with a preamble line above it, not a data row.
                     auto firstCellKind = [&](const SplitLineResult &sr) -> int {
                         if (sr.rawParts.isEmpty() || sr.rawParts[0].isEmpty()
                             || isMissingNumericToken(sr.rawParts[0], false))
@@ -2986,8 +2986,25 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                                 ? 1
                                 : 2;
                     };
-                    const bool p1FirstText = bestRelaxed && firstCellKind(srPrev1) == 2
-                            && firstCellKind(splitLineEx(bestStart, bestSep)) == 1;
+                    bool p1FirstText = firstCellKind(srPrev1) == 2;
+                    if (p1FirstText) {
+                        bool firstColNumbers = false;
+                        int scanned = 0;
+                        for (int k = bestStart; k < lines.size() && scanned < 32; ++k) {
+                            if (isCommentLineForSep(k, bestSep, true)
+                                || isBangSemicolonComment(k, bestSep))
+                                continue;
+                            const int kind = firstCellKind(splitLineEx(k, bestSep));
+                            if (kind == 2) {
+                                firstColNumbers = false;
+                                break;
+                            }
+                            if (kind == 1)
+                                firstColNumbers = true;
+                            ++scanned;
+                        }
+                        p1FirstText = firstColNumbers;
+                    }
                     if (p1Num >= 1 && p1Txt >= 1 && !p1FirstText) {
                         bestStart = prev1;
                         hdrStart = prev1;

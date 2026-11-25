@@ -35,7 +35,9 @@
 //        with an empty last column clears the cells it is pasted over; "3D-1" (no point) is
 //        an identifier, not a Fortran number; nearly-UTF-8 text with one stray Latin-1 byte
 //        stays UTF-8 with a warning; a "key,value" preamble line or a "Name,300" header above
-//        a first data row with a missing cell ("1,", "0,") stays a preamble / header (103j6)
+//        a first data row with a missing cell ("1,", "0,") stays a preamble / header, and a
+//        name over the numeric first column ("Month,2024") is a header, while an outlier in a
+//        value column ("0,OVER") stays a data row (103j6)
 // =============================================================================
 
 namespace {
@@ -665,6 +667,12 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
               { { 0, 1 }, { NaN, 2.5 } } },
             { "j6c", "Rate,10\nMass,5.2\nTemp,300\n0,\n1,2.5\n2,3.5\n",
               QStringLiteral("Rate,10\nMass,5.2"), {}, { { 0, 1, 2 }, { NaN, 2.5, 3.5 } } },
+            // a complete first data row: "Month,2024" (a name over the numeric first column)
+            // is the header, not a data row with an outlier
+            { "j6d", "Operator,Tanaka\nMonth,2024\n1,100\n2,200\n3,300\n",
+              QStringLiteral("Operator,Tanaka"),
+              { QStringLiteral("Month"), QStringLiteral("2024") },
+              { { 1, 2, 3 }, { 100, 200, 300 } } },
         };
         for (const ShapeCase &sc : shapes) {
             const QString path =
@@ -686,6 +694,32 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
                 }
                 CHECK_COND(ok, "103" << sc.tag << " (" << (pass == 0 ? "GUI" : "RPC")
                                      << "): " << dumpCols(cols));
+            }
+        }
+
+        // j6e: an outlier in a value column ("0,<0.01", "0,OVER") under a complete header stays
+        // the first data row (the header is not pushed into a preamble)
+        for (const char *outlier : { "<0.01", "OVER" }) {
+            QByteArray bytes = QByteArray("Idx,Val\n0,") + outlier + "\n";
+            QVector<double> idx { 0 };
+            for (int r = 1; r < 12; ++r) {
+                bytes += QByteArray::number(r) + "," + QByteArray::number(0.5 * r) + "\n";
+                idx << r;
+            }
+            const QString path = writeFile(
+                    QStringLiteral("outlier_%1.csv").arg(QString::fromLatin1(outlier).at(1)),
+                    bytes);
+            CHECK_COND(!AsciiTableImportFilter::hasDataPreamble(bytes, path),
+                       "103j6e: header above an outlier row taken for a preamble (" << outlier
+                                                                                    << ")");
+            for (int pass = 0; pass < 2; ++pass) {
+                const QVector<Col103> cols = (pass == 0) ? guiImport(path) : rpcImport(path);
+                const bool ok = cols.size() == 2 && cols[0].name == QLatin1String("Idx")
+                        && cols[1].name == QLatin1String("Val") && cols[0].numeric
+                        && numsEqual(cols[0].nums, idx)
+                        && (cols[1].numeric ? cols[1].nums.size() : cols[1].texts.size()) == 12;
+                CHECK_COND(ok, "103j6e (" << (pass == 0 ? "GUI" : "RPC") << ", " << outlier
+                                          << "): " << dumpCols(cols));
             }
         }
 
