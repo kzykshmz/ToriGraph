@@ -680,6 +680,7 @@ int runSuite106NumericsRound3(ApplicationWindow *mw);
 int runSuite107PlotFixesRound3(ApplicationWindow *mw);
 int runSuite108PlotGeometryCloneRoundTrip(ApplicationWindow *mw);
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw);
+int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw);
 int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H
