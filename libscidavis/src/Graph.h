@@ -1391,6 +1391,12 @@ private:
     QString resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const;
     bool matchesAutoAxisTitleCandidate(int axis, const QString &text) const;
     bool isAuxiliaryOrFitCurve(const QwtPlotCurve *pc, bool skipHiddenTables = true) const;
+    //! 軸題の元になるデータ曲線か（誤差棒・関数曲線・フィット曲線・スペクトログラムでなく、円・
+    //! 三角・極座標の図でもない）。\a type はその曲線の c_type。
+    bool isAutoAxisTitleSource(QwtPlotItem *it, int type) const;
+    //! 曲線が層から抜けたあと、自動の軸題を残りの曲線から決め直す。曲線が残っていないときは、
+    //! 抜けたのが軸題の元になるデータ曲線（\a removedDataCurve）なら空の層の軸題に戻す。
+    void refreshAutoAxisTitlesAfterRemoval(bool removedDataCurve);
     void applyZeroSnapOnAutoAxes();
     void applyLogAutoScalePositiveRange();
 };

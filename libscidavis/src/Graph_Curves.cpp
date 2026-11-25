@@ -1718,11 +1718,13 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
     }
 
     // From the last one down, so the indices and legend numbers of the rest stay valid.
+    bool takesDataCurve = false; // one the automatic axis titles come from
     for (int k = byIndex.size() - 1; k >= 0; --k) {
         QwtPlotItem *it = byIndex[k].second;
         const int idx = plotItemIndex(it);
         if (idx < 0)
             continue;
+        takesDataCurve = takesDataCurve || isAutoAxisTitleSource(it, c_type[idx]);
         TakenCurve t;
         t.item = it;
         t.key = c_keys[idx];
@@ -1754,6 +1756,11 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
             tc.curves.prepend(t);
     }
     tc.out = !tc.curves.isEmpty();
+    // the automatic axis titles from the curves left, as when the curves are deleted
+    // (removeCurveAt()): a column removed from y (MPa) and z left "Y / MPa", and its Undo -> Redo
+    // "y / MPa". Done before the legend is recorded, which the refresh may touch.
+    if (tc.out && takesDataCurve)
+        refreshAutoAxisTitlesAfterRemoval(true);
     if (legBefore && legendMarkerID >= 0 && d_plot->marker(legendMarkerID) == legBefore) {
         tc.legendAfter = legBefore->text();
         tc.curvesAfter = n_curves;
@@ -1989,6 +1996,17 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             sp->syncColorScale();
         }
     }
+    // the automatic axis titles from the curves now in the layer (as on adding a curve)
+    bool restoresDataCurve = false;
+    for (const auto &ri : restored) {
+        const int idx = curveIndexOfKey(ri.first, ri.second);
+        if (idx >= 0 && isAutoAxisTitleSource(ri.second, c_type[idx])) {
+            restoresDataCurve = true;
+            break;
+        }
+    }
+    if (restoresDataCurve && !d_refreshing_auto_titles)
+        refreshAutoAxisTitlesFromColumns();
     d_plot->replot();
     emit modifiedGraph();
 }
@@ -2060,14 +2078,7 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
     // 消すのが軸題の元になるデータ曲線か（誤差棒・関数曲線・フィット曲線でない）。最後の
     // 曲線を消したときに自動の軸題を空の層の軸題に戻すかどうかを決める（円・三角・極座標の
     // 図は軸題を自動で付けないので除く）。
-    bool removesDataCurve = false;
-    if (deleteItem && it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram && !isPiePlot()
-        && !isTernaryPlot() && !isPolarPlot() && !isPoleFigurePlot()) {
-        auto *dcRemoved = dynamic_cast<DataCurve *>(it);
-        const int t = c_type.value(index, -1);
-        removesDataCurve = dcRemoved && dcRemoved->table() && t != ErrorBars && t != Function
-                && t != Pie && !isAuxiliaryOrFitCurve(dcRemoved, false);
-    }
+    const bool removesDataCurve = deleteItem && isAutoAxisTitleSource(it, c_type.value(index, -1));
 
     // The error bars of a data curve go first, each with its own legend number, and the curve's
     // index is read again after them. Removing the curve's legend line first moved the numbers
@@ -2194,33 +2205,51 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
     // 自動の軸題を残りの曲線から決め直す。以前は消した直後だけ古い軸題（y と z の「Y / MPa」）
     // が残り、Undo -> Redo や再読込の後は「y / MPa」に変わっていた。利用者が付けた軸題（自動
     // でない軸）は変えない。曲線を取り出すだけのとき（deleteItem = false。列を消したときに
-    // 曲線を保持して Undo で戻す）は軸題に触れない。
-    if (deleteItem && !d_refreshing_auto_titles) {
-        if (n_curves > 0) {
-            refreshAutoAxisTitlesFromColumns();
-        } else if (removesDataCurve) {
-            // 最後の曲線を消した層は、作成直後の空の層（Plot の既定）と同じ軸題にする。空の層は
-            // 再読込や Undo で軸題を決め直さないので、ここで戻さないと古い軸題が残り続ける。
-            const bool prevRefreshing = d_refreshing_auto_titles;
-            d_refreshing_auto_titles = true;
-            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
-                if (!d_axis_title_auto[a])
-                    continue;
-                const QString emptyTitle = (a == QwtPlot::xBottom)
-                        ? Plot::tr("X Axis Title")
-                        : ((a == QwtPlot::yLeft) ? Plot::tr("Y Axis Title") : QString());
-                QwtText at = d_plot->axisTitle(a);
-                if (at.text() != emptyTitle) {
-                    at.setText(emptyTitle);
-                    d_plot->setAxisTitle(a, at);
-                }
-            }
-            d_refreshing_auto_titles = prevRefreshing;
-        }
-    }
+    // 曲線を保持して Undo で戻す）は、取り出しをまとめて終えた takeCurveItems() が更新する。
+    if (deleteItem)
+        refreshAutoAxisTitlesAfterRemoval(removesDataCurve);
 
     emit modifiedGraph();
     return taken;
+}
+
+bool Graph::isAutoAxisTitleSource(QwtPlotItem *it, int type) const
+{
+    // 円・三角・極座標の図は軸題を自動で付けない
+    if (!it || it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram || isPiePlot() || isTernaryPlot()
+        || isPolarPlot() || isPoleFigurePlot())
+        return false;
+    auto *dc = dynamic_cast<DataCurve *>(it);
+    return dc && dc->table() && type != ErrorBars && type != Function && type != Pie
+            && !isAuxiliaryOrFitCurve(dc, false);
+}
+
+void Graph::refreshAutoAxisTitlesAfterRemoval(bool removedDataCurve)
+{
+    if (d_refreshing_auto_titles)
+        return;
+    if (n_curves > 0) {
+        refreshAutoAxisTitlesFromColumns();
+        return;
+    }
+    if (!removedDataCurve)
+        return;
+    // 最後の曲線が抜けた層は、作成直後の空の層（Plot の既定）と同じ軸題にする。空の層は
+    // 再読込や Undo で軸題を決め直さないので、ここで戻さないと古い軸題が残り続ける。
+    d_refreshing_auto_titles = true;
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        if (!d_axis_title_auto[a])
+            continue;
+        const QString emptyTitle = (a == QwtPlot::xBottom)
+                ? Plot::tr("X Axis Title")
+                : ((a == QwtPlot::yLeft) ? Plot::tr("Y Axis Title") : QString());
+        QwtText at = d_plot->axisTitle(a);
+        if (at.text() != emptyTitle) {
+            at.setText(emptyTitle);
+            d_plot->setAxisTitle(a, at);
+        }
+    }
+    d_refreshing_auto_titles = false;
 }
 
 bool Graph::modifyFunctionCurve(ApplicationWindow *parent, int curve, int type,
