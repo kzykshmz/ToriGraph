@@ -664,5 +664,6 @@ int runSuite90FftWindowTeardown(ApplicationWindow *mw);
 int runSuite91GraphCopyStackTransforms(ApplicationWindow *mw);
 int runSuite92RenamePropagation(ApplicationWindow *mw);
 int runSuite93WorksheetSortAndBlankRows(ApplicationWindow *mw);
+int runSuite96XrdPeaksAndUnsortedDiff(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

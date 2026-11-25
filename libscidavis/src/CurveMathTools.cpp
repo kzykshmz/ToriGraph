@@ -10512,6 +10512,27 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         ySmooth[size_t(i)] = 0.25 * yNet[size_t(i - 1)] + 0.50 * yNet[size_t(i)] + 0.25 * yNet[size_t(i + 1)];
 
     const int promSpan = std::max(3, static_cast<int>(std::llround(1.4 / avgStep)));
+    // Point-to-point noise of the measured pattern around sample i: robust (MAD) spread of the
+    // second-difference residual y_k - (y_{k-1} + y_{k+1}) / 2 within +-promSpan, scaled to one
+    // sample's standard deviation (the residual of white noise has variance 1.5 sigma^2). The
+    // median ignores the few samples where a peak's curvature dominates the residual.
+    std::vector<double> noiseBuf;
+    auto localNoiseSigma = [&](int i) -> double {
+        const int lo = std::max(1, i - promSpan);
+        const int hi = std::min(N - 2, i + promSpan);
+        if (hi - lo + 1 < 5)
+            return 0.0;
+        noiseBuf.clear();
+        for (int k = lo; k <= hi; ++k)
+            noiseBuf.push_back(yRaw[size_t(k)] - 0.5 * (yRaw[size_t(k - 1)] + yRaw[size_t(k + 1)]));
+        auto mid = noiseBuf.begin() + noiseBuf.size() / 2;
+        std::nth_element(noiseBuf.begin(), mid, noiseBuf.end());
+        const double med = *mid;
+        for (double &v : noiseBuf)
+            v = std::fabs(v - med);
+        std::nth_element(noiseBuf.begin(), mid, noiseBuf.end());
+        return 1.4826 * (*mid) / std::sqrt(1.5);
+    };
     std::vector<int> candIdx;
     for (int i = 2; i < N - 2; ++i) {
         if (ySmooth[size_t(i)] < 0.035 * maxNet || yNet[size_t(i)] < 0.035 * maxNet)
@@ -10520,15 +10541,35 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
               && ySmooth[size_t(i)] > ySmooth[size_t(i + 1)])) {
             continue;
         }
-        double minL = ySmooth[size_t(i)];
-        for (int k = std::max(0, i - promSpan); k < i; ++k)
+        // Topographic prominence: on each side, walk away from the apex until the curve rises
+        // above it (or the +-promSpan window ends) and take the lowest point passed; the base
+        // is the higher of the two minima. The old base was the lowest point anywhere in the
+        // +-1.4 deg window, so a noise wiggle on the flank of a real reflection got the real
+        // peak's whole height as its prominence and was reported as a peak of its own (and
+        // could take the real reflection's (hkl), wrecking the Williamson-Hall fit). For an
+        // isolated peak, and for the taller of two neighbours, nothing changes.
+        const double yi = ySmooth[size_t(i)];
+        double minL = yi;
+        for (int k = i - 1; k >= std::max(0, i - promSpan); --k) {
+            if (ySmooth[size_t(k)] > yi)
+                break;
             minL = std::min(minL, ySmooth[size_t(k)]);
-        double minR = ySmooth[size_t(i)];
-        for (int k = i + 1; k <= std::min(N - 1, i + promSpan); ++k)
+        }
+        double minR = yi;
+        for (int k = i + 1; k <= std::min(N - 1, i + promSpan); ++k) {
+            if (ySmooth[size_t(k)] > yi)
+                break;
             minR = std::min(minR, ySmooth[size_t(k)]);
-        const double prom = ySmooth[size_t(i)] - std::max(minL, minR);
-        if (prom >= 0.03 * maxNet)
-            candIdx.push_back(i);
+        }
+        const double prom = yi - std::max(minL, minR);
+        if (prom < 0.03 * maxNet)
+            continue;
+        // Significance against the counting noise: a maximum that stands less than 5 sigma
+        // above its surroundings is not a resolved reflection. Noise-free data (sigma = 0)
+        // are unaffected.
+        if (prom < 5.0 * localNoiseSigma(i))
+            continue;
+        candIdx.push_back(i);
     }
 
     // Merge close candidates keeping the taller peak, cap at top 20. Candidates closer than
@@ -10687,11 +10728,17 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         double fwhmObs = fwhm0;
         double bestEta = 0.5;
         if (corePts.size() >= 5) {
-            auto evalPvRss = [&](double wTry, double etaTry, double hTry) -> double {
+            // The centre is refined together with width, shape and height. The 3-point apex
+            // above follows the noise of the top samples: on counting-noise data it sat 0.08 deg
+            // (0.15 FWHM) off the (222) centre, and the profile pinned there came out 24 % too
+            // wide (W-H size 64 nm instead of 40 nm). On noise-free data the 3-point apex is
+            // already the least-squares centre and is kept.
+            double bestX = xApex;
+            auto evalPvRss = [&](double wTry, double etaTry, double hTry, double xTry) -> double {
                 const double halfW = std::max(1e-6, 0.5 * wTry);
                 double rss = 0.0;
                 for (int k : corePts) {
-                    const double u = (ttGrid[size_t(k)] - xApex) / halfW;
+                    const double u = (ttGrid[size_t(k)] - xTry) / halfW;
                     const double u2 = u * u;
                     const double pv = etaTry / (1.0 + u2) + (1.0 - etaTry) * std::exp(-M_LN2 * u2);
                     const double diff = yNet[size_t(k)] - hTry * pv;
@@ -10701,8 +10748,11 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             };
             double bestW = fwhm0;
             double bestH = hApex;
-            double bestRss = evalPvRss(bestW, bestEta, bestH);
+            double bestRss = evalPvRss(bestW, bestEta, bestH, bestX);
             double stepW = 0.12 * fwhm0;
+            double stepX = 0.10 * fwhm0;
+            const double xLo = xApex - 0.3 * fwhm0;
+            const double xHi = xApex + 0.3 * fwhm0;
             double stepEta = 0.20;
             double stepH = 0.03 * hApex;
             const double wLo = 0.72 * fwhm0;
@@ -10710,7 +10760,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             for (int it = 0; it < 18; ++it) {
                 for (int dir : { -1, 1 }) {
                     const double candW = std::clamp(bestW + dir * stepW, wLo, wHi);
-                    const double r = evalPvRss(candW, bestEta, bestH);
+                    const double r = evalPvRss(candW, bestEta, bestH, bestX);
                     if (r < bestRss) {
                         bestRss = r;
                         bestW = candW;
@@ -10718,7 +10768,7 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 }
                 for (int dir : { -1, 1 }) {
                     const double candEta = std::clamp(bestEta + dir * stepEta, 0.0, 1.0);
-                    const double r = evalPvRss(bestW, candEta, bestH);
+                    const double r = evalPvRss(bestW, candEta, bestH, bestX);
                     if (r < bestRss) {
                         bestRss = r;
                         bestEta = candEta;
@@ -10726,18 +10776,28 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 }
                 for (int dir : { -1, 1 }) {
                     const double candH = std::clamp(bestH + dir * stepH, 0.85 * hApex, 1.15 * hApex);
-                    const double r = evalPvRss(bestW, bestEta, candH);
+                    const double r = evalPvRss(bestW, bestEta, candH, bestX);
                     if (r < bestRss) {
                         bestRss = r;
                         bestH = candH;
                     }
                 }
+                for (int dir : { -1, 1 }) {
+                    const double candX = std::clamp(bestX + dir * stepX, xLo, xHi);
+                    const double r = evalPvRss(bestW, bestEta, bestH, candX);
+                    if (r < bestRss) {
+                        bestRss = r;
+                        bestX = candX;
+                    }
+                }
+                stepX *= 0.65;
                 stepW *= 0.65;
                 stepEta *= 0.65;
                 stepH *= 0.65;
             }
             fwhmObs = bestW;
             hApex = bestH;
+            xApex = bestX;
         }
 
         const double thRad = 0.5 * xApex * (M_PI / 180.0);

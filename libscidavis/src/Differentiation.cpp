@@ -81,6 +81,11 @@ void Differentiation::init()
 {
     setObjectName(tr("Derivative"));
     d_min_points = 4;
+    // Differentiate in X order, as Integration and Interpolation do. In row order an unsorted
+    // curve (shuffled rows, a scan that turns back) gave wrong slopes without any warning.
+    // Points that share an X become adjacent after the sort, so output() still refuses them.
+    // A descending curve gives the same slopes as before, now listed in ascending X.
+    d_sort_data = true;
 }
 
 void Differentiation::output()
