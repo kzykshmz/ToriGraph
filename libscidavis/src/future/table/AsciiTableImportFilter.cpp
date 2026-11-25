@@ -1987,6 +1987,34 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
     return result;
 }
 
+// A metadata preamble is text ("key,value,unit", "Integration Time (sec): 0.1"). A line set
+// aside that holds only numbers is a data row the block search skipped (ragged rows whose
+// width grows further down, "a,b / 1,2 / 3,4 / 5,6,7", "t,T1 / 0,20 / 2,22,32", blocks of
+// rows separated by blank lines): the file has no preamble then. Shared by the GUI import
+// (importLabTextDataInternal) and AsciiTableImportFilter::hasDataPreamble (app.import_csv).
+bool preambleHoldsNumericRow(const QStringList &preLines, const QString &sep)
+{
+    for (const QString &line : preLines) {
+        const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
+                ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
+                : line.split(sep);
+        int num = 0, txt = 0;
+        for (const QString &cell : cells) {
+            const QString t = cell.trimmed();
+            double v = 0.0;
+            if (t.isEmpty() || isMissingNumericToken(t, false))
+                continue;
+            if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
+                ++num;
+            else
+                ++txt;
+        }
+        if (num >= 1 && txt == 0)
+            return true;
+    }
+    return false;
+}
+
 future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QString &tableName,
                                          const QString &filePathHint, const QString &separatorHint,
                                          const QString &encodingHint, int unitsRowHint,
@@ -2717,11 +2745,34 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         const QChar(&seps)[4] = (europeanSemicolonDetected || effectiveLocale.decimalPoint() == QLatin1Char(','))
                 ? sepsEuro
                 : sepsC;
+        // Every line holds the same number of TABs (one or more): the TAB is the separator of the
+        // whole file, there is no preamble of another shape above the table. A ',' / ';' found
+        // inside the cells is then a decimal comma ("0,50<TAB>1,234"), not the separator: splitting
+        // at it would cut the values apart ("0" / "50<TAB>1" / "234") and push the header into a
+        // preamble.
+        bool tabSeparatedFile = false;
+        {
+            int tabsPerLine = -1;
+            bool same = !lines.isEmpty();
+            for (int i = 0; same && i < lines.size(); ++i) {
+                int tabs = 0;
+                for (int k = lines[i].start; k < lines[i].end; ++k) {
+                    if (buf[k] == QLatin1Char('\t'))
+                        ++tabs;
+                }
+                if (tabsPerLine < 0)
+                    tabsPerLine = tabs;
+                same = tabs == tabsPerLine;
+            }
+            tabSeparatedFile = same && tabsPerLine >= 1;
+        }
         int bestStart = -1, bestFields = 0, bestRawFields = 0;
         bool bestRelaxed = false;
         QChar bestSep;
         for (const QChar sep : seps) {
             if (europeanSemicolonDetected && sep == QLatin1Char(','))
+                continue;
+            if (tabSeparatedFile && (sep == QLatin1Char(',') || sep == QLatin1Char(';')))
                 continue;
             for (int i = 0; i < lines.size(); ++i) {
                 if (bestStart >= 0 && i > bestStart)
@@ -2960,58 +3011,67 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 return n;
             };
 
-            // If a numeric data row right above bestStart contains a non-numeric outlier
+            // If numeric data rows right above bestStart contain a non-numeric outlier
             // (e.g. "0, <0.01" or "0, OVER") directly below an already width-matched pure-text
-            // header/unit/comment row (e.g. "Idx, Val"), include it in the data block instead of
-            // misclassifying it as a mixed header and discarding the real header into preamble.
-            while (bestStart > 0) {
-                const int prev1 = prevNonCommentIdx(bestStart - 1);
-                const int prev2 = (prev1 >= 0) ? prevNonCommentIdx(prev1 - 1) : -1;
-                if (prev1 >= 0 && prev2 >= 0 && isHeaderCandidateWithFields(prev1)
-                    && isPureTextRowWithFields(prev2) && nonEmptyCellCount(prev2) >= bestFields) {
-                    const SplitLineResult srPrev1 = splitLineEx(prev1, bestSep);
-                    int p1Num = 0, p1Txt = 0;
-                    rowStats(srPrev1.parts, p1Num, p1Txt);
-                    // The outlier sits in a value column ("0, <0.01", "0, OVER"). A row that
-                    // starts with a name over a first column that holds only numbers further
-                    // down ("Month,2024" under "Operator,Tanaka", above "1,100" or "1,") is a
-                    // mixed header with a preamble line above it, not a data row.
-                    auto firstCellKind = [&](const SplitLineResult &sr) -> int {
-                        if (sr.rawParts.isEmpty() || sr.rawParts[0].isEmpty()
-                            || isMissingNumericToken(sr.rawParts[0], false))
-                            return 0;
-                        double dv = 0.0;
-                        return tryParseLabDouble(sr.rawParts[0], primaryLoc,
-                                                 hasDistinctNumericLocale, dv)
-                                ? 1
-                                : 2;
-                    };
-                    bool p1FirstText = firstCellKind(srPrev1) == 2;
-                    if (p1FirstText) {
-                        bool firstColNumbers = false;
-                        int scanned = 0;
-                        for (int k = bestStart; k < lines.size() && scanned < 32; ++k) {
-                            if (isCommentLineForSep(k, bestSep, true)
-                                || isBangSemicolonComment(k, bestSep))
-                                continue;
-                            const int kind = firstCellKind(splitLineEx(k, bestSep));
-                            if (kind == 2) {
-                                firstColNumbers = false;
-                                break;
-                            }
-                            if (kind == 1)
-                                firstColNumbers = true;
-                            ++scanned;
+            // header/unit/comment row (e.g. "Idx, Val"), include them in the data block instead of
+            // misclassifying the lowest one as a mixed header and discarding the real header and
+            // the rows above into the preamble. Several such rows may follow each other
+            // ("t_h,H_ppm / 0,<0.01 / 1,<0.01 / 2,0.05", "Slice,Vf / 1,N.A. / 2,N.A. / 3,0.52",
+            // "Time,Counts / 0,"12,345" / 1,"5,432" / 3,987"): every one of them must be such an
+            // outlier row, and the row above the topmost one the pure-text header.
+            auto isOutlierDataRow = [&](int idx) -> bool {
+                if (idx < 0 || !isHeaderCandidateWithFields(idx))
+                    return false;
+                const SplitLineResult srRow = splitLineEx(idx, bestSep);
+                int rowNum = 0, rowTxt = 0;
+                rowStats(srRow.parts, rowNum, rowTxt);
+                // The outlier sits in a value column ("0, <0.01", "0, OVER"). A row that
+                // starts with a name over a first column that holds only numbers further
+                // down ("Month,2024" under "Operator,Tanaka", above "1,100" or "1,") is a
+                // mixed header with a preamble line above it, not a data row.
+                auto firstCellKind = [&](const SplitLineResult &sr) -> int {
+                    if (sr.rawParts.isEmpty() || sr.rawParts[0].isEmpty()
+                        || isMissingNumericToken(sr.rawParts[0], false))
+                        return 0;
+                    double dv = 0.0;
+                    return tryParseLabDouble(sr.rawParts[0], primaryLoc, hasDistinctNumericLocale,
+                                             dv)
+                            ? 1
+                            : 2;
+                };
+                bool firstText = firstCellKind(srRow) == 2;
+                if (firstText) {
+                    bool firstColNumbers = false;
+                    int scanned = 0;
+                    for (int k = bestStart; k < lines.size() && scanned < 32; ++k) {
+                        if (isCommentLineForSep(k, bestSep, true)
+                            || isBangSemicolonComment(k, bestSep))
+                            continue;
+                        const int kind = firstCellKind(splitLineEx(k, bestSep));
+                        if (kind == 2) {
+                            firstColNumbers = false;
+                            break;
                         }
-                        p1FirstText = firstColNumbers;
+                        if (kind == 1)
+                            firstColNumbers = true;
+                        ++scanned;
                     }
-                    if (p1Num >= 1 && p1Txt >= 1 && !p1FirstText) {
-                        bestStart = prev1;
-                        hdrStart = prev1;
-                        continue;
-                    }
+                    firstText = firstColNumbers;
                 }
-                break;
+                return rowNum >= 1 && rowTxt >= 1 && !firstText;
+            };
+            {
+                int top = -1;
+                int up = prevNonCommentIdx(bestStart - 1);
+                while (up >= 0 && isOutlierDataRow(up)) {
+                    top = up;
+                    up = prevNonCommentIdx(up - 1);
+                }
+                if (top >= 0 && up >= 0 && isPureTextRowWithFields(up)
+                    && nonEmptyCellCount(up) >= bestFields) {
+                    bestStart = top;
+                    hdrStart = top;
+                }
             }
 
             const int cand1 = prevNonCommentIdx(bestStart - 1);
@@ -3057,10 +3117,19 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 while (preambleEnd > 0 && isCommentLineForSep(preambleEnd - 1, bestSep, false))
                     --preambleEnd;
             }
+            QStringList pre;
+            for (int i = 0; i < preambleEnd; ++i)
+                pre << QString(buf + lines[i].start, lines[i].end - lines[i].start).trimmed();
+            // Rows that hold only numbers above the block are data rows the block search skipped
+            // (a table whose rows get wider further down, blocks separated by blank lines): no
+            // preamble, the file is read from its first line as app.import_csv reads it
+            // (hasDataPreamble() applies the same rule).
+            if (hdrStart > 0 && preambleHoldsNumericRow(pre, QString(bestSep))) {
+                hdrStart = 0;
+                forcedUnitsRow = -1;
+                forcedCommentsRow = -1;
+            }
             if (hdrStart > 0) {
-                QStringList pre;
-                for (int i = 0; i < preambleEnd; ++i)
-                    pre << QString(buf + lines[i].start, lines[i].end - lines[i].start).trimmed();
                 skippedNonBlankLines += preambleEnd;
                 preambleSeparator = QString(bestSep);
                 // Skip any '#'-comment lines immediately above numeric data (preserving '# col1, col2' header)
@@ -3429,8 +3498,10 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             }
             return false;
         };
+        // (the second row may be wider: a table whose rows get wider further down, "1,2 / 3,4,5",
+        // as app.import_csv reads it)
         if (previewRecords.size() >= 2 && previewRecords[0].size() >= 2
-            && previewRecords[0].size() == previewRecords[1].size()) {
+            && previewRecords[0].size() <= previewRecords[1].size()) {
             bool allRow0Num = true;
             bool allRow1Num = true;
             bool anyFloatMarkerInRow0 = false;
@@ -4831,31 +4902,12 @@ bool AsciiTableImportFilter::hasDataPreamble(const QByteArray &rawBytes,
     // preamble in this sense)
     bool found = !probe && !g_lastImportReport.preamble.isEmpty();
     if (found) {
-        // A metadata preamble is text ("key,value,unit", "Integration Time (sec): 0.1"). A line
-        // set aside that holds only numbers is a data row the block search skipped (ragged
-        // rows, "a,b,c / 1,2 / 3,4,5,6"): no preamble then.
-        const QString sep = g_lastImportReport.separator;
-        const QStringList preLines = g_lastImportReport.preamble.split(QLatin1Char('\n'));
-        for (const QString &line : preLines) {
-            const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
-                    ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
-                    : line.split(sep);
-            int num = 0, txt = 0;
-            for (const QString &cell : cells) {
-                const QString t = cell.trimmed();
-                double v = 0.0;
-                if (t.isEmpty() || isMissingNumericToken(t, false))
-                    continue;
-                if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
-                    ++num;
-                else
-                    ++txt;
-            }
-            if (num >= 1 && txt == 0) {
-                found = false;
-                break;
-            }
-        }
+        // A line set aside that holds only numbers is a data row the block search skipped
+        // (ragged rows, "a,b,c / 1,2 / 3,4,5,6"): no preamble then. The import itself drops
+        // such a preamble too (importLabTextDataInternal); this is kept as a guard.
+        if (preambleHoldsNumericRow(g_lastImportReport.preamble.split(QLatin1Char('\n')),
+                                    g_lastImportReport.separator))
+            found = false;
     }
     g_lastImportReport = savedReport;
     g_lastDecodedEncoding = savedEncoding;
