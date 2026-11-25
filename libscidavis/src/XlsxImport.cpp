@@ -1162,18 +1162,36 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
                 ++cnt;
         return cnt;
     };
+    // Per target column, the last row holding a number and the last row holding a non-missing
+    // non-number (-1 = none), found by one scan from the bottom. Rescanning [from, lastRow] for
+    // every candidate row was O(N^2) for a text ID column next to a column whose last row is text.
+    QVector<int> lastNumericRow, lastNonNumericRow;
+    auto ensureTailScan = [&]() {
+        if (!lastNumericRow.isEmpty())
+            return;
+        lastNumericRow.fill(-1, spanCols);
+        lastNonNumericRow.fill(-1, spanCols);
+        for (int c : targetCols) {
+            int lastNum = -1, lastText = -1;
+            for (int r = lastRow; r >= firstRow && (lastNum < 0 || lastText < 0); --r) {
+                const Cell &cell = cellAt(sheet, r, c);
+                if (isMissingOrErrorCell(cell))
+                    continue;
+                if (isNumericCell(cell)) {
+                    if (lastNum < 0)
+                        lastNum = r;
+                } else if (lastText < 0) {
+                    lastText = r;
+                }
+            }
+            lastNumericRow[c - firstCol] = lastNum;
+            lastNonNumericRow[c - firstCol] = lastText;
+        }
+    };
     // Every non-missing cell of rows [from, lastRow] in column c is a number, and there is one.
     auto columnNumericFrom = [&](int c, int from) {
-        bool any = false;
-        for (int r = from; r <= lastRow; ++r) {
-            const Cell &cell = cellAt(sheet, r, c);
-            if (isMissingOrErrorCell(cell))
-                continue;
-            if (!isNumericCell(cell))
-                return false;
-            any = true;
-        }
-        return any;
+        ensureTailScan();
+        return lastNonNumericRow[c - firstCol] < from && lastNumericRow[c - firstCol] >= from;
     };
 
     auto columnMostlyNumericFrom = [&](int c, int from) {
@@ -1196,21 +1214,12 @@ QList<Column *> sheetToColumns(const Sheet &sheet, bool date1904, SheetLayout *o
     auto allColsNumericFrom = [&](int from) {
         if (from > lastRow || targetCols.isEmpty())
             return false;
-        int numCols = 0;
+        // every target column is numeric from `from` on (same result as rescanning the rows)
         for (int c : targetCols) {
-            bool anyNum = false;
-            for (int r = from; r <= lastRow; ++r) {
-                const Cell &cell = cellAt(sheet, r, c);
-                if (isMissingOrErrorCell(cell))
-                    continue;
-                if (!isNumericCell(cell))
-                    return false;
-                anyNum = true;
-            }
-            if (anyNum)
-                ++numCols;
+            if (!columnNumericFrom(c, from))
+                return false;
         }
-        return numCols >= 1 && numCols == targetCols.size();
+        return true;
     };
 
     int firstNumericRow = -1;

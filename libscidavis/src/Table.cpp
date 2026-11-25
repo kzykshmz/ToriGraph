@@ -292,7 +292,8 @@ Table::Table(ScriptingEnv *env, const QString &fname, const QString &sep, int ig
                                         AsciiTableImportFilter::dialogDefaultEncoding(),
                                         ignoredLines,
                                         AsciiTableImportFilter::dialogDefaultUnitsRow(),
-                                        d_future_table->columnCount());
+                                        d_future_table->columnCount(),
+                                        future::Table::numericLocaleNameForImport(numericLocale));
     }
     init();
 }
@@ -2195,6 +2196,7 @@ bool Table::reimportFromSource()
         }
         return false;
     }
+    const QString numericLocaleName = d_future_table->importSourceNumericLocale();
     if (!QFileInfo::exists(path)) {
         const QString msg = tr("Source file not found:\n%1").arg(QDir::toNativeSeparators(path));
         if (!ApplicationWindow::isNonInteractiveContext(this))
@@ -2237,6 +2239,9 @@ bool Table::reimportFromSource()
         filter.set_units_row(unitsRow);
         if (ignoredLines > 0)
             filter.set_ignored_lines(ignoredLines);
+        // Same decimal mark as the original import (German "1,5"); unrecorded = C locale.
+        if (!numericLocaleName.isEmpty())
+            filter.set_numeric_locale(QLocale(numericLocaleName));
         std::unique_ptr<future::Table> imported(
                 static_cast<future::Table *>(filter.importAspect(file)));
         if (!imported) {
@@ -2362,7 +2367,7 @@ bool Table::reimportFromSource()
             d_future_table->insertColumns(common, extraCols);
     }
     d_future_table->setImportSource(path, sheet, sep, enc, ignoredLines, unitsRow,
-                                    newCols.size());
+                                    newCols.size(), numericLocaleName);
     const QVector<int> derivedCols =
             collectPreservedFormulaCols(d_future_table, newCols.size(), prevRows, maxRows);
     if (!derivedCols.isEmpty() && d_auto_recalc_formulas && !isUndoRedoReplaying()) {

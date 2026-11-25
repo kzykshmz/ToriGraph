@@ -53,6 +53,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 80, "runSuite80Round4P0P1RegressionGate", &runSuite80Round4P0P1RegressionGate },
     { 81, "runSuite81NumericalTransformCorrectness", &runSuite81NumericalTransformCorrectness },
     { 82, "runSuite82JsonRpcParamValidation", &runSuite82JsonRpcParamValidation },
+    { 83, "runSuite83ImportRobustness", &runSuite83ImportRobustness },
     { 84, "runSuite84ProjectSerializationFidelity", &runSuite84ProjectSerializationFidelity },
 };
 
@@ -5519,6 +5520,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite82JsonRpcParamValidation(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite83ImportRobustness(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite84ProjectSerializationFidelity(mw) != 0)

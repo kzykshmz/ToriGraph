@@ -2360,7 +2360,7 @@ void Table::copy(Table *other)
     setImportSource(other->importSourcePath(), other->importSourceSheet(),
                     other->importSourceSeparator(), other->importSourceEncoding(),
                     other->importSourceIgnoredLines(), other->importSourceUnitsRow(),
-                    other->importSourceColumnCount());
+                    other->importSourceColumnCount(), other->importSourceNumericLocale());
     setCaptionSpec(other->captionSpec());
     setComment(other->comment());
     for (int i = 0; i < columnCount(); i++)
@@ -2843,8 +2843,9 @@ void Table::setAutoRecalcFormulas(bool on)
 
 void Table::setImportSource(const QString &path, const QString &sheet, const QString &separator,
                             const QString &encoding, int ignoredLines, int unitsRow,
-                            int importColumnCount)
+                            int importColumnCount, const QString &numericLocaleName)
 {
+    d_import_numeric_locale = numericLocaleName;
     d_import_source_path = path;
     d_import_source_sheet = sheet;
     d_import_source_separator = separator;
@@ -2881,6 +2882,8 @@ void Table::save(QXmlStreamWriter *writer) const
         if (d_import_column_count >= 0)
             writer->writeAttribute("import_source_columns",
                                    QString::number(d_import_column_count));
+        if (!d_import_numeric_locale.isEmpty())
+            writer->writeAttribute("import_source_numeric_locale", d_import_numeric_locale);
     }
     writeCommentElement(writer);
 
@@ -2924,7 +2927,8 @@ bool Table::load(XmlStreamReader *reader)
                         attrs.value("import_source_sheet").toString(),
                         attrs.value("import_source_separator").toString(),
                         attrs.value("import_source_encoding").toString(), loadedIgnored,
-                        loadedUnits, loadedCols);
+                        loadedUnits, loadedCols,
+                        attrs.value("import_source_numeric_locale").toString());
 
         // read dimensions
         bool ok1, ok2;

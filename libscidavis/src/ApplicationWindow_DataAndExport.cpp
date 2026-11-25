@@ -1019,6 +1019,33 @@ void ApplicationWindow::importASCII()
     QLocale::setDefault(save_locale);
 }
 
+// Renames columns 0..targetNames.size()-1 of `ft` to targetNames (empty entry = keep the name)
+// through temporary names first, so that swapped headers ([A,B] -> [B,A]) do not collide with
+// a sibling and get uniquified to "B 1". Same scheme as Table::reimportFromSource().
+static void renameImportedColumnsViaTemp(future::Table *ft, const QVector<QString> &targetNames)
+{
+    if (!ft)
+        return;
+    const int n = qMin(targetNames.size(), ft->columnCount());
+    int tmpIdx = 0;
+    for (int i = 0; i < n; ++i) {
+        Column *dst = ft->column(i);
+        if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+            continue;
+        QString tmpName;
+        do {
+            tmpName = QStringLiteral("__tg_import_tmp_%1").arg(tmpIdx++);
+        } while (ft->column(tmpName, false) != nullptr || targetNames.contains(tmpName));
+        dst->setName(tmpName);
+    }
+    for (int i = 0; i < n; ++i) {
+        Column *dst = ft->column(i);
+        if (!dst || targetNames[i].isEmpty() || dst->name() == targetNames[i])
+            continue;
+        dst->setName(targetNames[i]);
+    }
+}
+
 void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                                     const QString &local_column_separator, int local_ignored_lines,
                                     bool local_rename_columns, bool local_strip_spaces,
@@ -1155,7 +1182,9 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 tempOwner.reset(static_cast<future::Table *>(filter.importAspect(in)));
         }
         future::Table *temp = tempOwner.get();
-        if (!temp) {
+        // An empty file (0 bytes, blanks or '#' comments only) parses into a table without
+        // columns; overwriting with it would delete the imported columns of the worksheet.
+        if (!temp || temp->columnCount() == 0) {
             const QString msg = openErr.isEmpty()
                     ? tr("Could not parse any columns from \"%1\".").arg(QFileInfo(file).fileName())
                     : tr("Could not open \"%1\": %2").arg(QFileInfo(file).fileName(), openErr);
@@ -1267,6 +1296,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             Q_ASSERT(table->columnCount() >= temp->columnCount());
             int start_row = table->rowCount();
             table->d_future_table->setRowCount(table->rowCount() + temp->rowCount());
+            QVector<QString> targetNames(temp->columnCount());
             for (int col = 0; col < temp->columnCount(); col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
@@ -1276,8 +1306,9 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
                 copyColumnMetadata(src_col, dst_col, false);
                 if (local_rename_columns)
-                    dst_col->setName(src_col->name());
+                    targetNames[col] = src_col->name();
             }
+            renameImportedColumnsViaTemp(table->d_future_table, targetNames);
             break;
         }
         case ImportASCIIDialog::Overwrite: {
@@ -1302,6 +1333,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
 
             if (prevRows != newRows)
                 table->d_future_table->setRowCount(newRows);
+            QVector<QString> targetNames(common);
             for (int col = 0; col < common; col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
@@ -1312,8 +1344,9 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 }
                 copyColumnMetadata(src_col, dst_col, true);
                 if (local_rename_columns)
-                    dst_col->setName(src_col->name());
+                    targetNames[col] = src_col->name();
             }
+            renameImportedColumnsViaTemp(table->d_future_table, targetNames);
             if (temp->columnCount() > common) {
                 QList<Column *> extraCols;
                 extraCols.reserve(temp->columnCount() - common);
@@ -1345,7 +1378,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 table->d_future_table->setImportSource(
                         file, QString(), local_column_separator,
                         AsciiTableImportFilter::dialogDefaultEncoding(), local_ignored_lines,
-                        AsciiTableImportFilter::dialogDefaultUnitsRow(), temp->columnCount());
+                        AsciiTableImportFilter::dialogDefaultUnitsRow(), temp->columnCount(),
+                        future::Table::numericLocaleNameForImport(local_numeric_locale));
             }
             for (int c = temp->columnCount(); c < table->columnCount(); ++c) {
                 Column *uc = table->column(c);

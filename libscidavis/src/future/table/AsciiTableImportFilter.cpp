@@ -82,6 +82,12 @@ QString g_dialogEncoding;
 int g_dialogUnitsRow = -1;
 AsciiTableImportFilter::ImportReport g_lastImportReport;
 
+// Upper bounds of one text import (checked before the column buffers are allocated). Same
+// order as XlsxImport's kMaxCols / kMaxTotalCells; a bit larger because big instrument logs are
+// usually exchanged as text (1e8 numeric cells = 800 MB of doubles).
+constexpr int kMaxAsciiImportColumns = 65536;
+constexpr qint64 kMaxAsciiImportCells = 100000000LL;
+
 void attachStdDisplayFormat(Column *col)
 {
     if (!col)
@@ -1528,24 +1534,37 @@ bool readNextRecordSpans(const QChar *buf, int len, int &ioPos, const QString &e
             }
         }
 
-        if (scanPos < len && buf[scanPos] == QLatin1Char('"')) {
-            cell.quoted = true;
-            pos = scanPos + 1;
-            const int qStart = pos;
-            bool hasEsc = false;
-            while (pos < len) {
-                const QChar ch = buf[pos];
+        // A quote that is still open at EOF does not start a multi-line field: like
+        // scanLogicalLineEnd(), the record then ends at the physical line end and the cell is
+        // read as plain text (otherwise every following line is swallowed into this one cell).
+        bool quotedField = (scanPos < len && buf[scanPos] == QLatin1Char('"'));
+        bool hasEsc = false;
+        int quoteEnd = scanPos + 1;
+        if (quotedField) {
+            bool crossesLine = false;
+            while (quoteEnd < len) {
+                const QChar ch = buf[quoteEnd];
                 if (ch == QLatin1Char('"')) {
-                    if (pos + 1 < len && buf[pos + 1] == QLatin1Char('"')) {
+                    if (quoteEnd + 1 < len && buf[quoteEnd + 1] == QLatin1Char('"')) {
                         hasEsc = true;
-                        pos += 2;
+                        quoteEnd += 2;
                     } else {
                         break;
                     }
                 } else {
-                    ++pos;
+                    if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
+                        crossesLine = true;
+                    ++quoteEnd;
                 }
             }
+            if (quoteEnd >= len && crossesLine)
+                quotedField = false;
+        }
+
+        if (quotedField) {
+            cell.quoted = true;
+            const int qStart = scanPos + 1;
+            pos = quoteEnd;
             const int qEnd = pos;
             if (pos < len && buf[pos] == QLatin1Char('"'))
                 ++pos;
@@ -1726,6 +1745,9 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
     };
 
     const bool useCustomLoc = (numericLocale.decimalPoint() != QLatin1Char('.'));
+    // Same as the main path: never read the group separator, or German "12.345" becomes 12345.
+    QLocale specLoc = numericLocale;
+    specLoc.setNumberOptions(QLocale::RejectGroupSeparator);
     QSet<QString> usedShortNames;
     auto makeUniqueShort = [&usedShortNames](const QString &candidate, int idx) -> QString {
         QString base = sanitizeShortColumnIdentifier(candidate);
@@ -1769,7 +1791,7 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
                     if (cell.isEmpty() || isMissingNumericToken(cell, false))
                         continue;
                     double dv = 0.0;
-                    if (!tryParseLabDouble(cell, numericLocale, useCustomLoc, dv)) {
+                    if (!tryParseLabDouble(cell, specLoc, useCustomLoc, dv)) {
                         allNumeric = false;
                         break;
                     }
@@ -1792,7 +1814,7 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
                     const QString cell = (c < sc.rows[r].size()) ? sc.rows[r][c] : QString();
                     double dv = 0.0;
                     if (!cell.isEmpty() && !isMissingNumericToken(cell, false)
-                        && tryParseLabDouble(cell, numericLocale, useCustomLoc, dv)
+                        && tryParseLabDouble(cell, specLoc, useCustomLoc, dv)
                         && std::isfinite(dv)) {
                         (*vec)[r] = dv;
                     } else {
@@ -3477,6 +3499,18 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
         }
     }
     maxCols = std::max(1, maxCols);
+
+    // One malformed line with a huge number of fields would make maxCols x dataRowCount buffers
+    // (and as many Column objects) below and end in bad_alloc. Refuse such a file before any
+    // allocation, like XlsxImport (kMaxCols / kMaxTotalCells); nullptr = "could not parse".
+    if (maxCols > kMaxAsciiImportColumns
+        || qint64(maxCols) * qint64(std::max(1, dataRowCount)) > kMaxAsciiImportCells) {
+        qWarning("ASCII import refused: %d columns x %d rows exceeds the import limit "
+                 "(%d columns, %lld cells)",
+                 maxCols, dataRowCount, kMaxAsciiImportColumns,
+                 static_cast<long long>(kMaxAsciiImportCells));
+        return nullptr;
+    }
 
     // 5. Stream directly into pre-allocated column buffers (0 intermediate Cell matrix!)
     std::vector<std::unique_ptr<QVector<qreal>>> numVecs(static_cast<size_t>(maxCols));

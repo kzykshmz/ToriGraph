@@ -37,6 +37,7 @@
 #endif
 #include "globals.h"
 #include <QList>
+#include <QLocale>
 #include <QStringList>
 #include <QPointer>
 
@@ -362,7 +363,8 @@ public:
     void setImportSource(const QString &path, const QString &sheet = QString(),
                          const QString &separator = QString(),
                          const QString &encoding = QString(), int ignoredLines = 0,
-                         int unitsRow = -1, int importColumnCount = -1);
+                         int unitsRow = -1, int importColumnCount = -1,
+                         const QString &numericLocaleName = QString());
     QString importSourcePath() const { return d_import_source_path; }
     QString importSourceSheet() const { return d_import_source_sheet; }
     QString importSourceSeparator() const { return d_import_source_separator; }
@@ -370,6 +372,13 @@ public:
     int importSourceIgnoredLines() const { return d_import_ignored_lines; }
     int importSourceUnitsRow() const { return d_import_units_row; }
     int importSourceColumnCount() const { return d_import_column_count; }
+    //! QLocale::name() of the numeric locale (decimal mark) used by the import; empty = C locale.
+    QString importSourceNumericLocale() const { return d_import_numeric_locale; }
+    //! Name to store for \a loc: empty for the C locale (the default when nothing is recorded).
+    static QString numericLocaleNameForImport(const QLocale &loc)
+    {
+        return (loc == QLocale::c()) ? QString() : loc.name();
+    }
 
 private:
     //! Internal function to connect all column signals
@@ -631,6 +640,7 @@ private:
     int d_import_ignored_lines = 0;
     int d_import_units_row = -1;
     int d_import_column_count = -1;
+    QString d_import_numeric_locale;
 };
 
 } // namespace
