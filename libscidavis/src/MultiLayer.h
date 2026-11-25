@@ -37,6 +37,7 @@
 #include <QPushButton>
 #include <QLayout>
 #include <QPointer>
+#include <QHash>
 #include <QMap>
 #include <QPair>
 #include <QRectF>
@@ -152,7 +153,7 @@ public:
     static void setSharedStylePresetsFolder(const QString &folder);
     static MultiPanelSizing multiPanelSizing();
     static void setMultiPanelSizing(MultiPanelSizing mode);
-    //! Schedules the new-graph preset for the window owning  g (called from polishGraph).
+    //! Schedules the new-graph preset for the window owning \a g (called from polishGraph).
     static void requestNewGraphStylePreset(Graph *g);
     //! Applies the new-graph preset now if one is pending; returns true if applied.
     bool applyPendingNewGraphStylePreset();
@@ -261,15 +262,34 @@ public:
 
     QUndoStack *undoStack() const { return d_undo_stack; }
     bool isRestoringSnapshot() const { return d_is_restoring_snapshot; }
-    //! Counts the snapshot restores (Undo / Redo of the graph), which replace all its layers.
-    int snapshotRestoreCount() const { return d_snapshot_restore_count; }
     void beginSuppressUndo();
     void endSuppressUndo();
     bool isUndoSuppressed() const { return d_undo_suppress_depth > 0; }
     QString captureUndoSnapshot();
     void pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId = -1);
+
+    //! A layer as a snapshot restore rebuilds it: its id (Graph::layerId()), the last curve
+    //! key it gave out and, in order, the key and Graph::curveIdentity() of each curve.
+    struct LayerIdentity
+    {
+        int id = 0;
+        int lastKey = 0;
+        QVector<int> keys;
+        QStringList curves;
+    };
+    //! The identities of the layers now, in order.
+    QVector<LayerIdentity> layerIdentities();
+    //! Rebuilds every layer from \a snapshot. The rebuilt layers stand for the layers the
+    //! snapshot was taken of: they get their ids and their curves the keys they had then
+    //! (\a ids: those layers' identities; if not given, those of a recent captureUndoSnapshot()
+    //! of the same text, or else the layers now when there are as many), so that curves held
+    //! out of a layer (column removal, table removal) find it again.
     bool restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
-                                int preferredActiveLayer = -1, bool restoreGeometry = false);
+                                int preferredActiveLayer = -1, bool restoreGeometry = false,
+                                const QVector<LayerIdentity> *ids = nullptr);
+    //! The layer identities recorded with a recent captureUndoSnapshot() that gave \a snapshot,
+    //! or null.
+    const QVector<LayerIdentity> *capturedLayerIdentities(const QString &snapshot) const;
     //! `tableColNames`: columns of the renamed table; when given, only references to those
     //! columns (`oldName_<column>`) are rewritten (not those of a table named oldName_...).
     void remapUndoSnapshotsForTableRename(const QString &oldName, const QString &newName,
@@ -520,7 +540,7 @@ private:
     //! is (canvas tops / lefts within a small tolerance share a row / column). The outside panel
     //! labels of one row / column are aligned with each other. Taken from the geometry, not
     //! from the layer order: after a panel of a grid is deleted, or with a layer added outside
-    //! the grid, the layer order no longer matches the rows on the page.  updateLayouts
+    //! the grid, the layer order no longer matches the rows on the page. \a updateLayouts
     //! false uses the plots' current layouts (while painting a widget).
     QHash<Graph *, QPoint> panelLabelGridCells(bool updateLayouts = true) const;
     void drawInsetConnectors(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
@@ -581,7 +601,10 @@ private:
     QPointer<SelectionMoveResizer> d_layers_selector;
     QUndoStack *d_undo_stack = nullptr;
     bool d_is_restoring_snapshot = false;
-    int d_snapshot_restore_count = 0;
+    //! recent captureUndoSnapshot() texts with the layer identities then (newest first)
+    QList<QPair<QString, QVector<LayerIdentity>>> d_captured_identities;
+    //! the last curve key each layer id gave out, also of layers no longer here
+    QHash<int, int> d_layer_last_keys;
     int d_undo_suppress_depth = 0;
     bool d_panel_labels_enabled = false;
     PanelLabelPlacement d_panel_label_placement = PanelOutsideTopLeft;

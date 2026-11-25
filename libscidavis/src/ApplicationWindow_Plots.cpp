@@ -2450,6 +2450,22 @@ void ApplicationWindow::removeCurves(const QString &name)
 
 namespace {
 
+//! The layer of \a window with the id \a layerId (Graph::layerId()): the layer curves were taken
+//! from, or the layer the graph's Undo / Redo rebuilt for it (any number of times), which has
+//! their keys too. Null if the layer is gone (deleted by the user, or by the graph's Undo of
+//! the step that added it): its curves do not go into another layer.
+Graph *layerWithId(MultiLayer *window, int layerId)
+{
+    if (!window)
+        return nullptr;
+    for (QWidget *w : window->graphPtrs()) {
+        auto *g = qobject_cast<Graph *>(w);
+        if (g && g->layerId() == layerId)
+            return g;
+    }
+    return nullptr;
+}
+
 //! Undo step for the curves that used removed columns. It holds the curve objects themselves
 //! while they are out of their layers: Undo (run after the columns are back) puts them back into
 //! the layers as they are now, so edits made to the graph in between stay; Redo takes them out
@@ -2464,14 +2480,17 @@ public:
             Graph::discardTakenCurves(l.taken);
     }
 
-    void add(Graph *g, const Graph::TakenCurves &taken) { d_layers.append({ g, taken }); }
+    void add(MultiLayer *window, Graph *g, const Graph::TakenCurves &taken)
+    {
+        d_layers.append({ window, g->layerId(), taken });
+    }
     bool isEmpty() const { return d_layers.isEmpty(); }
 
     void undo() override
     {
         for (Layer &l : d_layers) {
-            if (l.graph)
-                l.graph->restoreTakenCurves(l.taken);
+            if (Graph *g = layerWithId(l.window, l.layerId))
+                g->restoreTakenCurves(l.taken);
         }
     }
 
@@ -2482,15 +2501,16 @@ public:
             return;
         }
         for (Layer &l : d_layers) {
-            if (l.graph)
-                l.graph->retakeCurves(l.taken);
+            if (Graph *g = layerWithId(l.window, l.layerId))
+                g->retakeCurves(l.taken);
         }
     }
 
 private:
     struct Layer
     {
-        QPointer<Graph> graph;
+        QPointer<MultiLayer> window;
+        int layerId = 0;
         Graph::TakenCurves taken;
     };
     QList<Layer> d_layers;
@@ -2520,15 +2540,13 @@ public:
 
     struct Layer
     {
+        //! the layer they were taken from
         QPointer<Graph> graph;
-        //! the graph window and the layer's place in it: an Undo / Redo of the graph replaces
-        //! all its layers (snapshot restore); the curves then go to the layer now at that place,
-        //! but only if the window has as many layers as when they were taken. A layer the user
-        //! deleted is not replaced: its curves are deleted, not put into the next layer.
+        //! its window and id: an Undo / Redo of the graph replaces all its layers (snapshot
+        //! restore), and the curves then go to the layer rebuilt for it (layerWithId()). A layer
+        //! the user deleted is not rebuilt: its curves are deleted, not put into another layer.
         QPointer<MultiLayer> window;
-        int layerIndex = -1;
-        int layerCount = 0;
-        int snapshotRestores = 0;
+        int layerId = 0;
         Graph::TakenCurves taken;
         //! the table each curve reads (error bars: their error column's), which may be deleted
         //! for good while the curves are held (its step dropped off the Undo stack)
@@ -2577,9 +2595,7 @@ void takeCurvesInto(const QList<MyWidget *> &windows, QObject *owner, const QStr
             HeldRemovedCurves::Layer l;
             l.graph = g;
             l.window = ml;
-            l.layerIndex = li;
-            l.layerCount = layers.size();
-            l.snapshotRestores = ml->snapshotRestoreCount();
+            l.layerId = g->layerId();
             l.taken = taken;
             for (const Graph::TakenCurve &tc : taken.curves) {
                 if (auto *dc = dynamic_cast<DataCurve *>(tc.item))
@@ -2591,9 +2607,15 @@ void takeCurvesInto(const QList<MyWidget *> &windows, QObject *owner, const QStr
 }
 
 //! Deletes the held curves in \a items, with the error bars of those curves (first, unlinked
-//! from a curve that stays).
+//! from a held curve that stays; a curve not held may be gone with a rebuilt layer, and it was
+//! unlinked from them when they were taken).
 void deleteHeldCurves(HeldRemovedCurves::Layer &l, QSet<QwtPlotItem *> items)
 {
+    QSet<QwtPlotItem *> held;
+    for (const Graph::TakenCurve &tc : l.taken.curves) {
+        if (tc.item)
+            held.insert(tc.item);
+    }
     for (const Graph::TakenCurve &tc : l.taken.curves) {
         auto *er = dynamic_cast<QwtErrorPlotCurve *>(tc.item);
         if (er && items.contains(er->masterCurve()))
@@ -2606,7 +2628,8 @@ void deleteHeldCurves(HeldRemovedCurves::Layer &l, QSet<QwtPlotItem *> items)
             auto *er = dynamic_cast<QwtErrorPlotCurve *>(tc.item);
             if ((pass == 0) != (er != nullptr))
                 continue;
-            if (er && er->masterCurve() && !items.contains(er->masterCurve()))
+            if (er && er->masterCurve() && held.contains(er->masterCurve())
+                && !items.contains(er->masterCurve()))
                 er->masterCurve()->removeErrorBars(er);
             l.tables.remove(tc.item);
             delete tc.item;
@@ -2673,19 +2696,13 @@ void restoreHeldCurves(QObject *owner)
     if (!heldCurvesColumnsBack(held))
         return;
     for (HeldRemovedCurves::Layer &l : held->layers) {
-        Graph *g = l.graph.data();
-        // a layer taken out of its window (deleted by the user or replaced by the graph's Undo,
-        // and not yet destroyed) is not the place to go back to
-        if (g && (!l.window || !l.window->graphPtrs().contains(g)))
-            g = nullptr;
-        if (!g && l.window && l.layerIndex >= 0
-            && l.window->snapshotRestoreCount() != l.snapshotRestores) {
-            // the graph's Undo / Redo replaced its layers: the layer now at that place, if the
-            // window has as many layers as then, without the curves it already has again
-            const QWidgetList now = l.window->graphPtrs();
-            g = (now.size() == l.layerCount && l.layerIndex < now.size())
-                    ? qobject_cast<Graph *>(now.at(l.layerIndex))
-                    : nullptr;
+        // its layer, or the one the graph's Undo / Redo rebuilt for it; not a layer taken out
+        // of the window (deleted by the user or replaced, and not yet destroyed)
+        Graph *g = layerWithId(l.window, l.layerId);
+        if (g && g != l.graph.data()) {
+            // a rebuilt layer: without the curves it already has again (those it has under
+            // their own keys are left out by restoreTakenCurves(); these are the same curves
+            // under other keys)
             QSet<QwtPlotItem *> dup;
             for (const Graph::TakenCurve &tc : l.taken.curves) {
                 auto *dc = dynamic_cast<DataCurve *>(tc.item);
@@ -2695,7 +2712,8 @@ void restoreHeldCurves(QObject *owner)
                     auto *have = dynamic_cast<DataCurve *>(g->curve(i));
                     if (have && have->table() == dc->table() && have->type() == dc->type()
                         && have->title().text() == dc->title().text()
-                        && have->xColumnName() == dc->xColumnName()) {
+                        && have->xColumnName() == dc->xColumnName()
+                        && int(g->curveKey(i)) != tc.key) {
                         dup.insert(tc.item);
                         break;
                     }
@@ -2779,7 +2797,7 @@ void ApplicationWindow::removeCurvesOfColumnsWithUndo(Table *t, int first, int c
                 continue;
             Graph::TakenCurves taken = g->takeCurvesUsingColumns(names);
             if (taken.out)
-                cmd->add(g, taken);
+                cmd->add(static_cast<MultiLayer *>(w), g, taken);
         }
     }
     if (cmd->isEmpty()) {

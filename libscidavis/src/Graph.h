@@ -317,6 +317,22 @@ public:
     void retakeCurves(TakenCurves &tc);
     static void discardTakenCurves(TakenCurves &tc);
 
+    //! Identifies the layer within its window across the graph's Undo / Redo, which rebuilds
+    //! every layer from a snapshot (MultiLayer::restoreSnapshotInPlace()): a rebuilt layer takes
+    //! the id of the layer it stands for, and its curves the keys they had there, so that curves
+    //! taken out (TakenCurves) find their layer, their neighbours and their error bars' curve
+    //! again. A new layer gets a new id.
+    int layerId() const { return d_layer_id; }
+    void setLayerId(int id) { d_layer_id = id; }
+    //! The type and data of curve \a index ("type|plot association", or its title), which tells
+    //! the curves of a rebuilt layer apart when they are matched with the old ones.
+    QString curveIdentity(int index);
+    //! The last curve key this layer gave out.
+    int lastCurveKey() const;
+    //! Gives curve \a i the key \a keys[i] (-1 or a key given twice: a new key); new keys are
+    //! above \a reserved and every key given out so far, so none is given out twice.
+    void adoptCurveKeys(const QVector<int> &keys, int reserved);
+
 public slots:
 
     void updateCurvesData(Table *w, const QString &yColName);
@@ -1254,6 +1270,8 @@ private:
     QVector<int> c_type;
     //! Curves on plot keys
     QVector<int> c_keys;
+    //! see layerId()
+    int d_layer_id = 0;
     //! Arrows/lines on plot keys
     QVector<int> d_lines;
     //! Images on plot keys

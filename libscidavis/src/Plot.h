@@ -30,6 +30,7 @@
 #define PLOT_H
 
 #include <QObject>
+#include <QHash>
 #include <QMap>
 #include <QPoint>
 #include <QPointer>
@@ -65,6 +66,11 @@ public:
     void removeCurve(int index);
     //! Detaches the item with this key and hands it to the caller (removeCurve() deletes it).
     QwtPlotItem *takeCurve(int index);
+    //! The last curve key this plot gave out (keys are never given out twice).
+    int lastCurveKey() const { return curve_key; }
+    //! Gives the curves new keys: those in \a keys get theirs, the others new ones, all above
+    //! \a reserved and the keys given out so far (see Graph::adoptCurveKeys()).
+    void rekeyCurves(const QHash<QwtPlotItem *, int> &keys, int reserved);
 
     int closestCurve(int xpos, int ypos, int &dist, int &point);
     int closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestVertexOut) const;

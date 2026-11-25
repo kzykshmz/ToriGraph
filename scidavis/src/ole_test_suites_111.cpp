@@ -49,6 +49,14 @@
 //        rebuilt its layers, the curve and its error bars come back; held error bars from
 //        another table whose window was deleted meanwhile are dropped when a table comes back
 //        (they used to be read through the deleted window: use after free)
+//   111i held curves follow their layer through the graph's Undo / Redo, which rebuilds the
+//        layers (also several times in a row): a removed column's Undo brings its curve, error
+//        bars and legend line back (the layer used to be lost), Redo takes them from the rebuilt
+//        layer; a curve held while a layer was added goes back to layer 0 after the "add layer"
+//        is undone (it used to be dropped since the layer count differed); a curve put back into
+//        a rebuilt layer keeps its place in the curve order; after the layer before it is
+//        deleted and that undone, it goes back to its own layer; after the user deletes its
+//        layer, it does not go into another one
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -1108,6 +1116,335 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         wl->savedProject();
     }
     std::cout << "[PASS] 111h: held curves go back only to their own layer and with their tables\n";
+
+    // ---- 111i: curves held while the graph's Undo / Redo rebuilds its layers ----
+    // (each case is checked on its own, so that every one that fails is reported)
+    int fails111i = 0;
+    auto soft111i = [&fails111i](bool ok, const std::string &msg) {
+        if (!ok) {
+            std::cerr << "[FAIL] " << msg << std::endl;
+            ++fails111i;
+        }
+        return ok;
+    };
+    {
+        auto graphStep = [&](const char *graph, bool undo) {
+            return !isErr(rpc(QString::fromLatin1(undo ? "app.undo" : "app.redo"),
+                              QJsonObject{ { "graph", graph } }));
+        };
+        auto tableStep = [&](const char *table, bool undo) {
+            return !isErr(rpc(QString::fromLatin1(undo ? "app.undo" : "app.redo"),
+                              QJsonObject{ { "table", table } }));
+        };
+        // a graph step and its Undo: every layer is rebuilt from the snapshot
+        auto rebuild = [&](const char *graph, const char *title) {
+            const QJsonObject r = rpc(QString::fromLatin1("graph.set_title"),
+                                      QJsonObject{ { "graph", graph }, { "title", title } });
+            return !isErr(r) && graphStep(graph, true);
+        };
+        auto legendOf = [](Graph *g) {
+            return g->legend() ? g->legend()->text().toStdString() : std::string();
+        };
+        auto tableNames = [&]() {
+            QStringList names;
+            for (MyWidget *mw2 : w111->windowsList()) {
+                if (mw2 && mw2->inherits("Table"))
+                    names << mw2->name();
+            }
+            return names;
+        };
+
+        // (1) a removed column, then the graph's Undo (twice) and Undo / Redo: the column's Undo
+        //     brings the curve, its error bars and its legend line back (TakenCurvesUndoCommand
+        //     lost its layer); Redo takes them again from a layer rebuilt meanwhile
+        {
+            Table *t = w111->newTable(QString::fromLatin1("PT111"), 6, 4);
+            CHECK_COND(t && t->d_future_table, "111i: table PT111");
+            const char *pc[] = { "x", "y", "z", "e" };
+            for (int c = 0; c < 4; ++c)
+                t->setColName(c, QString::fromLatin1(pc[c]));
+            CHECK_COND(setCol("PT111", "x", { 1, 2, 3, 4, 5, 6 })
+                               && setCol("PT111", "y", { 1, 4, 9, 16, 25, 36 })
+                               && setCol("PT111", "z", { 2, 4, 6, 8, 10, 12 })
+                               && setCol("PT111", "e", { 0.5, 0.5, 0.5, 0.5, 0.5, 0.5 }),
+                       "111i: fill P111");
+            QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                                QJsonObject{ { "table", "PT111" },
+                                              { "x_col", "x" },
+                                              { "y_cols", QJsonArray{ "y", "z" } },
+                                              { "graph_name", "PG111" } });
+            CHECK_COND(!isErr(r), "111i: plot PG111: " << errText(r));
+            r = rpc(QString::fromLatin1("plot.add_error_bars"),
+                    QJsonObject{ { "graph", "PG111" },
+                                  { "err_col", "e" },
+                                  { "curve", "PT111_z" },
+                                  { "table", "PT111" } });
+            CHECK_COND(!isErr(r), "111i: error bars: " << errText(r));
+            r = rpc(QString::fromLatin1("graph.set_legend"),
+                    QJsonObject{ { "graph", "PG111" }, { "visible", true } });
+            CHECK_COND(!isErr(r), "111i: legend: " << errText(r));
+            MultiLayer *pml = findGraph(w111, "PG111");
+            CHECK_COND(pml && pml->layersList().size() == 1, "111i: PG111");
+            auto psig = [&]() {
+                Graph *g = pml->layersList().at(0);
+                return layerTitles(g) + "|" + legendOf(g);
+            };
+            const std::string p0 = psig();
+            std::cout << "[INFO] 111i: PG111 " << p0 << "\n";
+            CHECK_COND(p0.find("PT111_z;") != std::string::npos
+                               && p0.find("(err)") != std::string::npos,
+                       "111i: setup of PG111: " << p0);
+            r = rpc(QString::fromLatin1("table.remove_column"),
+                    QJsonObject{ { "table", "PT111" }, { "col", "z" } });
+            CHECK_COND(!isErr(r), "111i: remove z: " << errText(r));
+            CHECK_COND(psig().find("PT111_z") == std::string::npos,
+                       "111i: z curve left: " << psig());
+            CHECK_COND(rebuild("PG111", "t1") && rebuild("PG111", "t2"),
+                       "111i: graph steps undone");
+            r = rpc(QString::fromLatin1("graph.set_title"),
+                    QJsonObject{ { "graph", "PG111" }, { "title", "t3" } });
+            CHECK_COND(!isErr(r) && graphStep("PG111", true) && graphStep("PG111", false),
+                       "111i: graph Undo / Redo");
+            CHECK_COND(tableStep("PT111", true), "111i: undo remove z");
+            std::cout << "[INFO] 111i: z back after 4 rebuilds: " << psig() << "\n";
+            if (soft111i(psig() == p0,
+                         "111i (1): undoing the removal of z after the graph's Undo: " + psig()
+                                 + " expected " + p0)) {
+                // the layer is rebuilt again while the curve is back: Redo takes the curve of the
+                // rebuilt layer, Undo brings it back
+                CHECK_COND(rebuild("PG111", "t4"), "111i: graph step undone (2)");
+                CHECK_COND(tableStep("PT111", false), "111i: redo remove z");
+                CHECK_COND(psig().find("PT111_z") == std::string::npos,
+                           "111i: Redo left the z curve: " << psig());
+                CHECK_COND(rebuild("PG111", "t5"), "111i: graph step undone (3)");
+                CHECK_COND(tableStep("PT111", true), "111i: undo remove z (2)");
+                soft111i(psig() == p0,
+                         "111i (1): second Undo of removing z: " + psig() + " expected " + p0);
+            }
+            // only the error column: the error bars are taken without their curve, which the
+            // graph's Undo then rebuilds; the column's Undo hangs them on the rebuilt curve
+            r = rpc(QString::fromLatin1("table.remove_column"),
+                    QJsonObject{ { "table", "PT111" }, { "col", "e" } });
+            CHECK_COND(!isErr(r), "111i: remove e: " << errText(r));
+            CHECK_COND(psig().find("(err)") == std::string::npos,
+                       "111i: error bars left: " << psig());
+            CHECK_COND(rebuild("PG111", "t6"), "111i: graph step undone (4)");
+            CHECK_COND(tableStep("PT111", true), "111i: undo remove e");
+            bool linked = false;
+            Graph *pg = pml->layersList().at(0);
+            for (int i = 0; i < pg->curves(); ++i) {
+                auto *er = dynamic_cast<QwtErrorPlotCurve *>(pg->curve(i));
+                DataCurve *m = er ? er->masterCurve() : nullptr;
+                linked = linked
+                        || (m && pg->curveIndex(static_cast<QwtPlotCurve *>(m)) >= 0
+                            && m->title().text() == QLatin1String("PT111_z")
+                            && m->errorBarsList().contains(er));
+            }
+            std::cout << "[INFO] 111i: e back after a rebuild: " << psig()
+                      << (linked ? " (linked)" : "") << "\n";
+            soft111i(psig() == p0 && linked,
+                     "111i (1): the error bars did not come back on the rebuilt curve: " + psig());
+        }
+
+        // (2) a layer added, a curve held (its table's creation undone), the graph's "add layer"
+        //     undone: layer 0 is still there and gets its curve back (the held curve used to be
+        //     dropped because the window had fewer layers than when it was taken)
+        {
+            Table *t = w111->newTable(QString::fromLatin1("ST111"), 41, 2);
+            CHECK_COND(t && t->d_future_table, "111i: table ST111");
+            t->setColName(0, QString::fromLatin1("x"));
+            t->setColName(1, QString::fromLatin1("y"));
+            QVector<double> xs, ys;
+            for (int i = 0; i < 41; ++i) {
+                xs << 0.25 * i;
+                ys << 0.5 * 0.25 * i + 1 + ((i % 3) - 1) * 0.1;
+            }
+            CHECK_COND(setCol("ST111", "x", xs) && setCol("ST111", "y", ys), "111i: fill S111");
+            QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                                QJsonObject{ { "table", "ST111" },
+                                              { "x_col", "x" },
+                                              { "y_cols", QJsonArray{ "y" } },
+                                              { "graph_name", "SG111" } });
+            CHECK_COND(!isErr(r), "111i: plot SG111: " << errText(r));
+            const QStringList before = tableNames();
+            r = rpc(QString::fromLatin1("signal.smooth"),
+                    QJsonObject{ { "graph", "SG111" },
+                                  { "curve", 0 },
+                                  { "method", "savgol" },
+                                  { "window", 5 },
+                                  { "poly_order", 2 } });
+            CHECK_COND(!isErr(r), "111i: smooth: " << errText(r));
+            QString outTable;
+            for (const QString &n : tableNames()) {
+                if (!before.contains(n))
+                    outTable = n;
+            }
+            MultiLayer *sml = findGraph(w111, "SG111");
+            CHECK_COND(!outTable.isEmpty() && sml && sml->layersList().size() == 1,
+                       "111i: smoothing made no table");
+            const std::string s0 = layerTitles(sml->layersList().at(0));
+            std::cout << "[INFO] 111i: SG111 " << s0 << " (" << outTable.toStdString() << ")\n";
+            CHECK_COND(sml->layersList().at(0)->curves() == 2, "111i: setup of SG111: " << s0);
+            r = rpc(QString::fromLatin1("graph.add_layer"), QJsonObject{ { "graph", "SG111" } });
+            CHECK_COND(!isErr(r) && sml->layersList().size() == 2,
+                       "111i: add layer: " << errText(r));
+            int steps = 0;
+            while (w111->table(outTable) != nullptr && steps < 20) {
+                CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"),
+                                      QJsonObject{ { "table", "ST111" } })),
+                           "111i: undo of the smoothing");
+                ++steps;
+            }
+            CHECK_COND(
+                    w111->table(outTable) == nullptr
+                            && layerTitles(sml->layersList().at(0)) == "ST111_y;",
+                    "111i: undoing the smoothed table: " << layerTitles(sml->layersList().at(0)));
+            CHECK_COND(graphStep("SG111", true) && sml->layersList().size() == 1,
+                       "111i: undo add layer");
+            for (int k = 0; k < steps; ++k)
+                CHECK_COND(tableStep("ST111", false), "111i: redo of the smoothing");
+            const std::string s1 = layerTitles(sml->layersList().at(0));
+            std::cout << "[INFO] 111i: smoothed table back after the layer's Undo: " << s1 << "\n";
+            soft111i(w111->table(outTable) != nullptr && s1 == s0,
+                     "111i (2): the held curve was not put back into layer 0: " + s1 + " expected "
+                             + s0);
+        }
+
+        // (3) the curve order: a held curve put back into a rebuilt layer goes after the curve that
+        //     preceded it (the rebuilt layer numbered its curves anew: it went before Smoothed)
+        {
+            Table *t = w111->newTable(QString::fromLatin1("OT111"), 41, 2);
+            CHECK_COND(t && t->d_future_table, "111i: table OT111");
+            t->setColName(0, QString::fromLatin1("x"));
+            t->setColName(1, QString::fromLatin1("y"));
+            QVector<double> xs, ys;
+            for (int i = 0; i < 41; ++i) {
+                xs << 0.25 * i;
+                ys << 0.5 * 0.25 * i + 1;
+            }
+            CHECK_COND(setCol("OT111", "x", xs) && setCol("OT111", "y", ys), "111i: fill O111");
+            QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                                QJsonObject{ { "table", "OT111" },
+                                              { "x_col", "x" },
+                                              { "y_cols", QJsonArray{ "y" } },
+                                              { "graph_name", "OG111" } });
+            CHECK_COND(!isErr(r), "111i: plot OG111: " << errText(r));
+            r = rpc(QString::fromLatin1("analysis.fit_linear"),
+                    QJsonObject{ { "graph", "OG111" }, { "curve", 0 } });
+            CHECK_COND(!isErr(r), "111i: fit: " << errText(r));
+            r = rpc(QString::fromLatin1("plot.remove_curve"),
+                    QJsonObject{ { "graph", "OG111" }, { "curve", 1 } });
+            CHECK_COND(!isErr(r), "111i: remove the fit curve: " << errText(r));
+            r = rpc(QString::fromLatin1("signal.smooth"),
+                    QJsonObject{ { "graph", "OG111" },
+                                  { "curve", 0 },
+                                  { "method", "savgol" },
+                                  { "window", 5 },
+                                  { "poly_order", 2 } });
+            CHECK_COND(!isErr(r), "111i: smooth OG111: " << errText(r));
+            const QStringList before = tableNames();
+            r = rpc(QString::fromLatin1("curvemath.integrate"),
+                    QJsonObject{ { "graph", "OG111" }, { "curve", 0 }, { "plot_curve", true } });
+            CHECK_COND(!isErr(r), "111i: integrate OG111: " << errText(r));
+            QString outTable;
+            for (const QString &n : tableNames()) {
+                if (!before.contains(n))
+                    outTable = n;
+            }
+            MultiLayer *oml = findGraph(w111, "OG111");
+            CHECK_COND(!outTable.isEmpty() && oml && oml->layersList().size() == 1, "111i: OG111");
+            const std::string o0 = layerTitles(oml->layersList().at(0));
+            std::cout << "[INFO] 111i: OG111 " << o0 << "\n";
+            CHECK_COND(oml->layersList().at(0)->curves() == 3, "111i: setup of OG111: " << o0);
+            int steps = 0;
+            while (w111->table(outTable) != nullptr && steps < 20) {
+                CHECK_COND(!isErr(rpc(QString::fromLatin1("app.undo"),
+                                      QJsonObject{ { "table", "OT111" } })),
+                           "111i: undo of the integration");
+                ++steps;
+            }
+            CHECK_COND(
+                    w111->table(outTable) == nullptr && oml->layersList().at(0)->curves() == 2,
+                    "111i: undoing the integrated table: " << layerTitles(oml->layersList().at(0)));
+            CHECK_COND(rebuild("OG111", "t1") && rebuild("OG111", "t2"),
+                       "111i: OG111 graph steps undone");
+            for (int k = 0; k < steps; ++k)
+                CHECK_COND(tableStep("OT111", false), "111i: redo of the integration");
+            const std::string o1 = layerTitles(oml->layersList().at(0));
+            std::cout << "[INFO] 111i: integrated table back after the graph's Undo: " << o1
+                      << "\n";
+            soft111i(o1 == o0, "111i (3): curve order changed: " + o1 + " expected " + o0);
+        }
+
+        // (4) the layer before the curve's layer is deleted and the deletion undone (the layers
+        //     move up and back): the removed column's Undo puts the curve into its own layer 1,
+        //     not into layer 0. (5) The user deletes the curve's layer after a rebuild: the
+        //     curve does not go into the layer left.
+        {
+            Table *t = w111->newTable(QString::fromLatin1("QT111"), 4, 3);
+            CHECK_COND(t && t->d_future_table, "111i: table QT111");
+            t->setColName(0, QString::fromLatin1("x"));
+            t->setColName(1, QString::fromLatin1("y"));
+            t->setColName(2, QString::fromLatin1("q"));
+            CHECK_COND(setCol("QT111", "x", { 1, 2, 3, 4 }) && setCol("QT111", "y", { 4, 3, 2, 1 })
+                               && setCol("QT111", "q", { 10, 30, 20, 40 }),
+                       "111i: fill Q111");
+            QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                                QJsonObject{ { "table", "QT111" },
+                                              { "x_col", "x" },
+                                              { "y_cols", QJsonArray{ "y" } },
+                                              { "graph_name", "QG111" } });
+            CHECK_COND(!isErr(r), "111i: plot QG111: " << errText(r));
+            r = rpc(QString::fromLatin1("graph.add_layer"), QJsonObject{ { "graph", "QG111" } });
+            CHECK_COND(!isErr(r), "111i: QG111 add layer: " << errText(r));
+            r = rpc(QString::fromLatin1("plot.add_curve"),
+                    QJsonObject{ { "graph", "QG111" },
+                                  { "table", "QT111" },
+                                  { "x_col", "x" },
+                                  { "y_col", "q" },
+                                  { "layer", 1 } });
+            CHECK_COND(!isErr(r), "111i: q curve on layer 1: " << errText(r));
+            MultiLayer *qml = findGraph(w111, "QG111");
+            CHECK_COND(qml && qml->layersList().size() == 2, "111i: QG111 with 2 layers");
+            auto qsig = [&]() {
+                std::string s;
+                for (Graph *g : qml->layersList())
+                    s += "[" + layerTitles(g) + "]";
+                return s;
+            };
+            const std::string q0 = qsig();
+            CHECK_COND(q0 == "[QT111_y;][QT111_q;]", "111i: setup of QG111: " << q0);
+            r = rpc(QString::fromLatin1("table.remove_column"),
+                    QJsonObject{ { "table", "QT111" }, { "col", "q" } });
+            CHECK_COND(!isErr(r) && qsig() == "[QT111_y;][]", "111i: remove q: " << qsig());
+            r = rpc(QString::fromLatin1("graph.remove_layer"),
+                    QJsonObject{ { "graph", "QG111" }, { "layer", 0 } });
+            CHECK_COND(!isErr(r) && qml->layersList().size() == 1,
+                       "111i: remove layer 0: " << errText(r));
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            CHECK_COND(graphStep("QG111", true) && qml->layersList().size() == 2,
+                       "111i: undo remove layer 0");
+            CHECK_COND(tableStep("QT111", true), "111i: undo remove q");
+            std::cout << "[INFO] 111i: q back after layer 0 came back: " << qsig() << "\n";
+            soft111i(qsig() == q0, "111i (4): the q curve did not go back to layer 1: " + qsig());
+
+            // (5)
+            CHECK_COND(tableStep("QT111", false) && qsig() == "[QT111_y;][]",
+                       "111i: redo remove q: " << qsig());
+            CHECK_COND(rebuild("QG111", "t1"), "111i: QG111 graph step undone");
+            r = rpc(QString::fromLatin1("graph.remove_layer"),
+                    QJsonObject{ { "graph", "QG111" }, { "layer", 1 } });
+            CHECK_COND(!isErr(r) && qml->layersList().size() == 1,
+                       "111i: remove layer 1: " << errText(r));
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            CHECK_COND(tableStep("QT111", true), "111i: undo remove q (2)");
+            std::cout << "[INFO] 111i: q back after its layer was deleted: " << qsig() << "\n";
+            soft111i(qsig() == "[QT111_y;]",
+                     "111i (5): the q curve went into another layer: " + qsig());
+        }
+    }
+    CHECK_COND(fails111i == 0, "111i: " << fails111i << " case(s) failed");
+    std::cout << "[PASS] 111i: held curves follow their layer through the graph's Undo / Redo\n";
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";
     return 0;

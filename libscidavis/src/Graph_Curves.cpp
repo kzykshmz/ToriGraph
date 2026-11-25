@@ -1737,15 +1737,59 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
     d_plot->replot();
 }
 
+QString Graph::curveIdentity(int index)
+{
+    if (index < 0 || index >= n_curves)
+        return QString();
+    QwtPlotItem *it = plotItem(index);
+    QString id = QString::number(c_type.value(index)) + QLatin1Char('|')
+            + (it ? it->title().text() : QString());
+    if (auto *dc = dynamic_cast<DataCurve *>(it))
+        id += QLatin1Char('|') + dc->plotAssociation();
+    return id;
+}
+
+int Graph::lastCurveKey() const
+{
+    return d_plot ? d_plot->lastCurveKey() : 0;
+}
+
+void Graph::adoptCurveKeys(const QVector<int> &keys, int reserved)
+{
+    QList<QwtPlotItem *> items;
+    QHash<QwtPlotItem *, int> want;
+    for (int i = 0; i < n_curves && i < c_keys.size(); ++i) {
+        QwtPlotItem *it = d_plot->plotItem(c_keys[i]);
+        items << it;
+        if (it && keys.value(i, -1) > 0)
+            want.insert(it, keys[i]);
+    }
+    d_plot->rekeyCurves(want, reserved);
+    const QMap<int, QwtPlotItem *> now = d_plot->curves();
+    for (int i = 0; i < items.size(); ++i) {
+        if (items[i])
+            c_keys[i] = now.key(items[i], c_keys[i]);
+    }
+}
+
 void Graph::restoreTakenCurves(TakenCurves &tc)
 {
     if (!tc.out)
         return;
     tc.out = false;
 
+    // The items held here. An error bars' curve not among them may be gone (its layer was
+    // rebuilt by the graph's Undo / Redo): its address is only compared, never followed.
+    QSet<QwtPlotItem *> held;
+    for (const TakenCurve &t : tc.curves) {
+        if (t.item)
+            held.insert(t.item);
+    }
+    // held curves the layer has again (deleted at the end, after their error bars are seen to)
+    QList<QwtPlotItem *> recreated;
     QList<QPair<int, QwtPlotItem *>> restored; // key, item
-    // keys a curve could not get back (taken by another item, e.g. in a layer rebuilt by the
-    // graph's Undo): its error bars find it under the new one
+    // keys a curve could not get back (taken by another item): its error bars find it under the
+    // new one
     QHash<int, int> rekeyed;
     // the curves first, then the error bars, which need their curve back in the layer
     for (int pass = 0; pass < 2; ++pass) {
@@ -1755,17 +1799,42 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             QwtErrorPlotCurve *er = (t.type == ErrorBars)
                     ? dynamic_cast<QwtErrorPlotCurve *>(t.item)
                     : nullptr;
-            // Its curve must be the very one it hung on: the same key and the same object. The
-            // address alone is not enough, since a curve deleted meanwhile can leave it to a new
-            // one (a curve taken with it comes back first, under its own key).
-            DataCurve *master = er ? er->masterCurve() : nullptr;
-            if (er)
+            DataCurve *was = er ? er->masterCurve() : nullptr;
+            auto unlinkFromHeldCurve = [&]() {
+                if (was && held.contains(was))
+                    was->removeErrorBars(er);
+            };
+            // A curve under its own key is in the layer again: the graph's Undo / Redo rebuilt
+            // the layer with it (a rebuilt layer keeps the keys, and a key is never given to
+            // another curve). That one stays (and reads its columns below); the held copy goes.
+            if (QwtPlotItem *here = d_plot->plotItem(t.key)) {
+                unlinkFromHeldCurve();
+                recreated << t.item;
+                t.item = nullptr;
+                restored << qMakePair(t.key, here);
+                continue;
+            }
+            // Its curve is the one under the key it hung on: the very one, or the same curve in
+            // a layer rebuilt meanwhile. The address alone is not enough, since a curve deleted
+            // meanwhile can leave it to a new one, which has a new key.
+            DataCurve *master = nullptr;
+            if (er) {
                 t.masterKey = rekeyed.value(t.masterKey, t.masterKey);
-            if (t.type == ErrorBars && (!master || curveIndexOfKey(t.masterKey, master) < 0)) {
+                QwtPlotItem *mi = (t.masterKey >= 0) ? d_plot->plotItem(t.masterKey) : nullptr;
+                const int mIdx = mi ? c_keys.indexOf(t.masterKey) : -1;
+                if (mIdx >= 0 && mIdx < n_curves && c_type[mIdx] != ErrorBars)
+                    master = dynamic_cast<DataCurve *>(mi);
+            }
+            if (t.type == ErrorBars && (!er || !master)) {
                 // its curve is no longer in this layer: nothing to attach the error bars to
+                unlinkFromHeldCurve();
                 delete t.item;
                 t.item = nullptr;
                 continue;
+            }
+            if (er && was != master) {
+                unlinkFromHeldCurve();
+                er->setMasterCurve(master); // the same curve, rebuilt: hang on it
             }
 
             // after the item that preceded it when it was taken, if that one is still here
@@ -1848,6 +1917,7 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             restored << qMakePair(key, t.item);
         }
     }
+    qDeleteAll(recreated);
 
     syncCurveZOrder();
     // The columns are back: read their present values. loadData() drops a curve whose column
@@ -1872,11 +1942,17 @@ void Graph::retakeCurves(TakenCurves &tc)
     if (tc.out)
         return;
     QList<QwtPlotItem *> items;
-    // Only a curve still under the key it was put back with: one the user has deleted since
-    // may have left its address to a new curve, which must stay.
+    // The curve under the key it was put back with (or, for one the layer had again, the key
+    // it had): the same item, or the same curve in a layer rebuilt by the graph's Undo / Redo,
+    // which keeps the keys. One the user has deleted since may have left its address to a new
+    // curve, which has a new key and stays.
     for (const TakenCurve &t : tc.curves) {
-        if (t.item && curveIndexOfKey(t.key, t.item) >= 0)
-            items << t.item;
+        QwtPlotItem *now = (t.key >= 0) ? d_plot->plotItem(t.key) : nullptr;
+        const int idx = now ? c_keys.indexOf(t.key) : -1;
+        if (idx < 0 || idx >= n_curves || items.contains(now))
+            continue;
+        if (now == t.item || c_type[idx] == t.type)
+            items << now;
     }
     tc.curves.clear();
     if (!items.isEmpty())

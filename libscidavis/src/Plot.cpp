@@ -1852,6 +1852,27 @@ int Plot::insertCurve(QwtPlotItem *c, int key)
     return key;
 }
 
+void Plot::rekeyCurves(const QHash<QwtPlotItem *, int> &keys, int reserved)
+{
+    curve_key = qMax(curve_key, reserved);
+    QMap<int, QwtPlotItem *> rekeyed;
+    QList<QwtPlotItem *> rest;
+    for (auto it = d_curves.constBegin(); it != d_curves.constEnd(); ++it) {
+        const int k = keys.value(it.value(), -1);
+        if (k > 0 && !rekeyed.contains(k)) {
+            rekeyed.insert(k, it.value());
+            curve_key = qMax(curve_key, k);
+        } else {
+            rest << it.value();
+        }
+    }
+    for (QwtPlotItem *c : rest)
+        rekeyed.insert(++curve_key, c);
+    d_curves = rekeyed;
+    d_highlighted_curve_key = -1;
+    d_hover_curve_key = -1;
+}
+
 void Plot::removeCurve(int index)
 {
     delete takeCurve(index);

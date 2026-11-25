@@ -203,6 +203,8 @@ private:
 
 Graph::Graph(QWidget *parent, QString name, Qt::WindowFlags f) : QWidget(parent, f)
 {
+    static int lastLayerId = 0;
+    d_layer_id = ++lastLayerId;
     if (name.isEmpty())
         setObjectName("graph");
     else

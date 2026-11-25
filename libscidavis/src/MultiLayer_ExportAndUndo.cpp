@@ -1354,12 +1354,16 @@ class MultiLayerSnapshotUndoCommand : public QUndoCommand
 public:
     MultiLayerSnapshotUndoCommand(MultiLayer *ml, ApplicationWindow *app, const QString &label,
                                   const QString &beforeSnap, const QString &afterSnap,
-                                  int activeLayerIdx, int mergeId)
+                                  int activeLayerIdx, int mergeId,
+                                  const QVector<MultiLayer::LayerIdentity> &beforeIds,
+                                  const QVector<MultiLayer::LayerIdentity> &afterIds)
         : QUndoCommand(label),
           d_ml(ml),
           d_app(app),
           d_before(beforeSnap),
           d_after(afterSnap),
+          d_before_ids(beforeIds),
+          d_after_ids(afterIds),
           d_before_layer(activeLayerIdx),
           d_after_layer(activeLayerIdx),
           d_merge_id(mergeId),
@@ -1380,6 +1384,7 @@ public:
         if (qAbs(o->d_timestamp_ms - d_timestamp_ms) > 350)
             return false;
         d_after = o->d_after;
+        d_after_ids = o->d_after_ids;
         d_after_layer = o->d_after_layer;
         d_timestamp_ms = o->d_timestamp_ms;
         return true;
@@ -1391,7 +1396,8 @@ public:
             return;
         ApplicationWindow *app = d_app ? d_app.data() : findMultiLayerApp(d_ml);
         if (app)
-            d_ml->restoreSnapshotInPlace(app, d_before, d_before_layer, false);
+            d_ml->restoreSnapshotInPlace(app, d_before, d_before_layer, false,
+                                         d_before_ids.isEmpty() ? nullptr : &d_before_ids);
     }
 
     void redo() override
@@ -1404,7 +1410,8 @@ public:
             return;
         ApplicationWindow *app = d_app ? d_app.data() : findMultiLayerApp(d_ml);
         if (app)
-            d_ml->restoreSnapshotInPlace(app, d_after, d_after_layer, false);
+            d_ml->restoreSnapshotInPlace(app, d_after, d_after_layer, false,
+                                         d_after_ids.isEmpty() ? nullptr : &d_after_ids);
     }
 
     template <typename RemapFn>
@@ -1421,6 +1428,9 @@ private:
     QPointer<ApplicationWindow> d_app;
     QString d_before;
     QString d_after;
+    //! the layers each snapshot was taken of (empty if not known)
+    QVector<MultiLayer::LayerIdentity> d_before_ids;
+    QVector<MultiLayer::LayerIdentity> d_after_ids;
     int d_before_layer;
     int d_after_layer;
     int d_merge_id;
@@ -1473,7 +1483,47 @@ QString MultiLayer::captureUndoSnapshot()
 {
     if (d_is_restoring_snapshot || d_undo_suppress_depth > 0)
         return QString();
-    return saveToString(QString());
+    const QString snapshot = saveToString(QString());
+    // remembered for pushUndoSnapshot() (and a restore of this text), which then rebuilds these
+    // layers as the same layers
+    d_captured_identities.prepend(qMakePair(snapshot, layerIdentities()));
+    while (d_captured_identities.size() > 16)
+        d_captured_identities.removeLast();
+    return snapshot;
+}
+
+QVector<MultiLayer::LayerIdentity> MultiLayer::layerIdentities()
+{
+    QVector<LayerIdentity> ids;
+    for (QWidget *gw : graphsList) {
+        auto *g = qobject_cast<Graph *>(gw);
+        if (!g)
+            continue;
+        LayerIdentity li;
+        li.id = g->layerId();
+        li.lastKey = g->lastCurveKey();
+        for (int i = 0; i < g->curves(); ++i) {
+            li.keys << int(g->curveKey(i));
+            li.curves << g->curveIdentity(i);
+        }
+        d_layer_last_keys[li.id] = qMax(d_layer_last_keys.value(li.id), li.lastKey);
+        ids << li;
+    }
+    return ids;
+}
+
+const QVector<MultiLayer::LayerIdentity> *
+MultiLayer::capturedLayerIdentities(const QString &snapshot) const
+{
+    for (const auto &c : d_captured_identities) {
+        if (c.first.constData() == snapshot.constData())
+            return &c.second;
+    }
+    for (const auto &c : d_captured_identities) {
+        if (c.first == snapshot)
+            return &c.second;
+    }
+    return nullptr;
 }
 
 void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSnapshot, int mergeId)
@@ -1488,8 +1538,10 @@ void MultiLayer::pushUndoSnapshot(const QString &label, const QString &beforeSna
 
     const int activeIdx = active_graph ? graphsList.indexOf(active_graph) : 0;
     ApplicationWindow *app = findMultiLayerApp(this);
+    const QVector<LayerIdentity> *beforeIds = capturedLayerIdentities(beforeSnapshot);
     d_undo_stack->push(new MultiLayerSnapshotUndoCommand(
-            this, app, label, beforeSnapshot, afterSnapshot, qMax(0, activeIdx), mergeId));
+            this, app, label, beforeSnapshot, afterSnapshot, qMax(0, activeIdx), mergeId,
+            beforeIds ? *beforeIds : QVector<LayerIdentity>(), layerIdentities()));
     if (app)
         app->updateUndoRedoActionsForActiveWindow();
 }
@@ -2235,8 +2287,46 @@ void MultiLayer::remapUndoSnapshotsForMatrixRename(const QString &oldName, const
     }
 }
 
+namespace {
+
+//! The key each curve of a rebuilt layer takes: that of the same curve in \a was (-1 if none).
+//! A layer rebuilt from its own snapshot has the same curves in the same order (\a inOrder);
+//! otherwise the curves are matched by Graph::curveIdentity(), in order.
+QVector<int> matchCurveKeys(const MultiLayer::LayerIdentity &was, const QStringList &now,
+                            bool inOrder)
+{
+    QVector<int> keys(now.size(), -1);
+    if (inOrder && was.keys.size() == now.size()) {
+        for (int i = 0; i < now.size(); ++i)
+            keys[i] = was.keys.at(i);
+        return keys;
+    }
+    QVector<bool> used(was.curves.size(), false);
+    int from = 0;
+    for (int i = 0; i < now.size(); ++i) {
+        int j = -1;
+        for (int k = from; k < was.curves.size() && j < 0; ++k) {
+            if (!used[k] && was.curves.at(k) == now.at(i))
+                j = k;
+        }
+        for (int k = 0; k < from && j < 0; ++k) {
+            if (!used[k] && was.curves.at(k) == now.at(i))
+                j = k;
+        }
+        if (j >= 0 && j < was.keys.size()) {
+            used[j] = true;
+            keys[i] = was.keys.at(j);
+            from = j + 1;
+        }
+    }
+    return keys;
+}
+
+} // namespace
+
 bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &snapshot,
-                                        int preferredActiveLayer, bool restoreGeometry)
+                                        int preferredActiveLayer, bool restoreGeometry,
+                                        const QVector<LayerIdentity> *ids)
 {
     if (!app)
         app = findMultiLayerApp(this);
@@ -2270,7 +2360,14 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
             ml->d_is_restoring_snapshot = false;
         }
     } guard(this, app);
-    ++d_snapshot_restore_count; // the layers are replaced below
+    // The layers are replaced below. They stand for the layers the snapshot was taken of; else
+    // for the layers now (when there are as many).
+    if (!ids)
+        ids = capturedLayerIdentities(snapshot);
+    const QVector<LayerIdentity> idsNow = layerIdentities(); // also notes their last keys
+    const bool snapshotIds = ids != nullptr;
+    const QVector<LayerIdentity> was = snapshotIds ? *ids : idsNow;
+    QVector<Graph *> rebuilt; // the layer each <graph> block gave (null if none)
 
     CanvasInlineTextEditor::cancelActiveForMultiLayer(this);
     for (QWidget *gw : graphsList) {
@@ -2439,7 +2536,11 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
                 || graphLines.last().trimmed() != QLatin1String("</graph>")) {
                 graphLines.append(QStringLiteral("</graph>"));
             }
+            const int layersBefore = graphsList.size();
             app->openGraph(app, this, graphLines);
+            rebuilt << ((graphsList.size() == layersBefore + 1)
+                                ? qobject_cast<Graph *>(graphsList.last())
+                                : nullptr);
             continue;
         }
 
@@ -2474,6 +2575,25 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
 
     if (!preservedName.isEmpty() && this->name() != preservedName)
         this->setName(preservedName);
+
+    // The rebuilt layers stand for the layers they were taken of: their ids and curve keys,
+    // which curves held out of a layer (removed columns and tables) look them up by. New keys
+    // go above every key those layers gave out, so a key is never given to another curve.
+    if (rebuilt.size() == was.size()) {
+        for (int i = 0; i < rebuilt.size(); ++i) {
+            Graph *g = rebuilt.at(i);
+            if (!g)
+                continue;
+            const LayerIdentity &w = was.at(i);
+            QStringList now;
+            for (int c = 0; c < g->curves(); ++c)
+                now << g->curveIdentity(c);
+            g->setLayerId(w.id);
+            g->adoptCurveKeys(matchCurveKeys(w, now, snapshotIds),
+                              qMax(w.lastKey, d_layer_last_keys.value(w.id)));
+            d_layer_last_keys[w.id] = qMax(d_layer_last_keys.value(w.id), g->lastCurveKey());
+        }
+    }
 
     setPageBackgroundColor(d_page_bg_color);
 
