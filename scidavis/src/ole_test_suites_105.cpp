@@ -33,6 +33,12 @@
 //        values are numbers (one "OVER" in 100 is an invalid cell); a column that becomes text
 //        keeps its numbers exactly (round-trip digits, not the 6-digit display); set_cell of
 //        "N.D." / "ND" / "#N/A" is a missing value of the numeric column as in the import
+//   105g paste_tsv of a number into an existing date/time column is the day count from the
+//        column's numeric base, the same cell as set_cell with that number or that text
+//        ("45000" was 04:50:00 on 1900-01-01, "2" 02:00, "45000.5" and "1.5e4" empty cells);
+//        digits written as a date (yyyyMMdd) or a clock time with a leading zero ("0930") and
+//        other date/time texts keep the input filter's reading; a value that cannot be read is
+//        an empty cell with a warning
 // =============================================================================
 
 namespace {
@@ -568,6 +574,125 @@ int runSuite105RpcImportColumnTypes(ApplicationWindow *mw)
                 ++row;
             }
             EXPECT105(ok, "105f3: set_cell of an import missing token is a missing value");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 105g: numbers pasted into an existing date/time column
+    // -------------------------------------------------------------------------
+    {
+        const int R = 16;
+        auto makeDateTimeTable = [&](const QString &name) -> Table * {
+            Table *t = w105->newTable(R, 1, name, name);
+            QJsonArray texts;
+            for (int r = 0; r < R; ++r)
+                texts.append(QStringLiteral("2024-01-%1 10:00").arg(r + 1, 2, 10, QLatin1Char('0')));
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", name }, { "col", 0 }, { "mode", "datetime" },
+                              { "data", texts } });
+            return (t && t->column(0)->columnMode() == SciDAVis::ColumnMode::DateTime) ? t
+                                                                                        : nullptr;
+        };
+        Table *tp = makeDateTimeTable(QStringLiteral("G105"));   // paste_tsv
+        Table *tn = makeDateTimeTable(QStringLiteral("GN105"));  // set_cell with a number
+        Table *ts = makeDateTimeTable(QStringLiteral("GS105"));  // set_cell with a text
+        Table *tg = makeDateTimeTable(QStringLiteral("GG105"));  // typed into the cell (filter)
+        EXPECT105(tp && tn && ts && tg, "105g: date/time fixtures");
+        if (tp && tn && ts && tg) {
+            auto cellText = [](Table *t, int row) {
+                Column *c = t->column(0);
+                return c->isInvalid(row) ? QStringLiteral("<empty>")
+                                         : c->dateTimeAt(row).toString(Qt::ISODateWithMs);
+            };
+            auto paste = [&](int row, const QString &text) {
+                return rpc(QStringLiteral("table.paste_tsv"),
+                           QJsonObject { { "table", "G105" }, { "text", text },
+                                         { "header", false }, { "separator", "\t" },
+                                         { "start_row", row }, { "start_col", 0 } });
+            };
+            auto hasWarnings = [](const QJsonObject &resp) {
+                return !rpcResult105(resp).value(QStringLiteral("warnings")).toArray().isEmpty();
+            };
+            // numbers: the day count, as set_cell of the number and of the text
+            const QStringList numbers = { "45000", "45000.5", "2", "1.5e4", "0", "-1.25" };
+            int row = 0;
+            for (const QString &text : numbers) {
+                const QJsonObject r = paste(row, text);
+                rpc(QStringLiteral("table.set_cell"),
+                    QJsonObject { { "table", "GN105" }, { "row", row }, { "col", 0 },
+                                  { "value", text.toDouble() } });
+                rpc(QStringLiteral("table.set_cell"),
+                    QJsonObject { { "table", "GS105" }, { "row", row }, { "col", 0 },
+                                  { "value", text } });
+                const QString got = cellText(tp, row);
+                EXPECT105(!rpcIsError105(r) && !hasWarnings(r) && got == cellText(tn, row)
+                                  && cellText(ts, row) == got && got != QStringLiteral("<empty>"),
+                          "105g: paste '" << text.toStdString() << "' -> " << got.toStdString()
+                                          << ", set_cell(number) -> "
+                                          << cellText(tn, row).toStdString()
+                                          << ", set_cell(text) -> "
+                                          << cellText(ts, row).toStdString());
+                ++row;
+            }
+            EXPECT105(tp->column(0)->dateTimeAt(0).date() == QDate(2093, 3, 16)
+                              && tp->column(0)->dateTimeAt(2) == QDateTime(QDate(1970, 1, 3), QTime(0, 0))
+                              && tp->column(0)->dateTimeAt(1).time() == QTime(12, 0),
+                      "105g: '45000' / '2' / '45000.5' are not days from 1970-01-01: "
+                              << cellText(tp, 0).toStdString() << " " << cellText(tp, 2).toStdString()
+                              << " " << cellText(tp, 1).toStdString());
+            // dates and clock times written with digits, and other date/time texts: the input
+            // filter's reading, as typed into the cell
+            const QStringList filterTexts = { "20250506", "0930", "093000", "10:30",
+                                              "2024-01-02 03:04", "2025-05-06T07:08:09" };
+            for (const QString &text : filterTexts) {
+                const QJsonObject r = paste(row, text);
+                tg->setText(row, 0, text);
+                const QString got = cellText(tp, row);
+                std::cout << "[INFO] 105g: paste '" << text.toStdString() << "' -> "
+                          << got.toStdString() << "\n";
+                EXPECT105(!rpcIsError105(r) && got == cellText(tg, row),
+                          "105g: paste '" << text.toStdString() << "' -> " << got.toStdString()
+                                          << ", typed -> " << cellText(tg, row).toStdString());
+                ++row;
+            }
+            EXPECT105(tp->column(0)->dateTimeAt(6) == QDateTime(QDate(2025, 5, 6), QTime(0, 0)),
+                      "105g: '20250506' is not 2025-05-06: " << cellText(tp, 6).toStdString());
+            // a value that cannot be read: an empty cell and a warning; a missing token: empty
+            {
+                const QJsonObject r = paste(row, QStringLiteral("abc12"));
+                EXPECT105(!rpcIsError105(r) && tp->column(0)->isInvalid(row) && hasWarnings(r)
+                                  && rpcResult105(r)
+                                             .value(QStringLiteral("warnings"))
+                                             .toArray()
+                                             .at(0)
+                                             .toString()
+                                             .contains(QStringLiteral("abc12")),
+                          "105g: 'abc12' gives no warning: " << cellText(tp, row).toStdString());
+                ++row;
+                const QJsonObject m = paste(row, QStringLiteral("N.D."));
+                EXPECT105(!rpcIsError105(m) && tp->column(0)->isInvalid(row) && !hasWarnings(m),
+                          "105g: 'N.D.' in a date/time column: " << cellText(tp, row).toStdString());
+                ++row;
+            }
+            // several rows in one paste are one Undo step
+            {
+                QUndoStack *us = tp->d_future_table ? tp->d_future_table->undoStack() : nullptr;
+                const QString before0 = cellText(tp, R - 2), before1 = cellText(tp, R - 1);
+                us->clear();
+                const QJsonObject r = paste(R - 2, QStringLiteral("45000\n2024-03-01 10:00"));
+                const QString after0 = cellText(tp, R - 2), after1 = cellText(tp, R - 1);
+                const bool after1Ok =
+                        tp->column(0)->dateTimeAt(R - 1) == QDateTime(QDate(2024, 3, 1), QTime(10, 0));
+                const int steps = us->index();
+                us->undo();
+                QCoreApplication::processEvents();
+                EXPECT105(!rpcIsError105(r) && steps == 1 && after0 == cellText(tn, 0) && after1Ok
+                                  && cellText(tp, R - 2) == before0 && cellText(tp, R - 1) == before1,
+                          "105g: two-row paste " << after0.toStdString() << " / "
+                                                 << after1.toStdString() << ", " << steps
+                                                 << " Undo step(s), after Undo "
+                                                 << cellText(tp, R - 2).toStdString());
+            }
         }
     }
 

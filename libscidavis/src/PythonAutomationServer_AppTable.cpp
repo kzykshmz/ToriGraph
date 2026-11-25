@@ -72,6 +72,7 @@
 #include "core/datatypes/Double2DayOfWeekFilter.h"
 #include "core/datatypes/Double2MonthFilter.h"
 #include "core/datatypes/Double2StringFilter.h"
+#include "core/datatypes/String2DateTimeFilter.h"
 #include "lib/Interval.h"
 #include "matrix/future_Matrix.h"
 #include "table/AsciiTableImportFilter.h"
@@ -1598,6 +1599,82 @@ bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
     return AsciiTableImportFilter::parseNumberToken(trimmed, out);
 }
 
+//! A text written into an existing date/time column by table.paste_tsv or table.set_cell that
+//! is a number: a day count from the column's numeric date/time base, as table.set_cell with a
+//! JSON number ("45000" is the same cell as 45000). Through the input filter "2" and "45000"
+//! were clock times on 1900-01-01 (its "h" / "hmmss" formats: 02:00, 04:50:00) and "45000.5" or
+//! "1.5e4" empty cells. Digit strings written as a date or a clock time keep the filter's
+//! reading: the column's own format, a date in the yyyyMMdd form ("20250506") and digits with a
+//! leading zero ("0930", "093000").
+bool dateTimeTextAsDayCount(Column *col, const QString &trimmed, bool decimalComma, double &days)
+{
+    if (!col || col->columnMode() != SciDAVis::ColumnMode::DateTime || trimmed.isEmpty())
+        return false;
+    double v = 0.0;
+    if (!parseImportNumber(trimmed, decimalComma, v) || !std::isfinite(v))
+        return false;
+    static const QRegularExpression leadingZeroDigits(QStringLiteral("^0[0-9]+$"));
+    if (leadingZeroDigits.match(trimmed).hasMatch())
+        return false;
+    if (QDate::fromString(trimmed, QStringLiteral("yyyyMMdd")).isValid())
+        return false;
+    if (const auto *f = dynamic_cast<const String2DateTimeFilter *>(col->inputFilter())) {
+        if (!f->format().isEmpty() && QDateTime::fromString(trimmed, f->format()).isValid())
+            return false;
+    }
+    days = v;
+    return true;
+}
+
+//! table.paste_tsv into an existing date/time column: numbers are day counts as in
+//! table.set_cell (dateTimeTextAsDayCount), the other texts go through the column's input filter
+//! as before; one command. Returns the rows (in `texts`) of cells that hold a value but cannot
+//! be read: they are empty cells. The missing-value tokens of the import ("N.D.", "-", ...) are
+//! not counted.
+QVector<int> writeTextsToDateTimeColumn(Column *col, int firstRow, const QStringList &texts,
+                                        const QVector<bool> &quoted, bool decimalComma)
+{
+    QVector<int> unreadable;
+    const int n = texts.size();
+    if (!col || n == 0)
+        return unreadable;
+    QStringList filterTexts = texts;
+    QVector<int> dayRows;
+    QVector<double> dayValues;
+    for (int r = 0; r < n; ++r) {
+        double days = 0.0;
+        if (dateTimeTextAsDayCount(col, texts.at(r).trimmed(), decimalComma, days)) {
+            filterTexts[r].clear();
+            dayRows.append(r);
+            dayValues.append(days);
+        }
+    }
+    QList<QDateTime> values;
+    values.reserve(n);
+    {
+        // the column's own input filter, as ColumnStringIO::copy uses it (a column with a time
+        // zone offset keeps the offset of its first value)
+        Column source(QStringLiteral("paste"), filterTexts);
+        AbstractSimpleFilter *in = col->inputFilter();
+        in->input(0, &source);
+        const AbstractColumn *out = in->output(0);
+        for (int r = 0; r < n; ++r)
+            values.append(out->dateTimeAt(r));
+        in->input(0, col->asStringColumn());
+    }
+    for (int k = 0; k < dayRows.size(); ++k)
+        values[dayRows.at(k)] = calendarDateTimeFromNumber(col, dayValues.at(k));
+    for (int r = 0; r < n; ++r) {
+        if (values.at(r).isValid())
+            continue;
+        const QString trimmed = texts.at(r).trimmed();
+        if (!trimmed.isEmpty() && !isImportMissingNumericCell(trimmed, quoted.value(r)))
+            unreadable.append(r);
+    }
+    col->replaceDateTimes(firstRow, values);
+    return unreadable;
+}
+
 QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text, int startPos,
                                                              const QString &sep, bool stripSpaces,
                                                              bool simplifySpaces, int &outMaxCols,
@@ -1901,7 +1978,8 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                                        int maxCols, bool hasHeader, bool withComments,
                                        int unitsRowHint, bool convertNumeric, int startRowOffset,
                                        int startColOffset, bool assignDefaultPlotDesignations,
-                                       bool decimalComma, bool keepExistingColumnTypes = false)
+                                       bool decimalComma, bool keepExistingColumnTypes = false,
+                                       QStringList *warnings = nullptr)
 {
     QVector<ParsedCsvCell> headerRow;
     QVector<ParsedCsvCell> unitsRowCells;
@@ -2027,8 +2105,36 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                     if (dataRowCount > 0)
                         col->replaceTexts(startRowOffset, texts);
                 }
+            } else if (dataRowCount > 0 && col->columnMode() == SciDAVis::ColumnMode::DateTime) {
+                // date/time: numbers are day counts as in table.set_cell, other texts through
+                // the column's input filter; a value that cannot be read is an empty cell and
+                // a warning, not a silent loss
+                QVector<bool> quoted(dataRowCount, false);
+                for (int r = 0; r < dataRowCount; ++r) {
+                    const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                    quoted[r] = c < rec.size() && rec[c].quoted;
+                }
+                const QVector<int> unreadable = writeTextsToDateTimeColumn(
+                        col, startRowOffset, texts, quoted, decimalComma);
+                if (warnings && !unreadable.isEmpty()) {
+                    QStringList examples;
+                    for (int k = 0; k < unreadable.size() && k < 5; ++k) {
+                        const int r = unreadable.at(k);
+                        examples << QStringLiteral("row %1 '%2'")
+                                            .arg(startRowOffset + r)
+                                            .arg(texts.at(r).trimmed());
+                    }
+                    warnings->append(
+                            QStringLiteral("Column '%1': %2 value(s) could not be read as a "
+                                           "date/time and are empty cells (%3%4).")
+                                    .arg(t->colLabel(dstCol))
+                                    .arg(unreadable.size())
+                                    .arg(examples.join(QStringLiteral(", ")))
+                                    .arg(unreadable.size() > 5 ? QStringLiteral(", ...")
+                                                               : QString()));
+                }
             } else if (dataRowCount > 0) {
-                // text: as typed; date/time, month, day: through the column's input filter
+                // text: as typed; month, day: through the column's input filter
                 col->asStringColumn()->replaceTexts(startRowOffset, texts);
             }
         } else {
@@ -5668,6 +5774,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
 
         const bool assignDesigs = (startRow == 0 && startCol == 0);
+        QStringList pasteWarnings;
         {
             // growing the table, the temporary header names and the data are one Undo step
             ScopedRpcUndoMacro pasteMacro(t->d_future_table,
@@ -5676,7 +5783,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     t, records, maxCols, hasHeader, false, unitsRowHint, convertNumeric, startRow,
                     startCol, assignDesigs,
                     detectImportDecimalComma(rawText, 0, sep, convertNumeric),
-                    /*keepExistingColumnTypes=*/true);
+                    /*keepExistingColumnTypes=*/true, &pasteWarnings);
         }
         for (int c = startCol; c < std::min(t->numCols(), startCol + maxCols); ++c)
             d_app->updateCurves(t, fullColumnName(t, c));
@@ -5684,6 +5791,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
+        if (!pasteWarnings.isEmpty())
+            outResult[QStringLiteral("warnings")] = QJsonArray::fromStringList(pasteWarnings);
         return true;
     }
 
@@ -5711,6 +5820,15 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             // number, converted like set_column_data(mode=...) with numbers -- not text that the
             // input filter would read as a time ("3" -> 03:00:00)
             const QDateTime dt = calendarDateTimeFromNumber(col, val.toDouble());
+            if (dt.isValid())
+                col->setDateTimeAt(row, dt);
+            else
+                t->clearCell(row, colIdx);
+        } else if (double days = 0.0; col && val.isString()
+                   && dateTimeTextAsDayCount(col, val.toString().trimmed(), false, days)) {
+            // a number written as text in a date/time column is the same day count as the
+            // number itself (and as table.paste_tsv of that text)
+            const QDateTime dt = calendarDateTimeFromNumber(col, days);
             if (dt.isValid())
                 col->setDateTimeAt(row, dt);
             else
