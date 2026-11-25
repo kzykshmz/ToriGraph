@@ -3794,6 +3794,28 @@ bool Table::noYColumn()
     return d_future_table ? d_future_table->columnCount(SciDAVis::Y) == 0 : true;
 }
 
+QString Table::quoteCsvField(const QString &raw, const QString &separator)
+{
+    // A field must be quoted when it contains any non-blank character of the separator, not
+    // only the separator as a whole: with ", " or ";\t" a cell "Al,Zn" would otherwise be
+    // written bare and readers that split on ',' (Excel) would break the row.
+    bool hasSepChar = false;
+    for (const QChar ch : separator) {
+        if (!ch.isSpace() && raw.contains(ch)) {
+            hasSepChar = true;
+            break;
+        }
+    }
+    const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator)) || hasSepChar
+            || raw.contains(QLatin1Char('"')) || raw.contains(QLatin1Char('\n'))
+            || raw.contains(QLatin1Char('\r'));
+    if (!needsQuotes)
+        return raw;
+    QString escaped = raw;
+    escaped.replace(QLatin1String("\""), QLatin1String("\"\""));
+    return QLatin1Char('"') + escaped + QLatin1Char('"');
+}
+
 bool Table::exportASCII(const QString &fname, const QString &separator, bool withLabels,
                         bool exportSelection)
 {
@@ -3826,31 +3848,8 @@ bool Table::exportASCII(const QString &fname, const QString &separator, bool wit
     out.setCodec("UTF-8");
     out.setGenerateByteOrderMark(options.utf8Bom);
 
-    // A field must be quoted when it contains any non-blank character of the separator, not
-    // only the separator as a whole: with ", " or ";\t" a cell "Al,Zn" would otherwise be
-    // written bare and readers that split on ',' (Excel) would break the row.
-    QString sepChars;
-    for (const QChar ch : separator) {
-        if (!ch.isSpace() && !sepChars.contains(ch))
-            sepChars += ch;
-    }
-    auto quoteField = [&separator, &sepChars](const QString &raw) -> QString {
-        bool hasSepChar = false;
-        for (const QChar ch : sepChars) {
-            if (raw.contains(ch)) {
-                hasSepChar = true;
-                break;
-            }
-        }
-        const bool needsQuotes = (!separator.isEmpty() && raw.contains(separator)) || hasSepChar
-                || raw.contains(QLatin1Char('"'))
-                || raw.contains(QLatin1Char('\n'))
-                || raw.contains(QLatin1Char('\r'));
-        if (!needsQuotes)
-            return raw;
-        QString escaped = raw;
-        escaped.replace(QLatin1String("\""), QLatin1String("\"\""));
-        return QLatin1Char('"') + escaped + QLatin1Char('"');
+    auto quoteField = [&separator](const QString &raw) -> QString {
+        return quoteCsvField(raw, separator);
     };
 
     QLocale cLoc = QLocale::c();

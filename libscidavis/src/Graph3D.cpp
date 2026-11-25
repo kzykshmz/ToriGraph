@@ -393,7 +393,10 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
 
     // qwtplot3d spaces the grid by (max - min) / (points - 1): with fewer than two points the
     // vertices become NaN (and the axis autoscaler may never return). Same as updateDataXY().
+    // The ribbon is drawn as a filled mesh once the table has two points (resetNonEmptyStyle()).
     if (xmesh < 2) {
+        if (style_ == NOPLOT)
+            style_ = FILLEDMESH;
         sp->setPlotStyle(NOPLOT);
         update();
         return;
@@ -428,10 +431,7 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
     sp->makeCurrent();
     sp->legend()->setLimits(miny, qMax(miny + 1e-9, maxy));
     sp->loadFromData(data, xmesh, ymesh, minx, maxx, 0.0, maxz);
-    if (sp->plotStyle() == NOPLOT) {
-        sp->setPlotStyle(FILLEDMESH);
-        style_ = FILLEDMESH;
-    }
+    resetNonEmptyStyle(); // a NOPLOT left by an earlier degenerate table draws again
 
     if (d_autoscale)
         findBestLayout();
@@ -486,16 +486,24 @@ void Graph3D::addMatrixData(Matrix *m)
 
     int cols = m->numCols();
     int rows = m->numRows();
-    // qwtplot3d needs two grid lines along each axis (it spaces them by range / (n - 1)).
-    if (cols < 2 || rows < 2)
-        return;
 
     bool first_time = false;
     if (!d_matrix)
         first_time = true;
 
+    // Associate the plot with the matrix even when it cannot be drawn yet, so that it follows
+    // the matrix (updateMatrixData()) and the association is saved with the project.
     d_matrix = m;
     plotAssociation = "matrix<" + QString(m->name()) + ">";
+
+    // qwtplot3d needs two grid lines along each axis (it spaces them by range / (n - 1)).
+    // Leave the plot empty until the matrix has them (same as updateMatrixData()).
+    if (cols < 2 || rows < 2) {
+        sp->makeCurrent();
+        sp->setPlotStyle(NOPLOT);
+        update();
+        return;
+    }
 
     // loadFromData() takes data[x index][y index]: x runs along the matrix columns.
     double **data_matrix = Matrix::allocateMatrixData(cols, rows);
@@ -505,6 +513,7 @@ void Graph3D::addMatrixData(Matrix *m)
     }
 
     sp->makeCurrent();
+    resetNonEmptyStyle(); // e.g. "Change matrix" away from a matrix that had shrunk to one row
     sp->loadFromData(data_matrix, cols, rows, m->xStart(), m->xEnd(), m->yStart(), m->yEnd());
 
     double start, end;
@@ -557,8 +566,19 @@ void Graph3D::addData(Table *table, const QString &xColName, const QString &yCol
         }
     }
 
-    if (xmesh == 0)
-        xmesh++;
+    // Fewer than two points in the X range cannot be drawn as a ribbon (qwtplot3d spaces the
+    // grid by range / (points - 1), so one point gives NaN vertices): keep the axes but leave
+    // the plot empty until updateScales() / updateData() finds two points again.
+    if (xmesh < 2) {
+        if (style_ == NOPLOT)
+            style_ = FILLEDMESH;
+        sp->makeCurrent();
+        sp->setPlotStyle(NOPLOT);
+        sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
+        sp->legend()->setLimits(zl, zr);
+        sp->legend()->setMajors(legendMajorTicks);
+        return;
+    }
 
     double **data = Matrix::allocateMatrixData(xmesh, ymesh);
     for (j = 0; j < ymesh; j++) {
@@ -580,6 +600,7 @@ void Graph3D::addData(Table *table, const QString &xColName, const QString &yCol
         }
     }
     sp->makeCurrent();
+    resetNonEmptyStyle();
     sp->loadFromData(data, xmesh, ymesh, xl, xr, yl, yr);
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     sp->legend()->setLimits(zl, zr);
@@ -938,6 +959,12 @@ void Graph3D::resetNonEmptyStyle()
 {
     if (sp->plotStyle() != Qwt3D::NOPLOT)
         return; // the plot was not previousely emptied
+
+    // style_ is NOPLOT when no style was ever chosen (a plot that was empty from the start, or a
+    // ribbon / trajectory that kept qwtplot3d's default): draw it as qwtplot3d's default
+    // filled mesh instead of setting NOPLOT again and staying blank for good.
+    if (style_ == Qwt3D::NOPLOT)
+        style_ = Qwt3D::FILLEDMESH;
 
     if (style_ == Qwt3D::USER) { // reseting the right user plot style
         switch (pointStyle) {
@@ -1599,6 +1626,8 @@ void Graph3D::updateScalesFromMatrix(double xl, double xr, double yl, double yr,
                 data_matrix[i][j] = 0.0;
         }
     }
+    sp->makeCurrent();
+    resetNonEmptyStyle();
     sp->loadFromData(data_matrix, nc, nr, xl, xr, yl, yr);
     Matrix::freeMatrixData(data_matrix, nc);
 
@@ -1630,8 +1659,14 @@ void Graph3D::updateScales(double xl, double xr, double yl, double yr, double zl
         }
     }
 
-    if (xmesh == 0)
-        xmesh++;
+    // Fewer than two points in the X range: empty plot instead of NaN vertices (see
+    // addData(Table *, const QString &, const QString &, double, ...)); a wider range draws again.
+    if (xmesh < 2) {
+        sp->makeCurrent();
+        sp->setPlotStyle(NOPLOT);
+        sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
+        return;
+    }
 
     double **data = Matrix::allocateMatrixData(xmesh, ymesh);
 
@@ -1655,6 +1690,7 @@ void Graph3D::updateScales(double xl, double xr, double yl, double yr, double zl
     }
 
     sp->makeCurrent();
+    resetNonEmptyStyle();
     sp->loadFromData(data, xmesh, ymesh, xl, xr, yl, yr);
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     Matrix::freeMatrixData(data, xmesh);

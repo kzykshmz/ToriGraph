@@ -20,7 +20,11 @@
 //   87d  small scale factors (1e-5 shown as 0.00 %) survive OK unchanged
 //   87e  1xN / Nx1 matrices and a table with one valid point return in time and leave no
 //        NaN vertex in the plot
-// The checks report every failure (they do not stop at the first one); 87e comes last because
+//   87f  plots emptied (NOPLOT) by degenerate data draw again once there are two points:
+//        "Change matrix" after a 1-row matrix, a ribbon of an empty table that gets data, a
+//        1xN matrix that grows to 3xN (and is tied to the matrix meanwhile), a ribbon with an
+//        X range holding one point that is widened or gets a second point
+// The checks report every failure (they do not stop at the first one); 87e/87f come last because
 // the old code could loop forever there.
 // =============================================================================
 
@@ -392,6 +396,151 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw)
             CHECK87(gridFinite87(SurfacePeek87::grid(gt->sp)),
                     "87e: one-point table left NaN/inf vertices");
             delete gt;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 87f: a plot emptied by degenerate data (NOPLOT) draws again once the data has two points
+    // ---------------------------------------------------------------------------------------
+    {
+        // f1: matrix shrunk to one row (NOPLOT), then "Change matrix" to a normal matrix.
+        Matrix *ma = app->newMatrix(QStringLiteral("M87f_a"), 3, 4);
+        Matrix *mb = app->newMatrix(QStringLiteral("M87f_b"), 3, 5);
+        CHECK87(ma && mb, "87f1: matrix creation failed");
+        if (ma && mb) {
+            ma->setCoordinates(0.0, 3.0, 0.0, 2.0);
+            mb->setCoordinates(0.0, 4.0, 0.0, 2.0);
+            for (int r = 0; r < 3; ++r) {
+                for (int c = 0; c < 4; ++c)
+                    ma->setCell(r, c, 1.0 + r + c);
+                for (int c = 0; c < 5; ++c)
+                    mb->setCell(r, c, 10.0 * r + c);
+            }
+            Graph3D *gf = new Graph3D(QString());
+            gf->addMatrixData(ma);
+            gf->customPlotStyle(Qwt3D::FILLED); // as plot3DMatrix() does
+            ma->setDimensions(1, 4);
+            gf->updateMatrixData(ma);
+            CHECK87(gf->plotStyle() == Qwt3D::NOPLOT,
+                    "87f1: matrix shrunk to 1x4 is still drawn (style " << int(gf->plotStyle())
+                                                                         << ")");
+            gf->changeMatrix(mb);
+            QString why;
+            CHECK87(gf->plotStyle() == Qwt3D::FILLED,
+                    "87f1: after changeMatrix to a 3x5 matrix the style is "
+                            << int(gf->plotStyle()) << ", expected FILLED (" << int(Qwt3D::FILLED)
+                            << ")");
+            CHECK87(gf->matrix() == mb, "87f1: changeMatrix did not switch the matrix");
+            CHECK87(orientationOk87(SurfacePeek87::grid(gf->sp), mb, &why),
+                    "87f1: changeMatrix grid: " << why.toStdString());
+            delete gf;
+        }
+
+        // f2: ribbon made from an empty table draws once the table gets data.
+        Table *te = app->newTable(QStringLiteral("T87f_empty"), 3, 2);
+        CHECK87(te != nullptr, "87f2: table creation failed");
+        if (te) {
+            // A new table may start with 0.0 in every cell: make the cells really empty.
+            for (int c = 0; c < 2; ++c)
+                for (int r = 0; r < 3; ++r)
+                    te->column(c)->setInvalid(r, true);
+            Graph3D *gr = new Graph3D(QString());
+            gr->addData(te, te->colName(0), te->colName(1));
+            CHECK87(gr->plotStyle() == Qwt3D::NOPLOT,
+                    "87f2: ribbon of an empty table is not empty (style " << int(gr->plotStyle())
+                                                                          << ")");
+            for (int r = 0; r < 3; ++r) {
+                te->setCell(r, 0, double(r));
+                te->setCell(r, 1, 2.0 * r + 1.0);
+            }
+            gr->updateData(te);
+            const Qwt3D::GridData *grid = SurfacePeek87::grid(gr->sp);
+            CHECK87(gr->plotStyle() == Qwt3D::FILLEDMESH,
+                    "87f2: ribbon is not drawn after the table got 3 points (style "
+                            << int(gr->plotStyle()) << ")");
+            CHECK87(gridColumns87(grid) == 3 && gridFinite87(grid),
+                    "87f2: ribbon grid has " << gridColumns87(grid)
+                                             << " columns (expected 3) or NaN vertices");
+            delete gr;
+        }
+
+        // f3: 1xN matrix: the plot is associated with it and draws once it grows to 3xN.
+        Matrix *m1 = app->newMatrix(QStringLiteral("M87f_1xN"), 1, 5);
+        CHECK87(m1 != nullptr, "87f3: matrix creation failed");
+        if (m1) {
+            m1->setCoordinates(0.0, 4.0, 0.0, 2.0);
+            for (int c = 0; c < 5; ++c)
+                m1->setCell(0, c, 1.0 + c);
+            Graph3D *g1 = new Graph3D(QString());
+            g1->addMatrixData(m1);
+            CHECK87(g1->matrix() == m1, "87f3: the 3D plot of a 1x5 matrix is not tied to it");
+            CHECK87(g1->formula() == QStringLiteral("matrix<M87f_1xN>"),
+                    "87f3: plot association is '" << g1->formula().toStdString()
+                                                  << "', expected 'matrix<M87f_1xN>'");
+            CHECK87(g1->plotStyle() == Qwt3D::NOPLOT,
+                    "87f3: 1x5 matrix plot is not empty (style " << int(g1->plotStyle()) << ")");
+            CHECK87(gridFinite87(SurfacePeek87::grid(g1->sp)),
+                    "87f3: 1x5 matrix plot has NaN vertices");
+            m1->setDimensions(3, 5);
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 5; ++c)
+                    m1->setCell(r, c, 10.0 * r + c);
+            // ApplicationWindow::updateMatrixPlots() calls this for plots with matrix() == m.
+            g1->updateMatrixData(m1);
+            QString why;
+            CHECK87(g1->plotStyle() != Qwt3D::NOPLOT,
+                    "87f3: plot of the matrix grown to 3x5 is still empty");
+            CHECK87(orientationOk87(SurfacePeek87::grid(g1->sp), m1, &why),
+                    "87f3: grown 3x5 matrix grid: " << why.toStdString());
+            delete g1;
+        }
+
+        // f4: ribbon with X range: one point in range -> empty without NaN; a wider range or a
+        //     second point in range draws again.
+        Table *tr = app->newTable(QStringLiteral("T87f_range"), 6, 2);
+        CHECK87(tr != nullptr, "87f4: table creation failed");
+        if (tr) {
+            for (int r = 0; r < 4; ++r) {
+                tr->setCell(r, 0, double(r));
+                tr->setCell(r, 1, 1.0 + r);
+            }
+            for (int c = 0; c < 2; ++c) // rows 4 and 5 stay empty for now
+                for (int r = 4; r < 6; ++r)
+                    tr->column(c)->setInvalid(r, true);
+            Graph3D *gq = new Graph3D(QString());
+            gq->addData(tr, tr->colName(0), tr->colName(1), -0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
+            CHECK87(gq->plotStyle() == Qwt3D::NOPLOT,
+                    "87f4: one point in the X range is drawn (style " << int(gq->plotStyle())
+                                                                       << ")");
+            CHECK87(gridFinite87(SurfacePeek87::grid(gq->sp)),
+                    "87f4: one point in the X range left NaN vertices");
+
+            gq->updateScales(-0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
+            const Qwt3D::GridData *grid = SurfacePeek87::grid(gq->sp);
+            CHECK87(gq->plotStyle() == Qwt3D::FILLEDMESH,
+                    "87f4: wider X range (4 points) is not drawn (style " << int(gq->plotStyle())
+                                                                           << ")");
+            CHECK87(gridColumns87(grid) == 4 && gridFinite87(grid),
+                    "87f4: wider X range grid has " << gridColumns87(grid)
+                                                    << " columns (expected 4) or NaN vertices");
+
+            gq->updateScales(-0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
+            CHECK87(gq->plotStyle() == Qwt3D::NOPLOT,
+                    "87f4: X range narrowed to one point is still drawn");
+            CHECK87(gridFinite87(SurfacePeek87::grid(gq->sp)),
+                    "87f4: X range narrowed to one point left NaN vertices");
+
+            tr->setCell(4, 0, 0.25);
+            tr->setCell(4, 1, 7.0);
+            gq->updateScales(-0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
+            grid = SurfacePeek87::grid(gq->sp);
+            CHECK87(gq->plotStyle() == Qwt3D::FILLEDMESH,
+                    "87f4: second point in the X range is not drawn (style "
+                            << int(gq->plotStyle()) << ")");
+            CHECK87(gridColumns87(grid) == 2 && gridFinite87(grid),
+                    "87f4: two-point grid has " << gridColumns87(grid)
+                                                << " columns (expected 2) or NaN vertices");
+            delete gq;
         }
     }
 

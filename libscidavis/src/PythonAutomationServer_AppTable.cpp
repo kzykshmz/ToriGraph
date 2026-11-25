@@ -5462,15 +5462,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                            : true);
         const bool withComments = params.value(QStringLiteral("with_comments")).toBool(false);
 
+        // Same quoting rule as Table::exportASCII (also quotes "Al,Zn" with separator ", ").
         auto quoteField = [&sep](const QString &field) -> QString {
-            const bool mustQuote = (!sep.isEmpty() && field.contains(sep))
-                    || field.contains(QLatin1Char('"')) || field.contains(QLatin1Char('\n'))
-                    || field.contains(QLatin1Char('\r'));
-            if (!mustQuote)
-                return field;
-            QString escaped = field;
-            escaped.replace(QLatin1String("\""), QLatin1String("\"\""));
-            return QLatin1Char('"') + escaped + QLatin1Char('"');
+            return Table::quoteCsvField(field, sep);
         };
 
         QFile outFile(absPath);

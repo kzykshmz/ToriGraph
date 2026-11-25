@@ -313,6 +313,10 @@ public slots:
                      bool exportSelection = false);
     bool exportASCII(const QString &fname, const QString &separator, bool withLabels,
                      bool exportSelection, const AsciiExportOptions &options);
+    //! Quotes one CSV/ASCII field for writing with  separator (RFC 4180 style). A field is
+    //! quoted when it contains the separator, any non-blank character of the separator (with
+    //! ", " a cell "Al,Zn" must still be quoted), a double quote or a line break.
+    static QString quoteCsvField(const QString &field, const QString &separator);
     //! Error message of the last failed exportASCII() call (empty after success).
     QString lastExportError() const { return d_last_export_error; }
 

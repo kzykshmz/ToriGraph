@@ -20,6 +20,7 @@
 //        span/(n-1) instead of |x1 - x0|; an explicit 'sampling' still wins
 //   88d  FFTDialog (table mode) takes the default interval from the X column of the real
 //        column (colX(real)), not from the first X column of the table
+//   88e  RPC table.export_csv uses the same quoting rule as exportASCII (", " and "Al,Zn")
 // =============================================================================
 
 namespace {
@@ -335,6 +336,67 @@ int runSuite88ExportAndFftSampling(ApplicationWindow *mw)
                                                        << "' from column " << samplingColY1
                                                        << ", expected 1 from X1 (index 0)");
         std::cout << "[PASS] 88d: FFTDialog default interval follows colX(real)\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // 88e: RPC table.export_csv quotes like exportASCII (separator ", " and "Al,Zn")
+    // -------------------------------------------------------------------------
+    {
+        Table *t = w88->newTable(2, 2, QStringLiteral("T88Rpc"), QStringLiteral("Rpc88"));
+        CHECK_COND(t != nullptr, "88e: newTable failed");
+        t->setCell(0, 0, 1.0);
+        t->setCell(1, 0, 2.0);
+        Column *txt = t->column(1);
+        CHECK_COND(txt != nullptr, "88e: text column null");
+        txt->setColumnMode(SciDAVis::ColumnMode::Text);
+        txt->setTextAt(0, QStringLiteral("Al,Zn"));
+        txt->setTextAt(1, QStringLiteral("Mg;Si"));
+
+        PythonAutomationServer *srv = w88->pythonAutomationServer();
+        CHECK_COND(srv != nullptr, "88e: pythonAutomationServer null");
+        int rpcId = 8850;
+        struct Case
+        {
+            const char *sep;
+            const char *tag;
+            const char *line0;
+            const char *line1;
+        };
+        const Case cases[] = {
+            { ", ", "comma-space", "1, \"Al,Zn\"", "2, Mg;Si" },
+            { ";\t", "semicolon-tab", "1;\tAl,Zn", "2;\t\"Mg;Si\"" },
+            { ",", "comma", "1,\"Al,Zn\"", "2,Mg;Si" },
+        };
+        for (const Case &c : cases) {
+            const QString path = tmp.filePath(QStringLiteral("rpc88_%1.csv").arg(c.tag));
+            QJsonObject params;
+            params[QStringLiteral("table")] = t->name();
+            params[QStringLiteral("path")] = path;
+            params[QStringLiteral("separator")] = QString::fromLatin1(c.sep);
+            params[QStringLiteral("header")] = false;
+            QJsonObject req;
+            req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            req[QStringLiteral("id")] = ++rpcId;
+            req[QStringLiteral("method")] = QStringLiteral("table.export_csv");
+            req[QStringLiteral("params")] = params;
+            const QJsonObject resp = srv->handleRpcRequest(req);
+            QCoreApplication::processEvents();
+            CHECK_COND(!resp.contains(QStringLiteral("error")),
+                       "88e(" << c.tag << "): table.export_csv error: "
+                              << QJsonDocument(resp.value(QStringLiteral("error")).toObject())
+                                         .toJson(QJsonDocument::Compact)
+                                         .toStdString());
+            const QStringList lines = readLines88(path);
+            CHECK_COND(lines.size() == 2,
+                       "88e(" << c.tag << "): expected 2 lines, got " << lines.size());
+            CHECK_COND(lines[0] == QString::fromLatin1(c.line0),
+                       "88e(" << c.tag << "): row 1 written as '" << lines[0].toStdString()
+                              << "', expected '" << c.line0 << "'");
+            CHECK_COND(lines[1] == QString::fromLatin1(c.line1),
+                       "88e(" << c.tag << "): row 2 written as '" << lines[1].toStdString()
+                              << "', expected '" << c.line1 << "'");
+        }
+        std::cout << "[PASS] 88e: RPC table.export_csv quotes separator characters\n";
     }
 
     std::cout << "[PASS] Suite 88 passed.\n";
