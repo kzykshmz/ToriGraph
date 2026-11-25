@@ -151,4 +151,38 @@ private:
 // end of class TableMoveColumnCmd
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+// class TableReconnectColumnCmd
+///////////////////////////////////////////////////////////////////////////
+//! Reconnect a moved column to its table when the move is undone
+/**
+ * future::Table::moveColumn() is a macro of the aspect child move (AspectChildMoveCmd) and
+ * TableMoveColumnCmd. Undo runs them in reverse: TableMoveColumnCmd::undo() connects the column,
+ * then the child move's undo removes and re-inserts the child, and
+ * AbstractAspect::Private::removeChild() disconnects every connection from the column to the
+ * table. Pushed first in the macro, this command's undo() runs last and connects the column
+ * (at its old index `index`) again. redo() needs nothing: TableMoveColumnCmd::redo() runs after
+ * the child move.
+ */
+class TableReconnectColumnCmd : public QUndoCommand
+{
+public:
+    TableReconnectColumnCmd(future::Table::Private &private_obj, int index,
+                            QUndoCommand *parent = 0)
+        : QUndoCommand(parent), d_private_obj(private_obj), d_index(index)
+    {
+    }
+
+    void redo() override { }
+    void undo() override { d_private_obj.reconnectColumn(d_index); }
+
+private:
+    future::Table::Private &d_private_obj;
+    int d_index;
+};
+
+///////////////////////////////////////////////////////////////////////////
+// end of class TableReconnectColumnCmd
+///////////////////////////////////////////////////////////////////////////
+
 #endif // ifndef TABLE_COMMANDS_H

@@ -562,6 +562,8 @@ public:
         void appendColumns(QList<Column *> cols);
         //! Move a column to another position
         void moveColumn(int from, int to);
+        //! Connect the column at `index` to the table again (see TableReconnectColumnCmd)
+        void reconnectColumn(int index);
         //! Return the number of columns in the table
         int columnCount() const { return d_column_count; }
         //! Return the number of rows in the table

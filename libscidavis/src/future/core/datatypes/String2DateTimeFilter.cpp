@@ -50,8 +50,9 @@ struct IsoDateTime
 //! the basic form "20231231T235959", and a time of day with more than three decimals.
 //!
 //! Only strings the older fallback below cannot read are taken here: a 'T' between date and
-//! time, a time zone designator after a date and 'T', or a fraction of a second longer than
-//! milliseconds. A date and time separated by a space keeps its old parsing.
+//! time, a time zone designator after a date and 'T', or a fraction of a second (any number of
+//! digits, "." or ","; the fallback reads exactly three digits after "."). A date and time
+//! separated by a space without a fraction keeps its old parsing.
 //!
 //! A zone designator is read only after a date and 'T' (or in the basic form). After a time of
 //! day alone or a space-separated date and time, "+hh:mm" / "-hh:mm" is far more likely a time
@@ -85,7 +86,7 @@ IsoDateTime parseIso8601DateTime(const QString &input)
     const QString zone = m.captured(9);
     if (!zone.isEmpty() && !(hasDate && sepIsT))
         return out; // "09:00-17:00", "2024-01-02 09:00-10:30": not a zone, the older formats decide
-    if (!sepIsT && zone.isEmpty() && fraction.size() <= 3)
+    if (!sepIsT && zone.isEmpty() && fraction.isEmpty())
         return out; // the older formats read this one
 
     if (!zone.isEmpty()) {
@@ -107,18 +108,73 @@ IsoDateTime parseIso8601DateTime(const QString &input)
         if (!date.isValid())
             return out;
     }
-    const QTime time(m.captured(5).toInt(), m.captured(6).toInt(),
-                     m.captured(7).isEmpty() ? 0 : m.captured(7).toInt());
+    const int seconds = m.captured(7).isEmpty() ? 0 : m.captured(7).toInt();
+    // a leap second (23:59:60) is kept on its own day as the last millisecond before the next
+    // second (23:59:59.999), so that it still sorts between 23:59:59 and the next day's 00:00
+    const bool leapSecond = (seconds == 60);
+    const QTime time(m.captured(5).toInt(), m.captured(6).toInt(), leapSecond ? 59 : seconds,
+                     leapSecond ? 999 : 0);
     if (!time.isValid())
         return out;
     QDateTime result(date, time, Qt::UTC);
-    if (!fraction.isEmpty()) {
+    if (!fraction.isEmpty() && !leapSecond) {
         // fraction of a second -> milliseconds, rounded (".5" is 500 ms, ".123456" is 123 ms)
         const qint64 msecs = qRound64((QStringLiteral("0.") + fraction).toDouble() * 1000.0);
         result = result.addMSecs(msecs);
     }
     out.wall = result;
     return out;
+}
+
+//! A time of day for the fallback parsing: String2DateTimeFilter::time_formats, plus a fraction of
+//! a second with any number of digits after "." or "," ("10:00:00.5" is 500 ms; the "zzz" of the
+//! formats takes exactly three digits), a leap second ("23:59:60" -> 23:59:59.999) and a 12-hour
+//! clock with am / pm.
+QTime parseTimeOfDay(const QString &text, const QStringList &formats)
+{
+    // "10:00:15 pm", "10:00 AM", "10:00:00.5 p.m.": the 12-hour clock in English whatever the
+    // locale (QTime's "ap" follows the locale's AM/PM texts)
+    static const QRegularExpression ampm(
+            QStringLiteral("^(\\d{1,2}(?::\\d{2}(?::\\d{2}(?:[.,]\\d+)?)?)?)"
+                           "\\s*([AaPp])\\.?[Mm]\\.?$"));
+    const QRegularExpressionMatch am = ampm.match(text);
+    if (am.hasMatch()) {
+        QString clock = am.captured(1);
+        if (!clock.contains(QLatin1Char(':')))
+            clock += QStringLiteral(":00");
+        const QTime t = parseTimeOfDay(clock, formats);
+        if (!t.isValid() || t.hour() < 1 || t.hour() > 12)
+            return QTime();
+        const bool pm = am.captured(2).compare(QStringLiteral("p"), Qt::CaseInsensitive) == 0;
+        const int hour = (t.hour() % 12) + (pm ? 12 : 0);
+        return QTime(hour, t.minute(), t.second(), t.msec());
+    }
+    static const QRegularExpression leap(QStringLiteral("^(\\d{1,2}:\\d{2}):60(?:[.,]\\d+)?$"));
+    const QRegularExpressionMatch lm = leap.match(text);
+    if (lm.hasMatch()) {
+        const QTime t = QTime::fromString(lm.captured(1), QStringLiteral("h:mm"));
+        return t.isValid() ? QTime(t.hour(), t.minute(), 59, 999) : QTime();
+    }
+    static const QRegularExpression frac(
+            QStringLiteral("^(\\d{1,2}:\\d{2}(?::\\d{2})?)[.,](\\d+)$"));
+    const QRegularExpressionMatch fm = frac.match(text);
+    if (fm.hasMatch()) {
+        const QString whole = fm.captured(1);
+        // "h:mm:ss.f" with seconds; "mm:ss.f" (the "mm:ss.zzz" format) without
+        QTime t = QTime::fromString(whole, QStringLiteral("h:mm:ss"));
+        if (!t.isValid() && whole.count(QLatin1Char(':')) == 1)
+            t = QTime::fromString(QStringLiteral("0:") + whole, QStringLiteral("h:mm:ss"));
+        if (!t.isValid())
+            return QTime();
+        const double fraction = (QStringLiteral("0.") + fm.captured(2)).toDouble();
+        return t.addMSecs(qMin(999, int(qRound64(fraction * 1000.0))));
+    }
+    for (const auto &format : formats) {
+        const QTime t = QTime::fromString(text, format);
+        if (t.isValid())
+            return t;
+    }
+    return QTime();
 }
 } // namespace
 
@@ -170,15 +226,19 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
         return QDateTime(wall.date(), wall.time()); // local wall-clock time like the other paths
     }
 
-        // fallback:
-        // try other format strings built from date_formats and time_formats
-        // comma and space are valid separators between date and time
+    // fallback:
+    // try other format strings built from date_formats and time_formats
+    // comma and space are valid separators between date and time; a comma between the seconds
+    // and their fraction ("10:00:00,5") is not
+    QString text = input_value.simplified();
+    static const QRegularExpression decimalComma(QStringLiteral("(\\d:\\d{2}:\\d{2}),(\\d)"));
+    text.replace(decimalComma, QStringLiteral("\\1.\\2"));
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    QStringList strings = input_value.simplified().split(",", Qt::SkipEmptyParts);
+    QStringList strings = text.split(",", Qt::SkipEmptyParts);
     if (strings.size() == 1)
         strings = strings.at(0).split(" ", Qt::SkipEmptyParts);
 #else
-    QStringList strings = input_value.simplified().split(",", QString::SkipEmptyParts);
+    QStringList strings = text.split(",", QString::SkipEmptyParts);
     if (strings.size() == 1)
         strings = strings.at(0).split(" ", QString::SkipEmptyParts);
 #endif
@@ -187,14 +247,11 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
         return result; // invalid date/time from first attempt
 
     QDate date_result;
-    QTime time_result;
-
-    QString date_string = strings.at(0).trimmed();
-    QString time_string;
-    if (strings.size() > 1)
-        time_string = strings.at(1).trimmed();
-    else
-        time_string = date_string;
+    const QString date_string = strings.at(0).trimmed();
+    // everything after the date is the time ("10:00 pm" too)
+    const bool hasTimePart = strings.size() > 1;
+    const QString time_string = hasTimePart ? strings.mid(1).join(QLatin1Char(' ')).trimmed()
+                                            : date_string;
 
     // try to find a valid date
     for (const auto& format : date_formats) {
@@ -203,16 +260,22 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
             break;
     }
     // try to find a valid time
-    for (const auto& format : time_formats) {
-        time_result = QTime::fromString(time_string, format);
-        if (time_result.isValid())
-            break;
-    }
+    const QTime time_result = parseTimeOfDay(time_string, time_formats);
 
-    if (!date_result.isValid() && time_result.isValid())
-        date_result.setDate(1900, 1, 1); // this is what QDateTime does e.g. for
-                                         // QDateTime::fromString("00:00","hh:mm");
-    return QDateTime(date_result, time_result);
+    if (hasTimePart) {
+        // A date and a time were written: both have to be readable. A time that is not
+        // ("2024-03-01 25:00", "2024-03-01 abc", "2024-01-02 09:00-10:30") used to give the
+        // date at 00:00 without notice; it is invalid (an empty cell) now.
+        if (!date_result.isValid() || !time_result.isValid())
+            return QDateTime();
+        return QDateTime(date_result, time_result);
+    }
+    if (date_result.isValid()) // a date alone is the start of that day
+        return QDateTime(date_result, time_result.isValid() ? time_result : QTime(0, 0));
+    if (time_result.isValid())
+        // a time alone on 1900-01-01: what QDateTime::fromString("00:00", "hh:mm") gives
+        return QDateTime(QDate(1900, 1, 1), time_result);
+    return QDateTime();
 }
 
 void String2DateTimeFilter::writeExtraAttributes(QXmlStreamWriter *writer) const

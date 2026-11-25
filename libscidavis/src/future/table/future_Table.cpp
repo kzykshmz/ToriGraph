@@ -2455,6 +2455,8 @@ void Table::moveColumn(int from, int to)
                        .arg(d_table_private.column(from)->name())
                        .arg(from + 1)
                        .arg(to + 1));
+    // first in the macro, so that its undo() runs last, after the child move has been undone
+    exec(new TableReconnectColumnCmd(d_table_private, from));
     moveChild(from, to);
     exec(new TableMoveColumnCmd(d_table_private, from, to));
     endMacro();
@@ -2933,28 +2935,32 @@ void Table::handleRowsRemoved(const AbstractColumn *col, int first, int count)
         emit dataChanged(first, index, col->rowCount() - 1, index);
 }
 
+// Unique connections: connecting a column twice (TableMoveColumnCmd and
+// TableReconnectColumnCmd on Undo of a move) must not deliver its signals twice.
 void Table::connectColumn(const Column *col)
 {
     connect(col, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
-            SLOT(handleDescriptionChange(const AbstractAspect *)));
+            SLOT(handleDescriptionChange(const AbstractAspect *)), Qt::UniqueConnection);
     connect(col, SIGNAL(plotDesignationChanged(const AbstractColumn *)), this,
-            SLOT(handlePlotDesignationChange(const AbstractColumn *)));
+            SLOT(handlePlotDesignationChange(const AbstractColumn *)), Qt::UniqueConnection);
     connect(col, SIGNAL(modeChanged(const AbstractColumn *)), this,
-            SLOT(handleDataChange(const AbstractColumn *)));
+            SLOT(handleDataChange(const AbstractColumn *)), Qt::UniqueConnection);
     connect(col, SIGNAL(dataChanged(const AbstractColumn *)), this,
-            SLOT(handleDataChange(const AbstractColumn *)));
+            SLOT(handleDataChange(const AbstractColumn *)), Qt::UniqueConnection);
     connect(col, SIGNAL(modeChanged(const AbstractColumn *)), this,
-            SLOT(handleModeChange(const AbstractColumn *)));
+            SLOT(handleModeChange(const AbstractColumn *)), Qt::UniqueConnection);
     connect(col, SIGNAL(rowsAboutToBeInserted(const AbstractColumn *, int, int)), this,
-            SLOT(handleRowsAboutToBeInserted(const AbstractColumn *, int, int)));
+            SLOT(handleRowsAboutToBeInserted(const AbstractColumn *, int, int)),
+            Qt::UniqueConnection);
     connect(col, SIGNAL(rowsInserted(const AbstractColumn *, int, int)), this,
-            SLOT(handleRowsInserted(const AbstractColumn *, int, int)));
+            SLOT(handleRowsInserted(const AbstractColumn *, int, int)), Qt::UniqueConnection);
     connect(col, SIGNAL(rowsAboutToBeRemoved(const AbstractColumn *, int, int)), this,
-            SLOT(handleRowsAboutToBeRemoved(const AbstractColumn *, int, int)));
+            SLOT(handleRowsAboutToBeRemoved(const AbstractColumn *, int, int)),
+            Qt::UniqueConnection);
     connect(col, SIGNAL(rowsRemoved(const AbstractColumn *, int, int)), this,
-            SLOT(handleRowsRemoved(const AbstractColumn *, int, int)));
+            SLOT(handleRowsRemoved(const AbstractColumn *, int, int)), Qt::UniqueConnection);
     connect(col, SIGNAL(maskingChanged(const AbstractColumn *)), this,
-            SLOT(handleDataChange(const AbstractColumn *)));
+            SLOT(handleDataChange(const AbstractColumn *)), Qt::UniqueConnection);
 }
 
 void Table::disconnectColumn(const Column *col)
@@ -3096,6 +3102,17 @@ bool Table::load(XmlStreamReader *reader)
         }
 
         setRowCount(rows);
+        // The columns are added in one appendColumns() call: adding them one by one ran the
+        // whole column-insertion machinery (undo macro, header update, view geometry) once per
+        // column and made opening a project with a 2000-column table take ~18 s (16 s of it in
+        // appendColumns). Elements that refer to the columns read so far (column_width) and the
+        // end of the table flush the pending columns first.
+        QList<Column *> pendingColumns;
+        auto flushColumns = [&]() {
+            if (!pendingColumns.isEmpty())
+                appendColumns(pendingColumns);
+            pendingColumns.clear();
+        };
         // read child elements
         while (!reader->atEnd()) {
             reader->readNext();
@@ -3104,18 +3121,20 @@ bool Table::load(XmlStreamReader *reader)
                 break;
 
             if (reader->isStartElement()) {
+                if (reader->name() != "column")
+                    flushColumns();
                 if (reader->name() == "comment") {
                     if (!readCommentElement(reader))
                         return false;
                 } else if (reader->name() == "column") {
                     Column *column = new Column(tr("Column %1").arg(1), SciDAVis::ColumnMode::Text);
                     if (!column->load(reader)) {
+                        delete column;
+                        qDeleteAll(pendingColumns);
                         setColumnCount(0);
                         return false;
                     }
-                    QList<Column *> columns;
-                    columns.append(column);
-                    appendColumns(columns);
+                    pendingColumns.append(column);
                 } else if (reader->name() == "column_width") {
                     if (!readColumnWidthElement(reader))
                         return false;
@@ -3127,6 +3146,7 @@ bool Table::load(XmlStreamReader *reader)
                 }
             }
         }
+        flushColumns();
         if (cols != columnCount())
             reader->raiseWarning(tr("columns attribute and number of read columns do not match"));
 
@@ -3328,6 +3348,12 @@ void Table::Private::moveColumn(int from, int to)
     emit d_owner.dataChanged(0, to, d_row_count - 1, to);
     if (d_owner.d_view)
         d_owner.d_view->rereadSectionSizes();
+}
+
+void Table::Private::reconnectColumn(int index)
+{
+    if (index >= 0 && index < d_column_count)
+        d_owner.connectColumn(d_columns.at(index));
 }
 
 void Table::Private::setRowCount(int rows)

@@ -89,6 +89,9 @@ public:
         return !convertToDouble(str, val);
     }
 
+    //! Converts `str` the way this filter converts a cell; false if it is not a number.
+    bool toDouble(const QString &str, double &value) const { return convertToDouble(str, value); }
+
     //! Return the data type of the column
     virtual SciDAVis::ColumnDataType dataType() const { return SciDAVis::TypeDouble; }
 

@@ -36,7 +36,8 @@
 //       cached: a formula set after a write, a formula in another table, a removed column
 //       before the formula column, and a cleared formula.
 //   99g time zones: "+hh:mm" after a time alone or a space-separated date and time is a time
-//       range, not a zone ("09:00-17:00", "2024-01-02 09:00-10:30" keep the old result); a
+//       range, not a zone ("09:00-17:00", "2024-01-02 09:00-10:30" are invalid: since Suite 101
+//       a time part that cannot be read no longer gives the date at 00:00); a
 //       column written in one offset keeps the times as written; a column mixing "Z" and
 //       "+09:00" puts the same instant at the same time (converted to the first offset, also for
 //       values typed in later) and sorts by instant; values without a zone are not converted.
@@ -249,7 +250,8 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
                                        QStringLiteral("10:30"),
                                        QStringLiteral("10:30:15"),
                                        QStringLiteral("20240102"),
-                                       QStringLiteral("2024-03-01 10:00:00.5"),
+                                       // "2024-03-01 10:00:00.5" was read as 00:00 (Suite 101
+                                       // checks 10:00:00.500)
                                        QStringLiteral("2024-03-01 10:00:00.123"),
                                        QStringLiteral("2024-03-01 10:00:00.000") };
         Column *oldCol =
@@ -589,7 +591,8 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
     // -------------------------------------------------------------------------
     {
         const QString defaultFormat = QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz");
-        // "+hh:mm" / "-hh:mm" / "Z" without a date and 'T' in front: the old result, never a zone
+        // "+hh:mm" / "-hh:mm" / "Z" without a date and 'T' in front: never a zone; the time part
+        // cannot be read, so the value is invalid (the old parser gave the date at 00:00)
         const QStringList rangeTexts = { QStringLiteral("09:00-17:00"),
                                          QStringLiteral("2024-01-02 09:00-10:30"),
                                          QStringLiteral("2024-01-02 03:04:05+09:00"),
@@ -605,11 +608,11 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
                       << (gotValid ? dtText(rc->dateTimeAt(i)).toStdString()
                                    : std::string("<invalid>"))
                       << " (old parser: " << dtText(legacy).toStdString() << ")\n";
-            CHECK_COND(gotValid == legacy.isValid() && (!gotValid || rc->dateTimeAt(i) == legacy),
+            CHECK_COND(!gotValid,
                        "99g: '" << rangeTexts[i].toStdString() << "' -> "
-                                << (gotValid ? dtText(rc->dateTimeAt(i)).toStdString()
-                                             : std::string("<invalid>"))
-                                << ", the old parser gave " << dtText(legacy).toStdString());
+                                << dtText(rc->dateTimeAt(i)).toStdString()
+                                << ", expected invalid (old parser: "
+                                << dtText(legacy).toStdString() << ")");
         }
         CHECK_COND(rc->isInvalid(0) || !rc->dateTimeAt(0).isValid(),
                    "99g: '09:00-17:00' is not invalid");
@@ -896,12 +899,10 @@ int runSuite99DateTimeParsingAndWideTables(ApplicationWindow *mw)
             { "redo (one X)", [&] { us4->redo(); }, true },
             { "undo again (two X)", [&] { us4->undo(); }, true },
             { "move X col 3 -> 5", [&] { t4->d_future_table->moveColumn(3, 5); }, true },
-            // no rename probe here: the Undo of a column move leaves the moved column
-            // disconnected from the table (AspectChildMoveCmd::undo runs after the
-            // reconnecting TableMoveColumnCmd::undo), so a rename of it does not reach the
-            // header at all. That predates the incremental header update; the next move
-            // reconnects the column.
-            { "undo move", [&] { us4->undo(); }, false },
+            // the Undo of a column move used to leave the moved column disconnected from the
+            // table (AspectChildMoveCmd::undo ran after the reconnecting
+            // TableMoveColumnCmd::undo); TableReconnectColumnCmd connects it again (Suite 101)
+            { "undo move", [&] { us4->undo(); }, true },
             { "move X col 3 -> 0", [&] { t4->d_future_table->moveColumn(3, 0); }, true },
             { "insert X at 2",
               [&] {

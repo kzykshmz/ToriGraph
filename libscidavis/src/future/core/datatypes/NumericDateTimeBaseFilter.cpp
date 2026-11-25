@@ -29,12 +29,18 @@
 #include "NumericDateTimeBaseFilter.h"
 #include <math.h>
 
-const QDateTime NumericDateTimeBaseFilter::zeroOffsetDate = QDateTime::fromMSecsSinceEpoch(0);
+// 1970-01-01 00:00 as wall-clock time. It used to be QDateTime::fromMSecsSinceEpoch(0), the epoch
+// instant in the PC's zone (1970-01-01 09:00 on a JST PC), so that whole days fell on 09:00.
+const QDateTime NumericDateTimeBaseFilter::zeroOffsetDate =
+        QDateTime(QDate(1970, 1, 1), QTime(0, 0), Qt::UTC);
 static const double milliSecondsInDay = 86400000.0;
 
 void NumericDateTimeBaseFilter::writeExtraAttributes(QXmlStreamWriter *writer) const
 {
+    // the wall-clock base as milliseconds since 1970-01-01 00:00 (zone-free); "base_wall" tells
+    // load() that the number is not an instant in the PC's zone (files written before it)
     writer->writeAttribute("base_datetime", QString::number(m_date_time_0.toMSecsSinceEpoch()));
+    writer->writeAttribute("base_wall", QStringLiteral("1"));
     writer->writeAttribute("unit", QString::number(static_cast<int>(m_unit_interval)));
 }
 
@@ -43,6 +49,9 @@ bool NumericDateTimeBaseFilter::load(XmlStreamReader *reader)
     QXmlStreamAttributes attribs = reader->attributes();
     QString base_datetimeStr = attribs.value(reader->namespaceUri().toString(), "base_datetime").toString();
     QString unitStr = attribs.value(reader->namespaceUri().toString(), "unit").toString();
+    const bool baseIsWall =
+            attribs.value(reader->namespaceUri().toString(), "base_wall").toString()
+            == QLatin1String("1");
     if (AbstractSimpleFilter::load(reader)) {
         bool ok;
         UnitInterval unit = static_cast<UnitInterval>(unitStr.toInt(&ok));
@@ -58,7 +67,17 @@ bool NumericDateTimeBaseFilter::load(XmlStreamReader *reader)
                 reader->raiseError(tr("NumericDateTimeBaseFilter: invalid offset, defaulting to zero"));
                 msecs = 0;
             }
-        QDateTime base_datetime = QDateTime::fromMSecsSinceEpoch(msecs);
+        QDateTime base_datetime;
+        if (baseIsWall)
+            base_datetime = QDateTime::fromMSecsSinceEpoch(msecs, Qt::UTC);
+        else if (msecs == 0)
+            // older files: 0 was the default base (the epoch instant), which is now the
+            // wall-clock 1970-01-01 00:00
+            base_datetime = zeroOffsetDate;
+        else
+            // older files: an instant in the PC's zone; its local fields are the clock time the
+            // user chose in the column dialog
+            base_datetime = QDateTime::fromMSecsSinceEpoch(msecs);
         setBaseDateTime(base_datetime);
     } else
         return false;
@@ -86,14 +105,13 @@ void NumericDateTimeBaseFilter::setUnitInterval(const UnitInterval unit)
 
 void NumericDateTimeBaseFilter::setBaseDateTime(const QDateTime &date)
 {
-    if (date.isValid())
-        m_date_time_0 = date;
-    else
-        m_date_time_0 = zeroOffsetDate;
+    m_date_time_0 = wallClock(date.isValid() ? date : zeroOffsetDate);
 }
 
-double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &tDateTime) const
+double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
 {
+    // zone-free arithmetic on the date and time fields (see the header)
+    const QDateTime tDateTime = wallClock(input);
     double retVal = 0.0;
     switch (m_unit_interval) {
     case UnitInterval::Year: {
@@ -125,7 +143,7 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &tDateTime) con
         return retVal;
     }
     case UnitInterval::Day: {
-        int days = tDateTime.date().day() - m_date_time_0.date().day();
+        qint64 days = m_date_time_0.date().daysTo(tDateTime.date());
         if (tDateTime < m_date_time_0.addDays(days))
             days -= 1;
         retVal += days;
@@ -186,6 +204,8 @@ QDateTime NumericDateTimeBaseFilter::makeDateTime(double input_value) const
         break;
     }
     }
-    // add the residual difference in dates as milliseconds
-    return dateTime.addMSecs(residual);
+    // add the residual difference in dates as milliseconds; back to the local wall-clock time the
+    // cells of a date/time column hold
+    dateTime = dateTime.addMSecs(residual);
+    return QDateTime(dateTime.date(), dateTime.time());
 }

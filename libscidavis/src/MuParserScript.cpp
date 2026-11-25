@@ -34,6 +34,8 @@
 #include "MuParserScripting.h"
 #include "QStringStdString.h"
 #include "future/core/column/Column.h"
+#include "future/core/datatypes/NumericDateTimeBaseFilter.h"
+#include "future/core/datatypes/String2DoubleFilter.h"
 #include "Table.h"
 #include "Matrix.h"
 #include "Folder.h"
@@ -218,6 +220,49 @@ bool MuParserScript::setDouble(double value, const char *name)
     return true;
 }
 
+namespace {
+//! A cell of `column` as the number col(), cell() and their variants hand to a formula, converted
+//! like the column type conversion to Numeric: a date/time as its offset from the column's numeric
+//! base (days since 1970-01-01 00:00 by default), a month as its number (January = 1), a day of
+//! the week as its number (Monday = 1), a text as the number it spells. A cell that is empty, or a
+//! text that is not a number, makes the formula's result empty (EmptySourceError) instead of 0.
+double formulaCellValue(const Column *column, int row)
+{
+    if (column->isInvalid(row))
+        throw new EmptySourceError();
+    switch (column->columnMode()) {
+    case SciDAVis::ColumnMode::Numeric:
+        return column->valueAt(row);
+    case SciDAVis::ColumnMode::DateTime: {
+        const QDateTime dt = column->dateTimeAt(row);
+        const NumericDateTimeBaseFilter *base = column->numericDateTimeBaseFilter();
+        if (!dt.isValid() || !base)
+            throw new EmptySourceError();
+        return base->offsetToDouble(dt);
+    }
+    case SciDAVis::ColumnMode::Month: {
+        const QDate d = column->dateAt(row);
+        if (!d.isValid())
+            throw new EmptySourceError();
+        return double(d.month());
+    }
+    case SciDAVis::ColumnMode::Day: {
+        const QDate d = column->dateAt(row);
+        if (!d.isValid())
+            throw new EmptySourceError();
+        return double(d.dayOfWeek());
+    }
+    case SciDAVis::ColumnMode::Text: {
+        double value = 0.0;
+        if (!String2DoubleFilter().toDouble(column->textAt(row).trimmed(), value))
+            throw new EmptySourceError();
+        return value;
+    }
+    }
+    return column->valueAt(row);
+}
+} // namespace
+
 /**
  * \brief Implements column() function for tables.
  *
@@ -234,9 +279,7 @@ double MuParserScript::tableColumnFunction(const mu::string_type::value_type *co
     if (!column)
         return NAN; // failsafe, shouldn't happen
     int row = qRound(s_currentInstance->m_variables["i"]) - 1;
-    if (column->isInvalid(row))
-        throw new EmptySourceError();
-    return column->valueAt(row);
+    return formulaCellValue(column, row);
 }
 
 /**
@@ -265,9 +308,7 @@ double MuParserScript::tableColumn_Function(double columnIndex)
                                   .arg(qRound(columnIndex))
                                   .arg(thisTable->objectName()));
     int row = qRound(s_currentInstance->m_variables["i"]) - 1;
-    if (column->isInvalid(row))
-        throw new EmptySourceError();
-    return column->valueAt(row);
+    return formulaCellValue(column, row);
 }
 
 /**
@@ -302,9 +343,7 @@ double MuParserScript::tableColumn__Function(const mu::string_type::value_type *
         throw MuException(
                 tr("There's no column %1 in table %2!").arg(qRound(columnIndex)).arg(tableName));
     int row = qRound(s_currentInstance->m_variables["i"]) - 1;
-    if (column->isInvalid(row))
-        throw new EmptySourceError();
-    return column->valueAt(row);
+    return formulaCellValue(column, row);
 }
 
 /**
@@ -322,9 +361,7 @@ double MuParserScript::tableCellFunction(const mu::string_type::value_type *colu
     if (!column)
         return NAN; // failsafe, shouldn't happen
     int row = qRound(rowIndex) - 1;
-    if (column->isInvalid(row))
-        throw new EmptySourceError();
-    return column->valueAt(row);
+    return formulaCellValue(column, row);
 }
 
 /**
@@ -349,9 +386,7 @@ double MuParserScript::tableCell_Function(double columnIndex, double rowIndex)
                                   .arg(qRound(columnIndex))
                                   .arg(thisTable->objectName()));
     int row = qRound(rowIndex) - 1;
-    if (column->isInvalid(row))
-        throw new EmptySourceError();
-    return column->valueAt(row);
+    return formulaCellValue(column, row);
 }
 
 /**

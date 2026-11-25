@@ -43,8 +43,7 @@ class NumericDateTimeBaseFilter : public AbstractSimpleFilter
 {
     Q_OBJECT
 public:
-    // default offset date (zero offset) - the noon of January 1st, 4713 BC as per Julian Day Number
-    // convention
+    // default offset date (zero offset): 1970-01-01 00:00 wall-clock time (Qt::UTC)
     static const QDateTime zeroOffsetDate;
     // scoped enumeration to prevent potential mixing with many other similiar names
     enum class UnitInterval : int { Year, Month, Day, Hour, Minute, Second, Millisecond };
@@ -52,10 +51,7 @@ public:
     NumericDateTimeBaseFilter(const UnitInterval unit = UnitInterval::Day,
                               const QDateTime &date_time_0 = zeroOffsetDate)
         : m_unit_interval(unit),
-          m_date_time_0((date_time_0.isValid())
-                                ? (date_time_0)
-                                : (zeroOffsetDate)){}; // default to zeroOffsetDate if invalid
-                                                       // datetime provided
+          m_date_time_0(wallClock(date_time_0.isValid() ? date_time_0 : zeroOffsetDate)){};
 
     NumericDateTimeBaseFilter(const NumericDateTimeBaseFilter &other)
         : m_unit_interval(other.m_unit_interval), m_date_time_0(other.m_date_time_0){};
@@ -66,13 +62,28 @@ public:
     bool load(XmlStreamReader *reader) override;
 
     UnitInterval getUnitInterval() const { return m_unit_interval; }
-    QDateTime getBaseDateTime() const { return m_date_time_0; }
+    //! The base date/time as wall-clock time in the PC's zone (like the cells of a column).
+    QDateTime getBaseDateTime() const
+    {
+        return QDateTime(m_date_time_0.date(), m_date_time_0.time());
+    }
 
-protected:
+    // Date/time columns hold wall-clock times without a zone. The conversions therefore work on
+    // the date and time fields (as if they were UTC), never on the instant in the PC's zone: with
+    // the default base, 2024-03-01 00:00 is the whole number 19783 and 0 is 1970-01-01 00:00 on
+    // every PC, and a day is always 24 h (no DST jump).
+
     // convert the given date to double wrt unit, offset and base date
     double offsetToDouble(const QDateTime &m_offset) const;
     // convert the given numerical offset to DateTime wrt unit and base date
     QDateTime makeDateTime(double input_value) const;
+
+protected:
+    //! `dt`'s date and time fields as a Qt::UTC date/time (the zone-free wall-clock time).
+    static QDateTime wallClock(const QDateTime &dt)
+    {
+        return QDateTime(dt.date(), dt.time(), Qt::UTC);
+    }
 
 private:
     UnitInterval m_unit_interval;

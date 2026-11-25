@@ -856,53 +856,6 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
     }
 }
 
-class ColumnLongNameUnitsUndoCmd final : public QUndoCommand
-{
-public:
-    ColumnLongNameUnitsUndoCmd(Table *tbl, Column *col, int colIdx, const QString &oldLong,
-                               const QString &newLong, const QString &oldUnits,
-                               const QString &newUnits)
-        : QUndoCommand(QStringLiteral("Set Column Metadata")),
-          d_tbl(tbl),
-          d_col(col),
-          d_col_idx(colIdx),
-          d_old_long(oldLong),
-          d_new_long(newLong),
-          d_old_units(oldUnits),
-          d_new_units(newUnits)
-    {
-    }
-
-    void applyState(const QString &ln, const QString &un)
-    {
-        Column *c = d_col.data();
-        if (!c && d_tbl && d_col_idx >= 0 && d_col_idx < d_tbl->numCols())
-            c = d_tbl->column(d_col_idx);
-        if (!c)
-            return;
-        c->setLongName(ln);
-        c->setUnits(un);
-        if (d_tbl && d_col_idx >= 0 && d_col_idx < d_tbl->numCols()
-            && d_tbl->column(d_col_idx) == c) {
-            d_tbl->setColLongName(d_col_idx, ln);
-            d_tbl->setColUnits(d_col_idx, un);
-            d_tbl->update();
-        }
-    }
-
-    void redo() override { applyState(d_new_long, d_new_units); }
-    void undo() override { applyState(d_old_long, d_old_units); }
-
-private:
-    QPointer<Table> d_tbl;
-    QPointer<Column> d_col;
-    int d_col_idx = -1;
-    QString d_old_long;
-    QString d_new_long;
-    QString d_old_units;
-    QString d_new_units;
-};
-
 void applyColumnMetadataObject(Table *t, int colIdx, const QJsonObject &meta)
 {
     Column *col = t->column(colIdx);
@@ -1060,18 +1013,14 @@ void applyColumnMetadataObject(Table *t, int colIdx, const QJsonObject &meta)
     if (hasNewName)
         t->setColName(colIdx, newName);
 
-    if (hasNewLong || hasNewUnits) {
-        QUndoStack *us = t->d_future_table ? t->d_future_table->undoStack() : nullptr;
-        if (us) {
-            us->push(new ColumnLongNameUnitsUndoCmd(t, col, colIdx, oldLong, newLong, oldUnits,
-                                                    newUnits));
-        } else {
-            if (hasNewLong)
-                t->setColLongName(colIdx, newLong);
-            if (hasNewUnits)
-                t->setColUnits(colIdx, newUnits);
-        }
-    }
+    // Column::setLongName / setUnits push ColumnSetLongNameCmd / ColumnSetUnitsCmd themselves
+    // (inside the macro above); their undo()/redo() only touch the private column data, so the
+    // Redo history survives an Undo. A wrapper command calling these setters from its own
+    // undo()/redo() would push new commands from inside the stack and wipe the Redo entries.
+    if (hasNewLong)
+        t->setColLongName(colIdx, newLong);
+    if (hasNewUnits)
+        t->setColUnits(colIdx, newUnits);
 
     if (hasNewComment)
         t->setColComment(colIdx, newComment);
@@ -6158,7 +6107,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             const int rowLen = rArr.size();
             for (int c = 0; c < rowLen; ++c) {
                 const double d = jsonToDoubleOrNaN(rArr[c]);
-                colBuffers[c][r] = (std::isfinite(d) && std::abs(d) <= 1e300) ? d : qNaN;
+                // Keep every finite value, as table.set_column does (no magnitude cut-off).
+                colBuffers[c][r] = std::isfinite(d) ? d : qNaN;
             }
         }
 
