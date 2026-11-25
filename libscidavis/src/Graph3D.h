@@ -362,6 +362,10 @@ public slots:
     bool isAnimated() { return d_timer->isActive(); };
 
     void findBestLayout();
+    //! Sets the base zoom (the zoom findBestLayout() gives the data that is now loaded) without
+    //! changing what is drawn. zoom() and setZoom() are relative to it, so a reopened or cloned
+    //! plot must recompute it before the saved relative zoom is applied.
+    void updateBaseZoom();
     bool autoscale() { return d_autoscale; };
     //! Enables/Disables autoscaling using findBestLayout().
     void setAutoscale(bool on = true) { d_autoscale = on; };

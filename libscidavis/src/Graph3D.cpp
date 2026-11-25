@@ -537,6 +537,10 @@ void Graph3D::addMatrixData(Matrix *m, double xl, double xr, double yl, double y
     plotAssociation = "matrix<" + QString(m->name()) + ">";
 
     updateScalesFromMatrix(xl, xr, yl, yr, zl, zr);
+    // Used when a project is reopened or a plot is cloned: findBestLayout() is not called, so
+    // take the base zoom from the loaded data, as the plot did when it was created (the saved
+    // zoom is relative to it).
+    updateBaseZoom();
 }
 
 void Graph3D::addData(Table *table, const QString &xColName, const QString &yColName, double xl,
@@ -605,6 +609,7 @@ void Graph3D::addData(Table *table, const QString &xColName, const QString &yCol
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     sp->legend()->setLimits(zl, zr);
     sp->legend()->setMajors(legendMajorTicks);
+    updateBaseZoom(); // reopen / clone: the saved zoom is relative to this base
 
     Matrix::freeMatrixData(data, xmesh);
 }
@@ -775,6 +780,7 @@ void Graph3D::addData(Table *table, int xCol, int yCol, int zCol, double xl, dou
     sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
     sp->legend()->setLimits(zl, zr);
     sp->legend()->setMajors(legendMajorTicks);
+    updateBaseZoom(); // reopen / clone: the saved zoom is relative to this base
 
     deleteData(data, columns);
 }
@@ -3760,6 +3766,14 @@ bool Graph3D::openColorMap(ColorVector &cv, QString fname)
     return true;
 }
 
+void Graph3D::updateBaseZoom()
+{
+    double d = (sp->hull().maxVertex - sp->hull().minVertex).length();
+    if (!(d > 0.0) || !std::isfinite(d))
+        d = sqrt(3.0);
+    d_base_zoom = d / sqrt(3.0);
+}
+
 void Graph3D::findBestLayout()
 {
     double start, end;
@@ -3775,10 +3789,7 @@ void Graph3D::findBestLayout()
     const double dz = fabs(end - start);
     double zScale = (dz > 0.0 && std::isfinite(dz)) ? (1.0 / dz) : 1.0;
 
-    double d = (sp->hull().maxVertex - sp->hull().minVertex).length();
-    if (!(d > 0.0) || !std::isfinite(d))
-        d = sqrt(3.0);
-    d_base_zoom = d / sqrt(3.0);
+    updateBaseZoom();
     sp->setScale(xScale, yScale, zScale);
     sp->setZoom(d_base_zoom);
 
@@ -3838,7 +3849,14 @@ void Graph3D::copy(Graph3D *g)
     setYAxisLabelFont(g->yAxisLabelFont());
     setZAxisLabelFont(g->zAxisLabelFont());
     setRotation(g->xRotation(), g->yRotation(), g->zRotation());
-    setZoom(g->zoom());
+    // Take the source's base zoom and drawn zoom as they are: zoom() is relative to the base,
+    // and setZoom() may read a large relative value as an absolute one.
+    if (g->d_base_zoom > 1e-12 && std::isfinite(g->d_base_zoom))
+        d_base_zoom = g->d_base_zoom;
+    if (g->sp && std::isfinite(g->sp->zoom()) && g->sp->zoom() > 0.0)
+        sp->setZoom(g->sp->zoom());
+    else
+        setZoom(g->zoom());
     setScale(g->xScale(), g->yScale(), g->zScale());
     setShift(g->xShift(), g->yShift(), g->zShift());
     setMeshLineWidth((int)g->meshLineWidth());
