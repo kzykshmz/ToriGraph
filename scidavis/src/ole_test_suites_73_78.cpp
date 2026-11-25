@@ -1358,6 +1358,35 @@ struct Suite76TextDialogProbe : public TextDialog
             buttonApply->click();
     }
 };
+
+// Puts the run's settings file back as it was when the suite started. saveSettings() stores
+// the active graph of the saving window as the "last graph" defaults (LastGraphSettings: page
+// size, zoom and unit format; the graph fonts, tick lengths and legend of /2DPlots), and every
+// ApplicationWindow created later in the same run reads them for its new graphs. Suite 76 saves
+// with a lab_slide_83mm graph active (76a), so without this the later suites ran against that
+// graph's defaults instead of the initial ones (Suite 102j: a two-curve lab_slide_83mm graph
+// then got no legend headroom, so no <ToriAxisTickStep>, only in the full run).
+struct SettingsFileRestore76
+{
+    QList<QPair<QString, QVariant>> before;
+    SettingsFileRestore76()
+    {
+        QSettings &st = ApplicationWindow::getSettings();
+        st.sync();
+        for (const QString &k : st.allKeys())
+            before << qMakePair(k, st.value(k));
+    }
+    ~SettingsFileRestore76()
+    {
+        QSettings &st = ApplicationWindow::getSettings();
+        st.clear();
+        for (const auto &kv : before)
+            st.setValue(kv.first, kv.second);
+        st.sync();
+    }
+    SettingsFileRestore76(const SettingsFileRestore76 &) = delete;
+    SettingsFileRestore76 &operator=(const SettingsFileRestore76 &) = delete;
+};
 } // namespace
 
 int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
@@ -1365,6 +1394,8 @@ int runSuite76ReviewPolishAndEdgeCases(ApplicationWindow *mw)
     std::cout << "[INFO] Running Suite 76: review polish, fractional pt/px, workbook undo/redo, "
                  "pole-figure presets, xlsx N/A & paste disambiguation, and ref-line/colorbar persistence...\n";
     CHECK_COND(mw != nullptr, "76: ApplicationWindow is null");
+    // Declared before every window of this suite, so it restores the file after they are gone.
+    const SettingsFileRestore76 settingsRestore76;
     qApp->setProperty("torigraph_noninteractive", true);
     QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir tmp76;
