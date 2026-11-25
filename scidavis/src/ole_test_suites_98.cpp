@@ -24,6 +24,8 @@
 //   98g ';'-separated decimal-comma CSV (auto, separator=";", headerless, paste_tsv)
 //   98h blank lines above the header
 //   98i table.column_stats: sd / se are null for n < 2
+//   98j paste_tsv of a range whose first row is empty: the data rows are not shifted
+//   98k ';' decimal-comma file: "#A1;12,5;3,4" after the data stays data, as in the GUI
 // =============================================================================
 
 namespace {
@@ -486,6 +488,57 @@ int runSuite98RpcImportRobustness(ApplicationWindow *mw)
                            && std::fabs(s2.value("sd").toDouble() - std::sqrt(2.0)) < 1e-12
                            && std::fabs(s2.value("se").toDouble() - 1.0) < 1e-12,
                    "98i: n=2 stats sd=" << s2.value("sd").toDouble());
+    }
+
+    // -------------------------------------------------------------------------
+    // 98j: paste_tsv of a range whose first row is empty (copied from Excel)
+    // -------------------------------------------------------------------------
+    {
+        const QString text = QStringLiteral("\t\r\n1\t2\r\n3\t4");
+        // start_row=0 (header row by default): the empty first row is the header row, the data
+        // rows stay data
+        const QJsonObject r0 = rpc(QStringLiteral("table.paste_tsv"),
+                                   QJsonObject { { "text", text }, { "name", "Paste98j" } });
+        CHECK_COND(!rpcIsError98(r0), "98j: paste_tsv failed");
+        const QStringList n0 = columnNames(QStringLiteral("Paste98j"));
+        CHECK_COND(n0.size() == 2 && numsEqual(colData("Paste98j", n0[0]), { 1, 3 })
+                           && numsEqual(colData("Paste98j", n0[1]), { 2, 4 }),
+                   "98j: start_row=0: " << n0.join('|').toStdString() << " / "
+                                        << dump(colData("Paste98j", n0.value(0))));
+        // start_row=2 (no header): the empty row lands on row 2, the data on rows 3 and 4
+        const QString tbl = importCsv(writeFile(QStringLiteral("ab98j.csv"), "a,b\n10,20\n30,40\n"),
+                                      QJsonObject { { "name", "AB98j" } });
+        CHECK_COND(tbl == QStringLiteral("AB98j"), "98j: import failed");
+        const QJsonObject r2 = rpc(QStringLiteral("table.paste_tsv"),
+                                   QJsonObject { { "table", tbl },
+                                                 { "text", text },
+                                                 { "start_row", 2 },
+                                                 { "start_col", 0 } });
+        CHECK_COND(!rpcIsError98(r2), "98j: paste_tsv at row 2 failed");
+        CHECK_COND(numsEqual(colData(tbl, "a"), { 10, 30, NaN, 1, 3 })
+                           && numsEqual(colData(tbl, "b"), { 20, 40, NaN, 2, 4 }),
+                   "98j: start_row=2 shifted the data: a=" << dump(colData(tbl, "a")));
+    }
+
+    // -------------------------------------------------------------------------
+    // 98k: decimal-comma ';' file: "#A1;12,5;3,4" after the data rows is a specimen row
+    // -------------------------------------------------------------------------
+    {
+        const QByteArray bytes = "Probe;Wert;Dicke\nS0;10,5;3,1\nS1;11,5;3,2\n# Messung 2\n"
+                                 "#A1;12,5;3,4\n";
+        const QString path = writeFile(QStringLiteral("de_specimen98.csv"), bytes);
+        const QString tbl = importCsv(path);
+        const QJsonArray ids = colData(tbl, "Probe");
+        CHECK_COND(ids.size() == 3 && ids[2].toString() == "#A1"
+                           && numsEqual(colData(tbl, "Wert"), { 10.5, 11.5, 12.5 })
+                           && numsEqual(colData(tbl, "Dicke"), { 3.1, 3.2, 3.4 }),
+                   "98k: Probe=" << dump(ids) << " Wert=" << dump(colData(tbl, "Wert")));
+        // the GUI import reads the same rows
+        std::unique_ptr<future::Table> gui(
+                AsciiTableImportFilter::importLabTextData(bytes, QStringLiteral("Gui98k"), path));
+        CHECK_COND(gui && gui->columnCount() == 3 && gui->column(1)->rowCount() >= 3
+                           && std::fabs(gui->column(1)->valueAt(2) - 12.5) < 1e-12,
+                   "98k: GUI import of the same file differs");
     }
 
     w98.reset();

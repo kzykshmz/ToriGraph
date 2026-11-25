@@ -1713,10 +1713,13 @@ void MultiPeakFit::guessInitialValues()
 
 void MultiPeakFit::refineSolverResult(std::vector<double> &par, int &iterations, int &status)
 {
-    // A peak whose centre left the X range of the data does not describe these data (e.g. a
-    // surplus peak turning into a very broad hump centred far outside to model a sloping
-    // background). Such a solution is not adopted: the fit is repeated from the same initial
-    // values with those centres confined to the data range.
+    // A surplus peak may turn into a hump centred outside the X range of the data that only
+    // stands in for a sloping background: so broad that it spans a good part of the range, or
+    // so far out that it no longer reaches the data. Such a solution is not adopted: the fit is
+    // repeated from the same initial values with those centres confined to the data range.
+    // A centre just outside is kept: a peak cut at the end of the measurement, the tail of a
+    // neighbour inside a fit range, or a centre the user gave (analyze_peaks centers, picked in
+    // the GUI) -- pinning those to the end of the range biases their width and area.
     if (d_in_bootstrap || d_peaks <= 0 || !d_param_init || par.size() < d_p
         || d_p < unsigned(3 * d_peaks + 1) || d_x.empty())
         return;
@@ -1734,13 +1737,52 @@ void MultiPeakFit::refineSolverResult(std::vector<double> &par, int &iterations,
     if (!(xHi > xLo))
         return;
 
+    const double range = xHi - xLo;
+
+    // A centre the user gave: an explicit initial value (a peak picked on the plot), or a seed
+    // centre (analyze_peaks centers, the peak dialog's centres) the fit started from exactly --
+    // not one found by the second-derivative search, which is a detection like the automatic one.
+    auto sameX = [range](double a, double b) {
+        return std::isfinite(a) && std::isfinite(b)
+                && std::abs(a - b) <= 1e-9 * std::max(range, std::abs(b));
+    };
+    auto userGivenCentre = [&](int idx) {
+        if (d_explicit_init_vals.contains(idx))
+            return true;
+        if (!d_has_seed_request || d_seed_centers.empty())
+            return false;
+        const double init = initialGuess(idx);
+        for (double c : d_seed_centers) {
+            if (!sameX(init, c))
+                continue;
+            bool detected = false;
+            for (double dc : d_detected_2nd_deriv_centers)
+                detected = detected || sameX(c, dc);
+            if (!detected)
+                return true;
+        }
+        return false;
+    };
+
     std::vector<int> escaped;
     for (int m = 0; m < d_peaks; ++m) {
         const int idx = 3 * m + 1;
-        if (unsigned(idx) >= d_p || isParameterFixed(idx) || hasParameterBounds(idx))
+        if (unsigned(idx + 1) >= d_p || isParameterFixed(idx) || hasParameterBounds(idx))
             continue;
         const double xc = par[size_t(idx)];
-        if (!std::isfinite(xc) || xc < xLo || xc > xHi)
+        if (std::isfinite(xc) && xc >= xLo && xc <= xHi)
+            continue;
+        if (userGivenCentre(idx))
+            continue;
+        const double wPar = par[size_t(idx + 1)];
+        const double fwhm =
+                std::isfinite(wPar) ? peakFWHMFromW(peakProfileAt(m), wPar)
+                                    : std::numeric_limits<double>::quiet_NaN();
+        const double outside = std::isfinite(xc) ? std::max(xLo - xc, xc - xHi)
+                                                 : std::numeric_limits<double>::infinity();
+        const bool broad = !(fwhm < 0.5 * range);   // spans half the range or more (or NaN)
+        const bool far = !(outside < 5.0 * fwhm);   // 5 FWHM beyond the last point
+        if (broad || far)
             escaped.push_back(idx);
     }
     if (escaped.empty())

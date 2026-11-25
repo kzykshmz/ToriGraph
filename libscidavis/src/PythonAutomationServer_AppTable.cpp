@@ -1601,7 +1601,7 @@ bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
 QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text, int startPos,
                                                              const QString &sep, bool stripSpaces,
                                                              bool simplifySpaces, int &outMaxCols,
-                                                             bool skipHashCommentRows)
+                                                             bool fileImport, bool decimalComma)
 {
     QVector<QVector<ParsedCsvCell>> records;
     outMaxCols = 0;
@@ -1609,13 +1609,17 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
     const int sepLen = std::max(1, sep.size());
     int pos = std::max(0, startPos);
 
-    // Skip leading blank lines and '#' comment preamble lines before the first header/data row
-    // (a blank first line must not become the header row)
+    // Skip leading '#' comment preamble lines before the first header/data row, and for a file
+    // import also leading blank lines (a blank first line must not become the header row).
+    // Pasted text keeps them: a copied range whose first row is empty ("\t\r\n1\t2") is a row of
+    // empty cells, and dropping it would shift the data up a row (or, with header=true, make
+    // the first data row the column names).
     while (pos < len) {
         int probe = pos;
         while (probe < len && (text[probe] == QLatin1Char(' ') || text[probe] == QLatin1Char('\t')))
             ++probe;
-        if (probe < len && (text[probe] == QLatin1Char('\r') || text[probe] == QLatin1Char('\n'))) {
+        if (fileImport && probe < len
+            && (text[probe] == QLatin1Char('\r') || text[probe] == QLatin1Char('\n'))) {
             pos = probe;
             if (text[pos] == QLatin1Char('\r'))
                 ++pos;
@@ -1718,7 +1722,7 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
         return false;
     };
     bool anyHashRow = false;
-    for (int i = 0; skipHashCommentRows && i < records.size() && !anyHashRow; ++i)
+    for (int i = 0; fileImport && i < records.size() && !anyHashRow; ++i)
         anyHashRow = startsWithHash(records[i]);
     if (anyHashRow) {
         // as in the GUI: a '#'-only line of a multi-column table is a comment, of a one-column
@@ -1738,16 +1742,24 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
             }
         }
         const bool whitespaceDelim = (sep == QLatin1String(" "));
-        auto allNumeric = [](const QVector<ParsedCsvCell> &rec) {
-            QLocale cLoc = QLocale::c();
-            cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+        // numbers read as the import reads the cells: with decimal commas the German locale
+        // first, as the GUI import does ("#A1;12,5;3,4" after the data rows is a specimen row,
+        // not a comment), the C locale as fallback
+        QLocale cLoc = QLocale::c();
+        cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+        QLocale numLoc = decimalComma ? QLocale(QLocale::German) : QLocale::c();
+        numLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+        auto allNumeric = [&](const QVector<ParsedCsvCell> &rec) {
             int n = 0;
             for (const ParsedCsvCell &cell : rec) {
                 const QString tok = cell.value.trimmed();
                 if (tok.isEmpty())
                     continue;
                 bool ok = false;
-                cLoc.toDouble(tok, &ok);
+                if (decimalComma)
+                    numLoc.toDouble(tok, &ok);
+                if (!ok)
+                    cLoc.toDouble(tok, &ok);
                 if (!ok || cell.quoted)
                     return false;
                 ++n;
@@ -1770,7 +1782,8 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
                     quoted.append(cell.quoted);
                 }
                 if (AsciiTableImportFilter::isHashCommentRow(cells, quoted, whitespaceDelim,
-                                                             tableHasMultipleCols, dataSeen))
+                                                             tableHasMultipleCols, dataSeen,
+                                                             numLoc))
                     continue;
             }
             kept.append(std::move(rec));
@@ -3409,7 +3422,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records = parseDelimitedRecordsRfc4180(
-                text, pos, sep, stripSpaces, simplifySpaces, maxCols, true);
+                text, pos, sep, stripSpaces, simplifySpaces, maxCols, true, decimalComma);
 
         bool hasHeader = true;
         if (params.contains(QStringLiteral("header")) && !params.value(QStringLiteral("header")).isNull()) {
@@ -5456,7 +5469,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records =
-                parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols, false);
+                parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols, false, false);
         const qint64 dataRowSpan = std::max<qint64>(1, records.size());
         const qint64 reqEndRows = qint64(startRow) + dataRowSpan;
         const qint64 reqEndCols = qint64(startCol) + std::max<qint64>(1, maxCols);

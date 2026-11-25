@@ -2075,8 +2075,16 @@ bool Fit::dataLooksLikeDip(const std::vector<double> &y)
     const size_t n = v.size();
     if (n < 3)
         return false;
-    const double yMin = *std::min_element(v.begin(), v.end());
-    const double yMax = *std::max_element(v.begin(), v.end());
+    // The extremes are the k-th smallest / largest values (k = 3 .. 5, growing with the point
+    // count), not the single lowest / highest point: one or two outliers (dropped readings at 0
+    // under a peak of +400 on a baseline of 1000) must not turn an upward peak into a dip. A
+    // real peak or dip spans several points and keeps most of its depth in the k-th value.
+    std::vector<double> sorted = v;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t kExt = std::min<size_t>(std::max<size_t>(3, n / 50), 5);
+    const size_t kIdx = std::min(kExt, n / 2) - 1;
+    const double yMin = sorted[kIdx];
+    const double yMax = sorted[n - 1 - kIdx];
 
     // Baseline 1: the end points (mean of the first and last 5 %, at least one point each).
     const size_t k = std::max<size_t>(1, n / 20);
@@ -2086,9 +2094,7 @@ bool Fit::dataLooksLikeDip(const std::vector<double> &y)
     const double endBase = endSum / double(2 * k);
 
     // Baseline 2: the median.
-    std::vector<double> s = v;
-    std::nth_element(s.begin(), s.begin() + long(n / 2), s.end());
-    const double median = s[n / 2];
+    const double median = sorted[n / 2];
 
     // A dip only when both baselines agree, so that a broad peak whose median lies high on
     // the peak (end points still low) keeps the usual upward guess.
@@ -3339,23 +3345,73 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
     // Difference step for each parameter: relative to the parameter's own size, never an
     // absolute floor. A fixed floor of 1e-8 is larger than parameters such as xc = 2e-9 (nm
     // written in metres) or t = 2e-9 (ns written in seconds) and made their derivatives wrong.
-    // When the current value is close to 0, 1 % of the initial value sets the scale; a
-    // parameter that also starts at 0 takes the scale of the data.
-    double dataScale = 0.0;
+    // When the current value is close to 0, 1 % of the initial value sets the scale.
+    // A parameter that also starts at 0 has no size of its own, and its unit is unknown: it
+    // may be in x units (a peak centre xc, whose step must stay far below the peak width) or
+    // in y units (an offset y0, whose step must not drown in the rounding of y). Both 1 % of
+    // the x range and 1 % of the y range are tried, and the derivative with the smaller error
+    // estimate of gsl_deriv_central is kept, until |p| outgrows them. (The largest |x| or |y|
+    // as the single scale made the step of xc = 0 in a rocking curve, x = -0.05..0.05 deg,
+    // y up to 1e6 counts, ten times the peak width.)
+    double xMin = std::numeric_limits<double>::infinity(), xMax = -xMin;
+    double yMin = xMin, yMax = -xMin, absMax = 0.0;
     for (size_t i = 0; i < d_x.size(); ++i) {
-        if (std::isfinite(d_x[i]))
-            dataScale = std::max(dataScale, std::abs(d_x[i]));
-        if (i < d_y.size() && std::isfinite(d_y[i]))
-            dataScale = std::max(dataScale, std::abs(d_y[i]));
+        if (std::isfinite(d_x[i])) {
+            xMin = std::min(xMin, d_x[i]);
+            xMax = std::max(xMax, d_x[i]);
+            absMax = std::max(absMax, std::abs(d_x[i]));
+        }
+        if (i < d_y.size() && std::isfinite(d_y[i])) {
+            yMin = std::min(yMin, d_y[i]);
+            yMax = std::max(yMax, d_y[i]);
+            absMax = std::max(absMax, std::abs(d_y[i]));
+        }
     }
-    if (!(dataScale > 0.0) || !std::isfinite(dataScale))
-        dataScale = 1.0;
-    std::vector<double> stepScale(d_p, 0.01 * dataScale);
+    if (!(absMax > 0.0) || !std::isfinite(absMax))
+        absMax = 1.0;
+    auto rangeScale = [absMax](double lo, double hi) {
+        const double r = hi - lo;
+        return (r > 0.0 && std::isfinite(r)) ? 0.01 * r : 0.01 * absMax;
+    };
+    const double xStepScale = rangeScale(xMin, xMax);
+    const double yStepScale = rangeScale(yMin, yMax);
+    // stepScale[j] > 0: the parameter's own scale; 0: started at 0, x / y range candidates
+    std::vector<double> stepScale(d_p, 0.0);
     for (unsigned j = 0; j < d_p; ++j) {
         const double init = d_param_init ? std::abs(gsl_vector_get(d_param_init, j)) : 0.0;
         if (init > 0.0 && std::isfinite(init))
             stepScale[j] = 0.01 * init;
     }
+
+    // central difference with step h, one-sided when a side is outside the model's domain;
+    // false when no finite derivative could be formed
+    auto derivAt = [&](double xj, double h, double &res, double &err) {
+        data.success = true;
+        gsl_deriv_central(&F, xj, h, &res, &err);
+        if (data.success && std::isfinite(res) && std::isfinite(err))
+            return true;
+        if (data.success && std::isfinite(res)) {
+            err = std::numeric_limits<double>::max();
+            return true;
+        }
+        err = std::numeric_limits<double>::max();
+        res = std::numeric_limits<double>::quiet_NaN();
+        data.success = true;
+        const double f0 = evaluate_df_helper(xj, &data);
+        if (data.success && std::isfinite(f0)) {
+            data.success = true;
+            const double fPlus = evaluate_df_helper(xj + h, &data);
+            if (data.success && std::isfinite(fPlus)) {
+                res = (fPlus - f0) / h;
+            } else {
+                data.success = true;
+                const double fMinus = evaluate_df_helper(xj - h, &data);
+                if (data.success && std::isfinite(fMinus))
+                    res = (f0 - fMinus) / h;
+            }
+        }
+        return data.success && std::isfinite(res);
+    };
 
     for (unsigned i = 0; i < d_x.size(); i++) {
         if (i >= d_y_errors.size() || !std::isfinite(d_y_errors[i]) || !(d_y_errors[i] > 0.0)) {
@@ -3371,29 +3427,27 @@ int Fit::evaluate_df(const gsl_vector *x, gsl_matrix *J)
                 gsl_matrix_set(J, i, j, 0.0);
                 continue;
             }
-            double xj = gsl_vector_get(x, j);
-            double h = 1e-6 * std::max(std::abs(xj), stepScale[j]);
+            const double xj = gsl_vector_get(x, j);
             data.param = d_param_names[j];
-            data.success = true;
-            gsl_deriv_central(&F, xj, h, &result, &abserr);
-            if (!data.success || !std::isfinite(result)) {
-                data.success = true;
-                const double f0 = evaluate_df_helper(xj, &data);
-                if (data.success && std::isfinite(f0)) {
-                    data.success = true;
-                    const double fPlus = evaluate_df_helper(xj + h, &data);
-                    if (data.success && std::isfinite(fPlus)) {
-                        result = (fPlus - f0) / h;
-                    } else {
-                        data.success = true;
-                        const double fMinus = evaluate_df_helper(xj - h, &data);
-                        if (data.success && std::isfinite(fMinus))
-                            result = (f0 - fMinus) / h;
+            bool ok = false;
+            if (stepScale[j] > 0.0) {
+                ok = derivAt(xj, 1e-6 * std::max(std::abs(xj), stepScale[j]), result, abserr);
+            } else {
+                const double hx = 1e-6 * std::max(std::abs(xj), xStepScale);
+                const double hy = 1e-6 * std::max(std::abs(xj), yStepScale);
+                ok = derivAt(xj, hx, result, abserr);
+                if (hy != hx) {
+                    d_script->setDouble(xj, d_param_names[j].toUtf8());
+                    double resultY = 0.0, abserrY = 0.0;
+                    if (derivAt(xj, hy, resultY, abserrY) && (!ok || abserrY < abserr)) {
+                        result = resultY;
+                        abserr = abserrY;
+                        ok = true;
                     }
                 }
             }
             d_script->setDouble(xj, d_param_names[j].toUtf8());
-            if (!data.success || !std::isfinite(result))
+            if (!ok)
                 return GSL_EDOM;
             gsl_matrix_set(J, i, j, result / s);
         }
