@@ -48,8 +48,12 @@
 #include <QWidgetList>
 #include <QFileDialog>
 #include <QGroupBox>
+#include <QSignalBlocker>
 #include <QFontDialog>
 #include <QColorDialog>
+
+#include <cmath>
+#include <limits>
 
 #include <qwt3d_color.h>
 
@@ -59,6 +63,10 @@ Plot3DDialog::Plot3DDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent
 
     bars = 0;
     points = 0;
+    for (int i = 0; i < 3; ++i) {
+        d_scaleSet[i] = std::numeric_limits<double>::quiet_NaN();
+        d_scaleShown[i] = std::numeric_limits<double>::quiet_NaN();
+    }
 
     QHBoxLayout *hbox = new QHBoxLayout();
     hbox->addStretch();
@@ -832,7 +840,18 @@ void Plot3DDialog::changeZoom(double)
         return;
 
     emit updateZoom(boxZoom->value() * 0.01);
-    emit updateScaling(boxXScale->value(), boxYScale->value() * 0.01, boxZScale->value() * 0.01);
+    emit updateScaling(scaleFactor(0), scaleFactor(1), scaleFactor(2));
+}
+
+double Plot3DDialog::scaleFactor(int axis) const
+{
+    const QDoubleSpinBox *box = axis == 0 ? boxXScale : (axis == 1 ? boxYScale : boxZScale);
+    // The boxes show percent with two decimals, so a small factor (findBestLayout() gives
+    // 1e-5 for a 0..1e5 axis) reads as 0.00 %. Send the factor itself while the box still
+    // shows what setScaling() put there.
+    if (std::isfinite(d_scaleSet[axis]) && box->value() == d_scaleShown[axis])
+        return d_scaleSet[axis];
+    return box->value() * 0.01;
 }
 
 void Plot3DDialog::changeTransparency(int val)
@@ -879,8 +898,7 @@ bool Plot3DDialog::updatePlot()
         emit showColorLegend(boxLegend->isChecked());
         emit setNumbersFont(numbersFont);
         emit updateZoom(boxZoom->value() * 0.01);
-        emit updateScaling(boxXScale->value() * 0.01, boxYScale->value() * 0.01,
-                           boxZScale->value() * 0.01);
+        emit updateScaling(scaleFactor(0), scaleFactor(1), scaleFactor(2));
     }
 
     if (generalDialog->currentWidget() == (QWidget *)scale) {
@@ -1044,9 +1062,17 @@ void Plot3DDialog::setZoom(double zoom)
 
 void Plot3DDialog::setScaling(double xVal, double yVal, double zVal)
 {
+    // Loading the plot's values must not send half-updated scales back to the plot.
+    const QSignalBlocker bx(boxXScale), by(boxYScale), bz(boxZScale);
     boxXScale->setValue(xVal * 100);
     boxYScale->setValue(yVal * 100);
     boxZScale->setValue(zVal * 100);
+    d_scaleSet[0] = xVal;
+    d_scaleSet[1] = yVal;
+    d_scaleSet[2] = zVal;
+    d_scaleShown[0] = boxXScale->value();
+    d_scaleShown[1] = boxYScale->value();
+    d_scaleShown[2] = boxZScale->value();
 }
 
 void Plot3DDialog::showGeneralTab()

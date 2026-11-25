@@ -391,8 +391,13 @@ void Graph3D::addData(Table *table, int xcol, int ycol)
         }
     }
 
-    if (xmesh == 0)
-        xmesh = 1;
+    // qwtplot3d spaces the grid by (max - min) / (points - 1): with fewer than two points the
+    // vertices become NaN (and the axis autoscaler may never return). Same as updateDataXY().
+    if (xmesh < 2) {
+        sp->setPlotStyle(NOPLOT);
+        update();
+        return;
+    }
 
     double **data = Matrix::allocateMatrixData(xmesh, ymesh);
     gsl_vector *x = gsl_vector_calloc(xmesh);
@@ -481,7 +486,8 @@ void Graph3D::addMatrixData(Matrix *m)
 
     int cols = m->numCols();
     int rows = m->numRows();
-    if (cols <= 0 || rows <= 0)
+    // qwtplot3d needs two grid lines along each axis (it spaces them by range / (n - 1)).
+    if (cols < 2 || rows < 2)
         return;
 
     bool first_time = false;
@@ -491,21 +497,22 @@ void Graph3D::addMatrixData(Matrix *m)
     d_matrix = m;
     plotAssociation = "matrix<" + QString(m->name()) + ">";
 
-    double **data_matrix = Matrix::allocateMatrixData(rows, cols);
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++)
-            data_matrix[i][j] = m->cell(i, j);
+    // loadFromData() takes data[x index][y index]: x runs along the matrix columns.
+    double **data_matrix = Matrix::allocateMatrixData(cols, rows);
+    for (int c = 0; c < cols; c++) {
+        for (int r = 0; r < rows; r++)
+            data_matrix[c][r] = m->cell(r, c);
     }
 
     sp->makeCurrent();
-    sp->loadFromData(data_matrix, rows, cols, m->xStart(), m->xEnd(), m->yStart(), m->yEnd());
+    sp->loadFromData(data_matrix, cols, rows, m->xStart(), m->xEnd(), m->yStart(), m->yEnd());
 
     double start, end;
     sp->coordinates()->axes[Z1].limits(start, end);
     sp->legend()->setLimits(start, end);
     sp->legend()->setMajors(legendMajorTicks);
 
-    Matrix::freeMatrixData(data_matrix, rows);
+    Matrix::freeMatrixData(data_matrix, cols);
 
     if (d_autoscale || first_time)
         findBestLayout();
@@ -896,16 +903,23 @@ void Graph3D::updateMatrixData(Matrix *m)
         return;
     int cols = m->numCols();
     int rows = m->numRows();
-    if (cols <= 0 || rows <= 0)
+    // Fewer than two rows or columns cannot be drawn as a surface (see addMatrixData()).
+    if (cols < 2 || rows < 2) {
+        sp->setPlotStyle(NOPLOT);
+        update();
         return;
-
-    double **data = Matrix::allocateMatrixData(rows, cols);
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++)
-            data[i][j] = m->cell(i, j);
     }
 
-    sp->loadFromData(data, rows, cols, m->xStart(), m->xEnd(), m->yStart(), m->yEnd());
+    // loadFromData() takes data[x index][y index]: x runs along the matrix columns.
+    double **data = Matrix::allocateMatrixData(cols, rows);
+    for (int c = 0; c < cols; c++) {
+        for (int r = 0; r < rows; r++)
+            data[c][r] = m->cell(r, c);
+    }
+
+    sp->makeCurrent();
+    resetNonEmptyStyle();
+    sp->loadFromData(data, cols, rows, m->xStart(), m->xEnd(), m->yStart(), m->yEnd());
 
     Qwt3D::Axis z_axis = sp->coordinates()->axes[Z1];
     double start, end;
@@ -914,7 +928,7 @@ void Graph3D::updateMatrixData(Matrix *m)
     sp->legend()->setLimits(start, end);
     sp->legend()->setMajors(legendMajorTicks);
 
-    Matrix::freeMatrixData(data, rows);
+    Matrix::freeMatrixData(data, cols);
     if (d_autoscale)
         findBestLayout();
     update();
@@ -1527,27 +1541,9 @@ void Graph3D::updateScalesFromMatrix(double xl, double xr, double yl, double yr,
     const int mCols = d_matrix->numCols();
     const int mRows = d_matrix->numRows();
 
-    if (mCols <= 1 || mRows <= 1) {
-        double **data_matrix = Matrix::allocateMatrixData(mRows, mCols);
-        for (int i = 0; i < mRows; i++) {
-            for (int j = 0; j < mCols; j++) {
-                const double val = d_matrix->cell(i, j);
-                if (val > zr)
-                    data_matrix[i][j] = zr;
-                else if (val < zl)
-                    data_matrix[i][j] = zl;
-                else
-                    data_matrix[i][j] = val;
-            }
-        }
-        sp->loadFromData(data_matrix, mRows, mCols, xl, xr, yl, yr);
-        Matrix::freeMatrixData(data_matrix, mRows);
-        sp->createCoordinateSystem(Triple(xl, yl, zl), Triple(xr, yr, zr));
-        sp->legend()->setLimits(zl, zr);
-        sp->legend()->setMajors(legendMajorTicks);
-        update();
+    // A surface needs two rows and two columns (qwtplot3d spaces the grid by range / (n - 1)).
+    if (mCols < 2 || mRows < 2)
         return;
-    }
 
     double xStart = qMin(d_matrix->xStart(), d_matrix->xEnd());
     double xEnd = qMax(d_matrix->xStart(), d_matrix->xEnd());
@@ -1570,17 +1566,28 @@ void Graph3D::updateScalesFromMatrix(double xl, double xr, double yl, double yr,
     int nc = std::isfinite(rawNc) ? qBound(2, int(qMin(rawNc, 4096.0)), 4096) : mCols;
     int nr = std::isfinite(rawNr) ? qBound(2, int(qMin(rawNr, 4096.0)), 4096) : mRows;
 
-    double x_begin = qMin(xl, xr);
-    double y_begin = qMin(yl, yr);
+    // Sample the matrix where loadFromData() below puts the vertices (xl + i * (xr - xl) /
+    // (nc - 1)), and take the nearest matrix cell; the matrix puts column 0 at xStart() and
+    // row 0 at yStart().
+    const double gx = (xr - xl) / double(nc - 1);
+    const double gy = (yr - yl) / double(nr - 1);
+    const double mxs = d_matrix->xStart(), mxe = d_matrix->xEnd();
+    const double mys = d_matrix->yStart(), mye = d_matrix->yEnd();
+    const double epsX = 1e-9 * dx, epsY = 1e-9 * dy;
 
     double **data_matrix = Matrix::allocateMatrixData(nc, nr);
     for (int i = 0; i < nc; i++) {
-        double x = x_begin + i * dx;
+        const double x = xl + i * gx;
         for (int j = 0; j < nr; j++) {
-            double y = y_begin + j * dy;
-            if (x >= xStart && x <= xEnd && y >= yStart && y <= yEnd) {
-                int k = qBound(0, int(fabs((y - yStart) / dy)), mRows - 1);
-                int l = qBound(0, int(fabs((x - xStart) / dx)), mCols - 1);
+            const double y = yl + j * gy;
+            if (x >= xStart - epsX && x <= xEnd + epsX && y >= yStart - epsY
+                && y <= yEnd + epsY) {
+                const int k = (mye != mys)
+                        ? qBound(0, qRound((y - mys) / (mye - mys) * (mRows - 1)), mRows - 1)
+                        : 0;
+                const int l = (mxe != mxs)
+                        ? qBound(0, qRound((x - mxs) / (mxe - mxs) * (mCols - 1)), mCols - 1)
+                        : 0;
                 double val = d_matrix->cell(k, l);
                 if (val > zr)
                     data_matrix[i][j] = zr;

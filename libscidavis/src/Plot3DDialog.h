@@ -161,6 +161,7 @@ private:
     void initTitlePage();
     void initColorsPage();
     void initGeneralPage();
+    double scaleFactor(int axis) const;
 
     QPointer<Graph3D> d_plot;
     QFont titleFont, xAxisFont, yAxisFont, zAxisFont, numbersFont;
@@ -187,6 +188,10 @@ private:
     QComboBox *boxType, *boxPointStyle;
     QLineEdit *boxMajorLength, *boxMinorLength, *boxConesRad;
     QDoubleSpinBox *boxZoom, *boxXScale, *boxYScale, *boxZScale;
+    // Scale factors given to setScaling() and what the boxes showed for them (two decimals of
+    // percent cannot show e.g. 1e-5); an untouched box sends its factor back unchanged.
+    double d_scaleSet[3];
+    double d_scaleShown[3];
     QSpinBox *boxQuality;
     QLineEdit *boxSize, *boxBarsRad, *boxCrossRad, *boxCrossLinewidth;
     QStackedWidget *optionStack;
