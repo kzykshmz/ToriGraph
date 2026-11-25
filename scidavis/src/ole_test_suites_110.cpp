@@ -42,6 +42,11 @@
 //        (they went on the left axis: the left axis 0..0.1 became 0..2000); the left axis range
 //        and title are kept; the result of a left-axis curve stays on the left; the axes
 //        survive save -> reopen
+//   110g plot.remove_curve updates the automatic axis titles at once: removing z of y (MPa)
+//        and z gives "y / MPa" as undo -> redo and save -> reopen do (it stayed "Y / MPa");
+//        removing the last curve gives the titles of a new empty layer (the old ones stayed);
+//        a title the user typed stays, and taking curves out whole (takeCurvesUsingColumns)
+//        does not change the titles
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -887,6 +892,195 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
                                               << tx.toStdString() << "', '"
                                               << bTitleY.toStdString() << "' -> '"
                                               << ty.toStdString() << "'");
+    }
+
+    // ---- 110g: removing a curve updates the automatic axis titles -----------------------------
+    {
+        const QString prjG = tmp.filePath(QStringLiteral("autotitle_110g.sciprj"));
+        auto title = [](Rpc110 &rpc, const QString &graph, const char *key) {
+            return rpc.axis(graph, key).value(QStringLiteral("title")).toString();
+        };
+        auto removeCurve = [](Rpc110 &rpc, const QString &graph, const QString &curve) {
+            return Rpc110::ok(rpc.call(QStringLiteral("plot.remove_curve"),
+                                       QJsonObject{ { "graph", graph }, { "curve", curve } }));
+        };
+        auto undoRedo = [](Rpc110 &rpc, const QString &graph, bool redo) {
+            const QString method = redo ? QStringLiteral("app.redo") : QStringLiteral("app.undo");
+            return Rpc110::ok(rpc.call(method, QJsonObject{ { "graph", graph } }));
+        };
+        const QString manualY = QStringLiteral("Stress (manual)");
+        QString yOne, emptyX, emptyY, newX, newY;
+        {
+            AppWinGuard110 w(new ApplicationWindow());
+            Rpc110 rpc;
+            rpc.srv = w->pythonAutomationServer();
+            CHECK_COND(rpc.srv != nullptr, "110g: pythonAutomationServer null");
+            const QVector<double> xs{ 1, 2, 3, 4, 5 }, ys{ 2, 4, 6, 8, 10 }, zs{ 1, 4, 9, 16, 25 };
+            CHECK_COND(rpc.makeTable(QStringLiteral("T110G"), { "x", "y", "z" },
+                                     { toJson110(xs), toJson110(ys), toJson110(zs) }),
+                       "110g: table T110G");
+            CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("table.set_column_meta"),
+                                           QJsonObject{ { "table", "T110G" },
+                                                        { "col", "x" },
+                                                        { "plot_designation", "X" } }))
+                               && Rpc110::ok(rpc.call(QStringLiteral("table.set_column_meta"),
+                                                      QJsonObject{ { "table", "T110G" },
+                                                                   { "col", "y" },
+                                                                   { "units", "MPa" } })),
+                       "110g: set_column_meta");
+            // G110G: y and z, then z and y are removed; G110H: only z is removed;
+            // G110M: the Y title was typed by the user; G110N: an empty layer is added
+            for (const char *gn : { "G110G", "G110H", "G110M", "G110N" })
+                CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("plot.xy"),
+                                               QJsonObject{ { "table", "T110G" },
+                                                            { "x_col", "x" },
+                                                            { "y_cols", QJsonArray{ "y", "z" } },
+                                                            { "style", "line" },
+                                                            { "graph_name", gn } })),
+                           "110g: plot.xy " << gn);
+            CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("graph.add_layer"),
+                                           QJsonObject{ { "graph", "G110N" } })),
+                       "110g: graph.add_layer");
+            {
+                const QJsonArray layers =
+                        Rpc110::result(rpc.call(QStringLiteral("graph.get_info"),
+                                                QJsonObject{ { "graph", "G110N" } }))
+                                .value(QStringLiteral("layers"))
+                                .toArray();
+                const QJsonObject axes =
+                        layers.last().toObject().value(QStringLiteral("axes")).toObject();
+                auto axisTitle = [&axes](const char *key) {
+                    return axes.value(QString::fromLatin1(key))
+                            .toObject()
+                            .value(QStringLiteral("title"))
+                            .toString();
+                };
+                newX = axisTitle("x");
+                newY = axisTitle("y");
+                CHECK110(layers.size() == 2, "110g: the added layer is missing");
+            }
+            CHECK110(Rpc110::ok(rpc.call(QStringLiteral("graph.set_axis"),
+                                         QJsonObject{ { "graph", "G110M" },
+                                                      { "axis", "y" },
+                                                      { "title", manualY } })),
+                     "110g: graph.set_axis title");
+
+            const QString gG = QStringLiteral("G110G");
+            const QString y0 = title(rpc, gG, "y");
+            const QString x0 = title(rpc, gG, "x");
+
+            // taking z out whole (as when its column leaves the project) leaves the titles alone
+            if (Graph *g = layer110(w, gG)) {
+                Graph::TakenCurves tc = g->takeCurvesUsingColumns({ QStringLiteral("T110G_z") });
+                CHECK110(tc.out && g->curves() == 1, "110g: z was not taken out");
+                CHECK110(title(rpc, gG, "y") == y0 && title(rpc, gG, "x") == x0,
+                         "110g: taking z out changed the titles to '"
+                                 << title(rpc, gG, "x").toStdString() << "', '"
+                                 << title(rpc, gG, "y").toStdString() << "'");
+                g->restoreTakenCurves(tc);
+                CHECK110(g->curves() == 2 && title(rpc, gG, "y") == y0,
+                         "110g: putting z back changed the Y title to '"
+                                 << title(rpc, gG, "y").toStdString() << "'");
+            } else {
+                CHECK110(false, "110g: no layer G110G");
+            }
+
+            // removing z: the title is the one of y alone, as after undo -> redo
+            CHECK110(removeCurve(rpc, gG, QStringLiteral("T110G_z")), "110g: remove z");
+            yOne = title(rpc, gG, "y");
+            std::cout << "[INFO] 110g: Y title with y, z '" << y0.toStdString()
+                      << "', after removing z '" << yOne.toStdString() << "'\n";
+            CHECK110(yOne.contains(QStringLiteral("MPa")) && yOne != y0,
+                     "110g: removing z left the Y title '" << yOne.toStdString() << "'");
+            CHECK110(undoRedo(rpc, gG, false), "110g: undo");
+            CHECK110(title(rpc, gG, "y") == y0,
+                     "110g: undo gave the Y title '" << title(rpc, gG, "y").toStdString() << "'");
+            CHECK110(undoRedo(rpc, gG, true), "110g: redo");
+            CHECK110(title(rpc, gG, "y") == yOne,
+                     "110g: removing z gave '" << yOne.toStdString() << "', undo -> redo '"
+                                               << title(rpc, gG, "y").toStdString() << "'");
+
+            // removing the last curve: the titles of a new empty layer
+            CHECK110(removeCurve(rpc, gG, QStringLiteral("T110G_y")), "110g: remove y");
+            emptyX = title(rpc, gG, "x");
+            emptyY = title(rpc, gG, "y");
+            std::cout << "[INFO] 110g: titles of the emptied layer '" << emptyX.toStdString()
+                      << "', '" << emptyY.toStdString() << "', of a new layer '"
+                      << newX.toStdString() << "', '" << newY.toStdString() << "'\n";
+            CHECK110(rpc.curveCount(gG) == 0, "110g: curves left after removing y");
+            CHECK110(emptyX == newX && emptyY == newY,
+                     "110g: the emptied layer has the titles '" << emptyX.toStdString() << "', '"
+                             << emptyY.toStdString() << "' (a new layer '" << newX.toStdString()
+                             << "', '" << newY.toStdString() << "')");
+            CHECK110(undoRedo(rpc, gG, false), "110g: undo of removing y");
+            CHECK110(title(rpc, gG, "y") == yOne,
+                     "110g: undo of removing y gave '" << title(rpc, gG, "y").toStdString()
+                                                       << "'");
+            CHECK110(undoRedo(rpc, gG, true), "110g: redo of removing y");
+            CHECK110(title(rpc, gG, "x") == emptyX && title(rpc, gG, "y") == emptyY,
+                     "110g: redo of removing y gave '" << title(rpc, gG, "x").toStdString()
+                                                       << "', '"
+                                                       << title(rpc, gG, "y").toStdString()
+                                                       << "'");
+
+            CHECK110(removeCurve(rpc, QStringLiteral("G110H"), QStringLiteral("T110G_z")),
+                     "110g: remove z from G110H");
+            CHECK110(title(rpc, QStringLiteral("G110H"), "y") == yOne,
+                     "110g: G110H Y title '"
+                             << title(rpc, QStringLiteral("G110H"), "y").toStdString() << "'");
+
+            // a title the user typed stays, also when the layer is emptied
+            const QString gM = QStringLiteral("G110M");
+            CHECK110(title(rpc, gM, "y") == manualY,
+                     "110g: G110M Y title '" << title(rpc, gM, "y").toStdString() << "'");
+            CHECK110(removeCurve(rpc, gM, QStringLiteral("T110G_z")), "110g: remove z from G110M");
+            CHECK110(title(rpc, gM, "y") == manualY,
+                     "110g: removing z changed the typed Y title to '"
+                             << title(rpc, gM, "y").toStdString() << "'");
+            CHECK110(removeCurve(rpc, gM, QStringLiteral("T110G_y")), "110g: remove y from G110M");
+            CHECK110(title(rpc, gM, "y") == manualY,
+                     "110g: emptying the layer changed the typed Y title to '"
+                             << title(rpc, gM, "y").toStdString() << "'");
+            CHECK_COND(w->saveFolder(w->projectFolder(), prjG), "110g: saving the project failed");
+        }
+        {
+            AppWinGuard110 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(prjG), "110g: reopening the project failed");
+            QCoreApplication::processEvents();
+            Rpc110 rpc;
+            rpc.srv = rd->pythonAutomationServer();
+            const QString gx = title(rpc, QStringLiteral("G110G"), "x");
+            const QString gy = title(rpc, QStringLiteral("G110G"), "y");
+            const QString hy = title(rpc, QStringLiteral("G110H"), "y");
+            const QString my = title(rpc, QStringLiteral("G110M"), "y");
+            // the reopened empty layer added to G110N (its placeholder titles are not kept)
+            const QJsonObject nAxes = Rpc110::result(rpc.call(QStringLiteral("graph.get_info"),
+                                                              QJsonObject{ { "graph", "G110N" } }))
+                                              .value(QStringLiteral("layers"))
+                                              .toArray()
+                                              .last()
+                                              .toObject()
+                                              .value(QStringLiteral("axes"))
+                                              .toObject();
+            auto nTitle = [&nAxes](const char *key) {
+                return nAxes.value(QString::fromLatin1(key))
+                        .toObject()
+                        .value(QStringLiteral("title"))
+                        .toString();
+            };
+            const QString nx = nTitle("x");
+            const QString ny = nTitle("y");
+            std::cout << "[INFO] 110g reopened: G110G '" << gx.toStdString() << "', '"
+                      << gy.toStdString() << "', empty layer of G110N '" << nx.toStdString()
+                      << "', '" << ny.toStdString() << "', G110H '" << hy.toStdString()
+                      << "', G110M '" << my.toStdString() << "'\n";
+            CHECK110(gx == nx && gy == ny,
+                     "110g-reopen: emptied layer titles '" << gx.toStdString() << "', '"
+                             << gy.toStdString() << "', reopened new layer '" << nx.toStdString()
+                             << "', '" << ny.toStdString() << "'");
+            CHECK110(hy == yOne, "110g-reopen: G110H Y title '" << hy.toStdString() << "'");
+            CHECK110(my == manualY, "110g-reopen: G110M Y title '" << my.toStdString() << "'");
+        }
     }
 
     if (g110Failures > 0) {
