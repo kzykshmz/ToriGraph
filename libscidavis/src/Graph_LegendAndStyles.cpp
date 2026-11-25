@@ -2801,8 +2801,12 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         double gx0 = 0.0, gy0 = 0.0, cell = 16.0;
         int nx = 0, ny = 0;
     } stdGeom;
+    // Set only while the Y headroom asks what the legend still meets when this layer's yLeft
+    // curves are left out (they are what widening the left axis moves).
+    bool scoreSkipsYLeftCurves = false;
     auto stdGeomSignature = [&]() {
         QVector<double> sig;
+        sig << (scoreSkipsYLeftCurves ? 1.0 : 0.0);
         for (Graph *lg : layersToScore) {
             Plot *lp = lg ? lg->plotWidget() : nullptr;
             if (!lp || !lp->canvas())
@@ -2842,6 +2846,8 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     continue;
                 }
                 QwtPlotItem *it = lg->plotItem(i);
+                if (scoreSkipsYLeftCurves && lg == this && it && it->yAxis() == QwtPlot::yLeft)
+                    continue;
                 if (!it || !it->isVisible() || it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
                     stdGeom.otherCurves[li].append(i);
                     continue;
@@ -3760,6 +3766,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
             && !isToriAxisUserLocked(d_plot, QwtPlot::yLeft)
             && d_user_step[QwtPlot::yLeft] <= 0.0) {
             bool hasSpectrogram = false;
+            bool hasOtherYCurves = false;
             double maxCurveY = -std::numeric_limits<double>::infinity();
             for (int i = 0; i < n_curves && i < c_keys.size(); ++i) {
                 QwtPlotItem *it = plotItem(i);
@@ -3769,6 +3776,8 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     hasSpectrogram = true;
                     break;
                 }
+                if (it->yAxis() != QwtPlot::yLeft)
+                    hasOtherYCurves = true;
                 if (const QwtPlotCurve *cv = curve(i)) {
                     if (cv->yAxis() == QwtPlot::yLeft) {
                         const int np = cv->dataSize();
@@ -3780,9 +3789,26 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     }
                 }
             }
+            // Dual Y: widening the left axis only moves this layer's yLeft curves down. When the
+            // curves on the other Y axis still meet the legend at every top position, it cannot
+            // clear the legend; it only squeezed the left data into the bottom of the frame, and
+            // each later placement (a preset applied again) widened it once more (left
+            // 250..650 -> 200..1600 with lab_slide_83mm). The legend then keeps its best spot.
+            bool headroomCanClear = true;
+            if (hasOtherYCurves && !hasSpectrogram) {
+                scoreSkipsYLeftCurves = true;
+                double topFloor = std::numeric_limits<double>::infinity();
+                for (LegendAnchor cand : { LegendTopRight, LegendTopLeft, LegendTopCenter }) {
+                    const QPoint pt = originForInsideAnchor(cand);
+                    topFloor = std::min(topFloor, evaluateOriginScore(pt.x(), pt.y()));
+                }
+                scoreSkipsYLeftCurves = false;
+                headroomCanClear = (topFloor <= 12.0);
+            }
             const QwtScaleDiv *yDiv = d_plot->axisScaleDiv(QwtPlot::yLeft);
             const QwtScaleEngine *yEng = d_plot->axisScaleEngine(QwtPlot::yLeft);
-            if (!hasSpectrogram && yDiv && yEng && !Plot::isLog10ScaleEngine(yEng)
+            if (headroomCanClear && !hasSpectrogram && yDiv && yEng
+                && !Plot::isLog10ScaleEngine(yEng)
                 && !yEng->testAttribute(QwtScaleEngine::Inverted)) {
                 const double yLo = yDiv->lowerBound();
                 const double yHi = yDiv->upperBound();
