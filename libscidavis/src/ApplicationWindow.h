@@ -222,6 +222,11 @@ public:
                 | FormatPageDimensions,
         FormatAll = 0x3F
     };
+    //! Copy the format of srcMl to the format clipboard; with onlyLayer, that layer's format
+    //! only (pasted onto every layer of a target, or onto the layer given to the paste).
+    void copyGraphFormatFrom(MultiLayer *srcMl, Graph *onlyLayer = nullptr);
+    //! Paste the copied format onto dstMl; with onlyLayer, onto that layer only.
+    void pasteGraphFormatTo(MultiLayer *dstMl, int scopeFlags, Graph *onlyLayer = nullptr);
 
 public slots:
     void selectPlotType(int type);

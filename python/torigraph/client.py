@@ -2362,6 +2362,11 @@ class GraphProxy:
         )
 
     def copy_format(self, layer: Optional[int] = None) -> Dict[str, Any]:
+        """Copy this graph's format; ``layer=N`` copies that layer's format only.
+
+        A one-layer format is pasted onto every layer of the target, or onto the layer given
+        to :meth:`paste_format`.
+        """
         return self.session.call("graph.copy_format", graph=self.name, layer=layer)
 
     def paste_format(
@@ -2369,6 +2374,7 @@ class GraphProxy:
         layer: Optional[int] = None,
         scopes: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
+        """Paste the copied format onto this graph; ``layer=N`` onto that layer only."""
         return self.session.call(
             "graph.paste_format",
             graph=self.name,

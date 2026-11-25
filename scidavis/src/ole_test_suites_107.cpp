@@ -26,6 +26,9 @@
 //   107e plot.histogram with both bin_min and bin_max given and bin_min >= bin_max is an
 //        invalid-params error and leaves no window (it used to bin [bin_min, bin_min+1]); one
 //        bound only, and a constant column, still plot as before
+//   107f graph.copy_format(layer=L) copies the format of layer L (it used to copy layer 0 when
+//        the main window was shown); paste_format(layer=L) changes only layer L; with the main
+//        window shown and headless; an out-of-range layer is an error
 // =============================================================================
 
 namespace {
@@ -680,6 +683,121 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
         CHECK107(ls.valid && near107(ls.yHi, 1.64 * presetRMax),
                  "107a-legacy: old-format view y max " << ls.yHi << " (expected "
                                                        << 1.64 * presetRMax << ")");
+    }
+
+    // ---- 107f: graph.copy_format / paste_format honour layer= ---------------------------------
+    // With the main window shown (graph.copy_format activates the graph and uses the
+    // application's format clipboard) and headless (RPC clipboard).
+    for (const bool headless : { false, true }) {
+        const char *mode = headless ? "headless" : "shown";
+        AppWinGuard107 w(new ApplicationWindow());
+        if (!headless) {
+            w->setHeadlessMode(false);
+            w->resize(1280, 800);
+            w->show();
+            QCoreApplication::processEvents();
+        }
+        Rpc107 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "107f: pythonAutomationServer null");
+        QJsonArray xs, as, cs;
+        for (int i = 1; i <= 10; ++i) {
+            xs.append(i);
+            as.append(i);
+            cs.append(3 * i);
+        }
+        CHECK_COND(rpc.makeTable(QStringLiteral("T107F"), { "x", "a", "c" }, { xs, as, cs }),
+                   "107f: table");
+        auto plot = [&](const char *name) {
+            return Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                       QJsonObject{ { "table", "T107F" },
+                                                    { "x_col", "x" },
+                                                    { "y_cols", QJsonArray{ "a" } },
+                                                    { "graph_name", name } }));
+        };
+        auto addLayerWithCurve = [&](const char *name) {
+            return Rpc107::ok(rpc.call(QStringLiteral("graph.add_layer"),
+                                       QJsonObject{ { "graph", name } }))
+                    && Rpc107::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                           QJsonObject{ { "graph", name },
+                                                        { "layer", 1 },
+                                                        { "table", "T107F" },
+                                                        { "x_col", "x" },
+                                                        { "y_col", "c" } }));
+        };
+        // "color/width/y-numbers-pt" of the first curve of a layer
+        auto look = [&](const char *name, int layer) {
+            const QJsonObject info = Rpc107::result(
+                    rpc.call(QStringLiteral("graph.get_info"), QJsonObject{ { "graph", name } }));
+            const QJsonObject l = info.value(QStringLiteral("layers")).toArray().at(layer).toObject();
+            const QJsonObject c = l.value(QStringLiteral("curves")).toArray().at(0).toObject();
+            return QStringLiteral("%1/%2/%3")
+                    .arg(c.value(QStringLiteral("color")).toString())
+                    .arg(c.value(QStringLiteral("line_width")).toDouble())
+                    .arg(l.value(QStringLiteral("axes"))
+                                 .toObject()
+                                 .value(QStringLiteral("y"))
+                                 .toObject()
+                                 .value(QStringLiteral("numbers_font_size"))
+                                 .toDouble())
+                    .toStdString();
+        };
+        CHECK_COND(plot("ML107F") && addLayerWithCurve("ML107F"), "107f: two-layer source graph");
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.set_curve_style"),
+                                     QJsonObject{ { "graph", "ML107F" }, { "layer", 0 }, { "curve", 0 },
+                                                  { "color", "#ff0000" }, { "lw", 4 } })),
+                 "107f: style layer 0");
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.set_curve_style"),
+                                     QJsonObject{ { "graph", "ML107F" }, { "layer", 1 }, { "curve", 0 },
+                                                  { "color", "#0000ff" }, { "lw", 6 } })),
+                 "107f: style layer 1");
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.set_axis"),
+                                     QJsonObject{ { "graph", "ML107F" }, { "layer", 1 }, { "axis", "y" },
+                                                  { "numbers_font_size", 20 } })),
+                 "107f: axis font of layer 1");
+        const std::string src0 = look("ML107F", 0), src1 = look("ML107F", 1);
+        std::cout << "[INFO] 107f (" << mode << "): source layer 0 " << src0 << ", layer 1 " << src1
+                  << "\n";
+        CHECK_COND(src0.rfind("#ff0000/4/", 0) == 0 && src1 == "#0000ff/6/20",
+                   "107f: source styles not set: " << src0 << " / " << src1);
+
+        // copy_format(layer=L) -> a one-layer graph takes layer L's format
+        for (int L = 0; L < 2; ++L) {
+            const QString one = QStringLiteral("One107F%1").arg(L);
+            CHECK_COND(plot(one.toUtf8().constData()), "107f: one-layer graph " << L);
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.copy_format"),
+                                         QJsonObject{ { "graph", "ML107F" }, { "layer", L } })),
+                     "107f: copy_format layer " << L);
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.paste_format"),
+                                         QJsonObject{ { "graph", one } })),
+                     "107f: paste_format to " << one.toStdString());
+            const std::string got = look(one.toUtf8().constData(), 0);
+            const std::string want = L == 0 ? src0 : src1;
+            std::cout << "[INFO] 107f (" << mode << "): copy layer " << L << " -> " << got << "\n";
+            CHECK107(got == want, "107f (" << mode << "): copy_format(layer=" << L
+                                           << ") pasted " << got << ", expected " << want);
+        }
+
+        // paste_format(layer=1) changes only layer 1 of a two-layer graph
+        CHECK_COND(plot("Two107F") && addLayerWithCurve("Two107F"), "107f: two-layer target graph");
+        const std::string two0 = look("Two107F", 0);
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.copy_format"),
+                                     QJsonObject{ { "graph", "ML107F" }, { "layer", 1 } })),
+                 "107f: copy_format layer 1 for the layer paste");
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.paste_format"),
+                                     QJsonObject{ { "graph", "Two107F" }, { "layer", 1 } })),
+                 "107f: paste_format layer 1");
+        const std::string t0 = look("Two107F", 0), t1 = look("Two107F", 1);
+        std::cout << "[INFO] 107f (" << mode << "): paste to layer 1 -> layer 0 " << t0
+                  << ", layer 1 " << t1 << "\n";
+        CHECK107(t1 == src1, "107f (" << mode << "): paste_format(layer=1) gave layer 1 " << t1
+                                      << ", expected " << src1);
+        CHECK107(t0 == two0, "107f (" << mode << "): paste_format(layer=1) changed layer 0: "
+                                      << two0 << " -> " << t0);
+        // an out-of-range layer is an error, not a silent copy of nothing
+        CHECK107(!Rpc107::ok(rpc.call(QStringLiteral("graph.copy_format"),
+                                      QJsonObject{ { "graph", "ML107F" }, { "layer", 5 } })),
+                 "107f: copy_format(layer=5) on a two-layer graph did not fail");
     }
 
     if (g107Failures > 0) {

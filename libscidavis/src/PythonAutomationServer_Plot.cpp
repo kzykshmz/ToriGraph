@@ -5657,8 +5657,13 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
 
     if (method == QStringLiteral("graph.copy_format")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        // layer= copies that layer's format only (an out-of-range layer is an error); the
+        // application clipboard is filled from ml itself, not from whichever layer is active
+        const bool hasLayer = params.contains(QStringLiteral("layer"))
+                && !params.value(QStringLiteral("layer")).isNull();
+        Graph *copyLayer = hasLayer ? resolveGraphLayer(ml, params, true) : nullptr;
         d_app->activateSubWindow(ml);
-        d_app->copyGraphFormat();
+        d_app->copyGraphFormatFrom(ml, copyLayer);
 
         HeadlessFormatClipboard &clip = rpcFormatClipboard();
         clip = HeadlessFormatClipboard();
@@ -5742,6 +5747,10 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
 
     if (method == QStringLiteral("graph.paste_format")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
+        Graph *pasteLayer = (params.contains(QStringLiteral("layer"))
+                             && !params.value(QStringLiteral("layer")).isNull())
+                ? resolveGraphLayer(ml, params, true)
+                : nullptr;
         int scopeFlags = ApplicationWindow::FormatDefaultSafe;
         if (params.value(QStringLiteral("scopes")).isArray()) {
             scopeFlags = 0;
@@ -5782,11 +5791,15 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         } suppressInner{ ml };
         ml->setProperty("_suppressInnerUndoPush", true);
         d_app->activateSubWindow(ml);
-        d_app->pasteGraphFormatWithScope(scopeFlags);
+        // layer= pastes onto that layer only (the application clipboard used to paste onto
+        // every layer; the RPC clipboard below already honoured it)
+        const bool appPaste = d_app->d_workspace.activeSubWindow() == ml;
+        if (appPaste)
+            d_app->pasteGraphFormatTo(ml, scopeFlags, pasteLayer);
 
         const HeadlessFormatClipboard &clip = rpcFormatClipboard();
         // Fallback when headless QMdiArea::activeSubWindow() returns nullptr
-        if (clip.valid && d_app->d_workspace.activeSubWindow() != ml) {
+        if (clip.valid && !appPaste) {
             const bool doFonts = (scopeFlags & ApplicationWindow::FormatFonts) != 0;
             const bool doColors = (scopeFlags & ApplicationWindow::FormatColorsAndSymbols) != 0;
             const bool doFrame = (scopeFlags & ApplicationWindow::FormatFrameAndTicks) != 0;

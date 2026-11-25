@@ -4026,6 +4026,7 @@ struct CopiedGraphFormatClipboard
 
     CopiedLayerFormatSpec activeLayer;
     QVector<CopiedLayerFormatSpec> allLayers;
+    int srcLayerCount = 0; // layers of the source graph (allLayers holds one when one was copied)
 };
 
 static CopiedGraphFormatClipboard s_copiedGraphFormat;
@@ -4351,7 +4352,15 @@ void ApplicationWindow::copyGraphFormat()
 {
     QWidget *w = d_workspace.activeSubWindow();
     MultiLayer *srcMl = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    copyGraphFormatFrom(srcMl, nullptr);
+}
+
+void ApplicationWindow::copyGraphFormatFrom(MultiLayer *srcMl, Graph *onlyLayer)
+{
     if (!srcMl || srcMl->isEmpty())
+        return;
+    QList<Graph *> layers = srcMl->layersList();
+    if (onlyLayer && !layers.contains(onlyLayer))
         return;
 
     s_copiedGraphFormat = CopiedGraphFormatClipboard();
@@ -4375,14 +4384,20 @@ void ApplicationWindow::copyGraphFormat()
     s_copiedGraphFormat.horAlign = srcMl->horizontalAlignement();
     s_copiedGraphFormat.vertAlign = srcMl->verticalAlignement();
 
-    QList<Graph *> layers = srcMl->layersList();
-    Graph *actG = srcMl->activeGraph();
-    if (!actG && !layers.isEmpty())
-        actG = layers.first();
-    if (actG)
-        s_copiedGraphFormat.activeLayer = captureLayerFormat(actG);
-    for (Graph *lg : layers)
-        s_copiedGraphFormat.allLayers.append(captureLayerFormat(lg));
+    s_copiedGraphFormat.srcLayerCount = layers.size();
+    if (onlyLayer) {
+        // one layer's format: pasted onto every layer of a target (or onto the given layer)
+        s_copiedGraphFormat.activeLayer = captureLayerFormat(onlyLayer);
+        s_copiedGraphFormat.allLayers.append(s_copiedGraphFormat.activeLayer);
+    } else {
+        Graph *actG = srcMl->activeGraph();
+        if (!actG && !layers.isEmpty())
+            actG = layers.first();
+        if (actG)
+            s_copiedGraphFormat.activeLayer = captureLayerFormat(actG);
+        for (Graph *lg : layers)
+            s_copiedGraphFormat.allLayers.append(captureLayerFormat(lg));
+    }
 
     if (statusBar())
         statusBar()->showMessage(tr("Copied graph format from %1.").arg(srcMl->name()), 3000);
@@ -4395,21 +4410,27 @@ void ApplicationWindow::pasteGraphFormat()
 
 void ApplicationWindow::pasteGraphFormatWithScope(int scopeFlags)
 {
-    if (!s_copiedGraphFormat.valid)
-        return;
     QWidget *w = d_workspace.activeSubWindow();
     MultiLayer *dstMl = (w && w->inherits("MultiLayer")) ? static_cast<MultiLayer *>(w) : nullptr;
+    pasteGraphFormatTo(dstMl, scopeFlags, nullptr);
+}
+
+void ApplicationWindow::pasteGraphFormatTo(MultiLayer *dstMl, int scopeFlags, Graph *onlyLayer)
+{
+    if (!s_copiedGraphFormat.valid)
+        return;
     if (!dstMl || dstMl->isEmpty())
         return;
 
     const QList<Graph *> dstLayers = dstMl->layersList();
+    if (onlyLayer && !dstLayers.contains(onlyLayer))
+        return;
     int primaryDstCount = 0;
     for (Graph *dg : dstLayers) {
         if (dg && !dg->linkedParentLayer() && !dstMl->isInsetLayer(dg))
             ++primaryDstCount;
     }
-    const bool singleToSingle =
-            (s_copiedGraphFormat.allLayers.size() <= 1 && primaryDstCount <= 1);
+    const bool singleToSingle = (s_copiedGraphFormat.srcLayerCount <= 1 && primaryDstCount <= 1);
     const bool explicitPageOnly = (scopeFlags == FormatPageDimensions);
     const bool applyPageDims =
             (scopeFlags & FormatPageDimensions) != 0 && (singleToSingle || explicitPageOnly);
@@ -4439,6 +4460,8 @@ void ApplicationWindow::pasteGraphFormatWithScope(int scopeFlags)
     }
 
     for (int i = 0; i < dstLayers.size(); ++i) {
+        if (onlyLayer && dstLayers[i] != onlyLayer)
+            continue;
         const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
                 ? s_copiedGraphFormat.allLayers[i]
                 : s_copiedGraphFormat.activeLayer;
@@ -4452,6 +4475,8 @@ void ApplicationWindow::pasteGraphFormatWithScope(int scopeFlags)
         dstMl->arrangeLayers(false, false);
         if ((scopeFlags & FormatFrameAndTicks) != 0) {
             for (int i = 0; i < dstLayers.size(); ++i) {
+                if (onlyLayer && dstLayers[i] != onlyLayer)
+                    continue;
                 const CopiedLayerFormatSpec &lspec = (i < s_copiedGraphFormat.allLayers.size())
                         ? s_copiedGraphFormat.allLayers[i]
                         : s_copiedGraphFormat.activeLayer;
@@ -4505,7 +4530,7 @@ void ApplicationWindow::pasteGraphFormatToFolder()
 
         const QList<Graph *> dstLayers = dstMl->layersList();
         const bool singleToSingle =
-                (s_copiedGraphFormat.allLayers.size() <= 1 && dstLayers.size() <= 1);
+                (s_copiedGraphFormat.srcLayerCount <= 1 && dstLayers.size() <= 1);
         const QString before = dstMl->captureUndoSnapshot();
         if (singleToSingle) {
             dstMl->setMargins(s_copiedGraphFormat.leftMargin, s_copiedGraphFormat.rightMargin,
