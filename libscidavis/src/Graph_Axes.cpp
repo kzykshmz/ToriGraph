@@ -2188,6 +2188,19 @@ QString Graph::resolvedAutoAxisTitle(int axis, Column::UnitFormat fmt) const
         if (cols.size() == 1)
             return cleanColAxisTitle(cols.first());
 
+        // どの列からも同じ軸題（Long Name か列名＋単位）になるなら、それを使う。元の列「温度」
+        // （Long Name なし）と、その名前を Long Name に引き継いだ解析結果の列が並ぶときなど、
+        // Long Name の有無が混じっていても同じ量を表している。
+        {
+            const QString firstFull = cleanColAxisTitle(cols.first());
+            bool allSameFull = !firstFull.isEmpty();
+            for (int i = 1; i < cols.size() && allSameFull; ++i)
+                allSameFull = cleanColAxisTitle(cols[i]).compare(firstFull, Qt::CaseInsensitive)
+                        == 0;
+            if (allSameFull)
+                return firstFull;
+        }
+
         QString sharedUnits;
         bool unitsConflict = false;
         QStringList longNames;

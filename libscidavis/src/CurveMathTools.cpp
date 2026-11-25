@@ -573,6 +573,28 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
     if (!t)
         return nullptr;
 
+    // 結果の列に元の列の名前（Long Name、無ければ列名）と単位を引き継ぐ。引き継がないと
+    // 自動の軸題が元の曲線の「温度 / K」と結果の「X」の食い違いとみなされ、「X / K」
+    // 「Y / A」に変わってしまう。凡例は従来どおり「SubtractedY」と出るよう注釈に入れる。
+    if (const DataCurve *srcDc = dynamic_cast<const DataCurve *>(c)) {
+        Column *srcX = nullptr;
+        Column *srcY = nullptr;
+        srcDc->resolveColumns(srcX, srcY);
+        auto inherit = [](Column *dst, Column *src, bool keepUnits) {
+            if (!dst || !src)
+                return;
+            const QString ln = src->longName().trimmed();
+            dst->setLongName(ln.isEmpty() ? src->name().trimmed() : ln);
+            if (keepUnits)
+                dst->setUnits(src->units());
+        };
+        inherit(t->column(0), srcX, true);
+        // 0-1 正規化して表示している曲線は、Y の単位が元の列と違う
+        inherit(t->column(1), srcY, !srcDc->stackNormalize01());
+        if (srcY && t->column(1))
+            t->column(1)->setComment(QStringLiteral("SubtractedY"));
+    }
+
     QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(xs.size()),
                                                QPen(QColor(0, 158, 115), 2.0, Qt::SolidLine));
     g->updatePlot();
