@@ -174,7 +174,10 @@ bool TranslateCurveTool::translateCurve(QwtPlotCurve *curve, double delta)
         const double dispY = curve->y(pt) + (alongDisplayX ? 0.0 : delta);
         double rawX = 0.0;
         double rawY = 0.0;
-        if (!c->displayToRaw(dispX, dispY, &rawX, &rawY)) {
+        // A move along X writes X only: undo just the applied X offset, without requiring the
+        // 0-1 normalisation range (it is undefined when all Y values are equal). Only a move along
+        // Y has to undo the normalisation.
+        if (!c->displayToRaw(dispX, dispY, &rawX, alongDisplayX ? nullptr : &rawY)) {
             emit statusText(tr("This data point cannot be moved: the original values of the 0-1 "
                                "normalized curve cannot be recovered."));
             return false;

@@ -2458,18 +2458,32 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
     }
     case AssociatedErrors: {
         bool error = true;
-        QwtErrorPlotCurve *er = 0;
+        std::vector<double> rawErrs;
         const bool curveAlive = (d_curve && d_graph && d_graph->curveIndex(d_curve) >= 0);
         if (curveAlive) {
             if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
                 QList<DataCurve *> lst = dc->errorBarsList();
                 foreach (DataCurve *c, lst) {
-                    er = (QwtErrorPlotCurve *)c;
-                    if (!er->xErrors()) {
-                        d_y_error_dataset = er->title().text();
-                        error = false;
-                        break;
+                    QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(c);
+                    if (!er || er->xErrors())
+                        continue;
+                    // A Y error bar curve without a single usable error (it is kept with NaN
+                    // errors when e.g. its column is empty for the plotted rows) counts as no
+                    // error bars: it would give every point weight 0. Same criterion as
+                    // computeWeightsVector().
+                    std::vector<double> vals(d_x.size(), std::numeric_limits<double>::quiet_NaN());
+                    bool usable = false;
+                    for (size_t j = 0; j < vals.size() && j < d_indices.size(); j++) {
+                        vals[j] = er->errorValue(int(d_indices[j]));
+                        if (std::isfinite(vals[j]) && vals[j] > 0.0 && vals[j] < 1e140)
+                            usable = true;
                     }
+                    if (!usable)
+                        continue;
+                    rawErrs = std::move(vals);
+                    d_y_error_dataset = er->title().text();
+                    error = false;
+                    break;
                 }
             }
         }
@@ -2481,11 +2495,7 @@ bool Fit::setYErrorSource(ErrorSource err, const QString &colName, bool fail_sil
             return false;
         }
         d_raw_weights.clear();
-        d_raw_y_errors.assign(d_x.size(), std::numeric_limits<double>::quiet_NaN());
-        if (er) {
-            for (unsigned j = 0; j < d_raw_y_errors.size(); j++)
-                d_raw_y_errors[j] = er->errorValue(int(d_indices[j]));
-        }
+        d_raw_y_errors = std::move(rawErrs);
         d_weighting_method = WeightInstrumental;
         const std::vector<double> w = computeWeightsVector();
         applyWeightsToErrorVector(w);

@@ -955,6 +955,15 @@ bool PlotCurve::stackNormalizeRange(double *minY, double *span) const
 bool PlotCurve::displayToRaw(double dispX, double dispY, double *rawX, double *rawY) const
 {
     const double rx = dispX - d_applied_dx;
+    if (!rawY) {
+        // Only X wanted: the 0-1 normalisation acts on Y alone, so its range is not needed
+        // (a normalised curve with all Y values equal can still be moved along X).
+        if (!std::isfinite(rx))
+            return false;
+        if (rawX)
+            *rawX = rx;
+        return true;
+    }
     double ry = dispY - d_applied_dy;
     if (d_norm01) {
         double lo = 0.0;

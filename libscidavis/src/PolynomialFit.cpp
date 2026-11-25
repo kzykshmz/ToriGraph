@@ -789,12 +789,14 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     ApplicationWindow *app = (ApplicationWindow *)parent();
     DataCurve *dc = dynamic_cast<DataCurve *>(d_curve);
 
-    // As in Fit::computeWeightsVector(): a non-finite or non-positive error (e.g. an empty error
-    // cell) does not get a tiny made-up sigma, which would give that point a huge weight and let
-    // it dominate the regression; the point is left out of the fit instead (NaN marks it).
+    // As in Fit::computeWeightsVector(): a missing or non-finite error (e.g. an empty error cell)
+    // does not get a made-up sigma; the point is left out of the fit instead (NaN marks it).
+    // A zero error is a valid value here: it says that coordinate is exact, and York's weight
+    // W = 1 / (sy^2 + b^2 sx^2) stays finite as long as the other axis has an error. Only points
+    // with both errors zero are left out (see below).
     auto validSigma = [](double v) -> double {
-        return (std::isfinite(v) && v > 0.0 && v < 1e140) ? v
-                                                           : std::numeric_limits<double>::quiet_NaN();
+        return (std::isfinite(v) && v >= 0.0 && v < 1e140) ? v
+                                                            : std::numeric_limits<double>::quiet_NaN();
     };
 
     auto resolveErrors = [&](const QString &colSpec, bool wantXErr, std::vector<double> &sigmaOut,
@@ -857,6 +859,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
             if (tbl && colIdx >= 0) {
                 bool anyPos = false;
+                Column *errCol = tbl->column(colIdx);
                 for (size_t i = 0; i < n; ++i) {
                     int row = int(d_indices[i]);
                     if (dc && dc->table() == tbl) {
@@ -864,8 +867,11 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                         if (trRow >= 0)
                             row = trRow;
                     }
-                    double v = (row >= 0 && row < tbl->numRows()) ? std::abs(tbl->cell(row, colIdx))
-                                                                  : 0.0;
+                    // Table::cell() reads an empty cell as 0, which now means "exact": an empty
+                    // or missing cell is an unusable error instead.
+                    double v = (row >= 0 && row < tbl->numRows() && errCol && !errCol->isInvalid(row))
+                            ? std::abs(tbl->cell(row, colIdx))
+                            : std::numeric_limits<double>::quiet_NaN();
                     if (std::isfinite(v) && v > 0.0)
                         anyPos = true;
                     sigmaOut[i] = validSigma(v);
@@ -885,7 +891,10 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                 if (er && er->xErrors() == wantXErr) {
                     bool anyPos = false;
                     for (size_t i = 0; i < n; ++i) {
-                        double v = std::abs(er->errorValue(int(d_indices[i])));
+                        const int pt = int(d_indices[i]);
+                        double v = (pt >= 0 && pt < er->dataSize())
+                                ? std::abs(er->errorValue(pt))
+                                : std::numeric_limits<double>::quiet_NaN();
                         if (std::isfinite(v) && v > 0.0)
                             anyPos = true;
                         sigmaOut[i] = validSigma(v);
@@ -905,23 +914,56 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     resolveErrors(xErrColName, true, sx, hasExplicitX);
     resolveErrors(yErrColName, false, sy, hasExplicitY);
 
-    // Points without a usable error are not part of the fit (see validSigma above).
-    std::vector<double> xs, ys, wx, wy;
+    // Points without a usable error are not part of the fit (see validSigma above), nor are
+    // points with both errors zero (no finite York weight). The solver works with the error
+    // variances vx = sx^2, vy = sy^2 instead of the weights wx = 1/vx, wy = 1/vy, so that an
+    // exact coordinate (variance 0) enters as the limit of York's formulas:
+    //   W = wx wy / (wx + b^2 wy) = 1 / (vy + b^2 vx),
+    //   beta = W (U / wy + b V / wx) = W (U vy + b V vx).
+    std::vector<double> xs, ys, vx, vy;
     xs.reserve(n);
     ys.reserve(n);
-    wx.reserve(n);
-    wy.reserve(n);
+    vx.reserve(n);
+    vy.reserve(n);
     for (size_t i = 0; i < n; ++i) {
         if (!std::isfinite(sx[i]) || !std::isfinite(sy[i]))
             continue;
+        if (!(sx[i] > 0.0) && !(sy[i] > 0.0))
+            continue;
         xs.push_back(d_x[i]);
         ys.push_back(d_y[i]);
-        wx.push_back(1.0 / (sx[i] * sx[i]));
-        wy.push_back(1.0 / (sy[i] * sy[i]));
+        vx.push_back(sx[i] * sx[i]);
+        vy.push_back(sy[i] * sy[i]);
     }
     const size_t m = xs.size();
     if (m < 2)
         return false;
+
+    // York weights at slope b. 1 / (vy + b^2 vx) is infinite only for an exact Y (vy = 0) at
+    // b = 0 (or when the variances underflow): such a point gets a weight far above every other
+    // one, i.e. the line is pulled through it, but the sums stay finite.
+    auto yorkWeights = [&](double slope, std::vector<double> &Wout) {
+        double maxW = 0.0;
+        bool anyInf = false;
+        for (size_t i = 0; i < m; ++i) {
+            const double denom = vy[i] + slope * slope * vx[i];
+            const double wi = (denom > 0.0) ? (1.0 / denom) : 0.0;
+            if (denom > 0.0 && std::isfinite(wi)) {
+                Wout[i] = wi;
+                maxW = std::max(maxW, wi);
+            } else {
+                Wout[i] = -1.0;
+                anyInf = true;
+            }
+        }
+        if (anyInf) {
+            const double big = (maxW > 0.0) ? std::min(maxW * 1e12, 1e300) : 1.0;
+            for (size_t i = 0; i < m; ++i) {
+                if (Wout[i] < 0.0)
+                    Wout[i] = big;
+            }
+        }
+    };
 
     // Orthogonal / Deming initial slope estimate
     double mx0 = std::accumulate(xs.begin(), xs.end(), 0.0) / double(m);
@@ -947,9 +989,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     const int maxIter = 500;
     for (int iter = 0; iter < maxIter; ++iter) {
         double sumW = 0.0, sumWX = 0.0, sumWY = 0.0;
+        yorkWeights(b, W);
         for (size_t i = 0; i < m; ++i) {
-            double denom = wx[i] + b * b * wy[i];
-            W[i] = (denom > 1e-300) ? ((wx[i] * wy[i]) / denom) : 0.0;
             sumW += W[i];
             sumWX += W[i] * xs[i];
             sumWY += W[i] * ys[i];
@@ -964,7 +1005,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
         for (size_t i = 0; i < m; ++i) {
             U[i] = xs[i] - Xbar;
             V[i] = ys[i] - Ybar;
-            beta[i] = W[i] * (U[i] / wy[i] + b * V[i] / wx[i]);
+            beta[i] = W[i] * (U[i] * vy[i] + b * V[i] * vx[i]);
             num += W[i] * beta[i] * V[i];
             den += W[i] * beta[i] * U[i];
         }
@@ -983,9 +1024,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 
     // Final pass at converged slope b for exact York (2004) intercept & standard errors
     double sumW = 0.0, sumWX = 0.0, sumWY = 0.0;
+    yorkWeights(b, W);
     for (size_t i = 0; i < m; ++i) {
-        double denom = wx[i] + b * b * wy[i];
-        W[i] = (denom > 1e-300) ? ((wx[i] * wy[i]) / denom) : 0.0;
         sumW += W[i];
         sumWX += W[i] * xs[i];
         sumWY += W[i] * ys[i];
@@ -1002,7 +1042,7 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
     for (size_t i = 0; i < m; ++i) {
         U[i] = xs[i] - Xbar;
         V[i] = ys[i] - Ybar;
-        beta[i] = W[i] * (U[i] / wy[i] + b * V[i] / wx[i]);
+        beta[i] = W[i] * (U[i] * vy[i] + b * V[i] * vx[i]);
         x_adj[i] = Xbar + beta[i];
         sumWxAdj += W[i] * x_adj[i];
     }

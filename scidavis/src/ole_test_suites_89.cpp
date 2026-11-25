@@ -32,6 +32,10 @@
 //   89j RangeSelectorTool status shows the point number for box plots (no table row)
 //   89k baseline subtraction / Subtract Straight Line do not write histogram bins to the table
 //   89l York (Deming) fit leaves out points whose associated error cell is empty
+//   89m Y error bars without a single finite error count as no error bars: Linear / Polynomial
+//       / NonLinear fits fall back to unweighted (same result as without error bars)
+//   89n York fit keeps a point with X error 0 (exact X) and leaves out a point with both 0
+//   89o horizontal TranslateCurveTool on a 0-1 normalised curve with constant Y writes X
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -113,6 +117,45 @@ public:
         d_suppress_curve_output = true;
     }
 };
+
+class Suite89PolyFit : public PolynomialFit
+{
+public:
+    Suite89PolyFit(ApplicationWindow *app, Graph *g) : PolynomialFit(app, g, 2)
+    {
+        d_silent = true;
+        d_suppress_curve_output = true;
+    }
+};
+
+class Suite89NonLinearFit : public NonLinearFit
+{
+public:
+    Suite89NonLinearFit(ApplicationWindow *app, Graph *g) : NonLinearFit(app, g)
+    {
+        d_silent = true;
+        d_suppress_curve_output = true;
+    }
+};
+
+bool sameResults89(const std::vector<double> &a, const std::vector<double> &b, double tol)
+{
+    if (a.empty() || a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!near89(a[i], b[i], tol))
+            return false;
+    }
+    return true;
+}
+
+std::string results89(const std::vector<double> &r)
+{
+    std::string s;
+    for (double v : r)
+        s += (s.empty() ? "" : ", ") + std::to_string(v);
+    return "[" + s + "]";
+}
 
 } // namespace
 
@@ -745,6 +788,189 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
                 "89l: York slope must stay near 2, got " << fit.yorkSlope());
         suite89Close(ml);
         suite89Close(mlr);
+    }
+
+    // ------------------------------------------------ 89m: all-NaN Y error bars in fits
+    {
+        // The error bar curve survives with NaN errors only (89h); it must not be picked as the
+        // fits' associated errors, which would give every point weight 0 and abort the fit.
+        const double nan = std::nan("");
+        const std::vector<double> xs = { 1, 2, 3, 4, 5, 6 };
+        const std::vector<double> ys = { 2.9, 5.2, 6.8, 9.1, 11.2, 12.8 };
+        Table *t = suite89Table(mw, "S89NaNErr", { xs, ys, { nan, nan, nan, nan, nan, nan } });
+        Table *tr = suite89Table(mw, "S89NaNErrRef", { xs, ys });
+        MultiLayer *ml = nullptr;
+        MultiLayer *mlr = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        Graph *gr = suite89Plot(mw, tr, QStringList() << tr->colName(1), Graph::LineSymbols, &mlr);
+        CHECK_COND(g != nullptr && gr != nullptr, "89m: graphs");
+        CHECK_COND(g->addErrorBars(t->colName(1), t, t->colName(2), QwtErrorPlotCurve::Vertical),
+                   "89m: addErrorBars on an empty column");
+        CHECK_COND(suite89ErrorBars(dynamic_cast<DataCurve *>(g->curve(0))) != nullptr,
+                   "89m: NaN error bars kept");
+        const QString title = t->colName(1);
+        const QString titleRef = tr->colName(1);
+
+        {
+            Suite89LinearFit f(mw, g);
+            Suite89LinearFit r(mw, gr);
+            const bool okData = f.setDataFromCurve(title, g) && r.setDataFromCurve(titleRef, gr);
+            CHECK89(okData, "89m: linear fit data");
+            CHECK89(f.weightingMethod() == Fit::WeightNone,
+                    "89m: linear fit must not auto-select the NaN error bars (method "
+                            << int(f.weightingMethod()) << ")");
+            f.fit();
+            r.fit();
+            std::cout << "[INFO] 89m linear: " << results89(f.results()) << " vs no error bars "
+                      << results89(r.results()) << ", dof " << f.degreesOfFreedom() << "\n";
+            CHECK89(sameResults89(f.results(), r.results(), 1e-10)
+                            && f.degreesOfFreedom() == r.degreesOfFreedom(),
+                    "89m: linear fit with NaN error bars must equal the unweighted fit");
+            CHECK89(!f.setYErrorSource(Fit::AssociatedErrors, QString(), true),
+                    "89m: explicit AssociatedErrors must fail like a curve without Y error bars");
+        }
+        {
+            Suite89PolyFit f(mw, g);
+            Suite89PolyFit r(mw, gr);
+            const bool okData = f.setDataFromCurve(title, g) && r.setDataFromCurve(titleRef, gr);
+            CHECK89(okData, "89m: polynomial fit data");
+            f.fit();
+            r.fit();
+            std::cout << "[INFO] 89m polynomial: " << results89(f.results())
+                      << " vs no error bars " << results89(r.results()) << "\n";
+            CHECK89(f.weightingMethod() == Fit::WeightNone
+                            && sameResults89(f.results(), r.results(), 1e-9)
+                            && f.degreesOfFreedom() == r.degreesOfFreedom(),
+                    "89m: polynomial fit with NaN error bars must equal the unweighted fit");
+        }
+        {
+            Suite89NonLinearFit f(mw, g);
+            Suite89NonLinearFit r(mw, gr);
+            NonLinearFit *both[2] = { &f, &r };
+            for (NonLinearFit *nl : both) {
+                nl->setParametersList(QStringList() << "a" << "b");
+                nl->setFormula("a*x+b");
+            }
+            const bool okData = f.setDataFromCurve(title, g) && r.setDataFromCurve(titleRef, gr);
+            CHECK89(okData, "89m: nonlinear fit data");
+            for (NonLinearFit *nl : both) {
+                nl->setInitialGuess(0, 1.0);
+                nl->setInitialGuess(1, 0.0);
+            }
+            f.fit();
+            r.fit();
+            std::cout << "[INFO] 89m nonlinear: " << results89(f.results())
+                      << " vs no error bars " << results89(r.results()) << ", converged "
+                      << f.converged() << "\n";
+            CHECK89(f.weightingMethod() == Fit::WeightNone && f.converged()
+                            && sameResults89(f.results(), r.results(), 1e-7)
+                            && near89(f.results().empty() ? nan : f.results()[0], 2.0, 0.05),
+                    "89m: nonlinear fit with NaN error bars must equal the unweighted fit");
+        }
+        {
+            // One finite error is enough to use the error bars.
+            t->column(2)->setValueAt(1, 0.5);
+            g->updateCurvesData(t, t->colName(2));
+            Suite89LinearFit f(mw, g);
+            CHECK89(f.setDataFromCurve(title, g) && f.weightingMethod() == Fit::WeightInstrumental,
+                    "89m: error bars with a finite error must still be auto-selected");
+        }
+        suite89Close(ml);
+        suite89Close(mlr);
+    }
+
+    // ------------------------------------------------ 89n: York fit with zero errors
+    {
+        // Row 3 has an exact X (sx = 0) and must stay in the fit with York's limit weight
+        // 1/sy^2; row 5 has both errors 0 and has no finite weight, so it is left out.
+        const std::vector<double> xs = { 1, 2, 3, 4, 5, 6, 7 };
+        const std::vector<double> ys = { 3.2, 4.8, 7.4, 8.9, 25.0, 13.2, 14.8 };
+        const std::vector<double> sxs = { 0.1, 0.2, 0.0, 0.1, 0.0, 0.2, 0.1 };
+        const std::vector<double> sys = { 0.3, 0.2, 0.3, 0.4, 0.0, 0.3, 0.2 };
+        Table *t = suite89Table(mw, "S89YorkZero", { xs, ys, sxs, sys });
+        // Reference 1: the exact X replaced by a negligible error, the both-zero row removed.
+        Table *tl = suite89Table(mw, "S89YorkLim", { { 1, 2, 3, 4, 6, 7 },
+                                                     { 3.2, 4.8, 7.4, 8.9, 13.2, 14.8 },
+                                                     { 0.1, 0.2, 1e-9, 0.1, 0.2, 0.1 },
+                                                     { 0.3, 0.2, 0.3, 0.4, 0.3, 0.2 } });
+        // Reference 2: the exact-X row removed as well (what dropping it would give).
+        Table *td = suite89Table(mw, "S89YorkDrop", { { 1, 2, 4, 6, 7 },
+                                                      { 3.2, 4.8, 8.9, 13.2, 14.8 },
+                                                      { 0.1, 0.2, 0.1, 0.2, 0.1 },
+                                                      { 0.3, 0.2, 0.4, 0.3, 0.2 } });
+        MultiLayer *ml = nullptr, *mll = nullptr, *mld = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        Graph *gl = suite89Plot(mw, tl, QStringList() << tl->colName(1), Graph::LineSymbols, &mll);
+        Graph *gd = suite89Plot(mw, td, QStringList() << td->colName(1), Graph::LineSymbols, &mld);
+        CHECK_COND(g && gl && gd, "89n: graphs");
+        Suite89LinearFit fit(mw, g), lim(mw, gl), drop(mw, gd);
+        const bool okData = fit.setDataFromCurve(t->colName(1), g)
+                && lim.setDataFromCurve(tl->colName(1), gl)
+                && drop.setDataFromCurve(td->colName(1), gd);
+        CHECK_COND(okData, "89n: fit data");
+        const bool ok = fit.fitWithXYErrors(t->colName(2), t->colName(3));
+        const bool okLim = lim.fitWithXYErrors(tl->colName(2), tl->colName(3));
+        const bool okDrop = drop.fitWithXYErrors(td->colName(2), td->colName(3));
+        std::cout << "[INFO] 89n York with sx=0 row: slope " << fit.yorkSlope() << ", intercept "
+                  << fit.yorkIntercept() << ", dof " << fit.degreesOfFreedom()
+                  << "; limit sx=1e-9: slope " << lim.yorkSlope() << ", intercept "
+                  << lim.yorkIntercept() << "; row dropped: slope " << drop.yorkSlope() << "\n";
+        CHECK89(ok && okLim && okDrop, "89n: York fits must succeed");
+        CHECK89(fit.degreesOfFreedom() == 4,
+                "89n: 6 of 7 points (exact-X row kept, both-zero row out) must give dof 4, got "
+                        << fit.degreesOfFreedom());
+        CHECK89(near89(fit.yorkSlope(), lim.yorkSlope(), 1e-8)
+                        && near89(fit.yorkIntercept(), lim.yorkIntercept(), 1e-8),
+                "89n: the exact-X point must enter with York's limit weight (slope "
+                        << fit.yorkSlope() << " vs " << lim.yorkSlope() << ")");
+        CHECK89(!near89(fit.yorkSlope(), drop.yorkSlope(), 1e-6),
+                "89n: the exact-X point must not be dropped (slope equals the dropped-row fit "
+                        << drop.yorkSlope() << ")");
+        CHECK89(near89(fit.yorkSlope(), 2.0, 0.1),
+                "89n: the both-zero outlier must be left out, slope " << fit.yorkSlope());
+        suite89Close(ml);
+        suite89Close(mll);
+        suite89Close(mld);
+    }
+
+    // ------------------------------------------------ 89o: horizontal move, constant Y, 0-1
+    {
+        Table *t = suite89Table(mw, "S89TransFlat", { { 1, 2, 3, 4, 5 }, { 7, 7, 7, 7, 7 } });
+        MultiLayer *ml = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        CHECK_COND(g != nullptr, "89o: graph");
+        DataCurve *m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m != nullptr, "89o: curve");
+        m->setStackOffset(10.0, 0.0);
+        m->setStackNormalize01(true);
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(g, mw, TranslateCurveTool::Horizontal));
+            const bool ok = tool->translateCurve(m, 1.0);
+            std::cout << "[INFO] 89o flat normalised curve horizontal +1: ok=" << ok << ", X = "
+                      << suite89Cell(t, 0, 0) << " .. " << suite89Cell(t, 0, 4) << ", Y1 = "
+                      << suite89Cell(t, 1, 0) << "\n";
+            bool shifted = ok;
+            for (int r = 0; r < 5; ++r)
+                shifted = shifted && near89(suite89Cell(t, 0, r), double(r + 2))
+                        && near89(suite89Cell(t, 1, r), 7.0);
+            CHECK89(shifted,
+                    "89o: horizontal move of a constant-Y normalised curve must write X + 1 "
+                    "(offset removed) and leave Y");
+        }
+        m = dynamic_cast<DataCurve *>(g->curve(0));
+        CHECK_COND(m != nullptr, "89o: curve after move");
+        {
+            std::unique_ptr<TranslateCurveTool> tool(
+                    new TranslateCurveTool(g, mw, TranslateCurveTool::Vertical));
+            const bool ok = tool->translateCurve(m, 0.5);
+            bool unchanged = true;
+            for (int r = 0; r < 5; ++r)
+                unchanged = unchanged && near89(suite89Cell(t, 1, r), 7.0);
+            CHECK89(!ok && unchanged,
+                    "89o: vertical move of a constant-Y normalised curve must still be refused");
+        }
+        suite89Close(ml);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
