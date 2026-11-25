@@ -371,6 +371,10 @@ QwtPlotCurve *Filter::addResultCurve(const std::vector<double> &x, const std::ve
     DataCurve *c = new DataCurve(t, tableName + "_" + xCol->name(), tableName + "_" + yCol->name());
     c->setData(x.data(), y.data(), nPts);
     c->setPen(QPen(d_curveColor, 1));
+    // 結果の曲線は元の曲線と同じ軸に付ける。右軸の曲線の積分などが左軸に付くと、左軸の範囲が
+    // 広がって左の曲線が潰れていた。
+    if (d_curve && d_graph->curveIndex(d_curve) >= 0)
+        c->setAxis(d_curve->xAxis(), d_curve->yAxis());
     d_graph->insertPlotItem(c, Graph::Line);
     d_graph->updatePlot();
 

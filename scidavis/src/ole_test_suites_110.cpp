@@ -24,6 +24,10 @@
 //        y_col, and when y_col is already plotted against another X (the curve was reused
 //        whatever its X); x_col's plot designation is left as it was; a curve that has the
 //        same X is still reused, and without x_col the existing reuse is unchanged
+//   110d curvemath.integrate(plot_curve=true) on the right-axis curve of a double-Y graph puts
+//        the integral on the right axis (it went on the left axis and widened its range, which
+//        squashed the left curve); the left axis range is kept; the integral of a left-axis
+//        curve stays on the left; the axis survives save -> reopen
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -187,6 +191,15 @@ int countWindowsWithPrefix110(ApplicationWindow *app, const QString &prefix)
         if (w && w->name().startsWith(prefix))
             ++n;
     return n;
+}
+
+Graph *layer110(ApplicationWindow *app, const QString &name)
+{
+    for (MyWidget *w : app->windowsList())
+        if (w && w->name() == name)
+            if (auto *ml = qobject_cast<MultiLayer *>(w))
+                return ml->layersList().value(0);
+    return nullptr;
 }
 
 Table *findTable110(ApplicationWindow *app, const QString &name)
@@ -360,6 +373,49 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
                              && rpc.curveCount(QStringLiteral("G110P")) == 2,
                      "110a: integrate plot_curve=true did not add the integral curve ("
                              << rpc.curveCount(QStringLiteral("G110P")) << " curves)");
+        }
+
+        // ---- 110d: the integral of a right-axis curve goes on the right axis -----------------
+        {
+            CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("plot.double_y"),
+                                           QJsonObject{ { "table", "T110A" },
+                                                        { "x_col", "x" },
+                                                        { "y_left_col", "y" },
+                                                        { "y_right_col", "y2" },
+                                                        { "graph_name", "G110R" } })),
+                       "110d: plot.double_y G110R");
+            const QString gR = QStringLiteral("G110R");
+            const Range110 ly0 = range110(rpc, gR, "y");
+            Graph *g = layer110(w, gR);
+            CHECK_COND(g && g->curves() == 2 && g->curve(1)
+                               && g->curve(1)->yAxis() == QwtPlot::yRight,
+                       "110d: G110R curve 1 is not on the right axis");
+            const QJsonObject r = rpc.call(QStringLiteral("curvemath.integrate"),
+                                           QJsonObject{ { "graph", gR },
+                                                        { "curve", 1 },
+                                                        { "plot_curve", true } });
+            CHECK110(Rpc110::ok(r) && g->curves() == 3,
+                     "110d: integrate plot_curve=true on the right curve did not add a curve");
+            QwtPlotCurve *ic = g->curves() == 3 ? g->curve(2) : nullptr;
+            CHECK110(ic && ic->yAxis() == QwtPlot::yRight && ic->xAxis() == QwtPlot::xBottom,
+                     "110d: the integral of the right-axis curve is on axis "
+                             << (ic ? ic->yAxis() : -1) << " (want yRight "
+                             << int(QwtPlot::yRight) << ")");
+            const Range110 ly1 = range110(rpc, gR, "y");
+            std::cout << "[INFO] 110d: G110R left y " << ly0.str() << " -> " << ly1.str()
+                      << ", right " << range110(rpc, gR, "right").str() << "\n";
+            CHECK110(ly1 == ly0,
+                     "110d: integrating the right curve changed the left axis " << ly0.str()
+                                                                               << " -> "
+                                                                               << ly1.str());
+            // 左軸の曲線の積分は左軸のまま。
+            const QJsonObject rl = rpc.call(QStringLiteral("curvemath.integrate"),
+                                            QJsonObject{ { "graph", gR },
+                                                         { "curve", 0 },
+                                                         { "plot_curve", true } });
+            QwtPlotCurve *il = g->curves() == 4 ? g->curve(3) : nullptr;
+            CHECK110(Rpc110::ok(rl) && il && il->yAxis() == QwtPlot::yLeft,
+                     "110d: the integral of the left-axis curve is not on the left axis");
         }
 
         // ---- 110b: subtract_line keeps the automatic axis titles -----------------------------
@@ -542,6 +598,11 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
         CHECK110(dy1 == dY && dr1 == dR,
                  "110a-reopen: G110D axes y " << dY.str() << " -> " << dy1.str() << ", right "
                                               << dR.str() << " -> " << dr1.str());
+
+        Graph *gr = layer110(rd, QStringLiteral("G110R"));
+        CHECK110(gr && gr->curves() >= 3 && gr->curve(2)
+                         && gr->curve(2)->yAxis() == QwtPlot::yRight,
+                 "110d-reopen: the integral of the right-axis curve left the right axis");
 
         const QString tx =
                 rpc.axis(QStringLiteral("G110B"), "x").value(QStringLiteral("title")).toString();
