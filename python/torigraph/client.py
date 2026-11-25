@@ -6671,8 +6671,10 @@ def launch(
     ``language`` (``"ja"`` / ``"en"``) switches the UI language of the launched
     process.  The default ``None`` leaves it as the user's ToriGraph setting
     (Japanese on a fresh install).  Pass it explicitly when the script depends on
-    the language of generated labels.  Note that ToriGraph remembers the language
-    it last used, so an explicit value can carry over to the next GUI start.
+    the language of generated labels.  In a headless session (the default) the
+    language applies to that session only and is not stored, so it does not
+    change the language of the next GUI start; with ``headless=False`` ToriGraph
+    stores it like a language chosen in the GUI.
     """
     exe = _discover_torigraph_executable(exe_path)
 

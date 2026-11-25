@@ -1166,6 +1166,9 @@ public slots:
     bool isOleEmbeddedMode() const { return d_ole_embedded; }
     bool isNonInteractive() const { return d_headless_mode || m_batch; }
     static bool isNonInteractiveContext(const QObject *context = nullptr);
+    //! False in headless (--headless, the SDK's launch()) and batch sessions: they must not
+    //! change the user's stored settings (last graph settings, recent projects, language...).
+    bool persistsUserSettings() const;
     void setOleEmbeddedCallbacks(std::function<void()> onUpdate, std::function<void()> onClose)
     {
         d_ole_on_update = std::move(onUpdate);

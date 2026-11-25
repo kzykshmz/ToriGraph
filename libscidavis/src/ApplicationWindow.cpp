@@ -4619,6 +4619,20 @@ void ApplicationWindow::setHeadlessMode(bool headless)
     d_headless_mode = headless;
 }
 
+bool ApplicationWindow::persistsUserSettings() const
+{
+    // Same rule as closeEvent(): automation sessions keep their settings to themselves. A
+    // headless process may also hold windows that were created without setHeadlessMode() (e.g.
+    // by newProject()), so the process-wide flag set by main() is checked as well. The
+    // per-call "torigraph_noninteractive" that RPC forces on a GUI session is not used here:
+    // a GUI session driven by the SDK keeps saving like any GUI session.
+    if (isNonInteractive())
+        return false;
+    if (qApp && qApp->property("torigraph_headless_process").toBool())
+        return false;
+    return true;
+}
+
 bool ApplicationWindow::isNonInteractiveContext(const QObject *context)
 {
     if (qApp && qApp->property("torigraph_noninteractive").toBool())

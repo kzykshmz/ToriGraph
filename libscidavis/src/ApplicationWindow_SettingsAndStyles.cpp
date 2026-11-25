@@ -2781,6 +2781,9 @@ void ApplicationWindow::saveSettings()
     // After Settings > Import/Reset the stored settings are newer than this window's state.
     if (SettingsTransfer::saveSuppressed())
         return;
+    // Headless/batch sessions (SDK scripts) must not change what the next GUI start uses.
+    if (!persistsUserSettings())
+        return;
     // Capture the latest active/most-recent Graph & Table window geometry and settings
     if (!d_ole_embedded) {
         MultiLayer *bestMl = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
@@ -3335,8 +3338,11 @@ void ApplicationWindow::switchToLanguage(const QString &locale)
     if (actionLangEnglish)
         actionLangEnglish->setChecked(appLanguage == "en");
 
-    auto &settings = getSettings();
-    settings.setValue("/General/Language", appLanguage);
+    // A headless/batch session uses the language only while it runs.
+    if (persistsUserSettings()) {
+        auto &settings = getSettings();
+        settings.setValue("/General/Language", appLanguage);
+    }
 
     insertTranslatedStrings();
 }

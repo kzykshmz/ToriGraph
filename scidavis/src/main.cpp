@@ -483,6 +483,9 @@ int main(int argc, char **argv)
 
     app.headless = headlessMode;
     app.setProperty("torigraph_noninteractive", headlessMode);
+    // Unlike torigraph_noninteractive (which RPC forces on for each call, also in a GUI
+    // session) this stays as started: ApplicationWindow::persistsUserSettings() reads it.
+    app.setProperty("torigraph_headless_process", headlessMode);
 
 #ifdef Q_OS_WIN
     if (headlessMode && !oleEmbedded) {

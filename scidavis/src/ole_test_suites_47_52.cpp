@@ -4873,6 +4873,177 @@ int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw)
         QFile::remove(persistIni);
     }
 
+    // =========================================================================
+    // 52e. Headless / batch sessions (SDK tg.launch) must not change the user's settings:
+    //      saving, opening and importing through the paths that call saveSettings(), the
+    //      arrow defaults and a language switch leave the settings file as it was.
+    // =========================================================================
+    {
+        QTemporaryDir dir52e;
+        CHECK_COND(dir52e.isValid(), "Suite 52e: Failed to create QTemporaryDir");
+        const QString ini52e = dir52e.filePath(QStringLiteral("settings52e.ini"));
+        const QByteArray prevIniEnv52e = qgetenv("TORIGRAPH_SETTINGS_INI");
+        const QString prevLang52e = mw->appLanguage;
+        const QVariant prevHeadlessProc52e = qApp->property("torigraph_headless_process");
+        qputenv("TORIGRAPH_SETTINGS_INI", ini52e.toLocal8Bit());
+
+        auto dumpIni52e = [&ini52e]() {
+            ApplicationWindow::getSettings().sync();
+            QSettings s(ini52e, QSettings::IniFormat);
+            QMap<QString, QVariant> m;
+            for (const QString &k : s.allKeys())
+                m.insert(k, s.value(k));
+            return m;
+        };
+        auto diffKeys52e = [](const QMap<QString, QVariant> &a, const QMap<QString, QVariant> &b) {
+            QStringList keys = a.keys();
+            for (const QString &k : b.keys()) {
+                if (!keys.contains(k))
+                    keys << k;
+            }
+            QStringList out;
+            for (const QString &k : keys) {
+                if (!a.contains(k) || !b.contains(k) || a.value(k) != b.value(k))
+                    out << k;
+            }
+            out.sort();
+            return out.join(QStringLiteral(", "));
+        };
+        auto addGraph52e = [](ApplicationWindow *w, const QString &name,
+                              MultiLayer::StylePreset preset) -> MultiLayer * {
+            Table *t = w->newTable(name, 5, 2);
+            w->initTable(t);
+            for (int r = 0; r < 5; ++r) {
+                t->setCell(r, 0, double(r));
+                t->setCell(r, 1, double(r * r + 1));
+            }
+            MultiLayer *ml = w->multilayerPlot(t, QStringList() << (name + QStringLiteral("_2")),
+                                               Graph::Line);
+            if (ml)
+                ml->applyStylePreset(preset);
+            QApplication::processEvents();
+            return ml;
+        };
+        auto dropWindow52e = [](ApplicationWindow *w) {
+            if (!w)
+                return;
+            w->savedProject();
+            w->setOleEmbeddedMode(true);
+            delete w;
+            QApplication::processEvents();
+        };
+
+        // GUI session: stores the journal graph, a recent project and its language (control: the
+        // GUI keeps saving, so the checks below can see a write).
+        ApplicationWindow *wG = new ApplicationWindow();
+        wG->applyUserSettings();
+        MultiLayer *mlG =
+                addGraph52e(wG, QStringLiteral("Hl52eGui"), MultiLayer::StyleISIJJournal85mm);
+        CHECK_COND(mlG != nullptr, "Suite 52e: Failed to create the GUI graph");
+        wG->recentProjects = QStringList() << dir52e.filePath(QStringLiteral("gui_recent.sciprj"));
+        wG->saveSettings();
+        const QMap<QString, QVariant> base52e = dumpIni52e();
+        const QString storedLang = base52e.value(QStringLiteral("General/Language")).toString();
+        bool hasLastGraph52e = false;
+        for (auto it = base52e.cbegin(); it != base52e.cend(); ++it) {
+            if (it.key().startsWith(QStringLiteral("2DPlots/LastGraphSettings/")))
+                hasLastGraph52e = true;
+        }
+        CHECK_COND(!storedLang.isEmpty()
+                           && base52e.value(QStringLiteral("General/RecentProjects"))
+                                           .toStringList()
+                                           .size()
+                                   == 1
+                           && hasLastGraph52e,
+                   QString("Suite 52e: the GUI session did not store its settings (keys: %1)")
+                           .arg(QStringList(base52e.keys()).join(", "))
+                           .toStdString()
+                           .c_str());
+        dropWindow52e(wG);
+        const QString otherLang = storedLang == QStringLiteral("ja") ? QStringLiteral("en")
+                                                                     : QStringLiteral("ja");
+
+        // Headless session: slide-style graph, saved project, data file and project opened.
+        ApplicationWindow *wH = new ApplicationWindow();
+        wH->setHeadlessMode(true);
+        wH->applyUserSettings();
+        MultiLayer *mlH = addGraph52e(wH, QStringLiteral("Hl52eHeadless"),
+                                      MultiLayer::StylePresentationSlide28pt);
+        CHECK_COND(mlH != nullptr, "Suite 52e: Failed to create the headless graph");
+        wH->recentProjects.prepend(dir52e.filePath(QStringLiteral("headless_recent.sciprj")));
+        wH->saveSettings();
+        wH->setArrowDefaultSettings(QPen(QColor(200, 10, 10), 5), 13, 33, false);
+        wH->switchToLanguage(otherLang);
+        CHECK_COND(wH->appLanguage == otherLang,
+                   "Suite 52e: switchToLanguage did not change the headless session's language");
+        wH->parseCommandLineArguments(QStringList() << (QStringLiteral("--lang=") + storedLang));
+        wH->switchToLanguage(otherLang);
+        const QString prj52e = dir52e.filePath(QStringLiteral("headless52e.sciprj"));
+        CHECK_COND(wH->writeProjectFile(wH->projectFolder(), prj52e),
+                   "Suite 52e: headless project save failed");
+        const QString csv52e = dir52e.filePath(QStringLiteral("headless52e.csv"));
+        {
+            QFile f(csv52e);
+            CHECK_COND(f.open(QIODevice::WriteOnly), "Suite 52e: Failed to write the CSV file");
+            f.write("x,y\n1,2\n2,4\n3,9\n");
+        }
+        QPointer<ApplicationWindow> wHGuard = wH;
+        wH->parseCommandLineArguments(QStringList() << csv52e); // saveSettings() + open (import)
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        CHECK_COND(!wHGuard.isNull(),
+                   "Suite 52e: importing a data file replaced the headless window");
+
+        // Opening a project from the command line saves settings first, then replaces the window.
+        const QList<QWidget *> before52e = QApplication::topLevelWidgets();
+        ApplicationWindow *wO = new ApplicationWindow();
+        wO->setHeadlessMode(true);
+        wO->applyUserSettings();
+        QPointer<ApplicationWindow> wOGuard = wO;
+        wO->parseCommandLineArguments(QStringList() << prj52e);
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QApplication::processEvents();
+        // Collect first: deleting a window also deletes its top-level children.
+        QList<QPointer<ApplicationWindow>> opened52e;
+        for (QWidget *tlw : QApplication::topLevelWidgets()) {
+            ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw);
+            if (aw && aw != wOGuard.data() && aw != wH && aw != mw && !before52e.contains(tlw))
+                opened52e << aw;
+        }
+        CHECK_COND(!opened52e.isEmpty(),
+                   "Suite 52e: opening the project from the command line made no window");
+        for (const QPointer<ApplicationWindow> &aw : opened52e)
+            dropWindow52e(aw.data());
+        if (wOGuard)
+            dropWindow52e(wOGuard.data());
+
+        // A window of a headless process that was made without setHeadlessMode() (newProject()).
+        qApp->setProperty("torigraph_headless_process", true);
+        ApplicationWindow *wP = new ApplicationWindow();
+        wP->applyUserSettings();
+        MultiLayer *mlP = addGraph52e(wP, QStringLiteral("Hl52eProc"),
+                                      MultiLayer::StylePresentationSlide28pt);
+        CHECK_COND(mlP != nullptr, "Suite 52e: Failed to create the graph of the headless process");
+        wP->switchToLanguage(otherLang);
+        wP->saveSettings();
+        qApp->setProperty("torigraph_headless_process", prevHeadlessProc52e);
+        dropWindow52e(wP);
+
+        const QMap<QString, QVariant> after52e = dumpIni52e();
+        const QString changed52e = diffKeys52e(base52e, after52e);
+        std::cout << "[INFO] Suite 52e headless settings check: stored language="
+                  << storedLang.toStdString() << ", keys=" << base52e.size() << ", changed=["
+                  << changed52e.toStdString() << "]\n";
+
+        dropWindow52e(wH);
+        qputenv("TORIGRAPH_SETTINGS_INI", prevIniEnv52e);
+        mw->switchToLanguage(prevLang52e.isEmpty() ? QStringLiteral("en") : prevLang52e);
+        CHECK_COND(changed52e.isEmpty(),
+                   QString("Suite 52e: a headless session changed the user's settings: %1")
+                           .arg(changed52e)
+                           .toStdString()
+                           .c_str());
+    }
+
     std::cout << "[INFO] Suite 52 Phase 12 .opju Importer, Graph/Math Bug Fixes & Modern UI/Ribbon Polish Gate passed!\n";
     return 0;
 }
