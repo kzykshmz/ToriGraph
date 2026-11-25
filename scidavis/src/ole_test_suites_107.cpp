@@ -38,6 +38,13 @@
 //        from the saved points) stay function curves when the project is saved through RPC:
 //        they used to become data curves named "RpcFitCurve1_GlobalFit_..." of new hidden
 //        tables RpcFitCurve1..4; titles and points are kept on reopen
+//   107i graph.move_curve treats a curve and its error bars as one group and swaps it with the
+//        neighbouring group: 'up' on [y, z, w, err(y)] moves z above w (it used to send w to the
+//        bottom and z down), the error bars of y stay where they are, and to_index is the
+//        position the curve actually has afterwards; top / bottom / down / to_index likewise
+//   107j curve numbers on a layer with a heatmap: the index that graph.get_info lists names the
+//        same curve in set_curve_style, plot.remove_curve, plot.add_error_bars,
+//        graph.add_error_band and the fits; the heatmap's number is an error, not the next curve
 // =============================================================================
 
 namespace {
@@ -1076,6 +1083,266 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
             CHECK107(rpcFitTables(rd).empty(),
                      "107h: resaved and reopened, there are the tables " << rpcFitTables(rd));
         }
+    }
+
+    // ---- 107i: graph.move_curve moves a curve with its error bars past the neighbouring curve --
+    {
+        AppWinGuard107 w(new ApplicationWindow());
+        Rpc107 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "107i: pythonAutomationServer null");
+        QJsonArray xs, ys, zs, ws, es;
+        for (int i = 1; i <= 5; ++i) {
+            xs.append(i);
+            ys.append(2.0 * i);
+            zs.append(double(i) * i);
+            ws.append(i + 1.0);
+            es.append(0.3);
+        }
+        CHECK_COND(rpc.makeTable(QStringLiteral("T107I"), { "x", "y", "z", "w", "e" },
+                                 { xs, ys, zs, ws, es }),
+                   "107i: table");
+        auto titles = [&](const QString &graph) {
+            QStringList out;
+            const QJsonObject info = Rpc107::result(
+                    rpc.call(QStringLiteral("graph.get_info"), QJsonObject{ { "graph", graph } }));
+            const QJsonArray arr = info.value(QLatin1String("layers"))
+                                           .toArray()
+                                           .first()
+                                           .toObject()
+                                           .value(QLatin1String("curves"))
+                                           .toArray();
+            for (const QJsonValue &c : arr)
+                out << c.toObject().value(QLatin1String("title")).toString().remove(
+                        QLatin1String("T107I_"));
+            return out.join(QLatin1Char(','));
+        };
+        int nGraph = 0;
+        // [y, z, w, err(y)], or [y, err(y), z, w] with errorBarsFirst
+        auto build = [&](bool errorBarsFirst) {
+            const QString name = QStringLiteral("G107I_%1").arg(++nGraph);
+            const QJsonArray yCols = errorBarsFirst ? QJsonArray{ "y" } : QJsonArray{ "y", "z", "w" };
+            bool okAll = Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                             QJsonObject{ { "table", "T107I" },
+                                                          { "x_col", "x" },
+                                                          { "y_cols", yCols },
+                                                          { "graph_name", name } }));
+            okAll = okAll
+                    && Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                           QJsonObject{ { "graph", name },
+                                                        { "err_col", "e" },
+                                                        { "curve", "y" } }));
+            if (errorBarsFirst) {
+                for (const char *c : { "z", "w" })
+                    okAll = okAll
+                            && Rpc107::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                                   QJsonObject{ { "graph", name },
+                                                                { "table", "T107I" },
+                                                                { "x_col", "x" },
+                                                                { "y_col", c } }));
+            }
+            return okAll ? name : QString();
+        };
+        struct Case107I
+        {
+            bool errorBarsFirst;
+            const char *curve;
+            const char *direction; // nullptr: to_index
+            int toIndex;
+            const char *expected;
+            int expectedTo;
+        };
+        const Case107I cases[] = {
+            { false, "w", "up", -1, "y,z,w,e", 2 },      { false, "z", "up", -1, "y,w,z,e", 2 },
+            { false, "z", "down", -1, "z,y,w,e", 0 },    { false, "y", "up", -1, "z,y,w,e", 1 },
+            { false, "w", "down", -1, "y,w,z,e", 1 },    { false, "y", "down", -1, "y,z,w,e", 0 },
+            { false, "y", "top", -1, "z,w,y,e", 2 },     { false, "w", "bottom", -1, "w,y,z,e", 0 },
+            { false, "z", nullptr, 3, "y,w,z,e", 2 },    { true, "y", "up", -1, "z,y,e,w", 1 },
+            { true, "z", "down", -1, "z,y,e,w", 0 },     { true, "w", "down", -1, "y,e,w,z", 2 },
+            { true, "w", "top", -1, "y,e,z,w", 3 },      { true, "z", "top", -1, "y,e,w,z", 3 },
+        };
+        for (const Case107I &c : cases) {
+            const QString g = build(c.errorBarsFirst);
+            CHECK_COND(!g.isEmpty(), "107i: building the graph");
+            const QString before = titles(g);
+            CHECK_COND(before == (c.errorBarsFirst ? "y,e,z,w" : "y,z,w,e"),
+                       "107i: the graph has the curves " << before.toStdString());
+            QJsonObject p{ { "graph", g }, { "curve", c.curve } };
+            if (c.direction)
+                p[QLatin1String("direction")] = c.direction;
+            else
+                p[QLatin1String("to_index")] = c.toIndex;
+            const QJsonObject resp = rpc.call(QStringLiteral("graph.move_curve"), p);
+            const QJsonObject r = Rpc107::result(resp);
+            const QString after = titles(g);
+            const std::string what = QStringLiteral("move %1 %2 on [%3]")
+                                             .arg(QLatin1String(c.curve),
+                                                  c.direction ? QString::fromLatin1(c.direction)
+                                                              : QStringLiteral("to %1").arg(c.toIndex),
+                                                  before)
+                                             .toStdString();
+            std::cout << "[INFO] 107i: " << what << " -> [" << after.toStdString() << "] to_index "
+                      << r.value(QLatin1String("to_index")).toInt(-99) << "\n";
+            CHECK107(Rpc107::ok(resp) && r.value(QLatin1String("ok")).toBool(),
+                     "107i: " << what << " failed");
+            CHECK107(after == QLatin1String(c.expected),
+                     "107i: " << what << " gave [" << after.toStdString() << "], expected ["
+                              << c.expected << "]");
+            CHECK107(r.value(QLatin1String("to_index")).toInt(-99) == c.expectedTo,
+                     "107i: " << what << " returned to_index "
+                              << r.value(QLatin1String("to_index")).toInt(-99) << ", expected "
+                              << c.expectedTo);
+            if (Graph *lg = layer107(w, g)) {
+                for (int i = 0; i < lg->curves(); ++i) {
+                    auto *er = dynamic_cast<QwtErrorPlotCurve *>(lg->curve(i));
+                    CHECK107(!er || (er->masterCurve() && lg->plotItemIndex(er->masterCurve()) < i),
+                             "107i: " << what << ": the error bars are not after their curve");
+                }
+            }
+        }
+    }
+
+    // ---- 107j: curve numbers on a heatmap layer are the indices graph.get_info lists ----------
+    {
+        AppWinGuard107 w(new ApplicationWindow());
+        Rpc107 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "107j: pythonAutomationServer null");
+        auto compact = [](const QJsonObject &o) {
+            return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)).toStdString();
+        };
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("matrix.create"),
+                                       QJsonObject{ { "rows", 5 }, { "cols", 5 }, { "name", "M107J" } }))
+                           && Rpc107::ok(rpc.call(QStringLiteral("matrix.set_formula"),
+                                                  QJsonObject{ { "matrix", "M107J" },
+                                                               { "formula", "x+y" } })),
+                   "107j: matrix");
+        QJsonArray xs, ys, es;
+        for (int i = 1; i <= 5; ++i) {
+            xs.append(i);
+            ys.append(5.0 * i);
+            es.append(0.5);
+        }
+        CHECK_COND(rpc.makeTable(QStringLiteral("T107J"), { "x", "y", "e" }, { xs, ys, es }),
+                   "107j: table");
+        // [heatmap, x, 3*x, T107J_y]
+        auto build = [&](const QString &g) {
+            return Rpc107::ok(rpc.call(QStringLiteral("plot.matrix"),
+                                       QJsonObject{ { "matrix", "M107J" }, { "graph_name", g } }))
+                    && Rpc107::ok(rpc.call(QStringLiteral("plot.function"),
+                                           QJsonObject{ { "graph", g },
+                                                        { "formula", "x" },
+                                                        { "x_min", 0.0 },
+                                                        { "x_max", 4.0 } }))
+                    && Rpc107::ok(rpc.call(QStringLiteral("plot.function"),
+                                           QJsonObject{ { "graph", g },
+                                                        { "formula", "3*x" },
+                                                        { "x_min", 0.0 },
+                                                        { "x_max", 4.0 } }))
+                    && Rpc107::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                           QJsonObject{ { "graph", g },
+                                                        { "table", "T107J" },
+                                                        { "x_col", "x" },
+                                                        { "y_col", "y" } }));
+        };
+        auto curves = [&](const QString &g) {
+            return Rpc107::result(rpc.call(QStringLiteral("graph.get_info"),
+                                           QJsonObject{ { "graph", g } }))
+                    .value(QLatin1String("layers"))
+                    .toArray()
+                    .first()
+                    .toObject()
+                    .value(QLatin1String("curves"))
+                    .toArray();
+        };
+        auto indexOf = [&](const QString &g, const QString &title) {
+            for (const QJsonValue &c : curves(g))
+                if (c.toObject().value(QLatin1String("title")).toString() == title)
+                    return c.toObject().value(QLatin1String("index")).toInt(-1);
+            return -1;
+        };
+        auto titlesOf = [&](const QString &g) {
+            QStringList out;
+            for (const QJsonValue &c : curves(g))
+                out << c.toObject().value(QLatin1String("title")).toString();
+            return out.join(QStringLiteral(", ")).toStdString();
+        };
+
+        const QString g = QStringLiteral("HM107J");
+        CHECK_COND(build(g), "107j: heatmap graph with curves");
+        Graph *lg = layer107(w, g);
+        CHECK_COND(lg && lg->curves() == 4 && !lg->curve(0), "107j: the heatmap is not item 0");
+        const QString f1 = lg->curve(1)->title().text();
+        const QString f2 = lg->curve(2)->title().text();
+        const QString dataTitle = lg->curve(3)->title().text();
+        const int iF1 = indexOf(g, f1), iF2 = indexOf(g, f2), iData = indexOf(g, dataTitle);
+        std::cout << "[INFO] 107j: get_info lists " << titlesOf(g) << " with indices " << iF1
+                  << ", " << iF2 << ", " << iData << "\n";
+        CHECK107(iF1 == 1 && iF2 == 2 && iData == 3,
+                 "107j: get_info indices " << iF1 << ", " << iF2 << ", " << iData);
+
+        // set_curve_style: the get_info index styles that curve
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.set_curve_style"),
+                                     QJsonObject{ { "graph", g }, { "curve", iF1 }, { "color", "#ff0000" } })),
+                 "107j: set_curve_style(curve=" << iF1 << ") failed");
+        CHECK107(lg->curve(1)->pen().color().name() == QLatin1String("#ff0000"),
+                 "107j: set_curve_style(curve=" << iF1 << ") did not colour " << f1.toStdString());
+
+        // fits: curve=1 fits the curve with index 1 (y = x, slope 1), not the next one (3*x)
+        {
+            const QJsonObject resp = rpc.call(QStringLiteral("analysis.fit_linear"),
+                                              QJsonObject{ { "graph", g },
+                                                           { "curve", iF1 },
+                                                           { "plot_curve", false } });
+            const QJsonObject r = Rpc107::result(resp);
+            std::cout << "[INFO] 107j: fit_linear(curve=" << iF1 << ") slope "
+                      << r.value(QLatin1String("slope")).toDouble(-1) << "\n";
+            CHECK107(Rpc107::ok(resp) && near107(r.value(QLatin1String("slope")).toDouble(-1), 1.0),
+                     "107j: fit_linear(curve=" << iF1 << ") did not fit " << f1.toStdString()
+                                               << ": " << compact(r));
+        }
+
+        // plot.add_error_bars / graph.add_error_band: the data curve by its get_info index
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                     QJsonObject{ { "graph", g }, { "curve", iData }, { "err_col", "e" } })),
+                 "107j: add_error_bars(curve=" << iData << ") failed");
+        {
+            bool hasBars = false;
+            for (int i = 0; i < lg->curves(); ++i)
+                if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(lg->curve(i)))
+                    hasBars = hasBars || (er->masterCurve() == lg->curve(3) && !er->isBand());
+            CHECK107(hasBars, "107j: add_error_bars(curve=" << iData << ") gave "
+                                                           << dataTitle.toStdString() << " no error bars");
+        }
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.add_error_band"),
+                                     QJsonObject{ { "graph", g }, { "curve", iData }, { "err", "e" } })),
+                 "107j: add_error_band(curve=" << iData << ") failed");
+        {
+            bool hasBand = false;
+            for (int i = 0; i < lg->curves(); ++i)
+                if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(lg->curve(i)))
+                    hasBand = hasBand || (er->masterCurve() == lg->curve(3) && er->isBand());
+            CHECK107(hasBand, "107j: add_error_band(curve=" << iData << ") gave "
+                                                           << dataTitle.toStdString() << " no band");
+        }
+
+        // the heatmap's number is not a curve: an error that removes or changes nothing
+        const std::string beforeBad = titlesOf(g);
+        CHECK107(!Rpc107::ok(rpc.call(QStringLiteral("plot.remove_curve"),
+                                      QJsonObject{ { "graph", g }, { "curve", 0 } })),
+                 "107j: remove_curve(curve=0) on the heatmap's number did not fail");
+        CHECK107(titlesOf(g) == beforeBad,
+                 "107j: remove_curve(curve=0) changed the curves to " << titlesOf(g));
+        CHECK107(!Rpc107::ok(rpc.call(QStringLiteral("graph.set_curve_style"),
+                                      QJsonObject{ { "graph", g }, { "curve", 0 }, { "color", "#00ff00" } })),
+                 "107j: set_curve_style(curve=0) on the heatmap's number did not fail");
+
+        // remove_curve: the get_info index removes that curve and no other
+        CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.remove_curve"),
+                                     QJsonObject{ { "graph", g }, { "curve", iF2 } })),
+                 "107j: remove_curve(curve=" << iF2 << ") failed");
+        CHECK107(indexOf(g, f2) < 0 && indexOf(g, f1) >= 0 && indexOf(g, dataTitle) >= 0,
+                 "107j: remove_curve(curve=" << iF2 << ") left " << titlesOf(g));
     }
 
     if (g107Failures > 0) {

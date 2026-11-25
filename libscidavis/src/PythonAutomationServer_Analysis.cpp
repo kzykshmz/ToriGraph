@@ -664,29 +664,42 @@ int resolveCurveIndex(Graph *g, const QJsonObject &params, const QString &key, b
             throwInvalidParams(QStringLiteral("Graph layer is null."));
         return -1;
     }
-    // curvesList() の並び（QwtPlotCurve でない項目を除く）と曲線番号の対応。番号での指定は
-    // 以前から curvesList() の位置なので、その位置の曲線の番号を返す。
+    // 番号での指定は graph.get_info が曲線に付ける index（レイヤーの項目の並び。ヒートマップ・
+    // 等高線も 1 つ数える）。以前はヒートマップを飛ばして数えていたので、ヒートマップのある
+    // レイヤーでは get_info の番号と 1 つずれ、set_curve_style などの番号とも食い違って、
+    // 別の曲線を消したりフィットしたりしていた。ヒートマップの番号は曲線ではないのでエラー。
     QVector<int> curveIdxOf;
     for (int i = 0; i < g->curves(); ++i) {
         if (g->curve(i))
             curveIdxOf << i;
     }
     const QStringList allCurves = g->curvesList();
-    if (params.contains(key) && !params.value(key).isNull()) {
-        const QJsonValue v = params.value(key);
-        if (v.isDouble() && !v.isBool()) {
-            const int idx = parseStrictJsonInt(v, key);
-            if (idx >= 0 && idx < curveIdxOf.size())
-                return curveIdxOf[idx];
-            if (required) {
+    auto byNumber = [&](int idx, const QString &what) -> int {
+        if (idx >= 0 && idx < g->curves() && g->curve(idx))
+            return idx;
+        if (required) {
+            if (idx >= 0 && idx < g->curves()) {
                 throwInvalidParamsWithAvailable(
-                        QStringLiteral("Curve index %1 out of range (curve_count=%2).")
-                                .arg(idx)
-                                .arg(allCurves.size()),
+                        QStringLiteral("%1 %2 is a heatmap / contour map, not a curve (curve "
+                                       "numbers are the indices graph.get_info lists).")
+                                .arg(what)
+                                .arg(idx),
                         allCurves);
             }
-            return -1;
+            throwInvalidParamsWithAvailable(
+                    QStringLiteral("%1 %2 out of range (curve_count=%3; curve numbers are the "
+                                   "indices graph.get_info lists).")
+                            .arg(what)
+                            .arg(idx)
+                            .arg(allCurves.size()),
+                    allCurves);
         }
+        return -1;
+    };
+    if (params.contains(key) && !params.value(key).isNull()) {
+        const QJsonValue v = params.value(key);
+        if (v.isDouble() && !v.isBool())
+            return byNumber(parseStrictJsonInt(v, key), QStringLiteral("Curve index"));
         if (!v.isString()) {
             throwInvalidParams(
                     QStringLiteral("Parameter '%1' must be a 0-based curve index or curve name.")
@@ -753,18 +766,9 @@ int resolveCurveIndex(Graph *g, const QJsonObject &params, const QString &key, b
     }
     if (params.contains(QStringLiteral("curve_index"))
         && !params.value(QStringLiteral("curve_index")).isNull()) {
-        const int idx = parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
-                                           QStringLiteral("curve_index"));
-        if (idx >= 0 && idx < curveIdxOf.size())
-            return curveIdxOf[idx];
-        if (required) {
-            throwInvalidParamsWithAvailable(
-                    QStringLiteral("curve_index %1 out of range (curve_count=%2).")
-                            .arg(idx)
-                            .arg(allCurves.size()),
-                    allCurves);
-        }
-        return -1;
+        return byNumber(parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
+                                           QStringLiteral("curve_index")),
+                        QStringLiteral("curve_index"));
     }
     for (int ci = 0; ci < g->curves(); ++ci) {
         if (g->curve(ci) && g->curveType(ci) != Graph::ErrorBars)

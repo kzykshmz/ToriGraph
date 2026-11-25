@@ -3431,30 +3431,13 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         int cIdx = -1;
+        // 番号は graph.get_info の index（resolveCurveIndex。ヒートマップの番号はエラー）
         if (params.contains(QStringLiteral("curve_index"))
             && !params.value(QStringLiteral("curve_index")).isNull()) {
-            cIdx = parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
-                                      QStringLiteral("curve_index"));
-            if (cIdx < 0 || cIdx >= g->curves()) {
-                throwInvalidParams(
-                        QStringLiteral("curve_index %1 out of range [0, %2).")
-                                .arg(cIdx)
-                                .arg(g->curves()));
-            }
+            cIdx = resolveCurveIndex(g, params, QStringLiteral("curve_index"), true);
         } else if (params.contains(QStringLiteral("curve"))
                    && !params.value(QStringLiteral("curve")).isNull()) {
-            const QJsonValue cv = params.value(QStringLiteral("curve"));
-            if (cv.isDouble()) {
-                cIdx = parseStrictJsonInt(cv, QStringLiteral("curve"));
-                if (cIdx < 0 || cIdx >= g->curves()) {
-                    throwInvalidParams(
-                            QStringLiteral("curve index %1 out of range [0, %2).")
-                                    .arg(cIdx)
-                                    .arg(g->curves()));
-                }
-            } else {
-                cIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
-            }
+            cIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
         } else if (g->curves() > 0) {
             cIdx = 0;
         }
@@ -3633,6 +3616,41 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             throwInvalidParams(QStringLiteral("from_index (or curve) is required."));
         }
 
+        if (fromIdx < 0 || fromIdx >= g->curves()) {
+            throwInvalidParams(QStringLiteral("Curve index out of range [0, %1) (from=%2).")
+                                       .arg(g->curves())
+                                       .arg(fromIdx));
+        }
+        // 並びは描画順（0 が一番下、最後が一番上）。曲線はその誤差棒と一組で動き（GUI と同じ）、
+        // up / down は隣の曲線の組と入れ替え、top / bottom は一番上・一番下の曲線の組を越える。
+        // 誤差棒は親の曲線と一緒に描かれるので、組の境目に数えない。以前は to = from ± 1 と
+        // していたので、その位置にある別の曲線の誤差棒を指して、曲線が最下段へ飛んでいた。
+        const bool fromIsErr = g->curveType(fromIdx) == Graph::ErrorBars;
+        QVector<int> masterIdx; // 動かす曲線以外の、誤差棒でない項目の番号（昇順）
+        for (int i = 0; i < g->curves(); ++i)
+            if (i != fromIdx && g->curveType(i) != Graph::ErrorBars)
+                masterIdx.append(i);
+        QVector<int> above, below; // 動かす曲線より上（後）・下（前）にある曲線の組。近い順
+        for (int i : masterIdx) {
+            if (i > fromIdx)
+                above.append(i);
+        }
+        for (int k = masterIdx.size() - 1; k >= 0; --k) {
+            if (masterIdx[k] < fromIdx)
+                below.append(masterIdx[k]);
+        }
+        const int maxIdx = std::max(0, g->curves() - 1);
+        // steps > 0: 上へ steps 組、< 0: 下へ。越える組がなければ動かさない（to = from）。
+        auto stepGroups = [&](int steps) {
+            if (fromIsErr)
+                return std::clamp(fromIdx + steps, 0, maxIdx);
+            if (steps > 0)
+                return above.isEmpty() ? fromIdx : above[std::min(steps, int(above.size())) - 1];
+            if (steps < 0)
+                return below.isEmpty() ? fromIdx : below[std::min(-steps, int(below.size())) - 1];
+            return fromIdx;
+        };
+
         int toIdx = -1;
         if (params.contains(QStringLiteral("to_index"))
             && !params.value(QStringLiteral("to_index")).isNull()) {
@@ -3640,24 +3658,22 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                        QStringLiteral("to_index"));
         } else if (params.contains(QStringLiteral("delta"))
                    && !params.value(QStringLiteral("delta")).isNull()) {
-            const int d = parseBoundedInt(params, QStringLiteral("delta"), 0, -1000, 1000);
-            toIdx = std::clamp(fromIdx + d, 0, std::max(0, g->curves() - 1));
+            toIdx = stepGroups(parseBoundedInt(params, QStringLiteral("delta"), 0, -1000, 1000));
         } else if (params.contains(QStringLiteral("direction"))
                    && !params.value(QStringLiteral("direction")).isNull()) {
             const QString dir = optionalJsonString(params, QStringLiteral("direction"))
                                         .trimmed()
                                         .toLower();
-            const int maxIdx = std::max(0, g->curves() - 1);
             if (dir == QStringLiteral("up") || dir == QStringLiteral("forward")
                 || dir == QStringLiteral("front")) {
-                toIdx = std::min(maxIdx, fromIdx + 1);
+                toIdx = stepGroups(1);
             } else if (dir == QStringLiteral("down") || dir == QStringLiteral("backward")
                        || dir == QStringLiteral("back")) {
-                toIdx = std::max(0, fromIdx - 1);
+                toIdx = stepGroups(-1);
             } else if (dir == QStringLiteral("top") || dir == QStringLiteral("last")) {
-                toIdx = maxIdx;
+                toIdx = fromIsErr ? maxIdx : stepGroups(g->curves());
             } else if (dir == QStringLiteral("bottom") || dir == QStringLiteral("first")) {
-                toIdx = 0;
+                toIdx = fromIsErr ? 0 : stepGroups(-g->curves());
             } else {
                 throwInvalidParams(
                         QStringLiteral("Unknown move_curve direction '%1' (expected 'up'|'down'|'top'|'bottom').")
@@ -3667,21 +3683,24 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             throwInvalidParams(QStringLiteral("to_index, direction, or delta is required."));
         }
 
-        if (fromIdx < 0 || fromIdx >= g->curves() || toIdx < 0 || toIdx >= g->curves()) {
+        if (toIdx < 0 || toIdx >= g->curves()) {
             throwInvalidParams(
                     QStringLiteral("Curve index out of range [0, %1) (from=%2, to=%3).")
                             .arg(g->curves())
                             .arg(fromIdx)
                             .arg(toIdx));
         }
+        QwtPlotItem *movedItem = g->plotItem(fromIdx);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Move Curve"));
         const bool moved = (fromIdx == toIdx) ? true : g->moveCurve(fromIdx, toIdx);
         replotGraphOrDefer(g);
         if (moved && fromIdx != toIdx)
             undoGuard.commit();
+        // to_index は動かした後に曲線が実際にある位置（誤差棒の組を越えると、指定と違うことがある）
+        const int actualIdx = movedItem ? g->plotItemIndex(movedItem) : -1;
         outResult[QStringLiteral("ok")] = moved;
         outResult[QStringLiteral("from_index")] = fromIdx;
-        outResult[QStringLiteral("to_index")] = toIdx;
+        outResult[QStringLiteral("to_index")] = actualIdx >= 0 ? actualIdx : fromIdx;
         outResult[QStringLiteral("curves")] = toJsonArray(g->plotItemsList());
         return true;
     }

@@ -3847,7 +3847,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
     if (method == QStringLiteral("graph.add_error_band")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        // curve: Y column name ("Table1_B" or "B") or 0-based index among the data curves
+        // curve: Y column name ("Table1_B" or "B") or the curve's index as graph.get_info lists it
+        // (the same number as set_curve_style / add_error_bars; it used to count only the data
+        // curves of tables, so a function curve or a heatmap before it shifted the number)
         DataCurve *master = nullptr;
         QList<DataCurve *> dataCurves;
         for (int i = 0; i < g->curves(); ++i) {
@@ -3859,9 +3861,16 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         }
         const QJsonValue cv = params.value(QStringLiteral("curve"));
         if (cv.isDouble()) {
-            const int ci = cv.toInt(-1);
-            if (ci >= 0 && ci < dataCurves.size())
-                master = dataCurves[ci];
+            const int ci = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
+            auto *dc = dynamic_cast<DataCurve *>(g->curve(ci));
+            if (!dc || !dc->table() || g->curveType(ci) == Graph::ErrorBars) {
+                throwInvalidParams(
+                        QStringLiteral("graph.add_error_band: curve %1 ('%2') is not a data curve "
+                                       "of a table.")
+                                .arg(ci)
+                                .arg(g->curve(ci)->title().text()));
+            }
+            master = dc;
         } else {
             const QString cn = cv.toString().trimmed();
             for (DataCurve *dc : dataCurves) {

@@ -1633,7 +1633,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str*; visible:bool=true; layer:int=null",
       "g.set_curve_visible(0, False)" },
     { "graph.move_curve", "graph", "GraphProxy.move_curve(curve, direction='up', *, layer=None)",
-      "Reorder curve Z-order ('up', 'down', 'top', 'bottom').",
+      "Reorder curve Z-order (index 0 is drawn first, at the bottom). A curve moves together with its error bars: 'up' / 'down' swap it with the neighbouring curve, 'top' / 'bottom' put it above / below all curves; other curves keep their order. The result's to_index is the index the curve has afterwards; curve numbers are the indices graph.get_info lists.",
       "graph:str=''; curve:int|str*; direction:str='up'[up|down|top|bottom]; layer:int=null",
       "g.move_curve(1, 'top')" },
     { "graph.set_stack_offsets", "graph", "GraphProxy.set_stack_offsets(mode=None, y_offset_pct=15.0, x_offset_pct=0.0, normalize=False, layer=None, *, y_offset=None, x_offset=None, auto_waterfall=None, reset=False)",
@@ -3589,7 +3589,6 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
         // Additional curves on this layer (skip inset auto-cloned curves)
         int nonErrIdx = 0;
-        int dataCurveIdx = 0;
         if (!isInset) {
             for (int ci = 0; ci < lg->curves(); ++ci) {
                 QwtPlotCurve *c = lg->curve(ci);
@@ -3606,8 +3605,6 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                 auto *dc = dynamic_cast<DataCurve *>(c);
                 auto *fc = dynamic_cast<FunctionCurve *>(c);
                 auto *pc = dynamic_cast<PlotCurve *>(c);
-                // index among the layer's table-backed data curves (graph.add_error_band's 'curve')
-                const int thisDataCurveIdx = (dc && dc->table()) ? dataCurveIdx++ : -1;
                 bool curvePresent = (li == 0 && (ci == firstEmittedCurveOnL0 || l0HandledAllCurves))
                         || preHandledLayerCurves.contains(qMakePair(li, ci));
                 if (!curvePresent) {
@@ -3733,12 +3730,13 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                         else
                             bandBoth = eLbl;
                     }
-                    if (bandTable && thisDataCurveIdx >= 0) {
+                    // graph.add_error_band's 'curve' is the curve index, like add_error_bars
+                    if (bandTable && dc->table()) {
                         const QString bandTblArg = tblVarMap.value(bandTable);
                         if (!bandBoth.isEmpty()) {
                             lines << QStringLiteral(
                                              "g.add_error_band(%1, %2, table=%3.name, alpha=%4%5)")
-                                             .arg(thisDataCurveIdx)
+                                             .arg(nonErrIdx)
                                              .arg(pyEscapeStr(bandBoth), bandTblArg)
                                              .arg(bandAlpha)
                                              .arg(layerKw);
@@ -3748,7 +3746,7 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
                             const QString minusLbl = bandMinus.isEmpty() ? bandPlus : bandMinus;
                             lines << QStringLiteral(
                                              "g.add_error_band(%1, %2, err_minus=%3, table=%4.name, alpha=%5%6)")
-                                             .arg(thisDataCurveIdx)
+                                             .arg(nonErrIdx)
                                              .arg(pyEscapeStr(plusLbl), pyEscapeStr(minusLbl),
                                                   bandTblArg)
                                              .arg(bandAlpha)

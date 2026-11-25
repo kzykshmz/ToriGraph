@@ -4519,72 +4519,64 @@ bool Graph::moveCurve(int fromIndex, int toIndex)
             }
         }
     } else {
-        // Partition curves into logical [MasterCurve + attached ErrorBars] groups so moving a
-        // master curve steps cleanly across neighbor groups without snapping back or splitting.
-        QVector<QVector<int>> groups;
-        QVector<int> idxToGroup(n_curves, -1);
-        for (int i = 0; i < n_curves; ++i) {
-            if (idxToGroup[i] >= 0)
-                continue;
-            if (c_type[i] == ErrorBars) {
-                const int mOld = masterOldIndexFor(i);
-                if (mOld >= 0 && idxToGroup[mOld] >= 0) {
-                    const int g = idxToGroup[mOld];
-                    groups[g].append(i);
-                    idxToGroup[i] = g;
-                    continue;
-                }
-                if (mOld >= 0 && mOld > i) {
-                    const int g = groups.size();
-                    QVector<int> grp;
-                    grp.append(mOld);
-                    idxToGroup[mOld] = g;
-                    for (int k = 0; k < n_curves; ++k) {
-                        if (k != mOld && masterOldIndexFor(k) == mOld) {
-                            grp.append(k);
-                            idxToGroup[k] = g;
-                        }
-                    }
-                    groups.append(grp);
-                    continue;
-                }
-                const int g = groups.size();
-                groups.append(QVector<int>{ i });
-                idxToGroup[i] = g;
-            } else {
-                const int g = groups.size();
-                QVector<int> grp;
-                grp.append(i);
-                idxToGroup[i] = g;
-                for (int k = 0; k < n_curves; ++k) {
-                    if (k != i && masterOldIndexFor(k) == i) {
-                        grp.append(k);
-                        idxToGroup[k] = g;
-                    }
-                }
-                groups.append(grp);
+        // 曲線とその誤差棒を一組として動かし、範囲内にある曲線（誤差棒でない項目）の組を
+        // 飛び越える。動かすのは曲線と、その直後に続く自分の誤差棒だけで、ほかの項目の並びは
+        // 変えない（以前は全項目を [曲線 + 誤差棒] の組に組み直していたので、離れた所にある
+        // 誤差棒が親の直後へ寄せられ、関係のない曲線の順まで変わっていた）。
+        auto isErr = [&](int i) { return c_type[i] == ErrorBars; };
+        // 曲線 master の直後に続く自分の誤差棒の、次の位置
+        auto runEnd = [&](int master) {
+            int e = master + 1;
+            while (e < n_curves && isErr(e) && masterOldIndexFor(e) == master)
+                ++e;
+            return e;
+        };
+        const int srcEnd = runEnd(fromIndex);
+        const bool forward = toIndex > fromIndex;
+        // 飛び越える曲線のうち一番遠いもの: 前へなら (from, to] の最後、後ろへなら [to, from) の最初
+        int anchor = -1;
+        if (forward) {
+            for (int i = fromIndex + 1; i <= toIndex; ++i)
+                if (!isErr(i))
+                    anchor = i;
+            // to が自分の誤差棒なら、隣の曲線の組と入れ替える
+            if (anchor < 0 && masterOldIndexFor(toIndex) == fromIndex) {
+                for (int i = srcEnd; i < n_curves && anchor < 0; ++i)
+                    if (!isErr(i))
+                        anchor = i;
             }
+        } else {
+            for (int i = fromIndex - 1; i >= toIndex; --i)
+                if (!isErr(i))
+                    anchor = i;
         }
-
-        const int srcGroup = idxToGroup[fromIndex];
-        int dstGroup = idxToGroup[toIndex];
-        if (srcGroup < 0 || dstGroup < 0)
-            return false;
-        if (dstGroup == srcGroup) {
-            if (toIndex > fromIndex)
-                dstGroup = srcGroup + 1;
-            else if (toIndex < fromIndex)
-                dstGroup = srcGroup - 1;
-        }
-        if (dstGroup < 0 || dstGroup >= groups.size() || dstGroup == srcGroup)
+        if (anchor < 0)
             return false;
 
-        const QVector<int> movedGrp = groups.takeAt(srcGroup);
-        groups.insert(dstGroup, movedGrp);
+        QVector<int> moving;
+        for (int i = fromIndex; i < srcEnd; ++i)
+            moving.append(i);
+        for (int i = 0; i < n_curves; ++i)
+            if (i < fromIndex || i >= srcEnd)
+                order.append(i);
+        int insertPos = forward ? order.indexOf(runEnd(anchor) - 1) + 1 : order.indexOf(anchor);
+        if (insertPos < 0)
+            return false;
+        for (int k = 0; k < moving.size(); ++k)
+            order.insert(insertPos + k, moving[k]);
 
-        for (const QVector<int> &grp : groups) {
-            for (int oldIdx : grp)
-                order.append(oldIdx);
+        // 離れた所にある自分の誤差棒が曲線より前になったら、曲線の組の直後へ移す
+        // （.sciprj の読み込みは誤差棒が親の曲線より後にあることを前提にしている）。
+        QVector<int> stray;
+        for (int k = 0; k < insertPos; ++k)
+            if (isErr(order[k]) && masterOldIndexFor(order[k]) == fromIndex)
+                stray.append(order[k]);
+        if (!stray.isEmpty()) {
+            for (int oldIdx : stray)
+                order.removeOne(oldIdx);
+            const int after = order.indexOf(moving.last()) + 1;
+            for (int k = 0; k < stray.size(); ++k)
+                order.insert(after + k, stray[k]);
         }
     }
 
