@@ -28,6 +28,7 @@
  *                                                                         *
  ***************************************************************************/
 #include "String2DateTimeFilter.h"
+#include "NumericDateTimeBaseFilter.h"
 #include <QRegularExpression>
 #include <QStringList>
 #include "lib/XmlStreamReader.h"
@@ -201,14 +202,23 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
 {
     if (!d_inputs.value(0))
         return QDateTime();
-    QString input_value = d_inputs.value(0)->textAt(row);
+    const QString input_value = d_inputs.value(0)->textAt(row);
+    if (input_value.isEmpty())
+        return QDateTime();
+    // the cells hold local date/times; a clock time skipped when DST starts ("2024-03-10 02:30"
+    // in New York) is moved forward by the gap instead of becoming an empty cell
+    return NumericDateTimeBaseFilter::localWallClock(wallClockFromText(input_value));
+}
+
+QDateTime String2DateTimeFilter::wallClockFromText(const QString &input_value) const
+{
     if (input_value.isEmpty())
         return QDateTime();
 
     // first try the selected format string d_format
-    QDateTime result = QDateTime::fromString(input_value, d_format);
+    const QDateTime result = QDateTime::fromString(input_value, d_format);
     if (result.isValid())
-        return result;
+        return QDateTime(result.date(), result.time(), Qt::UTC);
 
     // ISO 8601 with 'T', a time zone or sub-millisecond digits (see parseIso8601DateTime)
     const IsoDateTime iso = parseIso8601DateTime(input_value.trimmed());
@@ -226,7 +236,7 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
                 wall = wall.addSecs(d_zone_offset_secs - iso.offsetSecs);
             }
         }
-        return QDateTime(wall.date(), wall.time()); // local wall-clock time like the other paths
+        return wall;
     }
 
     // fallback:
@@ -247,7 +257,7 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
 #endif
 
     if (strings.size() < 1)
-        return result; // invalid date/time from first attempt
+        return QDateTime();
 
     QDate date_result;
     const QString date_string = strings.at(0).trimmed();
@@ -295,13 +305,13 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
         // date at 00:00 without notice; it is invalid (an empty cell) now.
         if (!date_result.isValid() || !time_result.isValid())
             return QDateTime();
-        return QDateTime(date_result, time_result);
+        return QDateTime(date_result, time_result, Qt::UTC);
     }
     if (date_result.isValid()) // a date alone is the start of that day
-        return QDateTime(date_result, time_result.isValid() ? time_result : QTime(0, 0));
+        return QDateTime(date_result, time_result.isValid() ? time_result : QTime(0, 0), Qt::UTC);
     if (time_result.isValid())
         // a time alone on 1900-01-01: what QDateTime::fromString("00:00", "hh:mm") gives
-        return QDateTime(QDate(1900, 1, 1), time_result);
+        return QDateTime(QDate(1900, 1, 1), time_result, Qt::UTC);
     return QDateTime();
 }
 

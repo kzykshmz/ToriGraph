@@ -104,6 +104,11 @@ private:
 
 public:
     virtual QDateTime dateTimeAt(int row) const;
+    //! The clock time `text` spells, as a Qt::UTC date/time (zone-free; invalid if it cannot be
+    //! read). dateTimeAt() turns it into the local date/time of the cell with
+    //! NumericDateTimeBaseFilter::localWallClock(). Reading a zone designator fixes the offset of
+    //! the column like dateTimeAt() does.
+    QDateTime wallClockFromText(const QString &text) const;
     virtual QDate dateAt(int row) const { return dateTimeAt(row).date(); }
     virtual QTime timeAt(int row) const { return dateTimeAt(row).time(); }
     virtual bool isInvalid(int row) const

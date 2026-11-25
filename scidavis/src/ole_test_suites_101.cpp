@@ -1,6 +1,7 @@
 #include "ole_test_common.h"
 #include "PythonAutomationServer.h"
 #include "core/datatypes/NumericDateTimeBaseFilter.h"
+#include "core/datatypes/String2DateTimeFilter.h"
 
 #include <QBuffer>
 #include <QElapsedTimer>
@@ -33,7 +34,8 @@
 //        as before. A space-separated date and time with seconds takes a zone offset like 'T'
 //        (Python's str(datetime), pandas): "2024-01-02 09:00:00+09:00", "...Z"; without seconds
 //        "2024-01-02 09:00-10:30" stays a time range (invalid). A number that gives a clock time
-//        skipped when DST starts (02:30 on 2024-03-10 in New York) is not an empty cell.
+//        skipped when DST starts (02:30 on 2024-03-10 in New York) is not an empty cell, nor is
+//        such a text: both are moved forward by the gap (03:30).
 //   101d date/time <-> number without the PC's time zone: 2024-03-01 00:00 is 19783, 0 is
 //        1970-01-01 00:00; the base is saved as wall-clock time ("base_wall"), and files written
 //        before it (base 0, or an instant in the PC's zone) load to the same clock time.
@@ -504,6 +506,64 @@ int runSuite101WorksheetRound2(ApplicationWindow *mw)
             NumericDateTimeBaseFilter f(NumericDateTimeBaseFilter::UnitInterval::Day);
             CHECK_COND(f.makeDateTime(19783.5) == QDateTime(QDate(2024, 3, 1), QTime(12, 0)),
                        "101c-2: 19783.5 -> " << dt101(f.makeDateTime(19783.5)).toStdString());
+
+            // text -> date/time in the DST gap: String2DateTimeFilter::dateTimeAt() is
+            // localWallClock(wallClockFromText(text)) (the text gave an empty cell as well).
+            // The clock time each path reads, put into New York's zone, moves forward like a
+            // number does; the column cells are localWallClock() of that clock time.
+            struct GapText
+            {
+                const char *text;
+                QTime wall; // the clock time as written
+                QTime moved; // in New York's zone
+            };
+            const GapText gapTexts[] = {
+                { "2024-03-10 02:30", QTime(2, 30), QTime(3, 30) }, // fallback formats
+                { "2024-03-10T02:30:00", QTime(2, 30), QTime(3, 30) }, // ISO 8601
+                { "2024-03-10 02:30:00.500", QTime(2, 30, 0, 500), QTime(3, 30, 0, 500) }, // d_format
+                { "2024-03-10 02:30:00.5", QTime(2, 30, 0, 500), QTime(3, 30, 0, 500) }, // ISO fraction
+                { "2024/03/10 2:30 am", QTime(2, 30), QTime(3, 30) }, // am / pm
+                { "2024-03-10 02:30:00Z", QTime(2, 30), QTime(3, 30) }, // zone after a space
+            };
+            QStringList gapColumn;
+            for (const GapText &g : gapTexts) {
+                String2DateTimeFilter sf;
+                const QString text = QString::fromUtf8(g.text);
+                gapColumn << text;
+                const QDateTime wall = sf.wallClockFromText(text);
+                CHECK_COND(wall.isValid() && wall.timeSpec() == Qt::UTC && wall.date() == gapDay
+                                   && wall.time() == g.wall,
+                           "101c-2: wall clock of '" << g.text << "' -> " << dt101(wall).toStdString());
+                const QDateTime inNy = NumericDateTimeBaseFilter::wallClockInZone(wall, ny);
+                CHECK_COND(inNy.isValid() && inNy.toTimeZone(ny).date() == gapDay
+                                   && inNy.toTimeZone(ny).time() == g.moved,
+                           "101c-2: '" << g.text << "' in New York -> "
+                                       << dt101(inNy.toTimeZone(ny)).toStdString());
+            }
+            Column *gc = convertTexts(QStringLiteral("T101DstText"), gapColumn,
+                                      SciDAVis::ColumnMode::DateTime);
+            CHECK_COND(gc != nullptr, "101c-2: conversion of the DST gap texts failed");
+            for (int i = 0; i < gapColumn.size(); ++i) {
+                const QDateTime expected = NumericDateTimeBaseFilter::localWallClock(
+                        QDateTime(gapDay, gapTexts[i].wall, Qt::UTC));
+                CHECK_COND(!gc->isInvalid(i) && gc->dateTimeAt(i) == expected,
+                           "101c-2: column cell '" << gapTexts[i].text << "' -> "
+                                                   << dt101(gc->dateTimeAt(i)).toStdString()
+                                                   << ", expected " << dt101(expected).toStdString());
+            }
+            if (localGap.isValid()) {
+                // the PC's zone has a gap: the text of that clock time is not an empty cell
+                const QString text =
+                        localGap.toString(QStringLiteral("yyyy-MM-dd hh:mm"));
+                Column *lc = convertTexts(QStringLiteral("T101DstLocal"), { text },
+                                          SciDAVis::ColumnMode::DateTime);
+                CHECK_COND(lc != nullptr && !lc->isInvalid(0)
+                                   && lc->dateTimeAt(0)
+                                           == NumericDateTimeBaseFilter::localWallClock(localGap),
+                           "101c-2: text in the PC's DST gap '" << text.toStdString() << "' -> "
+                                   << (lc ? dt101(lc->dateTimeAt(0)).toStdString()
+                                          : std::string("?")));
+            }
         }
         std::cout << "[PASS] 101c-2: words after the time, notes in parentheses, offsets after a "
                      "space with seconds, DST gap\n";
