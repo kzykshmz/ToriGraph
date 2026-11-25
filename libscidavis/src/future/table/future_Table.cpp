@@ -295,21 +295,27 @@ Column *Table::column(const QString &name, bool legacy_kludge) const
         // default names) uses them as names. A reference in the same style that matches no column
         // then names a column that is gone (removed, or renamed without the formula following),
         // and reading the column now at that position would silently give the values of another
-        // column. The positional reading is refused when some column of the table has a name in
-        // the style of the reference that could itself be a position in this table (letter or
-        // number 1..columnCount). Names such as "X", "Y" or "2024" in a small table do not, so
-        // col("A") or col("1") still reads the first column there.
+        // column. The positional reading is refused when the table names its columns in that
+        // style: at least half of its columns carry a name in the style of the reference, and one
+        // of them could itself be a position in this table or in the table before columns were
+        // removed (1..2*columnCount). A lone physical-quantity name such as "C" in Time, Strain, C,
+        // or names such as "X", "Y" or "2024" in a small table, do not count, so col("A") or
+        // col("1") still reads by position there.
         auto tableHasPositionLikeName = [this](bool (*styleOf)(const QString &),
                                                qint64 (*indexOf)(const QString &)) {
-            for (int i = 0; i < columnCount(); i++) {
+            const int n = columnCount();
+            int styled = 0;
+            bool positionLike = false;
+            for (int i = 0; i < n; i++) {
                 const Column *col = d_table_private.column(i);
                 if (col && styleOf(col->name())) {
+                    ++styled;
                     const qint64 idx = indexOf(col->name());
-                    if (idx >= 1 && idx <= columnCount())
-                        return true;
+                    if (idx >= 1 && idx <= 2 * qint64(n))
+                        positionLike = true;
                 }
             }
-            return false;
+            return positionLike && 2 * styled >= n;
         };
         auto digitIndex = [](const QString &s) -> qint64 {
             bool ok = false;

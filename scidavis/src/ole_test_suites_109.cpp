@@ -259,6 +259,30 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                            && sameValues(columnValues("XY109", "2024"), { 6, 8, 10 }),
                    "109b: col(\"A\")+col(\"2\") in a table named X,Y,2024: "
                            << q(columnValues("XY109", "2024")));
+
+        // a lone one-letter quantity name (C) does not make the table letter-named
+        Table *s = w109->newTable(QStringLiteral("TSC109"), 3, 3);
+        CHECK_COND(s != nullptr, "109b: table TSC109");
+        s->setColName(0, QStringLiteral("Time"));
+        s->setColName(1, QStringLiteral("Strain"));
+        s->setColName(2, QStringLiteral("C"));
+        rpc(QStringLiteral("table.set_column_data"),
+            QJsonObject{ { "table", "TSC109" }, { "col", "Time" }, { "data", numbers({ 1, 2, 3 }) } });
+        r = rpc(QStringLiteral("table.set_formula"),
+                QJsonObject{ { "table", "TSC109" }, { "col", "C" }, { "formula", "col(\"A\")*2" } });
+        CHECK_COND(res(r).value(QStringLiteral("ok")).toBool()
+                           && sameValues(columnValues("TSC109", "C"), { 2, 4, 6 }),
+                   "109b: col(\"A\")*2 in a table named Time,Strain,C: " << q(columnValues("TSC109", "C")));
+
+        // two default-named columns: removing "1" leaves "2" alone, col("1") must not read it
+        Table *d = w109->newTable(QStringLiteral("D2109"), 3, 2); // names "1", "2"
+        CHECK_COND(d != nullptr, "109b: table D2109");
+        rpc(QStringLiteral("table.set_column_data"),
+            QJsonObject{ { "table", "D2109" }, { "col", "2" }, { "data", numbers({ 7, 8, 9 }) } });
+        d->d_future_table->removeColumns(0, 1);
+        CHECK_COND(d->d_future_table->columnCount() == 1
+                           && d->d_future_table->column(QStringLiteral("1")) == nullptr,
+                   "109b: col(\"1\") after removing column 1 of a 1,2 table resolves to another column");
         std::cout << "[PASS] 109b: column letters, numbers and Long Names still resolve\n";
     }
 
