@@ -1038,13 +1038,16 @@ void ApplicationWindow::importASCII()
     QLocale::setDefault(save_locale);
 }
 
-// Renames columns 0..targetNames.size()-1 of `ft` to targetNames (empty entry = keep the name)
-// through temporary names first, so that swapped headers ([A,B] -> [B,A]) do not collide with
-// a sibling and get uniquified to "B 1". Same scheme as Table::reimportFromSource().
-static void renameImportedColumnsViaTemp(future::Table *ft, const QVector<QString> &targetNames)
+// Renames columns 0..targetNames.size()-1 of `table` to targetNames (empty entry = keep the
+// name) through temporary names first, so that swapped headers ([A,B] -> [B,A]) do not collide
+// with a sibling and get uniquified to "B 1". Same scheme as Table::reimportFromSource(). The
+// columns are matched by name, so formula references keep the names they use.
+static void renameImportedColumnsViaTemp(Table *table, const QVector<QString> &targetNames)
 {
+    future::Table *ft = table ? table->d_future_table : nullptr;
     if (!ft)
         return;
+    Table::RenamePropagationBlocker renameBlocker(table);
     const int n = qMin(targetNames.size(), ft->columnCount());
     int tmpIdx = 0;
     for (int i = 0; i < n; ++i) {
@@ -1333,7 +1336,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                 if (local_rename_columns)
                     targetNames[col] = src_col->name();
             }
-            renameImportedColumnsViaTemp(table->d_future_table, targetNames);
+            renameImportedColumnsViaTemp(table, targetNames);
             break;
         }
         case ImportASCIIDialog::Overwrite: {
@@ -1377,7 +1380,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             if (importedSpan > temp->columnCount())
                 table->d_future_table->removeColumns(temp->columnCount(),
                                                      importedSpan - temp->columnCount());
-            renameImportedColumnsViaTemp(table->d_future_table, targetNames);
+            renameImportedColumnsViaTemp(table, targetNames);
             if (temp->columnCount() > common) {
                 QList<Column *> extraCols;
                 extraCols.reserve(temp->columnCount() - common);

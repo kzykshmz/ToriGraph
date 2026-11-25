@@ -85,6 +85,7 @@
 #include "Script.h"
 #include "I18nJapanese.h"
 #include <mutex>
+#include <optional>
 #include <QStatusBar>
 #include <QVBoxLayout>
 #include <QPushButton>
@@ -2354,6 +2355,8 @@ bool Table::reimportFromSource()
     }
 
     // Two-pass rename prevents sibling collisions when columns are swapped or removed (e.g. [A,B]->[B,A]).
+    // The columns are matched by name, so formula references keep the names they use.
+    std::optional<RenamePropagationBlocker> renameBlocker(std::in_place, this);
     int tmpIdx = 0;
     for (int i = 0; i < common; ++i) {
         Column *dst = d_future_table->column(i);
@@ -2372,6 +2375,7 @@ bool Table::reimportFromSource()
             continue;
         dst->setName(targetNames[i]);
     }
+    renameBlocker.reset();
 
     if (newCols.size() > common) {
         QList<Column *> extraCols;
@@ -5025,27 +5029,95 @@ const QRegularExpression &renameTableColRefRx()
     return rx;
 }
 
-QString unescapeFormulaPath(QString s)
+// How a function reads its quoted column argument (MuParserScript::translateLegacyFunctions):
+// - Legacy: col("...") and tablecol("...", "...") take the text as written (the translation
+//   escapes it for column()); muParser only turns \" into ". A name with " cannot be written
+//   back safely (and one ending in \ would escape the closing quote), so such a rename leaves
+//   the reference alone.
+// - Path: column("..."), cell("...", i) (and column_ / cell_) take a path of
+//   resolveColumnPath(): '/' separates the table (and folders) from the column and \ escapes
+//   the next character (\\, \/, \").
+enum class RefArgStyle { Legacy, Path };
+
+RefArgStyle quotedArgStyle(const QString &fn)
 {
-    s.replace(QLatin1String("\\/"), QLatin1String("/"));
-    s.replace(QLatin1String("\\\\"), QLatin1String("\\"));
-    return s;
+    return (fn == QLatin1String("col") || fn == QLatin1String("tablecol")
+            || fn == QLatin1String("column__"))
+            ? RefArgStyle::Legacy
+            : RefArgStyle::Path;
 }
 
-QString escapeFormulaName(QString s)
+QString legacyDecode(QString raw)
+{
+    raw.replace(QLatin1String("\\\""), QLatin1String("\""));
+    return raw;
+}
+
+bool legacyEncode(const QString &name, QString &out)
+{
+    if (name.contains(QLatin1Char('"')) || name.endsWith(QLatin1Char('\\')))
+        return false;
+    out = name;
+    return true;
+}
+
+QString pathEscape(QString s)
 {
     s.replace(QLatin1String("\\"), QLatin1String("\\\\"));
+    s.replace(QLatin1String("/"), QLatin1String("\\/"));
+    s.replace(QLatin1String("\""), QLatin1String("\\\""));
     return s;
 }
 
-// Text for an unquoted column argument col(A): kept unquoted when the new name is a plain
-// identifier, quoted otherwise (col("new name") is read the same way).
-QString bareColumnArgument(const QString &newCol)
+// Components of a path argument (resolveColumnPath()), with their span in the raw text.
+struct PathComponent
+{
+    QString text;
+    int start = 0; // offset in the raw argument
+    int end = 0; // one past the last raw character
+};
+
+QVector<PathComponent> splitPathArgument(const QString &raw)
+{
+    QVector<PathComponent> out;
+    PathComponent cur;
+    for (int i = 0; i < raw.size(); ++i) {
+        const QChar ch = raw.at(i);
+        if (ch == QLatin1Char('\\') && i + 1 < raw.size()) {
+            cur.text.append(raw.at(++i));
+        } else if (ch == QLatin1Char('/')) {
+            cur.end = i;
+            out.push_back(cur);
+            cur = PathComponent();
+            cur.start = i + 1;
+        } else {
+            cur.text.append(ch);
+        }
+    }
+    cur.end = raw.size();
+    out.push_back(cur);
+    return out;
+}
+
+// Text for a column argument written without quotes, col(A): kept unquoted when the new name is
+// a plain identifier, quoted otherwise in the function's own convention. False when the name
+// cannot be written (a legacy argument with ").
+bool bareColumnArgument(const QString &newCol, RefArgStyle style, QString &out)
 {
     static const QRegularExpression ident(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
-    if (ident.match(newCol).hasMatch())
-        return newCol;
-    return QLatin1Char('"') + escapeFormulaName(newCol) + QLatin1Char('"');
+    if (ident.match(newCol).hasMatch()) {
+        out = newCol;
+        return true;
+    }
+    if (style == RefArgStyle::Path) {
+        out = QLatin1Char('"') + pathEscape(newCol) + QLatin1Char('"');
+        return true;
+    }
+    QString lit;
+    if (!legacyEncode(newCol, lit))
+        return false;
+    out = QLatin1Char('"') + lit + QLatin1Char('"');
+    return true;
 }
 
 struct FormulaEdit
@@ -5069,7 +5141,7 @@ QString applyFormulaEdits(const QString &formula, QVector<FormulaEdit> edits)
 
 // Edit for an unquoted argument captured as `capIdx` (it may carry surrounding blanks).
 bool bareArgumentEdit(const QRegularExpressionMatch &m, int capIdx, const QString &oldCol,
-                      const QString &newCol, FormulaEdit &edit)
+                      const QString &newCol, RefArgStyle style, FormulaEdit &edit)
 {
     const QString raw = m.captured(capIdx);
     const QString arg = raw.trimmed();
@@ -5079,9 +5151,10 @@ bool bareArgumentEdit(const QRegularExpressionMatch &m, int capIdx, const QStrin
     arg.toInt(&isNum);
     if (isNum)
         return false; // a column number, not a name
+    if (!bareColumnArgument(newCol, style, edit.text))
+        return false;
     edit.start = m.capturedStart(capIdx) + raw.indexOf(arg);
     edit.length = arg.size();
-    edit.text = bareColumnArgument(newCol);
     return true;
 }
 
@@ -5155,60 +5228,56 @@ QString Table::rewriteColumnRefsInFormula(const QString &formula, const QString 
     QRegularExpressionMatchIterator it = renameColRefRx().globalMatch(formula);
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
-        if (m.capturedStart(3) >= 0) {
-            const QString raw = m.captured(3);
-            const QString name = unescapeFormulaPath(raw);
-            if (name.contains(QLatin1Char('/'))) {
-                const QString tablePart = name.section(QLatin1Char('/'), 0, 0);
-                const QString colPart = name.section(QLatin1Char('/'), 1);
-                if (tablePart != targetTable || colPart != oldCol)
-                    continue;
-                // keep the table part (and its separator) as written, replace the column part
-                const QString escapedOldTail = escapeFormulaName(oldCol);
-                if (!raw.endsWith(escapedOldTail))
-                    continue;
-                FormulaEdit e;
-                e.start = m.capturedStart(3) + raw.size() - escapedOldTail.size();
-                e.length = escapedOldTail.size();
-                e.text = escapeFormulaName(newCol);
-                edits.push_back(e);
-            } else {
-                if (formulaTable != targetTable || name != oldCol)
-                    continue;
-                FormulaEdit e;
-                e.start = m.capturedStart(3);
-                e.length = raw.size();
-                e.text = escapeFormulaName(newCol);
-                edits.push_back(e);
-            }
-        } else if (formulaTable == targetTable) {
+        const RefArgStyle style = quotedArgStyle(m.captured(1));
+        if (m.capturedStart(3) < 0) {
             FormulaEdit e;
-            if (bareArgumentEdit(m, 2, oldCol, newCol, e))
+            if (formulaTable == targetTable && bareArgumentEdit(m, 2, oldCol, newCol, style, e))
                 edits.push_back(e);
+            continue;
         }
+        const QString raw = m.captured(3);
+        const int rawStart = m.capturedStart(3);
+        if (style == RefArgStyle::Legacy) {
+            // col("A") names a column of the formula's table; col("T/A") is read as column A of
+            // table T (the dependency analysis), unless the whole text is the column's name.
+            QString lit;
+            if (!legacyEncode(newCol, lit))
+                continue;
+            const int slash = raw.indexOf(QLatin1Char('/'));
+            if (formulaTable == targetTable && legacyDecode(raw) == oldCol) {
+                edits.push_back({ rawStart, int(raw.size()), lit });
+            } else if (slash > 0 && legacyDecode(raw.left(slash)) == targetTable
+                       && legacyDecode(raw.mid(slash + 1)) == oldCol) {
+                edits.push_back({ rawStart + slash + 1, int(raw.size()) - slash - 1, lit });
+            }
+            continue;
+        }
+        // path argument: the last component is the column, the one before it the table
+        const QVector<PathComponent> parts = splitPathArgument(raw);
+        const PathComponent &colPart = parts.last();
+        if (colPart.text != oldCol)
+            continue;
+        const QString refTable = parts.size() >= 2 ? parts.at(parts.size() - 2).text : formulaTable;
+        if (refTable != targetTable)
+            continue;
+        edits.push_back(
+                { rawStart + colPart.start, colPart.end - colPart.start, pathEscape(newCol) });
     }
 
     // tablecol("T", "A"), tablecol("T", A), column__("T", ...)
     QRegularExpressionMatchIterator itTbl = renameTableColRefRx().globalMatch(formula);
     while (itTbl.hasNext()) {
         const QRegularExpressionMatch m = itTbl.next();
-        QString tblName = m.captured(2);
-        tblName.replace(QLatin1String("\\\\"), QLatin1String("\\"));
-        if (tblName != targetTable)
+        if (legacyDecode(m.captured(2)) != targetTable)
             continue;
         if (m.capturedStart(4) >= 0) {
-            QString colName = m.captured(4);
-            colName.replace(QLatin1String("\\\\"), QLatin1String("\\"));
-            if (colName != oldCol)
+            QString lit;
+            if (legacyDecode(m.captured(4)) != oldCol || !legacyEncode(newCol, lit))
                 continue;
-            FormulaEdit e;
-            e.start = m.capturedStart(4);
-            e.length = m.captured(4).size();
-            e.text = escapeFormulaName(newCol);
-            edits.push_back(e);
+            edits.push_back({ m.capturedStart(4), int(m.captured(4).size()), lit });
         } else {
             FormulaEdit e;
-            if (bareArgumentEdit(m, 3, oldCol, newCol, e))
+            if (bareArgumentEdit(m, 3, oldCol, newCol, RefArgStyle::Legacy, e))
                 edits.push_back(e);
         }
     }
@@ -5258,6 +5327,27 @@ void Table::updateCrossTableFormulaReferences(ApplicationWindow *app, const QStr
     }
 }
 
+namespace {
+quint64 s_tableRenamePropagations = 0;
+} // namespace
+
+Table::RenamePropagationBlocker::RenamePropagationBlocker(Table *table) : d_table(table)
+{
+    if (d_table)
+        ++d_table->d_rename_propagation_blocked;
+}
+
+Table::RenamePropagationBlocker::~RenamePropagationBlocker()
+{
+    if (d_table)
+        --d_table->d_rename_propagation_blocked;
+}
+
+quint64 Table::tableRenamePropagationCount()
+{
+    return s_tableRenamePropagations;
+}
+
 void Table::handleAspectDescriptionAboutToChange(const AbstractAspect *aspect)
 {
     if (d_future_table && aspect == d_future_table) {
@@ -5284,12 +5374,17 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
         d_has_stored_table_name = false;
         if (oldTableName.isEmpty() || oldTableName == newTableName)
             return;
+        // A table being read from a project (temporary name -> saved name -> unique name): the
+        // loader records the renames and names the explorer item itself.
+        if (isRenamePropagationBlocked())
+            return;
         // A rename, or the undo / redo of one: graphs, graph undo snapshots and the project
         // explorer follow the name each time. Formula references are rewritten only on the
         // forward edit (inside the rename macro); undo / redo replays those commands.
         ApplicationWindow *aw = owningApplicationWindowForTable(this);
         if (!aw || !aw->windowsList().contains(this))
             return;
+        ++s_tableRenamePropagations;
         aw->updateTableNames(oldTableName, newTableName);
         aw->renameListViewItem(oldTableName, newTableName);
         const bool forwardEdit = !isUndoRedoReplaying()
@@ -5315,7 +5410,9 @@ void Table::handleAspectDescriptionChange(const AbstractAspect *aspect)
         if (old_name != new_name) {
             emit changedColHeader(name() + "_" + old_name, name() + "_" + new_name);
 
-            if (!inUndoOrOutsideMacro) {
+            // Not for a column re-pointed through a temporary name (re-import, overwrite
+            // import): the columns are matched by name there, so the references keep theirs.
+            if (!inUndoOrOutsideMacro && !isRenamePropagationBlocked()) {
                 // References to this column, resolved like the formula dependency analysis:
                 // own-table col("A") / col("Self/A") / tablecol("Self","A") and other tables'
                 // col("Self/A") / tablecol("Self","A"). tablecol("Other","A") in this table is
@@ -5413,6 +5510,8 @@ void Table::importASCII(const QString &fname, const QString &sep, int ignoredLin
         if (importedSpan > overwritten_cols)
             d_future_table->removeColumns(overwritten_cols, importedSpan - overwritten_cols);
         if (renameCols) {
+            // matched by name: formula references keep the names they use
+            RenamePropagationBlocker renameBlocker(this);
             int tmpIdx = 0;
             for (int i = 0; i < overwritten_cols; i++) {
                 Column *dst = column(i);

@@ -1600,6 +1600,8 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
     if (t->numRows() < neededRows)
         t->setNumRows(neededRows);
 
+    // The header columns are re-pointed through temporary names below: references keep theirs.
+    Table::RenamePropagationBlocker renameBlocker(t);
     if (hasHeader && !headerRow.isEmpty() && startRowOffset == 0) {
         for (int c = 0; c < maxCols; ++c) {
             t->setColName(startColOffset + c,
@@ -2877,6 +2879,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
             if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
                 t->setWindowLabel(absPath);
+            // columns re-pointed through temporary names: references keep their names
+            Table::RenamePropagationBlocker renameBlocker(t);
             for (int c = 0; c < nCols; ++c)
                 t->setColName(c, QStringLiteral("__ras_col_%1__").arg(c));
             for (int c = 0; c < nCols; ++c) {
@@ -2919,6 +2923,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 Table *t = createUniqueTableHeadless(d_app, nRows, nCols, reqImportName);
                 if (reqImportName.trimmed().isEmpty() || reqImportName.trimmed() == t->name())
                     t->setWindowLabel(absPath);
+                // columns re-pointed through temporary names: references keep their names
+                Table::RenamePropagationBlocker renameBlocker(t);
                 for (int c = 0; c < nCols; ++c)
                     t->setColName(c, QStringLiteral("__vasp_col_%1__").arg(c));
                 for (int c = 0; c < nCols; ++c) {
@@ -4974,6 +4980,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 t->setNumCols(nCols);
             if (t->numRows() < nRows)
                 t->setNumRows(nRows);
+            // columns re-pointed through temporary names: references keep their names
+            Table::RenamePropagationBlocker renameBlocker(t);
             for (int c = 0; c < nCols; ++c)
                 t->setColName(c, QStringLiteral("__ras_paste_col_%1__").arg(c));
             for (int c = 0; c < nCols; ++c) {

@@ -132,6 +132,7 @@
 #include "GraphDigitizer.h"
 
 #include <stdio.h>
+#include <optional>
 #include <stdlib.h>
 #include <cmath>
 #include <algorithm>
@@ -2967,6 +2968,9 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         int cols = list[2].toInt();
 
         Table *w = app->newTable(caption, rows, cols);
+        // Renames while the table is read (unique name, header) are recorded in renamedTables
+        // and applied by the loader, not propagated one by one.
+        Table::RenamePropagationBlocker renameBlocker(w);
         sanitizeLoadedWindowName(app, w, caption, QStringLiteral("Table"));
         if (!rawCaption.isEmpty() && w->name() != rawCaption)
             app->renamedTables << rawCaption << w->name();
@@ -3113,6 +3117,10 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
             ScopedCreatingHidden hiddenGuard(geomHidden);
             w = app->newTable(tempCap, 1, 1);
         }
+        // The table is renamed from tempCap to its saved name by load() and then made unique;
+        // those renames are recorded (renamedTables, explorer item below) instead of reaching
+        // every graph, graph undo snapshot and formula of the project once per table.
+        std::optional<Table::RenamePropagationBlocker> renameBlocker(std::in_place, w);
         if (w->d_future_table->load(&reader) == false) {
             QString msg_text = reader.errorString();
             if (!isNonInteractiveContext(this))
@@ -3129,6 +3137,7 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         }
 
         sanitizeLoadedWindowName(app, w, xmlName, QStringLiteral("Table"));
+        renameBlocker.reset();
 
         w->setObjectName(w->name());
         app->renameListViewItem(tempCap, w->name());
@@ -4997,9 +5006,13 @@ void ApplicationWindow::appendProject(const QString &fn)
             mf->setProperty("torigraph_saved_active_obj", QVariant());
         if ((mw->inherits("Table") || mw->inherits("Matrix")) && stringContainsWhitespace(mw->name())) {
             const QString oldName = mw->name();
-            sanitizeLoadedWindowName(this, mw, oldName,
-                                     mw->inherits("Matrix") ? QStringLiteral("Matrix")
-                                                            : QStringLiteral("Table"));
+            {
+                // the rename is propagated once, by updateTableNames below
+                Table::RenamePropagationBlocker renameBlocker(qobject_cast<Table *>(mw));
+                sanitizeLoadedWindowName(this, mw, oldName,
+                                         mw->inherits("Matrix") ? QStringLiteral("Matrix")
+                                                                : QStringLiteral("Table"));
+            }
             const QString newName = mw->name();
             if (newName != oldName) {
                 mw->setObjectName(newName);

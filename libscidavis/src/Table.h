@@ -108,6 +108,26 @@ public:
                                                   const QString &oldTableName,
                                                   const QString &newTableName);
 
+    //! While alive, renames of `table` and of its columns are not propagated to the graphs, the
+    //! project explorer or the formula references (handleAspectDescriptionChange skips that
+    //! part). Used where columns are re-pointed through temporary names (re-import, overwrite
+    //! import: the columns are matched by name, so references must keep the names) and while a
+    //! table is read from a project (the loader names it once, afterwards).
+    class RenamePropagationBlocker
+    {
+    public:
+        explicit RenamePropagationBlocker(Table *table);
+        ~RenamePropagationBlocker();
+        RenamePropagationBlocker(const RenamePropagationBlocker &) = delete;
+        RenamePropagationBlocker &operator=(const RenamePropagationBlocker &) = delete;
+
+    private:
+        Table *d_table;
+    };
+    bool isRenamePropagationBlocked() const { return d_rename_propagation_blocked > 0; }
+    //! Number of table renames propagated by handleAspectDescriptionChange so far (tests).
+    static quint64 tableRenamePropagationCount();
+
     //! Sets the number of significant digits
     void setNumericPrecision(int prec);
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -414,6 +434,7 @@ private:
     //! handleAspectDescriptionChange (rename, undo and redo of a rename).
     QString d_stored_table_name;
     bool d_has_stored_table_name = false;
+    int d_rename_propagation_blocked = 0;
     bool d_auto_recalc_formulas = true;
     bool d_in_auto_recalc = false;
     bool d_pending_unwrapped_recalc = false;
