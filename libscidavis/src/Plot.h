@@ -61,6 +61,8 @@ public:
 
     int insertCurve(QwtPlotItem *c);
     void removeCurve(int index);
+    //! Detaches the item with this key and hands it to the caller (removeCurve() deletes it).
+    QwtPlotItem *takeCurve(int index);
 
     int closestCurve(int xpos, int ypos, int &dist, int &point);
     int closestCurveInteractive(const QPoint &pos, int &distOut, int &nearestVertexOut) const;

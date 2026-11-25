@@ -1850,12 +1850,17 @@ int Plot::insertCurve(QwtPlotItem *c)
 
 void Plot::removeCurve(int index)
 {
+    delete takeCurve(index);
+}
+
+QwtPlotItem *Plot::takeCurve(int index)
+{
     if (!d_curves.contains(index))
-        return;
+        return nullptr;
     QwtPlotItem *c = d_curves.value(index, nullptr);
     if (!c) {
         d_curves.remove(index);
-        return;
+        return nullptr;
     }
 
     if (c->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
@@ -1869,7 +1874,7 @@ void Plot::removeCurve(int index)
         d_highlighted_curve_key = -1;
     c->detach();
     d_curves.remove(index);
-    delete c;
+    return c;
 }
 
 QList<int> Plot::getMajorTicksType()

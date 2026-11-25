@@ -19,6 +19,10 @@
 //   111b removing a column that curves use (X, Y) and undoing it brings the curves back in
 //        every graph and layer that used them, with their style and order; Redo removes them
 //        again; removing a Y column only takes that curve and Undo puts it back in place
+//   111c Undo puts the curves back into the graph as it is now: an X range set and a curve
+//        added after the removal stay, the legend gets the lines back in order, the error bars
+//        hang on their curve again, a layer deleted meanwhile is skipped; removing only the
+//        error column takes and restores only the error bars
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -349,6 +353,138 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(l0.size() == 3 && std::fabs(l0.at(1).toObject().value(QString::fromLatin1("y_max")).toDouble() - 25.0) < 1e-9,
                    "111b: restored curve y2 does not follow its column: y_max "
                            << (l0.size() > 1 ? l0.at(1).toObject().value(QString::fromLatin1("y_max")).toDouble() : -1.0));
+    }
+
+    // ---- 111c: Undo puts the curves back into the graph as it is now ----
+    {
+        Table *t = w111->newTable(QString::fromLatin1("V111"), 5, 4);
+        Table *t2 = w111->newTable(QString::fromLatin1("W111"), 3, 2);
+        CHECK_COND(t != nullptr && t2 != nullptr, "111c: tables");
+        t->setColName(0, QString::fromLatin1("x"));
+        t->setColName(1, QString::fromLatin1("y1"));
+        t->setColName(2, QString::fromLatin1("y2"));
+        t->setColName(3, QString::fromLatin1("e1"));
+        t2->setColName(0, QString::fromLatin1("xx"));
+        t2->setColName(1, QString::fromLatin1("yy"));
+        CHECK_COND(setCol("V111", "x", { 0, 1, 2, 3, 4 }) && setCol("V111", "y1", { 1, 3, 2, 5, 4 })
+                           && setCol("V111", "y2", { 10, 12, 11, 15, 13 })
+                           && setCol("V111", "e1", { 0.1, 0.2, 0.3, 0.2, 0.1 })
+                           && setCol("W111", "xx", { 0, 2, 4 }) && setCol("W111", "yy", { 7, 8, 9 }),
+                   "111c: fill tables");
+
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "V111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "y1", "y2" } }, { "graph_name", "VG111" } });
+        CHECK_COND(!isErr(r), "111c: plot VG111: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_error_bars"),
+                QJsonObject{ { "graph", "VG111" }, { "err_col", "e1" }, { "curve", "V111_y1" },
+                             { "table", "V111" } });
+        CHECK_COND(!isErr(r), "111c: error bars: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_curve_style"),
+                QJsonObject{ { "graph", "VG111" }, { "curve", "V111_y2" }, { "color", "#654321" } });
+        CHECK_COND(!isErr(r), "111c: style y2: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.add_layer"), QJsonObject{ { "graph", "VG111" } });
+        CHECK_COND(!isErr(r), "111c: add layer: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "VG111" }, { "table", "V111" }, { "x_col", "x" },
+                             { "y_col", "y1" }, { "layer", 1 } });
+        CHECK_COND(!isErr(r), "111c: curve on layer 1: " << errText(r));
+
+        MultiLayer *ml = nullptr;
+        for (MyWidget *mw2 : w111->windowsList()) {
+            if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String("VG111"))
+                ml = static_cast<MultiLayer *>(mw2);
+        }
+        CHECK_COND(ml != nullptr && ml->layersList().size() == 2, "111c: graph VG111 with 2 layers");
+        Graph *g0 = ml->layersList().at(0);
+
+        auto layerSig = [&](Graph *g) {
+            std::string s;
+            for (int i = 0; i < g->curves(); ++i) {
+                QwtPlotCurve *c = g->curve(i);
+                s += (c ? c->title().text().toStdString() : std::string("?")) + ":"
+                        + (c ? c->pen().color().name().toStdString() : std::string()) + ";";
+            }
+            return s;
+        };
+        // the error bars hang on y1 and y1 lists them
+        auto errLinked = [&](Graph *g) {
+            for (int i = 0; i < g->curves(); ++i) {
+                auto *er = dynamic_cast<QwtErrorPlotCurve *>(g->curve(i));
+                if (!er)
+                    continue;
+                DataCurve *m = er->masterCurve();
+                return m && g->plotItemIndex(m) >= 0 && m->title().text() == QLatin1String("V111_y1")
+                        && m->errorBarsList().contains(er) && er->dataSize() == 5;
+            }
+            return false;
+        };
+        auto legendText = [&](Graph *g) {
+            return g->legend() ? g->legend()->text().toStdString() : std::string();
+        };
+        const std::string sig0 = layerSig(g0);
+        const std::string leg0 = legendText(g0);
+        std::cout << "[INFO] 111c: VG111 layer 0 " << sig0 << " legend " << leg0 << "\n";
+        CHECK_COND(errLinked(g0) && sig0.find("#654321") != std::string::npos,
+                   "111c: setup: error bars on y1 and styled y2 expected: " << sig0);
+
+        auto undoV = [&](bool undo) {
+            return !isErr(rpc(QString::fromLatin1(undo ? "app.undo" : "app.redo"),
+                              QJsonObject{ { "table", "V111" } }));
+        };
+
+        // remove x; then edit the graph: X range, a new curve on layer 0, delete layer 1
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "V111" }, { "col", "x" } });
+        CHECK_COND(!isErr(r), "111c: remove x: " << errText(r));
+        CHECK_COND(g0->curves() == 0, "111c: curves left after removing x: " << layerSig(g0));
+        r = rpc(QString::fromLatin1("graph.set_axis"),
+                QJsonObject{ { "graph", "VG111" }, { "axis", "x" }, { "min", -3.0 }, { "max", 7.0 }, { "layer", 0 } });
+        CHECK_COND(!isErr(r), "111c: set x range: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "VG111" }, { "table", "W111" }, { "x_col", "xx" },
+                             { "y_col", "yy" }, { "layer", 0 } });
+        CHECK_COND(!isErr(r), "111c: add W111 curve: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.remove_layer"), QJsonObject{ { "graph", "VG111" }, { "layer", 1 } });
+        CHECK_COND(!isErr(r) && ml->layersList().size() == 1, "111c: remove layer 1: " << errText(r));
+        auto xRange = [&]() {
+            return std::to_string(g0->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->lowerBound()) + ".."
+                    + std::to_string(g0->plotWidget()->axisScaleDiv(QwtPlot::xBottom)->upperBound());
+        };
+        const std::string range1 = xRange();
+
+        CHECK_COND(undoV(true), "111c: undo remove x");
+        const std::string sigU = layerSig(g0);
+        std::cout << "[INFO] 111c: after undo " << sigU << " x " << xRange() << " legend "
+                  << legendText(g0) << "\n";
+        CHECK_COND(t->numCols() == 4, "111c: undo did not restore x");
+        CHECK_COND(sigU.compare(0, sig0.size(), sig0) == 0 && sigU.find("W111_yy:") == sig0.size()
+                           && g0->curves() == 4,
+                   "111c: after undo expected the original curves then W111_yy: " << sigU
+                                                                                << " original " << sig0);
+        CHECK_COND(xRange() == range1, "111c: undo changed the X range " << range1 << " -> " << xRange());
+        CHECK_COND(errLinked(g0), "111c: error bars not linked to y1 after undo");
+        const std::string legU = legendText(g0);
+        // y1, y2, the error bars (no legend line), W111_yy
+        CHECK_COND(legU.find("\\c{1}") != std::string::npos && legU.find("\\c{2}") != std::string::npos
+                           && legU.find("\\c{4}") != std::string::npos
+                           && legU.find("\\c{3}") == std::string::npos
+                           && legU.find("\\c{1}") < legU.find("\\c{2}")
+                           && legU.find("\\c{2}") < legU.find("\\c{4}"),
+                   "111c: legend after undo: " << legU);
+
+        CHECK_COND(undoV(false), "111c: redo remove x");
+        CHECK_COND(t->numCols() == 3 && layerSig(g0).rfind("W111_yy:", 0) == 0 && g0->curves() == 1,
+                   "111c: redo should leave only W111_yy: " << layerSig(g0));
+        CHECK_COND(xRange() == range1, "111c: redo changed the X range " << xRange());
+        CHECK_COND(undoV(true), "111c: undo remove x again");
+        CHECK_COND(layerSig(g0) == sigU && errLinked(g0) && legendText(g0) == legU,
+                   "111c: second undo: " << layerSig(g0) << " legend " << legendText(g0));
+
+        // removing the error column takes only the error bars; undo hangs them on y1 again
+        r = rpc(QString::fromLatin1("table.remove_column"), QJsonObject{ { "table", "V111" }, { "col", "e1" } });
+        CHECK_COND(!isErr(r) && !errLinked(g0) && g0->curves() == 3, "111c: remove e1: " << layerSig(g0));
+        CHECK_COND(undoV(true) && errLinked(g0) && layerSig(g0) == sigU,
+                   "111c: undo remove e1: " << layerSig(g0));
     }
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";

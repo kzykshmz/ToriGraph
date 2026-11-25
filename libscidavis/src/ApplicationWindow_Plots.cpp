@@ -2448,6 +2448,57 @@ void ApplicationWindow::removeCurves(const QString &name)
     QApplication::restoreOverrideCursor();
 }
 
+namespace {
+
+//! Undo step for the curves that used removed columns. It holds the curve objects themselves
+//! while they are out of their layers: Undo (run after the columns are back) puts them back into
+//! the layers as they are now, so edits made to the graph in between stay; Redo takes them out
+//! again. A layer deleted in between is skipped.
+class TakenCurvesUndoCommand : public QUndoCommand
+{
+public:
+    explicit TakenCurvesUndoCommand(const QString &text) : QUndoCommand(text) { }
+    ~TakenCurvesUndoCommand() override
+    {
+        for (Layer &l : d_layers)
+            Graph::discardTakenCurves(l.taken);
+    }
+
+    void add(Graph *g, const Graph::TakenCurves &taken) { d_layers.append({ g, taken }); }
+    bool isEmpty() const { return d_layers.isEmpty(); }
+
+    void undo() override
+    {
+        for (Layer &l : d_layers) {
+            if (l.graph)
+                l.graph->restoreTakenCurves(l.taken);
+        }
+    }
+
+    void redo() override
+    {
+        if (!d_initial_redo_done) {
+            d_initial_redo_done = true; // taken when the command was made
+            return;
+        }
+        for (Layer &l : d_layers) {
+            if (l.graph)
+                l.graph->retakeCurves(l.taken);
+        }
+    }
+
+private:
+    struct Layer
+    {
+        QPointer<Graph> graph;
+        Graph::TakenCurves taken;
+    };
+    QList<Layer> d_layers;
+    bool d_initial_redo_done = false;
+};
+
+} // namespace
+
 void ApplicationWindow::removeCurvesOfColumnsWithUndo(Table *t, int first, int count)
 {
     if (!t || !t->d_future_table || count < 1 || Table::isUndoRedoReplaying())
@@ -2458,43 +2509,30 @@ void ApplicationWindow::removeCurvesOfColumnsWithUndo(Table *t, int first, int c
     if (names.isEmpty())
         return;
 
-    // Each graph window that uses one of the columns: snapshot, remove its curves now (the
-    // aboutToRemoveCol pass then finds nothing left) and put the snapshot command in the
-    // removal's undo macro ahead of the column commands. Undo runs it after the columns are
-    // back and restores the curves with their style, order and layers; Redo removes them again
-    // before the columns go.
+    // Take the curves that use these columns out of every 2D layer now (the aboutToRemoveCol
+    // pass then finds nothing left) and put the command that holds them in the removal's undo
+    // macro ahead of the column commands: Undo runs it after the columns are back, Redo before
+    // they go.
+    auto *cmd = new TakenCurvesUndoCommand(tr("Remove Curves"));
     const QList<MyWidget *> windows = windowsList();
     for (MyWidget *w : windows) {
         if (!w || !w->inherits("MultiLayer"))
             continue;
-        auto *ml = static_cast<MultiLayer *>(w);
-        const QWidgetList layers = ml->graphPtrs();
-        bool uses = false;
+        const QWidgetList layers = static_cast<MultiLayer *>(w)->graphPtrs();
         for (QWidget *lw : layers) {
             auto *g = static_cast<Graph *>(lw);
-            for (const QString &n : names) {
-                if (g && g->hasCurvesUsingColumn(n)) {
-                    uses = true;
-                    break;
-                }
-            }
-            if (uses)
-                break;
+            if (!g)
+                continue;
+            Graph::TakenCurves taken = g->takeCurvesUsingColumns(names);
+            if (taken.out)
+                cmd->add(g, taken);
         }
-        if (!uses)
-            continue;
-        const QString before = ml->captureUndoSnapshot();
-        if (before.isEmpty())
-            continue; // snapshots suppressed: removeCurves() still removes them, unrecorded
-        for (QWidget *lw : layers) {
-            if (auto *g = static_cast<Graph *>(lw)) {
-                for (const QString &n : names)
-                    g->removeCurves(n);
-            }
-        }
-        if (QUndoCommand *cmd = ml->createUndoSnapshotCommand(tr("Remove Curves"), before))
-            t->d_future_table->exec(cmd);
     }
+    if (cmd->isEmpty()) {
+        delete cmd;
+        return;
+    }
+    t->d_future_table->exec(cmd); // without an undo stack it is run and deleted at once
 }
 
 void ApplicationWindow::updateCurves(Table *t, const QString &name)

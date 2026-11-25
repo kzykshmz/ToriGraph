@@ -1626,13 +1626,235 @@ bool Graph::curveUsesColumn(int index, const QString &s)
             || dc->plotAssociation().contains(QRegExp("\b" + s + "\b"));
 }
 
-bool Graph::hasCurvesUsingColumn(const QString &s)
+Graph::TakenCurves Graph::takeCurvesUsingColumns(const QStringList &names)
 {
+    TakenCurves tc;
+    QList<QwtPlotItem *> items;
     for (int i = 0; i < n_curves; ++i) {
-        if (curveUsesColumn(i, s))
-            return true;
+        for (const QString &n : names) {
+            if (curveUsesColumn(i, n)) {
+                items << plotItem(i);
+                break;
+            }
+        }
     }
-    return false;
+    // the error bars of a taken curve go with it, so its links stay whole
+    const QList<QwtPlotItem *> matched = items;
+    for (QwtPlotItem *it : matched) {
+        DataCurve *dc = dynamic_cast<DataCurve *>(it);
+        if (!dc || dc->type() == ErrorBars)
+            continue;
+        for (DataCurve *er : dc->errorBarsList()) {
+            if (er && !items.contains(er) && plotItemIndex(er) >= 0)
+                items << er;
+        }
+    }
+    if (!items.isEmpty())
+        takeCurveItems(items, tc);
+    return tc;
+}
+
+void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
+{
+    tc.curves.clear();
+    tc.order.clear();
+    for (int i = 0; i < n_curves; ++i)
+        tc.order << plotItem(i);
+
+    QList<QPair<int, QwtPlotItem *>> byIndex;
+    for (QwtPlotItem *it : items) {
+        const int idx = plotItemIndex(it);
+        if (idx >= 0)
+            byIndex << qMakePair(idx, it);
+    }
+    std::sort(byIndex.begin(), byIndex.end(),
+              [](const QPair<int, QwtPlotItem *> &a, const QPair<int, QwtPlotItem *> &b) {
+                  return a.first < b.first;
+              });
+
+    // From the last one down, so the indices and legend numbers of the rest stay valid.
+    for (int k = byIndex.size() - 1; k >= 0; --k) {
+        QwtPlotItem *it = byIndex[k].second;
+        const int idx = plotItemIndex(it);
+        if (idx < 0)
+            continue;
+        TakenCurve t;
+        t.item = it;
+        t.type = c_type[idx];
+        t.index = idx;
+        t.fitCurve = d_fit_curves.contains(dynamic_cast<QwtPlotCurve *>(it));
+        Legend *leg = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
+        if (leg && t.type != ErrorBars && !isPiePlot()) {
+            const QString token = "\\c{" + QString::number(idx + 1) + "}";
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+            const QStringList lines = leg->text().split("\n", Qt::SkipEmptyParts);
+#else
+            const QStringList lines = leg->text().split("\n", QString::SkipEmptyParts);
+#endif
+            for (const QString &ln : lines) {
+                if (ln.contains(token)) {
+                    t.legendLine = ln;
+                    break;
+                }
+            }
+        }
+        // error bars whose curve stays: unlink them from it (restoreTakenCurves() links back)
+        if (QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(it)) {
+            if (er->masterCurve() && !items.contains(er->masterCurve()))
+                er->detachFromMasterCurve();
+        }
+        if (removeCurveAt(idx, false) == it)
+            tc.curves.prepend(t);
+    }
+    tc.out = !tc.curves.isEmpty();
+    d_plot->replot();
+}
+
+void Graph::restoreTakenCurves(TakenCurves &tc)
+{
+    if (!tc.out)
+        return;
+    tc.out = false;
+
+    auto isTaken = [&](const QwtPlotItem *it) {
+        return std::any_of(tc.curves.cbegin(), tc.curves.cend(),
+                           [&](const TakenCurve &o) { return o.item == it; });
+    };
+
+    QList<QwtPlotItem *> restored;
+    // the curves first, then the error bars, which need their curve back in the layer
+    for (int pass = 0; pass < 2; ++pass) {
+        for (TakenCurve &t : tc.curves) {
+            if (!t.item || (pass == 0) == (t.type == ErrorBars))
+                continue;
+            QwtErrorPlotCurve *er = (t.type == ErrorBars)
+                    ? dynamic_cast<QwtErrorPlotCurve *>(t.item)
+                    : nullptr;
+            DataCurve *master = er ? er->masterCurve() : nullptr;
+            if (t.type == ErrorBars && (!master || plotItemIndex(master) < 0)) {
+                // its curve is no longer in this layer: nothing to attach the error bars to
+                if (!master || !isTaken(master)) {
+                    delete t.item;
+                    t.item = nullptr;
+                }
+                continue;
+            }
+
+            // after the item that preceded it when it was taken, if that one is still here
+            int pos = 0;
+            for (int p = tc.order.indexOf(t.item) - 1; p >= 0; --p) {
+                const int cur = plotItemIndex(tc.order.at(p));
+                if (cur >= 0) {
+                    pos = cur + 1;
+                    break;
+                }
+            }
+            pos = qBound(0, pos, n_curves);
+
+            // shift the curve numbers in the legend and the per-index state from pos on
+            Legend *leg =
+                    (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
+            if (leg) {
+                QVector<int> oldToNew(n_curves);
+                for (int i = 0; i < n_curves; ++i)
+                    oldToNew[i] = (i < pos) ? i : i + 1;
+                QString text = remapLegendCurveTokens(leg->text(), oldToNew);
+                if (!t.legendLine.isEmpty()) {
+                    QString line = t.legendLine;
+                    line.replace("\\c{" + QString::number(t.index + 1) + "}",
+                                 "\\c{" + QString::number(pos + 1) + "}");
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                    QStringList lines = text.split("\n", Qt::SkipEmptyParts);
+#else
+                    QStringList lines = text.split("\n", QString::SkipEmptyParts);
+#endif
+                    int at = -1;
+                    const QString prevTok = "\\c{" + QString::number(pos) + "}";
+                    const QString nextTok = "\\c{" + QString::number(pos + 2) + "}";
+                    for (int li = 0; pos > 0 && li < lines.size() && at < 0; ++li) {
+                        if (lines[li].contains(prevTok))
+                            at = li + 1;
+                    }
+                    for (int li = 0; li < lines.size() && at < 0; ++li) {
+                        if (lines[li].contains(nextTok))
+                            at = li;
+                    }
+                    if (at < 0)
+                        at = lines.size();
+                    lines.insert(at, line);
+                    text = lines.join("\n") + "\n";
+                }
+                if (text != leg->text())
+                    leg->setText(text);
+            }
+            {
+                QMap<int, QString> shiftedLabels;
+                for (auto lit = d_last_auto_curve_labels.constBegin();
+                     lit != d_last_auto_curve_labels.constEnd(); ++lit)
+                    shiftedLabels.insert(lit.key() < pos ? lit.key() : lit.key() + 1,
+                                         lit.value());
+                d_last_auto_curve_labels = shiftedLabels;
+            }
+            if ((d_selection.kind == GraphSelection::Curve
+                 || d_selection.kind == GraphSelection::ErrorBars
+                 || d_selection.kind == GraphSelection::Spectrogram)
+                && d_selection.primaryId >= pos)
+                d_selection.primaryId++;
+
+            const int key = d_plot->insertCurve(t.item);
+            c_keys.insert(pos, key);
+            c_type.insert(pos, t.type);
+            ++n_curves;
+            if (t.fitCurve)
+                if (QwtPlotCurve *fc = dynamic_cast<QwtPlotCurve *>(t.item))
+                    d_fit_curves << fc;
+            if (er && !master->errorBarsList().contains(er))
+                master->addErrorBars(er);
+            restored << t.item;
+        }
+    }
+
+    syncCurveZOrder();
+    // The columns are back: read their present values. loadData() may drop a curve that has
+    // no valid point left, so each one is looked up again first.
+    for (QwtPlotItem *it : restored) {
+        if (plotItemIndex(it) < 0)
+            continue;
+        if (QwtErrorPlotCurve *er = dynamic_cast<QwtErrorPlotCurve *>(it))
+            er->loadData();
+        else if (DataCurve *dc = dynamic_cast<DataCurve *>(it)) {
+            if (dc->type() != Function)
+                dc->loadData();
+        }
+    }
+    d_plot->replot();
+    emit modifiedGraph();
+}
+
+void Graph::retakeCurves(TakenCurves &tc)
+{
+    if (tc.out)
+        return;
+    QList<QwtPlotItem *> items;
+    for (const TakenCurve &t : tc.curves) {
+        if (t.item && plotItemIndex(t.item) >= 0)
+            items << t.item;
+    }
+    tc.curves.clear();
+    if (!items.isEmpty())
+        takeCurveItems(items, tc);
+}
+
+void Graph::discardTakenCurves(TakenCurves &tc)
+{
+    if (tc.out) {
+        for (TakenCurve &t : tc.curves) {
+            delete t.item;
+            t.item = nullptr;
+        }
+    }
+    tc.curves.clear();
+    tc.out = false;
 }
 
 void Graph::removeCurves(const QString &s)
@@ -1653,18 +1875,25 @@ void Graph::removeCurve(const QString &s)
 
 void Graph::removeCurve(int index)
 {
+    removeCurveAt(index, true);
+}
+
+QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
+{
     if (index < 0 || index >= n_curves)
-        return;
+        return nullptr;
 
     QwtPlotItem *it = plotItem(index);
     if (!it)
-        return;
+        return nullptr;
 
     removeLegendItem(index);
 
     if (it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
         PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
-        if (pc && pc->type() == ErrorBars) {
+        if (!deleteItem) {
+            // taken out whole: the caller keeps the error bar links (takeCurvesUsingColumns)
+        } else if (pc && pc->type() == ErrorBars) {
             if (QwtErrorPlotCurve *epc = dynamic_cast<QwtErrorPlotCurve *>(pc)) {
                 if (epc->masterCurve())
                     epc->detachFromMasterCurve();
@@ -1684,7 +1913,7 @@ void Graph::removeCurve(int index)
     // Re-resolve index in case clearErrorBars() removed items before it
     index = plotItemIndex(it);
     if (index < 0 || index >= n_curves)
-        return;
+        return nullptr;
 
     QwtPlotCurve *removedCurve = curve(index);
     if (d_active_tool) {
@@ -1722,7 +1951,11 @@ void Graph::removeCurve(int index)
     if (d_plot->highlightedCurveKey() == c_keys[index])
         d_plot->setHighlightedCurveKey(-1);
 
-    d_plot->removeCurve(c_keys[index]);
+    QwtPlotItem *taken = nullptr;
+    if (deleteItem)
+        d_plot->removeCurve(c_keys[index]);
+    else
+        taken = d_plot->takeCurve(c_keys[index]);
     n_curves--;
 
     for (int i = index; i < n_curves; i++) {
@@ -1757,6 +1990,7 @@ void Graph::removeCurve(int index)
 
     syncCurveZOrder();
     emit modifiedGraph();
+    return taken;
 }
 
 bool Graph::modifyFunctionCurve(ApplicationWindow *parent, int curve, int type,

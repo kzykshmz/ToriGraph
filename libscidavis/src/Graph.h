@@ -276,8 +276,39 @@ public slots:
      * \brief Removes all curves defined by the title/plot association string s.
      */
     void removeCurves(const QString &s);
-    //! True when removeCurves(s) would remove at least one curve.
-    bool hasCurvesUsingColumn(const QString &s);
+
+public:
+    //! Curves taken out of a layer (not deleted) by takeCurvesUsingColumns(), so that an undo
+    //! command can put them back with restoreTakenCurves() and take them again with
+    //! retakeCurves(). While they are out (\c out) the holder owns them and deletes them with
+    //! discardTakenCurves().
+    struct TakenCurve
+    {
+        QwtPlotItem *item = nullptr;
+        int type = 0;
+        int index = -1; //!< its index when it was taken
+        QString legendLine; //!< its legend line (with \c{index+1}), empty if none
+        bool fitCurve = false;
+    };
+    struct TakenCurves
+    {
+        QList<TakenCurve> curves; //!< in the layer's order
+        //! Every item of the layer just before the take, in order; only compared, never used,
+        //! to put each curve back after the item that preceded it.
+        QList<QwtPlotItem *> order;
+        bool out = false;
+    };
+    //! Takes out the curves removeCurves() would remove for any of \a names, with the error
+    //! bars of those curves, keeping them whole (style, error bar links, legend line).
+    TakenCurves takeCurvesUsingColumns(const QStringList &names);
+    //! Puts the taken curves back, each after the item that preceded it (if still here) and
+    //! with its legend line; the rest of the layer stays as it is now.
+    void restoreTakenCurves(TakenCurves &tc);
+    //! Takes the restored curves out again (those the user has removed since are skipped).
+    void retakeCurves(TakenCurves &tc);
+    static void discardTakenCurves(TakenCurves &tc);
+
+public slots:
 
     void updateCurvesData(Table *w, const QString &yColName);
 
@@ -1187,6 +1218,10 @@ signals:
 private:
     //! The title/plot association test of removeCurves() for one curve.
     bool curveUsesColumn(int index, const QString &s);
+    //! removeCurve(index), or with \a deleteItem false takes the item out and returns it.
+    QwtPlotItem *removeCurveAt(int index, bool deleteItem);
+    //! Takes \a items out of the layer into \a tc (see takeCurvesUsingColumns()).
+    void takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc);
     //! List storing pointers to the curves resulting after a fit session, in case the user wants to delete them later on.
     QList<QwtPlotCurve *> d_fit_curves;
     //! Render hint for plot items.
