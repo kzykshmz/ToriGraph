@@ -558,12 +558,16 @@ QString Graph::saveCurveLayout(int index)
     }
 
     if (style == Histogram) {
-        QwtHistogram *h = (QwtHistogram *)c;
-        s += QString::number(h->autoBinning()) + "\t";
-        // Bin width/range in the shortest exact round-trip form (default is 6 digits).
-        s += QString::number(h->binSize(), 'g', QLocale::FloatingPointShortest) + "\t";
-        s += QString::number(h->begin(), 'g', QLocale::FloatingPointShortest) + "\t";
-        s += QString::number(h->end(), 'g', QLocale::FloatingPointShortest) + "\t";
+        if (QwtHistogram *h = dynamic_cast<QwtHistogram *>(c)) {
+            s += QString::number(h->autoBinning()) + "\t";
+            // Bin width/range in the shortest exact round-trip form (default is 6 digits).
+            s += QString::number(h->binSize(), 'g', QLocale::FloatingPointShortest) + "\t";
+            s += QString::number(h->begin(), 'g', QLocale::FloatingPointShortest) + "\t";
+            s += QString::number(h->end(), 'g', QLocale::FloatingPointShortest) + "\t";
+        } else {
+            // not a histogram object: never read its memory as one; ask for automatic bins
+            s += QStringLiteral("1\t1\t0\t10\t");
+        }
     } else if (style == VectXYXY || style == VectXYAM) {
         VectorCurve *v = (VectorCurve *)c;
         s += COLORNAME(v->color()) + "\t";

@@ -117,6 +117,9 @@ QwtHistogram::QwtHistogram(Table *t, const QString &name, int startRow, int endR
     d_min = 0.0;
     d_max = 0.0;
     setGap(0);
+    // The bar base class marks itself as vertical bars; a histogram must report its own type,
+    // otherwise copies (Graph::copy, clone) are built as plain bar curves that lose the binning.
+    setType(Graph::Histogram);
 }
 
 void QwtHistogram::copy(const QwtHistogram *h)
