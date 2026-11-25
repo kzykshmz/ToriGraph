@@ -246,8 +246,9 @@ int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize)
         buf[n++] = static_cast<char>(u);
     }
     if (dPos >= 1) {
-        // Fortran double-precision exponent: digits (with a point, or a signed exponent) on the
-        // left, an integer exponent on the right; "2D3" without either stays text.
+        // Fortran double-precision exponent: digits with a point on the left ("1.0D+00",
+        // "1.D5"), an integer exponent on the right. Without the point it is an identifier
+        // ("2D3", "3D-1", "3D-2": sample / position names) and stays text.
         bool mantissaDigits = false, mantissaPoint = false, mantissaOk = true;
         for (int i = 0; i < dPos; ++i) {
             const char c = buf[i];
@@ -265,7 +266,7 @@ int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize)
         bool expOk = e < n;
         for (int i = e; i < n; ++i)
             expOk = expOk && buf[i] >= '0' && buf[i] <= '9';
-        if (mantissaOk && mantissaDigits && expOk && (mantissaPoint || expSigned))
+        if (mantissaOk && mantissaDigits && expOk && mantissaPoint)
             buf[dPos] = 'e';
     }
     return n;
@@ -2717,6 +2718,7 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 ? sepsEuro
                 : sepsC;
         int bestStart = -1, bestFields = 0, bestRawFields = 0;
+        bool bestRelaxed = false;
         QChar bestSep;
         for (const QChar sep : seps) {
             if (europeanSemicolonDetected && sep == QLatin1Char(','))
@@ -2783,16 +2785,14 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                     bestStart = i;
                     bestFields = blockWidth;
                     bestRawFields = blockRawWidth;
+                    bestRelaxed = relaxedStart;
                     bestSep = sep;
                 }
                 break;
             }
         }
         if (bestStart >= 0) {
-            int bsNum = 0, bsTxt = 0;
-            const SplitLineResult srBest = splitLineEx(bestStart, bestSep);
-            rowStats(srBest.parts, bsNum, bsTxt);
-            const bool bestStartAllNumeric = (bsTxt == 0 && isNumericBlockRow(srBest, bsNum, bsTxt));
+            bool bestStartAllNumeric = false;
             int hdrStart = bestStart;
             auto matchesBestWidth = [&](int idx) -> bool {
                 if (idx < 0 || isCommentLineForSep(idx, bestSep, false))
@@ -2804,6 +2804,45 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 return sr.rawFieldCount == bestFields || sr.parts.size() == bestFields
                         || (bestRawFields > bestFields && sr.rawFieldCount == bestRawFields);
             };
+            // A start row accepted only through its missing cells ("2,", ",352") under rows of the
+            // same width that hold numbers ("1,heated", "S2,350"): the table has a text column that
+            // is empty further down, and those rows are its first data rows, not a header and a
+            // preamble ("Time,Note / 0,start / 1,heated / 2, / 3,"). The block starts at the
+            // first of them when a row without numbers (the header) or the file start is above
+            // them, or when there are several. A single such row under a line of another width
+            // (a title) stays a header candidate ("Temp,300" above "0," / "1,2.5").
+            if (bestRelaxed) {
+                auto prevDataIdx = [&](int fromIdx) -> int {
+                    int cur = fromIdx;
+                    while (cur >= 0
+                           && (isCommentLineForSep(cur, bestSep, false)
+                               || isBangSemicolonComment(cur, bestSep)))
+                        --cur;
+                    return cur;
+                };
+                int top = bestStart;
+                int chain = 0;
+                int up = prevDataIdx(top - 1);
+                while (up >= 0 && matchesBestWidth(up)) {
+                    int num = 0, txt = 0;
+                    rowStats(splitLineEx(up, bestSep).parts, num, txt);
+                    if (num < 1)
+                        break;
+                    top = up;
+                    ++chain;
+                    up = prevDataIdx(up - 1);
+                }
+                if (chain > 0 && (chain >= 2 || up < 0 || matchesBestWidth(up))) {
+                    bestStart = top;
+                    hdrStart = top;
+                }
+            }
+            {
+                int bsNum = 0, bsTxt = 0;
+                const SplitLineResult srBest = splitLineEx(bestStart, bestSep);
+                rowStats(srBest.parts, bsNum, bsTxt);
+                bestStartAllNumeric = bsTxt == 0 && isNumericBlockRow(srBest, bsNum, bsTxt);
+            }
             auto isPureTextRowWithFields = [&](int idx) -> bool {
                 if (!matchesBestWidth(idx))
                     return false;
@@ -4367,6 +4406,29 @@ QString AsciiTableImportFilter::decodeLabTextAuto(const QByteArray &rawBytes,
         if (QTextCodec *w1252 = QTextCodec::codecForName("windows-1252"))
             westDecoded = decodeCountingInvalid(w1252, rawBytes, westInvalid);
         const int westScore = (westInvalid == 0) ? westernTextScore(westDecoded) : 0;
+        // Mostly valid UTF-8 ("°C", "µm", "é" decoded) with a few damaged bytes, which Shift-JIS
+        // reads worse ("Ü", "à" are not Shift-JIS): UTF-8 with a warning, before Windows-1252 /
+        // EUC-JP, which read any byte and would turn every UTF-8 character into two
+        // ("°C" -> "Â°C") without a warning. The Shift-JIS codec puts U+FFFD for a byte it cannot
+        // read without counting it as invalid, so the replacement characters are counted here.
+        int sjisBad = sjisInvalid;
+        if (utf8Invalid > 0)
+            sjisBad = std::max<int>(sjisBad, int(decoded.count(QChar::ReplacementCharacter)));
+        if (utf8Invalid > 0 && utf8Invalid < sjisBad) {
+            int utf8Chars = 0;
+            for (const QChar ch : utf8Decoded) {
+                if (ch.unicode() >= 0x80 && ch != QChar::ReplacementCharacter
+                    && ch != QChar(0xFEFF))
+                    ++utf8Chars;
+            }
+            if (utf8Chars > utf8Invalid) {
+                g_lastDecodedEncoding = QStringLiteral("UTF-8");
+                g_lastDecodeInvalidChars = utf8Invalid;
+                if (!utf8Decoded.isEmpty() && utf8Decoded.at(0) == QChar(0xFEFF))
+                    utf8Decoded.remove(0, 1);
+                return utf8Decoded;
+            }
+        }
         const bool eucBetter = eucInvalid == 0 && eucScore > 0
                 && (sjisInvalid > 0 || eucScore > sjisScore);
         const bool westBetter = westInvalid == 0 && westScore > 0

@@ -28,8 +28,13 @@
 //   103f Fortran exponents ("1.0D+00", "3.5d+02") are numbers; "2D3" stays text
 //   103g full-width digits ("１", "２．５", "－３") are numbers, no row becomes header / units
 //   103h headerless file whose first row holds NaN; a separator at the end of every line does
-//        not add an empty column (import_csv, GUI, paste_tsv)
+//        not add an empty column (import_csv, GUI; paste_tsv keeps the pasted range, 103j3)
 //   103i plotFile() of a headless window gives a headless, hidden window
+//   103j regressions of the round-2 fixes: a table with one numeric column and a text column
+//        that is empty further down keeps its header and first rows (GUI and RPC); paste_tsv
+//        with an empty last column clears the cells it is pasted over; "3D-1" (no point) is
+//        an identifier, not a Fortran number; nearly-UTF-8 text with one stray Latin-1 byte
+//        stays UTF-8 with a warning
 // =============================================================================
 
 namespace {
@@ -505,8 +510,10 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
                            && v == 1.0
                            && AsciiTableImportFilter::parseNumberToken(QStringLiteral("-2.5d-3"), v)
                            && v == -2.5e-3
-                           && AsciiTableImportFilter::parseNumberToken(QStringLiteral("2D+3"), v)
-                           && v == 2000.0
+                           && AsciiTableImportFilter::parseNumberToken(QStringLiteral("1.D5"), v)
+                           && v == 1e5
+                           && !AsciiTableImportFilter::parseNumberToken(QStringLiteral("2D+3"), v)
+                           && !AsciiTableImportFilter::parseNumberToken(QStringLiteral("3D-1"), v)
                            && !AsciiTableImportFilter::parseNumberToken(QStringLiteral("2D3"), v)
                            && !AsciiTableImportFilter::parseNumberToken(QStringLiteral("D+3"), v)
                            && !AsciiTableImportFilter::parseNumberToken(QStringLiteral("1.0D"), v),
@@ -555,19 +562,7 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
         const QVector<Col103> namedGui = guiImport(tmp103.filePath(QStringLiteral("named_empty.csv")));
         CHECK_COND(namedGui.size() == 3 && namedGui[2].name == QLatin1String("z"),
                    "103h3 (GUI): named empty last column dropped: " << dumpCols(namedGui));
-        // paste_tsv
-        const QJsonObject pr = rpc(QStringLiteral("table.paste_tsv"),
-                                   QJsonObject { { "text", "x\ty\t\n1\t2\t\n3\t4\t\n" },
-                                                 { "name", "Paste103" } });
-        CHECK_COND(!rpcIsError103(pr), "103h4: paste_tsv failed");
-        const QJsonArray pcols = rpcResult103(rpc(QStringLiteral("table.get_info"),
-                                                  QJsonObject { { "table", rpcResult103(pr)
-                                                                                   .value(QStringLiteral("name"))
-                                                                                   .toString() } }))
-                                         .value(QStringLiteral("columns"))
-                                         .toArray();
-        CHECK_COND(pcols.size() == 2, "103h4: paste_tsv with trailing tabs gave " << pcols.size()
-                                                                                 << " columns");
+        // (table.paste_tsv keeps the empty last column of the pasted range: 103j3)
     }
     std::cout << "  [OK] 103h headerless NaN first row / trailing separators\n";
 
@@ -591,6 +586,141 @@ int runSuite103ImportRound2(ApplicationWindow *mw)
                    "103i: plotFile window headless=" << headless << " visible=" << visible);
     }
     std::cout << "  [OK] 103i plotFile keeps headless mode\n";
+
+    // -------------------------------------------------------------------------
+    // 103j: regressions of the round-2 fixes
+    // -------------------------------------------------------------------------
+    {
+        // j1/j2: one numeric column and a text column that is empty further down. The rows
+        // "2," / ",355" (numbers and missing cells only) are not the start of the data: the
+        // header and the rows with text above them stay (GUI and RPC, no preamble).
+        struct MixedCase
+        {
+            const char *tag;
+            QByteArray bytes;
+            QStringList names;
+            int numCol;
+            QVector<double> nums;
+            QStringList texts;
+        };
+        const QVector<MixedCase> mixed {
+            { "j1", "Time,Note\n0,start\n1,heated\n2,\n3,\n4,\n",
+              { QStringLiteral("Time"), QStringLiteral("Note") }, 0, { 0, 1, 2, 3, 4 },
+              { QStringLiteral("start"), QStringLiteral("heated"), QString(), QString(),
+                QString() } },
+            { "j2", "Sample,HV\nS1,350\nS2,352\n,355\n,351\n,349\n",
+              { QStringLiteral("Sample"), QStringLiteral("HV") }, 1, { 350, 352, 355, 351, 349 },
+              { QStringLiteral("S1"), QStringLiteral("S2"), QString(), QString(), QString() } },
+            { "j2b", "Sample\tHV\r\nS1\t350\r\nS2\t352\r\n\t355\r\n\t351\r\n",
+              { QStringLiteral("Sample"), QStringLiteral("HV") }, 1, { 350, 352, 355, 351 },
+              { QStringLiteral("S1"), QStringLiteral("S2"), QString(), QString() } },
+        };
+        for (const MixedCase &mc : mixed) {
+            const QString path = writeFile(
+                    QStringLiteral("mixed_%1.%2")
+                            .arg(QLatin1String(mc.tag),
+                                 mc.bytes.contains('\t') ? QStringLiteral("txt")
+                                                         : QStringLiteral("csv")),
+                    mc.bytes);
+            CHECK_COND(!AsciiTableImportFilter::hasDataPreamble(mc.bytes, path),
+                       "103" << mc.tag << ": header and first rows taken for a preamble");
+            for (int pass = 0; pass < 2; ++pass) {
+                const QVector<Col103> cols = (pass == 0) ? guiImport(path) : rpcImport(path);
+                const int txtCol = 1 - mc.numCol;
+                bool ok = cols.size() == 2 && cols[0].name == mc.names[0]
+                        && cols[1].name == mc.names[1] && cols[mc.numCol].numeric
+                        && numsEqual(cols[mc.numCol].nums, mc.nums) && !cols[txtCol].numeric
+                        && cols[txtCol].texts.size() >= mc.texts.size();
+                for (int r = 0; ok && r < mc.texts.size(); ++r)
+                    ok = cols[txtCol].texts[r].trimmed() == mc.texts[r];
+                CHECK_COND(ok, "103" << mc.tag << " (" << (pass == 0 ? "GUI" : "RPC")
+                                     << "): " << dumpCols(cols));
+            }
+        }
+        // missing values in the first data rows still keep the header (103a1)
+        CHECK_COND(checkBoth("j1b", writeFile(QStringLiteral("mf_empty2.csv"),
+                                              "Time,Load\n0,\n1,\n2,3.5\n3,4.5\n"),
+                             { { "Time", { 0, 1, 2, 3 } }, { "Load", { NaN, NaN, 3.5, 4.5 } } }),
+                   "103j1b: missing values in the first two data rows");
+
+        // j3: paste_tsv over existing data: the empty last column of the pasted range clears the
+        // cells below it (only app.import_csv drops a column that every line leaves empty)
+        const QJsonObject base =
+                rpc(QStringLiteral("table.paste_tsv"),
+                    QJsonObject { { "text", "x\ty\tz\n1\t2\t3\n4\t5\t6\n7\t8\t9\n" },
+                                  { "name", "Paste103j" } });
+        CHECK_COND(!rpcIsError103(base), "103j3: paste_tsv (new table) failed");
+        const QString ptbl = rpcResult103(base).value(QStringLiteral("name")).toString();
+        const QJsonObject over = rpc(QStringLiteral("table.paste_tsv"),
+                                     QJsonObject { { "text", "1\t2\t\n3\t4\t" },
+                                                   { "table", ptbl },
+                                                   { "start_row", 1 } });
+        CHECK_COND(!rpcIsError103(over), "103j3: paste_tsv over existing data failed");
+        auto colData = [&](const char *col) {
+            QVector<double> v;
+            const QJsonArray data = rpcResult103(rpc(QStringLiteral("table.get_column_data"),
+                                                     QJsonObject { { "table", ptbl },
+                                                                   { "col", col } }))
+                                            .value(QStringLiteral("data"))
+                                            .toArray();
+            for (const QJsonValue &d : data)
+                v << (d.isDouble() ? d.toDouble() : nanOf());
+            return v;
+        };
+        auto numsText = [](const QVector<double> &v) {
+            QStringList s;
+            for (double d : v)
+                s << (std::isnan(d) ? QStringLiteral("NaN") : QString::number(d));
+            return s.join(QLatin1Char(',')).toStdString();
+        };
+        const QVector<double> px = colData("x"), py = colData("y"), pz = colData("z");
+        CHECK_COND(numsEqual(px, { 1, 1, 3 }) && numsEqual(py, { 2, 2, 4 })
+                           && numsEqual(pz, { 3, NaN, NaN }),
+                   "103j3: paste_tsv with an empty last column: x {"
+                           << numsText(px) << "} y {" << numsText(py) << "} z {" << numsText(pz)
+                           << "}");
+
+        // j4: "3D-1", "3D-2" are identifiers (no point in the mantissa); "1.0D+00" stays a number
+        const QString ids = writeFile(QStringLiteral("ids_3d.csv"),
+                                      "pos,v\n3D-1,1.0D+00\n3D-2,2.5D-01\n3D-3,3.D2\n");
+        for (int pass = 0; pass < 2; ++pass) {
+            const QVector<Col103> cols = (pass == 0) ? guiImport(ids) : rpcImport(ids);
+            CHECK_COND(cols.size() == 2 && !cols[0].numeric
+                               && cols[0].texts.value(0) == QLatin1String("3D-1")
+                               && cols[0].texts.value(2) == QLatin1String("3D-3")
+                               && cols[1].numeric && numsEqual(cols[1].nums, { 1, 0.25, 300 }),
+                       "103j4 (" << (pass == 0 ? "GUI" : "RPC") << "): " << dumpCols(cols));
+        }
+
+        // j5: UTF-8 text ("°", "µ", "±", "é", and "Ü", "à", which Shift-JIS cannot read) with one
+        // stray Latin-1 byte: UTF-8 with a warning, not Windows-1252 ("Â°C")
+        const QByteArray nearUtf8 =
+                QStringLiteral("Temp (°C),Size (µm),Note\n20,1.5,Größe ± é Ü\n25,2.5,à Ü\n30,3.5,x")
+                        .toUtf8()
+                + QByteArray("\xB0") + QByteArray("y\n");
+        const QString nearPath = writeFile(QStringLiteral("near_utf8.csv"), nearUtf8);
+        AsciiTableImportFilter::ImportReport nrep;
+        std::unique_ptr<future::Table> nft(AsciiTableImportFilter::importDroppedTextData(
+                nearUtf8, QStringLiteral("Near103"), nearPath, &nrep));
+        CHECK_COND(nft && nrep.encoding == QLatin1String("UTF-8") && nrep.invalidChars == 1
+                           && !AsciiTableImportFilter::describeImportReport(nrep).isEmpty()
+                           && nft->columnCount() == 3
+                           && nft->column(0)->units() == QStringLiteral("°C")
+                           && nft->column(1)->units() == QStringLiteral("µm")
+                           && nft->column(2)->textAt(0) == QStringLiteral("Größe ± é Ü"),
+                   "103j5 (GUI): encoding " << nrep.encoding.toStdString() << " invalid "
+                                            << nrep.invalidChars << " cols "
+                                            << (nft ? nft->columnCount() : -1) << " units0 "
+                                            << (nft && nft->columnCount() > 0
+                                                        ? nft->column(0)->units().toStdString()
+                                                        : std::string()));
+        const QVector<Col103> nr = rpcImport(nearPath);
+        CHECK_COND(nr.size() == 3 && nr[0].units == QStringLiteral("°C")
+                           && nr[1].units == QStringLiteral("µm")
+                           && nr[2].texts.value(0) == QStringLiteral("Größe ± é Ü"),
+                   "103j5 (RPC): " << dumpCols(nr));
+    }
+    std::cout << "  [OK] 103j round-2 regressions (text column, paste_tsv, 3D-1, near-UTF-8)\n";
 
     std::cout << "[PASS] Suite 103: text import round-2 findings passed!\n";
     return 0;

@@ -1756,8 +1756,10 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
     }
     // Every line ending in a separator ("x,y,", "1,2,") with nothing after it, the header line
     // included: the separator terminates the line, it does not open an empty last column (as
-    // in the GUI import). Blank lines do not count.
-    if (outMaxCols >= 2) {
+    // in the GUI import). Blank lines do not count. Only for a file import, which makes a new
+    // table: pasted text (table.paste_tsv) is a cell range, and its empty last column clears
+    // the cells it is pasted over.
+    if (fileImport && outMaxCols >= 2) {
         bool allEndWithSep = true;
         int nonBlank = 0;
         for (const QVector<ParsedCsvCell> &rec : records) {
