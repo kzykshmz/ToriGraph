@@ -1720,9 +1720,7 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
 
     // A workbook answers to its name like a window: no window takes it, except a worksheet of
     // that workbook (as a workbook may take the name of its own worksheet).
-    bool bookNameTaken = false;
-    if (WorkbookManager *wm = WorkbookManager::existing(this))
-        bookNameTaken = wm->bookNames().contains(newName) && wm->bookOf(w) != newName;
+    const bool bookNameTaken = workbookHasName(newName, w);
 
     while (alreadyUsedName(newName) || bookNameTaken) {
         if (!nonInteractive) {
@@ -3511,6 +3509,14 @@ QStringList ApplicationWindow::matrixNames()
     return names;
 }
 
+bool ApplicationWindow::workbookHasName(const QString &name, const MyWidget *sheet)
+{
+    WorkbookManager *wm = WorkbookManager::existing(this);
+    if (!wm || name.isEmpty() || !wm->bookNames().contains(name))
+        return false;
+    return !sheet || wm->bookOf(sheet) != name;
+}
+
 bool ApplicationWindow::alreadyUsedName(const QString &label)
 {
     if (d_batch_window_updates_depth > 0)
@@ -4780,6 +4786,9 @@ QString ApplicationWindow::generateUniqueName(const QString &name, bool incremen
         if (widget->name().startsWith(name))
             index++;
     }
+    // nor the name of a workbook (a workbook answers to its name like a window)
+    if (WorkbookManager *wm = WorkbookManager::existing(this))
+        lst << wm->bookNames();
 
     QString newName = name;
     if (increment) // force return of a different name

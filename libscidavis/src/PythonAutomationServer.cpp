@@ -1044,6 +1044,9 @@ QString makeUniqueValidWindowName(ApplicationWindow *app, const QString &sanitiz
     auto hasConflict = [&](const QString &cand) -> bool {
         if (app && app->alreadyUsedName(cand))
             return true;
+        // a workbook's name, as for another window (a worksheet may take its own workbook's)
+        if (app && app->workbookHasName(cand, targetWidget))
+            return true;
         if (targetWidget && targetWidget->inherits("Table")) {
             if (static_cast<Table *>(targetWidget)->colNames().contains(cand))
                 return true;

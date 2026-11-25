@@ -69,6 +69,9 @@
 //   109i app.rename_window (and ApplicationWindow::renameWindow of the dialog) refuses the name
 //        of a workbook for a table, graph or matrix (it used to be taken); a worksheet may take
 //        the name of its own workbook
+//   109j new windows do not take the name of a workbook: table.create / matrix.create / plot.xy
+//        with that name get "name-2" with the name as their label (as for the name of another
+//        window; they took it), and the default names of new windows skip it
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -1417,6 +1420,63 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(!isErr(own), "109i: a worksheet of WB109G2 could not take the name of its workbook: "
                                         << errText(own));
         std::cout << "[PASS] 109i: app.rename_window refuses the names of workbooks\n";
+
+        // ---- 109j: new windows do not take the name of a workbook ----
+        // table.create / matrix.create / plot.* with a name that a workbook has get "name-2" and
+        // keep the name as their label, as with the name of another window (they took the name);
+        // the default names of new windows skip the names of workbooks too
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.create"),
+                              QJsonObject{ { "name", "WB109J" }, { "sheets", 1 } }))
+                           && bookNames().contains(QStringLiteral("WB109J"))
+                           && w109->window(QStringLiteral("WB109J")) == nullptr,
+                   "109j: workbook WB109J");
+        auto createdName = [&](const QJsonObject &r) {
+            const QJsonObject o = res(r);
+            return o.value(QStringLiteral("name")).toString();
+        };
+        const QJsonObject tr109j = rpc(QStringLiteral("table.create"),
+                                       QJsonObject{ { "name", "WB109J" }, { "rows", 3 }, { "cols", 2 } });
+        CHECK_COND(!isErr(tr109j), "109j: table.create: " << errText(tr109j));
+        const QString tName = createdName(tr109j);
+        std::cout << "[INFO] 109j: table.create named WB109J -> " << tName.toStdString() << "\n";
+        CHECK_COND(tName != QStringLiteral("WB109J") && w109->window(QStringLiteral("WB109J")) == nullptr,
+                   "109j: table.create took the name of the workbook WB109J");
+        CHECK_COND(w109->window(tName) && w109->window(tName)->windowLabel() == QStringLiteral("WB109J"),
+                   "109j: the table " << tName.toStdString() << " does not keep WB109J as its label");
+        const QJsonObject mr109j = rpc(QStringLiteral("matrix.create"),
+                                       QJsonObject{ { "name", "WB109J" }, { "rows", 3 }, { "cols", 3 } });
+        CHECK_COND(!isErr(mr109j), "109j: matrix.create: " << errText(mr109j));
+        const QString mName = createdName(mr109j);
+        std::cout << "[INFO] 109j: matrix.create named WB109J -> " << mName.toStdString() << "\n";
+        CHECK_COND(mName != QStringLiteral("WB109J") && w109->window(QStringLiteral("WB109J")) == nullptr,
+                   "109j: matrix.create took the name of the workbook WB109J");
+        CHECK_COND(w109->window(mName) && w109->window(mName)->windowLabel() == QStringLiteral("WB109J"),
+                   "109j: the matrix " << mName.toStdString() << " does not keep WB109J as its label");
+        const QJsonObject pr109j = rpc(QStringLiteral("plot.xy"),
+                                       QJsonObject{ { "table", "T109G" },
+                                                    { "x_col", "1" },
+                                                    { "y_cols", QJsonArray{ "2" } },
+                                                    { "graph_name", "WB109J" } });
+        CHECK_COND(!isErr(pr109j), "109j: plot.xy: " << errText(pr109j));
+        std::cout << "[INFO] 109j: plot.xy graph_name WB109J -> "
+                  << res(pr109j).value(QStringLiteral("graph")).toString().toStdString() << "\n";
+        CHECK_COND(w109->window(QStringLiteral("WB109J")) == nullptr,
+                   "109j: plot.xy took the name of the workbook WB109J");
+        // default names: a workbook with the name the next new worksheet would get
+        const QString nextTable = w109->generateUniqueName(QStringLiteral("Table"));
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.rename"),
+                              QJsonObject{ { "book", "WB109J" }, { "new_name", nextTable } }))
+                           && bookNames().contains(nextTable),
+                   "109j: renaming WB109J to " << nextTable.toStdString());
+        const QString nextNow = w109->generateUniqueName(QStringLiteral("Table"));
+        std::cout << "[INFO] 109j: default name next to the workbook " << nextTable.toStdString()
+                  << ": " << nextNow.toStdString() << "\n";
+        CHECK_COND(nextNow != nextTable, "109j: the default name of a new window is the name of the workbook "
+                                                 << nextTable.toStdString());
+        Table *dt = w109->newTable();
+        CHECK_COND(dt && dt->name() != nextTable,
+                   "109j: a new worksheet took the name of the workbook " << nextTable.toStdString());
+        std::cout << "[PASS] 109j: new windows do not take the names of workbooks\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";

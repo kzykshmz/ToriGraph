@@ -3961,12 +3961,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             }
             // a workbook's name, unless the window is a worksheet of that workbook (the same
             // rule as workbook.rename / workbook.create the other way round)
-            if (WorkbookManager *wm = WorkbookManager::existing(d_app)) {
-                if (wm->bookNames().contains(canonicalNew) && wm->bookOf(w) != canonicalNew) {
-                    throwInvalidParams(
-                            QStringLiteral("Window name '%1' is already in use by a workbook.")
-                                    .arg(canonicalNew));
-                }
+            if (d_app->workbookHasName(canonicalNew, w)) {
+                throwInvalidParams(
+                        QStringLiteral("Window name '%1' is already in use by a workbook.")
+                                .arg(canonicalNew));
             }
             if (w->inherits("Table")
                 && static_cast<Table *>(w)->colNames().contains(canonicalNew)) {

@@ -1076,6 +1076,9 @@ public slots:
     void switchToEnglish();
 
     bool alreadyUsedName(const QString &label);
+    //! True when a workbook is named \a name, other than the workbook \a sheet is a worksheet of
+    //! (no window takes a workbook's name, except a worksheet that of its own workbook).
+    bool workbookHasName(const QString &name, const MyWidget *sheet = nullptr);
     bool projectHas2DPlots();
     bool projectHas3DPlots();
     bool projectHasMatrices();
