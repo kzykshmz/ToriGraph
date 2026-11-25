@@ -612,6 +612,11 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             l_canvas_height = qMax(50, availH);
             gridOverflows = (availW < 50 || availH < 50);
         }
+        // ページを広げてよいのは graph.arrange_layers のように明示的に許可されたときだけ
+        // （setAllowPageGrowthForLayout）。ページ寸法の指定・プリセット・縦横比固定の尺度変更・
+        // ウィンドウのリサイズから来た再配置では、従来どおり 50 px の下限だけで指定のページに収める。
+        if (!d_allow_page_growth_for_layout)
+            gridOverflows = false;
         if (gridOverflows) {
             // The axis margins of all the columns (rows) leave the plot areas less than the 50 px
             // floor, so the grid would run off the page (1 x 3 on a journal-size page). Give
@@ -773,7 +778,8 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
 
     // A grid that does not fit the page even at the minimum plot-area size widens (or
     // heightens) the page to hold it, then is laid out again on the larger page.
-    if (!userSize && d_arrange_overflow_px.isValid() && !d_growing_page_for_layout) {
+    if (!userSize && d_allow_page_growth_for_layout && d_arrange_overflow_px.isValid()
+        && !d_growing_page_for_layout) {
         const QSize need = d_arrange_overflow_px;
         const QSize have = canvas ? canvas->size() : QSize();
         if (have.width() > 0 && have.height() > 0 && d_page_width_val > 0.0

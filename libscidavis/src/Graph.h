@@ -252,8 +252,10 @@ public slots:
     QString savePieCurveLayout();
     //@}
 
+    //! xColName が空でなければ、各 Y 列の X をその列に固定する（空なら表の X 指定列から探す）。
     bool insertCurvesList(Table *w, const QStringList &names, int style, int lWidth, int sSize,
-                          int startRow = 0, int endRow = -1);
+                          int startRow = 0, int endRow = -1,
+                          const QString &xColName = QString());
     bool insertCurve(Table *w, const QString &name, int style, int startRow = 0, int endRow = -1);
     bool insertCurve(Table *w, int xcol, const QString &name, int style);
     bool insertCurve(Table *w, const QString &xColName, const QString &yColName, int style,

@@ -3,8 +3,13 @@
 #include "Graph3D.h"
 #include "ScaleDraw.h"
 
+#include <qwt_plot_canvas.h>
+#include <qwt_plot_layout.h>
+#include <qwt_scale_widget.h>
+
 #include <QElapsedTimer>
 #include <QFile>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLocale>
@@ -28,6 +33,15 @@
 //   102f plot.3d_xyz accepts one column for X and Z
 //   102g a function curve keeps its Function type across save -> reopen
 //   102h appending a project whose table is renamed keeps the custom curve label
+//   102i plot.xy / plot.double_y / plot.waterfall with x_col bind the curves to that column even
+//        when another X column lies left of the Y column (a date/time Y as well), also after
+//        reopen; without x_col the X still comes from the table's X designation
+//   102j a linear axis with "10^x" (Superscripts) labels keeps them and its preset ticks
+//        through undo / redo and save -> reopen (<ToriAxisTickStep> no longer resets them)
+//   102c (page) only graph.arrange_layers enlarges the page: set_page_size(85 mm), the
+//        journal_2col_175mm preset and a short aspect-locked 1 x 1 page keep their size
+//   102b (canvas) the slide_28pt plot area and axis label gaps, and the exported PNG, stay the
+//        same after save -> reopen
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -243,7 +257,50 @@ struct PresetTicks102
     QString graph;
     QList<double> x, y;
     double xStep = 0.0, yStep = 0.0; // user steps (the preset sets none)
+    QSize canvas;                    // plot area (layout canvas rect)
+    QString png;                     // PNG exported before saving
 };
+
+struct FmtTicks102
+{
+    QString graph;
+    QList<double> x, y; // major ticks with "10^x" labels on X and Y
+};
+
+// Plot area of a layer as laid out by Qwt (what graph.inspect reports as canvas_rect_px).
+QSize canvasSize102(Graph *g)
+{
+    Plot *p = g ? g->plotWidget() : nullptr;
+    if (!p)
+        return QSize();
+    if (p->plotLayout() && p->plotLayout()->canvasRect().isValid())
+        return p->plotLayout()->canvasRect().size();
+    return p->canvas() ? p->canvas()->size() : QSize();
+}
+
+std::string spacings102(Graph *g)
+{
+    QStringList t;
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        const QwtScaleWidget *sw = (g && g->plotWidget()) ? g->plotWidget()->axisWidget(a) : nullptr;
+        t << QString::number(sw ? sw->spacing() : -1);
+    }
+    return t.join(',').toStdString();
+}
+
+bool sameImage102(const QString &a, const QString &b)
+{
+    const QImage ia(a), ib(b);
+    return !ia.isNull() && ia.size() == ib.size()
+            && ia.convertToFormat(QImage::Format_ARGB32) == ib.convertToFormat(QImage::Format_ARGB32);
+}
+
+// X column bound to curve idx ("" if the curve is not a data curve).
+QString curveXName102(Graph *g, int idx)
+{
+    auto *dc = (g && idx < g->curves()) ? dynamic_cast<DataCurve *>(g->curve(idx)) : nullptr;
+    return dc ? dc->xColumnName() : QString();
+}
 
 } // namespace
 
@@ -263,6 +320,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
 
     // Values recorded in the source session and compared after reopening.
     QList<PresetTicks102> presetTicks;
+    QList<FmtTicks102> fmtTicks;
     QStringList cscatSvgBefore;
     QString cscatSvgAfterPath = tmp.filePath(QStringLiteral("cscat_after.svg"));
 
@@ -388,7 +446,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
             CHECK_COND(rpc.makeTable(QStringLiteral("T102P"), { "X", "A", "B" }, { px, pa, pb }),
                        "102b: creating T102P failed");
             for (const char *preset : { "isij_85mm", "lab_slide_83mm", "slide_28pt" }) {
-                const QString gname = QStringLiteral("G102P_%1").arg(QString::fromLatin1(preset).left(3));
+                const QString gname = QStringLiteral("G102P%1").arg(QString::fromLatin1(preset).left(3));
                 CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
                                              QJsonObject{ { "table", "T102P" },
                                                           { "x_col", "X" },
@@ -520,6 +578,57 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
                                                    << " plot area squashed to " << minCanvas
                                                    << " px");
             }
+
+            // Only graph.arrange_layers may enlarge the page. An explicit page size, a preset
+            // with its own page size and a short 1 x 1 page with a locked 3:1 aspect keep the
+            // requested size.
+            auto pageIs = [](MultiLayer *ml, double wv, double hv) {
+                return ml && std::fabs(ml->pageWidthPhysical() - wv) < 1e-6
+                        && std::fabs(ml->pageHeightPhysical() - hv) < 1e-6;
+            };
+            if (auto *ml3 = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102A1x3")))) {
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.set_page_size"),
+                                             QJsonObject{ { "graph", "G102A1x3" },
+                                                          { "width", 85 },
+                                                          { "height", 60 },
+                                                          { "unit", "mm" } })),
+                         "102c: set_page_size 85 mm");
+                CHECK102(pageIs(ml3, 85.0, 60.0),
+                         "102c: 1 x 3 page after set_page_size(85 x 60 mm) is "
+                                 << ml3->pageWidthPhysical() << " x " << ml3->pageHeightPhysical());
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.apply_style_preset"),
+                                             QJsonObject{ { "graph", "G102A1x3" },
+                                                          { "preset", "journal_2col_175mm" } })),
+                         "102c: journal_2col_175mm");
+                CHECK102(std::fabs(ml3->pageWidthPhysical() - 175.0) < 1e-6,
+                         "102c: 1 x 3 page after journal_2col_175mm is "
+                                 << ml3->pageWidthPhysical() << " x " << ml3->pageHeightPhysical());
+            }
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                         QJsonObject{ { "table", "T102L" },
+                                                      { "x_col", "X" },
+                                                      { "y_cols", QJsonArray{ "A" } },
+                                                      { "graph_name", "G102A1x1" } })),
+                     "102c: plot.xy G102A1x1");
+            if (auto *ml1 = qobject_cast<MultiLayer *>(findWindow102(w, QStringLiteral("G102A1x1")))) {
+                ml1->setKeepAspectRatio(true);
+                ml1->setTargetAspectRatio(3.0);
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.set_page_size"),
+                                             QJsonObject{ { "graph", "G102A1x1" },
+                                                          { "width", 85 },
+                                                          { "height", 30 },
+                                                          { "unit", "mm" } })),
+                         "102c: set_page_size 85 x 30 mm");
+                CHECK102(pageIs(ml1, 85.0, 30.0),
+                         "102c: 1 x 1 page 85 x 30 mm became " << ml1->pageWidthPhysical() << " x "
+                                                               << ml1->pageHeightPhysical());
+                // rescaling an axis of an aspect-locked graph re-arranges the layers
+                if (Graph *g1 = ml1->activeGraph())
+                    g1->setScale(QwtPlot::xBottom, 0.0, 20.0);
+                CHECK102(pageIs(ml1, 85.0, 30.0),
+                         "102c: 1 x 1 page after setScale " << ml1->pageWidthPhysical() << " x "
+                                                            << ml1->pageHeightPhysical());
+            }
         }
 
         // ---- 102d: many Y columns ------------------------------------------------------------
@@ -642,6 +751,221 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
                      "102g: new function curve type " << (g && g->curves() ? g->curveType(0) : -1));
         }
 
+        // ---- 102i: plot.xy with x_col uses that column, not the X designation left of Y ------
+        {
+            // [X1 (X), A, B] and [A, X1 (X), B]: x_col = A, Y = B. In the second table the X
+            // designation search from B finds X1 first.
+            for (const char *tn : { "T102XA", "T102XB" }) {
+                const bool xFirst = (QLatin1String(tn) == QLatin1String("T102XA"));
+                const QStringList cols = xFirst ? QStringList{ "X1", "A", "B" }
+                                                : QStringList{ "A", "X1", "B" };
+                const QJsonArray x1{ 10.0, 20.0, 30.0 }, a{ 1.0, 2.0, 3.0 }, b{ 4.0, 5.0, 7.0 };
+                CHECK_COND(rpc.makeTable(QString::fromLatin1(tn), cols,
+                                         xFirst ? QList<QJsonArray>{ x1, a, b }
+                                                : QList<QJsonArray>{ a, x1, b }),
+                           "102i: creating " << tn << " failed");
+                Table *t = qobject_cast<Table *>(findWindow102(w, QString::fromLatin1(tn)));
+                CHECK_COND(t != nullptr, "102i: table " << tn << " missing");
+                t->setColPlotDesignation(cols.indexOf(QStringLiteral("X1")), SciDAVis::X);
+                const QString gname = QStringLiteral("G102I%1").arg(QLatin1Char(tn[5]));
+                const QString wantX = QString::fromLatin1(tn) + QStringLiteral("_A");
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                             QJsonObject{ { "table", tn },
+                                                          { "x_col", "A" },
+                                                          { "y_cols", QJsonArray{ "B" } },
+                                                          { "graph_name", gname } })),
+                         "102i: plot.xy " << tn);
+                Graph *g = firstLayer102(w, gname);
+                CHECK102(g && g->curves() == 1, "102i: " << tn << " has no curve");
+                if (g && g->curves() == 1) {
+                    double lo = 0, hi = 0;
+                    curveRange102(g, 0, true, &lo, &hi);
+                    CHECK102(curveXName102(g, 0) == wantX && lo == 1.0 && hi == 3.0,
+                             "102i: " << tn << " curve X is '"
+                                      << curveXName102(g, 0).toStdString() << "' (" << lo << ".."
+                                      << hi << "), expected " << tn << "_A (1..3)");
+                }
+            }
+            // Without x_col the X still comes from the X designation (X1 left of B).
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                         QJsonObject{ { "table", "T102XB" },
+                                                      { "y_cols", QJsonArray{ "B" } },
+                                                      { "graph_name", "G102IN" } })),
+                     "102i: plot.xy without x_col");
+            Graph *gn = firstLayer102(w, QStringLiteral("G102IN"));
+            CHECK102(gn && gn->curves() == 1 && curveXName102(gn, 0) == QLatin1String("T102XB_X1"),
+                     "102i: without x_col the curve X is '"
+                             << (gn ? curveXName102(gn, 0).toStdString() : std::string("<none>"))
+                             << "', expected T102XB_X1");
+
+            // The reported case: an empty X column "1" first, a date/time column T (X), a
+            // numeric Y; plot Y as X and T as Y -> "0 plottable curves" before the fix.
+            CHECK_COND(rpc.makeTable(QStringLiteral("T102XD"), { "1", "T", "Y" },
+                                     { QJsonArray{ QJsonValue(), QJsonValue(), QJsonValue(),
+                                                   QJsonValue() },
+                                       QJsonArray{ 0, 0, 0, 0 },
+                                       QJsonArray{ 1.0, 2.0, 3.0, 4.0 } }),
+                       "102i: creating T102XD failed");
+            CHECK102(Rpc102::ok(rpc.call(
+                             QStringLiteral("table.set_column_data"),
+                             QJsonObject{ { "table", "T102XD" },
+                                          { "col", "T" },
+                                          { "mode", "datetime" },
+                                          { "data",
+                                            QJsonArray{ "2024-03-01 00:00:00", "2024-03-02 00:00:00",
+                                                        "2024-03-03 12:00:00",
+                                                        "2024-03-05 00:00:00" } } })),
+                     "102i: datetime column data");
+            if (Table *t = qobject_cast<Table *>(findWindow102(w, QStringLiteral("T102XD")))) {
+                t->setColPlotDesignation(0, SciDAVis::X);
+                t->setColPlotDesignation(1, SciDAVis::X);
+            }
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                         QJsonObject{ { "table", "T102XD" },
+                                                      { "x_col", "Y" },
+                                                      { "y_cols", QJsonArray{ "T" } },
+                                                      { "graph_name", "G102ID" } })),
+                     "102i: plot.xy with a datetime Y column and another X column was refused");
+            Graph *gd = firstLayer102(w, QStringLiteral("G102ID"));
+            CHECK102(gd && gd->curves() == 1 && curveXName102(gd, 0) == QLatin1String("T102XD_Y")
+                             && gd->curve(0)->dataSize() == 4
+                             && gd->axesType()[QwtPlot::yLeft] == Graph::AxisType::DateTime,
+                     "102i: datetime Y graph X '"
+                             << (gd ? curveXName102(gd, 0).toStdString() : std::string("<none>"))
+                             << "', points "
+                             << (gd && gd->curves() ? int(gd->curve(0)->dataSize()) : -1));
+
+            // plot.double_y and plot.waterfall take x_col the same way.
+            CHECK_COND(rpc.makeTable(QStringLiteral("T102XW"), { "A", "X1", "B", "C" },
+                                     { QJsonArray{ 1.0, 2.0, 3.0 }, QJsonArray{ 10.0, 20.0, 30.0 },
+                                       QJsonArray{ 4.0, 5.0, 7.0 }, QJsonArray{ 2.0, 1.0, 0.5 } }),
+                       "102i: creating T102XW failed");
+            if (Table *t = qobject_cast<Table *>(findWindow102(w, QStringLiteral("T102XW"))))
+                t->setColPlotDesignation(1, SciDAVis::X);
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.double_y"),
+                                         QJsonObject{ { "table", "T102XW" },
+                                                      { "x_col", "A" },
+                                                      { "y_left_col", "B" },
+                                                      { "y_right_col", "C" },
+                                                      { "graph_name", "G102I2Y" } })),
+                     "102i: plot.double_y");
+            Graph *g2 = firstLayer102(w, QStringLiteral("G102I2Y"));
+            CHECK102(g2 && g2->curves() == 2 && curveXName102(g2, 0) == QLatin1String("T102XW_A")
+                             && curveXName102(g2, 1) == QLatin1String("T102XW_A"),
+                     "102i: double_y curve X '"
+                             << (g2 ? curveXName102(g2, 0).toStdString() : std::string("<none>"))
+                             << "', '"
+                             << (g2 ? curveXName102(g2, 1).toStdString() : std::string("<none>"))
+                             << "'");
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.waterfall"),
+                                         QJsonObject{ { "table", "T102XW" },
+                                                      { "x_col", "A" },
+                                                      { "y_cols", QJsonArray{ "B", "C" } },
+                                                      { "graph_name", "G102IWF" } })),
+                     "102i: plot.waterfall");
+            Graph *gw = firstLayer102(w, QStringLiteral("G102IWF"));
+            bool wfX = gw && gw->curves() >= 2;
+            for (int i = 0; wfX && i < gw->curves(); ++i)
+                if (dynamic_cast<DataCurve *>(gw->curve(i)))
+                    wfX = curveXName102(gw, i) == QLatin1String("T102XW_A");
+            CHECK102(wfX, "102i: waterfall curve X '"
+                                  << (gw && gw->curves() ? curveXName102(gw, 0).toStdString()
+                                                         : std::string("<none>"))
+                                  << "'");
+        }
+
+        // ---- 102j: "10^x" tick labels with preset ticks survive undo / redo ---------------
+        {
+            // Two curves: lab_slide_83mm then keeps its Y step with the legend headroom on a
+            // fixed Y range, which is saved as <ToriAxisTickStep axis="0"> after LabelsFormat.
+            QJsonArray jx, ja, jb;
+            for (int i = 0; i < 50; ++i) {
+                const double x = 0.1 + (10.0 - 0.1) * i / 49.0;
+                jx.append(x);
+                ja.append(20000.0 * std::sin(x));
+                jb.append(20000.0 * std::cos(x));
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T102J"), { "X", "A", "B" }, { jx, ja, jb }),
+                       "102j: creating T102J failed");
+            for (const char *preset : { "lab_slide_83mm" }) {
+                const QString gname = QStringLiteral("G102J%1").arg(QString::fromLatin1(preset).left(3));
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("plot.xy"),
+                                             QJsonObject{ { "table", "T102J" },
+                                                          { "x_col", "X" },
+                                                          { "y_cols", QJsonArray{ "A", "B" } },
+                                                          { "graph_name", gname } })),
+                         "102j: plot.xy " << preset);
+                CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.apply_style_preset"),
+                                             QJsonObject{ { "graph", gname }, { "preset", preset } })),
+                         "102j: apply_style_preset " << preset);
+                auto *ml = qobject_cast<MultiLayer *>(findWindow102(w, gname));
+                Graph *g = firstLayer102(w, gname);
+                if (!ml || !g) {
+                    CHECK102(false, "102j: " << gname.toStdString() << " missing");
+                    continue;
+                }
+                for (int a : { int(QwtPlot::xBottom), int(QwtPlot::yLeft) })
+                    g->setLabelsNumericFormat(a, Plot::Superscripts, 1, QString());
+                g->replot();
+                FmtTicks102 ft{ gname, majors102(g, QwtPlot::xBottom), majors102(g, QwtPlot::yLeft) };
+                fmtTicks << ft;
+                std::cout << "[INFO] 102j: " << preset << " x " << str102(ft.x) << " y "
+                          << str102(ft.y) << "\n";
+                const QString saved = g->saveToString();
+                CHECK102(saved.contains(QStringLiteral("<ToriAxisTickStep axis=\"0\""))
+                                 && saved.indexOf(QStringLiteral("<ToriAxisTickStep axis=\"0\""))
+                                         > saved.indexOf(QStringLiteral("LabelsFormat")),
+                         "102j: " << preset
+                                  << " saves no <ToriAxisTickStep> for Y after LabelsFormat (test is vacuous)");
+                auto same = [&](Graph *gg, const char *when) {
+                    for (int a : { int(QwtPlot::xBottom), int(QwtPlot::yLeft) }) {
+                        CHECK102(gg && gg->plotWidget()->axisLabelFormat(a) == Plot::Superscripts
+                                         && gg->plotWidget()->axisLabelPrecision(a) == 1,
+                                 "102j: " << preset << " " << when << ": axis " << a << " format "
+                                          << (gg ? gg->plotWidget()->axisLabelFormat(a) : -1)
+                                          << " precision "
+                                          << (gg ? gg->plotWidget()->axisLabelPrecision(a) : -1)
+                                          << " (expected Superscripts, 1)");
+                    }
+                    CHECK102(gg && sameList102(majors102(gg, QwtPlot::xBottom), ft.x)
+                                     && sameList102(majors102(gg, QwtPlot::yLeft), ft.y),
+                             "102j: " << preset << " " << when << ": ticks x " << str102(ft.x)
+                                      << " -> " << str102(majors102(gg, QwtPlot::xBottom))
+                                      << ", y " << str102(ft.y) << " -> "
+                                      << str102(majors102(gg, QwtPlot::yLeft)));
+                };
+                const QString before = ml->captureUndoSnapshot();
+                g->setAxisTitleAuto(QwtPlot::xBottom, false);
+                g->setAxisTitle(QwtPlot::xBottom, QStringLiteral("Changed"));
+                ml->pushUndoSnapshot(QStringLiteral("102j"), before);
+                if (QUndoStack *us = ml->undoStack()) {
+                    us->undo();
+                    QCoreApplication::processEvents();
+                    same(firstLayer102(w, gname), "after undo");
+                    us->redo();
+                    QCoreApplication::processEvents();
+                    same(firstLayer102(w, gname), "after redo");
+                } else {
+                    CHECK102(false, "102j: no undo stack");
+                }
+            }
+        }
+
+        // 102b: plot area and PNG of the preset graphs as saved.
+        for (PresetTicks102 &pt : presetTicks) {
+            Graph *g = firstLayer102(w, pt.graph);
+            pt.canvas = canvasSize102(g);
+            pt.png = tmp.filePath(pt.graph + QStringLiteral("_before.png"));
+            std::cout << "[INFO] 102b: " << pt.graph.toStdString() << " canvas "
+                      << pt.canvas.width() << "x" << pt.canvas.height() << ", axis gaps "
+                      << spacings102(g) << "\n";
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.export"),
+                                         QJsonObject{ { "graph", pt.graph },
+                                                      { "path", pt.png },
+                                                      { "dpi", 100 } })),
+                     "102b: PNG export " << pt.graph.toStdString());
+        }
+
         CHECK_COND(w->saveFolder(w->projectFolder(), prj), "102: saving the project failed");
     }
 
@@ -748,6 +1072,84 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
             CHECK102(g && g->curves() == 1 && g->curveType(0) == Graph::Function,
                      "102g-reopen: function curve type "
                              << (g && g->curves() ? g->curveType(0) : -1));
+        }
+        // 102i
+        {
+            const struct
+            {
+                const char *graph, *x;
+            } bound[] = { { "G102IA", "T102XA_A" },   { "G102IB", "T102XB_A" },
+                          { "G102IN", "T102XB_X1" },  { "G102ID", "T102XD_Y" },
+                          { "G102I2Y", "T102XW_A" } };
+            for (const auto &b : bound) {
+                Graph *g = firstLayer102(rd, QString::fromLatin1(b.graph));
+                CHECK102(g && g->curves() >= 1 && curveXName102(g, 0) == QLatin1String(b.x)
+                                 && g->curve(0)->dataSize() > 0,
+                         "102i-reopen: " << b.graph << " curve X '"
+                                         << (g && g->curves() ? curveXName102(g, 0).toStdString()
+                                                              : std::string("<none>"))
+                                         << "', expected " << b.x);
+            }
+            Graph *gb = firstLayer102(rd, QStringLiteral("G102IB"));
+            double lo = 0, hi = 0;
+            CHECK102(gb && curveRange102(gb, 0, true, &lo, &hi) && lo == 1.0 && hi == 3.0,
+                     "102i-reopen: G102IB X range " << lo << ".." << hi);
+        }
+        // 102j: "10^x" labels and preset ticks after reopening, and after undo / redo there
+        for (const FmtTicks102 &ft : fmtTicks) {
+            auto check = [&](const char *when) {
+                Graph *g = firstLayer102(rd, ft.graph);
+                for (int a : { int(QwtPlot::xBottom), int(QwtPlot::yLeft) }) {
+                    CHECK102(g && g->plotWidget()->axisLabelFormat(a) == Plot::Superscripts
+                                     && g->plotWidget()->axisLabelPrecision(a) == 1,
+                             "102j-reopen: " << ft.graph.toStdString() << " " << when << ": axis "
+                                             << a << " format "
+                                             << (g ? g->plotWidget()->axisLabelFormat(a) : -1)
+                                             << " precision "
+                                             << (g ? g->plotWidget()->axisLabelPrecision(a) : -1));
+                }
+                CHECK102(g && sameList102(majors102(g, QwtPlot::xBottom), ft.x)
+                                 && sameList102(majors102(g, QwtPlot::yLeft), ft.y),
+                         "102j-reopen: " << ft.graph.toStdString() << " " << when << ": ticks x "
+                                         << str102(ft.x) << " -> "
+                                         << str102(majors102(g, QwtPlot::xBottom)) << ", y "
+                                         << str102(ft.y) << " -> "
+                                         << str102(majors102(g, QwtPlot::yLeft)));
+            };
+            check("reopened");
+            auto *ml = qobject_cast<MultiLayer *>(findWindow102(rd, ft.graph));
+            Graph *g = firstLayer102(rd, ft.graph);
+            if (ml && g && ml->undoStack()) {
+                const QString before = ml->captureUndoSnapshot();
+                g->setAxisTitleAuto(QwtPlot::yLeft, false);
+                g->setAxisTitle(QwtPlot::yLeft, QStringLiteral("Changed"));
+                ml->pushUndoSnapshot(QStringLiteral("102j"), before);
+                ml->undoStack()->undo();
+                QCoreApplication::processEvents();
+                check("after undo");
+                ml->undoStack()->redo();
+                QCoreApplication::processEvents();
+                check("after redo");
+            }
+        }
+        // 102b: plot area, axis label gaps and PNG after reopening
+        for (const PresetTicks102 &pt : presetTicks) {
+            Graph *g = firstLayer102(rd, pt.graph);
+            const QSize c = canvasSize102(g);
+            std::cout << "[INFO] 102b-reopen: " << pt.graph.toStdString() << " canvas " << c.width()
+                      << "x" << c.height() << ", axis gaps " << spacings102(g) << "\n";
+            CHECK102(c == pt.canvas,
+                     "102b-reopen: " << pt.graph.toStdString() << " plot area " << pt.canvas.width()
+                                     << "x" << pt.canvas.height() << " -> " << c.width() << "x"
+                                     << c.height());
+            const QString png = tmp.filePath(pt.graph + QStringLiteral("_after.png"));
+            CHECK102(Rpc102::ok(rpc.call(QStringLiteral("graph.export"),
+                                         QJsonObject{ { "graph", pt.graph },
+                                                      { "path", png },
+                                                      { "dpi", 100 } })),
+                     "102b-reopen: PNG export " << pt.graph.toStdString());
+            CHECK102(sameImage102(pt.png, png),
+                     "102b-reopen: " << pt.graph.toStdString() << " PNG differs after reopening");
         }
     }
 

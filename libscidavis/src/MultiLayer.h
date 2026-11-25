@@ -206,6 +206,11 @@ public:
     //! Page size (in the page unit) arrangeLayers last widened the page from, or an empty size;
     //! cleared by takeLayoutPageGrowth().
     QSizeF takeLayoutPageGrowth();
+    //! While on, arrangeLayers may enlarge the page when the grid cannot fit even at the
+    //! minimum plot-area size (only explicit layout requests such as graph.arrange_layers turn
+    //! it on; page size changes, presets, rescaling and window resizes never enlarge the page).
+    void setAllowPageGrowthForLayout(bool on) { d_allow_page_growth_for_layout = on; }
+    bool allowPageGrowthForLayout() const { return d_allow_page_growth_for_layout; }
     void fitLayersToPage();
     void syncChildOverlayAndInsetGeometries();
     void showPageSetupDialog();
@@ -531,6 +536,7 @@ private:
     //! px of the whole grid, empty when it fits); arrangeLayers(bool, bool) then widens the page.
     QSize d_arrange_overflow_px;
     bool d_growing_page_for_layout = false;
+    bool d_allow_page_growth_for_layout = false;
     QSizeF d_layout_page_grown_from;
     QPointer<QWidget> d_passthrough_source;
     QPointer<QWidget> d_passthrough_target;

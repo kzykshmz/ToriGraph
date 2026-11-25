@@ -1016,6 +1016,17 @@ QString Graph::saveToString(bool saveAsTemplate)
                              .arg(QString::number(effStep, 'g', 17));
         }
 
+        // 軸の線と目盛りの数字・軸の題の間隔。スタイルプリセットは文字の大きさに合わせて
+        // 広げる（28 pt で 13 px）が保存しておらず、開き直すと既定の 8 px に戻って描画域の
+        // 高さが変わっていた（slide_28pt で 475 -> 480 px）。既定と違う軸だけ書く。
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const QwtScaleWidget *sw = d_plot ? d_plot->axisWidget(a) : nullptr;
+            if (sw && sw->spacing() != Plot::kDefaultAxisSpacing)
+                s += QString("<ToriAxisSpacing axis=\"%1\" spacing=\"%2\"/>\n")
+                             .arg(a)
+                             .arg(sw->spacing());
+        }
+
         s += QString("<ToriAutoscaleFonts val=\"%1\"/>\n").arg(autoScaleFonts ? 1 : 0);
 
         const QString unitFmtStr = (d_axis_unit_format == Column::UnitFormat::ISIJSlash)
@@ -2531,6 +2542,17 @@ bool Graph::restorePhase5Tag(const QString &line)
         return true;
     }
 
+    if (s.startsWith("<ToriAxisSpacing")) {
+        const int a = attrs.value("axis", "-1").toInt();
+        bool okSp = false;
+        const int sp = attrs.value("spacing").toInt(&okSp);
+        if (a >= 0 && a < QwtPlot::axisCnt && okSp && sp >= 0 && sp <= 200 && d_plot) {
+            if (QwtScaleWidget *sw = d_plot->axisWidget(a))
+                sw->setSpacing(sp);
+        }
+        return true;
+    }
+
     if (s.startsWith("<ToriAxisTickStep")) {
         // Re-divide the axis with the spacing its ticks had when saved; the user step (and
         // the lock state restored just before) stay as they are.
@@ -2550,7 +2572,27 @@ bool Graph::restorePhase5Tag(const QString &line)
         const bool inverted = se->testAttribute(QwtScaleEngine::Inverted);
         const bool wasLocked = isAxisUserLocked(a);
         const double userStep = d_user_step[a];
+        // setScale は線形軸の「10^x（Superscripts）」表記を Automatic・精度 4 に戻す（対数軸から
+        // 線形軸に切り替えたときのため）。ここは目盛りを割り直すだけなので、先に読み込んだ
+        // LabelsFormat の表記と精度を 4 軸とも保つ。
+        int prevFmt[QwtPlot::axisCnt];
+        int prevPrec[QwtPlot::axisCnt];
+        AxisType prevType[QwtPlot::axisCnt];
+        for (int k = 0; k < QwtPlot::axisCnt; ++k) {
+            prevFmt[k] = d_plot->axisLabelFormat(k);
+            prevPrec[k] = d_plot->axisLabelPrecision(k);
+            prevType[k] = axisType[k];
+        }
         setScale(a, lo, hi, step, d_plot->axisMaxMajor(a), d_plot->axisMaxMinor(a), 0, inverted);
+        for (int k = 0; k < QwtPlot::axisCnt; ++k) {
+            if (prevType[k] == AxisType::Numeric && axisType[k] == AxisType::Numeric
+                && (d_plot->axisLabelFormat(k) != prevFmt[k]
+                    || d_plot->axisLabelPrecision(k) != prevPrec[k])
+                && d_plot->axisScaleDraw(k)
+                && d_plot->axisScaleDraw(k)->hasComponent(QwtAbstractScaleDraw::Labels)) {
+                setLabelsNumericFormat(k, prevFmt[k], prevPrec[k], axesFormulas[k]);
+            }
+        }
         d_user_step[a] = userStep;
         setAxisUserLocked(a, wasLocked);
         return true;

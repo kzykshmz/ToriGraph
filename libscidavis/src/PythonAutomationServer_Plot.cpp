@@ -1895,8 +1895,11 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
     if (method == QStringLiteral("plot.xy") || method == QStringLiteral("plot.stacked_bars")) {
         Table *t = resolveTable(d_app, params);
         int xIdx = -1;
+        // x_col を名指ししたときは、曲線の X をその列に固定する（下の multilayerPlot に渡す）。
+        bool explicitX = false;
         if (params.contains(QStringLiteral("x_col")) && !params.value(QStringLiteral("x_col")).isNull()) {
             xIdx = resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true);
+            explicitX = true;
             t->setColPlotDesignation(xIdx, SciDAVis::X);
         } else {
             xIdx = t->firstXCol();
@@ -2243,7 +2246,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                     QStringLiteral("plot.xy requires at least 1 finite unmasked numeric point across the selected columns in table '%1'.")
                             .arg(t->name()));
         }
-        MultiLayer *ml = d_app->multilayerPlot(t, yFullCols, style, 0, t->numRows() - 1);
+        MultiLayer *ml = d_app->multilayerPlot(
+                t, yFullCols, style, 0, t->numRows() - 1,
+                (explicitX && xIdx >= 0) ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create 2D XY plot."));
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
@@ -2704,7 +2709,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
 
         QStringList cols;
         cols << fullColumnName(t, y1Idx) << fullColumnName(t, y2Idx);
-        MultiLayer *ml = d_app->multilayerPlot(t, cols, Graph::LineSymbols, 0, t->numRows() - 1);
+        const bool explicitX = !xParam.isUndefined() && !xParam.isNull() && xIdx >= 0;
+        MultiLayer *ml = d_app->multilayerPlot(t, cols, Graph::LineSymbols, 0, t->numRows() - 1,
+                                               explicitX ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Double-Y plot."));
         if (!ml->activeGraph() || ml->activeGraph()->curves() < 2) {
@@ -2792,7 +2799,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             wfFinite += countFiniteUnmaskedInTableColumn(t, yi, xIdx);
         if (wfFinite <= 0)
             throwInvalidParams(QStringLiteral("plot.waterfall requires at least 1 finite numeric point."));
-        MultiLayer *ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
+        const bool explicitX = params.contains(QStringLiteral("x_col")) && xIdx >= 0;
+        MultiLayer *ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1,
+                                               explicitX ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create waterfall plot."));
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
@@ -5191,9 +5200,22 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                 ? optionalJsonBool(params, QStringLiteral("fit"), false)
                 : (defaultFit ? false : false);
         ml->takeLayoutPageGrowth(); // forget a widening made before this call
-        ml->arrangeLayers(fitGrid && !(hasExplicitRows || hasExplicitCols), false);
-        if (ml->pageViewMode() && !fitGrid)
-            ml->fitLayersToPage();
+        {
+            // この配置の間だけ、収まらない格子のためにページを広げてよい（warnings で知らせる）。
+            struct PageGrowthScope
+            {
+                MultiLayer *m;
+                bool prev;
+                explicit PageGrowthScope(MultiLayer *ml_) : m(ml_), prev(ml_->allowPageGrowthForLayout())
+                {
+                    m->setAllowPageGrowthForLayout(true);
+                }
+                ~PageGrowthScope() { m->setAllowPageGrowthForLayout(prev); }
+            } growthScope(ml);
+            ml->arrangeLayers(fitGrid && !(hasExplicitRows || hasExplicitCols), false);
+            if (ml->pageViewMode() && !fitGrid)
+                ml->fitLayersToPage();
+        }
         const QSizeF grownFrom = ml->takeLayoutPageGrowth();
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);

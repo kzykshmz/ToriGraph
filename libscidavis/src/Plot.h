@@ -50,6 +50,9 @@ class Plot : public QwtPlot
 public:
     Plot(QWidget *parent = 0, QString name = QString());
 
+    //! Gap (px) between an axis backbone and its labels / title set for every axis on creation.
+    static constexpr int kDefaultAxisSpacing = 8;
+
     enum LabelFormat { Automatic, Decimal, Scientific, Superscripts };
 
     Grid *grid() { return (Grid *)d_grid; };

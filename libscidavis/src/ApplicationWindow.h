@@ -317,7 +317,7 @@ public slots:
     //@{
     MultiLayer *multilayerPlot(int c, int r, int style);
     MultiLayer *multilayerPlot(Table *w, const QStringList &colList, int style, int startRow = 0,
-                               int endRow = -1);
+                               int endRow = -1, const QString &xColName = QString());
     //! used when restoring a plot from a project file
     MultiLayer *multilayerPlot(const QString &caption);
     //! used by the plot wizard

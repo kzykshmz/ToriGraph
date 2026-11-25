@@ -992,7 +992,7 @@ void Graph::insertPlotItem(QwtPlotItem *i, int type)
 }
 
 bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int lWidth, int sSize,
-                             int startRow, int endRow)
+                             int startRow, int endRow, const QString &xColName)
 {
     if (style == Graph::Pie)
         plotPie(w, names[0], startRow, endRow);
@@ -1050,7 +1050,15 @@ bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int 
                     ok = addErrorBars(w->colName(ycol), w, lst[i]);
             } else {
                 type_of_i = (CurveType)style;
-                ok = insertCurve(w, lst[i], style, startRow, endRow);
+                // 呼び出し側が X 列を名指ししたときはそれを使う。表の X 指定列から探すと
+                // Y 列の左にある別の X 指定列に結び付いてしまう（plot.xy の x_col が無視された）。
+                if (!xColName.isEmpty() && w->colIndex(xColName) >= 0) {
+                    ok = insertCurve(w, xColName, lst[i], style, startRow, endRow);
+                    if (ok)
+                        emit modifiedGraph();
+                } else {
+                    ok = insertCurve(w, lst[i], style, startRow, endRow);
+                }
             }
 
             if (ok) {

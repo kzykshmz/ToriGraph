@@ -1955,7 +1955,8 @@ static void finalizePieGraphLegendAndLayout(Graph *ag, Table *w, const QStringLi
 }
 
 MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colList, int style,
-                                              int startRow, int endRow)
+                                              int startRow, int endRow,
+                                              const QString &xColName)
 { // used when plotting selected columns
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
@@ -1970,7 +1971,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(Table *w, const QStringList &colLi
 
     setPreferences(ag);
     ag->insertCurvesList(w, colList, style, defaultCurveLineWidth, defaultSymbolSize, startRow,
-                         endRow);
+                         endRow, xColName);
 
     polishGraph(ag, style);
     ag->newLegend();

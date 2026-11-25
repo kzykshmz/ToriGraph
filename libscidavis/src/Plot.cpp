@@ -239,7 +239,7 @@ Plot::Plot(QWidget *parent, QString) : QwtPlot(parent)
         if (scale) {
             scale->setFont(defaultTickFont);
             scale->setMargin(0);
-            scale->setSpacing(8);
+            scale->setSpacing(kDefaultAxisSpacing);
             scale->setPenWidth(2);
 
             // the axis title color & Arial font must be initialized...
