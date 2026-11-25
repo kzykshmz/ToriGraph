@@ -885,7 +885,7 @@ int runSuite101WorksheetRound2(ApplicationWindow *mw)
                    "101g: open_project failed: " << errText(r));
         std::cout << "[INFO] 101g: opening " << nCols << " columns x " << nRows << " rows took "
                   << ms << " ms\n";
-        CHECK_COND(ms < 8000, "101g: opening took " << ms << " ms (was ~18 s)");
+        CHECK_COND(ms < 8000 * kTestTimingScale, "101g: opening took " << ms << " ms (was ~18 s)");
         Table *lt = w101->table(QStringLiteral("W101"));
         CHECK_COND(lt != nullptr, "101g: table W101 not found after open");
         CHECK_COND(lt->numCols() == nCols && lt->numRows() == nRows,

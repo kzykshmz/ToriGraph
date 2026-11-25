@@ -800,7 +800,7 @@ int runSuite102PlotRound2(ApplicationWindow *mw)
             std::cout << "[INFO] 102d: plot.xy with " << nCurves << " curves took " << ms
                       << " ms\n";
             // Before the fix this took about 100 s (and 20 curves ~10 s).
-            CHECK102(ms < 20000, "102d: plot.xy with " << nCurves << " curves took " << ms
+            CHECK102(ms < 20000 * kTestTimingScale, "102d: plot.xy with " << nCurves << " curves took " << ms
                                                        << " ms");
             Graph *g = firstLayer102(w, QStringLiteral("G102N"));
             CHECK102(g && g->curves() == nCurves && g->legend(), "102d: curves/legend missing");

@@ -313,7 +313,7 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                   << msRange << " ms\n";
         CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == 8000,
                    "109c: mask_rows range: " << errText(r));
-        CHECK_COND(msRange < 5000, "109c: masking 8000 rows took " << msRange << " ms");
+        CHECK_COND(msRange < 5000 * kTestTimingScale, "109c: masking 8000 rows took " << msRange << " ms");
         CHECK_COND(src->isMasked(10) && src->isMasked(8009) && !src->isMasked(9) && !src->isMasked(8010),
                    "109c: masked range");
         CHECK_COND(std::fabs(fx->valueAt(100) - 200.0) < 1e-9 && fx->formulaError().isEmpty(),
@@ -351,7 +351,7 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("changed_cells")).toInt() == 2000
                            && src->maskedIntervals().isEmpty(),
                    "109c: unmask_rows: " << errText(r));
-        CHECK_COND(msList < 5000 && msUnmask < 5000,
+        CHECK_COND(msList < 5000 * kTestTimingScale && msUnmask < 5000 * kTestTimingScale,
                    "109c: scattered mask " << msList << " ms / unmask " << msUnmask << " ms");
         CHECK_COND(!isErr(rpc(QStringLiteral("app.undo"), QJsonObject{ { "table", "M109" } })),
                    "109c: undo unmask");

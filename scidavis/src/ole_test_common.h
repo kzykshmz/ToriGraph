@@ -2,6 +2,15 @@
 #define TORIGRAPH_OLE_TEST_COMMON_H
 
 #include "ApplicationWindow.h"
+
+// Time limits of the performance checks are multiplied by this factor in the AddressSanitizer
+// build (dev.ps1 asan), which runs several times slower; the checks still catch the slow
+// paths they guard against (tens of seconds before the fixes).
+#if defined(__SANITIZE_ADDRESS__)
+constexpr long long kTestTimingScale = 10;
+#else
+constexpr long long kTestTimingScale = 1;
+#endif
 #include "MultiLayer.h"
 #include "Graph.h"
 #include "Plot.h"
