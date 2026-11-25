@@ -274,8 +274,18 @@ void Spectrogram::enforceColorBarArialFont()
             sd->enableComponent(QwtAbstractScaleDraw::Backbone, true);
             sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
             sd->enableComponent(QwtAbstractScaleDraw::Ticks, true);
-            sd->setMajorTicksStyle(ScaleDraw::Out);
-            sd->setMinorTicksStyle(ScaleDraw::None);
+            if (auto *pp = dynamic_cast<Plot *>(plot)) {
+                // Give the outward ticks the plot's tick lengths as well. Only switching the
+                // style kept the length the axis got while it was off (the minor length, 5 px,
+                // since a disabled axis counts as having inward ticks), so a new heatmap's colour
+                // bar axis was 4 px narrower, and its plot area wider, than after save -> reopen
+                // or clone_window, where the saved outward style brings the major length (9 px).
+                pp->setMajorTicksType(color_axis, ScaleDraw::Out);
+                pp->setMinorTicksType(color_axis, ScaleDraw::None);
+            } else {
+                sd->setMajorTicksStyle(ScaleDraw::Out);
+                sd->setMinorTicksStyle(ScaleDraw::None);
+            }
             sd->setColorBarBorder(true, colorAxis->colorBarWidth(),
                                   qMax(1, colorAxis->penWidth()));
             QGradientStops stops;

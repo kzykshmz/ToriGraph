@@ -2427,17 +2427,37 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     setProperty("toriAppliedStylePreset",
                 d_applied_style_preset_id.isEmpty() ? QVariant()
                                                     : QVariant(d_applied_style_preset_id));
-    setPageBackgroundColor(ml->d_page_bg_color);
+    graph_width = ml->graph_width;
+    graph_height = ml->graph_height;
+    setPageBackgroundColor(ml->d_page_bg_color); // also sizes the page host and the canvas
     if (d_page_unit == UnitPx && !d_page_view_mode && qAbs(d_page_zoom - 1.0) <= 1e-4) {
         if (ml->canvasWidget() && canvas)
             canvas->resize(ml->canvasWidget()->size());
     }
+    // The layers below are placed at the source's pixel positions on a canvas of the source's
+    // size. Record that size as already laid out (as restoring <ToriPageSetup> does when a
+    // project is opened); otherwise the next resize check sees a canvas size different from the
+    // unset lastSize and re-arranges the layers with the default margins, moving and resizing
+    // the plot area of a physical-size page (isij_85mm, slide_28pt, ...).
+    if (canvas)
+        lastSize = canvas->size();
 
     QWidgetList srcGraphs = ml->graphPtrs();
     for (int i = 0; i < srcGraphs.count(); i++) {
         Graph *g = (Graph *)srcGraphs.at(i);
         Graph *g2 = addLayer(g->pos().x(), g->pos().y(), g->width(), g->height());
         g2->copy(parent, g);
+        // Gap between each axis line and its tick labels / title: style presets widen it with
+        // the font (13 px at 28 pt) and a project saves it (<ToriAxisSpacing>), but Graph::copy()
+        // left the clone at the default 8 px, which moved and resized the plot area.
+        if (g->plotWidget() && g2->plotWidget()) {
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                const QwtScaleWidget *ssw = g->plotWidget()->axisWidget(a);
+                QwtScaleWidget *dsw = g2->plotWidget()->axisWidget(a);
+                if (ssw && dsw && dsw->spacing() != ssw->spacing())
+                    dsw->setSpacing(ssw->spacing());
+            }
+        }
         g2->setIgnoreResizeEvents(g->ignoresResizeEvents());
         g2->setAutoscaleFonts(g->autoscaleFonts());
     }
@@ -2480,6 +2500,8 @@ void MultiLayer::copy(ApplicationWindow *parent, MultiLayer *ml)
     refreshLayerButtonBadges();
     updateCanvasStatusPill();
     show();
+    if (canvas)
+        lastSize = canvas->size();
 }
 
 bool MultiLayer::focusNextPrevChild(bool next)
