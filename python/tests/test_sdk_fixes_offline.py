@@ -551,3 +551,113 @@ def test_pptx_slide_scale_server_fields_and_close_discard() -> None:
     s.close_window("Graph1")
     assert "Graph1" not in s._slide_preset_graphs
     assert tg_pptx._graph_slide_scale(s, "Graph1", {"name": "Graph1"}) is None
+
+
+def _parse_comp_obj_unicode_strings(stream: bytes) -> List[str]:
+    """Walk a CompObj stream per MS-OLEDS 2.3.3 and return the three Unicode strings."""
+    import struct
+
+    pos = 28  # Reserved1 + Version + Reserved2 (CLSID)
+    for _ in range(3):  # AnsiUserType, AnsiClipboardFormat, Reserved1 (length-prefixed ANSI)
+        (n,) = struct.unpack_from("<I", stream, pos)
+        pos += 4 + n
+    (marker,) = struct.unpack_from("<I", stream, pos)
+    assert marker == 0x71B239F4
+    pos += 4
+    out: List[str] = []
+    for _ in range(3):  # LengthPrefixedUnicodeString: length = characters incl. the null
+        (n_chars,) = struct.unpack_from("<I", stream, pos)
+        pos += 4
+        raw = stream[pos : pos + 2 * n_chars]
+        pos += 2 * n_chars
+        txt = raw.decode("utf-16-le")
+        assert txt.endswith("\x00"), txt
+        out.append(txt[:-1])
+    assert pos == len(stream), (pos, len(stream))
+    return out
+
+
+def test_comp_obj_unicode_lengths_count_characters() -> None:
+    """Non-Windows CompObj writes MS-OLEDS character counts (incl. null), not UTF-16 byte counts."""
+    stream = tg_pptx._build_comp_obj_stream("ToriGraph Graph", "ToriGraph.Graph.1")
+    assert _parse_comp_obj_unicode_strings(stream) == [
+        "ToriGraph Graph",
+        "Embed Source",
+        "ToriGraph.Graph.1",
+    ]
+
+
+def test_unix_local_socket_candidates_follow_qdir_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pipe://name resolves under $TMPDIR (QDir::tempPath) first, then /tmp."""
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/var/folders/ab/T/")
+    assert tg_client._unix_local_socket_candidates("torigraph_rpc_42") == [
+        "/var/folders/ab/T/torigraph_rpc_42",
+        "/tmp/torigraph_rpc_42",
+    ]
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp")
+    assert tg_client._unix_local_socket_candidates("torigraph_rpc_42") == ["/tmp/torigraph_rpc_42"]
+    assert tg_client._unix_local_socket_candidates("/run/user/1000/tg.sock") == ["/run/user/1000/tg.sock"]
+
+
+def test_local_pipe_transport_unix_tries_tmpdir_then_tmp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Unix branch connects to $TMPDIR/<name>, falling back to /tmp/<name>."""
+    import os as real_os
+    import tempfile
+
+    attempts: List[str] = []
+
+    class FakeSock:
+        def __init__(self, *_a: Any) -> None:
+            self.closed = False
+
+        def settimeout(self, _t: float) -> None:
+            pass
+
+        def connect(self, path: str) -> None:
+            attempts.append(path)
+            if path != "/tmp/torigraph_rpc_7":
+                raise FileNotFoundError(2, "No such file or directory")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class PosixOs:
+        name = "posix"
+
+        def __getattr__(self, key: str) -> Any:
+            return getattr(real_os, key)
+
+    monkeypatch.setattr(tg_client, "os", PosixOs())
+    monkeypatch.setattr(tg_client.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(tg_client.socket, "socket", FakeSock)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/var/folders/ab/T")
+
+    t = tg_client._LocalPipeTransport("torigraph_rpc_7", timeout=1.0)
+    assert attempts == ["/var/folders/ab/T/torigraph_rpc_7", "/tmp/torigraph_rpc_7"]
+    assert isinstance(t._unix_sock, FakeSock)
+
+    attempts.clear()
+    with pytest.raises(TransportError, match="/var/folders/ab/T/torigraph_rpc_8"):
+        tg_client._LocalPipeTransport("torigraph_rpc_8", timeout=1.0)
+    assert attempts == ["/var/folders/ab/T/torigraph_rpc_8", "/tmp/torigraph_rpc_8"]
+
+
+def test_overlay_grid_and_cell_shrink_helpers() -> None:
+    """slide= grid picks the smallest grid holding all graphs; >6 raise. Cell shrink keeps aspect."""
+    assert tg_pptx._overlay_grid_for_count(1, 1) == (1, 1)
+    assert tg_pptx._overlay_grid_for_count(2, 4) == (2, 2)  # per_slide grid holds them
+    assert tg_pptx._overlay_grid_for_count(5, 1) == (2, 3)
+    assert tg_pptx._overlay_grid_for_count(5, 4) == (2, 3)
+    assert tg_pptx._overlay_grid_for_count(6, 2) == (2, 3)
+    with pytest.raises(ValueError, match="at most 6"):
+        tg_pptx._overlay_grid_for_count(7, 6)
+
+    cell = (1000, 2000, 300_000, 200_000)
+    # fits -> unchanged, not reported
+    assert tg_pptx._shrink_rect_into_cell_emu(5, 6, 100_000, 100_000, cell) == (5, 6, 100_000, 100_000, None)
+    l_e, t_e, w_e, h_e, orig = tg_pptx._shrink_rect_into_cell_emu(0, 0, 400_000, 400_000, cell)
+    assert w_e <= cell[2] and h_e <= cell[3] and w_e == h_e == 200_000
+    assert l_e == 1000 + 50_000 and t_e == 2000
+    assert orig == (round(400_000 / tg_pptx.EMU_PER_CM, 2),) * 2

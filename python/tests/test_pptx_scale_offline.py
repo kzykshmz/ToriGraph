@@ -525,6 +525,150 @@ def test_pptx_oversize_ole_falls_back_to_static_emf(emf_bytes, tmp_path):
     assert len(w_cfb) >= 2
 
 
+def _rects_cm(res):
+    return [(p["left_cm"], p["top_cm"], p["width_cm"], p["height_cm"]) for p in res["placements"]]
+
+
+def _assert_no_overlap(rects, tol=0.02):
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            a_l, a_t, a_w, a_h = rects[i]
+            b_l, b_t, b_w, b_h = rects[j]
+            overlap_w = min(a_l + a_w, b_l + b_w) - max(a_l, b_l)
+            overlap_h = min(a_t + a_h, b_t + b_h) - max(a_t, b_t)
+            assert overlap_w <= tol or overlap_h <= tol, f"placements {i} and {j} overlap: {rects}"
+
+
+class ManySession(FakeSession):
+    """Graph1..GraphN (2D) plus an optional Graph3D window; apply_style_preset accepted."""
+
+    def __init__(self, emf, n=7, with_3d=False):
+        super().__init__(emf)
+        self.n = n
+        self.with_3d = with_3d
+
+    def list_windows(self):
+        wins = [{"name": f"Graph{i}", "type": "MultiLayer"} for i in range(1, self.n + 1)]
+        if self.with_3d:
+            wins.append({"name": "Graph3D1", "type": "Graph3D"})
+        return wins
+
+    def call(self, method, _params=None, **kw):
+        if method == "graph.apply_style_preset":
+            self.calls.append((method, kw))
+            return {"ok": True}
+        return super().call(method, _params, **kw)
+
+
+def test_pptx_slide_overlay_picks_grid_that_holds_all_graphs(emf_bytes, tmp_path):
+    """slide= with 5 graphs uses 2x3 (not 1 cell); more than 6 raise instead of stacking."""
+    names5 = [f"Graph{i}" for i in range(1, 6)]
+    res = export_graphs_to_pptx(ManySession(emf_bytes), tmp_path / "five.pptx", names5, slide=1)
+    rects = _rects_cm(res)
+    assert len(rects) == 5 and {p["slide"] for p in res["placements"]} == {1}
+    assert len({(round(r[0], 2), round(r[1], 2)) for r in rects}) == 5
+    _assert_no_overlap(rects)
+    # 2x3 grid: two rows of top positions, three columns of left positions
+    assert len({round(r[1], 1) for r in rects}) == 2
+    assert len({round(r[0], 1) for r in rects}) == 3
+
+    # 6 graphs fill 2x3 without overlap
+    names6 = [f"Graph{i}" for i in range(1, 7)]
+    res6 = export_graphs_to_pptx(ManySession(emf_bytes), tmp_path / "six.pptx", names6, slide=1)
+    _assert_no_overlap(_rects_cm(res6))
+
+    # 7 graphs: refused before any graph is exported, no file written
+    s7 = ManySession(emf_bytes)
+    names7 = [f"Graph{i}" for i in range(1, 8)]
+    with pytest.raises(ValueError, match="at most 6"):
+        export_graphs_to_pptx(s7, tmp_path / "seven.pptx", names7, slide=1)
+    assert not [c for c in s7.calls if c[0] == "graph.export_ole"]
+    assert not (tmp_path / "seven.pptx").exists()
+
+    # explicit per-graph boxes are not limited by the grid
+    boxes = [(1.0 + 2.0 * i, 1.0, 1.5) for i in range(7)]
+    res_box = export_graphs_to_pptx(
+        ManySession(emf_bytes), tmp_path / "seven_box.pptx", names7, slide=1, box=boxes
+    )
+    assert res_box["embedded_count"] == 7
+
+
+def test_pptx_scaled_graphs_shrink_to_cell_in_multi_cell_grid(emf_bytes, tmp_path):
+    """140 % in a multi-cell grid never spills into the neighbour; 1 cell and box=(l, t) unchanged."""
+    names4 = [f"Graph{i}" for i in range(1, 5)]
+    # per_slide=4 (2x2) with the lab preset: 11.67 cm does not fit a ~7.9 cm high cell
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        res = export_graphs_to_pptx(
+            ManySession(emf_bytes), tmp_path / "grid4.pptx", names4, per_slide=4,
+            preset="lab_slide_83mm",
+        )
+    rects = _rects_cm(res)
+    _assert_no_overlap(rects)
+    for pl in res["placements"]:
+        assert pl["clamped"] is True
+        assert pl["effective_scale"] < 1.4 - 1e-3
+        assert abs(pl["width_cm"] - pl["height_cm"]) < 0.02  # aspect ratio kept (square page)
+    assert sum("grid cell" in m for m in res["warnings"]) == 4
+    assert any("grid cell" in str(x.message) for x in w)
+
+    # slide= overlay grid (4 graphs -> 2x2) with explicit scale= behaves the same
+    with pytest.warns(UserWarning, match="grid cell"):
+        res_ov = export_graphs_to_pptx(
+            ManySession(emf_bytes), tmp_path / "overlay4.pptx", names4, slide=1, scale=1.4
+        )
+    _assert_no_overlap(_rects_cm(res_ov))
+    assert all(p.get("clamped") for p in res_ov["placements"])
+
+    # per_slide=2 (1x2): 11.67 cm fits a ~15 cm cell -> exact 140 %, not clamped
+    res2 = export_graphs_to_pptx(
+        ManySession(emf_bytes), tmp_path / "grid2.pptx", names4[:2], per_slide=2, scale=1.4
+    )
+    _assert_no_overlap(_rects_cm(res2))
+    for pl in res2["placements"]:
+        assert abs(pl["effective_scale"] - 1.4) < 1e-3
+        assert "clamped" not in pl
+
+    # per_slide=1 (one cell) keeps 140 % even when larger than the cell
+    big = make_emf(12000, 12000)  # 12 cm page -> 16.8 cm at 140 %, the 1x1 cell is ~16.65 cm high
+    res1 = export_graphs_to_pptx(
+        ManySession(big), tmp_path / "one.pptx", ["Graph1"], scale=1.4
+    )
+    assert abs(res1["placements"][0]["effective_scale"] - 1.4) < 1e-3
+    assert "clamped" not in res1["placements"][0]
+
+    # explicit box=(left, top) is placed at natural size x scale even if graphs overlap
+    res_box = export_graphs_to_pptx(
+        ManySession(emf_bytes), tmp_path / "box.pptx", names4[:2], per_slide=2, scale=1.4,
+        box=[(1.0, 1.0), (5.0, 1.0)],
+    )
+    for pl in res_box["placements"]:
+        assert abs(pl["effective_scale"] - 1.4) < 1e-3
+        assert "clamped" not in pl
+
+
+def test_pptx_preset_scale_does_not_enlarge_graph3d(emf_bytes, tmp_path):
+    """preset='lab_slide_83mm' scales 2D graphs to 140 %; Graph3D keeps the plain fit."""
+    res = export_graphs_to_pptx(
+        ManySession(emf_bytes, n=1, with_3d=True), tmp_path / "mixed.pptx",
+        ["Graph1", "Graph3D1"], preset="lab_slide_83mm",
+    )
+    by_name = {(p.get("graph_name") or p.get("graph")): p for p in res["placements"]}
+    assert abs(by_name["Graph1"]["effective_scale"] - 1.4) < 1e-3
+    plain = export_graphs_to_pptx(
+        ManySession(emf_bytes, n=1, with_3d=True), tmp_path / "plain3d.pptx", ["Graph3D1"]
+    )
+    assert abs(by_name["Graph3D1"]["width_cm"] - plain["placements"][0]["width_cm"]) < 0.01
+    assert abs(by_name["Graph3D1"]["effective_scale"] - 1.4) > 0.05
+
+    # an explicit scale= still applies to every graph, Graph3D included
+    res_s = export_graphs_to_pptx(
+        ManySession(emf_bytes, n=1, with_3d=True), tmp_path / "mixed_scale.pptx",
+        ["Graph1", "Graph3D1"], preset="lab_slide_83mm", scale=1.2,
+    )
+    assert all(abs(p["effective_scale"] - 1.2) < 1e-3 for p in res_s["placements"])
+
+
 if __name__ == "__main__":
     test_export_graphs_to_pptx_scale_effective_pt_and_warnings(make_emf(8333, 8333))
     print("ALL OK")

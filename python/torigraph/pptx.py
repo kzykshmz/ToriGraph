@@ -163,9 +163,11 @@ def _build_comp_obj_stream(user_type: str = "ToriGraph Graph", prog_id: str = TO
         # Unicode marker (0x71B239F4) + UTF-16LE userType, clipFormat, progId
         struct.pack("<I", 0x71B239F4),
     ]
+    # MS-OLEDS 2.1.5 LengthPrefixedUnicodeString: the length counts Unicode *characters*
+    # (UTF-16 code units) including the terminating null, not bytes.
     for s in (user_type, "Embed Source", prog_id):
         u16 = (s + "\x00").encode("utf-16-le")
-        parts.append(struct.pack("<I", len(u16)))
+        parts.append(struct.pack("<I", len(u16) // 2))
         parts.append(u16)
     return b"".join(parts)
 
@@ -1492,6 +1494,50 @@ def _clamp_scaled_rect_to_slide_emu(
     return l_e, t_e, w_e, h_e, orig_cm
 
 
+def _shrink_rect_into_cell_emu(
+    l_e: int,
+    t_e: int,
+    w_e: int,
+    h_e: int,
+    cell: Tuple[int, int, int, int],
+) -> Tuple[int, int, int, int, Optional[Tuple[float, float]]]:
+    """Shrink a scaled placement (aspect kept) so it fits ``cell``, centred in it.
+
+    Mirrors ``placeInCell`` (``shrinkToFit``) in ``PptxExport.cpp``.  Returns the rect and the
+    original size in cm when it had to be shrunk (``None`` when it already fitted).
+    """
+    c_l, c_t, c_w, c_h = cell
+    if w_e <= c_w and h_e <= c_h:
+        return l_e, t_e, w_e, h_e, None
+    orig_cm = (round(w_e / EMU_PER_CM, 2), round(h_e / EMU_PER_CM, 2))
+    factor = min(float(c_w) / float(max(1, w_e)), float(c_h) / float(max(1, h_e)))
+    w_e = max(1, min(c_w, int(w_e * factor)))
+    h_e = max(1, min(c_h, int(h_e * factor)))
+    l_e = c_l + max(0, (c_w - w_e) // 2)
+    t_e = c_t + max(0, (c_h - h_e) // 2)
+    return l_e, t_e, w_e, h_e, orig_cm
+
+
+def _overlay_grid_for_count(count: int, per_slide: int) -> Tuple[int, int]:
+    """Grid ``(rows, cols)`` for ``count`` graphs placed together onto one ``slide=``.
+
+    ``per_slide``'s grid when it holds them all, else the smallest valid grid that does
+    (5 -> 2x3).  More graphs than the largest grid holds raise ``ValueError`` rather than
+    stacking graphs on top of each other.
+    """
+    if count <= per_slide:
+        return _VALID_PER_SLIDE[per_slide]
+    for k in sorted(_VALID_PER_SLIDE):
+        if k >= count:
+            return _VALID_PER_SLIDE[k]
+    max_cells = max(_VALID_PER_SLIDE)
+    raise ValueError(
+        f"slide= would place {count} graphs on one slide, but the automatic grid holds at most "
+        f"{max_cells}. Pass one box per graph (box=[(left_cm, top_cm), ...]), export the graphs "
+        "in several calls, or omit slide= to spread them over new slides."
+    )
+
+
 def _explicit_box_emu(
     cur_box: Sequence[float], w_hm: int, h_hm: int, scale: Optional[float]
 ) -> Tuple[int, int, int, int]:
@@ -1551,7 +1597,9 @@ def export_graphs_to_pptx(
         Refuses ``path == deck`` unless ``overwrite=True``.
     slide:
         Optional 1-based target slide number in ``deck`` (``0`` is also accepted for Slide 1,
-        and negative numbers index from the end).
+        and negative numbers index from the end).  When more graphs than ``per_slide`` go onto
+        that slide without ``box``, the smallest grid that holds them all is used (5 -> 2x3);
+        more than 6 raise ``ValueError`` instead of stacking graphs on top of each other.
     box:
         Explicit figure placement ``(left_cm, top_cm, width_cm)`` (preserving aspect ratio) or
         ``(left_cm, top_cm, width_cm, height_cm)``, or a per-graph list of boxes.
@@ -1575,15 +1623,18 @@ def export_graphs_to_pptx(
         export (Graph3D windows are skipped); an RPC error such as an unknown preset or graph
         name is raised.  Graphs that carry ``lab_slide_83mm`` -- via ``preset=`` or applied
         earlier (``g.lab_slide_style()``) -- are placed at 140 % automatically (12.9 pt -> 18 pt)
-        unless ``scale=`` or a ``box`` width is given.
+        unless ``scale=`` or a ``box`` width is given.  Graph3D windows, which the preset does
+        not restyle, are not enlarged by it either.
     widescreen:
         Use 16:9 widescreen (``13.333 x 7.5 in``) when creating a brand-new deck.
     scale:
         Size on the slide relative to the graph's own (page) size, e.g. ``1.4``, ``140`` or
         ``"140%"``. Without it, graphs are shrunk/enlarged to fit their grid cell (or the
         replaced shape), as before. With it, each graph is placed at exactly natural size x
-        ``scale`` (centred in its cell, or at the top-left of a replaced shape). It may be
-        combined with ``box=(left_cm, top_cm)``, but not with a box that gives a width.
+        ``scale`` (centred in its cell, or at the top-left of a replaced shape); in a grid of
+        several cells a graph that would overflow its cell is shrunk (aspect kept) to fit it
+        and reported as ``clamped``. It may be combined with ``box=(left_cm, top_cm)``, but not
+        with a box that gives a width.
     embed_scope:
         ``"graph"`` (default) embeds each graph with only the tables/matrices it plots;
         ``"project"`` embeds the whole project (all windows and the results log) in every object.
@@ -1674,6 +1725,10 @@ def export_graphs_to_pptx(
 
     if not graph_names:
         raise ValueError("No graphs specified (and no open graph windows found in session).")
+
+    if slide is not None and box is None and (replace is None or replace is False):
+        # Fail before touching any graph when slide= cannot hold them all (checked again below).
+        _overlay_grid_for_count(len(graph_names), per_slide_int)
 
     if preset:
         # Style presets exist for 2D graphs only; Graph3D windows are exported as they are.
@@ -1970,10 +2025,18 @@ def export_graphs_to_pptx(
             )
 
         slide_scale_used: List[bool] = []
+        # True when new_placement_scale_f comes from preset= (not from scale=): the preset is
+        # never applied to Graph3D windows, so they must not get its 140 % either.
+        scale_from_preset_only = explicit_scale_f is None and new_placement_scale_f is not None
 
         def _item_scale(item: Mapping[str, Any]) -> Optional[float]:
             """Placement factor of one graph: scale= / lab preset arg, else its own slide preset."""
             if new_placement_scale_f is not None:
+                if scale_from_preset_only and (
+                    item["graph_name"] in graph3d_names
+                    or item.get("canonical_window") in graph3d_names
+                ):
+                    return None
                 return new_placement_scale_f
             s = item.get("slide_scale")
             if s is not None and not box_has_explicit_width:
@@ -2171,14 +2234,15 @@ def export_graphs_to_pptx(
                     else:
                         s_obj, s_num = _resolve_1based_slide(prs, slide)
 
-                    eff_rows, eff_cols = _VALID_PER_SLIDE.get(
-                        per_slide_int if len(pending_indices) <= per_slide_int else min(6, len(pending_indices)),
-                        (n_rows, n_cols),
-                    )
+                    if per_graph_boxes is None and single_box is None:
+                        eff_rows, eff_cols = _overlay_grid_for_count(len(pending_indices), per_slide_int)
+                    else:
+                        eff_rows, eff_cols = n_rows, n_cols  # every graph has its own box
                     for local_k, idx in enumerate(pending_indices):
                         item = built_items[idx]
                         cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                         clamped_orig_cm = None
+                        shrunk_to_cell = False
                         if cur_box is not None:
                             box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                             l_e, t_e, w_e, h_e = _explicit_box_emu(
@@ -2194,7 +2258,7 @@ def export_graphs_to_pptx(
                                 slide_h,
                                 eff_rows,
                                 eff_cols,
-                                local_k % (eff_rows * eff_cols),
+                                local_k,
                                 has_title=bool(title_list),
                             )
                             if _item_scale(item) is not None:
@@ -2202,6 +2266,12 @@ def export_graphs_to_pptx(
                                     item["w_hm"], item["h_hm"], _item_scale(item), (c_l, c_t, c_w, c_h),
                                     center=True,
                                 )
+                                cell_orig_cm = None
+                                if eff_rows * eff_cols > 1:
+                                    # Several cells: never spill into the neighbouring graph.
+                                    l_e, t_e, w_e, h_e, cell_orig_cm = _shrink_rect_into_cell_emu(
+                                        l_e, t_e, w_e, h_e, (c_l, c_t, c_w, c_h)
+                                    )
                                 l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                     l_e,
                                     t_e,
@@ -2212,6 +2282,9 @@ def export_graphs_to_pptx(
                                     anchor_rect=(c_l, c_t, c_w, c_h),
                                     center=True,
                                 )
+                                if cell_orig_cm is not None:
+                                    clamped_orig_cm = cell_orig_cm
+                                    shrunk_to_cell = True
                             else:
                                 l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
                                     c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
@@ -2227,6 +2300,8 @@ def export_graphs_to_pptx(
                         pl["slide"] = s_num
                         if clamped_orig_cm is not None:
                             pl["_clamped_from_cm"] = clamped_orig_cm
+                            if shrunk_to_cell:
+                                pl["_clamped_to_cell"] = True
                         placements.append(pl)
                         touched_slides.add(s_num)
                         embedded_count += 1
@@ -2245,6 +2320,7 @@ def export_graphs_to_pptx(
                             item = built_items[idx]
                             cur_box = per_graph_boxes[idx] if per_graph_boxes is not None else single_box
                             clamped_orig_cm = None
+                            shrunk_to_cell = False
                             if cur_box is not None:
                                 box_scale = explicit_scale_f if len(cur_box) >= 3 else _item_scale(item)
                                 l_e, t_e, w_e, h_e = _explicit_box_emu(
@@ -2268,6 +2344,12 @@ def export_graphs_to_pptx(
                                         item["w_hm"], item["h_hm"], _item_scale(item),
                                         (c_l, c_t, c_w, c_h), center=True,
                                     )
+                                    cell_orig_cm = None
+                                    if n_rows * n_cols > 1:
+                                        # Several cells: never spill into the neighbouring graph.
+                                        l_e, t_e, w_e, h_e, cell_orig_cm = _shrink_rect_into_cell_emu(
+                                            l_e, t_e, w_e, h_e, (c_l, c_t, c_w, c_h)
+                                        )
                                     l_e, t_e, w_e, h_e, clamped_orig_cm = _clamp_scaled_rect_to_slide_emu(
                                         l_e,
                                         t_e,
@@ -2278,6 +2360,9 @@ def export_graphs_to_pptx(
                                         anchor_rect=(c_l, c_t, c_w, c_h),
                                         center=True,
                                     )
+                                    if cell_orig_cm is not None:
+                                        clamped_orig_cm = cell_orig_cm
+                                        shrunk_to_cell = True
                                 else:
                                     l_e, t_e, w_e, h_e = _fit_aspect_inside_box(
                                         c_l, c_t, c_w, c_h, item["w_hm"], item["h_hm"]
@@ -2293,6 +2378,8 @@ def export_graphs_to_pptx(
                             pl["slide"] = s_num
                             if clamped_orig_cm is not None:
                                 pl["_clamped_from_cm"] = clamped_orig_cm
+                                if shrunk_to_cell:
+                                    pl["_clamped_to_cell"] = True
                             placements.append(pl)
                             touched_slides.add(s_num)
                             embedded_count += 1
@@ -2322,13 +2409,19 @@ def export_graphs_to_pptx(
             pl["nominal_" + key] = nominal
             pl["effective_" + key] = round(nominal * eff, 2) if nominal else None
         clamped_from = pl.pop("_clamped_from_cm", None)
+        clamped_to_cell = bool(pl.pop("_clamped_to_cell", False))
         tol = EMU_PER_MM  # rounding of the cm values
         if clamped_from is not None:
             pl["clamped"] = True
+            where = (
+                f"does not fit its grid cell on slide {pl.get('slide')} and was shrunk "
+                "(aspect ratio kept) to "
+                if clamped_to_cell
+                else f"extends beyond slide {pl.get('slide')} and was clamped to "
+            )
             msg = (
                 f"'{item['graph_name']}' ({clamped_from[0]:.1f} x {clamped_from[1]:.1f} cm) "
-                f"extends beyond slide {pl.get('slide')} and was clamped to "
-                f"{pl['width_cm']:.1f} x {pl['height_cm']:.1f} cm."
+                f"{where}{pl['width_cm']:.1f} x {pl['height_cm']:.1f} cm."
             )
             warn_list.append(msg)
             warnings.warn(msg, UserWarning, stacklevel=2)

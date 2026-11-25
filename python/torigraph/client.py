@@ -6,6 +6,7 @@ import ctypes
 import json
 import math
 import os
+import posixpath
 import queue
 import shutil
 import socket
@@ -932,6 +933,22 @@ class _TcpTransport:
             pass
 
 
+def _unix_local_socket_candidates(pipe_name: str) -> List[str]:
+    """Socket paths to try for a Unix ``pipe://<name>`` endpoint, most likely first.
+
+    ``QLocalServer::listen("<name>")`` creates the socket under ``QDir::tempPath()``, which is
+    ``$TMPDIR`` when it is set (macOS always sets it) and ``/tmp`` otherwise.  An absolute name
+    (containing ``/``) is used as is.
+    """
+    if "/" in pipe_name:
+        return [pipe_name]
+    candidates = [posixpath.join(tempfile.gettempdir(), pipe_name)]
+    legacy = f"/tmp/{pipe_name}"
+    if posixpath.normpath(legacy) != posixpath.normpath(candidates[0]):
+        candidates.append(legacy)
+    return candidates
+
+
 class _LocalPipeTransport:
     """Newline-delimited UTF-8 JSON-RPC 2.0 transport over Windows Named Pipe / Unix socket."""
 
@@ -992,14 +1009,29 @@ class _LocalPipeTransport:
                     f"Failed to open named pipe '{full_path}' within {self.timeout:.2f}s: {last_err}"
                 )
         else:
-            path = pipe_name if "/" in pipe_name else f"/tmp/{pipe_name}"
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(self.timeout)
-                sock.connect(path)
-                self._unix_sock = sock
-            except OSError as exc:
-                raise TransportError(f"Failed to connect Unix domain socket '{path}': {exc}") from exc
+            candidates = _unix_local_socket_candidates(pipe_name)
+            errors: List[str] = []
+            last_exc: Optional[OSError] = None
+            for path in candidates:
+                sock: Optional[socket.socket] = None
+                try:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.settimeout(self.timeout)
+                    sock.connect(path)
+                    self._unix_sock = sock
+                    break
+                except OSError as exc:
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                    errors.append(f"'{path}': {exc}")
+                    last_exc = exc
+            if self._unix_sock is None:
+                raise TransportError(
+                    "Failed to connect Unix domain socket " + "; ".join(errors)
+                ) from last_exc
 
     @property
     def endpoint(self) -> str:
