@@ -3007,6 +3007,62 @@ void Graph::setAutoScale()
     emit modifiedGraph();
 }
 
+double Graph::effectiveMajorStep(int axis) const
+{
+    if (axis < 0 || axis >= QwtPlot::axisCnt || axis >= d_user_step.size())
+        return 0.0;
+    const double userStep = d_user_step[axis];
+    if (!d_plot)
+        return userStep;
+    if (d_axis_breaks[axis].enabled || !d_custom_tick_positions[axis].isEmpty()
+        || !axesFormulas[axis].isEmpty())
+        return userStep;
+    const QwtScaleEngine *se = d_plot->axisScaleEngine(axis);
+    const QwtScaleDiv *sd = d_plot->axisScaleDiv(axis);
+    // An autoscaled axis gets its ticks from autoscaling again after reopening.
+    if (!se || !sd || Plot::isLog10ScaleEngine(se) || d_plot->axisAutoScale(axis))
+        return userStep;
+    QwtValueList cur = sd->ticks(QwtScaleDiv::MajorTick);
+    if (cur.size() < 2)
+        return userStep;
+    std::sort(cur.begin(), cur.end());
+    const double lo = qMin(sd->lowerBound(), sd->upperBound());
+    const double hi = qMax(sd->lowerBound(), sd->upperBound());
+    if (!(hi > lo) || !std::isfinite(lo) || !std::isfinite(hi))
+        return userStep;
+    const int minT = d_plot->axisMaxMinor(axis);
+    const int maxMinInt = (minT >= 1) ? (minT + 1) : minT;
+    const int maj = d_plot->axisMaxMajor(axis);
+    // Same division as Graph::setScale (reopen) and Graph::copy (clone) would make.
+    auto majorsFor = [&](double stepSize) {
+        QwtLinearScaleEngine eng;
+        QwtValueList v = eng.divideScale(lo, hi, maj, maxMinInt, stepSize)
+                                 .ticks(QwtScaleDiv::MajorTick);
+        std::sort(v.begin(), v.end());
+        return v;
+    };
+    const double step = cur[1] - cur[0];
+    if (!(step > 0.0) || !std::isfinite(step))
+        return userStep;
+    const double eps = 1e-6 * step;
+    auto sameTicks = [&](const QwtValueList &v) {
+        if (v.size() != cur.size())
+            return false;
+        for (int i = 0; i < v.size(); ++i) {
+            if (std::fabs(v[i] - cur[i]) > eps)
+                return false;
+        }
+        return true;
+    };
+    if (sameTicks(majorsFor(userStep)))
+        return userStep;
+    for (int i = 1; i + 1 < cur.size(); ++i) {
+        if (std::fabs((cur[i + 1] - cur[i]) - step) > eps)
+            return userStep; // uneven ticks cannot be stored as a step
+    }
+    return sameTicks(majorsFor(step)) ? step : userStep;
+}
+
 void Graph::setScale(int axis, double start, double end, double step, int majorTicks,
                      int minorTicks, int type, bool inverted)
 {

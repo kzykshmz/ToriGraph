@@ -4998,10 +4998,14 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                     undoGuard.commit();
                 }
             }
+            // Fonts only: lay the layers out again and redraw, but do not run updatePlot(),
+            // which re-autoscales every unlocked axis and so dropped ticks/ranges set by a
+            // style preset or the legend headroom from the embedded copy (and the graph).
             for (Graph *lg : ml->layersList()) {
                 if (lg) {
                     enforceArialGraphFonts(lg);
-                    lg->updatePlot();
+                    if (lg->plotWidget())
+                        lg->plotWidget()->updateLayout();
                     lg->replot();
                 }
             }

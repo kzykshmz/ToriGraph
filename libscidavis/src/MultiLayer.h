@@ -203,6 +203,9 @@ public:
     QColor pageBackgroundColor() const { return d_page_bg_color; }
     void setPageBackgroundColor(const QColor &color);
     void fitPageToLayers(int marginPx = 14);
+    //! Page size (in the page unit) arrangeLayers last widened the page from, or an empty size;
+    //! cleared by takeLayoutPageGrowth().
+    QSizeF takeLayoutPageGrowth();
     void fitLayersToPage();
     void syncChildOverlayAndInsetGeometries();
     void showPageSetupDialog();
@@ -524,6 +527,11 @@ private:
     bool d_initial_viewport_fit_done = false;
     bool d_was_tiled_split = false;
     bool d_suppress_canvas_resize_layout = false;
+    //! Set by arrangeLayers(bool) when the panels need more room than the page has (canvas
+    //! px of the whole grid, empty when it fits); arrangeLayers(bool, bool) then widens the page.
+    QSize d_arrange_overflow_px;
+    bool d_growing_page_for_layout = false;
+    QSizeF d_layout_page_grown_from;
     QPointer<QWidget> d_passthrough_source;
     QPointer<QWidget> d_passthrough_target;
     QPointer<Graph> d_inset_drag_graph;
@@ -616,6 +624,12 @@ private:
     QList<QPointer<Graph>> prevLayers;
     QVector<QRect> prevLayerGeometry;
     QVector<QSize> prevPlotSize;
+    // Per layer (prevLayers): the axes whose autoscale is paused for the export. Autoscaling
+    // adds the symbol size in pixels to the data range (PlotCurve::boundingRect), so redrawing
+    // at the smaller 100 % canvas could widen an axis by a tick step (-3..2 became -4..2) and
+    // the file would not show the ranges seen on screen.
+    QVector<int> pausedAutoAxes;
+    QVector<QwtScaleDiv> pausedAutoDivs; // [layer * 4 + axis]: the division held
     int prevLayerCanvasW = 0;
     int prevLayerCanvasH = 0;
     bool prevMlUpdates = true;

@@ -257,6 +257,12 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
                 all_valid = false;
                 break;
             }
+            if ((col->columnMode() == SciDAVis::ColumnMode::Month
+                 || col->columnMode() == SciDAVis::ColumnMode::Day)
+                && !col->dateAt(row).isValid()) {
+                all_valid = false;
+                break;
+            }
         }
         if (all_valid) {
             if (saw_invalid_after_valid && !valid_rows.isEmpty()) {
@@ -318,6 +324,22 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
             reference_dates.push_back(QDate());
             reference_times.push_back(QTime());
             break;
+        case SciDAVis::ColumnMode::Month:
+            // Month columns plot as the month number (January -> 1, as Month2DoubleFilter does)
+            // on a month-name axis; keep a month axis the user already formatted.
+            if (g && g->axesType()[axes[i]] != Graph::AxisType::Month)
+                g->setLabelsMonthFormat(axes[i], MonthScaleDraw::ShortName);
+            reference_dates.push_back(QDate());
+            reference_times.push_back(QTime());
+            break;
+        case SciDAVis::ColumnMode::Day:
+            // Day-of-week columns plot as the ISO weekday number (Monday -> 1, as
+            // DayOfWeek2DoubleFilter does) on a weekday-name axis.
+            if (g && g->axesType()[axes[i]] != Graph::AxisType::Day)
+                g->setLabelsDayFormat(axes[i], WeekDayScaleDraw::ShortName);
+            reference_dates.push_back(QDate());
+            reference_times.push_back(QTime());
+            break;
         default:
             if (g && d_type == Graph::HorizontalBars && i == 0
                 && g->axesType()[axes[i]] == Graph::AxisType::Txt) {
@@ -341,6 +363,12 @@ QList<QVector<double>> DataCurve::convertData(const QList<Column *> &cols,
                 result[j][i] = dt.toMSecsSinceEpoch() / 86400000. + 2440587.5;
                 break;
             }
+            case SciDAVis::ColumnMode::Month:
+                result[j][i] = double(cols[j]->dateAt(valid_rows[i]).month());
+                break;
+            case SciDAVis::ColumnMode::Day:
+                result[j][i] = double(cols[j]->dateAt(valid_rows[i]).dayOfWeek());
+                break;
             default:
                 result[j][i] = cols[j]->valueAt(valid_rows[i]);
                 break;

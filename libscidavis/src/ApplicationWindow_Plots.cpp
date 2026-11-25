@@ -1497,7 +1497,15 @@ Graph3D *ApplicationWindow::dataPlotXYZ(Table *table, const QString &zColName, i
         return 0;
     int yCol = table->colY(zCol);
     int xCol = table->colX(zCol);
-    if (xCol < 0 || xCol >= table->numCols() || yCol < 0 || yCol >= table->numCols())
+    return dataPlotXYZ(table, xCol, yCol, zCol, type);
+}
+
+Graph3D *ApplicationWindow::dataPlotXYZ(Table *table, int xCol, int yCol, int zCol, int type)
+{
+    if (!table)
+        return 0;
+    if (xCol < 0 || xCol >= table->numCols() || yCol < 0 || yCol >= table->numCols()
+        || zCol < 0 || zCol >= table->numCols())
         return 0;
 
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));

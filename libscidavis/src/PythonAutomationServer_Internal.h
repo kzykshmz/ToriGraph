@@ -535,6 +535,7 @@ void harmonizeFitCurveLabelsOnGraph(Graph *g, int curvesBefore, bool hadJapanese
 QJsonObject inspectGraphDetailed(MultiLayer *ml, bool includeTicks, bool diagnose);
 void closeAndDeleteEmptyPlot(ApplicationWindow *app, MultiLayer *ml);
 int countFiniteUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx = -1);
+int countPlottableUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx = -1);
 void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
                                  bool applyColor = true);
 void sanitizeAllProjectFunctionCurves(ApplicationWindow *app);

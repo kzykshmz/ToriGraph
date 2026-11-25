@@ -908,6 +908,11 @@ void MultiLayer::applyStylePresetSpec(const GraphStylePresetSpec &spec)
                     newEng->setAttribute(QwtScaleEngine::Inverted);
                     newDiv.invert();
                 }
+                // Keep the major-tick cap the division above used (slide presets: at most 5) as
+                // the axis' max-major count, so re-dividing the range (autoscale on the next
+                // updatePlot, the pptx OLE export, saving/reopening, cloning) gives the same ticks.
+                if (!isLog && maj != plot->axisMaxMajor(a))
+                    plot->setAxisMaxMajor(a, maj);
                 plot->setAxisScale(a, isInv ? hi : lo, isInv ? lo : hi, isLog ? 0.0 : step);
                 plot->setAxisScaleEngine(a, newEng);
                 plot->setAxisScaleDiv(a, newDiv);

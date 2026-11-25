@@ -1689,6 +1689,35 @@ int countFiniteUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx)
     return count;
 }
 
+// plot.xy: like countFiniteUnmaskedInTableColumn, but a date/time, month or weekday Y column
+// counts as plottable (DataCurve converts it to Julian days / month / weekday numbers).
+int countPlottableUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx)
+{
+    if (!t || colIdx < 0 || colIdx >= t->numCols())
+        return 0;
+    Column *yc = t->column(colIdx);
+    if (!yc)
+        return 0;
+    const SciDAVis::ColumnMode ym = yc->columnMode();
+    if (ym == SciDAVis::ColumnMode::Numeric)
+        return countFiniteUnmaskedInTableColumn(t, colIdx, optXIdx);
+    if (ym != SciDAVis::ColumnMode::DateTime && ym != SciDAVis::ColumnMode::Month
+        && ym != SciDAVis::ColumnMode::Day)
+        return 0;
+    Column *xc = (optXIdx >= 0 && optXIdx < t->numCols()) ? t->column(optXIdx) : nullptr;
+    int count = 0;
+    for (int r = 0; r < t->numRows(); ++r) {
+        if (yc->isInvalid(r) || yc->isMasked(r) || !yc->dateTimeAt(r).isValid())
+            continue;
+        if (xc && xc->columnMode() == SciDAVis::ColumnMode::Numeric) {
+            if (xc->isInvalid(r) || xc->isMasked(r) || !std::isfinite(xc->valueAt(r)))
+                continue;
+        }
+        ++count;
+    }
+    return count;
+}
+
 void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
                                  bool applyColor)
 {
@@ -2208,7 +2237,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                          Graph::LineSymbols);
         int totalFinitePts = 0;
         for (int yi : yIdxs)
-            totalFinitePts += countFiniteUnmaskedInTableColumn(t, yi, xIdx);
+            totalFinitePts += countPlottableUnmaskedInTableColumn(t, yi, xIdx);
         if (totalFinitePts <= 0) {
             throwInvalidParams(
                     QStringLiteral("plot.xy requires at least 1 finite unmasked numeric point across the selected columns in table '%1'.")
@@ -2324,8 +2353,11 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                     g->addErrorBars(xFull, yFullCols.first(), t, fullColumnName(t, xeIdx), 0);
             }
             g->refreshAutoAxisTitlesFromColumns();
+            // Only a text X column becomes a category axis: date/time, month and weekday columns
+            // keep the date/time, month-name or weekday-name axis DataCurve::loadData gave them
+            // (their textAt() is empty, so category labels would blank the axis).
             if (xIdx >= 0 && t->column(xIdx)
-                && t->column(xIdx)->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                && t->column(xIdx)->columnMode() == SciDAVis::ColumnMode::Text) {
                 QStringList cats;
                 cats.reserve(t->numRows());
                 for (int r = 0; r < t->numRows(); ++r)
@@ -4345,9 +4377,17 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         const int zIdx = params.contains(QStringLiteral("z_col"))
                 ? resolveColumnIndex(t, params.value(QStringLiteral("z_col")), true)
                 : std::min(2, t->numCols() - 1);
+        // One column may serve several roles (e.g. X and Z): the plot is built from the column
+        // indices, and a shared column keeps the designation of its first role. If the plot
+        // cannot be made, the designations are put back as they were.
+        const SciDAVis::PlotDesignation oldXDes = t->colPlotDesignation(xIdx);
+        const SciDAVis::PlotDesignation oldYDes = t->colPlotDesignation(yIdx);
+        const SciDAVis::PlotDesignation oldZDes = t->colPlotDesignation(zIdx);
         t->setColPlotDesignation(xIdx, SciDAVis::X);
-        t->setColPlotDesignation(yIdx, SciDAVis::Y);
-        t->setColPlotDesignation(zIdx, SciDAVis::Z);
+        if (yIdx != xIdx)
+            t->setColPlotDesignation(yIdx, SciDAVis::Y);
+        if (zIdx != xIdx && zIdx != yIdx)
+            t->setColPlotDesignation(zIdx, SciDAVis::Z);
 
         int plotType = Graph3D::Scatter;
         if (style == QStringLiteral("trajectory") || style == QStringLiteral("line"))
@@ -4355,9 +4395,13 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         else if (style == QStringLiteral("bars"))
             plotType = Graph3D::Bars;
 
-        Graph3D *plot = d_app->dataPlotXYZ(t, fullColumnName(t, zIdx), plotType);
-        if (!plot)
+        Graph3D *plot = d_app->dataPlotXYZ(t, xIdx, yIdx, zIdx, plotType);
+        if (!plot) {
+            t->setColPlotDesignation(zIdx, oldZDes);
+            t->setColPlotDesignation(yIdx, oldYDes);
+            t->setColPlotDesignation(xIdx, oldXDes);
             throwRpcRuntime(QStringLiteral("Failed to create 3D XYZ plot."));
+        }
         enforceArialGraph3DFonts(plot);
         applyRequestedWindowName(d_app, plot, params);
         outResult = serializeGraph3DInfo(plot);
@@ -5146,12 +5190,38 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         const bool fitGrid = params.contains(QStringLiteral("fit"))
                 ? optionalJsonBool(params, QStringLiteral("fit"), false)
                 : (defaultFit ? false : false);
+        ml->takeLayoutPageGrowth(); // forget a widening made before this call
         ml->arrangeLayers(fitGrid && !(hasExplicitRows || hasExplicitCols), false);
         if (ml->pageViewMode() && !fitGrid)
             ml->fitLayersToPage();
+        const QSizeF grownFrom = ml->takeLayoutPageGrowth();
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
+        QJsonArray arrangeWarnings;
+        if (grownFrom.isValid()) {
+            arrangeWarnings.append(
+                    QStringLiteral("The %1 x %2 panels did not fit the %3 x %4 page; the page was "
+                                   "enlarged to %5 x %6 so every panel stays on it.")
+                            .arg(ml->getRows())
+                            .arg(ml->getCols())
+                            .arg(grownFrom.width(), 0, 'g', 6)
+                            .arg(grownFrom.height(), 0, 'g', 6)
+                            .arg(ml->pageWidthPhysical(), 0, 'g', 6)
+                            .arg(ml->pageHeightPhysical(), 0, 'g', 6));
+        }
+        for (Graph *lg : ml->layersList()) {
+            if (!lg || lg->linkedParentLayer() || ml->isInsetLayer(lg) || !ml->canvasWidget())
+                continue;
+            if (!ml->canvasWidget()->rect().contains(lg->geometry())) {
+                arrangeWarnings.append(QStringLiteral(
+                        "Some panels still extend past the page; enlarge the page or use fewer "
+                        "columns."));
+                break;
+            }
+        }
+        if (!arrangeWarnings.isEmpty())
+            outResult[QStringLiteral("warnings")] = arrangeWarnings;
         return true;
     }
 

@@ -2731,6 +2731,31 @@ static QString remapRenamedTableRef(const QStringList &renamedTables, const QStr
     return ref;
 }
 
+// Curve tags written after the curves (custom label, colour map, error band) name their columns
+// as "<table>_<column>"; a table renamed while loading (appendProject name clash,
+// sanitizeLoadedWindowName) must be renamed there too, as the curve lines are, or the tag no
+// longer finds its curve.
+static QString remapToriTagColumnRefs(const QStringList &renamedTables, const QString &line)
+{
+    if (renamedTables.isEmpty()
+        || !(line.startsWith(QLatin1String("<ToriCurveLabel"))
+             || line.startsWith(QLatin1String("<ToriPointColorMap"))
+             || line.startsWith(QLatin1String("<ToriErrorBand"))))
+        return line;
+    static const QRegularExpression re(QStringLiteral("\\s(x|y|z|err|size)=\"([^\"]*)\""));
+    QString out;
+    int last = 0;
+    QRegularExpressionMatchIterator it = re.globalMatch(line);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += line.mid(last, m.capturedStart(2) - last);
+        out += remapRenamedTableRef(renamedTables, m.captured(2));
+        last = m.capturedEnd(2);
+    }
+    out += line.mid(last);
+    return out;
+}
+
 static QString remapSurfacePlotSource(const QStringList &renamedTables, const QString &src)
 {
     if (renamedTables.isEmpty() || src.isEmpty())
@@ -3252,7 +3277,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
         if (ag && trimmedLine.startsWith(QLatin1String("<Tori"))) {
             if (trimmedLine.startsWith(QLatin1String("<ToriAutoscaleFonts")))
                 hasToriAutoscaleFonts = true;
-            ag->restorePhase5Tag(trimmedLine);
+            ag->restorePhase5Tag(remapToriTagColumnRefs(app->renamedTables, trimmedLine));
             continue;
         }
         if (s.startsWith(QLatin1String("ggeometry\t"))) {

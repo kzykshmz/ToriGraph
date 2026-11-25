@@ -458,6 +458,15 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
     // nothing changed
     if (type == old_type)
         return;
+    // A function curve read back from a project is inserted as Line (insertFunctionCurve, so a
+    // fit curve keeps the Line type it was created with); restoring a saved Function type only
+    // re-tags it, the item already is a FunctionCurve.
+    if (type == Function) {
+        const PlotCurve *pc = dynamic_cast<const PlotCurve *>(curve(curve_index));
+        if (old_type == Line && pc && pc->type() == Function)
+            c_type[curve_index] = Function;
+        return;
+    }
     // not all types can be modified cleanly
     if (type != Line && type != Scatter && type != LineSymbols && type != VerticalBars
         && type != Area && type != VerticalDropLines && type != Spline && type != HorizontalSteps

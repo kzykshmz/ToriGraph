@@ -1004,6 +1004,18 @@ QString Graph::saveToString(bool saveAsTemplate)
                      .arg(m_autoscale ? 1 : 0)
                      .arg(autoMask);
 
+        // Major ticks set directly with a scale division (a style preset's tick cap, the
+        // legend headroom keeping the preset's step) do not come back from re-dividing the
+        // saved range with the user step; their spacing is stored here and applied after the
+        // axis locks, without becoming the axis' user step (see effectiveMajorStep).
+        for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+            const double effStep = effectiveMajorStep(a);
+            if (effStep != d_user_step[a])
+                s += QString("<ToriAxisTickStep axis=\"%1\" step=\"%2\"/>\n")
+                             .arg(a)
+                             .arg(QString::number(effStep, 'g', 17));
+        }
+
         s += QString("<ToriAutoscaleFonts val=\"%1\"/>\n").arg(autoScaleFonts ? 1 : 0);
 
         const QString unitFmtStr = (d_axis_unit_format == Column::UnitFormat::ISIJSlash)
@@ -1571,6 +1583,9 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         QwtValueList lst = sd->ticks(QwtScaleDiv::MajorTick);
 
         d_user_step[i] = g->axisStep(i);
+        // Ticks set directly with a division (style preset, legend headroom) are re-divided
+        // with their own spacing, so the copy shows the same ticks (see effectiveMajorStep).
+        const double divStep = g->effectiveMajorStep(i);
 
         QwtScaleDiv div;
         if (d_axis_breaks[i].enabled || useMirrorBreak) {
@@ -1586,11 +1601,11 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
 #if QWT_VERSION >= 0x050200
             div = sc_engine->divideScale(qMin(sd->lowerBound(), sd->upperBound()),
                                          qMax(sd->lowerBound(), sd->upperBound()),
-                                         majorTicks, max_min_intervals, d_user_step[i]);
+                                         majorTicks, max_min_intervals, divStep);
 #else
             div = sc_engine->divideScale(qMin(sd->lBound(), sd->hBound()),
                                          qMax(sd->lBound(), sd->hBound()), majorTicks,
-                                         max_min_intervals, d_user_step[i]);
+                                         max_min_intervals, divStep);
 #endif
             if (se->testAttribute(QwtScaleEngine::Inverted)) {
                 sc_engine->setAttribute(QwtScaleEngine::Inverted);
@@ -2513,6 +2528,31 @@ bool Graph::restorePhase5Tag(const QString &line)
 
     if (s.startsWith("<ToriAutoscaleFonts")) {
         autoScaleFonts = (attrs.value("val", "0").toInt() != 0);
+        return true;
+    }
+
+    if (s.startsWith("<ToriAxisTickStep")) {
+        // Re-divide the axis with the spacing its ticks had when saved; the user step (and
+        // the lock state restored just before) stay as they are.
+        const int a = attrs.value("axis", "-1").toInt();
+        const double step = attrs.value("step", "0").toDouble();
+        if (a < 0 || a >= QwtPlot::axisCnt || !(step > 0.0) || !std::isfinite(step) || !d_plot
+            || d_plot->axisAutoScale(a) || d_axis_breaks[a].enabled)
+            return true;
+        const QwtScaleEngine *se = d_plot->axisScaleEngine(a);
+        const QwtScaleDiv *sd = d_plot->axisScaleDiv(a);
+        if (!se || !sd || Plot::isLog10ScaleEngine(se))
+            return true;
+        const double lo = qMin(sd->lowerBound(), sd->upperBound());
+        const double hi = qMax(sd->lowerBound(), sd->upperBound());
+        if (!(hi > lo) || !std::isfinite(lo) || !std::isfinite(hi))
+            return true;
+        const bool inverted = se->testAttribute(QwtScaleEngine::Inverted);
+        const bool wasLocked = isAxisUserLocked(a);
+        const double userStep = d_user_step[a];
+        setScale(a, lo, hi, step, d_plot->axisMaxMajor(a), d_plot->axisMaxMinor(a), 0, inverted);
+        d_user_step[a] = userStep;
+        setAxisUserLocked(a, wasLocked);
         return true;
     }
 

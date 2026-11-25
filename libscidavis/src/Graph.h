@@ -397,6 +397,12 @@ public slots:
     void setScale(int axis, double start, double end, double step = 0.0, int majorTicks = 5,
                   int minorTicks = 5, int type = 0, bool inverted = false);
     double axisStep(int axis) { return d_user_step[axis]; };
+    //! The step that re-divides the axis to its current major ticks when saving (the
+    //! <ToriAxisTickStep> tag) or cloning: the user step if re-dividing the range with it and
+    //! the max-major count gives them back, otherwise the spacing of those ticks when that
+    //! does (ticks set directly with a scale division by a style preset or the legend
+    //! headroom). The user step itself is not changed.
+    double effectiveMajorStep(int axis) const;
 
     //! \name Curves Layout
     //@{

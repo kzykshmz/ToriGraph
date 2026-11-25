@@ -175,6 +175,20 @@ ScopedUnzoomForExport::ScopedUnzoomForExport(MultiLayer *target) : ml(target)
             prevLayers << QPointer<Graph>(gr);
             prevLayerGeometry << gr->geometry();
             prevPlotSize << gr->plotWidget()->size();
+            // Keep the on-screen ranges while the page is at 100 %: an autoscaled axis is held
+            // at its current division (see pausedAutoAxes) and autoscales again on restore.
+            Plot *pl = gr->plotWidget();
+            int mask = 0;
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                const QwtScaleDiv *sd = pl->axisScaleDiv(a);
+                const QwtScaleDiv held = sd ? *sd : QwtScaleDiv();
+                pausedAutoDivs << held;
+                if (sd && pl->axisAutoScale(a)) {
+                    pl->setAxisScaleDiv(a, held);
+                    mask |= (1 << a);
+                }
+            }
+            pausedAutoAxes << mask;
         }
         prevLayerCanvasW = ml->l_canvas_width;
         prevLayerCanvasH = ml->l_canvas_height;
@@ -237,6 +251,22 @@ void ScopedUnzoomForExport::restoreNow()
         ml->l_canvas_height = prevLayerCanvasH;
         if (moved)
             ml->repositionCanvasStatusPill();
+        // Autoscale the held axes again; the next redraw recomputes them on the restored
+        // canvas, which gives back the ranges they had before the export.
+        for (int i = 0; i < prevLayers.size() && i < pausedAutoAxes.size(); ++i) {
+            Graph *gr = prevLayers.at(i);
+            if (!gr || !gr->plotWidget() || !pausedAutoAxes.at(i))
+                continue;
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                // Only an axis nobody re-scaled meanwhile (the legend placement may add
+                // headroom with an explicit scale, which must stay).
+                const QwtScaleDiv *sd = gr->plotWidget()->axisScaleDiv(a);
+                const int k = i * QwtPlot::axisCnt + a;
+                if ((pausedAutoAxes.at(i) & (1 << a)) && !gr->plotWidget()->axisAutoScale(a)
+                    && sd && k < pausedAutoDivs.size() && *sd == pausedAutoDivs.at(k))
+                    gr->plotWidget()->setAxisAutoScale(a);
+            }
+        }
     }
     if (QWidget *w = ml->widget()) {
         w->setUpdatesEnabled(prevWidgetUpdates);

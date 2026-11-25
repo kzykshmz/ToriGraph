@@ -353,6 +353,8 @@ public slots:
                               double xr, double yl, double yr, double zl, double zr);
     Graph3D *dataPlot3D(Table *table, const QString &colName);
     Graph3D *dataPlotXYZ(Table *table, const QString &zColName, int type);
+    //! X, Y and Z by column index (one column may take several roles).
+    Graph3D *dataPlotXYZ(Table *table, int xCol, int yCol, int zCol, int type);
     Graph3D *dataPlot3D(const QString &caption, const QString &formula, double xl, double xr,
                         double yl, double yr, double zl, double zr);
     Graph3D *dataPlotXYZ(const QString &caption, const QString &formula, double xl, double xr,

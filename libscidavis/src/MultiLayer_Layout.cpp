@@ -583,6 +583,8 @@ QSize MultiLayer::arrangeLayers(bool userSize)
     for (i = 0; i < nCols; i++)
         sumMarginW += maxLeftW[i] + maxRightW[i];
 
+    d_arrange_overflow_px = QSize();
+    bool gridOverflows = false;
     if (!userSize) {
         const double aspect = (d_keep_aspect_ratio && d_target_aspect_ratio > 0.0)
                 ? d_target_aspect_ratio
@@ -604,9 +606,39 @@ QSize MultiLayer::arrangeLayers(bool userSize)
             }
             l_canvas_width = qMax(50, fitW);
             l_canvas_height = qMax(50, fitH);
+            gridOverflows = (fitW < 50 || fitH < 50);
         } else {
             l_canvas_width = qMax(50, availW);
             l_canvas_height = qMax(50, availH);
+            gridOverflows = (availW < 50 || availH < 50);
+        }
+        if (gridOverflows) {
+            // The axis margins of all the columns (rows) leave the plot areas less than the 50 px
+            // floor, so the grid would run off the page (1 x 3 on a journal-size page). Give
+            // each plot area at least the room of its own axis decorations instead and let
+            // arrangeLayers(bool, bool) widen the page to hold the grid.
+            int panelMarginW = 0;
+            for (i = 0; i < nCols; i++)
+                panelMarginW = qMax(panelMarginW, maxLeftW[i] + maxRightW[i]);
+            int panelMarginH = 0;
+            for (i = 0; i < nRows; i++)
+                panelMarginH = qMax(panelMarginH, maxTopH[i] + maxBottomH[i]);
+            const int minSide = qMax(100, qMax(panelMarginW, panelMarginH));
+            if (d_keep_aspect_ratio) {
+                int w = minSide;
+                int h = qRound(w / aspect);
+                if (h < minSide) {
+                    h = minSide;
+                    w = qRound(h * aspect);
+                }
+                l_canvas_width = qMax(l_canvas_width, w);
+                l_canvas_height = qMax(l_canvas_height, h);
+            } else {
+                if (availW < 50)
+                    l_canvas_width = minSide;
+                if (availH < 50)
+                    l_canvas_height = minSide;
+            }
         }
     }
 
@@ -628,6 +660,8 @@ QSize MultiLayer::arrangeLayers(bool userSize)
 
     const int totalW = accumW + (nCols - 1) * colsSpace + left_margin + right_margin;
     const int totalH = accumH + (nRows - 1) * rowsSpace + top_margin + bottom_margin;
+    if (gridOverflows && (totalW > rect.width() || totalH > rect.height()))
+        d_arrange_overflow_px = QSize(totalW, totalH);
     const int offsetX = userSize ? 0 : qMax(0, (rect.width() - totalW) / 2);
     const int offsetY = userSize ? 0 : qMax(0, (rect.height() - totalH) / 2);
 
@@ -737,6 +771,34 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
         size = arrangeLayers(userSize);
     }
 
+    // A grid that does not fit the page even at the minimum plot-area size widens (or
+    // heightens) the page to hold it, then is laid out again on the larger page.
+    if (!userSize && d_arrange_overflow_px.isValid() && !d_growing_page_for_layout) {
+        const QSize need = d_arrange_overflow_px;
+        const QSize have = canvas ? canvas->size() : QSize();
+        if (have.width() > 0 && have.height() > 0 && d_page_width_val > 0.0
+            && d_page_height_val > 0.0) {
+            const double fw = qMax(1.0, double(need.width() + 2) / double(have.width()));
+            const double fh = qMax(1.0, double(need.height() + 2) / double(have.height()));
+            // Keep the page within the 16,384 px export limit at its dpi.
+            const double pxPerUnit = (d_page_unit == UnitInch)
+                    ? double(d_page_dpi)
+                    : ((d_page_unit == UnitMm)
+                               ? double(d_page_dpi) / 25.4
+                               : ((d_page_unit == UnitCm) ? double(d_page_dpi) / 2.54 : 1.0));
+            const double maxVal = 16384.0 / qMax(1e-9, pxPerUnit);
+            const double newW = qMin(maxVal, qMax(d_page_width_val, d_page_width_val * fw));
+            const double newH = qMin(maxVal, qMax(d_page_height_val, d_page_height_val * fh));
+            if (newW > d_page_width_val + 1e-9 || newH > d_page_height_val + 1e-9) {
+                if (!d_layout_page_grown_from.isValid())
+                    d_layout_page_grown_from = QSizeF(d_page_width_val, d_page_height_val);
+                d_growing_page_for_layout = true;
+                setPageSizePhysical(newW, newH, d_page_unit, d_page_dpi); // re-arranges
+                d_growing_page_for_layout = false;
+            }
+        }
+    }
+
     if (userSize) { // resize window
         bool ignoreResize = active_graph ? active_graph->ignoresResizeEvents() : false;
         for (int i = 0; i < (int)graphsList.count(); i++) {
@@ -762,6 +824,13 @@ void MultiLayer::arrangeLayers(bool fit, bool userSize)
 
     emit modifiedPlot();
     QApplication::restoreOverrideCursor();
+}
+
+QSizeF MultiLayer::takeLayoutPageGrowth()
+{
+    const QSizeF from = d_layout_page_grown_from;
+    d_layout_page_grown_from = QSizeF();
+    return from;
 }
 
 void MultiLayer::setCols(int c)

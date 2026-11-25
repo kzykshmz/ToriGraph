@@ -2769,16 +2769,254 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         }
     }
 
+    // Screen geometry of the standard line/symbol curves (part 5 of evaluateCollisionScore),
+    // projected once and indexed by a uniform grid of cells. The placement search scores
+    // thousands of candidate boxes (25 x 25 grid origins, each box and each legend row), and
+    // walking every point of every curve for each of them made plot_xy with many Y columns
+    // quadratic in the curve count. A box now only visits the symbols and segments of the
+    // cells it touches; each one is scored by the same test as before. The projection is
+    // rebuilt whenever an axis scale or the canvas changes (Y headroom, 2-column legend).
+    struct StdCurveElem {
+        bool isSeg;
+        double x0, y0, x1, y1; // symbol: (x0, y0); segment: (x0, y0)-(x1, y1)
+        double r; // symbol test radius
+        double weight; // symbol: added cost; segment: pen weight
+        double stride;
+    };
+    struct StdCurveGeom {
+        QVector<double> signature;
+        bool built = false;
+        QVector<StdCurveElem> elems;
+        QVector<int> outside; // elements not inside the indexed area: always tested
+        // per layer (layersToScore order): curves evaluateCollisionScore still walks itself
+        QVector<QVector<int>> otherCurves;
+        struct Cell {
+            QVector<int> singles; // elements (padded box) inside this cell only
+            QVector<int> multis; // elements spanning several cells
+            double fullSum = 0.0; // what the singles add when the box covers the whole cell
+        };
+        QVector<Cell> cells;
+        QVector<int> stamp;
+        int stampId = 0;
+        double gx0 = 0.0, gy0 = 0.0, cell = 16.0;
+        int nx = 0, ny = 0;
+    } stdGeom;
+    auto stdGeomSignature = [&]() {
+        QVector<double> sig;
+        for (Graph *lg : layersToScore) {
+            Plot *lp = lg ? lg->plotWidget() : nullptr;
+            if (!lp || !lp->canvas())
+                continue;
+            sig << lp->canvas()->width() << lp->canvas()->height();
+            for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+                const QwtScaleMap m = lp->canvasMap(a);
+                sig << m.s1() << m.s2() << m.p1() << m.p2();
+            }
+        }
+        return sig;
+    };
+    auto ensureStdGeom = [&]() {
+        QVector<double> sig = stdGeomSignature();
+        if (stdGeom.built && sig == stdGeom.signature)
+            return;
+        stdGeom.signature = sig;
+        stdGeom.built = true;
+        stdGeom.elems.clear();
+        stdGeom.outside.clear();
+        stdGeom.otherCurves = QVector<QVector<int>>(layersToScore.size());
+        double maxW = 1.0, maxH = 1.0;
+        for (int li = 0; li < layersToScore.size(); ++li) {
+            Graph *lg = layersToScore[li];
+            Plot *lp = lg ? lg->plotWidget() : nullptr;
+            if (!lp)
+                continue;
+            if (lp->canvas()) {
+                maxW = qMax(maxW, double(lp->canvas()->width()));
+                maxH = qMax(maxH, double(lp->canvas()->height()));
+            }
+            for (int i = 0; i < lg->n_curves && i < lg->c_keys.size(); ++i) {
+                // Curves that are not plain line/symbol curves (and hidden ones, which cost
+                // nothing) stay with evaluateCollisionScore.
+                if (!lg->isCurveVisible(i)) {
+                    stdGeom.otherCurves[li].append(i);
+                    continue;
+                }
+                QwtPlotItem *it = lg->plotItem(i);
+                if (!it || !it->isVisible() || it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+                    stdGeom.otherCurves[li].append(i);
+                    continue;
+                }
+                const int ct = (i < lg->c_type.size()) ? lg->c_type[i] : Line;
+                if (ct == ErrorBars || ct == VerticalBars || ct == HorizontalBars
+                    || ct == Histogram || ct == Box || ct == VectXYXY || ct == VectXYAM) {
+                    stdGeom.otherCurves[li].append(i);
+                    continue;
+                }
+                QwtPlotCurve *c = dynamic_cast<QwtPlotCurve *>(it);
+                if (!c)
+                    continue; // costs nothing in evaluateCollisionScore either
+                const int nPts = c->dataSize();
+                if (nPts <= 0)
+                    continue;
+                const QwtScaleMap xMap = lp->canvasMap(c->xAxis());
+                const QwtScaleMap yMap = lp->canvasMap(c->yAxis());
+                const DataCurve *dc = dynamic_cast<const DataCurve *>(c);
+                const bool hasSymbols =
+                        (c->symbol().style() != QwtSymbol::NoSymbol || ct == Scatter);
+                const bool hasLines = (c->style() != QwtPlotCurve::NoCurve && ct != Scatter);
+                const double symR = hasSymbols
+                        ? qMax(4.0,
+                               0.5 * qMax(c->symbol().size().width(), c->symbol().size().height()))
+                        : 0.0;
+                const double penWeight = 1.4 + 0.35 * qMax(1, c->pen().width());
+                const int stride = (nPts > 6000) ? qMax(1, nPts / 3000) : 1;
+                Column *dcXCol = nullptr;
+                Column *dcYCol = nullptr;
+                const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
+                if (dcHasMasks)
+                    dc->resolveColumns(dcXCol, dcYCol);
+                bool hasPrev = false;
+                double prevPx = 0.0, prevPy = 0.0;
+                for (int p = 0; p < nPts; p += stride) {
+                    if (dcHasMasks && dc->isPointMaskedFast(p, dcXCol, dcYCol)) {
+                        hasPrev = false;
+                        continue;
+                    }
+                    const double vx = c->x(p);
+                    const double vy = c->y(p);
+                    if (!std::isfinite(vx) || !std::isfinite(vy)) {
+                        hasPrev = false;
+                        continue;
+                    }
+                    const double px = xMap.xTransform(vx);
+                    const double py = yMap.xTransform(vy);
+                    if (!std::isfinite(px) || !std::isfinite(py)) {
+                        hasPrev = false;
+                        continue;
+                    }
+                    if (hasSymbols)
+                        stdGeom.elems.append({ false, px, py, px, py, symR,
+                                               (45.0 + symR * 4.0) * stride, double(stride) });
+                    if (hasLines && hasPrev)
+                        stdGeom.elems.append({ true, prevPx, prevPy, px, py, 0.0, penWeight,
+                                               double(stride) });
+                    prevPx = px;
+                    prevPy = py;
+                    hasPrev = true;
+                }
+            }
+        }
+        // Index the canvas plus one canvas size on every side; anything reaching beyond that
+        // is kept in the always-tested list.
+        stdGeom.gx0 = -maxW;
+        stdGeom.gy0 = -maxH;
+        stdGeom.cell = qMax(16.0, qMax(3.0 * maxW, 3.0 * maxH) / 256.0);
+        stdGeom.nx = qMax(1, int(std::ceil(3.0 * maxW / stdGeom.cell)));
+        stdGeom.ny = qMax(1, int(std::ceil(3.0 * maxH / stdGeom.cell)));
+        stdGeom.cells = QVector<StdCurveGeom::Cell>(stdGeom.nx * stdGeom.ny);
+        stdGeom.stamp = QVector<int>(stdGeom.elems.size(), 0);
+        stdGeom.stampId = 0;
+        const double gx1 = stdGeom.gx0 + stdGeom.nx * stdGeom.cell;
+        const double gy1 = stdGeom.gy0 + stdGeom.ny * stdGeom.cell;
+        for (int e = 0; e < stdGeom.elems.size(); ++e) {
+            const StdCurveElem &el = stdGeom.elems[e];
+            const double pad = el.r + 1.0;
+            const double l = qMin(el.x0, el.x1) - pad;
+            const double r = qMax(el.x0, el.x1) + pad;
+            const double t = qMin(el.y0, el.y1) - pad;
+            const double b = qMax(el.y0, el.y1) + pad;
+            if (l < stdGeom.gx0 || t < stdGeom.gy0 || r >= gx1 || b >= gy1) {
+                stdGeom.outside.append(e);
+                continue;
+            }
+            const int cx0 = int((l - stdGeom.gx0) / stdGeom.cell);
+            const int cx1 = int((r - stdGeom.gx0) / stdGeom.cell);
+            const int cy0 = int((t - stdGeom.gy0) / stdGeom.cell);
+            const int cy1 = int((b - stdGeom.gy0) / stdGeom.cell);
+            if (cx0 == cx1 && cy0 == cy1) {
+                StdCurveGeom::Cell &cl = stdGeom.cells[cy0 * stdGeom.nx + cx0];
+                cl.singles.append(e);
+                // Inside a box that covers the whole cell a symbol always counts and a segment
+                // is never clipped (the same values the tests below give).
+                const double segLen = std::hypot(el.x1 - el.x0, el.y1 - el.y0);
+                cl.fullSum += el.isSeg ? (6.0 + segLen * el.weight) * el.stride : el.weight;
+                continue;
+            }
+            for (int cy = cy0; cy <= cy1; ++cy)
+                for (int cx = cx0; cx <= cx1; ++cx)
+                    stdGeom.cells[cy * stdGeom.nx + cx].multis.append(e);
+        }
+    };
+    auto stdGeomCost = [&](const QRectF &box) -> double {
+        ensureStdGeom();
+        double cost = 0.0;
+        auto scoreElem = [&](const StdCurveElem &el) {
+            if (!el.isSeg) {
+                if (box.adjusted(-el.r, -el.r, el.r, el.r).contains(QPointF(el.x0, el.y0)))
+                    cost += el.weight;
+            } else {
+                bool hit = false;
+                const double clipLen =
+                        liangBarskyClippedLength(el.x0, el.y0, el.x1, el.y1, box, &hit);
+                if (hit)
+                    cost += (6.0 + clipLen * el.weight) * el.stride;
+            }
+        };
+        // Elements reaching outside the indexed area are always tested; every other element
+        // that meets the box meets the part of the box inside that area, so only the cells
+        // under that part are visited (a tall legend box may extend past the area).
+        for (int e : stdGeom.outside)
+            scoreElem(stdGeom.elems[e]);
+        if (++stdGeom.stampId == std::numeric_limits<int>::max()) {
+            stdGeom.stamp.fill(0);
+            stdGeom.stampId = 1;
+        }
+        auto cellIndex = [&](double v, double origin, int n) {
+            const double c = std::floor((v - origin) / stdGeom.cell);
+            return int(qBound(-1.0, c, double(n)));
+        };
+        const int cx0 = qMax(0, cellIndex(box.left() - 1.0, stdGeom.gx0, stdGeom.nx));
+        const int cx1 =
+                qMin(stdGeom.nx - 1, cellIndex(box.right() + 1.0, stdGeom.gx0, stdGeom.nx));
+        const int cy0 = qMax(0, cellIndex(box.top() - 1.0, stdGeom.gy0, stdGeom.ny));
+        const int cy1 =
+                qMin(stdGeom.ny - 1, cellIndex(box.bottom() + 1.0, stdGeom.gy0, stdGeom.ny));
+        for (int cy = cy0; cy <= cy1; ++cy) {
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                const StdCurveGeom::Cell &cl = stdGeom.cells[cy * stdGeom.nx + cx];
+                const double cellL = stdGeom.gx0 + cx * stdGeom.cell;
+                const double cellT = stdGeom.gy0 + cy * stdGeom.cell;
+                if (box.left() < cellL && cellL + stdGeom.cell < box.right() && box.top() < cellT
+                    && cellT + stdGeom.cell < box.bottom()) {
+                    cost += cl.fullSum;
+                } else {
+                    for (int e : cl.singles)
+                        scoreElem(stdGeom.elems[e]);
+                }
+                for (int e : cl.multis) {
+                    if (stdGeom.stamp[e] == stdGeom.stampId)
+                        continue;
+                    stdGeom.stamp[e] = stdGeom.stampId;
+                    scoreElem(stdGeom.elems[e]);
+                }
+            }
+        }
+        return cost;
+    };
+
     auto evaluateCollisionScore = [&](const QRectF &candRect) -> double {
         const QRectF box = candRect.adjusted(-4.0, -4.0, 4.0, 4.0);
-        double cost = 0.0;
+        double cost = stdGeomCost(box);
 
-        for (Graph *lg : layersToScore) {
+        for (int li = 0; li < layersToScore.size(); ++li) {
+            Graph *lg = layersToScore[li];
             Plot *lp = lg ? lg->plotWidget() : nullptr;
             if (!lp)
                 continue;
 
-            for (int i = 0; i < lg->n_curves && i < lg->c_keys.size(); ++i) {
+            for (int i : stdGeom.otherCurves.value(li)) {
+                if (i >= lg->n_curves || i >= lg->c_keys.size())
+                    continue;
                 if (!lg->isCurveVisible(i))
                     continue;
                 QwtPlotItem *it = lg->plotItem(i);
@@ -3019,58 +3257,8 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                     continue;
                 }
 
-                // 5. Standard 2D curve symbols + Liang-Barsky clipped curve segments
-                const bool hasSymbols =
-                        (c->symbol().style() != QwtSymbol::NoSymbol || ct == Scatter);
-                const bool hasLines = (c->style() != QwtPlotCurve::NoCurve && ct != Scatter);
-                const double symR = hasSymbols
-                        ? qMax(4.0,
-                               0.5 * qMax(c->symbol().size().width(), c->symbol().size().height()))
-                        : 0.0;
-                const QRectF symTestBox = box.adjusted(-symR, -symR, symR, symR);
-                const double penWeight = 1.4 + 0.35 * qMax(1, c->pen().width());
-                const int stride = (nPts > 6000) ? qMax(1, nPts / 3000) : 1;
-
-                Column *dcXCol = nullptr;
-                Column *dcYCol = nullptr;
-                const bool dcHasMasks = dc && dc->hasAnyMaskedPoints();
-                if (dcHasMasks)
-                    dc->resolveColumns(dcXCol, dcYCol);
-
-                bool hasPrev = false;
-                double prevPx = 0.0, prevPy = 0.0;
-                for (int p = 0; p < nPts; p += stride) {
-                    if (dcHasMasks && dc->isPointMaskedFast(p, dcXCol, dcYCol)) {
-                        hasPrev = false;
-                        continue;
-                    }
-                    const double vx = c->x(p);
-                    const double vy = c->y(p);
-                    if (!std::isfinite(vx) || !std::isfinite(vy)) {
-                        hasPrev = false;
-                        continue;
-                    }
-                    const double px = xMap.xTransform(vx);
-                    const double py = yMap.xTransform(vy);
-                    if (!std::isfinite(px) || !std::isfinite(py)) {
-                        hasPrev = false;
-                        continue;
-                    }
-
-                    if (hasSymbols && symTestBox.contains(QPointF(px, py)))
-                        cost += (45.0 + symR * 4.0) * stride;
-
-                    if (hasLines && hasPrev) {
-                        bool hit = false;
-                        const double clipLen =
-                                liangBarskyClippedLength(prevPx, prevPy, px, py, box, &hit);
-                        if (hit)
-                            cost += (6.0 + clipLen * penWeight) * stride;
-                    }
-                    prevPx = px;
-                    prevPy = py;
-                    hasPrev = true;
-                }
+                // 5. Standard 2D curve symbols and line segments: scored through the
+                // grid index above (stdGeomCost), added once per box at the top.
             }
 
             // 6. Other text markers, image markers, arrow markers, and reference lines
@@ -3335,12 +3523,20 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
         return cost;
     };
 
-    auto evaluateOriginScore = [&](int ox, int oy) -> double {
+    // bound: a caller that only keeps a score below it (the grid search) lets the per-row sum
+    // stop once it reaches the bound; every cost is >= 0, so such a candidate could not have
+    // been chosen, and a score below the bound is computed in full as before.
+    auto evaluateOriginScore = [&](int ox, int oy,
+                                   double bound =
+                                           std::numeric_limits<double>::infinity()) -> double {
         const double fullBoxScore = evaluateCollisionScore(QRectF(ox, oy, legW, legH));
         if (framelessSingleCol && !rowVisualRects.isEmpty()) {
             double sum = 0.0;
-            for (const QRectF &rr : rowVisualRects)
+            for (const QRectF &rr : rowVisualRects) {
                 sum += evaluateCollisionScore(rr.translated(double(ox), double(oy)));
+                if (sum + 0.35 * fullBoxScore >= bound)
+                    break;
+            }
             return sum + 0.35 * fullBoxScore;
         }
         return fullBoxScore;
@@ -3480,7 +3676,7 @@ QString Graph::placeLegendAnchor(LegendAnchor anchor, double *outOverlapScore, i
                         const bool isCorner =
                                 (rGx == 0 || rGx == kGridN - 1) && (gy == 0 || gy == kGridN - 1);
                         const double penalty = isCorner ? 0.0 : 0.05;
-                        const double sc = evaluateOriginScore(px, py) + penalty;
+                        const double sc = evaluateOriginScore(px, py, bestGridScore) + penalty;
                         if (sc < bestGridScore - 1e-9) {
                             bestGridScore = sc;
                             bestPt = QPoint(px, py);

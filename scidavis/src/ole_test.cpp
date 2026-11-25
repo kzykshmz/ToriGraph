@@ -72,6 +72,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 99, "runSuite99DateTimeParsingAndWideTables", &runSuite99DateTimeParsingAndWideTables },
     { 100, "runSuite100NumericsRound2", &runSuite100NumericsRound2 },
     { 101, "runSuite101WorksheetRound2", &runSuite101WorksheetRound2 },
+    { 102, "runSuite102PlotRound2", &runSuite102PlotRound2 },
     { 103, "runSuite103ImportRound2", &runSuite103ImportRound2 },
 };
 
@@ -5595,6 +5596,9 @@ static int runAllTests(int argc, char **argv, QTemporaryDir &runTempDir)
         return 1;
     mw->savedProject();
     if (runSuite101WorksheetRound2(mw) != 0)
+        return 1;
+    mw->savedProject();
+    if (runSuite102PlotRound2(mw) != 0)
         return 1;
     mw->savedProject();
     if (runSuite103ImportRound2(mw) != 0)
