@@ -934,6 +934,18 @@ bool WorkbookManager::renameBook(const QString &book, const QString &newName, QS
         setErr(err, wbTr("A workbook named %1 already exists.").arg(nn));
         return false;
     }
+    // Nor the name of another window (worksheet, matrix, graph, note): workbook and window would
+    // answer to the same name, which app.rename_window refuses as well. The name of one of its
+    // own sheets is allowed (a workbook made from worksheets is named after the first one).
+    if (d_app && d_app->alreadyUsedName(nn)) {
+        bool ownSheet = false;
+        for (Table *s : b->sheets)
+            ownSheet = ownSheet || (s && s->name() == nn);
+        if (!ownSheet) {
+            setErr(err, wbTr("The name %1 is already used by another window.").arg(nn));
+            return false;
+        }
+    }
     // The sheets keep their table names (and so every graph / formula reference); the old
     // name stays the prefix that is left out of the tab labels.
     b->name = nn;

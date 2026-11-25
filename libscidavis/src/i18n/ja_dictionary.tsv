@@ -6473,6 +6473,7 @@ A linked Right-Y overlay layer already owns the right Y axis. Add or edit curves
 A picture of the graph (EMF vector and %1 dpi PNG) was placed on the clipboard instead. It can be pasted, but not edited again from PowerPoint.	代わりにグラフの画像(EMF ベクターと %1 dpi の PNG)をクリップボードに載せました。貼り付けはできますが、PowerPoint から再編集はできません。
 A picture of the graph (bitmap only) was placed on the clipboard instead. It can be pasted, but not edited again from PowerPoint.	代わりにグラフの画像 (ビットマップのみ) をクリップボードに載せました。貼り付けはできますが、PowerPoint から再編集はできません。
 A workbook named %1 already exists.	ブック %1 はすでにあります。
+The name %1 is already used by another window.	%1 という名前はほかのウィンドウがすでに使っています。
 ASTM E1820 elastic-plastic fracture toughness J-R curve with experimental J-Δa data, power-law fit, construction blunting line (J = 2σY·Δa), and 0.2 mm offset line yielding JQ.	ASTM E1820 準拠の弾塑性破壊靭性 J-R 抵抗曲線。実験点・べき乗則フィット・鈍化線 (J = 2σY·Δa)・0.2 mm オフセット鈍化線を同一グラフに描画し、交点 JQ を視覚化。
 Add &Existing Worksheet	既存のワークシートを加える(&E)
 Add Error &Band...	エラーバンドを追加(&B)...

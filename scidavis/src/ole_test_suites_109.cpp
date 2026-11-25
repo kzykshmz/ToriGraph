@@ -59,6 +59,10 @@
 //        unchanged; a column with 12500 masked runs reads in one step (5 s before, one
 //        command per <mask> element), and <mask> elements out of order, overlapping or
 //        touching read as their union
+//   109g workbook.rename refuses the name of another window (table, graph, matrix) like
+//        app.rename_window, and leaves the workbook as it was (it used to take the name, so
+//        a workbook and a table answered to the same name); a free name is taken, and a
+//        workbook made from a worksheet may take that sheet's name back
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -1269,6 +1273,72 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
         }
         std::cout << "[PASS] 109f: columns with scattered empty cells are read quickly and "
                      "unchanged\n";
+    }
+
+    // ---- 109g: workbook.rename refuses the name of another window ----
+    {
+        auto bookNames = [&]() {
+            QStringList out;
+            const QJsonArray books = res(rpc(QString::fromLatin1("workbook.list"), QJsonObject{}))
+                                             .value(QString::fromLatin1("workbooks"))
+                                             .toArray();
+            for (const QJsonValue &v : books)
+                out << v.toObject().value(QString::fromLatin1("name")).toString();
+            return out;
+        };
+        CHECK_COND(!isErr(rpc(QStringLiteral("table.create"),
+                              QJsonObject{ { "name", "T109G" }, { "rows", 3 }, { "cols", 2 } })),
+                   "109g: table T109G");
+        CHECK_COND(!isErr(rpc(QStringLiteral("table.set_data_dict"),
+                              QJsonObject{ { "table", "T109G" },
+                                           { "data", QJsonObject{ { "1", numbers({ 1, 2, 3 }) },
+                                                                  { "2", numbers({ 4, 5, 7 }) } } } })),
+                   "109g: data of T109G");
+        CHECK_COND(!isErr(rpc(QStringLiteral("plot.xy"),
+                              QJsonObject{ { "table", "T109G" },
+                                           { "x_col", "1" },
+                                           { "y_cols", QJsonArray{ "2" } },
+                                           { "graph_name", "G109G" } })),
+                   "109g: graph G109G");
+        CHECK_COND(!isErr(rpc(QStringLiteral("table.to_matrix"),
+                              QJsonObject{ { "table", "T109G" }, { "name", "M109G" } })),
+                   "109g: matrix M109G");
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.create"),
+                              QJsonObject{ { "name", "WB109G" }, { "sheets", 2 } })),
+                   "109g: workbook WB109G");
+        for (const char *taken : { "T109G", "G109G", "M109G" }) {
+            const QJsonObject r = rpc(QStringLiteral("workbook.rename"),
+                                      QJsonObject{ { "book", "WB109G" }, { "new_name", taken } });
+            std::cout << "[INFO] 109g: workbook.rename to " << taken << " -> "
+                      << (isErr(r) ? errText(r) : std::string("accepted")) << "\n";
+            CHECK_COND(isErr(r) && QString::fromStdString(errText(r)).contains(QLatin1String(taken)),
+                       "109g: workbook.rename accepted the name of the window " << taken);
+            CHECK_COND(bookNames().contains(QStringLiteral("WB109G"))
+                               && !bookNames().contains(QLatin1String(taken)),
+                       "109g: the refused rename to " << taken << " changed the workbooks: "
+                                                      << bookNames().join(QStringLiteral(", ")).toStdString());
+        }
+        // a free name is taken; a workbook made from a worksheet may take that sheet's name again
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.rename"),
+                              QJsonObject{ { "book", "WB109G" }, { "new_name", "WB109G2" } })),
+                   "109g: workbook.rename to a free name failed");
+        CHECK_COND(!isErr(rpc(QStringLiteral("table.create"),
+                              QJsonObject{ { "name", "S109G" }, { "rows", 3 }, { "cols", 2 } })),
+                   "109g: table S109G");
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.create"),
+                              QJsonObject{ { "tables", QJsonArray{ "S109G" } } })),
+                   "109g: workbook of S109G");
+        CHECK_COND(bookNames().contains(QStringLiteral("S109G")),
+                   "109g: the workbook of S109G is not named after it: "
+                           << bookNames().join(QStringLiteral(", ")).toStdString());
+        CHECK_COND(!isErr(rpc(QStringLiteral("workbook.rename"),
+                              QJsonObject{ { "book", "S109G" }, { "new_name", "B109G" } })),
+                   "109g: renaming the workbook of S109G");
+        const QJsonObject back = rpc(QStringLiteral("workbook.rename"),
+                                     QJsonObject{ { "book", "B109G" }, { "new_name", "S109G" } });
+        CHECK_COND(!isErr(back), "109g: the workbook could not take back the name of its own sheet: "
+                                         << errText(back));
+        std::cout << "[PASS] 109g: workbook.rename refuses the names of other windows\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";
