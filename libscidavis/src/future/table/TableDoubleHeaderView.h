@@ -67,7 +67,8 @@ protected:
     virtual void paintSection(QPainter *painter, const QRect &rect,
                               int logicalIndex) const override;
 
-    TableModel *d_table_model = nullptr;
+    // QPointer: TableView deletes its model before ~QWidget, which may still ask for sizeHint().
+    QPointer<TableModel> d_table_model;
 
     friend class TableDoubleHeaderView; // access to paintSection (protected)
 };

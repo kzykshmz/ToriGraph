@@ -4880,6 +4880,14 @@ ApplicationWindow::~ApplicationWindow()
             if (!w)
                 return;
             w->askOnCloseEvent(false);
+            // Drop a maximized / minimized state first. QMdiArea::removeSubWindow() turns a
+            // hidden subwindow that is still maximized (e.g. a table created while FFT's
+            // maximized result graph was active) back into a visible native top-level window;
+            // ~QWidget then hides it after ~TableView has already deleted its TableModel and
+            // the header's sizeHint() reads the freed model (access violation on teardown).
+            w->setWindowState(w->windowState()
+                              & ~(Qt::WindowMaximized | Qt::WindowMinimized
+                                  | Qt::WindowFullScreen));
             w->hide();
             if (Folder *wf = w->folder())
                 wf->removeWindow(w);
