@@ -5,8 +5,12 @@
 #include "GraphStatsAndSurfaceFit.h"
 #include "OriginGadgets.h"
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+
+#include <gsl/gsl_blas.h>
+#include <gsl/gsl_multifit_nlin.h>
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +64,11 @@
 //        at size 1e-22 and 1e+20 it equals the fit at size 1.
 //   106k Curve_R2 / Global_R2 of the global fit were blank for tss < 1e-30 (data of size
 //        1e-22); constant data stay undefined unless the model reproduces them (R2 = 1).
+//   106l cost of the step / gradient tests on large data: a 100 000-point Gauss fit converges
+//        to the true parameters (the time is reported), and Fit::lmStepConverged /
+//        lmGradientIsStationary on a 100 000 x 4 solver give the same answers on every call
+//        (their time per call is reported; they allocated and copied an n x p Jacobian on
+//        every call).
 // =============================================================================
 namespace {
 
@@ -1219,6 +1228,152 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                 }
             }
         }
+    }
+    // -------------------------------------------------------------------------
+    // 106l: a 100 000-point Gauss fit; cost of the step / gradient tests
+    {
+        const int nBig = 100000;
+        std::vector<double> bx(static_cast<size_t>(nBig)), by(static_cast<size_t>(nBig));
+        SplitMix106 rng(106);
+        for (int i = 0; i < nBig; ++i) {
+            const double xv = 100.0 * i / (nBig - 1);
+            bx[size_t(i)] = xv;
+            by[size_t(i)] = 1.0 + 10.0 * std::exp(-0.5 * std::pow((xv - 50.0) / 5.0, 2))
+                    + 0.1 * rng.gauss();
+        }
+        const QString gBig = plotXY(bx, by);
+        CHECK_COND(!gBig.isEmpty(), "106l: 100 000-point graph not created");
+        QElapsedTimer tm;
+        tm.start();
+        const QJsonObject r = result(rpc(QStringLiteral("analysis.fit_nonlinear"),
+                                         QJsonObject{ { "graph", gBig },
+                                                      { "curve", 0 },
+                                                      { "formula", "y0+A*exp(-0.5*((x-xc)/w)^2)" },
+                                                      { "param_names",
+                                                        QJsonArray{ "y0", "A", "xc", "w" } },
+                                                      { "init_params",
+                                                        QJsonObject{ { "y0", 0.5 },
+                                                                     { "A", 8.0 },
+                                                                     { "xc", 48.0 },
+                                                                     { "w", 7.0 } } },
+                                                      { "plot_curve", false } }));
+        const qint64 fitMs = tm.elapsed();
+        const QJsonObject prm = r.value(QStringLiteral("params")).toObject();
+        std::cout << "[INFO] 106l: 100 000-point Gauss fit " << fitMs << " ms, converged "
+                  << r.value("converged").toBool() << ", y0 " << num(prm.value("y0")) << " A "
+                  << num(prm.value("A")) << " xc " << num(prm.value("xc")) << " w "
+                  << num(prm.value("w")) << "\n";
+        EXPECT106(r.value("converged").toBool(), "106l: the 100 000-point Gauss fit must converge");
+        EXPECT106(std::fabs(num(prm.value("y0")) - 1.0) < 0.01
+                          && std::fabs(num(prm.value("A")) - 10.0) < 0.05
+                          && std::fabs(num(prm.value("xc")) - 50.0) < 0.05
+                          && std::fabs(num(prm.value("w")) - 5.0) < 0.05,
+                  "106l: the 100 000-point Gauss fit must find the true parameters");
+
+        // The tests themselves on a solver at the solution: same answers, time per call.
+        struct GaussData106
+        {
+            const std::vector<double> *x;
+            const std::vector<double> *y;
+            int jacobianEvals;
+        } gd{ &bx, &by, 0 };
+        gsl_multifit_function_fdf fdf;
+        fdf.f = [](const gsl_vector *p, void *d, gsl_vector *f) -> int {
+            const auto *g = static_cast<const GaussData106 *>(d);
+            const double y0 = gsl_vector_get(p, 0), a = gsl_vector_get(p, 1),
+                         xc = gsl_vector_get(p, 2), wv = gsl_vector_get(p, 3);
+            for (size_t i = 0; i < g->x->size(); ++i) {
+                const double z = ((*g->x)[i] - xc) / wv;
+                gsl_vector_set(f, i, y0 + a * std::exp(-0.5 * z * z) - (*g->y)[i]);
+            }
+            return GSL_SUCCESS;
+        };
+        fdf.df = [](const gsl_vector *p, void *d, gsl_matrix *J) -> int {
+            auto *g = static_cast<GaussData106 *>(d);
+            ++g->jacobianEvals;
+            const double a = gsl_vector_get(p, 1), xc = gsl_vector_get(p, 2),
+                         wv = gsl_vector_get(p, 3);
+            for (size_t i = 0; i < g->x->size(); ++i) {
+                const double z = ((*g->x)[i] - xc) / wv;
+                const double e = std::exp(-0.5 * z * z);
+                gsl_matrix_set(J, i, 0, 1.0);
+                gsl_matrix_set(J, i, 1, e);
+                gsl_matrix_set(J, i, 2, a * e * z / wv);
+                gsl_matrix_set(J, i, 3, a * e * z * z / wv);
+            }
+            return GSL_SUCCESS;
+        };
+        fdf.fdf = [](const gsl_vector *p, void *d, gsl_vector *f, gsl_matrix *J) -> int {
+            auto *g = static_cast<GaussData106 *>(d);
+            ++g->jacobianEvals;
+            const double y0 = gsl_vector_get(p, 0), a = gsl_vector_get(p, 1),
+                         xc = gsl_vector_get(p, 2), wv = gsl_vector_get(p, 3);
+            for (size_t i = 0; i < g->x->size(); ++i) {
+                const double z = ((*g->x)[i] - xc) / wv;
+                const double e = std::exp(-0.5 * z * z);
+                gsl_vector_set(f, i, y0 + a * e - (*g->y)[i]);
+                gsl_matrix_set(J, i, 0, 1.0);
+                gsl_matrix_set(J, i, 1, e);
+                gsl_matrix_set(J, i, 2, a * e * z / wv);
+                gsl_matrix_set(J, i, 3, a * e * z * z / wv);
+            }
+            return GSL_SUCCESS;
+        };
+        fdf.n = size_t(nBig);
+        fdf.p = 4;
+        fdf.params = &gd;
+        gsl_multifit_fdfsolver *s =
+                gsl_multifit_fdfsolver_alloc(gsl_multifit_fdfsolver_lmsder, size_t(nBig), 4);
+        gsl_vector *x0 = gsl_vector_alloc(4);
+        gsl_vector_set(x0, 0, 0.5);
+        gsl_vector_set(x0, 1, 8.0);
+        gsl_vector_set(x0, 2, 48.0);
+        gsl_vector_set(x0, 3, 7.0);
+        gsl_multifit_fdfsolver_set(s, &fdf, x0);
+        for (int it = 0; it < 50; ++it) {
+            if (gsl_multifit_fdfsolver_iterate(s) != GSL_SUCCESS)
+                break;
+            if (gsl_multifit_test_delta(s->dx, s->x, 0.0, 1e-10) == GSL_SUCCESS)
+                break;
+        }
+        // Steps that pass only the absolute part of the delta test, so lmStepConverged has to
+        // weigh them with the Jacobian: a large one (rejected) and a tiny one (accepted).
+        const double tol = 1e-6;
+        gsl_vector *dxBig = gsl_vector_alloc(4);
+        gsl_vector *dxTiny = gsl_vector_alloc(4);
+        for (size_t j = 0; j < 4; ++j) {
+            const double xj = std::fabs(gsl_vector_get(s->x, j));
+            gsl_vector_set(dxBig, j, tol * xj + 0.9 * tol);
+            gsl_vector_set(dxTiny, j, j == 0 ? tol * xj + 0.5 * tol : 0.0);
+        }
+        const bool bigConv = Fit::lmStepConverged(s, dxBig, s->x, tol);
+        const bool tinyConv = Fit::lmStepConverged(s, dxTiny, s->x, tol);
+        const bool stat = Fit::lmGradientIsStationary(s, 1e-4);
+        std::cout << "[INFO] 106l: at the solution: large step converged " << bigConv
+                  << ", tiny step " << tinyConv << ", stationary " << stat << "\n";
+        EXPECT106(!bigConv && tinyConv,
+                  "106l: lmStepConverged must reject the large step and accept the tiny one");
+        EXPECT106(stat, "106l: the solution must be stationary");
+        const int calls = 200;
+        int agree = 0;
+        const int evalsBefore = gd.jacobianEvals;
+        tm.restart();
+        for (int k = 0; k < calls; ++k)
+            agree += (Fit::lmStepConverged(s, dxBig, s->x, tol) == bigConv) ? 1 : 0;
+        const qint64 stepNs = tm.nsecsElapsed();
+        tm.restart();
+        for (int k = 0; k < calls; ++k)
+            agree += (Fit::lmGradientIsStationary(s, 1e-4) == stat) ? 1 : 0;
+        const qint64 gradNs = tm.nsecsElapsed();
+        std::cout << "[INFO] 106l: n = " << nBig << ", p = 4: lmStepConverged "
+                  << (double(stepNs) / calls / 1000.0) << " us/call, lmGradientIsStationary "
+                  << (double(gradNs) / calls / 1000.0) << " us/call, Jacobian evaluations "
+                  << (gd.jacobianEvals - evalsBefore) << "\n";
+        EXPECT106(agree == 2 * calls, "106l: repeated calls must give the same answer");
+        gsl_vector_free(dxBig);
+        gsl_vector_free(dxTiny);
+        gsl_vector_free(x0);
+        gsl_multifit_fdfsolver_free(s);
     }
 #undef EXPECT106
 

@@ -1042,6 +1042,80 @@ void Fit::setStraightLinePearson(const std::vector<double> &x, const std::vector
     d_line_pearson_r = qBound(-1.0, sxy / std::sqrt(sxx * syy), 1.0);
 }
 
+namespace {
+
+// The Jacobian the LM solver holds at its current point, for the convergence tests below. GSL 1
+// exposes it (s->J); GSL 2 only copies it out (gsl_multifit_fdfsolver_jac). The copy goes into a
+// buffer kept per thread and reallocated only when n x p changes: the tests run after every
+// step, and an n x p allocation on each call (3.2 MB for 100 000 points and 4 parameters) cost
+// about as much as the step itself. Returns nullptr when the Jacobian is not available.
+const gsl_matrix *lmSolverJacobian(gsl_multifit_fdfsolver *s, size_t n, size_t p)
+{
+#if GSL_MAJOR_VERSION < 2
+    Q_UNUSED(n)
+    Q_UNUSED(p)
+    return s->J;
+#else
+    struct Workspace
+    {
+        gsl_matrix *J = nullptr;
+        ~Workspace()
+        {
+            if (J)
+                gsl_matrix_free(J);
+        }
+    };
+    thread_local Workspace ws;
+    if (!ws.J || ws.J->size1 != n || ws.J->size2 != p) {
+        if (ws.J)
+            gsl_matrix_free(ws.J);
+        ws.J = gsl_matrix_alloc(n, p);
+        if (!ws.J)
+            return nullptr;
+    }
+    if (gsl_multifit_fdfsolver_jac(s, ws.J) != GSL_SUCCESS)
+        return nullptr;
+    return ws.J;
+#endif
+}
+
+// Euclidean norm of every column of J and, when f is given, the dot product of every column
+// with f, in one pass over the rows (gsl_blas_dnrm2 / ddot on each column walked the n x p
+// matrix p times with a stride, and dnrm2 divides on every element). The dot products add the
+// same terms in the same order as gsl_blas_ddot. A plain sum of squares can underflow or
+// overflow where dnrm2 (which rescales) does not; such a column is measured with dnrm2.
+void lmJacobianColumnStats(const gsl_matrix *J, const gsl_vector *f, std::vector<double> &norms,
+                           std::vector<double> *dots)
+{
+    const size_t n = J->size1;
+    const size_t p = J->size2;
+    std::vector<double> ssq(p, 0.0);
+    norms.assign(p, 0.0);
+    if (dots)
+        dots->assign(p, 0.0);
+    for (size_t i = 0; i < n; ++i) {
+        const double *row = J->data + i * J->tda;
+        const double fi = f ? f->data[i * f->stride] : 0.0;
+        for (size_t j = 0; j < p; ++j) {
+            const double v = row[j];
+            ssq[j] += v * v;
+            if (dots)
+                (*dots)[j] += v * fi;
+        }
+    }
+    for (size_t j = 0; j < p; ++j) {
+        // 1e-290 .. 1e290: no element square underflowed to nothing or overflowed
+        if (std::isfinite(ssq[j]) && ssq[j] > 1e-290 && ssq[j] < 1e290) {
+            norms[j] = std::sqrt(ssq[j]);
+        } else {
+            gsl_vector_const_view col = gsl_matrix_const_column(J, j);
+            norms[j] = gsl_blas_dnrm2(&col.vector);
+        }
+    }
+}
+
+} // namespace
+
 bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
                                  const std::vector<int> *kktSigns)
 {
@@ -1056,23 +1130,17 @@ bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
         return false;
     if (fnorm == 0.0)
         return true;
-    gsl_matrix *J = gsl_matrix_alloc(n, p);
-#if GSL_MAJOR_VERSION < 2
-    gsl_matrix_memcpy(J, s->J);
-#else
-    if (gsl_multifit_fdfsolver_jac(s, J) != GSL_SUCCESS) {
-        gsl_matrix_free(J);
+    const gsl_matrix *J = lmSolverJacobian(s, n, p);
+    if (!J)
         return false;
-    }
-#endif
+    std::vector<double> colNorm, colDot;
+    lmJacobianColumnStats(J, s->f, colNorm, &colDot);
     bool stationary = true;
     for (size_t j = 0; j < p && stationary; ++j) {
-        gsl_vector_view col = gsl_matrix_column(J, j);
-        const double cnorm = gsl_blas_dnrm2(&col.vector);
+        const double cnorm = colNorm[j];
         if (!(cnorm > 0.0))
             continue; // a parameter without influence cannot move the fit any further
-        double dot = 0.0;
-        gsl_blas_ddot(&col.vector, s->f, &dot);
+        const double dot = colDot[j];
         const double cosAngle = std::abs(dot) / (cnorm * fnorm);
         if (!std::isfinite(cosAngle)) {
             stationary = false;
@@ -1084,7 +1152,6 @@ bool Fit::lmGradientIsStationary(gsl_multifit_fdfsolver *s, double gtol,
                 stationary = false;
         }
     }
-    gsl_matrix_free(J);
     return stationary;
 }
 
@@ -1107,25 +1174,19 @@ bool Fit::lmStepConverged(gsl_multifit_fdfsolver *s, const gsl_vector *dx, const
         return false;
     const size_t n = s->f->size;
     const size_t p = x->size;
-    gsl_matrix *J = gsl_matrix_alloc(n, p);
-#if GSL_MAJOR_VERSION < 2
-    gsl_matrix_memcpy(J, s->J);
-#else
-    if (gsl_multifit_fdfsolver_jac(s, J) != GSL_SUCCESS) {
-        gsl_matrix_free(J);
+    const gsl_matrix *J = lmSolverJacobian(s, n, p);
+    if (!J)
         return false;
-    }
-#endif
+    std::vector<double> colNorm;
+    lmJacobianColumnStats(J, nullptr, colNorm, nullptr);
     double dxNorm2 = 0.0, xNorm2 = 0.0;
     for (size_t j = 0; j < p; ++j) {
-        gsl_vector_view col = gsl_matrix_column(J, j);
-        const double d = gsl_blas_dnrm2(&col.vector);
+        const double d = colNorm[j];
         const double dd = d * gsl_vector_get(dx, j);
         const double dxj = d * gsl_vector_get(x, j);
         dxNorm2 += dd * dd;
         xNorm2 += dxj * dxj;
     }
-    gsl_matrix_free(J);
     if (!std::isfinite(dxNorm2) || !std::isfinite(xNorm2))
         return false;
     if (xNorm2 > 0.0)
