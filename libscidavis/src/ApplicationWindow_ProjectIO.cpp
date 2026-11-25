@@ -3647,6 +3647,18 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
             j--;
 
             bool fnLoaded = ag->insertFunctionCurve(app, func_spec, curve[2].toInt(), d_file_version);
+            if (fnLoaded && !sampledX.isEmpty()) {
+                // A formula that gives no number at all (the global fit curves of older files
+                // carry the bare expression without their parameter values, so every point is
+                // NaN) is drawn from the saved points instead, as when it cannot be read.
+                if (auto *fc = dynamic_cast<FunctionCurve *>(ag->curve(curveID))) {
+                    bool anyFinite = false;
+                    for (int k = 0; k < fc->dataSize() && !anyFinite; ++k)
+                        anyFinite = std::isfinite(fc->x(k)) && std::isfinite(fc->y(k));
+                    if (!anyFinite)
+                        fc->setData(sampledX.constData(), sampledY.constData(), sampledX.size());
+                }
+            }
             if (!fnLoaded && !sampledX.isEmpty()) {
                 QStringList cMeta = curve[1].split(",");
                 const int fType = !cMeta.isEmpty() ? cMeta[0].toInt() : int(FunctionCurve::Normal);

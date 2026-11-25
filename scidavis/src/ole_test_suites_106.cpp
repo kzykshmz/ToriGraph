@@ -88,7 +88,11 @@
 //        step was added up and the range kept to 15 digits), the axis range and the
 //        milliseconds of the table's creation time were cut, and a result table named with a
 //        space (the Japanese "3次スプライン (Cubic)補間1" of 106c) was renamed with "_". They
-//        are kept, and saves 1, 2 and 3 are equal in the curve, axis and table lines.
+//        are kept, and saves 1, 2 and 3 are equal in the curve, axis and table lines. A global
+//        fit graph lost its fit curves on reopen (their formula had no parameter values, so
+//        every point was NaN) and its automatic y range with them, and a derivative graph was
+//        laid out again on reopen (it kept the layout of its empty layer). Every line of these
+//        graphs but the sampled fit points is compared as well.
 // =============================================================================
 namespace {
 
@@ -1570,6 +1574,44 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
         CHECK_COND(!ra.contains(QStringLiteral("error")),
                    "106n: set_axis failed: " << errMsg(ra).toStdString());
 
+        // a global fit (a*exp(x/20), as in 106k) of two constant curves on an automatic y axis:
+        // its curves were saved with the bare expression, came back all NaN and the axis
+        // shrank to the data alone (2.2 .. 3.8 -> 1.5 .. 4.5)
+        QString gGlob;
+        {
+            const QString tK = QStringLiteral("T106nK");
+            Table *tk = w->newTable(60, 3, tK, tK);
+            CHECK_COND(tk != nullptr, "106n: global fit table not created");
+            for (int i = 0; i < 60; ++i) {
+                tk->setCell(i, 0, 10.0 * i / 59.0);
+                tk->setCell(i, 1, 3.0);
+                tk->setCell(i, 2, 3.0);
+            }
+            MultiLayer *gml = w->multilayerPlot(tk, QStringList() << tk->colName(1) << tk->colName(2),
+                                                Graph::Line);
+            QCoreApplication::processEvents();
+            Graph *gg = gml ? gml->activeGraph() : nullptr;
+            CHECK_COND(gg && gg->curves() == 2, "106n: global fit graph not created");
+            gGlob = gml->name();
+            NonLinearFit nlf(w, gg);
+            nlf.setSilent(true);
+            nlf.setParametersList(QStringList{ "a" });
+            nlf.setFormula(QStringLiteral("a*exp(x/20)"));
+            Table *sum = nullptr;
+            CHECK_COND(nlf.fitGlobal(QStringList{ gg->curve(0)->title().text(),
+                                                  gg->curve(1)->title().text() },
+                                     QVector<bool>(1, false), &sum),
+                       "106n: global fit failed");
+            QCoreApplication::processEvents();
+        }
+        // the graph of a derivative (curvemath.differentiate makes a new graph window): it kept
+        // the layout of the empty layer and reopening laid it out again (290 -> 294)
+        const QJsonObject rdv = rpc(QStringLiteral("curvemath.differentiate"),
+                                    QJsonObject{ { "graph", gFit }, { "curve", 0 } });
+        const QString gDer = result(rdv).value(QStringLiteral("graph")).toString();
+        CHECK_COND(!gDer.isEmpty(), "106n: differentiate made no graph: " << errMsg(rdv).toStdString());
+        QCoreApplication::processEvents();
+
         auto findGraph = [](ApplicationWindow *app, const QString &name) -> Graph * {
             for (MyWidget *mw2 : app->windowsList())
                 if (mw2 && mw2->name() == name)
@@ -1591,6 +1633,8 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
             QVector<double> fitX;
             double yMin = 0.0, yMax = 0.0;
             QDateTime created;
+            QString globY;  // y range of the global fit graph
+            QString derGeo; // layer canvas size and layer geometry of the derivative graph
         };
         auto stateOf = [&](ApplicationWindow *app) {
             State106n s;
@@ -1620,12 +1664,33 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
             if (Table *t = findTable(app, tBox))
                 if (t->d_future_table)
                     s.created = t->d_future_table->creationTime();
+            if (Graph *g = findGraph(app, gGlob))
+                if (const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft))
+                    s.globY = QStringLiteral("%1 .. %2")
+                                      .arg(qMin(d->lowerBound(), d->upperBound()), 0, 'g', 17)
+                                      .arg(qMax(d->lowerBound(), d->upperBound()), 0, 'g', 17);
+            if (Graph *g = findGraph(app, gDer)) {
+                QStringList ticks;
+                if (const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft))
+                    for (double v : d->ticks(QwtScaleDiv::MajorTick))
+                        ticks << QString::number(v, 'g', 17);
+                MultiLayer *ml = g->multiLayerParent();
+                const QSize cs = ml ? ml->layerCanvasSize() : QSize();
+                s.derGeo = QStringLiteral("canvas %1x%2, layer %3,%4 %5x%6, y ticks %7")
+                                   .arg(cs.width())
+                                   .arg(cs.height())
+                                   .arg(g->pos().x())
+                                   .arg(g->pos().y())
+                                   .arg(g->frameGeometry().width())
+                                   .arg(g->frameGeometry().height())
+                                   .arg(ticks.join(QLatin1Char(' ')));
+            }
             return s;
         };
-        // The lines of a saved project that hold these states: the creation times of all tables,
-        // the curve and axis lines of the two graphs above (sorted: the reader makes the tables
-        // and matrices before the graphs, so the window order may change once).
-        const QStringList graphs106n{ gBox, gFit };
+        // The lines of a saved project that hold these states: the creation times of all tables
+        // and every line of the graphs above but their sampled fit points (sorted: the reader
+        // makes the tables and matrices before the graphs, so the window order may change once).
+        const QStringList graphs106n{ gBox, gFit, gGlob, gDer };
         auto stateLines = [&graphs106n](const QString &path) {
             QFile f(path);
             if (!f.open(QIODevice::ReadOnly))
@@ -1634,20 +1699,23 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
             const QRegularExpression tableTime(
                     QStringLiteral("^<table creation_time=\"([^\"]*)\".*? name=\"([^\"]*)\""));
             const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
-            QString window; // the graph the curve / axis lines belong to
+            QString window; // the graph the lines belong to
+            bool inSamples = false;
             for (int i = 0; i < lines.size(); ++i) {
                 const QString &l = lines[i];
                 const QRegularExpressionMatch m = tableTime.match(l);
                 if (l == QLatin1String("<multiLayer>") && i + 1 < lines.size())
                     window = lines[i + 1].section(QLatin1Char('\t'), 0, 0);
+                else if (l == QLatin1String("</multiLayer>"))
+                    window.clear();
                 else if (m.hasMatch())
                     out << QStringLiteral("table ") + m.captured(2) + QLatin1Char(' ')
                                     + m.captured(1);
-                else if (graphs106n.contains(window)
-                         && (l.startsWith(QLatin1String("curve\t"))
-                             || l.startsWith(QLatin1String("FunctionCurve\t"))
-                             || l.startsWith(QLatin1String("AxisType\t"))
-                             || l.startsWith(QLatin1String("scale\t"))))
+                if (l == QLatin1String("<sampled_xy>"))
+                    inSamples = true;
+                else if (l == QLatin1String("</sampled_xy>"))
+                    inSamples = false;
+                else if (!inSamples && graphs106n.contains(window))
                     out << window + QLatin1Char(' ') + l;
             }
             out.sort();
@@ -1661,8 +1729,9 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                   << "; category axis " << live.catAxisType << " '"
                   << live.catAxisInfo.toStdString() << "'; y " << std::setprecision(17)
                   << live.yMin << " .. " << live.yMax << "; created "
-                  << live.created.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() << "\n";
-
+                  << live.created.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString()
+                  << "; global fit y " << live.globY.toStdString() << "; derivative "
+                  << live.derGeo.toStdString() << "\n";
         QStringList paths;
         for (int k = 1; k <= 3; ++k)
             paths << tmp.filePath(QStringLiteral("roundtrip_106n_%1.sciprj").arg(k));
@@ -1705,6 +1774,12 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                                       << " -> "
                                       << st.created.toString(QStringLiteral("hh:mm:ss.zzz"))
                                                  .toStdString());
+            EXPECT106(st.globY == live.globY,
+                      "106n: reopen " << k << ": global fit y range " << live.globY.toStdString()
+                                      << " -> " << st.globY.toStdString());
+            EXPECT106(st.derGeo == live.derGeo,
+                      "106n: reopen " << k << ": derivative graph " << live.derGeo.toStdString()
+                                      << " -> " << st.derGeo.toStdString());
             CHECK_COND(rd->saveFolder(rd->projectFolder(), paths[k]),
                        "106n: save " << (k + 1) << " failed");
         }

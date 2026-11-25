@@ -2111,7 +2111,20 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
                 fc->setPen(QPen(ColorButton::color((m + 1) % 10), 2));
                 fc->setData(xg.data(), yg.data(), nGrid);
                 fc->setRange(x0, x1);
-                fc->setFormula(exprLine);
+                // The curve is sampled again from its formula when a project is reopened: the
+                // formula carries this curve's parameter values as a single fit's does
+                // (Fit::insertFitFunctionCurve). With the bare expression the parameters were
+                // undefined there, every point became NaN and the curve vanished (and an
+                // automatic axis lost its range).
+                QString curveFormula;
+                for (int j = 0; j < P && j < d_param_names.size(); ++j)
+                    curveFormula += QString("%1=%2\n")
+                                            .arg(d_param_names[j])
+                                            .arg(fittedParams[size_t(m)][size_t(j)], 0, 'g',
+                                                 d_prec);
+                curveFormula += "\n";
+                curveFormula += exprLine;
+                fc->setFormula(curveFormula);
                 // 各データ曲線と同じ軸に付ける（右軸の曲線のフィットが左軸に付かないように）。
                 if (QwtPlotCurve *src = d_graph->curve(curveTitles[m]))
                     attachToSourceAxes(fc, src);

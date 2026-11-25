@@ -307,5 +307,13 @@ void Differentiation::output()
         if (Legend *l = dg->legend())
             l->setText(QStringLiteral("\\c{1}") + derivLabel);
         dg->replot();
+        // The layer was laid out by newGraph() while it was still empty; lay it out again for
+        // its axis labels and titles, as a graph plotted from a table is. Otherwise the plot
+        // area kept the empty layer's size (a 298 x 294 canvas on a square layer of 290), and
+        // reopening the project, which lays the layer out again, changed it.
+        if (ml->pageViewMode())
+            ml->fitLayersToPage();
+        else
+            ml->arrangeLayers(false, false);
     }
 }
