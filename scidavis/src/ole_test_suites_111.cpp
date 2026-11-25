@@ -62,6 +62,10 @@
 //   111j the legend gets its text back as it was when the curves come back: an empty line in it
 //        (left by removing the last curve and adding another, or typed by the user) used to be
 //        dropped by the Undo of a column removal or of a table deletion
+//   111k the graph's Undo of a step made before a column was removed rebuilds the layer from a
+//        snapshot with the removed column's curve: the curve is left out and so is its legend
+//        line now (it stayed, and the column's Undo put it in again: \c{2}z\n\c{3}z), for a Y
+//        column with error bars, one in the middle and the last one
 //   111l removing error bars (curve or column) moves the legend numbers after them up (\c{3}w
 //        stayed with two curves), removing the last curve removes its line also when the legend
 //        has fewer lines than curves; a line that is not a curve's and a curve without a line
@@ -1568,6 +1572,79 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
             std::cerr << "[INFO] " << method << ": " << errText(r) << "\n";
         return !isErr(r);
     };
+
+    // ---- 111k: a graph Undo from before a column removal does not double its legend line ----
+    // y, z, w and error bars of y; the title is set, then a column removed: the graph's Undo
+    // (of the title) rebuilds the layer from a snapshot that still has the curve of the removed
+    // column. The curve could not be rebuilt but its legend line stayed (and the lines after it
+    // were numbered for curves that had moved up), so the column's Undo put the line in a second
+    // time: \c{1}y\n\c{2}z\n\c{3}z\n\c{4}w.
+    {
+        int fails111k = 0;
+        for (const char *col : { "z", "y", "w" }) {
+            const QByteArray tn = QByteArray("RT111") + col;
+            const QByteArray gn = QByteArray("RG111") + col;
+            const char *t = tn.constData();
+            const char *gname = gn.constData();
+            Table *rt = w111->newTable(QString::fromLatin1(t), 6, 5);
+            CHECK_COND(rt, "111k: table " << t);
+            const char *rc[] = { "x", "y", "z", "e", "w" };
+            for (int c = 0; c < 5; ++c)
+                rt->setColName(c, QString::fromLatin1(rc[c]));
+            CHECK_COND(setCol(t, "x", { 1, 2, 3, 4, 5, 6 }) && setCol(t, "y", { 2, 4, 6, 8, 10, 12 })
+                               && setCol(t, "z", { 1, 4, 9, 16, 25, 36 })
+                               && setCol(t, "e", { 0.5, 0.5, 0.5, 0.5, 0.5, 0.5 })
+                               && setCol(t, "w", { 2, 3, 4, 5, 6, 7 }),
+                       "111k: fill " << t);
+            CHECK_COND(call("plot.xy", QJsonObject{ { "table", t }, { "x_col", "x" },
+                                                    { "y_cols", QJsonArray{ "y", "z", "w" } },
+                                                    { "graph_name", gname } })
+                               && call("graph.set_legend", QJsonObject{ { "graph", gname }, { "visible", true } })
+                               && call("plot.add_error_bars",
+                                       QJsonObject{ { "graph", gname }, { "err_col", "e" },
+                                                    { "curve", QString::fromLatin1(t) + "_y" } }),
+                       "111k: graph " << gname);
+            const QString init = legendOf(gname);
+            CHECK_COND(init == QStringLiteral("\\c{1}y\n\\c{2}z\n\\c{3}w\n") && curvesOf(gname) == 4,
+                       "111k: legend of " << gname << ": " << shownText(init));
+            CHECK_COND(call("graph.set_title", QJsonObject{ { "graph", gname }, { "title", "T" } })
+                               && call("table.remove_column", QJsonObject{ { "table", t }, { "col", col } }),
+                       "111k: title / remove column " << col);
+            const QString removed = legendOf(gname);
+            const int curvesRemoved = curvesOf(gname);
+            std::cout << "[INFO] 111k (" << col << "): removed " << shownText(removed) << "\n";
+            CHECK_COND(call("app.undo", QJsonObject{ { "graph", gname } }), "111k: graph undo");
+            std::cout << "[INFO] 111k (" << col << "): graph Undo " << shownText(legendOf(gname)) << "\n";
+            if (legendOf(gname) != removed || curvesOf(gname) != curvesRemoved) {
+                std::cerr << "[FAIL] 111k (" << col << "): legend after the graph's Undo "
+                          << shownText(legendOf(gname)) << " expected " << shownText(removed)
+                          << std::endl;
+                ++fails111k;
+            }
+            CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111k: table undo");
+            std::cout << "[INFO] 111k (" << col << "): column back " << shownText(legendOf(gname)) << "\n";
+            if (legendOf(gname) != init || curvesOf(gname) != 4) {
+                std::cerr << "[FAIL] 111k (" << col << "): legend after the column's Undo "
+                          << shownText(legendOf(gname)) << " expected " << shownText(init) << std::endl;
+                ++fails111k;
+            }
+            CHECK_COND(call("app.redo", QJsonObject{ { "table", t } }), "111k: table redo");
+            if (legendOf(gname) != removed || curvesOf(gname) != curvesRemoved) {
+                std::cerr << "[FAIL] 111k (" << col << "): legend after the column's Redo "
+                          << shownText(legendOf(gname)) << " expected " << shownText(removed)
+                          << std::endl;
+                ++fails111k;
+            }
+            CHECK_COND(call("app.undo", QJsonObject{ { "table", t } }), "111k: table undo 2");
+            if (legendOf(gname) != init || curvesOf(gname) != 4) {
+                std::cerr << "[FAIL] 111k (" << col << "): legend after the second Undo "
+                          << shownText(legendOf(gname)) << " expected " << shownText(init) << std::endl;
+                ++fails111k;
+            }
+        }
+        CHECK_COND(fails111k == 0, "111k: " << fails111k << " case(s) failed");
+    }
+    std::cout << "[PASS] 111k: a graph Undo from before a column removal keeps the legend whole\n";
 
     // ---- 111l: the legend numbers after removed error bars move up ----
     // y, error bars e of y, w: the legend is \c{1}y\n\c{3}w (the error bars take number 2).

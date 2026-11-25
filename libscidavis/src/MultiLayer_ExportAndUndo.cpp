@@ -2292,13 +2292,16 @@ namespace {
 //! The key each curve of a rebuilt layer takes: that of the same curve in \a was (-1 if none).
 //! A layer rebuilt from its own snapshot has the same curves in the same order (\a inOrder);
 //! otherwise the curves are matched by Graph::curveIdentity(), in order.
+//! \a matched (if given) tells which curves of \a was got a curve of \a now.
 QVector<int> matchCurveKeys(const MultiLayer::LayerIdentity &was, const QStringList &now,
-                            bool inOrder)
+                            bool inOrder, QVector<bool> *matched = nullptr)
 {
     QVector<int> keys(now.size(), -1);
     if (inOrder && was.keys.size() == now.size()) {
         for (int i = 0; i < now.size(); ++i)
             keys[i] = was.keys.at(i);
+        if (matched)
+            *matched = QVector<bool>(was.curves.size(), true);
         return keys;
     }
     QVector<bool> used(was.curves.size(), false);
@@ -2319,6 +2322,8 @@ QVector<int> matchCurveKeys(const MultiLayer::LayerIdentity &was, const QStringL
             from = j + 1;
         }
     }
+    if (matched)
+        *matched = used;
     return keys;
 }
 
@@ -2589,8 +2594,22 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
             for (int c = 0; c < g->curves(); ++c)
                 now << g->curveIdentity(c);
             g->setLayerId(w.id);
-            g->adoptCurveKeys(matchCurveKeys(w, now, snapshotIds),
+            QVector<bool> matched;
+            g->adoptCurveKeys(matchCurveKeys(w, now, snapshotIds, &matched),
                               qMax(w.lastKey, d_layer_last_keys.value(w.id)));
+            // A curve of the snapshot the layer could not rebuild (its column or table is gone
+            // meanwhile, and the curve is held for that removal's Undo) leaves the legend too:
+            // its line went on standing for it, numbered for the curves before it, so the
+            // removal's Undo put the line in a second time. Only when exactly the missing curves
+            // went unmatched (curves renamed meanwhile match nothing, and their lines stay).
+            if (snapshotIds && now.size() < w.curves.size()
+                && matched.size() == w.curves.size()
+                && matched.count(false) == w.curves.size() - now.size()) {
+                for (int c = matched.size() - 1; c >= 0; --c) {
+                    if (!matched.at(c))
+                        g->removeLegendCurveNumber(c);
+                }
+            }
             d_layer_last_keys[w.id] = qMax(d_layer_last_keys.value(w.id), g->lastCurveKey());
         }
     }
