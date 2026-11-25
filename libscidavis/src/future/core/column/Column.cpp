@@ -824,6 +824,20 @@ QList<Interval<int>> Column::formulaIntervals() const
     return d_column_private->formulaIntervals();
 }
 
+namespace {
+quint64 s_formula_epoch = 1;
+}
+
+quint64 Column::formulaEpoch()
+{
+    return s_formula_epoch;
+}
+
+void Column::touchFormulaEpoch()
+{
+    ++s_formula_epoch;
+}
+
 void Column::notifyDisplayChange()
 {
     emit dataChanged(this); // all cells must be repainted

@@ -69,6 +69,10 @@ protected:
 
     // QPointer: TableView deletes its model before ~QWidget, which may still ask for sizeHint().
     QPointer<TableModel> d_table_model;
+    // anyColumnHasFormula() cache, valid while Column::formulaEpoch() stays the same
+    mutable quint64 d_formula_scan_epoch = 0;
+    mutable const void *d_formula_scan_model = nullptr;
+    mutable bool d_formula_scan_result = false;
 
     friend class TableDoubleHeaderView; // access to paintSection (protected)
 };
@@ -110,6 +114,11 @@ public:
 public slots:
     // adjust geometry and repaint header
     void refresh();
+    // refresh() once the event loop runs again (several requests are merged into one)
+    void scheduleRefresh();
+    // refresh() if the formula sub-row appeared or disappeared, checked once the event loop
+    // runs again
+    void scheduleSubRowCheck();
     // React to a header data change
     void headerDataChanged(Qt::Orientation orientation, int logicalFirst, int logicalLast);
 
@@ -139,6 +148,8 @@ protected:
     bool d_inline_had_multiline_comment = false;
     bool d_committing_inline = false;
     int d_last_subrow_count = 3;
+    bool d_refresh_pending = false;
+    bool d_subrow_check_pending = false;
     QPointer<QAbstractItemModel> d_observed_model;
 };
 

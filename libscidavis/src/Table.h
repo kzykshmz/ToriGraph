@@ -230,6 +230,10 @@ public slots:
 public:
     using MyWidget::askOnCloseEvent;
     bool askOnCloseEvent() const { return askOnClose; }
+    //! The formula columns of this table: (column index, a formula refers to another table).
+    //! Cached until Column::formulaEpoch() changes, so the check for dependent formulas after
+    //! each column write does not read every formula of every table again.
+    const QVector<QPair<int, bool>> &formulaColumns();
 
 public slots:
 
@@ -463,6 +467,9 @@ private:
     bool d_pending_unwrapped_recalc = false;
     int d_pending_recalc_first_col = -1;
     int d_pending_recalc_col_count = 0;
+    QVector<QPair<int, bool>> d_formula_columns;
+    quint64 d_formula_columns_epoch = 0; // 0: never scanned
+    const void *d_formula_columns_source = nullptr;
     QString d_last_export_error;
     bool d_import_failed = false;
     QString d_last_import_error;

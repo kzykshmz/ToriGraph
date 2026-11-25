@@ -32,6 +32,7 @@
 
 #include "../AbstractSimpleFilter.h"
 #include <QDateTime>
+#include <QLocale>
 #include <math.h>
 #include "lib/XmlStreamReader.h"
 #include <QXmlStreamWriter>
@@ -72,10 +73,12 @@ public:
             if (!temp.isValid())
                 temp = QDate::fromString(input_value, "dddd");
 #endif
-            if (!temp.isValid())
-                return QDateTime();
-            else
+            if (temp.isValid())
                 day_value = temp.dayOfWeek();
+            else
+                day_value = englishDayOfWeek(input_value);
+            if (day_value < 1)
+                return QDateTime();
         }
 
         // Don't use Julian days here since support for years < 1 is bad
@@ -114,6 +117,23 @@ public:
 
     //! Return the data type of the column
     virtual SciDAVis::ColumnDataType dataType() const { return SciDAVis::TypeQDateTime; }
+
+    //! 1 (Monday) .. 7 (Sunday) for an English day name, full ("Monday") or short ("Mon"), in
+    //! any letter case; 0 otherwise. QDate::fromString() above reads the names of the system
+    //! locale only, so on a Japanese PC "Monday" was not a day of the week.
+    static int englishDayOfWeek(const QString &text)
+    {
+        const QString t = text.trimmed();
+        if (t.isEmpty())
+            return 0;
+        const QLocale c = QLocale::c();
+        for (int d = 1; d <= 7; ++d) {
+            if (t.compare(c.dayName(d, QLocale::LongFormat), Qt::CaseInsensitive) == 0
+                || t.compare(c.dayName(d, QLocale::ShortFormat), Qt::CaseInsensitive) == 0)
+                return d;
+        }
+        return 0;
+    }
 
 protected:
     virtual bool inputAcceptable(int, const AbstractColumn *source)

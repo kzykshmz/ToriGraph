@@ -238,6 +238,11 @@ public:
      * \endcode
      */
     QList<Interval<int>> formulaIntervals() const override;
+    //! Counter that changes whenever a formula of any column changes or columns are added to,
+    //! removed from or moved within a table; a key for caching scans for formula columns
+    static quint64 formulaEpoch();
+    //! Mark every cached scan for formula columns as stale
+    static void touchFormulaEpoch();
     //! Set a formula string for an interval of rows
     void setFormula(Interval<int> i, QString formula);
     //! Overloaded function for convenience

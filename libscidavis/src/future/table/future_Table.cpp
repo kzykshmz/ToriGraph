@@ -65,6 +65,8 @@
 #include "IconLoader.h"
 #include "ModernUiTheme.h"
 #include <algorithm>
+#include <memory>
+#include <QUndoCommand>
 #include <mutex>
 #include <QSet>
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
@@ -305,16 +307,84 @@ QWidget *Table::view()
     return d_view;
 }
 
+namespace {
+//! Lets the view relayout once after a run of per-column inserts or removals.
+struct BulkColumnChangeGuard
+{
+    QPointer<TableView> view;
+    explicit BulkColumnChangeGuard(TableView *v) : view(v)
+    {
+        if (view)
+            view->beginBulkColumnChange();
+    }
+    ~BulkColumnChangeGuard()
+    {
+        if (view)
+            view->endBulkColumnChange();
+    }
+    BulkColumnChangeGuard(const BulkColumnChangeGuard &) = delete;
+    BulkColumnChangeGuard &operator=(const BulkColumnChangeGuard &) = delete;
+};
+
+//! Undo and redo of a multi-column insert or removal replay one command per column. A marker
+//! at each end of the macro brackets that replay so the view relayouts once (the macro runs
+//! backwards on undo). The first redo, at the forward edit, is covered by
+//! BulkColumnChangeGuard and does nothing here.
+class BulkColumnChangeMarkerCmd : public QUndoCommand
+{
+public:
+    BulkColumnChangeMarkerCmd(Table *table, bool opening,
+                              std::shared_ptr<QPointer<TableView>> started)
+        : d_table(table), d_opening(opening), d_started(std::move(started))
+    {
+    }
+    void redo() override
+    {
+        if (d_first_redo) {
+            d_first_redo = false;
+            return;
+        }
+        d_opening ? begin() : end();
+    }
+    void undo() override { d_opening ? end() : begin(); }
+
+private:
+    void begin()
+    {
+        end(); // never leave an unmatched bracket behind
+        if (d_table)
+            *d_started = qobject_cast<TableView *>(d_table->view());
+        if (*d_started)
+            (*d_started)->beginBulkColumnChange();
+    }
+    void end()
+    {
+        if (*d_started)
+            (*d_started)->endBulkColumnChange();
+        d_started->clear();
+    }
+
+    QPointer<Table> d_table;
+    bool d_opening;
+    bool d_first_redo = true;
+    std::shared_ptr<QPointer<TableView>> d_started;
+};
+} // namespace
+
 void Table::insertColumns(int before, QList<Column *> new_cols)
 {
     if (new_cols.size() < 1 || before < 0 || before > columnCount())
         return;
     WAIT_CURSOR;
+    BulkColumnChangeGuard bulk(d_view);
     beginMacro(QObject::tr("%1: insert %2 column(s)").arg(name()).arg(new_cols.size()));
+    auto bulkView = std::make_shared<QPointer<TableView>>();
+    exec(new BulkColumnChangeMarkerCmd(this, true, bulkView));
     int pos = before;
     foreach (Column *col, new_cols)
         insertChild(col, pos++);
     // remark: the TableInsertColumnsCmd will be created in completeAspectInsertion()
+    exec(new BulkColumnChangeMarkerCmd(this, false, bulkView));
     endMacro();
     RESET_CURSOR;
 }
@@ -324,13 +394,17 @@ void Table::removeColumns(int first, int count)
     if (count < 1 || first < 0 || first + count > columnCount())
         return;
     WAIT_CURSOR;
+    BulkColumnChangeGuard bulk(d_view);
     beginMacro(QObject::tr("%1: remove %2 column(s)").arg(name()).arg(count));
+    auto bulkView = std::make_shared<QPointer<TableView>>();
+    exec(new BulkColumnChangeMarkerCmd(this, true, bulkView));
     QList<Column *> cols;
     for (int i = first; i < (first + count); i++)
         cols.append(d_table_private.column(i));
     // remark:  the TableRemoveColumnsCmd will be created in prepareAspectRemoval()
     foreach (Column *col, cols)
         removeChild(col);
+    exec(new BulkColumnChangeMarkerCmd(this, false, bulkView));
     endMacro();
     RESET_CURSOR;
 }
@@ -2792,14 +2866,15 @@ void Table::handleModeChange(const AbstractColumn *col)
 {
     int index = columnIndex(static_cast<const Column *>(col));
     if (index != -1)
-        d_table_private.updateHorizontalHeader(index, index);
+        d_table_private.updateHorizontalHeader(index, index, true);
 }
 
 void Table::handleDescriptionChange(const AbstractAspect *aspect)
 {
+    // a name, comment or format change touches only the label of this column
     int index = columnIndex(static_cast<const Column *>(aspect));
     if (index != -1)
-        d_table_private.updateHorizontalHeader(index, index);
+        d_table_private.updateHorizontalHeader(index, index, true);
 }
 
 void Table::handlePlotDesignationChange(const AbstractColumn *col)
@@ -3177,6 +3252,7 @@ void Table::Private::replaceColumns(int first, QList<Column *> new_cols)
         d_columns[first + i] = new_cols.at(i);
         d_owner.connectColumn(new_cols.at(i));
     }
+    Column::touchFormulaEpoch(); // the formula columns of this table may have changed
     updateHorizontalHeader(first, first + count - 1);
     emit d_owner.columnsReplaced(first, new_cols.count());
     emit d_owner.dataChanged(0, first, d_row_count - 1, first + count - 1);
@@ -3205,6 +3281,7 @@ void Table::Private::insertColumns(int before, QList<Column *> cols)
         d_column_widths.insert(before, Table::defaultColumnWidth());
     }
     d_column_count += count;
+    Column::touchFormulaEpoch(); // the formula columns of this table may have changed
     emit d_owner.columnsInserted(before, cols.count());
     updateHorizontalHeader(before, before + count - 1);
 }
@@ -3225,6 +3302,7 @@ void Table::Private::removeColumns(int first, int count)
         d_column_widths.removeAt(first);
     }
     d_column_count -= count;
+    Column::touchFormulaEpoch(); // the formula columns of this table may have changed
     emit d_owner.columnsRemoved(first, count);
     updateHorizontalHeader(first, d_column_count - 1);
 }
@@ -3242,6 +3320,7 @@ void Table::Private::moveColumn(int from, int to)
         return;
 
     d_columns.move(from, to);
+    Column::touchFormulaEpoch(); // formula column indices changed
     d_owner.connectColumn(d_columns.at(to));
     d_column_widths.move(from, to);
     updateHorizontalHeader(qMin(from, to), qMax(from, to));
@@ -3296,7 +3375,7 @@ void Table::Private::updateVerticalHeader(int start_row)
     emit d_owner.headerDataChanged(Qt::Vertical, start_row, d_row_count - 1);
 }
 
-void Table::Private::updateHorizontalHeader(int start_col, int end_col)
+void Table::Private::updateHorizontalHeader(int start_col, int end_col, bool only_range)
 {
     if (start_col > end_col)
         return;
@@ -3304,54 +3383,64 @@ void Table::Private::updateHorizontalHeader(int start_col, int end_col)
     while (d_horizontal_header_data.size() < d_column_count)
         d_horizontal_header_data << QString();
 
-    if (numColsWithPD(SciDAVis::X) > 1) {
-        int x_cols = 0;
-        for (int i = 0; i < d_column_count; i++) {
+    // A name or type change (only_range) leaves the designations, and so the numbering mode,
+    // as they are; a designation change arrives through handlePlotDesignationChange().
+    const bool multi_x = (only_range && d_header_labels_valid) ? d_header_multi_x
+                                                               : numColsWithPD(SciDAVis::X) > 1;
+    // The label of column i depends on its own name and designation and, with several X
+    // columns, on the number of X columns up to i. Labels left of start_col therefore stay
+    // valid unless the numbering mode changed; rebuilding every label on each column change
+    // made adding or renaming the columns of a wide table quadratic in the column count.
+    int from = 0;
+    int to = d_column_count - 1;
+    if (d_header_labels_valid && multi_x == d_header_multi_x) {
+        from = qBound(0, start_col, d_column_count);
+        if (only_range)
+            to = qMin(end_col, d_column_count - 1);
+    }
+
+    int x_cols = 0;
+    if (multi_x) {
+        for (int i = 0; i < from; i++)
             if (d_columns.at(i)->plotDesignation() == SciDAVis::X)
-                composeColumnHeader(
-                        i, d_columns.at(i)->name() + "[X" + QString::number(++x_cols) + "]");
-            else if (d_columns.at(i)->plotDesignation() == SciDAVis::Y) {
-                if (x_cols > 0)
-                    composeColumnHeader(
-                            i, d_columns.at(i)->name() + "[Y" + QString::number(x_cols) + "]");
-                else
-                    composeColumnHeader(i, d_columns.at(i)->name() + "[Y]");
-            } else if (d_columns.at(i)->plotDesignation() == SciDAVis::Z) {
-                if (x_cols > 0)
-                    composeColumnHeader(
-                            i, d_columns.at(i)->name() + "[Z" + QString::number(x_cols) + "]");
-                else
-                    composeColumnHeader(i, d_columns.at(i)->name() + "[Z]");
-            } else if (d_columns.at(i)->plotDesignation() == SciDAVis::xErr) {
-                if (x_cols > 0)
-                    composeColumnHeader(
-                            i, d_columns.at(i)->name() + "[xEr" + QString::number(x_cols) + "]");
-                else
-                    composeColumnHeader(i, d_columns.at(i)->name() + "[xEr]");
-            } else if (d_columns.at(i)->plotDesignation() == SciDAVis::yErr) {
-                if (x_cols > 0)
-                    composeColumnHeader(
-                            i, d_columns.at(i)->name() + "[yEr" + QString::number(x_cols) + "]");
-                else
-                    composeColumnHeader(i, d_columns.at(i)->name() + "[yEr]");
-            } else
-                composeColumnHeader(i, d_columns.at(i)->name());
+                ++x_cols;
+    }
+    for (int i = from; i <= to; i++) {
+        const Column *col = d_columns.at(i);
+        const SciDAVis::PlotDesignation pd = col->plotDesignation();
+        QString suffix;
+        switch (pd) {
+        case SciDAVis::X:
+            suffix = QStringLiteral("X");
+            if (multi_x)
+                suffix += QString::number(++x_cols);
+            break;
+        case SciDAVis::Y:
+            suffix = QStringLiteral("Y");
+            break;
+        case SciDAVis::Z:
+            suffix = QStringLiteral("Z");
+            break;
+        case SciDAVis::xErr:
+            suffix = QStringLiteral("xEr");
+            break;
+        case SciDAVis::yErr:
+            suffix = QStringLiteral("yEr");
+            break;
+        default:
+            break;
         }
-    } else {
-        for (int i = 0; i < d_column_count; i++) {
-            if (d_columns.at(i)->plotDesignation() == SciDAVis::X)
-                composeColumnHeader(i, d_columns.at(i)->name() + "[X]");
-            else if (d_columns.at(i)->plotDesignation() == SciDAVis::Y)
-                composeColumnHeader(i, d_columns.at(i)->name() + "[Y]");
-            else if (d_columns.at(i)->plotDesignation() == SciDAVis::Z)
-                composeColumnHeader(i, d_columns.at(i)->name() + "[Z]");
-            else if (d_columns.at(i)->plotDesignation() == SciDAVis::xErr)
-                composeColumnHeader(i, d_columns.at(i)->name() + "[xEr]");
-            else if (d_columns.at(i)->plotDesignation() == SciDAVis::yErr)
-                composeColumnHeader(i, d_columns.at(i)->name() + "[yEr]");
-            else
-                composeColumnHeader(i, d_columns.at(i)->name());
+        if (suffix.isEmpty()) {
+            composeColumnHeader(i, col->name());
+            continue;
         }
+        if (multi_x && pd != SciDAVis::X && x_cols > 0)
+            suffix += QString::number(x_cols);
+        composeColumnHeader(i, col->name() + QLatin1Char('[') + suffix + QLatin1Char(']'));
+    }
+    if (to == d_column_count - 1) {
+        d_header_labels_valid = true;
+        d_header_multi_x = multi_x;
     }
     emit d_owner.headerDataChanged(Qt::Horizontal, start_col, end_col);
 }

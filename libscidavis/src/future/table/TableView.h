@@ -73,10 +73,18 @@ public:
     //! Constructor
     TableViewWidget(QWidget *parent = 0) : QTableView(parent) {};
     using QTableView::sizeHintForColumn;
+    //! While deferred, updateGeometries() only notes that it is due; it runs once when the
+    //! deferral ends (used while many columns are inserted or removed one by one)
+    void setGeometryUpdatesDeferred(bool deferred);
 
 protected:
     //! Overloaded function (cf. Qt documentation)
     virtual void keyPressEvent(QKeyEvent *event);
+    void updateGeometries() override;
+
+private:
+    bool d_defer_geometries = false;
+    bool d_geometries_pending = false;
 
 signals:
     void advanceCell();
@@ -195,6 +203,9 @@ public:
     int columnWidth(int col) const;
     void autoExpandColumnWidthForHeader(int col, bool fitDataCellsToo = false);
     bool formulaModeActive() const;
+    //! Merge the view relayouts of a run of single-column inserts/removals into one (nestable)
+    void beginBulkColumnChange();
+    void endBulkColumnChange();
 
 public slots:
     void activateFormulaMode(bool on);
@@ -243,6 +254,8 @@ protected:
     void setColumnForControlTabs(int col);
     void initWorksheetQuickBar(QWidget *parentWidget);
     void syncQuickBarState();
+    //! syncQuickBarState() once the event loop runs again (merges per-column requests)
+    void scheduleQuickBarSync();
     void applyQuickColumnRole(int roleCode);
     void applyQuickFormula();
     void triggerQuickPlot(int curveStyle);
@@ -283,6 +296,8 @@ protected:
     QLineEdit *d_units_edit = nullptr;
     QPointer<QWidget> d_last_desc_edit;
     bool d_updating_ui = false;
+    bool d_quick_bar_sync_pending = false;
+    int d_bulk_column_change = 0;
     bool d_comment_dirty = false;
     bool d_user_hid_comments = false;
     bool d_cell_drag_candidate = false;

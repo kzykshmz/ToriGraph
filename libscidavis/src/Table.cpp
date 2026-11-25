@@ -1003,29 +1003,13 @@ static QVector<int> collectFormulaColumnIndices(Table *tbl, int skipFirstCol, in
     QVector<int> cols;
     if (!tbl || !tbl->d_future_table)
         return cols;
-    const int nCols = tbl->numCols();
-    for (int c = 0; c < nCols; ++c) {
+    for (const QPair<int, bool> &fc : tbl->formulaColumns()) {
+        const int c = fc.first;
         if (skipCount > 0 && c >= skipFirstCol && c < skipFirstCol + skipCount)
             continue;
-        Column *cp = tbl->column(c);
-        if (!cp || cp->formulaIntervals().isEmpty())
-            continue;
-        bool colHasFormula = false;
-        const QList<Interval<int>> ivs = cp->formulaIntervals();
-        for (const Interval<int> &iv : ivs) {
-            const QString f = cp->formula(iv.start()).trimmed();
-            if (!f.isEmpty()) {
-                colHasFormula = true;
-                if (outHasCrossTableRef
-                    && (f.contains(QLatin1Char('/'))
-                        || f.contains(QLatin1String("tablecol"), Qt::CaseInsensitive)
-                        || f.contains(QLatin1String("column__"), Qt::CaseInsensitive))) {
-                    *outHasCrossTableRef = true;
-                }
-            }
-        }
-        if (colHasFormula)
-            cols.push_back(c);
+        cols.push_back(c);
+        if (outHasCrossTableRef && fc.second)
+            *outHasCrossTableRef = true;
     }
     return cols;
 }
@@ -1038,6 +1022,47 @@ struct ScopedCrossTableRecalcGuard
     ~ScopedCrossTableRecalcGuard() { s_inCrossTableAutoRecalc = false; }
 };
 } // namespace
+
+const QVector<QPair<int, bool>> &Table::formulaColumns()
+{
+    // Called after every column write (dependent formula check) for this table and for every
+    // other table of the project; reading all formulas each time made writing the columns of a
+    // wide table quadratic. The epoch changes with any formula and any column insert/remove/move.
+    const quint64 epoch = Column::formulaEpoch();
+    const void *source = d_future_table.data();
+    if (d_formula_columns_epoch == epoch && d_formula_columns_source == source)
+        return d_formula_columns;
+    d_formula_columns.clear();
+    d_formula_columns_epoch = epoch;
+    d_formula_columns_source = source;
+    if (!d_future_table)
+        return d_formula_columns;
+    const int nCols = numCols();
+    for (int c = 0; c < nCols; ++c) {
+        Column *cp = column(c);
+        if (!cp)
+            continue;
+        const QList<Interval<int>> ivs = cp->formulaIntervals();
+        if (ivs.isEmpty())
+            continue;
+        bool colHasFormula = false;
+        bool crossRef = false;
+        for (const Interval<int> &iv : ivs) {
+            const QString f = cp->formula(iv.start()).trimmed();
+            if (!f.isEmpty()) {
+                colHasFormula = true;
+                if (f.contains(QLatin1Char('/'))
+                    || f.contains(QLatin1String("tablecol"), Qt::CaseInsensitive)
+                    || f.contains(QLatin1String("column__"), Qt::CaseInsensitive)) {
+                    crossRef = true;
+                }
+            }
+        }
+        if (colHasFormula)
+            d_formula_columns.append(qMakePair(c, crossRef));
+    }
+    return d_formula_columns;
+}
 
 namespace {
 // Same-table column references of a formula: col("B"), col(B), col("B", i), cell("B", i),

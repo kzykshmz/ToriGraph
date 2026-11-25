@@ -711,6 +711,7 @@ void Column::Private::insertRows(int before, int count)
     d_validity.insertRows(before, count);
     d_masking.insertRows(before, count);
     d_formulas.insertRows(before, count);
+    Column::touchFormulaEpoch();
 
     if (before <= rowCount()) {
         d_validity.setValue(Interval<int>(before, before + count - 1), true);
@@ -740,6 +741,7 @@ void Column::Private::removeRows(int first, int count)
     d_validity.removeRows(first, count);
     d_masking.removeRows(first, count);
     d_formulas.removeRows(first, count);
+    Column::touchFormulaEpoch();
 
     if (first < rowCount()) {
         int corrected_count = count;
@@ -832,6 +834,7 @@ void Column::Private::setMasked(int row, bool mask)
 void Column::Private::setFormula(Interval<int> i, QString formula)
 {
     d_formulas.setValue(i, formula);
+    Column::touchFormulaEpoch();
     emit d_owner->aspectDescriptionChanged(d_owner);
 }
 
@@ -843,6 +846,7 @@ void Column::Private::setFormula(int row, QString formula)
 void Column::Private::clearFormulas()
 {
     d_formulas.clear();
+    Column::touchFormulaEpoch();
     emit d_owner->aspectDescriptionChanged(d_owner);
 }
 
@@ -1023,6 +1027,7 @@ void Column::Private::replaceMasking(IntervalAttribute<bool> masking)
 void Column::Private::replaceFormulas(IntervalAttribute<QString> formulas)
 {
     d_formulas = formulas;
+    Column::touchFormulaEpoch();
     emit d_owner->aspectDescriptionChanged(d_owner);
 }
 

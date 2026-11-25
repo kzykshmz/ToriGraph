@@ -606,8 +606,15 @@ public:
          * change.
          * \param start_col first column that needs to be updated
          * \param end_col last column that needs to be updated
+         * \param only_range true when nothing but the labels of start_col..end_col can have
+         *        changed (a column name or type); otherwise the X/Y numbering of every column
+         *        from start_col on is rebuilt
+         *
+         * The labels left of start_col are kept as long as the "several X columns" numbering
+         * mode stays the same, so adding or renaming one column of a wide table does not
+         * rebuild the label of every column.
          */
-        void updateHorizontalHeader(int start_col, int end_col);
+        void updateHorizontalHeader(int start_col, int end_col, bool only_range = false);
         void setColumnWidth(int col, int width) { d_column_widths[col] = width; }
         int columnWidth(int col) const { return d_column_widths.at(col); }
 
@@ -629,6 +636,10 @@ public:
          * Don't use this outside updateHorizontalHeader()
          */
         void composeColumnHeader(int col, const QString &label);
+        //! Whether d_horizontal_header_data holds the labels of all columns
+        bool d_header_labels_valid = false;
+        //! Numbering mode used for d_horizontal_header_data (true: "[X1]", "[Y1]", ...)
+        bool d_header_multi_x = false;
         //! Columns widths
         QList<int> d_column_widths;
         //! Index of last activated column

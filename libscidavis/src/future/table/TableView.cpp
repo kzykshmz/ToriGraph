@@ -90,6 +90,8 @@
 #include "MultiLayer.h"
 #include "Table.h"
 
+#include <QTimer>
+
 namespace {
 
 static void registerTableViewTranslations()
@@ -1390,16 +1392,33 @@ void TableView::handleAspectDescriptionChanged(const AbstractAspect *aspect)
             }
         }
         autoExpandColumnWidthForHeader(colIdx, false);
+        // Both the header relayout and the quick bar (which scans the selection of every
+        // column) cost O(columns); run them once after a burst of per-column changes
+        // instead of once per column.
         if (d_horizontal_header)
-            d_horizontal_header->refresh();
+            d_horizontal_header->scheduleRefresh();
         if (!d_updating_ui && d_view_widget && d_view_widget->selectionModel()) {
             const int curCol = d_view_widget->selectionModel()->currentIndex().column();
             if (curCol == colIdx)
                 setColumnForControlTabs(curCol);
             else
-                syncQuickBarState();
+                scheduleQuickBarSync();
         }
     }
+}
+
+void TableView::scheduleQuickBarSync()
+{
+    if (d_quick_bar_sync_pending)
+        return;
+    d_quick_bar_sync_pending = true;
+    QTimer::singleShot(0, this, [this]() {
+        if (!d_quick_bar_sync_pending)
+            return;
+        d_quick_bar_sync_pending = false;
+        if (!d_updating_ui)
+            syncQuickBarState();
+    });
 }
 
 void TableView::handleAspectAdded(const AbstractAspect *aspect)
@@ -2803,6 +2822,7 @@ void TableView::initWorksheetQuickBar(QWidget *parentWidget)
 
 void TableView::syncQuickBarState()
 {
+    d_quick_bar_sync_pending = false; // a scheduled sync would only repeat this one
     if (!d_quick_bar)
         return;
 
@@ -3120,12 +3140,52 @@ void TableViewWidget::selectAll()
     sel_model->select(sel, QItemSelectionModel::Select);
 }
 
+void TableViewWidget::setGeometryUpdatesDeferred(bool deferred)
+{
+    d_defer_geometries = deferred;
+    if (!deferred && d_geometries_pending) {
+        d_geometries_pending = false;
+        updateGeometries();
+    }
+}
+
+void TableViewWidget::updateGeometries()
+{
+    // Qt relayouts the headers after every inserted column (columnCountChanged), measuring up to
+    // 200 header sections each time; a table growing by thousands of columns does it once.
+    if (d_defer_geometries) {
+        d_geometries_pending = true;
+        return;
+    }
+    QTableView::updateGeometries();
+}
+
+void TableView::beginBulkColumnChange()
+{
+    if (d_bulk_column_change++ == 0 && d_view_widget)
+        d_view_widget->setGeometryUpdatesDeferred(true);
+}
+
+void TableView::endBulkColumnChange()
+{
+    if (d_bulk_column_change <= 0)
+        return;
+    if (--d_bulk_column_change == 0 && d_view_widget)
+        d_view_widget->setGeometryUpdatesDeferred(false);
+}
+
 void TableViewWidget::updateHeaderGeometry(Qt::Orientation o, int first, int last)
 {
     Q_UNUSED(first)
     Q_UNUSED(last)
     if (o != Qt::Horizontal)
         return;
+    // The stretch toggle below relayouts every section; the double header does the same in
+    // its refresh(), merged over all header changes of one event loop pass.
+    if (auto *doubleHeader = qobject_cast<TableDoubleHeaderView *>(horizontalHeader())) {
+        doubleHeader->scheduleRefresh();
+        return;
+    }
     horizontalHeader()->setStretchLastSection(
             true); // ugly hack (flaw in Qt? Does anyone know a better way?)
     horizontalHeader()->updateGeometry();

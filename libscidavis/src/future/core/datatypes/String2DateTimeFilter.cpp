@@ -28,9 +28,72 @@
  *                                                                         *
  ***************************************************************************/
 #include "String2DateTimeFilter.h"
+#include <QRegularExpression>
 #include <QStringList>
 #include "lib/XmlStreamReader.h"
 #include <QXmlStreamWriter>
+
+namespace {
+//! ISO 8601 date and time as written by Python's datetime.isoformat() and most loggers:
+//! "2023-12-31T23:59:59", "...T23:59:59.123456", "...T23:59:59Z", "...T23:59:59+09:00",
+//! the basic form "20231231T235959", and a time of day with more than three decimals.
+//!
+//! Only strings the older fallback below cannot read are taken here: a 'T' between date and
+//! time, a time zone designator, or a fraction of a second longer than milliseconds. A date and
+//! time separated by a space keeps its old parsing.
+//!
+//! Time zones: date/time columns hold wall-clock times without a zone (QDateTime in local time
+//! built from date and time fields; the numeric conversions use those fields), so the clock time
+//! written in the string is kept and the designator is checked but not applied. Converting to the
+//! PC's zone would make the same file show other times on another PC.
+QDateTime parseIso8601DateTime(const QString &input)
+{
+    static const QRegularExpression extended(QStringLiteral(
+            "^(?:(\\d{4})-(\\d{1,2})-(\\d{1,2})([Tt ]))?"
+            "(\\d{1,2}):(\\d{2})(?::(\\d{2})(?:[.,](\\d+))?)?"
+            "\\s*([Zz]|[+-]\\d{2}(?::?\\d{2})?)?$"));
+    static const QRegularExpression basic(QStringLiteral(
+            "^(\\d{4})(\\d{2})(\\d{2})([Tt])(\\d{2})(\\d{2})(?:(\\d{2})(?:[.,](\\d+))?)?"
+            "([Zz]|[+-]\\d{2}(?::?\\d{2})?)?$"));
+    QRegularExpressionMatch m = extended.match(input);
+    if (!m.hasMatch())
+        m = basic.match(input);
+    if (!m.hasMatch())
+        return QDateTime();
+
+    const bool hasDate = !m.captured(1).isEmpty();
+    const bool sepIsT = m.captured(4).compare(QStringLiteral("T"), Qt::CaseInsensitive) == 0;
+    const QString fraction = m.captured(8);
+    const QString zone = m.captured(9);
+    if (!sepIsT && zone.isEmpty() && fraction.size() <= 3)
+        return QDateTime(); // the older formats read this one
+
+    if (!zone.isEmpty() && zone.compare(QStringLiteral("Z"), Qt::CaseInsensitive) != 0) {
+        const int zoneHours = zone.mid(1, 2).toInt();
+        const int zoneMinutes = zone.size() > 3 ? zone.right(2).toInt() : 0;
+        if (zoneHours > 23 || zoneMinutes > 59)
+            return QDateTime();
+    }
+
+    QDate date(1900, 1, 1); // a time of day alone: the date the older fallback uses
+    if (hasDate) {
+        date = QDate(m.captured(1).toInt(), m.captured(2).toInt(), m.captured(3).toInt());
+        if (!date.isValid())
+            return QDateTime();
+    }
+    const QTime time(m.captured(5).toInt(), m.captured(6).toInt(),
+                     m.captured(7).isEmpty() ? 0 : m.captured(7).toInt());
+    if (!time.isValid())
+        return QDateTime();
+    QDateTime result(date, time);
+    if (!fraction.isEmpty()) {
+        // fraction of a second -> milliseconds, rounded (".5" is 500 ms, ".123456" is 123 ms)
+        const qint64 msecs = qRound64((QStringLiteral("0.") + fraction).toDouble() * 1000.0);
+        result = result.addMSecs(msecs);
+    }
+    return result;
+}
+} // namespace
 
 const QStringList String2DateTimeFilter::date_formats = {
     "yyyy-M-d", // ISO 8601 w/ and w/o leading zeros
@@ -60,6 +123,11 @@ QDateTime String2DateTimeFilter::dateTimeAt(int row) const
     QDateTime result = QDateTime::fromString(input_value, d_format);
     if (result.isValid())
         return result;
+
+    // ISO 8601 with 'T', a time zone or sub-millisecond digits (see parseIso8601DateTime)
+    const QDateTime iso = parseIso8601DateTime(input_value.trimmed());
+    if (iso.isValid())
+        return iso;
 
         // fallback:
         // try other format strings built from date_formats and time_formats

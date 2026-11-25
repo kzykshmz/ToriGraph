@@ -29,6 +29,7 @@
 #include "AbstractAspect.h"
 #include "AspectPrivate.h"
 #include <QRegExp>
+#include <QSet>
 #include <QStringList>
 #include <stdexcept>
 using namespace std;
@@ -210,12 +211,22 @@ QDateTime AbstractAspect::Private::creationTime() const
 
 QString AbstractAspect::Private::uniqueNameFor(const QString &current_name) const
 {
-    QStringList child_names;
-    foreach (AbstractAspect *child, d_children)
-        child_names << child->name();
-
-    if (!child_names.contains(current_name))
+    // Common case first: no collision, decided without building a list of all child names
+    // (this runs for every column added to or renamed in a table).
+    bool taken = false;
+    for (const AbstractAspect *child : d_children) {
+        if (child->name() == current_name) {
+            taken = true;
+            break;
+        }
+    }
+    if (!taken)
         return current_name;
+
+    QSet<QString> child_names;
+    child_names.reserve(d_children.size());
+    for (const AbstractAspect *child : d_children)
+        child_names.insert(child->name());
 
     QString base = current_name;
     int last_non_digit;

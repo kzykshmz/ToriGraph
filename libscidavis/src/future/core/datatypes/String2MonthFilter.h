@@ -32,6 +32,7 @@
 
 #include "../AbstractSimpleFilter.h"
 #include <QDateTime>
+#include <QLocale>
 #include <math.h>
 #include "lib/XmlStreamReader.h"
 #include <QXmlStreamWriter>
@@ -58,10 +59,12 @@ public:
             QDate temp = QDate::fromString(input_value, "MMM");
             if (!temp.isValid())
                 temp = QDate::fromString(input_value, "MMMM");
-            if (!temp.isValid())
-                return QDateTime();
-            else
+            if (temp.isValid())
                 month_value = temp.month();
+            else
+                month_value = englishMonth(input_value);
+            if (month_value < 1)
+                return QDateTime();
         }
 
         // Don't use Julian days here since support for years < 1 is bad
@@ -100,6 +103,23 @@ public:
 
     //! Return the data type of the column
     virtual SciDAVis::ColumnDataType dataType() const { return SciDAVis::TypeQDateTime; }
+
+    //! 1..12 for an English month name, full ("January") or short ("Jan"), in any letter case;
+    //! 0 otherwise. QDate::fromString() above reads the names of the system locale only, so on a
+    //! Japanese PC "January" or "Feb" was not a month.
+    static int englishMonth(const QString &text)
+    {
+        const QString t = text.trimmed();
+        if (t.isEmpty())
+            return 0;
+        const QLocale c = QLocale::c();
+        for (int m = 1; m <= 12; ++m) {
+            if (t.compare(c.monthName(m, QLocale::LongFormat), Qt::CaseInsensitive) == 0
+                || t.compare(c.monthName(m, QLocale::ShortFormat), Qt::CaseInsensitive) == 0)
+                return m;
+        }
+        return 0;
+    }
 
 protected:
     virtual bool inputAcceptable(int, const AbstractColumn *source)

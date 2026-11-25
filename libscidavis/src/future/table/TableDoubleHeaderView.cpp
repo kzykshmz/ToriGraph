@@ -183,12 +183,24 @@ bool TableCommentsHeaderView::anyColumnHasFormula() const
 {
     if (!d_table_model)
         return false;
+    // sizeHint() and painting ask for this on every header relayout (e.g. once per added
+    // column); reading every formula each time made adding columns quadratic. The result only
+    // changes when a formula or the set of columns changes, which moves Column::formulaEpoch().
+    const quint64 epoch = Column::formulaEpoch();
+    if (d_formula_scan_epoch == epoch && d_formula_scan_model == d_table_model.data())
+        return d_formula_scan_result;
+    bool any = false;
     const int cols = d_table_model->columnCount();
     for (int c = 0; c < cols; ++c) {
-        if (!extractColumnFormula(d_table_model->column(c)).isEmpty())
-            return true;
+        if (!extractColumnFormula(d_table_model->column(c)).isEmpty()) {
+            any = true;
+            break;
+        }
     }
-    return false;
+    d_formula_scan_epoch = epoch;
+    d_formula_scan_model = d_table_model.data();
+    d_formula_scan_result = any;
+    return any;
 }
 
 int TableCommentsHeaderView::subRowCount() const
@@ -413,16 +425,13 @@ void TableDoubleHeaderView::setModel(QAbstractItemModel *model)
     connect(model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)), this,
             SLOT(headerDataChanged(Qt::Orientation, int, int)));
     connect(model, &QAbstractItemModel::columnsInserted, this,
-            [this](const QModelIndex &, int, int) { refresh(); });
+            [this](const QModelIndex &, int, int) { scheduleRefresh(); });
     connect(model, &QAbstractItemModel::columnsRemoved, this,
-            [this](const QModelIndex &, int, int) { refresh(); });
+            [this](const QModelIndex &, int, int) { scheduleRefresh(); });
     connect(model, &QAbstractItemModel::modelReset, this, [this]() { refresh(); });
     connect(model, &QAbstractItemModel::layoutChanged, this, [this]() { refresh(); });
     connect(model, &QAbstractItemModel::dataChanged, this,
-            [this](const QModelIndex &, const QModelIndex &) {
-                if (d_slave && d_slave->subRowCount() != d_last_subrow_count)
-                    refresh();
-            });
+            [this](const QModelIndex &, const QModelIndex &) { scheduleSubRowCheck(); });
     d_last_subrow_count = d_slave ? d_slave->subRowCount() : 3;
 }
 
@@ -487,8 +496,36 @@ void TableDoubleHeaderView::showComments(bool on)
     refresh();
 }
 
+void TableDoubleHeaderView::scheduleRefresh()
+{
+    // Coalesce: refresh() relayouts every section (O(columns)), and a wide table emits one header
+    // change per column while it is built, imported or reformatted.
+    if (d_refresh_pending)
+        return;
+    d_refresh_pending = true;
+    QTimer::singleShot(0, this, [this]() {
+        if (d_refresh_pending)
+            refresh();
+    });
+}
+
+void TableDoubleHeaderView::scheduleSubRowCheck()
+{
+    // subRowCount() reads the formula of every column; a data change of each column of a wide
+    // table made that quadratic, so check once after the burst. A pending refresh() re-reads it.
+    if (d_subrow_check_pending || d_refresh_pending)
+        return;
+    d_subrow_check_pending = true;
+    QTimer::singleShot(0, this, [this]() {
+        d_subrow_check_pending = false;
+        if (d_slave && d_slave->subRowCount() != d_last_subrow_count)
+            refresh();
+    });
+}
+
 void TableDoubleHeaderView::refresh()
 {
+    d_refresh_pending = false;
     d_last_subrow_count = d_slave ? d_slave->subRowCount() : 3;
     // adjust geometry and repaint header (still looking for a more elegant solution)
     d_slave->setStretchLastSection(true); // ugly hack (flaw in Qt? Does anyone know a better way?)
@@ -506,7 +543,7 @@ void TableDoubleHeaderView::headerDataChanged(Qt::Orientation orientation, int l
     Q_UNUSED(logicalFirst);
     Q_UNUSED(logicalLast);
     if (orientation == Qt::Horizontal)
-        refresh();
+        scheduleRefresh();
 }
 
 void TableDoubleHeaderView::sectionsInserted(const QModelIndex &parent, int logicalFirst,
