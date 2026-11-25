@@ -26,7 +26,9 @@
 //   89e DataPickerTool Move on horizontal bars writes x to the Y column and y to the X column
 //   89f box / histogram points map to no table row (-1); Move refuses them; vector curves map
 //       their points to the rows they came from
-//   89g Graph::updateCurvesData does not skip a curve when the previous one is removed
+//   89g Graph::updateCurvesData reloads every curve on the column: a curve left without a valid
+//       point stays as an empty curve (it used to be removed, and Undo did not bring it back;
+//       Suite 111e) and the next curve on the same X column is still reloaded
 //   89h error bars survive master reloads that leave no finite error (row range, stack offset)
 //   89i TranslateCurveTool writes each point back to its own row, in original coordinates;
 //       box plots are refused
@@ -445,8 +447,8 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
 
     // ------------------------------------------------ 89g: updateCurvesData after a removal
     {
-        // Y1 only has a value in row 1; clearing X1 empties that curve (removed) while the
-        // second curve on the same X column must still be reloaded.
+        // Y1 only has a value in row 1; clearing X1 empties that curve (kept, without points)
+        // while the second curve on the same X column must still be reloaded.
         const double nan = std::nan("");
         Table *t = suite89Table(mw, "S89Upd", { { 1, 2, 3, 4, 5 },
                                                 { 10, nan, nan, nan, nan },
@@ -459,14 +461,18 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
         t->column(0)->setInvalid(0, true);
         t->blockSignals(false);
         g->updateCurvesData(t, t->colName(0));
-        const QwtPlotCurve *left = (g->curves() == 1) ? g->curve(0) : nullptr;
-        std::cout << "[INFO] 89g after clearing X1: " << g->curves() << " curve(s), remaining "
+        const QwtPlotCurve *emptied = (g->curves() == 2) ? g->curve(0) : nullptr;
+        const QwtPlotCurve *left = (g->curves() == 2) ? g->curve(1) : nullptr;
+        std::cout << "[INFO] 89g after clearing X1: " << g->curves() << " curve(s), "
+                  << (emptied ? emptied->dataSize() : -1) << " and "
                   << (left ? left->dataSize() : -1) << " point(s)\n";
-        CHECK89(g->curves() == 1 && left && left->title().text() == t->colName(2)
-                        && left->dataSize() == 4,
-                "89g: second curve on the same X column was not reloaded ("
-                        << g->curves() << " curves, " << (left ? left->dataSize() : -1)
-                        << " points)");
+        CHECK89(g->curves() == 2 && emptied && emptied->title().text() == t->colName(1)
+                        && emptied->dataSize() == 0 && left
+                        && left->title().text() == t->colName(2) && left->dataSize() == 4,
+                "89g: the emptied curve must stay without points and the second curve on the "
+                "same X column must be reloaded ("
+                        << g->curves() << " curves, " << (emptied ? emptied->dataSize() : -1)
+                        << " / " << (left ? left->dataSize() : -1) << " points)");
         suite89Close(ml);
 
         Table *t2 = suite89Table(mw, "S89Upd2", { { 1, 2, 3 }, { 1, 2, 3 }, { 4, 5, 6 } });
@@ -481,9 +487,17 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
         g2->updateCurvesData(t2, t2->colName(0));
         std::cout << "[INFO] 89g after clearing the whole X column: " << g2->curves()
                   << " curve(s) left\n";
-        CHECK89(g2->curves() == 0,
-                "89g: both curves must be removed when the X column is cleared, "
+        CHECK89(g2->curves() == 2 && g2->curve(0)->dataSize() == 0 && g2->curve(1)->dataSize() == 0,
+                "89g: both curves must stay, without points, when the X column is cleared: "
                         << g2->curves() << " left");
+        // the data comes back: both curves show it again
+        t2->blockSignals(true);
+        for (int r = 0; r < 3; ++r)
+            t2->column(0)->setValueAt(r, double(r + 1));
+        t2->blockSignals(false);
+        g2->updateCurvesData(t2, t2->colName(0));
+        CHECK89(g2->curves() == 2 && g2->curve(0)->dataSize() == 3 && g2->curve(1)->dataSize() == 3,
+                "89g: the curves did not take the X column back");
         suite89Close(ml2);
     }
 

@@ -2,8 +2,10 @@
 #include "PythonAutomationServer.h"
 #include "future/table/future_Table.h"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QTemporaryDir>
 #include <QUndoStack>
 
 #include <cmath>
@@ -28,6 +30,11 @@
 //        removed, the user deletes the error bars' curve and a new curve comes (if possible at
 //        the same address); the table's Undo does not hang the error bars on it. A restored
 //        curve the user deletes, followed by a new one: the table's Redo leaves the new one
+//   111e a column that is empty for a while (cells cleared, a formula 1/0 that makes every row
+//        invalid, its data entry undone) keeps its curve as an empty curve with its style and
+//        legend line: the curve used to leave the graph without an Undo step, so Undo / Redo
+//        brought the data back but not the curve. Saving works with an empty curve; plotting a
+//        column without data is still refused
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -573,6 +580,107 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
                            && g0->plotItemIndex(n2) >= 0,
                    "111d: undo after redo: " << layerSig(g0));
         std::cout << "[INFO] 111d: address reuse reproduced " << reuseHits << "/2\n";
+    }
+
+    // ---- 111e: a column that is empty for a while keeps its curve ----
+    {
+        Table *t = w111->newTable(QString::fromLatin1("E111"), 4, 4);
+        CHECK_COND(t != nullptr, "111e: table E111");
+        t->setColName(0, QString::fromLatin1("x"));
+        t->setColName(1, QString::fromLatin1("y"));
+        t->setColName(2, QString::fromLatin1("z"));
+        t->setColName(3, QString::fromLatin1("w"));
+        CHECK_COND(setCol("E111", "x", { 1, 2, 3, 4 }) && setCol("E111", "y", { 1, 4, 9, 16 })
+                           && setCol("E111", "z", { 2, 3, 4, 5 }),
+                   "111e: fill E111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "E111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "y", "z" } }, { "graph_name", "EG111" } });
+        CHECK_COND(!isErr(r), "111e: plot EG111: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.set_curve_style"),
+                QJsonObject{ { "graph", "EG111" }, { "curve", 0 }, { "color", "#ff0000" }, { "lw", 4.0 } });
+        CHECK_COND(!isErr(r), "111e: style curve 0: " << errText(r));
+
+        // "title:color:width:points;..." of layer 0, and its legend
+        auto sigE = [&]() {
+            std::string s;
+            const QJsonArray layers = graphInfo("EG111").value(QString::fromLatin1("layers")).toArray();
+            for (const QJsonValue &cv : layers.at(0).toObject().value(QString::fromLatin1("curves")).toArray()) {
+                const QJsonObject c = cv.toObject();
+                s += c.value(QString::fromLatin1("title")).toString().toStdString() + ":"
+                        + c.value(QString::fromLatin1("color")).toString().toStdString() + ":"
+                        + std::to_string(c.value(QString::fromLatin1("line_width")).toDouble()) + ":"
+                        + std::to_string(c.value(QString::fromLatin1("points")).toInt()) + ";";
+            }
+            return s;
+        };
+        MultiLayer *eml = nullptr;
+        for (MyWidget *mw2 : w111->windowsList()) {
+            if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String("EG111"))
+                eml = static_cast<MultiLayer *>(mw2);
+        }
+        CHECK_COND(eml != nullptr && !eml->layersList().isEmpty(), "111e: graph EG111");
+        Graph *eg = eml->layersList().at(0);
+        auto legendE = [&]() { return eg->legend() ? eg->legend()->text().toStdString() : std::string(); };
+        auto undoE = [&](bool undo) {
+            return !isErr(rpc(QString::fromLatin1(undo ? "app.undo" : "app.redo"),
+                              QJsonObject{ { "table", "E111" } }));
+        };
+        const std::string e0 = sigE();
+        const std::string leg0 = legendE();
+        std::cout << "[INFO] 111e: EG111 " << e0 << "\n";
+        CHECK_COND(e0.find("E111_y:#ff0000:4.000000:4;") == 0 && e0.find("E111_z:") != std::string::npos,
+                   "111e: setup: " << e0);
+
+        // y emptied (all cells empty), then Undo: the curve stays (empty) and comes back as it was
+        r = rpc(QString::fromLatin1("table.set_column_data"),
+                QJsonObject{ { "table", "E111" }, { "col", "y" },
+                             { "data", QJsonArray{ QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue() } } });
+        CHECK_COND(!isErr(r), "111e: clear y: " << errText(r));
+        const std::string e1 = sigE();
+        std::cout << "[INFO] 111e: y emptied " << e1 << "\n";
+        CHECK_COND(e1.find("E111_y:#ff0000:4.000000:0;") == 0,
+                   "111e: the curve of the emptied y left the graph (or kept points): " << e1);
+        CHECK_COND(legendE() == leg0, "111e: legend changed while y is empty: " << legendE());
+        CHECK_COND(undoE(true), "111e: undo clear y");
+        CHECK_COND(sigE() == e0 && legendE() == leg0,
+                   "111e: undo of clearing y did not bring the curve back: " << sigE() << " expected " << e0);
+
+        // a formula that makes every row invalid (1/0), then Undo
+        r = rpc(QString::fromLatin1("table.set_formula"),
+                QJsonObject{ { "table", "E111" }, { "col", "y" }, { "formula", "1/0" } });
+        CHECK_COND(!isErr(r), "111e: formula 1/0: " << errText(r));
+        std::cout << "[INFO] 111e: y = 1/0 " << sigE() << "\n";
+        CHECK_COND(sigE().find("E111_y:#ff0000:4.000000:0;") == 0, "111e: y = 1/0: " << sigE());
+        CHECK_COND(undoE(true), "111e: undo formula");
+        CHECK_COND(sigE() == e0, "111e: undo of y = 1/0 did not bring the curve back: " << sigE());
+
+        // undo the data entry of y and x (the table's first steps), then redo them
+        CHECK_COND(undoE(true) && undoE(true), "111e: undo the data entry");
+        std::cout << "[INFO] 111e: data entry undone " << sigE() << "\n";
+        CHECK_COND(sigE().find("E111_y:#ff0000:4.000000:0;") == 0, "111e: data entry undone: " << sigE());
+        CHECK_COND(undoE(false) && undoE(false), "111e: redo the data entry");
+        CHECK_COND(sigE() == e0 && legendE() == leg0,
+                   "111e: redo of the data entry did not bring the curves back: " << sigE() << " expected " << e0);
+
+        // saving a graph with an empty curve works; plotting a column without data is refused
+        r = rpc(QString::fromLatin1("table.set_column_data"),
+                QJsonObject{ { "table", "E111" }, { "col", "z" },
+                             { "data", QJsonArray{ QJsonValue(), QJsonValue(), QJsonValue(), QJsonValue() } } });
+        CHECK_COND(!isErr(r), "111e: clear z: " << errText(r));
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "111e: temp dir");
+        const QString prj = tmp.filePath(QString::fromLatin1("e111.sciprj"));
+        r = rpc(QString::fromLatin1("app.save_project"), QJsonObject{ { "path", prj } });
+        CHECK_COND(!isErr(r) && QFileInfo(prj).size() > 0, "111e: save with an empty curve: " << errText(r));
+        CHECK_COND(undoE(true) && sigE() == e0, "111e: undo clear z: " << sigE());
+        r = rpc(QString::fromLatin1("plot.xy"),
+                QJsonObject{ { "table", "E111" }, { "x_col", "x" }, { "y_cols", QJsonArray{ "w" } },
+                             { "graph_name", "EW111" } });
+        std::cout << "[INFO] 111e: plotting the empty column w: "
+                  << (isErr(r) ? errText(r) : std::string("no error")) << "\n";
+        CHECK_COND(isErr(r), "111e: plotting a column without data is no longer refused");
+        std::cout << "[PASS] 111e: an emptied column keeps its curve and Undo / Redo bring the data back\n";
     }
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";

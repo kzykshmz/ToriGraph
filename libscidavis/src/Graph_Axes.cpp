@@ -2848,6 +2848,12 @@ void Graph::applyLogAutoScalePositiveRange()
                 continue;
             if ((isX && it->xAxis() != a) || (!isX && it->yAxis() != a))
                 continue;
+            // 点の無い曲線（列が一時的に空）の範囲は Qwt の無効な矩形 (1,1,-2,-2) で、
+            // そのまま読むと -1..1 になり「0 以下の値がある」と誤って数えてしまう。
+            if (const QwtPlotCurve *pc = dynamic_cast<const QwtPlotCurve *>(it)) {
+                if (pc->dataSize() <= 0)
+                    continue;
+            }
             const QwtDoubleRect r = it->boundingRect();
             const double lo = isX ? qMin(r.left(), r.right()) : qMin(r.top(), r.bottom());
             const double hi = isX ? qMax(r.left(), r.right()) : qMax(r.top(), r.bottom());

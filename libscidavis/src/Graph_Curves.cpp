@@ -1163,6 +1163,12 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
 
     if (!c->loadData())
         return false;
+    // loadData() は有効な点が無くなった既存の曲線を空のまま残す。新しく作図する曲線は従来どおり、
+    // 有効な点が 1 つも無ければ作らない（空の列で作図したときはエラーになる）。
+    if (c->dataSize() <= 0) {
+        c->remove();
+        return false;
+    }
 
     if (style == HorizontalBars) {
         bool anyHorizTextCurve = false;
@@ -1836,8 +1842,8 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
     }
 
     syncCurveZOrder();
-    // The columns are back: read their present values. loadData() may drop a curve that has
-    // no valid point left, so each one is looked up again first.
+    // The columns are back: read their present values. loadData() drops a curve whose column
+    // is (still) missing, so each one is looked up again first.
     for (const auto &ri : restored) {
         QwtPlotItem *it = ri.second;
         if (curveIndexOfKey(ri.first, it) < 0)

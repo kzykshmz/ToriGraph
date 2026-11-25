@@ -100,7 +100,8 @@ void DataCurve::setRowRange(int startRow, int endRow)
     // As in SciDAVis, the error bars take over the new row range. Their points follow this
     // curve's point -> row mapping, so loadData() below reloads them once more after this
     // curve's own data. The error bars are updated first because loadData() may remove (and
-    // delete) this curve when the new range holds no valid point.
+    // delete) this curve when one of its columns is gone (a range without a valid point only
+    // leaves the curve empty).
     const QList<DataCurve *> bars = d_error_bars;
     foreach (DataCurve *c, bars)
         c->setRowRange(startRow, endRow);
@@ -394,8 +395,21 @@ bool DataCurve::loadData()
             QList<int>() << xAxis() << yAxis());
 
     if (points.isEmpty() || points[0].size() == 0) {
-        remove();
-        return false;
+        // 列はあるが有効な点が 1 つも無い（列を空にした、全行が無効になる数式、範囲に有効な行が無い）。
+        // 曲線はグラフから外さず、空の曲線として体裁ごと残す。外すとその削除は Undo に
+        // 記録されないので、データを Undo / Redo で戻しても曲線は戻らなかった。データが戻れば
+        // updateData() からここへ来て、そのまま描き直される。新しく作図するときに空の列を
+        // 断るのは Graph::insertCurve() の役目（列そのものが無いときだけ上で外す）。
+        d_applied_dx = 0.0;
+        d_applied_dy = 0.0;
+        if (d_norm01)
+            d_raw_y_backup.clear();
+        setData(QwtArray<double>(), QwtArray<double>());
+        d_index_to_row.clear();
+        d_gap_before_indices.clear();
+        foreach (DataCurve *c, d_error_bars)
+            c->loadData(); // 点が無い主曲線に合わせて空になる（誤差棒は消えない）
+        return true;
     }
 
     d_applied_dx = 0.0;
