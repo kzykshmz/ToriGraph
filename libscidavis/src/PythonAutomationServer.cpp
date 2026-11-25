@@ -1633,10 +1633,13 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "Reorder curve Z-order ('up', 'down', 'top', 'bottom').",
       "graph:str=''; curve:int|str*; direction:str='up'[up|down|top|bottom]; layer:int=null",
       "g.move_curve(1, 'top')" },
-    { "graph.set_stack_offsets", "graph", "GraphProxy.set_stack_offsets(*, y_offset=0.0, x_offset=0.0, auto_waterfall=False, layer=None)",
-      "Apply vertical/horizontal stack offsets across curves (XRD / spectroscopy waterfall).",
-      "graph:str=''; y_offset:float=0.0; x_offset:float=0.0; auto_waterfall:bool=false; layer:int=null",
-      "g.set_stack_offsets(auto_waterfall=True)" },
+    { "graph.set_stack_offsets", "graph", "GraphProxy.set_stack_offsets(mode=None, y_offset_pct=15.0, x_offset_pct=0.0, normalize=False, layer=None, *, y_offset=None, x_offset=None, auto_waterfall=None, reset=False)",
+      "Offset the curves of a layer from each other (XRD / spectroscopy stack). The offsets are percentages, not data units. "
+      "Waterfall is the default (mode 1, also when auto_waterfall is left out): each curve sits above the previous one with a gap of y_offset % of the mean y span of the curves. "
+      "auto_waterfall=false or mode=0 / 'uniform' moves curve k up by k x (1 + y_offset/100) x that span; an explicit mode wins over auto_waterfall. "
+      "x_offset moves curve k right by k x x_offset % of the widest x span. normalize scales each curve to 0..1 first; reset=true (or mode 'none') removes the offsets.",
+      "graph:str=''; mode:int|str=1; y_offset:float=15.0; x_offset:float=0.0; auto_waterfall:bool=true; normalize:bool=false; reset:bool=false; layer:int=null",
+      "g.set_stack_offsets(y_offset_pct=10)" },
     { "graph.apply_series_scheme", "graph", "GraphProxy.apply_series_scheme(scheme='okabe_ito', *, group_size=2, layer=None)",
       "Apply multi-curve publication styling scheme ('okabe_ito', 'bw_hollow_filled', 'blue_red_hollow', 'muted_categorical', 'cool_to_warm', 'viridis', 'origin_classic').",
       "graph:str=''; scheme:str='okabe_ito'[okabe_ito|bw_hollow_filled|blue_red_hollow|muted_categorical|cool_to_warm|viridis|origin_classic]; group_size:int=2; layer:int=null",

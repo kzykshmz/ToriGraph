@@ -1159,6 +1159,65 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         QwtPlotCurve *fc = CurveMathTools::fillBetweenCurves(d_app, g, cA, cB, fillCol);
         replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (fc != nullptr);
+        if (!fc) {
+            // Say why nothing was filled (an empty curve used to give a bare ok false).
+            struct Pts
+            {
+                int distinctX = 0;
+                double lo = 0.0, hi = 0.0;
+            };
+            auto validPoints = [g](const QString &title) {
+                Pts p;
+                const int idx = g->curveIndex(title);
+                QwtPlotCurve *c = idx >= 0 ? g->curve(idx) : nullptr;
+                if (!c)
+                    return p;
+                countValidCurvePoints(c, &p.distinctX);
+                auto *dc = dynamic_cast<DataCurve *>(c);
+                const bool masks = dc && dc->hasAnyMaskedPoints();
+                Column *mx = nullptr;
+                Column *my = nullptr;
+                if (masks)
+                    dc->resolveColumns(mx, my);
+                bool first = true;
+                for (int i = 0; i < c->dataSize(); ++i) {
+                    if (masks && dc->isPointMaskedFast(i, mx, my))
+                        continue;
+                    const double xv = c->x(i);
+                    if (!std::isfinite(xv) || !std::isfinite(c->y(i)))
+                        continue;
+                    p.lo = first ? xv : std::min(p.lo, xv);
+                    p.hi = first ? xv : std::max(p.hi, xv);
+                    first = false;
+                }
+                return p;
+            };
+            const Pts pA = validPoints(cA);
+            const Pts pB = validPoints(cB);
+            QString why;
+            if (pA.distinctX < 2 || pB.distinctX < 2) {
+                const bool aShort = pA.distinctX < 2;
+                why = QStringLiteral("curvemath.fill_between requires at least 2 valid data points "
+                                     "at different x on each curve (curve '%1' has %2).")
+                              .arg(aShort ? cA : cB)
+                              .arg(aShort ? pA.distinctX : pB.distinctX);
+            } else if (!(std::min(pA.hi, pB.hi) > std::max(pA.lo, pB.lo))) {
+                why = QStringLiteral("curvemath.fill_between: the x ranges of curves '%1' [%2, %3] "
+                                     "and '%4' [%5, %6] do not overlap, so there is no area "
+                                     "between them.")
+                              .arg(cA)
+                              .arg(pA.lo)
+                              .arg(pA.hi)
+                              .arg(cB)
+                              .arg(pB.lo)
+                              .arg(pB.hi);
+            } else {
+                why = QStringLiteral("curvemath.fill_between: no area could be filled between "
+                                     "curves '%1' and '%2'.")
+                              .arg(cA, cB);
+            }
+            outResult[QStringLiteral("error")] = why;
+        }
         return true;
     }
 
@@ -4463,8 +4522,21 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
         outResult[QStringLiteral("ok")] = (ec != nullptr);
-        if (ec)
+        if (ec) {
             outResult[QStringLiteral("ellipse_curve")] = ec->title().text();
+        } else {
+            // Say why there is no ellipse (an empty curve used to give a bare ok false).
+            const int idx = g->curveIndex(curveTitle);
+            const int valid = countValidCurvePoints(idx >= 0 ? g->curve(idx) : nullptr);
+            outResult[QStringLiteral("error")] = valid < 3
+                    ? QStringLiteral("stats.confidence_ellipse requires at least 3 valid data "
+                                     "points (curve '%1' has %2).")
+                              .arg(curveTitle)
+                              .arg(valid)
+                    : QStringLiteral("stats.confidence_ellipse: no ellipse could be made for "
+                                     "curve '%1'.")
+                              .arg(curveTitle);
+        }
         return true;
     }
 

@@ -405,6 +405,82 @@ bool validateFunctionCurveSilent(ApplicationWindow *app, FunctionCurve *fc)
     return false;
 }
 
+// True for a FunctionCurve that a saved project brings back from its saved points: its
+// formula(s) can be read but give no number at any of the points a reopened project computes
+// (FunctionCurve::loadData with dataSize() points over the range), while the curve holds finite
+// points that are saved as <sampled_xy> (Graph::saveCurves writes up to 20000 points).
+// ApplicationWindow::openGraph then draws the curve from those points, so it needs no backing
+// table. This is the case of the global fit curves of older files (the bare expression without
+// the parameter values) once they have been opened.
+static bool functionCurveDrawnFromSavedPoints(ApplicationWindow *app, FunctionCurve *fc)
+{
+    if (!app || !fc)
+        return false;
+    const int n = fc->dataSize();
+    if (n < 2 || n > 20000)
+        return false;
+    bool anyFinite = false;
+    for (int k = 0; k < n && !anyFinite; ++k)
+        anyFinite = std::isfinite(fc->x(k)) && std::isfinite(fc->y(k));
+    if (!anyFinite)
+        return false;
+
+    const QStringList forms = fc->formulas();
+    const QString varName = fc->variable().trimmed();
+    const double r0 = fc->startRange();
+    const double r1 = fc->endRange();
+    if (varName.isEmpty() || !std::isfinite(r0) || !std::isfinite(r1))
+        return false;
+    const bool normal = fc->functionType() == FunctionCurve::Normal;
+    if (!normal && fc->functionType() != FunctionCurve::Parametric
+        && fc->functionType() != FunctionCurve::Polar)
+        return false;
+    const int nForms = normal ? 1 : 2;
+    if (forms.size() < nForms)
+        return false;
+    for (int f = 0; f < nForms; ++f)
+        if (forms[f].trimmed().isEmpty())
+            return false;
+
+    ScriptingEnv *env = ScriptingLangManager::newEnv("muParser", app);
+    if (!env)
+        return false;
+    env->incref();
+    struct EnvRefGuard
+    {
+        ScriptingEnv *e;
+        ~EnvRefGuard()
+        {
+            if (e)
+                e->decref();
+        }
+    } envGuard{ env };
+
+    std::unique_ptr<Script> sc[2];
+    for (int f = 0; f < nForms; ++f) {
+        sc[f].reset(env->newScript(forms[f], nullptr, QStringLiteral("rpc_fc_saved_points")));
+        if (!sc[f])
+            return false;
+        sc[f]->setEmitErrors(false);
+    }
+    const QByteArray varUtf8 = varName.toUtf8();
+    const double step = (r1 - r0) / double(n - 1);
+    for (int i = 0; i < n; ++i) {
+        const double v = r0 + i * step;
+        bool allFinite = true;
+        for (int f = 0; f < nForms; ++f) {
+            sc[f]->setDouble(v, varUtf8.constData());
+            const QVariant rv = sc[f]->eval();
+            if (rv.type() != QVariant::Double)
+                return false; // not a readable formula: keep the backing table
+            allFinite = allFinite && std::isfinite(rv.toDouble());
+        }
+        if (allFinite)
+            return false; // the formula gives numbers: reopening draws it, not the saved points
+    }
+    return true;
+}
+
 bool containsJapaneseChars(const QString &s)
 {
     for (int i = 0; i < s.size(); ++i) {
@@ -2206,6 +2282,8 @@ QJsonObject serializeGraph3DInfo(Graph3D *g3d)
 // 1. Strip commas/tabs/newlines from FunctionCurve titles (Graph::saveCurves comma-splits header).
 // 2. Convert any FunctionCurve whose formula is empty, non-muParser text (e.g. ALS baseline), or
 //    evaluates to NaN into a hidden-Table-backed DataCurve preserving all points and styling.
+//    A NaN formula whose curve has finite points saved with it (<sampled_xy>, up to 20000) is
+//    kept: reopening draws it from those points (functionCurveDrawnFromSavedPoints).
 void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
 {
     if (!app || !g)
@@ -2224,6 +2302,12 @@ void sanitizeGraphFunctionCurves(ApplicationWindow *app, Graph *g)
             fc->setTitle(cleanTitle);
 
         if (validateFunctionCurveSilent(app, fc))
+            continue;
+        // A formula that gives no number but whose points are saved with the curve: reopening
+        // draws it from those points (ApplicationWindow::openGraph), so it stays a function
+        // curve with its title. Replacing it made the global fit curves of an older file data
+        // curves "RpcFitCurve1_..." of new hidden tables on every RPC save.
+        if (functionCurveDrawnFromSavedPoints(app, fc))
             continue;
 
         const int n = fc->dataSize();

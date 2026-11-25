@@ -29,6 +29,15 @@
 //   107f graph.copy_format(layer=L) copies the format of layer L (it used to copy layer 0 when
 //        the main window was shown); paste_format(layer=L) changes only layer L; with the main
 //        window shown and headless; an out-of-range layer is an error
+//   107g curvemath.fill_between and stats.confidence_ellipse on a curve without points return
+//        ok false with the reason in "error" (it used to be a bare ok false); describe_api of
+//        graph.set_stack_offsets gives the defaults the RPC uses (auto_waterfall true: leaving
+//        it out stacks as a waterfall, like auto_waterfall=true and unlike false) and says
+//        that y_offset / x_offset are percentages
+//   107h the global fit curves of an older file (formula without the parameter values, drawn
+//        from the saved points) stay function curves when the project is saved through RPC:
+//        they used to become data curves named "RpcFitCurve1_GlobalFit_..." of new hidden
+//        tables RpcFitCurve1..4; titles and points are kept on reopen
 // =============================================================================
 
 namespace {
@@ -798,6 +807,275 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
         CHECK107(!Rpc107::ok(rpc.call(QStringLiteral("graph.copy_format"),
                                       QJsonObject{ { "graph", "ML107F" }, { "layer", 5 } })),
                  "107f: copy_format(layer=5) on a two-layer graph did not fail");
+    }
+
+    // ---- 107g: ok false with a reason; set_stack_offsets as described --------------------------
+    {
+        AppWinGuard107 w(new ApplicationWindow());
+        Rpc107 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "107g: pythonAutomationServer null");
+        auto compact = [](const QJsonObject &o) {
+            return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)).toStdString();
+        };
+        QJsonArray xs, as, bs, cs, empties;
+        for (int i = 1; i <= 10; ++i) {
+            xs.append(i);
+            as.append(double(i) * i);
+            bs.append(2.0 * i);
+            cs.append(30.0 + i);
+            empties.append(QJsonValue::Null);
+        }
+        CHECK_COND(rpc.makeTable(QStringLiteral("T107G"), { "x", "a", "b", "c" }, { xs, as, bs, cs }),
+                   "107g: table");
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                       QJsonObject{ { "table", "T107G" },
+                                                    { "x_col", "x" },
+                                                    { "y_cols", QJsonArray{ "a", "b", "c" } },
+                                                    { "graph_name", "G107G" } })),
+                   "107g: plot");
+        // emptying column b leaves its curve on the graph without points
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("table.set_column_data"),
+                                       QJsonObject{ { "table", "T107G" },
+                                                    { "col", "b" },
+                                                    { "data", empties } })),
+                   "107g: emptying column b");
+        Graph *g = layer107(w, QStringLiteral("G107G"));
+        CHECK_COND(g && g->curves() == 3 && g->curve(1) && g->curve(1)->dataSize() == 0,
+                   "107g: the curve of the emptied column is not an empty curve");
+
+        auto explained = [](const QJsonObject &r) {
+            return !r.value(QStringLiteral("ok")).toBool(true)
+                    && r.value(QStringLiteral("error")).toString().contains(QLatin1String("T107G_b"));
+        };
+        for (const QJsonObject &p :
+             { QJsonObject{ { "graph", "G107G" }, { "curve_a", 0 }, { "curve_b", 1 } },
+               QJsonObject{ { "graph", "G107G" }, { "curve_a", 1 }, { "curve_b", 2 } } }) {
+            const QJsonObject r = rpc.call(QStringLiteral("curvemath.fill_between"), p);
+            std::cout << "[INFO] 107g: fill_between " << compact(p) << " -> "
+                      << compact(Rpc107::result(r)) << "\n";
+            CHECK107(Rpc107::ok(r) && explained(Rpc107::result(r)),
+                     "107g: fill_between with the empty curve gave no reason: "
+                             << compact(Rpc107::result(r)));
+        }
+        {
+            const QJsonObject r = rpc.call(QStringLiteral("stats.confidence_ellipse"),
+                                           QJsonObject{ { "graph", "G107G" }, { "curve", 1 } });
+            std::cout << "[INFO] 107g: confidence_ellipse of the empty curve -> "
+                      << compact(Rpc107::result(r)) << "\n";
+            CHECK107(Rpc107::ok(r) && explained(Rpc107::result(r)),
+                     "107g: confidence_ellipse of the empty curve gave no reason: "
+                             << compact(Rpc107::result(r)));
+        }
+        // curves with points still work and carry no error
+        {
+            const QJsonObject r = Rpc107::result(rpc.call(
+                    QStringLiteral("curvemath.fill_between"),
+                    QJsonObject{ { "graph", "G107G" }, { "curve_a", 0 }, { "curve_b", 2 } }));
+            CHECK107(r.value(QStringLiteral("ok")).toBool() && !r.contains(QStringLiteral("error")),
+                     "107g: fill_between of two curves with points: " << compact(r));
+            const QJsonObject e = Rpc107::result(rpc.call(
+                    QStringLiteral("stats.confidence_ellipse"),
+                    QJsonObject{ { "graph", "G107G" }, { "curve", 0 } }));
+            CHECK107(e.value(QStringLiteral("ok")).toBool() && !e.contains(QStringLiteral("error")),
+                     "107g: confidence_ellipse of a curve with points: " << compact(e));
+        }
+
+        // set_stack_offsets: describe_api tells the defaults the RPC uses
+        const QJsonObject api =
+                Rpc107::result(rpc.call(QStringLiteral("app.describe_api"),
+                                        QJsonObject{ { "method", "graph.set_stack_offsets" } }));
+        QJsonObject awParam;
+        for (const QJsonValue &v : api.value(QStringLiteral("params")).toArray())
+            if (v.toObject().value(QStringLiteral("name")).toString() == QLatin1String("auto_waterfall"))
+                awParam = v.toObject();
+        std::cout << "[INFO] 107g: describe_api set_stack_offsets: " << compact(api) << "\n";
+        CHECK107(awParam.value(QStringLiteral("default")).isBool()
+                         && awParam.value(QStringLiteral("default")).toBool(),
+                 "107g: describe_api gives auto_waterfall the default " << compact(awParam)
+                                                                        << " (the RPC uses true)");
+        const QString apiText = api.value(QStringLiteral("summary")).toString()
+                + api.value(QStringLiteral("sdk_method")).toString();
+        CHECK107(apiText.contains(QLatin1Char('%')),
+                 "107g: describe_api does not say that the offsets are percentages");
+
+        CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                       QJsonObject{ { "table", "T107G" },
+                                                    { "x_col", "x" },
+                                                    { "y_cols", QJsonArray{ "a", "c" } },
+                                                    { "graph_name", "S107G" } })),
+                   "107g: stack graph");
+        auto stacked = [&](QJsonObject p) {
+            p[QStringLiteral("graph")] = QStringLiteral("S107G");
+            rpc.call(QStringLiteral("graph.set_stack_offsets"),
+                     QJsonObject{ { "graph", "S107G" }, { "reset", true } });
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("graph.set_stack_offsets"), p)),
+                     "107g: set_stack_offsets " << compact(p));
+            const QJsonObject c = Rpc107::result(rpc.call(QStringLiteral("graph.get_info"),
+                                                          QJsonObject{ { "graph", "S107G" } }))
+                                          .value(QStringLiteral("layers"))
+                                          .toArray()
+                                          .first()
+                                          .toObject()
+                                          .value(QStringLiteral("curves"))
+                                          .toArray()
+                                          .at(1)
+                                          .toObject();
+            return QStringLiteral("%1..%2")
+                    .arg(c.value(QStringLiteral("y_min")).toDouble(), 0, 'g', 12)
+                    .arg(c.value(QStringLiteral("y_max")).toDouble(), 0, 'g', 12)
+                    .toStdString();
+        };
+        const std::string byDefault = stacked(QJsonObject{ { "y_offset", 10 } });
+        const std::string waterfall = stacked(QJsonObject{ { "y_offset", 10 }, { "auto_waterfall", true } });
+        const std::string uniform = stacked(QJsonObject{ { "y_offset", 10 }, { "auto_waterfall", false } });
+        std::cout << "[INFO] 107g: second curve stacked by default " << byDefault << ", waterfall "
+                  << waterfall << ", uniform " << uniform << "\n";
+        CHECK107(byDefault == waterfall && byDefault != uniform,
+                 "107g: set_stack_offsets without auto_waterfall " << byDefault
+                         << " is not the waterfall " << waterfall << " (uniform " << uniform << ")");
+    }
+
+    // ---- 107h: global fit curves of an older file stay function curves when saved via RPC ----
+    {
+        const QString livePath = tmp.filePath(QStringLiteral("global_107h.sciprj"));
+        const QString oldPath = tmp.filePath(QStringLiteral("global_107h_old.sciprj"));
+        const QString resavedPath = tmp.filePath(QStringLiteral("global_107h_resaved.sciprj"));
+        struct Fc107
+        {
+            QString title;
+            QVector<double> x, y;
+        };
+        auto functionCurves = [](ApplicationWindow *app) {
+            QList<Fc107> out;
+            if (Graph *g = layer107(app, QStringLiteral("G107H")))
+                for (int i = 0; i < g->curves(); ++i)
+                    if (auto *fc = dynamic_cast<FunctionCurve *>(g->curve(i))) {
+                        Fc107 f;
+                        f.title = fc->title().text();
+                        for (int k = 0; k < fc->dataSize(); ++k) {
+                            f.x << fc->x(k);
+                            f.y << fc->y(k);
+                        }
+                        out << f;
+                    }
+            return out;
+        };
+        auto curveTitles = [](ApplicationWindow *app) {
+            QStringList out;
+            if (Graph *g = layer107(app, QStringLiteral("G107H")))
+                for (int i = 0; i < g->curves(); ++i)
+                    out << g->curve(i)->title().text();
+            return out.join(QStringLiteral(", ")).toStdString();
+        };
+        auto rpcFitTables = [](ApplicationWindow *app) {
+            QStringList out;
+            for (MyWidget *mw2 : app->windowsList())
+                if (mw2 && mw2->name().startsWith(QLatin1String("RpcFitCurve")))
+                    out << mw2->name();
+            return out.join(QStringLiteral(", ")).toStdString();
+        };
+        auto samePoints = [](const QList<Fc107> &a, const QList<Fc107> &b) {
+            if (a.size() != b.size())
+                return false;
+            for (int i = 0; i < a.size(); ++i) {
+                if (a[i].title != b[i].title || a[i].x.size() != b[i].x.size())
+                    return false;
+                for (int k = 0; k < a[i].x.size(); ++k)
+                    if (!(std::fabs(a[i].x[k] - b[i].x[k]) <= 1e-9 * qMax(1.0, std::fabs(b[i].x[k])))
+                        || !(std::fabs(a[i].y[k] - b[i].y[k]) <= 1e-9 * qMax(1.0, std::fabs(b[i].y[k]))))
+                        return false;
+            }
+            return true;
+        };
+
+        QList<Fc107> live;
+        {
+            AppWinGuard107 w(new ApplicationWindow());
+            Rpc107 rpc;
+            rpc.srv = w->pythonAutomationServer();
+            CHECK_COND(rpc.srv != nullptr, "107h: pythonAutomationServer null");
+            QJsonArray xs, as, bs;
+            for (int i = 0; i <= 20; ++i) {
+                const double x = 0.5 * i;
+                xs.append(x);
+                as.append(1.0 + 5.0 * std::exp(-x / 3.0));
+                bs.append(2.0 + 3.0 * std::exp(-x / 3.0));
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T107H"), { "x", "a", "b" }, { xs, as, bs }),
+                       "107h: table");
+            CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                           QJsonObject{ { "table", "T107H" },
+                                                        { "x_col", "x" },
+                                                        { "y_cols", QJsonArray{ "a", "b" } },
+                                                        { "graph_name", "G107H" } })),
+                       "107h: plot");
+            CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("analysis.fit_global"),
+                                           QJsonObject{ { "graph", "G107H" },
+                                                        { "curves", QJsonArray{ 0, 1 } },
+                                                        { "formula", "y0+A*exp(-x/t)" },
+                                                        { "param_names", QJsonArray{ "y0", "A", "t" } },
+                                                        { "shared_params", QJsonArray{ "t" } } })),
+                       "107h: fit_global");
+            live = functionCurves(w);
+            std::cout << "[INFO] 107h: live curves " << curveTitles(w) << "\n";
+            CHECK_COND(live.size() == 2 && live[0].x.size() > 1 && std::isfinite(live[0].y[0]),
+                       "107h: the global fit made " << live.size() << " function curves");
+            CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("app.save_project"),
+                                           QJsonObject{ { "path", livePath } })),
+                       "107h: saving the project");
+        }
+
+        // an older file: the formulas of the global fit curves carry no "name=value" lines
+        {
+            QFile in(livePath);
+            CHECK_COND(in.open(QIODevice::ReadOnly), "107h: reading the saved project");
+            QString text = QString::fromUtf8(in.readAll());
+            in.close();
+            const QRegularExpression paramLines(QStringLiteral(
+                    "(<formula>\\r?\\n)(?:[A-Za-z_]\\w*=[^\\r\\n]*\\r?\\n)+\\r?\\n"));
+            int n = 0;
+            for (auto it = paramLines.globalMatch(text); it.hasNext(); it.next())
+                ++n;
+            CHECK_COND(n == 2, "107h: " << n << " formulas with parameter lines (expected 2)");
+            text.replace(paramLines, QStringLiteral("\\1"));
+            QFile out(oldPath);
+            CHECK_COND(out.open(QIODevice::WriteOnly | QIODevice::Truncate),
+                       "107h: writing the older file");
+            out.write(text.toUtf8());
+        }
+
+        {
+            AppWinGuard107 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(oldPath), "107h: opening the older file failed");
+            QCoreApplication::processEvents();
+            const QList<Fc107> opened = functionCurves(rd);
+            CHECK107(samePoints(opened, live),
+                     "107h: the older file shows other fit curves: " << curveTitles(rd));
+            Rpc107 rpc;
+            rpc.srv = rd->pythonAutomationServer();
+            CHECK_COND(rpc.srv != nullptr, "107h: reopened pythonAutomationServer null");
+            CHECK_COND(Rpc107::ok(rpc.call(QStringLiteral("app.save_project"),
+                                           QJsonObject{ { "path", resavedPath } })),
+                       "107h: saving the older file through RPC");
+            std::cout << "[INFO] 107h: after the RPC save: curves " << curveTitles(rd)
+                      << "; RpcFitCurve tables '" << rpcFitTables(rd) << "'\n";
+            CHECK107(samePoints(functionCurves(rd), live),
+                     "107h: the RPC save turned the fit curves into " << curveTitles(rd));
+            CHECK107(rpcFitTables(rd).empty(),
+                     "107h: the RPC save made the tables " << rpcFitTables(rd));
+        }
+
+        {
+            AppWinGuard107 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(resavedPath), "107h: reopening the resaved file failed");
+            QCoreApplication::processEvents();
+            std::cout << "[INFO] 107h: resaved and reopened: curves " << curveTitles(rd) << "\n";
+            CHECK107(samePoints(functionCurves(rd), live),
+                     "107h: resaved and reopened, the fit curves are " << curveTitles(rd));
+            CHECK107(rpcFitTables(rd).empty(),
+                     "107h: resaved and reopened, there are the tables " << rpcFitTables(rd));
+        }
     }
 
     if (g107Failures > 0) {

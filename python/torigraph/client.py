@@ -2731,7 +2731,7 @@ class GraphProxy:
 
     def set_stack_offsets(
         self,
-        mode: Union[int, str] = 1,
+        mode: Optional[Union[int, str]] = None,
         y_offset_pct: float = 15.0,
         x_offset_pct: float = 0.0,
         normalize: bool = False,
@@ -2745,6 +2745,23 @@ class GraphProxy:
         reset: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        """Offset the curves of the layer from each other (XRD / spectroscopy stack).
+
+        The offsets are percentages, not data units:
+
+        - ``y_offset_pct`` (or ``y_offset``, default 15): in the waterfall mode each
+          curve sits above the previous one with a gap of this % of the mean y span of
+          the curves; in the uniform mode curve k moves up by k x (1 + y/100) x that span.
+        - ``x_offset_pct`` (or ``x_offset``, default 0): curve k moves right by
+          k x this % of the widest x span.
+
+        The waterfall mode is the default: leaving out both ``mode`` and
+        ``auto_waterfall`` stacks as ``auto_waterfall=True`` (mode 1).
+        ``auto_waterfall=False``, ``mode=0`` or ``mode='uniform'`` select the uniform
+        steps; an explicit ``mode`` wins over ``auto_waterfall``. ``normalize=True``
+        scales each curve to 0..1 first. ``reset=True`` (or ``mode='none'``) removes
+        the offsets.
+        """
         eff_y = y_offset if y_offset is not None else (y_offset_pct if y_gap_pct is None else y_gap_pct)
         eff_x = x_offset if x_offset is not None else (x_offset_pct if x_gap_pct is None else x_gap_pct)
         return self.session.call(
