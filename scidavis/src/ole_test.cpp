@@ -52,6 +52,7 @@ static const ModularSuiteEntry kModularSuites[] = {
     { 79, "runSuite79ZeroBaseOverhaulV2Gate", &runSuite79ZeroBaseOverhaulV2Gate },
     { 80, "runSuite80Round4P0P1RegressionGate", &runSuite80Round4P0P1RegressionGate },
     { 81, "runSuite81NumericalTransformCorrectness", &runSuite81NumericalTransformCorrectness },
+    { 82, "runSuite82JsonRpcParamValidation", &runSuite82JsonRpcParamValidation },
 };
 
 static const ModularSuiteEntry *findModularSuite(int id)

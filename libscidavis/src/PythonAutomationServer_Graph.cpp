@@ -4445,19 +4445,41 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 targetLayers = ml->layersList();
         }
 
+        // An explicit 'curve' that cannot be resolved on a layer must not fall back to masking every
+        // DataCurve of that layer (the mask is written into the source table columns). Resolve on
+        // all target layers first, skip layers where it is missing, and fail without touching any
+        // data when no layer has it (same contract as graph.clear_masks).
+        const bool hasExplicitCurve = params.contains(QStringLiteral("curve"))
+                && !params.value(QStringLiteral("curve")).isNull();
+        QVector<int> onlyIdxPerLayer(targetLayers.size(), -1);
+        bool foundCurve = !hasExplicitCurve;
+        if (hasExplicitCurve) {
+            for (int li = 0; li < targetLayers.size(); ++li) {
+                Graph *lg = targetLayers.at(li);
+                if (!lg)
+                    continue;
+                const QString ct = resolveCurveTitle(lg, params, QStringLiteral("curve"), false);
+                if (!ct.isEmpty()) {
+                    onlyIdxPerLayer[li] = lg->curveIndex(ct);
+                    if (onlyIdxPerLayer[li] >= 0)
+                        foundCurve = true;
+                }
+            }
+        }
+        if (!foundCurve)
+            throwInvalidParams(
+                    QStringLiteral("Curve not found on graph '%1'.").arg(ml->name()));
+
         int totalMasked = 0;
-        for (Graph *lg : targetLayers) {
+        for (int li = 0; li < targetLayers.size(); ++li) {
+            Graph *lg = targetLayers.at(li);
             if (!lg)
                 continue;
-            int onlyIdx = -1;
-            if (params.contains(QStringLiteral("curve"))
-                && !params.value(QStringLiteral("curve")).isNull()) {
-                const QString ct = resolveCurveTitle(lg, params, QStringLiteral("curve"), false);
-                if (!ct.isEmpty())
-                    onlyIdx = lg->curveIndex(ct);
-            }
+            const int onlyIdx = onlyIdxPerLayer.at(li);
+            if (hasExplicitCurve && onlyIdx < 0)
+                continue;
             for (int i = 0; i < lg->curves(); ++i) {
-                if (onlyIdx >= 0 && i != onlyIdx)
+                if (hasExplicitCurve && i != onlyIdx)
                     continue;
                 if (auto *dc = dynamic_cast<DataCurve *>(lg->curve(i)))
                     totalMasked += dc->maskRegion(rect, doMask);

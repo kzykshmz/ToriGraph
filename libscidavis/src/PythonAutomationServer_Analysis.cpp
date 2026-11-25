@@ -2311,6 +2311,44 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
     }
 
     if (method == QStringLiteral("analysis.analyze_peaks")) {
+        // Validate peak-count driving inputs before anything is plotted or allocated. Doublet
+        // indices feed MultiPeakFit::setNumPeaks(max(secondary, primary) + 1) and 'centers' feeds
+        // setNumPeaks(centers.size()); both share the 500-peak cap of num_peaks / max_peaks so that
+        // 3 * peaks + 1 cannot overflow and the GSL vectors stay allocatable.
+        constexpr int kMaxAnalyzePeaks = 500;
+        struct ParsedDoublet
+        {
+            int secondary;
+            int primary;
+            double areaRatio;
+            double centerOffset;
+            bool shareWidth;
+        };
+        QVector<ParsedDoublet> parsedDoublets;
+        if (params.value(QStringLiteral("doublets")).isArray()) {
+            for (const QJsonValue &dv : params.value(QStringLiteral("doublets")).toArray()) {
+                if (!dv.isObject())
+                    continue;
+                const QJsonObject dobj = dv.toObject();
+                ParsedDoublet pd;
+                pd.secondary = parseBoundedInt(dobj, QStringLiteral("secondary"), 1, 0,
+                                               kMaxAnalyzePeaks - 1);
+                pd.primary = parseBoundedInt(dobj, QStringLiteral("primary"), 0, 0,
+                                             kMaxAnalyzePeaks - 1);
+                pd.areaRatio = dobj.value(QStringLiteral("area_ratio")).toDouble(0.5);
+                pd.centerOffset = dobj.value(QStringLiteral("center_offset")).toDouble(0.0);
+                pd.shareWidth = dobj.value(QStringLiteral("share_width")).toBool(true);
+                parsedDoublets.append(pd);
+            }
+        }
+        const QJsonArray centersArr = params.value(QStringLiteral("centers")).toArray();
+        if (centersArr.size() > kMaxAnalyzePeaks) {
+            throwInvalidParams(
+                    QStringLiteral("Parameter 'centers' must contain at most %1 entries, got %2.")
+                            .arg(kMaxAnalyzePeaks)
+                            .arg(centersArr.size()));
+        }
+
         MultiLayer *ml = nullptr;
         Graph *g = nullptr;
         QString curveTitle;
@@ -2393,10 +2431,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         if (subtractBaseline && baseMode != MultiPeakFit::BaselineZero)
             mpf.subtractBaselineFromData();
 
-        if (params.value(QStringLiteral("centers")).isArray()
-            && !params.value(QStringLiteral("centers")).toArray().isEmpty()) {
+        if (params.value(QStringLiteral("centers")).isArray() && !centersArr.isEmpty()) {
             std::vector<double> pickedCenters;
-            for (const QJsonValue &cv : params.value(QStringLiteral("centers")).toArray())
+            for (const QJsonValue &cv : centersArr)
                 pickedCenters.push_back(cv.toDouble());
             mpf.setNumPeaks(static_cast<int>(pickedCenters.size()));
             mpf.seedPeaksFromCenters(pickedCenters, prominence);
@@ -2421,18 +2458,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             mpf.autoDetectAndUpdateNumPeaks(maxPeaks, prominence);
         }
 
-        if (params.value(QStringLiteral("doublets")).isArray()) {
-            for (const QJsonValue &dv : params.value(QStringLiteral("doublets")).toArray()) {
-                if (!dv.isObject())
-                    continue;
-                const QJsonObject dobj = dv.toObject();
-                mpf.addPeakDoubletConstraint(
-                        dobj.value(QStringLiteral("secondary")).toInt(1),
-                        dobj.value(QStringLiteral("primary")).toInt(0),
-                        dobj.value(QStringLiteral("area_ratio")).toDouble(0.5),
-                        dobj.value(QStringLiteral("center_offset")).toDouble(0.0),
-                        dobj.value(QStringLiteral("share_width")).toBool(true));
-            }
+        for (const ParsedDoublet &pd : parsedDoublets) {
+            mpf.addPeakDoubletConstraint(pd.secondary, pd.primary, pd.areaRatio, pd.centerOffset,
+                                         pd.shareWidth);
         }
 
         const int curvesBefore = g->curves();

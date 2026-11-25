@@ -2175,7 +2175,11 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                   || sm.startsWith(QStringLiteral("gadget.")))
                 || sm == QStringLiteral("graph.merge_graphs")
                 || sm == QStringLiteral("graph.batch_clone")
-                || sm == QStringLiteral("graph.drop_columns")) {
+                || sm == QStringLiteral("graph.drop_columns")
+                // Masks live in the source table columns, which the MultiLayer XML snapshot
+                // does not cover; these need the full workspace snapshot to roll back.
+                || sm == QStringLiteral("graph.mask_region")
+                || sm == QStringLiteral("graph.clear_masks")) {
                 graphOnlyFastSnapshot = false;
             }
         }
@@ -2184,6 +2188,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         QHash<MultiLayer *, QString> fastMlSnapshots;
         QHash<MultiLayer *, int> fastMlUndoIdx;
         QByteArray fullWorkspaceSnapshot;
+        bool needFullWorkspaceRestore = false;
         bool hadUntouchedSingleTable = false;
         QString untouchedTblName;
         int untouchedTblRows = 30;
@@ -2237,10 +2242,12 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     } else {
                         sanitizeAllProjectFunctionCurves(d_app);
                         fullWorkspaceSnapshot = d_app->saveProjectToByteArray();
+                        needFullWorkspaceRestore = true;
                     }
                 } else {
                     sanitizeAllProjectFunctionCurves(d_app);
                     fullWorkspaceSnapshot = d_app->saveProjectToByteArray();
+                    needFullWorkspaceRestore = true;
                 }
             }
         }
@@ -2358,6 +2365,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
 
         bool rolledBack = false;
+        QString rollbackError;
         if (failedIndex >= 0 && atomic && bctx.recursionDepth == 1) {
             const auto openSnaps = bctx.preBatchGraphSnaps;
             bctx.preBatchGraphSnaps.clear();
@@ -2387,21 +2395,56 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 }
                 rolledBack = true;
             } else {
-                resetProjectInPlaceHeadless(d_app);
+                bool restoreOk = true;
                 if (hadUntouchedSingleTable) {
+                    resetProjectInPlaceHeadless(d_app);
                     createUniqueTableHeadless(d_app, untouchedTblRows, untouchedTblCols,
                                               untouchedTblName);
-                } else if (!fullWorkspaceSnapshot.isEmpty()) {
+                } else if (needFullWorkspaceRestore) {
+                    // Stage the snapshot on disk first and only clear the workspace once it is
+                    // known to be readable back; otherwise the batch's partial changes are left in
+                    // place (rolled_back:false) instead of silently losing the whole project.
                     QTemporaryFile tmpProj(
                             QDir::temp().filePath(QStringLiteral("torigraph_batch_rb_XXXXXX.sciprj")));
-                    if (tmpProj.open()) {
-                        const QString tmpPath = tmpProj.fileName();
-                        tmpProj.write(fullWorkspaceSnapshot);
-                        tmpProj.flush();
+                    bool staged = false;
+                    QString tmpPath;
+                    if (fullWorkspaceSnapshot.isEmpty()) {
+                        rollbackError = QStringLiteral(
+                                "atomic rollback failed: the pre-batch workspace snapshot is empty; "
+                                "the workspace was left in its post-failure state.");
+                    } else if (!tmpProj.open()) {
+                        rollbackError =
+                                QStringLiteral("atomic rollback failed: cannot create temporary "
+                                               "snapshot file (%1); the workspace was left in its "
+                                               "post-failure state.")
+                                        .arg(tmpProj.errorString());
+                    } else {
+                        tmpPath = tmpProj.fileName();
+                        staged = tmpProj.write(fullWorkspaceSnapshot) == fullWorkspaceSnapshot.size()
+                                && tmpProj.flush();
                         tmpProj.close();
-                        (void)d_app->loadProject(tmpPath);
+                        if (!staged) {
+                            rollbackError =
+                                    QStringLiteral("atomic rollback failed: cannot write temporary "
+                                                   "snapshot file '%1'; the workspace was left in "
+                                                   "its post-failure state.")
+                                            .arg(QDir::toNativeSeparators(tmpPath));
+                        }
+                    }
+                    if (staged) {
+                        resetProjectInPlaceHeadless(d_app);
+                        if (!d_app->loadProject(tmpPath)) {
+                            rollbackError =
+                                    QStringLiteral("atomic rollback failed: the pre-batch snapshot "
+                                                   "could not be reloaded; the workspace may be "
+                                                   "incomplete.");
+                        }
                         QFile::remove(tmpPath);
                     }
+                    restoreOk = rollbackError.isEmpty();
+                } else {
+                    // Empty pre-batch workspace: clearing it is the full rollback.
+                    resetProjectInPlaceHeadless(d_app);
                 }
                 d_app->recentProjects = savedRecent;
                 d_app->projectname = savedProjName;
@@ -2410,7 +2453,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     if (MyWidget *aw = findWindowByName(d_app, savedActiveWinName))
                         d_app->activateSubWindow(aw);
                 }
-                rolledBack = true;
+                rolledBack = restoreOk;
             }
         } else if (bctx.recursionDepth == 1) {
             // Flush coalesced font enforcement, layout arrangement, replots, and final Undo snapshots once at commit
@@ -2454,6 +2497,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         outResult[QStringLiteral("results")] = resultsJsonArr;
         outResult[QStringLiteral("failed_index")] =
                 (failedIndex >= 0) ? QJsonValue(failedIndex) : QJsonValue::Null;
+        if (!rollbackError.isEmpty()) {
+            firstErrorObj[QStringLiteral("rollback_error")] = rollbackError;
+            outResult[QStringLiteral("rollback_error")] = rollbackError;
+        }
         outResult[QStringLiteral("error")] =
                 (failedIndex >= 0) ? QJsonValue(firstErrorObj) : QJsonValue::Null;
         return true;
@@ -4794,6 +4841,18 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             t = createUniqueTableHeadless(d_app, maxRows, keys.size(),
                                           params.value(QStringLiteral("name")).toString());
         } else {
+            // The table only grows here, so check the final max(rows) x max(cols) footprint
+            // against the shared 25,000,000-cell cap before resizing anything.
+            const qint64 finalRows = std::max<qint64>(t->numRows(), maxRows);
+            const qint64 finalCols = std::max<qint64>(t->numCols(), keys.size());
+            const bool grows = finalRows > t->numRows() || finalCols > t->numCols();
+            if (grows && finalRows * finalCols > 25000000LL) {
+                throwInvalidParams(
+                        QStringLiteral("table.set_data_dict would resize table '%1' to %2x%3, exceeding the 25,000,000-cell limit.")
+                                .arg(t->name())
+                                .arg(finalRows)
+                                .arg(finalCols));
+            }
             preexistingCols = t->numCols();
             if (t->numCols() < keys.size())
                 t->setNumCols(keys.size());
