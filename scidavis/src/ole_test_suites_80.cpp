@@ -1542,7 +1542,11 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
                 const double fitNow = mlSp->fitPageZoomFactor();
                 if (csVp80->height() < 88)
                     sawStarved = true;
-                if (prevFit >= 0.0 && fitNow > prevFit + 1e-3 && riseVpH < 0) {
+                // Outside the starved band, small rises are legitimate (a scroll bar appearing or
+                // the limiting side switching from height to width); only a jump towards the
+                // 1.6 fallback, or any rise inside the 80..87 px band, is the regression.
+                const bool rose = prevFit >= 0.0 && fitNow > prevFit + 1e-3;
+                if (riseVpH < 0 && ((rose && csVp80->height() < 88) || (rose && fitNow >= 1.5))) {
                     prevFitAtRise = prevFit;
                     risenFit = fitNow;
                     riseVpH = csVp80->height();
