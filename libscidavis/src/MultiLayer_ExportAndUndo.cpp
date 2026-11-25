@@ -2270,6 +2270,7 @@ bool MultiLayer::restoreSnapshotInPlace(ApplicationWindow *app, const QString &s
             ml->d_is_restoring_snapshot = false;
         }
     } guard(this, app);
+    ++d_snapshot_restore_count; // the layers are replaced below
 
     CanvasInlineTextEditor::cancelActiveForMultiLayer(this);
     for (QWidget *gw : graphsList) {

@@ -44,6 +44,11 @@
 //        and of an added column, then redoing it, brings the curve back (it was lost); deleting
 //        the data table and undoing that brings its curve back with its style and legend line,
 //        Redo takes it again
+//   111h held curves go back only to their own layer and only with their tables: a layer the
+//        user deleted meanwhile does not hand its curve to the next layer; after the graph's Undo
+//        rebuilt its layers, the curve and its error bars come back; held error bars from
+//        another table whose window was deleted meanwhile are dropped when a table comes back
+//        (they used to be read through the deleted window: use after free)
 // =============================================================================
 
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
@@ -928,6 +933,181 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(isig() == g2, "111g: second undo of deleting I111: " << isig());
         std::cout << "[PASS] 111g: curves of a table that leaves the project come back with it\n";
     }
+
+    // ---- 111h: held curves go back only to their own layer, and only with their tables ----
+    auto findGraph = [](ApplicationWindow *app, const char *name) -> MultiLayer * {
+        for (MyWidget *mw2 : app->windowsList()) {
+            if (mw2 && mw2->inherits("MultiLayer") && mw2->name() == QLatin1String(name))
+                return static_cast<MultiLayer *>(mw2);
+        }
+        return nullptr;
+    };
+    auto layerTitles = [](Graph *g) {
+        std::string s;
+        for (int i = 0; i < g->curves(); ++i) {
+            QwtPlotCurve *c = g->curve(i);
+            s += (c ? c->title().text().toStdString() : std::string("?"))
+                    + (dynamic_cast<QwtErrorPlotCurve *>(c) ? "(err)" : "") + ";";
+        }
+        return s;
+    };
+    {
+        // (1) the layer the curve left is deleted by the user: the curve is not put into the
+        //     layer that now has its number
+        Table *k = w111->newTable(QString::fromLatin1("K111"), 4, 2);
+        Table *l = w111->newTable(QString::fromLatin1("L111"), 4, 2);
+        CHECK_COND(k && l && k->d_future_table, "111h: tables K111 / L111");
+        k->setColName(0, QString::fromLatin1("x"));
+        k->setColName(1, QString::fromLatin1("y"));
+        l->setColName(0, QString::fromLatin1("x"));
+        l->setColName(1, QString::fromLatin1("y"));
+        CHECK_COND(setCol("K111", "x", { 1, 2, 3, 4 }) && setCol("K111", "y", { 4, 3, 2, 1 })
+                           && setCol("L111", "x", { 1, 2, 3, 4 }) && setCol("L111", "y", { 100, 200, 300, 400 }),
+                   "111h: fill K111 / L111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "K111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "y" } }, { "graph_name", "KG111" } });
+        CHECK_COND(!isErr(r), "111h: plot KG111: " << errText(r));
+        r = rpc(QString::fromLatin1("graph.add_layer"), QJsonObject{ { "graph", "KG111" } });
+        CHECK_COND(!isErr(r), "111h: add layer: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "KG111" }, { "table", "L111" }, { "x_col", "x" },
+                             { "y_col", "y" }, { "layer", 1 } });
+        CHECK_COND(!isErr(r), "111h: L111 curve on layer 1: " << errText(r));
+        MultiLayer *kml = findGraph(w111, "KG111");
+        CHECK_COND(kml && kml->layersList().size() == 2, "111h: KG111 with 2 layers");
+        QUndoStack *ps = k->d_future_table->undoStack();
+        w111->closeWindow(k);
+        QCoreApplication::processEvents();
+        CHECK_COND(w111->table(QString::fromLatin1("K111")) == nullptr
+                           && kml->layersList().at(0)->curves() == 0,
+                   "111h: deleting K111: " << layerTitles(kml->layersList().at(0)));
+        r = rpc(QString::fromLatin1("graph.remove_layer"), QJsonObject{ { "graph", "KG111" }, { "layer", 0 } });
+        CHECK_COND(!isErr(r) && kml->layersList().size() == 1, "111h: remove layer 0: " << errText(r));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); // the closed layer goes
+        ps->undo(); // K111 comes back
+        QCoreApplication::processEvents();
+        const std::string left = layerTitles(kml->layersList().at(0));
+        std::cout << "[INFO] 111h: K111 back, the layer left: " << left << "\n";
+        CHECK_COND(w111->table(QString::fromLatin1("K111")) != nullptr && left == "L111_y;",
+                   "111h: the curve of the deleted layer went into another layer: " << left);
+    }
+    {
+        // (2) error bars on a curve of another table: Undo / Redo of the graph (its layers are
+        //     replaced) while the table is out, then the table comes back: the curve and its
+        //     error bars come back
+        Table *m = w111->newTable(QString::fromLatin1("M111"), 4, 3);
+        CHECK_COND(m && m->d_future_table, "111h: table M111");
+        m->setColName(0, QString::fromLatin1("x"));
+        m->setColName(1, QString::fromLatin1("y"));
+        m->setColName(2, QString::fromLatin1("e"));
+        CHECK_COND(setCol("M111", "x", { 1, 2, 3, 4 }) && setCol("M111", "y", { 2, 4, 3, 5 })
+                           && setCol("M111", "e", { 0.1, 0.2, 0.3, 0.4 }),
+                   "111h: fill M111");
+        QJsonObject r = rpc(QString::fromLatin1("plot.xy"),
+                            QJsonObject{ { "table", "M111" }, { "x_col", "x" },
+                                         { "y_cols", QJsonArray{ "y" } }, { "graph_name", "MG111" } });
+        CHECK_COND(!isErr(r), "111h: plot MG111: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_curve"),
+                QJsonObject{ { "graph", "MG111" }, { "table", "L111" }, { "x_col", "x" }, { "y_col", "y" } });
+        CHECK_COND(!isErr(r), "111h: L111 curve on MG111: " << errText(r));
+        r = rpc(QString::fromLatin1("plot.add_error_bars"),
+                QJsonObject{ { "graph", "MG111" }, { "err_col", "e" }, { "curve", "M111_y" },
+                             { "table", "M111" } });
+        CHECK_COND(!isErr(r), "111h: error bars: " << errText(r));
+        MultiLayer *mml = findGraph(w111, "MG111");
+        CHECK_COND(mml && !mml->layersList().isEmpty(), "111h: MG111");
+        const std::string m0 = layerTitles(mml->layersList().at(0));
+        std::cout << "[INFO] 111h: MG111 " << m0 << "\n";
+        QUndoStack *ps = m->d_future_table->undoStack();
+        w111->closeWindow(m);
+        QCoreApplication::processEvents();
+        // a graph step and its Undo: the layers are rebuilt from the snapshot
+        r = rpc(QString::fromLatin1("graph.set_axis"),
+                QJsonObject{ { "graph", "MG111" }, { "axis", "x" }, { "min", 0 }, { "max", 9 } });
+        CHECK_COND(!isErr(r), "111h: set_axis: " << errText(r));
+        r = rpc(QString::fromLatin1("app.undo"), QJsonObject{ { "graph", "MG111" } });
+        CHECK_COND(!isErr(r), "111h: undo set_axis: " << errText(r));
+        ps->undo(); // M111 comes back
+        QCoreApplication::processEvents();
+        const std::string m1 = layerTitles(mml->layersList().at(0));
+        std::cout << "[INFO] 111h: M111 back after a graph Undo: " << m1 << "\n";
+        CHECK_COND(m1.find("M111_y;") != std::string::npos && m1.find("(err)") != std::string::npos
+                           && m1.find("L111_y;") != std::string::npos,
+                   "111h: curve or error bars missing after the table came back: " << m1 << " (was " << m0 << ")");
+    }
+    {
+        // (3) error bars from another table B, whose window is deleted while they are held
+        //     (app.close_window deletes the window; its table stays with the Undo step): when
+        //     another table comes back, the held error bars are not read through the deleted
+        //     window (use after free) but dropped; the curve on table A stays as it is
+        AppWinGuard111 wl(new ApplicationWindow());
+        wl->applyUserSettings();
+        wl->confirmCloseTable = false;
+        PythonAutomationServer *lsrv = wl->pythonAutomationServer();
+        CHECK_COND(lsrv != nullptr, "111h: server of the second window");
+        int lid = 11900;
+        auto lrpc = [&](const QString &method, const QJsonObject &params) {
+            QJsonObject req;
+            req[QString::fromLatin1("jsonrpc")] = QString::fromLatin1("2.0");
+            req[QString::fromLatin1("id")] = ++lid;
+            req[QString::fromLatin1("method")] = method;
+            req[QString::fromLatin1("params")] = params;
+            const QJsonObject resp = lsrv->handleRpcRequest(req);
+            QCoreApplication::processEvents();
+            return resp;
+        };
+        auto lset = [&](const char *table, const char *col, const QVector<double> &v) {
+            return !isErr(lrpc(QString::fromLatin1("table.set_column_data"),
+                               QJsonObject{ { "table", table }, { "col", col }, { "data", toArr(v) } }));
+        };
+        Table *a = wl->newTable(QString::fromLatin1("A111"), 4, 2);
+        Table *b = wl->newTable(QString::fromLatin1("B111e"), 4, 1);
+        Table *c = wl->newTable(QString::fromLatin1("C111"), 4, 1);
+        CHECK_COND(a && b && c && a->d_future_table && b->d_future_table, "111h: tables A / B / C");
+        a->setColName(0, QString::fromLatin1("x"));
+        a->setColName(1, QString::fromLatin1("y"));
+        b->setColName(0, QString::fromLatin1("e"));
+        c->setColName(0, QString::fromLatin1("z"));
+        CHECK_COND(lset("A111", "x", { 1, 2, 3, 4 }) && lset("A111", "y", { 3, 1, 4, 1 })
+                           && lset("B111e", "e", { 0.5, 0.5, 0.5, 0.5 }) && lset("C111", "z", { 1, 2, 3, 4 }),
+                   "111h: fill A / B / C");
+        QJsonObject r = lrpc(QString::fromLatin1("plot.xy"),
+                             QJsonObject{ { "table", "A111" }, { "x_col", "x" },
+                                          { "y_cols", QJsonArray{ "y" } }, { "graph_name", "AG111" } });
+        CHECK_COND(!isErr(r), "111h: plot AG111: " << errText(r));
+        r = lrpc(QString::fromLatin1("plot.add_error_bars"),
+                 QJsonObject{ { "graph", "AG111" }, { "err_col", "e" }, { "curve", "A111_y" },
+                              { "table", "B111e" } });
+        CHECK_COND(!isErr(r), "111h: error bars from B: " << errText(r));
+        MultiLayer *aml = findGraph(wl, "AG111");
+        CHECK_COND(aml && !aml->layersList().isEmpty(), "111h: AG111");
+        Graph *ag = aml->layersList().at(0);
+        std::cout << "[INFO] 111h: AG111 " << layerTitles(ag) << "\n";
+        QPointer<future::Table> fb(b->d_future_table);
+        QUndoStack *ps = a->d_future_table->undoStack();
+        r = lrpc(QString::fromLatin1("app.close_window"), QJsonObject{ { "name", "B111e" } });
+        CHECK_COND(!isErr(r), "111h: close_window B111e: " << errText(r));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        std::cout << "[INFO] 111h: B111e closed (its table kept: " << (fb ? "yes" : "no") << ") "
+                  << layerTitles(ag) << "\n";
+        CHECK_COND(layerTitles(ag) == "A111_y;", "111h: closing B111e: " << layerTitles(ag));
+        // another table goes and comes back: the held curves are looked at
+        wl->closeWindow(c);
+        QCoreApplication::processEvents();
+        ps->undo();
+        QCoreApplication::processEvents();
+        const bool heldLeft = fb && fb->findChild<QObject *>(QString::fromLatin1("_tg_held_removed_curves"),
+                                                             Qt::FindDirectChildrenOnly);
+        std::cout << "[INFO] 111h: C111 back: " << layerTitles(ag) << ", error bars of B still held: "
+                  << (heldLeft ? "yes" : "no") << "\n";
+        CHECK_COND(wl->table(QString::fromLatin1("C111")) != nullptr && layerTitles(ag) == "A111_y;",
+                   "111h: after C111 came back: " << layerTitles(ag));
+        CHECK_COND(!heldLeft, "111h: the error bars of the deleted window B111e are still held (read "
+                              "through a deleted window)");
+        wl->savedProject();
+    }
+    std::cout << "[PASS] 111h: held curves go back only to their own layer and with their tables\n";
 
     std::cout << "[PASS] Suite 111: dual-Y legend headroom and removed-column undo passed.\n";
     return 0;

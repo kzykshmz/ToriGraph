@@ -1744,6 +1744,9 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
     tc.out = false;
 
     QList<QPair<int, QwtPlotItem *>> restored; // key, item
+    // keys a curve could not get back (taken by another item, e.g. in a layer rebuilt by the
+    // graph's Undo): its error bars find it under the new one
+    QHash<int, int> rekeyed;
     // the curves first, then the error bars, which need their curve back in the layer
     for (int pass = 0; pass < 2; ++pass) {
         for (TakenCurve &t : tc.curves) {
@@ -1756,6 +1759,8 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             // address alone is not enough, since a curve deleted meanwhile can leave it to a new
             // one (a curve taken with it comes back first, under its own key).
             DataCurve *master = er ? er->masterCurve() : nullptr;
+            if (er)
+                t.masterKey = rekeyed.value(t.masterKey, t.masterKey);
             if (t.type == ErrorBars && (!master || curveIndexOfKey(t.masterKey, master) < 0)) {
                 // its curve is no longer in this layer: nothing to attach the error bars to
                 delete t.item;
@@ -1829,6 +1834,8 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
             // back under its own key, so that it is known by that key again (retakeCurves(),
             // the error bars of other taken sets that hang on it)
             const int key = d_plot->insertCurve(t.item, t.key);
+            if (key != t.key)
+                rekeyed.insert(t.key, key);
             t.key = key;
             c_keys.insert(pos, key);
             c_type.insert(pos, t.type);

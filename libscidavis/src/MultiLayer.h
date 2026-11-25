@@ -261,6 +261,8 @@ public:
 
     QUndoStack *undoStack() const { return d_undo_stack; }
     bool isRestoringSnapshot() const { return d_is_restoring_snapshot; }
+    //! Counts the snapshot restores (Undo / Redo of the graph), which replace all its layers.
+    int snapshotRestoreCount() const { return d_snapshot_restore_count; }
     void beginSuppressUndo();
     void endSuppressUndo();
     bool isUndoSuppressed() const { return d_undo_suppress_depth > 0; }
@@ -579,6 +581,7 @@ private:
     QPointer<SelectionMoveResizer> d_layers_selector;
     QUndoStack *d_undo_stack = nullptr;
     bool d_is_restoring_snapshot = false;
+    int d_snapshot_restore_count = 0;
     int d_undo_suppress_depth = 0;
     bool d_panel_labels_enabled = false;
     PanelLabelPlacement d_panel_label_placement = PanelOutsideTopLeft;
