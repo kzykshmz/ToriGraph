@@ -2540,11 +2540,13 @@ void MultiLayer::setPanelLabels(bool enabled, PanelLabelPlacement placement,
     d_panel_label_pattern = pattern.trimmed().isEmpty() ? QStringLiteral("(%a)") : pattern;
     d_panel_label_font_pt = qMax(0, fontPt);
 
-    if (layoutChanged && graphs > 0 && !d_is_restoring_snapshot) {
-        if (d_keep_aspect_ratio && qFuzzyCompare(d_target_aspect_ratio, 1.0))
-            applySquareCanvasFrame70Percent();
-        else if (rows > 1 || cols > 1)
-            arrangeLayers(false, false);
+    // 複数行・複数列のレイアウトでは、並べ終えたパネルの位置と大きさを保ったまま
+    // ラベルだけを足す。以前は縦横比 1:1 の固定があると rows>1 でも 1 枚用の
+    // applySquareCanvasFrame70Percent() が走り（それ以外は arrangeLayers()）、
+    // パネルが縮んで自動の軸範囲・目盛りが変わり、開き直すとさらに目盛りが変わっていた。
+    if (layoutChanged && graphs > 0 && !d_is_restoring_snapshot && rows <= 1 && cols <= 1
+        && d_keep_aspect_ratio && qFuzzyCompare(d_target_aspect_ratio, 1.0)) {
+        applySquareCanvasFrame70Percent();
     }
 
     syncCanvasOverlayVisibility();

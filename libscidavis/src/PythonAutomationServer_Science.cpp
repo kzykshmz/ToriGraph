@@ -3302,6 +3302,12 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (!targetG->insertCurve(t, xc, yc, Graph::Scatter))
                 throwRpcRuntime(QStringLiteral("Failed to add color-mapped scatter curve."));
             const int idx = targetG->curves() - 1;
+            // 新規作成（ExtraPlotTypes::plotColorMappedScatter）と同じく、Scatter の
+            // 既定レイアウト（NoCurve）を当てる。当てないと作成時だけ点が線で結ばれる。
+            {
+                CurveLayout cl = targetG->initCurveLayout(Graph::Scatter, 1);
+                targetG->updateCurveLayout(idx, &cl);
+            }
             cmDc = dynamic_cast<DataCurve *>(targetG->curve(idx));
             if (cmDc) {
                 QwtSymbol sym = cmDc->symbol();

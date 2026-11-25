@@ -1830,8 +1830,14 @@ void applyInlineCurveStyleParams(Graph *g, int cIdx, const QJsonObject &params,
     if (params.contains(QStringLiteral("label")) && !params.value(QStringLiteral("label")).isNull()) {
         const QString customLbl = optionalJsonString(params, QStringLiteral("label")).trimmed();
         if (!customLbl.isEmpty()) {
-            if (QwtPlotCurve *cur = g->curve(cIdx))
-                cur->setTitle(customLbl);
+            // 表に結び付いた曲線（DataCurve）のタイトルは Y 列の結び付き
+            // （yColumnName() == title()）なので書き換えない。書き換えると保存で Y 列名の
+            // 代わりにラベルが書かれ、開き直しで曲線が消え、表の編集にも追従しなくなる。
+            // ラベルは凡例の文字列（下の \c{n} 行）だけで持つ。
+            if (QwtPlotCurve *cur = g->curve(cIdx)) {
+                if (!dynamic_cast<DataCurve *>(cur))
+                    cur->setTitle(customLbl);
+            }
             if (Legend *leg = g->legend()) {
                 QStringList lines = leg->text().split(QLatin1Char('\n'));
                 const QString prefix = QStringLiteral("\\c{%1}").arg(cIdx + 1);
@@ -2686,6 +2692,13 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             if (rt.isEmpty())
                 rt = t->colLabel(y2Idx);
             g->setRightAxisTitle(rt);
+            // 左軸も右軸と同じ規則（左の Y 列の題）で付ける。作成時は 2 本とも左軸に
+            // 載った状態で自動の題を決めるため空のままで、開き直して初めて列名が入っていた。
+            QString lt = t->column(y1Idx) ? t->column(y1Idx)->formattedAxisTitle().trimmed()
+                                          : t->colLabel(y1Idx);
+            if (lt.isEmpty())
+                lt = t->colLabel(y1Idx);
+            g->setYAxisTitle(lt);
             double yMin = std::numeric_limits<double>::infinity();
             double yMax = -std::numeric_limits<double>::infinity();
             for (int k = 0; k < int(cRight->dataSize()); ++k) {
@@ -2700,6 +2713,13 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                 g->setScale(QwtPlot::yRight, yMin - 0.05 * span, yMax + 0.05 * span);
             }
             g->setAutoScale();
+            // 凡例はデータ座標（xBottom/yLeft）で位置を持つ。凡例は 2 本とも左軸に載った
+            // 広い範囲で置かれたので、右の曲線を移して左軸の範囲が縮むと、同じ座標が
+            // ページの外（上）に押し出される。尺度が決まった後に置き直す。
+            if (g->legend()) {
+                g->replot();
+                g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+            }
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);

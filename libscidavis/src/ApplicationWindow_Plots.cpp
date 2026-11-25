@@ -553,6 +553,8 @@ void ApplicationWindow::plotDoubleY()
         return;
 
     const QString beforeSnap = createdNewMl ? QString() : ml->captureUndoSnapshot();
+    // 凡例はデータ座標で位置を持つので、左軸の尺度が変わる前の画面上の位置を覚えておく。
+    const QPoint legendPxBefore = g->legend() ? g->legend()->rect().topLeft() : QPoint();
 
     rightCurve->setYAxis(QwtPlot::yRight);
     g->enableAxis(QwtPlot::yRight, true);
@@ -644,6 +646,17 @@ void ApplicationWindow::plotDoubleY()
     }
     g->syncAxisColorToCurve(QwtPlot::yRight, rightCurveIdx);
     g->replot();
+    // 凡例は 2 本とも左軸に載った広い範囲のデータ座標で置かれている。右の曲線を移して
+    // 左軸の範囲が縮むと、同じ座標がページの外へ押し出される。新しく作ったグラフでは
+    // 尺度が決まった後に自動配置で置き直し、既存のグラフでは利用者が置いた画面上の
+    // 位置を保つ。
+    if (Legend *leg = g->legend()) {
+        if (createdNewMl)
+            g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
+        else
+            leg->setOrigin(legendPxBefore);
+        g->replot();
+    }
     if (!createdNewMl && !beforeSnap.isEmpty())
         ml->pushUndoSnapshot(tr("Convert to Double-Y Plot"), beforeSnap);
     else if (createdNewMl && ml->undoStack())
@@ -1600,8 +1613,12 @@ void ApplicationWindow::polishGraph(Graph *g, int style)
     // E1: bar charts and histograms keep the configured (inward) tick direction like every
     // other plot type; they are no longer forced to outward ticks.
     if (style == Graph::HorizontalBars) {
-        g->setAxisTitle(0, tr("Y Axis Title"));
-        g->setAxisTitle(1, tr("X Axis Title"));
+        // 横棒では下軸に Y の値、左軸に X（分類）が来る。旧 SciDAVis の setAxisTitle は
+        // 0=下・1=左の番号付けだったが、今の Graph::setAxisTitle は QwtPlot の軸番号
+        // （0=yLeft・1=yRight）を取るので、名前で指定する。数字のままだと右軸に仮の題
+        // 「X Axis Title」が付き、開き直すと消えていた。
+        g->setAxisTitle(QwtPlot::xBottom, tr("Y Axis Title"));
+        g->setAxisTitle(QwtPlot::yLeft, tr("X Axis Title"));
     }
     // E1: apply the "preset for new graphs" (default ISIJ 85 mm) once the graph window has been
     // fully built. Pie, ternary and polar plots are skipped inside the request.

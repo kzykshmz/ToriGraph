@@ -4624,9 +4624,17 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 throwInvalidParams(QStringLiteral("EMF export is only supported on Windows."));
 #endif
             } else {
+                // 2D と同じく dpi を解像度として渡す（指定が無ければ 0 = 3D グラフ既定の
+                // export_dpi / 300 dpi）。以前は dpi を渡しておらず、常に既定の寸法になっていた。
+                // Graph3D::renderExportImage は 72..600 dpi・長辺 3200 px に収める。
+                const int dpi3d = (params.contains(QStringLiteral("dpi"))
+                                   && !params.value(QStringLiteral("dpi")).isNull())
+                        ? parseBoundedInt(params, QStringLiteral("dpi"), 300, 36, 2400)
+                        : 0;
                 targetG3D->exportImage(tmp3d,
                                        params.value(QStringLiteral("quality")).toInt(100),
-                                       params.value(QStringLiteral("transparent")).toBool(false));
+                                       params.value(QStringLiteral("transparent")).toBool(false),
+                                       dpi3d);
             }
             if (!is3dEmf) {
                 if (!QFileInfo::exists(tmp3d) || QFileInfo(tmp3d).size() <= 0) {
@@ -4647,6 +4655,15 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             outResult[QStringLiteral("ok")] = true;
             outResult[QStringLiteral("path")] = absPath;
             outResult[QStringLiteral("bytes")] = QFileInfo(absPath).size();
+            if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg")
+                || ext == QStringLiteral("jpeg") || ext == QStringLiteral("bmp")
+                || ext == QStringLiteral("tif") || ext == QStringLiteral("tiff")) {
+                QImage img(absPath);
+                if (!img.isNull()) {
+                    outResult[QStringLiteral("width_px")] = img.width();
+                    outResult[QStringLiteral("height_px")] = img.height();
+                }
+            }
             return true;
         }
 

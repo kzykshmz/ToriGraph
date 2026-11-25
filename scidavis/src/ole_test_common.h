@@ -666,5 +666,6 @@ int runSuite92RenamePropagation(ApplicationWindow *mw);
 int runSuite93WorksheetSortAndBlankRows(ApplicationWindow *mw);
 int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw);
 int runSuite96XrdPeaksAndUnsortedDiff(ApplicationWindow *mw);
+int runSuite97PlotDataFidelity(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

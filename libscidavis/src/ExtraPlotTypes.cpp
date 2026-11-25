@@ -770,6 +770,13 @@ MultiLayer *ExtraPlotTypes::plotColorMappedScatter(ApplicationWindow *app, Table
     if (!g->insertCurve(t, xFull, yFull, Graph::Scatter))
         return ml;
     const int idx = g->curves() - 1;
+    // insertCurve(..., Scatter) は曲線の描き方（NoCurve）を適用しない。開き直しでは
+    // updateCurveLayout が Scatter を NoCurve にするので、作成時にも同じ既定の
+    // レイアウトを当て、点を線で結ばない状態にそろえる。
+    {
+        CurveLayout cl = g->initCurveLayout(Graph::Scatter, 1);
+        g->updateCurveLayout(idx, &cl);
+    }
     auto *dc = dynamic_cast<DataCurve *>(g->curve(idx));
     if (!dc)
         return ml;
@@ -800,6 +807,12 @@ MultiLayer *ExtraPlotTypes::plotColorMappedScatter(ApplicationWindow *app, Table
     g->syncPointColorBar();
     refreshLegend(g);
     g->replot();
+    // newGraph() は曲線の無い空のレイヤーで凡例を作るため、凡例は既定の尺度
+    // のデータ座標で左上に置かれる。曲線とカラーバーで尺度が決まった後も
+    // そのままだと、凡例がページのはるか外に出る。plot_xy の newLegend と同じ規則で
+    // 置き直す。
+    if (g->legend())
+        g->placeLegendAnchor(Graph::LegendAutoAvoidData, nullptr, 12);
     emit g->modifiedGraph();
     return ml;
 }

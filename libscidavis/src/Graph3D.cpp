@@ -3425,10 +3425,11 @@ QString Graph3D::saveToString(const QString &geometry)
     s += "zoom\t";
     s += QString::number(zoom()) + "\n";
 
+    // 軸範囲と同じく最短の往復表記で書く（既定の 'g',6 だと 1.0192977 が 1.0193 に丸まる）。
     s += "scaling\t";
-    s += QString::number(sp->xScale()) + "\t";
-    s += QString::number(sp->yScale()) + "\t";
-    s += QString::number(sp->zScale()) + "\n";
+    s += QString::number(sp->xScale(), 'g', QLocale::FloatingPointShortest) + "\t";
+    s += QString::number(sp->yScale(), 'g', QLocale::FloatingPointShortest) + "\t";
+    s += QString::number(sp->zScale(), 'g', QLocale::FloatingPointShortest) + "\n";
 
     s += "shift\t";
     s += QString::number(sp->xShift()) + "\t";
