@@ -189,7 +189,9 @@ public:
     virtual void setBirthDate(const QString &s)
     {
         birthdate = s;
-        if (d_future_table)
+        // The text has whole seconds only: re-reading the table's own creation time from it
+        // (as the project reader does) would drop the milliseconds kept in creation_time.
+        if (d_future_table && s != QLocale().toString(d_future_table->creationTime()))
             d_future_table->importV0x0001XXCreationTime(s);
     }
 

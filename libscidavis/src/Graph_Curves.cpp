@@ -2432,6 +2432,10 @@ void Graph::plotBoxDiagram(Table *w, const QStringList &names, int startRow, int
             delete c;
             continue;
         }
+        // A box is drawn by BoxCurve::draw, not as connected points: the same UserCurve style
+        // that updateCurveLayout gives it on reopen (the Qwt default Lines was saved as "1" and
+        // came back as "100", so the first and second save of a project differed).
+        c->setStyle(QwtPlotCurve::UserCurve);
 
         c_keys.resize(++n_curves);
         c_keys[n_curves - 1] = d_plot->insertCurve(c);
@@ -2569,6 +2573,11 @@ void Graph::openBoxDiagram(Table *w, const QStringList &l, int fileVersion)
     c_keys[n_curves - 1] = d_plot->insertCurve(c);
     c_type.resize(n_curves);
     c_type[n_curves - 1] = Box;
+    // The category axis of a box plot refers to the box table, as plotBoxDiagram sets it. The
+    // AxisType line keeps it ("1;<table>"), but its reader only takes "<table>_<column>", so the
+    // reference was lost on reopen and the next save wrote "1;".
+    axesFormatInfo[QwtPlot::xBottom] = w->name();
+    axesFormatInfo[QwtPlot::xTop] = w->name();
 
     if (fileVersion >= 0x011800) // 1.24.0
     {

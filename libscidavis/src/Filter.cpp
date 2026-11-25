@@ -39,6 +39,7 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QLocale>
+#include <QRegularExpression>
 
 #include <gsl/gsl_sort.h>
 
@@ -362,7 +363,12 @@ QwtPlotCurve *Filter::addResultCurve(const std::vector<double> &x, const std::ve
     if (nPts <= 0)
         return nullptr;
 
-    const QString tableName = app->generateUniqueName(this->objectName());
+    // A window name has no white space: the project reader turns it into "_" (with the Japanese
+    // UI "3次スプライン (Cubic)補間1" became "3次スプライン_(Cubic)補間1" on reopen), so make the
+    // result table's name that way from the start.
+    QString baseName = this->objectName().trimmed();
+    baseName.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    const QString tableName = app->generateUniqueName(baseName);
     Column *xCol = new Column(tr("1", "filter table x column name"), SciDAVis::ColumnMode::Numeric);
     Column *yCol = new Column(tr("2", "filter table y column name"), SciDAVis::ColumnMode::Numeric);
     xCol->setPlotDesignation(SciDAVis::X);

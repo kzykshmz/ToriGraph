@@ -5,10 +5,12 @@
 #include "GraphStatsAndSurfaceFit.h"
 #include "OriginGadgets.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 
 #include <gsl/gsl_blas.h>
@@ -17,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <vector>
 
@@ -78,6 +81,14 @@
 //        dash fields), and a legend text ending in a line break lost it on the first reopen.
 //        The formulas, cap / join and legend text are kept, and saves 1, 2 and 3 are equal in
 //        the function curve and legend lines.
+//   106n save -> reopen -> save of a box plot, a fit curve over a range that is not exact in
+//        15 digits and an axis range of 0.1 + 0.2: the box curves came back with another
+//        curve style (Lines 1 -> UserCurve 100) and the category axis lost its table (the
+//        AxisType line "1;<table>" -> "1;"), the fit curve was sampled again at other x (the
+//        step was added up and the range kept to 15 digits), the axis range and the
+//        milliseconds of the table's creation time were cut, and a result table named with a
+//        space (the Japanese "3次スプライン (Cubic)補間1" of 106c) was renamed with "_". They
+//        are kept, and saves 1, 2 and 3 are equal in the curve, axis and table lines.
 // =============================================================================
 namespace {
 
@@ -1509,6 +1520,213 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
                                     << " differ in the function curves / legend at line "
                                     << firstDiff << ": '" << a.value(firstDiff).toStdString()
                                     << "' vs '" << b.value(firstDiff).toStdString() << "'");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 106n: save -> reopen -> save keeps the box plot, the creation time of a table, the points
+    // of a fit curve and an axis range exactly
+    {
+        QTemporaryDir tmp;
+        CHECK_COND(tmp.isValid(), "106n: temp dir creation failed");
+
+        // box plot of two columns (as plot.box makes it)
+        const QString tBox = QStringLiteral("T106nBox");
+        Table *tb = w->newTable(30, 2, tBox, tBox);
+        CHECK_COND(tb != nullptr, "106n: box table not created");
+        tb->setColName(0, QStringLiteral("p"));
+        tb->setColName(1, QStringLiteral("q"));
+        for (int r = 0; r < 30; ++r) {
+            tb->setCell(r, 0, std::sin(0.7 * r) * 3.0 + 0.1 * r);
+            tb->setCell(r, 1, std::cos(0.3 * r) * 50.0 + 10.0);
+        }
+        const QString gBox = QStringLiteral("G106nBox");
+        const QJsonObject rb = rpc(QStringLiteral("plot.box"),
+                                   QJsonObject{ { "table", tBox },
+                                                { "cols", QJsonArray{ "p", "q" } },
+                                                { "graph_name", gBox } });
+        CHECK_COND(!rb.contains(QStringLiteral("error")),
+                   "106n: plot.box failed: " << errMsg(rb).toStdString());
+
+        // a linear fit over an x range whose ends are not exact in 15 digits
+        std::vector<double> fx, fy;
+        for (int i = 0; i <= 20; ++i) {
+            const double xv = 0.3 + 0.37 * i;
+            fx.push_back(xv);
+            fy.push_back(1.5 * xv + 0.2 + 0.01 * std::sin(3.0 * xv));
+        }
+        const QString gFit = plotXY(fx, fy);
+        CHECK_COND(!gFit.isEmpty(), "106n: fit graph not created");
+        const QJsonObject rl = rpc(QStringLiteral("analysis.fit_linear"),
+                                   QJsonObject{ { "graph", gFit }, { "curve", 0 } });
+        CHECK_COND(!rl.contains(QStringLiteral("error")),
+                   "106n: fit_linear failed: " << errMsg(rl).toStdString());
+        // an axis range that 15 digits do not keep (0.1 + 0.2 = 0.30000000000000004)
+        const QJsonObject ra = rpc(QStringLiteral("graph.set_axis"),
+                                   QJsonObject{ { "graph", gFit },
+                                                { "axis", "y" },
+                                                { "min", 0.1 + 0.2 },
+                                                { "max", 40.0 / 3.0 } });
+        CHECK_COND(!ra.contains(QStringLiteral("error")),
+                   "106n: set_axis failed: " << errMsg(ra).toStdString());
+
+        auto findGraph = [](ApplicationWindow *app, const QString &name) -> Graph * {
+            for (MyWidget *mw2 : app->windowsList())
+                if (mw2 && mw2->name() == name)
+                    if (auto *ml = qobject_cast<MultiLayer *>(mw2))
+                        return ml->activeGraph();
+            return nullptr;
+        };
+        auto findTable = [](ApplicationWindow *app, const QString &name) -> Table * {
+            for (MyWidget *mw2 : app->windowsList())
+                if (mw2 && mw2->name() == name)
+                    return qobject_cast<Table *>(mw2);
+            return nullptr;
+        };
+        struct State106n
+        {
+            QStringList boxes; // per box: style, ranges
+            int catAxisType = -1;
+            QString catAxisInfo;
+            QVector<double> fitX;
+            double yMin = 0.0, yMax = 0.0;
+            QDateTime created;
+        };
+        auto stateOf = [&](ApplicationWindow *app) {
+            State106n s;
+            if (Graph *g = findGraph(app, gBox)) {
+                for (int i = 0; i < g->curves(); ++i)
+                    if (auto *b = dynamic_cast<BoxCurve *>(g->curve(i)))
+                        s.boxes << QStringLiteral("%1|style %2|box %3:%4|whiskers %5:%6")
+                                           .arg(b->title().text())
+                                           .arg(int(b->style()))
+                                           .arg(b->boxRangeType())
+                                           .arg(b->boxRange(), 0, 'g', 17)
+                                           .arg(b->whiskersRangeType())
+                                           .arg(b->whiskersRange(), 0, 'g', 17);
+                s.catAxisType = int(g->axesType().value(QwtPlot::xBottom));
+                s.catAxisInfo = g->axisFormatInfo(QwtPlot::xBottom);
+            }
+            if (Graph *g = findGraph(app, gFit)) {
+                for (int i = 0; i < g->curves(); ++i)
+                    if (auto *fc = dynamic_cast<FunctionCurve *>(g->curve(i)))
+                        for (int k = 0; k < fc->dataSize(); ++k)
+                            s.fitX << fc->x(k);
+                if (const QwtScaleDiv *d = g->plotWidget()->axisScaleDiv(QwtPlot::yLeft)) {
+                    s.yMin = qMin(d->lowerBound(), d->upperBound());
+                    s.yMax = qMax(d->lowerBound(), d->upperBound());
+                }
+            }
+            if (Table *t = findTable(app, tBox))
+                if (t->d_future_table)
+                    s.created = t->d_future_table->creationTime();
+            return s;
+        };
+        // The lines of a saved project that hold these states: the creation times of all tables,
+        // the curve and axis lines of the two graphs above (sorted: the reader makes the tables
+        // and matrices before the graphs, so the window order may change once).
+        const QStringList graphs106n{ gBox, gFit };
+        auto stateLines = [&graphs106n](const QString &path) {
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly))
+                return QStringList{ QStringLiteral("<unreadable>") };
+            QStringList out;
+            const QRegularExpression tableTime(
+                    QStringLiteral("^<table creation_time=\"([^\"]*)\".*? name=\"([^\"]*)\""));
+            const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+            QString window; // the graph the curve / axis lines belong to
+            for (int i = 0; i < lines.size(); ++i) {
+                const QString &l = lines[i];
+                const QRegularExpressionMatch m = tableTime.match(l);
+                if (l == QLatin1String("<multiLayer>") && i + 1 < lines.size())
+                    window = lines[i + 1].section(QLatin1Char('\t'), 0, 0);
+                else if (m.hasMatch())
+                    out << QStringLiteral("table ") + m.captured(2) + QLatin1Char(' ')
+                                    + m.captured(1);
+                else if (graphs106n.contains(window)
+                         && (l.startsWith(QLatin1String("curve\t"))
+                             || l.startsWith(QLatin1String("FunctionCurve\t"))
+                             || l.startsWith(QLatin1String("AxisType\t"))
+                             || l.startsWith(QLatin1String("scale\t"))))
+                    out << window + QLatin1Char(' ') + l;
+            }
+            out.sort();
+            return out;
+        };
+
+        const State106n live = stateOf(w);
+        EXPECT106(live.boxes.size() == 2, "106n: " << live.boxes.size() << " box curves (want 2)");
+        EXPECT106(!live.fitX.isEmpty(), "106n: no fit curve points");
+        std::cout << "[INFO] 106n live: box " << live.boxes.join(QStringLiteral(", ")).toStdString()
+                  << "; category axis " << live.catAxisType << " '"
+                  << live.catAxisInfo.toStdString() << "'; y " << std::setprecision(17)
+                  << live.yMin << " .. " << live.yMax << "; created "
+                  << live.created.toString(QStringLiteral("hh:mm:ss.zzz")).toStdString() << "\n";
+
+        QStringList paths;
+        for (int k = 1; k <= 3; ++k)
+            paths << tmp.filePath(QStringLiteral("roundtrip_106n_%1.sciprj").arg(k));
+        CHECK_COND(w->saveFolder(w->projectFolder(), paths[0]), "106n: save 1 failed");
+        for (int k = 1; k < 3; ++k) {
+            AppWinGuard106 rd(new ApplicationWindow());
+            rd->setHeadlessMode(true);
+            rd->applyUserSettings();
+            CHECK_COND(rd->loadProject(paths[k - 1]), "106n: reopen " << k << " failed");
+            QCoreApplication::processEvents();
+            const State106n st = stateOf(rd);
+            EXPECT106(st.boxes == live.boxes,
+                      "106n: reopen " << k << ": box curves '"
+                                      << live.boxes.join(QStringLiteral(", ")).toStdString()
+                                      << "' -> '"
+                                      << st.boxes.join(QStringLiteral(", ")).toStdString() << "'");
+            EXPECT106(st.catAxisType == live.catAxisType && st.catAxisInfo == live.catAxisInfo,
+                      "106n: reopen " << k << ": category axis " << live.catAxisType << " '"
+                                      << live.catAxisInfo.toStdString() << "' -> "
+                                      << st.catAxisType << " '" << st.catAxisInfo.toStdString()
+                                      << "'");
+            int xDiff = -1;
+            for (int i = 0; i < std::max(st.fitX.size(), live.fitX.size()) && xDiff < 0; ++i)
+                if (i >= st.fitX.size() || i >= live.fitX.size() || st.fitX[i] != live.fitX[i])
+                    xDiff = i;
+            EXPECT106(xDiff < 0,
+                      "106n: reopen " << k << ": fit curve point " << xDiff << " x "
+                                      << std::setprecision(17) << live.fitX.value(xDiff)
+                                      << " -> " << st.fitX.value(xDiff) << " ("
+                                      << live.fitX.size() << " / " << st.fitX.size()
+                                      << " points)");
+            EXPECT106(st.yMin == live.yMin && st.yMax == live.yMax,
+                      "106n: reopen " << k << ": y range " << std::setprecision(17) << live.yMin
+                                      << " .. " << live.yMax << " -> " << st.yMin << " .. "
+                                      << st.yMax);
+            EXPECT106(st.created == live.created,
+                      "106n: reopen " << k << ": table creation time "
+                                      << live.created.toString(QStringLiteral("hh:mm:ss.zzz"))
+                                                 .toStdString()
+                                      << " -> "
+                                      << st.created.toString(QStringLiteral("hh:mm:ss.zzz"))
+                                                 .toStdString());
+            CHECK_COND(rd->saveFolder(rd->projectFolder(), paths[k]),
+                       "106n: save " << (k + 1) << " failed");
+        }
+        for (int k = 1; k < 3; ++k) {
+            const QStringList a = stateLines(paths[k - 1]);
+            const QStringList b = stateLines(paths[k]);
+            QStringList onlyA, onlyB;
+            for (const QString &l : a)
+                if (!b.contains(l))
+                    onlyA << l;
+            for (const QString &l : b)
+                if (!a.contains(l))
+                    onlyB << l;
+            std::cout << "[INFO] 106n: save " << k << " vs " << (k + 1) << ": " << a.size()
+                      << " / " << b.size() << " curve / axis / table lines\n";
+            EXPECT106(onlyA.isEmpty() && onlyB.isEmpty() && a.size() > 4,
+                      "106n: save " << k << " and " << (k + 1)
+                                    << " differ in the curve / axis / table lines: '"
+                                    << onlyA.mid(0, 4).join(QStringLiteral("' '")).toStdString()
+                                    << "' vs '"
+                                    << onlyB.mid(0, 4).join(QStringLiteral("' '")).toStdString()
+                                    << "'");
         }
     }
 #undef EXPECT106

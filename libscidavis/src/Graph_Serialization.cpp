@@ -332,14 +332,17 @@ QString Graph::saveScale()
         const QwtScaleDiv *scDiv = d_plot->axisScaleDiv(i);
         QwtValueList lst = scDiv->ticks(QwtScaleDiv::MajorTick);
 
+        // Range and step in the shortest exact round-trip form: with 15 digits an automatic
+        // limit such as -3.5999999999999996 came back as -3.6 on reopen.
+        constexpr int kExact = QLocale::FloatingPointShortest;
 #if QWT_VERSION >= 0x050200
-        s += QString::number(qMin(scDiv->lowerBound(), scDiv->upperBound()), 'g', 15) + "\t";
-        s += QString::number(qMax(scDiv->lowerBound(), scDiv->upperBound()), 'g', 15) + "\t";
+        s += QString::number(qMin(scDiv->lowerBound(), scDiv->upperBound()), 'g', kExact) + "\t";
+        s += QString::number(qMax(scDiv->lowerBound(), scDiv->upperBound()), 'g', kExact) + "\t";
 #else
-        s += QString::number(qMin(scDiv->lBound(), scDiv->hBound()), 'g', 15) + "\t";
-        s += QString::number(qMax(scDiv->lBound(), scDiv->hBound()), 'g', 15) + "\t";
+        s += QString::number(qMin(scDiv->lBound(), scDiv->hBound()), 'g', kExact) + "\t";
+        s += QString::number(qMax(scDiv->lBound(), scDiv->hBound()), 'g', kExact) + "\t";
 #endif
-        s += QString::number(d_user_step[i], 'g', 15) + "\t";
+        s += QString::number(d_user_step[i], 'g', kExact) + "\t";
         s += QString::number(d_plot->axisMaxMajor(i)) + "\t";
         s += QString::number(d_plot->axisMaxMinor(i)) + "\t";
 
@@ -633,8 +636,12 @@ QString Graph::saveCurves()
                     s += QString::number(fc->functionType()) + ",";
                     s += c->title().text() + ",";
                     s += fc->variable() + ",";
-                    s += QString::number(fc->startRange(), 'g', 15) + ",";
-                    s += QString::number(fc->endRange(), 'g', 15) + "\t";
+                    // shortest exact round-trip form: the curve is sampled again from this
+                    // range on reopen, and 15 digits moved its points
+                    s += QString::number(fc->startRange(), 'g', QLocale::FloatingPointShortest)
+                            + ",";
+                    s += QString::number(fc->endRange(), 'g', QLocale::FloatingPointShortest)
+                            + "\t";
                     s += QString::number(fc->dataSize()) + "\t\t\t";
                     // the 2 last tabs are legacy code, kept for compatibility with old project
                     // files

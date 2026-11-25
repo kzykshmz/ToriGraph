@@ -125,9 +125,11 @@ bool FunctionCurve::loadData(int points)
         }
         QObject::connect(script.data(), SIGNAL(error(const QString &, const QString &, int)), this,
                          SLOT(scriptError(const QString &, const QString &, int)));
-        int i;
-        double x;
-        for (i = 0, x = d_from; i < points; i++, x += step) {
+        // x = from + i * step, as Fit::generateX makes the points of a fit curve: adding the step
+        // up gathered rounding errors, so a fit curve reopened from its formula was sampled at
+        // slightly other x than the curve that was saved.
+        for (int i = 0; i < points; i++) {
+            const double x = d_from + i * step;
             X[i] = x;
             script->setDouble(x, d_variable.toUtf8().constData());
             QVariant result = script->eval();
@@ -149,9 +151,8 @@ bool FunctionCurve::loadData(int points)
             delete[] Y;
             return dataSize() > 0;
         }
-        int i;
-        double par;
-        for (i = 0, par = d_from; i < points; i++, par += step) {
+        for (int i = 0; i < points; i++) {
+            const double par = d_from + i * step;
             script_x->setDouble(par, d_variable.toUtf8().constData());
             script_y->setDouble(par, d_variable.toUtf8().constData());
             QVariant result_x = script_x->eval();

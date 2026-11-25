@@ -96,7 +96,9 @@ public:
     virtual void setBirthDate(const QString &s)
     {
         birthdate = s;
-        if (d_future_matrix)
+        // As Table::setBirthDate: the text has whole seconds only and must not drop the
+        // milliseconds of the matrix's own creation time.
+        if (d_future_matrix && s != QLocale().toString(d_future_matrix->creationTime()))
             d_future_matrix->importV0x0001XXCreationTime(s);
     }
 
