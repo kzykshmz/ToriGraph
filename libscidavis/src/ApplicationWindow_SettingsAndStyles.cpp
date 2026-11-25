@@ -2223,6 +2223,11 @@ void ApplicationWindow::setArrowDefaultSettings(const QPen &pen, int headLength,
 void ApplicationWindow::readSettings(bool restoreWindowLayout)
 {
     auto &settings = getSettings();
+    // The one-time migrations and the number format fix-up below write to the settings. A
+    // headless/batch session (whose saveSettings() writes nothing) keeps them in memory only:
+    // most migrations store just their "done" flag and leave the value to saveSettings(), so
+    // storing the flag there would make the next GUI start skip the migration.
+    const bool persistSettings = persistsUserSettings();
     // Lab-wide defaults next to the exe fill only keys the user has not set (I10).
     SettingsTransfer::applyLabDefaults(settings, SettingsTransfer::labDefaultsPath());
     // The default curve palette may have been read (and cached) before this point, e.g. by
@@ -2275,8 +2280,10 @@ void ApplicationWindow::readSettings(bool restoreWindowLayout)
     if (!settings.value("/UndoLimitMigrated50", false).toBool()) {
         if (undoLimit <= 10)
             undoLimit = 50;
-        settings.setValue("/UndoLimit", undoLimit);
-        settings.setValue("/UndoLimitMigrated50", true);
+        if (persistSettings) {
+            settings.setValue("/UndoLimit", undoLimit);
+            settings.setValue("/UndoLimitMigrated50", true);
+        }
     }
     if (undoLimit < 1)
         undoLimit = 50;
@@ -2303,8 +2310,10 @@ void ApplicationWindow::readSettings(bool restoreWindowLayout)
         d_default_numeric_format = 'g';
         d_decimal_digits = 6;
     }
-    settings.setValue("/DecimalDigits", d_decimal_digits);
-    settings.setValue("/DefaultNumericFormat", QChar(d_default_numeric_format));
+    if (persistSettings) {
+        settings.setValue("/DecimalDigits", d_decimal_digits);
+        settings.setValue("/DefaultNumericFormat", QChar(d_default_numeric_format));
+    }
 
     if (restoreWindowLayout) {
         // restore geometry of main window
@@ -2622,7 +2631,8 @@ void ApplicationWindow::readSettings(bool restoreWindowLayout)
     if (!settings.value("/FrameStyleMigratedNone", false).toBool()) {
         if (legendFrameStyle == int(Legend::Line))
             legendFrameStyle = int(Legend::None);
-        settings.setValue("/FrameStyleMigratedNone", true);
+        if (persistSettings)
+            settings.setValue("/FrameStyleMigratedNone", true);
     }
     legendTextColor = QColor(COLORVALUE(
             settings.value("/TextColor", "#ff000000").toString())); // default color Qt::black
@@ -2767,7 +2777,8 @@ void ApplicationWindow::readSettings(bool restoreWindowLayout)
     if (!settings.value("/ResolutionMigrated600", false).toBool()) {
         if (d_export_resolution == 72)
             d_export_resolution = 600;
-        settings.setValue("/ResolutionMigrated600", true);
+        if (persistSettings)
+            settings.setValue("/ResolutionMigrated600", true);
     }
     d_export_color = settings.value("/ExportColor", true).toBool();
     d_export_vector_size = settings.value("/ExportPageSize", QPrinter::Custom).toInt();

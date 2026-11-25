@@ -5028,6 +5028,58 @@ int runSuite52Phase12OpjuApiGraphMathAndGuiGate(ApplicationWindow *mw)
         qApp->setProperty("torigraph_headless_process", prevHeadlessProc52e);
         dropWindow52e(wP);
 
+        // Starting a window in a headless process reads the settings; the one-time migrations
+        // and the number format fix-up there must not write either (they store a "done" flag
+        // whose value only saveSettings() writes, so the next GUI start would skip them).
+        {
+            const QString migIni = dir52e.filePath(QStringLiteral("migrate52e.ini"));
+            {
+                QSettings seed(migIni, QSettings::IniFormat);
+                seed.setValue(QStringLiteral("General/UndoLimit"), 5);
+                seed.setValue(QStringLiteral("General/DecimalDigits"), 14);
+                seed.setValue(QStringLiteral("General/DefaultNumericFormat"), QStringLiteral("f"));
+                seed.setValue(QStringLiteral("2DPlots/Legend/FrameStyle"), int(Legend::Line));
+                seed.setValue(QStringLiteral("ExportImage/Resolution"), 72);
+                seed.sync();
+            }
+            auto dumpMig = [&migIni]() {
+                ApplicationWindow::getSettings().sync();
+                QSettings s(migIni, QSettings::IniFormat);
+                QMap<QString, QVariant> m;
+                for (const QString &k : s.allKeys())
+                    m.insert(k, s.value(k));
+                return m;
+            };
+            qputenv("TORIGRAPH_SETTINGS_INI", migIni.toLocal8Bit());
+            const QMap<QString, QVariant> migBefore = dumpMig();
+            qApp->setProperty("torigraph_headless_process", true);
+            ApplicationWindow *wM = new ApplicationWindow();
+            wM->applyUserSettings();
+            const bool migratedInMemory = wM->undoLimit == 50;
+            qApp->setProperty("torigraph_headless_process", prevHeadlessProc52e);
+            dropWindow52e(wM);
+            const QString migChanged = diffKeys52e(migBefore, dumpMig());
+            // Control: a GUI start does store the migrations in the same file.
+            ApplicationWindow *wMG = new ApplicationWindow();
+            wMG->applyUserSettings();
+            dropWindow52e(wMG);
+            const QMap<QString, QVariant> migGui = dumpMig();
+            qputenv("TORIGRAPH_SETTINGS_INI", ini52e.toLocal8Bit());
+            std::cout << "[INFO] Suite 52e headless start migrations: changed=["
+                      << migChanged.toStdString() << "]\n";
+            CHECK_COND(migratedInMemory,
+                       "Suite 52e: the headless start did not migrate UndoLimit in memory");
+            CHECK_COND(migChanged.isEmpty(),
+                       QString("Suite 52e: starting a headless window wrote the settings: %1")
+                               .arg(migChanged)
+                               .toStdString()
+                               .c_str());
+            CHECK_COND(migGui.value(QStringLiteral("2DPlots/Legend/FrameStyleMigratedNone")).toBool()
+                               && migGui.value(QStringLiteral("ExportImage/ResolutionMigrated600"))
+                                          .toBool(),
+                       "Suite 52e: the GUI start did not store the migrations (control)");
+        }
+
         const QMap<QString, QVariant> after52e = dumpIni52e();
         const QString changed52e = diffKeys52e(base52e, after52e);
         std::cout << "[INFO] Suite 52e headless settings check: stored language="
