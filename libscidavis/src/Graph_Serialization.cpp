@@ -1531,10 +1531,9 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
                 } else if (style == Box) {
                     c = new BoxCurve(cv->table(), cv->title().text(), cv->startRow(), cv->endRow());
                     ((BoxCurve *)c)->copy((const BoxCurve *)cv);
-                    if (n > 0) {
-                        QwtSingleArrayData dat(x[0], y, n);
-                        c->setData(dat);
-                    }
+                    // an empty box keeps its position too
+                    const double pos = (n > 0) ? x[0] : static_cast<BoxCurve *>(cv)->position();
+                    c->setData(QwtSingleArrayData(pos, y, n));
                 } else {
                     c = new DataCurve(cv->table(), cv->xColumnName(), cv->title().text(),
                                       cv->startRow(), cv->endRow());

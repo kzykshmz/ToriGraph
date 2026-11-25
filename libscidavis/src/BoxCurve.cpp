@@ -530,9 +530,19 @@ void BoxCurve::setWhiskersRange(int type, double coeff)
         w_coeff = coeff;
 }
 
+double BoxCurve::position() const
+{
+    // QwtSingleArrayData answers its X for any index, also when it holds no value
+    if (dynamic_cast<const QwtSingleArrayData *>(&data()) || dataSize() > 0)
+        return x(0);
+    return 1.0;
+}
+
 QwtDoubleRect BoxCurve::boundingRect() const
 {
     QwtDoubleRect rect = QwtPlotCurve::boundingRect();
+    if (dataSize() <= 0)
+        return rect; // invalid: an empty box does not widen the axes
 
     double dy = 0.2 * (rect.bottom() - rect.top());
     rect.setTop(rect.top() - dy);
@@ -567,12 +577,14 @@ bool BoxCurve::loadData()
         }
     }
 
+    // 列はあるが有効な値が無い（列を空にした、範囲に行が無い）ときも箱は外さず、位置と体裁を
+    // 保ったまま空にする。外すとその削除は Undo に記録されず、データを戻しても箱は戻らなかった。
     const int startR = qMax(0, d_start_row);
     const int endR = (d_end_row < 0) ? (y_col_ptr->rowCount() - 1)
                                      : qMin(d_end_row, y_col_ptr->rowCount() - 1);
     if (startR > endR) {
-        remove();
-        return false;
+        setData(QwtSingleArrayData(position(), QwtArray<double>(), 0));
+        return true;
     }
 
     QVector<double> Y(endR - startR + 1);
@@ -601,9 +613,10 @@ bool BoxCurve::loadData()
     if (size > 0) {
         Y.resize(size);
         gsl_sort(Y.data(), 1, size);
-        setData(QwtSingleArrayData(this->x(0), Y, size));
-    } else
-        remove();
+        setData(QwtSingleArrayData(position(), Y, size));
+    } else {
+        setData(QwtSingleArrayData(position(), QwtArray<double>(), 0));
+    }
 
     return true;
 }

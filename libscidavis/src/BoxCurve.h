@@ -46,6 +46,9 @@ public:
 
     virtual QwtDoubleRect boundingRect() const;
 
+    //! The box's X position, kept with the data also while the box has no point.
+    double position() const;
+
     QwtSymbol::Style minStyle() { return min_style; };
     void setMinStyle(QwtSymbol::Style s) { min_style = s; };
 
