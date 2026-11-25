@@ -1108,8 +1108,8 @@ PureLuResult factorizeSquareMatrixPureLu(Matrix *m, const QString &opLabel)
 
 double computeMatrixDeterminantHeadless(Matrix *m)
 {
-    // Same singularity rule as the GUI's Matrix::determinant() (pivot vs. n*eps times the largest
-    // |entry| of its original column); the inverse keeps its own rcond test above.
+    // Same computation as the GUI's Matrix::determinant() (plain partial-pivot LU, as LAPACK);
+    // the inverse keeps its own rcond test above.
     const std::vector<double> a = readSquareMatrixChecked(m, QStringLiteral("determinant"), nullptr);
     const double det = Matrix::denseDeterminant(a.data(), m->numRows());
     if (!std::isfinite(det)) {

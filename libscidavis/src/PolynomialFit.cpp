@@ -799,6 +799,29 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                                                             : std::numeric_limits<double>::quiet_NaN();
     };
 
+    // Reads an error cell without Table::cell(), which turns an empty or non-numeric cell into
+    // 0.0 (= "exact" here). Only a real number counts; anything else gives NaN, so the point is
+    // left out: an invalid cell, a Text cell that does not parse ("n/a", ""), or a column type
+    // that holds no numbers (date/time).
+    auto readErrorCell = [](Column *col, int row) -> double {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        if (!col || row < 0 || row >= col->rowCount() || col->isInvalid(row))
+            return nan;
+        if (col->columnMode() == SciDAVis::ColumnMode::Text) {
+            const QString text = col->textAt(row).trimmed();
+            if (text.isEmpty())
+                return nan;
+            bool ok = false;
+            double v = QLocale().toDouble(text, &ok);
+            if (!ok)
+                v = QLocale::c().toDouble(text, &ok);
+            return ok ? v : nan;
+        }
+        if (col->dataType() == SciDAVis::TypeDouble)
+            return col->valueAt(row);
+        return nan;
+    };
+
     auto resolveErrors = [&](const QString &colSpec, bool wantXErr, std::vector<double> &sigmaOut,
                              bool &explicitFound) {
         sigmaOut.assign(n, 1.0);
@@ -867,11 +890,10 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
                         if (trRow >= 0)
                             row = trRow;
                     }
-                    // Table::cell() reads an empty cell as 0, which now means "exact": an empty
-                    // or missing cell is an unusable error instead.
-                    double v = (row >= 0 && row < tbl->numRows() && errCol && !errCol->isInvalid(row))
-                            ? std::abs(tbl->cell(row, colIdx))
-                            : std::numeric_limits<double>::quiet_NaN();
+                    // Table::cell() reads an empty or non-numeric cell as 0, which here means
+                    // "exact": such a cell is an unusable error instead (NaN, point left out).
+                    double v = row < tbl->numRows() ? std::abs(readErrorCell(errCol, row))
+                                                    : std::numeric_limits<double>::quiet_NaN();
                     if (std::isfinite(v) && v > 0.0)
                         anyPos = true;
                     sigmaOut[i] = validSigma(v);

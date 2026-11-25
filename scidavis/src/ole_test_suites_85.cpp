@@ -27,12 +27,13 @@
 //   85f Matrix::recalculate: x steps along the columns, y along the rows
 //   85g Matrix::determinant: no ||A||-relative pivot tolerance (diag(1e10, 1e-5) -> 1e5)
 //   85h Matrix transpose swaps the x and y coordinate ranges
-//   85i determinant singularity: GUI (Matrix::determinant) and JSON-RPC matrix.determinant use
-//       the same scale-independent pivot rule (diag(1e10, 1e-7) -> 1e3, 1..9 3x3 -> 0); a pivot
-//       is only zeroed when it is lost in the rounding of its own cancellation, so triangular
-//       matrices keep their true determinant ([[1,1e16],[0,1]] -> 1,
-//       [[1,1000],[0,1e-13]] -> 1e-13); the multiplier's own cancellation is counted, so
-//       rank-deficient integer matrices give exactly 0 (3x3 and 4x4 cases)
+//   85i determinant = plain partial-pivot LU (as LAPACK / numpy.linalg.det); GUI
+//       (Matrix::determinant) and JSON-RPC matrix.determinant give the same value. Regular
+//       matrices are within a small relative error of the exact value and never 0
+//       (diag(1e10, 1e-7) -> 1e3, [[1,1e16],[0,1]] -> 1, 2^-30 / 2^-52 near-singular cases,
+//       Hilbert H6/H8/H11 with a condition-number tolerance and the right sign); singular
+//       matrices only need |det| <= n * eps * prod ||row_i||_2 (rounding residue relative to
+//       Hadamard's bound), not an exact 0
 // Every check is evaluated (failures are counted) so a single run reports all regressions.
 // =============================================================================
 namespace {
@@ -359,13 +360,16 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
         std::cout << "[INFO] 85g det(diag(1e10, 1e-5)) = " << det << "\n";
         CHECK85(std::fabs(det - 1e5) <= 1e5 * 1e-12,
                 "85g: det(diag(1e10, 1e-5)) = " << det << ", expected 1e5");
-        // an exactly singular matrix still gives 0
+        // a singular matrix leaves at most rounding residue: |det| <= n*eps*prod ||row_i||_2
         m->setCell(0, 0, 1.0);
         m->setCell(0, 1, 2.0);
         m->setCell(1, 0, 2.0);
         m->setCell(1, 1, 4.0);
         const double det0 = m->determinant();
-        CHECK85(det0 == 0.0, "85g: det([[1,2],[2,4]]) = " << det0 << ", expected 0");
+        const double bound0 =
+                2.0 * std::numeric_limits<double>::epsilon() * std::sqrt(5.0) * std::sqrt(20.0);
+        CHECK85(std::isfinite(det0) && std::fabs(det0) <= bound0,
+                "85g: det([[1,2],[2,4]]) = " << det0 << ", expected |det| <= " << bound0);
     }
 
     // ------------------------------------------------ 85i: GUI and SDK determinant agree
@@ -374,30 +378,57 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
         CHECK_COND(srv != nullptr, "85i: pythonAutomationServer null");
         struct DetCase
         {
-            const char *label;
+            std::string label;
             int n;
             std::vector<double> rowMajor;
-            double expected;
+            bool singular; // the exact determinant is 0
+            double expected; // exact determinant (regular matrices)
+            double relTol; // allowed relative error (regular matrices)
         };
+        auto regular = [](const std::string &label, int n, std::vector<double> a, double expected,
+                          double relTol) {
+            return DetCase{ label, n, std::move(a), false, expected, relTol };
+        };
+        auto singular = [](const std::string &label, int n, std::vector<double> a) {
+            return DetCase{ label, n, std::move(a), true, 0.0, 0.0 };
+        };
+        auto hilbert = [](int n) {
+            std::vector<double> a(size_t(n) * size_t(n));
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j)
+                    a[size_t(i) * size_t(n) + size_t(j)] = 1.0 / double(i + j + 1);
+            return a;
+        };
+        const double p30 = std::ldexp(1.0, -30);
         const std::vector<DetCase> cases = {
-            { "diag(1e10, 1e-5)", 2, { 1e10, 0.0, 0.0, 1e-5 }, 1e5 },
-            { "diag(1e10, 1e-7)", 2, { 1e10, 0.0, 0.0, 1e-7 }, 1e3 },
-            { "[[1,2,3],[4,5,6],[7,8,9]]", 3, { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 0.0 },
-            { "[[1,2],[2,4]]", 2, { 1, 2, 2, 4 }, 0.0 },
-            // no cancellation happens in a triangular matrix: nothing may be zeroed
-            { "[[1,1e16],[0,1]]", 2, { 1.0, 1e16, 0.0, 1.0 }, 1.0 },
-            { "[[1e20,1e20],[0,1]]", 2, { 1e20, 1e20, 0.0, 1.0 }, 1e20 },
-            { "[[1,1000],[0,1e-13]]", 2, { 1.0, 1000.0, 0.0, 1e-13 }, 1e-13 },
+            regular("diag(1e10, 1e-5)", 2, { 1e10, 0.0, 0.0, 1e-5 }, 1e5, 1e-12),
+            regular("diag(1e10, 1e-7)", 2, { 1e10, 0.0, 0.0, 1e-7 }, 1e3, 1e-12),
+            // triangular matrices: no cancellation, the true determinant must come out
+            regular("[[1,1e16],[0,1]]", 2, { 1.0, 1e16, 0.0, 1.0 }, 1.0, 1e-12),
+            regular("[[1e20,1e20],[0,1]]", 2, { 1e20, 1e20, 0.0, 1.0 }, 1e20, 1e-12),
+            regular("[[1,1000],[0,1e-13]]", 2, { 1.0, 1000.0, 0.0, 1e-13 }, 1e-13, 1e-12),
             // nearly singular but exact in binary: 1 + 2^-30 - 1 = 2^-30 is not noise
-            { "[[1,1],[1,1+2^-30]]", 2, { 1.0, 1.0, 1.0, 1.0 + std::ldexp(1.0, -30) },
-              std::ldexp(1.0, -30) },
-            // rank-deficient integer matrices (det = 0 exactly): the multiplier l_ik is itself
-            // produced by a cancellation, so its uncertainty has to be carried into the scale
-            // or the rounding residue survives (-1.19e-11 / -9.4e-10 before the fix)
-            { "[[85,121,0],[-11,25,-108],[18,26,-1]]", 3,
-              { 85, 121, 0, -11, 25, -108, 18, 26, -1 }, 0.0 },
-            { "[[98,-92,-52,16],[62,-66,-16,-2],[-51,63,28,76],[16,-32,16,-46]]", 4,
-              { 98, -92, -52, 16, 62, -66, -16, -2, -51, 63, 28, 76, 16, -32, 16, -46 }, 0.0 },
+            regular("[[1,1],[1,1+2^-30]]", 2, { 1.0, 1.0, 1.0, 1.0 + p30 }, p30, 1e-9),
+            // det = 2^-20 * 2^-32 = 2^-52 (every eliminated entry is exact)
+            regular("[[1,1,1],[1,1+2^-20,1],[1,1+2^-21,1+2^-32]]", 3,
+                    { 1.0, 1.0, 1.0, 1.0, 1.0 + std::ldexp(1.0, -20), 1.0, 1.0,
+                      1.0 + std::ldexp(1.0, -21), 1.0 + std::ldexp(1.0, -32) },
+                    std::ldexp(1.0, -52), 1e-9),
+            // Hilbert matrices. Exact determinants from Python fractions: H6 = 1/186313420339200000,
+            // H8 = 1/365356847125734485878112256000000, H11 = 1/3.3122504897063414e64. The cells
+            // are the double roundings of 1/(i+j+1), so the tolerance follows cond(H_n) * eps
+            // (cond(H6) ~ 1.5e7, cond(H8) ~ 1.5e10, cond(H11) ~ 5.2e14); the value must stay
+            // positive and non-zero.
+            regular("Hilbert H6", 6, hilbert(6), 5.3672998873586876e-18, 1e-8),
+            regular("Hilbert H8", 8, hilbert(8), 2.7370501137915131e-33, 1e-6),
+            regular("Hilbert H11", 11, hilbert(11), 3.019095334449353e-65, 5e-2),
+            // singular matrices: only rounding residue relative to Hadamard's bound is allowed
+            singular("[[1,2,3],[4,5,6],[7,8,9]]", 3, { 1, 2, 3, 4, 5, 6, 7, 8, 9 }),
+            singular("[[1,2],[2,4]]", 2, { 1, 2, 2, 4 }),
+            singular("[[85,121,0],[-11,25,-108],[18,26,-1]]", 3,
+                     { 85, 121, 0, -11, 25, -108, 18, 26, -1 }),
+            singular("[[98,-92,-52,16],[62,-66,-16,-2],[-51,63,28,76],[16,-32,16,-46]]", 4,
+                     { 98, -92, -52, 16, 62, -66, -16, -2, -51, 63, 28, 76, 16, -32, 16, -46 }),
         };
         int rpcId = 8500;
         for (const DetCase &c : cases) {
@@ -421,16 +452,41 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
                     resp.value(QStringLiteral("result")).toObject().value(QStringLiteral("determinant"));
             const double sdk = dv.isDouble() ? dv.toDouble() : std::numeric_limits<double>::quiet_NaN();
 
-            std::cout << "[INFO] 85i det(" << c.label << "): GUI = " << gui << ", SDK = " << sdk
-                      << ", expected " << c.expected << "\n";
-            auto matchesExpected = [&c](double v) {
-                return c.expected == 0.0 ? v == 0.0
-                                         : std::fabs(v - c.expected) <= std::fabs(c.expected) * 1e-12;
+            // Hadamard: |det A| <= prod ||row_i||_2; a singular matrix may keep n*eps of it.
+            double hadamard = 1.0;
+            for (int r = 0; r < c.n; ++r) {
+                double s2 = 0.0;
+                for (int col = 0; col < c.n; ++col) {
+                    const double v = c.rowMajor[size_t(r) * size_t(c.n) + size_t(col)];
+                    s2 += v * v;
+                }
+                hadamard *= std::sqrt(s2);
+            }
+            const double singularBound =
+                    double(c.n) * std::numeric_limits<double>::epsilon() * hadamard;
+            const double reference = c.singular ? singularBound : c.expected;
+            const char *refLabel = c.singular ? ", bound " : ", expected ";
+
+            std::ostringstream info;
+            info.precision(17);
+            info << "[INFO] 85i det(" << c.label << "): GUI = " << gui << ", SDK = " << sdk
+                 << refLabel << reference;
+            if (!c.singular)
+                info << " (rel err " << std::fabs(gui - c.expected) / std::fabs(c.expected) << ")";
+            std::cout << info.str() << "\n";
+
+            auto matchesExpected = [&c, singularBound](double v) {
+                if (!std::isfinite(v))
+                    return false;
+                if (c.singular)
+                    return std::fabs(v) <= singularBound;
+                return v != 0.0 && (v > 0.0) == (c.expected > 0.0)
+                        && std::fabs(v - c.expected) <= std::fabs(c.expected) * c.relTol;
             };
-            CHECK85(matchesExpected(gui), "85i: GUI det(" << c.label << ") = " << gui << ", expected "
-                                               << c.expected);
-            CHECK85(matchesExpected(sdk), "85i: SDK det(" << c.label << ") = " << sdk << ", expected "
-                                               << c.expected);
+            CHECK85(matchesExpected(gui),
+                    "85i: GUI det(" << c.label << ") = " << gui << refLabel << reference);
+            CHECK85(matchesExpected(sdk),
+                    "85i: SDK det(" << c.label << ") = " << sdk << refLabel << reference);
             CHECK85(gui == sdk, "85i: GUI and SDK disagree on det(" << c.label << "): " << gui
                                                                   << " vs " << sdk);
         }

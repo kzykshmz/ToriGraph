@@ -412,45 +412,32 @@ double Matrix::denseDeterminant(const double *a, int n)
         return std::numeric_limits<double>::quiet_NaN();
     const size_t nn = size_t(n);
     std::vector<double> lu(a, a + nn * nn);
-    // scale[i][j] tracks the size of the terms that have been added into lu[i][j] during the
-    // elimination: max(|a_ij|, L_ik * scale[k][j] over the eliminations that touched it), where
-    // L_ik = max(|l_ik|, scale[i][k] / |pivot_k|) is the size of the multiplier including its
-    // own cancellation.
-    // An entry is only treated as zero when it is lost in the rounding of its own cancellation,
-    // so untouched entries (triangular / diagonal matrices) are never zeroed, whatever their
-    // magnitude relative to the rest of the column.
-    std::vector<double> scale(nn * nn, 0.0);
     for (size_t i = 0; i < nn * nn; ++i) {
         if (!std::isfinite(lu[i]))
             return std::numeric_limits<double>::quiet_NaN();
-        scale[i] = std::abs(lu[i]);
     }
 
-    const double relTol = double(n) * std::numeric_limits<double>::epsilon();
+    // Plain LU with partial pivoting, as LAPACK dgetrf / numpy.linalg.det: the determinant is
+    // the product of the pivots with the sign of the row exchanges. No rounding residue is
+    // snapped to zero; only an exactly zero pivot column makes the matrix singular.
     double det = 1.0;
     for (size_t k = 0; k < nn; ++k) {
         size_t pivRow = k;
         double maxAbs = 0.0;
         for (size_t i = k; i < nn; ++i) {
-            double &v = lu[i * nn + k];
-            if (!std::isfinite(v))
+            const double cand = std::abs(lu[i * nn + k]);
+            if (!std::isfinite(cand)) // overflow during the elimination
                 return std::numeric_limits<double>::quiet_NaN();
-            // rounding residue of a cancellation -> exact zero
-            if (std::abs(v) <= relTol * scale[i * nn + k])
-                v = 0.0;
-            const double cand = std::abs(v);
             if (cand > maxAbs) {
                 maxAbs = cand;
                 pivRow = i;
             }
         }
-        if (!(maxAbs > 0.0))
+        if (maxAbs == 0.0)
             return 0.0;
         if (pivRow != k) {
-            for (size_t j = 0; j < nn; ++j) {
+            for (size_t j = 0; j < nn; ++j)
                 std::swap(lu[k * nn + j], lu[pivRow * nn + j]);
-                std::swap(scale[k * nn + j], scale[pivRow * nn + j]);
-            }
             det = -det;
         }
         const double diag = lu[k * nn + k];
@@ -458,16 +445,8 @@ double Matrix::denseDeterminant(const double *a, int n)
         for (size_t i = k + 1; i < nn; ++i) {
             const double lik = lu[i * nn + k] / diag;
             if (lik != 0.0) {
-                // The multiplier carries the uncertainty of lu[i][k] itself: when that entry was
-                // produced by a cancellation, its rounding error is of order eps * scale[i][k],
-                // so the multiplier must be counted at least at scale[i][k] / |pivot|. Using
-                // |l_ik| alone under-estimates the cancellation size of rank-deficient matrices
-                // and leaves rounding residue (e.g. -1.2e-11 instead of 0).
-                const double absL = std::max(std::abs(lik), scale[i * nn + k] / std::abs(diag));
-                for (size_t j = k + 1; j < nn; ++j) {
+                for (size_t j = k + 1; j < nn; ++j)
                     lu[i * nn + j] -= lik * lu[k * nn + j];
-                    scale[i * nn + j] = std::max(scale[i * nn + j], absL * scale[k * nn + j]);
-                }
             }
         }
     }

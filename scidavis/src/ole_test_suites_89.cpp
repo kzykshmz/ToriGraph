@@ -40,6 +40,8 @@
 //   89p baseline subtraction (overwrite / new column) and Subtract Straight Line (in place) write
 //       y - baseline in the original coordinates: no stack offset baked in, 0-1 normalisation
 //       undone; a curve whose normalisation cannot be undone is refused
+//   89q York fit with Text error columns leaves out non-numeric cells ("n/a", ""): they are not
+//       read as 0 (= exact); a Text "0" still means an exact coordinate
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -1191,6 +1193,62 @@ int runSuite89CurveDataMapping(ApplicationWindow *mw)
                     "89p: a flat normalised curve must be refused without touching the table");
             suite89Close(k.ml);
         }
+    }
+
+    // ------------------------------------------------ 89q: York fit with Text error columns
+    {
+        // The error columns are Text. Table::cell() reads "n/a" and "" as 0, i.e. "exact"; they
+        // must be left out instead. A Text "0" is a real number and still means exact X.
+        // Row 4 is an outlier with sy = "n/a", row 6 has sx = "": both rows are left out, so the
+        // fit must equal the numeric fit without them (row 2 keeps its exact X).
+        const std::vector<double> xs = { 1, 2, 3, 4, 5, 6, 7 };
+        const std::vector<double> ys = { 3.2, 4.8, 7.4, 8.9, 25.0, 13.2, 14.8 };
+        const QStringList sxText = { "0.1", "0.2", "0", "0.1", "0.1", "0.2", "" };
+        const QStringList syText = { "0.3", "0.2", "0.3", "0.4", "n/a", "0.3", "0.2" };
+        Table *t = suite89Table(mw, "S89YorkText", { xs, ys, { 0, 0, 0, 0, 0, 0, 0 },
+                                                     { 0, 0, 0, 0, 0, 0, 0 } });
+        CHECK_COND(t != nullptr, "89q: table");
+        t->setColumnType(2, SciDAVis::ColumnMode::Text);
+        t->setColumnType(3, SciDAVis::ColumnMode::Text);
+        for (int r = 0; r < int(xs.size()); ++r) {
+            t->setText(r, 2, sxText[r]);
+            t->setText(r, 3, syText[r]);
+        }
+        CHECK_COND(t->column(2)->columnMode() == SciDAVis::ColumnMode::Text
+                           && t->column(3)->columnMode() == SciDAVis::ColumnMode::Text
+                           && t->column(3)->textAt(4) == QLatin1String("n/a"),
+                   "89q: Text error columns");
+        Table *tr = suite89Table(mw, "S89YorkTextRef", { { 1, 2, 3, 4, 6 },
+                                                         { 3.2, 4.8, 7.4, 8.9, 13.2 },
+                                                         { 0.1, 0.2, 0.0, 0.1, 0.2 },
+                                                         { 0.3, 0.2, 0.3, 0.4, 0.3 } });
+        MultiLayer *ml = nullptr, *mlr = nullptr;
+        Graph *g = suite89Plot(mw, t, QStringList() << t->colName(1), Graph::LineSymbols, &ml);
+        Graph *gr = suite89Plot(mw, tr, QStringList() << tr->colName(1), Graph::LineSymbols, &mlr);
+        CHECK_COND(g && gr, "89q: graphs");
+        Suite89LinearFit fit(mw, g), ref(mw, gr);
+        const bool okData = fit.setDataFromCurve(t->colName(1), g)
+                && ref.setDataFromCurve(tr->colName(1), gr);
+        CHECK_COND(okData, "89q: fit data");
+        const bool ok = fit.fitWithXYErrors(t->colName(2), t->colName(3));
+        const bool okRef = ref.fitWithXYErrors(tr->colName(2), tr->colName(3));
+        std::cout << "[INFO] 89q York with Text errors (\"n/a\", \"\"): slope " << fit.yorkSlope()
+                  << ", intercept " << fit.yorkIntercept() << ", dof " << fit.degreesOfFreedom()
+                  << "; rows removed: slope " << ref.yorkSlope() << ", intercept "
+                  << ref.yorkIntercept() << ", dof " << ref.degreesOfFreedom() << "\n";
+        CHECK89(ok && okRef, "89q: York fits must succeed");
+        CHECK89(fit.degreesOfFreedom() == ref.degreesOfFreedom(),
+                "89q: non-numeric Text error cells must leave their rows out (dof "
+                        << fit.degreesOfFreedom() << " vs " << ref.degreesOfFreedom() << ")");
+        CHECK89(near89(fit.yorkSlope(), ref.yorkSlope(), 1e-9)
+                        && near89(fit.yorkIntercept(), ref.yorkIntercept(), 1e-9),
+                "89q: York fit with Text \"n/a\" / \"\" errors must equal the fit without those "
+                "rows (slope "
+                        << fit.yorkSlope() << " vs " << ref.yorkSlope() << ")");
+        CHECK89(near89(fit.yorkSlope(), 2.0, 0.1),
+                "89q: the \"n/a\" outlier must be left out, slope " << fit.yorkSlope());
+        suite89Close(ml);
+        suite89Close(mlr);
     }
 
     qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
