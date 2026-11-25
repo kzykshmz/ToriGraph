@@ -110,13 +110,18 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &tDateTime) con
         return retVal;
     }
     case UnitInterval::Month: {
-        int months = tDateTime.date().month() - m_date_time_0.date().month();
+        // brutto, including the whole years in between (the month numbers alone gave
+        // 2020-01-01 -> 2021-03-01 as 2 months instead of 14)
+        int months = (tDateTime.date().year() - m_date_time_0.date().year()) * 12
+                + (tDateTime.date().month() - m_date_time_0.date().month());
+        // as for years: base 2020/01/15 and tDateTime 2020/03/01 is one full month + some days
         if (tDateTime < m_date_time_0.addMonths(months))
             months -= 1;
         retVal += months;
         auto previousMonthsOffset = m_date_time_0.addMonths(months);
         auto daysToNextMonth = previousMonthsOffset.daysTo(previousMonthsOffset.addMonths(1));
-        retVal += previousMonthsOffset.msecsTo(tDateTime) / daysToNextMonth / milliSecondsInDay;
+        retVal += double(previousMonthsOffset.msecsTo(tDateTime)) / double(daysToNextMonth)
+                / milliSecondsInDay;
         return retVal;
     }
     case UnitInterval::Day: {

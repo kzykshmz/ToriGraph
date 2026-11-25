@@ -1137,6 +1137,28 @@ void Table::setSelectedColumnsAsNone()
     setSelectionAs(SciDAVis::noDesignation);
 }
 
+namespace {
+// Writes values[row] back only for the rows flagged in `write`, one replaceValues() per
+// contiguous run, so the other rows keep both their value and their invalid flag (a single
+// replaceValues(0, ...) over the whole column used to turn empty cells into valid zeros).
+void normalizeReplaceRowRuns(Column *col, const QVector<qreal> &values, const QVector<bool> &write)
+{
+    const int n = values.size();
+    int row = 0;
+    while (row < n) {
+        if (!write.at(row)) {
+            ++row;
+            continue;
+        }
+        int last = row;
+        while (last + 1 < n && write.at(last + 1))
+            ++last;
+        col->replaceValues(row, values.mid(row, last - row + 1));
+        row = last + 1;
+    }
+}
+} // namespace
+
 void Table::normalizeColumns(QList<Column *> cols)
 {
     if (!d_view)
@@ -1145,18 +1167,35 @@ void Table::normalizeColumns(QList<Column *> cols)
     WAIT_CURSOR;
     beginMacro(QObject::tr("%1: normalize column(s)").arg(name()));
     foreach (Column *col, cols) {
-        if (col->dataType() == SciDAVis::TypeDouble) {
-            double max = 0.0;
-            for (int row = 0; row < col->rowCount(); row++) {
-                if (col->valueAt(row) > max)
-                    max = col->valueAt(row);
+        if (col->dataType() != SciDAVis::TypeDouble)
+            continue;
+        const int n = col->rowCount();
+        // max of the valid (finite) values, seeded with the first one: starting from 0 turned
+        // an all-negative column into zeros.
+        bool haveMax = false;
+        double max = 0.0;
+        for (int row = 0; row < n; row++) {
+            if (col->isInvalid(row))
+                continue;
+            const double v = col->valueAt(row);
+            if (!std::isfinite(v))
+                continue;
+            if (!haveMax || v > max) {
+                max = v;
+                haveMax = true;
             }
-            QVector<qreal> results(col->rowCount());
-            if (max != 0.0) // avoid division by zero
-                for (int row = 0; row < col->rowCount(); row++)
-                    results[row] = col->valueAt(row) / max;
-            col->replaceValues(0, results);
         }
+        if (!haveMax || max == 0.0) // nothing to scale / avoid division by zero
+            continue;
+        QVector<qreal> results(n);
+        QVector<bool> write(n, false);
+        for (int row = 0; row < n; row++) {
+            if (col->isInvalid(row))
+                continue; // empty cells stay empty
+            results[row] = col->valueAt(row) / max;
+            write[row] = true;
+        }
+        normalizeReplaceRowRuns(col, results, write);
     }
     endMacro();
     RESET_CURSOR;
@@ -1174,28 +1213,44 @@ void Table::normalizeSelection()
 
     WAIT_CURSOR;
     beginMacro(QObject::tr("%1: normalize selection").arg(name()));
+    // max of the selected valid (finite) cells, seeded with the first one (see normalizeColumns)
+    bool haveMax = false;
     double max = 0.0;
     foreach (Column *col_ptr, d_view->selectedColumns()) {
         int col = columnIndex(col_ptr);
-        if (col_ptr->dataType() == SciDAVis::TypeDouble)
-            for (int row = 0; row < col_ptr->rowCount(); row++)
-                if (d_view->isCellSelected(row, col) && col_ptr->valueAt(row) > max)
-                    max = col_ptr->valueAt(row);
+        if (col_ptr->dataType() != SciDAVis::TypeDouble)
+            continue;
+        for (int row = 0; row < col_ptr->rowCount(); row++) {
+            if (!d_view->isCellSelected(row, col) || col_ptr->isInvalid(row))
+                continue;
+            const double v = col_ptr->valueAt(row);
+            if (!std::isfinite(v))
+                continue;
+            if (!haveMax || v > max) {
+                max = v;
+                haveMax = true;
+            }
+        }
     }
 
-    if (max != 0.0) // avoid division by zero
+    if (haveMax && max != 0.0) // avoid division by zero
     {
         foreach (Column *col_ptr, d_view->selectedColumns()) {
             int col = columnIndex(col_ptr);
-            if (col_ptr->dataType() == SciDAVis::TypeDouble) {
-                QVector<qreal> results(rowCount());
-                for (int row = 0; row < col_ptr->rowCount(); row++)
-                    if (d_view->isCellSelected(row, col))
-                        results[row] = col_ptr->valueAt(row) / max;
-                    else
-                        results[row] = col_ptr->valueAt(row);
-                col_ptr->replaceValues(0, results);
+            if (col_ptr->dataType() != SciDAVis::TypeDouble)
+                continue;
+            // Only the column's own rows: sizing this by the table's rowCount() appended zeros
+            // to shorter columns.
+            const int n = col_ptr->rowCount();
+            QVector<qreal> results(n);
+            QVector<bool> write(n, false);
+            for (int row = 0; row < n; row++) {
+                if (!d_view->isCellSelected(row, col) || col_ptr->isInvalid(row))
+                    continue;
+                results[row] = col_ptr->valueAt(row) / max;
+                write[row] = true;
             }
+            normalizeReplaceRowRuns(col_ptr, results, write);
         }
     }
     endMacro();

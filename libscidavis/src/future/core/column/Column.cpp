@@ -481,8 +481,15 @@ void Column::save(QXmlStreamWriter *writer) const
 
     case SciDAVis::TypeQDateTime: {
         { // this conversion is needed to store base class;
-            NumericDateTimeBaseFilter numericFilter(
-                    *(d_column_private->getNumericDateTimeFilter()));
+            // Month/Day columns used to carry no filter (null): fall back to the default one.
+            const NumericDateTimeBaseFilter *storedFilter =
+                    d_column_private->getNumericDateTimeFilter();
+            QScopedPointer<NumericDateTimeBaseFilter> fallbackFilter;
+            if (!storedFilter) {
+                fallbackFilter.reset(new NumericDateTimeBaseFilter());
+                storedFilter = fallbackFilter.data();
+            }
+            NumericDateTimeBaseFilter numericFilter(*storedFilter);
             writer->writeStartElement("numericDateTimeFilter");
             numericFilter.save(writer);
             writer->writeEndElement();
@@ -620,6 +627,9 @@ bool Column::XmlReadNumericDateTimeFilter(XmlStreamReader *reader)
     Q_ASSERT(reader->isStartElement() && reader->name() == "numericDateTimeFilter");
     if (!reader->skipToNextTag())
         return false;
+    // A column read as Month/Day after being built as Numeric used to have no filter (null).
+    if (!d_column_private->getNumericDateTimeFilter())
+        d_column_private->setNumericDateTimeFilter(new NumericDateTimeBaseFilter());
     if (!d_column_private->getNumericDateTimeFilter()->load(reader))
         return false;
     if (!reader->skipToNextTag())

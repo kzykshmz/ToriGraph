@@ -154,12 +154,16 @@ public:
         for (int c = 0; c < intervals_copy.size(); c++) {
             i = intervals_copy.at(c);
             T value = values_copy.at(c);
+            bool merged = false;
             for (int cc = 0; cc < d_intervals.size(); cc++) {
                 if (d_intervals.at(cc).touches(i) && d_values.at(cc) == value) {
                     d_intervals.replace(cc, Interval<int>::merge(d_intervals.at(cc), i));
-                    return;
+                    merged = true;
+                    break; // go on with the next interval (a return here dropped all the rest)
                 }
             }
+            if (merged)
+                continue;
             // if it could not be merged, just append it
             d_intervals.append(i);
             d_values.append(value);

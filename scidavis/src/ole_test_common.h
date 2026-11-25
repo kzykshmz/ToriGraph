@@ -655,5 +655,6 @@ int runSuite81NumericalTransformCorrectness(ApplicationWindow *mw);
 int runSuite82JsonRpcParamValidation(ApplicationWindow *mw);
 int runSuite83ImportRobustness(ApplicationWindow *mw);
 int runSuite84ProjectSerializationFidelity(ApplicationWindow *mw);
+int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

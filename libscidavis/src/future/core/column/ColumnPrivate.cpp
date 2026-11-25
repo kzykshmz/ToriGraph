@@ -116,6 +116,12 @@ Column::Private::Private(Column *owner, SciDAVis::ColumnMode mode) : d_owner(own
     }
     } // switch(mode)
 
+    // Every mode carries a numeric <-> date/time filter, not only DateTime: a column that is built
+    // as Numeric (e.g. by Column::load) and then switched to Month/Day keeps this one, and save(),
+    // load() and the type tab of TableView dereference it for every QDateTime column.
+    if (!d_numeric_datetime_filter)
+        d_numeric_datetime_filter.reset(new NumericDateTimeBaseFilter());
+
     d_plot_designation = SciDAVis::noDesignation;
     d_input_filter->setName("InputFilter");
     d_output_filter->setName("OutputFilter");
@@ -178,6 +184,12 @@ Column::Private::Private(Column *owner, SciDAVis::ColumnDataType type, SciDAVis:
         break;
     }
     } // switch(mode)
+
+    // Every mode carries a numeric <-> date/time filter, not only DateTime: a column that is built
+    // as Numeric (e.g. by Column::load) and then switched to Month/Day keeps this one, and save(),
+    // load() and the type tab of TableView dereference it for every QDateTime column.
+    if (!d_numeric_datetime_filter)
+        d_numeric_datetime_filter.reset(new NumericDateTimeBaseFilter());
 
     d_plot_designation = SciDAVis::noDesignation;
     d_input_filter->setName("InputFilter");
@@ -947,7 +959,7 @@ void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_va
 
     for (int i = 0; i < num_rows; i++) {
         static_cast<QList<QDateTime> *>(d_data)->replace(first + i, new_values.at(i));
-        d_validity.setValue(i, !new_values.at(i).isValid());
+        d_validity.setValue(first + i, !new_values.at(i).isValid());
     }
     emit d_owner->dataChanged(d_owner);
 }
@@ -990,12 +1002,15 @@ void Column::Private::replaceValues(int first, const QVector<qreal> &new_values)
 
 NumericDateTimeBaseFilter *Column::Private::getNumericDateTimeFilter()
 {
+    // Never hand out null: callers (save/load, TableView, setColumnMode) dereference it.
+    if (!d_numeric_datetime_filter)
+        d_numeric_datetime_filter.reset(new NumericDateTimeBaseFilter());
     return d_numeric_datetime_filter.data();
 }
 
 void Column::Private::setNumericDateTimeFilter(NumericDateTimeBaseFilter *const newFilter)
 {
-    d_numeric_datetime_filter.reset(newFilter);
+    d_numeric_datetime_filter.reset(newFilter ? newFilter : new NumericDateTimeBaseFilter());
 }
 
 void Column::Private::replaceMasking(IntervalAttribute<bool> masking)

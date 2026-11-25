@@ -331,7 +331,10 @@ struct DenseLuDecomposition
     std::vector<int> piv;
 };
 
-static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n)
+// relPivotTol > 0: a pivot not above relPivotTol * ||A||_1 counts as singular (what invert()
+// needs). relPivotTol == 0: only an exactly zero or non-finite pivot counts as singular (what
+// determinant() needs: a relative tolerance made e.g. diag(1e10, 1e-5) "singular", det = 0).
+static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n, double relPivotTol)
 {
     DenseLuDecomposition res;
     res.n = n;
@@ -356,12 +359,12 @@ static DenseLuDecomposition decomposeDenseMatrixLu(Matrix *m, int n)
             res.norm1 = colAbsSum;
     }
 
-    if (!(res.norm1 > 0.0) || !std::isfinite(res.norm1)) {
+    if (relPivotTol > 0.0 && (!(res.norm1 > 0.0) || !std::isfinite(res.norm1))) {
         res.singular = true;
         return res;
     }
 
-    const double pivTol = 1e-14 * res.norm1;
+    const double pivTol = relPivotTol > 0.0 ? relPivotTol * res.norm1 : 0.0;
     for (int k = 0; k < n; ++k) {
         int pivRow = k;
         double maxAbs = std::abs(res.lu[size_t(k) * size_t(n) + size_t(k)]);
@@ -427,7 +430,7 @@ double Matrix::determinant()
     if (!nonInteractive)
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
-    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, rows);
+    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, rows, 0.0);
     double det = 0.0;
     if (lu.nonFinite) {
         det = std::numeric_limits<double>::quiet_NaN();
@@ -467,7 +470,7 @@ void Matrix::invert()
         QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
 
     const int n = rows;
-    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, n);
+    const DenseLuDecomposition lu = decomposeDenseMatrixLu(this, n, 1e-14);
     if (lu.singular || lu.nonFinite) {
         if (!nonInteractive) {
             QApplication::restoreOverrideCursor();
@@ -584,8 +587,13 @@ bool Matrix::recalculate()
 
     QVariant ret;
     saveCellsToMemory();
-    double dx = fabs(xEnd() - xStart()) / (double)(numRows() - 1);
-    double dy = fabs(yEnd() - yStart()) / (double)(numCols() - 1);
+    // x runs along the columns and y along the rows (as in MatrixModel::headerData), so dx is
+    // divided by the column count and dy by the row count; the sign is kept so that a reversed
+    // range (xEnd < xStart) matches the header, and a single column/row gives a step of 0.
+    const int nCols = numCols();
+    const int nRows = numRows();
+    const double dx = nCols > 1 ? (xEnd() - xStart()) / double(nCols - 1) : 0.0;
+    const double dy = nRows > 1 ? (yEnd() - yStart()) / double(nRows - 1) : 0.0;
     std::pair<double, bool> unsetValue(std::numeric_limits<double>::quiet_NaN(), false);
     std::vector<std::vector<std::pair<double, bool>>> calculatedValues(
             endRow - startRow + 1,

@@ -448,6 +448,16 @@ void MatrixTransposeCmd::redo()
         d_private_obj->removeRows(cols, temp_size - cols);
     else if (cols > rows)
         d_private_obj->removeColumns(rows, temp_size - rows);
+    // Rows and columns are swapped, so the x range (along the columns) and the y range (along the
+    // rows) swap too; undo() runs redo() again, which swaps them back.
+    const double xStart = d_private_obj->xStart();
+    const double xEnd = d_private_obj->xEnd();
+    const double yStart = d_private_obj->yStart();
+    const double yEnd = d_private_obj->yEnd();
+    d_private_obj->setXStart(yStart);
+    d_private_obj->setXEnd(yEnd);
+    d_private_obj->setYStart(xStart);
+    d_private_obj->setYEnd(xEnd);
     d_private_obj->blockChangeSignals(false);
     d_private_obj->emitDataChanged(0, 0, d_private_obj->rowCount() - 1,
                                    d_private_obj->columnCount() - 1);

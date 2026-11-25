@@ -1345,9 +1345,11 @@ void TableView::setColumnForControlTabs(int col)
             ui.formatLineEdit->setText(filter->format());
             ui.format_box->setCurrentIndex(ui.format_box->findData(filter->format()));
             auto num_filter = col_ptr->numericDateTimeBaseFilter();
-            ui.date_time_0->setDateTime(num_filter->getBaseDateTime());
-            auto unit = static_cast<int>(num_filter->getUnitInterval());
-            ui.date_time_interval->setCurrentIndex(ui.date_time_interval->findData(unit));
+            if (num_filter) { // Month/Day columns used to have none
+                ui.date_time_0->setDateTime(num_filter->getBaseDateTime());
+                auto unit = static_cast<int>(num_filter->getUnitInterval());
+                ui.date_time_interval->setCurrentIndex(ui.date_time_interval->findData(unit));
+            }
             break;
         }
         default:
