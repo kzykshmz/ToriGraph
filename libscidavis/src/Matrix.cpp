@@ -412,34 +412,43 @@ double Matrix::denseDeterminant(const double *a, int n)
         return std::numeric_limits<double>::quiet_NaN();
     const size_t nn = size_t(n);
     std::vector<double> lu(a, a + nn * nn);
-    std::vector<double> colMax(nn, 0.0);
-    for (size_t i = 0; i < nn; ++i) {
-        for (size_t j = 0; j < nn; ++j) {
-            const double v = lu[i * nn + j];
-            if (!std::isfinite(v))
-                return std::numeric_limits<double>::quiet_NaN();
-            colMax[j] = std::max(colMax[j], std::abs(v));
-        }
+    // scale[i][j] tracks the size of the terms that have been added into lu[i][j] during the
+    // elimination: max(|a_ij|, |l_ik| * scale[k][j] over the eliminations that touched it).
+    // An entry is only treated as zero when it is lost in the rounding of its own cancellation,
+    // so untouched entries (triangular / diagonal matrices) are never zeroed, whatever their
+    // magnitude relative to the rest of the column.
+    std::vector<double> scale(nn * nn, 0.0);
+    for (size_t i = 0; i < nn * nn; ++i) {
+        if (!std::isfinite(lu[i]))
+            return std::numeric_limits<double>::quiet_NaN();
+        scale[i] = std::abs(lu[i]);
     }
 
     const double relTol = double(n) * std::numeric_limits<double>::epsilon();
     double det = 1.0;
     for (size_t k = 0; k < nn; ++k) {
         size_t pivRow = k;
-        double maxAbs = std::abs(lu[k * nn + k]);
-        for (size_t i = k + 1; i < nn; ++i) {
-            const double cand = std::abs(lu[i * nn + k]);
+        double maxAbs = 0.0;
+        for (size_t i = k; i < nn; ++i) {
+            double &v = lu[i * nn + k];
+            if (!std::isfinite(v))
+                return std::numeric_limits<double>::quiet_NaN();
+            // rounding residue of a cancellation -> exact zero
+            if (std::abs(v) <= relTol * scale[i * nn + k])
+                v = 0.0;
+            const double cand = std::abs(v);
             if (cand > maxAbs) {
                 maxAbs = cand;
                 pivRow = i;
             }
         }
-        // Singular when the pivot is lost in the rounding of its own column (or not finite).
-        if (!std::isfinite(maxAbs) || !(maxAbs > relTol * colMax[k]))
+        if (!(maxAbs > 0.0))
             return 0.0;
         if (pivRow != k) {
-            for (size_t j = 0; j < nn; ++j)
+            for (size_t j = 0; j < nn; ++j) {
                 std::swap(lu[k * nn + j], lu[pivRow * nn + j]);
+                std::swap(scale[k * nn + j], scale[pivRow * nn + j]);
+            }
             det = -det;
         }
         const double diag = lu[k * nn + k];
@@ -447,8 +456,11 @@ double Matrix::denseDeterminant(const double *a, int n)
         for (size_t i = k + 1; i < nn; ++i) {
             const double lik = lu[i * nn + k] / diag;
             if (lik != 0.0) {
-                for (size_t j = k + 1; j < nn; ++j)
+                const double absL = std::abs(lik);
+                for (size_t j = k + 1; j < nn; ++j) {
                     lu[i * nn + j] -= lik * lu[k * nn + j];
+                    scale[i * nn + j] = std::max(scale[i * nn + j], absL * scale[k * nn + j]);
+                }
             }
         }
     }

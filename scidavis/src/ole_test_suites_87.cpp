@@ -24,6 +24,11 @@
 //        "Change matrix" after a 1-row matrix, a ribbon of an empty table that gets data, a
 //        1xN matrix that grows to 3xN (and is tied to the matrix meanwhile), a ribbon with an
 //        X range holding one point that is widened or gets a second point
+//   87g  a plot emptied (NOPLOT) by degenerate data saves the style the user chose: the Style
+//        record of saveToString names it (not the floor style), and a new Graph3D restored from
+//        it draws with that style once the data is back (ribbon with an X range: wireframe and
+//        points; 1-row matrix: wireframe). A broken record ("nofloor" as the plot style, written
+//        by the old code) restores the default filled mesh
 // The checks report every failure (they do not stop at the first one); 87e/87f come last because
 // the old code could loop forever there.
 // =============================================================================
@@ -541,6 +546,142 @@ int runSuite87Graph3DMatrixOrientation(ApplicationWindow *mw)
                     "87f4: two-point grid has " << gridColumns87(grid)
                                                 << " columns (expected 2) or NaN vertices");
             delete gq;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 87g: saving a plot emptied by degenerate data keeps the plot style the user chose
+    // ---------------------------------------------------------------------------------------
+    {
+        // The "Style" record of saveToString(), split as openSurfacePlot() does.
+        auto styleRecord = [](Graph3D *g) -> QStringList {
+            const QStringList lines = g->saveToString(QString()).split(QLatin1Char('\n'));
+            for (const QString &line : lines)
+                if (line.startsWith(QLatin1String("Style\t")))
+                    return line.split(QLatin1Char('\t'), Qt::SkipEmptyParts);
+            return QStringList();
+        };
+
+        Table *tg = app->newTable(QStringLiteral("T87g_range"), 4, 2);
+        CHECK87(tg != nullptr, "87g: table creation failed");
+        if (tg) {
+            for (int r = 0; r < 4; ++r) {
+                tg->setCell(r, 0, double(r));
+                tg->setCell(r, 1, 1.0 + r);
+            }
+            struct Variant
+            {
+                const char *label;
+                int style; // passed to customPlotStyle()
+                const char *savedName;
+                Qwt3D::PLOTSTYLE drawn;
+                Graph3D::PointStyle point;
+            };
+            const Variant variants[] = {
+                { "wireframe", int(Qwt3D::WIREFRAME), "wireframe", Qwt3D::WIREFRAME,
+                  Graph3D::None },
+                { "points", int(Qwt3D::POINTS), "points", Qwt3D::USER, Graph3D::Dots },
+            };
+            for (const Variant &v : variants) {
+                Graph3D *g = new Graph3D(QString());
+                g->addData(tg, tg->colName(0), tg->colName(1), -0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
+                g->customPlotStyle(v.style);
+                CHECK87(g->plotStyle() == v.drawn,
+                        "87g " << v.label << ": style after customPlotStyle is "
+                               << int(g->plotStyle()));
+                g->updateScales(-0.5, 0.5, 0.0, 1.0, 0.0, 10.0); // one point left -> NOPLOT
+                CHECK87(g->plotStyle() == Qwt3D::NOPLOT,
+                        "87g " << v.label << ": X range with one point is still drawn");
+                const QStringList rec = styleRecord(g);
+                std::cout << "[INFO] 87g " << v.label << " (NOPLOT) Style record: "
+                          << rec.join(QLatin1Char(' ')).toStdString() << "\n";
+                CHECK87(rec.value(3) == QLatin1String(v.savedName),
+                        "87g " << v.label << ": saved plot style is '"
+                               << rec.value(3).toStdString() << "', expected '" << v.savedName
+                               << "'");
+
+                // Restore as openSurfacePlot() does: data first (still one point), then Style.
+                Graph3D *gn = new Graph3D(QString());
+                gn->addData(tg, tg->colName(0), tg->colName(1), -0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
+                CHECK87(gn->plotStyle() == Qwt3D::NOPLOT,
+                        "87g " << v.label << ": restored plot with one point is drawn");
+                if (rec.size() >= 4)
+                    gn->setStyle(rec);
+                gn->updateScales(-0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
+                const Qwt3D::GridData *grid = SurfacePeek87::grid(gn->sp);
+                CHECK87(gn->plotStyle() == v.drawn && gn->pointType() == v.point,
+                        "87g " << v.label << ": restored plot draws with style "
+                               << int(gn->plotStyle()) << " / point " << int(gn->pointType())
+                               << ", expected " << int(v.drawn) << " / " << int(v.point));
+                CHECK87(gridColumns87(grid) == 4 && gridFinite87(grid),
+                        "87g " << v.label << ": restored grid has " << gridColumns87(grid)
+                               << " columns (expected 4) or NaN vertices");
+                delete gn;
+                delete g;
+            }
+
+            // A Style record written by the old code ("nofloor" in the plot style field)
+            // restores qwtplot3d's default filled mesh, for an empty and a drawn plot.
+            const QStringList broken = { QStringLiteral("Style"), QStringLiteral("frame"),
+                                         QStringLiteral("nofloor"), QStringLiteral("nofloor") };
+            Graph3D *gb = new Graph3D(QString());
+            gb->addData(tg, tg->colName(0), tg->colName(1), -0.5, 0.5, 0.0, 1.0, 0.0, 10.0);
+            gb->setStyle(broken);
+            gb->updateScales(-0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
+            CHECK87(gb->plotStyle() == Qwt3D::FILLEDMESH,
+                    "87g broken record (empty plot): style " << int(gb->plotStyle())
+                                                             << ", expected FILLEDMESH");
+            delete gb;
+            Graph3D *gd = new Graph3D(QString());
+            gd->addData(tg, tg->colName(0), tg->colName(1), -0.5, 3.5, 0.0, 1.0, 0.0, 10.0);
+            gd->setStyle(broken);
+            CHECK87(gd->plotStyle() == Qwt3D::FILLEDMESH,
+                    "87g broken record (drawn plot): style " << int(gd->plotStyle())
+                                                             << ", expected FILLEDMESH");
+            delete gd;
+        }
+
+        // 1-row matrix: the wireframe chosen on the 3x5 matrix survives save / restore.
+        Matrix *mg = app->newMatrix(QStringLiteral("M87g"), 3, 5);
+        CHECK87(mg != nullptr, "87g matrix: creation failed");
+        if (mg) {
+            mg->setCoordinates(0.0, 4.0, 0.0, 2.0);
+            auto fill = [mg]() {
+                for (int r = 0; r < mg->numRows(); ++r)
+                    for (int c = 0; c < mg->numCols(); ++c)
+                        mg->setCell(r, c, 10.0 * r + c);
+            };
+            fill();
+            Graph3D *g = new Graph3D(QString());
+            g->addMatrixData(mg);
+            g->customPlotStyle(Qwt3D::WIREFRAME);
+            mg->setDimensions(1, 5);
+            g->updateMatrixData(mg);
+            CHECK87(g->plotStyle() == Qwt3D::NOPLOT, "87g matrix: 1x5 matrix plot is drawn");
+            const QStringList rec = styleRecord(g);
+            std::cout << "[INFO] 87g matrix (NOPLOT) Style record: "
+                      << rec.join(QLatin1Char(' ')).toStdString() << "\n";
+            CHECK87(rec.value(3) == QLatin1String("wireframe"),
+                    "87g matrix: saved plot style is '" << rec.value(3).toStdString()
+                                                        << "', expected 'wireframe'");
+
+            Graph3D *gn = new Graph3D(QString());
+            gn->addMatrixData(mg);
+            CHECK87(gn->plotStyle() == Qwt3D::NOPLOT,
+                    "87g matrix: restored 1x5 matrix plot is drawn");
+            if (rec.size() >= 4)
+                gn->setStyle(rec);
+            mg->setDimensions(3, 5);
+            fill();
+            gn->updateMatrixData(mg);
+            QString why;
+            CHECK87(gn->plotStyle() == Qwt3D::WIREFRAME,
+                    "87g matrix: restored plot of the 3x5 matrix draws with style "
+                            << int(gn->plotStyle()) << ", expected WIREFRAME");
+            CHECK87(orientationOk87(SurfacePeek87::grid(gn->sp), mg, &why),
+                    "87g matrix: restored grid: " << why.toStdString());
+            delete gn;
+            delete g;
         }
     }
 

@@ -3280,7 +3280,14 @@ QString Graph3D::saveToString(const QString &geometry)
     }
     s += st + "\t";
 
-    switch (sp->plotStyle()) {
+    // A plot emptied by degenerate data (fewer than two points, NOPLOT) keeps the style the user
+    // chose in style_ / pointStyle and draws with it again once the data is back: save that
+    // style, not NOPLOT (which has no name and used to leave the floor style in the field).
+    Qwt3D::PLOTSTYLE savedStyle = sp->plotStyle();
+    if (savedStyle == NOPLOT)
+        savedStyle = (style_ == NOPLOT) ? FILLEDMESH : style_;
+    st = "filledmesh"; // qwtplot3d's default, for anything without a name below
+    switch (savedStyle) {
     case USER:
         if (pointStyle == VerticalBars)
             st = "bars\t" + QString::number(barsRad);
@@ -3314,7 +3321,8 @@ QString Graph3D::saveToString(const QString &geometry)
         st = "filledmesh";
         break;
 
-    default:;
+    default:
+        break;
     }
     s += st + "\n";
 

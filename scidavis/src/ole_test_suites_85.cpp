@@ -28,7 +28,10 @@
 //   85g Matrix::determinant: no ||A||-relative pivot tolerance (diag(1e10, 1e-5) -> 1e5)
 //   85h Matrix transpose swaps the x and y coordinate ranges
 //   85i determinant singularity: GUI (Matrix::determinant) and JSON-RPC matrix.determinant use
-//       the same scale-independent pivot rule (diag(1e10, 1e-7) -> 1e3, 1..9 3x3 -> 0)
+//       the same scale-independent pivot rule (diag(1e10, 1e-7) -> 1e3, 1..9 3x3 -> 0); a pivot
+//       is only zeroed when it is lost in the rounding of its own cancellation, so triangular
+//       matrices keep their true determinant ([[1,1e16],[0,1]] -> 1,
+//       [[1,1000],[0,1e-13]] -> 1e-13)
 // Every check is evaluated (failures are counted) so a single run reports all regressions.
 // =============================================================================
 namespace {
@@ -380,6 +383,13 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
             { "diag(1e10, 1e-7)", 2, { 1e10, 0.0, 0.0, 1e-7 }, 1e3 },
             { "[[1,2,3],[4,5,6],[7,8,9]]", 3, { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 0.0 },
             { "[[1,2],[2,4]]", 2, { 1, 2, 2, 4 }, 0.0 },
+            // no cancellation happens in a triangular matrix: nothing may be zeroed
+            { "[[1,1e16],[0,1]]", 2, { 1.0, 1e16, 0.0, 1.0 }, 1.0 },
+            { "[[1e20,1e20],[0,1]]", 2, { 1e20, 1e20, 0.0, 1.0 }, 1e20 },
+            { "[[1,1000],[0,1e-13]]", 2, { 1.0, 1000.0, 0.0, 1e-13 }, 1e-13 },
+            // nearly singular but exact in binary: 1 + 2^-30 - 1 = 2^-30 is not noise
+            { "[[1,1],[1,1+2^-30]]", 2, { 1.0, 1.0, 1.0, 1.0 + std::ldexp(1.0, -30) },
+              std::ldexp(1.0, -30) },
         };
         int rpcId = 8500;
         for (const DetCase &c : cases) {
@@ -407,7 +417,7 @@ int runSuite85TableMatrixCoreIntegrity(ApplicationWindow *mw)
                       << ", expected " << c.expected << "\n";
             auto matchesExpected = [&c](double v) {
                 return c.expected == 0.0 ? v == 0.0
-                                         : std::fabs(v - c.expected) <= std::fabs(c.expected) * 1e-9;
+                                         : std::fabs(v - c.expected) <= std::fabs(c.expected) * 1e-12;
             };
             CHECK85(matchesExpected(gui), "85i: GUI det(" << c.label << ") = " << gui << ", expected "
                                                << c.expected);
