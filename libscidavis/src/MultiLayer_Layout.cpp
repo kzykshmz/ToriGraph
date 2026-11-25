@@ -1350,6 +1350,10 @@ double MultiLayer::fitPageZoomFactor() const
 
     int availW = 0;
     int availH = 0;
+    // True once a visible, laid-out viewport supplied availW/availH. A measured viewport that is
+    // smaller than the page margins must fit to the minimum zoom; only an unmeasured one may use
+    // the preset fallback below (which is the 1.6 upper bound for small pages).
+    bool viewportMeasured = false;
     QScrollArea *cs = widget()
             ? widget()->findChild<QScrollArea *>(QStringLiteral("MultiLayerCanvasScroll"))
             : nullptr;
@@ -1369,6 +1373,7 @@ double MultiLayer::fitPageZoomFactor() const
         if (csVp && csVp->isVisible() && csVp->width() >= 80 && csVp->height() >= 80) {
             availW = csVp->width() - 28;
             availH = csVp->height() - 28;
+            viewportMeasured = true;
         } else if (splitMode && mdi && mdi->viewport() && mdi->viewport()->isVisible()
                    && mdi->viewport()->width() >= 200 && mdi->viewport()->height() >= 120) {
             const double leftRatio =
@@ -1378,11 +1383,13 @@ double MultiLayer::fitPageZoomFactor() const
             const int paneH = mdi->viewport()->height();
             availW = rightPaneW - (2 * styleFrameW + 28);
             availH = paneH - (styleTitleH + 2 * styleFrameW + topBarH + 28);
+            viewportMeasured = true;
         } else if (mdi && mdi->viewport() && mdi->viewport()->isVisible()
                    && mdi->viewport()->width() >= 160 && mdi->viewport()->height() >= 160) {
             availW = mdi->viewport()->width() - (tabbedMode ? 28 : (2 * styleFrameW + 28));
             availH = mdi->viewport()->height()
                     - (tabbedMode ? (topBarH + 28) : (styleTitleH + 2 * styleFrameW + topBarH + 28));
+            viewportMeasured = true;
         }
     } else {
         if (mdi && mdi->viewport() && mdi->viewport()->isVisible()
@@ -1391,14 +1398,17 @@ double MultiLayer::fitPageZoomFactor() const
             const int vpH = mdi->viewport()->height();
             availW = vpW - (2 * styleFrameW + 20);
             availH = vpH - (styleTitleH + 2 * styleFrameW + topBarH + 20);
+            viewportMeasured = true;
         } else if (csVp && csVp->isVisible() && csVp->width() >= 80 && csVp->height() >= 80) {
             availW = csVp->width() - 28;
             availH = csVp->height() - 28;
+            viewportMeasured = true;
         }
     }
 
-    if (availW >= 60 && availH >= 60 && basePxW > 0.0 && basePxH > 0.0) {
-        const double fitZoom = std::min(double(availW) / basePxW, double(availH) / basePxH);
+    if (viewportMeasured && basePxW > 0.0 && basePxH > 0.0) {
+        const double fitZoom = std::min(double(qMax(1, availW)) / basePxW,
+                                        double(qMax(1, availH)) / basePxH);
         return qBound(0.35, fitZoom, 1.6);
     }
 

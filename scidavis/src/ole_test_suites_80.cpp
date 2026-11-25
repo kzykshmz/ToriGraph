@@ -32,6 +32,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
@@ -1463,6 +1464,14 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         wVis->confirmClosePlot2D = false;
         wVis->confirmClosePlot3D = false;
         wVis->confirmCloseFolder = false;
+        // A new window restores its docks from the per-run settings file. In a full run that
+        // file is saved (Suite 69) from the shared window, whose Results Log the earlier fits and
+        // analyses have opened, so this window would start with the log docked under the
+        // workspace and the 760x420 shrink below would measure a different pane than when
+        // Suite 80 runs alone. Start from the default docks; the too-small pane is checked
+        // explicitly after the shrink (80c-log).
+        wVis->logWindow.hide();
+        wVis->explorerWindow.hide();
         wVis->resize(1920, 1080);
         wVis->show();
         QCoreApplication::processEvents();
@@ -1504,6 +1513,56 @@ int runSuite80Round4P0P1RegressionGate(ApplicationWindow *mw)
         CHECK_COND(zoomShrunk < zoomLarge - 0.10,
                    "80c: Split MultiLayer shrink did not auto-fit pageZoom (large="
                            << zoomLarge << " shrunk=" << zoomShrunk << ")");
+
+        // 80c-log: a Split pane shorter than the page margins (canvas viewport visible but 80..87
+        // px high, availH < 60) must fit to the minimum zoom, not fall back to the 1.6 upper
+        // bound for small pages. In a full run the Results Log, restored from the settings
+        // file saved by earlier suites, left exactly such a pane at 760x420 (viewport 394x82)
+        // and pageZoom stayed 1.6. Lower the graph window 1 px at a time so the viewport passes
+        // through that band regardless of ribbon and dock heights.
+        {
+            QScrollArea *cs80 = mlSp->widget() ? mlSp->widget()->findChild<QScrollArea *>(
+                                        QStringLiteral("MultiLayerCanvasScroll"))
+                                               : nullptr;
+            QWidget *csVp80 = cs80 ? cs80->viewport() : nullptr;
+            CHECK_COND(csVp80 != nullptr, "80c-log: MultiLayerCanvasScroll viewport missing");
+            bool sawStarved = false;
+            double prevFit = -1.0;
+            double prevFitAtRise = -1.0;
+            double risenFit = -1.0;
+            int riseVpH = -1;
+            // The graph window's own minimum height (title, layer bar) can keep the viewport
+            // above the band; lift it for the sweep only.
+            const int prevMinH = mlSp->minimumHeight();
+            mlSp->setMinimumHeight(40);
+            for (int h = mlSp->height(); h >= 40 && csVp80->height() >= 80; --h) {
+                mlSp->resize(mlSp->width(), h);
+                if (!csVp80->isVisible() || csVp80->height() < 80)
+                    break;
+                const double fitNow = mlSp->fitPageZoomFactor();
+                if (csVp80->height() < 88)
+                    sawStarved = true;
+                if (prevFit >= 0.0 && fitNow > prevFit + 1e-3 && riseVpH < 0) {
+                    prevFitAtRise = prevFit;
+                    risenFit = fitNow;
+                    riseVpH = csVp80->height();
+                }
+                prevFit = fitNow;
+            }
+            CHECK_COND(sawStarved,
+                       "80c-log: lowering the Split graph window never reached a canvas viewport "
+                       "of 80..87 px (graph="
+                               << mlSp->width() << "x" << mlSp->height() << " viewport="
+                               << csVp80->width() << "x" << csVp80->height() << ")");
+            CHECK_COND(riseVpH < 0,
+                       "80c-log: a smaller Split pane raised the fit zoom from "
+                               << prevFitAtRise << " to " << risenFit << " at viewport height "
+                               << riseVpH);
+            mlSp->setMinimumHeight(prevMinH);
+            // Re-tile the Split panes for the steps below.
+            rib->applySplitWorkspaceGeometry();
+            pumpEventsMs80(40);
+        }
 
         mlSp->setPageZoom(1.35);
         pumpEventsMs80(20);
