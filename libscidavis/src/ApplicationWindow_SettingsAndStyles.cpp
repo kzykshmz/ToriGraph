@@ -5133,6 +5133,16 @@ MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *
                 }
                 out.append(remappedLine);
                 continue;
+            } else if (line.trimmed().startsWith("<ToriCurveLabel")) {
+                // 独自ラベルは元の表の曲線に付けた名前なので、別の表へ差し替える複製には
+                // 持ち越さない（凡例は複製先の表の列名から作り直す）。Y 列が同じ表に
+                // 残るとき（複製先が元と同じ表）だけ残す。
+                const QRegularExpressionMatch m =
+                        QRegularExpression(QStringLiteral("\\by=\"([^\"]*)\"")).match(line);
+                const QString yRef = m.hasMatch() ? m.captured(1) : QString();
+                if (!yRef.isEmpty() && mapColumnToTarget(yRef) == yRef)
+                    out.append(line);
+                continue;
             }
             out.append(line);
         }

@@ -28,6 +28,15 @@
 //       a label given while there is no legend shows up when the legend is shown
 //   97i 2-row layout: outside panel labels lie inside the page, above their canvas and clear of
 //       the axis band of the panel above (panel heights / axis ranges: 97f)
+//   97j a labelled curve switched vertical bars -> line (a new curve object) keeps its label,
+//       also across save -> reopen
+//   97k batch plotting a labelled graph onto another table does not carry the label over: the
+//       copy's legend shows the new table's column and curve="<label>" does not resolve there
+//   97l 2x2 layout with the top-left panel deleted: outside panel labels (set twice) do not push
+//       the remaining panels down by a panel height nor grow the page again
+//   97m two curves of one Y column (different X): a label on the 2nd curve resolves to the 2nd
+//       curve in RPC (style, visibility, mask, remove); a method that selects curves by column
+//       (fit) reports the ambiguity instead of using the 1st curve
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -280,6 +289,7 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
     // Values recorded in the source session and compared after reopening.
     QList<AxisState97> panelAfterLabels;
     double cscatXLo = 0.0, cscatXHi = 0.0;
+    QString batchCloneName;
 
     {
         AppWinGuard97 w(new ApplicationWindow());
@@ -739,6 +749,261 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
             }
         }
 
+        // ---- 97j: label kept when switching bars <-> line ------------------------------------
+        {
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "A" } },
+                                        { "style", "vertical_bars" },
+                                        { "graph_name", "G97BL" } })),
+                    "97j: vertical bars failed");
+            CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                           QJsonObject{ { "graph", "G97BL" },
+                                        { "curve", 0 },
+                                        { "label", "BarLbl" } })),
+                    "97j: label on the bar curve failed");
+            Graph *g = firstLayer97(w, QStringLiteral("G97BL"));
+            CHECK97(g && g->curves() == 1 && g->curveType(0) == Graph::VerticalBars,
+                    "97j: G97BL should hold one vertical bar curve");
+            if (g && g->curves() == 1) {
+                g->setCurveType(0, Graph::Line);
+                CHECK97(g->curveType(0) == Graph::Line, "97j: curve type not switched to line");
+                CHECK97(g->curveCustomLabel(0) == QLatin1String("BarLbl"),
+                        "97j: label lost by bars -> line ('"
+                                << g->curveCustomLabel(0).toStdString() << "')");
+                g->setCurveType(0, Graph::HorizontalBars);
+                g->setCurveType(0, Graph::Scatter);
+                CHECK97(g->curveCustomLabel(0) == QLatin1String("BarLbl"),
+                        "97j: label lost by line -> horizontal bars -> scatter");
+                g->setCurveType(0, Graph::VerticalBars);
+                g->setCurveType(0, Graph::Line);
+                g->reconstructLegend();
+                CHECK97(legendHas97(g, QStringLiteral("\\c{1}BarLbl")),
+                        "97j: legend lost the label after the type changes: " << legendText97(g));
+            }
+        }
+
+        // ---- 97k: batch plotting does not carry a label to another table ---------------------
+        {
+            QJsonArray b2x, b2a, b2b, b2c;
+            for (int i = 0; i <= 10; ++i) {
+                b2x.append(double(i));
+                b2a.append(2.0 * i);
+                b2b.append(3.0 * i);
+                b2c.append(4.0 * i);
+            }
+            CHECK_COND(makeTable(QStringLiteral("T97B2"), { "X", "A", "B", "C" },
+                                 { b2x, b2a, b2b, b2c }),
+                       "97k: creating table T97B2 failed");
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "A" } },
+                                        { "graph_name", "G97BC" },
+                                        { "label", "Sample1" } })),
+                    "97k: plot.xy label= failed");
+            const QJsonObject r = rpc(QStringLiteral("graph.batch_clone"),
+                                      QJsonObject{ { "graph", "G97BC" }, { "table", "T97B2" } });
+            CHECK97(ok(r), "97k: graph.batch_clone failed");
+            batchCloneName =
+                    r.value(QStringLiteral("result")).toObject().value(QStringLiteral("name")).toString();
+            Graph *src = firstLayer97(w, QStringLiteral("G97BC"));
+            Graph *cg = firstLayer97(w, batchCloneName);
+            CHECK97(src && src->curveCustomLabel(0) == QLatin1String("Sample1"),
+                    "97k: batch plotting removed the source label");
+            CHECK97(cg && cg->curves() == 1, "97k: batch copy '" << batchCloneName.toStdString()
+                                                                 << "' missing or empty");
+            if (cg && cg->curves() == 1) {
+                CHECK97(cg->curve(0)->title().text() == QLatin1String("T97B2_A"),
+                        "97k: batch copy curve bound to '"
+                                << cg->curve(0)->title().text().toStdString() << "'");
+                CHECK97(cg->curveCustomLabel(0).isEmpty(),
+                        "97k: batch copy carries the label '"
+                                << cg->curveCustomLabel(0).toStdString() << "'");
+                CHECK97(cg->legend() && !cg->legend()->text().contains(QStringLiteral("Sample1"))
+                                && cg->legend()->text().contains(QStringLiteral("\\c{1}")),
+                        "97k: batch copy legend: " << legendText97(cg));
+                const QJsonObject rs = rpc(QStringLiteral("graph.set_curve_style"),
+                                           QJsonObject{ { "graph", batchCloneName },
+                                                        { "curve", "Sample1" },
+                                                        { "color", "#123456" } });
+                CHECK97(!ok(rs), "97k: curve=\"Sample1\" resolved on the batch copy");
+            }
+        }
+
+        // ---- 97l: 2x2 with a deleted panel + outside panel labels -----------------------------
+        {
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97P" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "A" } },
+                                        { "graph_name", "G97Q" } })),
+                    "97l: plot.xy failed");
+            for (int k = 1; k <= 3; ++k) {
+                CHECK97(ok(rpc(QStringLiteral("graph.add_layer"), QJsonObject{ { "graph", "G97Q" } })),
+                        "97l: add_layer " << k << " failed");
+                CHECK97(ok(rpc(QStringLiteral("plot.add_curve"),
+                               QJsonObject{ { "graph", "G97Q" },
+                                            { "table", "T97P" },
+                                            { "x_col", "X" },
+                                            { "y_col", (k % 2) ? "B" : "A" },
+                                            { "layer", k } })),
+                        "97l: add_curve to layer " << k << " failed");
+            }
+            CHECK97(ok(rpc(QStringLiteral("graph.arrange_layers"),
+                           QJsonObject{ { "graph", "G97Q" }, { "rows", 2 }, { "cols", 2 } })),
+                    "97l: arrange_layers 2x2 failed");
+            CHECK97(ok(rpc(QStringLiteral("graph.remove_layer"),
+                           QJsonObject{ { "graph", "G97Q" }, { "layer", 0 } })),
+                    "97l: removing the top-left layer failed");
+            auto *ml = qobject_cast<MultiLayer *>(findWindow97(w, QStringLiteral("G97Q")));
+            CHECK97(ml && ml->layersList().size() == 3, "97l: G97Q should have 3 layers");
+            if (ml && ml->layersList().size() == 3) {
+                QCoreApplication::processEvents();
+                QList<QRect> geo0;
+                for (Graph *lg : ml->layersList())
+                    geo0 << lg->geometry();
+                const int pageH0 = ml->canvasWidget() ? ml->canvasWidget()->height() : -1;
+                CHECK97(ok(rpc(QStringLiteral("graph.set_panel_labels"),
+                               QJsonObject{ { "graph", "G97Q" }, { "enabled", true } })),
+                        "97l: set_panel_labels failed");
+                QList<QRect> geo1;
+                for (Graph *lg : ml->layersList())
+                    geo1 << lg->geometry();
+                const int pageH1 = ml->canvasWidget() ? ml->canvasWidget()->height() : -1;
+                int maxPanelH = 0;
+                for (int k = 0; k < 3; ++k) {
+                    maxPanelH = qMax(maxPanelH, geo0[k].height());
+                    std::cout << "[INFO] 97l: layer " << k << " y " << geo0[k].y() << " -> "
+                              << geo1[k].y() << " (h " << geo0[k].height() << ")\n";
+                    CHECK97(std::abs(geo1[k].y() - geo0[k].y()) <= geo0[k].height() / 4
+                                    && geo1[k].x() == geo0[k].x()
+                                    && geo1[k].size() == geo0[k].size(),
+                            "97l: layer " << k << " moved from y " << geo0[k].y() << " to "
+                                          << geo1[k].y() << " by the panel labels");
+                }
+                std::cout << "[INFO] 97l: page height " << pageH0 << " -> " << pageH1 << "\n";
+                // Panels that shared a row on the page still do, and every label sits just
+                // above its own panel (not at the height of another row's labels).
+                for (int a = 0; a < 3; ++a)
+                    for (int c = a + 1; c < 3; ++c)
+                        if (geo0[a].y() == geo0[c].y())
+                            CHECK97(geo1[a].y() == geo1[c].y(),
+                                    "97l: layers " << a << " and " << c << " of one row now at y "
+                                                   << geo1[a].y() << " / " << geo1[c].y());
+                QString whyL;
+                CHECK97(panelLabelsClear97(ml, &whyL), "97l: panel labels: " << whyL.toStdString());
+                for (const MultiLayer::PanelLabelBox &pb : ml->panelLabelBoxes()) {
+                    Plot *pp = pb.graph->plotWidget();
+                    pp->updateLayout();
+                    const int canvasTop =
+                            pp->plotLayout()->canvasRect().translated(pb.graph->pos()).top();
+                    CHECK97(canvasTop - pb.box.bottom() <= pb.graph->height() / 4,
+                            "97l: label of layer " << ml->layersList().indexOf(pb.graph)
+                                                   << " (bottom " << pb.box.bottom()
+                                                   << ") far above its canvas top " << canvasTop);
+                }
+                CHECK97(pageH1 - pageH0 <= maxPanelH / 4,
+                        "97l: page grew from " << pageH0 << " to " << pageH1);
+                CHECK97(ok(rpc(QStringLiteral("graph.set_panel_labels"),
+                               QJsonObject{ { "graph", "G97Q" }, { "enabled", true } })),
+                        "97l: second set_panel_labels failed");
+                for (int k = 0; k < 3; ++k)
+                    CHECK97(ml->layersList().at(k)->geometry() == geo1[k],
+                            "97l: layer " << k << " moved by a repeated set_panel_labels (y "
+                                          << geo1[k].y() << " -> "
+                                          << ml->layersList().at(k)->geometry().y() << ")");
+                CHECK97(!ml->canvasWidget() || ml->canvasWidget()->height() == pageH1,
+                        "97l: page grew again on a repeated set_panel_labels ("
+                                << pageH1 << " -> " << ml->canvasWidget()->height() << ")");
+            }
+        }
+
+        // ---- 97m: label on the 2nd of two curves of one Y column -----------------------------
+        {
+            CHECK97(ok(rpc(QStringLiteral("plot.xy"),
+                           QJsonObject{ { "table", "T97" },
+                                        { "x_col", "X" },
+                                        { "y_cols", QJsonArray{ "B" } },
+                                        { "graph_name", "G97DUP" } })),
+                    "97m: plot.xy failed");
+            CHECK97(ok(rpc(QStringLiteral("plot.add_curve"),
+                           QJsonObject{ { "graph", "G97DUP" },
+                                        { "table", "T97" },
+                                        { "x_col", "C" },
+                                        { "y_col", "B" },
+                                        { "label", "run2" } })),
+                    "97m: add_curve X=C Y=B label=run2 failed");
+            Graph *g = firstLayer97(w, QStringLiteral("G97DUP"));
+            auto xColOf = [](Graph *gr, int i) {
+                auto *dc = gr ? dynamic_cast<DataCurve *>(gr->curve(i)) : nullptr;
+                return dc ? dc->xColumnName() : QString();
+            };
+            CHECK97(g && g->curves() == 2 && g->curve(0)->title().text() == QLatin1String("T97_B")
+                            && g->curve(1)->title().text() == QLatin1String("T97_B")
+                            && xColOf(g, 1) == QLatin1String("T97_C")
+                            && g->curveCustomLabel(1) == QLatin1String("run2"),
+                    "97m: G97DUP should hold B(X) and B(C) with the label on the 2nd");
+            if (g && g->curves() == 2) {
+                const QColor before0 = g->curve(0)->pen().color();
+                CHECK97(ok(rpc(QStringLiteral("graph.set_curve_style"),
+                               QJsonObject{ { "graph", "G97DUP" },
+                                            { "curve", "run2" },
+                                            { "color", "#0000ff" } })),
+                        "97m: set_curve_style curve=run2 failed");
+                g = firstLayer97(w, QStringLiteral("G97DUP"));
+                CHECK97(g->curve(1)->pen().color() == QColor(QStringLiteral("#0000ff"))
+                                && g->curve(0)->pen().color() == before0,
+                        "97m: curve=run2 styled the 1st curve");
+                CHECK97(ok(rpc(QStringLiteral("graph.set_curve_visible"),
+                               QJsonObject{ { "graph", "G97DUP" },
+                                            { "curve", "run2" },
+                                            { "visible", false } })),
+                        "97m: set_curve_visible curve=run2 failed");
+                g = firstLayer97(w, QStringLiteral("G97DUP"));
+                CHECK97(!g->isCurveVisible(1) && g->isCurveVisible(0),
+                        "97m: curve=run2 hid the wrong curve");
+                rpc(QStringLiteral("graph.set_curve_visible"),
+                    QJsonObject{ { "graph", "G97DUP" }, { "curve", 1 }, { "visible", true } });
+                // X of the 2nd curve is exp(x): only its last two points lie in [5, 8]; the 1st
+                // curve (X in [-2, 2]) has none there.
+                const QJsonObject rm = rpc(QStringLiteral("graph.mask_region"),
+                                           QJsonObject{ { "graph", "G97DUP" },
+                                                        { "curve", "run2" },
+                                                        { "x_min", 5.0 },
+                                                        { "x_max", 8.0 } });
+                CHECK97(ok(rm)
+                                && rm.value(QStringLiteral("result"))
+                                                .toObject()
+                                                .value(QStringLiteral("masked_points"))
+                                                .toInt()
+                                        == 2,
+                        "97m: mask_region curve=run2 masked "
+                                << rm.value(QStringLiteral("result"))
+                                           .toObject()
+                                           .value(QStringLiteral("masked_points"))
+                                           .toInt()
+                                << " points (expected 2)");
+                CHECK97(ok(rpc(QStringLiteral("graph.clear_masks"),
+                               QJsonObject{ { "graph", "G97DUP" }, { "curve", "run2" } })),
+                        "97m: clear_masks curve=run2 failed");
+                // A fit picks its data by column title: it must not silently fit the 1st curve.
+                const QJsonObject rf = rpc(QStringLiteral("analysis.fit_linear"),
+                                           QJsonObject{ { "graph", "G97DUP" },
+                                                        { "curve", "run2" },
+                                                        { "plot_curve", false } });
+                CHECK97(!ok(rf), "97m: fit_linear curve=run2 used the 1st curve silently");
+                CHECK97(ok(rpc(QStringLiteral("plot.remove_curve"),
+                               QJsonObject{ { "graph", "G97DUP" }, { "curve", "run2" } })),
+                        "97m: remove_curve curve=run2 failed");
+                g = firstLayer97(w, QStringLiteral("G97DUP"));
+                CHECK97(g && g->curves() == 1 && xColOf(g, 0) == QLatin1String("T97_X"),
+                        "97m: remove_curve curve=run2 removed the 1st curve (left X '"
+                                << (g ? xColOf(g, 0).toStdString() : std::string("?")) << "')");
+            }
+        }
+
         // ---- 97g: 3D scale -------------------------------------------------------------------
         {
             auto *g3 = qobject_cast<Graph3D *>(findWindow97(w, QStringLiteral("S97F")));
@@ -840,6 +1105,26 @@ int runSuite97PlotDataFidelity(ApplicationWindow *mw)
                 CHECK97(panelLabelsClear97(ml, &why),
                         "97i-reopen: panel labels: " << why.toStdString());
             }
+        }
+        // 97j
+        {
+            Graph *g = firstLayer97(rd, QStringLiteral("G97BL"));
+            CHECK97(g && g->curves() == 1 && g->curveType(0) == Graph::Line
+                            && g->curveCustomLabel(0) == QLatin1String("BarLbl"),
+                    "97j-reopen: bars -> line curve lost its type or label ('"
+                            << (g ? g->curveCustomLabel(0).toStdString() : std::string("?"))
+                            << "')");
+        }
+        // 97k
+        {
+            Graph *src = firstLayer97(rd, QStringLiteral("G97BC"));
+            CHECK97(src && src->curveCustomLabel(0) == QLatin1String("Sample1"),
+                    "97k-reopen: source label not restored");
+            Graph *cg = firstLayer97(rd, batchCloneName);
+            CHECK97(cg && cg->curves() == 1 && cg->curveCustomLabel(0).isEmpty()
+                            && cg->legend()
+                            && !cg->legend()->text().contains(QStringLiteral("Sample1")),
+                    "97k-reopen: batch copy carries the source label: " << legendText97(cg));
         }
         // 97g
         {

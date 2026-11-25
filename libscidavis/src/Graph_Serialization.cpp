@@ -2231,9 +2231,14 @@ bool Graph::restorePhase5Tag(const QString &line)
             return dc;
         };
         // 同じ番号の曲線（列名が一致するか、曲線の数が保存時と同じなら列の改名後でも）。
+        // 列名が違うときは、Y 列の表が保存時と同じ曲線にだけ付ける。別の表へ差し替えた
+        // 曲線（一括作図の複製など）に元の表の曲線のラベルを持ち越さない。
         DataCurve *target = boundTo(idx, true);
-        if (!target && savedN == n_curves)
-            target = boundTo(idx, false);
+        if (!target && savedN == n_curves) {
+            DataCurve *dc = boundTo(idx, false);
+            if (dc && yName.startsWith(dc->table()->name() + QLatin1Char('_')))
+                target = dc;
+        }
         // 曲線の数が変わった（読めなかった曲線がある）ときは列名で探す。
         for (int i = 0; !target && i < n_curves; ++i) {
             DataCurve *dc = boundTo(i, true);

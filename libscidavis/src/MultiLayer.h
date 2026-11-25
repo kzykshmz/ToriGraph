@@ -276,7 +276,7 @@ public:
     struct PanelLabelBox
     {
         Graph *graph = nullptr;
-        int row = 0; //!< row in the panel grid (label numbering order / cols)
+        int row = 0; //!< row of the panel on the page (panelLabelGridCells())
         QRect box;   //!< glyph box in canvas pixels, as panelLabelsBoundingRect() unites them
     };
     //! The panel labels, one per labelled primary panel, in layer order. Empty when panel
@@ -503,6 +503,13 @@ private:
     //! panel's size, so no axis range changes) and grows the page when a label would leave the
     //! page top or overlap the axis band of the panel above.
     void makeRoomForOutsidePanelLabels();
+    //! Row (y) and column (x) of each primary panel on the page, from where its canvas actually
+    //! is (canvas tops / lefts within a small tolerance share a row / column). The outside panel
+    //! labels of one row / column are aligned with each other. Taken from the geometry, not
+    //! from the layer order: after a panel of a grid is deleted, or with a layer added outside
+    //! the grid, the layer order no longer matches the rows on the page.  updateLayouts
+    //! false uses the plots' current layouts (while painting a widget).
+    QHash<Graph *, QPoint> panelLabelGridCells(bool updateLayouts = true) const;
     void drawInsetConnectors(QPainter *painter, const QPoint &originOffset = QPoint(0, 0)) const;
     void syncCanvasOverlayVisibility();
     QList<Graph *> orderedLayersForRender() const;

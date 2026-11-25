@@ -3358,8 +3358,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                                     .arg(g->curves()));
                 }
             } else {
-                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-                cIdx = g->curveIndex(ct);
+                cIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
             }
         } else if (g->curves() > 0) {
             cIdx = 0;
@@ -3489,8 +3488,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             if (cv.isDouble()) {
                 idx = parseStrictJsonInt(cv, QStringLiteral("curve"));
             } else {
-                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-                idx = g->curveIndex(ct);
+                idx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
             }
         } else if (params.contains(QStringLiteral("curve_index"))
                    && !params.value(QStringLiteral("curve_index")).isNull()) {
@@ -3534,8 +3532,7 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             if (cv.isDouble()) {
                 fromIdx = parseStrictJsonInt(cv, QStringLiteral("curve"));
             } else {
-                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-                fromIdx = g->curveIndex(ct);
+                fromIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
             }
         } else {
             throwInvalidParams(QStringLiteral("from_index (or curve) is required."));
@@ -4458,12 +4455,10 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 Graph *lg = targetLayers.at(li);
                 if (!lg)
                     continue;
-                const QString ct = resolveCurveTitle(lg, params, QStringLiteral("curve"), false);
-                if (!ct.isEmpty()) {
-                    onlyIdxPerLayer[li] = lg->curveIndex(ct);
-                    if (onlyIdxPerLayer[li] >= 0)
-                        foundCurve = true;
-                }
+                onlyIdxPerLayer[li] =
+                        resolveCurveIndex(lg, params, QStringLiteral("curve"), false);
+                if (onlyIdxPerLayer[li] >= 0)
+                    foundCurve = true;
             }
         }
         if (!foundCurve)
@@ -4507,13 +4502,10 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 continue;
             int onlyIdx = -1;
             if (hasExplicitCurve) {
-                const QString ct = resolveCurveTitle(lg, params, QStringLiteral("curve"),
-                                                     targetLayers.size() == 1);
-                if (!ct.isEmpty()) {
-                    onlyIdx = lg->curveIndex(ct);
-                    if (onlyIdx >= 0)
-                        foundCurve = true;
-                }
+                onlyIdx = resolveCurveIndex(lg, params, QStringLiteral("curve"),
+                                            targetLayers.size() == 1);
+                if (onlyIdx >= 0)
+                    foundCurve = true;
             }
             for (int i = 0; i < lg->curves(); ++i) {
                 if (hasExplicitCurve && (onlyIdx < 0 || i != onlyIdx))

@@ -68,6 +68,7 @@
 #include <QThread>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <limits>
 
 #if QT_VERSION >= 0x040300
@@ -1955,6 +1956,7 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
             if (lineChanged)
                 line = parts.join(QLatin1Char('\t'));
         } else if (trimmed.startsWith(QLatin1String("<ToriErrorBand"))
+                   || trimmed.startsWith(QLatin1String("<ToriCurveLabel"))
                    || trimmed.startsWith(QLatin1String("<ToriPointColorMap"))
                    || trimmed.startsWith(QLatin1String("<ToriDensity2D"))
                    || trimmed.startsWith(QLatin1String("<ToriPoleFigure"))
@@ -1973,7 +1975,9 @@ QString remapSnapshotText(const QString &snapshot, SnapshotRenameKind kind, cons
                 for (int si = 0; si < spans.size(); ++si)
                     newVals[si] = spans[si].value;
 
-                if (trimmed.startsWith(QLatin1String("<ToriErrorBand"))) {
+                if (trimmed.startsWith(QLatin1String("<ToriErrorBand"))
+                    || trimmed.startsWith(QLatin1String("<ToriCurveLabel"))) {
+                    // 曲線ラベルの x/y は、番号がずれたときと表が差し替わったかの照合に使う。
                     if (kind != SnapshotRenameKind::MatrixRename) {
                         for (int si = 0; si < spans.size(); ++si) {
                             const QString &an = spans[si].name;
@@ -2570,52 +2574,103 @@ void MultiLayer::makeRoomForOutsidePanelLabels()
     if (boxes.isEmpty())
         return;
 
-    // Rows in the order the labels number the panels (the same grouping panelLabelBoxes() uses
-    // to align the labels of one row).
-    const int effCols = qMax(1, cols);
-    QMap<int, QList<Graph *>> rowGraphs;
-    int panelIdx = 0;
+    // Panels in the rows panelLabelBoxes() aligns the labels of (panelLabelGridCells(): rows on
+    // the page). A row moves as one so its labels stay aligned. Which panels lie above which is
+    // also taken from the geometry. Rows from the layer order (index / cols) mixed panels of
+    // different rows on the page after deleting a panel of a grid or adding a layer outside it,
+    // and the bottom of that mixed "row above" pushed a panel down by about a panel height, again
+    // on every call.
+    struct PanelGeo {
+        Graph *gr = nullptr;
+        QRect geo;
+        int canvasTop = 0;
+        int labelTop = 0;
+        bool hasLabel = false;
+        int group = 0;
+    };
+    QHash<Graph *, int> labelTopOf;
+    for (const PanelLabelBox &pb : boxes) {
+        labelTopOf[pb.graph] = labelTopOf.contains(pb.graph)
+                ? qMin(labelTopOf.value(pb.graph), pb.box.top())
+                : pb.box.top();
+    }
+    const QHash<Graph *, QPoint> cells = panelLabelGridCells();
+    QVector<PanelGeo> panels;
+    QMap<int, int> groupMinTop;
+    int maxBottomBefore = std::numeric_limits<int>::min();
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
         if (!gr || !gr->plotWidget() || gr->linkedParentLayer() || d_inset_specs.contains(gr))
             continue;
-        const int row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
-        rowGraphs[row].append(gr);
-        ++panelIdx;
+        PanelGeo pg;
+        pg.gr = gr;
+        pg.geo = gr->geometry();
+        Plot *plot = gr->plotWidget();
+        plot->updateLayout();
+        pg.canvasTop = plot->plotLayout()->canvasRect().top() + gr->y();
+        pg.hasLabel = labelTopOf.contains(gr);
+        pg.labelTop = labelTopOf.value(gr, 0);
+        pg.group = cells.value(gr).y();
+        groupMinTop[pg.group] = groupMinTop.contains(pg.group)
+                ? qMin(groupMinTop.value(pg.group), pg.geo.top())
+                : pg.geo.top();
+        maxBottomBefore = qMax(maxBottomBefore, pg.geo.bottom());
+        panels.append(pg);
     }
-    QMap<int, int> rowLabelTop;
-    for (const PanelLabelBox &pb : boxes) {
-        rowLabelTop[pb.row] = rowLabelTop.contains(pb.row) ? qMin(rowLabelTop[pb.row], pb.box.top())
-                                                           : pb.box.top();
-    }
+    // Q lies above P: it starts higher, ends before P's canvas (so it is not an overlapping
+    // layer) and shares a real part of P's width.
+    auto isAbove = [](const PanelGeo &q, const PanelGeo &p) {
+        if (q.geo.top() >= p.geo.top() || q.geo.bottom() >= p.canvasTop)
+            return false;
+        const int overlap = qMin(q.geo.right(), p.geo.right()) - qMax(q.geo.left(), p.geo.left());
+        return overlap > qMin(q.geo.width(), p.geo.width()) / 4;
+    };
 
-    // Each row's labels must start inside the page and below the bottom edge of the row above
-    // (its plot widgets hold the bottom axis band: tick labels and axis title).
+    // Each label must start inside the page and below the bottom edge of the panels above it
+    // (their plot widgets hold the bottom axis band: tick labels and axis title). A panel moves
+    // at least as far as the panels above it. Shifts only grow, so this settles.
     const int kGap = 2;
-    QHash<Graph *, int> shiftOf;
-    int cumShift = 0;
-    bool havePrev = false;
-    int prevRowBottom = 0;
-    int maxBottomBefore = std::numeric_limits<int>::min();
-    for (auto it = rowGraphs.constBegin(); it != rowGraphs.constEnd(); ++it) {
-        int rowBottom = std::numeric_limits<int>::min();
-        for (Graph *gr : it.value()) {
-            rowBottom = qMax(rowBottom, gr->geometry().bottom());
-            maxBottomBefore = qMax(maxBottomBefore, gr->geometry().bottom());
+    QMap<int, int> groupShift;
+    for (auto it = groupMinTop.constBegin(); it != groupMinTop.constEnd(); ++it)
+        groupShift[it.key()] = 0;
+    QList<int> order = groupMinTop.keys();
+    std::stable_sort(order.begin(), order.end(), [&groupMinTop](int a, int b) {
+        return groupMinTop.value(a) < groupMinTop.value(b);
+    });
+    for (int pass = 0; pass <= order.size(); ++pass) {
+        bool changed = false;
+        for (int grp : order) {
+            int s = groupShift.value(grp);
+            for (const PanelGeo &p : panels) {
+                if (p.group != grp)
+                    continue;
+                if (p.hasLabel)
+                    s = qMax(s, -p.labelTop);
+                for (const PanelGeo &q : panels) {
+                    if (q.group == grp || !isAbove(q, p))
+                        continue;
+                    const int qs = groupShift.value(q.group);
+                    s = qMax(s, qs);
+                    if (p.hasLabel)
+                        s = qMax(s, q.geo.bottom() + qs + 1 + kGap - p.labelTop);
+                }
+            }
+            if (s != groupShift.value(grp)) {
+                groupShift[grp] = s;
+                changed = true;
+            }
         }
-        if (rowLabelTop.contains(it.key())) {
-            const int labelTop = rowLabelTop.value(it.key()) + cumShift;
-            int needTop = 0;
-            if (havePrev)
-                needTop = qMax(needTop, prevRowBottom + 1 + kGap);
-            cumShift += qMax(0, needTop - labelTop);
-        }
-        for (Graph *gr : it.value())
-            shiftOf.insert(gr, cumShift);
-        prevRowBottom = rowBottom + cumShift;
-        havePrev = true;
+        if (!changed)
+            break;
     }
-    if (cumShift <= 0)
+    QHash<Graph *, int> shiftOf;
+    int maxShift = 0;
+    for (const PanelGeo &p : panels) {
+        const int s = groupShift.value(p.group);
+        shiftOf.insert(p.gr, s);
+        maxShift = qMax(maxShift, s);
+    }
+    if (maxShift <= 0)
         return;
 
     QVector<bool> savedIgnore(graphsList.count(), false);
@@ -2687,6 +2742,52 @@ void MultiLayer::makeRoomForOutsidePanelLabels()
     }
 }
 
+QHash<Graph *, QPoint> MultiLayer::panelLabelGridCells(bool updateLayouts) const
+{
+    QVector<QPair<int, Graph *>> tops;
+    QVector<QPair<int, Graph *>> lefts;
+    int minH = std::numeric_limits<int>::max();
+    int minW = std::numeric_limits<int>::max();
+    for (int i = 0; i < graphsList.count(); ++i) {
+        Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
+        if (!gr || !gr->plotWidget() || gr->linkedParentLayer() || d_inset_specs.contains(gr))
+            continue;
+        Plot *plot = gr->plotWidget();
+        if (updateLayouts)
+            plot->updateLayout();
+        const QRect c = plot->plotLayout()->canvasRect().translated(gr->pos());
+        tops.append(qMakePair(c.top(), gr));
+        lefts.append(qMakePair(c.left(), gr));
+        minH = qMin(minH, qMax(1, c.height()));
+        minW = qMin(minW, qMax(1, c.width()));
+    }
+    // Sorted positions start a new row / column when they lie more than the tolerance below /
+    // right of the first panel of the current one.
+    auto cluster = [](QVector<QPair<int, Graph *>> v, int tol) {
+        std::stable_sort(v.begin(), v.end(),
+                         [](const QPair<int, Graph *> &a, const QPair<int, Graph *> &b) {
+                             return a.first < b.first;
+                         });
+        QHash<Graph *, int> out;
+        int idx = -1;
+        int start = 0;
+        for (const auto &e : v) {
+            if (idx < 0 || e.first - start > tol) {
+                ++idx;
+                start = e.first;
+            }
+            out.insert(e.second, idx);
+        }
+        return out;
+    };
+    const QHash<Graph *, int> rowOf = cluster(tops, qMax(4, minH / 8));
+    const QHash<Graph *, int> colOf = cluster(lefts, qMax(4, minW / 8));
+    QHash<Graph *, QPoint> cells;
+    for (auto it = rowOf.constBegin(); it != rowOf.constEnd(); ++it)
+        cells.insert(it.key(), QPoint(colOf.value(it.key()), it.value()));
+    return cells;
+}
+
 QRect MultiLayer::panelLabelsBoundingRect() const
 {
     QRect bounds;
@@ -2743,7 +2844,7 @@ QVector<MultiLayer::PanelLabelBox> MultiLayer::panelLabelBoxes() const
     };
 
     QVector<PanelInfo> panels;
-    const int effCols = qMax(1, cols);
+    const QHash<Graph *, QPoint> cells = panelLabelGridCells();
     int panelIdx = 0;
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
@@ -2789,8 +2890,8 @@ QVector<MultiLayer::PanelLabelBox> MultiLayer::panelLabelBoxes() const
         pi.ascent = fm.ascent();
         pi.descent = fm.descent();
         pi.height = fm.height();
-        pi.col = (effCols > 1) ? (panelIdx % effCols) : 0;
-        pi.row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
+        pi.col = cells.value(gr).x();
+        pi.row = cells.value(gr).y();
         pi.cx = innerCanvas.left() + 8;
         pi.cy = innerCanvas.top() + 6 + pi.ascent;
 
@@ -3046,7 +3147,8 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
     painter->setRenderHint(QPainter::TextAntialiasing, true);
 
     QVector<PanelDrawItem> items;
-    const int effCols = qMax(1, cols);
+    const QHash<Graph *, QPoint> cells = panelLabelGridCells(
+            painter->device() && painter->device()->devType() != QInternal::Widget);
     int panelIdx = 0;
     for (int i = 0; i < graphsList.count(); ++i) {
         Graph *gr = qobject_cast<Graph *>(graphsList.at(i));
@@ -3090,8 +3192,8 @@ void MultiLayer::drawPanelLabels(QPainter *painter, const QPoint &originOffset) 
         item.fnt = fnt;
         item.text = text;
         item.ascent = fm.ascent();
-        item.col = (effCols > 1) ? (panelIdx % effCols) : 0;
-        item.row = (effCols > 1) ? (panelIdx / effCols) : panelIdx;
+        item.col = cells.value(gr).x();
+        item.row = cells.value(gr).y();
         item.cx = innerCanvas.left() + 8;
         item.cy = innerCanvas.top() + 6 + fm.ascent();
 

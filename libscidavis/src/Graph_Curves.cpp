@@ -505,6 +505,16 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
         }
 
         const bool wasVisible = old_curve->isVisible();
+        // 曲線そのものが持つ状態（c_type や表には無いもの）を新しい曲線へ写す。写さないと
+        // 縦棒・横棒との行き来で、独自ラベル（凡例の名前）、右軸・上軸への割り当て、
+        // 色分け、記号の間引き、積み重ねのずらし・0-1 正規化が消える。ずらしと正規化は
+        // 下の loadData() が読み直した点に掛け直す。点と表の行の対応も loadData() が作る。
+        new_curve->setCustomLabel(old_curve->customLabel());
+        new_curve->setAxis(old_curve->xAxis(), old_curve->yAxis());
+        new_curve->setPointColorMap(old_curve->pointColorMap());
+        new_curve->setSymbolSkip(old_curve->symbolSkip());
+        new_curve->setStackOffset(old_curve->stackOffsetX(), old_curve->stackOffsetY());
+        new_curve->setStackNormalize01(old_curve->stackNormalize01());
         old_curve->clearErrorBars();
         curve_index = plotItemIndex(old_curve);
         if (curve_index < 0 || curve_index >= n_curves || curve_index >= c_type.size()) {

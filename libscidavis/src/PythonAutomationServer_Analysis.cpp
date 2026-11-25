@@ -608,22 +608,30 @@ int requireCurveMinPoints(Graph *g, const QString &curveTitle, int minPts, const
     return validPts;
 }
 
-QString resolveCurveTitle(Graph *g, const QJsonObject &params,
-                          const QString &key, bool required)
+int resolveCurveIndex(Graph *g, const QJsonObject &params, const QString &key, bool required,
+                      bool *matchedByLabel)
 {
+    if (matchedByLabel)
+        *matchedByLabel = false;
     if (!g) {
         if (required)
             throwInvalidParams(QStringLiteral("Graph layer is null."));
-        return QString();
+        return -1;
+    }
+    // curvesList() の並び（QwtPlotCurve でない項目を除く）と曲線番号の対応。番号での指定は
+    // 以前から curvesList() の位置なので、その位置の曲線の番号を返す。
+    QVector<int> curveIdxOf;
+    for (int i = 0; i < g->curves(); ++i) {
+        if (g->curve(i))
+            curveIdxOf << i;
     }
     const QStringList allCurves = g->curvesList();
-    const QStringList dataCurves = g->analysableCurvesList();
     if (params.contains(key) && !params.value(key).isNull()) {
         const QJsonValue v = params.value(key);
         if (v.isDouble() && !v.isBool()) {
             const int idx = parseStrictJsonInt(v, key);
-            if (idx >= 0 && idx < allCurves.size())
-                return allCurves[idx];
+            if (idx >= 0 && idx < curveIdxOf.size())
+                return curveIdxOf[idx];
             if (required) {
                 throwInvalidParamsWithAvailable(
                         QStringLiteral("Curve index %1 out of range (curve_count=%2).")
@@ -631,7 +639,7 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                                 .arg(allCurves.size()),
                         allCurves);
             }
-            return QString();
+            return -1;
         }
         if (!v.isString()) {
             throwInvalidParams(
@@ -640,18 +648,20 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
         }
         const QString want = v.toString().trimmed();
         if (!want.isEmpty()) {
-            if (g->curveIndex(want) >= 0)
-                return want;
-            for (const QString &c : allCurves) {
-                if (c.compare(want, Qt::CaseInsensitive) == 0)
-                    return c;
+            const int exact = g->curveIndex(want);
+            if (exact >= 0)
+                return exact;
+            for (int k = 0; k < curveIdxOf.size(); ++k) {
+                if (g->curve(curveIdxOf[k])->title().text().compare(want, Qt::CaseInsensitive)
+                    == 0)
+                    return curveIdxOf[k];
             }
             for (int ci = 0; ci < g->curves(); ++ci) {
                 if (auto *dc = dynamic_cast<DataCurve *>(g->curve(ci))) {
                     if (dc->table()
                         && dc->yColumnName()
                                 == dc->table()->name() + QStringLiteral("_") + want) {
-                        return dc->title().text();
+                        return ci;
                     }
                 }
             }
@@ -662,15 +672,19 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                                    dc->table()->name() + QStringLiteral("_") + want,
                                    Qt::CaseInsensitive)
                                 == 0) {
-                        return dc->title().text();
+                        return ci;
                     }
                 }
             }
             // 曲線の独自ラベル（label= で付けた凡例の名前）。タイトルは Y 列のままなので、
-            // ラベルで指定されたら、その曲線のタイトルを返す。
+            // 同じ Y 列の曲線が複数あるとタイトルでは区別できない。ラベルで当たった曲線の
+            // 番号をそのまま返す。
             const int byLabel = g->curveIndexByCustomLabel(want);
-            if (byLabel >= 0 && g->curve(byLabel))
-                return g->curve(byLabel)->title().text();
+            if (byLabel >= 0 && g->curve(byLabel)) {
+                if (matchedByLabel)
+                    *matchedByLabel = true;
+                return byLabel;
+            }
             for (int ci = 0; ci < g->curves(); ++ci) {
                 QwtPlotCurve *pc = g->curve(ci);
                 if (!pc)
@@ -680,7 +694,7 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                     const QString ct = pc->title().text();
                     if (ct.endsWith(QStringLiteral("_") + want)
                         || ct.endsWith(QStringLiteral("_") + want, Qt::CaseInsensitive)) {
-                        return ct;
+                        return ci;
                     }
                 }
             }
@@ -688,15 +702,15 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                 throwInvalidParamsWithAvailable(
                         QStringLiteral("Curve '%1' not found on graph.").arg(want), allCurves);
             }
-            return QString();
+            return -1;
         }
     }
     if (params.contains(QStringLiteral("curve_index"))
         && !params.value(QStringLiteral("curve_index")).isNull()) {
         const int idx = parseStrictJsonInt(params.value(QStringLiteral("curve_index")),
                                            QStringLiteral("curve_index"));
-        if (idx >= 0 && idx < allCurves.size())
-            return allCurves[idx];
+        if (idx >= 0 && idx < curveIdxOf.size())
+            return curveIdxOf[idx];
         if (required) {
             throwInvalidParamsWithAvailable(
                     QStringLiteral("curve_index %1 out of range (curve_count=%2).")
@@ -704,15 +718,43 @@ QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                             .arg(allCurves.size()),
                     allCurves);
         }
-        return QString();
+        return -1;
     }
-    if (!dataCurves.isEmpty())
-        return dataCurves.first();
-    if (!allCurves.isEmpty())
-        return allCurves.first();
+    for (int ci = 0; ci < g->curves(); ++ci) {
+        if (g->curve(ci) && g->curveType(ci) != Graph::ErrorBars)
+            return ci;
+    }
+    if (!curveIdxOf.isEmpty())
+        return curveIdxOf.first();
     if (required)
         throwInvalidParamsWithAvailable(QStringLiteral("Graph layer has no curves."), allCurves);
-    return QString();
+    return -1;
+}
+
+QString resolveCurveTitle(Graph *g, const QJsonObject &params,
+                          const QString &key, bool required)
+{
+    bool byLabel = false;
+    const int idx = resolveCurveIndex(g, params, key, required, &byLabel);
+    QwtPlotCurve *c = (g && idx >= 0) ? g->curve(idx) : nullptr;
+    if (!c)
+        return QString();
+    const QString title = c->title().text();
+    // 呼び出し側はタイトルで曲線を引き直す（最初に一致した曲線になる）。ラベルで指定された
+    // 曲線より前に同じタイトル（同じ Y 列）の曲線があると別の曲線に当たるので、黙って
+    // 取り違えずに知らせる。
+    if (byLabel && g->curveIndex(title) != idx) {
+        throwInvalidParams(
+                QStringLiteral("Curve label '%1' names curve %2, but curve %3 plots the same "
+                               "column '%4' and this method selects curves by column, so it "
+                               "cannot tell them apart. Plot the data in a separate layer or "
+                               "graph to use it here.")
+                        .arg(params.value(key).toString().trimmed())
+                        .arg(idx)
+                        .arg(g->curveIndex(title))
+                        .arg(title));
+    }
+    return title;
 }
 
 // Resolves either an existing (MultiLayer*, Graph*, curveTitle) OR auto-plots from (table, x_col, y_col)

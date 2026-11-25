@@ -441,6 +441,12 @@ void replotGraphOrDefer(Graph *g);
 void enforceArialGraph3DFonts(Graph3D *g3d);
 QString resolveCurveTitle(Graph *g, const QJsonObject &params,
                           const QString &key = QStringLiteral("curve"), bool required = true);
+//! Same lookup as resolveCurveTitle(), but returns the curve index, so a curve picked by its
+//! label (or position) is not confused with an earlier curve plotting the same Y column.
+//! Returns -1 when nothing matched and \a required is false.
+int resolveCurveIndex(Graph *g, const QJsonObject &params,
+                      const QString &key = QStringLiteral("curve"), bool required = true,
+                      bool *matchedByLabel = nullptr);
 QString sanitizeWindowNameForSciDAVis(const QString &raw,
                                       const QString &fallbackPrefix = QStringLiteral("Win"),
                                       bool preserveUnderscores = false);

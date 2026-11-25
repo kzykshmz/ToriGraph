@@ -2573,11 +2573,11 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
     if (method == QStringLiteral("plot.remove_curve")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        const QString title = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+        const int curveIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
         ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Remove Curve"));
         if (d_app)
             d_app->invalidateModelessGraphDialogs(ml);
-        g->removeCurve(title);
+        g->removeCurve(curveIdx);
         g->replot();
         undoGuard.commit();
         outResult = serializeGraphInfo(ml);
@@ -4763,8 +4763,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             if (cv.isDouble()) {
                 cIdx = parseStrictJsonInt(cv, QStringLiteral("curve"));
             } else {
-                const QString ct = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
-                cIdx = g->curveIndex(ct);
+                cIdx = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
             }
         } else {
             for (int ci = 0; ci < g->curves(); ++ci) {
