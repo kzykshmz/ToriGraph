@@ -25,6 +25,10 @@
 //        missing tokens ("\"N/A\"") make it a text column
 //   105d label columns, columns with too many non-numeric cells, too few numbers and date /
 //        time columns stay text
+//   105e table.paste_tsv into existing columns keeps their type as table.set_cell does (text,
+//        date/time, month and numeric columns; a non-number turns a numeric column into text
+//        without losing its other rows); a one-line paste without tab is one cell; one Undo
+//        restores the table; empty default columns still take the type of the pasted data
 // =============================================================================
 
 namespace {
@@ -332,6 +336,150 @@ int runSuite105RpcImportColumnTypes(ApplicationWindow *mw)
                                          "eps,6\n"),
                          "tn"),
                "105d5: a label column with one number stays text");
+
+    // -------------------------------------------------------------------------
+    // 105e: paste_tsv into existing columns keeps their type (as set_cell does)
+    // -------------------------------------------------------------------------
+    {
+        auto tableState = [](Table *t) -> QStringList {
+            QStringList st;
+            st << QString::number(t->numRows()) << QString::number(t->numCols());
+            for (int c = 0; c < t->numCols(); ++c) {
+                Column *col = t->column(c);
+                st << t->colLabel(c) << QString::number(int(col->columnMode()));
+                for (int r = 0; r < t->numRows(); ++r)
+                    st << (col->isInvalid(r) ? QStringLiteral("<inv>") : t->text(r, c));
+            }
+            return st;
+        };
+        auto undoStackOf = [](Table *t) -> QUndoStack * {
+            return (t && t->d_future_table) ? t->d_future_table->undoStack() : nullptr;
+        };
+        // text Al..Cu, date/time, month, numeric: the worksheet of the report
+        auto makeFixture = [&](const QString &name) -> Table * {
+            Table *t = w105->newTable(4, 4, name, name);
+            if (!t)
+                return nullptr;
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", name }, { "col", 0 }, { "mode", "text" },
+                              { "data", QJsonArray { "Al", "Zn", "Mg", "Cu" } } });
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", name },
+                              { "col", 1 },
+                              { "mode", "datetime" },
+                              { "data", QJsonArray { "2024-01-01 10:00", "2024-01-02 11:00",
+                                                     "2024-01-03 12:00", "2024-01-04 13:00" } } });
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", name }, { "col", 2 },
+                              { "data", QJsonArray { 1, 2, 3, 4 } } });
+            rpc(QStringLiteral("table.set_column_meta"),
+                QJsonObject { { "table", name }, { "col", 2 }, { "mode", "month" } });
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", name }, { "col", 3 },
+                              { "data", QJsonArray { 1.5, 2.5, 3.5, 4.5 } } });
+            return t;
+        };
+        // paste_tsv on one fixture, set_cell of the same strings on a twin: same table, one
+        // Undo step that restores the table
+        int caseNo = 0;
+        auto pasteLikeSetCell = [&](const char *tag, const QString &text, int startRow,
+                                    int startCol, const QStringList &cells) -> bool {
+            const QString nameP = QStringLiteral("P105_%1").arg(caseNo);
+            const QString nameS = QStringLiteral("S105_%1").arg(caseNo++);
+            Table *tp = makeFixture(nameP);
+            Table *ts = makeFixture(nameS);
+            QUndoStack *us = undoStackOf(tp);
+            if (!tp || !ts || !us) {
+                std::cerr << "[FAIL] 105" << tag << ": fixture\n";
+                return false;
+            }
+            // the worksheets may share one undo stack: paste last, check its one step, Undo /
+            // Redo it, then write the twin with set_cell
+            us->clear(); // stay below the project's undo limit, so index() counts the steps
+            const QStringList before = tableState(tp);
+            const QJsonObject r = rpc(QStringLiteral("table.paste_tsv"),
+                                      QJsonObject { { "table", nameP },
+                                                    { "text", text },
+                                                    { "header", false },
+                                                    { "start_row", startRow },
+                                                    { "start_col", startCol } });
+            const QStringList pasted = tableState(tp);
+            const int steps = us->index();
+            us->undo();
+            QCoreApplication::processEvents();
+            const QStringList undone = tableState(tp);
+            us->redo();
+            QCoreApplication::processEvents();
+            if (rpcIsError105(r) || steps != 1 || undone != before || tableState(tp) != pasted) {
+                std::cerr << "[FAIL] 105" << tag << ": paste_tsv made " << steps
+                          << " Undo step(s); after one Undo: "
+                          << undone.join(QLatin1Char('|')).toStdString() << "\n";
+                return false;
+            }
+            for (int k = 0; k < cells.size(); ++k) {
+                rpc(QStringLiteral("table.set_cell"),
+                    QJsonObject { { "table", nameS },
+                                  { "row", startRow },
+                                  { "col", startCol + k },
+                                  { "value", cells[k] } });
+            }
+            const QStringList viaSetCell = tableState(ts);
+            if (pasted != viaSetCell) {
+                std::cerr << "[FAIL] 105" << tag << ": paste_tsv differs from set_cell\n  paste   : "
+                          << pasted.join(QLatin1Char('|')).toStdString()
+                          << "\n  set_cell: " << viaSetCell.join(QLatin1Char('|')).toStdString()
+                          << "\n";
+                return false;
+            }
+            return true;
+        };
+
+        EXPECT105(pasteLikeSetCell("e1", QStringLiteral("12\t45000\t7\t9"), 3, 0,
+                                   { "12", "45000", "7", "9" }),
+                  "105e1: paste of one row keeps the text / date-time / month / numeric columns");
+        EXPECT105(pasteLikeSetCell("e2", QStringLiteral("x"), 3, 3, { "x" }),
+                  "105e2: a non-number turns the numeric column into text, its rows kept");
+        EXPECT105(pasteLikeSetCell("e3", QStringLiteral("2025-05-06 07:08"), 1, 1,
+                                   { "2025-05-06 07:08" }),
+                  "105e3: a date/time pasted without tab is one cell of the date/time column");
+        EXPECT105(pasteLikeSetCell("e4", QStringLiteral("2025-05-06 07:08:09\tMay"), 0, 1,
+                                   { "2025-05-06 07:08:09", "May" }),
+                  "105e4: date/time and month texts go through the columns' input filters");
+
+        // the rows that were not pasted over keep their data, the types do not change
+        {
+            Table *t = makeFixture(QStringLiteral("K105"));
+            rpc(QStringLiteral("table.paste_tsv"),
+                QJsonObject { { "table", "K105" }, { "text", "12\t45000\t7\t9" },
+                              { "header", false }, { "start_row", 3 }, { "start_col", 0 } });
+            const bool ok = t && t->column(0)->columnMode() == SciDAVis::ColumnMode::Text
+                    && t->column(1)->columnMode() == SciDAVis::ColumnMode::DateTime
+                    && t->column(2)->columnMode() == SciDAVis::ColumnMode::Month
+                    && t->column(3)->columnMode() == SciDAVis::ColumnMode::Numeric
+                    && t->text(0, 0) == QStringLiteral("Al") && t->text(2, 0) == QStringLiteral("Mg")
+                    && t->text(3, 0) == QStringLiteral("12")
+                    && t->column(1)->dateTimeAt(0) == QDateTime(QDate(2024, 1, 1), QTime(10, 0))
+                    && !t->column(2)->isInvalid(1) && t->column(3)->valueAt(0) == 1.5
+                    && t->column(3)->valueAt(3) == 9.0 && t->numCols() == 4;
+            EXPECT105(ok, "105e5: rows not pasted over keep their data and the column types");
+        }
+        // empty default columns and new columns still take the type of the pasted data
+        {
+            Table *t = w105->newTable(30, 2, QStringLiteral("N105"), QStringLiteral("N105"));
+            const QJsonObject r =
+                    rpc(QStringLiteral("table.paste_tsv"),
+                        QJsonObject { { "table", "N105" },
+                                      { "text", "Sample\tv\tw\nA\t1\t5\nB\t2\t6\nC\tN.D.\t7\n" },
+                                      { "header", true } });
+            const bool ok = !rpcIsError105(r) && t && t->numCols() == 3
+                    && t->column(0)->columnMode() == SciDAVis::ColumnMode::Text
+                    && t->column(1)->columnMode() == SciDAVis::ColumnMode::Numeric
+                    && t->column(1)->isInvalid(2)
+                    && t->column(2)->columnMode() == SciDAVis::ColumnMode::Numeric
+                    && t->text(1, 0) == QStringLiteral("B");
+            EXPECT105(ok, "105e6: paste into empty default / new columns decides their type");
+        }
+    }
 
 #undef EXPECT105
     if (failures105 > 0) {

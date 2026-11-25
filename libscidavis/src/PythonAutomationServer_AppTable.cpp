@@ -1870,7 +1870,7 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                                        int maxCols, bool hasHeader, bool withComments,
                                        int unitsRowHint, bool convertNumeric, int startRowOffset,
                                        int startColOffset, bool assignDefaultPlotDesignations,
-                                       bool decimalComma)
+                                       bool decimalComma, bool keepExistingColumnTypes = false)
 {
     QVector<ParsedCsvCell> headerRow;
     QVector<ParsedCsvCell> unitsRowCells;
@@ -1903,6 +1903,7 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
     const int neededRows = std::max(1, startRowOffset + dataRowCount);
     // every name the table had before the import (before the columns added below)
     const QStringList namesBeforeImport = t->colNames();
+    const int colsBeforeImport = t->numCols();
     if (t->numCols() < neededCols) {
         const int oldCols = t->numCols();
         t->setNumCols(neededCols);
@@ -1931,98 +1932,157 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         if (!col)
             continue;
 
-        bool useText = !convertNumeric;
-        bool anyQuoted = false;
-        bool anyFiniteNumber = false;
-        QVector<qreal> parsedNums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
-        QVector<int> invalidRows;
-
-        // Column type as the GUI import decides it (AsciiTableImportFilter::importLabTextData):
-        // missing tokens are empty cells; a few stray non-numeric cells ("OVER", a repeated
-        // header line) are invalid cells of a numeric column when at least 5 cells and 90 % of
-        // the non-missing cells are numbers; otherwise the column is text.
-        if (convertNumeric) {
-            int validNumCount = 0;
-            int strayNonNumCount = 0;
-            for (int r = 0; r < dataRowCount; ++r) {
-                const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
-                const QString valStr = (c < rec.size()) ? rec[c].value : QString();
-                const bool wasQuoted = (c < rec.size()) ? rec[c].quoted : false;
-                if (wasQuoted)
-                    anyQuoted = true;
-                const QString trimmed = valStr.trimmed();
-                if (trimmed.isEmpty()) {
-                    invalidRows.append(r);
+        // table.paste_tsv into a column that existed before: the column keeps its type, as
+        // table.set_cell does, so the rows that are not pasted over keep their data. Text
+        // columns take the texts; date/time, month and day columns read them through their
+        // input filter; numeric columns take numbers and missing values, and become text
+        // columns (their numbers kept as text) when a pasted cell is not a number. Default
+        // empty numeric columns and columns added by the paste take the type of the data.
+        bool keepType = false;
+        if (keepExistingColumnTypes && convertNumeric && dstCol < colsBeforeImport) {
+            keepType = col->columnMode() != SciDAVis::ColumnMode::Numeric;
+            const int pasteEnd = startRowOffset + dataRowCount;
+            for (int r = 0; !keepType && r < col->rowCount(); ++r) {
+                if (r >= startRowOffset && r < pasteEnd) {
+                    r = pasteEnd - 1;
                     continue;
                 }
-                if (isImportMissingNumericCell(trimmed, wasQuoted)) {
-                    invalidRows.append(r);
-                    continue;
-                }
-                double numVal = 0.0;
-                if (parseImportNumber(trimmed, decimalComma, numVal)) {
-                    parsedNums[r] = numVal;
-                    anyFiniteNumber = true;
-                    ++validNumCount;
-                } else {
-                    ++strayNonNumCount;
-                    const int maxRemainingNum = validNumCount + (dataRowCount - r - 1);
-                    if (maxRemainingNum < 5
-                        || qint64(maxRemainingNum) < qint64(strayNonNumCount) * 9) {
-                        useText = true;
-                        break;
-                    }
-                    invalidRows.append(r);
-                }
-            }
-            if (!useText) {
-                const bool enoughForNumeric = (strayNonNumCount == 0)
-                        || (validNumCount >= 5
-                            && qint64(validNumCount) * 10
-                                    >= qint64(validNumCount + strayNonNumCount) * 9);
-                if (!enoughForNumeric || (anyQuoted && !anyFiniteNumber))
-                    useText = true;
+                keepType = !col->isInvalid(r);
             }
         }
-
-        if (useText) {
-            if (col->columnMode() != SciDAVis::ColumnMode::Text)
-                col->setColumnMode(SciDAVis::ColumnMode::Text);
-            if (dataRowCount > 0) {
-                QStringList texts;
-                texts.reserve(dataRowCount);
-                for (int r = 0; r < dataRowCount; ++r) {
-                    const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
-                    texts.append((c < rec.size()) ? rec[c].value : QString());
+        if (keepType) {
+            QStringList texts;
+            texts.reserve(dataRowCount);
+            for (int r = 0; r < dataRowCount; ++r) {
+                const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                texts.append((c < rec.size()) ? rec[c].value : QString());
+            }
+            if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
+                QVector<qreal> nums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
+                QVector<int> missingRows;
+                bool allNumeric = true;
+                for (int r = 0; allNumeric && r < dataRowCount; ++r) {
+                    const QString trimmed = texts[r].trimmed();
+                    const bool wasQuoted = (c < records[dataStartIdx + r].size())
+                            && records[dataStartIdx + r][c].quoted;
+                    if (trimmed.isEmpty() || isImportMissingNumericCell(trimmed, wasQuoted))
+                        missingRows.append(r);
+                    else if (!parseImportNumber(trimmed, decimalComma, nums[r]))
+                        allNumeric = false;
                 }
-                col->replaceTexts(startRowOffset, texts);
-            } else if (startRowOffset == 0) {
-                col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+                if (allNumeric) {
+                    if (dataRowCount > 0) {
+                        col->setInvalid(
+                                Interval<int>(startRowOffset, startRowOffset + dataRowCount - 1),
+                                false);
+                        col->replaceValues(startRowOffset, nums);
+                        for (int r : missingRows)
+                            col->setInvalid(startRowOffset + r, true);
+                    }
+                } else {
+                    col->setColumnMode(SciDAVis::ColumnMode::Text);
+                    if (dataRowCount > 0)
+                        col->replaceTexts(startRowOffset, texts);
+                }
+            } else if (dataRowCount > 0) {
+                // text: as typed; date/time, month, day: through the column's input filter
+                col->asStringColumn()->replaceTexts(startRowOffset, texts);
             }
         } else {
-            if (col->columnMode() != SciDAVis::ColumnMode::Numeric)
-                col->setColumnMode(SciDAVis::ColumnMode::Numeric);
-            applyDefaultNumericFormat6g(t, dstCol);
-            if (dataRowCount > 0) {
-                if (startRowOffset == 0 && dataRowCount == t->numRows())
-                    col->clearValidity();
-                else
-                    col->setInvalid(Interval<int>(startRowOffset, startRowOffset + dataRowCount - 1),
-                                    false);
-                col->replaceValues(startRowOffset, parsedNums);
-                int k = 0;
-                while (k < invalidRows.size()) {
-                    const int startR = startRowOffset + invalidRows[k];
-                    int endR = startR;
-                    while (k + 1 < invalidRows.size()
-                           && (startRowOffset + invalidRows[k + 1]) == endR + 1) {
-                        endR = startRowOffset + invalidRows[++k];
+            bool useText = !convertNumeric;
+            bool anyQuoted = false;
+            bool anyFiniteNumber = false;
+            QVector<qreal> parsedNums(dataRowCount, std::numeric_limits<double>::quiet_NaN());
+            QVector<int> invalidRows;
+
+            // Column type as the GUI import decides it (AsciiTableImportFilter::
+            // importLabTextData): missing tokens are empty cells; a few stray non-numeric cells
+            // ("OVER", a repeated header line) are invalid cells of a numeric column when at
+            // least 5 cells and 90 % of the non-missing cells are numbers; otherwise text.
+            if (convertNumeric) {
+                int validNumCount = 0;
+                int strayNonNumCount = 0;
+                for (int r = 0; r < dataRowCount; ++r) {
+                    const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                    const QString valStr = (c < rec.size()) ? rec[c].value : QString();
+                    const bool wasQuoted = (c < rec.size()) ? rec[c].quoted : false;
+                    if (wasQuoted)
+                        anyQuoted = true;
+                    const QString trimmed = valStr.trimmed();
+                    if (trimmed.isEmpty()) {
+                        invalidRows.append(r);
+                        continue;
                     }
-                    col->setInvalid(Interval<int>(startR, endR), true);
-                    ++k;
+                    if (isImportMissingNumericCell(trimmed, wasQuoted)) {
+                        invalidRows.append(r);
+                        continue;
+                    }
+                    double numVal = 0.0;
+                    if (parseImportNumber(trimmed, decimalComma, numVal)) {
+                        parsedNums[r] = numVal;
+                        anyFiniteNumber = true;
+                        ++validNumCount;
+                    } else {
+                        ++strayNonNumCount;
+                        const int maxRemainingNum = validNumCount + (dataRowCount - r - 1);
+                        if (maxRemainingNum < 5
+                            || qint64(maxRemainingNum) < qint64(strayNonNumCount) * 9) {
+                            useText = true;
+                            break;
+                        }
+                        invalidRows.append(r);
+                    }
                 }
-            } else if (startRowOffset == 0) {
-                col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+                if (!useText) {
+                    const bool enoughForNumeric = (strayNonNumCount == 0)
+                            || (validNumCount >= 5
+                                && qint64(validNumCount) * 10
+                                        >= qint64(validNumCount + strayNonNumCount) * 9);
+                    if (!enoughForNumeric || (anyQuoted && !anyFiniteNumber))
+                        useText = true;
+                }
+            }
+
+            if (useText) {
+                if (col->columnMode() != SciDAVis::ColumnMode::Text)
+                    col->setColumnMode(SciDAVis::ColumnMode::Text);
+                if (dataRowCount > 0) {
+                    QStringList texts;
+                    texts.reserve(dataRowCount);
+                    for (int r = 0; r < dataRowCount; ++r) {
+                        const QVector<ParsedCsvCell> &rec = records[dataStartIdx + r];
+                        texts.append((c < rec.size()) ? rec[c].value : QString());
+                    }
+                    col->replaceTexts(startRowOffset, texts);
+                } else if (startRowOffset == 0) {
+                    col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+                }
+            } else {
+                if (col->columnMode() != SciDAVis::ColumnMode::Numeric)
+                    col->setColumnMode(SciDAVis::ColumnMode::Numeric);
+                applyDefaultNumericFormat6g(t, dstCol);
+                if (dataRowCount > 0) {
+                    if (startRowOffset == 0 && dataRowCount == t->numRows())
+                        col->clearValidity();
+                    else
+                        col->setInvalid(Interval<int>(startRowOffset,
+                                                      startRowOffset + dataRowCount - 1),
+                                        false);
+                    col->replaceValues(startRowOffset, parsedNums);
+                    int k = 0;
+                    while (k < invalidRows.size()) {
+                        const int startR = startRowOffset + invalidRows[k];
+                        int endR = startR;
+                        while (k + 1 < invalidRows.size()
+                               && (startRowOffset + invalidRows[k + 1]) == endR + 1) {
+                            endR = startRowOffset + invalidRows[++k];
+                        }
+                        col->setInvalid(Interval<int>(startR, endR), true);
+                        ++k;
+                    }
+                } else if (startRowOffset == 0) {
+                    col->setInvalid(Interval<int>(0, t->numRows() - 1), true);
+                }
             }
         }
 
@@ -5515,6 +5575,12 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             sep = rawText.contains(QLatin1Char('\t'))
                     ? QStringLiteral("\t")
                     : autoDetectCsvSeparator(rawText, 0, QString());
+            // one line without tab, comma or ';': a single cell ("2025-05-06 07:08", "Al 7075")
+            // is not split at its blanks (an explicit separator=" " still splits it)
+            const QString oneLine = rawText.trimmed();
+            if (sep == QLatin1String(" ") && !oneLine.contains(QLatin1Char('\n'))
+                && !oneLine.contains(QLatin1Char('\r')))
+                sep = QStringLiteral("\t");
         }
 
         int maxCols = 1;
@@ -5566,7 +5632,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             populateDelimitedRecordsIntoTable(
                     t, records, maxCols, hasHeader, false, unitsRowHint, convertNumeric, startRow,
                     startCol, assignDesigs,
-                    detectImportDecimalComma(rawText, 0, sep, convertNumeric));
+                    detectImportDecimalComma(rawText, 0, sep, convertNumeric),
+                    /*keepExistingColumnTypes=*/true);
         }
         for (int c = startCol; c < std::min(t->numCols(), startCol + maxCols); ++c)
             d_app->updateCurves(t, fullColumnName(t, c));
