@@ -160,13 +160,11 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
     painter->setBrush(QwtPlotCurve::brush());
 
     const double ref = yMap.xTransform(baseline());
+    // The points are bin centres; each bar spans [centre - width/2, centre + width/2].
+    const double halfBin = 0.5 * binWidthForDrawing();
     double dx = 0.0;
-    if (d_bin_size > 0.0 && std::isfinite(d_bin_size)) {
-        dx = std::fabs(xMap.xTransform(x(from) + d_bin_size) - xMap.xTransform(x(from)));
-    } else if (from + 1 < dataSize()) {
-        dx = std::fabs(xMap.xTransform(x(from + 1)) - xMap.xTransform(x(from)));
-    } else if (dataSize() >= 2) {
-        dx = std::fabs(xMap.xTransform(x(1)) - xMap.xTransform(x(0)));
+    if (halfBin > 0.0) {
+        dx = std::fabs(xMap.xTransform(x(from) + halfBin) - xMap.xTransform(x(from) - halfBin));
     }
     if (dx <= 1e-6)
         dx = qMax(6.0 * sc, std::fabs(xMap.pDist()) / 10.0);
@@ -176,7 +174,7 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
     const double xOffset = 0.01 * offset() * bar_width;
 
     for (int i = from; i <= to; i++) {
-        const double px1 = xMap.xTransform(x(i));
+        const double px1 = xMap.xTransform(x(i) - halfBin);
         const double py1 = yMap.xTransform(y(i));
         if (!std::isfinite(px1) || !std::isfinite(py1) || !std::isfinite(ref))
             continue;
@@ -188,19 +186,30 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
     painter->restore();
 }
 
+double QwtHistogram::binWidthForDrawing() const
+{
+    if (d_bin_size > 0.0 && std::isfinite(d_bin_size))
+        return d_bin_size;
+    if (dataSize() >= 2) {
+        const double w = std::fabs(x(1) - x(0));
+        if (w > 0.0 && std::isfinite(w))
+            return w;
+    }
+    return 0.0;
+}
+
 QwtDoubleRect QwtHistogram::boundingRect() const
 {
     QwtDoubleRect rect = QwtPlotCurve::boundingRect();
     if (dataSize() <= 0)
         return rect;
-    double bw = (d_bin_size > 0.0 && std::isfinite(d_bin_size)) ? d_bin_size : 0.0;
-    if (bw <= 0.0 && dataSize() >= 2)
-        bw = std::fabs(x(1) - x(0));
+    double bw = binWidthForDrawing();
     if (bw <= 0.0 || !std::isfinite(bw))
         bw = 1.0;
 
-    rect.setLeft(rect.left() - 0.15 * bw);
-    rect.setRight(rect.right() + 1.15 * bw);
+    // points are bin centres: half a bin to the outer bar edges plus a 15 % bin margin
+    rect.setLeft(rect.left() - 0.65 * bw);
+    rect.setRight(rect.right() + 0.65 * bw);
     rect.setTop(0.0);
     rect.setBottom(qMax(1.0, 1.15 * rect.bottom()));
     return rect;
@@ -309,7 +318,7 @@ bool QwtHistogram::loadData()
     Y.resize(n);
     for (int i = 0; i < n; i++) {
         Y[i] = gsl_histogram_get(h, i);
-        X[i] = d_begin + double(i) * d_bin_size;
+        X[i] = d_begin + (double(i) + 0.5) * d_bin_size; // bin centre
     }
     setData(X.data(), Y.data(), n);
 
@@ -367,7 +376,7 @@ void QwtHistogram::initData(const QVector<double> &Y, int size)
     std::vector<double> x(n), y(n);
     for (int i = 0; i < n; i++) {
         y[i] = gsl_histogram_get(h, i);
-        x[i] = d_begin + double(i) * d_bin_size;
+        x[i] = d_begin + (double(i) + 0.5) * d_bin_size; // bin centre
     }
 
     setData(x.data(), y.data(), n);

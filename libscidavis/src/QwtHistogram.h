@@ -32,6 +32,11 @@
 #include "QwtBarCurve.h"
 
 //! Histogram class
+/**
+ * The curve points are the bin centres (x) and counts (y), so fits, analysis and the data
+ * readouts see the centre of each bin. The bars are drawn from centre - width/2 to
+ * centre + width/2, i.e. from the left bin edge over one bin width.
+ */
 class QwtHistogram : public QwtBarCurve
 {
 public:
@@ -46,6 +51,8 @@ public:
     double begin() { return d_begin; };
     double end() { return d_end; };
     double binSize() { return d_bin_size; };
+    //! Bin width used to draw the bars (the bin size, else the spacing of the first two bins).
+    double binWidthForDrawing() const;
 
     virtual bool loadData();
     void initData(const QVector<double> &Y, int size);

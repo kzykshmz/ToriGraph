@@ -1016,16 +1016,17 @@ ExtraPlotTypes::plotHistogramCumulative(ApplicationWindow *app, Table *t, const 
 
     res.bins = bins;
     res.binWidth = w;
-    res.begin = h->x(0);
+    // histogram points are bin centres
+    res.begin = h->x(0) - 0.5 * w;
     res.total = int(std::lround(total));
     res.upperEdges.resize(bins + 1);
     res.cumulativePct.resize(bins + 1);
-    res.upperEdges[0] = h->x(0);
+    res.upperEdges[0] = res.begin;
     res.cumulativePct[0] = 0.0;
     double acc = 0.0;
     for (int i = 0; i < bins; ++i) {
         acc += h->y(i);
-        res.upperEdges[i + 1] = h->x(i) + w;
+        res.upperEdges[i + 1] = h->x(i) + 0.5 * w;
         res.cumulativePct[i + 1] = (i == bins - 1) ? 100.0 : 100.0 * acc / total;
     }
 

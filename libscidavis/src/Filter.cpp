@@ -32,6 +32,7 @@
 #include "Table.h"
 #include "FunctionCurve.h"
 #include "PlotCurve.h"
+#include "QwtHistogram.h"
 #include "CurveMathTools.h"
 #include "future/core/column/Column.h"
 
@@ -139,8 +140,13 @@ void Filter::setDataCurve(int curve, double start, double end)
 
     d_indices = getIndices(temp, start, end, d_sort_data);
 
-    // Mask-aware filtering: skip points whose X or Y cell is masked in the source table
-    if (DataCurve *dc = dynamic_cast<DataCurve *>(d_curve)) {
+    // Mask-aware filtering: skip points whose X or Y cell is masked in the source table.
+    // Histogram points are bins, not table rows (masked cells are already left out of the
+    // counts), so they are never matched to rows here.
+    DataCurve *maskDc = dynamic_cast<QwtHistogram *>(d_curve)
+            ? nullptr
+            : dynamic_cast<DataCurve *>(d_curve);
+    if (DataCurve *dc = maskDc) {
         if (Table *tbl = dc->table()) {
             int xi = tbl->colIndex(dc->xColumnName());
             Column *xCol = (xi >= 0) ? tbl->column(xi) : tbl->column(dc->xColumnName());
