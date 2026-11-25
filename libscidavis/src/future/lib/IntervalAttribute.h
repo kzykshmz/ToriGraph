@@ -220,6 +220,22 @@ public:
 
     void setValue(int row, bool value) { setValue(Interval<int>(row, row), value); }
 
+    //! Set a list of runs in one step. The runs must be ascending, neither overlap nor touch
+    //! each other, and lie in a range that is entirely unset (e.g. right after
+    //! setValue(range, false)). Only the first and the last run can touch an interval outside
+    //! that range, so the others are appended directly (linear instead of one scan of all
+    //! intervals per run).
+    void setDisjointValues(const QList<Interval<int>> &runs)
+    {
+        const int n = runs.size();
+        for (int k = 1; k + 1 < n; ++k)
+            d_intervals.append(runs.at(k));
+        if (n > 0)
+            setValue(runs.first(), true);
+        if (n > 1)
+            setValue(runs.last(), true);
+    }
+
     bool isSet(int row) const
     {
         foreach (Interval<int> iv, d_intervals)

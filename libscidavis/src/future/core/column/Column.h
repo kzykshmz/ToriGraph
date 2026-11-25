@@ -349,8 +349,12 @@ private:
     bool XmlReadMask(XmlStreamReader *reader);
     //! Read XML formula element
     bool XmlReadFormula(XmlStreamReader *reader);
-    //! Read XML row element
-    bool XmlReadRow(XmlStreamReader *reader);
+    //! The rows read by XmlReadRow(), stored in one step by XmlApplyRows()
+    struct RowBuffer;
+    //! Read XML row element into \c rows
+    bool XmlReadRow(XmlStreamReader *reader, RowBuffer *rows);
+    //! Store the rows read so far (values and empty cells) and clear \c rows
+    void XmlApplyRows(RowBuffer &rows);
     //@}
 
 private slots:

@@ -531,6 +531,40 @@ void Column::save(QXmlStreamWriter *writer) const
     writer->writeEndElement(); // "column"
 }
 
+//! The <row> elements of a column being loaded (see Column::load / XmlApplyRows).
+struct Column::RowBuffer
+{
+    enum RowState : char { NotRead = 0, Valid = 1, Invalid = 2 };
+    QVector<double> values;
+    QStringList texts;
+    QList<QDateTime> dateTimes;
+    //! per row: NotRead (a row missing from the file: an empty cell, as resizeTo() made it),
+    //! Valid or Invalid
+    QVector<char> state;
+
+    //! Makes room for \c row like Private::resizeTo(): rows added are 0 / empty / invalid.
+    void reserveRow(int row, SciDAVis::ColumnDataType type)
+    {
+        const int oldSize = state.size();
+        if (row < oldSize)
+            return;
+        state.resize(row + 1); // new entries are NotRead
+        switch (type) {
+        case SciDAVis::TypeDouble:
+            values.resize(row + 1);
+            break;
+        case SciDAVis::TypeQString:
+            for (int i = oldSize; i <= row; ++i)
+                texts.append(QString());
+            break;
+        case SciDAVis::TypeQDateTime:
+            for (int i = oldSize; i <= row; ++i)
+                dateTimes.append(QDateTime());
+            break;
+        }
+    }
+};
+
 bool Column::load(XmlStreamReader *reader)
 {
     if (reader->isStartElement() && reader->name() == "column") {
@@ -594,6 +628,10 @@ bool Column::load(XmlStreamReader *reader)
         clearValidity();
         clearMasks();
         clearFormulas();
+        // The <row> elements are collected and stored in one step at the end: setting them one
+        // by one scanned the list of empty cells read so far for every row, so a column with
+        // scattered empty cells took a time growing with the square of the rows to open.
+        RowBuffer rows;
         // read child elements
         while (!reader->atEnd()) {
             reader->readNext();
@@ -616,17 +654,22 @@ bool Column::load(XmlStreamReader *reader)
                 else if (reader->name() == "formula")
                     ret_val = XmlReadFormula(reader);
                 else if (reader->name() == "row")
-                    ret_val = XmlReadRow(reader);
+                    ret_val = XmlReadRow(reader, &rows);
                 else // unknown element
                 {
                     reader->raiseWarning(tr("unknown element '%1'").arg(reader->name().toString()));
-                    if (!reader->skipToEndElement())
+                    if (!reader->skipToEndElement()) {
+                        XmlApplyRows(rows);
                         return false;
+                    }
                 }
-                if (!ret_val)
+                if (!ret_val) {
+                    XmlApplyRows(rows);
                     return false;
+                }
             }
         }
+        XmlApplyRows(rows);
     } else // no column element
         reader->raiseError(tr("no column element found"));
 
@@ -711,7 +754,41 @@ bool Column::XmlReadFormula(XmlStreamReader *reader)
     return true;
 }
 
-bool Column::XmlReadRow(XmlStreamReader *reader)
+void Column::XmlApplyRows(RowBuffer &rows)
+{
+    const int n = rows.state.size();
+    if (n == 0)
+        return;
+    // The column has no rows here (load() removed them): replace*() fill rows 0..n-1 and mark
+    // them valid; the empty cells are then set in one step from the runs of empty rows.
+    switch (dataType()) {
+    case SciDAVis::TypeDouble:
+        replaceValues(0, rows.values);
+        break;
+    case SciDAVis::TypeQString:
+        replaceTexts(0, rows.texts);
+        break;
+    case SciDAVis::TypeQDateTime:
+        replaceDateTimes(0, rows.dateTimes);
+        break;
+    }
+    QList<Interval<int>> invalid;
+    int runStart = -1;
+    for (int i = 0; i <= n; ++i) {
+        const bool empty = i < n && rows.state.at(i) != RowBuffer::Valid;
+        if (empty && runStart < 0)
+            runStart = i;
+        else if (!empty && runStart >= 0) {
+            invalid.append(Interval<int>(runStart, i - 1));
+            runStart = -1;
+        }
+    }
+    if (!invalid.isEmpty() || !invalidIntervals().isEmpty())
+        replaceInvalidIntervals(invalid);
+    rows = RowBuffer();
+}
+
+bool Column::XmlReadRow(XmlStreamReader *reader, RowBuffer *rows)
 {
     Q_ASSERT(reader->isStartElement() && reader->name() == "row");
 
@@ -729,11 +806,15 @@ bool Column::XmlReadRow(XmlStreamReader *reader)
 
     bool ok;
     int index = reader->readAttributeInt("index", &ok);
-    if (!ok) {
+    if (!ok || index < 0) {
         reader->raiseError(tr("invalid or missing row index"));
         return false;
     }
+    const bool markedInvalid =
+            attribs.value(reader->namespaceUri().toString(), "invalid") == QLatin1String("yes");
 
+    // A later row with the same index replaces the earlier one (value and empty flag), as
+    // setting the cells one by one did.
     str = reader->readElementText();
     switch (dataType()) {
     case SciDAVis::TypeDouble: {
@@ -742,11 +823,15 @@ bool Column::XmlReadRow(XmlStreamReader *reader)
             reader->raiseError(tr("invalid row value"));
             return false;
         }
-        setValueAt(index, value);
+        rows->reserveRow(index, SciDAVis::TypeDouble);
+        rows->values[index] = value;
+        rows->state[index] = markedInvalid ? RowBuffer::Invalid : RowBuffer::Valid;
         break;
     }
     case SciDAVis::TypeQString:
-        setTextAt(index, str);
+        rows->reserveRow(index, SciDAVis::TypeQString);
+        rows->texts[index] = str;
+        rows->state[index] = markedInvalid ? RowBuffer::Invalid : RowBuffer::Valid;
         break;
 
     case SciDAVis::TypeQDateTime: {
@@ -762,14 +847,13 @@ bool Column::XmlReadRow(XmlStreamReader *reader)
             date_time = NumericDateTimeBaseFilter::localWallClock(QDateTime(date, time, Qt::UTC));
         else
             date_time = QDateTime::fromString(str, "yyyy-dd-MM hh:mm:ss:zzz");
-        setDateTimeAt(index, date_time);
+        rows->reserveRow(index, SciDAVis::TypeQDateTime);
+        rows->dateTimes[index] = date_time;
+        rows->state[index] = (markedInvalid || !date_time.isValid()) ? RowBuffer::Invalid
+                                                                      : RowBuffer::Valid;
         break;
     }
     }
-
-    str = attribs.value(reader->namespaceUri().toString(), "invalid").toString();
-    if (str == "yes")
-        setInvalid(index);
 
     return true;
 }

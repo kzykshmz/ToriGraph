@@ -967,9 +967,22 @@ void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_va
     if (first + num_rows > rowCount())
         resizeTo(first + num_rows);
 
+    // Invalid date/times are empty cells. They are collected as runs of rows and set after the
+    // whole range was marked valid: setting the flag row by row scanned all empty cells for each
+    // row (a time growing with the square of the rows for scattered empty cells).
+    QList<Interval<int>> invalidRuns;
     for (int i = 0; i < num_rows; i++) {
         static_cast<QList<QDateTime> *>(d_data)->replace(first + i, new_values.at(i));
-        d_validity.setValue(first + i, !new_values.at(i).isValid());
+        if (!new_values.at(i).isValid()) {
+            if (!invalidRuns.isEmpty() && invalidRuns.last().end() == first + i - 1)
+                invalidRuns.last().setEnd(first + i);
+            else
+                invalidRuns.append(Interval<int>(first + i, first + i));
+        }
+    }
+    if (num_rows > 0) {
+        d_validity.setValue(Interval<int>(first, first + num_rows - 1), false);
+        d_validity.setDisjointValues(invalidRuns);
     }
     emit d_owner->dataChanged(d_owner);
 }

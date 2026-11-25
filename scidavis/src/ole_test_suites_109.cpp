@@ -1,14 +1,20 @@
 #include "ole_test_common.h"
 #include "PythonAutomationServer.h"
 #include "future/table/future_Table.h"
+#include "core/datatypes/Double2StringFilter.h"
+#include "lib/XmlStreamReader.h"
 
+#include <QBuffer>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QTemporaryDir>
+#include <QXmlStreamWriter>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 // =============================================================================
 // Suite 109: worksheet formulas and masks, data-driven review findings (JSON-RPC path).
@@ -35,6 +41,12 @@
 //        entered into the active worksheet (the data went NaN and the curve was lost); after a
 //        table edit they undo the table even when the graph is the active window and a graph
 //        RPC that changes nothing (copy_format) came in between
+//   109e reading columns with about 1 % empty cells scattered over the rows (numeric, text and
+//        date/time, 100000 rows each) takes about as long as without them (each row used to scan
+//        all empty cells read so far: 6.6 s for one numeric column); rows out of order, gaps
+//        and repeated rows read as before; a project with a 20000 x 20 table with empty cells,
+//        masks, a formula column, text / date columns and a number format opens fast and
+//        unchanged
 // =============================================================================
 
 int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
@@ -675,6 +687,255 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw)
                                          << q(columnValues("U109", "2")));
         CHECK_COND(layerCount() == layersBefore, "109e: app.undo after the table edit changed the graph");
         std::cout << "[PASS] 109e: app.undo / app.redo without a window follow the last RPC's target\n";
+    }
+
+    // ---- 109e: reading columns with scattered empty cells ----
+    {
+        auto saveCol = [](const Column *col) {
+            QByteArray bytes;
+            QBuffer buf(&bytes);
+            buf.open(QIODevice::WriteOnly);
+            QXmlStreamWriter writer(&buf);
+            writer.writeStartDocument();
+            col->save(&writer);
+            writer.writeEndDocument();
+            buf.close();
+            return bytes;
+        };
+        auto loadCol = [](const QByteArray &xml, SciDAVis::ColumnMode mode, bool *ok) {
+            std::unique_ptr<Column> col(new Column(QStringLiteral("loaded109"), mode));
+            XmlStreamReader reader(xml);
+            while (!reader.atEnd() && !(reader.isStartElement() && reader.name() == "column"))
+                reader.readNext();
+            *ok = reader.isStartElement() && col->load(&reader) && !reader.hasError();
+            return col;
+        };
+        auto invalidFlags = [](const Column *col) {
+            QVector<bool> f(col->rowCount(), false);
+            for (const Interval<int> &iv : col->invalidIntervals())
+                for (int k = qMax(0, iv.start()); k <= qMin(col->rowCount() - 1, iv.end()); ++k)
+                    f[k] = true;
+            return f;
+        };
+        quint32 seed = 4242u;
+        auto nextRand = [&seed]() {
+            seed = seed * 1664525u + 1013904223u;
+            return seed >> 8;
+        };
+
+        // (1) one column of each kind with about 1 % empty cells scattered over the rows: reading
+        //     it back used to scan every empty cell found so far for each row (12 s for a numeric
+        //     column of 100000 rows); values and empty cells are unchanged
+        const int N = 100000;
+        QElapsedTimer timer;
+        const SciDAVis::ColumnMode modes[3] = { SciDAVis::ColumnMode::Numeric,
+                                                SciDAVis::ColumnMode::Text,
+                                                SciDAVis::ColumnMode::DateTime };
+        qint64 msRead[3][2] = {}; // [mode][0: with empty cells, 1: without]
+        for (int variant = 0; variant < 6; ++variant) {
+            const int m = variant / 2;
+            const SciDAVis::ColumnMode mode = modes[m];
+            const bool withHoles = variant % 2 == 0;
+            Column src(QStringLiteral("src109"), mode);
+            const QDateTime t0(QDate(2024, 3, 1), QTime(8, 0, 0));
+            QList<Interval<int>> holes;
+            QVector<qreal> values(N);
+            QStringList texts;
+            QList<QDateTime> stamps;
+            for (int k = 0; k < N; ++k) {
+                const bool hole = nextRand() % 100 == 0 && withHoles;
+                if (hole)
+                    holes << Interval<int>(k, k);
+                values[k] = k * 0.25 + 1.0;
+                texts << (hole ? QString() : QStringLiteral("t%1").arg(k));
+                stamps << (hole ? QDateTime() : t0.addSecs(k));
+            }
+            if (mode == SciDAVis::ColumnMode::Numeric)
+                src.replaceValues(0, values);
+            else if (mode == SciDAVis::ColumnMode::Text)
+                src.replaceTexts(0, texts);
+            else
+                src.replaceDateTimes(0, stamps);
+            src.replaceInvalidIntervals(holes);
+            const QVector<bool> srcInvalid = invalidFlags(&src);
+            CHECK_COND(src.rowCount() == N && srcInvalid.count(true) == holes.size(),
+                       "109e: source column " << int(mode) << " has " << srcInvalid.count(true)
+                                              << " empty cells, expected " << holes.size());
+            const QByteArray xml = saveCol(&src);
+            timer.start();
+            bool ok = false;
+            std::unique_ptr<Column> dst = loadCol(xml, mode, &ok);
+            const qint64 ms = timer.elapsed();
+            msRead[m][withHoles ? 0 : 1] = ms;
+            std::cout << "[INFO] 109e: reading a column (mode " << int(mode) << ") of " << N
+                      << " rows with " << holes.size() << " scattered empty cells: " << ms << " ms\n";
+            CHECK_COND(ok, "109e: loading column mode " << int(mode) << " failed");
+            CHECK_COND(dst->rowCount() == N, "109e: " << dst->rowCount() << " rows after loading");
+            CHECK_COND(invalidFlags(dst.get()) == srcInvalid,
+                       "109e: empty cells differ after loading (mode " << int(mode) << ")");
+            for (int k = 0; k < N; ++k) {
+                if (srcInvalid.at(k))
+                    continue;
+                if (mode == SciDAVis::ColumnMode::Numeric)
+                    CHECK_COND(dst->valueAt(k) == src.valueAt(k), "109e: value of row " << k);
+                else if (mode == SciDAVis::ColumnMode::Text)
+                    CHECK_COND(dst->textAt(k) == src.textAt(k), "109e: text of row " << k);
+                else
+                    CHECK_COND(dst->dateTimeAt(k) == src.dateTimeAt(k), "109e: date of row " << k);
+            }
+        }
+        // the empty cells add little to the time of reading the column (date/time cells take
+        // longer to parse in any case)
+        for (int m = 0; m < 3; ++m)
+            CHECK_COND(msRead[m][0] < 2 * msRead[m][1] + 500 * kTestTimingScale,
+                       "109e: reading a column (mode " << int(modes[m]) << ") with empty cells took "
+                                                       << msRead[m][0] << " ms, without "
+                                                       << msRead[m][1] << " ms");
+        CHECK_COND(msRead[0][0] + msRead[1][0] < 2000 * kTestTimingScale,
+                   "109e: reading the numeric and text columns with empty cells took "
+                           << msRead[0][0] + msRead[1][0] << " ms");
+
+        // (2) rows out of order, a gap and a repeated row read as before: the gap is empty, the
+        //     last occurrence of a row wins (also over an earlier invalid="yes")
+        {
+            Column empty(QStringLiteral("rows109"), SciDAVis::ColumnMode::Numeric);
+            QByteArray xml = saveCol(&empty);
+            const QByteArray rows =
+                    "<row type=\"TypeDouble\" index=\"0\" invalid=\"no\">1</row>"
+                    "<row type=\"TypeDouble\" index=\"2\" invalid=\"yes\">2</row>"
+                    "<row type=\"TypeDouble\" index=\"5\" invalid=\"no\">5</row>"
+                    "<row type=\"TypeDouble\" index=\"3\" invalid=\"no\">3</row>"
+                    "<row type=\"TypeDouble\" index=\"4\" invalid=\"yes\">4</row>"
+                    "<row type=\"TypeDouble\" index=\"4\" invalid=\"no\">44</row>";
+            const int end = xml.lastIndexOf("</column>");
+            CHECK_COND(end > 0, "109e: no </column> in the saved XML");
+            xml.insert(end, rows);
+            bool ok = false;
+            std::unique_ptr<Column> dst = loadCol(xml, SciDAVis::ColumnMode::Numeric, &ok);
+            CHECK_COND(ok && dst->rowCount() == 6, "109e: hand-written rows: " << dst->rowCount());
+            const QVector<bool> inv = invalidFlags(dst.get());
+            CHECK_COND(inv == QVector<bool>({ false, true, true, false, false, false }),
+                       "109e: empty cells of the hand-written rows");
+            CHECK_COND(dst->valueAt(0) == 1.0 && dst->valueAt(3) == 3.0 && dst->valueAt(4) == 44.0
+                               && dst->valueAt(5) == 5.0,
+                       "109e: values of the hand-written rows");
+        }
+
+        // (3) a project with a table of 20000 rows x 20 columns and 1 % empty cells, masks, a
+        //     formula column, text and date/time columns and a number format: opening took 14 s
+        //     (3.7 s without the empty cells); everything reads back unchanged
+        {
+            const int R = 20000;
+            const int C = 20;
+            // an empty project first: the saved project holds only this table
+            QJsonObject r = rpc(QStringLiteral("app.new_project"), QJsonObject{ { "force", true } });
+            CHECK_COND(!isErr(r), "109e: new_project: " << errText(r));
+            Table *t = w109->newTable(QStringLiteral("O109"), R, C);
+            CHECK_COND(t != nullptr && t->numRows() == R && t->numCols() == C, "109e: table O109");
+            for (int c = 0; c < C; ++c) {
+                Column *col = t->column(c);
+                if (c == 17)
+                    col->setColumnMode(SciDAVis::ColumnMode::Text);
+                else if (c == 18)
+                    col->setColumnMode(SciDAVis::ColumnMode::DateTime);
+                QList<Interval<int>> holes;
+                QVector<qreal> values(R);
+                QStringList texts;
+                QList<QDateTime> stamps;
+                for (int k = 0; k < R; ++k) {
+                    const bool hole = nextRand() % 100 == 0;
+                    if (hole)
+                        holes << Interval<int>(k, k);
+                    values[k] = double(nextRand() % 1000000) * 1e-3;
+                    texts << QStringLiteral("r%1").arg(k);
+                    stamps << QDateTime(QDate(2025, 1, 1), QTime(0, 0)).addSecs(60 * k);
+                }
+                if (c == 17)
+                    col->replaceTexts(0, texts);
+                else if (c == 18)
+                    col->replaceDateTimes(0, stamps);
+                else
+                    col->replaceValues(0, values);
+                col->replaceInvalidIntervals(holes);
+            }
+            t->column(0)->setMasked(Interval<int>(100, 199));
+            t->column(0)->setMasked(Interval<int>(5000, 5000));
+            t->column(3)->setMasked(Interval<int>(10000, 12000));
+            static_cast<Double2StringFilter *>(t->column(5)->outputFilter())->setNumericFormat('e');
+            static_cast<Double2StringFilter *>(t->column(5)->outputFilter())->setNumDigits(3);
+            r = rpc(QStringLiteral("table.set_formula"),
+                    QJsonObject{ { "table", "O109" },
+                                 { "col", C - 1 },
+                                 { "formula", "col(\"1\")*2+col(\"2\")" } });
+            CHECK_COND(res(r).value(QStringLiteral("ok")).toBool(), "109e: set_formula: " << errText(r));
+
+            struct ColSnap
+            {
+                SciDAVis::ColumnMode mode;
+                QVector<bool> invalid;
+                QStringList cells; // display text of every cell ("" for empty ones)
+                QVector<double> values;
+                QList<Interval<int>> masks;
+                QString formula;
+            };
+            auto snapshot = [&](Table *tab) {
+                QVector<ColSnap> s;
+                for (int c = 0; c < tab->numCols(); ++c) {
+                    Column *col = tab->column(c);
+                    ColSnap cs;
+                    cs.mode = col->columnMode();
+                    cs.invalid = invalidFlags(col);
+                    for (int k = 0; k < col->rowCount(); ++k) {
+                        cs.cells << (cs.invalid.at(k) ? QString() : col->asStringColumn()->textAt(k));
+                        cs.values << (cs.invalid.at(k) || cs.mode != SciDAVis::ColumnMode::Numeric
+                                              ? 0.0
+                                              : col->valueAt(k));
+                    }
+                    cs.masks = col->maskedIntervals();
+                    cs.formula = col->formula(0);
+                    s.append(cs);
+                }
+                return s;
+            };
+            const QVector<ColSnap> before = snapshot(t);
+            CHECK_COND(before.at(5).cells.at(0).contains(QLatin1Char('e')),
+                       "109e: number format of column 6 not applied: "
+                               << before.at(5).cells.at(0).toStdString());
+
+            QTemporaryDir tmp;
+            CHECK_COND(tmp.isValid(), "109e: no temporary directory");
+            const QString path = tmp.filePath(QStringLiteral("open109.sciprj"));
+            r = rpc(QStringLiteral("app.save_project"), QJsonObject{ { "path", path } });
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
+                       "109e: save_project: " << errText(r));
+            timer.start();
+            r = rpc(QStringLiteral("app.open_project"), QJsonObject{ { "path", path }, { "force", true } });
+            const qint64 msOpen = timer.elapsed();
+            CHECK_COND(!isErr(r) && res(r).value(QStringLiteral("ok")).toBool(),
+                       "109e: open_project: " << errText(r));
+            std::cout << "[INFO] 109e: opening a project with a table of " << R << " x " << C
+                      << " with 1 % empty cells took " << msOpen << " ms\n";
+            Table *lt = w109->table(QStringLiteral("O109"));
+            CHECK_COND(lt != nullptr && lt->numRows() == R && lt->numCols() == C,
+                       "109e: table O109 after opening");
+            const QVector<ColSnap> after = snapshot(lt);
+            for (int c = 0; c < C; ++c) {
+                const ColSnap &a = before.at(c);
+                const ColSnap &b = after.at(c);
+                CHECK_COND(a.mode == b.mode, "109e: column " << c + 1 << " mode changed");
+                CHECK_COND(a.invalid == b.invalid, "109e: column " << c + 1 << " empty cells changed");
+                CHECK_COND(a.cells == b.cells, "109e: column " << c + 1 << " cell texts changed");
+                CHECK_COND(a.values == b.values, "109e: column " << c + 1 << " values changed");
+                CHECK_COND(a.masks.size() == b.masks.size(),
+                           "109e: column " << c + 1 << " masks changed");
+                for (const Interval<int> &iv : a.masks)
+                    CHECK_COND(b.masks.contains(iv), "109e: column " << c + 1 << " lost the mask "
+                                                                     << iv.toString().toStdString());
+                CHECK_COND(a.formula == b.formula, "109e: column " << c + 1 << " formula changed");
+            }
+            CHECK_COND(msOpen < 8000 * kTestTimingScale, "109e: opening took " << msOpen << " ms");
+        }
+        std::cout << "[PASS] 109e: columns with scattered empty cells are read quickly and unchanged\n";
     }
 
     std::cout << "[PASS] Suite 109: worksheet formula references and masks\n";
