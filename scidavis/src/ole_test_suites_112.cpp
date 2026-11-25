@@ -25,6 +25,10 @@
 //        finds xc = 50 for bin widths 1 and 4 (it was half a bin to the left), a LogNormal fit
 //        of bins starting at 0 works, graph.get_info reports the centres, the cumulative %
 //        table keeps the bin edges, and the bars are still drawn from edge to edge
+//   112d the X / Y axes of a heatmap and a contour map follow the matrix: after a transpose,
+//        new coordinates and a rotation they show the matrix's new coordinate range (they used
+//        to stay at the first range, also after save -> reopen); an axis range the user fixed
+//        stays, and the axes still follow the matrix after the project is reopened
 // =============================================================================
 
 namespace {
@@ -564,6 +568,131 @@ int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw)
         QwtHistogram *d = histogramOf112(rd, QStringLiteral("G112AutoC"));
         CHECK112(c && d && d->autoBinning() && sameCounts112(c, d),
                  "112b: reopened automatic-bin clone differs");
+    }
+
+    // ---- 112d: heatmap / contour X/Y axes follow the matrix coordinates ----------------------
+    {
+        const QString prjD = tmp.filePath(QStringLiteral("axes_112d.sciprj"));
+        auto axisRange = [](ApplicationWindow *app, const QString &graph, int axis) {
+            auto *ml = qobject_cast<MultiLayer *>(findWindow112(app, graph));
+            Graph *g = (ml && !ml->layersList().isEmpty()) ? ml->layersList().first() : nullptr;
+            const QwtScaleDiv *div = g ? g->plotWidget()->axisScaleDiv(axis) : nullptr;
+            if (!div)
+                return std::make_pair(std::nan(""), std::nan(""));
+            return std::make_pair(qMin(div->lowerBound(), div->upperBound()),
+                                  qMax(div->lowerBound(), div->upperBound()));
+        };
+        auto closeTo = [](double a, double b) {
+            return std::fabs(a - b) <= 1e-9 * (1.0 + std::fabs(b));
+        };
+        // checks that the graph's X / Y axes show x0..x1 / y0..y1
+        auto expectAxes = [&](ApplicationWindow *app, const QString &graph, double x0, double x1,
+                              double y0, double y1, const char *when) {
+            const auto x = axisRange(app, graph, QwtPlot::xBottom);
+            const auto y = axisRange(app, graph, QwtPlot::yLeft);
+            std::cout << "[INFO] 112d " << when << " " << graph.toStdString() << ": x " << x.first
+                      << ".." << x.second << ", y " << y.first << ".." << y.second << "\n";
+            CHECK112(closeTo(x.first, x0) && closeTo(x.second, x1),
+                     "112d " << when << ": " << graph.toStdString() << " X axis " << x.first
+                             << ".." << x.second << ", expected " << x0 << ".." << x1);
+            CHECK112(closeTo(y.first, y0) && closeTo(y.second, y1),
+                     "112d " << when << ": " << graph.toStdString() << " Y axis " << y.first
+                             << ".." << y.second << ", expected " << y0 << ".." << y1);
+        };
+        auto matrixExtent = [](const QJsonObject &info) {
+            return std::vector<double> { info.value(QStringLiteral("x_min")).toDouble(),
+                                         info.value(QStringLiteral("x_max")).toDouble(),
+                                         info.value(QStringLiteral("y_min")).toDouble(),
+                                         info.value(QStringLiteral("y_max")).toDouble() };
+        };
+        auto setCoords = [](Rpc112 &rpc, double x0, double x1, double y0, double y1) {
+            return Rpc112::ok(rpc.call(QStringLiteral("matrix.set_coordinates"),
+                                       QJsonObject { { "matrix", "M112D" },
+                                                     { "x_min", x0 },
+                                                     { "x_max", x1 },
+                                                     { "y_min", y0 },
+                                                     { "y_max", y1 } }));
+        };
+        {
+            AppWinGuard112 w(new ApplicationWindow());
+            Rpc112 rpc;
+            rpc.srv = w->pythonAutomationServer();
+            CHECK_COND(rpc.srv != nullptr, "112d: pythonAutomationServer null");
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("matrix.create"),
+                                         QJsonObject { { "rows", 20 },
+                                                       { "cols", 30 },
+                                                       { "name", "M112D" },
+                                                       { "x_min", -3.0 },
+                                                       { "x_max", 3.0 },
+                                                       { "y_min", -2.0 },
+                                                       { "y_max", 2.0 } })),
+                     "112d: matrix.create");
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("matrix.set_formula"),
+                                         QJsonObject { { "matrix", "M112D" },
+                                                       { "formula", "exp(-((x-1)^2+y^2))" } })),
+                     "112d: matrix.set_formula");
+            // a heatmap, a contour map and a heatmap whose X axis the user fixed at 10..20
+            const std::pair<const char *, const char *> plots[] = { { "G112D", "colormap" },
+                                                                    { "G112DC", "contour" },
+                                                                    { "G112DL", "colormap" } };
+            for (const auto &gs : plots)
+                CHECK112(Rpc112::ok(rpc.call(QStringLiteral("plot.matrix"),
+                                             QJsonObject { { "matrix", "M112D" },
+                                                           { "style", gs.second },
+                                                           { "graph_name", gs.first } })),
+                         "112d: plot.matrix " << gs.first);
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("graph.set_axis"),
+                                         QJsonObject { { "graph", "G112DL" },
+                                                       { "axis", "x" },
+                                                       { "min", 10.0 },
+                                                       { "max", 20.0 } })),
+                     "112d: graph.set_axis");
+            expectAxes(w, QStringLiteral("G112D"), -3, 3, -2, 2, "initial");
+            expectAxes(w, QStringLiteral("G112DC"), -3, 3, -2, 2, "initial");
+            expectAxes(w, QStringLiteral("G112DL"), 10, 20, -2, 2, "initial");
+
+            // transpose: the X and Y coordinates swap
+            const std::vector<double> t = matrixExtent(Rpc112::result(rpc.call(
+                    QStringLiteral("matrix.transpose"), QJsonObject { { "matrix", "M112D" } })));
+            std::cout << "[INFO] 112d transposed matrix: x " << t[0] << ".." << t[1] << ", y "
+                      << t[2] << ".." << t[3] << "\n";
+            expectAxes(w, QStringLiteral("G112D"), t[0], t[1], t[2], t[3], "after transpose");
+            expectAxes(w, QStringLiteral("G112DC"), t[0], t[1], t[2], t[3], "after transpose");
+            expectAxes(w, QStringLiteral("G112DL"), 10, 20, t[2], t[3], "after transpose");
+
+            // new coordinates
+            CHECK112(setCoords(rpc, 0, 100, 0, 50), "112d: matrix.set_coordinates");
+            expectAxes(w, QStringLiteral("G112D"), 0, 100, 0, 50, "after set_coordinates");
+            expectAxes(w, QStringLiteral("G112DC"), 0, 100, 0, 50, "after set_coordinates");
+            expectAxes(w, QStringLiteral("G112DL"), 10, 20, 0, 50, "after set_coordinates");
+
+            // a rotation changes the number of rows and columns
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("matrix.flip"),
+                                         QJsonObject { { "matrix", "M112D" },
+                                                       { "mode", "rot90_cw" } })),
+                     "112d: matrix.flip rot90_cw");
+            const std::vector<double> r = matrixExtent(Rpc112::result(rpc.call(
+                    QStringLiteral("matrix.get_info"), QJsonObject { { "matrix", "M112D" } })));
+            expectAxes(w, QStringLiteral("G112D"), r[0], r[1], r[2], r[3], "after rot90_cw");
+            CHECK112(setCoords(rpc, 0, 100, 0, 50), "112d: matrix.set_coordinates again");
+            expectAxes(w, QStringLiteral("G112D"), 0, 100, 0, 50, "before saving");
+            CHECK_COND(w->saveFolder(w->projectFolder(), prjD), "112d: saving the project failed");
+        }
+        {
+            AppWinGuard112 rd(new ApplicationWindow());
+            CHECK_COND(rd->loadProject(prjD), "112d: reopening the project failed");
+            QCoreApplication::processEvents();
+            expectAxes(rd, QStringLiteral("G112D"), 0, 100, 0, 50, "reopened");
+            expectAxes(rd, QStringLiteral("G112DC"), 0, 100, 0, 50, "reopened");
+            expectAxes(rd, QStringLiteral("G112DL"), 10, 20, 0, 50, "reopened");
+            // after reopening the axes still follow the matrix and the fixed X axis stays
+            Rpc112 rpc;
+            rpc.srv = rd->pythonAutomationServer();
+            CHECK112(setCoords(rpc, 5, 6, -1, 1), "112d: matrix.set_coordinates after reopening");
+            expectAxes(rd, QStringLiteral("G112D"), 5, 6, -1, 1, "reopened, new coordinates");
+            expectAxes(rd, QStringLiteral("G112DC"), 5, 6, -1, 1, "reopened, new coordinates");
+            expectAxes(rd, QStringLiteral("G112DL"), 10, 20, -1, 1, "reopened, new coordinates");
+        }
     }
 
     if (g112Failures > 0) {

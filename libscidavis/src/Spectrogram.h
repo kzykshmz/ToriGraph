@@ -139,6 +139,15 @@ protected:
     bool drawsMissingCellsTransparent() const;
     void rebuildData();
     void syncColorAxisEngine();
+    //! Remember the matrix coordinate range the X/Y axes were last fitted to
+    void rememberMatrixExtent();
+    //! After the matrix coordinates changed (transpose, rotation, new coordinates ...), put the
+    //! new range on the X/Y axes, except on an axis the user fixed at another range
+    void followMatrixExtent();
+
+    //! Matrix coordinate range (x min, x max, y min, y max) last remembered
+    double d_matrix_extent[4] = { 0.0, 0.0, 0.0, 0.0 };
+    bool d_matrix_extent_valid = false;
 
     //! Guarded pointer to the source data matrix
     QPointer<Matrix> d_matrix;

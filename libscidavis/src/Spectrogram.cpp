@@ -28,6 +28,7 @@
 
 #include "Spectrogram.h"
 #include "ColorButton.h"
+#include "Graph.h"
 #include "Plot.h"
 #include "ScaleDraw.h"
 #include <algorithm>
@@ -160,6 +161,7 @@ Spectrogram::Spectrogram(Matrix *m)
     }
 
     setContourLevels(contourLevels);
+    rememberMatrixExtent();
 }
 
 QwtDoubleInterval Spectrogram::rawDataRange() const
@@ -386,14 +388,77 @@ void Spectrogram::updateData(Matrix *m)
     setLevelsNumber(prevLevels);
 
     QwtPlot *plot = this->plot();
-    if (!plot)
+    if (!plot) {
+        rememberMatrixExtent();
         return;
+    }
 
     syncColorScale();
     const QwtDoubleInterval zRange = colorAxisRange();
     plot->setAxisScale(color_axis, zRange.minValue(), zRange.maxValue());
     enforceColorBarArialFont();
+    followMatrixExtent();
     plot->replot();
+}
+
+void Spectrogram::rememberMatrixExtent()
+{
+    if (!d_matrix)
+        return;
+    d_matrix_extent[0] = qMin(d_matrix->xStart(), d_matrix->xEnd());
+    d_matrix_extent[1] = qMax(d_matrix->xStart(), d_matrix->xEnd());
+    d_matrix_extent[2] = qMin(d_matrix->yStart(), d_matrix->yEnd());
+    d_matrix_extent[3] = qMax(d_matrix->yStart(), d_matrix->yEnd());
+    d_matrix_extent_valid = true;
+}
+
+void Spectrogram::followMatrixExtent()
+{
+    const bool hadExtent = d_matrix_extent_valid;
+    const double oldExtent[4] = { d_matrix_extent[0], d_matrix_extent[1], d_matrix_extent[2],
+                                  d_matrix_extent[3] };
+    rememberMatrixExtent();
+    QwtPlot *plot = this->plot();
+    Graph *g = plot ? qobject_cast<Graph *>(plot->parent()) : nullptr;
+    if (!hadExtent || !g || !d_matrix_extent_valid)
+        return;
+
+    auto same = [](double a, double b, double span) {
+        return std::fabs(a - b) <= 1e-9 * qMax(span, qMax(std::fabs(a), std::fabs(b)));
+    };
+    const int axes[2] = { xAxis(), yAxis() };
+    for (int k = 0; k < 2; ++k) {
+        const int axis = axes[k];
+        const double oldLo = oldExtent[2 * k], oldHi = oldExtent[2 * k + 1];
+        const double newLo = d_matrix_extent[2 * k], newHi = d_matrix_extent[2 * k + 1];
+        const double oldSpan = std::fabs(oldHi - oldLo);
+        if ((same(oldLo, newLo, oldSpan) && same(oldHi, newHi, oldSpan))
+            || !std::isfinite(newLo) || !std::isfinite(newHi) || !(newHi > newLo)
+            || axis == color_axis)
+            continue;
+        const QwtScaleDiv *div = plot->axisScaleDiv(axis);
+        if (!div)
+            continue;
+        const double lo = qMin(div->lowerBound(), div->upperBound());
+        const double hi = qMax(div->lowerBound(), div->upperBound());
+        // An axis still showing the previous coordinate range follows the matrix (also after
+        // reopening a project, where every restored axis counts as fixed by the user); an axis
+        // the user fixed at another range keeps it, like the autoscaled axes of curves.
+        const bool showsOldRange = same(lo, oldLo, oldSpan) && same(hi, oldHi, oldSpan);
+        const bool locked = g->isAxisUserLocked(axis);
+        if (locked && !showsOldRange)
+            continue;
+        const QwtScaleEngine *eng = plot->axisScaleEngine(axis);
+        const bool inverted = eng && eng->testAttribute(QwtScaleEngine::Inverted);
+        const bool log = eng && Plot::isLog10ScaleEngine(eng) && newLo > 0.0;
+        double step = g->axisStep(axis);
+        // a fixed tick step chosen for the old range is kept unless it gives too many ticks
+        if (!(step > 0.0) || (newHi - newLo) / step > 50.0)
+            step = 0.0;
+        g->setScale(axis, newLo, newHi, step, plot->axisMaxMajor(axis), plot->axisMaxMinor(axis),
+                    log ? 1 : 0, inverted);
+        g->setAxisUserLocked(axis, locked);
+    }
 }
 
 void Spectrogram::setLevelsNumber(int levels)
