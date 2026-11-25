@@ -39,6 +39,9 @@
 //        digits written as a date (yyyyMMdd) or a clock time with a leading zero ("0930") and
 //        other date/time texts keep the input filter's reading; a value that cannot be read is
 //        an empty cell with a warning
+//   105h table.export_csv writes each number as the shortest text that reads back as the same
+//        double (as the GUI export; 15 digits wrote 0.1+0.2 as 0.3 and cut 1/3), and numbers
+//        written into a text column (set_column_data mode "text", set_cell) keep all digits
 // =============================================================================
 
 namespace {
@@ -693,6 +696,87 @@ int runSuite105RpcImportColumnTypes(ApplicationWindow *mw)
                                                  << " Undo step(s), after Undo "
                                                  << cellText(tp, R - 2).toStdString());
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 105h: table.export_csv writes numbers that read back exactly (shortest round-trip text,
+    //       as the GUI export); numbers written into a text column keep all their digits
+    // -------------------------------------------------------------------------
+    {
+        const QVector<double> vals = { 0.1 + 0.2,
+                                       1.0 / 3.0,
+                                       1234.56789012345678,
+                                       -1.2345678901234567e-7,
+                                       6.02214076e23,
+                                       123456789012345678.0,
+                                       2.5,
+                                       -0.0,
+                                       1e-320,
+                                       0.5 };
+        const int R = vals.size();
+        Table *t = w105->newTable(R, 3, QStringLiteral("H105"), QStringLiteral("H105"));
+        QJsonArray arr;
+        for (double v : vals)
+            arr.append(v);
+        const QJsonObject r1 =
+                rpc(QStringLiteral("table.set_column_data"),
+                    QJsonObject { { "table", "H105" }, { "col", 0 }, { "data", arr } });
+        const QJsonObject r2 = rpc(
+                QStringLiteral("table.set_column_data"),
+                QJsonObject {
+                        { "table", "H105" }, { "col", 1 }, { "data", arr }, { "mode", "text" } });
+        EXPECT105(t && !rpcIsError105(r1) && !rpcIsError105(r2)
+                          && t->column(0)->columnMode() == SciDAVis::ColumnMode::Numeric
+                          && t->column(1)->columnMode() == SciDAVis::ColumnMode::Text,
+                  "105h: fixture H105");
+        if (t && !rpcIsError105(r1) && !rpcIsError105(r2)) {
+            // set_cell of a number into a text column
+            rpc(QStringLiteral("table.set_column_data"),
+                QJsonObject { { "table", "H105" },
+                              { "col", 2 },
+                              { "data", QJsonArray { "a" } },
+                              { "mode", "text" } });
+            const QJsonObject r3 = rpc(QStringLiteral("table.set_cell"),
+                                       QJsonObject { { "table", "H105" },
+                                                     { "row", 0 },
+                                                     { "col", 2 },
+                                                     { "value", 1.0 / 3.0 } });
+            EXPECT105(!rpcIsError105(r3) && t->column(2)->textAt(0).toDouble() == 1.0 / 3.0,
+                      "105h: set_cell of 1/3 into a text column: "
+                              << t->column(2)->textAt(0).toStdString());
+
+            const QString path = tmp105.filePath(QStringLiteral("h105.csv"));
+            const QJsonObject re = rpc(QStringLiteral("table.export_csv"),
+                                       QJsonObject { { "table", "H105" }, { "path", path } });
+            const QList<QByteArray> lines = readFile(path).split('\n');
+            EXPECT105(!rpcIsError105(re) && lines.size() >= R + 1,
+                      "105h: export_csv: " << lines.size() << " line(s)");
+            int exactCsv = 0, exactText = 0;
+            for (int i = 0; i < R && i + 1 < lines.size(); ++i) {
+                const QList<QByteArray> f = lines.at(i + 1).split(',');
+                bool ok1 = false, ok2 = false;
+                const double back = f.value(0).toDouble(&ok1);
+                const double backText = t->column(1)->textAt(i).toDouble(&ok2);
+                const bool same = ok1 && back == vals.at(i);
+                const bool sameText = ok2 && backText == vals.at(i);
+                exactCsv += same ? 1 : 0;
+                exactText += sameText ? 1 : 0;
+                if (!same || !sameText)
+                    std::cerr << "    105h row " << i << ": csv '" << f.value(0).constData()
+                              << "', text column '" << t->column(1)->textAt(i).toStdString()
+                              << "'\n";
+            }
+            EXPECT105(exactCsv == R,
+                      "105h: export_csv: " << exactCsv << " of " << R
+                                           << " values read back exactly");
+            EXPECT105(exactText == R,
+                      "105h: numbers in a text column: " << exactText << " of " << R << " exact");
+            // shortest text, not 17 digits everywhere: 2.5 stays "2.5", 0.1+0.2 needs 17 digits
+            EXPECT105(lines.size() > 7 && lines.at(7).split(',').value(0) == "2.5"
+                              && lines.at(1).split(',').value(0) == "0.30000000000000004",
+                      "105h: export_csv texts '" << lines.value(7).constData() << "' / '"
+                                                 << lines.value(1).constData() << "'");
         }
     }
 

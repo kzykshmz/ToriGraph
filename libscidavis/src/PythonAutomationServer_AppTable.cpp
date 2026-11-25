@@ -812,8 +812,8 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
                 texts.append(QString());
             else if (v.isString())
                 texts.append(v.toString());
-            else if (v.isDouble())
-                texts.append(QString::number(v.toDouble(), 'g', 15));
+            else if (v.isDouble()) // shortest text that reads back as the same double
+                texts.append(QString::number(v.toDouble(), 'g', QLocale::FloatingPointShortest));
             else if (v.isBool())
                 texts.append(v.toBool() ? QStringLiteral("true") : QStringLiteral("false"));
             else
@@ -5888,8 +5888,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             t->setText(row, colIdx,
                        val.isString() ? val.toString() : QString::number(val.toDouble(), 'g', 15));
         } else if (col && col->columnMode() == SciDAVis::ColumnMode::Text) {
-            col->setTextAt(row, val.isString() ? val.toString()
-                                               : QString::number(val.toDouble(), 'g', 15));
+            col->setTextAt(row,
+                           val.isString() ? val.toString()
+                                          : QString::number(val.toDouble(), 'g',
+                                                            QLocale::FloatingPointShortest));
         } else if (val.isString()) {
             const QString sTrim = val.toString().trimmed();
             // the missing / Excel error tokens of the text import and table.paste_tsv ("N.D.",
@@ -6372,7 +6374,11 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     rowFields << QString();
                 } else if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
                     const double v = col->valueAt(r);
-                    rowFields << (std::isfinite(v) ? cLoc.toString(v, 'g', 15) : QString());
+                    // shortest text that reads back as exactly the same double, as the GUI
+                    // export (Table::exportASCII); 15 digits lost 0.1+0.2, 1/3, ...
+                    rowFields << (std::isfinite(v)
+                                          ? cLoc.toString(v, 'g', QLocale::FloatingPointShortest)
+                                          : QString());
                 } else if (col->columnMode() == SciDAVis::ColumnMode::Text) {
                     rowFields << quoteField(col->textAt(r));
                 } else {
