@@ -1,0 +1,575 @@
+#include "ole_test_common.h"
+#include "PythonAutomationServer.h"
+#include "QwtHistogram.h"
+
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QPainter>
+
+#include <gsl/gsl_cdf.h>
+
+#include <cmath>
+#include <limits>
+
+// =============================================================================
+// Suite 112: heatmap / contour with blocks of missing cells, histogram clone and bin centres.
+//   112a a block of 3x3 or more NaN cells in a matrix (values 10..20) is not drawn as 0: the
+//        colour range stays 10..20, the cells without a finite neighbour are transparent and
+//        the contour lines do not draw a false ring around the hole; a single NaN cell is still
+//        filled from its neighbours (default look unchanged)
+//   112b app.clone_window of a histogram keeps a histogram (not a bar curve of the bins): same
+//        bins (manual and automatic), follows edits of the source table, and the clone's bins
+//        survive save -> reopen (they used to be read from a bar curve as garbage)
+//   112c the histogram points are the bin centres: a Gauss fit of a normal sample (mean 50)
+//        finds xc = 50 for bin widths 1 and 4 (it was half a bin to the left), a LogNormal fit
+//        of bins starting at 0 works, graph.get_info reports the centres, the cumulative %
+//        table keeps the bin edges, and the bars are still drawn from edge to edge
+// =============================================================================
+
+namespace {
+
+int g112Failures = 0;
+
+#define CHECK112(cond, msg)                                                                        \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "[FAIL] " << msg << " (line " << __LINE__ << ")" << std::endl;            \
+            ++g112Failures;                                                                        \
+        }                                                                                          \
+    } while (0)
+
+struct NonInteractiveGuard112
+{
+    QVariant prevNonInteractive;
+    bool prevQuitOnLast = true;
+    NonInteractiveGuard112()
+        : prevNonInteractive(qApp->property("torigraph_noninteractive")),
+          prevQuitOnLast(QApplication::quitOnLastWindowClosed())
+    {
+        qApp->setProperty("torigraph_noninteractive", true);
+        QApplication::setQuitOnLastWindowClosed(false);
+    }
+    ~NonInteractiveGuard112()
+    {
+        qApp->setProperty("torigraph_noninteractive", prevNonInteractive);
+        QApplication::setQuitOnLastWindowClosed(prevQuitOnLast);
+    }
+};
+
+struct AppWinGuard112
+{
+    ApplicationWindow *win = nullptr;
+    explicit AppWinGuard112(ApplicationWindow *w = nullptr) : win(w)
+    {
+        if (win) {
+            win->setHeadlessMode(true);
+            win->applyUserSettings();
+            win->confirmCloseTable = false;
+            win->confirmCloseMatrix = false;
+            win->confirmClosePlot2D = false;
+            win->confirmClosePlot3D = false;
+            win->confirmCloseFolder = false;
+            win->confirmCloseNotes = false;
+        }
+    }
+    ~AppWinGuard112()
+    {
+        if (win) {
+            win->savedProject();
+            win->setOleEmbeddedMode(true);
+            delete win;
+            win = nullptr;
+        }
+        QApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+    AppWinGuard112(const AppWinGuard112 &) = delete;
+    AppWinGuard112 &operator=(const AppWinGuard112 &) = delete;
+    ApplicationWindow *operator->() const { return win; }
+    operator ApplicationWindow *() const { return win; }
+};
+
+struct Rpc112
+{
+    PythonAutomationServer *srv = nullptr;
+    int id = 11200;
+    QJsonObject call(const QString &method, const QJsonObject &params)
+    {
+        QJsonObject req;
+        req[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+        req[QStringLiteral("id")] = ++id;
+        req[QStringLiteral("method")] = method;
+        req[QStringLiteral("params")] = params;
+        const QJsonObject resp = srv->handleRpcRequest(req);
+        QCoreApplication::processEvents();
+        if (resp.contains(QStringLiteral("error")))
+            std::cerr << "[INFO] 112: " << method.toStdString() << " error: "
+                      << QJsonDocument(resp.value(QStringLiteral("error")).toObject())
+                                 .toJson(QJsonDocument::Compact)
+                                 .toStdString()
+                      << "\n";
+        return resp;
+    }
+    static bool ok(const QJsonObject &resp) { return !resp.contains(QStringLiteral("error")); }
+    static QJsonObject result(const QJsonObject &resp)
+    {
+        return resp.value(QStringLiteral("result")).toObject();
+    }
+    bool makeTable(const QString &name, const QString &col, const std::vector<double> &v)
+    {
+        QJsonArray data;
+        for (double x : v)
+            data.append(x);
+        if (!ok(call(QStringLiteral("table.create"),
+                     QJsonObject { { "rows", int(v.size()) },
+                                   { "cols", 1 },
+                                   { "name", name },
+                                   { "col_names", QJsonArray { col } } })))
+            return false;
+        return ok(call(QStringLiteral("table.set_data_dict"),
+                       QJsonObject { { "table", name },
+                                     { "data", QJsonObject { { col, data } } },
+                                     { "column_order", QJsonArray { col } } }));
+    }
+    QString histogram(const QString &table, const QString &col, const QString &graph,
+                      double binSize = 0.0, double binMin = 0.0, double binMax = 0.0)
+    {
+        QJsonObject p { { "table", table }, { "col", col }, { "graph_name", graph } };
+        if (binSize > 0.0) {
+            p[QStringLiteral("bin_size")] = binSize;
+            p[QStringLiteral("bin_min")] = binMin;
+            p[QStringLiteral("bin_max")] = binMax;
+        }
+        const QJsonObject r = call(QStringLiteral("plot.histogram"), p);
+        return ok(r) ? result(r).value(QStringLiteral("name")).toString() : QString();
+    }
+    QJsonObject firstCurveInfo(const QString &graph)
+    {
+        const QJsonObject r =
+                result(call(QStringLiteral("graph.get_info"), QJsonObject { { "graph", graph } }));
+        const QJsonArray layers = r.value(QStringLiteral("layers")).toArray();
+        if (layers.isEmpty())
+            return QJsonObject();
+        const QJsonArray curves =
+                layers.first().toObject().value(QStringLiteral("curves")).toArray();
+        return curves.isEmpty() ? QJsonObject() : curves.first().toObject();
+    }
+};
+
+MyWidget *findWindow112(ApplicationWindow *app, const QString &name)
+{
+    if (!app)
+        return nullptr;
+    for (MyWidget *w : app->windowsList())
+        if (w && w->name() == name)
+            return w;
+    return nullptr;
+}
+
+QwtHistogram *histogramOf112(ApplicationWindow *app, const QString &graph)
+{
+    auto *ml = qobject_cast<MultiLayer *>(findWindow112(app, graph));
+    if (!ml || ml->layersList().isEmpty() || !ml->layersList().first())
+        return nullptr;
+    Graph *g = ml->layersList().first();
+    return g->curves() > 0 ? dynamic_cast<QwtHistogram *>(g->curve(0)) : nullptr;
+}
+
+int curveTypeOf112(ApplicationWindow *app, const QString &graph)
+{
+    auto *ml = qobject_cast<MultiLayer *>(findWindow112(app, graph));
+    if (!ml || ml->layersList().isEmpty() || !ml->layersList().first())
+        return -1;
+    Graph *g = ml->layersList().first();
+    return g->curves() > 0 ? g->curveType(0) : -1;
+}
+
+QString countsStr112(QwtPlotCurve *c)
+{
+    QStringList s;
+    for (int i = 0; c && i < c->dataSize(); ++i)
+        s << QString::number(c->y(i));
+    return s.join(QLatin1Char(' '));
+}
+
+bool sameCounts112(QwtPlotCurve *a, QwtPlotCurve *b)
+{
+    if (!a || !b || a->dataSize() != b->dataSize())
+        return false;
+    for (int i = 0; i < a->dataSize(); ++i)
+        if (a->x(i) != b->x(i) || a->y(i) != b->y(i))
+            return false;
+    return true;
+}
+
+//! Gives the test access to the raster image and the contour lines that Spectrogram draws.
+class SpectrogramProbe112 : public Spectrogram
+{
+public:
+    explicit SpectrogramProbe112(Matrix *m) : Spectrogram(m) { }
+    using Spectrogram::renderContourLines;
+    using Spectrogram::renderImage;
+};
+
+struct HoleResult112
+{
+    double zMin = 0.0, zMax = 0.0;
+    bool centreFinite = true;
+    int centreAlpha = -1;
+    int cornerAlpha = -1;
+    double lowestLevel = 0.0;
+    double worstRingDist = 0.0; // farthest lowest-level contour point from its true position
+    int lowestSegments = 0;
+};
+
+// 20x20 matrix z = 10 + 10 * col / 19 over x, y = 0..19, with a size x size block of NaN
+// starting at row/col 8.
+HoleResult112 probeHole112(ApplicationWindow *app, int size, const QString &name)
+{
+    HoleResult112 r;
+    Matrix *m = app->newMatrix(name, 20, 20);
+    if (!m)
+        return r;
+    m->setCoordinates(0.0, 19.0, 0.0, 19.0);
+    for (int i = 0; i < 20; ++i)
+        for (int j = 0; j < 20; ++j) {
+            const bool hole = i >= 8 && i < 8 + size && j >= 8 && j < 8 + size;
+            m->setCell(i, j,
+                       hole ? std::numeric_limits<double>::quiet_NaN()
+                            : 10.0 + 10.0 * double(j) / 19.0);
+        }
+
+    SpectrogramProbe112 sp(m);
+    sp.setLevelsNumber(6);
+    const QwtDoubleInterval zr = sp.effectiveValueRange();
+    r.zMin = zr.minValue();
+    r.zMax = zr.maxValue();
+    const double hc = 8.0 + 0.5 * double(size - 1); // centre of the hole
+    r.centreFinite = std::isfinite(sp.data().value(hc, hc));
+
+    QwtScaleMap xMap, yMap;
+    xMap.setScaleInterval(0.0, 19.0);
+    xMap.setPaintInterval(0, 190);
+    yMap.setScaleInterval(0.0, 19.0);
+    yMap.setPaintInterval(190, 0);
+    const QImage img = sp.renderImage(xMap, yMap, QwtDoubleRect(0.0, 0.0, 19.0, 19.0));
+    if (!img.isNull()) {
+        auto alphaAt = [&](double x, double y) {
+            const int px =
+                    qBound(0, int(std::lround(x / 19.0 * (img.width() - 1))), img.width() - 1);
+            const int py = qBound(0, int(std::lround((19.0 - y) / 19.0 * (img.height() - 1))),
+                                  img.height() - 1);
+            return qAlpha(img.pixel(px, py));
+        };
+        r.centreAlpha = alphaAt(hc, hc);
+        r.cornerAlpha = alphaAt(2.0, 2.0);
+    }
+
+    const QwtValueList levels = sp.contourLevels();
+    if (!levels.isEmpty()) {
+        r.lowestLevel = *std::min_element(levels.begin(), levels.end());
+        const QwtRasterData::ContourLines lines =
+                sp.renderContourLines(QwtDoubleRect(0.0, 0.0, 19.0, 19.0), QSize(80, 80));
+        const QPolygonF seg = lines.value(r.lowestLevel);
+        r.lowestSegments = seg.size() / 2;
+        const double expectedX = 19.0 * (r.lowestLevel - 10.0) / 10.0;
+        for (const QPointF &p : seg)
+            r.worstRingDist = std::max(r.worstRingDist, std::fabs(p.x() - expectedX));
+    }
+    return r;
+}
+
+std::vector<double> normalSample112(int n, double mean, double sd)
+{
+    std::vector<double> v(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k)
+        v[size_t(k)] = mean + sd * gsl_cdf_ugaussian_Pinv((double(k) + 0.5) / double(n));
+    return v;
+}
+
+std::vector<double> lognormalSample112(int n, double median, double sigma)
+{
+    std::vector<double> v(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k)
+        v[size_t(k)] =
+                median * std::exp(sigma * gsl_cdf_ugaussian_Pinv((double(k) + 0.5) / double(n)));
+    return v;
+}
+
+} // namespace
+
+int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw)
+{
+    Q_UNUSED(mw);
+    std::cout << "[INFO] Running Suite 112: heatmap NaN blocks, histogram clone and bin "
+                 "centres...\n";
+    g112Failures = 0;
+    NonInteractiveGuard112 niGuard;
+
+    QTemporaryDir tmp;
+    CHECK_COND(tmp.isValid(), "112: temp dir creation failed");
+    const QString prj = tmp.filePath(QStringLiteral("hist_112.sciprj"));
+
+    {
+        AppWinGuard112 w(new ApplicationWindow());
+        Rpc112 rpc;
+        rpc.srv = w->pythonAutomationServer();
+        CHECK_COND(rpc.srv != nullptr, "112: pythonAutomationServer null");
+
+        // ---- 112a: blocks of missing cells ---------------------------------------------------
+        {
+            const HoleResult112 one = probeHole112(w, 1, QStringLiteral("M112One"));
+            std::cout << "[INFO] 112a 1x1: z " << one.zMin << ".." << one.zMax << ", centre finite "
+                      << one.centreFinite << "\n";
+            CHECK112(one.zMin >= 10.0 - 1e-9 && one.zMax <= 20.0 + 1e-9,
+                     "112a: 1x1 hole colour range " << one.zMin << ".." << one.zMax);
+            CHECK112(one.centreFinite && one.centreAlpha == 255,
+                     "112a: a single NaN cell must still be filled from its neighbours (alpha "
+                             << one.centreAlpha << ")");
+
+            for (int size : { 3, 4 }) {
+                const HoleResult112 h =
+                        probeHole112(w, size, QStringLiteral("M112Hole%1").arg(size));
+                std::cout << "[INFO] 112a " << size << "x" << size << ": z " << h.zMin << ".."
+                          << h.zMax << ", centre finite " << h.centreFinite << ", alpha centre "
+                          << h.centreAlpha << " corner " << h.cornerAlpha << ", level "
+                          << h.lowestLevel << " segments " << h.lowestSegments << " worst distance "
+                          << h.worstRingDist << "\n";
+                CHECK112(h.zMin >= 10.0 - 1e-9 && h.zMax <= 20.0 + 1e-9,
+                         "112a: " << size << "x" << size << " hole stretches the colour range to "
+                                  << h.zMin << ".." << h.zMax);
+                CHECK112(!h.centreFinite,
+                         "112a: " << size << "x" << size << " hole centre is drawn with a value");
+                CHECK112(h.centreAlpha == 0 && h.cornerAlpha == 255,
+                         "112a: " << size << "x" << size << " hole centre alpha " << h.centreAlpha
+                                  << " (want 0), corner alpha " << h.cornerAlpha);
+                CHECK112(h.lowestSegments > 0 && h.worstRingDist < 0.75,
+                         "112a: " << size << "x" << size << " lowest contour level "
+                                  << h.lowestLevel << " has points " << h.worstRingDist
+                                  << " away from its line (false ring around the hole)");
+            }
+
+            // colour bar of a plotted heatmap (RPC)
+            const QString plotted = QStringLiteral("M112Hole4");
+            const QJsonObject pr = rpc.call(QStringLiteral("plot.matrix"),
+                                            QJsonObject { { "matrix", plotted },
+                                                          { "style", "colormap" },
+                                                          { "graph_name", "G112Heat" } });
+            CHECK112(Rpc112::ok(pr), "112a: plot.matrix");
+            const QJsonObject info = Rpc112::result(rpc.call(
+                    QStringLiteral("graph.get_info"), QJsonObject { { "graph", "G112Heat" } }));
+            const QJsonArray layers = info.value(QStringLiteral("layers")).toArray();
+            const QJsonArray specs = layers.isEmpty()
+                    ? QJsonArray()
+                    : layers.first().toObject().value(QStringLiteral("spectrograms")).toArray();
+            const double zMin = specs.isEmpty()
+                    ? -1.0
+                    : specs.first().toObject().value(QStringLiteral("z_min")).toDouble(-1.0);
+            std::cout << "[INFO] 112a plotted 4x4 hole colour bar z_min " << zMin << "\n";
+            CHECK112(std::fabs(zMin - 10.0) < 1e-9, "112a: plotted colour bar starts at " << zMin);
+        }
+
+        // ---- 112b: histogram clone ----------------------------------------------------------
+        {
+            const std::vector<double> v = lognormalSample112(3000, 10.0, 0.5);
+            CHECK_COND(rpc.makeTable(QStringLiteral("T112H"), QStringLiteral("d"), v),
+                       "112b: table T112H");
+            const QString gm = rpc.histogram(QStringLiteral("T112H"), QStringLiteral("d"),
+                                             QStringLiteral("G112Man"), 2.0, 0.0, 60.0);
+            const QString ga = rpc.histogram(QStringLiteral("T112H"), QStringLiteral("d"),
+                                             QStringLiteral("G112Auto"));
+            CHECK_COND(!gm.isEmpty() && !ga.isEmpty(), "112b: plot.histogram");
+            for (const QString &src : { gm, ga }) {
+                const QString dst = src + QStringLiteral("C");
+                CHECK112(Rpc112::ok(rpc.call(QStringLiteral("app.clone_window"),
+                                             QJsonObject { { "name", src }, { "new_name", dst } })),
+                         "112b: clone_window " << src.toStdString());
+                QwtHistogram *hs = histogramOf112(w, src);
+                QwtHistogram *hc = histogramOf112(w, dst);
+                std::cout << "[INFO] 112b " << dst.toStdString() << ": histogram object "
+                          << (hc != nullptr) << ", curve type " << curveTypeOf112(w, dst)
+                          << ", points " << (hc ? hc->dataSize() : -1) << "\n";
+                CHECK112(hs && hc,
+                         "112b: the clone of " << src.toStdString()
+                                               << " is not a histogram object");
+                if (!hs || !hc)
+                    continue;
+                CHECK112(hs->type() == Graph::Histogram && hc->type() == Graph::Histogram,
+                         "112b: histogram curve type " << hs->type() << " / " << hc->type());
+                CHECK112(curveTypeOf112(w, dst) == Graph::Histogram, "112b: clone curve type");
+                CHECK112(hs->autoBinning() == hc->autoBinning() && hs->binSize() == hc->binSize()
+                                 && hs->begin() == hc->begin() && hs->end() == hc->end(),
+                         "112b: clone bins " << hc->autoBinning() << "/" << hc->binSize() << "/"
+                                             << hc->begin() << "/" << hc->end() << " vs "
+                                             << hs->autoBinning() << "/" << hs->binSize() << "/"
+                                             << hs->begin() << "/" << hs->end());
+                CHECK112(sameCounts112(hs, hc), "112b: clone counts differ");
+            }
+            QwtHistogram *hm = histogramOf112(w, gm);
+            CHECK112(hm && !hm->autoBinning() && hm->dataSize() == 30,
+                     "112b: manual histogram bins " << (hm ? hm->dataSize() : -1));
+
+            // edit the source table: the clones follow it like the originals
+            CHECK112(Rpc112::ok(rpc.call(QStringLiteral("table.set_cell"),
+                                         QJsonObject { { "table", "T112H" },
+                                                       { "row", 0 },
+                                                       { "col", "d" },
+                                                       { "value", 30.0 } })),
+                     "112b: table.set_cell");
+            for (const QString &src : { gm, ga }) {
+                QwtHistogram *hs = histogramOf112(w, src);
+                QwtHistogram *hc = histogramOf112(w, src + QStringLiteral("C"));
+                std::cout << "[INFO] 112b after edit " << src.toStdString() << ": "
+                          << (hs ? hs->dataSize() : -1) << " bins, clone "
+                          << (hc ? hc->dataSize() : -1) << " bins\n";
+                CHECK112(hs && hc && sameCounts112(hs, hc),
+                         "112b: after the edit the clone of "
+                                 << src.toStdString() << " shows " << countsStr112(hc).toStdString()
+                                 << "\n  source " << countsStr112(hs).toStdString());
+            }
+
+            CHECK_COND(w->saveFolder(w->projectFolder(), prj), "112b: saving the project failed");
+        }
+
+        // ---- 112c: bin centres ---------------------------------------------------------------
+        {
+            const std::vector<double> v = normalSample112(5000, 50.0, 5.0);
+            CHECK_COND(rpc.makeTable(QStringLiteral("T112N"), QStringLiteral("d"), v),
+                       "112c: table T112N");
+            for (double bw : { 1.0, 4.0 }) {
+                const QString g =
+                        rpc.histogram(QStringLiteral("T112N"), QStringLiteral("d"),
+                                      QStringLiteral("G112N%1").arg(int(bw)), bw, 20.0, 80.0);
+                CHECK112(!g.isEmpty(), "112c: plot.histogram bin " << bw);
+                if (g.isEmpty())
+                    continue;
+                const QJsonObject ci = rpc.firstCurveInfo(g);
+                const double xMin = ci.value(QStringLiteral("x_min")).toDouble(-1.0);
+                const double xMax = ci.value(QStringLiteral("x_max")).toDouble(-1.0);
+                const QJsonObject fr = rpc.call(QStringLiteral("analysis.fit_nonlinear"),
+                                                QJsonObject { { "graph", g },
+                                                              { "curve", 0 },
+                                                              { "model", "Gauss" },
+                                                              { "plot_curve", false } });
+                const double xc = Rpc112::result(fr)
+                                          .value(QStringLiteral("params"))
+                                          .toObject()
+                                          .value(QStringLiteral("xc"))
+                                          .toDouble(-1.0);
+                std::cout << "[INFO] 112c bin " << bw << ": curve x " << xMin << ".." << xMax
+                          << ", Gauss xc " << xc << "\n";
+                CHECK112(std::fabs(xMin - (20.0 + 0.5 * bw)) < 1e-9
+                                 && std::fabs(xMax - (80.0 - 0.5 * bw)) < 1e-9,
+                         "112c: bin " << bw << " curve points " << xMin << ".." << xMax
+                                      << " are not the bin centres");
+                CHECK112(Rpc112::ok(fr) && std::fabs(xc - 50.0) < 0.05,
+                         "112c: bin " << bw << " Gauss fit centre " << xc << " (sample mean 50)");
+            }
+
+            const std::vector<double> lv = lognormalSample112(3000, 10.0, 0.5);
+            CHECK_COND(rpc.makeTable(QStringLiteral("T112L"), QStringLiteral("d"), lv),
+                       "112c: table T112L");
+            const QString gl = rpc.histogram(QStringLiteral("T112L"), QStringLiteral("d"),
+                                             QStringLiteral("G112Log"), 2.0, 0.0, 60.0);
+            const QJsonObject lr = rpc.call(QStringLiteral("analysis.fit_nonlinear"),
+                                            QJsonObject { { "graph", gl },
+                                                          { "curve", 0 },
+                                                          { "model", "LogNormal" },
+                                                          { "plot_curve", false } });
+            std::cout << "[INFO] 112c LogNormal fit of bins from 0: "
+                      << QJsonDocument(
+                                 Rpc112::result(lr).value(QStringLiteral("params")).toObject())
+                                 .toJson(QJsonDocument::Compact)
+                                 .toStdString()
+                      << "\n";
+            const QJsonValue lxc = Rpc112::result(lr)
+                                           .value(QStringLiteral("params"))
+                                           .toObject()
+                                           .value(QStringLiteral("xc"));
+            CHECK112(!gl.isEmpty() && Rpc112::ok(lr) && lxc.isDouble()
+                             && std::isfinite(lxc.toDouble()),
+                     "112c: LogNormal fit of a histogram with bins from 0 failed");
+
+            // cumulative % keeps the bin edges
+            Table *th = w->newTable(QStringLiteral("T112Cum"), 20, 1);
+            CHECK_COND(th != nullptr, "112c: table T112Cum");
+            for (int r = 0; r < 20; ++r)
+                th->setCell(r, 0, r + 1);
+            const ExtraPlotTypes::HistogramCumulativeResult hr =
+                    ExtraPlotTypes::plotHistogramCumulative(w, th, th->colName(0), 5.0, 0.0);
+            CHECK112(hr.valid && hr.upperEdges.size() == 6, "112c: histogram + cumulative failed");
+            for (int i = 0; hr.valid && i < hr.upperEdges.size(); ++i)
+                CHECK112(std::fabs(hr.upperEdges[i] - 5.0 * i) < 1e-9,
+                         "112c: cumulative upper edge " << i << " = " << hr.upperEdges[i]);
+
+            // the bars still span the bins: values 1.5, 2.5, 2.5, 3.5 in bins [1,2) [2,3) [3,4)
+            CHECK_COND(rpc.makeTable(QStringLiteral("T112D"), QStringLiteral("d"),
+                                     { 1.5, 2.5, 2.5, 3.5 }),
+                       "112c: table T112D");
+            const QString gd = rpc.histogram(QStringLiteral("T112D"), QStringLiteral("d"),
+                                             QStringLiteral("G112Draw"), 1.0, 1.0, 4.0);
+            QwtHistogram *hd = histogramOf112(w, gd);
+            CHECK112(hd && hd->dataSize() == 3, "112c: draw probe histogram");
+            if (hd && hd->dataSize() == 3) {
+                CHECK112(std::fabs(hd->x(0) - 1.5) < 1e-12 && std::fabs(hd->x(2) - 3.5) < 1e-12,
+                         "112c: bin centres " << hd->x(0) << " .. " << hd->x(2));
+                const QwtDoubleRect br = hd->boundingRect();
+                CHECK112(std::fabs(br.left() - 0.85) < 1e-9 && std::fabs(br.right() - 4.15) < 1e-9,
+                         "112c: histogram bounding box " << br.left() << ".." << br.right()
+                                                         << " (want 0.85..4.15)");
+                QImage img(500, 100, QImage::Format_ARGB32);
+                img.fill(Qt::white);
+                QwtScaleMap xMap, yMap;
+                xMap.setScaleInterval(0.0, 5.0);
+                xMap.setPaintInterval(0, 500);
+                yMap.setScaleInterval(0.0, 2.0);
+                yMap.setPaintInterval(100, 0);
+                hd->setPen(QPen(Qt::NoPen));
+                hd->setBrush(QBrush(Qt::black));
+                {
+                    QPainter p(&img);
+                    static_cast<QwtPlotCurve *>(hd)->draw(&p, xMap, yMap, 0, -1);
+                }
+                auto dark = [&](int px) { return qGray(img.pixel(px, 98)) < 128; };
+                std::cout << "[INFO] 112c bars at x 0.95/1.05/3.95/4.05: " << dark(95) << dark(105)
+                          << dark(395) << dark(405) << "\n";
+                CHECK112(!dark(95) && dark(105) && dark(395) && !dark(405),
+                         "112c: histogram bars no longer span [1, 4]");
+            }
+        }
+    }
+
+    // ---- reopen: the clone's bins ------------------------------------------------------------
+    {
+        AppWinGuard112 rd(new ApplicationWindow());
+        CHECK_COND(rd->loadProject(prj), "112b: reopening the project failed");
+        QCoreApplication::processEvents();
+        for (const QString &name : { QStringLiteral("G112Man"), QStringLiteral("G112ManC"),
+                                     QStringLiteral("G112Auto"), QStringLiteral("G112AutoC") }) {
+            QwtHistogram *h = histogramOf112(rd, name);
+            std::cout << "[INFO] 112b reopened " << name.toStdString() << ": "
+                      << (h ? h->dataSize() : -1) << " bins, binning "
+                      << (h ? h->autoBinning() : -1) << "/" << (h ? h->binSize() : 0.0) << "/"
+                      << (h ? h->begin() : 0.0) << "/" << (h ? h->end() : 0.0) << "\n";
+            CHECK112(h != nullptr, "112b: reopened " << name.toStdString() << " has no histogram");
+        }
+        QwtHistogram *a = histogramOf112(rd, QStringLiteral("G112Man"));
+        QwtHistogram *b = histogramOf112(rd, QStringLiteral("G112ManC"));
+        CHECK112(b && !b->autoBinning() && b->binSize() == 2.0 && b->begin() == 0.0
+                         && b->end() == 60.0 && b->dataSize() == 30,
+                 "112b: reopened clone lost its bins");
+        CHECK112(a && b && sameCounts112(a, b), "112b: reopened clone counts differ");
+        QwtHistogram *c = histogramOf112(rd, QStringLiteral("G112Auto"));
+        QwtHistogram *d = histogramOf112(rd, QStringLiteral("G112AutoC"));
+        CHECK112(c && d && d->autoBinning() && sameCounts112(c, d),
+                 "112b: reopened automatic-bin clone differs");
+    }
+
+    if (g112Failures > 0) {
+        std::cerr << "[FAIL] Suite 112: " << g112Failures << " check(s) failed\n";
+        return 1;
+    }
+    std::cout << "[PASS] Suite 112 passed.\n";
+    return 0;
+}
