@@ -3263,6 +3263,10 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             if (g->curves() > curvesBefore) {
                 QPen p(QColor("#D55E00"), 1.8);
                 g->setCurvePen(g->curves() - 1, p);
+                // 平滑化した曲線は元の曲線と同じ軸に付ける（右軸の曲線で左軸が広がらないように）。
+                CurveMathTools::attachToSourceAxes(g, g->curve(g->curves() - 1),
+                                                   g->curve(g->curveIndex(curveTitle)));
+                g->updatePlot();
             }
             enforceArialGraphFonts(g);
             replotGraphOrDefer(g);

@@ -255,6 +255,8 @@ QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
     DataCurve *dc = new DataCurve(t, tblName + "_" + colX->name(), tblName + "_" + colY->name());
     dc->setData(xs.data(), yn.data(), n);
     dc->setPen(QPen(QColor(25, 130, 75), 2));
+    // 元の曲線と同じ軸に付ける（右軸の曲線の正規化が左軸に付いて左軸を広げないように）。
+    dc->setAxis(src->xAxis(), src->yAxis());
     g->insertPlotItem(dc, Graph::Line);
     g->updatePlot();
     return dc;

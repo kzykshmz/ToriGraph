@@ -324,20 +324,34 @@ Table *createNumericTable(ApplicationWindow *app, const QString &prefix,
     return t;
 }
 
+// source: the curve the result was computed from; the result goes on its axes (nullptr: the
+// default bottom / left axes, for curves on a graph of their own).
 QwtPlotCurve *insertStyledCurve(Graph *g, Table *t, int xColIdx, int yColIdx, int nRows,
-                                const QPen &pen)
+                                const QPen &pen, const QwtPlotCurve *source = nullptr)
 {
     if (!g || !t || nRows <= 0)
         return nullptr;
     if (!g->insertCurve(t, t->colName(xColIdx), t->colName(yColIdx), Graph::Line, 0, nRows - 1))
         return nullptr;
     QwtPlotCurve *curve = g->curve(g->curves() - 1);
-    if (curve)
+    if (curve) {
         curve->setPen(pen);
+        CurveMathTools::attachToSourceAxes(g, curve, source);
+    }
     return curve;
 }
 
 } // namespace
+
+void CurveMathTools::attachToSourceAxes(Graph *g, QwtPlotCurve *result, const QwtPlotCurve *source)
+{
+    if (!g || !result || !source || result == source)
+        return;
+    // 元の曲線がこの層にあるときだけ合わせる（別の層の曲線や消えた曲線の軸は使わない）。
+    if (g->curveIndex(const_cast<QwtPlotCurve *>(source)) < 0)
+        return;
+    result->setAxis(source->xAxis(), source->yAxis());
+}
 
 QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
                                               const QString &curveA, const QString &curveB,
@@ -453,8 +467,10 @@ QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
     if (!t)
         return nullptr;
 
+    // 結果は A の曲線と同じ軸に付ける（右軸の曲線どうしの演算で左軸が広がらないように）。
     QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(outX.size()),
-                                               QPen(QColor(0, 114, 178), 2.0, Qt::SolidLine));
+                                               QPen(QColor(0, 114, 178), 2.0, Qt::SolidLine),
+                                               resolveCurve(g, curveA));
     g->updatePlot();
 
     app->updateLog(trMath("[%1] Curve Math (%2): %3 vs %4 -> %5 (%6 pts)\n")
@@ -596,7 +612,7 @@ QwtPlotCurve *CurveMathTools::subtractStraightLine(ApplicationWindow *app, Graph
     }
 
     QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(xs.size()),
-                                               QPen(QColor(0, 158, 115), 2.0, Qt::SolidLine));
+                                               QPen(QColor(0, 158, 115), 2.0, Qt::SolidLine), c);
     g->updatePlot();
     return resCurve;
 }
@@ -714,13 +730,18 @@ QwtPlotCurve *CurveMathTools::averageMultipleCurves(ApplicationWindow *app, Grap
 
     const int nOut = static_cast<int>(gridX.size());
     const QColor mainColor(213, 94, 0);
+    // 平均と ±SD の曲線は最初の曲線と同じ軸に付ける。
+    const QwtPlotCurve *source = nullptr;
+    for (const QString &name : names)
+        if ((source = resolveCurve(g, name)) != nullptr)
+            break;
     QwtPlotCurve *meanCurve =
-            insertStyledCurve(g, t, 0, 1, nOut, QPen(mainColor, 2.2, Qt::SolidLine));
+            insertStyledCurve(g, t, 0, 1, nOut, QPen(mainColor, 2.2, Qt::SolidLine), source);
 
     if (addSdBand) {
         const QPen bandPen(QColor(213, 94, 0, 190), 1.4, Qt::DashLine);
-        insertStyledCurve(g, t, 0, 3, nOut, bandPen);
-        insertStyledCurve(g, t, 0, 4, nOut, bandPen);
+        insertStyledCurve(g, t, 0, 3, nOut, bandPen, source);
+        insertStyledCurve(g, t, 0, 4, nOut, bandPen, source);
     }
 
     g->updatePlot();
@@ -800,7 +821,8 @@ QwtPlotCurve *CurveMathTools::normalizeCurve(ApplicationWindow *app, Graph *g,
         return nullptr;
 
     QwtPlotCurve *resCurve = insertStyledCurve(g, t, 0, 1, static_cast<int>(n),
-                                               QPen(QColor(204, 121, 167), 2.0, Qt::SolidLine));
+                                               QPen(QColor(204, 121, 167), 2.0, Qt::SolidLine),
+                                               resolveCurve(g, curveTitle));
     g->updatePlot();
     return resCurve;
 }

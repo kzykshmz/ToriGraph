@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QTemporaryDir>
 
 #include <cmath>
@@ -34,6 +35,13 @@
 //        (the fit curve, the bands and the peak curves went on the left axis and changed its
 //        range; only the "same X as the data" output followed the source curve); the left axis
 //        range is kept; the axes survive save -> reopen
+//   110f curve maths and signal processing of a right-axis curve of a double-Y graph
+//        (curvemath.normalize / subtract_line / eval / average_curves with the SD band,
+//        signal.smooth gaussian / iir_filter / envelope (Hilbert and peak) / decimate /
+//        savgol_derivative / wavelet_denoise / fsd) put their result curves on the right axis
+//        (they went on the left axis: the left axis 0..0.1 became 0..2000); the left axis range
+//        and title are kept; the result of a left-axis curve stays on the left; the axes
+//        survive save -> reopen
 // Every check is evaluated (failures are counted) so one run reports all regressions.
 // =============================================================================
 namespace {
@@ -270,6 +278,8 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
     Range110 aX, aY, dY, dR, fLeft;
     int fCurves = 0, fBands = 0;
     QString bTitleX, bTitleY;
+    QMap<QString, int> gCurves110f;
+    QMap<QString, Range110> gLeft110f;
 
     {
         AppWinGuard110 w(new ApplicationWindow());
@@ -523,6 +533,111 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
             fCurves = g->curves();
         }
 
+        // ---- 110f: curvemath / signal results of a right-axis curve go on the right axis ------
+        {
+            QVector<double> xs, yl, yr, yr2;
+            for (int i = 0; i <= 50; ++i) {
+                const double x = 10.0 * i / 50.0;
+                xs << x;
+                yl << 0.01 * x;
+                yr << 1000.0 + 100.0 * x + 5.0 * std::sin(3.0 * x);
+                yr2 << 1500.0 + 50.0 * std::sin(x);
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T110G"), { "x", "L", "R", "R2" },
+                                     { toJson110(xs), toJson110(yl), toJson110(yr),
+                                       toJson110(yr2) }),
+                       "110f: table T110G");
+            struct OpCase
+            {
+                const char *graph;
+                const char *method;
+                QJsonObject params;
+            };
+            const QList<OpCase> cases = {
+                { "G110Fnorm", "curvemath.normalize", QJsonObject{ { "curve", 1 }, { "mode", "minmax" } } },
+                { "G110Fsubl", "curvemath.subtract_line",
+                  QJsonObject{ { "curve", 1 }, { "x1", 0.0 }, { "y1", 1000.0 }, { "x2", 10.0 }, { "y2", 2000.0 } } },
+                { "G110Feval", "curvemath.eval",
+                  QJsonObject{ { "curve1", 2 }, { "curve2", 1 }, { "op", "sub" } } },
+                { "G110Favg", "curvemath.average_curves",
+                  QJsonObject{ { "curves", QJsonArray{ 1, 2 } }, { "sd_band", true } } },
+                { "G110Fgauss", "signal.smooth",
+                  QJsonObject{ { "curve", 1 }, { "method", "gaussian" }, { "window", 5 } } },
+                { "G110Fiir", "signal.iir_filter",
+                  QJsonObject{ { "curve", 1 }, { "filter_type", "lowpass" }, { "cutoff", 1.0 } } },
+                { "G110Fenv", "signal.envelope", QJsonObject{ { "curve", 1 }, { "plot_lower", true } } },
+                { "G110Fpenv", "signal.envelope", QJsonObject{ { "curve", 1 }, { "method", "peak" } } },
+                { "G110Fdec", "signal.decimate", QJsonObject{ { "curve", 1 }, { "factor", 2 } } },
+                { "G110Fsgd", "signal.savgol_derivative", QJsonObject{ { "curve", 1 }, { "window", 7 } } },
+                { "G110Fwav", "signal.wavelet_denoise", QJsonObject{ { "curve", 1 } } },
+                { "G110Ffsd", "signal.fsd", QJsonObject{ { "curve", 1 }, { "fwhm", 1.0 } } },
+            };
+            for (const OpCase &oc : cases) {
+                const QString gn = QString::fromLatin1(oc.graph);
+                CHECK_COND(Rpc110::ok(rpc.call(QStringLiteral("plot.double_y"),
+                                               QJsonObject{ { "table", "T110G" },
+                                                            { "x_col", "x" },
+                                                            { "y_left_col", "L" },
+                                                            { "y_right_col", "R" },
+                                                            { "graph_name", gn } }))
+                                   && Rpc110::ok(rpc.call(QStringLiteral("plot.add_curve"),
+                                                          QJsonObject{ { "graph", gn },
+                                                                       { "table", "T110G" },
+                                                                       { "x_col", "x" },
+                                                                       { "y_col", "R2" },
+                                                                       { "right_axis", true } })),
+                           "110f: graph " << oc.graph);
+                Graph *g = layer110(w, gn);
+                CHECK_COND(g && g->curves() == 3 && g->curve(1) && g->curve(2)
+                                   && g->curve(1)->yAxis() == QwtPlot::yRight
+                                   && g->curve(2)->yAxis() == QwtPlot::yRight,
+                           "110f: " << oc.graph << ": curves 1 and 2 are not on the right axis");
+                const Range110 ly0 = range110(rpc, gn, "y");
+                const QString lt0 = rpc.axis(gn, "y").value(QStringLiteral("title")).toString();
+                QJsonObject p = oc.params;
+                p.insert(QStringLiteral("graph"), gn);
+                const QJsonObject r = rpc.call(QString::fromLatin1(oc.method), p);
+                CHECK110(Rpc110::ok(r) && g->curves() > 3,
+                         "110f: " << oc.method << " on " << oc.graph << " added "
+                                  << (g->curves() - 3) << " curves");
+                for (int i = 3; i < g->curves(); ++i) {
+                    QwtPlotCurve *c = g->curve(i);
+                    CHECK110(c && c->yAxis() == QwtPlot::yRight && c->xAxis() == QwtPlot::xBottom,
+                             "110f: " << oc.method << " on " << oc.graph << ": result curve '"
+                                      << (c ? c->title().text().toStdString() : std::string())
+                                      << "' is on axes " << (c ? c->xAxis() : -1) << "/"
+                                      << (c ? c->yAxis() : -1) << " (want xBottom/yRight)");
+                }
+                const Range110 ly = range110(rpc, gn, "y");
+                const QString lt = rpc.axis(gn, "y").value(QStringLiteral("title")).toString();
+                std::cout << "[INFO] 110f: " << oc.method << " on " << oc.graph << ": "
+                          << g->curves() << " curves, left y " << ly0.str() << " -> " << ly.str()
+                          << ", right " << range110(rpc, gn, "right").str() << "\n";
+                CHECK110(ly == ly0, "110f: " << oc.method << " on " << oc.graph
+                                             << " changed the left axis " << ly0.str() << " -> "
+                                             << ly.str());
+                CHECK110(lt == lt0, "110f: " << oc.method << " on " << oc.graph
+                                             << " changed the left axis title '"
+                                             << lt0.toStdString() << "' -> '" << lt.toStdString()
+                                             << "'");
+                gCurves110f.insert(gn, g->curves());
+                gLeft110f.insert(gn, ly0);
+            }
+            // 左軸の曲線の結果は左軸のまま。
+            const QString gn = QStringLiteral("G110Fnorm");
+            Graph *g = layer110(w, gn);
+            const int before = g ? g->curves() : 0;
+            const QJsonObject r = rpc.call(QStringLiteral("curvemath.normalize"),
+                                           QJsonObject{ { "graph", gn }, { "curve", 0 } });
+            QwtPlotCurve *c = (g && g->curves() == before + 1) ? g->curve(before) : nullptr;
+            CHECK110(Rpc110::ok(r) && c && c->yAxis() == QwtPlot::yLeft,
+                     "110f: normalize of the left-axis curve is not on the left axis");
+            if (g) {
+                gCurves110f.insert(gn, g->curves());
+                gLeft110f.remove(gn);
+            }
+        }
+
         // ---- 110b: subtract_line keeps the automatic axis titles -----------------------------
         {
             QVector<double> xs, ys;
@@ -734,6 +849,34 @@ int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw)
         const Range110 fl1 = range110(rpc, QStringLiteral("G110F"), "y");
         CHECK110(fl1 == fLeft,
                  "110e-reopen: G110F left axis " << fLeft.str() << " -> " << fl1.str());
+
+        for (auto it = gCurves110f.constBegin(); it != gCurves110f.constEnd(); ++it) {
+            Graph *gg = layer110(rd, it.key());
+            CHECK110(gg && gg->curves() == it.value(),
+                     "110f-reopen: " << it.key().toStdString() << " has "
+                                     << (gg ? gg->curves() : -1) << " curves (want " << it.value()
+                                     << ")");
+            // G110Fnorm の最後の曲線は左軸の曲線の正規化（左軸のまま）。
+            const bool lastOnLeft = it.key() == QLatin1String("G110Fnorm");
+            for (int i = 1; gg && i < gg->curves(); ++i) {
+                QwtPlotCurve *c = gg->curve(i);
+                const int want = (lastOnLeft && i == gg->curves() - 1) ? QwtPlot::yLeft
+                                                                       : QwtPlot::yRight;
+                CHECK110(c && c->yAxis() == want && c->xAxis() == QwtPlot::xBottom,
+                         "110f-reopen: " << it.key().toStdString() << " curve " << i << " '"
+                                         << (c ? c->title().text().toStdString() : std::string())
+                                         << "' is on axes " << (c ? c->xAxis() : -1) << "/"
+                                         << (c ? c->yAxis() : -1) << " (want y axis " << want
+                                         << ")");
+            }
+            if (gLeft110f.contains(it.key())) {
+                const Range110 l1 = range110(rpc, it.key(), "y");
+                CHECK110(l1 == gLeft110f.value(it.key()),
+                         "110f-reopen: " << it.key().toStdString() << " left axis "
+                                         << gLeft110f.value(it.key()).str() << " -> "
+                                         << l1.str());
+            }
+        }
 
         const QString tx =
                 rpc.axis(QStringLiteral("G110B"), "x").value(QStringLiteral("title")).toString();

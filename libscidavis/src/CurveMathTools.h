@@ -59,6 +59,9 @@ public:
     static std::vector<double> normalizeValues(const std::vector<double> &xs,
                                                const std::vector<double> &ys, NormMode mode,
                                                double refValue = 0.0);
+    //! Puts a result curve on the axes of the curve it was computed from (only when that curve is
+    //! in g), so the result of a right-axis curve does not land on the left axis and widen it.
+    static void attachToSourceAxes(Graph *g, QwtPlotCurve *result, const QwtPlotCurve *source);
     static QVector<QPointF> findCurveIntersections(Graph *g, const QString &curveA,
                                                    const QString &curveB,
                                                    bool markOnGraph = true,

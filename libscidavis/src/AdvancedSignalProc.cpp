@@ -12,6 +12,7 @@
 #include "AdvancedSignalProc.h"
 
 #include "ApplicationWindow.h"
+#include "CurveMathTools.h"
 #include "Graph.h"
 #include "I18nJapanese.h"
 #include "Legend.h"
@@ -314,6 +315,13 @@ QwtPlotCurve *resolveSignalCurve(Graph *g, const QString &curveTitle)
     if (!analysable.isEmpty())
         return g->curve(analysable.first());
     return g->curve(0);
+}
+
+// The result curves of a signal operation go on the axes of the curve they were computed from:
+// on a double-Y graph the result of a right-axis curve landed on the left axis and widened it.
+void attachSignalResultToSource(Graph *g, QwtPlotCurve *result, const QString &curveTitle)
+{
+    CurveMathTools::attachToSourceAxes(g, result, resolveSignalCurve(g, curveTitle));
 }
 
 // What extractUniformSignal() did to the input (sorting, duplicate merging, resampling).
@@ -1705,6 +1713,7 @@ QwtPlotCurve *AdvancedSignalProc::iirFilter(ApplicationWindow *app, Graph *g,
     QwtPlotCurve *resCurve = g->curve(g->curves() - 1);
     if (resCurve)
         resCurve->setPen(QPen(QColor(0, 114, 178), 2.0, Qt::SolidLine));
+    attachSignalResultToSource(g, resCurve, curveTitle);
     g->updatePlot();
 
     if (resCurve) {
@@ -1867,10 +1876,14 @@ QwtPlotCurve *AdvancedSignalProc::hilbertEnvelope(ApplicationWindow *app, Graph 
     if (upperCurve)
         upperCurve->setPen(QPen(QColor(213, 94, 0), 2.0, Qt::SolidLine));
 
+    attachSignalResultToSource(g, upperCurve, curveTitle);
+
     if (plotLowerEnvelope) {
         if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(2), Graph::Line, 0, nRows - 1)) {
-            if (QwtPlotCurve *lowCurve = g->curve(g->curves() - 1))
+            if (QwtPlotCurve *lowCurve = g->curve(g->curves() - 1)) {
                 lowCurve->setPen(QPen(QColor(213, 94, 0, 200), 1.6, Qt::DashLine));
+                attachSignalResultToSource(g, lowCurve, curveTitle);
+            }
         }
     }
     g->updatePlot();
@@ -2027,6 +2040,7 @@ QwtPlotCurve *AdvancedSignalProc::waveletDenoiseDWT(ApplicationWindow *app, Grap
     QwtPlotCurve *resCurve = g->curve(g->curves() - 1);
     if (resCurve)
         resCurve->setPen(QPen(QColor(0, 158, 115), 2.0, Qt::SolidLine));
+    attachSignalResultToSource(g, resCurve, curveTitle);
     g->updatePlot();
 
     if (resCurve) {
@@ -3035,6 +3049,7 @@ QwtPlotCurve *AdvancedSignalProc::savitzkyGolayDerivative(ApplicationWindow *app
     QwtPlotCurve *resCurve = g->curve(g->curves() - 1);
     if (resCurve)
         resCurve->setPen(QPen(QColor(180, 35, 110), 2.0, Qt::SolidLine));
+    attachSignalResultToSource(g, resCurve, curveTitle);
     g->updatePlot();
 
     if (resCurve) {
@@ -3096,6 +3111,7 @@ QwtPlotCurve *AdvancedSignalProc::computePeakEnvelope(ApplicationWindow *app, Gr
         QwtPlotCurve *upperCurve = g->curve(g->curves() - 1);
         if (upperCurve)
             upperCurve->setPen(QPen(QColor(213, 62, 20), 2.0, Qt::SolidLine));
+        attachSignalResultToSource(g, upperCurve, curveTitle);
         g->updatePlot();
         return upperCurve;
     }
@@ -3113,6 +3129,7 @@ QwtPlotCurve *AdvancedSignalProc::computePeakEnvelope(ApplicationWindow *app, Gr
         QwtPlotCurve *lowCurve = g->curve(g->curves() - 1);
         if (lowCurve)
             lowCurve->setPen(QPen(QColor(20, 110, 190), 2.0, Qt::DashLine));
+        attachSignalResultToSource(g, lowCurve, curveTitle);
         if (lowerCurveOut)
             *lowerCurveOut = lowCurve;
         g->updatePlot();
@@ -3141,6 +3158,8 @@ QwtPlotCurve *AdvancedSignalProc::computePeakEnvelope(ApplicationWindow *app, Gr
         if (lowCurve)
             lowCurve->setPen(QPen(QColor(20, 110, 190), 2.0, Qt::DashLine));
     }
+    attachSignalResultToSource(g, upperCurve, curveTitle);
+    attachSignalResultToSource(g, lowCurve, curveTitle);
     if (lowerCurveOut)
         *lowerCurveOut = lowCurve;
     g->updatePlot();
@@ -3173,6 +3192,7 @@ QwtPlotCurve *AdvancedSignalProc::decimateCurve(ApplicationWindow *app, Graph *g
     QwtPlotCurve *resCurve = g->curve(g->curves() - 1);
     if (resCurve)
         resCurve->setPen(QPen(QColor(15, 135, 95), 2.0, Qt::SolidLine));
+    attachSignalResultToSource(g, resCurve, curveTitle);
     g->updatePlot();
     return resCurve;
 }
