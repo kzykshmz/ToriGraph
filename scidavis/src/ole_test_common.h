@@ -668,5 +668,6 @@ int runSuite94RpcWorksheetDataFidelity(ApplicationWindow *mw);
 int runSuite95FitDataDriven(ApplicationWindow *mw);
 int runSuite96XrdPeaksAndUnsortedDiff(ApplicationWindow *mw);
 int runSuite97PlotDataFidelity(ApplicationWindow *mw);
+int runSuite98RpcImportRobustness(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

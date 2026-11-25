@@ -34,6 +34,8 @@
 #include <QByteArray>
 #include <QLocale>
 #include <QString>
+#include <QStringList>
+#include <QVector>
 
 namespace future {
 class Table;
@@ -131,6 +133,24 @@ public:
     //! "n/a", "n.d.", "nd", "null", "#n/a", "#div/0!", "#value!", "#ref!", "#name?", "#num!",
     //! "#null!", "#getting_data", "#spill!", "#calc!", case-insensitive).
     static bool isMissingDataToken(const QString &raw);
+    //! Separator choice of the text import from sample lines (the non-empty, non-'#' lines at
+    //! the top of the data): "\t", ",", ";" or " " (whitespace). Shared with the JSON-RPC import.
+    static QString detectSeparator(const QStringList &sampleLines, const QString &filePathHint);
+    //! True when the lines are ';'-separated with decimal commas ("0,5;1,5"), the case in which
+    //! the text import reads numbers with the German locale.
+    static bool looksLikeEuropeanDecimalComma(const QStringList &lines);
+    //! '#'-row classifier of the text import: true when a record whose first cell starts with
+    //! '#' is a comment ("# note", "#comment"), false for data ("#1, 520" specimen rows,
+    //! "#N/A" missing values, and once data rows were seen "#A1, 520" identifiers).
+    static bool isHashCommentRow(const QStringList &cells, const QVector<bool> &quoted,
+                                 bool whitespaceDelim, bool tableHasMultipleCols,
+                                 bool allowAlphaHashIds,
+                                 const QLocale &numericLocale = QLocale::c());
+    //! Synchrotron SPEC scan file (#S / #L / #N): one column group per scan, as the text import
+    //! reads it. Returns nullptr when the text is not a SPEC file.
+    static future::Table *importSpecTextData(const QString &decodedText, const QString &tableName,
+                                             bool convertToNumeric = true,
+                                             bool firstRowNamesColumns = true);
     static future::Table *importLabTextData(const QByteArray &rawBytes, const QString &tableName,
                                             const QString &filePathHint = QString(),
                                             const QString &separatorHint = QString(),

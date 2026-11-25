@@ -4118,6 +4118,53 @@ bool AsciiTableImportFilter::isMissingDataToken(const QString &raw)
     return isMissingDataTokenImpl(raw);
 }
 
+QString AsciiTableImportFilter::detectSeparator(const QStringList &sampleLines,
+                                                const QString &filePathHint)
+{
+    return detectDelimiterFromSampleLines(sampleLines, filePathHint);
+}
+
+bool AsciiTableImportFilter::looksLikeEuropeanDecimalComma(const QStringList &lines)
+{
+    return looksLikeEuropeanSemicolonLines(lines);
+}
+
+bool AsciiTableImportFilter::isHashCommentRow(const QStringList &cells, const QVector<bool> &quoted,
+                                              bool whitespaceDelim, bool tableHasMultipleCols,
+                                              bool allowAlphaHashIds, const QLocale &numericLocale)
+{
+    QLocale primaryLoc = numericLocale;
+    primaryLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+    const bool useCustomLocale = (numericLocale != QLocale::c());
+    // trimmed copies stay alive for the whole classification (the getter hands out pointers)
+    QStringList trimmedCells;
+    trimmedCells.reserve(cells.size());
+    for (const QString &c : cells)
+        trimmedCells.append(c.trimmed());
+    return isHashCommentRecordCells(trimmedCells.size(), whitespaceDelim, tableHasMultipleCols,
+                                    allowAlphaHashIds, primaryLoc, useCustomLocale,
+                                    [&](int k, const QChar *&pk, int &nk, bool &kQuoted) {
+                                        if (k >= 0 && k < trimmedCells.size()) {
+                                            pk = trimmedCells.at(k).constData();
+                                            nk = trimmedCells.at(k).size();
+                                            kQuoted = quoted.value(k, false);
+                                        } else {
+                                            pk = nullptr;
+                                            nk = 0;
+                                            kQuoted = false;
+                                        }
+                                    });
+}
+
+future::Table *AsciiTableImportFilter::importSpecTextData(const QString &decodedText,
+                                                          const QString &tableName,
+                                                          bool convertToNumeric,
+                                                          bool firstRowNamesColumns)
+{
+    return tryParseSpecTextInternal(decodedText, tableName, convertToNumeric, QLocale::c(),
+                                    firstRowNamesColumns);
+}
+
 void AsciiTableImportFilter::splitHeaderNameAndUnits(const QString &rawHeader,
                                                      QString &outShortName,
                                                      QString &outLongName,

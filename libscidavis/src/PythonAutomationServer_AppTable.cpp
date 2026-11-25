@@ -1095,8 +1095,12 @@ QJsonObject computeNumericStatsJson(std::vector<double> vals)
         const double d = v - mean;
         varSum += d * d;
     }
-    const double sd = (n > 1) ? std::sqrt(varSum / double(n - 1)) : 0.0;
-    const double se = (n > 0) ? (sd / std::sqrt(double(n))) : 0.0;
+    // the sample standard deviation needs n >= 2: with one value sd / se are undefined (null,
+    // as for n == 0), not 0
+    const double sd =
+            (n > 1) ? std::sqrt(varSum / double(n - 1)) : std::numeric_limits<double>::quiet_NaN();
+    const double se =
+            (n > 1) ? (sd / std::sqrt(double(n))) : std::numeric_limits<double>::quiet_NaN();
 
     auto quantileSorted = [&](double q) -> double {
         if (vals.size() == 1)
@@ -1437,6 +1441,50 @@ bool isMissingNumericSentinel(const QString &trimmed)
             || low == QStringLiteral("null") || low == QStringLiteral("none");
 }
 
+int countUnquotedImportChar(const QString &line, QChar ch)
+{
+    int n = 0;
+    bool inQuotes = false;
+    for (const QChar c : line) {
+        if (c == QLatin1Char('"'))
+            inQuotes = !inQuotes;
+        else if (!inQuotes && c == ch)
+            ++n;
+    }
+    return n;
+}
+
+//! Up to `maxLines` trimmed non-empty lines from `startPos` (CR, LF or CRLF endings), without
+//! the '#' comment lines -- and the ';' / '!' ones when `skipSemicolonBangLines` -- for the
+//! separator / decimal-comma detection.
+QStringList collectImportSampleLines(const QString &text, int startPos, int maxLines,
+                                     bool skipSemicolonBangLines)
+{
+    QStringList out;
+    const int len = text.size();
+    int p = std::max(0, startPos);
+    while (p < len && out.size() < maxLines) {
+        int lineEnd = p;
+        while (lineEnd < len && text[lineEnd] != QLatin1Char('\r')
+               && text[lineEnd] != QLatin1Char('\n')) {
+            ++lineEnd;
+        }
+        const QString trimmed = text.mid(p, lineEnd - p).trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))
+            && !(skipSemicolonBangLines
+                 && (trimmed.startsWith(QLatin1Char(';'))
+                     || trimmed.startsWith(QLatin1Char('!'))))) {
+            out.append(trimmed);
+        }
+        p = lineEnd;
+        if (p < len && text[p] == QLatin1Char('\r'))
+            ++p;
+        if (p < len && text[p] == QLatin1Char('\n'))
+            ++p;
+    }
+    return out;
+}
+
 QString autoDetectCsvSeparator(const QString &text, int startPos, const QString &fileHint,
                                bool *outWhitespace = nullptr)
 {
@@ -1450,60 +1498,30 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
             || fileHint.endsWith(QStringLiteral(".xye"), Qt::CaseInsensitive)
             || fileHint.endsWith(QStringLiteral(".dat"), Qt::CaseInsensitive)
             || fileHint.endsWith(QStringLiteral(".asc"), Qt::CaseInsensitive);
-    const int len = text.size();
-    int p = std::max(0, startPos);
-    while (p < len) {
-        int lineEnd = p;
-        while (lineEnd < len && text[lineEnd] != QLatin1Char('\r')
-               && text[lineEnd] != QLatin1Char('\n')) {
-            ++lineEnd;
+    // Decided over several lines with the GUI import's rule (a delimiter that splits every
+    // line into the same number of fields wins), not from the header line alone: a comma in a
+    // column name ("Time, s;Force, N") must not beat the ';' / TAB of the data lines.
+    const QStringList samples = collectImportSampleLines(text, startPos, 15, true);
+    if (!samples.isEmpty()) {
+        const QString detected = AsciiTableImportFilter::detectSeparator(samples, fileHint);
+        if (detected == QLatin1String(" ")) {
+            if (outWhitespace)
+                *outWhitespace = true;
+            return detected;
         }
-        const QString line = text.mid(p, lineEnd - p);
-        const QString trimmed = line.trimmed();
-        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))
-            && !trimmed.startsWith(QLatin1Char(';')) && !trimmed.startsWith(QLatin1Char('!'))) {
-            bool inQuotes = false;
-            int commas = 0, tabs = 0, semis = 0, spaces = 0;
-            bool prevSpace = false;
-            for (int i = 0; i < trimmed.size(); ++i) {
-                const QChar ch = trimmed[i];
-                if (ch == QLatin1Char('"')) {
-                    inQuotes = !inQuotes;
-                    prevSpace = false;
-                } else if (!inQuotes) {
-                    if (ch == QLatin1Char(','))
-                        ++commas;
-                    else if (ch == QLatin1Char('\t'))
-                        ++tabs;
-                    else if (ch == QLatin1Char(';'))
-                        ++semis;
-                    else if (ch == QLatin1Char(' ')) {
-                        if (!prevSpace)
-                            ++spaces;
-                        prevSpace = true;
-                        continue;
-                    }
-                    prevSpace = false;
+        // The GUI rule falls back to "," / TAB when no line holds any delimiter: then a
+        // single-column file, read as whitespace-separated for the XRD/ASCII extensions.
+        bool delimiterSeen = false;
+        if (detected.size() == 1) {
+            for (const QString &ln : samples) {
+                if (countUnquotedImportChar(ln, detected.at(0)) > 0) {
+                    delimiterSeen = true;
+                    break;
                 }
             }
-            if (tabs > commas && tabs >= 1)
-                return QStringLiteral("\t");
-            if (commas >= 1)
-                return QStringLiteral(",");
-            if (semis >= 1)
-                return QStringLiteral(";");
-            if (spaces >= 1 || isSpaceExt) {
-                if (outWhitespace)
-                    *outWhitespace = true;
-                return QStringLiteral(" ");
-            }
-            break;
         }
-        p = lineEnd;
-        if (p < len && text[p] == QLatin1Char('\r'))
-            ++p;
-        if (p < len && text[p] == QLatin1Char('\n'))
-            ++p;
+        if (delimiterSeen)
+            return detected;
     }
     if (isSpaceExt) {
         if (outWhitespace)
@@ -1513,9 +1531,46 @@ QString autoDetectCsvSeparator(const QString &text, int startPos, const QString 
     return QStringLiteral(",");
 }
 
+//! Decimal commas are read only with the ';' separator, when the lines look like a European
+//! export ("0,5;1,5"), as the GUI import decides it (AsciiTableImportFilter).
+bool detectImportDecimalComma(const QString &text, int startPos, const QString &sep,
+                              bool convertNumeric)
+{
+    if (!convertNumeric || sep != QLatin1String(";"))
+        return false;
+    return AsciiTableImportFilter::looksLikeEuropeanDecimalComma(
+            collectImportSampleLines(text, startPos, 24, false));
+}
+
+//! Number of an imported cell: C locale, or with `decimalComma` the German one first (the C
+//! locale stays as fallback, "1.5" is still 1.5), as the GUI import reads it. Group separators
+//! are never accepted ("1.234" is not 1234).
+bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
+{
+    static const QLocale cLoc = [] {
+        QLocale l = QLocale::c();
+        l.setNumberOptions(QLocale::RejectGroupSeparator);
+        return l;
+    }();
+    bool ok = false;
+    if (decimalComma) {
+        static const QLocale deLoc = [] {
+            QLocale l(QLocale::German);
+            l.setNumberOptions(QLocale::RejectGroupSeparator);
+            return l;
+        }();
+        out = deLoc.toDouble(trimmed, &ok);
+        if (ok && std::isfinite(out))
+            return true;
+    }
+    out = cLoc.toDouble(trimmed, &ok);
+    return ok && std::isfinite(out);
+}
+
 QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text, int startPos,
                                                              const QString &sep, bool stripSpaces,
-                                                             bool simplifySpaces, int &outMaxCols)
+                                                             bool simplifySpaces, int &outMaxCols,
+                                                             bool skipHashCommentRows)
 {
     QVector<QVector<ParsedCsvCell>> records;
     outMaxCols = 0;
@@ -1523,11 +1578,20 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
     const int sepLen = std::max(1, sep.size());
     int pos = std::max(0, startPos);
 
-    // Skip leading '#' comment preamble lines before the first header/data row
+    // Skip leading blank lines and '#' comment preamble lines before the first header/data row
+    // (a blank first line must not become the header row)
     while (pos < len) {
         int probe = pos;
         while (probe < len && (text[probe] == QLatin1Char(' ') || text[probe] == QLatin1Char('\t')))
             ++probe;
+        if (probe < len && (text[probe] == QLatin1Char('\r') || text[probe] == QLatin1Char('\n'))) {
+            pos = probe;
+            if (text[pos] == QLatin1Char('\r'))
+                ++pos;
+            if (pos < len && text[pos] == QLatin1Char('\n'))
+                ++pos;
+            continue;
+        }
         if (probe < len && text[probe] == QLatin1Char('#')) {
             while (pos < len && text[pos] != QLatin1Char('\r') && text[pos] != QLatin1Char('\n'))
                 ++pos;
@@ -1606,9 +1670,84 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
             }
             break;
         }
-        outMaxCols = std::max(outMaxCols, row.size());
         records.append(row);
     }
+
+    // File import: '#' lines further down (a comment between data blocks, "# units: ..." under
+    // the header) are comments too, decided by the GUI import's '#'-row rule: "#1, 520" specimen
+    // rows, "#N/A" cells and -- once data rows were read -- "#A1, 520" identifiers stay data.
+    // (Pasted text keeps them, like a paste into the worksheet.)
+    auto startsWithHash = [](const QVector<ParsedCsvCell> &rec) {
+        if (rec.isEmpty() || rec[0].quoted)
+            return false;
+        for (const QChar ch : rec[0].value) {
+            if (!ch.isSpace())
+                return ch == QLatin1Char('#');
+        }
+        return false;
+    };
+    bool anyHashRow = false;
+    for (int i = 0; skipHashCommentRows && i < records.size() && !anyHashRow; ++i)
+        anyHashRow = startsWithHash(records[i]);
+    if (anyHashRow) {
+        // as in the GUI: a '#'-only line of a multi-column table is a comment, of a one-column
+        // table ("#1", "#2") it may be data
+        bool tableHasMultipleCols = false;
+        for (const QVector<ParsedCsvCell> &rec : records) {
+            if (startsWithHash(rec))
+                continue;
+            int effCols = 0;
+            for (int k = 0; k < rec.size(); ++k) {
+                if (!rec[k].value.trimmed().isEmpty() || rec[k].quoted)
+                    effCols = k + 1;
+            }
+            if (effCols >= 2) {
+                tableHasMultipleCols = true;
+                break;
+            }
+        }
+        const bool whitespaceDelim = (sep == QLatin1String(" "));
+        auto allNumeric = [](const QVector<ParsedCsvCell> &rec) {
+            QLocale cLoc = QLocale::c();
+            cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
+            int n = 0;
+            for (const ParsedCsvCell &cell : rec) {
+                const QString tok = cell.value.trimmed();
+                if (tok.isEmpty())
+                    continue;
+                bool ok = false;
+                cLoc.toDouble(tok, &ok);
+                if (!ok || cell.quoted)
+                    return false;
+                ++n;
+            }
+            return n > 0;
+        };
+        QVector<QVector<ParsedCsvCell>> kept;
+        kept.reserve(records.size());
+        for (QVector<ParsedCsvCell> &rec : records) {
+            if (startsWithHash(rec)) {
+                // data rows seen: past the header row, or a headerless file starting with numbers
+                const bool dataSeen =
+                        kept.size() >= 2 || (kept.size() == 1 && allNumeric(kept.first()));
+                QStringList cells;
+                QVector<bool> quoted;
+                cells.reserve(rec.size());
+                quoted.reserve(rec.size());
+                for (const ParsedCsvCell &cell : rec) {
+                    cells.append(cell.value);
+                    quoted.append(cell.quoted);
+                }
+                if (AsciiTableImportFilter::isHashCommentRow(cells, quoted, whitespaceDelim,
+                                                             tableHasMultipleCols, dataSeen))
+                    continue;
+            }
+            kept.append(std::move(rec));
+        }
+        records = std::move(kept);
+    }
+    for (const QVector<ParsedCsvCell> &rec : records)
+        outMaxCols = std::max(outMaxCols, rec.size());
 
     outMaxCols = std::max(1, outMaxCols);
     while (!records.isEmpty() && outMaxCols > 1 && records.last().size() == 1
@@ -1619,25 +1758,23 @@ QVector<QVector<ParsedCsvCell>> parseDelimitedRecordsRfc4180(const QString &text
 }
 
 bool looksLikeSecondRowUnits(const QVector<ParsedCsvCell> &candUnitRow,
-                             const QVector<ParsedCsvCell> &firstDataRow, int maxCols)
+                             const QVector<ParsedCsvCell> &firstDataRow, int maxCols,
+                             bool decimalComma)
 {
-    QLocale cLoc = QLocale::c();
-    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
     int numericColsInDataRow = 0;
     int nonEmptyUnitTokens = 0;
     for (int c = 0; c < maxCols; ++c) {
         const QString uTxt = (c < candUnitRow.size()) ? candUnitRow[c].value.trimmed() : QString();
         const QString dTxt =
                 (c < firstDataRow.size()) ? firstDataRow[c].value.trimmed() : QString();
-        bool okData = false;
-        const double dv = cLoc.toDouble(dTxt, &okData);
-        if (okData && std::isfinite(dv)) {
+        // A row holding a number in any column is data, not units (as for xlsx): also when the
+        // next row fills other columns ("1,10,," above ",,1.5,20").
+        double uv = 0.0;
+        if (!uTxt.isEmpty() && parseImportNumber(uTxt, decimalComma, uv))
+            return false;
+        double dv = 0.0;
+        if (parseImportNumber(dTxt, decimalComma, dv))
             ++numericColsInDataRow;
-            bool okUnitNum = false;
-            const double uv = cLoc.toDouble(uTxt, &okUnitNum);
-            if (okUnitNum && std::isfinite(uv))
-                return false; // Row 2 has numbers in numeric columns -> it's data, not units!
-        }
         if (!uTxt.isEmpty()) {
             if (uTxt.size() > 28)
                 return false;
@@ -1686,7 +1823,8 @@ int parseUnitsRowHintParam(const QJsonObject &params)
 void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsvCell>> &records,
                                        int maxCols, bool hasHeader, bool withComments,
                                        int unitsRowHint, bool convertNumeric, int startRowOffset,
-                                       int startColOffset, bool assignDefaultPlotDesignations)
+                                       int startColOffset, bool assignDefaultPlotDesignations,
+                                       bool decimalComma)
 {
     QVector<ParsedCsvCell> headerRow;
     QVector<ParsedCsvCell> unitsRowCells;
@@ -1700,7 +1838,8 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
             if (unitsRowHint >= 1 && dataStartIdx < records.size()) {
                 useRowAsUnits = true;
             } else if (unitsRowHint < 0 && records.size() >= 3) {
-                useRowAsUnits = looksLikeSecondRowUnits(records[1], records[2], maxCols);
+                useRowAsUnits =
+                        looksLikeSecondRowUnits(records[1], records[2], maxCols, decimalComma);
             }
             if (useRowAsUnits && dataStartIdx < records.size()) {
                 unitsRowCells = records[dataStartIdx];
@@ -1740,9 +1879,6 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
         }
     }
 
-    QLocale cLoc = QLocale::c();
-    cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
-
     for (int c = 0; c < maxCols; ++c) {
         const int dstCol = startColOffset + c;
         Column *col = t->column(dstCol);
@@ -1773,9 +1909,8 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
                     anyNonEmptySentinel = true;
                     continue;
                 }
-                bool okNum = false;
-                const double numVal = cLoc.toDouble(trimmed, &okNum);
-                if (okNum && std::isfinite(numVal)) {
+                double numVal = 0.0;
+                if (parseImportNumber(trimmed, decimalComma, numVal)) {
                     parsedNums[r] = numVal;
                     anyFiniteNumber = true;
                 } else {
@@ -1886,6 +2021,54 @@ void populateDelimitedRecordsIntoTable(Table *t, const QVector<QVector<ParsedCsv
             t->setColPlotDesignation(dstCol, (dstCol == 0) ? SciDAVis::X : SciDAVis::Y);
     }
     t->propagateRelabeledColumnNames(oldHeaderNames, namesBeforeImport, startColOffset);
+    // The data were written while the header columns had their temporary names, so the
+    // automatic recalculation of dependent formula columns (col("y")) could not resolve them:
+    // run it again now that the names are back (inside the caller's undo macro, if any).
+    if (relabelHeader)
+        t->handleColumnChange(startColOffset, maxCols);
+}
+
+//! New worksheet holding the columns of `src` (a table read by AsciiTableImportFilter), named
+//! `reqName` or labelled with the file path, with the columns' names, units, comments and plot
+//! designations.
+Table *createTableFromImportedColumns(ApplicationWindow *app, future::Table *src,
+                                      const QString &reqName, const QString &absPath,
+                                      const QString &tmpNamePrefix)
+{
+    const int nRows = std::max(1, src->rowCount());
+    const int nCols = src->columnCount();
+    if (nCols > 4096 || nRows > 5000000 || qint64(nCols) * qint64(nRows) > 25000000LL) {
+        throwInvalidParams(QStringLiteral("Imported table dimensions (%1x%2) exceed limits.")
+                                   .arg(nRows)
+                                   .arg(nCols));
+    }
+    Table *t = createUniqueTableHeadless(app, nRows, nCols, reqName);
+    if (reqName.trimmed().isEmpty() || reqName.trimmed() == t->name())
+        t->setWindowLabel(absPath);
+    // columns re-pointed through temporary names: references keep their names, except names
+    // that are gone afterwards (propagateRelabeledColumnNames below)
+    const QStringList oldNames = t->colNamesInRange(0, nCols);
+    const QStringList namesBeforeImport = t->colNames();
+    Table::RenamePropagationBlocker renameBlocker(t);
+    for (int c = 0; c < nCols; ++c)
+        t->setColName(c, tmpNamePrefix + QString::number(c) + QStringLiteral("__"));
+    for (int c = 0; c < nCols; ++c) {
+        Column *srcCol = src->column(c);
+        Column *dstCol = t->column(c);
+        if (!srcCol || !dstCol)
+            continue;
+        dstCol->setColumnMode(srcCol->columnMode());
+        dstCol->copy(srcCol);
+        t->setColName(c,
+                      srcCol->name().trimmed().isEmpty() ? QString::number(c + 1) : srcCol->name());
+        t->setColLongName(c, srcCol->longName());
+        t->setColUnits(c, srcCol->units());
+        t->setColComment(c, srcCol->comment());
+        t->setColPlotDesignation(c, srcCol->plotDesignation());
+        applyDefaultNumericFormat6g(t, c);
+    }
+    t->propagateRelabeledColumnNames(oldNames, namesBeforeImport);
+    return t;
 }
 
 // ============================================================================
@@ -3110,6 +3293,25 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         QString text = AsciiTableImportFilter::decodeLabTextAuto(rawBytes, encodingHint);
         const int ignoredLines = parseBoundedInt(params, QStringLiteral("skip_lines"), 0, 0, 1000000);
+
+        // Synchrotron SPEC scan files (#S / #L): one column group per scan, read by the GUI
+        // import's SPEC parser (the generic path would take the '#' directives for comments).
+        if (ignoredLines == 0) {
+            const bool specFirstRowNames = !(params.contains(QStringLiteral("header"))
+                                             && !params.value(QStringLiteral("header")).isNull())
+                    || optionalJsonBool(params, QStringLiteral("header"), true);
+            std::unique_ptr<future::Table> specFt(AsciiTableImportFilter::importSpecTextData(
+                    text, QStringLiteral("SpecImportTmp"),
+                    optionalJsonBool(params, QStringLiteral("numeric"), true), specFirstRowNames));
+            if (specFt && specFt->columnCount() > 0) {
+                Table *t = createTableFromImportedColumns(d_app, specFt.get(), reqImportName,
+                                                          absPath, QStringLiteral("__spec_col_"));
+                outResult = serializeTableInfo(t);
+                outResult[QStringLiteral("ok")] = true;
+                return true;
+            }
+        }
+
         int pos = 0;
         {
             const int len0 = text.size();
@@ -3138,21 +3340,20 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         }
 
         if (autoWhitespaceSep && sep == QStringLiteral(" ")) {
-            // Collapse runs of spaces/tabs outside quotes on non-comment lines so multi-space .xy/.dat aligns cleanly
+            // Collapse runs of spaces/tabs on every line so multi-space .xy/.dat aligns cleanly
+            // (CR-only, LF and CRLF line ends). ';' / '!' lines are comments of such files and are
+            // dropped; '#' lines are kept for the '#'-row rule of parseDelimitedRecordsRfc4180
+            // ("#1 520" specimen rows stay data).
             const QString tail = text.mid(pos);
-            const QStringList rawLines = tail.split(QRegularExpression(QStringLiteral("\\r?\\n")));
+            const QStringList rawLines =
+                    tail.split(QRegularExpression(QStringLiteral("\\r\\n|\\r|\\n")));
             QStringList normLines;
             normLines.reserve(rawLines.size());
             for (const QString &ln : rawLines) {
                 const QString tr = ln.trimmed();
-                if (tr.isEmpty() || tr.startsWith(QLatin1Char('#'))
-                    || tr.startsWith(QLatin1Char(';')) || tr.startsWith(QLatin1Char('!'))) {
-                    if (tr.startsWith(QLatin1Char(';')) || tr.startsWith(QLatin1Char('!')))
-                        normLines.append(QLatin1Char('#') + tr.mid(1));
-                    else if (!tr.isEmpty())
-                        normLines.append(tr);
+                if (tr.isEmpty() || tr.startsWith(QLatin1Char(';'))
+                    || tr.startsWith(QLatin1Char('!')))
                     continue;
-                }
                 normLines.append(tr.simplified());
             }
             text = normLines.join(QLatin1Char('\n'));
@@ -3162,30 +3363,29 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         const bool stripSpaces = optionalJsonBool(params, QStringLiteral("strip_spaces"), true);
         const bool simplifySpaces = optionalJsonBool(params, QStringLiteral("simplify_spaces"), false);
         const bool convertNumeric = optionalJsonBool(params, QStringLiteral("numeric"), true);
+        // ';'-separated with decimal commas ("0,5;1,5"), auto-detected or with separator=";"
+        const bool decimalComma = detectImportDecimalComma(text, pos, sep, convertNumeric);
         const bool withComments = params.contains(QStringLiteral("with_comments"))
                 ? optionalJsonBool(params, QStringLiteral("with_comments"), false)
                 : optionalJsonBool(params, QStringLiteral("comments"), false);
 
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records = parseDelimitedRecordsRfc4180(
-                text, pos, sep, stripSpaces, simplifySpaces, maxCols);
+                text, pos, sep, stripSpaces, simplifySpaces, maxCols, true);
 
         bool hasHeader = true;
         if (params.contains(QStringLiteral("header")) && !params.value(QStringLiteral("header")).isNull()) {
             hasHeader = optionalJsonBool(params, QStringLiteral("header"), true);
         } else if (!records.isEmpty()) {
             // Auto-detect headerless numeric files (.xy, .xye, .dat, etc.): if every non-empty cell in row 0 is numeric, row 0 is data!
-            QLocale cLoc = QLocale::c();
-            cLoc.setNumberOptions(QLocale::RejectGroupSeparator);
             int numTokens = 0;
             bool allRow0Numeric = true;
             for (const ParsedCsvCell &cell : records[0]) {
                 const QString tok = cell.value.trimmed();
                 if (tok.isEmpty())
                     continue;
-                bool okN = false;
-                const double dv = cLoc.toDouble(tok, &okN);
-                if (!cell.quoted && okN && std::isfinite(dv)) {
+                double dv = 0.0;
+                if (!cell.quoted && parseImportNumber(tok, decimalComma, dv)) {
                     ++numTokens;
                 } else {
                     allRow0Numeric = false;
@@ -3209,7 +3409,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             t->setWindowLabel(absPath);
 
         populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, withComments,
-                                          unitsRowHint, convertNumeric, 0, 0, true);
+                                          unitsRowHint, convertNumeric, 0, 0, true, decimalComma);
 
         if (!hasHeader
             && (absPath.endsWith(QStringLiteral(".xy"), Qt::CaseInsensitive)
@@ -5218,7 +5418,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
         int maxCols = 1;
         const QVector<QVector<ParsedCsvCell>> records =
-                parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols);
+                parseDelimitedRecordsRfc4180(rawText, 0, sep, true, false, maxCols, false);
         const qint64 dataRowSpan = std::max<qint64>(1, records.size());
         const qint64 reqEndRows = qint64(startRow) + dataRowSpan;
         const qint64 reqEndCols = qint64(startCol) + std::max<qint64>(1, maxCols);
@@ -5262,8 +5462,10 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             // growing the table, the temporary header names and the data are one Undo step
             ScopedRpcUndoMacro pasteMacro(t->d_future_table,
                                           QObject::tr("%1: paste").arg(t->name()));
-            populateDelimitedRecordsIntoTable(t, records, maxCols, hasHeader, false, unitsRowHint,
-                                              convertNumeric, startRow, startCol, assignDesigs);
+            populateDelimitedRecordsIntoTable(
+                    t, records, maxCols, hasHeader, false, unitsRowHint, convertNumeric, startRow,
+                    startCol, assignDesigs,
+                    detectImportDecimalComma(rawText, 0, sep, convertNumeric));
         }
         for (int c = startCol; c < std::min(t->numCols(), startCol + maxCols); ++c)
             d_app->updateCurves(t, fullColumnName(t, c));
