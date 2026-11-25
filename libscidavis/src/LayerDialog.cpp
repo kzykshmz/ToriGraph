@@ -823,6 +823,12 @@ void LayerDialog::update()
             multi_layer->setCols(bestCols);
         }
 
+        // 新しい比率を先に入れる: setKeepAspectRatio(true) は今の比率で並べ直すので、古い比率で
+        // あふれた格子のためにページが広がり、新しい比率で収まっても広いページが残ってしまう。
+        const bool newTargetFirst = !GroupCanvasSize->isChecked() && keepAspectBox->isChecked()
+                && customAspectBox->value() > 0.05;
+        if (newTargetFirst)
+            multi_layer->setTargetAspectRatio(customAspectBox->value());
         multi_layer->setKeepAspectRatio(keepAspectBox->isChecked());
         if (GroupCanvasSize->isChecked()) {
             multi_layer->setLayerCanvasSize(boxCanvasWidth->value(), boxCanvasHeight->value());
@@ -831,8 +837,6 @@ void LayerDialog::update()
                 customAspectBox->setValue((double)boxCanvasWidth->value()
                                           / (double)boxCanvasHeight->value());
             }
-        } else if (keepAspectBox->isChecked() && customAspectBox->value() > 0.05) {
-            multi_layer->setTargetAspectRatio(customAspectBox->value());
         }
 
         multi_layer->arrangeLayers(fitBox->isChecked(), GroupCanvasSize->isChecked());
