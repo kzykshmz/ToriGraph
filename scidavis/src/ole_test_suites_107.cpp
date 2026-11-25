@@ -20,6 +20,12 @@
 //        log_after say otherwise; the axis reports scale "log10", also after reopening
 //   107c plot.3d_function without z_min / z_max takes the Z range from the function (50*x*y
 //        is not cut at 5); given bounds are kept; describe_api lists z_min / z_max
+//   107d plot.add_error_bars without table= takes err_col from the curve's own table, not from
+//        the active / last table that happens to have a column of the same name; an explicit
+//        table is kept; a curve whose table lacks err_col is an error
+//   107e plot.histogram with both bin_min and bin_max given and bin_min >= bin_max is an
+//        invalid-params error and leaves no window (it used to bin [bin_min, bin_min+1]); one
+//        bound only, and a constant column, still plot as before
 // =============================================================================
 
 namespace {
@@ -464,6 +470,133 @@ int runSuite107PlotFixesRound3(ApplicationWindow *mw)
             CHECK107(apiText.contains(QStringLiteral("z_min"))
                              && apiText.contains(QStringLiteral("z_max")),
                      "107c: describe_api does not list z_min / z_max");
+        }
+
+        // ---- 107d: add_error_bars without table= reads the curve's own table ---------------
+        {
+            QJsonArray xs, ys, es, others;
+            for (int i = 0; i < 5; ++i) {
+                xs.append(double(i));
+                ys.append(10.0 + i);
+                es.append(0.1);
+                others.append(3.0);
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T107E"), { "x", "y", "e" }, { xs, ys, es }),
+                       "107d: table T107E");
+            CHECK_COND(rpc.makeTable(QStringLiteral("N107E"), { "x", "y" }, { xs, ys }),
+                       "107d: table N107E");
+            // 後から作った表（同名の列 e を持つ）。table を省くと以前はこちらが使われた。
+            CHECK_COND(rpc.makeTable(QStringLiteral("O107E"), { "x", "e" }, { xs, others }),
+                       "107d: table O107E");
+            for (const char *gname : { "G107E", "G107F" }) {
+                CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                             QJsonObject{ { "table", "T107E" },
+                                                          { "x_col", "x" },
+                                                          { "y_cols", QJsonArray{ "y" } },
+                                                          { "graph_name", gname } })),
+                         "107d: plot.xy " << gname);
+            }
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.xy"),
+                                         QJsonObject{ { "table", "N107E" },
+                                                      { "x_col", "x" },
+                                                      { "y_cols", QJsonArray{ "y" } },
+                                                      { "graph_name", "G107N" } })),
+                     "107d: plot.xy G107N");
+            // エラーバーの曲線のタイトルは誤差の列のフル名（表名_列名）。
+            auto errTitle = [&](const char *gname) {
+                Graph *g = layer107(w, QString::fromLatin1(gname));
+                if (!g)
+                    return QString();
+                for (int ci = 0; ci < g->curves(); ++ci)
+                    if (auto *er = dynamic_cast<QwtErrorPlotCurve *>(g->curve(ci)))
+                        return er->title().text();
+                return QString();
+            };
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                         QJsonObject{ { "graph", "G107E" },
+                                                      { "curve", 0 },
+                                                      { "err_col", "e" } })),
+                     "107d: add_error_bars without table");
+            std::cout << "[INFO] 107d: error bars without table use '"
+                      << errTitle("G107E").toStdString() << "'\n";
+            CHECK107(errTitle("G107E") == QLatin1String("T107E_e"),
+                     "107d: add_error_bars without table used '"
+                             << errTitle("G107E").toStdString()
+                             << "' instead of the curve's table T107E_e");
+            // 明示した table はそのまま使う。
+            CHECK107(Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                         QJsonObject{ { "graph", "G107F" },
+                                                      { "table", "O107E" },
+                                                      { "curve", 0 },
+                                                      { "err_col", "e" } })),
+                     "107d: add_error_bars with table=O107E");
+            CHECK107(errTitle("G107F") == QLatin1String("O107E_e"),
+                     "107d: add_error_bars table=O107E used '" << errTitle("G107F").toStdString()
+                                                               << "'");
+            // 曲線の表に誤差の列が無ければ、別の表の同名の列を黙って使わずにエラーにする。
+            CHECK107(!Rpc107::ok(rpc.call(QStringLiteral("plot.add_error_bars"),
+                                          QJsonObject{ { "graph", "G107N" },
+                                                       { "curve", 0 },
+                                                       { "err_col", "e" } })),
+                     "107d: add_error_bars took column e from another table for N107E's curve");
+            CHECK107(errTitle("G107N").isEmpty(),
+                     "107d: G107N got error bars '" << errTitle("G107N").toStdString() << "'");
+        }
+
+        // ---- 107e: plot.histogram with bin_min >= bin_max is an error ------------------------
+        {
+            QJsonArray vs, cs;
+            for (int i = 0; i < 40; ++i) {
+                vs.append(std::sin(0.37 * i) * 2.0);
+                cs.append(5.0);
+            }
+            CHECK_COND(rpc.makeTable(QStringLiteral("T107H"), { "v", "c" }, { vs, cs }),
+                       "107e: table T107H");
+            const int nWin = w->windowsList().size();
+            struct Bad
+            {
+                const char *label;
+                QJsonObject extra;
+            };
+            const QList<Bad> bad = {
+                { "bin_min 3 > bin_max -3", QJsonObject{ { "bin_min", 3 }, { "bin_max", -3 } } },
+                { "bin_min = bin_max", QJsonObject{ { "bin_min", 1 }, { "bin_max", 1 } } },
+                { "min 2 > max 0 with bin_size",
+                  QJsonObject{ { "min", 2 }, { "max", 0 }, { "bin_size", 0.5 } } },
+            };
+            for (const Bad &b : bad) {
+                QJsonObject p = b.extra;
+                p.insert(QStringLiteral("table"), QStringLiteral("T107H"));
+                p.insert(QStringLiteral("col"), QStringLiteral("v"));
+                const QJsonObject r = rpc.call(QStringLiteral("plot.histogram"), p);
+                const int code = r.value(QStringLiteral("error"))
+                                         .toObject()
+                                         .value(QStringLiteral("code"))
+                                         .toInt();
+                CHECK107(!Rpc107::ok(r) && code == -32602,
+                         "107e: histogram " << b.label << " was not an invalid-params error"
+                                            << " (code " << code << ")");
+                CHECK107(w->windowsList().size() == nWin,
+                         "107e: histogram " << b.label << " left a window behind");
+            }
+            // 片方だけ・自動の場合は今までどおり（bin_min がデータの最大より上でも作図する）。
+            const QJsonObject r1 = rpc.call(QStringLiteral("plot.histogram"),
+                                            QJsonObject{ { "table", "T107H" },
+                                                         { "col", "v" },
+                                                         { "bin_min", 10 } });
+            CHECK107(Rpc107::ok(r1), "107e: histogram with bin_min only failed");
+            const QJsonObject r2 = rpc.call(QStringLiteral("plot.histogram"),
+                                            QJsonObject{ { "table", "T107H" },
+                                                         { "col", "v" },
+                                                         { "bin_min", -1 },
+                                                         { "bin_max", 1 } });
+            CHECK107(Rpc107::ok(r2), "107e: histogram with bin_min < bin_max failed");
+            // 全部同じ値の列（自動範囲が潰れる）も今までどおり作図する。
+            const QJsonObject r3 = rpc.call(QStringLiteral("plot.histogram"),
+                                            QJsonObject{ { "table", "T107H" },
+                                                         { "col", "c" },
+                                                         { "bins", 10 } });
+            CHECK107(Rpc107::ok(r3), "107e: histogram of a constant column failed");
         }
 
         CHECK_COND(w->saveFolder(w->projectFolder(), prj), "107: saving the project failed");

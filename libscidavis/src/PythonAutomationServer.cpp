@@ -1418,7 +1418,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "graph:str=''; curve:int|str=0; layer:int=null", "g.remove_curve(0)" },
     { "plot.add_error_bars", "plot",
       "GraphProxy.add_error_bars(err_col, *, curve=None, table=None, direction='y', layer=None)",
-      "Attach X or Y error bars from a worksheet column to an existing curve.",
+      "Attach X or Y error bars from a worksheet column to an existing curve. Without table, err_col is taken from the curve's own worksheet.",
       "graph:str=''; err_col:int|str*; curve:int|str=null; table:str=''; direction:str='y'[x|y]; layer:int=null",
       "g.add_error_bars('Stress_SD', curve='Stress')" },
     { "plot.double_y", "plot",

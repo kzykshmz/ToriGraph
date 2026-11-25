@@ -2638,8 +2638,22 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
     if (method == QStringLiteral("plot.add_error_bars")) {
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
-        Table *t = resolveTable(d_app, params);
         const QString curveTitle = resolveCurveTitle(g, params, QStringLiteral("curve"), true);
+        // table を省いたら曲線の元の表（Y 列の表）から err_col を取る。以前はアクティブな表か
+        // 最後の表を使ったので、別の表の同名の列が黙って誤差棒になっていた。曲線は
+        // Graph::addErrorBars と同じく、タイトルが一致する最初の（誤差棒でない）曲線。
+        Table *t = nullptr;
+        if (g && optionalJsonString(params, QStringLiteral("table")).trimmed().isEmpty()
+            && optionalJsonString(params, QStringLiteral("window")).trimmed().isEmpty()) {
+            for (int ci = 0; ci < g->curves() && !t; ++ci) {
+                auto *dc = dynamic_cast<DataCurve *>(g->curve(ci));
+                if (dc && g->curveType(ci) != Graph::ErrorBars
+                    && dc->title().text() == curveTitle)
+                    t = dc->table();
+            }
+        }
+        if (!t)
+            t = resolveTable(d_app, params);
         const int errIdx = resolveColumnIndex(t, params.value(QStringLiteral("err_col")), true);
         const QString dirStr = optionalJsonString(params, QStringLiteral("direction")).trimmed().toLower();
         if (!dirStr.isEmpty() && dirStr != QStringLiteral("y")
@@ -2905,6 +2919,29 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             throwInvalidParams(
                     QStringLiteral("%1 requires at least 1 finite unmasked numeric value with bounded span in '%2'.")
                             .arg(method, t->name()));
+        }
+        if (method == QStringLiteral("plot.histogram")) {
+            // bin_min と bin_max を両方指定して bin_min >= bin_max なら、[bin_min, bin_min+1] に
+            // 黙って置き換えずにエラーにする（bin_size <= 0 と同じ扱い）。作図の前に調べるので
+            // グラフは残らない。片方だけ・自動の範囲が潰れる場合は下の既存の扱いのまま。
+            // 下のビン設定と同じく、bin_min / bin_max があればそちら、無ければ min / max。
+            auto givenBound = [&](const char *key, const char *alias, double *out) {
+                const QString name = params.contains(QString::fromLatin1(key))
+                        ? QString::fromLatin1(key)
+                        : QString::fromLatin1(alias);
+                if (!params.contains(name) || params.value(name).isNull())
+                    return false;
+                *out = optionalJsonFiniteDouble(params, name, 0.0);
+                return true;
+            };
+            double reqLo = 0.0, reqHi = 0.0;
+            if (givenBound("bin_min", "min", &reqLo) && givenBound("bin_max", "max", &reqHi)
+                && !(reqLo < reqHi)) {
+                throwInvalidParams(
+                        QStringLiteral("plot.histogram 'bin_min' (%1) must be < 'bin_max' (%2).")
+                                .arg(reqLo, 0, 'g', 10)
+                                .arg(reqHi, 0, 'g', 10));
+            }
         }
         const int plotType = (method == QStringLiteral("plot.histogram")) ? Graph::Histogram
                                                                           : Graph::Box;
