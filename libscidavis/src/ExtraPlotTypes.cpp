@@ -1317,6 +1317,12 @@ ExtraPlotTypes::plotProbability(ApplicationWindow *app, Table *t, const QString 
         return res;
     if (g->insertCurve(tbl, tbl->colName(0), tbl->colName(3), Graph::Scatter, 0, n - 1)) {
         const int idx = g->curves() - 1;
+        {
+            CurveLayout cl = g->initCurveLayout(Graph::Scatter, 1);
+            g->updateCurveLayout(idx, &cl);
+        }
+        if (QwtPlotCurve *cv = g->curve(idx))
+            cv->setStyle(QwtPlotCurve::NoCurve);
         g->setCurveSymbol(idx, QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 100, 190)),
                                          QPen(QColor(15, 45, 100), 1.2), QSize(7, 7)));
     }

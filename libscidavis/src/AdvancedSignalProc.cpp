@@ -1795,7 +1795,10 @@ Matrix *AdvancedSignalProc::computeSTFT(ApplicationWindow *app, Graph *g,
     const double tStart = t.front() + 0.5 * std::min(n - 1, W - 1) * dt;
     const double tEnd = (nFrames > 1) ? (tStart + static_cast<double>(nFrames - 1) * H * dt)
                                       : t.back();
-    mat->setCoordinates(tStart, std::max(tStart + dt, tEnd), 0.0, 0.5 * fs);
+    const double fMax = (nFreqs > 1)
+            ? (static_cast<double>(nFreqs - 1) * fs / static_cast<double>(W))
+            : (0.5 * fs);
+    mat->setCoordinates(tStart, std::max(tStart + dt, tEnd), 0.0, fMax);
 
     std::vector<double> frameBuf(static_cast<size_t>(W), 0.0);
     std::vector<double> unpacked(static_cast<size_t>(2 * W), 0.0);
@@ -1939,7 +1942,7 @@ Matrix *AdvancedSignalProc::waveletCWT(ApplicationWindow *app, Graph *g,
 
     const double sMin = 1.0;
     const double sMax = std::max(4.0, 0.30 * static_cast<double>(n));
-    mat->setCoordinates(t.front(), t.back(), sMin, sMax);
+    mat->setCoordinates(t.front(), t.back(), std::log2(sMin), std::log2(sMax));
 
     std::vector<double> omega(nFft, 0.0);
     for (size_t m = 0; m < nFft; ++m) {
@@ -2004,7 +2007,8 @@ Matrix *AdvancedSignalProc::waveletCWT(ApplicationWindow *app, Graph *g,
         MultiLayer *ml = app->plotSpectrogram(mat, Graph::ColorMap);
         if (ml && ml->activeGraph()) {
             ml->activeGraph()->setXAxisTitle(trSig("Time"));
-            ml->activeGraph()->setYAxisTitle(trSig("Wavelet Scale"));
+            ml->activeGraph()->setYAxisTitle(QStringLiteral("log<sub>2</sub>(")
+                                             + trSig("Wavelet Scale") + QStringLiteral(")"));
             ml->activeGraph()->replot();
         }
     }
@@ -2224,23 +2228,37 @@ Matrix *AdvancedSignalProc::fft2D(ApplicationWindow *app, Matrix *srcMatrix,
     const double dy = (rows > 1) ? std::fabs(srcMatrix->yEnd() - srcMatrix->yStart())
                     / static_cast<double>(rows - 1)
                                  : 1.0;
-    const double fxMax = (dx > 1e-15) ? (0.5 / dx) : 0.5;
-    const double fyMax = (dy > 1e-15) ? (0.5 / dy) : 0.5;
+    const double effDx = (dx > 1e-15) ? dx : 1.0;
+    const double effDy = (dy > 1e-15) ? dy : 1.0;
     double outXStart = srcMatrix->xStart();
     double outXEnd = srcMatrix->xEnd();
     double outYStart = srcMatrix->yStart();
     double outYEnd = srcMatrix->yEnd();
     if (!inverse) {
         if (shiftCenter) {
-            outXStart = -fxMax;
-            outXEnd = fxMax;
-            outYStart = -fyMax;
-            outYEnd = fyMax;
+            const size_t sc = C / 2;
+            const size_t sr = R / 2;
+            outXStart = (cols > 1)
+                    ? (-static_cast<double>(sc) / (static_cast<double>(C) * effDx))
+                    : (-0.5 / effDx);
+            outXEnd = (cols > 1)
+                    ? (static_cast<double>(C - 1 - sc) / (static_cast<double>(C) * effDx))
+                    : (0.5 / effDx);
+            outYStart = (rows > 1)
+                    ? (-static_cast<double>(sr) / (static_cast<double>(R) * effDy))
+                    : (-0.5 / effDy);
+            outYEnd = (rows > 1)
+                    ? (static_cast<double>(R - 1 - sr) / (static_cast<double>(R) * effDy))
+                    : (0.5 / effDy);
         } else {
             outXStart = 0.0;
-            outXEnd = 2.0 * fxMax;
+            outXEnd = (cols > 1)
+                    ? (static_cast<double>(C - 1) / (static_cast<double>(C) * effDx))
+                    : (1.0 / effDx);
             outYStart = 0.0;
-            outYEnd = 2.0 * fyMax;
+            outYEnd = (rows > 1)
+                    ? (static_cast<double>(R - 1) / (static_cast<double>(R) * effDy))
+                    : (1.0 / effDy);
         }
     }
     outMat->setCoordinates(outXStart, outXEnd, outYStart, outYEnd);
@@ -3843,6 +3861,7 @@ Matrix *AdvancedSignalProc::filterMatrix2D(ApplicationWindow *app, Matrix *srcMa
         A[2][0] = A[0][2];
         A[2][1] = A[1][2];
 
+        const double rawSumZ = A[2][3];
         double coef[3] = { 0.0, 0.0, 0.0 };
         if (validCnt >= 3) {
             // Solve 3x3 normal equations (with degenerate-dimension fallback)
@@ -3876,9 +3895,11 @@ Matrix *AdvancedSignalProc::filterMatrix2D(ApplicationWindow *app, Matrix *srcMa
                 coef[0] = A[0][3];
                 coef[1] = A[1][3];
                 coef[2] = A[2][3];
-            } else if (A[2][2] > 0.0) {
-                coef[2] = A[2][3] / A[2][2];
+            } else {
+                coef[2] = rawSumZ / static_cast<double>(validCnt);
             }
+        } else if (validCnt > 0) {
+            coef[2] = rawSumZ / static_cast<double>(validCnt);
         }
 
         for (int r = 0; r < rows; ++r) {

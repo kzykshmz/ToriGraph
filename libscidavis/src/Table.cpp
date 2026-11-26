@@ -330,10 +330,17 @@ static bool isUndoStackInMacro(const QUndoStack *us)
 {
     return us && us->count() > 0 && !us->canUndo() && !us->canRedo();
 }
+
+QHash<const Table *, QList<QStringList>> &pendingRemovedColNames()
+{
+    static QHash<const Table *, QList<QStringList>> map;
+    return map;
+}
 } // namespace
 
 Table::~Table()
 {
+    pendingRemovedColNames().remove(this);
     if (d_future_table && !d_future_table->parentAspect() && d_future_table->view() == this) {
         future::Table *ft = d_future_table.data();
         d_future_table.clear();
@@ -452,14 +459,30 @@ void Table::handleColumnChange(int top, int left, int bottom, int right)
 
 void Table::handleColumnsAboutToBeRemoved(int first, int count)
 {
-    for (int i = first; i < first + count; i++)
-        emit aboutToRemoveCol(colName(i));
+    QStringList names;
+    names.reserve(qMax(0, count));
+    for (int i = first; i < first + count; i++) {
+        const QString cn = colName(i);
+        names << cn;
+        emit aboutToRemoveCol(cn);
+    }
+    pendingRemovedColNames()[this].append(names);
 }
 
 void Table::handleColumnsRemoved(int first, int count)
 {
-    for (int i = first; i < first + count; i++)
-        emit removedCol(colName(i));
+    QStringList names;
+    auto it = pendingRemovedColNames().find(this);
+    if (it != pendingRemovedColNames().end() && !it->isEmpty()) {
+        names = it->takeLast();
+        if (it->isEmpty())
+            pendingRemovedColNames().erase(it);
+    } else {
+        for (int i = first; i < first + count; i++)
+            names << colName(i);
+    }
+    for (const QString &cn : names)
+        emit removedCol(cn);
 }
 
 void Table::handleRowChange()

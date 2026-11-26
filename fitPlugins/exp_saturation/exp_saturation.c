@@ -72,8 +72,10 @@ int function_df(const gsl_vector * params, void * void_data, gsl_matrix *J)
 	size_t i;
 	for (i=0; i<d->n; i++) {
 		double x = d->X[i];
-		gsl_matrix_set(J, i, 0, (1-exp(-b2*x)));
-		gsl_matrix_set(J, i, 1, b1*x*exp(-b2*x));
+		double s = d->sigma[i];
+		double e = exp(-b2*x);
+		gsl_matrix_set(J, i, 0, (1.0 - e) / s);
+		gsl_matrix_set(J, i, 1, b1 * x * e / s);
 	}
 	return GSL_SUCCESS;
 }

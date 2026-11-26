@@ -37,7 +37,9 @@
 #include <QLocale>
 #include <gsl/gsl_fft_halfcomplex.h>
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 Convolution::Convolution(ApplicationWindow *parent, Table *t, const QString &signalColName,
                          const QString &responseColName)
@@ -68,13 +70,14 @@ void Convolution::setDataFromTable(Table *t, const QString &signalColName,
         return;
     }
 
-    size_t d_n_response = 0;
+    std::vector<double> responseVals;
     int rows = d_table->numRows();
     for (int i = 0; i < rows; i++) {
         if (!d_table->text(i, response_col).isEmpty())
-            d_n_response++;
+            responseVals.push_back(d_table->cell(i, response_col));
     }
-    if (d_n_response >= rows / 2) {
+    const size_t d_n_response = responseVals.size();
+    if (rows <= 0 || d_n_response >= static_cast<size_t>(rows / 2)) {
         QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
                              tr("The response dataset '%1' must be less then half the size of the "
                                 "signal dataset '%2'!")
@@ -105,11 +108,11 @@ void Convolution::setDataFromTable(Table *t, const QString &signalColName,
         return;
     }
 
-    for (unsigned i = 0; i < rows; i++)
-        d_x[i] = d_table->cell(i, signal_col);
-    std::fill(d_x.begin()+rows,d_x.end(),0.0);
-    for (int i = 0u; i < d_n_response; i++)
-        d_y[i] = d_table->cell(i, response_col);
+    for (int i = 0; i < rows; i++)
+        d_x[static_cast<size_t>(i)] = d_table->cell(i, signal_col);
+    std::fill(d_x.begin() + rows, d_x.end(), 0.0);
+    for (size_t i = 0; i < d_n_response; i++)
+        d_y[i] = responseVals[i];
 }
 
 void Convolution::output()

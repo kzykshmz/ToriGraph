@@ -48,10 +48,333 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <numeric>
+#include <unordered_map>
 using namespace std;
 
 namespace {
+
+static bool isNonInteractivePolyFit(const QObject *parentObj, bool silent)
+{
+    if (silent)
+        return true;
+    if (qApp && qApp->property("torigraph_noninteractive").toBool())
+        return true;
+    const ApplicationWindow *app = dynamic_cast<const ApplicationWindow *>(parentObj);
+    return app && app->isHeadlessMode();
+}
+
+struct CenteredPolyCache
+{
+    long double xMean = 0.0L;
+    long double xScale = 1.0L;
+    std::vector<double> cU;
+    std::vector<double> coeffsX;
+    bool apparent = false;
+};
+
+static std::mutex &centeredPolyCacheMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+static std::unordered_map<const Fit *, CenteredPolyCache> &centeredPolyCacheMap()
+{
+    static std::unordered_map<const Fit *, CenteredPolyCache> mp;
+    return mp;
+}
+
+static void eraseCenteredPolyCache(const Fit *key)
+{
+    std::lock_guard<std::mutex> lock(centeredPolyCacheMutex());
+    centeredPolyCacheMap().erase(key);
+}
+
+static void storeCenteredPolyCache(const Fit *key, const CenteredPolyCache &cache)
+{
+    std::lock_guard<std::mutex> lock(centeredPolyCacheMutex());
+    centeredPolyCacheMap()[key] = cache;
+}
+
+static bool loadCenteredPolyCache(const Fit *key, CenteredPolyCache &out)
+{
+    std::lock_guard<std::mutex> lock(centeredPolyCacheMutex());
+    auto it = centeredPolyCacheMap().find(key);
+    if (it == centeredPolyCacheMap().end())
+        return false;
+    out = it->second;
+    return true;
+}
+
+static double evalPolyHornerLD(const std::vector<double> &par, unsigned nParams, double x)
+{
+    const size_t m = std::min<size_t>(size_t(nParams), par.size());
+    if (m == 0)
+        return 0.0;
+    const long double xld = static_cast<long double>(x);
+    long double yi = static_cast<long double>(par[m - 1]);
+    for (size_t j = m - 1; j > 0; --j)
+        yi = yi * xld + static_cast<long double>(par[j - 1]);
+    return static_cast<double>(yi);
+}
+
+static bool evalWithCenteredCacheIfApplicable(const CenteredPolyCache &cache,
+                                              const std::vector<double> &par, unsigned nParams,
+                                              double xt, double &outVal)
+{
+    if (cache.cU.empty() || cache.coeffsX.size() != par.size()
+        || size_t(nParams) != cache.coeffsX.size())
+        return false;
+
+    int diffCount = 0;
+    size_t diffIdx = 0;
+    for (size_t j = 0; j < par.size(); ++j) {
+        if (par[j] != cache.coeffsX[j]) {
+            ++diffCount;
+            diffIdx = j;
+            if (diffCount > 1)
+                return false;
+        }
+    }
+    if (diffCount == 1) {
+        const double d = std::abs(par[diffIdx] - cache.coeffsX[diffIdx]);
+        if (!std::isfinite(d) || d > 1e-2 * std::max(1.0, std::abs(cache.coeffsX[diffIdx])))
+            return false;
+    }
+
+    const long double u = (static_cast<long double>(xt) - cache.xMean) / cache.xScale;
+    long double val = static_cast<long double>(cache.cU.back());
+    for (size_t j = cache.cU.size() - 1; j > 0; --j)
+        val = val * u + static_cast<long double>(cache.cU[j - 1]);
+    if (diffCount == 1) {
+        const long double diff = static_cast<long double>(par[diffIdx])
+                - static_cast<long double>(cache.coeffsX[diffIdx]);
+        long double xpow = 1.0L;
+        const long double xld = static_cast<long double>(xt);
+        for (size_t k = 0; k < diffIdx; ++k)
+            xpow *= xld;
+        val += diff * xpow;
+    }
+    outVal = static_cast<double>(val);
+    return true;
+}
+
+static void collectActiveXY(const std::vector<double> &x, const std::vector<double> &y,
+                            const std::vector<double> &weights, std::vector<double> &xOut,
+                            std::vector<double> &yOut)
+{
+    const size_t n = std::min(x.size(), y.size());
+    xOut.clear();
+    yOut.clear();
+    xOut.reserve(n);
+    yOut.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (i < weights.size() && (!std::isfinite(weights[i]) || !(weights[i] > 0.0)))
+            continue;
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i]))
+            continue;
+        xOut.push_back(x[i]);
+        yOut.push_back(y[i]);
+    }
+}
+
+static bool computeWeightedMeanXY(const std::vector<double> &x, const std::vector<double> &y,
+                                  const std::vector<double> &weights, double &wmXOut,
+                                  double &wmYOut)
+{
+    const size_t n = std::min(x.size(), y.size());
+    double W = 0.0;
+    double wmX = 0.0;
+    double wmY = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double wi = (i < weights.size()) ? weights[i] : 1.0;
+        if (std::isfinite(wi) && wi > 0.0 && std::isfinite(x[i]) && std::isfinite(y[i])) {
+            W += wi;
+            wmX += (x[i] - wmX) * (wi / W);
+            wmY += (y[i] - wmY) * (wi / W);
+        }
+    }
+    if (!(W > 0.0) || !std::isfinite(wmX) || !std::isfinite(wmY))
+        return false;
+    wmXOut = wmX;
+    wmYOut = wmY;
+    return true;
+}
+
+static bool solveCenteredWeightedPolynomial(const std::vector<double> &x,
+                                            const std::vector<double> &y,
+                                            const std::vector<double> &weights, unsigned p,
+                                            std::vector<double> &coeffsOut, gsl_matrix *covarOut,
+                                            double &chi2Out, std::vector<double> *yFitOut,
+                                            CenteredPolyCache *cacheOut)
+{
+    const size_t n = std::min(x.size(), y.size());
+    if (n == 0 || p == 0)
+        return false;
+
+    long double sumX = 0.0L;
+    size_t activeCount = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const bool active = (i < weights.size())
+                ? (std::isfinite(weights[i]) && weights[i] > 0.0)
+                : true;
+        if (active && std::isfinite(x[i]) && std::isfinite(y[i])) {
+            sumX += static_cast<long double>(x[i]);
+            ++activeCount;
+        }
+    }
+    if (activeCount == 0) {
+        for (size_t i = 0; i < n; ++i) {
+            if (std::isfinite(x[i])) {
+                sumX += static_cast<long double>(x[i]);
+                ++activeCount;
+            }
+        }
+    }
+    const long double xMean =
+            (activeCount > 0) ? (sumX / static_cast<long double>(activeCount)) : 0.0L;
+
+    long double maxDev = 0.0L;
+    for (size_t i = 0; i < n; ++i) {
+        const bool active = (i < weights.size())
+                ? (std::isfinite(weights[i]) && weights[i] > 0.0)
+                : true;
+        if (active && std::isfinite(x[i]) && std::isfinite(y[i])) {
+            const long double dev = std::abs(static_cast<long double>(x[i]) - xMean);
+            if (dev > maxDev)
+                maxDev = dev;
+        }
+    }
+    const long double xScale =
+            (maxDev > 0.0L && std::isfinite(static_cast<double>(maxDev))) ? maxDev : 1.0L;
+
+    gsl_matrix *U = gsl_matrix_alloc(n, p);
+    gsl_vector *cU = gsl_vector_alloc(p);
+    gsl_matrix *covU = gsl_matrix_alloc(p, p);
+    gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(n, p);
+
+    const bool hasWeights = (weights.size() >= n);
+    std::vector<double> yClean(n, 0.0);
+    std::vector<double> wClean(n, 0.0);
+    bool anyInactive = false;
+
+    for (size_t i = 0; i < n; ++i) {
+        const double wi = hasWeights ? weights[i] : 1.0;
+        if (!std::isfinite(wi) || !(wi > 0.0) || !std::isfinite(x[i]) || !std::isfinite(y[i])) {
+            anyInactive = true;
+            for (unsigned j = 0; j < p; ++j)
+                gsl_matrix_set(U, i, j, 0.0);
+            yClean[i] = 0.0;
+            wClean[i] = 0.0;
+            continue;
+        }
+        const double ui = static_cast<double>((static_cast<long double>(x[i]) - xMean) / xScale);
+        double upow = 1.0;
+        bool rowFinite = std::isfinite(ui);
+        for (unsigned j = 0; j < p; ++j) {
+            if (!std::isfinite(upow)) {
+                rowFinite = false;
+                break;
+            }
+            gsl_matrix_set(U, i, j, upow);
+            upow *= ui;
+        }
+        if (!rowFinite) {
+            anyInactive = true;
+            for (unsigned j = 0; j < p; ++j)
+                gsl_matrix_set(U, i, j, 0.0);
+            yClean[i] = 0.0;
+            wClean[i] = 0.0;
+        } else {
+            yClean[i] = y[i];
+            wClean[i] = wi;
+        }
+    }
+
+    gsl_vector_const_view yv = gsl_vector_const_view_array(yClean.data(), n);
+    int status = GSL_SUCCESS;
+    if (hasWeights || anyInactive) {
+        gsl_vector_const_view wv = gsl_vector_const_view_array(wClean.data(), n);
+        status = gsl_multifit_wlinear(U, &wv.vector, &yv.vector, cU, covU, &chi2Out, work);
+    } else {
+        status = gsl_multifit_linear(U, &yv.vector, cU, covU, &chi2Out, work);
+    }
+
+    std::vector<double> cUVec(p, 0.0);
+    for (unsigned j = 0; j < p; ++j)
+        cUVec[j] = gsl_vector_get(cU, j);
+
+    // Evaluate fitted Y values directly in centered u-basis so residuals and RSS avoid
+    // catastrophic cancellation at large X offsets.
+    if (yFitOut) {
+        yFitOut->resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const long double ui = (static_cast<long double>(x[i]) - xMean) / xScale;
+            long double yi = static_cast<long double>(cUVec[p - 1]);
+            for (unsigned j = p - 1; j > 0; --j)
+                yi = yi * ui + static_cast<long double>(cUVec[j - 1]);
+            (*yFitOut)[i] = static_cast<double>(yi);
+        }
+    }
+
+    // Exact upper-triangular binomial shift+scale matrix T mapping centered coefficients c_u
+    // back to the original x basis (a = T * c_u, cov_x = T * cov_u * T^T).
+    std::vector<std::vector<long double>> T(p, std::vector<long double>(p, 0.0L));
+    T[0][0] = 1.0L;
+    const long double invS = 1.0L / xScale;
+    const long double negMuOverS = -xMean / xScale;
+    for (unsigned k = 1; k < p; ++k) {
+        T[0][k] = negMuOverS * T[0][k - 1];
+        for (unsigned j = 1; j < k; ++j)
+            T[j][k] = invS * T[j - 1][k - 1] + negMuOverS * T[j][k - 1];
+        T[k][k] = invS * T[k - 1][k - 1];
+    }
+
+    coeffsOut.resize(p, 0.0);
+    for (unsigned j = 0; j < p; ++j) {
+        long double acc = 0.0L;
+        for (unsigned k = j; k < p; ++k)
+            acc += T[j][k] * static_cast<long double>(cUVec[k]);
+        coeffsOut[j] = static_cast<double>(acc);
+    }
+
+    if (covarOut && covarOut->size1 >= p && covarOut->size2 >= p) {
+        std::vector<std::vector<long double>> tmp(p, std::vector<long double>(p, 0.0L));
+        for (unsigned a = 0; a < p; ++a) {
+            for (unsigned m = 0; m < p; ++m) {
+                long double s = 0.0L;
+                for (unsigned k = a; k < p; ++k)
+                    s += T[a][k] * static_cast<long double>(gsl_matrix_get(covU, k, m));
+                tmp[a][m] = s;
+            }
+        }
+        for (unsigned a = 0; a < p; ++a) {
+            for (unsigned b = a; b < p; ++b) {
+                long double s = 0.0L;
+                for (unsigned m = b; m < p; ++m)
+                    s += tmp[a][m] * T[b][m];
+                const double val = static_cast<double>(s);
+                gsl_matrix_set(covarOut, a, b, val);
+                gsl_matrix_set(covarOut, b, a, val);
+            }
+        }
+    }
+
+    if (cacheOut) {
+        cacheOut->xMean = xMean;
+        cacheOut->xScale = xScale;
+        cacheOut->cU = std::move(cUVec);
+        cacheOut->coeffsX = coeffsOut;
+    }
+
+    gsl_multifit_linear_free(work);
+    gsl_matrix_free(covU);
+    gsl_vector_free(cU);
+    gsl_matrix_free(U);
+    return status == GSL_SUCCESS;
+}
 
 // Reports why an apparent (log-space) linear fit cannot run, instead of returning silently.
 static void reportApparentFitShortage(Fit *fit, ApplicationWindow *app, bool silent, int needed,
@@ -87,15 +410,16 @@ static int poly_model_f(const gsl_vector *x, void *params, gsl_vector *f)
 {
     FitData *d = static_cast<FitData *>(params);
     for (size_t i = 0; i < d->n; ++i) {
-        double xi = d->X[i];
-        double yi = 0.0;
-        double xpow = 1.0;
-        for (size_t j = 0; j < d->p; ++j) {
-            yi += gsl_vector_get(x, j) * xpow;
-            xpow *= xi;
+        const double s = d->sigma ? d->sigma[i] : 1.0;
+        if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140) {
+            gsl_vector_set(f, i, 0.0);
+            continue;
         }
-        double s = (d->sigma && d->sigma[i] > 0.0) ? d->sigma[i] : 1.0;
-        gsl_vector_set(f, i, (yi - d->Y[i]) / s);
+        const long double xi = static_cast<long double>(d->X[i]);
+        long double yi = (d->p > 0) ? static_cast<long double>(gsl_vector_get(x, d->p - 1)) : 0.0L;
+        for (size_t j = (d->p > 0 ? d->p - 1 : 0); j > 0; --j)
+            yi = yi * xi + static_cast<long double>(gsl_vector_get(x, j - 1));
+        gsl_vector_set(f, i, (static_cast<double>(yi) - d->Y[i]) / s);
     }
     return GSL_SUCCESS;
 }
@@ -105,8 +429,13 @@ static int poly_model_df(const gsl_vector *x, void *params, gsl_matrix *J)
     Q_UNUSED(x)
     FitData *d = static_cast<FitData *>(params);
     for (size_t i = 0; i < d->n; ++i) {
+        const double s = d->sigma ? d->sigma[i] : 1.0;
+        if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140) {
+            for (size_t j = 0; j < d->p; ++j)
+                gsl_matrix_set(J, i, j, 0.0);
+            continue;
+        }
         double xi = d->X[i];
-        double s = (d->sigma && d->sigma[i] > 0.0) ? d->sigma[i] : 1.0;
         double xpow = 1.0;
         for (size_t j = 0; j < d->p; ++j) {
             gsl_matrix_set(J, i, j, xpow / s);
@@ -128,15 +457,14 @@ static double poly_model_d(const gsl_vector *x, void *params)
     FitData *d = static_cast<FitData *>(params);
     double sum = 0.0;
     for (size_t i = 0; i < d->n; ++i) {
-        double xi = d->X[i];
-        double yi = 0.0;
-        double xpow = 1.0;
-        for (size_t j = 0; j < d->p; ++j) {
-            yi += gsl_vector_get(x, j) * xpow;
-            xpow *= xi;
-        }
-        double s = (d->sigma && d->sigma[i] > 0.0) ? d->sigma[i] : 1.0;
-        double r = (yi - d->Y[i]) / s;
+        const double s = d->sigma ? d->sigma[i] : 1.0;
+        if (!std::isfinite(s) || !(s > 0.0) || s >= 1e140)
+            continue;
+        const long double xi = static_cast<long double>(d->X[i]);
+        long double yi = (d->p > 0) ? static_cast<long double>(gsl_vector_get(x, d->p - 1)) : 0.0L;
+        for (size_t j = (d->p > 0 ? d->p - 1 : 0); j > 0; --j)
+            yi = yi * xi + static_cast<long double>(gsl_vector_get(x, j - 1));
+        double r = (static_cast<double>(yi) - d->Y[i]) / s;
         sum += r * r;
     }
     return sum;
@@ -256,7 +584,8 @@ static bool tryGenerateApparentLogX(const std::vector<double> &dx, bool genFunct
 
 static void evaluateApparentPolyY(bool logX, bool logY, int nPoints, unsigned nParams,
                                   const std::vector<double> &par, const std::vector<double> &X,
-                                  std::vector<double> &Y)
+                                  std::vector<double> &Y,
+                                  const CenteredPolyCache *cache = nullptr)
 {
     for (int i = 0; i < nPoints; ++i) {
         if (logX && !(X[size_t(i)] > 0.0)) {
@@ -265,11 +594,8 @@ static void evaluateApparentPolyY(bool logX, bool logY, int nPoints, unsigned nP
         }
         const double xt = logX ? std::log10(X[size_t(i)]) : X[size_t(i)];
         double yt = 0.0;
-        double xpow = 1.0;
-        for (unsigned j = 0; j < nParams && j < par.size(); ++j) {
-            yt += par[j] * xpow;
-            xpow *= xt;
-        }
+        if (!cache || !evalWithCenteredCacheIfApplicable(*cache, par, nParams, xt, yt))
+            yt = evalPolyHornerLD(par, nParams, xt);
         Y[size_t(i)] = logY ? std::pow(10.0, yt) : yt;
     }
 }
@@ -300,6 +626,7 @@ PolynomialFit::PolynomialFit(ApplicationWindow *parent, Graph *g, QString &curve
 
 PolynomialFit::~PolynomialFit()
 {
+    eraseCenteredPolyCache(this);
     if (!is_non_linear && d_param_init) {
         gsl_vector_free(d_param_init);
         d_param_init = nullptr;
@@ -357,21 +684,25 @@ QStringList PolynomialFit::generateParameterList(int order)
 bool PolynomialFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                           std::vector<double> &Y)
 {
-    if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
+    CenteredPolyCache cache;
+    const bool hasCache = loadCenteredPolyCache(this, cache);
+    const bool isApparent = d_apparent_fit && (d_app_log_x || d_app_log_y);
+    const CenteredPolyCache *useCache =
+            (hasCache && cache.apparent == isApparent && cache.coeffsX == d_results) ? &cache
+                                                                                     : nullptr;
+
+    if (isApparent) {
         if (!tryGenerateApparentLogX(d_x, d_gen_function, d_app_log_x, d_points, X))
             generateX(X);
-        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, d_p, par, X, Y);
+        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, d_p, par, X, Y, useCache);
         return true;
     }
 
     generateX(X);
     for (int i = 0; i < d_points; i++) {
         double yi = 0.0;
-        double xpow = 1.0;
-        for (unsigned j = 0; j < d_p && j < par.size(); j++) {
-            yi += par[j] * xpow;
-            xpow *= X[i];
-        }
+        if (!useCache || !evalWithCenteredCacheIfApplicable(*useCache, par, d_p, X[i], yi))
+            yi = evalPolyHornerLD(par, d_p, X[i]);
         Y[i] = yi;
     }
     return true;
@@ -382,16 +713,7 @@ void PolynomialFit::fit()
     if (d_init_err)
         return;
 
-    int minNeeded = std::max(1, effectiveFreeParameters());
-    if (unsigned(minNeeded) > d_x.size()) {
-        if (!d_silent)
-            QMessageBox::critical(
-                    (ApplicationWindow *)parent(), tr("Fit Error"),
-                    tr("You need at least %1 data points for this fit operation. Operation aborted!")
-                            .arg(minNeeded));
-        return;
-    }
-
+    eraseCenteredPolyCache(this);
     d_result_errors.clear();
     d_has_custom_r2 = false;
     d_has_custom_rss = false;
@@ -402,6 +724,22 @@ void PolynomialFit::fit()
     d_straight_line_fit = false;
     d_convergence = Converged;
     d_fit_notes.clear();
+
+    const int minNeeded = std::max(1, effectiveFreeParameters());
+    const int nActive = effectivePointCount();
+    if (minNeeded > nActive) {
+        chi_2 = -1.0;
+        d_y_fit.clear();
+        d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+        if (!isNonInteractivePolyFit(parent(), d_silent))
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("Fit Error"),
+                    tr("You need at least %1 valid data points (with positive weight) for this fit operation. "
+                       "Operation aborted!")
+                            .arg(minNeeded));
+        return;
+    }
+
     int xAx = d_curve ? d_curve->xAxis() : QwtPlot::xBottom;
     int yAx = d_curve ? d_curve->yAxis() : QwtPlot::yLeft;
     d_app_log_x = d_apparent_fit && isGraphAxisLog10(d_graph, xAx);
@@ -426,126 +764,144 @@ void PolynomialFit::fit()
                               "from the log-space fit.")
                                    .arg(logData.excludedWeightCount)
                                    .arg(int(d_x.size()));
-        if (logData.xt.size() < size_t(d_p)) {
+        const int effFree = effectiveFreeParameters();
+        const int minLogNeeded = std::max(1, effFree);
+        if (logData.xt.size() < size_t(minLogNeeded)) {
             chi_2 = -1.0;
             d_y_fit.clear();
             d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
-            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, int(d_p),
+            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, minLogNeeded,
                                       int(logData.xt.size()));
             return;
         }
-        d_has_custom_dof = true;
-        d_custom_n_points = int(logData.xt.size());
-        d_custom_p_free = int(d_p);
         if (d_p == 2)
             setStraightLinePearson(logData.xt, logData.yt);
 
-        gsl_matrix *X = gsl_matrix_alloc(logData.xt.size(), d_p);
-        gsl_vector *c = gsl_vector_alloc(d_p);
-        for (size_t i = 0; i < logData.xt.size(); ++i) {
-            double xpow = 1.0;
-            for (unsigned j = 0; j < d_p; ++j) {
-                gsl_matrix_set(X, i, j, xpow);
-                xpow *= logData.xt[i];
-            }
-        }
-        gsl_vector_const_view yv = gsl_vector_const_view_array(logData.yt.data(), logData.yt.size());
-        gsl_vector_const_view wv = gsl_vector_const_view_array(logData.wt.data(), logData.wt.size());
-        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(logData.xt.size(), d_p);
-        gsl_multifit_wlinear(X, &wv.vector, &yv.vector, c, covar, &chi_2, work);
-
-        for (unsigned i = 0; i < d_p; ++i)
-            d_results[i] = gsl_vector_get(c, i);
-
-        gsl_multifit_linear_free(work);
-        gsl_matrix_free(X);
-        gsl_vector_free(c);
-
-        std::vector<double> yfit_t(logData.xt.size(), 0.0);
-        for (size_t i = 0; i < logData.xt.size(); ++i) {
-            double xpow = 1.0;
-            for (unsigned j = 0; j < d_p; ++j) {
-                yfit_t[i] += d_results[j] * xpow;
-                xpow *= logData.xt[i];
-            }
-        }
-        d_has_custom_r2 = true;
-        d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
-        populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit, d_has_custom_rss,
-                                      d_custom_rss);
-    } else if (hasActiveConstraints()) {
-        // Seed unconstrained OLS estimates into non-explicit parameters first
-        if (d_x.size() >= size_t(d_p)) {
-            gsl_matrix *X = gsl_matrix_alloc(d_x.size(), d_p);
-            gsl_vector *c = gsl_vector_alloc(d_p);
-            gsl_matrix *tmpCov = gsl_matrix_alloc(d_p, d_p);
-            double tmpChi2 = 0.0;
-            for (size_t i = 0; i < d_x.size(); ++i) {
-                double xpow = 1.0;
-                for (unsigned j = 0; j < d_p; ++j) {
-                    gsl_matrix_set(X, i, j, xpow);
-                    xpow *= d_x[i];
+        if (hasActiveConstraints()) {
+            // Honor fixed parameters, bounds, and linear constraints inside apparent log-space fit
+            if (logData.xt.size() >= size_t(d_p)) {
+                std::vector<double> seedC;
+                double tmpChi2 = 0.0;
+                if (solveCenteredWeightedPolynomial(logData.xt, logData.yt, logData.wt, d_p, seedC,
+                                                    nullptr, tmpChi2, nullptr, nullptr)) {
+                    for (unsigned j = 0; j < d_p && j < seedC.size(); ++j) {
+                        if (!d_all_guesses_set && !d_explicit_init_vals.contains(int(j)))
+                            gsl_vector_set(d_param_init, j, seedC[j]);
+                    }
                 }
             }
-            gsl_vector_view yv = gsl_vector_view_array(d_y.data(), d_y.size());
-            gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(d_x.size(), d_p);
-            gsl_multifit_linear(X, &yv.vector, c, tmpCov, &tmpChi2, work);
-            for (unsigned j = 0; j < d_p; ++j) {
-                if (!d_all_guesses_set && !d_explicit_init_vals.contains(int(j)))
-                    gsl_vector_set(d_param_init, j, gsl_vector_get(c, j));
+            applyExplicitInitialGuesses();
+
+            const std::vector<double> savedX = d_x;
+            const std::vector<double> savedY = d_y;
+            const std::vector<double> savedYErr = d_y_errors;
+            const std::vector<double> savedRawW = d_raw_weights;
+            const std::vector<double> savedRawYErr = d_raw_y_errors;
+            const WeightingMethod savedWMethod = d_weighting_method;
+            const ErrorSource savedErrSrc = d_y_error_source;
+            const bool savedAppLogX = d_app_log_x;
+            const bool savedAppLogY = d_app_log_y;
+
+            d_x = logData.xt;
+            d_y = logData.yt;
+            d_app_log_x = false;
+            d_app_log_y = false;
+            if (isWeighted) {
+                d_weighting_method = WeightDirect;
+                d_y_error_source = CustomErrors;
+                d_raw_weights = logData.wt;
+                d_raw_y_errors.clear();
+                applyWeightsToErrorVector(logData.wt);
+            } else {
+                d_weighting_method = WeightNone;
+                d_y_error_source = UnknownErrors;
+                d_raw_weights.clear();
+                d_raw_y_errors.clear();
+                d_y_errors.assign(logData.xt.size(), 1.0);
             }
-            gsl_multifit_linear_free(work);
-            gsl_matrix_free(tmpCov);
-            gsl_matrix_free(X);
-            gsl_vector_free(c);
+
+            int iterations = 0, status = GSL_SUCCESS;
+            d_results = fitGslMultifit(iterations, status);
+            const std::vector<double> yfit_t = d_y_fit;
+
+            d_x = savedX;
+            d_y = savedY;
+            d_y_errors = savedYErr;
+            d_raw_weights = savedRawW;
+            d_raw_y_errors = savedRawYErr;
+            d_weighting_method = savedWMethod;
+            d_y_error_source = savedErrSrc;
+            d_app_log_x = savedAppLogX;
+            d_app_log_y = savedAppLogY;
+
+            if (status == GSL_SUCCESS && std::isfinite(chi_2) && chi_2 >= 0.0
+                && yfit_t.size() == logData.xt.size()) {
+                d_has_custom_dof = true;
+                d_custom_n_points = int(logData.xt.size());
+                d_custom_p_free = effFree;
+                d_has_custom_r2 = true;
+                d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+                populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit,
+                                              d_has_custom_rss, d_custom_rss);
+            } else {
+                chi_2 = -1.0;
+                d_y_fit.clear();
+                d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+                return;
+            }
+        } else {
+            d_has_custom_dof = true;
+            d_custom_n_points = int(logData.xt.size());
+            d_custom_p_free = int(d_p);
+
+            std::vector<double> yfit_t;
+            CenteredPolyCache cache;
+            solveCenteredWeightedPolynomial(logData.xt, logData.yt, logData.wt, d_p, d_results,
+                                            covar, chi_2, &yfit_t, &cache);
+            cache.apparent = true;
+            storeCenteredPolyCache(this, cache);
+
+            d_has_custom_r2 = true;
+            d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+            populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit,
+                                          d_has_custom_rss, d_custom_rss);
+        }
+    } else if (hasActiveConstraints()) {
+        const std::vector<double> weightsVec = computeWeightsVector();
+        // Seed unconstrained centered WLS estimates into non-explicit parameters first
+        if (nActive >= int(d_p)) {
+            std::vector<double> seedC;
+            double tmpChi2 = 0.0;
+            if (solveCenteredWeightedPolynomial(d_x, d_y, weightsVec, d_p, seedC, nullptr, tmpChi2,
+                                                nullptr, nullptr)) {
+                for (unsigned j = 0; j < d_p && j < seedC.size(); ++j) {
+                    if (!d_all_guesses_set && !d_explicit_init_vals.contains(int(j)))
+                        gsl_vector_set(d_param_init, j, seedC[j]);
+                }
+            }
         }
         applyExplicitInitialGuesses();
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
-        if (d_p == 2)
-            setStraightLinePearson(d_x, d_y);
+        if (d_p == 2) {
+            std::vector<double> xAct, yAct;
+            collectActiveXY(d_x, d_y, weightsVec, xAct, yAct);
+            setStraightLinePearson(xAct, yAct);
+        }
     } else {
-        if (d_p == 2)
-            setStraightLinePearson(d_x, d_y);
-        const size_t n = d_x.size();
         const std::vector<double> weightsVec = computeWeightsVector();
-        d_y_errors.resize(n, 1.0);
-        for (size_t i = 0; i < n; ++i)
-            d_y_errors[i] = 1.0 / std::sqrt(std::max(weightsVec[i], 1e-300));
-
-        gsl_matrix *X = gsl_matrix_alloc(n, d_p);
-        gsl_vector *c = gsl_vector_alloc(d_p);
-
-        for (size_t i = 0; i < n; i++) {
-            double xpow = 1.0;
-            for (unsigned j = 0; j < d_p; j++) {
-                gsl_matrix_set(X, i, j, xpow);
-                xpow *= d_x[i];
-            }
+        applyWeightsToErrorVector(weightsVec);
+        if (d_p == 2) {
+            std::vector<double> xAct, yAct;
+            collectActiveXY(d_x, d_y, weightsVec, xAct, yAct);
+            setStraightLinePearson(xAct, yAct);
         }
 
-        gsl_vector_view y = gsl_vector_view_array(d_y.data(), n);
-        gsl_vector_const_view weights = gsl_vector_const_view_array(weightsVec.data(), n);
-        gsl_multifit_linear_workspace *work = gsl_multifit_linear_alloc(n, d_p);
-
-        gsl_multifit_wlinear(X, &weights.vector, &y.vector, c, covar, &chi_2, work);
-
-        for (unsigned i = 0; i < d_p; i++)
-            d_results[i] = gsl_vector_get(c, i);
-
-        gsl_multifit_linear_free(work);
-        gsl_matrix_free(X);
-        gsl_vector_free(c);
-
-        d_y_fit.resize(d_x.size());
-        for (size_t i = 0; i < d_x.size(); ++i) {
-            double yi = 0.0, xpow = 1.0;
-            for (unsigned j = 0; j < d_p; ++j) {
-                yi += d_results[j] * xpow;
-                xpow *= d_x[i];
-            }
-            d_y_fit[i] = yi;
-        }
+        CenteredPolyCache cache;
+        solveCenteredWeightedPolynomial(d_x, d_y, weightsVec, d_p, d_results, covar, chi_2,
+                                        &d_y_fit, &cache);
+        cache.apparent = false;
+        storeCenteredPolyCache(this, cache);
     }
 
     ApplicationWindow *app = (ApplicationWindow *)parent();
@@ -620,6 +976,7 @@ LinearFit::LinearFit(ApplicationWindow *parent, Graph *g, const QString &curveTi
 
 LinearFit::~LinearFit()
 {
+    eraseCenteredPolyCache(this);
     if (!is_non_linear && d_param_init) {
         gsl_vector_free(d_param_init);
         d_param_init = nullptr;
@@ -655,16 +1012,7 @@ void LinearFit::fit()
     if (d_init_err)
         return;
 
-    int minNeeded = std::max(1, effectiveFreeParameters());
-    if (unsigned(minNeeded) > d_x.size()) {
-        if (!d_silent)
-            QMessageBox::critical(
-                    (ApplicationWindow *)parent(), tr("Fit Error"),
-                    tr("You need at least %1 data points for this fit operation. Operation aborted!")
-                            .arg(minNeeded));
-        return;
-    }
-
+    eraseCenteredPolyCache(this);
     d_result_errors.clear();
     d_has_custom_r2 = false;
     d_has_custom_rss = false;
@@ -675,6 +1023,22 @@ void LinearFit::fit()
     d_straight_line_fit = false;
     d_convergence = Converged;
     d_fit_notes.clear();
+
+    const int minNeeded = std::max(1, effectiveFreeParameters());
+    const int nActive = effectivePointCount();
+    if (minNeeded > nActive) {
+        chi_2 = -1.0;
+        d_y_fit.clear();
+        d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+        if (!isNonInteractivePolyFit(parent(), d_silent))
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("Fit Error"),
+                    tr("You need at least %1 valid data points (with positive weight) for this fit operation. "
+                       "Operation aborted!")
+                            .arg(minNeeded));
+        return;
+    }
+
     int xAx = d_curve ? d_curve->xAxis() : QwtPlot::xBottom;
     int yAx = d_curve ? d_curve->yAxis() : QwtPlot::yLeft;
     d_app_log_x = d_apparent_fit && isGraphAxisLog10(d_graph, xAx);
@@ -699,42 +1063,136 @@ void LinearFit::fit()
                               "from the log-space fit.")
                                    .arg(logData.excludedWeightCount)
                                    .arg(int(d_x.size()));
-        if (logData.xt.size() < 2) {
+        const int effFree = effectiveFreeParameters();
+        const int minLogNeeded = std::max(1, effFree);
+        if (logData.xt.size() < size_t(minLogNeeded)) {
             chi_2 = -1.0;
             d_y_fit.clear();
             d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
-            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, 2,
+            reportApparentFitShortage(this, (ApplicationWindow *)parent(), d_silent, minLogNeeded,
                                       int(logData.xt.size()));
             return;
         }
-        d_has_custom_dof = true;
-        d_custom_n_points = int(logData.xt.size());
-        d_custom_p_free = 2;
         setStraightLinePearson(logData.xt, logData.yt);
 
-        double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
-        gsl_fit_wlinear(logData.xt.data(), 1, logData.wt.data(), 1, logData.yt.data(), 1,
-                        logData.xt.size(), &c0, &c1, &cov00, &cov01, &cov11, &chi_2);
+        if (hasActiveConstraints()) {
+            // Honor fixed parameters, bounds, and linear constraints inside apparent log-space fit
+            if (logData.xt.size() >= 2) {
+                double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, tmpChi2 = 0.0;
+                gsl_fit_wlinear(logData.xt.data(), 1, logData.wt.data(), 1, logData.yt.data(), 1,
+                                logData.xt.size(), &c0, &c1, &cov00, &cov01, &cov11, &tmpChi2);
+                if (!d_all_guesses_set && !d_explicit_init_vals.contains(0))
+                    gsl_vector_set(d_param_init, 0, c0);
+                if (!d_all_guesses_set && !d_explicit_init_vals.contains(1))
+                    gsl_vector_set(d_param_init, 1, c1);
+            }
+            applyExplicitInitialGuesses();
 
-        d_results[0] = c0;
-        d_results[1] = c1;
-        gsl_matrix_set(covar, 0, 0, cov00);
-        gsl_matrix_set(covar, 0, 1, cov01);
-        gsl_matrix_set(covar, 1, 1, cov11);
-        gsl_matrix_set(covar, 1, 0, cov01);
+            const std::vector<double> savedX = d_x;
+            const std::vector<double> savedY = d_y;
+            const std::vector<double> savedYErr = d_y_errors;
+            const std::vector<double> savedRawW = d_raw_weights;
+            const std::vector<double> savedRawYErr = d_raw_y_errors;
+            const WeightingMethod savedWMethod = d_weighting_method;
+            const ErrorSource savedErrSrc = d_y_error_source;
+            const bool savedAppLogX = d_app_log_x;
+            const bool savedAppLogY = d_app_log_y;
 
-        std::vector<double> yfit_t(logData.xt.size());
-        for (size_t i = 0; i < logData.xt.size(); ++i)
-            yfit_t[i] = c0 + c1 * logData.xt[i];
-        d_has_custom_r2 = true;
-        d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
-        populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit, d_has_custom_rss,
-                                      d_custom_rss);
+            d_x = logData.xt;
+            d_y = logData.yt;
+            d_app_log_x = false;
+            d_app_log_y = false;
+            if (isWeighted) {
+                d_weighting_method = WeightDirect;
+                d_y_error_source = CustomErrors;
+                d_raw_weights = logData.wt;
+                d_raw_y_errors.clear();
+                applyWeightsToErrorVector(logData.wt);
+            } else {
+                d_weighting_method = WeightNone;
+                d_y_error_source = UnknownErrors;
+                d_raw_weights.clear();
+                d_raw_y_errors.clear();
+                d_y_errors.assign(logData.xt.size(), 1.0);
+            }
+
+            int iterations = 0, status = GSL_SUCCESS;
+            d_results = fitGslMultifit(iterations, status);
+            const std::vector<double> yfit_t = d_y_fit;
+
+            d_x = savedX;
+            d_y = savedY;
+            d_y_errors = savedYErr;
+            d_raw_weights = savedRawW;
+            d_raw_y_errors = savedRawYErr;
+            d_weighting_method = savedWMethod;
+            d_y_error_source = savedErrSrc;
+            d_app_log_x = savedAppLogX;
+            d_app_log_y = savedAppLogY;
+
+            if (status == GSL_SUCCESS && std::isfinite(chi_2) && chi_2 >= 0.0
+                && yfit_t.size() == logData.xt.size()) {
+                d_has_custom_dof = true;
+                d_custom_n_points = int(logData.xt.size());
+                d_custom_p_free = effFree;
+                d_has_custom_r2 = true;
+                d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+                populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit,
+                                              d_has_custom_rss, d_custom_rss);
+            } else {
+                chi_2 = -1.0;
+                d_y_fit.clear();
+                d_results.assign(d_p, std::numeric_limits<double>::quiet_NaN());
+                return;
+            }
+        } else {
+            d_has_custom_dof = true;
+            d_custom_n_points = int(logData.xt.size());
+            d_custom_p_free = 2;
+
+            double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
+            gsl_fit_wlinear(logData.xt.data(), 1, logData.wt.data(), 1, logData.yt.data(), 1,
+                            logData.xt.size(), &c0, &c1, &cov00, &cov01, &cov11, &chi_2);
+
+            d_results[0] = c0;
+            d_results[1] = c1;
+            gsl_matrix_set(covar, 0, 0, cov00);
+            gsl_matrix_set(covar, 0, 1, cov01);
+            gsl_matrix_set(covar, 1, 1, cov11);
+            gsl_matrix_set(covar, 1, 0, cov01);
+
+            double wmX = 0.0, wmY = 0.0;
+            const bool hasMean = computeWeightedMeanXY(logData.xt, logData.yt, logData.wt, wmX, wmY)
+                    && std::isfinite(c0) && std::isfinite(c1);
+            if (hasMean) {
+                CenteredPolyCache cache;
+                cache.xMean = static_cast<long double>(wmX);
+                cache.xScale = 1.0L;
+                cache.cU = { wmY, c1 };
+                cache.coeffsX = d_results;
+                cache.apparent = true;
+                storeCenteredPolyCache(this, cache);
+            }
+
+            std::vector<double> yfit_t(logData.xt.size());
+            if (hasMean) {
+                for (size_t i = 0; i < logData.xt.size(); ++i)
+                    yfit_t[i] = wmY + c1 * (logData.xt[i] - wmX);
+            } else {
+                for (size_t i = 0; i < logData.xt.size(); ++i)
+                    yfit_t[i] = evalPolyHornerLD(d_results, 2, logData.xt[i]);
+            }
+            d_has_custom_r2 = true;
+            d_custom_r2 = computeTransformedR2(logData.yt, yfit_t);
+            populateApparentLogFitOutputs(logData, d_y, d_app_log_y, yfit_t, d_y_fit,
+                                          d_has_custom_rss, d_custom_rss);
+        }
     } else if (hasActiveConstraints()) {
-        if (d_x.size() >= 2) {
+        const std::vector<double> weights = computeWeightsVector();
+        if (nActive >= 2) {
             double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0, tmpChi2 = 0.0;
-            gsl_fit_linear(d_x.data(), 1, d_y.data(), 1, d_x.size(), &c0, &c1, &cov00, &cov01,
-                           &cov11, &tmpChi2);
+            gsl_fit_wlinear(d_x.data(), 1, weights.data(), 1, d_y.data(), 1, d_x.size(), &c0, &c1,
+                            &cov00, &cov01, &cov11, &tmpChi2);
             if (!d_all_guesses_set && !d_explicit_init_vals.contains(0))
                 gsl_vector_set(d_param_init, 0, c0);
             if (!d_all_guesses_set && !d_explicit_init_vals.contains(1))
@@ -743,15 +1201,17 @@ void LinearFit::fit()
         applyExplicitInitialGuesses();
         int iterations = 0, status = GSL_SUCCESS;
         d_results = fitGslMultifit(iterations, status);
-        setStraightLinePearson(d_x, d_y);
+        std::vector<double> xAct, yAct;
+        collectActiveXY(d_x, d_y, weights, xAct, yAct);
+        setStraightLinePearson(xAct, yAct);
     } else {
-        setStraightLinePearson(d_x, d_y);
         double c0 = 0.0, c1 = 0.0, cov00 = 0.0, cov01 = 0.0, cov11 = 0.0;
         const size_t n = d_x.size();
         const std::vector<double> weights = computeWeightsVector();
-        d_y_errors.resize(n, 1.0);
-        for (size_t i = 0; i < n; ++i)
-            d_y_errors[i] = 1.0 / std::sqrt(std::max(weights[i], 1e-300));
+        applyWeightsToErrorVector(weights);
+        std::vector<double> xAct, yAct;
+        collectActiveXY(d_x, d_y, weights, xAct, yAct);
+        setStraightLinePearson(xAct, yAct);
 
         gsl_fit_wlinear(d_x.data(), 1, weights.data(), 1, d_y.data(), 1, n, &c0, &c1, &cov00,
                         &cov01, &cov11, &chi_2);
@@ -764,9 +1224,27 @@ void LinearFit::fit()
         gsl_matrix_set(covar, 1, 1, cov11);
         gsl_matrix_set(covar, 1, 0, cov01);
 
+        double wmX = 0.0, wmY = 0.0;
+        const bool hasMean = computeWeightedMeanXY(d_x, d_y, weights, wmX, wmY)
+                && std::isfinite(c0) && std::isfinite(c1);
+        if (hasMean) {
+            CenteredPolyCache cache;
+            cache.xMean = static_cast<long double>(wmX);
+            cache.xScale = 1.0L;
+            cache.cU = { wmY, c1 };
+            cache.coeffsX = d_results;
+            cache.apparent = false;
+            storeCenteredPolyCache(this, cache);
+        }
+
         d_y_fit.resize(d_x.size());
-        for (size_t i = 0; i < d_x.size(); ++i)
-            d_y_fit[i] = c0 + c1 * d_x[i];
+        if (hasMean) {
+            for (size_t i = 0; i < d_x.size(); ++i)
+                d_y_fit[i] = wmY + c1 * (d_x[i] - wmX);
+        } else {
+            for (size_t i = 0; i < d_x.size(); ++i)
+                d_y_fit[i] = evalPolyHornerLD(d_results, 2, d_x[i]);
+        }
     }
 
     ApplicationWindow *app = (ApplicationWindow *)parent();
@@ -784,6 +1262,8 @@ bool LinearFit::fitWithXYErrors(const QString &xErrColName, const QString &yErrC
 {
     if (d_init_err || d_x.size() < 2 || d_y.size() != d_x.size())
         return false;
+
+    eraseCenteredPolyCache(this);
 
     const size_t n = d_x.size();
     ApplicationWindow *app = (ApplicationWindow *)parent();
@@ -1151,15 +1631,26 @@ bool LinearFit::calculateFitCurveData(const vector<double> &par, std::vector<dou
     if (par.size() < 2)
         return false;
 
-    if (d_apparent_fit && (d_app_log_x || d_app_log_y)) {
+    CenteredPolyCache cache;
+    const bool hasCache = loadCenteredPolyCache(this, cache);
+    const bool isApparent = d_apparent_fit && (d_app_log_x || d_app_log_y);
+    const CenteredPolyCache *useCache =
+            (hasCache && cache.apparent == isApparent && cache.coeffsX == d_results) ? &cache
+                                                                                     : nullptr;
+
+    if (isApparent) {
         if (!tryGenerateApparentLogX(d_x, d_gen_function, d_app_log_x, d_points, X))
             generateX(X);
-        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, 2, par, X, Y);
+        evaluateApparentPolyY(d_app_log_x, d_app_log_y, d_points, 2, par, X, Y, useCache);
         return true;
     }
 
     generateX(X);
-    for (int i = 0; i < d_points; i++)
-        Y[i] = par[0] + par[1] * X[i];
+    for (int i = 0; i < d_points; i++) {
+        double yi = 0.0;
+        if (!useCache || !evalWithCenteredCacheIfApplicable(*useCache, par, 2, X[i], yi))
+            yi = evalPolyHornerLD(par, 2, X[i]);
+        Y[i] = yi;
+    }
     return true;
 }

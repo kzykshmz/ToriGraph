@@ -322,52 +322,62 @@ void Matrix::pasteIntoSelection()
     int rows, cols;
 
     const QClipboard *clipboard = QApplication::clipboard();
-    const QMimeData *mimeData = clipboard->mimeData();
-    ;
-    if (mimeData->hasText()) {
-        QString input_str = QString(clipboard->text());
-        QList<QStringList> cell_texts;
-        QStringList input_rows(input_str.split(QRegExp("\\n|\\r\\n|\\r")));
-        input_row_count = input_rows.count();
-        input_col_count = 0;
-        for (int i = 0; i < input_row_count; i++) {
-            cell_texts.append(input_rows.at(i).split("\t"));
-            if (cell_texts.at(i).count() > input_col_count)
-                input_col_count = cell_texts.at(i).count();
-        }
+    const QMimeData *mimeData = clipboard ? clipboard->mimeData() : nullptr;
+    if (mimeData && mimeData->hasText()) {
+        QString input_str = clipboard->text();
+        while (input_str.endsWith(QLatin1Char('\n')) || input_str.endsWith(QLatin1Char('\r')))
+            input_str.chop(1);
+        if (!input_str.isEmpty()) {
+            QList<QStringList> cell_texts;
+            QStringList input_rows(input_str.split(QRegExp("\\r\\n|\\n|\\r")));
+            input_row_count = input_rows.count();
+            input_col_count = 0;
+            for (int i = 0; i < input_row_count; i++) {
+                cell_texts.append(input_rows.at(i).split("\t"));
+                if (cell_texts.at(i).count() > input_col_count)
+                    input_col_count = cell_texts.at(i).count();
+            }
 
-        if ((first_col == -1 || first_row == -1)
-            || (last_row == first_row && last_col == first_col))
-        // if the is no selection or only one cell selected, the
-        // selection will be expanded to the needed size from the current cell
-        {
-            int current_row, current_col;
-            d_view->getCurrentCell(&current_row, &current_col);
-            if (current_row == -1)
-                current_row = 0;
-            if (current_col == -1)
-                current_col = 0;
-            d_view->setCellSelected(current_row, current_col);
-            first_col = current_col;
-            first_row = current_row;
-            last_row = first_row + input_row_count - 1;
-            last_col = first_col + input_col_count - 1;
-            // resize the matrix if necessary
-            if (last_col >= columnCount())
-                appendColumns(last_col + 1 - columnCount());
-            if (last_row >= rowCount())
-                appendRows(last_row + 1 - rowCount());
-            // select the rectangle to be pasted in
-            d_view->setCellsSelected(first_row, first_col, last_row, last_col);
-        }
+            if ((first_col == -1 || first_row == -1)
+                || (last_row == first_row && last_col == first_col))
+            // if the is no selection or only one cell selected, the
+            // selection will be expanded to the needed size from the current cell
+            {
+                int current_row, current_col;
+                d_view->getCurrentCell(&current_row, &current_col);
+                if (current_row == -1)
+                    current_row = 0;
+                if (current_col == -1)
+                    current_col = 0;
+                d_view->setCellSelected(current_row, current_col);
+                first_col = current_col;
+                first_row = current_row;
+                last_row = first_row + input_row_count - 1;
+                last_col = first_col + input_col_count - 1;
+                // resize the matrix if necessary
+                if (last_col >= columnCount())
+                    appendColumns(last_col + 1 - columnCount());
+                if (last_row >= rowCount())
+                    appendRows(last_row + 1 - rowCount());
+                // select the rectangle to be pasted in
+                d_view->setCellsSelected(first_row, first_col, last_row, last_col);
+            }
 
-        rows = last_row - first_row + 1;
-        cols = last_col - first_col + 1;
-        for (int r = 0; r < rows && r < input_row_count; r++) {
-            for (int c = 0; c < cols && c < input_col_count; c++) {
-                if (d_view->isCellSelected(first_row + r, first_col + c)
-                    && (c < cell_texts.at(r).count())) {
-                    setCell(first_row + r, first_col + c, cell_texts.at(r).at(c).toDouble());
+            rows = last_row - first_row + 1;
+            cols = last_col - first_col + 1;
+            const QLocale loc;
+            const QLocale cLoc = QLocale::c();
+            for (int r = 0; r < rows && r < input_row_count; r++) {
+                for (int c = 0; c < cols && c < input_col_count; c++) {
+                    if (d_view->isCellSelected(first_row + r, first_col + c)
+                        && (c < cell_texts.at(r).count())) {
+                        const QString token = cell_texts.at(r).at(c).trimmed();
+                        bool ok = false;
+                        double val = loc.toDouble(token, &ok);
+                        if (!ok)
+                            val = cLoc.toDouble(token, &ok);
+                        setCell(first_row + r, first_col + c, ok ? val : 0.0);
+                    }
                 }
             }
         }
@@ -1108,7 +1118,7 @@ void Matrix::addColumns()
     if (!d_view)
         return;
     WAIT_CURSOR;
-    int count = d_view->selectedRowCount(false);
+    int count = d_view->selectedColumnCount(false);
     beginMacro(QObject::tr("%1: add %2 column(s)").arg(name()).arg(count));
     exec(new MatrixInsertColumnsCmd(d_matrix_private, columnCount(), count));
     endMacro();
@@ -1280,7 +1290,19 @@ bool Matrix::load(XmlStreamReader *reader)
             reader->raiseError(tr("invalid row or column count"));
             return false;
         }
-        d_matrix_private->blockChangeSignals(true);
+        struct ScopedBlockChangeSignals {
+            Matrix::Private *priv;
+            explicit ScopedBlockChangeSignals(Matrix::Private *p) : priv(p)
+            {
+                if (priv)
+                    priv->blockChangeSignals(true);
+            }
+            ~ScopedBlockChangeSignals()
+            {
+                if (priv)
+                    priv->blockChangeSignals(false);
+            }
+        } signalGuard(d_matrix_private);
         setDimensions(rows, cols);
 
         // read child elements
@@ -1316,7 +1338,6 @@ bool Matrix::load(XmlStreamReader *reader)
                     return false;
             }
         }
-        d_matrix_private->blockChangeSignals(false);
     } else // no matrix element
         reader->raiseError(tr("no matrix element found"));
 
@@ -1539,18 +1560,21 @@ void Matrix::setCells(
         const int startRow, const int startCol,
                       const std::vector<std::vector<std::pair<double, bool>>> &values)
 {
+    if (values.empty() || startRow < 0 || startCol < 0)
+        return;
+    const auto maxRowIt = std::max_element(
+            values.cbegin(), values.cend(),
+            [](const std::vector<std::pair<double, bool>> &a,
+               const std::vector<std::pair<double, bool>> &b) {
+                return a.size() < b.size();
+            });
+    if (maxRowIt->empty())
+        return;
     WAIT_CURSOR;
-    auto lastRow = startRow + values.size() - 1;
-    auto lastCol = startCol
-            + std::max_element(values.cbegin(), values.cend(),
-                               [](const std::vector<std::pair<double, bool>> &a,
-                                  const std::vector<std::pair<double, bool>> &b) {
-                                   return a.size() > b.size();
-                               })
-                      ->size() - 1;
+    auto lastRow = startRow + static_cast<int>(values.size()) - 1;
+    auto lastCol = startCol + static_cast<int>(maxRowIt->size()) - 1;
     exec(new MatrixSetCellsCmd(d_matrix_private, startRow, lastRow, startCol, lastCol, values));
     RESET_CURSOR;
-
 }
 
 void Matrix::mirrorHorizontally()
@@ -1861,8 +1885,8 @@ std::vector<std::vector<std::pair<double, bool>>> Matrix::Private::getCells(cons
                                                                             const int startCol,
                                                                             const int endCol) const
 {
-    if (startRow > endRow || startCol > endCol || startCol < 0 || endCol > columnCount()
-        || startRow < 0 || endRow > rowCount())
+    if (startRow > endRow || startCol > endCol || startCol < 0 || endCol >= columnCount()
+        || startRow < 0 || endRow >= rowCount())
         return std::vector<std::vector<std::pair<double, bool>>>();
 
     std::pair<double, bool> invalidValue(std::numeric_limits<double>::quiet_NaN(), false);
@@ -1878,24 +1902,37 @@ std::vector<std::vector<std::pair<double, bool>>> Matrix::Private::getCells(cons
 void Matrix::Private::setCells(const int startRow, const int startCol,
                                const std::vector<std::vector<std::pair<double, bool>>> &values)
 {
+    if (values.empty() || startRow < 0 || startCol < 0)
+        return;
+    const auto maxRowIt = std::max_element(
+            values.cbegin(), values.cend(),
+            [](const std::vector<std::pair<double, bool>> &a,
+               const std::vector<std::pair<double, bool>> &b) {
+                return a.size() < b.size();
+            });
+    if (maxRowIt->empty())
+        return;
     blockChangeSignals(true);
     for (size_t ii = 0u; values.size() > ii; ++ii) {
-        const auto &column = values[ii];
-        for (size_t jj = 0u; column.size() > jj; ++jj) {
-            const auto &pair = column[jj];
+        const auto &row = values[ii];
+        const int r = startRow + static_cast<int>(ii);
+        if (r < 0 || r >= rowCount())
+            continue;
+        for (size_t jj = 0u; row.size() > jj; ++jj) {
+            const auto &pair = row[jj];
             if (!pair.second)
                 continue;
-            setCell(startRow + ii, startCol + jj, pair.first);
+            const int c = startCol + static_cast<int>(jj);
+            if (c < 0 || c >= columnCount())
+                continue;
+            setCell(r, c, pair.first);
         }
     }
     blockChangeSignals(false);
-    auto endRow = startRow + values.size() - 1;
-    auto endCol = startCol + std::max_element(
-            values.cbegin(), values.cend(),
-            [](const std::vector<std::pair<double, bool>> &a,
-               const std::vector<std::pair<double, bool>> &b) 
-			{ return a.size() > b.size();})->size() - 1;
-    emit d_owner->dataChanged(startRow, startCol, endRow, endCol);
+    auto endRow = std::min(rowCount() - 1, startRow + static_cast<int>(values.size()) - 1);
+    auto endCol = std::min(columnCount() - 1, startCol + static_cast<int>(maxRowIt->size()) - 1);
+    if (endRow >= startRow && endCol >= startCol)
+        emit d_owner->dataChanged(startRow, startCol, endRow, endCol);
 }
 
 } // namespace

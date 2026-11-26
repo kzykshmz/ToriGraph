@@ -133,7 +133,7 @@ extern "C" MY_EXPORT int function_df(const gsl_vector *x, void *params, gsl_matr
         double s = sigma[i];
         double t = X[i];
         double e = 1 / (1 + a * t);
-        gsl_matrix_set(J, i, 0, -e * e * a * (b + c * t) / s);
+        gsl_matrix_set(J, i, 0, -e * e * t * (b + c * t) / s);
         gsl_matrix_set(J, i, 1, e / s);
         gsl_matrix_set(J, i, 2, e * t / s);
     }

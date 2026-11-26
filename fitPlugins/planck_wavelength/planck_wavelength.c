@@ -72,8 +72,12 @@ int function_df(const gsl_vector * params, void * void_data, gsl_matrix *J)
 	size_t i;
 	for (i=0; i<d->n; i++) {
 		double x = d->X[i];
-		gsl_matrix_set(J, i, 0, 1.0/(pow(x,5)*(exp(b/x)-1.0)));
-		gsl_matrix_set(J, i, 1, a/(pow(x,3)*pow(exp(b/x)-1, 2)*exp(b/x)*b));
+		double s = d->sigma[i];
+		double E = exp(b/x);
+		double D = E - 1.0;
+		double x5 = pow(x, 5);
+		gsl_matrix_set(J, i, 0, (1.0 / (x5 * D)) / s);
+		gsl_matrix_set(J, i, 1, (-a * (E / D) / (x5 * x * D)) / s);
 	}
 	return GSL_SUCCESS;
 }

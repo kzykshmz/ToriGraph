@@ -38,6 +38,7 @@
 #include <QtDebug>
 
 #include <algorithm>
+#include <limits>
 
 namespace {
 //! The intervals sorted by their start, overlapping and touching ones merged (invalid ones
@@ -166,8 +167,7 @@ void Column::setColumnMode(SciDAVis::ColumnMode mode, AbstractFilter *conversion
 
 bool Column::copy(const AbstractColumn *other)
 {
-    Q_CHECK_PTR(other);
-    if (other->dataType() != dataType())
+    if (!other || other->dataType() != dataType())
         return false;
     const Column *srcCol = qobject_cast<const Column *>(other);
     if (!srcCol || srcCol == this) {
@@ -189,12 +189,14 @@ bool Column::copy(const AbstractColumn *other)
 
 bool Column::copy(const AbstractColumn *source, int source_start, int dest_start, int num_rows)
 {
-    Q_CHECK_PTR(source);
-    if (source->dataType() != dataType())
+    if (!source || source->dataType() != dataType() || source_start < 0 || dest_start < 0
+        || num_rows < 0 || source_start > std::numeric_limits<int>::max() - num_rows
+        || dest_start > std::numeric_limits<int>::max() - num_rows)
         return false;
+    if (num_rows == 0)
+        return true;
     const Column *srcCol = qobject_cast<const Column *>(source);
-    if (!srcCol || num_rows <= 0 || source_start < 0 || dest_start < 0
-        || (srcCol == this && source_start == dest_start)) {
+    if (!srcCol || (srcCol == this && source_start == dest_start)) {
         exec(new ColumnPartialCopyCmd(d_column_private, source, source_start, dest_start, num_rows));
         return true;
     }
@@ -1056,24 +1058,24 @@ void ColumnStringIO::setTextAt(int row, const QString &value)
 
 bool ColumnStringIO::copy(const AbstractColumn *other)
 {
-    if (other->columnMode() != SciDAVis::ColumnMode::Text)
+    if (!other || other->columnMode() != SciDAVis::ColumnMode::Text)
         return false;
     d_owner->d_column_private->inputFilter()->input(0, other);
-    d_owner->copy(d_owner->d_column_private->inputFilter()->output(0));
+    const bool ok = d_owner->copy(d_owner->d_column_private->inputFilter()->output(0));
     d_owner->d_column_private->inputFilter()->input(0, this);
-    return true;
+    return ok;
 }
 
 bool ColumnStringIO::copy(const AbstractColumn *source, int source_start, int dest_start,
                           int num_rows)
 {
-    if (source->columnMode() != SciDAVis::ColumnMode::Text)
+    if (!source || source->columnMode() != SciDAVis::ColumnMode::Text)
         return false;
     d_owner->d_column_private->inputFilter()->input(0, source);
-    d_owner->copy(d_owner->d_column_private->inputFilter()->output(0), source_start, dest_start,
-                  num_rows);
+    const bool ok = d_owner->copy(d_owner->d_column_private->inputFilter()->output(0), source_start,
+                                  dest_start, num_rows);
     d_owner->d_column_private->inputFilter()->input(0, this);
-    return true;
+    return ok;
 }
 
 void ColumnStringIO::replaceTexts(int start_row, const QStringList &texts)

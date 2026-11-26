@@ -2369,6 +2369,8 @@ bool Graph::applyTemplateCurveStyle(int curveIndex, int styleIndex)
                             || st.curveType == VerticalDropLines);
         if (curXY && tplXY) {
             c_type[curveIndex] = st.curveType;
+            cv->setCurveAttribute(QwtPlotCurve::Fitted, false);
+            cv->setCurveAttribute(QwtPlotCurve::Inverted, false);
             switch (st.curveType) {
             case Scatter:
                 cv->setStyle(QwtPlotCurve::NoCurve);
@@ -2378,11 +2380,11 @@ bool Graph::applyTemplateCurveStyle(int curveIndex, int styleIndex)
                 break;
             case VerticalSteps:
                 cv->setStyle(QwtPlotCurve::Steps);
-                cv->setCurveAttribute(QwtPlotCurve::Inverted, false);
+                cv->setCurveAttribute(QwtPlotCurve::Inverted, true);
                 break;
             case HorizontalSteps:
                 cv->setStyle(QwtPlotCurve::Steps);
-                cv->setCurveAttribute(QwtPlotCurve::Inverted, true);
+                cv->setCurveAttribute(QwtPlotCurve::Inverted, false);
                 break;
             case Spline:
                 cv->setStyle(QwtPlotCurve::Lines);
@@ -2390,7 +2392,6 @@ bool Graph::applyTemplateCurveStyle(int curveIndex, int styleIndex)
                 break;
             default:
                 cv->setStyle(QwtPlotCurve::Lines);
-                cv->setCurveAttribute(QwtPlotCurve::Fitted, false);
                 break;
             }
         }

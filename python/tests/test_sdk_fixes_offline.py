@@ -446,8 +446,11 @@ def test_reconnect_reresolves_tcp_auth_token(
 ) -> None:
     """Reconnecting a tokenless TCP session re-reads the updated token file instead of reusing stale auth."""
     monkeypatch.delenv("TORIGRAPH_RPC_TOKEN", raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setattr(tg_client.os, "name", "nt")
+    if tg_client.os.name == "nt":
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    else:
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "local"))
     token_dir = tmp_path / "local" / "ToriGraph" / "rpc"
     token_dir.mkdir(parents=True)
     token_file = token_dir / "tcp_45123.token"
@@ -643,3 +646,88 @@ def test_overlay_grid_and_cell_shrink_helpers() -> None:
     assert w_e <= cell[2] and h_e <= cell[3] and w_e == h_e == 200_000
     assert l_e == 1000 + 50_000 and t_e == 2000
     assert orig == (round(400_000 / tg_pptx.EMU_PER_CM, 2),) * 2
+
+
+def test_fit_nonlinear_fixed_dict_str_and_list() -> None:
+    t = MockTransport([_ok({"ok": True}), _ok({"ok": True}), _ok({"ok": True})])
+    s = Session(t)
+    s.fit_nonlinear(model="Gauss", fixed={"y0": True, "xc": 0})
+    s.fit_nonlinear(model="Gauss", fixed="y0")
+    s.fit_nonlinear(model="Gauss", fixed=["y0", "xc"])
+    assert t.sent[0][0]["params"]["fixed"] == {"y0": True, "xc": False}
+    assert t.sent[1][0]["params"]["fixed"] == ["y0"]
+    assert t.sent[2][0]["params"]["fixed"] == ["y0", "xc"]
+
+
+def test_graph_move_curve_named_curve_to_int_index() -> None:
+    t = MockTransport([_ok({"ok": True}), _ok({"ok": True}), _ok({"ok": True}), _ok({"ok": True})])
+    s = Session(t)
+    g = s.graph("Graph1")
+    g.move_curve("Table1_Y2", to_index=0)
+    g.move_curve("Table1_Y2", 0)
+    g.move_curve(1, 0)
+    g.move_curve("Table1_Y2", "top")
+    assert t.sent[0][0]["params"] == {"graph": "Graph1", "curve": "Table1_Y2", "to_index": 0}
+    assert t.sent[1][0]["params"] == {"graph": "Graph1", "curve": "Table1_Y2", "to_index": 0}
+    assert t.sent[2][0]["params"] == {"graph": "Graph1", "from_index": 1, "to_index": 0}
+    assert t.sent[3][0]["params"] == {"graph": "Graph1", "curve": "Table1_Y2", "direction": "top"}
+
+
+def test_workbook_proxy_batch_registration_and_sanitize() -> None:
+    t = MockTransport(
+        [
+            _ok(
+                {
+                    "ok": True,
+                    "completed": 3,
+                    "total": 3,
+                    "rolled_back": False,
+                    "results": [
+                        {"ok": True, "name": "Book1"},
+                        {"ok": True, "name": "Specimens"},
+                        {"ok": True, "table": "Specimens_S2"},
+                    ],
+                }
+            )
+        ]
+    )
+    s = Session(t)
+    with s.batch():
+        wb = s.new_workbook("Book1")
+        wb.rename("Specimens")
+        sh = wb.add_sheet("S2")
+    assert wb.name == "Specimens"
+    assert sh.name == "Specimens_S2"
+    cmds = t.sent[0][0]["params"]["commands"]
+    assert cmds[1]["params"]["book"] == "$steps[0].name"
+    assert cmds[2]["params"]["book"] == "$steps[1].name"
+    assert tg_client._sanitize_for_json({"wb": wb}) == {"wb": "Specimens"}
+
+
+def test_single_str_and_int_column_coercion() -> None:
+    t = MockTransport([_ok({"ok": True}) for _ in range(11)])
+    s = Session(t)
+    s.clustering("T1", "ColA", k=2)
+    s.clustering("T1", 0, k=2)
+    s.fit_mlr("T1", "ColX", "ColY")
+    s.fit_logistic("T1", y_col="Resp", x_cols="Dose")
+    s.batch_peaks("T1", "TwoTheta", "Sample1")
+    s.average_curves("G1", curves="CurveA")
+    s.anova_oneway("T1", "GroupA")
+    s.nonparametric("T1", "GroupA")
+    s.pca("T1", "FeatA")
+    s.correlation("T1", "FeatA")
+    s.clustering("T1", ["ColA", "ColB"], k=2)
+
+    assert t.sent[0][0]["params"]["cols"] == ["ColA"]
+    assert t.sent[1][0]["params"]["cols"] == [0]
+    assert t.sent[2][0]["params"]["x_cols"] == ["ColX"]
+    assert t.sent[3][0]["params"]["x_cols"] == ["Dose"]
+    assert t.sent[4][0]["params"]["y_cols"] == ["Sample1"]
+    assert t.sent[5][0]["params"]["curves"] == ["CurveA"]
+    assert t.sent[6][0]["params"]["cols"] == ["GroupA"]
+    assert t.sent[7][0]["params"]["cols"] == ["GroupA"]
+    assert t.sent[8][0]["params"]["cols"] == ["FeatA"]
+    assert t.sent[9][0]["params"]["cols"] == ["FeatA"]
+    assert t.sent[10][0]["params"]["cols"] == ["ColA", "ColB"]
+

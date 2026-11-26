@@ -42,6 +42,13 @@ public:
     ExponentialFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                    double end, bool expGrowth = false);
 
+protected:
+    bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,
+                            std::vector<double> &Y) override;
+    double toInternalParameter(int index, double userVal) const override;
+    double fromInternalParameter(int index, double internalVal) const override;
+    double covarSolverToStoredScale(int parIndex, double solverVal) const override;
+
 private:
     void init();
     void storeCustomFitResults(const std::vector<double> &) override;
@@ -61,6 +68,13 @@ public:
     TwoExpFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
               double end);
 
+protected:
+    bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,
+                            std::vector<double> &Y) override;
+    double toInternalParameter(int index, double userVal) const override;
+    double fromInternalParameter(int index, double internalVal) const override;
+    double covarSolverToStoredScale(int parIndex, double solverVal) const override;
+
 private:
     void init();
     void storeCustomFitResults(const std::vector<double> &) override;
@@ -77,6 +91,13 @@ public:
     ThreeExpFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle);
     ThreeExpFit(ApplicationWindow *parent, Graph *g, const QString &curveTitle, double start,
                 double end);
+
+protected:
+    bool evaluateModelCurve(const std::vector<double> &solverPar, std::vector<double> &X,
+                            std::vector<double> &Y) override;
+    double toInternalParameter(int index, double userVal) const override;
+    double fromInternalParameter(int index, double internalVal) const override;
+    double covarSolverToStoredScale(int parIndex, double solverVal) const override;
 
 private:
     void init();

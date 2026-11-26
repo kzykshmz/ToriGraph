@@ -498,7 +498,15 @@ void LayerDialog::enableLayoutOptions(bool ok)
 
 void LayerDialog::setMultiLayer(MultiLayer *g)
 {
+    if (!g)
+        return;
+    if (multi_layer)
+        disconnect(multi_layer, &QObject::destroyed, this, nullptr);
     multi_layer = g;
+    connect(multi_layer, &QObject::destroyed, this, [this]() {
+        multi_layer = nullptr;
+        reject();
+    });
     userEditedGeo = false;
 
     layersBox->setValue(g->layers());
@@ -682,9 +690,12 @@ int LayerDialog::gridCellLayerCount(int layerCount) const
 
 void LayerDialog::update()
 {
+    QPointer<LayerDialog> self(this);
     setProperty("lastUpdateAborted", false);
-    if (!multi_layer)
+    if (!multi_layer) {
+        setProperty("lastUpdateAborted", true);
         return;
+    }
 
     int graphs = layersBox->value();
     int cols = boxX->value();
@@ -701,6 +712,8 @@ void LayerDialog::update()
                                  tr("The number of columns you've entered is greater than the "
                                     "number of graphs (%1)!")
                                          .arg(cellLayers));
+            if (!self)
+                return;
             boxX->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
@@ -711,6 +724,8 @@ void LayerDialog::update()
                                  tr("The number of rows you've entered is greater than the number "
                                     "of graphs (%1)!")
                                          .arg(cellLayers));
+            if (!self)
+                return;
             boxY->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
@@ -724,6 +739,8 @@ void LayerDialog::update()
                                          .arg(rows)
                                          .arg(rows * cols)
                                          .arg(cellLayers));
+            if (!self)
+                return;
             boxX->setFocus();
             setProperty("lastUpdateAborted", true);
             return;
@@ -753,6 +770,8 @@ void LayerDialog::update()
                             .arg(dn)
                             .arg(totalItemsToDelete),
                     QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (!self)
+                return;
             if (ans != QMessageBox::Yes) {
                 QSignalBlocker b(layersBox);
                 layersBox->setValue(old_graphs);
@@ -760,6 +779,11 @@ void LayerDialog::update()
                 return;
             }
         }
+    }
+
+    if (!multi_layer) {
+        setProperty("lastUpdateAborted", true);
+        return;
     }
 
     QPointer<MultiLayer> mlGuard = multi_layer;
@@ -891,7 +915,10 @@ void LayerDialog::update()
 
 void LayerDialog::accept()
 {
+    QPointer<LayerDialog> self(this);
     update();
+    if (!self)
+        return;
     if (!property("lastUpdateAborted").toBool())
         QDialog::accept();
 }

@@ -795,16 +795,28 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     if (d_syncing_tree || !item || !d_target_ml)
         return;
 
+    // Extract all needed fields from `item` BEFORE flushing pending edits, because
+    // flushPendingAnnotationEdit() calls refreshObjectTree() -> d_object_tree->clear(),
+    // freeing every QTreeWidgetItem* including `item`.
+    const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
+    const auto kind =
+            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
+    const int primaryId = item->data(0, RolePrimaryId).toInt();
+    const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+
     // E5-2: flush any pending debounced edits before switching selection or layer.
-    if (d_annot_commit_timer && d_annot_commit_timer->isActive())
+    const bool flushedAnnot = d_annot_commit_timer && d_annot_commit_timer->isActive();
+    if (flushedAnnot)
         flushPendingAnnotationEdit();
     if (d_axis_title_timer && d_axis_title_timer->isActive())
         flushPendingAxisTitleEdit();
 
+    if (!d_target_ml)
+        return;
+
     if (GraphMiniToolbar *mt = GraphMiniToolbar::instance())
         mt->cancelScheduledAndHide();
 
-    const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
     if (layerOneBased >= 1) {
         if (Graph *targetG = d_target_ml->layer(layerOneBased)) {
             if (d_target_ml->activeGraph() != targetG)
@@ -813,10 +825,6 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
     }
 
     Graph *g = activeLayer();
-    const auto kind =
-            static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
-    const int primaryId = item->data(0, RolePrimaryId).toInt();
-    const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
 
     if (g && !isGroupHeader) {
         Graph::GraphSelection sel;
@@ -824,6 +832,9 @@ void GraphInspectorDock::onTreeItemClicked(QTreeWidgetItem *item, int)
         sel.primaryId = primaryId;
         g->setCurrentSelection(sel, false);
     }
+
+    if (flushedAnnot && !isGroupHeader)
+        refreshObjectTree();
 
     switch (kind) {
     case Graph::GraphSelection::Page:
@@ -882,12 +893,16 @@ void GraphInspectorDock::onTreeItemDoubleClicked(QTreeWidgetItem *item, int colu
         || ApplicationWindow::isNonInteractiveContext(d_app)) {
         return;
     }
-    onTreeItemClicked(item, column);
 
+    // Extract all needed fields from `item` BEFORE onTreeItemClicked(), which may flush
+    // pending edits and call refreshObjectTree() -> d_object_tree->clear(), freeing `item`.
     const auto kind =
             static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
     const int primaryId = item->data(0, RolePrimaryId).toInt();
     const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
+
+    onTreeItemClicked(item, column);
+
     QPointer<MultiLayer> safeMl(d_target_ml);
     QPointer<Graph> safeG(activeLayer());
     if (!ensureTargetMultiLayerActive(safeMl))
@@ -1072,11 +1087,10 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
     if (!item)
         return;
 
-    d_object_tree->setCurrentItem(item);
-    onTreeItemClicked(item, 0);
-
-    // E5-3: capture ONLY value-based descriptors + QPointer guards before menu.exec() —
-    // never capture raw QTreeWidgetItem* or raw Graph* across the nested event loop.
+    // E5-3: capture ONLY value-based descriptors + QPointer guards BEFORE onTreeItemClicked()
+    // (which may flush pending edits and call refreshObjectTree() -> d_object_tree->clear(),
+    // freeing `item`) and before menu.exec() — never dereference or capture raw
+    // QTreeWidgetItem* or raw Graph* afterward.
     const int layerOneBased = item->data(0, RoleLayerIndex).toInt();
     const auto kind =
             static_cast<Graph::GraphSelection::Kind>(item->data(0, RoleSelKind).toInt());
@@ -1084,6 +1098,9 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
     const bool isGroupHeader = item->data(0, RoleIsGroupHeader).toBool();
     const bool isCheckable = !isGroupHeader && (item->flags() & Qt::ItemIsUserCheckable);
     const bool isVis = isCheckable && (item->checkState(0) == Qt::Checked);
+
+    d_object_tree->setCurrentItem(item);
+    onTreeItemClicked(item, 0);
 
     QPointer<MultiLayer> safeMl(d_target_ml);
     QPointer<Graph> safeG(
@@ -1559,18 +1576,22 @@ void GraphInspectorDock::onGraphSelectionChanged(MultiLayer *page, Graph *layer,
         return;
 
     // E5-2: flush pending debounced text edits if selection moved away from the edited object.
-    if (d_annot_commit_timer && d_annot_commit_timer->isActive()
-        && (layer != d_annot_edit_layer.data()
-            || sel.kind != Graph::GraphSelection::TextAnnotation
-            || sel.primaryId != d_annot_edit_id)) {
-        flushPendingAnnotationEdit();
+    if (d_annot_commit_timer && d_annot_commit_timer->isActive()) {
+        const bool sameAnnotTarget = d_annot_edit_layer
+                && (layer == d_annot_edit_layer.data())
+                && (sel.kind == Graph::GraphSelection::TextAnnotation)
+                && (sel.primaryId == d_annot_edit_id);
+        if (!sameAnnotTarget)
+            flushPendingAnnotationEdit();
     }
-    if (d_axis_title_timer && d_axis_title_timer->isActive()
-        && (layer != d_axis_title_edit_layer.data()
-            || ((sel.kind == Graph::GraphSelection::Axis
-                 || sel.kind == Graph::GraphSelection::AxisTitle)
-                && qBound(0, sel.primaryId, 3) != d_axis_title_edit_axis))) {
-        flushPendingAxisTitleEdit();
+    if (d_axis_title_timer && d_axis_title_timer->isActive()) {
+        const bool sameAxisTarget = d_axis_title_edit_layer
+                && (layer == d_axis_title_edit_layer.data())
+                && (sel.kind == Graph::GraphSelection::Axis
+                    || sel.kind == Graph::GraphSelection::AxisTitle)
+                && (qBound(0, sel.primaryId, 3) == d_axis_title_edit_axis);
+        if (!sameAxisTarget)
+            flushPendingAxisTitleEdit();
     }
 
     if (layer && d_target_ml && d_target_ml->activeGraph() != layer)

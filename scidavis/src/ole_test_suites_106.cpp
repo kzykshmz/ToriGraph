@@ -1115,7 +1115,10 @@ int runSuite106NumericsRound3(ApplicationWindow *mw)
             struct QF
             {
                 bool conv = false;
-                double r2 = nan, xc = nan, fwhm = nan, amp = nan;
+                double r2 = std::numeric_limits<double>::quiet_NaN();
+                double xc = std::numeric_limits<double>::quiet_NaN();
+                double fwhm = std::numeric_limits<double>::quiet_NaN();
+                double amp = std::numeric_limits<double>::quiet_NaN();
             };
             auto quickGauss = [&](double sc) {
                 QF q;

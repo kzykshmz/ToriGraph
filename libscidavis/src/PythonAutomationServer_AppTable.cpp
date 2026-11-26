@@ -77,6 +77,7 @@
 #include "matrix/future_Matrix.h"
 #include "table/AsciiTableImportFilter.h"
 #include "table/future_Table.h"
+#include "core/Project.h"
 
 #ifdef Q_OS_WIN
 #include "EmfPaintDevice.h"
@@ -651,19 +652,28 @@ struct ScopedRpcUndoMacro
 //! Table::recalculateFormulaColumnsChecked instead, which touches no other worksheet.
 void recalcFormulaColumnsWithCycleCheck(const QVector<Table *> &tables)
 {
-    QVector<QPointer<Table>> quietlyEnabled;
+    QVector<QPointer<Table>> safeTables;
+    safeTables.reserve(tables.size());
     for (Table *t : tables) {
-        if (t && !t->autoRecalcFormulas() && t->d_future_table) {
-            t->d_future_table->setAutoRecalcFormulas(true);
-            quietlyEnabled.append(QPointer<Table>(t));
+        if (t)
+            safeTables.append(QPointer<Table>(t));
+    }
+
+    QVector<QPointer<Table>> quietlyEnabled;
+    for (const QPointer<Table> &tp : safeTables) {
+        if (Table *t = tp.data()) {
+            if (!t->autoRecalcFormulas() && t->d_future_table) {
+                t->d_future_table->setAutoRecalcFormulas(true);
+                quietlyEnabled.append(tp);
+            }
         }
     }
-    for (Table *t : tables) {
-        if (t)
+    for (const QPointer<Table> &tp : safeTables) {
+        if (Table *t = tp.data())
             t->setAutoRecalcFormulas(true);
     }
-    for (const QPointer<Table> &t : quietlyEnabled) {
-        if (t)
+    for (const QPointer<Table> &tp : quietlyEnabled) {
+        if (Table *t = tp.data())
             t->setAutoRecalcFormulas(false);
     }
 }
@@ -783,8 +793,10 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
         return;
     }
 
-    bool useText = (modeHint.compare(QStringLiteral("text"), Qt::CaseInsensitive) == 0);
-    if (!useText && modeHint.isEmpty()) {
+    const QString trimmedMode = modeHint.trimmed();
+    bool useText = (trimmedMode.compare(QStringLiteral("text"), Qt::CaseInsensitive) == 0
+                    || trimmedMode.compare(QStringLiteral("string"), Qt::CaseInsensitive) == 0);
+    if (!useText && trimmedMode.isEmpty()) {
         for (const QJsonValue &v : arr) {
             if (v.isString()) {
                 const QString s = v.toString().trimmed();
@@ -1591,6 +1603,21 @@ bool parseImportNumber(const QString &trimmed, bool decimalComma, double &out)
         out = deLoc.toDouble(trimmed, &ok);
         if (ok && std::isfinite(out))
             return true;
+        // European decimal-comma Fortran exponents (e.g. "3,50D-02", "-4,125d+01"):
+        // require a single comma with no dot anywhere, followed by a D/d exponent, and
+        // delegate final syntax/range checks to AsciiTableImportFilter::parseNumberToken.
+        const int commaPos = trimmed.indexOf(QLatin1Char(','));
+        if (commaPos >= 0 && trimmed.indexOf(QLatin1Char(','), commaPos + 1) < 0
+            && trimmed.indexOf(QLatin1Char('.')) < 0) {
+            const int dPos = trimmed.indexOf(QLatin1Char('D'), commaPos + 1);
+            const int ldPos = trimmed.indexOf(QLatin1Char('d'), commaPos + 1);
+            if (dPos > commaPos || ldPos > commaPos) {
+                QString normalized = trimmed;
+                normalized[commaPos] = QLatin1Char('.');
+                if (AsciiTableImportFilter::parseNumberToken(normalized, out))
+                    return true;
+            }
+        }
     }
     out = cLoc.toDouble(trimmed, &ok);
     if (ok && std::isfinite(out))
@@ -2756,7 +2783,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             return true;
         }
 
-        bool graphOnlyFastSnapshot = atomic && (bctx.recursionDepth == 0);
+        static bool s_atomicSnapshotHeld = false;
+        const bool ownsAtomicRollback = atomic && !s_atomicSnapshotHeld;
+        bool graphOnlyFastSnapshot = ownsAtomicRollback && (bctx.recursionDepth == 0);
         for (int i = 0; i < totalSteps; ++i) {
             if (!cmdsArr[i].isObject()) {
                 throwInvalidParams(
@@ -2775,20 +2804,140 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 throwInvalidParams(
                         QStringLiteral("app.batch step %1 'params' must be a JSON object.").arg(i));
             }
-            if (!(sm.startsWith(QStringLiteral("graph."))
-                  || sm.startsWith(QStringLiteral("gadget.")))
+            if (!sm.startsWith(QStringLiteral("graph."))
                 || sm == QStringLiteral("graph.merge_graphs")
                 || sm == QStringLiteral("graph.batch_clone")
                 || sm == QStringLiteral("graph.drop_columns")
                 // Masks live in the source table columns, which the MultiLayer XML snapshot
                 // does not cover; these need the full workspace snapshot to roll back.
                 || sm == QStringLiteral("graph.mask_region")
-                || sm == QStringLiteral("graph.clear_masks")) {
+                || sm == QStringLiteral("graph.clear_masks")
+                // Graph3D and density2d matrix counts are outside MultiLayer XML snapshots.
+                || sm == QStringLiteral("graph.set_3d_options")
+                || sm == QStringLiteral("graph.rebuild_density2d")) {
                 graphOnlyFastSnapshot = false;
             }
         }
 
         // Capture pre-batch atomic snapshot (two-tier: fast MultiLayer XML vs full .sciprj bytes)
+        struct PreBatchGadgetSnap
+        {
+            enum Kind { KindRoi, KindVerticalCursor, KindDeltaCursor, KindImageProfile };
+            QString mlName;
+            int layerIndex = 0;
+            Kind kind = KindRoi;
+            RoiGadgetTool::GadgetMode roiMode = RoiGadgetTool::RegionStats;
+            RoiGadgetTool::QuickFitModel quickFitModel = RoiGadgetTool::FitLinear;
+            RoiGadgetTool::IntegrateBaseline integrateBaseline = RoiGadgetTool::BaseYZero;
+            bool detectNegativePeaks = false;
+            int savGolWindow = 5;
+            QRectF roiRect;
+            QString targetCurve;
+            bool syncAllLayers = true;
+            DeltaCursorTool::SnapMode deltaSnapMode = DeltaCursorTool::SnapInterpolateCurve;
+            bool horizCrosshair = true;
+            int activeCursor = 1;
+            int specIndex = 0;
+            double x1 = 0.0;
+            double y1 = 0.0;
+            double x2 = 0.0;
+            double y2 = 0.0;
+        };
+        auto collectAllMultiLayers = [&]() -> QList<MultiLayer *> {
+            QList<MultiLayer *> result;
+            QSet<MultiLayer *> seen;
+            auto addFromList = [&](const QList<MyWidget *> &wins) {
+                for (MyWidget *w : wins) {
+                    if (w && w->inherits("MultiLayer")) {
+                        auto *ml = static_cast<MultiLayer *>(w);
+                        if (!seen.contains(ml)) {
+                            seen.insert(ml);
+                            result.append(ml);
+                        }
+                    }
+                }
+            };
+            if (Folder *rootF = d_app->projectFolder()) {
+                QList<Folder *> stack;
+                stack.append(rootF);
+                while (!stack.isEmpty()) {
+                    Folder *f = stack.takeLast();
+                    if (!f)
+                        continue;
+                    addFromList(f->windowsList());
+                    for (Folder *sub : f->folders()) {
+                        if (sub)
+                            stack.append(sub);
+                    }
+                }
+            }
+            addFromList(d_app->windowsList());
+            return result;
+        };
+        QVector<PreBatchGadgetSnap> preBatchGadgets;
+        auto restorePreBatchGadgets = [&]() {
+            const QList<MultiLayer *> curMls = collectAllMultiLayers();
+            QHash<QString, MultiLayer *> mlByName;
+            for (MultiLayer *ml : curMls) {
+                if (!ml)
+                    continue;
+                mlByName.insert(ml->name(), ml);
+                for (Graph *g : ml->layersList()) {
+                    if (g && g->activeTool())
+                        RoiGadgetTool::clearGadget(g);
+                }
+            }
+            for (const PreBatchGadgetSnap &snap : preBatchGadgets) {
+                MultiLayer *ml = mlByName.value(snap.mlName, nullptr);
+                if (!ml)
+                    continue;
+                const QList<Graph *> layers = ml->layersList();
+                if (snap.layerIndex < 0 || snap.layerIndex >= layers.size())
+                    continue;
+                Graph *g = layers.at(snap.layerIndex);
+                if (!g)
+                    continue;
+                switch (snap.kind) {
+                case PreBatchGadgetSnap::KindRoi:
+                    if (auto *roi = RoiGadgetTool::attachGadget(d_app, g, snap.roiMode)) {
+                        roi->setQuickFitModel(snap.quickFitModel);
+                        roi->setIntegrateBaseline(snap.integrateBaseline);
+                        roi->setDetectNegativePeaks(snap.detectNegativePeaks);
+                        roi->setSavGolWindow(snap.savGolWindow);
+                        if (!snap.targetCurve.isEmpty())
+                            roi->setTargetCurve(snap.targetCurve);
+                        if (!snap.roiRect.isNull())
+                            roi->setRoiRect(snap.roiRect);
+                        roi->recalculate();
+                    }
+                    break;
+                case PreBatchGadgetSnap::KindVerticalCursor:
+                    if (auto *vc = VerticalCursorTool::attachCursor(d_app, g, snap.syncAllLayers))
+                        vc->setCursorX(snap.x1);
+                    break;
+                case PreBatchGadgetSnap::KindDeltaCursor:
+                    if (auto *dc = DeltaCursorTool::attach(d_app, g, snap.deltaSnapMode)) {
+                        dc->setHorizontalCrosshairEnabled(snap.horizCrosshair);
+                        dc->setActiveCursor(snap.activeCursor);
+                        if (!snap.targetCurve.isEmpty())
+                            dc->setTargetCurve(snap.targetCurve);
+                        if (snap.deltaSnapMode == DeltaCursorTool::FreeScreenCrosshair)
+                            dc->setCursorPoints2D(snap.x1, snap.y1, snap.x2, snap.y2);
+                        else
+                            dc->setCursorPositions(snap.x1, snap.x2);
+                    }
+                    break;
+                case PreBatchGadgetSnap::KindImageProfile:
+                    if (auto *ip = ImageProfileGadgetTool::attach(g, d_app)) {
+                        if (snap.specIndex >= 0)
+                            ip->setTargetSpectrogramIndex(snap.specIndex);
+                        ip->setCrosshairPosition(snap.x1, snap.y1);
+                    }
+                    break;
+                }
+            }
+        };
+
         QHash<MultiLayer *, QString> fastMlSnapshots;
         QHash<MultiLayer *, int> fastMlUndoIdx;
         QByteArray fullWorkspaceSnapshot;
@@ -2808,7 +2957,56 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             if (auto *mw = qobject_cast<MyWidget *>(actW))
                 savedActiveWinName = mw->name();
         }
-        if (atomic && bctx.recursionDepth == 0) {
+        if (ownsAtomicRollback) {
+            for (MultiLayer *ml : collectAllMultiLayers()) {
+                if (!ml)
+                    continue;
+                const QList<Graph *> layers = ml->layersList();
+                for (int li = 0; li < layers.size(); ++li) {
+                    Graph *g = layers.at(li);
+                    PlotToolInterface *tool = g ? g->activeTool() : nullptr;
+                    if (!tool)
+                        continue;
+                    PreBatchGadgetSnap snap;
+                    snap.mlName = ml->name();
+                    snap.layerIndex = li;
+                    if (auto *roi = dynamic_cast<RoiGadgetTool *>(tool)) {
+                        snap.kind = PreBatchGadgetSnap::KindRoi;
+                        snap.roiMode = roi->gadgetMode();
+                        snap.quickFitModel = roi->quickFitModel();
+                        snap.integrateBaseline = roi->integrateBaseline();
+                        snap.detectNegativePeaks = roi->detectNegativePeaks();
+                        snap.savGolWindow = roi->savGolWindow();
+                        snap.roiRect = roi->roiRect();
+                        snap.targetCurve = roi->targetCurveTitle();
+                        preBatchGadgets.append(snap);
+                    } else if (auto *vc = dynamic_cast<VerticalCursorTool *>(tool)) {
+                        snap.kind = PreBatchGadgetSnap::KindVerticalCursor;
+                        snap.syncAllLayers = vc->syncAllLayers();
+                        snap.x1 = vc->cursorX();
+                        preBatchGadgets.append(snap);
+                    } else if (auto *dc = dynamic_cast<DeltaCursorTool *>(tool)) {
+                        snap.kind = PreBatchGadgetSnap::KindDeltaCursor;
+                        snap.deltaSnapMode = dc->snapMode();
+                        snap.horizCrosshair = dc->horizontalCrosshairEnabled();
+                        snap.activeCursor = dc->activeCursor();
+                        snap.targetCurve = dc->targetCurveTitle();
+                        const auto rd = dc->currentReadout();
+                        snap.x1 = rd.x1;
+                        snap.y1 = rd.y1;
+                        snap.x2 = rd.x2;
+                        snap.y2 = rd.y2;
+                        preBatchGadgets.append(snap);
+                    } else if (auto *ip = dynamic_cast<ImageProfileGadgetTool *>(tool)) {
+                        snap.kind = PreBatchGadgetSnap::KindImageProfile;
+                        snap.specIndex = ip->targetSpectrogramIndex();
+                        const QPointF pos = ip->crosshairPosition();
+                        snap.x1 = pos.x();
+                        snap.y1 = pos.y();
+                        preBatchGadgets.append(snap);
+                    }
+                }
+            }
             if (graphOnlyFastSnapshot) {
                 for (MyWidget *w : d_app->windowsList()) {
                     if (w && w->inherits("MultiLayer")) {
@@ -2819,17 +3017,27 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 }
             } else {
                 const QList<MyWidget *> curWins = d_app->windowsList();
-                if (curWins.isEmpty()) {
+                const bool hasSubfolders =
+                        d_app->projectFolder() && !d_app->projectFolder()->folders().isEmpty();
+                if (curWins.isEmpty() && !hasSubfolders) {
                     // Empty workspace fast path: 0-byte snapshot, resetProjectInPlaceHeadless rolls back in <1ms
-                } else if (curWins.size() == 1 && curWins.first()
+                } else if (!hasSubfolders && curWins.size() == 1 && curWins.first()
                            && curWins.first()->inherits("Table")) {
                     auto *t0 = static_cast<Table *>(curWins.first());
-                    bool untouched = (t0->numRows() <= 100 && t0->numCols() <= 16
+                    WorkbookManager *wbm = WorkbookManager::existing(d_app);
+                    const bool inWorkbook = (wbm != nullptr) && !wbm->bookOf(t0).isEmpty();
+                    bool untouched = (!inWorkbook && t0->numRows() <= 100 && t0->numCols() <= 16
                                       && (!t0->d_future_table || !t0->d_future_table->undoStack()
                                           || t0->d_future_table->undoStack()->index() == 0));
                     for (int c = 0; untouched && c < t0->numCols(); ++c) {
                         Column *col = t0->column(c);
-                        if (!col || !col->formula(0).trimmed().isEmpty()
+                        const SciDAVis::PlotDesignation expectedPd =
+                                (c == 0) ? SciDAVis::X : SciDAVis::Y;
+                        if (!col || t0->colLabel(c) != QString::number(c + 1)
+                            || col->columnMode() != SciDAVis::ColumnMode::Numeric
+                            || col->plotDesignation() != expectedPd
+                            || !col->comment().trimmed().isEmpty()
+                            || !col->formula(0).trimmed().isEmpty()
                             || !col->longName().trimmed().isEmpty()
                             || !col->units().trimmed().isEmpty()) {
                             untouched = false;
@@ -2866,13 +3074,22 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         struct ScopedBatchActivation
         {
             BatchExecutionContext &ctx;
+            bool &atomicSnapshotHeld;
             bool prevActive;
             bool prevDefer;
-            ScopedBatchActivation(BatchExecutionContext &c, bool defer)
-                : ctx(c), prevActive(c.active), prevDefer(c.deferReplot)
+            bool prevAtomicSnapshotHeld;
+            ScopedBatchActivation(BatchExecutionContext &c, bool defer, bool &atomicHeld,
+                                  bool ownsAtomic)
+                : ctx(c)
+                , atomicSnapshotHeld(atomicHeld)
+                , prevActive(c.active)
+                , prevDefer(c.deferReplot)
+                , prevAtomicSnapshotHeld(atomicHeld)
             {
                 ctx.active = true;
                 ctx.deferReplot = defer;
+                if (ownsAtomic)
+                    atomicSnapshotHeld = true;
                 ++ctx.recursionDepth;
             }
             ~ScopedBatchActivation()
@@ -2880,6 +3097,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 --ctx.recursionDepth;
                 ctx.active = prevActive;
                 ctx.deferReplot = prevDefer;
+                atomicSnapshotHeld = prevAtomicSnapshotHeld;
                 if (ctx.recursionDepth <= 0) {
                     ctx.recursionDepth = 0;
                     for (const auto &pr : ctx.preBatchGraphSnaps) {
@@ -2894,7 +3112,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     ctx.snapshottedMultiLayers.clear();
                 }
             }
-        } batchScope(bctx, deferReplot);
+        } batchScope(bctx, deferReplot, s_atomicSnapshotHeld, ownsAtomicRollback);
 
         QVector<QJsonObject> stepResultsVec;
         stepResultsVec.reserve(totalSteps);
@@ -2925,6 +3143,34 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     throw RpcDispatchException(
                             -32601, QStringLiteral("Method not found: %1").arg(stepMethod),
                             errData);
+                }
+                if (stepMethod == QStringLiteral("app.batch")
+                    && !stepRes.value(QStringLiteral("ok")).toBool(true)) {
+                    const QJsonObject innerErr = stepRes.value(QStringLiteral("error")).toObject();
+                    QJsonObject errEntry = innerErr;
+                    if (!errEntry.contains(QStringLiteral("code")))
+                        errEntry[QStringLiteral("code")] = -32603;
+                    if (errEntry.value(QStringLiteral("message")).toString().trimmed().isEmpty()) {
+                        errEntry[QStringLiteral("message")] =
+                                QStringLiteral("Nested app.batch failed.");
+                    }
+                    if (!innerErr.isEmpty()
+                        && (innerErr.contains(QStringLiteral("step_index"))
+                            || innerErr.contains(QStringLiteral("step_method")))) {
+                        errEntry[QStringLiteral("nested_error")] = innerErr;
+                    }
+                    errEntry[QStringLiteral("step_index")] = i;
+                    errEntry[QStringLiteral("step_method")] = stepMethod;
+
+                    if (failedIndex < 0) {
+                        failedIndex = i;
+                        firstErrorObj = errEntry;
+                    }
+                    stepResultsVec.append(stepRes);
+                    resultsJsonArr.append(stepRes);
+                    if (stopOnError || atomic)
+                        break;
+                    continue;
                 }
                 if (!stepRes.contains(QStringLiteral("ok")))
                     stepRes[QStringLiteral("ok")] = true;
@@ -2975,18 +3221,20 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
         bool rolledBack = false;
         bool undoHistoryCleared = false;
         QString rollbackError;
-        if (failedIndex >= 0 && atomic && bctx.recursionDepth == 1) {
-            const auto openSnaps = bctx.preBatchGraphSnaps;
-            bctx.preBatchGraphSnaps.clear();
-            bctx.active = false;
-            bctx.deferReplot = false;
-            bctx.dirtyGraphs.clear();
-            bctx.dirtyMultiLayers.clear();
-            bctx.snapshottedMultiLayers.clear();
-            for (const auto &pr : openSnaps) {
-                if (MultiLayer *ml = pr.first.data()) {
-                    if (QUndoStack *us = ml->undoStack())
-                        us->endMacro();
+        if (failedIndex >= 0 && ownsAtomicRollback) {
+            if (bctx.recursionDepth == 1) {
+                const auto openSnaps = bctx.preBatchGraphSnaps;
+                bctx.preBatchGraphSnaps.clear();
+                bctx.active = false;
+                bctx.deferReplot = false;
+                bctx.dirtyGraphs.clear();
+                bctx.dirtyMultiLayers.clear();
+                bctx.snapshottedMultiLayers.clear();
+                for (const auto &pr : openSnaps) {
+                    if (MultiLayer *ml = pr.first.data()) {
+                        if (QUndoStack *us = ml->undoStack())
+                            us->endMacro();
+                    }
                 }
             }
 
@@ -3002,6 +3250,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                             ml->undoStack()->setIndex(wantIdx);
                     }
                 }
+                restorePreBatchGadgets();
                 rolledBack = true;
             } else {
                 bool restoreOk = true;
@@ -3076,10 +3325,25 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 // The workspace was rebuilt from the snapshot: the Undo history of the windows
                 // that existed before the batch cannot be carried over.
                 undoHistoryCleared = workspaceReset;
+                if (workspaceReset && bctx.recursionDepth > 1) {
+                    const auto openSnaps = bctx.preBatchGraphSnaps;
+                    bctx.preBatchGraphSnaps.clear();
+                    bctx.dirtyGraphs.clear();
+                    bctx.dirtyMultiLayers.clear();
+                    bctx.snapshottedMultiLayers.clear();
+                    for (const auto &pr : openSnaps) {
+                        if (MultiLayer *ml = pr.first.data()) {
+                            if (QUndoStack *us = ml->undoStack())
+                                us->endMacro();
+                        }
+                    }
+                }
                 if (!savedActiveWinName.isEmpty()) {
                     if (MyWidget *aw = findWindowByName(d_app, savedActiveWinName))
                         d_app->activateSubWindow(aw);
                 }
+                if (restoreOk)
+                    restorePreBatchGadgets();
                 rolledBack = restoreOk;
             }
         } else if (bctx.recursionDepth == 1) {
@@ -4168,17 +4432,23 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
 
     if (method == QStringLiteral("app.recalculate")) {
         RecalcManager *rm = RecalcManager::instance(d_app);
-        QVector<Table *> allTables;
-        for (MyWidget *w : d_app->windowsList()) {
-            if (w && w->inherits("Table"))
-                allTables.append(static_cast<Table *>(w));
-        }
+        auto collectLiveTables = [d_app]() -> QVector<Table *> {
+            QVector<Table *> out;
+            for (MyWidget *w : d_app->windowsList()) {
+                if (w && w->inherits("Table"))
+                    out.append(static_cast<Table *>(w));
+            }
+            return out;
+        };
+        const QVector<Table *> initialTables = collectLiveTables();
         // Formula columns are evaluated in dependency order through the worksheets' own
         // recalculation, so circular formulas get a formula error and keep their values (they
         // used to grow on every call). Passes repeat only while something still changes.
         auto formulaState = [](const QVector<Table *> &tables) {
             QStringList st;
             for (Table *t : tables) {
+                if (!t)
+                    continue;
                 for (int c = 0; c < t->numCols(); ++c) {
                     Column *col = t->column(c);
                     if (!col || col->formula(0).trimmed().isEmpty())
@@ -4195,24 +4465,37 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             }
             return st;
         };
-        const int maxPasses = std::max(2, allTables.size() + 2);
+        const int maxPasses = std::max(2, initialTables.size() + 2);
         for (int pass = 0; pass < maxPasses; ++pass) {
-            const QStringList before = formulaState(allTables);
-            recalcFormulaColumnsWithCycleCheck(allTables);
-            if (formulaState(allTables) == before)
+            const QVector<Table *> liveBefore = collectLiveTables();
+            const QStringList before = formulaState(liveBefore);
+            recalcFormulaColumnsWithCycleCheck(liveBefore);
+            const QVector<Table *> liveAfterPass = collectLiveTables();
+            if (formulaState(liveAfterPass) == before)
                 break;
         }
-        for (Table *t : allTables) {
-            for (int c = 0; c < t->numCols(); ++c) {
-                if (t->column(c) && !t->column(c)->formula(0).trimmed().isEmpty())
-                    d_app->updateCurves(t, fullColumnName(t, c));
+        QVector<QPointer<Table>> tablesToUpdate;
+        for (Table *t : collectLiveTables())
+            tablesToUpdate.append(QPointer<Table>(t));
+        for (const QPointer<Table> &tp : tablesToUpdate) {
+            for (int c = 0;; ++c) {
+                Table *t = tp.data();
+                if (!t || c >= t->numCols())
+                    break;
+                Column *col = t->column(c);
+                if (col && !col->formula(0).trimmed().isEmpty()) {
+                    const QString colFullName = fullColumnName(t, c);
+                    if (Table *liveT = tp.data())
+                        d_app->updateCurves(liveT, colFullName);
+                }
             }
         }
         const int updatedLinks = rm->recalculateAll();
-        const QJsonArray fErrs = formulaErrorsJson(allTables);
+        const QVector<Table *> liveAfter = collectLiveTables();
+        const QJsonArray fErrs = formulaErrorsJson(liveAfter);
         outResult[QStringLiteral("ok")] = fErrs.isEmpty();
         outResult[QStringLiteral("updated_links")] = updatedLinks;
-        outResult[QStringLiteral("tables_checked")] = allTables.size();
+        outResult[QStringLiteral("tables_checked")] = liveAfter.size();
         outResult[QStringLiteral("formula_errors")] = fErrs;
         return true;
     }
@@ -4334,24 +4617,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             return true;
         }
 
-        QUndoStack *projStack = nullptr;
-        for (MyWidget *w : d_app->windowsList()) {
-            if (!w)
-                continue;
-            if (w->inherits("Table")) {
-                auto *t = static_cast<Table *>(w);
-                if (t->d_future_table && t->d_future_table->undoStack()) {
-                    projStack = t->d_future_table->undoStack();
-                    break;
-                }
-            } else if (w->inherits("Matrix")) {
-                auto *m = static_cast<Matrix *>(w);
-                if (m->d_future_matrix && m->d_future_matrix->undoStack()) {
-                    projStack = m->d_future_matrix->undoStack();
-                    break;
-                }
-            }
-        }
+        QUndoStack *projStack = d_app->project() ? d_app->project()->undoStack() : nullptr;
 
         QWidget *activeSub = d_app->d_workspace.activeSubWindow();
         MultiLayer *activeMl = (activeSub && activeSub->inherits("MultiLayer"))
@@ -5696,8 +5962,25 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             // an existing table keeps the roles the user (or table.create) already assigned.
             if (tableWasCreated || c >= preexistingCols)
                 t->setColPlotDesignation(c, (c == 0) ? SciDAVis::X : SciDAVis::Y);
+            QString modeHint;
+            if (metaMap.contains(colKey) && metaMap.value(colKey).isObject()) {
+                modeHint = metaMap.value(colKey).toObject().value(QStringLiteral("mode")).toString();
+            }
+            if (modeHint.trimmed().isEmpty()) {
+                QString pdHint;
+                if (metaMap.contains(colKey) && metaMap.value(colKey).isObject()) {
+                    pdHint = metaMap.value(colKey)
+                                     .toObject()
+                                     .value(QStringLiteral("plot_designation"))
+                                     .toString();
+                }
+                if (pdHint.trimmed().isEmpty() && desigMap.contains(colKey))
+                    pdHint = desigMap.value(colKey).toString();
+                if (pdHint.trimmed().compare(QStringLiteral("label"), Qt::CaseInsensitive) == 0)
+                    modeHint = QStringLiteral("text");
+            }
             if (dataDict.value(colKey).isArray()) {
-                writeBulkColumnArray(t, c, dataDict.value(colKey).toArray(), QString());
+                writeBulkColumnArray(t, c, dataDict.value(colKey).toArray(), modeHint);
             }
             if (unitsMap.contains(colKey))
                 t->setColUnits(c, unitsMap.value(colKey).toString());

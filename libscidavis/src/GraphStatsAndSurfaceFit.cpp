@@ -728,8 +728,12 @@ struct SurfaceEvalContext
     double xMax = 1.0;
     double yMin = 0.0;
     double yMax = 1.0;
+    double spanX = 1.0;
+    double spanY = 1.0;
+    double spanZ = 1.0;
     QString customExpr;
     QStringList paramNames;
+    std::vector<double> paramScales;
 
     // Reusable parser state for Custom2D
     mutable std::unique_ptr<MyParser> parser;
@@ -784,6 +788,8 @@ struct SurfaceEvalContext
 
     double evalPoint(double px, double py, const double *p) const
     {
+        const double minWidthFloor =
+                std::max(std::numeric_limits<double>::min(), 1e-12 * std::min(spanX, spanY));
         switch (model) {
         case GraphStatsAndSurfaceFit::Plane2D:
             return p[0] + p[1] * px + p[2] * py;
@@ -797,8 +803,8 @@ struct SurfaceEvalContext
             const double A = p[1];
             const double xc = p[2];
             const double yc = p[3];
-            const double sx = std::max(1e-12, std::abs(p[4]));
-            const double sy = std::max(1e-12, std::abs(p[5]));
+            const double sx = std::max(minWidthFloor, std::abs(p[4]));
+            const double sy = std::max(minWidthFloor, std::abs(p[5]));
             const double th = p[6];
             const double c = std::cos(th);
             const double s = std::sin(th);
@@ -815,8 +821,8 @@ struct SurfaceEvalContext
             const double A = p[1];
             const double xc = p[2];
             const double yc = p[3];
-            const double wx = std::max(1e-12, std::abs(p[4]));
-            const double wy = std::max(1e-12, std::abs(p[5]));
+            const double wx = std::max(minWidthFloor, std::abs(p[4]));
+            const double wy = std::max(minWidthFloor, std::abs(p[5]));
             const double th = p[6];
             const double c = std::cos(th);
             const double s = std::sin(th);
@@ -832,8 +838,8 @@ struct SurfaceEvalContext
             const double A = p[1];
             const double xc = p[2];
             const double yc = p[3];
-            const double sx = std::max(1e-12, std::abs(p[4]));
-            const double sy = std::max(1e-12, std::abs(p[5]));
+            const double sx = std::max(minWidthFloor, std::abs(p[4]));
+            const double sy = std::max(minWidthFloor, std::abs(p[5]));
             const double mu = std::clamp(p[6], 0.0, 1.0);
             const double dx = px - xc;
             const double dy = py - yc;
@@ -857,10 +863,10 @@ struct SurfaceEvalContext
             const double xHi = std::max(xMin, xMax);
             const double yLo = std::min(yMin, yMax);
             const double yHi = std::max(yMin, yMax);
-            const double spanX = (xHi > xLo) ? (xHi - xLo) : 1.0;
-            const double spanY = (yHi > yLo) ? (yHi - yLo) : 1.0;
-            const double tx = 2.0 * (px - xLo) / spanX - 1.0;
-            const double ty = 2.0 * (py - yLo) / spanY - 1.0;
+            const double chebSpanX = (xHi > xLo) ? (xHi - xLo) : 1.0;
+            const double chebSpanY = (yHi > yLo) ? (yHi - yLo) : 1.0;
+            const double tx = 2.0 * (px - xLo) / chebSpanX - 1.0;
+            const double ty = 2.0 * (py - yLo) / chebSpanY - 1.0;
             const double T1x = tx;
             const double T2x = 2.0 * tx * tx - 1.0;
             const double T1y = ty;
@@ -920,7 +926,11 @@ int surface_gsl_df(const gsl_vector *parVec, void *dataPtr, gsl_matrix *J)
 
     for (size_t j = 0; j < p; ++j) {
         const double pj = par[j];
-        const double h = std::max(1e-6, 1e-6 * std::abs(pj));
+        const double pScale = (j < ctx->paramScales.size() && std::isfinite(ctx->paramScales[j])
+                               && ctx->paramScales[j] > 0.0)
+                ? ctx->paramScales[j]
+                : 1.0;
+        const double h = std::max(1e-6 * std::abs(pj), 1e-8 * pScale);
         par[j] = pj + h;
         std::vector<double> fPlus(n);
         for (size_t i = 0; i < n; ++i) {
@@ -1035,13 +1045,24 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
     const double xHi = std::max(ctx.xMin, ctx.xMax);
     const double yLo = std::min(ctx.yMin, ctx.yMax);
     const double yHi = std::max(ctx.yMin, ctx.yMax);
-    const double spanX = std::max(1e-6, xHi - xLo);
-    const double spanY = std::max(1e-6, yHi - yLo);
+    const double rawSpanX = xHi - xLo;
+    const double rawSpanY = yHi - yLo;
+    const double rawSpanZ = zMax - zMin;
+    const double fallbackX = std::max({ std::abs(xLo), std::abs(xHi), 1.0 });
+    const double fallbackY = std::max({ std::abs(yLo), std::abs(yHi), 1.0 });
+    const double fallbackZ = std::max({ std::abs(zMin), std::abs(zMax), 1.0 });
+    const double spanX = (rawSpanX > 0.0 && std::isfinite(rawSpanX)) ? rawSpanX : fallbackX;
+    const double spanY = (rawSpanY > 0.0 && std::isfinite(rawSpanY)) ? rawSpanY : fallbackY;
+    const double spanZ = (rawSpanZ > 0.0 && std::isfinite(rawSpanZ)) ? rawSpanZ : fallbackZ;
+    ctx.spanX = spanX;
+    ctx.spanY = spanY;
+    ctx.spanZ = spanZ;
 
     switch (ctx.model) {
     case GraphStatsAndSurfaceFit::Plane2D: {
         ctx.paramNames = QStringList{ QStringLiteral("z0"), QStringLiteral("a"),
                                       QStringLiteral("b") };
+        ctx.paramScales = { spanZ, spanZ / spanX, spanZ / spanY };
         std::vector<std::vector<double>> basis(n, std::vector<double>(3));
         for (size_t i = 0; i < n; ++i)
             basis[i] = { 1.0, ctx.x[i], ctx.y[i] };
@@ -1053,6 +1074,12 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
         ctx.paramNames = QStringList{ QStringLiteral("z0"), QStringLiteral("a"),
                                       QStringLiteral("b"),  QStringLiteral("c"),
                                       QStringLiteral("d"),  QStringLiteral("e") };
+        ctx.paramScales = { spanZ,
+                            spanZ / spanX,
+                            spanZ / spanY,
+                            spanZ / (spanX * spanX),
+                            spanZ / (spanY * spanY),
+                            spanZ / (spanX * spanY) };
         std::vector<std::vector<double>> basis(n, std::vector<double>(6));
         for (size_t i = 0; i < n; ++i) {
             double px = ctx.x[i], py = ctx.y[i];
@@ -1081,6 +1108,7 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
                                           QStringLiteral("sigma_x"), QStringLiteral("sigma_y"),
                                           QStringLiteral("mu") };
         }
+        ctx.paramScales = { spanZ, spanZ, spanX, spanY, spanX, spanY, 1.0 };
 
         const bool positivePeak = (zMax - zMed) >= (zMed - zMin);
         const double z0 = positivePeak ? zP10 : zP90;
@@ -1090,8 +1118,8 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
                 extIdx = i;
         }
         double A0 = ctx.z[extIdx] - z0;
-        if (std::abs(A0) < 1e-12)
-            A0 = positivePeak ? 1.0 : -1.0;
+        if (!(std::abs(A0) > 0.0) || !std::isfinite(A0))
+            A0 = positivePeak ? spanZ : -spanZ;
 
         // Weighted centroid & second moments above 20% height
         double sumW = 0.0, sumX = 0.0, sumY = 0.0;
@@ -1125,17 +1153,21 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
             varX /= w2Sum;
             varY /= w2Sum;
             covXY /= w2Sum;
-            double corr = covXY / std::max(1e-12, std::sqrt(varX * varY));
+            const double varDenom = std::sqrt(std::max(0.0, varX * varY));
+            const double corr = (varDenom > 0.0) ? (covXY / varDenom) : 0.0;
+            const double minVarX = (0.02 * spanX) * (0.02 * spanX);
+            const double minVarY = (0.02 * spanY) * (0.02 * spanY);
             if (ctx.model != GraphStatsAndSurfaceFit::PseudoVoigt2D && std::abs(corr) > 0.20) {
                 theta0 = 0.5 * std::atan2(2.0 * covXY, varX - varY);
                 double c = std::cos(theta0), s = std::sin(theta0);
                 double uVar = c * c * varX + 2.0 * c * s * covXY + s * s * varY;
                 double vVar = s * s * varX - 2.0 * c * s * covXY + c * c * varY;
-                sx0 = std::sqrt(std::max(1e-8, uVar / 0.45));
-                sy0 = std::sqrt(std::max(1e-8, vVar / 0.45));
+                const double minVarUV = std::min(minVarX, minVarY);
+                sx0 = std::sqrt(std::max(minVarUV, uVar / 0.45));
+                sy0 = std::sqrt(std::max(minVarUV, vVar / 0.45));
             } else {
-                sx0 = std::sqrt(std::max(1e-8, varX / 0.45));
-                sy0 = std::sqrt(std::max(1e-8, varY / 0.45));
+                sx0 = std::sqrt(std::max(minVarX, varX / 0.45));
+                sy0 = std::sqrt(std::max(minVarY, varY / 0.45));
             }
         }
         sx0 = std::clamp(sx0, 0.02 * spanX, 0.8 * spanX);
@@ -1150,12 +1182,13 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
     case GraphStatsAndSurfaceFit::Exponential2D: {
         ctx.paramNames = QStringList{ QStringLiteral("z0"), QStringLiteral("A"),
                                       QStringLiteral("bx"), QStringLiteral("by") };
-        double z0 = zMin - 0.05 * std::max(1e-6, zMax - zMin);
+        ctx.paramScales = { spanZ, spanZ, 1.0 / spanX, 1.0 / spanY };
+        double z0 = zMin - 0.05 * spanZ;
         std::vector<std::vector<double>> basis;
         std::vector<double> logZ;
         for (size_t i = 0; i < n; ++i) {
             double shifted = ctx.z[i] - z0;
-            if (shifted > 1e-12) {
+            if (shifted > 1e-12 * spanZ) {
                 basis.push_back({ 1.0, ctx.x[i], ctx.y[i] });
                 logZ.push_back(std::log(shifted));
             }
@@ -1164,13 +1197,14 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
         if (basis.size() >= 4 && solveLinearLeastSquares(basis, logZ, linC))
             initOut = { z0, std::exp(std::clamp(linC[0], -50.0, 50.0)), linC[1], linC[2] };
         else
-            initOut = { zMin, std::max(1e-3, zMax - zMin), 0.1 / spanX, 0.1 / spanY };
+            initOut = { zMin, (rawSpanZ > 0.0 ? rawSpanZ : spanZ), 0.1 / spanX, 0.1 / spanY };
         break;
     }
     case GraphStatsAndSurfaceFit::Chebyshev2D: {
         ctx.paramNames = QStringList{ QStringLiteral("c00"), QStringLiteral("c10"),
                                       QStringLiteral("c01"), QStringLiteral("c20"),
                                       QStringLiteral("c11"), QStringLiteral("c02") };
+        ctx.paramScales = { spanZ, spanZ, spanZ, spanZ, spanZ, spanZ };
         const double chebSpanX = (xHi > xLo) ? (xHi - xLo) : 1.0;
         const double chebSpanY = (yHi > yLo) ? (yHi - yLo) : 1.0;
         std::vector<std::vector<double>> basis(n, std::vector<double>(6));
@@ -1188,16 +1222,35 @@ void buildInitialSurfaceParameters(SurfaceEvalContext &ctx, std::vector<double> 
         if (ctx.paramNames.isEmpty())
             ctx.paramNames = QStringList{ QStringLiteral("a") };
         initOut.assign(static_cast<size_t>(ctx.paramNames.size()), 1.0);
+        const double genericScale = std::min({ spanX, spanY, spanZ });
+        ctx.paramScales.assign(static_cast<size_t>(ctx.paramNames.size()),
+                               (genericScale > 0.0 && std::isfinite(genericScale)) ? genericScale
+                                                                                   : 1.0);
         for (int j = 0; j < ctx.paramNames.size(); ++j) {
             const QString &nm = ctx.paramNames[j];
-            if (nm.compare(QStringLiteral("z0"), Qt::CaseInsensitive) == 0)
+            if (nm.compare(QStringLiteral("z0"), Qt::CaseInsensitive) == 0) {
                 initOut[static_cast<size_t>(j)] = zP10;
-            else if (nm.compare(QStringLiteral("A"), Qt::CaseInsensitive) == 0)
-                initOut[static_cast<size_t>(j)] = std::max(1e-3, zMax - zP10);
-            else if (nm.compare(QStringLiteral("xc"), Qt::CaseInsensitive) == 0)
+                ctx.paramScales[static_cast<size_t>(j)] = spanZ;
+            } else if (nm.compare(QStringLiteral("A"), Qt::CaseInsensitive) == 0) {
+                const double aGuess = zMax - zP10;
+                initOut[static_cast<size_t>(j)] =
+                        (aGuess > 0.0 && std::isfinite(aGuess)) ? aGuess : spanZ;
+                ctx.paramScales[static_cast<size_t>(j)] = spanZ;
+            } else if (nm.compare(QStringLiteral("xc"), Qt::CaseInsensitive) == 0) {
                 initOut[static_cast<size_t>(j)] = 0.5 * (ctx.xMin + ctx.xMax);
-            else if (nm.compare(QStringLiteral("yc"), Qt::CaseInsensitive) == 0)
+                ctx.paramScales[static_cast<size_t>(j)] = spanX;
+            } else if (nm.compare(QStringLiteral("yc"), Qt::CaseInsensitive) == 0) {
                 initOut[static_cast<size_t>(j)] = 0.5 * (ctx.yMin + ctx.yMax);
+                ctx.paramScales[static_cast<size_t>(j)] = spanY;
+            } else if (nm.compare(QStringLiteral("sx"), Qt::CaseInsensitive) == 0
+                       || nm.compare(QStringLiteral("wx"), Qt::CaseInsensitive) == 0
+                       || nm.compare(QStringLiteral("sigma_x"), Qt::CaseInsensitive) == 0) {
+                ctx.paramScales[static_cast<size_t>(j)] = spanX;
+            } else if (nm.compare(QStringLiteral("sy"), Qt::CaseInsensitive) == 0
+                       || nm.compare(QStringLiteral("wy"), Qt::CaseInsensitive) == 0
+                       || nm.compare(QStringLiteral("sigma_y"), Qt::CaseInsensitive) == 0) {
+                ctx.paramScales[static_cast<size_t>(j)] = spanY;
+            }
         }
         break;
     }
@@ -1418,7 +1471,8 @@ runSurfaceFitCore(ApplicationWindow *app, SurfaceEvalContext &ctx, const QString
             std::swap(out.params[4], out.params[5]);
             std::swap(out.errors[4], out.errors[5]);
         }
-        if (std::abs(out.params[4] - out.params[5]) < 1e-9 * std::max(1.0, out.params[4]))
+        const double wMax = std::max(out.params[4], out.params[5]);
+        if (wMax > 0.0 && std::abs(out.params[4] - out.params[5]) < 1e-9 * wMax)
             th = 0.0;
         out.params[6] = th;
         for (size_t j = 0; j < p; ++j)
@@ -1949,10 +2003,18 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     const double bgCutoff =
             sortedValid[std::min(sortedValid.size() - 1, (sortedValid.size() * 3) / 10)];
 
+    const double matXMid = 0.5 * (x0 + x1);
+    const double matYMid = 0.5 * (y0 + y1);
+    const double matSpanX =
+            (std::abs(x1 - x0) > 0.0 && std::isfinite(x1 - x0)) ? std::abs(x1 - x0) : 1.0;
+    const double matSpanY =
+            (std::abs(y1 - y0) > 0.0 && std::isfinite(y1 - y0)) ? std::abs(y1 - y0) : 1.0;
+
     std::vector<std::vector<double>> bgBasis;
     std::vector<double> bgZ;
     for (int r = 0; r < R; ++r) {
         const double py = y0 + r * dyStep;
+        const double ty = (py - matYMid) / matSpanY;
         for (int c = 0; c < C; ++c) {
             const size_t idx = static_cast<size_t>(r * C + c);
             if (!validMask[idx])
@@ -1960,7 +2022,8 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             const double v = rawZ[idx];
             if (v <= bgCutoff || r == 0 || r == R - 1 || c == 0 || c == C - 1) {
                 if (v <= sortedValid[std::min(sortedValid.size() - 1, (sortedValid.size() * 6) / 10)]) {
-                    bgBasis.push_back({ 1.0, x0 + c * dxStep, py });
+                    const double px = x0 + c * dxStep;
+                    bgBasis.push_back({ 1.0, (px - matXMid) / matSpanX, ty });
                     bgZ.push_back(v);
                 }
             }
@@ -1969,6 +2032,10 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
     std::vector<double> planeC = { sortedValid.front(), 0.0, 0.0 };
     if (bgBasis.size() >= 6)
         solveLinearLeastSquares(bgBasis, bgZ, planeC);
+    auto evalBgPlane = [&](double px, double py) -> double {
+        return planeC[0] + planeC[1] * ((px - matXMid) / matSpanX)
+                + planeC[2] * ((py - matYMid) / matSpanY);
+    };
 
     std::vector<double> resid(static_cast<size_t>(R * C), nanVal);
     double rMin = std::numeric_limits<double>::max();
@@ -1980,7 +2047,7 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             if (!validMask[idx])
                 continue;
             const double px = x0 + c * dxStep;
-            const double bg = planeC[0] + planeC[1] * px + planeC[2] * py;
+            const double bg = evalBgPlane(px, py);
             const double rv = rawZ[idx] - bg;
             resid[idx] = rv;
             rMin = std::min(rMin, rv);
@@ -1988,7 +2055,9 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
         }
     }
 
-    const double zSpan = std::max(1e-12, rMax - std::max(0.0, rMin));
+    const double zMag = std::max(std::abs(sortedValid.front()), std::abs(sortedValid.back()));
+    const double zSpanFloor = std::max(std::numeric_limits<double>::min(), 1e-12 * zMag);
+    const double zSpan = std::max(zSpanFloor, rMax - std::max(0.0, rMin));
     const double thresh = std::max(0.0, prominenceFrac) * zSpan;
 
     struct CandPeak
@@ -2079,6 +2148,16 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
         patch.xMax = x0 + cEnd * dxStep;
         patch.yMin = y0 + rStart * dyStep;
         patch.yMax = y0 + rEnd * dyStep;
+        const double loX = std::min(patch.xMin, patch.xMax);
+        const double hiX = std::max(patch.xMin, patch.xMax);
+        const double loY = std::min(patch.yMin, patch.yMax);
+        const double hiY = std::max(patch.yMin, patch.yMax);
+        const double rawSpanX = hiX - loX;
+        const double rawSpanY = hiY - loY;
+        const double fallbackX = std::max({ std::abs(loX), std::abs(hiX), 1.0 });
+        const double fallbackY = std::max({ std::abs(loY), std::abs(hiY), 1.0 });
+        patch.spanX = (rawSpanX > 0.0 && std::isfinite(rawSpanX)) ? rawSpanX : fallbackX;
+        patch.spanY = (rawSpanY > 0.0 && std::isfinite(rawSpanY)) ? rawSpanY : fallbackY;
 
         for (int rr = rStart; rr <= rEnd; ++rr) {
             double py = y0 + rr * dyStep;
@@ -2095,14 +2174,22 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
 
         double xcGuess = x0 + pk.c * dxStep;
         double ycGuess = y0 + pk.r * dyStep;
-        double sxGuess = std::max(1e-6, 1.5 * std::abs(dxStep));
-        double syGuess = std::max(1e-6, 1.5 * std::abs(dyStep));
+        const double minWidthFloor = std::max(std::numeric_limits<double>::min(),
+                                              1e-12 * std::min(patch.spanX, patch.spanY));
+        double sxGuess = std::max(minWidthFloor, 1.5 * std::abs(dxStep));
+        double syGuess = std::max(minWidthFloor, 1.5 * std::abs(dyStep));
         double ampGuess = pk.h;
+        const double ampScale = (std::abs(ampGuess) > 0.0 && std::isfinite(ampGuess))
+                ? std::abs(ampGuess)
+                : ((zSpan > 0.0 && std::isfinite(zSpan)) ? zSpan : 1.0);
+        patch.spanZ = ampScale;
 
         patch.paramNames = QStringList{ QStringLiteral("z0"),      QStringLiteral("A"),
                                         QStringLiteral("xc"),      QStringLiteral("yc"),
                                         QStringLiteral("sigma_x"), QStringLiteral("sigma_y"),
                                         QStringLiteral("theta") };
+        patch.paramScales = { ampScale,    ampScale,    patch.spanX, patch.spanY,
+                              patch.spanX, patch.spanY, 1.0 };
 
         if (patch.z.size() >= 9) {
             gsl_multifit_function_fdf fdf;
@@ -2144,12 +2231,9 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
                 if (std::abs(fitTh) > 0.25 * kPi)
                     std::swap(fitSx, fitSy);
 
-                const double loX = std::min(patch.xMin, patch.xMax);
-                const double hiX = std::max(patch.xMin, patch.xMax);
-                const double loY = std::min(patch.yMin, patch.yMax);
-                const double hiY = std::max(patch.yMin, patch.yMax);
-                if (fitA > 0.0 && fitXc >= loX && fitXc <= hiX && fitYc >= loY && fitYc <= hiY
-                    && fitSx > 0.0 && fitSy > 0.0) {
+                if (std::isfinite(fitA) && fitA > 0.0 && fitXc >= loX && fitXc <= hiX
+                    && fitYc >= loY && fitYc <= hiY && std::isfinite(fitSx) && fitSx > 0.0
+                    && std::isfinite(fitSy) && fitSy > 0.0) {
                     ampGuess = fitA;
                     xcGuess = fitXc;
                     ycGuess = fitYc;
@@ -2161,7 +2245,7 @@ Table *GraphStatsAndSurfaceFit::analyze2DPeaks(ApplicationWindow *app, Matrix *s
             gsl_vector_free(pInit);
         }
 
-        double bgAtPeak = planeC[0] + planeC[1] * xcGuess + planeC[2] * ycGuess;
+        double bgAtPeak = evalBgPlane(xcGuess, ycGuess);
         double vol = 2.0 * kPi * ampGuess * sxGuess * syGuess;
         refined.push_back({ xcGuess, ycGuess, ampGuess, sxGuess, syGuess, vol, bgAtPeak });
     }
@@ -3533,7 +3617,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotKaplanMeier(ApplicationWindow *app, Tab
 
 MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Table *srcTable,
                                                      const QStringList &colNames,
-                                                     Table **scoresTableOut)
+                                                     Table **scoresTableOut,
+                                                     bool standardize)
 {
     if (scoresTableOut)
         *scoresTableOut = nullptr;
@@ -3577,7 +3662,7 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
     if (N < 3)
         return nullptr;
 
-    // Standardize variables to zero mean, unit variance
+    // Center variables (and scale to unit variance when standardize == true)
     std::vector<double> means(static_cast<size_t>(P), 0.0);
     std::vector<double> sds(static_cast<size_t>(P), 1.0);
     for (int j = 0; j < P; ++j) {
@@ -3586,28 +3671,32 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
             s += rawX[static_cast<size_t>(i)][static_cast<size_t>(j)];
         means[static_cast<size_t>(j)] = s / static_cast<double>(N);
 
-        double ss = 0.0;
-        for (int i = 0; i < N; ++i) {
-            double d = rawX[static_cast<size_t>(i)][static_cast<size_t>(j)]
-                    - means[static_cast<size_t>(j)];
-            ss += d * d;
+        if (standardize) {
+            double ss = 0.0;
+            for (int i = 0; i < N; ++i) {
+                double d = rawX[static_cast<size_t>(i)][static_cast<size_t>(j)]
+                        - means[static_cast<size_t>(j)];
+                ss += d * d;
+            }
+            double sd = std::sqrt(ss / static_cast<double>(N - 1));
+            const double zeroTol = 1e-15 * std::abs(means[static_cast<size_t>(j)]);
+            sds[static_cast<size_t>(j)] = (sd > zeroTol && sd > 0.0) ? sd : 1.0;
         }
-        double sd = std::sqrt(ss / static_cast<double>(N - 1));
-        sds[static_cast<size_t>(j)] = (sd > 1e-15) ? sd : 1.0;
     }
 
     std::vector<std::vector<double>> Z(static_cast<size_t>(N),
                                        std::vector<double>(static_cast<size_t>(P), 0.0));
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < P; ++j) {
+            const double centered =
+                    rawX[static_cast<size_t>(i)][static_cast<size_t>(j)]
+                    - means[static_cast<size_t>(j)];
             Z[static_cast<size_t>(i)][static_cast<size_t>(j)] =
-                    (rawX[static_cast<size_t>(i)][static_cast<size_t>(j)]
-                     - means[static_cast<size_t>(j)])
-                    / sds[static_cast<size_t>(j)];
+                    standardize ? (centered / sds[static_cast<size_t>(j)]) : centered;
         }
     }
 
-    // Correlation matrix R = Z^T Z / (N - 1)
+    // Correlation (standardize=true) or sample covariance (standardize=false) matrix R = Z^T Z / (N - 1)
     gsl_matrix *R = gsl_matrix_alloc(static_cast<size_t>(P), static_cast<size_t>(P));
     for (int j1 = 0; j1 < P; ++j1) {
         for (int j2 = j1; j2 < P; ++j2) {
@@ -3658,7 +3747,7 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
 
     std::vector<double> pc1(static_cast<size_t>(N), 0.0);
     std::vector<double> pc2(static_cast<size_t>(N), 0.0);
-    double maxScoreAbs = 1e-6;
+    double maxScoreAbs = 0.0;
     for (int i = 0; i < N; ++i) {
         double s1 = 0.0, s2 = 0.0;
         for (int j = 0; j < P; ++j) {
@@ -3671,10 +3760,12 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
         pc2[static_cast<size_t>(i)] = s2;
         maxScoreAbs = std::max({ maxScoreAbs, std::abs(s1), std::abs(s2) });
     }
+    if (!(maxScoreAbs > 0.0))
+        maxScoreAbs = 1.0;
 
     std::vector<double> load1(static_cast<size_t>(P), 0.0);
     std::vector<double> load2(static_cast<size_t>(P), 0.0);
-    double maxLoadLen = 1e-6;
+    double maxLoadLen = 0.0;
     for (int j = 0; j < P; ++j) {
         load1[static_cast<size_t>(j)] = gsl_matrix_get(evec, static_cast<size_t>(j), 0);
         load2[static_cast<size_t>(j)] = gsl_matrix_get(evec, static_cast<size_t>(j), 1);
@@ -3682,6 +3773,8 @@ MultiLayer *GraphStatsAndSurfaceFit::runPCAAndBiplot(ApplicationWindow *app, Tab
                               std::hypot(load1[static_cast<size_t>(j)],
                                          load2[static_cast<size_t>(j)]));
     }
+    if (!(maxLoadLen > 0.0))
+        maxLoadLen = 1.0;
 
     gsl_eigen_symmv_free(ws);
     gsl_matrix_free(evec);
@@ -6562,7 +6655,7 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
     double mleMSE = betaSE;
     double mleSigma0 = sigma0;
     double mleSigma0SE = sigma0 * lnSigma0SE;
-    double mleVarInvM = 0.0, mleVarLnS0 = 0.0, mleCovLnS0InvM = 0.0;
+    double mleVarLnS0 = 0.0, mleCovLnS0InvM = 0.0;
     bool mleConverged = false;
     {
         std::vector<double> allLnShifted;
@@ -6645,7 +6738,6 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
                     mleMSE = std::sqrt(varM);
                     mleSigma0SE = mleSigma0 * std::sqrt(varU0);
                     mleVarLnS0 = varU0;
-                    mleVarInvM = varM / std::pow(mCur, 4);
                     mleCovLnS0InvM = -covMU0 / (mCur * mCur);
                 }
             }
@@ -6784,10 +6876,12 @@ GraphStatsAndSurfaceFit::WeibullPlotResult GraphStatsAndSurfaceFit::plotWeibullP
         const double wh = interceptA + betaM * uv;
         double hb = 0.0;
         if (res.usedMle && mleVarLnS0 > 0.0) {
-            // Delta-method 95% confidence band on W(u) = m * (u - ln(sigma0))
+            // Delta-method 95% confidence band on W(u) = m * (u - ln(sigma0));
+            // under JIS R 1625 (betaM = B_n * mleM, betaSE = B_n * mleMSE),
+            // Var(betaM) = B_n^2 * Var(mleM) and Cov(betaM, u0) = B_n * Cov(mleM, u0).
             const double du = uv - effLnS0;
-            const double varM = mleMSE * mleMSE;
-            const double covMU0 = -mleCovLnS0InvM * betaM * betaM;
+            const double varM = betaSE * betaSE;
+            const double covMU0 = -mleCovLnS0InvM * mleM * betaM;
             const double varW = std::max(
                     0.0, du * du * varM + betaM * betaM * mleVarLnS0 - 2.0 * du * betaM * covMU0);
             hb = 1.959963984540054 * std::sqrt(varW);
@@ -8044,10 +8138,10 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
     if (!corrMat)
         return nullptr;
 
-    // Cell-aligned [0.5, P + 0.5] x [0.5, P + 0.5] bounds so standard Spectrogram / MatrixData
-    // places cell (i, j) on [j + 0.5, j + 1.5] x [i + 0.5, i + 1.5] centered at integer tick
-    // (j + 1, i + 1) identically both before and after .sciprj reload.
-    corrMat->setCoordinates(0.5, static_cast<double>(P) + 0.5, 0.5, static_cast<double>(P) + 0.5);
+    // Cell centers live at 1..P along both axes; FlagCellBlocks expands each block half a cell
+    // to [0.5, P + 0.5] x [0.5, P + 0.5], centered at integer ticks (j + 1, i + 1) without
+    // bilinear smearing.
+    corrMat->setCoordinates(1.0, static_cast<double>(P), 1.0, static_cast<double>(P));
     for (int i = 0; i < P; ++i) {
         for (int j = 0; j < P; ++j)
             corrMat->setCell(i, j, rMat[static_cast<size_t>(i * P + j)]);
@@ -8081,6 +8175,7 @@ MultiLayer *GraphStatsAndSurfaceFit::plotCorrelationMatrixHeatmap(
             const QwtPlotItemList items = g->plotWidget()->itemList();
             for (QwtPlotItem *it : items) {
                 if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                    sp->setCellBlocks(true);
                     const QwtDoubleInterval zRange = sp->data().range();
                     const double zMin = zRange.isValid() ? zRange.minValue() : -1.0;
                     const double zMax = zRange.isValid() ? zRange.maxValue() : 1.0;
@@ -8872,6 +8967,19 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
 {
     registerPhase5StatsTranslationsOnce();
     PassingBablokDemingResult res;
+    const double initNan = std::numeric_limits<double>::quiet_NaN();
+    res.pbSlope = initNan;
+    res.pbSlopeCILow = initNan;
+    res.pbSlopeCIHigh = initNan;
+    res.pbIntercept = initNan;
+    res.pbInterceptCILow = initNan;
+    res.pbInterceptCIHigh = initNan;
+    res.cusumStat = initNan;
+    res.cusumLinearityP = initNan;
+    res.demingSlope = initNan;
+    res.demingSlopeSE = initNan;
+    res.demingIntercept = initNan;
+    res.demingInterceptSE = initNan;
     if (!srcTable)
         return res;
 
@@ -8895,7 +9003,7 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
 
     std::stable_sort(pts.begin(), pts.end(),
                      [](const std::pair<double, double> &a, const std::pair<double, double> &b) {
-                         return a.first < b.first;
+                         return a.first < b.first || (a.first == b.first && a.second < b.second);
                      });
 
     auto medianOfVec = [](std::vector<double> v) -> double {
@@ -8926,7 +9034,7 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                 continue; // identical pair omitted per Passing & Bablok (1983)
             double s = 0.0;
             if (std::fabs(dx) <= 1e-15) {
-                s = (dy > 0.0) ? infVal : -infVal;
+                s = infVal; // vertical pairs are +inf per Passing & Bablok (1983/1988)
             } else {
                 s = dy / dx;
                 if (std::fabs(s + 1.0) <= 1e-15)
@@ -8943,33 +9051,30 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         return res;
 
     std::sort(slopes.begin(), slopes.end());
-    auto clampedSlopeAt = [&](long long idx0) -> double {
-        const long long cIdx = std::clamp<long long>(idx0, 0, static_cast<long long>(M - 1));
-        return slopes[static_cast<size_t>(cIdx)];
+    auto slopeAtOrNan = [&](long long idx0) -> double {
+        if (idx0 < 0 || idx0 >= static_cast<long long>(M))
+            return nanVal;
+        const double rawS = slopes[static_cast<size_t>(idx0)];
+        return isVerticalSlope(rawS) ? nanVal : rawS;
     };
 
     double pbSlope = nanVal;
     if (M % 2 == 1) {
-        const double rawS = clampedSlopeAt(static_cast<long long>((M - 1) / 2) + kLessMinusOne);
-        pbSlope = isVerticalSlope(rawS) ? nanVal : rawS;
+        pbSlope = slopeAtOrNan(static_cast<long long>((M - 1) / 2) + kLessMinusOne);
     } else {
-        const double s1 = clampedSlopeAt(static_cast<long long>(M / 2 - 1) + kLessMinusOne);
-        const double s2 = clampedSlopeAt(static_cast<long long>(M / 2) + kLessMinusOne);
-        pbSlope = (isVerticalSlope(s1) || isVerticalSlope(s2)) ? nanVal : (0.5 * (s1 + s2));
+        const double s1 = slopeAtOrNan(static_cast<long long>(M / 2 - 1) + kLessMinusOne);
+        const double s2 = slopeAtOrNan(static_cast<long long>(M / 2) + kLessMinusOne);
+        pbSlope = (std::isfinite(s1) && std::isfinite(s2)) ? (0.5 * (s1 + s2)) : nanVal;
     }
 
     const double dn = static_cast<double>(n);
     const double cGamma = 1.959963984540054 * std::sqrt(dn * (dn - 1.0) * (2.0 * dn + 5.0) / 18.0);
     const long long m1Rank = std::llround(0.5 * (static_cast<double>(M) - cGamma));
     const long long m2Rank = static_cast<long long>(M) - m1Rank + 1;
-    const long long loSlopeIdx =
-            std::clamp<long long>(m1Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
-    const long long hiSlopeIdx =
-            std::clamp<long long>(m2Rank + kLessMinusOne - 1, 0, static_cast<long long>(M - 1));
-    const double rawSlopeLo = slopes[static_cast<size_t>(loSlopeIdx)];
-    const double rawSlopeHi = slopes[static_cast<size_t>(hiSlopeIdx)];
-    const double pbSlopeLo = isVerticalSlope(rawSlopeLo) ? nanVal : rawSlopeLo;
-    const double pbSlopeHi = isVerticalSlope(rawSlopeHi) ? nanVal : rawSlopeHi;
+    const long long loSlopeIdx = m1Rank + kLessMinusOne - 1;
+    const long long hiSlopeIdx = m2Rank + kLessMinusOne - 1;
+    const double pbSlopeLo = slopeAtOrNan(loSlopeIdx);
+    const double pbSlopeHi = slopeAtOrNan(hiSlopeIdx);
 
     auto interceptForSlope = [&](double b) -> double {
         if (isVerticalSlope(b))
@@ -9086,49 +9191,56 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         double beta = 0.0;
         if (u >= 0.0) {
             const double denom = 2.0 * lambda * sxy;
-            if (std::fabs(denom) > 1e-30)
-                beta = (u + rad) / denom;
-            else if (sxx > 1e-30)
-                beta = sxy / sxx;
+            if (std::fabs(denom) <= 1e-30)
+                return false;
+            beta = (u + rad) / denom;
         } else {
             const double denom = rad - u;
-            beta = (denom > 1e-30) ? ((2.0 * sxy) / denom) : 0.0;
+            if (denom <= 1e-30)
+                return false;
+            beta = (2.0 * sxy) / denom;
         }
+        const double intercept = my - beta * mx;
+        if (!std::isfinite(beta) || !std::isfinite(intercept))
+            return false;
         slopeOut = beta;
-        interceptOut = my - beta * mx;
-        return std::isfinite(slopeOut) && std::isfinite(interceptOut);
+        interceptOut = intercept;
+        return true;
     };
 
-    double demSlope = 1.0, demIntercept = 0.0;
-    if (!evalDemingPair(-1, demSlope, demIntercept))
+    double demSlope = nanVal, demIntercept = nanVal;
+    double demSlopeSE = nanVal, demInterceptSE = nanVal;
+    const bool demHasFiniteLine = evalDemingPair(-1, demSlope, demIntercept);
+    if (!pbHasFiniteLine && !demHasFiniteLine)
         return res;
 
-    std::vector<double> jkSlopes, jkIntercepts;
-    jkSlopes.reserve(static_cast<size_t>(n));
-    jkIntercepts.reserve(static_cast<size_t>(n));
-    for (int k = 0; k < n; ++k) {
-        double bs = 0.0, ba = 0.0;
-        if (evalDemingPair(k, bs, ba)) {
-            jkSlopes.push_back(bs);
-            jkIntercepts.push_back(ba);
+    if (demHasFiniteLine) {
+        std::vector<double> jkSlopes, jkIntercepts;
+        jkSlopes.reserve(static_cast<size_t>(n));
+        jkIntercepts.reserve(static_cast<size_t>(n));
+        for (int k = 0; k < n; ++k) {
+            double bs = 0.0, ba = 0.0;
+            if (evalDemingPair(k, bs, ba)) {
+                jkSlopes.push_back(bs);
+                jkIntercepts.push_back(ba);
+            }
         }
-    }
-    double demSlopeSE = 0.0, demInterceptSE = 0.0;
-    if (jkSlopes.size() >= 2) {
-        const double mJk = static_cast<double>(jkSlopes.size());
-        const double meanBs =
-                std::accumulate(jkSlopes.begin(), jkSlopes.end(), 0.0) / mJk;
-        const double meanBa =
-                std::accumulate(jkIntercepts.begin(), jkIntercepts.end(), 0.0) / mJk;
-        double ssBs = 0.0, ssBa = 0.0;
-        for (size_t i = 0; i < jkSlopes.size(); ++i) {
-            const double dBs = jkSlopes[i] - meanBs;
-            const double dBa = jkIntercepts[i] - meanBa;
-            ssBs += dBs * dBs;
-            ssBa += dBa * dBa;
+        if (jkSlopes.size() >= 2) {
+            const double mJk = static_cast<double>(jkSlopes.size());
+            const double meanBs =
+                    std::accumulate(jkSlopes.begin(), jkSlopes.end(), 0.0) / mJk;
+            const double meanBa =
+                    std::accumulate(jkIntercepts.begin(), jkIntercepts.end(), 0.0) / mJk;
+            double ssBs = 0.0, ssBa = 0.0;
+            for (size_t i = 0; i < jkSlopes.size(); ++i) {
+                const double dBs = jkSlopes[i] - meanBs;
+                const double dBa = jkIntercepts[i] - meanBa;
+                ssBs += dBs * dBs;
+                ssBa += dBa * dBa;
+            }
+            demSlopeSE = std::sqrt(((mJk - 1.0) / mJk) * ssBs);
+            demInterceptSE = std::sqrt(((mJk - 1.0) / mJk) * ssBa);
         }
-        demSlopeSE = std::sqrt(((mJk - 1.0) / mJk) * ssBs);
-        demInterceptSE = std::sqrt(((mJk - 1.0) / mJk) * ssBa);
     }
 
     res.valid = true;
@@ -9171,46 +9283,52 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
             for (int c : colsToMark)
                 sumTbl->column(c)->setInvalid(row, true);
         };
+        auto setValOrInvalid = [&](int col, int row, double v) {
+            if (std::isfinite(v))
+                sumTbl->column(col)->setValueAt(row, v);
+            else
+                sumTbl->column(col)->setInvalid(row, true);
+        };
 
         sumTbl->column(0)->setTextAt(0, QStringLiteral("N"));
         sumTbl->column(1)->setTextAt(0, QStringLiteral("Paired Valid"));
-        sumTbl->column(2)->setValueAt(0, static_cast<double>(n));
+        setValOrInvalid(2, 0, static_cast<double>(n));
         markInvalidCols(0, { 3, 4, 5, 6 });
 
         sumTbl->column(0)->setTextAt(1, QStringLiteral("Slope"));
         sumTbl->column(1)->setTextAt(1, QStringLiteral("Passing-Bablok"));
-        sumTbl->column(2)->setValueAt(1, pbSlope);
-        sumTbl->column(4)->setValueAt(1, pbSlopeLo);
-        sumTbl->column(5)->setValueAt(1, pbSlopeHi);
+        setValOrInvalid(2, 1, pbSlope);
+        setValOrInvalid(4, 1, pbSlopeLo);
+        setValOrInvalid(5, 1, pbSlopeHi);
         markInvalidCols(1, { 3, 6 });
 
         sumTbl->column(0)->setTextAt(2, QStringLiteral("Intercept"));
         sumTbl->column(1)->setTextAt(2, QStringLiteral("Passing-Bablok"));
-        sumTbl->column(2)->setValueAt(2, pbIntercept);
-        sumTbl->column(4)->setValueAt(2, pbInterceptLo);
-        sumTbl->column(5)->setValueAt(2, pbInterceptHi);
+        setValOrInvalid(2, 2, pbIntercept);
+        setValOrInvalid(4, 2, pbInterceptLo);
+        setValOrInvalid(5, 2, pbInterceptHi);
         markInvalidCols(2, { 3, 6 });
 
         sumTbl->column(0)->setTextAt(3, QStringLiteral("Cusum_Linearity"));
         sumTbl->column(1)->setTextAt(3, QStringLiteral("Passing-Bablok"));
-        sumTbl->column(2)->setValueAt(3, cusumH);
-        sumTbl->column(6)->setValueAt(3, cusumP);
+        setValOrInvalid(2, 3, cusumH);
+        setValOrInvalid(6, 3, cusumP);
         markInvalidCols(3, { 3, 4, 5 });
 
         sumTbl->column(0)->setTextAt(4, QStringLiteral("Slope"));
         sumTbl->column(1)->setTextAt(4, QStringLiteral("Deming (λ=%1)").arg(lambda, 0, 'g', 4));
-        sumTbl->column(2)->setValueAt(4, demSlope);
-        sumTbl->column(3)->setValueAt(4, demSlopeSE);
-        sumTbl->column(4)->setValueAt(4, demSlope - tCrit * demSlopeSE);
-        sumTbl->column(5)->setValueAt(4, demSlope + tCrit * demSlopeSE);
+        setValOrInvalid(2, 4, demSlope);
+        setValOrInvalid(3, 4, demSlopeSE);
+        setValOrInvalid(4, 4, demSlope - tCrit * demSlopeSE);
+        setValOrInvalid(5, 4, demSlope + tCrit * demSlopeSE);
         markInvalidCols(4, { 6 });
 
         sumTbl->column(0)->setTextAt(5, QStringLiteral("Intercept"));
         sumTbl->column(1)->setTextAt(5, QStringLiteral("Deming (λ=%1)").arg(lambda, 0, 'g', 4));
-        sumTbl->column(2)->setValueAt(5, demIntercept);
-        sumTbl->column(3)->setValueAt(5, demInterceptSE);
-        sumTbl->column(4)->setValueAt(5, demIntercept - tCrit * demInterceptSE);
-        sumTbl->column(5)->setValueAt(5, demIntercept + tCrit * demInterceptSE);
+        setValOrInvalid(2, 5, demIntercept);
+        setValOrInvalid(3, 5, demInterceptSE);
+        setValOrInvalid(4, 5, demIntercept - tCrit * demInterceptSE);
+        setValOrInvalid(5, 5, demIntercept + tCrit * demInterceptSE);
         markInvalidCols(5, { 6 });
     }
 
@@ -9225,6 +9343,12 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         const double xSpan = std::max(1e-6, xMax - xMin);
         const double xLineMin = xMin - 0.04 * xSpan;
         const double xLineMax = xMax + 0.04 * xSpan;
+        const bool pbHasPlottableLine = pbHasFiniteLine
+                && std::isfinite(pbIntercept + pbSlope * xLineMin)
+                && std::isfinite(pbIntercept + pbSlope * xLineMax);
+        const bool demHasPlottableLine = demHasFiniteLine
+                && std::isfinite(demIntercept + demSlope * xLineMin)
+                && std::isfinite(demIntercept + demSlope * xLineMax);
 
         Column *colObsX = new Column(QStringLiteral("Ref_X"), SciDAVis::ColumnMode::Numeric);
         Column *colObsY = new Column(QStringLiteral("Observed"), SciDAVis::ColumnMode::Numeric);
@@ -9249,15 +9373,20 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         colLineX->setValueAt(1, xLineMax);
         colIdY->setValueAt(0, xLineMin);
         colIdY->setValueAt(1, xLineMax);
-        if (pbHasFiniteLine) {
+        if (pbHasPlottableLine) {
             colPbY->setValueAt(0, pbIntercept + pbSlope * xLineMin);
             colPbY->setValueAt(1, pbIntercept + pbSlope * xLineMax);
         } else {
             colPbY->setInvalid(0, true);
             colPbY->setInvalid(1, true);
         }
-        colDemY->setValueAt(0, demIntercept + demSlope * xLineMin);
-        colDemY->setValueAt(1, demIntercept + demSlope * xLineMax);
+        if (demHasPlottableLine) {
+            colDemY->setValueAt(0, demIntercept + demSlope * xLineMin);
+            colDemY->setValueAt(1, demIntercept + demSlope * xLineMax);
+        } else {
+            colDemY->setInvalid(0, true);
+            colDemY->setInvalid(1, true);
+        }
         for (int r = 2; r < n; ++r) {
             colLineX->setInvalid(r, true);
             colIdY->setInvalid(r, true);
@@ -9276,27 +9405,33 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
         if (ml && plotTbl) {
             if (Graph *g = ml->activeGraph()) {
                 // Build exact rank-envelope 95% CI band over x in [xLineMin, xLineMax]
+                const bool pbHasFiniteCI = pbHasPlottableLine && std::isfinite(pbSlopeLo)
+                        && std::isfinite(pbSlopeHi) && std::isfinite(aAtLo) && std::isfinite(aAtHi)
+                        && loSlopeIdx >= 0 && hiSlopeIdx >= loSlopeIdx
+                        && hiSlopeIdx < static_cast<long long>(M)
+                        && std::fabs(pbSlopeLo) < 1e12 && std::fabs(pbSlopeHi) < 1e12;
                 std::vector<std::pair<double, double>> ciLines;
-                if (std::isfinite(pbSlopeLo) && std::isfinite(aAtLo) && std::fabs(pbSlopeLo) < 1e12)
+                if (pbHasFiniteCI) {
                     ciLines.emplace_back(pbSlopeLo, aAtLo);
-                if (std::isfinite(pbSlopeHi) && std::isfinite(aAtHi) && std::fabs(pbSlopeHi) < 1e12)
                     ciLines.emplace_back(pbSlopeHi, aAtHi);
-                if (pbHasFiniteLine && std::fabs(pbSlope) < 1e12)
-                    ciLines.emplace_back(pbSlope, pbIntercept);
-                const long long idxSpan = std::max<long long>(1, hiSlopeIdx - loSlopeIdx);
-                const long long stepIdx = std::max<long long>(1, idxSpan / 24);
-                for (long long k = loSlopeIdx; k <= hiSlopeIdx; k += stepIdx) {
-                    const double bk = slopes[static_cast<size_t>(k)];
-                    if (std::isfinite(bk) && std::fabs(bk) < 1e12) {
-                        const double ak = interceptForSlope(bk);
-                        if (std::isfinite(ak))
-                            ciLines.emplace_back(bk, ak);
+                    if (std::fabs(pbSlope) < 1e12)
+                        ciLines.emplace_back(pbSlope, pbIntercept);
+                    const long long idxSpan = std::max<long long>(1, hiSlopeIdx - loSlopeIdx);
+                    const long long stepIdx = std::max<long long>(1, idxSpan / 24);
+                    for (long long k = loSlopeIdx; k <= hiSlopeIdx; k += stepIdx) {
+                        const double bk = slopes[static_cast<size_t>(k)];
+                        if (std::isfinite(bk) && std::fabs(bk) < 1e12) {
+                            const double ak = interceptForSlope(bk);
+                            if (std::isfinite(ak))
+                                ciLines.emplace_back(bk, ak);
+                        }
                     }
                 }
 
-                if (!ciLines.empty()) {
+                if (ciLines.size() >= 2) {
                     constexpr int kGrid = 65;
                     QVector<double> bx(kGrid), bLo(kGrid), bHi(kGrid);
+                    bool bandFinite = true;
                     for (int gi = 0; gi < kGrid; ++gi) {
                         const double xg = xLineMin
                                 + (xLineMax - xLineMin) * static_cast<double>(gi)
@@ -9305,15 +9440,23 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                         double hiY = -std::numeric_limits<double>::max();
                         for (const auto &ab : ciLines) {
                             const double yg = ab.second + ab.first * xg;
+                            if (!std::isfinite(yg)) {
+                                bandFinite = false;
+                                break;
+                            }
                             loY = std::min(loY, yg);
                             hiY = std::max(hiY, yg);
                         }
+                        if (!bandFinite)
+                            break;
                         bx[gi] = xg;
                         bLo[gi] = loY;
                         bHi[gi] = hiY;
                     }
-                    g->addShadedBand(bx, bLo, bHi, QColor(195, 30, 45, 44),
-                                     QObject::tr("PB 95% CI"));
+                    if (bandFinite) {
+                        g->addShadedBand(bx, bLo, bHi, QColor(195, 30, 45, 44),
+                                         QObject::tr("PB 95% CI"));
+                    }
                 }
 
                 if (g->insertCurve(plotTbl, plotTbl->colName(0), plotTbl->colName(1),
@@ -9328,20 +9471,22 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                     const int idx = g->curves() - 1;
                     g->setCurvePen(idx, QPen(QColor(115, 120, 130), 1.5, Qt::DashLine));
                 }
-                if (g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(4), Graph::Line,
-                                   0, 1)) {
+                if (pbHasPlottableLine
+                    && g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(4),
+                                      Graph::Line, 0, 1)) {
                     const int idx = g->curves() - 1;
                     g->setCurvePen(idx, QPen(QColor(195, 30, 45), 2.2, Qt::SolidLine));
                 }
-                if (g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(5), Graph::Line,
-                                   0, 1)) {
+                if (demHasPlottableLine
+                    && g->insertCurve(plotTbl, plotTbl->colName(2), plotTbl->colName(5),
+                                      Graph::Line, 0, 1)) {
                     const int idx = g->curves() - 1;
                     g->setCurvePen(idx, QPen(QColor(15, 135, 120), 2.0, Qt::DashDotLine));
                 }
 
                 double allMinY = std::min(yMin, xLineMin);
                 double allMaxY = std::max(yMax, xLineMax);
-                if (pbHasFiniteLine) {
+                if (pbHasPlottableLine) {
                     allMinY = std::min({ allMinY, pbIntercept + pbSlope * xLineMin,
                                          pbIntercept + pbSlope * xLineMax });
                     allMaxY = std::max({ allMaxY, pbIntercept + pbSlope * xLineMin,
@@ -9350,7 +9495,7 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                 const double ySpan = std::max(1e-6, allMaxY - allMinY);
                 auto fmtPb = [](double v, int prec = 4) -> QString {
                     return std::isfinite(v) ? QString::number(v, 'g', prec)
-                                            : QStringLiteral("undefined (vertical)");
+                                            : QStringLiteral("N/A");
                 };
                 const QString boxText =
                         QStringLiteral("Passing-Bablok (n = %1)\n"
@@ -9368,8 +9513,8 @@ GraphStatsAndSurfaceFit::runPassingBablokDeming(
                                 .arg(fmtPb(pbInterceptHi))
                                 .arg(fmtPb(cusumP, 3))
                                 .arg(lambda, 0, 'g', 4)
-                                .arg(demIntercept, 0, 'g', 4)
-                                .arg(demSlope, 0, 'g', 4);
+                                .arg(fmtPb(demIntercept))
+                                .arg(fmtPb(demSlope));
                 g->setXAxisTitle(cX->name());
                 g->setYAxisTitle(cY->name());
                 g->setTitle(QString());

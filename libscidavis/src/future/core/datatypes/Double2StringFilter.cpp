@@ -60,6 +60,8 @@ bool Double2StringFilter::load(XmlStreamReader *reader)
 
 void Double2StringFilter::setNumericFormat(char format)
 {
+    if (format != 'f' && format != 'e' && format != 'g' && format != 'E' && format != 'G')
+        format = 'g';
     exec(new Double2StringFilterSetFormatCmd(this, format));
 }
 

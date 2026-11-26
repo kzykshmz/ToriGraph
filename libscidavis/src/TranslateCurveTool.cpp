@@ -84,8 +84,11 @@ void TranslateCurveTool::selectCurvePoint(QwtPlotCurve *curve, int point_index)
     d_sub_tool = nullptr;
 
     // Phase 2: select destination
-    d_sub_tool = new ScreenPickerTool(d_graph, this, SIGNAL(statusText(const QString &)));
-    connect((ScreenPickerTool *)d_sub_tool, SIGNAL(selected(const QwtDoublePoint &)), this,
+    ScreenPickerTool *picker =
+            new ScreenPickerTool(d_graph, this, SIGNAL(statusText(const QString &)));
+    picker->setAxis(d_selected_curve->xAxis(), d_selected_curve->yAxis());
+    d_sub_tool = picker;
+    connect(picker, SIGNAL(selected(const QwtDoublePoint &)), this,
             SLOT(selectDestination(const QwtDoublePoint &)));
     emit statusText(tr("Curve selected! Move cursor and click to choose a point and "
                        "double-click/press 'Enter' to finish!"));

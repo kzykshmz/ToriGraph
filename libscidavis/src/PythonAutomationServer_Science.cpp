@@ -190,6 +190,13 @@
 
 using namespace rpc_internal;
 
+namespace CurveMathToolsInternal {
+CurveMathTools::EISResult analyzeEISWithOptions(
+        ApplicationWindow *app, Table *srcTable, const QString &freqCol,
+        const QString &zRealCol, const QString &zImagCol,
+        bool zImagAlreadyNegated, bool fitCircuit, bool idealCapacitorOnly);
+}
+
 namespace {
 
 class RpcIntegration : public Integration
@@ -469,10 +476,24 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 ? QStringLiteral("curve_b")
                 : QStringLiteral("curve2");
         QString cA, cB;
-        if (!params.contains(keyA) && !params.contains(keyB) && g->curves() >= 2) {
-            cA = g->curve(0)->title().text();
-            cB = g->curve(1)->title().text();
-        } else {
+        const bool hasA = params.contains(keyA) && !params.value(keyA).isNull();
+        const bool hasB = params.contains(keyB) && !params.value(keyB).isNull();
+        bool pickedDefaults = false;
+        if (!hasA && !hasB) {
+            QStringList defaultCurves;
+            for (int ci = 0; ci < g->curves() && defaultCurves.size() < 2; ++ci) {
+                if (QwtPlotCurve *pc = g->curve(ci)) {
+                    if (g->curveType(ci) != Graph::ErrorBars)
+                        defaultCurves.append(pc->title().text());
+                }
+            }
+            if (defaultCurves.size() >= 2) {
+                cA = defaultCurves[0];
+                cB = defaultCurves[1];
+                pickedDefaults = true;
+            }
+        }
+        if (!pickedDefaults) {
             cA = resolveCurveTitle(g, params, keyA, true);
             cB = resolveCurveTitle(g, params, keyB, true);
         }
@@ -503,10 +524,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                     QStringLiteral("Unsupported curve math op '%1' (expected 'add'|'sub'|'mul'|'div' or '+'|'-'|'*'|'/').")
                             .arg(opStr));
 
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Curve Math"));
         QwtPlotCurve *outC = CurveMathTools::simpleCurveMath(
                 d_app, g, cA, cB, op, optionalJsonBool(params, QStringLiteral("union_grid"), false));
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -535,10 +559,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 ? optionalJsonBool(params, QStringLiteral("sd_band"), true)
                 : optionalJsonBool(params, QStringLiteral("add_sd_band"), true);
         Table *outTbl = nullptr;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Average Curves"));
         QwtPlotCurve *avgC = CurveMathTools::averageMultipleCurves(
                 d_app, g, titles, numPts, sdBand, &outTbl);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (avgC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (avgC != nullptr);
         if (avgC)
             outResult[QStringLiteral("output_curve")] = avgC->title().text();
@@ -574,10 +601,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             throwInvalidParams(
                     QStringLiteral("Unsupported normalize mode '%1'.").arg(m));
 
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Normalize Curve"));
         QwtPlotCurve *outC = CurveMathTools::normalizeCurve(
                 d_app, g, curveTitle, nm, params.value(QStringLiteral("ref_x")).toDouble(0.0));
         enforceArialGraphFonts(g);
         g->replot();
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -658,6 +688,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             .arg(curveTitle));
         }
         integ.setMethod(static_cast<Integration::InterpolationMethod>(integMethod));
+        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Integrate Curve"));
         const bool ok = integ.run();
         const double areaVal = integ.result();
 
@@ -684,6 +715,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                     QStringLiteral("Integration failed to produce a finite area on curve '%1'.")
                             .arg(curveTitle));
         }
+        if (plotCurve && g->curves() > curvesBefore)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = true;
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("curve")] = curveTitle;
@@ -902,9 +935,12 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             .arg(minPts));
         }
         interp->setOutputPoints(outPts);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Interpolate Curve"));
         const bool ok = interp->run() && (g->curves() > curvesBefore);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (ok)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = ok;
         if (!ok) {
             outResult[QStringLiteral("message")] =
@@ -951,11 +987,14 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             throwInvalidParams(QStringLiteral("curvemath.subtract_line y2 - y1 overflows."));
         const QPointF p1(x1, y1);
         const QPointF p2(x2, y2);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Subtract Straight Line"));
         QwtPlotCurve *outC = CurveMathTools::subtractStraightLine(
                 d_app, g, curveTitle, p1, p2,
                 optionalJsonBool(params, QStringLiteral("in_place"), false));
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -1140,11 +1179,26 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         MultiLayer *ml = resolveMultiLayer(d_app, params);
         Graph *g = resolveGraphLayer(ml, params);
         QString cA, cB;
-        if (!params.contains(QStringLiteral("curve_a"))
-            && !params.contains(QStringLiteral("curve_b")) && g->curves() >= 2) {
-            cA = g->curve(0)->title().text();
-            cB = g->curve(1)->title().text();
-        } else {
+        const bool hasA = params.contains(QStringLiteral("curve_a"))
+                && !params.value(QStringLiteral("curve_a")).isNull();
+        const bool hasB = params.contains(QStringLiteral("curve_b"))
+                && !params.value(QStringLiteral("curve_b")).isNull();
+        bool pickedDefaults = false;
+        if (!hasA && !hasB) {
+            QStringList defaultCurves;
+            for (int ci = 0; ci < g->curves() && defaultCurves.size() < 2; ++ci) {
+                if (QwtPlotCurve *pc = g->curve(ci)) {
+                    if (g->curveType(ci) != Graph::ErrorBars)
+                        defaultCurves.append(pc->title().text());
+                }
+            }
+            if (defaultCurves.size() >= 2) {
+                cA = defaultCurves[0];
+                cB = defaultCurves[1];
+                pickedDefaults = true;
+            }
+        }
+        if (!pickedDefaults) {
             cA = resolveCurveTitle(g, params, QStringLiteral("curve_a"), true);
             cB = resolveCurveTitle(g, params, QStringLiteral("curve_b"), true);
         }
@@ -1156,8 +1210,11 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                                                           : std::clamp(int(std::round(rawA)), 0, 255);
             fillCol.setAlpha(a255);
         }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Fill Between Curves"));
         QwtPlotCurve *fc = CurveMathTools::fillBetweenCurves(d_app, g, cA, cB, fillCol);
         replotGraphOrDefer(g);
+        if (fc)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (fc != nullptr);
         if (!fc) {
             // Say why nothing was filled (an empty curve used to give a bare ok false).
@@ -1477,9 +1534,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const QString zrCol = t->colLabel(resolveColumnIndex(t, zrKey, true));
         const QString ziCol = t->colLabel(resolveColumnIndex(t, ziKey, true));
         const bool negImag = optionalJsonBool(params, QStringLiteral("z_imag_negated"), false);
-        bool fitCpe = params.contains(QStringLiteral("fit_cpe"))
-                ? optionalJsonBool(params, QStringLiteral("fit_cpe"), true)
-                : true;
+        bool fitCircuit = true;
+        bool idealCapacitorOnly = false;
         const QString rawModel = params.contains(QStringLiteral("model"))
                 ? optionalJsonString(params, QStringLiteral("model")).trimmed()
                 : optionalJsonString(params, QStringLiteral("circuit")).trimmed();
@@ -1489,20 +1545,24 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             mNorm.remove(QLatin1Char('-'));
             mNorm.remove(QLatin1Char(' '));
             if (mNorm == QStringLiteral("randles") || mNorm == QStringLiteral("rc")) {
-                if (!params.contains(QStringLiteral("fit_cpe")))
-                    fitCpe = false;
+                idealCapacitorOnly = true;
+                fitCircuit = true;
             } else if (mNorm == QStringLiteral("randlescpe")
                        || mNorm == QStringLiteral("randleswarburg")
                        || mNorm == QStringLiteral("cpe")) {
-                if (!params.contains(QStringLiteral("fit_cpe")))
-                    fitCpe = true;
+                idealCapacitorOnly = false;
+                fitCircuit = true;
             } else {
                 throwInvalidParams(
                         QStringLiteral("Unknown EIS circuit model '%1' (expected 'Randles' or 'Randles_CPE' / 'RandlesWarburg').")
                                 .arg(rawModel));
             }
+        } else if (params.contains(QStringLiteral("fit_cpe"))
+                   && !optionalJsonBool(params, QStringLiteral("fit_cpe"), true)) {
+            fitCircuit = false;
         }
-        const auto eis = CurveMathTools::analyzeEIS(d_app, t, fCol, zrCol, ziCol, negImag, fitCpe);
+        const auto eis = CurveMathToolsInternal::analyzeEISWithOptions(
+                d_app, t, fCol, zrCol, ziCol, negImag, fitCircuit, idealCapacitorOnly);
         if (eis.nyquistPlot) {
             for (Graph *lg : eis.nyquistPlot->layersList())
                 enforceArialGraphFonts(lg);
@@ -2149,7 +2209,7 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (!std::isfinite(v))
                 return std::numeric_limits<double>::quiet_NaN();
             if (mode == QStringLiteral("2theta_to_d")) {
-                if (v <= 0.0 || v >= 180.0)
+                if (v <= 0.0 || v > 180.0)
                     return std::numeric_limits<double>::quiet_NaN();
                 const double s = std::sin(0.5 * v * kPi / 180.0);
                 return (s > 1e-12) ? (wavelength / (2.0 * s))
@@ -2159,11 +2219,12 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 if (v <= 0.0)
                     return std::numeric_limits<double>::quiet_NaN();
                 const double arg = wavelength / (2.0 * v);
-                return (arg > 0.0 && arg <= 1.0) ? (2.0 * std::asin(arg) * 180.0 / kPi)
-                                                 : std::numeric_limits<double>::quiet_NaN();
+                return (arg > 0.0 && arg <= 1.0 + 1e-12)
+                        ? (2.0 * std::asin(std::min(1.0, arg)) * 180.0 / kPi)
+                        : std::numeric_limits<double>::quiet_NaN();
             }
             if (mode == QStringLiteral("2theta_to_q")) {
-                if (v < 0.0 || v >= 180.0)
+                if (v < 0.0 || v > 180.0)
                     return std::numeric_limits<double>::quiet_NaN();
                 return 4.0 * kPi * std::sin(0.5 * v * kPi / 180.0) / wavelength;
             }
@@ -2171,8 +2232,9 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 if (v < 0.0)
                     return std::numeric_limits<double>::quiet_NaN();
                 const double arg = v * wavelength / (4.0 * kPi);
-                return (arg >= 0.0 && arg <= 1.0) ? (2.0 * std::asin(arg) * 180.0 / kPi)
-                                                  : std::numeric_limits<double>::quiet_NaN();
+                return (arg >= 0.0 && arg <= 1.0 + 1e-12)
+                        ? (2.0 * std::asin(std::min(1.0, arg)) * 180.0 / kPi)
+                        : std::numeric_limits<double>::quiet_NaN();
             }
             if (mode == QStringLiteral("d_to_q")) {
                 return (v > 1e-12) ? (2.0 * kPi / v)
@@ -2221,11 +2283,23 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             MultiLayer *ml = resolveMultiLayer(d_app, params);
             Graph *parentG = resolveGraphLayer(ml, params);
             ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Bragg Linked Axis"));
-            const QString xExpr = (mode == QStringLiteral("2theta_to_q"))
-                    ? QStringLiteral("4*3.141592653589793*sin(x*3.141592653589793/360)/(%1)")
-                              .arg(wavelength, 0, 'g', 12)
-                    : QStringLiteral("(%1)/(2*sin(x*3.141592653589793/360))")
-                              .arg(wavelength, 0, 'g', 12);
+            QString xExpr;
+            if (mode == QStringLiteral("2theta_to_q")) {
+                xExpr = QStringLiteral("4*3.141592653589793*sin(x*3.141592653589793/360)/(%1)")
+                                .arg(wavelength, 0, 'g', 12);
+            } else if (mode == QStringLiteral("2theta_to_d")) {
+                xExpr = QStringLiteral("(%1)/(2*sin(x*3.141592653589793/360))")
+                                .arg(wavelength, 0, 'g', 12);
+            } else if (mode == QStringLiteral("d_to_2theta")) {
+                xExpr = QStringLiteral("360/3.141592653589793*asin((%1)/(2*x))")
+                                .arg(wavelength, 0, 'g', 12);
+            } else if (mode == QStringLiteral("q_to_2theta")) {
+                xExpr = QStringLiteral("360/3.141592653589793*asin(x*(%1)/(4*3.141592653589793))")
+                                .arg(wavelength, 0, 'g', 12);
+            } else {
+                // d_to_q and q_to_d are both 2*pi / x
+                xExpr = QStringLiteral("2*3.141592653589793/x");
+            }
             Graph *linkedG =
                     ml->addLinkedLayer(parentG, true, false, xExpr, QStringLiteral("y"));
             if (linkedG) {
@@ -3709,9 +3783,36 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const bool attachToExisting =
                 !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
 
+        bool hasZRange = false;
+        double parsedZMin = 0.0;
+        double parsedZMax = 1.0;
+        if (params.contains(QStringLiteral("z_min")) && params.contains(QStringLiteral("z_max"))
+            && !params.value(QStringLiteral("z_min")).isNull()
+            && !params.value(QStringLiteral("z_max")).isNull()) {
+            const double zLo = parseFiniteCoordDouble(params.value(QStringLiteral("z_min")),
+                                                      QStringLiteral("z_min"));
+            const double zHi = parseFiniteCoordDouble(params.value(QStringLiteral("z_max")),
+                                                      QStringLiteral("z_max"));
+            validateFiniteCoordRange(zLo, zHi, QStringLiteral("Colorbar [z_min, z_max]"));
+            parsedZMin = std::min(zLo, zHi);
+            parsedZMax = std::max(zLo, zHi);
+            hasZRange = true;
+        }
+        const bool hasColorBarTitle = params.contains(QStringLiteral("colorbar_title"))
+                && !params.value(QStringLiteral("colorbar_title")).isNull();
+        const QString reqColorBarTitle = hasColorBarTitle
+                ? optionalJsonString(params, QStringLiteral("colorbar_title"))
+                : QString();
+        const bool hasShowColorBar = params.contains(QStringLiteral("show_colorbar"))
+                && !params.value(QStringLiteral("show_colorbar")).isNull();
+        const bool reqShowColorBar = hasShowColorBar
+                ? optionalJsonBool(params, QStringLiteral("show_colorbar"), true)
+                : true;
+
         MultiLayer *ml = nullptr;
         Graph *targetG = nullptr;
         DataCurve *cmDc = nullptr;
+        std::unique_ptr<ScopedGraphUndoGuard> undoGuard;
         if (attachToExisting) {
             Column *cx = t->column(xIdx);
             Column *cy = t->column(yIdx);
@@ -3724,7 +3825,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
             ml = resolveMultiLayer(d_app, params);
             targetG = resolveGraphLayer(ml, params);
-            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Color-Mapped Scatter"));
+            undoGuard = std::make_unique<ScopedGraphUndoGuard>(
+                    ml, QObject::tr("Add Color-Mapped Scatter"));
             if (!targetG->insertCurve(t, xc, yc, Graph::Scatter))
                 throwRpcRuntime(QStringLiteral("Failed to add color-mapped scatter curve."));
             const int idx = targetG->curves() - 1;
@@ -3760,7 +3862,6 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             }
             targetG->syncPointColorBar();
             replotGraphOrDefer(targetG);
-            undoGuard.commit();
         } else {
             ml = ExtraPlotTypes::plotColorMappedScatter(d_app, t, xc, yc, zc, sc, int(preset), rev);
             if (!ml)
@@ -3772,27 +3873,18 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         if (cmDc && targetG) {
             bool pmChanged = false;
             DataCurve::PointColorMap pm = cmDc->pointColorMap();
-            if (params.contains(QStringLiteral("z_min")) && params.contains(QStringLiteral("z_max"))
-                && !params.value(QStringLiteral("z_min")).isNull()
-                && !params.value(QStringLiteral("z_max")).isNull()) {
-                const double zLo = parseFiniteCoordDouble(params.value(QStringLiteral("z_min")),
-                                                          QStringLiteral("z_min"));
-                const double zHi = parseFiniteCoordDouble(params.value(QStringLiteral("z_max")),
-                                                          QStringLiteral("z_max"));
-                validateFiniteCoordRange(zLo, zHi, QStringLiteral("Colorbar [z_min, z_max]"));
+            if (hasZRange) {
                 pm.autoRange = false;
-                pm.zMin = std::min(zLo, zHi);
-                pm.zMax = std::max(zLo, zHi);
+                pm.zMin = parsedZMin;
+                pm.zMax = parsedZMax;
                 pmChanged = true;
             }
-            if (params.contains(QStringLiteral("colorbar_title"))
-                && !params.value(QStringLiteral("colorbar_title")).isNull()) {
-                pm.colorBarTitle = optionalJsonString(params, QStringLiteral("colorbar_title"));
+            if (hasColorBarTitle) {
+                pm.colorBarTitle = reqColorBarTitle;
                 pmChanged = true;
             }
-            if (params.contains(QStringLiteral("show_colorbar"))
-                && !params.value(QStringLiteral("show_colorbar")).isNull()) {
-                pm.showColorBar = optionalJsonBool(params, QStringLiteral("show_colorbar"), true);
+            if (hasShowColorBar) {
+                pm.showColorBar = reqShowColorBar;
                 pmChanged = true;
             }
             if (pmChanged) {
@@ -3801,8 +3893,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 replotGraphOrDefer(targetG);
             }
         }
+        if (undoGuard)
+            undoGuard->commit();
         outResult[QStringLiteral("ok")] = true;
-        outResult[QStringLiteral("graph")] = ml->name();
+        if (ml) {
+            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("name")] = ml->name();
+        }
         if (cmDc) {
             double lo = 0.0, hi = 1.0;
             cmDc->pointColorRange(&lo, &hi);
@@ -3821,7 +3918,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const auto hr = ExtraPlotTypes::plotHistogramCumulative(
                 d_app, t, t->colName(cIdx),
                 optionalJsonFiniteDouble(params, QStringLiteral("bin_width"), 0.0),
-                optionalJsonFiniteDouble(params, QStringLiteral("begin"), 0.0));
+                optionalJsonFiniteDouble(params, QStringLiteral("begin"),
+                                         std::numeric_limits<double>::quiet_NaN()));
         if (!hr.valid)
             throwInvalidParams(hr.error.isEmpty() ? QStringLiteral("Histogram failed.") : hr.error);
         if (hr.plot)
@@ -3839,8 +3937,10 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         outResult[QStringLiteral("cumulative_pct")] = cum;
         if (hr.table)
             outResult[QStringLiteral("table")] = hr.table->name();
-        if (hr.plot)
+        if (hr.plot) {
             outResult[QStringLiteral("graph")] = hr.plot->name();
+            outResult[QStringLiteral("name")] = hr.plot->name();
+        }
         return true;
     }
 
@@ -3864,11 +3964,12 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             const int ci = resolveCurveIndex(g, params, QStringLiteral("curve"), true);
             auto *dc = dynamic_cast<DataCurve *>(g->curve(ci));
             if (!dc || !dc->table() || g->curveType(ci) == Graph::ErrorBars) {
+                const QString cTitle = g->curve(ci) ? g->curve(ci)->title().text() : QString();
                 throwInvalidParams(
                         QStringLiteral("graph.add_error_band: curve %1 ('%2') is not a data curve "
                                        "of a table.")
                                 .arg(ci)
-                                .arg(g->curve(ci)->title().text()));
+                                .arg(cTitle));
             }
             master = dc;
         } else {
@@ -3945,8 +4046,10 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         outResult[QStringLiteral("max_count")] = safeJsonDouble(dr.maxCount);
         if (dr.matrix)
             outResult[QStringLiteral("matrix")] = dr.matrix->name();
-        if (dr.plot)
+        if (dr.plot) {
             outResult[QStringLiteral("graph")] = dr.plot->name();
+            outResult[QStringLiteral("name")] = dr.plot->name();
+        }
         return true;
     }
 
@@ -4091,8 +4194,10 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         outResult[QStringLiteral("missing")] = pr.missing;
         if (pr.matrix)
             outResult[QStringLiteral("matrix")] = pr.matrix->name();
-        if (pr.plot)
+        if (pr.plot) {
             outResult[QStringLiteral("graph")] = pr.plot->name();
+            outResult[QStringLiteral("name")] = pr.plot->name();
+        }
         return true;
     }
 
@@ -4206,11 +4311,21 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         const bool wantBiplot = optionalJsonBool(params, QStringLiteral("biplot"), true);
         QStringList colNames;
         QVector<int> colIdxs;
-        if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray()) {
-                const int ci = resolveColumnIndex(t, cv, true);
+        if (params.contains(QStringLiteral("cols")) && !params.value(QStringLiteral("cols")).isNull()) {
+            const QJsonValue colsVal = params.value(QStringLiteral("cols"));
+            if (colsVal.isArray()) {
+                for (const QJsonValue &cv : colsVal.toArray()) {
+                    const int ci = resolveColumnIndex(t, cv, true);
+                    colIdxs.append(ci);
+                    colNames << t->colLabel(ci);
+                }
+            } else if (colsVal.isString() || colsVal.isDouble()) {
+                const int ci = resolveColumnIndex(t, colsVal, true);
                 colIdxs.append(ci);
                 colNames << t->colLabel(ci);
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("stats.pca 'cols' must be a list of column names or indices."));
             }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
@@ -4239,13 +4354,14 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (okRow)
                 ++completeRows;
         }
-        if (completeRows < 2) {
+        if (completeRows < 3) {
             throwInvalidParams(
-                    QStringLiteral("stats.pca requires at least 2 complete finite rows (got %1).")
+                    QStringLiteral("stats.pca requires at least 3 complete finite rows (got %1).")
                             .arg(completeRows));
         }
         Table *scoresTbl = nullptr;
-        MultiLayer *ml = GraphStatsAndSurfaceFit::runPCAAndBiplot(d_app, t, colNames, &scoresTbl);
+        MultiLayer *ml = GraphStatsAndSurfaceFit::runPCAAndBiplot(d_app, t, colNames, &scoresTbl,
+                                                                  standardize);
         if (!ml && !scoresTbl) {
             throwInvalidParams(
                     QStringLiteral("stats.pca failed due to insufficient valid data in '%1'.")
@@ -4404,11 +4520,21 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         Table *t = resolveTable(d_app, params);
         QStringList colNames;
         QVector<int> colIdxs;
-        if (params.value(QStringLiteral("cols")).isArray()) {
-            for (const QJsonValue &cv : params.value(QStringLiteral("cols")).toArray()) {
-                const int ci = resolveColumnIndex(t, cv, true);
+        if (params.contains(QStringLiteral("cols")) && !params.value(QStringLiteral("cols")).isNull()) {
+            const QJsonValue colsVal = params.value(QStringLiteral("cols"));
+            if (colsVal.isArray()) {
+                for (const QJsonValue &cv : colsVal.toArray()) {
+                    const int ci = resolveColumnIndex(t, cv, true);
+                    colIdxs.append(ci);
+                    colNames << t->colLabel(ci);
+                }
+            } else if (colsVal.isString() || colsVal.isDouble()) {
+                const int ci = resolveColumnIndex(t, colsVal, true);
                 colIdxs.append(ci);
                 colNames << t->colLabel(ci);
+            } else {
+                throwInvalidParams(
+                        QStringLiteral("stats.clustering 'cols' must be a column name, index, or list."));
             }
         } else {
             for (int c = 0; c < t->numCols(); ++c) {
@@ -4459,18 +4585,213 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             throwInvalidParams(
                     QStringLiteral("Unknown hierarchical linkage '%1' (expected 'ward'|'complete'|'average').")
                             .arg(lnkStr));
+        const bool plotC = params.contains(QStringLiteral("plot"))
+                ? optionalJsonBool(params, QStringLiteral("plot"), true)
+                : true;
         if (alg == QStringLiteral("hierarchical") || alg == QStringLiteral("dendrogram")) {
-            MultiLayer *ml = GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(d_app, t, colNames,
-                                                                                 lnk);
-            if (!ml) {
+            const int D = colIdxs.size();
+            std::vector<int> validRows;
+            std::vector<std::vector<double>> rawX;
+            for (int r = 0; r < t->numRows(); ++r) {
+                bool okRow = true;
+                std::vector<double> pt(size_t(D), 0.0);
+                for (int d = 0; d < D; ++d) {
+                    Column *cc = t->column(colIdxs[d]);
+                    if (!cc || cc->columnMode() != SciDAVis::ColumnMode::Numeric || cc->isInvalid(r)
+                        || cc->isMasked(r) || !std::isfinite(cc->valueAt(r))) {
+                        okRow = false;
+                        break;
+                    }
+                    pt[size_t(d)] = cc->valueAt(r);
+                }
+                if (okRow) {
+                    validRows.push_back(r);
+                    rawX.push_back(std::move(pt));
+                }
+            }
+            const int N = static_cast<int>(rawX.size());
+            if (N < 2) {
                 throwInvalidParams(
                         QStringLiteral("stats.clustering (hierarchical) failed due to insufficient valid data in '%1'.")
                                 .arg(t->name()));
             }
-            for (Graph *lg : ml->layersList())
-                enforceArialGraphFonts(lg);
+            const bool hasExplicitK = params.contains(QStringLiteral("k"))
+                    && !params.value(QStringLiteral("k")).isNull();
+            int kCut = hasExplicitK ? parseBoundedInt(params, QStringLiteral("k"), 3, 2, 256)
+                                    : std::min(3, N);
+            if (hasExplicitK && kCut > N) {
+                throwInvalidParams(
+                        QStringLiteral("stats.clustering (hierarchical) requires at least k=%1 complete finite rows (got %2).")
+                                .arg(kCut)
+                                .arg(N));
+            }
+            kCut = std::clamp(kCut, 1, N);
+
+            // Standardize features (matching GraphStatsAndSurfaceFit::plotHierarchicalDendrogram)
+            std::vector<double> meanF(size_t(D), 0.0), sdF(size_t(D), 1.0);
+            for (int d = 0; d < D; ++d) {
+                double s = 0.0;
+                for (int i = 0; i < N; ++i)
+                    s += rawX[size_t(i)][size_t(d)];
+                meanF[size_t(d)] = s / double(N);
+                double ss = 0.0;
+                for (int i = 0; i < N; ++i) {
+                    const double dev = rawX[size_t(i)][size_t(d)] - meanF[size_t(d)];
+                    ss += dev * dev;
+                }
+                const double sd = std::sqrt(ss / double(N - 1));
+                sdF[size_t(d)] = (sd > 1e-15) ? sd : 1.0;
+            }
+            const int totalNodes = 2 * N - 1;
+            struct HNode
+            {
+                int left = -1;
+                int right = -1;
+                int count = 1;
+                double height = 0.0;
+                bool active = false;
+            };
+            std::vector<HNode> nodes(static_cast<size_t>(totalNodes));
+            for (int i = 0; i < N; ++i)
+                nodes[size_t(i)].active = true;
+            std::vector<double> distMat(size_t(totalNodes) * size_t(totalNodes), 0.0);
+            for (int i = 0; i < N; ++i) {
+                for (int j = i + 1; j < N; ++j) {
+                    double d2 = 0.0;
+                    for (int d = 0; d < D; ++d) {
+                        const double diff =
+                                (rawX[size_t(i)][size_t(d)] - rawX[size_t(j)][size_t(d)])
+                                / sdF[size_t(d)];
+                        d2 += diff * diff;
+                    }
+                    const double val = (lnk == 0) ? d2 : std::sqrt(d2);
+                    distMat[size_t(i) * size_t(totalNodes) + size_t(j)] = val;
+                    distMat[size_t(j) * size_t(totalNodes) + size_t(i)] = val;
+                }
+            }
+            QJsonArray linkageArr;
+            std::vector<int> cutActive;
+            const int cutStep = N - kCut;
+            if (cutStep == 0) {
+                for (int i = 0; i < N; ++i)
+                    cutActive.push_back(i);
+            }
+            for (int step = 0; step < N - 1; ++step) {
+                int bestA = -1, bestB = -1;
+                double minD = std::numeric_limits<double>::max();
+                const int curMax = N + step;
+                for (int a = 0; a < curMax; ++a) {
+                    if (!nodes[size_t(a)].active)
+                        continue;
+                    for (int b = a + 1; b < curMax; ++b) {
+                        if (!nodes[size_t(b)].active)
+                            continue;
+                        const double dab = distMat[size_t(a) * size_t(totalNodes) + size_t(b)];
+                        if (dab < minD) {
+                            minD = dab;
+                            bestA = a;
+                            bestB = b;
+                        }
+                    }
+                }
+                if (bestA < 0 || bestB < 0)
+                    break;
+                const int newNode = N + step;
+                const int nA = nodes[size_t(bestA)].count;
+                const int nB = nodes[size_t(bestB)].count;
+                const double rawHeight =
+                        (lnk == 0) ? std::sqrt(std::max(0.0, minD)) : std::max(0.0, minD);
+                const double childMaxH =
+                        std::max(nodes[size_t(bestA)].height, nodes[size_t(bestB)].height);
+                const double h = std::max(rawHeight, childMaxH);
+                nodes[size_t(newNode)].left = bestA;
+                nodes[size_t(newNode)].right = bestB;
+                nodes[size_t(newNode)].count = nA + nB;
+                nodes[size_t(newNode)].height = h;
+                nodes[size_t(newNode)].active = true;
+                nodes[size_t(bestA)].active = false;
+                nodes[size_t(bestB)].active = false;
+
+                QJsonArray mergeRow;
+                mergeRow.append(bestA);
+                mergeRow.append(bestB);
+                mergeRow.append(safeJsonDouble(h));
+                mergeRow.append(nA + nB);
+                linkageArr.append(mergeRow);
+
+                for (int c = 0; c < newNode; ++c) {
+                    if (!nodes[size_t(c)].active)
+                        continue;
+                    const double dAC = distMat[size_t(bestA) * size_t(totalNodes) + size_t(c)];
+                    const double dBC = distMat[size_t(bestB) * size_t(totalNodes) + size_t(c)];
+                    const int nC = nodes[size_t(c)].count;
+                    double dNew = 0.0;
+                    if (lnk == 0) {
+                        const double denom = double(nA + nB + nC);
+                        dNew = (double(nA + nC) * dAC + double(nB + nC) * dBC - double(nC) * minD)
+                                / denom;
+                        dNew = std::max(0.0, dNew);
+                    } else if (lnk == 1) {
+                        dNew = std::max(dAC, dBC);
+                    } else {
+                        dNew = (double(nA) * dAC + double(nB) * dBC) / double(nA + nB);
+                    }
+                    distMat[size_t(newNode) * size_t(totalNodes) + size_t(c)] = dNew;
+                    distMat[size_t(c) * size_t(totalNodes) + size_t(newNode)] = dNew;
+                }
+                if (step + 1 == cutStep) {
+                    for (int c = 0; c <= newNode; ++c) {
+                        if (nodes[size_t(c)].active)
+                            cutActive.push_back(c);
+                    }
+                }
+            }
+
+            const int assignLen = t->numRows();
+            QVector<int> hAssign(assignLen, -1);
+            for (int cid = 0; cid < static_cast<int>(cutActive.size()); ++cid) {
+                QVector<int> stk;
+                stk.push_back(cutActive[size_t(cid)]);
+                while (!stk.isEmpty()) {
+                    const int u = stk.takeLast();
+                    if (u < 0)
+                        continue;
+                    if (u < N) {
+                        const int rowIdx = validRows[size_t(u)];
+                        if (rowIdx >= 0 && rowIdx < assignLen)
+                            hAssign[rowIdx] = cid;
+                    } else {
+                        stk.push_back(nodes[size_t(u)].left);
+                        stk.push_back(nodes[size_t(u)].right);
+                    }
+                }
+            }
+            QJsonArray assignArr;
+            for (int a : hAssign)
+                assignArr.append(a);
+
+            MultiLayer *ml = nullptr;
+            if (plotC) {
+                ml = GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(d_app, t, colNames, lnk);
+                if (!ml) {
+                    throwInvalidParams(
+                            QStringLiteral("stats.clustering (hierarchical) failed due to insufficient valid data in '%1'.")
+                                    .arg(t->name()));
+                }
+                for (Graph *lg : ml->layersList())
+                    enforceArialGraphFonts(lg);
+            }
             outResult[QStringLiteral("ok")] = true;
-            outResult[QStringLiteral("graph")] = ml->name();
+            outResult[QStringLiteral("method")] = QStringLiteral("hierarchical");
+            outResult[QStringLiteral("linkage")] =
+                    (lnk == 0) ? QStringLiteral("ward")
+                               : ((lnk == 1) ? QStringLiteral("complete")
+                                             : QStringLiteral("average"));
+            outResult[QStringLiteral("k")] = static_cast<int>(cutActive.size());
+            outResult[QStringLiteral("assignments")] = assignArr;
+            outResult[QStringLiteral("linkage_matrix")] = linkageArr;
+            if (ml)
+                outResult[QStringLiteral("graph")] = ml->name();
             return true;
         }
         if (!alg.isEmpty() && alg != QStringLiteral("kmeans") && alg != QStringLiteral("k_means")
@@ -4486,9 +4807,6 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                             .arg(k)
                             .arg(completeRows));
         }
-        const bool plotC = params.contains(QStringLiteral("plot"))
-                ? optionalJsonBool(params, QStringLiteral("plot"), true)
-                : true;
         const auto km =
                 GraphStatsAndSurfaceFit::runKMeansClustering(d_app, t, colNames, k, plotC);
         if (!km.valid) {
@@ -4526,10 +4844,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
         if (conf <= 0.0 || conf >= 1.0)
             throwInvalidParams(QStringLiteral("Confidence level must satisfy 0 < level < 1."));
         const bool pred = optionalJsonBool(params, QStringLiteral("prediction"), false);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Confidence Ellipse"));
         QwtPlotCurve *ec =
                 GraphStatsAndSurfaceFit::addConfidenceEllipse(d_app, g, curveTitle, conf, pred);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (ec)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (ec != nullptr);
         if (ec) {
             outResult[QStringLiteral("ellipse_curve")] = ec->title().text();

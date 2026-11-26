@@ -1057,8 +1057,7 @@ QwtText QwtSupersciptsScaleDraw::label(double value) const
 
             int matchPos = -1;
             for (int i = 0; i < items.size(); ++i) {
-                if (std::fabs(items[i].tv - transformed)
-                    <= 1e-7 * qMax(1.0, std::fabs(transformed))) {
+                if (std::fabs(items[i].tv - transformed) <= 1e-7 * std::fabs(transformed)) {
                     matchPos = i;
                     break;
                 }

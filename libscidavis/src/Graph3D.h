@@ -168,6 +168,7 @@ public slots:
 
     QStringList scaleTicks();
     void setTicks(const QStringList &options);
+    void setScaleTypes(const QStringList &types);
 
     void updateTickLength(int, double majorLength, double minorLength);
     void adjustLabels(int val);
@@ -290,6 +291,7 @@ public slots:
 
     QString colorMap() { return color_map; };
     void setDataColorMap(const QString &fileName);
+    void setDataColorMapPreset(const QString &presetName, bool reverse = false);
     bool openColorMap(ColorVector &cv, QString fname);
 
     void setColors(const QStringList &colors);
@@ -414,6 +416,7 @@ private:
     QPointer<Matrix> d_matrix;
     Qwt3D::PLOTSTYLE style_;
     double d_base_zoom = 1.0;
+    double d_applied_alpha = 1.0;
     bool d_right_dragging = false;
     bool d_right_drag_moved = false;
     bool d_suppress_next_context_menu = false;

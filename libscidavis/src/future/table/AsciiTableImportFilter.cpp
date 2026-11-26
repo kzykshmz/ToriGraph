@@ -225,12 +225,15 @@ char asciiForFullwidthNumberChar(ushort u)
 //! Copies a number token into `buf` as ASCII (full-width digits, point, signs and exponent
 //! mapped to ASCII; a Fortran exponent "1.0D+00" / "2.5d-3" turned into 'e'). Returns the
 //! length, or -1 when the token holds other non-ASCII characters or blanks.
-int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize)
+int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize,
+                             bool decimalComma = false)
 {
     if (!ptr || len <= 0 || len >= bufSize)
         return -1;
     int n = 0;
     int dPos = -1;
+    bool seenComma = false;
+    bool seenDot = false;
     for (int i = 0; i < len; ++i) {
         ushort u = ptr[i].unicode();
         if (u >= 0x80) {
@@ -241,14 +244,25 @@ int asciiNumberTokenToBuffer(const QChar *ptr, int len, char *buf, int bufSize)
         }
         if (u == ' ' || u == '\t')
             return -1;
+        if (u == '.')
+            seenDot = true;
+        if (u == ',') {
+            if (!decimalComma || seenComma || seenDot)
+                return -1;
+            seenComma = true;
+            u = '.';
+        }
         if (u == 'D' || u == 'd')
             dPos = (dPos == -1) ? n : -2;
         buf[n++] = static_cast<char>(u);
     }
+    if (seenComma && seenDot)
+        return -1;
     if (dPos >= 1) {
         // Fortran double-precision exponent: digits with a point on the left ("1.0D+00",
-        // "1.D5"), an integer exponent on the right. Without the point it is an identifier
-        // ("2D3", "3D-1", "3D-2": sample / position names) and stays text.
+        // "1.D5", or "3,50D-02" when decimalComma is active), an integer exponent on the right.
+        // Without the point it is an identifier ("2D3", "3D-1", "3D-2": sample / position names)
+        // and stays text.
         bool mantissaDigits = false, mantissaPoint = false, mantissaOk = true;
         for (int i = 0; i < dPos; ++i) {
             const char c = buf[i];
@@ -313,12 +327,12 @@ bool isMissingNumericToken(const QString &trimmed, bool wasQuoted)
     return false;
 }
 
-bool tryParseAsciiDoubleSpan(const QChar *ptr, int len, double &outVal)
+bool tryParseAsciiDoubleSpan(const QChar *ptr, int len, double &outVal, bool decimalComma = false)
 {
     if (!ptr || len <= 0 || len > 60)
         return false;
     char buf[64];
-    const int n = asciiNumberTokenToBuffer(ptr, len, buf, sizeof(buf));
+    const int n = asciiNumberTokenToBuffer(ptr, len, buf, sizeof(buf), decimalComma);
     if (n <= 0)
         return false;
     const int startIdx = (buf[0] == '+') ? 1 : 0;
@@ -367,6 +381,12 @@ bool tryParseLabDouble(const QString &trimmed, const QLocale &primaryLoc, bool u
     }
     outVal = primaryLoc.toDouble(trimmed, &ok);
     if (ok && std::isfinite(outVal))
+        return true;
+    const bool decimalComma = (primaryLoc.decimalPoint() == QLatin1Char(','));
+    if (decimalComma
+        && tryParseAsciiDoubleSpan(trimmed.constData(), trimmed.size(), outVal, true))
+        return true;
+    if (tryParseAsciiDoubleSpan(trimmed.constData(), trimmed.size(), outVal, false))
         return true;
     outVal = cLoc.toDouble(trimmed, &ok);
     return ok && std::isfinite(outVal);
@@ -831,14 +851,14 @@ QStringList splitUnquotedSimple(const QString &line, QChar delim, QVector<bool> 
 bool isDigitCommaDecimalToken(const QString &tok)
 {
     static const QRegularExpression kRe(
-            QStringLiteral("^[+-]?\\d+,\\d+(?:[eE][+-]?\\d+)?$"));
+            QStringLiteral("^[+-]?\\d+,\\d+(?:[eEdD][+-]?\\d+)?$"));
     return kRe.match(tok.trimmed()).hasMatch();
 }
 
 bool isDotDecimalToken(const QString &tok)
 {
     static const QRegularExpression kRe(
-            QStringLiteral("^[+-]?\\d+\\.\\d+(?:[eE][+-]?\\d+)?$"));
+            QStringLiteral("^[+-]?\\d+\\.\\d+(?:[eEdD][+-]?\\d+)?$"));
     return kRe.match(tok.trimmed()).hasMatch();
 }
 
@@ -1987,28 +2007,6 @@ future::Table *tryParseSpecTextInternal(const QString &decoded, const QString &e
     return result;
 }
 
-// Cells of a line above the data block (the preamble check of importLabTextDataInternal):
-// how many hold a number and how many hold text (missing tokens and empty cells count as
-// neither).
-void countPreambleLineCells(const QString &line, const QString &sep, int &num, int &txt)
-{
-    const QStringList cells = (sep.isEmpty() || sep == QLatin1String(" "))
-            ? line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)
-            : line.split(sep);
-    num = 0;
-    txt = 0;
-    for (const QString &cell : cells) {
-        const QString t = cell.trimmed();
-        double v = 0.0;
-        if (t.isEmpty() || isMissingNumericToken(t, false))
-            continue;
-        if (tryParseAsciiDoubleSpan(t.constData(), t.size(), v))
-            ++num;
-        else
-            ++txt;
-    }
-}
-
 future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QString &tableName,
                                          const QString &filePathHint, const QString &separatorHint,
                                          const QString &encodingHint, int unitsRowHint,
@@ -2940,7 +2938,29 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                 const SplitLineResult sr = splitLineEx(idx, bestSep);
                 int num = 0, txt = 0;
                 rowStats(sr.parts, num, txt);
-                return txt >= 1 && (num == 0 || bestStartAllNumeric);
+                if (txt >= 1 && (num == 0 || bestStartAllNumeric))
+                    return true;
+                // A top-line header exported with an auto-numbered column (e.g. "colA,colB,colC,4")
+                // above mixed text+numeric data has majority text labels over numeric data columns.
+                if (idx == 0 && txt > num && bestStart > 0) {
+                    const SplitLineResult srBest = splitLineEx(bestStart, bestSep);
+                    const int nCheck = std::min(sr.rawParts.size(), srBest.rawParts.size());
+                    for (int c = 0; c < nCheck; ++c) {
+                        const QString &hc = sr.rawParts[c];
+                        const QString &dc = srBest.rawParts[c];
+                        if (hc.isEmpty() || dc.isEmpty() || isMissingNumericToken(hc, false)
+                            || isMissingNumericToken(dc, false))
+                            continue;
+                        double d1 = 0.0, d2 = 0.0;
+                        const bool hNum = tryParseLabDouble(hc, primaryLoc,
+                                                            hasDistinctNumericLocale, d1);
+                        const bool dNum = tryParseLabDouble(dc, primaryLoc,
+                                                            hasDistinctNumericLocale, d2);
+                        if (!hNum && dNum)
+                            return true;
+                    }
+                }
+                return false;
             };
             auto prevNonCommentIdx = [&](int fromIdx) -> int {
                 int cur = fromIdx;
@@ -3128,38 +3148,38 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
             // Time,Force,Disp / 0,0,0"), "Points,1001", a single "1001".
             bool numberRowsAreData = false;
             if (hdrStart > 0) {
-                const QString sepStr(bestSep);
-                auto lineText = [&](int idx) {
-                    return QString(buf + lines[idx].start, lines[idx].end - lines[idx].start)
-                            .trimmed();
-                };
                 auto sameCells = [&](int a, int b) {
+                    const SplitLineResult sra = splitLineEx(a, bestSep);
                     int na = 0, ta = 0;
-                    countPreambleLineCells(lineText(a), sepStr, na, ta);
+                    rowStats(sra.parts, na, ta);
                     if (ta == 0)
                         return false;
-                    const QString la = lineText(a), lb = lineText(b);
-                    const bool ws = sepStr.isEmpty() || sepStr == QLatin1String(" ");
-                    QStringList ca = ws ? la.split(QRegularExpression(QStringLiteral("\\s+")),
-                                                   Qt::SkipEmptyParts)
-                                        : la.split(sepStr);
-                    QStringList cb = ws ? lb.split(QRegularExpression(QStringLiteral("\\s+")),
-                                                   Qt::SkipEmptyParts)
-                                        : lb.split(sepStr);
-                    for (QString &s : ca)
-                        s = s.trimmed();
-                    for (QString &s : cb)
-                        s = s.trimmed();
-                    return ca == cb;
+                    const SplitLineResult srb = splitLineEx(b, bestSep);
+                    return sra.parts == srb.parts;
                 };
-                QVector<int> nums(bestStart, 0), txts(bestStart, 0);
-                for (int i = 0; i < bestStart; ++i)
-                    countPreambleLineCells(lineText(i), sepStr, nums[i], txts[i]);
+                QVector<int> nums(bestStart, 0), txts(bestStart, 0), widths(bestStart, 0);
+                QVector<bool> firstCellNum(bestStart, false);
+                for (int i = 0; i < bestStart; ++i) {
+                    const SplitLineResult sri = splitLineEx(i, bestSep);
+                    rowStats(sri.parts, nums[i], txts[i]);
+                    widths[i] = sri.parts.size();
+                    if (!sri.rawParts.isEmpty() && !sri.rawParts[0].isEmpty()
+                        && !isMissingNumericToken(sri.rawParts[0], false)) {
+                        double dv = 0.0;
+                        firstCellNum[i] = tryParseLabDouble(sri.rawParts[0], primaryLoc,
+                                                            hasDistinctNumericLocale, dv);
+                    }
+                }
                 auto numberRow = [&](int i) { return nums[i] >= 1 && txts[i] == 0; };
                 for (int i = 0; i < hdrStart && !numberRowsAreData; ++i) {
-                    if (!(nums[i] >= 2 && txts[i] == 0))
+                    const bool pureNumRow = (nums[i] >= 2 && txts[i] == 0);
+                    const bool mixedNumRow = (nums[i] >= 2 && nums[i] >= txts[i])
+                            && (!bestStartAllNumeric
+                                || (i > 0 && nums[i - 1] == 0 && txts[i - 1] == widths[i]
+                                    && firstCellNum[i]));
+                    if (!pureNumRow && !mixedNumRow)
                         continue;
-                    if (nums[i] < bestFields) {
+                    if (widths[i] < bestFields) {
                         bool joined = true;
                         for (int k = i + 1; k < bestStart && joined; ++k)
                             joined = !(nums[k] == 0 && txts[k] > 0);
@@ -3168,6 +3188,8 @@ future::Table *importLabTextDataInternal(const QByteArray &rawBytes, const QStri
                             continue;
                         }
                     }
+                    if (!pureNumRow)
+                        continue;
                     int top = i, bottom = i;
                     while (top > 0 && numberRow(top - 1))
                         --top;

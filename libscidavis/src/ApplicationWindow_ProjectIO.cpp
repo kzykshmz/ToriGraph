@@ -525,6 +525,131 @@ static bool isSecondPassProjectBlockStart(const QString &s)
             || s.left(5) == QLatin1String("<log>");
 }
 
+static bool isFirstPassProjectBlockStart(const QString &s)
+{
+    return s == QLatin1String("<table>") || s == QLatin1String("<matrix>")
+            || s == QLatin1String("<note>")
+            || s.left(17) == QLatin1String("<TableStatistics>");
+}
+
+// Skips the body of a <table>, <matrix>, <note>, or <TableStatistics> block whose opening line
+// `opening` has just been read, with the same framing rules as the first pass, so Pass 2 never
+// misinterprets lines inside Notes/Tables (such as <log>, <multiLayer>, <SurfacePlot>) as
+// top-level project blocks.
+static void skipFirstPassProjectBlock(QTextStream &t, const QString &opening, int fileVersion)
+{
+    QString s = opening;
+    if (s == QLatin1String("<table>")) {
+        if (fileVersion >= 0x000200) {
+            bool ok = false;
+            const int length = t.readLine().toInt(&ok);
+            if (ok && length > 0) {
+                int remaining = length;
+                while (remaining > 0 && !t.atEnd()) {
+                    const int chunk = qMin(remaining, 65536);
+                    const QString part = t.read(chunk);
+                    if (part.isEmpty())
+                        break;
+                    remaining -= part.length();
+                }
+            }
+            if (!t.atEnd())
+                t.readLine(); // skip to next newline after XML payload
+            if (!t.atEnd())
+                t.readLine(); // geometry line
+            while (!t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull() || s == QLatin1String("</table>"))
+                    break;
+            }
+        } else {
+            while (s != QLatin1String("</table>") && !t.atEnd()) {
+                s = t.readLine();
+                if (s.isNull())
+                    return;
+            }
+        }
+    } else if (s == QLatin1String("<matrix>")) {
+        while (s != QLatin1String("</matrix>") && !t.atEnd()) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+        }
+    } else if (s == QLatin1String("<note>")) {
+        for (int i = 0; i < 3 && !t.atEnd(); ++i) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+        }
+        while (s != QLatin1String("</note>") && !t.atEnd()) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+        }
+    } else if (s.left(17) == QLatin1String("<TableStatistics>")) {
+        while (s != QLatin1String("</TableStatistics>") && !t.atEnd()) {
+            s = t.readLine();
+            if (s.isNull())
+                return;
+        }
+    }
+}
+
+static void clearSavedActiveFolderPropsRecursive(Folder *folder)
+{
+    if (!folder)
+        return;
+    folder->setProperty("torigraph_saved_active_obj", QVariant());
+    for (MyWidget *mw : folder->windowsList()) {
+        if (mw)
+            mw->setProperty("torigraph_saved_active", QVariant());
+    }
+    for (Folder *sub : folder->folders())
+        clearSavedActiveFolderPropsRecursive(sub);
+}
+
+struct ScopedSavedActiveCleanup
+{
+    QPointer<ApplicationWindow> app;
+    bool cleared = false;
+    explicit ScopedSavedActiveCleanup(ApplicationWindow *a) : app(a) {}
+    void clearNow()
+    {
+        if (cleared || !app)
+            return;
+        cleared = true;
+        if (Folder *root = app->projectFolder())
+            clearSavedActiveFolderPropsRecursive(root);
+        for (MyWidget *mw : app->windowsList()) {
+            if (mw) {
+                mw->setProperty("torigraph_saved_active", QVariant());
+                if (Folder *mf = mw->folder())
+                    mf->setProperty("torigraph_saved_active_obj", QVariant());
+            }
+        }
+    }
+    ~ScopedSavedActiveCleanup() { clearNow(); }
+    ScopedSavedActiveCleanup(const ScopedSavedActiveCleanup &) = delete;
+    ScopedSavedActiveCleanup &operator=(const ScopedSavedActiveCleanup &) = delete;
+};
+
+struct ScopedMatrixRenameBlock
+{
+    QPointer<Matrix> mtx;
+    explicit ScopedMatrixRenameBlock(Matrix *m) : mtx(m)
+    {
+        if (mtx)
+            mtx->setProperty("_tg_block_rename_prop", true);
+    }
+    ~ScopedMatrixRenameBlock()
+    {
+        if (mtx)
+            mtx->setProperty("_tg_block_rename_prop", QVariant());
+    }
+    ScopedMatrixRenameBlock(const ScopedMatrixRenameBlock &) = delete;
+    ScopedMatrixRenameBlock &operator=(const ScopedMatrixRenameBlock &) = delete;
+};
+
 // Second pass: applies the folder marker line `s` (a "<folder>..." or "</folder>" line just
 // read from `t`) using the folders recorded by the first pass (see skipSecondPassProjectBlock).
 // A line at a position the first pass did not record is body text of a block the first pass
@@ -1462,6 +1587,7 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     };
 
     BatchWindowUpdates batchGuard(this);
+    ScopedSavedActiveCleanup savedActiveGuard(this);
 
     Folder *cf = projectFolder();
     folders.blockSignals(true);
@@ -1705,7 +1831,9 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
                 bool otherSavedActive = false;
                 if (Folder *pf = plot->folder()) {
                     MyWidget *sa = qobject_cast<MyWidget *>(
-                            pf->property("torigraph_saved_active_obj").value<QObject *>());
+                            pf->property("torigraph_saved_active_obj")
+                                    .value<QPointer<QObject>>()
+                                    .data());
                     if (sa && sa != plot && !hidden(sa)
                         && sa->property("torigraph_saved_active").toBool()) {
                         otherSavedActive = true;
@@ -1747,6 +1875,8 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
                     truncatedProject = true;
             }
             results->setText(logInfo);
+        } else if (isFirstPassProjectBlockStart(s)) {
+            skipFirstPassProjectBlock(t, s, d_file_version);
         }
     }
 
@@ -1796,13 +1926,7 @@ bool ApplicationWindow::loadProjectImpl(const QString &fn, ApplicationWindow **o
     changeFolder(cf, true);
     updateExplorerFolderPaneVisibility();
 
-    for (MyWidget *mw : windowsList()) {
-        if (mw) {
-            mw->setProperty("torigraph_saved_active", QVariant());
-            if (Folder *mf = mw->folder())
-                mf->setProperty("torigraph_saved_active_obj", QVariant());
-        }
-    }
+    savedActiveGuard.clearNow();
 
     blockSignals(false);
     renamedTables.clear();
@@ -2061,7 +2185,10 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
     for (MyWidget *w : windows) {
         if (!w)
             continue;
-        if (Table *tb = qobject_cast<Table *>(w)) {
+        if (qobject_cast<TableStatistics *>(w)) {
+            t << w->saveToString(windowGeometryInfo(w));
+            t.flush();
+        } else if (Table *tb = qobject_cast<Table *>(w)) {
             QString geom = windowGeometryInfo(tb);
             if (hidden(tb) || tb->status() == MyWidget::Hidden) {
                 bool promoteBgSheet = false;
@@ -2099,6 +2226,7 @@ QByteArray ApplicationWindow::saveWindowsToByteArray(const QList<MyWidget *> &wi
                         ? QStringLiteral("geometry\t%1\t%2\t%3\t%4\t\n").arg(gx).arg(gy).arg(gw).arg(gh)
                         : QStringLiteral("geometry\t%1\t%2\t%3\t%4\thidden\n").arg(gx).arg(gy).arg(gw).arg(gh);
             }
+            t.flush();
             tb->saveToDevice(&buf, geom);
         } else {
             t << w->saveToString(windowGeometryInfo(w));
@@ -2707,7 +2835,54 @@ static void sanitizeLoadedWindowName(ApplicationWindow *app, MyWidget *w, const 
     app->syncBatchWindowName(w);
 }
 
-static QString remapRenamedTableRef(const QStringList &renamedTables, const QString &ref)
+static const QSet<Table *> *s_appendPreExistingTables = nullptr;
+
+struct ScopedAppendPreExistingTables
+{
+    const QSet<Table *> *prev = nullptr;
+    explicit ScopedAppendPreExistingTables(const QSet<Table *> *tables)
+        : prev(s_appendPreExistingTables)
+    {
+        s_appendPreExistingTables = tables;
+    }
+    ~ScopedAppendPreExistingTables() { s_appendPreExistingTables = prev; }
+};
+
+static bool hasLongerLiveTableOwner(ApplicationWindow *app, const QString &ref, int matchedPrefixLen,
+                                    bool checkExactTableMatch)
+{
+    if (!app)
+        return false;
+    auto matchesLiveTable = [&](MyWidget *w) -> bool {
+        if (!w || !w->inherits("Table"))
+            return false;
+        Table *t = static_cast<Table *>(w);
+        if (s_appendPreExistingTables && s_appendPreExistingTables->contains(t))
+            return false;
+        const QString tName = t->name();
+        if (tName.isEmpty())
+            return false;
+        if (checkExactTableMatch && tName == ref)
+            return true;
+        if (tName.length() > matchedPrefixLen && ref.startsWith(tName + QLatin1Char('_'))
+            && t->column(ref.mid(tName.length() + 1)) != nullptr) {
+            return true;
+        }
+        return false;
+    };
+    for (MyWidget *w : app->windowsList()) {
+        if (matchesLiveTable(w))
+            return true;
+    }
+    for (MyWidget *hw : app->hiddenWindows) {
+        if (matchesLiveTable(hw))
+            return true;
+    }
+    return false;
+}
+
+static QString remapRenamedTableRef(ApplicationWindow *app, const QStringList &renamedTables,
+                                    const QString &ref)
 {
     if (renamedTables.isEmpty() || ref.isEmpty())
         return ref;
@@ -2726,44 +2901,195 @@ static QString remapRenamedTableRef(const QStringList &renamedTables, const QStr
     if (bestIdx >= 0) {
         const QString &oldCap = renamedTables.at(bestIdx);
         const QString &newCap = renamedTables.at(bestIdx + 1);
+        if (ref == oldCap)
+            return newCap;
+        if (hasLongerLiveTableOwner(app, ref, oldCap.length(), true))
+            return ref;
         return newCap + ref.mid(oldCap.length());
     }
     return ref;
 }
 
+static QString remapRenamedExactName(const QStringList &renamedTables, const QString &name)
+{
+    if (renamedTables.isEmpty() || name.isEmpty())
+        return name;
+    int bestIdx = -1;
+    for (int k = 0; k + 1 < renamedTables.size(); k += 2) {
+        const QString &oldCap = renamedTables.at(k);
+        if (!oldCap.isEmpty() && name == oldCap)
+            bestIdx = k;
+    }
+    return bestIdx >= 0 ? renamedTables.at(bestIdx + 1) : name;
+}
+
+static QString remapRenamedColPrefixRef(ApplicationWindow *app, const QStringList &renamedTables,
+                                        const QString &ref)
+{
+    if (renamedTables.isEmpty() || ref.isEmpty())
+        return ref;
+    int bestIdx = -1;
+    int bestLen = -1;
+    for (int k = 0; k + 1 < renamedTables.size(); k += 2) {
+        const QString &oldCap = renamedTables.at(k);
+        if (oldCap.isEmpty())
+            continue;
+        if (ref.startsWith(oldCap + QLatin1Char('_')) && oldCap.length() >= bestLen) {
+            bestIdx = k;
+            bestLen = oldCap.length();
+        }
+    }
+    if (bestIdx >= 0) {
+        const QString &oldCap = renamedTables.at(bestIdx);
+        const QString &newCap = renamedTables.at(bestIdx + 1);
+        if (hasLongerLiveTableOwner(app, ref, oldCap.length(), true))
+            return ref;
+        return newCap + ref.mid(oldCap.length());
+    }
+    return ref;
+}
+
+static QString unescapeToriTagAttr(QString v)
+{
+    v.replace(QLatin1String("&#10;"), QLatin1String("\n"));
+    v.replace(QLatin1String("&quot;"), QLatin1String("\""));
+    v.replace(QLatin1String("&lt;"), QLatin1String("<"));
+    v.replace(QLatin1String("&gt;"), QLatin1String(">"));
+    v.replace(QLatin1String("&amp;"), QLatin1String("&"));
+    return v;
+}
+
+static QString escapeToriTagAttr(QString v)
+{
+    v.replace(QLatin1Char('&'), QLatin1String("&amp;"));
+    v.replace(QLatin1Char('"'), QLatin1String("&quot;"));
+    v.replace(QLatin1Char('<'), QLatin1String("&lt;"));
+    v.replace(QLatin1Char('>'), QLatin1String("&gt;"));
+    v.replace(QLatin1Char('\n'), QLatin1String("&#10;"));
+    return v;
+}
+
 // Curve tags written after the curves (custom label, colour map, error band) name their columns
 // as "<table>_<column>"; a table renamed while loading (appendProject name clash,
 // sanitizeLoadedWindowName) must be renamed there too, as the curve lines are, or the tag no
-// longer finds its curve.
-static QString remapToriTagColumnRefs(const QStringList &renamedTables, const QString &line)
+// longer finds its curve. Similarly, <ToriDensity2D> / <ToriPoleFigure> store matrix/table
+// window names (and optional qualified column refs), and <ToriBackbones> stores base64 curve
+// titles in curveWidths.
+static QString remapToriTagColumnRefs(ApplicationWindow *app, const QStringList &renamedTables,
+                                      const QString &line)
 {
-    if (renamedTables.isEmpty()
-        || !(line.startsWith(QLatin1String("<ToriCurveLabel"))
-             || line.startsWith(QLatin1String("<ToriPointColorMap"))
-             || line.startsWith(QLatin1String("<ToriErrorBand"))))
+    if (renamedTables.isEmpty())
         return line;
-    static const QRegularExpression re(QStringLiteral("\\s(x|y|z|err|size)=\"([^\"]*)\""));
-    QString out;
-    int last = 0;
-    QRegularExpressionMatchIterator it = re.globalMatch(line);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        out += line.mid(last, m.capturedStart(2) - last);
-        out += remapRenamedTableRef(renamedTables, m.captured(2));
-        last = m.capturedEnd(2);
+
+    if (line.startsWith(QLatin1String("<ToriCurveLabel"))
+        || line.startsWith(QLatin1String("<ToriPointColorMap"))
+        || line.startsWith(QLatin1String("<ToriErrorBand"))) {
+        static const QRegularExpression re(QStringLiteral("\\s(x|y|z|err|size)=\"([^\"]*)\""));
+        QString out;
+        int last = 0;
+        QRegularExpressionMatchIterator it = re.globalMatch(line);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            out += line.mid(last, m.capturedStart(2) - last);
+            out += remapRenamedTableRef(app, renamedTables, m.captured(2));
+            last = m.capturedEnd(2);
+        }
+        out += line.mid(last);
+        return out;
     }
-    out += line.mid(last);
-    return out;
+
+    const bool isDensity2D = line.startsWith(QLatin1String("<ToriDensity2D"));
+    const bool isPoleFigure = line.startsWith(QLatin1String("<ToriPoleFigure"));
+    if (isDensity2D || isPoleFigure) {
+        static const QRegularExpression tableRe(QStringLiteral("\\stable=\"([^\"]*)\""));
+        const QRegularExpressionMatch tableMatch = tableRe.match(line);
+        const QString tagTable =
+                tableMatch.hasMatch() ? unescapeToriTagAttr(tableMatch.captured(1)) : QString();
+        const QString remappedTagTable = remapRenamedExactName(renamedTables, tagTable);
+
+        static const QRegularExpression densityRe(
+                QStringLiteral("\\s(matrix|table|x|y)=\"([^\"]*)\""));
+        static const QRegularExpression poleRe(
+                QStringLiteral("\\s(matrix|sourceMatrix|table|a|b|i)=\"([^\"]*)\""));
+        const QRegularExpression &re = isDensity2D ? densityRe : poleRe;
+
+        QString out;
+        int last = 0;
+        QRegularExpressionMatchIterator it = re.globalMatch(line);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            const QString key = m.captured(1);
+            const QString rawEncoded = m.captured(2);
+            const QString decoded = unescapeToriTagAttr(rawEncoded);
+            QString remapped = decoded;
+            if (key == QLatin1String("matrix") || key == QLatin1String("sourceMatrix")
+                || key == QLatin1String("table")) {
+                remapped = remapRenamedExactName(renamedTables, decoded);
+            } else {
+                if (!tagTable.isEmpty()) {
+                    if (remappedTagTable != tagTable
+                        && decoded.startsWith(tagTable + QLatin1Char('_'))) {
+                        remapped = remappedTagTable + decoded.mid(tagTable.length());
+                    }
+                } else {
+                    remapped = remapRenamedColPrefixRef(app, renamedTables, decoded);
+                }
+            }
+            out += line.mid(last, m.capturedStart(2) - last);
+            out += (remapped != decoded) ? escapeToriTagAttr(remapped) : rawEncoded;
+            last = m.capturedEnd(2);
+        }
+        out += line.mid(last);
+        return out;
+    }
+
+    if (line.startsWith(QLatin1String("<ToriBackbones"))) {
+        static const QRegularExpression re(QStringLiteral("\\scurveWidths=\"([^\"]*)\""));
+        const QRegularExpressionMatch m = re.match(line);
+        if (!m.hasMatch())
+            return line;
+        QStringList entries = m.captured(1).split(QLatin1Char(';'));
+        bool changed = false;
+        for (int ei = 0; ei < entries.size(); ++ei) {
+            const QString ent = entries.at(ei);
+            const int colon = ent.indexOf(QLatin1Char(':'));
+            if (colon <= 0)
+                continue;
+            const int c1 = ent.indexOf(QLatin1Char(','), colon + 1);
+            if (c1 <= colon)
+                continue;
+            const int c2 = ent.indexOf(QLatin1Char(','), c1 + 1);
+            if (c2 <= c1)
+                continue;
+            const QString b64 = ent.mid(c2 + 1);
+            if (b64.isEmpty())
+                continue;
+            const QString decTitle = QString::fromUtf8(QByteArray::fromBase64(b64.toLatin1()));
+            const QString nextTitle = remapRenamedColPrefixRef(app, renamedTables, decTitle);
+            if (nextTitle != decTitle) {
+                const QString newB64 = QString::fromLatin1(nextTitle.toUtf8().toBase64());
+                entries[ei] = ent.left(c2 + 1) + newB64;
+                changed = true;
+            }
+        }
+        if (!changed)
+            return line;
+        return line.left(m.capturedStart(1)) + entries.join(QLatin1Char(';'))
+                + line.mid(m.capturedEnd(1));
+    }
+
+    return line;
 }
 
-static QString remapSurfacePlotSource(const QStringList &renamedTables, const QString &src)
+static QString remapSurfacePlotSource(ApplicationWindow *app, const QStringList &renamedTables,
+                                      const QString &src)
 {
     if (renamedTables.isEmpty() || src.isEmpty())
         return src;
     if (src.startsWith(QStringLiteral("matrix<"), Qt::CaseSensitive)
         && src.endsWith(QLatin1Char('>'), Qt::CaseInsensitive)) {
         const QString inner = src.mid(7, src.length() - 8);
-        return QStringLiteral("matrix<") + remapRenamedTableRef(renamedTables, inner)
+        return QStringLiteral("matrix<") + remapRenamedExactName(renamedTables, inner)
                 + QLatin1Char('>');
     }
     const int xDelim = src.indexOf(QStringLiteral("(X),"), 0, Qt::CaseSensitive);
@@ -2773,15 +3099,15 @@ static QString remapSurfacePlotSource(const QStringList &renamedTables, const QS
             const QString xRef = src.left(xDelim);
             const QString yRef = src.mid(xDelim + 4, yDelim - (xDelim + 4));
             const QString zRef = src.mid(yDelim + 4, src.length() - (yDelim + 4) - 3);
-            return remapRenamedTableRef(renamedTables, xRef) + QStringLiteral("(X),")
-                    + remapRenamedTableRef(renamedTables, yRef) + QStringLiteral("(Y),")
-                    + remapRenamedTableRef(renamedTables, zRef) + QStringLiteral("(Z)");
+            return remapRenamedTableRef(app, renamedTables, xRef) + QStringLiteral("(X),")
+                    + remapRenamedTableRef(app, renamedTables, yRef) + QStringLiteral("(Y),")
+                    + remapRenamedTableRef(app, renamedTables, zRef) + QStringLiteral("(Z)");
         }
         if (yDelim < 0 && src.endsWith(QStringLiteral("(Y)"), Qt::CaseSensitive)) {
             const QString xRef = src.left(xDelim);
             const QString yRef = src.mid(xDelim + 4, src.length() - (xDelim + 4) - 3);
-            return remapRenamedTableRef(renamedTables, xRef) + QStringLiteral("(X),")
-                    + remapRenamedTableRef(renamedTables, yRef) + QStringLiteral("(Y)");
+            return remapRenamedTableRef(app, renamedTables, xRef) + QStringLiteral("(X),")
+                    + remapRenamedTableRef(app, renamedTables, yRef) + QStringLiteral("(Y)");
         }
     }
     if (src.endsWith(QStringLiteral("(Y)"), Qt::CaseSensitive)
@@ -2792,7 +3118,8 @@ static QString remapSurfacePlotSource(const QStringList &renamedTables, const QS
                 || part.endsWith(QStringLiteral("(Y)"), Qt::CaseSensitive)
                 || part.endsWith(QStringLiteral("(Z)"), Qt::CaseSensitive)) {
                 const QString suffix = part.right(3);
-                part = remapRenamedTableRef(renamedTables, part.left(part.length() - 3)) + suffix;
+                part = remapRenamedTableRef(app, renamedTables, part.left(part.length() - 3))
+                        + suffix;
             }
         }
         return parts.join(QLatin1Char(','));
@@ -2827,7 +3154,10 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         int cols = list[2].toInt();
 
         Matrix *w = app->newMatrix(caption, rows, cols);
-        sanitizeLoadedWindowName(app, w, caption, QStringLiteral("Matrix"));
+        {
+            ScopedMatrixRenameBlock renameBlocker(w);
+            sanitizeLoadedWindowName(app, w, caption, QStringLiteral("Matrix"));
+        }
         if (!rawCaption.isEmpty() && w->name() != rawCaption)
             app->renamedTables << rawCaption << w->name();
         app->setListViewDate(w->name(), list[3]);
@@ -2909,22 +3239,26 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         while (app->alreadyUsedName(tempCap))
             tempCap = QStringLiteral("__loading_matrix_%1__").arg(++s_loading_matrix_seq);
         Matrix *w = app->newMatrix(tempCap, 1, 1);
-        if (w->d_future_matrix->load(&reader) == false) {
-            QString msg_text = reader.errorString();
-            if (!isNonInteractiveContext(this))
-                QMessageBox::critical(this, tr("Error reading matrix from project file"), msg_text);
-        }
-        if (reader.hasWarnings()) {
-            QString msg_text =
-                    tr("The following problems occured when loading the project file:\n");
-            QStringList warnings = reader.warningStrings();
-            foreach (QString str, warnings)
-                msg_text += str + "\n";
-            if (!isNonInteractiveContext(this))
-                QMessageBox::warning(this, tr("Project loading partly failed"), msg_text);
-        }
+        {
+            ScopedMatrixRenameBlock renameBlocker(w);
+            if (w->d_future_matrix->load(&reader) == false) {
+                QString msg_text = reader.errorString();
+                if (!isNonInteractiveContext(this))
+                    QMessageBox::critical(this, tr("Error reading matrix from project file"),
+                                          msg_text);
+            }
+            if (reader.hasWarnings()) {
+                QString msg_text =
+                        tr("The following problems occured when loading the project file:\n");
+                QStringList warnings = reader.warningStrings();
+                foreach (QString str, warnings)
+                    msg_text += str + "\n";
+                if (!isNonInteractiveContext(this))
+                    QMessageBox::warning(this, tr("Project loading partly failed"), msg_text);
+            }
 
-        sanitizeLoadedWindowName(app, w, xmlName, QStringLiteral("Matrix"));
+            sanitizeLoadedWindowName(app, w, xmlName, QStringLiteral("Matrix"));
+        }
 
         w->setObjectName(w->name());
         app->renameListViewItem(tempCap, w->name());
@@ -2939,7 +3273,9 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
             bool otherSavedActive = false;
             if (Folder *wf = w->folder()) {
                 MyWidget *sa = qobject_cast<MyWidget *>(
-                        wf->property("torigraph_saved_active_obj").value<QObject *>());
+                        wf->property("torigraph_saved_active_obj")
+                                .value<QPointer<QObject>>()
+                                .data());
                 if (sa && sa != w && !app->hidden(sa)
                     && sa->property("torigraph_saved_active").toBool()) {
                     otherSavedActive = true;
@@ -3178,7 +3514,9 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
             bool otherSavedActive = false;
             if (Folder *wf = w->folder()) {
                 MyWidget *sa = qobject_cast<MyWidget *>(
-                        wf->property("torigraph_saved_active_obj").value<QObject *>());
+                        wf->property("torigraph_saved_active_obj")
+                                .value<QPointer<QObject>>()
+                                .data());
                 if (sa && sa != w && !app->hidden(sa)
                     && sa->property("torigraph_saved_active").toBool()) {
                     otherSavedActive = true;
@@ -3208,18 +3546,25 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
     for (int i = 1; i <= (*line).count('\t'); i++)
         targets << (*line).section('\t', i, i).toInt();
 
-    const QString baseRef = remapRenamedTableRef(renamedTables, list[1]);
+    const QString baseRef = remapRenamedExactName(renamedTables, list[1]);
     Table *baseTbl = nullptr;
     {
         ScopedDisableRenamedLookup guard;
         baseTbl = table(baseRef);
     }
+    if (!baseTbl) {
+        qWarning("openTableStatistics: base table '%s' not found; skipping '%s'",
+                 qPrintable(baseRef), qPrintable(caption));
+        return nullptr;
+    }
     TableStatistics *w = newTableStatistics(baseTbl,
                                             list[2] == "row" ? TableStatistics::StatRow
                                                              : TableStatistics::StatColumn,
                                             targets, caption);
+    if (!w)
+        return nullptr;
 
-    setListViewDate(caption, list[3]);
+    setListViewDate(w->name(), list[3]);
     w->setBirthDate(list[3]);
 
     for (line++; line != flist.end(); line++) {
@@ -3277,7 +3622,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
         if (ag && trimmedLine.startsWith(QLatin1String("<Tori"))) {
             if (trimmedLine.startsWith(QLatin1String("<ToriAutoscaleFonts")))
                 hasToriAutoscaleFonts = true;
-            ag->restorePhase5Tag(remapToriTagColumnRefs(app->renamedTables, trimmedLine));
+            ag->restorePhase5Tag(remapToriTagColumnRefs(app, app->renamedTables, trimmedLine));
             continue;
         }
         if (s.startsWith(QLatin1String("ggeometry\t"))) {
@@ -3362,7 +3707,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
             QStringList curve = s.split("\t");
             if (curve.size() >= 8) {
                 if (!app->renamedTables.isEmpty())
-                    curve[1] = remapRenamedTableRef(app->renamedTables, curve[1]);
+                    curve[1] = remapRenamedTableRef(app, app->renamedTables, curve[1]);
                 QPen pen = QPen(QColor(COLORVALUE(curve[3])), curve[2].toInt(),
                                 Graph::getPenStyle(curve[4]));
 
@@ -3401,7 +3746,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 if (!app->renamedTables.isEmpty()) {
                     for (int idx = 1; idx < curve.size(); ++idx) {
                         if (curve[idx].contains(QLatin1Char('_')))
-                            curve[idx] = remapRenamedTableRef(app->renamedTables, curve[idx]);
+                            curve[idx] = remapRenamedTableRef(app, app->renamedTables, curve[idx]);
                     }
                 }
 
@@ -3706,9 +4051,9 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
             QStringList curve = s.split("\t", QString::SkipEmptyParts);
 #endif
             if (!app->renamedTables.isEmpty() && curve.size() > 4) {
-                curve[2] = remapRenamedTableRef(app->renamedTables, curve[2]);
-                curve[3] = remapRenamedTableRef(app->renamedTables, curve[3]);
-                curve[4] = remapRenamedTableRef(app->renamedTables, curve[4]);
+                curve[2] = remapRenamedTableRef(app, app->renamedTables, curve[2]);
+                curve[3] = remapRenamedTableRef(app, app->renamedTables, curve[3]);
+                curve[4] = remapRenamedTableRef(app, app->renamedTables, curve[4]);
             }
             bool errAdded = false;
             if (ag && curve.size() >= 11) {
@@ -3946,7 +4291,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                             ag->setLabelsDateTimeFormat(i, format, lst[1] + ";" + lst[2]);
                         break;
                     case Graph::AxisType::Txt: {
-                        const QString colRef = remapRenamedTableRef(app->renamedTables, lst[1]);
+                        const QString colRef = remapRenamedTableRef(app, app->renamedTables, lst[1]);
                         ScopedDisableRenamedLookup guard;
                         Table *lblTbl = app->table(colRef);
                         if (lblTbl && lblTbl->colIndex(colRef) >= 0)
@@ -3954,7 +4299,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                         break;
                     }
                     case Graph::AxisType::ColHeader: {
-                        const QString tblRef = remapRenamedTableRef(app->renamedTables, lst[1]);
+                        const QString tblRef = remapRenamedExactName(app->renamedTables, lst[1]);
                         ScopedDisableRenamedLookup guard;
                         ag->setLabelsColHeaderFormat(i, app->table(tblRef));
                         break;
@@ -3970,7 +4315,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 for (int i = 0; i < 4; i++) {
                     switch (axesTypes[i]) {
                     case Graph::AxisType::Txt: {
-                        const QString colRef = remapRenamedTableRef(app->renamedTables, fList[i + 1]);
+                        const QString colRef =
+                                remapRenamedTableRef(app, app->renamedTables, fList[i + 1]);
                         ScopedDisableRenamedLookup guard;
                         Table *lblTbl = app->table(colRef);
                         if (lblTbl && lblTbl->colIndex(colRef) >= 0)
@@ -3978,7 +4324,8 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                         break;
                     }
                     case Graph::AxisType::ColHeader: {
-                        const QString tblRef = remapRenamedTableRef(app->renamedTables, fList[i + 1]);
+                        const QString tblRef =
+                                remapRenamedExactName(app->renamedTables, fList[i + 1]);
                         ScopedDisableRenamedLookup guard;
                         ag->setLabelsColHeaderFormat(i, app->table(tblRef));
                         break;
@@ -4032,7 +4379,7 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
     if (fList.size() < 8)
         return 0;
     if (!fList[1].isEmpty())
-        fList[1] = remapSurfacePlotSource(app->renamedTables, fList[1]);
+        fList[1] = remapSurfacePlotSource(app, app->renamedTables, fList[1]);
     const double xl = fList.value(2).toDouble();
     const double xr = fList.value(3).toDouble();
     const double yl = fList.value(4).toDouble();
@@ -4087,9 +4434,15 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
         plot->setColors(splitNonEmptyTabs(6));
 
     if (lst.size() > 7) {
-        fList = splitNonEmptyTabs(7);
+        fList = lst.value(7).split("\t");
         if (!fList.isEmpty())
             fList.pop_front();
+        while (fList.size() < 3)
+            fList << QString();
+        for (QString &lbl : fList) {
+            lbl.replace(QLatin1String("&#9;"), QLatin1String("\t"));
+            lbl.replace(QStringLiteral("<br>"), QLatin1String("\n"), Qt::CaseInsensitive);
+        }
         plot->setAxesLabels(fList);
     }
 
@@ -4158,7 +4511,9 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
     if (d_file_version > 71 && lst.size() > 20) {
         fList = lst.value(20).split(
                 "\t"); // using QString::SkipEmptyParts here causes a crash for empty window labels
-        const QString unescLbl = QString(fList.value(1)).replace(QLatin1String("&#9;"), QLatin1String("\t"));
+        const QString unescLbl = QString(fList.value(1))
+                                         .replace(QLatin1String("&#9;"), QLatin1String("\t"))
+                                         .replace(QLatin1String("<br>"), QLatin1String("\n"));
         plot->setWindowLabel(unescLbl);
         plot->setCaptionPolicy((MyWidget::CaptionPolicy)fList.value(2).toInt());
         app->setListViewLabel(plot->name(), unescLbl);
@@ -4168,6 +4523,12 @@ Graph3D *ApplicationWindow::openSurfacePlot(ApplicationWindow *app, const QStrin
         fList = splitNonEmptyTabs(21);
         if (fList.size() > 1)
             plot->setOrtho(fList.value(1).toInt());
+    }
+
+    for (int i = 22; i < lst.size(); ++i) {
+        fList = splitNonEmptyTabs(i);
+        if (fList.size() >= 4 && fList.first() == QLatin1String("ScaleTypes"))
+            plot->setScaleTypes(fList);
     }
 
     plot->update();
@@ -4680,6 +5041,7 @@ void ApplicationWindow::appendProject(const QString &fn)
         }
         ~ScopedAppendMacro() { close(); }
     } appendMacro(projUndo, tr("Append project"));
+    ScopedSavedActiveCleanup savedActiveGuard(this);
 
     Folder *appendedRoot = &current_folder->addChild<Folder>(baseName);
     current_folder = appendedRoot;
@@ -4739,6 +5101,17 @@ void ApplicationWindow::appendProject(const QString &fn)
         if (!nonInteractive)
             QApplication::restoreOverrideCursor();
     };
+
+    QSet<Table *> preExistingTables;
+    for (MyWidget *mw : windowsList()) {
+        if (Table *t = qobject_cast<Table *>(mw))
+            preExistingTables.insert(t);
+    }
+    for (MyWidget *hw : hiddenWindows) {
+        if (Table *t = qobject_cast<Table *>(hw))
+            preExistingTables.insert(t);
+    }
+    ScopedAppendPreExistingTables appendPreExistingGuard(&preExistingTables);
 
     if (fn.endsWith(".opju", Qt::CaseInsensitive)) {
         file->close();
@@ -5027,6 +5400,8 @@ void ApplicationWindow::appendProject(const QString &fn)
                     // The results log is not restored when appending, but its lines must not be
                     // taken for folder markers or window blocks.
                     skipSecondPassProjectBlock(t, s);
+                } else if (isFirstPassProjectBlockStart(s)) {
+                    skipFirstPassProjectBlock(t, s, d_file_version);
                 }
             }
         }
@@ -5035,6 +5410,7 @@ void ApplicationWindow::appendProject(const QString &fn)
 
         if (truncatedProject || property("_tg_load_truncated").toBool()) {
             abortAppendCleanup();
+            savedActiveGuard.clearNow();
             bool backupAccepted = false;
             if (offerBackupIfPresent(fn, &backupAccepted) && backupAccepted) {
                 appendProject(fn + QStringLiteral("~"));
@@ -5051,6 +5427,103 @@ void ApplicationWindow::appendProject(const QString &fn)
         }
     }
 
+    if (!renamedTables.isEmpty()) {
+        QVector<QPair<QString, QString>> renamePairs;
+        QHash<QString, int> oldNameIndex;
+        for (int k = 0; k + 1 < renamedTables.size(); k += 2) {
+            const QString &oldName = renamedTables.at(k);
+            const QString &newName = renamedTables.at(k + 1);
+            if (oldName.isEmpty() || newName.isEmpty() || oldName == newName)
+                continue;
+            auto it = oldNameIndex.find(oldName);
+            if (it != oldNameIndex.end()) {
+                renamePairs[it.value()].second = newName;
+            } else {
+                oldNameIndex.insert(oldName, renamePairs.size());
+                renamePairs.append(qMakePair(oldName, newName));
+            }
+        }
+        if (!renamePairs.isEmpty()) {
+            QList<Table *> appendedTables;
+            QSet<Table *> seenAppended;
+            auto collectAppendedTable = [&](MyWidget *mw) {
+                if (Table *tbl = qobject_cast<Table *>(mw)) {
+                    if (!preExistingTables.contains(tbl) && !seenAppended.contains(tbl)
+                        && tbl->d_future_table) {
+                        seenAppended.insert(tbl);
+                        appendedTables.append(tbl);
+                    }
+                }
+            };
+            for (MyWidget *mw : windowsList())
+                collectAppendedTable(mw);
+            for (MyWidget *hw : hiddenWindows)
+                collectAppendedTable(hw);
+
+            struct PendingFormulaUpdate
+            {
+                int col = 0;
+                Interval<int> iv;
+                QString formula;
+            };
+            for (Table *tbl : appendedTables) {
+                QVector<PendingFormulaUpdate> updates;
+                for (int c = 0; c < tbl->numCols(); ++c) {
+                    Column *cp = tbl->column(c);
+                    if (!cp)
+                        continue;
+                    const QList<Interval<int>> ivs = cp->formulaIntervals();
+                    for (const Interval<int> &iv : ivs) {
+                        const QString orig = cp->formula(iv.start());
+                        if (orig.isEmpty())
+                            continue;
+                        QString f = orig;
+                        QVector<QPair<QString, QString>> placeholders;
+                        placeholders.reserve(renamePairs.size());
+                        // Two-pass simultaneous rewrite via collision-free placeholders so
+                        // chains (Table1 -> Table2, Table2 -> Table3) never double-rename.
+                        for (int k = 0; k < renamePairs.size(); ++k) {
+                            QString ph = QStringLiteral("__TG_APPEND_TBL_PH_%1__").arg(k);
+                            auto collides = [&](const QString &cand) -> bool {
+                                if (orig.contains(cand) || f.contains(cand))
+                                    return true;
+                                for (const auto &p : renamePairs) {
+                                    if (p.first.contains(cand) || p.second.contains(cand))
+                                        return true;
+                                }
+                                return false;
+                            };
+                            while (collides(ph))
+                                ph.append(QLatin1Char('_'));
+                            const QString next = Table::rewriteTableRefsInFormula(
+                                    f, renamePairs.at(k).first, ph);
+                            if (next != f) {
+                                f = next;
+                                placeholders.append(qMakePair(ph, renamePairs.at(k).second));
+                            }
+                        }
+                        for (const auto &phPair : placeholders) {
+                            f = Table::rewriteTableRefsInFormula(f, phPair.first, phPair.second);
+                        }
+                        if (f != orig)
+                            updates.push_back({ c, iv, f });
+                    }
+                }
+                if (updates.isEmpty())
+                    continue;
+                const bool prevAuto = tbl->autoRecalcFormulas();
+                if (prevAuto)
+                    tbl->setAutoRecalcFormulas(false);
+                for (const PendingFormulaUpdate &u : updates) {
+                    if (Column *cp = tbl->column(u.col))
+                        cp->setFormula(u.iv, u.formula);
+                }
+                if (prevAuto)
+                    tbl->d_future_table->setAutoRecalcFormulas(true);
+            }
+        }
+    }
+
     appendMacro.close();
     if (cf && cf->folderListItem())
         folders.setCurrentItem(cf->folderListItem());
@@ -5058,17 +5531,16 @@ void ApplicationWindow::appendProject(const QString &fn)
     // keep caller's active folder after appending project
     changeFolder(cf, true);
     updateExplorerFolderPaneVisibility();
+    savedActiveGuard.clearNow();
     for (MyWidget *mw : windowsList()) {
         if (!mw)
             continue;
-        mw->setProperty("torigraph_saved_active", QVariant());
-        if (Folder *mf = mw->folder())
-            mf->setProperty("torigraph_saved_active_obj", QVariant());
         if ((mw->inherits("Table") || mw->inherits("Matrix")) && stringContainsWhitespace(mw->name())) {
             const QString oldName = mw->name();
             {
-                // the rename is propagated once, by updateTableNames below
+                // the rename is propagated once, by updateTableNames / changeMatrixName below
                 Table::RenamePropagationBlocker renameBlocker(qobject_cast<Table *>(mw));
+                ScopedMatrixRenameBlock mtxRenameBlocker(qobject_cast<Matrix *>(mw));
                 sanitizeLoadedWindowName(this, mw, oldName,
                                          mw->inherits("Matrix") ? QStringLiteral("Matrix")
                                                                 : QStringLiteral("Table"));
@@ -5097,11 +5569,15 @@ void ApplicationWindow::rawSaveFolder(Folder *folder, QIODevice *device)
     QTextStream stream(device);
     stream.setCodec(QTextCodec::codecForName("UTF-8"));
     foreach (MyWidget *w, folder->windowsList()) {
-        Table *t = qobject_cast<Table *>(w);
-        if (t)
-            t->saveToDevice(device, windowGeometryInfo(w));
-        else
+        if (qobject_cast<TableStatistics *>(w)) {
             stream << w->saveToString(windowGeometryInfo(w));
+            stream.flush();
+        } else if (Table *t = qobject_cast<Table *>(w)) {
+            stream.flush();
+            t->saveToDevice(device, windowGeometryInfo(w));
+        } else {
+            stream << w->saveToString(windowGeometryInfo(w));
+        }
     }
     // D8: workbook (sheet tabs) membership; older versions ignore the line
     stream << WorkbookManager::instance(this)->saveFolderBooks(folder);

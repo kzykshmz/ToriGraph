@@ -1682,10 +1682,13 @@ void graphPageSizeMmForPreview(MyWidget *w, bool applyLabFirst,
                 break;
             default: {
                 const QWidget *cv = ml->canvasWidget();
-                const int wPx = (cv && cv->width() > 0) ? cv->width() : ml->width();
-                const int hPx = (cv && cv->height() > 0) ? cv->height() : ml->height();
-                wMm = wPx > 0 ? (double(wPx) * 25.4 / 96.0) : 85.0;
-                hMm = hPx > 0 ? (double(hPx) * 25.4 / 96.0) : 85.0;
+                const double zoom = (ml->pageZoom() > 1e-6) ? ml->pageZoom() : 1.0;
+                const double wPx = (cv && cv->width() > 0) ? (double(cv->width()) / zoom)
+                                                           : double(ml->width());
+                const double hPx = (cv && cv->height() > 0) ? (double(cv->height()) / zoom)
+                                                            : double(ml->height());
+                wMm = wPx > 0.0 ? (wPx * 25.4 / 96.0) : 85.0;
+                hMm = hPx > 0.0 ? (hPx * 25.4 / 96.0) : 85.0;
                 break;
             }
             }

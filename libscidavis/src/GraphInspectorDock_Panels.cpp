@@ -3193,7 +3193,9 @@ QWidget *GraphInspectorDock::buildLegendInspector()
             return;
         }
 
-        if (!g->hasLegend())
+        const QString before = d_target_ml->captureUndoSnapshot();
+        const bool createdLegend = !g->hasLegend();
+        if (createdLegend)
             g->newLegend();
         leg = g->legend();
         if (!leg)
@@ -3218,11 +3220,11 @@ QWidget *GraphInspectorDock::buildLegendInspector()
         d_edit_leg_header->setProperty("_syncedText", hdr);
         d_edit_leg_header->setModified(false);
         setLineEditPendingCue(d_edit_leg_header, false);
-        if (leg->text() == updated)
+        if (!createdLegend && leg->text() == updated)
             return;
 
-        const QString before = d_target_ml->captureUndoSnapshot();
-        leg->setText(updated);
+        if (leg->text() != updated)
+            leg->setText(updated);
         g->replot();
         emit g->modifiedGraph();
         d_target_ml->pushUndoSnapshot(tr("Edit Legend Header"), before, kMergeLegendHeader);

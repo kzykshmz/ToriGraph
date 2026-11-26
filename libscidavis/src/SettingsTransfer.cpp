@@ -371,6 +371,24 @@ int SettingsTransfer::applyLabDefaults(QSettings &user, const QString &labIniPat
     for (const QString &key : lab.allKeys()) {
         if (isBookkeepingKey(key) || isPersonalKey(key))
             continue;
+        if (key == QLatin1String(kStylePresetsKey)) {
+            const QString presetPath = stylePresetsFileFor(user);
+            if (!presetPath.isEmpty() && !QFile::exists(presetPath)) {
+                const QByteArray json =
+                        QByteArray::fromBase64(lab.value(key).toString().toLatin1());
+                QJsonParseError parseErr;
+                const QJsonDocument doc = QJsonDocument::fromJson(json, &parseErr);
+                if (!json.isEmpty() && parseErr.error == QJsonParseError::NoError
+                    && (doc.isObject() || doc.isArray())) {
+                    QDir().mkpath(QFileInfo(presetPath).absolutePath());
+                    QSaveFile sf(presetPath);
+                    if (sf.open(QIODevice::WriteOnly) && sf.write(json) == json.size()
+                        && sf.commit())
+                        ++written;
+                }
+            }
+            continue;
+        }
         const QVariant labValue = lab.value(key);
         const QString appliedKey = QLatin1String(kLabAppliedPrefix) + key;
         bool write = false;
@@ -494,7 +512,7 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
                              trST("The settings could not be read:\n%1").arg(err));
         return;
     }
-    setSaveSuppressed(false);
+    setSaveSuppressed(true);
     QPointer<ApplicationWindow> callerGuard(app);
     bool appliedToCaller = false;
     auto applyLiveToWindow = [](ApplicationWindow *aw, bool isPrimary) {
@@ -523,8 +541,7 @@ void SettingsTransfer::importInteractive(ApplicationWindow *app)
     }
     if (!appliedToCaller && callerGuard)
         applyLiveToWindow(callerGuard.data(), true);
-    if (callerGuard)
-        callerGuard->saveSettings();
+    ApplicationWindow::getSettings().sync();
     QMessageBox::information(
             callerGuard.data(), trST("Import Settings"),
             trST("%1 settings were read and applied live (language, theme colors, fonts, "

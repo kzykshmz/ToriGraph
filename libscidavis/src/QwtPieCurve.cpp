@@ -270,7 +270,7 @@ bool QwtPieCurve::loadData()
             } else {
                 val = y_col_ptr->valueAt(row);
             }
-            if (!std::isfinite(val) || val < 0.0)
+            if (!std::isfinite(val) || val <= 0.0)
                 continue;
             Y[size++] = val;
         }

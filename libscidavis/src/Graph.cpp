@@ -743,26 +743,29 @@ bool Graph::framed()
 
 QColor Graph::canvasFrameColor()
 {
-    QwtPlotCanvas *canvas = (QwtPlotCanvas *)d_plot->canvas();
-    QPalette pal = canvas->palette();
+    QPalette pal = d_plot->palette();
     return pal.color(QPalette::Active, QPalette::WindowText);
 }
 
 int Graph::canvasFrameWidth()
 {
-    QwtPlotCanvas *canvas = (QwtPlotCanvas *)d_plot->canvas();
-    return canvas->lineWidth();
+    return d_plot->lineWidth();
 }
 
 void Graph::drawCanvasFrame(const QStringList &frame)
 {
-    d_plot->setLineWidth((frame[1]).toInt());
-    if ((frame[1]).toInt())
+    if (frame.size() < 2)
+        return;
+    const int w = (frame[1]).toInt();
+    d_plot->setLineWidth(w);
+    if (w > 0)
         d_plot->setFrameStyle(QFrame::Box);
 
-    QPalette pal = d_plot->palette();
-    pal.setColor(QPalette::WindowText, QColor(COLORVALUE(frame[2])));
-    d_plot->setPalette(pal);
+    if (frame.size() >= 3) {
+        QPalette pal = d_plot->palette();
+        pal.setColor(QPalette::WindowText, QColor(COLORVALUE(frame[2])));
+        d_plot->setPalette(pal);
+    }
 }
 
 void Graph::drawCanvasFrame(bool frameOn, int width, const QColor &color)
@@ -775,6 +778,8 @@ void Graph::drawCanvasFrame(bool frameOn, int width, const QColor &color)
 
     if (frameOn) {
         d_plot->setLineWidth(width);
+        if (width > 0)
+            d_plot->setFrameStyle(QFrame::Box);
         pal.setColor(QPalette::WindowText, color);
         d_plot->setPalette(pal);
     } else {
@@ -854,8 +859,7 @@ void Graph::zoom(bool on)
     d_zoomer[0]->setEnabled(on);
     d_zoomer[1]->setEnabled(on);
     for (int i = 0; i < n_curves; i++) {
-        Spectrogram *sp = (Spectrogram *)this->curve(i);
-        if (sp && sp->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
+        if (auto *sp = dynamic_cast<Spectrogram *>(this->plotItem(i))) {
             if (sp->colorScaleAxis() == QwtPlot::xBottom || sp->colorScaleAxis() == QwtPlot::yLeft)
                 d_zoomer[0]->setEnabled(false);
             else
@@ -3244,8 +3248,8 @@ class ShadedBandPlotItem : public QwtPlotItem
 public:
     ShadedBandPlotItem(const QVector<double> &x, const QVector<double> &yLow,
                        const QVector<double> &yHigh, const QColor &fillColor,
-                       const QString &bandTitle)
-        : d_x(x), d_yLow(yLow), d_yHigh(yHigh), d_color(fillColor)
+                       const QString &bandTitle, bool horizontal = false)
+        : d_x(x), d_yLow(yLow), d_yHigh(yHigh), d_color(fillColor), d_horizontal(horizontal)
     {
         setZ(15.0);
         setTitle(bandTitle);
@@ -3268,16 +3272,21 @@ public:
                 continue;
             const double lo = qMin(d_yLow[i], d_yHigh[i]);
             const double hi = qMax(d_yLow[i], d_yHigh[i]);
+            const double ptMinX = d_horizontal ? lo : d_x[i];
+            const double ptMaxX = d_horizontal ? hi : d_x[i];
+            const double ptMinY = d_horizontal ? d_x[i] : lo;
+            const double ptMaxY = d_horizontal ? d_x[i] : hi;
             if (first) {
-                minX = maxX = d_x[i];
-                minY = lo;
-                maxY = hi;
+                minX = ptMinX;
+                maxX = ptMaxX;
+                minY = ptMinY;
+                maxY = ptMaxY;
                 first = false;
             } else {
-                minX = qMin(minX, d_x[i]);
-                maxX = qMax(maxX, d_x[i]);
-                minY = qMin(minY, lo);
-                maxY = qMax(maxY, hi);
+                minX = qMin(minX, ptMinX);
+                maxX = qMax(maxX, ptMaxX);
+                minY = qMin(minY, ptMinY);
+                maxY = qMax(maxY, ptMaxY);
             }
         }
         if (first)
@@ -3298,18 +3307,24 @@ public:
                 && xMap.transformation()->type() == QwtScaleTransformation::Log10;
         const bool logY = yMap.transformation()
                 && yMap.transformation()->type() == QwtScaleTransformation::Log10;
-        const double logYFloor = logY ? qMax(1e-300, 0.1 * qMin(qMax(1e-300, yMap.s1()),
-                                                                qMax(1e-300, yMap.s2())))
-                                      : 0.0;
+        const bool logIndep = d_horizontal ? logY : logX;
+        const bool logSpan = d_horizontal ? logX : logY;
+        const double logSpanFloor = d_horizontal
+                ? (logX ? qMax(1e-300, 0.1 * qMin(qMax(1e-300, xMap.s1()),
+                                                  qMax(1e-300, xMap.s2())))
+                        : 0.0)
+                : (logY ? qMax(1e-300, 0.1 * qMin(qMax(1e-300, yMap.s1()),
+                                                  qMax(1e-300, yMap.s2())))
+                        : 0.0);
 
         auto isValidBandPt = [&](int idx) -> bool {
             if (!std::isfinite(d_x[idx]) || !std::isfinite(d_yLow[idx])
                 || !std::isfinite(d_yHigh[idx])) {
                 return false;
             }
-            if (logX && d_x[idx] <= 0.0)
+            if (logIndep && d_x[idx] <= 0.0)
                 return false;
-            if (logY && qMax(d_yLow[idx], d_yHigh[idx]) <= 0.0)
+            if (logSpan && qMax(d_yLow[idx], d_yHigh[idx]) <= 0.0)
                 return false;
             return true;
         };
@@ -3330,16 +3345,20 @@ public:
                 QPolygonF poly;
                 poly.reserve(2 * (segEnd - segStart + 1));
                 for (int k = segStart; k <= segEnd; ++k) {
-                    const double yHiVal = logY ? qMax(d_yHigh[k], logYFloor) : d_yHigh[k];
-                    const double px = xMap.xTransform(d_x[k]);
-                    const double py = yMap.xTransform(yHiVal);
+                    const double spanHiVal = logSpan ? qMax(d_yHigh[k], logSpanFloor) : d_yHigh[k];
+                    const double px = d_horizontal ? xMap.xTransform(spanHiVal)
+                                                   : xMap.xTransform(d_x[k]);
+                    const double py = d_horizontal ? yMap.xTransform(d_x[k])
+                                                   : yMap.xTransform(spanHiVal);
                     if (std::isfinite(px) && std::isfinite(py))
                         poly.append(QPointF(px, py));
                 }
                 for (int k = segEnd; k >= segStart; --k) {
-                    const double yLoVal = logY ? qMax(d_yLow[k], logYFloor) : d_yLow[k];
-                    const double px = xMap.xTransform(d_x[k]);
-                    const double py = yMap.xTransform(yLoVal);
+                    const double spanLoVal = logSpan ? qMax(d_yLow[k], logSpanFloor) : d_yLow[k];
+                    const double px = d_horizontal ? xMap.xTransform(spanLoVal)
+                                                   : xMap.xTransform(d_x[k]);
+                    const double py = d_horizontal ? yMap.xTransform(d_x[k])
+                                                   : yMap.xTransform(spanLoVal);
                     if (std::isfinite(px) && std::isfinite(py))
                         poly.append(QPointF(px, py));
                 }
@@ -3355,13 +3374,14 @@ private:
     QVector<double> d_yLow;
     QVector<double> d_yHigh;
     QColor d_color;
+    bool d_horizontal = false;
 };
 
 } // namespace
 
 QwtPlotItem *Graph::addShadedBand(const QVector<double> &x, const QVector<double> &yLow,
                                   const QVector<double> &yHigh, const QColor &fillColor,
-                                  const QString &title)
+                                  const QString &title, bool horizontal)
 {
     if (!d_plot)
         return nullptr;
@@ -3369,7 +3389,7 @@ QwtPlotItem *Graph::addShadedBand(const QVector<double> &x, const QVector<double
     if (n < 2)
         return nullptr;
 
-    ShadedBandPlotItem *item = new ShadedBandPlotItem(x, yLow, yHigh, fillColor, title);
+    ShadedBandPlotItem *item = new ShadedBandPlotItem(x, yLow, yHigh, fillColor, title, horizontal);
     item->attach(d_plot);
 
     ShadedBandSpec spec;
@@ -3378,6 +3398,7 @@ QwtPlotItem *Graph::addShadedBand(const QVector<double> &x, const QVector<double
     spec.yHigh = yHigh;
     spec.fillColor = fillColor;
     spec.title = title;
+    spec.horizontal = horizontal;
     spec.item = item;
     d_shaded_bands.append(spec);
 

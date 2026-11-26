@@ -692,5 +692,6 @@ int runSuite109WorksheetFormulaRefsAndMasks(ApplicationWindow *mw);
 int runSuite110CurveMathKeepsGraphAndColumns(ApplicationWindow *mw);
 int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw);
 int runSuite112HeatmapHolesAndHistogramBins(ApplicationWindow *mw);
+int runSuite113SwarmAuditRegressions(ApplicationWindow *mw);
 
 #endif // TORIGRAPH_OLE_TEST_COMMON_H

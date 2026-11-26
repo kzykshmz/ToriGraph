@@ -1429,6 +1429,37 @@ int user_fdf(const gsl_vector *x, void *params, gsl_vector *f, gsl_matrix *J)
     return user_df(x, params, J);
 }
 
+static inline double boltzmann_eval_r(double diff, double dx, double *prodOut, double *uOut)
+{
+    double u = 0.0;
+    if (std::fabs(dx) < 1e-300) {
+        u = (diff == 0.0) ? 0.0 : ((diff > 0.0) ? 1000.0 : -1000.0);
+    } else {
+        u = diff / dx;
+    }
+    double r = 0.5;
+    double prod = 0.25;
+    if (!std::isfinite(u)) {
+        r = (u > 0.0) ? 0.0 : 1.0;
+        prod = 0.0;
+    } else if (u >= 0.0) {
+        const double em = std::exp(-u);
+        const double denom = 1.0 + em;
+        r = em / denom;
+        prod = r / denom;
+    } else {
+        const double ep = std::exp(u);
+        const double denom = 1.0 + ep;
+        r = 1.0 / denom;
+        prod = ep * r * r;
+    }
+    if (prodOut)
+        *prodOut = prod;
+    if (uOut)
+        *uOut = u;
+    return r;
+}
+
 int boltzmann_f(const gsl_vector *x, void *params, gsl_vector *f)
 {
     size_t n = ((struct FitData *)params)->n;
@@ -1447,7 +1478,8 @@ int boltzmann_f(const gsl_vector *x, void *params, gsl_vector *f)
             continue;
         }
         double s = sigma ? sigma[i] : 1.0;
-        double Yi = (A1 - A2) / (1 + exp((X[i] - x0) / dx)) + A2;
+        double r = boltzmann_eval_r(X[i] - x0, dx, nullptr, nullptr);
+        double Yi = (A1 - A2) * r + A2;
         gsl_vector_set(f, i, (Yi - Y[i]) / s);
     }
 
@@ -1471,7 +1503,8 @@ double boltzmann_d(const gsl_vector *x, void *params)
         if (fit_gsl_invalid_sigma(sigma, i))
             continue;
         double s = sigma ? sigma[i] : 1.0;
-        double dYi = ((A1 - A2) / (1 + exp((X[i] - x0) / dx)) + A2 - Y[i]) / s;
+        double r = boltzmann_eval_r(X[i] - x0, dx, nullptr, nullptr);
+        double dYi = ((A1 - A2) * r + A2 - Y[i]) / s;
         val += dYi * dYi;
     }
     return val;
@@ -1487,6 +1520,7 @@ int boltzmann_df(const gsl_vector *x, void *params, gsl_matrix *J)
     double A2 = gsl_vector_get(x, 1);
     double x0 = gsl_vector_get(x, 2);
     double dx = gsl_vector_get(x, 3);
+    const double safeDx = (std::fabs(dx) < 1e-300) ? ((dx < 0.0) ? -1e-300 : 1e-300) : dx;
     size_t i;
     for (i = 0; i < n; i++) {
         if (fit_gsl_invalid_sigma(sigma, i)) {
@@ -1499,13 +1533,15 @@ int boltzmann_df(const gsl_vector *x, void *params, gsl_matrix *J)
         /* and the xj are the parameters (A1,A2,x0,dx)*/
         double s = sigma ? sigma[i] : 1.0;
         double diff = X[i] - x0;
-        double e = exp(diff / dx);
-        double r = 1 / (1 + e);
-        double aux = (A1 - A2) * e * r * r / (dx * s);
+        double prod = 0.0;
+        double u = 0.0;
+        double r = boltzmann_eval_r(diff, dx, &prod, &u);
+        double aux = (prod == 0.0) ? 0.0 : ((A1 - A2) * prod / (safeDx * s));
+        double dDx = (prod == 0.0 || !std::isfinite(u)) ? 0.0 : (aux * u);
         gsl_matrix_set(J, i, 0, r / s);
-        gsl_matrix_set(J, i, 1, (1 - r) / s);
-        gsl_matrix_set(J, i, 2, aux);
-        gsl_matrix_set(J, i, 3, aux * diff / dx);
+        gsl_matrix_set(J, i, 1, (1.0 - r) / s);
+        gsl_matrix_set(J, i, 2, std::isfinite(aux) ? aux : 0.0);
+        gsl_matrix_set(J, i, 3, std::isfinite(dDx) ? dDx : 0.0);
     }
     return GSL_SUCCESS;
 }

@@ -255,7 +255,7 @@ QString Graph::saveEnabledAxes()
 QString Graph::saveCanvas()
 {
     QString s = "";
-    int w = d_plot->canvas()->lineWidth();
+    int w = d_plot->lineWidth();
     if (w > 0) {
         s += "CanvasFrame\t" + QString::number(w) + "\t";
         s += COLORNAME(canvasFrameColor()) + "\n";
@@ -1085,6 +1085,8 @@ QString Graph::saveToString(bool saveAsTemplate)
                 const QString axesAttr = (bxAxis == QwtPlot::xBottom && byAxis == QwtPlot::yLeft)
                         ? QString()
                         : QStringLiteral(" xaxis=\"%1\" yaxis=\"%2\"").arg(bxAxis).arg(byAxis);
+                const QString horizAttr =
+                        bs.horizontal ? QStringLiteral(" horizontal=\"1\"") : QString();
                 s += QString("<ToriRefLine kind=\"band\" color=\"%1\" title=\"%2\" x=\"%3\" "
                              "yLow=\"%4\" yHigh=\"%5\"")
                              .arg(bs.fillColor.name(QColor::HexArgb))
@@ -1092,7 +1094,7 @@ QString Graph::saveToString(bool saveAsTemplate)
                              .arg(xStr.join(","))
                              .arg(ylStr.join(","))
                              .arg(yhStr.join(","))
-                        + axesAttr + QStringLiteral("/>\n");
+                        + axesAttr + horizAttr + QStringLiteral("/>\n");
             }
 
             // E11: error bands and colour-mapped scatter symbols (restored after the curves)
@@ -1776,7 +1778,8 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
         setReferenceLines(g->referenceLines());
 
     for (const ShadedBandSpec &bs : g->d_shaded_bands) {
-        QwtPlotItem *band = addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title);
+        QwtPlotItem *band =
+                addShadedBand(bs.x, bs.yLow, bs.yHigh, bs.fillColor, bs.title, bs.horizontal);
         if (band && bs.item)
             band->setAxis(bs.item->xAxis(), bs.item->yAxis());
     }
@@ -2418,7 +2421,8 @@ bool Graph::restorePhase5Tag(const QString &line)
                 QColor col(attrs.value("color", "#371e66b8"));
                 if (!col.isValid())
                     col = QColor(30, 102, 184, 55);
-                QwtPlotItem *band = addShadedBand(xv, ylv, yhv, col, attrs.value("title"));
+                const bool horiz = (attrs.value("horizontal", "0").toInt() != 0);
+                QwtPlotItem *band = addShadedBand(xv, ylv, yhv, col, attrs.value("title"), horiz);
                 if (band && (attrs.contains("xaxis") || attrs.contains("yaxis"))) {
                     const int bxAxis = attrs.value("xaxis", "2").toInt();
                     const int byAxis = attrs.value("yaxis", "0").toInt();

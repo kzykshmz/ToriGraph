@@ -68,7 +68,7 @@ public:
     //! Standard constructor.
     LineProfileTool(Graph *graph, int average_pixels);
     virtual RTTI rtti() const { return LineProfile; }
-    void calculateLineProfile(const QPoint &start, const QPoint &end);
+    bool calculateLineProfile(const QPoint &start, const QPoint &end);
 
 signals:
     /*! Emitted whenever a new message should be presented to the user.
@@ -98,10 +98,15 @@ protected:
     virtual void mouseReleaseEvent(QMouseEvent *e);
 
 private:
+    ImageMarker *resolveTarget() const;
     //! Number of image pixels over which to average.
     int d_average_pixels;
-    //! The image marker to operate on.
+    //! The image marker to operate on (validated via d_target_key against d_graph).
     ImageMarker *d_target;
+    //! Marker key in d_graph used to validate d_target before dereferencing.
+    long d_target_key;
+    //! Whether a left-button drag is currently active.
+    bool d_dragging;
     /*!\brief Mouse position where an operation started.
      */
     QPoint d_op_start;

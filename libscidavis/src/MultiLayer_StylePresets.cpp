@@ -58,6 +58,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
@@ -2258,7 +2259,15 @@ MultiLayer::GraphStylePresetSpec MultiLayer::captureStylePresetSpec(const QStrin
     s.name = name.trimmed().isEmpty() ? QObject::tr("New Custom Preset") : name.trimmed();
     s.builtIn = false;
 
-    const double dpi = double(qMax(72, d_page_dpi));
+    double pageW = d_page_width_val;
+    double pageH = d_page_height_val;
+    if (d_page_unit == UnitPx && canvas && canvas->width() > 0 && canvas->height() > 0
+        && d_page_zoom > 1e-6) {
+        pageW = double(canvas->width()) / d_page_zoom;
+        pageH = double(canvas->height()) / d_page_zoom;
+    }
+
+    constexpr double screenPpi = 96.0;
     auto toMm = [&](double val) -> double {
         switch (d_page_unit) {
         case UnitMm:
@@ -2269,11 +2278,11 @@ MultiLayer::GraphStylePresetSpec MultiLayer::captureStylePresetSpec(const QStrin
             return val * 25.4;
         case UnitPx:
         default:
-            return val * 25.4 / dpi;
+            return val * 25.4 / screenPpi;
         }
     };
-    s.pageWidthMm = qBound(20.0, toMm(d_page_width_val), 1000.0);
-    s.pageHeightMm = qBound(20.0, toMm(d_page_height_val), 1000.0);
+    s.pageWidthMm = qBound(20.0, toMm(pageW), 1000.0);
+    s.pageHeightMm = qBound(20.0, toMm(pageH), 1000.0);
     s.keepAspectRatio = d_keep_aspect_ratio;
     s.targetDpi = qBound(72, d_page_dpi, 2400);
     s.marginPx = qBound(0, left_margin, 80);
@@ -2328,11 +2337,13 @@ MultiLayer::GraphStylePresetSpec MultiLayer::captureStylePresetSpec(const QStrin
 void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer *targetGraph)
 {
     registerStylePresetTranslationsOnce();
-    if (app && ApplicationWindow::isNonInteractiveContext(app))
+    QPointer<ApplicationWindow> appGuard(app);
+    QPointer<MultiLayer> targetGraphGuard(targetGraph);
+    if (appGuard && ApplicationWindow::isNonInteractiveContext(appGuard.data()))
         return;
 
-    if (!targetGraph && app)
-        targetGraph = qobject_cast<MultiLayer *>(app->d_workspace.activeSubWindow());
+    if (!targetGraphGuard && appGuard)
+        targetGraphGuard = qobject_cast<MultiLayer *>(appGuard->d_workspace.activeSubWindow());
 
     const QString origNewGraphPresetId = newGraphStylePresetId();
     const QString origCurvePalette = Graph::defaultCurvePaletteName();
@@ -2341,7 +2352,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QString pendingNewGraphPresetId = origNewGraphPresetId;
     QString stagedSharedFolder = origSharedFolder;
 
-    QDialog dlg(app);
+    QDialog dlg(appGuard.data());
     dlg.setWindowTitle(QObject::tr("Graph Style Preset Manager"));
     dlg.setMinimumSize(680, 410);
     dlg.resize(750, 480);
@@ -2360,7 +2371,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QHBoxLayout *addRow = new QHBoxLayout();
     QPushButton *btnNew = new QPushButton(QObject::tr("New"), &dlg);
     QPushButton *btnFromGraph = new QPushButton(QObject::tr("From Current Graph"), &dlg);
-    btnFromGraph->setEnabled(targetGraph != nullptr);
+    btnFromGraph->setEnabled(targetGraphGuard != nullptr);
     addRow->addWidget(btnNew);
     addRow->addWidget(btnFromGraph);
     leftCol->addLayout(addRow);
@@ -2574,7 +2585,14 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QHBoxLayout *btnRow = new QHBoxLayout();
     QPushButton *btnSave = new QPushButton(QObject::tr("Save Changes"), &dlg);
     QPushButton *btnApply = new QPushButton(QObject::tr("Save && Apply to Graph"), &dlg);
-    btnApply->setEnabled(targetGraph != nullptr);
+    btnApply->setEnabled(targetGraphGuard != nullptr);
+    if (targetGraphGuard) {
+        QObject::connect(targetGraphGuard.data(), &QObject::destroyed, &dlg,
+                         [btnFromGraph, btnApply]() {
+                             btnFromGraph->setEnabled(false);
+                             btnApply->setEnabled(false);
+                         });
+    }
     QPushButton *btnOk = new QPushButton(QObject::tr("OK"), &dlg);
     QPushButton *btnCancel = new QPushButton(QObject::tr("Cancel"), &dlg);
     for (QPushButton *b : { btnNew, btnFromGraph, btnDup, btnDel, btnReset, btnImport, btnExport,
@@ -2695,7 +2713,7 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         btnDel->setEnabled(!s.builtIn && !s.readOnly);
         btnReset->setEnabled(s.builtIn);
         btnSave->setEnabled(true);
-        btnApply->setEnabled(targetGraph != nullptr);
+        btnApply->setEnabled(targetGraphGuard != nullptr);
         btnApply->setText(s.readOnly ? QObject::tr("Apply to Graph")
                                      : QObject::tr("Save && Apply to Graph"));
         loadingUi = false;
@@ -2818,8 +2836,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
         }
         setNewGraphStylePresetId(cbNewGraphPreset->currentData().toString());
         Graph::setDefaultCurvePaletteName(cbCurvePalette->currentData().toString());
-        if (app && app->graphInspectorDock())
-            app->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
+        if (appGuard && appGuard->graphInspectorDock())
+            appGuard->graphInspectorDock()->syncSeriesSchemeToDefaultPalette();
         setMultiPanelSizing(static_cast<MultiPanelSizing>(cbPanelSizing->currentData().toInt()));
         setSharedStylePresetsFolder(stagedSharedFolder);
         return true;
@@ -2839,11 +2857,14 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     });
 
     QObject::connect(btnFromGraph, &QPushButton::clicked, &dlg, [&]() {
-        if (!targetGraph)
+        if (!targetGraphGuard) {
+            btnFromGraph->setEnabled(false);
+            btnApply->setEnabled(false);
             return;
+        }
         flushCurrentRowToModel();
         GraphStylePresetSpec s =
-                targetGraph->captureStylePresetSpec(QObject::tr("New Custom Preset"));
+                targetGraphGuard->captureStylePresetSpec(QObject::tr("New Custom Preset"));
         insertPersonalPresetInModel(s);
         refreshListUi(s.id);
         leName->setFocus();
@@ -2973,14 +2994,19 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
 
     QObject::connect(btnSave, &QPushButton::clicked, &dlg, [&]() { commitAllChanges(); });
     QObject::connect(btnApply, &QPushButton::clicked, &dlg, [&]() {
-        if (!targetGraph || !commitAllChanges())
+        if (!targetGraphGuard) {
+            btnFromGraph->setEnabled(false);
+            btnApply->setEnabled(false);
+            return;
+        }
+        if (!commitAllChanges())
             return;
         const int row = lw->currentRow();
-        if (row >= 0 && row < presets.size()) {
-            targetGraph->applyStylePresetSpec(presets[row]);
-            if (app) {
-                app->modifiedProject();
-                if (GraphInspectorDock *insp = app->graphInspectorDock())
+        if (targetGraphGuard && row >= 0 && row < presets.size()) {
+            targetGraphGuard->applyStylePresetSpec(presets[row]);
+            if (appGuard) {
+                appGuard->modifiedProject();
+                if (GraphInspectorDock *insp = appGuard->graphInspectorDock())
                     insp->refreshAll();
             }
         }
@@ -2994,8 +3020,8 @@ void MultiLayer::showStylePresetManagerDialog(ApplicationWindow *app, MultiLayer
     QObject::connect(btnCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
 
     dlg.exec();
-    if (app) {
-        if (GraphInspectorDock *insp = app->graphInspectorDock())
+    if (appGuard) {
+        if (GraphInspectorDock *insp = appGuard->graphInspectorDock())
             insp->refreshAll();
     }
 }

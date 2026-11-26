@@ -48,6 +48,38 @@
 
 namespace {
 
+constexpr const char *kSpecCbHiddenOwnersProp = "_tg_spec_cb_hidden_owners";
+
+bool hasHiddenSpecCbOwner(const QwtScaleWidget *sw, const Spectrogram *sp)
+{
+    if (!sw || !sp)
+        return false;
+    const qulonglong id = static_cast<qulonglong>(reinterpret_cast<quintptr>(sp));
+    const QVariantList owners = sw->property(kSpecCbHiddenOwnersProp).toList();
+    for (const QVariant &v : owners) {
+        if (v.toULongLong() == id)
+            return true;
+    }
+    return false;
+}
+
+void removeHiddenSpecCbOwner(QwtScaleWidget *sw, const Spectrogram *sp)
+{
+    if (!sw || !sp)
+        return;
+    const qulonglong id = static_cast<qulonglong>(reinterpret_cast<quintptr>(sp));
+    QVariantList owners = sw->property(kSpecCbHiddenOwnersProp).toList();
+    bool changed = false;
+    for (int i = owners.size() - 1; i >= 0; --i) {
+        if (owners.at(i).toULongLong() == id) {
+            owners.removeAt(i);
+            changed = true;
+        }
+    }
+    if (changed)
+        sw->setProperty(kSpecCbHiddenOwnersProp, owners);
+}
+
 double spectrogramScreenZoomScale(const QwtPlot *qwtPlot)
 {
     if (!QwtPainter::metricsMap().isIdentity())
@@ -333,7 +365,8 @@ void Spectrogram::setColorBarTitle(const QString &title)
 {
     d_colorbar_title = unwrapColorBarTitleNoWrap(title);
     QwtPlot *plot = this->plot();
-    if (!plot || color_axis < 0 || color_axis >= QwtPlot::axisCnt)
+    if (!plot || plot->property("_tg_spec_title_data_only").toBool() || color_axis < 0
+        || color_axis >= QwtPlot::axisCnt)
         return;
     QwtScaleWidget *colorAxis = plot->axisWidget(color_axis);
     if (!colorAxis)
@@ -490,11 +523,18 @@ bool Spectrogram::hasColorScale()
 
 void Spectrogram::showColorScale(int axis, bool on)
 {
+    if (axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+
     QwtPlot *plot = this->plot();
     if (!plot) {
         color_axis = axis;
         return;
     }
+
+    if (color_axis >= 0 && color_axis < QwtPlot::axisCnt)
+        removeHiddenSpecCbOwner(plot->axisWidget(color_axis), this);
+    removeHiddenSpecCbOwner(plot->axisWidget(axis), this);
 
     if (hasColorScale() == on && color_axis == axis) {
         syncColorScale();
@@ -530,20 +570,24 @@ void Spectrogram::showColorScale(int axis, bool on)
 
     // Next we switch axes scales
     QwtScaleDiv *scDiv = plot->axisScaleDiv(oldMainAxis);
+    if (scDiv) {
 #if QWT_VERSION >= 0x050200
-    if (axis == QwtPlot::xBottom || axis == QwtPlot::xTop)
-        plot->setAxisScale(xAxis, scDiv->lowerBound(), scDiv->upperBound());
-    else if (axis == QwtPlot::yLeft || color_axis == QwtPlot::yRight)
-        plot->setAxisScale(yAxis, scDiv->lowerBound(), scDiv->upperBound());
+        if ((axis == QwtPlot::xBottom || axis == QwtPlot::xTop) && xAxis != oldMainAxis)
+            plot->setAxisScale(xAxis, scDiv->lowerBound(), scDiv->upperBound());
+        else if ((axis == QwtPlot::yLeft || color_axis == QwtPlot::yRight) && yAxis != oldMainAxis)
+            plot->setAxisScale(yAxis, scDiv->lowerBound(), scDiv->upperBound());
 #else
-    if (axis == QwtPlot::xBottom || axis == QwtPlot::xTop)
-        plot->setAxisScale(xAxis, scDiv->lBound(), scDiv->hBound());
-    else if (axis == QwtPlot::yLeft || color_axis == QwtPlot::yRight)
-        plot->setAxisScale(yAxis, scDiv->lBound(), scDiv->hBound());
+        if ((axis == QwtPlot::xBottom || axis == QwtPlot::xTop) && xAxis != oldMainAxis)
+            plot->setAxisScale(xAxis, scDiv->lBound(), scDiv->hBound());
+        else if ((axis == QwtPlot::yLeft || color_axis == QwtPlot::yRight) && yAxis != oldMainAxis)
+            plot->setAxisScale(yAxis, scDiv->lBound(), scDiv->hBound());
 #endif
+    }
 
     const QwtDoubleInterval zRange = effectiveValueRange();
     colorAxis = plot->axisWidget(color_axis);
+    if (!colorAxis)
+        return;
     syncColorAxisEngine();
     plot->setAxisScale(color_axis, colorAxisRange().minValue(), colorAxisRange().maxValue());
     colorAxis->setColorBarEnabled(on);
@@ -859,7 +903,9 @@ QString Spectrogram::saveToString()
         }
     }
     QwtScaleWidget *colorAxis = plot() ? plot()->axisWidget(color_axis) : nullptr;
-    if (colorAxis && colorAxis->isColorBarEnabled()) {
+    if (colorAxis
+        && ((isVisible() && colorAxis->isColorBarEnabled())
+            || hasHiddenSpecCbOwner(colorAxis, this))) {
         s += "\t<ColorBar>\n\t\t<axis>" + QString::number(color_axis) + "</axis>\n";
         s += "\t\t<width>" + QString::number(colorAxis->colorBarWidth()) + "</width>\n";
         s += "\t</ColorBar>\n";
@@ -1069,7 +1115,11 @@ void Spectrogram::syncColorAxisEngine()
 QImage Spectrogram::renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                                 const QwtDoubleRect &area) const
 {
-    if (!drawsMissingCellsTransparent() || colorMap().format() != QwtColorMap::RGB)
+    const QwtDoubleInterval rawRange = data().range();
+    const bool degenerateRange =
+            rawRange.isValid() && std::abs(rawRange.maxValue() - rawRange.minValue()) <= 1e-12;
+    if ((!drawsMissingCellsTransparent() && !degenerateRange)
+        || colorMap().format() != QwtColorMap::RGB)
         return QwtPlotSpectrogram::renderImage(xMap, yMap, area);
     if (area.isEmpty())
         return QImage();
@@ -1107,7 +1157,9 @@ QImage Spectrogram::renderImage(const QwtScaleMap &xMap, const QwtScaleMap &yMap
 
     QImage image(rect.size(), QImage::Format_ARGB32);
     image.fill(Qt::transparent);
-    const QwtDoubleInterval intensityRange = data().range();
+    if (!rawRange.isValid())
+        return image;
+    const QwtDoubleInterval intensityRange = degenerateRange ? effectiveValueRange() : rawRange;
     if (!intensityRange.isValid())
         return image;
 

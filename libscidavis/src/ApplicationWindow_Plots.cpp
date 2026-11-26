@@ -1179,9 +1179,10 @@ void ApplicationWindow::updateMatrixPlots(MyWidget *window)
             for (int j = 0; j < (int)graphsList.count(); j++) {
                 Graph *g = (Graph *)graphsList.at(j);
                 for (int i = 0; i < g->curves(); i++) {
-                    Spectrogram *sp = (Spectrogram *)g->plotItem(i);
-                    if (sp && sp->rtti() == QwtPlotItem::Rtti_PlotSpectrogram && sp->matrix() == m)
-                        sp->updateData(m);
+                    if (auto *sp = dynamic_cast<Spectrogram *>(g->plotItem(i))) {
+                        if (sp->matrix() == m)
+                            sp->updateData(m);
+                    }
                 }
             }
         }
@@ -2100,8 +2101,9 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
         int pos = s.indexOf(":", 0);
         QString caption = s.left(pos) + "_";
         Table *w = (Table *)table(caption);
-        if (w)
-            ToriUx::dismissPlotThisDataBar(w);
+        if (!w)
+            continue;
+        ToriUx::dismissPlotThisDataBar(w);
 
         int posX = s.indexOf("(X)", pos);
         QString xColName = caption + s.mid(pos + 2, posX - pos - 2);
@@ -2111,6 +2113,7 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
         int posY = s.indexOf("(Y)", posX);
         QString yColName = caption + s.mid(posX + 2, posY - posX - 2);
 
+        const int prevCurves = ag->curves();
         if (s.contains("(yErr)") || s.contains("(xErr)")) {
             posY = s.indexOf(",", posY);
             int posErr, errType;
@@ -2127,10 +2130,12 @@ MultiLayer *ApplicationWindow::multilayerPlot(const QStringList &colList)
         } else
             ag->insertCurve(w, xCol, yColName, defaultCurveStyle);
 
-        CurveLayout cl = ag->initCurveLayout(defaultCurveStyle, curves - errorBars);
-        cl.lWidth = defaultCurveLineWidth;
-        cl.sSize = defaultSymbolSize;
-        ag->updateCurveLayout(i, &cl);
+        if (ag->curves() > prevCurves) {
+            CurveLayout cl = ag->initCurveLayout(defaultCurveStyle, curves - errorBars);
+            cl.lWidth = defaultCurveLineWidth;
+            cl.sSize = defaultSymbolSize;
+            ag->updateCurveLayout(ag->curves() - 1, &cl);
+        }
     }
     ag->newLegend();
     applyWorksheetMetadataToGraph(ag, nullptr, QStringList(), defaultCurveStyle);
@@ -2345,19 +2350,52 @@ void ApplicationWindow::defineErrorBars(const QString &name, int type, const QSt
     const int rows = data->rowCount();
     if (type == 0) {
         const double fraction = percent.toDouble() / 100.0;
-        for (int i = 0; i < rows; i++)
-            errors->setValueAt(i, std::abs(data->valueAt(i) * fraction));
+        for (int i = 0; i < rows; i++) {
+            if (data->isInvalid(i) || data->isMasked(i)) {
+                errors->setInvalid(i, true);
+                continue;
+            }
+            const double v = data->valueAt(i);
+            if (!std::isfinite(v)) {
+                errors->setInvalid(i, true);
+                continue;
+            }
+            errors->setValueAt(i, std::abs(v * fraction));
+        }
     } else if (type == 1 && rows > 0) {
         double average = 0.0;
-        double dev = 0.0;
-        for (int i = 0; i < rows; i++)
-            average += data->valueAt(i);
-        average /= rows;
-        for (int i = 0; i < rows; i++)
-            dev += pow(data->valueAt(i) - average, 2);
-        dev = sqrt(dev / rows);
-        for (int i = 0; i < rows; i++)
-            errors->setValueAt(i, dev);
+        int validCount = 0;
+        for (int i = 0; i < rows; i++) {
+            if (data->isInvalid(i) || data->isMasked(i))
+                continue;
+            const double v = data->valueAt(i);
+            if (!std::isfinite(v))
+                continue;
+            average += v;
+            ++validCount;
+        }
+        if (validCount > 0) {
+            average /= validCount;
+            double dev = 0.0;
+            for (int i = 0; i < rows; i++) {
+                if (data->isInvalid(i) || data->isMasked(i))
+                    continue;
+                const double v = data->valueAt(i);
+                if (!std::isfinite(v))
+                    continue;
+                const double diff = v - average;
+                dev += diff * diff;
+            }
+            dev = std::sqrt(dev / validCount);
+            for (int i = 0; i < rows; i++) {
+                if (data->isInvalid(i) || data->isMasked(i) || !std::isfinite(data->valueAt(i)))
+                    errors->setInvalid(i, true);
+                else
+                    errors->setValueAt(i, dev);
+            }
+        } else {
+            errors->setInvalid(Interval<int>(0, rows - 1), true);
+        }
     }
 
     const QString beforeSnap = ml->captureUndoSnapshot();
@@ -4489,16 +4527,29 @@ void ApplicationWindow::pixelLineProfile()
     if (!g)
         return;
 
+    if (!dynamic_cast<ImageMarker *>(g->selectedMarkerPtr())) {
+        QMessageBox::warning(this, tr("Pixel selection warning"),
+                             tr("Please select an image marker first."));
+        return;
+    }
+
+    QPointer<Graph> gGuard(g);
     bool ok;
     int res = QInputDialog::getInt(this, tr("Set the number of pixels to average"),
                                    tr("Number of averaged pixels"), 1, 1, 2000, 2, &ok);
-    if (!ok)
+    if (!ok || !gGuard)
         return;
 
-    LineProfileTool *lpt = new LineProfileTool(g, res);
+    if (!dynamic_cast<ImageMarker *>(gGuard->selectedMarkerPtr())) {
+        QMessageBox::warning(this, tr("Pixel selection warning"),
+                             tr("Please select an image marker first."));
+        return;
+    }
+
+    LineProfileTool *lpt = new LineProfileTool(gGuard, res);
     connect(lpt, SIGNAL(createTablePlot(const QString &, const QString &, QList<Column *>)), this,
             SLOT(newWrksheetPlot(const QString &, const QString &, QList<Column *>)));
-    g->setActiveTool(lpt);
+    gGuard->setActiveTool(lpt);
 }
 
 void ApplicationWindow::intensityTable()

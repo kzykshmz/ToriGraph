@@ -67,6 +67,50 @@ void Note::modifiedNote()
     emit modifiedWindow(this);
 }
 
+namespace {
+
+QString escapeNoteClosingTags(const QString &text)
+{
+    QString out = text;
+    for (const QLatin1String tag : { QLatin1String("/content>"), QLatin1String("/note>") }) {
+        int searchFrom = 0;
+        while ((searchFrom = out.indexOf(tag, searchFrom)) != -1) {
+            int bs = searchFrom;
+            while (bs > 0 && out.at(bs - 1) == QLatin1Char('\\'))
+                --bs;
+            if (bs > 0 && out.at(bs - 1) == QLatin1Char('<')) {
+                out.insert(searchFrom, QLatin1Char('\\'));
+                searchFrom += 1 + tag.size();
+            } else {
+                searchFrom += tag.size();
+            }
+        }
+    }
+    return out;
+}
+
+QString unescapeNoteClosingTags(const QString &text)
+{
+    QString out = text;
+    for (const QLatin1String tag : { QLatin1String("/content>"), QLatin1String("/note>") }) {
+        int searchFrom = 0;
+        while ((searchFrom = out.indexOf(tag, searchFrom)) != -1) {
+            int bs = searchFrom;
+            while (bs > 0 && out.at(bs - 1) == QLatin1Char('\\'))
+                --bs;
+            if (bs < searchFrom && bs > 0 && out.at(bs - 1) == QLatin1Char('<')) {
+                out.remove(searchFrom - 1, 1);
+                searchFrom += tag.size() - 1;
+            } else {
+                searchFrom += tag.size();
+            }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 QString Note::saveToString(const QString &info)
 {
     QString s = "<note>\n";
@@ -74,7 +118,7 @@ QString Note::saveToString(const QString &info)
     s += info;
     s += "WindowLabel\t" + windowLabel() + "\t" + QString::number(captionPolicy()) + "\n";
     s += "AutoExec\t" + QString(autoExec ? "1" : "0") + "\n";
-    s += "<content>\n" + te->toPlainText().trimmed() + "\n</content>";
+    s += "<content>\n" + escapeNoteClosingTags(te->toPlainText().trimmed()) + "\n</content>";
     s += "\n</note>\n";
     return s;
 }
@@ -96,7 +140,7 @@ void Note::restore(const QStringList &data)
     if (line != data.end() && *line == "<content>")
         line++;
     while (line != data.end() && *line != "</content>")
-        te->insertPlainText((*line++) + "\n");
+        te->insertPlainText(unescapeNoteClosingTags(*line++) + "\n");
 }
 
 void Note::setAutoexec(bool exec)

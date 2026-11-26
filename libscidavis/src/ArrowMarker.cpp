@@ -428,17 +428,9 @@ void ArrowMarker::setBoundingRect(double xs, double ys, double xe, double ye)
 
 QwtDoubleRect ArrowMarker::boundingRect() const
 {
-    const QwtScaleMap &xMap = plot()->canvasMap(xAxis());
-    const QwtScaleMap &yMap = plot()->canvasMap(yAxis());
-
-    const int x0 = xMap.transform(d_rect.left());
-    const int y0 = yMap.transform(d_rect.top());
-    const int x1 = xMap.transform(d_rect.right());
-    const int y1 = yMap.transform(d_rect.bottom());
-
-    return QwtDoubleRect(
-            x0 < x1 ? d_rect.left() : d_rect.right(), y0 < y1 ? d_rect.top() : d_rect.bottom(),
-            qAbs(d_rect.left() - d_rect.right()), qAbs(d_rect.top() - d_rect.bottom()));
+    return QwtDoubleRect(qMin(d_rect.left(), d_rect.right()), qMin(d_rect.top(), d_rect.bottom()),
+                         qAbs(d_rect.right() - d_rect.left()),
+                         qAbs(d_rect.bottom() - d_rect.top()));
 }
 
 void ArrowMarker::updateBoundingRect()

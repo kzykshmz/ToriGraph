@@ -238,28 +238,38 @@ void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<doubl
 
 void SmoothFilter::smoothFFT(std::vector<double>& x, std::vector<double>&  y)
 {
-    if (d_x.size() < 2 || d_y.size() < 2 || x.size() < d_x.size() || y.size() < d_y.size()
-        || d_right_points <= 0 || x[1] == x[0])
+    const size_t n = std::min(d_x.size(), d_y.size());
+    if (n < 2 || x.size() < n || y.size() < n || d_right_points <= 0)
         return;
-
-    gsl_fft_real_workspace *work = gsl_fft_real_workspace_alloc(d_x.size());
-    gsl_fft_real_wavetable *real = gsl_fft_real_wavetable_alloc(d_x.size());
-    gsl_fft_real_transform(y.data(), 1, d_y.size(), real, work); // FFT forward
-    gsl_fft_real_wavetable_free(real);
 
     // Use the magnitude of the step: with X in descending order x[1]-x[0] < 0 would flip the
     // cutoff test below and turn the low-pass into a high-pass.
-    double df = 1.0 / std::fabs(x[1] - x[0]);
-    double lf = df / (double)d_right_points; // frequency cutoff
-    df = 0.5 * df / (double)d_x.size();
+    const double dx = std::fabs(x[1] - x[0]);
+    if (!(dx > 0.0) || !std::isfinite(dx))
+        return;
 
-    for (unsigned i = 0; i < d_x.size(); i++) {
+    gsl_fft_real_workspace *work = gsl_fft_real_workspace_alloc(n);
+    gsl_fft_real_wavetable *real = gsl_fft_real_wavetable_alloc(n);
+    gsl_fft_real_transform(y.data(), 1, n, real, work); // FFT forward
+    gsl_fft_real_wavetable_free(real);
+
+    // GSL real/half-complex FFT layout: element 0 is DC (k = 0), elements (2k-1, 2k) hold
+    // Re(X_k) and Im(X_k) for frequency bin k = (i + 1) / 2, and for even n element n-1 is
+    // Nyquist (k = n/2). Pairing via k = (i + 1) / 2 ensures Re(X_k) and Im(X_k) are always
+    // kept or zeroed together. Standard FFT smoothing cutoff: f_c = 1 / (2 * m * dx) = 0.5 * fs / m.
+    const double fs = 1.0 / dx;
+    const double lf = 0.5 * fs / static_cast<double>(d_right_points); // frequency cutoff
+    const double binDf = fs / static_cast<double>(n);
+
+    for (size_t i = 0; i < n; i++) {
         x[i] = d_x[i];
-        y[i] = i * df > lf ? 0 : y[i]; // filtering frequencies
+        const size_t k = (i + 1) / 2;
+        if (static_cast<double>(k) * binDf > lf)
+            y[i] = 0.0; // filtering frequencies
     }
 
-    gsl_fft_halfcomplex_wavetable *hc = gsl_fft_halfcomplex_wavetable_alloc(d_y.size());
-    gsl_fft_halfcomplex_inverse(y.data(), 1, d_y.size(), hc, work); // FFT inverse
+    gsl_fft_halfcomplex_wavetable *hc = gsl_fft_halfcomplex_wavetable_alloc(n);
+    gsl_fft_halfcomplex_inverse(y.data(), 1, n, hc, work); // FFT inverse
     gsl_fft_halfcomplex_wavetable_free(hc);
     gsl_fft_real_workspace_free(work);
 }

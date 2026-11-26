@@ -48,6 +48,7 @@
 #include "ApplicationWindow.h"
 #include <QtDebug>
 
+#include <limits>
 #include <stdexcept>
 using namespace std;
 
@@ -506,7 +507,7 @@ void Column::Private::replaceData(void *data, IntervalAttribute<bool> validity)
 
 bool Column::Private::copy(const AbstractColumn *other)
 {
-    if (other->dataType() != dataType())
+    if (!other || other->dataType() != dataType())
         return false;
     int num_rows = other->rowCount();
 
@@ -543,39 +544,71 @@ bool Column::Private::copy(const AbstractColumn *other)
 bool Column::Private::copy(const AbstractColumn *source, int source_start, int dest_start,
                            int num_rows)
 {
-    if (source->dataType() != dataType())
+    if (!source || source->dataType() != dataType() || source_start < 0 || dest_start < 0
+        || num_rows < 0 || dest_start > std::numeric_limits<int>::max() - num_rows
+        || source_start > std::numeric_limits<int>::max() - num_rows)
         return false;
     if (num_rows == 0)
         return true;
 
+    const int origRowCount = rowCount();
+    const bool selfCopy = (source == d_owner);
+    const bool copyBackward = (selfCopy && dest_start > source_start
+                               && dest_start < source_start + num_rows);
+
     emit d_owner->dataAboutToChange(d_owner);
-    if (dest_start + 1 - rowCount() > 1)
-        d_validity.setValue(Interval<int>(rowCount(), dest_start - 1), true);
-    if (dest_start + num_rows > rowCount())
+    if (dest_start + 1 - origRowCount > 1)
+        d_validity.setValue(Interval<int>(origRowCount, dest_start - 1), true);
+    if (dest_start + num_rows > origRowCount)
         resizeTo(dest_start + num_rows);
 
     // copy the data
     switch (d_data_type) {
     case SciDAVis::TypeDouble: {
         double *ptr = static_cast<QVector<double> *>(d_data)->data();
-        for (int i = 0; i < num_rows; i++)
-            ptr[dest_start + i] = source->valueAt(source_start + i);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                ptr[dest_start + i] = source->valueAt(source_start + i);
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                ptr[dest_start + i] = source->valueAt(source_start + i);
+        }
         break;
     }
-    case SciDAVis::TypeQString:
-        for (int i = 0; i < num_rows; i++)
-            static_cast<QStringList *>(d_data)->replace(dest_start + i,
-                                                        source->textAt(source_start + i));
+    case SciDAVis::TypeQString: {
+        auto *list = static_cast<QStringList *>(d_data);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                list->replace(dest_start + i, source->textAt(source_start + i));
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                list->replace(dest_start + i, source->textAt(source_start + i));
+        }
         break;
-    case SciDAVis::TypeQDateTime:
-        for (int i = 0; i < num_rows; i++)
-            static_cast<QList<QDateTime> *>(d_data)->replace(dest_start + i,
-                                                             source->dateTimeAt(source_start + i));
+    }
+    case SciDAVis::TypeQDateTime: {
+        auto *list = static_cast<QList<QDateTime> *>(d_data);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                list->replace(dest_start + i, source->dateTimeAt(source_start + i));
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                list->replace(dest_start + i, source->dateTimeAt(source_start + i));
+        }
         break;
+    }
     }
     // copy the validity information
-    for (int i = 0; i < num_rows; i++)
-        d_validity.setValue(dest_start + i, source->isInvalid(source_start + i));
+    auto srcIsInvalid = [&](int srcRow) {
+        return (selfCopy && srcRow >= origRowCount) ? true : source->isInvalid(srcRow);
+    };
+    if (copyBackward) {
+        for (int i = num_rows - 1; i >= 0; --i)
+            d_validity.setValue(dest_start + i, srcIsInvalid(source_start + i));
+    } else {
+        for (int i = 0; i < num_rows; i++)
+            d_validity.setValue(dest_start + i, srcIsInvalid(source_start + i));
+    }
 
     emit d_owner->dataChanged(d_owner);
 
@@ -584,8 +617,10 @@ bool Column::Private::copy(const AbstractColumn *source, int source_start, int d
 
 bool Column::Private::copy(const Private *other)
 {
-    if (other->dataType() != dataType())
+    if (!other || other->dataType() != dataType())
         return false;
+    if (other == this)
+        return true;
     int num_rows = other->rowCount();
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -620,39 +655,71 @@ bool Column::Private::copy(const Private *other)
 
 bool Column::Private::copy(const Private *source, int source_start, int dest_start, int num_rows)
 {
-    if (source->dataType() != dataType())
+    if (!source || source->dataType() != dataType() || source_start < 0 || dest_start < 0
+        || num_rows < 0 || dest_start > std::numeric_limits<int>::max() - num_rows
+        || source_start > std::numeric_limits<int>::max() - num_rows)
         return false;
     if (num_rows == 0)
         return true;
 
+    const int origRowCount = rowCount();
+    const bool selfCopy = (source == this);
+    const bool copyBackward = (selfCopy && dest_start > source_start
+                               && dest_start < source_start + num_rows);
+
     emit d_owner->dataAboutToChange(d_owner);
-    if (dest_start + 1 - rowCount() > 1)
-        d_validity.setValue(Interval<int>(rowCount(), dest_start - 1), true);
-    if (dest_start + num_rows > rowCount())
+    if (dest_start + 1 - origRowCount > 1)
+        d_validity.setValue(Interval<int>(origRowCount, dest_start - 1), true);
+    if (dest_start + num_rows > origRowCount)
         resizeTo(dest_start + num_rows);
 
     // copy the data
     switch (d_data_type) {
     case SciDAVis::TypeDouble: {
         double *ptr = static_cast<QVector<double> *>(d_data)->data();
-        for (int i = 0; i < num_rows; i++)
-            ptr[dest_start + i] = source->valueAt(source_start + i);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                ptr[dest_start + i] = source->valueAt(source_start + i);
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                ptr[dest_start + i] = source->valueAt(source_start + i);
+        }
         break;
     }
-    case SciDAVis::TypeQString:
-        for (int i = 0; i < num_rows; i++)
-            static_cast<QStringList *>(d_data)->replace(dest_start + i,
-                                                        source->textAt(source_start + i));
+    case SciDAVis::TypeQString: {
+        auto *list = static_cast<QStringList *>(d_data);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                list->replace(dest_start + i, source->textAt(source_start + i));
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                list->replace(dest_start + i, source->textAt(source_start + i));
+        }
         break;
-    case SciDAVis::TypeQDateTime:
-        for (int i = 0; i < num_rows; i++)
-            static_cast<QList<QDateTime> *>(d_data)->replace(dest_start + i,
-                                                             source->dateTimeAt(source_start + i));
+    }
+    case SciDAVis::TypeQDateTime: {
+        auto *list = static_cast<QList<QDateTime> *>(d_data);
+        if (copyBackward) {
+            for (int i = num_rows - 1; i >= 0; --i)
+                list->replace(dest_start + i, source->dateTimeAt(source_start + i));
+        } else {
+            for (int i = 0; i < num_rows; i++)
+                list->replace(dest_start + i, source->dateTimeAt(source_start + i));
+        }
         break;
+    }
     }
     // copy the validity information
-    for (int i = 0; i < num_rows; i++)
-        d_validity.setValue(dest_start + i, source->isInvalid(source_start + i));
+    auto srcIsInvalid = [&](int srcRow) {
+        return (selfCopy && srcRow >= origRowCount) ? true : source->isInvalid(srcRow);
+    };
+    if (copyBackward) {
+        for (int i = num_rows - 1; i >= 0; --i)
+            d_validity.setValue(dest_start + i, srcIsInvalid(source_start + i));
+    } else {
+        for (int i = 0; i < num_rows; i++)
+            d_validity.setValue(dest_start + i, srcIsInvalid(source_start + i));
+    }
 
     emit d_owner->dataChanged(d_owner);
 

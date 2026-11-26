@@ -58,6 +58,21 @@ QUndoStack *resolveProjectUndoStack(ApplicationWindow *app, Table *t)
         return t->d_future_table->undoStack();
     return nullptr;
 }
+
+bool isSelectablePickerCurve(Graph *g, int idx, const QwtPlotCurve *c)
+{
+    if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve || c->dataSize() <= 0)
+        return false;
+    if (g && idx >= 0 && g->curveType(idx) == Graph::ErrorBars)
+        return false;
+    if (const PlotCurve *pc = dynamic_cast<const PlotCurve *>(c)) {
+        if (pc->type() == Graph::ErrorBars)
+            return false;
+    }
+    if (dynamic_cast<const QwtErrorPlotCurve *>(c) != nullptr)
+        return false;
+    return true;
+}
 } // namespace
 
 DataPickerTool::DataPickerTool(Graph *graph, ApplicationWindow *app, Mode mode,
@@ -300,12 +315,14 @@ bool DataPickerTool::keyEventFilter(QKeyEvent *ke)
             if (n_curves > 0) {
                 int curIdx = d_graph->curveIndex(d_selected_curve);
                 int start = (curIdx >= 0 ? curIdx : 0) + 1;
-                QwtPlotCurve *c;
-                for (int i = start; i < start + n_curves; ++i)
-                    if ((c = d_graph->curve(i % n_curves)) != nullptr && c->dataSize() > 0) {
+                for (int i = start; i < start + n_curves; ++i) {
+                    const int idx = i % n_curves;
+                    QwtPlotCurve *c = d_graph->curve(idx);
+                    if (isSelectablePickerCurve(d_graph, idx, c)) {
                         setSelection(c, qMin(c->dataSize() - 1, qMax(0, d_selected_point)));
                         break;
                     }
+                }
                 d_graph->plotWidget()->replot();
             }
         }
@@ -317,12 +334,14 @@ bool DataPickerTool::keyEventFilter(QKeyEvent *ke)
             if (n_curves > 0) {
                 int curIdx = d_graph->curveIndex(d_selected_curve);
                 int start = (curIdx >= 0 ? curIdx : 0) + n_curves - 1;
-                QwtPlotCurve *c;
-                for (int i = start; i > start - n_curves; --i)
-                    if ((c = d_graph->curve(i % n_curves)) != nullptr && c->dataSize() > 0) {
+                for (int i = start; i > start - n_curves; --i) {
+                    const int idx = i % n_curves;
+                    QwtPlotCurve *c = d_graph->curve(idx);
+                    if (isSelectablePickerCurve(d_graph, idx, c)) {
                         setSelection(c, qMin(c->dataSize() - 1, qMax(0, d_selected_point)));
                         break;
                     }
+                }
                 d_graph->plotWidget()->replot();
             }
         }
@@ -340,7 +359,7 @@ bool DataPickerTool::keyEventFilter(QKeyEvent *ke)
             } else if (d_graph->curves() > 0) {
                 for (int i = 0; i < d_graph->curves(); ++i) {
                     if (QwtPlotCurve *c = d_graph->curve(i)) {
-                        if (c->dataSize() > 0) {
+                        if (isSelectablePickerCurve(d_graph, i, c)) {
                             setSelection(c, 0);
                             break;
                         }
@@ -363,7 +382,7 @@ bool DataPickerTool::keyEventFilter(QKeyEvent *ke)
             } else if (d_graph->curves() > 0) {
                 for (int i = d_graph->curves() - 1; i >= 0; --i) {
                     if (QwtPlotCurve *c = d_graph->curve(i)) {
-                        if (c->dataSize() > 0) {
+                        if (isSelectablePickerCurve(d_graph, i, c)) {
                             setSelection(c, 0);
                             break;
                         }
@@ -525,6 +544,19 @@ bool DataPickerTool::end(bool ok)
     if (d_selected_curve && (!d_graph || d_graph->curveIndex(d_selected_curve) < 0)) {
         d_selected_curve = NULL;
         d_selection_marker.detach();
+    }
+    if (!ok) {
+        if (d_mode == Move && d_selected_curve && d_graph && d_graph->plotWidget()
+            && d_selected_point >= 0 && d_selected_point < d_selected_curve->dataSize()) {
+            const double origX = d_selected_curve->x(d_selected_point);
+            const double origY = d_selected_curve->y(d_selected_point);
+            d_move_target_pos = QPoint(
+                    d_graph->plotWidget()->transform(d_selected_curve->xAxis(), origX),
+                    d_graph->plotWidget()->transform(d_selected_curve->yAxis(), origY));
+            d_selection_marker.setValue(origX, origY);
+            d_graph->replot();
+        }
+        return QwtPlotPicker::end(false);
     }
     if (d_mode == Move && d_selected_curve) {
         const double new_x_val = d_graph->plotWidget()->invTransform(d_selected_curve->xAxis(),

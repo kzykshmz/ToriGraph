@@ -75,7 +75,7 @@ TeXTableSettings TeXTableSettingsWidget::settings(void)
         selected_settings.set_with_caption(false);
 
     // TeX columns labels
-    if (with_caption_CB->isChecked())
+    if (with_labels_CB->isChecked())
         selected_settings.set_with_labels(true);
     else
         selected_settings.set_with_labels(false);

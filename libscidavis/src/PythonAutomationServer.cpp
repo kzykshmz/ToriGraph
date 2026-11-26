@@ -112,6 +112,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -1248,6 +1249,9 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "workbook.rename", "workbook", "WorkbookProxy.rename(new_name)",
       "Rename a workbook (the sheets keep their table names, so references stay valid).", "book:str*; new_name:str*",
       "wb.rename('Specimens')" },
+    { "workbook.delete_sheet", "workbook", "Session.call('workbook.delete_sheet', table=...)",
+      "Delete a sheet (worksheet table) from its workbook.",
+      "table:str*", "app.call('workbook.delete_sheet', table='Book1_Sheet2')" },
     { "workbook.ungroup", "workbook", "WorkbookProxy.ungroup()",
       "Dissolve a workbook: every sheet becomes a stand-alone worksheet.", "book:str*",
       "wb.ungroup()" },
@@ -1758,7 +1762,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
     { "analysis.fit_nonlinear", "analysis",
       "Session.fit_nonlinear(*, model=None, formula=None, graph=None, curve=None, init_params=None, bounds=None, fixed=None, max_iter=1000, plot_curve=True, fit_label=None)",
       "Fit a built-in nonlinear model ('Gauss'/'Gaussian', 'GaussAmp', 'Lorentz'/'Lorentzian', 'PseudoVoigt1', 'Boltzmann', 'Arrhenius', 'Hollomon', 'Voce') or custom muParser formula.",
-      "model:str=''; formula:str=''; param_names:list=null; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; init_params:dict=null; bounds:dict=null; fixed:list=null; max_iter:int=1000; tolerance:float=1e-7; points:int=200; plot_curve:bool=true; fit_label:str=''",
+      "model:str=''; formula:str=''; param_names:list=null; graph:str=''; curve:int|str=null; table:str=''; x_col:int|str=null; y_col:int|str=null; init_params:dict=null; bounds:dict=null; fixed:list|dict=null; max_iter:int=1000; tolerance:float=1e-7; points:int=200; plot_curve:bool=true; fit_label:str=''",
       "res = app.fit_nonlinear(graph=g, model='Gaussian')" },
     { "analysis.fit_global", "analysis",
       "Session.fit_global(*, graph=None, curves=None, model=None, formula=None, shared_params=None, max_iter=200)",
@@ -2027,9 +2031,9 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "table:str=''; x:int|str=0; y:int|str=1; z:int|str=2; size:int|str=null; palette:str='viridis'; reverse:bool=false",
       "g = app.plot_color_scatter(tbl, 'x', 'y', 'strain')" },
     { "plot.histogram_cumulative", "plot",
-      "Session.plot_histogram_cumulative(table=None, col=0, *, bin_width=0, begin=0)",
+      "Session.plot_histogram_cumulative(table=None, col=0, *, bin_width=0, begin=None)",
       "Frequency histogram with the cumulative percentage (0-100 %) on the right axis.",
-      "table:str=''; col:int|str=0; bin_width:float=0; begin:float=0",
+      "table:str=''; col:int|str=0; bin_width:float=0; begin:float=null",
       "app.plot_histogram_cumulative(tbl, 'DefectSize', bin_width=5)" },
     { "graph.add_error_band", "graph",
       "GraphProxy.add_error_band(curve, err, *, err_minus=None, table=None, alpha=64, layer=None)",
@@ -2302,12 +2306,68 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         auto it = rxAttr.globalMatch(tag);
         while (it.hasNext()) {
             const auto m = it.next();
-            QString val = m.captured(2);
-            val.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-            val.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
-            val.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-            val.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-            val.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            const QString raw = m.captured(2);
+            QString val;
+            if (!raw.contains(QLatin1Char('&'))) {
+                val = raw;
+            } else {
+                val.reserve(raw.size());
+                for (int i = 0; i < raw.size(); ++i) {
+                    if (raw.at(i) == QLatin1Char('&')) {
+                        const int semi = raw.indexOf(QLatin1Char(';'), i + 1);
+                        if (semi > i + 1 && semi - i <= 12) {
+                            const QString ent = raw.mid(i + 1, semi - i - 1);
+                            if (ent == QLatin1String("amp")) {
+                                val += QLatin1Char('&');
+                                i = semi;
+                                continue;
+                            }
+                            if (ent == QLatin1String("quot")) {
+                                val += QLatin1Char('"');
+                                i = semi;
+                                continue;
+                            }
+                            if (ent == QLatin1String("apos")) {
+                                val += QLatin1Char('\'');
+                                i = semi;
+                                continue;
+                            }
+                            if (ent == QLatin1String("lt")) {
+                                val += QLatin1Char('<');
+                                i = semi;
+                                continue;
+                            }
+                            if (ent == QLatin1String("gt")) {
+                                val += QLatin1Char('>');
+                                i = semi;
+                                continue;
+                            }
+                            if (ent.startsWith(QLatin1Char('#'))) {
+                                bool okNum = false;
+                                uint code = 0;
+                                if (ent.size() > 2
+                                    && (ent.at(1) == QLatin1Char('x')
+                                        || ent.at(1) == QLatin1Char('X'))) {
+                                    code = ent.mid(2).toUInt(&okNum, 16);
+                                } else if (ent.size() > 1) {
+                                    code = ent.mid(1).toUInt(&okNum, 10);
+                                }
+                                if (okNum && code > 0 && code <= 0x10FFFFu) {
+                                    if (code <= 0xFFFFu) {
+                                        val += QChar(static_cast<ushort>(code));
+                                    } else {
+                                        val += QChar(QChar::highSurrogate(code));
+                                        val += QChar(QChar::lowSurrogate(code));
+                                    }
+                                    i = semi;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    val += raw.at(i);
+                }
+            }
             out.insert(m.captured(1), val);
         }
         return out;
@@ -2437,6 +2497,36 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         lines << QString();
     }
 
+    auto plotDesigPyStr = [](SciDAVis::PlotDesignation pd) -> QString {
+        if (pd == SciDAVis::X)
+            return QStringLiteral("X");
+        if (pd == SciDAVis::Y)
+            return QStringLiteral("Y");
+        if (pd == SciDAVis::Z)
+            return QStringLiteral("Z");
+        if (pd == SciDAVis::xErr)
+            return QStringLiteral("xErr");
+        if (pd == SciDAVis::yErr)
+            return QStringLiteral("yErr");
+        if (pd == SciDAVis::noDesignation)
+            return QStringLiteral("None");
+        return QString();
+    };
+    auto colModePyStr = [](SciDAVis::ColumnMode m) -> QString {
+        switch (m) {
+        case SciDAVis::ColumnMode::DateTime:
+            return QStringLiteral("datetime");
+        case SciDAVis::ColumnMode::Month:
+            return QStringLiteral("month");
+        case SciDAVis::ColumnMode::Day:
+            return QStringLiteral("day");
+        case SciDAVis::ColumnMode::Text:
+            return QStringLiteral("text");
+        default:
+            return QStringLiteral("numeric");
+        }
+    };
+
     QHash<Table *, QString> tblVarMap;
     for (int ti = 0; ti < refTables.size(); ++ti) {
         Table *t = refTables[ti];
@@ -2461,65 +2551,163 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             }
             lines << QStringLiteral("%1 = app.import_csv(os.path.join(_script_dir, %2), name=%3)")
                              .arg(varName, pyEscapeStr(csvName), pyEscapeStr(t->name()));
-            continue;
-        }
-
-        // Inline data emission
-        lines << QStringLiteral("%1 = app.create_table(rows=%2, cols=%3, name=%4)")
-                         .arg(varName)
-                         .arg(t->numRows())
-                         .arg(t->numCols())
-                         .arg(pyEscapeStr(t->name()));
-        QStringList dataEntries, unitEntries, longEntries, desigEntries;
-        for (int c = 0; c < t->numCols(); ++c) {
-            Column *col = t->column(c);
-            const QString cLbl = t->colLabel(c);
-            QStringList vals;
-            const int nR = t->numRows();
-            for (int r = 0; r < nR; ++r) {
-                if (!col || col->isInvalid(r)) {
-                    vals << QStringLiteral("None");
-                } else if (col->columnMode() == SciDAVis::ColumnMode::Numeric) {
-                    vals << pyFormatNum(col->valueAt(r));
-                } else {
-                    vals << pyEscapeStr(col->textAt(r));
+            for (int c = 0; c < t->numCols(); ++c) {
+                Column *col = t->column(c);
+                if (!col)
+                    continue;
+                const QString cLbl = t->colLabel(c);
+                QStringList metaArgs;
+                const SciDAVis::ColumnMode cMode = col->columnMode();
+                bool restoreNumericTextCol = false;
+                if (cMode == SciDAVis::ColumnMode::Text) {
+                    int nonEmptyCount = 0;
+                    int validNum = 0;
+                    int strayNonNum = 0;
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (col->isInvalid(r))
+                            continue;
+                        const QString s = col->textAt(r).trimmed();
+                        if (s.isEmpty())
+                            continue;
+                        ++nonEmptyCount;
+                        if (s.compare(QStringLiteral("nan"), Qt::CaseInsensitive) == 0
+                            || s.compare(QStringLiteral("na"), Qt::CaseInsensitive) == 0
+                            || s.compare(QStringLiteral("n/a"), Qt::CaseInsensitive) == 0
+                            || s.compare(QStringLiteral("null"), Qt::CaseInsensitive) == 0
+                            || s.compare(QStringLiteral("none"), Qt::CaseInsensitive) == 0
+                            || s == QStringLiteral("-")) {
+                            continue;
+                        }
+                        bool okNum = false;
+                        s.toDouble(&okNum);
+                        if (okNum)
+                            ++validNum;
+                        else
+                            ++strayNonNum;
+                    }
+                    // app.import_csv (numeric=True) parses a column as Numeric when all non-missing
+                    // cells parse as numbers (or >=5 and >=90% do), stripping leading zeros,
+                    // trailing decimals, or high-precision digits from numeric-looking Text columns.
+                    restoreNumericTextCol = (nonEmptyCount > 0)
+                            && (strayNonNum == 0
+                                || (validNum >= 5
+                                    && qint64(validNum) * 10
+                                            >= qint64(validNum + strayNonNum) * 9));
+                }
+                if (restoreNumericTextCol) {
+                    QStringList rawVals;
+                    rawVals.reserve(t->numRows());
+                    for (int r = 0; r < t->numRows(); ++r) {
+                        if (col->isInvalid(r))
+                            rawVals << QStringLiteral("None");
+                        else
+                            rawVals << pyEscapeStr(col->textAt(r));
+                    }
+                    lines << QStringLiteral("%1.set_column(%2, [%3], mode='text')")
+                                     .arg(varName, pyEscapeStr(cLbl),
+                                          rawVals.join(QStringLiteral(", ")));
+                } else if (cMode != SciDAVis::ColumnMode::Numeric) {
+                    metaArgs << QStringLiteral("mode=%1")
+                                        .arg(pyEscapeStr(colModePyStr(cMode)));
+                }
+                if (!t->colUnits(c).trimmed().isEmpty()) {
+                    metaArgs << QStringLiteral("units=%1")
+                                        .arg(pyEscapeStr(t->colUnits(c).trimmed()));
+                }
+                if (!t->colLongName(c).trimmed().isEmpty()) {
+                    metaArgs << QStringLiteral("long_name=%1")
+                                        .arg(pyEscapeStr(t->colLongName(c).trimmed()));
+                }
+                if (!t->colComment(c).trimmed().isEmpty()) {
+                    metaArgs << QStringLiteral("comment=%1")
+                                        .arg(pyEscapeStr(t->colComment(c).trimmed()));
+                }
+                const SciDAVis::PlotDesignation pd = t->colPlotDesignation(c);
+                const SciDAVis::PlotDesignation defPd = (c == 0) ? SciDAVis::X : SciDAVis::Y;
+                const QString pdStr = plotDesigPyStr(pd);
+                if (!pdStr.isEmpty() && pd != defPd) {
+                    metaArgs << QStringLiteral("plot_designation=%1")
+                                        .arg(pyEscapeStr(pdStr));
+                }
+                if (!metaArgs.isEmpty()) {
+                    lines << QStringLiteral("%1.set_meta(%2, %3)")
+                                     .arg(varName, pyEscapeStr(cLbl),
+                                          metaArgs.join(QStringLiteral(", ")));
                 }
             }
-            dataEntries << QStringLiteral("        %1: [%2]").arg(pyEscapeStr(cLbl),
-                                                                  vals.join(QStringLiteral(", ")));
-            if (!t->colUnits(c).trimmed().isEmpty()) {
-                unitEntries << QStringLiteral("%1: %2").arg(pyEscapeStr(cLbl),
-                                                            pyEscapeStr(t->colUnits(c).trimmed()));
+        } else {
+            // Inline data emission
+            lines << QStringLiteral("%1 = app.create_table(rows=%2, cols=%3, name=%4)")
+                             .arg(varName)
+                             .arg(t->numRows())
+                             .arg(t->numCols())
+                             .arg(pyEscapeStr(t->name()));
+            QStringList dataEntries, metaEntries, unitEntries, longEntries, desigEntries;
+            for (int c = 0; c < t->numCols(); ++c) {
+                Column *col = t->column(c);
+                const QString cLbl = t->colLabel(c);
+                const SciDAVis::ColumnMode cMode =
+                        col ? col->columnMode() : SciDAVis::ColumnMode::Numeric;
+                QStringList vals;
+                const int nR = t->numRows();
+                for (int r = 0; r < nR; ++r) {
+                    if (!col || col->isInvalid(r)) {
+                        vals << QStringLiteral("None");
+                    } else if (cMode == SciDAVis::ColumnMode::Numeric) {
+                        vals << pyFormatNum(col->valueAt(r));
+                    } else if (cMode == SciDAVis::ColumnMode::Text) {
+                        vals << pyEscapeStr(col->textAt(r));
+                    } else if (cMode == SciDAVis::ColumnMode::DateTime) {
+                        const QDateTime dt = col->dateTimeAt(r);
+                        const QString dtStr = dt.isValid()
+                                ? dt.toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz"))
+                                : col->asStringColumn()->textAt(r);
+                        vals << pyEscapeStr(dtStr);
+                    } else {
+                        // Month / Day columns
+                        vals << pyEscapeStr(col->asStringColumn()->textAt(r));
+                    }
+                }
+                dataEntries << QStringLiteral("        %1: [%2]").arg(
+                        pyEscapeStr(cLbl), vals.join(QStringLiteral(", ")));
+                if (cMode != SciDAVis::ColumnMode::Numeric) {
+                    metaEntries << QStringLiteral("%1: {'mode': %2}")
+                                           .arg(pyEscapeStr(cLbl),
+                                                pyEscapeStr(colModePyStr(cMode)));
+                }
+                if (!t->colUnits(c).trimmed().isEmpty()) {
+                    unitEntries << QStringLiteral("%1: %2").arg(
+                            pyEscapeStr(cLbl), pyEscapeStr(t->colUnits(c).trimmed()));
+                }
+                if (!t->colLongName(c).trimmed().isEmpty()) {
+                    longEntries << QStringLiteral("%1: %2").arg(
+                            pyEscapeStr(cLbl), pyEscapeStr(t->colLongName(c).trimmed()));
+                }
+                const QString pdStr = plotDesigPyStr(t->colPlotDesignation(c));
+                if (!pdStr.isEmpty())
+                    desigEntries << QStringLiteral("%1: %2").arg(pyEscapeStr(cLbl),
+                                                                 pyEscapeStr(pdStr));
             }
-            if (!t->colLongName(c).trimmed().isEmpty()) {
-                longEntries << QStringLiteral("%1: %2").arg(
-                        pyEscapeStr(cLbl), pyEscapeStr(t->colLongName(c).trimmed()));
+            lines << QStringLiteral("%1.set_data_dict(").arg(varName);
+            lines << QStringLiteral("    {\n%1\n    },")
+                             .arg(dataEntries.join(QStringLiteral(",\n")));
+            if (!metaEntries.isEmpty()) {
+                lines << QStringLiteral("    meta={%1},")
+                                 .arg(metaEntries.join(QStringLiteral(", ")));
             }
-            const int pd = t->colPlotDesignation(c);
-            if (pd == SciDAVis::X)
-                desigEntries << QStringLiteral("%1: 'X'").arg(pyEscapeStr(cLbl));
-            else if (pd == SciDAVis::Y)
-                desigEntries << QStringLiteral("%1: 'Y'").arg(pyEscapeStr(cLbl));
-            else if (pd == SciDAVis::Z)
-                desigEntries << QStringLiteral("%1: 'Z'").arg(pyEscapeStr(cLbl));
-            else if (pd == SciDAVis::xErr)
-                desigEntries << QStringLiteral("%1: 'xErr'").arg(pyEscapeStr(cLbl));
-            else if (pd == SciDAVis::yErr)
-                desigEntries << QStringLiteral("%1: 'yErr'").arg(pyEscapeStr(cLbl));
+            if (!unitEntries.isEmpty())
+                lines << QStringLiteral("    units={%1},")
+                                 .arg(unitEntries.join(QStringLiteral(", ")));
+            if (!longEntries.isEmpty()) {
+                lines << QStringLiteral("    long_names={%1},")
+                                 .arg(longEntries.join(QStringLiteral(", ")));
+            }
+            if (!desigEntries.isEmpty()) {
+                lines << QStringLiteral("    designations={%1},")
+                                 .arg(desigEntries.join(QStringLiteral(", ")));
+            }
+            lines << QStringLiteral(")");
         }
-        lines << QStringLiteral("%1.set_data_dict(").arg(varName);
-        lines << QStringLiteral("    {\n%1\n    },").arg(dataEntries.join(QStringLiteral(",\n")));
-        if (!unitEntries.isEmpty())
-            lines << QStringLiteral("    units={%1},").arg(unitEntries.join(QStringLiteral(", ")));
-        if (!longEntries.isEmpty()) {
-            lines << QStringLiteral("    long_names={%1},")
-                             .arg(longEntries.join(QStringLiteral(", ")));
-        }
-        if (!desigEntries.isEmpty()) {
-            lines << QStringLiteral("    designations={%1},")
-                             .arg(desigEntries.join(QStringLiteral(", ")));
-        }
-        lines << QStringLiteral(")");
 
         for (int c = 0; c < t->numCols(); ++c) {
             Column *col = t->column(c);
@@ -2885,9 +3073,8 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
 
         if (isBaseLayer) {
             args << QStringLiteral("graph_name=%1").arg(pyEscapeStr(ml->name()));
-            lines << QStringLiteral("_pf_res = app.plot_pole_figure(%1)")
+            lines << QStringLiteral("g = app.plot_pole_figure(%1)")
                              .arg(args.join(QStringLiteral(", ")));
-            lines << QStringLiteral("g = app.graph(_pf_res['graph'])");
         } else {
             lines << QStringLiteral("app.call('plot.pole_figure', graph=g.name, layer=%1, %2)")
                              .arg(li)
@@ -3953,22 +4140,19 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
         // Shaded bands (parsed cleanly from Graph::saveToString line-anchored <ToriRefLine kind="band">)
         {
             const QString savedG = lg->saveToString();
-            static const QRegularExpression rxAttr(
-                    QStringLiteral("([A-Za-z0-9_]+)=\"([^\"]*)\""));
             for (const QString &rawLn : savedG.split(QLatin1Char('\n'))) {
                 const QString ln = rawLn.trimmed();
                 if (!ln.startsWith(QStringLiteral("<ToriRefLine"))
                     || !ln.contains(QStringLiteral("kind=\"band\""))) {
                     continue;
                 }
-                QMap<QString, QString> am;
-                auto ait = rxAttr.globalMatch(ln);
-                while (ait.hasNext()) {
-                    const auto m = ait.next();
-                    am.insert(m.captured(1), m.captured(2));
-                }
+                const QMap<QString, QString> am = parseXmlTagAttrs(ln);
                 if (am.value(QStringLiteral("kind")) != QStringLiteral("band"))
                     continue;
+                if (am.value(QStringLiteral("horizontal")).toInt() != 0) {
+                    noteUnreproduced(pyTr("horizontal shaded band"));
+                    continue;
+                }
                 const QString xCsv = am.value(QStringLiteral("x"));
                 const QString y1Csv = am.contains(QStringLiteral("yLow"))
                         ? am.value(QStringLiteral("yLow"))

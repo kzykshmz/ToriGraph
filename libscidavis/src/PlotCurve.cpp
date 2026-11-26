@@ -44,6 +44,7 @@
 #include <QPolygonF>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <qwt_curve_fitter.h>
 #include <qwt_painter.h>
@@ -1058,12 +1059,12 @@ QwtDoubleRect PlotCurve::boundingRect() const
         || !std::isfinite(py_bottom))
         return r;
 
-    const double d_x_right = xMap.invTransform(px_right + margin);
-    const double d_x_left = xMap.invTransform(px_left - margin);
-    const double d_y_top = yMap.invTransform(py_top + margin);
-    const double d_y_bottom = yMap.invTransform(py_bottom - margin);
-    if (!std::isfinite(d_x_right) || !std::isfinite(d_x_left) || !std::isfinite(d_y_top)
-        || !std::isfinite(d_y_bottom))
+    const double d_x_a = xMap.invTransform(qMin(px_left, px_right) - margin);
+    const double d_x_b = xMap.invTransform(qMax(px_left, px_right) + margin);
+    const double d_y_a = yMap.invTransform(qMin(py_top, py_bottom) - margin);
+    const double d_y_b = yMap.invTransform(qMax(py_top, py_bottom) + margin);
+    if (!std::isfinite(d_x_a) || !std::isfinite(d_x_b) || !std::isfinite(d_y_a)
+        || !std::isfinite(d_y_b))
         return r;
 
     const double rawMinX = qMin(r.left(), r.right());
@@ -1071,14 +1072,16 @@ QwtDoubleRect PlotCurve::boundingRect() const
     const double rawMinY = qMin(r.top(), r.bottom());
     const double rawMaxY = qMax(r.top(), r.bottom());
 
-    double minX = qMin(d_x_left, d_x_right);
-    double maxX = qMax(d_x_left, d_x_right);
-    double minY = qMin(d_y_top, d_y_bottom);
-    double maxY = qMax(d_y_top, d_y_bottom);
+    double minX = qMin(rawMinX, qMin(d_x_a, d_x_b));
+    double maxX = qMax(rawMaxX, qMax(d_x_a, d_x_b));
+    double minY = qMin(rawMinY, qMin(d_y_a, d_y_b));
+    double maxY = qMax(rawMaxY, qMax(d_y_a, d_y_b));
     if (rawMinX >= 0.0 && rawMaxX > 0.0 && minX < 0.0)
         minX = 0.0;
     if (rawMinY >= 0.0 && rawMaxY > 0.0 && minY < 0.0)
         minY = 0.0;
+    if (!std::isfinite(maxX - minX) || !std::isfinite(maxY - minY))
+        return r;
     return QwtDoubleRect(minX, minY, maxX - minX, maxY - minY);
 }
 
@@ -1545,7 +1548,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
         const bool isFitted = testCurveAttribute(Fitted) && (curveFitter() != nullptr);
         if (isFitted) {
             const DataCurve *dc = dynamic_cast<const DataCurve *>(this);
-            if (!dc || dc->maskedPointCount() == 0) {
+            if (!dc || (dc->maskedPointCount() == 0 && dc->gapBeforeIndices().isEmpty())) {
                 from = 0;
                 to = n - 1;
             }
@@ -1650,6 +1653,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
                     bool prevHadVertBar = false;
                     double prevMinY = 0.0, prevMaxY = 0.0;
                     qint64 curCol = 0;
+                    qint64 prevCol = 0;
                     int firstIdx = -1, lastIdx = -1;
                     QPointF firstPt, minPt, maxPt, lastPt, prevLastPt;
 
@@ -1658,7 +1662,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
                             return;
                         const bool curHasVertBar = (maxPt.y() - minPt.y() > minVertSpan);
                         const bool overlapAdjacentBars = hasPrevLast && prevHadVertBar
-                                && curHasVertBar
+                                && curHasVertBar && std::llabs(curCol - prevCol) <= 1
                                 && (std::max(prevMinY, minPt.y()) <= std::min(prevMaxY, maxPt.y()));
                         if (hasPrevLast && !overlapAdjacentBars
                             && (std::fabs(firstPt.x() - prevLastPt.x()) > 1e-6
@@ -1678,6 +1682,7 @@ void PlotCurve::drawCurve(QPainter *painter, int style, const QwtScaleMap &xMap,
                         prevHadVertBar = curHasVertBar;
                         prevMinY = minPt.y();
                         prevMaxY = maxPt.y();
+                        prevCol = curCol;
                         hasPrevLast = true;
                         hasBucket = false;
                         if (envSegs.size() >= 64) {

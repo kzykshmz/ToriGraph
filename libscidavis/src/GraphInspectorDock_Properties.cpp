@@ -1087,7 +1087,9 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
         auto commitCurveLabel = [this, gp, ci](const QString &newLbl) {
             if (d_syncing_props || !gp || !d_target_ml)
                 return;
-            if (!gp->hasLegend())
+            const QString before = d_target_ml->captureUndoSnapshot();
+            const bool createdLegend = !gp->hasLegend();
+            if (createdLegend)
                 gp->newLegend();
             Legend *curLeg = gp->legend();
             if (!curLeg)
@@ -1126,13 +1128,13 @@ void GraphInspectorDock::rebuildLegendCurveEntryRows(Graph *g, Legend *leg)
                 nextCustom = (normLbl.trimmed() == gp->columnCurveLabel(ci).trimmed())
                         ? QString()
                         : normLbl.trimmed();
-            if (curLeg->text() == updated && nextCustom == prevCustom)
+            if (!createdLegend && curLeg->text() == updated && nextCustom == prevCustom)
                 return;
 
-            const QString before = d_target_ml->captureUndoSnapshot();
             if (nextCustom != prevCustom)
                 gp->setCurveCustomLabel(ci, nextCustom);
-            curLeg->setText(updated);
+            if (curLeg->text() != updated)
+                curLeg->setText(updated);
             gp->replot();
             emit gp->modifiedGraph();
             d_target_ml->pushUndoSnapshot(tr("Edit Legend Label"), before, kMergeLegendHeader);
@@ -1579,7 +1581,9 @@ void GraphInspectorDock::applyAxisScaleFromUi(int mergeId, bool fromRangeEdits)
             lo = 0.1;
             hi = 100.0;
         } else if (lo <= 0.0) {
-            lo = qMax(1e-6, hi * 1e-4);
+            lo = std::max(std::numeric_limits<double>::min(), hi * 1e-4);
+        } else if (hi <= 0.0) {
+            hi = std::max(std::numeric_limits<double>::min(), lo * 1e-4);
         }
     }
     if (qAbs(hi - lo) < 1e-30)
@@ -1762,14 +1766,17 @@ void GraphInspectorDock::applyTickDivideFromUi(bool fromLineEdit)
     if (!ok || !std::isfinite(factor) || std::fabs(factor) <= 1e-300)
         return;
 
-    if (fromLineEdit && targets.size() == 1 && targets.first()
-        && std::fabs(targets.first()->tickDivideFactor(d_active_axis) - factor) <= 1e-12) {
-        if (divEdit) {
-            divEdit->setProperty("_syncedText", divEdit->text().trimmed());
-            divEdit->setModified(false);
-            setLineEditPendingCue(divEdit, false);
+    if (fromLineEdit && targets.size() == 1 && targets.first()) {
+        const double curF = targets.first()->tickDivideFactor(d_active_axis);
+        const double tol = 1e-12 * std::max(std::fabs(curF), std::fabs(factor));
+        if (std::fabs(curF - factor) <= tol) {
+            if (divEdit) {
+                divEdit->setProperty("_syncedText", divEdit->text().trimmed());
+                divEdit->setModified(false);
+                setLineEditPendingCue(divEdit, false);
+            }
+            return;
         }
-        return;
     }
 
     const QString before = d_target_ml->captureUndoSnapshot();

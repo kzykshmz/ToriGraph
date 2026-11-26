@@ -67,6 +67,12 @@ public:
     bool loadData(int points = 0);
     void setSuppressScriptErrors(bool suppress);
 
+    QwtDoubleRect boundingRect() const override;
+
+protected:
+    void drawCurve(QPainter *p, int style, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
+                   int from, int to) const override;
+
 protected slots:
     void scriptError(const QString &message, const QString &scriptName, int lineNumber);
 

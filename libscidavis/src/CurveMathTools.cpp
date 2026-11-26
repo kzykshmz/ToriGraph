@@ -3464,13 +3464,13 @@ QwtPlotCurve *CurveMathTools::fillBetweenCurves(ApplicationWindow *app, Graph *g
     return diffCurve;
 }
 
-CurveMathTools::EISResult CurveMathTools::analyzeEIS(
+static CurveMathTools::EISResult analyzeEISImpl(
         ApplicationWindow *app, Table *srcTable, const QString &freqCol,
         const QString &zRealCol, const QString &zImagCol,
-        bool zImagAlreadyNegated, bool fitRandlesCPE)
+        bool zImagAlreadyNegated, bool fitCircuit, bool idealCapacitorOnly)
 {
     registerMatSciTranslationsOnce();
-    EISResult res;
+    CurveMathTools::EISResult res;
     if (!srcTable)
         return res;
 
@@ -3530,152 +3530,161 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
         outNegIm = rct * (alpha * s) / denom;
     };
 
-    // Step 1: Taubin (1991) algebraic circle fit on (x = Z', y = -Z'')
-    double meanX = 0.0, meanY = 0.0;
-    double minRe = pts.front().zRe, maxRe = pts.front().zRe;
-    int idxPeak = 0;
-    for (int i = 0; i < N; ++i) {
-        const EisSample &s = pts[static_cast<size_t>(i)];
-        meanX += s.zRe;
-        meanY += s.negZIm;
-        minRe = std::min(minRe, s.zRe);
-        maxRe = std::max(maxRe, s.zRe);
-        if (s.negZIm > pts[static_cast<size_t>(idxPeak)].negZIm)
-            idxPeak = i;
-    }
-    meanX /= static_cast<double>(N);
-    meanY /= static_cast<double>(N);
-
-    double sumR2 = 0.0;
-    for (const EisSample &s : pts) {
-        const double dx = s.zRe - meanX;
-        const double dy = s.negZIm - meanY;
-        sumR2 += dx * dx + dy * dy;
-    }
-    const double scale = std::sqrt(std::max(1e-24, sumR2 / static_cast<double>(N)));
-
-    double mXX = 0.0, mXY = 0.0, mYY = 0.0, mXZ = 0.0, mYZ = 0.0, mZZ = 0.0;
-    for (const EisSample &s : pts) {
-        const double u = (s.zRe - meanX) / scale;
-        const double v = (s.negZIm - meanY) / scale;
-        const double z = u * u + v * v;
-        mXX += u * u;
-        mXY += u * v;
-        mYY += v * v;
-        mXZ += u * z;
-        mYZ += v * z;
-        mZZ += z * z;
-    }
-    const double invN = 1.0 / static_cast<double>(N);
-    mXX *= invN;
-    mXY *= invN;
-    mYY *= invN;
-    mXZ *= invN;
-    mYZ *= invN;
-    mZZ *= invN;
-
-    const double mZ = mXX + mYY; // == 1.0 when normalized
-    const double covXY = mXX * mYY - mXY * mXY;
-    const double varZ = mZZ - mZ * mZ;
-    const double a3 = 4.0 * mZ;
-    const double a2 = -3.0 * mZ * mZ - mZZ;
-    const double a1 = varZ * mZ + 4.0 * covXY * mZ - mXZ * mXZ - mYZ * mYZ;
-    const double a0 = mXZ * (mXZ * mYY - mYZ * mXY) + mYZ * (mYZ * mXX - mXZ * mXY) - varZ * covXY;
-
-    // Newton-Raphson from eta = 0 finds the smallest non-negative root of Taubin's characteristic polynomial
-    double eta = 0.0;
-    for (int it = 0; it < 30; ++it) {
-        const double fVal = ((a3 * eta + a2) * eta + a1) * eta + a0;
-        const double dfVal = (3.0 * a3 * eta + 2.0 * a2) * eta + a1;
-        if (std::fabs(dfVal) <= 1e-30)
-            break;
-        const double nextEta = std::max(0.0, eta - fVal / dfVal);
-        if (std::fabs(nextEta - eta) <= 1e-13) {
-            eta = nextEta;
-            break;
+    if (fitCircuit) {
+        // Step 1: Taubin (1991) algebraic circle fit on (x = Z', y = -Z'')
+        double meanX = 0.0, meanY = 0.0;
+        double minRe = pts.front().zRe, maxRe = pts.front().zRe;
+        int idxPeak = 0;
+        for (int i = 0; i < N; ++i) {
+            const EisSample &s = pts[static_cast<size_t>(i)];
+            meanX += s.zRe;
+            meanY += s.negZIm;
+            minRe = std::min(minRe, s.zRe);
+            maxRe = std::max(maxRe, s.zRe);
+            if (s.negZIm > pts[static_cast<size_t>(idxPeak)].negZIm)
+                idxPeak = i;
         }
-        eta = nextEta;
-    }
+        meanX /= static_cast<double>(N);
+        meanY /= static_cast<double>(N);
 
-    const double cXX = mXX - eta;
-    const double cYY = mYY - eta;
-    const double det2 = cXX * cYY - mXY * mXY;
-
-    double rsSeed = std::max(1e-6, std::max(0.0, pts.back().zRe));
-    double rctSeed = std::max(1e-3, maxRe - minRe);
-    double nSeed = 0.90;
-
-    if (std::fabs(det2) > 1e-18) {
-        const double uc = (mXZ * cYY - mYZ * mXY) / (2.0 * det2);
-        const double vc = (mYZ * cXX - mXZ * mXY) / (2.0 * det2);
-        const double radNorm = std::sqrt(std::max(1e-18, uc * uc + vc * vc + mZ));
-        const double xc = meanX + uc * scale;
-        const double yc = meanY + vc * scale;
-        const double rad = radNorm * scale;
-        if (std::isfinite(xc) && std::isfinite(yc) && std::isfinite(rad) && rad > 0.0) {
-            const double halfChordSq = rad * rad - yc * yc;
-            if (halfChordSq > 1e-18) {
-                const double halfChord = std::sqrt(halfChordSq);
-                rsSeed = std::max(1e-6, xc - halfChord);
-                rctSeed = std::max(1e-4, 2.0 * halfChord);
-                const double depAngle = std::clamp(std::atan2(-yc, halfChord), 0.0, 0.46 * M_PI);
-                nSeed = std::clamp(1.0 - (2.0 * depAngle / M_PI), 0.35, 1.0);
-            } else {
-                rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
-                rctSeed = std::max(1e-4, std::max(2.0 * rad, maxRe - rsSeed));
-            }
-        }
-    } else {
-        rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
-        rctSeed = std::max(1e-4, std::max(maxRe - rsSeed, 2.0 * pts[static_cast<size_t>(idxPeak)].negZIm));
-    }
-
-    const double omegaPeakSeed = std::max(1e-9, pts[static_cast<size_t>(idxPeak)].omega);
-    double qSeed = 1.0 / std::max(1e-30, rctSeed * std::pow(omegaPeakSeed, nSeed));
-    qSeed = std::clamp(qSeed, 1e-18, 1e6);
-
-    auto unpackParams = [](const double p[4], double &rs, double &rct, double &q, double &n) {
-        rs = std::exp(std::clamp(p[0], -30.0, 30.0));
-        rct = std::exp(std::clamp(p[1], -30.0, 30.0));
-        q = std::exp(std::clamp(p[2], -45.0, 20.0));
-        n = 0.05 + 0.475 * (1.0 + std::cos(p[3]));
-    };
-
-    auto packParams = [](double rs, double rct, double q, double n, double p[4]) {
-        p[0] = std::log(std::clamp(rs, 1e-12, 1e12));
-        p[1] = std::log(std::clamp(rct, 1e-12, 1e12));
-        p[2] = std::log(std::clamp(q, 1e-19, 1e8));
-        const double cosVal = std::clamp((std::clamp(n, 0.05, 1.0) - 0.05) / 0.475 - 1.0, -1.0, 1.0);
-        p[3] = std::acos(cosVal);
-    };
-
-    auto evalRssParams = [&](const double p[4]) -> double {
-        double rs = 0.0, rct = 0.0, q = 0.0, n = 1.0;
-        unpackParams(p, rs, rct, q, n);
-        double rss = 0.0;
+        double sumR2 = 0.0;
         for (const EisSample &s : pts) {
-            double mr = 0.0, mi = 0.0;
-            evalRandlesCPE(s.omega, rs, rct, q, n, mr, mi);
-            const double er = s.zRe - mr;
-            const double ei = s.negZIm - mi;
-            rss += er * er + ei * ei;
+            const double dx = s.zRe - meanX;
+            const double dy = s.negZIm - meanY;
+            sumR2 += dx * dx + dy * dy;
         }
-        return rss;
-    };
+        const double scale = std::sqrt(std::max(1e-24, sumR2 / static_cast<double>(N)));
 
-    double bestP[4] = { 0.0, 0.0, 0.0, 0.0 };
-    packParams(rsSeed, rctSeed, qSeed, nSeed, bestP);
-    double bestRss = evalRssParams(bestP);
+        double mXX = 0.0, mXY = 0.0, mYY = 0.0, mXZ = 0.0, mYZ = 0.0, mZZ = 0.0;
+        for (const EisSample &s : pts) {
+            const double u = (s.zRe - meanX) / scale;
+            const double v = (s.negZIm - meanY) / scale;
+            const double z = u * u + v * v;
+            mXX += u * u;
+            mXY += u * v;
+            mYY += v * v;
+            mXZ += u * z;
+            mYZ += v * z;
+            mZZ += z * z;
+        }
+        const double invN = 1.0 / static_cast<double>(N);
+        mXX *= invN;
+        mXY *= invN;
+        mYY *= invN;
+        mXZ *= invN;
+        mYZ *= invN;
+        mZZ *= invN;
 
-    if (fitRandlesCPE) {
-        // Also test ideal n = 1.0 Debye capacitor seed in case circle depression was slightly noisy
+        const double mZ = mXX + mYY; // == 1.0 when normalized
+        const double covXY = mXX * mYY - mXY * mXY;
+        const double varZ = mZZ - mZ * mZ;
+        const double a3 = 4.0 * mZ;
+        const double a2 = -3.0 * mZ * mZ - mZZ;
+        const double a1 = varZ * mZ + 4.0 * covXY * mZ - mXZ * mXZ - mYZ * mYZ;
+        const double a0 = mXZ * (mXZ * mYY - mYZ * mXY) + mYZ * (mYZ * mXX - mXZ * mXY) - varZ * covXY;
+
+        // Newton-Raphson from eta = 0 finds the smallest non-negative root of Taubin's characteristic polynomial
+        double eta = 0.0;
+        for (int it = 0; it < 30; ++it) {
+            const double fVal = ((a3 * eta + a2) * eta + a1) * eta + a0;
+            const double dfVal = (3.0 * a3 * eta + 2.0 * a2) * eta + a1;
+            if (std::fabs(dfVal) <= 1e-30)
+                break;
+            const double nextEta = std::max(0.0, eta - fVal / dfVal);
+            if (std::fabs(nextEta - eta) <= 1e-13) {
+                eta = nextEta;
+                break;
+            }
+            eta = nextEta;
+        }
+
+        const double cXX = mXX - eta;
+        const double cYY = mYY - eta;
+        const double det2 = cXX * cYY - mXY * mXY;
+
+        double rsSeed = std::max(1e-6, std::max(0.0, pts.back().zRe));
+        double rctSeed = std::max(1e-3, maxRe - minRe);
+        double nSeed = 0.90;
+
+        if (std::fabs(det2) > 1e-18) {
+            const double uc = (mXZ * cYY - mYZ * mXY) / (2.0 * det2);
+            const double vc = (mYZ * cXX - mXZ * mXY) / (2.0 * det2);
+            const double radNorm = std::sqrt(std::max(1e-18, uc * uc + vc * vc + mZ));
+            const double xc = meanX + uc * scale;
+            const double yc = meanY + vc * scale;
+            const double rad = radNorm * scale;
+            if (std::isfinite(xc) && std::isfinite(yc) && std::isfinite(rad) && rad > 0.0) {
+                const double halfChordSq = rad * rad - yc * yc;
+                if (halfChordSq > 1e-18) {
+                    const double halfChord = std::sqrt(halfChordSq);
+                    rsSeed = std::max(1e-6, xc - halfChord);
+                    rctSeed = std::max(1e-4, 2.0 * halfChord);
+                    const double depAngle = std::clamp(std::atan2(-yc, halfChord), 0.0, 0.46 * M_PI);
+                    nSeed = std::clamp(1.0 - (2.0 * depAngle / M_PI), 0.35, 1.0);
+                } else {
+                    rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
+                    rctSeed = std::max(1e-4, std::max(2.0 * rad, maxRe - rsSeed));
+                }
+            }
+        } else {
+            rsSeed = std::max(1e-6, std::min(minRe, pts.back().zRe));
+            rctSeed = std::max(1e-4, std::max(maxRe - rsSeed, 2.0 * pts[static_cast<size_t>(idxPeak)].negZIm));
+        }
+
+        const double omegaPeakSeed = std::max(1e-9, pts[static_cast<size_t>(idxPeak)].omega);
+        double qSeed = 1.0 / std::max(1e-30, rctSeed * std::pow(omegaPeakSeed, nSeed));
+        qSeed = std::clamp(qSeed, 1e-18, 1e6);
+
+        auto unpackParams = [idealCapacitorOnly](const double p[4], double &rs, double &rct,
+                                                 double &q, double &n) {
+            rs = std::exp(std::clamp(p[0], -30.0, 30.0));
+            rct = std::exp(std::clamp(p[1], -30.0, 30.0));
+            q = std::exp(std::clamp(p[2], -45.0, 20.0));
+            n = idealCapacitorOnly ? 1.0 : (0.05 + 0.475 * (1.0 + std::cos(p[3])));
+        };
+
+        auto packParams = [](double rs, double rct, double q, double n, double p[4]) {
+            p[0] = std::log(std::clamp(rs, 1e-12, 1e12));
+            p[1] = std::log(std::clamp(rct, 1e-12, 1e12));
+            p[2] = std::log(std::clamp(q, 1e-19, 1e8));
+            const double cosVal = std::clamp((std::clamp(n, 0.05, 1.0) - 0.05) / 0.475 - 1.0, -1.0, 1.0);
+            p[3] = std::acos(cosVal);
+        };
+
+        auto evalRssParams = [&](const double p[4]) -> double {
+            double rs = 0.0, rct = 0.0, q = 0.0, n = 1.0;
+            unpackParams(p, rs, rct, q, n);
+            double rss = 0.0;
+            for (const EisSample &s : pts) {
+                double mr = 0.0, mi = 0.0;
+                evalRandlesCPE(s.omega, rs, rct, q, n, mr, mi);
+                const double er = s.zRe - mr;
+                const double ei = s.negZIm - mi;
+                rss += er * er + ei * ei;
+            }
+            return rss;
+        };
+
+        // Ideal n = 1.0 Debye capacitor seed (primary seed for ideal Randles RC, also tested for CPE)
         double idealP[4] = { 0.0, 0.0, 0.0, 0.0 };
         packParams(rsSeed, rctSeed, 1.0 / std::max(1e-30, rctSeed * omegaPeakSeed), 1.0, idealP);
-        const double idealRss = evalRssParams(idealP);
-        if (idealRss < bestRss) {
+        idealP[3] = 0.0;
+
+        double bestP[4] = { 0.0, 0.0, 0.0, 0.0 };
+        double bestRss = 0.0;
+        if (idealCapacitorOnly) {
             for (int k = 0; k < 4; ++k)
                 bestP[k] = idealP[k];
-            bestRss = idealRss;
+            bestRss = evalRssParams(bestP);
+        } else {
+            packParams(rsSeed, rctSeed, qSeed, nSeed, bestP);
+            bestRss = evalRssParams(bestP);
+            const double idealRss = evalRssParams(idealP);
+            if (idealRss < bestRss) {
+                for (int k = 0; k < 4; ++k)
+                    bestP[k] = idealP[k];
+                bestRss = idealRss;
+            }
         }
 
         // Step 2: Levenberg-Marquardt nonlinear least squares (2N residuals x 4 parameters)
@@ -3803,72 +3812,77 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
         }
 
         // Step 3: Nelder-Mead simplex polish (escapes cosine boundary saddles smoothly)
-        double simp[5][4];
-        double fSimp[5];
+        const int nDim = idealCapacitorOnly ? 3 : 4;
+        const int nVerts = nDim + 1;
+        double simp[5][4] = {};
+        double fSimp[5] = {};
         for (int j = 0; j < 4; ++j)
             simp[0][j] = bestP[j];
+        if (idealCapacitorOnly)
+            simp[0][3] = 0.0;
         fSimp[0] = bestRss;
         const double initDelta[4] = { 0.04, 0.04, 0.08, 0.05 };
-        for (int v = 1; v <= 4; ++v) {
+        for (int v = 1; v < nVerts; ++v) {
             for (int j = 0; j < 4; ++j)
-                simp[v][j] = bestP[j];
+                simp[v][j] = simp[0][j];
             simp[v][v - 1] += initDelta[v - 1];
             fSimp[v] = evalRssParams(simp[v]);
         }
 
         for (int it = 0; it < 240; ++it) {
             int order[5] = { 0, 1, 2, 3, 4 };
-            std::sort(order, order + 5, [&](int a, int b) { return fSimp[a] < fSimp[b]; });
+            std::sort(order, order + nVerts, [&](int a, int b) { return fSimp[a] < fSimp[b]; });
             double sortedS[5][4];
             double sortedF[5];
-            for (int v = 0; v < 5; ++v) {
+            for (int v = 0; v < nVerts; ++v) {
                 sortedF[v] = fSimp[order[v]];
                 for (int j = 0; j < 4; ++j)
                     sortedS[v][j] = simp[order[v]][j];
             }
-            for (int v = 0; v < 5; ++v) {
+            for (int v = 0; v < nVerts; ++v) {
                 fSimp[v] = sortedF[v];
                 for (int j = 0; j < 4; ++j)
                     simp[v][j] = sortedS[v][j];
             }
-            if (std::fabs(fSimp[4] - fSimp[0]) <= 1e-22 * std::max(1.0, fSimp[0]))
+            if (std::fabs(fSimp[nDim] - fSimp[0]) <= 1e-22 * std::max(1.0, fSimp[0]))
                 break;
 
             double cent[4] = {};
-            for (int v = 0; v < 4; ++v) {
-                for (int j = 0; j < 4; ++j)
-                    cent[j] += 0.25 * simp[v][j];
+            const double invNDim = 1.0 / static_cast<double>(nDim);
+            for (int v = 0; v < nDim; ++v) {
+                for (int j = 0; j < nDim; ++j)
+                    cent[j] += invNDim * simp[v][j];
             }
 
-            double xr[4];
-            for (int j = 0; j < 4; ++j)
-                xr[j] = cent[j] + (cent[j] - simp[4][j]);
+            double xr[4] = {};
+            for (int j = 0; j < nDim; ++j)
+                xr[j] = cent[j] + (cent[j] - simp[nDim][j]);
             const double fr = evalRssParams(xr);
 
             if (fr < fSimp[0]) {
-                double xe[4];
-                for (int j = 0; j < 4; ++j)
+                double xe[4] = {};
+                for (int j = 0; j < nDim; ++j)
                     xe[j] = cent[j] + 2.0 * (xr[j] - cent[j]);
                 const double fe = evalRssParams(xe);
-                for (int j = 0; j < 4; ++j)
-                    simp[4][j] = (fe < fr) ? xe[j] : xr[j];
-                fSimp[4] = std::min(fe, fr);
-            } else if (fr < fSimp[3]) {
-                for (int j = 0; j < 4; ++j)
-                    simp[4][j] = xr[j];
-                fSimp[4] = fr;
+                for (int j = 0; j < nDim; ++j)
+                    simp[nDim][j] = (fe < fr) ? xe[j] : xr[j];
+                fSimp[nDim] = std::min(fe, fr);
+            } else if (fr < fSimp[nDim - 1]) {
+                for (int j = 0; j < nDim; ++j)
+                    simp[nDim][j] = xr[j];
+                fSimp[nDim] = fr;
             } else {
-                double xc[4];
-                for (int j = 0; j < 4; ++j)
-                    xc[j] = cent[j] + 0.5 * (((fr < fSimp[4]) ? xr[j] : simp[4][j]) - cent[j]);
+                double xc[4] = {};
+                for (int j = 0; j < nDim; ++j)
+                    xc[j] = cent[j] + 0.5 * (((fr < fSimp[nDim]) ? xr[j] : simp[nDim][j]) - cent[j]);
                 const double fc = evalRssParams(xc);
-                if (fc < std::min(fr, fSimp[4])) {
-                    for (int j = 0; j < 4; ++j)
-                        simp[4][j] = xc[j];
-                    fSimp[4] = fc;
+                if (fc < std::min(fr, fSimp[nDim])) {
+                    for (int j = 0; j < nDim; ++j)
+                        simp[nDim][j] = xc[j];
+                    fSimp[nDim] = fc;
                 } else {
-                    for (int v = 1; v < 5; ++v) {
-                        for (int j = 0; j < 4; ++j)
+                    for (int v = 1; v < nVerts; ++v) {
+                        for (int j = 0; j < nDim; ++j)
                             simp[v][j] = simp[0][j] + 0.5 * (simp[v][j] - simp[0][j]);
                         fSimp[v] = evalRssParams(simp[v]);
                     }
@@ -3876,7 +3890,7 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
             }
         }
         int bestIdx = 0;
-        for (int v = 1; v < 5; ++v) {
+        for (int v = 1; v < nVerts; ++v) {
             if (fSimp[v] < fSimp[bestIdx])
                 bestIdx = v;
         }
@@ -3885,14 +3899,27 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
             for (int j = 0; j < 4; ++j)
                 bestP[j] = simp[bestIdx][j];
         }
-    }
+        if (idealCapacitorOnly)
+            bestP[3] = 0.0;
 
-    unpackParams(bestP, res.rs, res.rct, res.qCpe, res.nCpe);
-    res.cEff = std::pow(std::max(1e-300, res.qCpe * std::pow(std::max(1e-300, res.rct), 1.0 - res.nCpe)),
-                        1.0 / std::max(0.05, res.nCpe));
-    res.fPeakHz = 1.0 / (2.0 * M_PI * std::pow(std::max(1e-300, res.rct * res.qCpe),
-                                               1.0 / std::max(0.05, res.nCpe)));
-    res.rmse = std::sqrt(std::max(0.0, bestRss / static_cast<double>(2 * N)));
+        unpackParams(bestP, res.rs, res.rct, res.qCpe, res.nCpe);
+        res.cEff = idealCapacitorOnly
+                ? res.qCpe
+                : std::pow(std::max(1e-300, res.qCpe * std::pow(std::max(1e-300, res.rct), 1.0 - res.nCpe)),
+                           1.0 / std::max(0.05, res.nCpe));
+        res.fPeakHz = 1.0 / (2.0 * M_PI * std::pow(std::max(1e-300, res.rct * res.qCpe),
+                                                   1.0 / std::max(0.05, res.nCpe)));
+        res.rmse = std::sqrt(std::max(0.0, bestRss / static_cast<double>(2 * N)));
+    } else {
+        const double qNaN = std::numeric_limits<double>::quiet_NaN();
+        res.rs = qNaN;
+        res.rct = qNaN;
+        res.qCpe = qNaN;
+        res.nCpe = qNaN;
+        res.cEff = qNaN;
+        res.fPeakHz = qNaN;
+        res.rmse = qNaN;
+    }
     res.valid = true;
 
     if (!app)
@@ -3903,44 +3930,65 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
     std::vector<double> colLogF(static_cast<size_t>(N));
     std::vector<double> colZRe(static_cast<size_t>(N));
     std::vector<double> colNegZIm(static_cast<size_t>(N));
-    std::vector<double> colZReFit(static_cast<size_t>(N));
-    std::vector<double> colNegZImFit(static_cast<size_t>(N));
     std::vector<double> colLogMag(static_cast<size_t>(N));
-    std::vector<double> colLogMagFit(static_cast<size_t>(N));
     std::vector<double> colPhase(static_cast<size_t>(N));
-    std::vector<double> colPhaseFit(static_cast<size_t>(N));
+    std::vector<double> colZReFit;
+    std::vector<double> colNegZImFit;
+    std::vector<double> colLogMagFit;
+    std::vector<double> colPhaseFit;
+    if (fitCircuit) {
+        colZReFit.resize(static_cast<size_t>(N));
+        colNegZImFit.resize(static_cast<size_t>(N));
+        colLogMagFit.resize(static_cast<size_t>(N));
+        colPhaseFit.resize(static_cast<size_t>(N));
+    }
 
     for (int i = 0; i < N; ++i) {
         const size_t idx = static_cast<size_t>(i);
         const EisSample &s = pts[idx];
-        double mr = 0.0, mNegIm = 0.0;
-        evalRandlesCPE(s.omega, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
         const double zIm = -s.negZIm;
-        const double zImFit = -mNegIm;
         colFreq[idx] = s.f;
         colLogF[idx] = std::log10(s.f);
         colZRe[idx] = s.zRe;
         colNegZIm[idx] = s.negZIm;
-        colZReFit[idx] = mr;
-        colNegZImFit[idx] = mNegIm;
         colLogMag[idx] = std::log10(std::max(1e-30, std::hypot(s.zRe, zIm)));
-        colLogMagFit[idx] = std::log10(std::max(1e-30, std::hypot(mr, zImFit)));
         colPhase[idx] = std::atan2(zIm, s.zRe) * (180.0 / M_PI);
-        colPhaseFit[idx] = std::atan2(zImFit, mr) * (180.0 / M_PI);
+        if (fitCircuit) {
+            double mr = 0.0, mNegIm = 0.0;
+            evalRandlesCPE(s.omega, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
+            const double zImFit = -mNegIm;
+            colZReFit[idx] = mr;
+            colNegZImFit[idx] = mNegIm;
+            colLogMagFit[idx] = std::log10(std::max(1e-30, std::hypot(mr, zImFit)));
+            colPhaseFit[idx] = std::atan2(zImFit, mr) * (180.0 / M_PI);
+        }
     }
 
-    Table *resTbl = createNumericTable(
-            app, QStringLiteral("EISData"),
-            QStringList() << QStringLiteral("FreqHz") << QStringLiteral("LogFreqHz")
-                          << QStringLiteral("ZReal") << QStringLiteral("NegZImag")
-                          << QStringLiteral("ZRealFit") << QStringLiteral("NegZImagFit")
-                          << QStringLiteral("LogMagZ") << QStringLiteral("LogMagZFit")
-                          << QStringLiteral("PhaseDeg") << QStringLiteral("PhaseDegFit"),
-            QList<SciDAVis::PlotDesignation>()
-                    << SciDAVis::X << SciDAVis::X << SciDAVis::X << SciDAVis::Y << SciDAVis::X
-                    << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y,
-            { colFreq, colLogF, colZRe, colNegZIm, colZReFit, colNegZImFit,
-              colLogMag, colLogMagFit, colPhase, colPhaseFit });
+    Table *resTbl = nullptr;
+    if (fitCircuit) {
+        resTbl = createNumericTable(
+                app, QStringLiteral("EISData"),
+                QStringList() << QStringLiteral("FreqHz") << QStringLiteral("LogFreqHz")
+                              << QStringLiteral("ZReal") << QStringLiteral("NegZImag")
+                              << QStringLiteral("ZRealFit") << QStringLiteral("NegZImagFit")
+                              << QStringLiteral("LogMagZ") << QStringLiteral("LogMagZFit")
+                              << QStringLiteral("PhaseDeg") << QStringLiteral("PhaseDegFit"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::X << SciDAVis::X << SciDAVis::Y << SciDAVis::X
+                        << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y,
+                { colFreq, colLogF, colZRe, colNegZIm, colZReFit, colNegZImFit,
+                  colLogMag, colLogMagFit, colPhase, colPhaseFit });
+    } else {
+        resTbl = createNumericTable(
+                app, QStringLiteral("EISData"),
+                QStringList() << QStringLiteral("FreqHz") << QStringLiteral("LogFreqHz")
+                              << QStringLiteral("ZReal") << QStringLiteral("NegZImag")
+                              << QStringLiteral("LogMagZ") << QStringLiteral("PhaseDeg"),
+                QList<SciDAVis::PlotDesignation>()
+                        << SciDAVis::X << SciDAVis::X << SciDAVis::X
+                        << SciDAVis::Y << SciDAVis::Y << SciDAVis::Y,
+                { colFreq, colLogF, colZRe, colNegZIm, colLogMag, colPhase });
+    }
     res.resultTable = resTbl;
     if (!resTbl)
         return res;
@@ -3949,42 +3997,47 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
     constexpr int kArcPts = 200;
     const double logFMin = colLogF.front() - 0.15;
     const double logFMax = colLogF.back() + 0.15;
-    QVector<qreal> arcLogF(kArcPts), arcZRe(kArcPts), arcNegZIm(kArcPts);
-    QVector<qreal> arcLogMag(kArcPts), arcPhase(kArcPts);
-    for (int k = 0; k < kArcPts; ++k) {
-        const double lf = logFMin + (logFMax - logFMin) * static_cast<double>(k) / (kArcPts - 1);
-        const double w = 2.0 * M_PI * std::pow(10.0, lf);
-        double mr = 0.0, mNegIm = 0.0;
-        evalRandlesCPE(w, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
-        arcLogF[k] = lf;
-        arcZRe[k] = mr;
-        arcNegZIm[k] = mNegIm;
-        arcLogMag[k] = std::log10(std::max(1e-30, std::hypot(mr, -mNegIm)));
-        arcPhase[k] = std::atan2(-mNegIm, mr) * (180.0 / M_PI);
+    QVector<qreal> arcZRe, arcNegZIm;
+    Table *arcTbl = nullptr;
+    if (fitCircuit) {
+        QVector<qreal> arcLogF(kArcPts), arcLogMag(kArcPts), arcPhase(kArcPts);
+        arcZRe.resize(kArcPts);
+        arcNegZIm.resize(kArcPts);
+        for (int k = 0; k < kArcPts; ++k) {
+            const double lf = logFMin + (logFMax - logFMin) * static_cast<double>(k) / (kArcPts - 1);
+            const double w = 2.0 * M_PI * std::pow(10.0, lf);
+            double mr = 0.0, mNegIm = 0.0;
+            evalRandlesCPE(w, res.rs, res.rct, res.qCpe, res.nCpe, mr, mNegIm);
+            arcLogF[k] = lf;
+            arcZRe[k] = mr;
+            arcNegZIm[k] = mNegIm;
+            arcLogMag[k] = std::log10(std::max(1e-30, std::hypot(mr, -mNegIm)));
+            arcPhase[k] = std::atan2(-mNegIm, mr) * (180.0 / M_PI);
+        }
+
+        Column *cArcLogF = new Column(QStringLiteral("ArcLogF"), SciDAVis::ColumnMode::Numeric);
+        Column *cArcZRe = new Column(QStringLiteral("ArcZRe"), SciDAVis::ColumnMode::Numeric);
+        Column *cArcNegZIm = new Column(QStringLiteral("ArcNegZIm"), SciDAVis::ColumnMode::Numeric);
+        Column *cArcLogMag = new Column(QStringLiteral("ArcLogMag"), SciDAVis::ColumnMode::Numeric);
+        Column *cArcPhase = new Column(QStringLiteral("ArcPhase"), SciDAVis::ColumnMode::Numeric);
+        cArcLogF->setPlotDesignation(SciDAVis::X);
+        cArcZRe->setPlotDesignation(SciDAVis::X);
+        cArcNegZIm->setPlotDesignation(SciDAVis::Y);
+        cArcLogMag->setPlotDesignation(SciDAVis::Y);
+        cArcPhase->setPlotDesignation(SciDAVis::Y);
+        cArcLogF->replaceValues(0, arcLogF);
+        cArcZRe->replaceValues(0, arcZRe);
+        cArcNegZIm->replaceValues(0, arcNegZIm);
+        cArcLogMag->replaceValues(0, arcLogMag);
+        cArcPhase->replaceValues(0, arcPhase);
+
+        const QString hidArcName = app->generateUniqueName(QStringLiteral("EISModelArc"));
+        arcTbl = app->newHiddenTable(
+                hidArcName, QStringLiteral("EIS Randles-CPE Smooth Fit"),
+                QList<Column *>() << cArcLogF << cArcZRe << cArcNegZIm << cArcLogMag << cArcPhase);
+        if (arcTbl)
+            arcTbl->setProperty("_tg_internal_helper", true);
     }
-
-    Column *cArcLogF = new Column(QStringLiteral("ArcLogF"), SciDAVis::ColumnMode::Numeric);
-    Column *cArcZRe = new Column(QStringLiteral("ArcZRe"), SciDAVis::ColumnMode::Numeric);
-    Column *cArcNegZIm = new Column(QStringLiteral("ArcNegZIm"), SciDAVis::ColumnMode::Numeric);
-    Column *cArcLogMag = new Column(QStringLiteral("ArcLogMag"), SciDAVis::ColumnMode::Numeric);
-    Column *cArcPhase = new Column(QStringLiteral("ArcPhase"), SciDAVis::ColumnMode::Numeric);
-    cArcLogF->setPlotDesignation(SciDAVis::X);
-    cArcZRe->setPlotDesignation(SciDAVis::X);
-    cArcNegZIm->setPlotDesignation(SciDAVis::Y);
-    cArcLogMag->setPlotDesignation(SciDAVis::Y);
-    cArcPhase->setPlotDesignation(SciDAVis::Y);
-    cArcLogF->replaceValues(0, arcLogF);
-    cArcZRe->replaceValues(0, arcZRe);
-    cArcNegZIm->replaceValues(0, arcNegZIm);
-    cArcLogMag->replaceValues(0, arcLogMag);
-    cArcPhase->replaceValues(0, arcPhase);
-
-    const QString hidArcName = app->generateUniqueName(QStringLiteral("EISModelArc"));
-    Table *arcTbl = app->newHiddenTable(
-            hidArcName, QStringLiteral("EIS Randles-CPE Smooth Fit"),
-            QList<Column *>() << cArcLogF << cArcZRe << cArcNegZIm << cArcLogMag << cArcPhase);
-    if (arcTbl)
-        arcTbl->setProperty("_tg_internal_helper", true);
 
     // 1. Nyquist Plot (-Z'' vs Z' with 1:1 isometric equal-span axes)
     MultiLayer *mlNyq = app->newGraph(makeUniqueTableName(app, QStringLiteral("EISNyquistPlot")));
@@ -4000,25 +4053,29 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
                                      QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(40, 105, 195)),
                                                QPen(QColor(15, 45, 95), 1.2), QSize(8, 8)));
             }
-            if (arcTbl) {
-                insertStyledCurve(gNyq, arcTbl, 1, 2, kArcPts,
-                                  QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
-            } else {
-                insertStyledCurve(gNyq, resTbl, 4, 5, N,
-                                  QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
+            if (fitCircuit) {
+                if (arcTbl) {
+                    insertStyledCurve(gNyq, arcTbl, 1, 2, kArcPts,
+                                      QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
+                } else {
+                    insertStyledCurve(gNyq, resTbl, 4, 5, N,
+                                      QPen(QColor(205, 30, 40), 2.2, Qt::SolidLine));
+                }
             }
 
             double xLo = *std::min_element(colZRe.begin(), colZRe.end());
             double xHi = *std::max_element(colZRe.begin(), colZRe.end());
             double yLo = std::min(0.0, *std::min_element(colNegZIm.begin(), colNegZIm.end()));
             double yHi = *std::max_element(colNegZIm.begin(), colNegZIm.end());
-            xLo = std::min(xLo, res.rs);
-            xHi = std::max(xHi, res.rs + res.rct);
-            for (int k = 0; k < kArcPts; ++k) {
-                xLo = std::min(xLo, static_cast<double>(arcZRe[k]));
-                xHi = std::max(xHi, static_cast<double>(arcZRe[k]));
-                yLo = std::min(yLo, static_cast<double>(arcNegZIm[k]));
-                yHi = std::max(yHi, static_cast<double>(arcNegZIm[k]));
+            if (fitCircuit) {
+                xLo = std::min(xLo, res.rs);
+                xHi = std::max(xHi, res.rs + res.rct);
+                for (int k = 0; k < arcZRe.size(); ++k) {
+                    xLo = std::min(xLo, static_cast<double>(arcZRe[k]));
+                    xHi = std::max(xHi, static_cast<double>(arcZRe[k]));
+                    yLo = std::min(yLo, static_cast<double>(arcNegZIm[k]));
+                    yHi = std::max(yHi, static_cast<double>(arcNegZIm[k]));
+                }
             }
             const double rawSpan = std::max({ 1e-6, xHi - xLo, yHi - yLo });
             const double isoSpan = rawSpan * 1.16;
@@ -4037,18 +4094,20 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
                 gNyq->legend()->setText(gNyq->legendText());
             applyArialToMatSciGraph(gNyq);
 
-            const QString summary = QStringLiteral(
-                    "<i>R</i><sub>s</sub> = %1 \u03A9,  <i>R</i><sub>ct</sub> = %2 \u03A9\n"
-                    "<i>Q</i> = %3 S s<sup><i>n</i></sup>,  <i>n</i> = %4\n"
-                    "<i>C</i><sub>eff</sub> = %5 F,  <i>f</i><sub>peak</sub> = %6 Hz")
-                    .arg(res.rs, 0, 'g', 4)
-                    .arg(res.rct, 0, 'g', 4)
-                    .arg(res.qCpe, 0, 'e', 2)
-                    .arg(res.nCpe, 0, 'f', 3)
-                    .arg(res.cEff, 0, 'e', 2)
-                    .arg(res.fPeakHz, 0, 'g', 4);
-            addMatSciCalloutBox(gNyq, isoXStart + 0.05 * isoSpan,
-                                isoYStart + 0.93 * isoSpan, summary);
+            if (fitCircuit) {
+                const QString summary = QStringLiteral(
+                        "<i>R</i><sub>s</sub> = %1 \u03A9,  <i>R</i><sub>ct</sub> = %2 \u03A9\n"
+                        "<i>Q</i> = %3 S s<sup><i>n</i></sup>,  <i>n</i> = %4\n"
+                        "<i>C</i><sub>eff</sub> = %5 F,  <i>f</i><sub>peak</sub> = %6 Hz")
+                        .arg(res.rs, 0, 'g', 4)
+                        .arg(res.rct, 0, 'g', 4)
+                        .arg(res.qCpe, 0, 'e', 2)
+                        .arg(res.nCpe, 0, 'f', 3)
+                        .arg(res.cEff, 0, 'e', 2)
+                        .arg(res.fPeakHz, 0, 'g', 4);
+                addMatSciCalloutBox(gNyq, isoXStart + 0.05 * isoSpan,
+                                    isoYStart + 0.93 * isoSpan, summary);
+            }
             gNyq->replot();
         }
     }
@@ -4060,7 +4119,10 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
         if (Graph *gBode = mlBode->activeGraph()) {
             gBode->enableAxis(QwtPlot::yRight, true);
 
-            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(6),
+            const int colIdxLogMag = fitCircuit ? 6 : 4;
+            const int colIdxPhase = fitCircuit ? 8 : 5;
+
+            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(colIdxLogMag),
                                    Graph::Scatter, 0, N - 1)) {
                 const int idx = gBode->curves() - 1;
                 gBode->setCurvePen(idx, QPen(QColor(25, 75, 155), 1.4));
@@ -4068,15 +4130,17 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
                                       QwtSymbol(QwtSymbol::Ellipse, QBrush(QColor(35, 95, 185)),
                                                 QPen(QColor(15, 45, 95), 1.1), QSize(7, 7)));
             }
-            if (arcTbl) {
-                insertStyledCurve(gBode, arcTbl, 0, 3, kArcPts,
-                                  QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
-            } else {
-                insertStyledCurve(gBode, resTbl, 1, 7, N,
-                                  QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
+            if (fitCircuit) {
+                if (arcTbl) {
+                    insertStyledCurve(gBode, arcTbl, 0, 3, kArcPts,
+                                      QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
+                } else {
+                    insertStyledCurve(gBode, resTbl, 1, 7, N,
+                                      QPen(QColor(25, 75, 155), 2.1, Qt::SolidLine));
+                }
             }
 
-            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(8),
+            if (gBode->insertCurve(resTbl, resTbl->colName(1), resTbl->colName(colIdxPhase),
                                    Graph::Scatter, 0, N - 1)) {
                 const int idx = gBode->curves() - 1;
                 gBode->setCurvePen(idx, QPen(QColor(195, 55, 30), 1.4));
@@ -4086,13 +4150,15 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
                 if (QwtPlotCurve *cPhPts = gBode->curve(idx))
                     cPhPts->setAxis(QwtPlot::xBottom, QwtPlot::yRight);
             }
-            QwtPlotCurve *cPhFit = arcTbl
-                    ? insertStyledCurve(gBode, arcTbl, 0, 4, kArcPts,
-                                        QPen(QColor(195, 55, 30), 2.0, Qt::DashLine))
-                    : insertStyledCurve(gBode, resTbl, 1, 9, N,
-                                        QPen(QColor(195, 55, 30), 2.0, Qt::DashLine));
-            if (cPhFit)
-                cPhFit->setAxis(QwtPlot::xBottom, QwtPlot::yRight);
+            if (fitCircuit) {
+                QwtPlotCurve *cPhFit = arcTbl
+                        ? insertStyledCurve(gBode, arcTbl, 0, 4, kArcPts,
+                                            QPen(QColor(195, 55, 30), 2.0, Qt::DashLine))
+                        : insertStyledCurve(gBode, resTbl, 1, 9, N,
+                                            QPen(QColor(195, 55, 30), 2.0, Qt::DashLine));
+                if (cPhFit)
+                    cPhFit->setAxis(QwtPlot::xBottom, QwtPlot::yRight);
+            }
 
             const auto magMM = std::minmax_element(colLogMag.begin(), colLogMag.end());
             const double magSpan = std::max(0.2, *magMM.second - *magMM.first);
@@ -4119,6 +4185,28 @@ CurveMathTools::EISResult CurveMathTools::analyzeEIS(
     }
 
     return res;
+}
+
+namespace CurveMathToolsInternal {
+
+CurveMathTools::EISResult analyzeEISWithOptions(
+        ApplicationWindow *app, Table *srcTable, const QString &freqCol,
+        const QString &zRealCol, const QString &zImagCol,
+        bool zImagAlreadyNegated, bool fitCircuit, bool idealCapacitorOnly)
+{
+    return analyzeEISImpl(app, srcTable, freqCol, zRealCol, zImagCol,
+                          zImagAlreadyNegated, fitCircuit, idealCapacitorOnly);
+}
+
+} // namespace CurveMathToolsInternal
+
+CurveMathTools::EISResult CurveMathTools::analyzeEIS(
+        ApplicationWindow *app, Table *srcTable, const QString &freqCol,
+        const QString &zRealCol, const QString &zImagCol,
+        bool zImagAlreadyNegated, bool fitRandlesCPE)
+{
+    return analyzeEISImpl(app, srcTable, freqCol, zRealCol, zImagCol,
+                          zImagAlreadyNegated, fitRandlesCPE, false);
 }
 
 void CurveMathTools::showArrheniusDialog(ApplicationWindow *app)
@@ -4804,6 +4892,20 @@ CurveMathTools::TensileResult CurveMathTools::analyzeTensile(
     if (pts.size() < 4) {
         res.error = QObject::tr("At least 4 valid data points are required for tensile analysis.");
         return res;
+    }
+
+    // Order points by ascending strain without discarding noisy jitter points (matches
+    // analyzeWorkHardening); stable_sort preserves relative order of equal-strain points.
+    bool strainUnsorted = false;
+    for (size_t i = 1; i < pts.size(); ++i) {
+        if (pts[i].x < pts[i - 1].x) {
+            strainUnsorted = true;
+            break;
+        }
+    }
+    if (strainUnsorted) {
+        std::stable_sort(pts.begin(), pts.end(),
+                         [](const TensilePt &a, const TensilePt &b) { return a.x < b.x; });
     }
 
     // Find global peak stress (UTS) and fracture point
@@ -9166,6 +9268,26 @@ CurveMathTools::WorkHardeningResult CurveMathTools::analyzeWorkHardening(
         }
         engPts.emplace_back(xv, yv);
     }
+    bool engUnsorted = false;
+    for (size_t i = 1; i < engPts.size(); ++i) {
+        if (engPts[i].first < engPts[i - 1].first) {
+            engUnsorted = true;
+            break;
+        }
+    }
+    if (engUnsorted) {
+        std::stable_sort(engPts.begin(), engPts.end(),
+                         [](const std::pair<double, double> &a,
+                            const std::pair<double, double> &b) { return a.first < b.first; });
+        maxEngY = -1e300;
+        utsRawIdx = 0;
+        for (size_t i = 0; i < engPts.size(); ++i) {
+            if (engPts[i].second > maxEngY) {
+                maxEngY = engPts[i].second;
+                utsRawIdx = i;
+            }
+        }
+    }
 
     // Strains are measured from the toe-corrected origin x0 (same as the tensile analysis).
     const double x0 = tr.toeStrainX0;
@@ -11458,10 +11580,12 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         }
 
         if (!allowed.empty()) {
-            double bestScore = -1.0;
+            double bestScore = -std::numeric_limits<double>::infinity();
             double bestA0 = 0.0;
             std::vector<int> bestAssign(pks.size(), -1);
 
+            const double ttLo = ttGrid.front() + 0.5;
+            const double ttHi = ttGrid.back() - 0.5;
             const size_t maxRefPeak = std::min<size_t>(2, pks.size());
             const size_t maxFirstHkl = std::min<size_t>(4, allowed.size());
             for (size_t rp = 0; rp < maxRefPeak; ++rp) {
@@ -11501,11 +11625,37 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                         }
                     }
                     if (matched > 0) {
+                        const double aCand = (sumW > 0.0) ? (sumA / sumW) : aTry;
                         const double rmse = std::sqrt(sumErr2 / double(matched));
-                        const double score = double(matched) - 12.0 * rmse;
+                        // Penalize skipped allowed reflections inside the measured 2theta range
+                        // and prefer smaller fundamental M so supercell harmonics (e.g. sqrt(2)*a)
+                        // cannot beat the primitive unit cell with identical matched count and RMSE.
+                        std::vector<char> usedK(allowed.size(), 0);
+                        double sumM = 0.0;
+                        for (int kIdx : assign) {
+                            if (kIdx >= 0 && size_t(kIdx) < allowed.size()) {
+                                usedK[size_t(kIdx)] = 1;
+                                sumM += allowed[size_t(kIdx)].M;
+                            }
+                        }
+                        int skippedInRange = 0;
+                        for (size_t k = 0; k < allowed.size(); ++k) {
+                            if (usedK[k])
+                                continue;
+                            const double sinTh =
+                                    (effLambda * std::sqrt(allowed[k].M)) / (2.0 * aCand);
+                            if (sinTh <= 0.0 || sinTh >= 1.0)
+                                continue;
+                            const double pred2Th = 2.0 * std::asin(sinTh) * (180.0 / M_PI);
+                            if (pred2Th >= ttLo && pred2Th <= ttHi)
+                                ++skippedInRange;
+                        }
+                        const double meanM = sumM / double(matched);
+                        const double score = double(matched) - 12.0 * rmse
+                                - 0.15 * double(skippedInRange) - 0.02 * meanM;
                         if (score > bestScore) {
                             bestScore = score;
-                            bestA0 = (sumW > 0.0) ? (sumA / sumW) : aTry;
+                            bestA0 = aCand;
                             bestAssign = assign;
                         }
                     }
@@ -11560,16 +11710,9 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 whPool.push_back(p);
         }
     }
-    if (whPool.empty()) {
-        for (size_t p = 0; p < pks.size(); ++p)
-            whPool.push_back(p);
-    }
     std::vector<char> inWhPool(pks.size(), 0);
     for (size_t idx : whPool)
         inWhPool[idx] = 1;
-    int whExcludedCount = 0;
-    for (char f : inWhPool)
-        whExcludedCount += f ? 0 : 1;
 
     constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     double whSlope = 0.0;
@@ -11612,6 +11755,11 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
                 whSResid = std::sqrt(std::max(0.0, rss / double(whPool.size() - 2)));
         }
     }
+    if (!whFitted)
+        std::fill(inWhPool.begin(), inWhPool.end(), 0);
+    int whExcludedCount = 0;
+    for (char f : inWhPool)
+        whExcludedCount += f ? 0 : 1;
     // Williamson-Hall: beta cos(theta) = K lambda / D + eps * 4 sin(theta). A negative slope or a
     // non-positive intercept has no physical meaning; report N/A instead of silently substituting
     // the Scherrer mean.
@@ -12013,7 +12161,8 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
             const QString usedCol = (whExcludedCount > 0 && tbl->numCols() > 14)
                     ? tbl->colName(14)
                     : tbl->colName(8);
-            if (gw->insertCurve(tbl, tbl->colName(7), usedCol, Graph::Scatter, 0, M - 1)) {
+            if (whFitted && !whPool.empty()
+                && gw->insertCurve(tbl, tbl->colName(7), usedCol, Graph::Scatter, 0, M - 1)) {
                 const int idx = gw->curves() - 1;
                 gw->setCurvePen(idx, QPen(QColor(25, 65, 135), 1.5));
                 gw->setCurveSymbol(idx,
@@ -12475,46 +12624,6 @@ void CurveMathTools::showXRDAnalyzerDialog(ApplicationWindow *app)
 
 namespace {
 
-class HorizontalShadedDosItem : public QwtPlotItem
-{
-public:
-    HorizontalShadedDosItem(const QVector<double> &dosX, const QVector<double> &energyY,
-                            const QColor &fillColor)
-        : d_dosX(dosX), d_energyY(energyY), d_color(fillColor)
-    {
-        setZ(1.0);
-        setItemAttribute(QwtPlotItem::Legend, false);
-    }
-
-    int rtti() const override { return QwtPlotItem::Rtti_PlotUserItem + 77; }
-
-    void draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScaleMap &yMap,
-              const QRect &) const override
-    {
-        const int n = std::min(d_dosX.size(), d_energyY.size());
-        if (!painter || n < 2)
-            return;
-        const double px0 = xMap.xTransform(0.0);
-        QPolygonF poly;
-        poly.reserve(n + 2);
-        poly.append(QPointF(px0, yMap.xTransform(d_energyY.front())));
-        for (int i = 0; i < n; ++i)
-            poly.append(QPointF(xMap.xTransform(d_dosX[i]), yMap.xTransform(d_energyY[i])));
-        poly.append(QPointF(px0, yMap.xTransform(d_energyY.back())));
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QBrush(d_color));
-        painter->drawPolygon(poly);
-        painter->restore();
-    }
-
-private:
-    QVector<double> d_dosX;
-    QVector<double> d_energyY;
-    QColor d_color;
-};
-
 class HighSymmetryKScaleDraw : public ScaleDraw
 {
 public:
@@ -12974,9 +13083,10 @@ static CurveMathTools::VaspPlotResult plotVaspDosImpl(
                     customLegLines << QStringLiteral("\\c{%1}%2").arg(g->curves()).arg(lbl);
                 }
             } else {
-                if (Plot *pw = g->plotWidget()) {
-                    auto *fillItem = new HorizontalShadedDosItem(vDos, vE, fillCol);
-                    fillItem->attach(pw);
+                if (QwtPlotItem *band =
+                            g->addShadedBand(vE, vZero, vDos, fillCol, QString(), true)) {
+                    band->setZ(1.0);
+                    band->setItemAttribute(QwtPlotItem::Legend, false);
                 }
                 if (g->insertCurve(tbl, tbl->colName(tblColIdx), tbl->colName(0), Graph::Line, 0,
                                    N - 1)) {

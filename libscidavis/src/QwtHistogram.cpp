@@ -159,28 +159,75 @@ void QwtHistogram::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtSca
     painter->setPen(hPen);
     painter->setBrush(QwtPlotCurve::brush());
 
-    const double ref = yMap.xTransform(baseline());
+    const bool isLogX = xMap.transformation()
+            && xMap.transformation()->type() == QwtScaleTransformation::Log10;
+    const bool isLogY = yMap.transformation()
+            && yMap.transformation()->type() == QwtScaleTransformation::Log10;
+    const double xLogFloor = isLogX ? qMax(1e-100, qMin(xMap.s1(), xMap.s2())) : 0.0;
+
+    const double pyS1 = yMap.xTransform(yMap.s1());
+    const double pyS2 = yMap.xTransform(yMap.s2());
+    const double pyMin = qMin(pyS1, pyS2);
+    const double pyMax = qMax(pyS1, pyS2);
+    const double baseVal = isLogY ? qMax(1e-100, qMin(yMap.s1(), yMap.s2())) : baseline();
+    const double ref = isLogY ? qBound(pyMin, yMap.xTransform(baseVal), pyMax)
+                              : yMap.xTransform(baseVal);
+    if (!std::isfinite(ref)) {
+        painter->restore();
+        return;
+    }
+
     // The points are bin centres; each bar spans [centre - width/2, centre + width/2].
     const double halfBin = 0.5 * binWidthForDrawing();
-    double dx = 0.0;
-    if (halfBin > 0.0) {
-        dx = std::fabs(xMap.xTransform(x(from) + halfBin) - xMap.xTransform(x(from) - halfBin));
-    }
-    if (dx <= 1e-6)
-        dx = qMax(6.0 * sc, std::fabs(xMap.pDist()) / 10.0);
-
-    const double bar_width = qMax(1.0, dx * (1.0 - gap() * 0.01));
-    const double half_width = 0.5 * (dx - bar_width);
-    const double xOffset = 0.01 * offset() * bar_width;
+    const double fallbackDx = qMax(6.0 * sc, std::fabs(xMap.pDist()) / 10.0);
 
     for (int i = from; i <= to; i++) {
-        const double px1 = xMap.xTransform(x(i) - halfBin);
-        const double py1 = yMap.xTransform(y(i));
-        if (!std::isfinite(px1) || !std::isfinite(py1) || !std::isfinite(ref))
+        const double vy = y(i);
+        if (!std::isfinite(vy) || (isLogY && vy <= 0.0))
             continue;
+        const double rawPy1 = yMap.xTransform(vy);
+        if (!std::isfinite(rawPy1))
+            continue;
+        const double py1 = isLogY ? qBound(pyMin, rawPy1, pyMax) : rawPy1;
+
+        double pxLeft = 0.0;
+        double binDx = 0.0;
+        if (halfBin > 0.0) {
+            double xLeftVal = x(i) - halfBin;
+            double xRightVal = x(i) + halfBin;
+            if (isLogX) {
+                if (xRightVal <= 0.0)
+                    continue;
+                if (xLeftVal <= 0.0)
+                    xLeftVal = qMax(1e-100, qMin(xLogFloor, 0.5 * xRightVal));
+            }
+            const double pxA = xMap.xTransform(xLeftVal);
+            const double pxB = xMap.xTransform(xRightVal);
+            if (!std::isfinite(pxA) || !std::isfinite(pxB))
+                continue;
+            pxLeft = qMin(pxA, pxB);
+            binDx = std::fabs(pxB - pxA);
+        } else {
+            const double vx = x(i);
+            if (!std::isfinite(vx) || (isLogX && vx <= 0.0))
+                continue;
+            const double pxC = xMap.xTransform(vx);
+            if (!std::isfinite(pxC))
+                continue;
+            binDx = fallbackDx;
+            pxLeft = pxC - 0.5 * binDx;
+        }
+
+        if (binDx <= 1e-6)
+            binDx = fallbackDx;
+
+        const double bar_width = qMax(1.0, binDx * (1.0 - gap() * 0.01));
+        const double half_width = 0.5 * (binDx - bar_width);
+        const double xOffset = 0.01 * offset() * bar_width;
+
         const double top = qMin(py1, ref);
         const double h = std::fabs(ref - py1);
-        painter->drawRect(QRectF(px1 + half_width + xOffset, top, bar_width, qMax(0.0, h)));
+        painter->drawRect(QRectF(pxLeft + half_width + xOffset, top, bar_width, qMax(0.0, h)));
     }
 
     painter->restore();
@@ -207,11 +254,47 @@ QwtDoubleRect QwtHistogram::boundingRect() const
     if (bw <= 0.0 || !std::isfinite(bw))
         bw = 1.0;
 
+    const bool xLog = plot() && Plot::isLog10ScaleEngine(plot()->axisScaleEngine(xAxis()));
+    const bool yLog = plot() && Plot::isLog10ScaleEngine(plot()->axisScaleEngine(yAxis()));
+
     // points are bin centres: half a bin to the outer bar edges plus a 15 % bin margin
-    rect.setLeft(rect.left() - 0.65 * bw);
+    double xLeft = rect.left() - 0.65 * bw;
+    if (xLog && xLeft <= 0.0) {
+        double minPosX = 0.0;
+        for (int i = 0; i < dataSize(); ++i) {
+            const double xi = x(i);
+            if (std::isfinite(xi) && xi > 0.0) {
+                const double edge = xi - 0.5 * bw;
+                const double cand = (edge > 0.0) ? edge : xi;
+                if (minPosX <= 0.0 || cand < minPosX)
+                    minPosX = cand;
+            }
+        }
+        if (minPosX > 0.0)
+            xLeft = minPosX;
+    }
+    rect.setLeft(xLeft);
     rect.setRight(rect.right() + 0.65 * bw);
-    rect.setTop(0.0);
-    rect.setBottom(qMax(1.0, 1.15 * rect.bottom()));
+    if (yLog) {
+        double minPosY = 0.0;
+        double maxPosY = 0.0;
+        for (int i = 0; i < dataSize(); ++i) {
+            const double yi = y(i);
+            if (std::isfinite(yi) && yi > 0.0) {
+                if (minPosY <= 0.0 || yi < minPosY)
+                    minPosY = yi;
+                if (yi > maxPosY)
+                    maxPosY = yi;
+            }
+        }
+        if (minPosY > 0.0 && maxPosY > 0.0) {
+            rect.setTop(qMax(1e-100, minPosY * 0.5));
+            rect.setBottom(1.15 * maxPosY);
+        }
+    } else {
+        rect.setTop(0.0);
+        rect.setBottom(qMax(1.0, 1.15 * rect.bottom()));
+    }
     return rect;
 }
 

@@ -1008,6 +1008,99 @@ void registerFitJapaneseStrings()
     });
 }
 
+template <typename ToInternalFn>
+static void mapUserBoundsToInternal(ToInternalFn &&toInternal, int j, double lo_u, double hi_u,
+                                    double &loOut, double &hiOut)
+{
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    loOut = -kInf;
+    hiOut = kInf;
+    if (std::isnan(lo_u))
+        lo_u = -kInf;
+    if (std::isnan(hi_u))
+        hi_u = kInf;
+    if (lo_u > hi_u)
+        std::swap(lo_u, hi_u);
+
+    const double f0 = toInternal(j, 0.0);
+    if (!std::isfinite(f0)) {
+        // Reciprocal-style reparameterization with a pole at 0 (e.g. lambda = +-1/t).
+        const double f1 = toInternal(j, 1.0);
+        if (!std::isfinite(f1) || f1 == 0.0)
+            return;
+        const bool posPole = (f1 > 0.0);
+        if (lo_u > 0.0) {
+            const double fLo = toInternal(j, lo_u);
+            const double fHi = std::isfinite(hi_u) ? toInternal(j, hi_u) : 0.0;
+            if (std::isfinite(fLo) && std::isfinite(fHi)) {
+                loOut = std::min(fLo, fHi);
+                hiOut = std::max(fLo, fHi);
+            }
+        } else if (lo_u == 0.0 && hi_u > 0.0) {
+            const double fHi = std::isfinite(hi_u) ? toInternal(j, hi_u) : 0.0;
+            if (std::isfinite(fHi)) {
+                if (posPole) {
+                    loOut = fHi;
+                    hiOut = kInf;
+                } else {
+                    loOut = -kInf;
+                    hiOut = fHi;
+                }
+            }
+        } else if (hi_u < 0.0) {
+            const double fHi = toInternal(j, hi_u);
+            const double fLo = std::isfinite(lo_u) ? toInternal(j, lo_u) : 0.0;
+            if (std::isfinite(fLo) && std::isfinite(fHi)) {
+                loOut = std::min(fLo, fHi);
+                hiOut = std::max(fLo, fHi);
+            }
+        } else if (hi_u == 0.0 && lo_u < 0.0) {
+            const double fLo = std::isfinite(lo_u) ? toInternal(j, lo_u) : 0.0;
+            if (std::isfinite(fLo)) {
+                if (posPole) {
+                    loOut = -kInf;
+                    hiOut = fLo;
+                } else {
+                    loOut = fLo;
+                    hiOut = kInf;
+                }
+            }
+        }
+        // Intervals straddling 0 map to a disconnected set in internal space; leave unbounded
+        // rather than inverting into the complement.
+        return;
+    }
+
+    const double f1 = toInternal(j, 1.0);
+    const bool decreasing = std::isfinite(f1) && (f1 < f0);
+    if (std::isfinite(lo_u) && std::isfinite(hi_u)) {
+        double a = toInternal(j, lo_u);
+        double b = toInternal(j, hi_u);
+        if (std::isfinite(a) && std::isfinite(b)) {
+            if (a > b)
+                std::swap(a, b);
+            loOut = a;
+            hiOut = b;
+        }
+    } else if (std::isfinite(lo_u)) {
+        const double a = toInternal(j, lo_u);
+        if (std::isfinite(a)) {
+            if (decreasing)
+                hiOut = a;
+            else
+                loOut = a;
+        }
+    } else if (std::isfinite(hi_u)) {
+        const double b = toInternal(j, hi_u);
+        if (std::isfinite(b)) {
+            if (decreasing)
+                loOut = b;
+            else
+                hiOut = b;
+        }
+    }
+}
+
 } // namespace
 
 void Fit::registerJapaneseStrings()
@@ -1428,20 +1521,22 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
             double p0 = gsl_vector_get(d_param_init, j);
             double u0 = fromInternalParameter(int(j), 0.0);
             double u1 = fromInternalParameter(int(j), 1.0);
-            slopeToUser[j] = (std::abs(u1 - u0) > 1e-15) ? (u1 - u0) : 1.0;
-            offsetToUser[j] = u0;
+            if (std::isfinite(u0) && std::isfinite(u1) && std::abs(u1 - u0) > 1e-15) {
+                slopeToUser[j] = u1 - u0;
+                offsetToUser[j] = u0;
+            } else {
+                slopeToUser[j] = 1.0;
+                offsetToUser[j] = 0.0;
+            }
 
             double lo_u = -std::numeric_limits<double>::infinity();
             double hi_u = std::numeric_limits<double>::infinity();
             bool bounded = hasParameterBounds(int(j), &lo_u, &hi_u);
             double lo = lo_u, hi = hi_u;
             if (bounded) {
-                if (std::isfinite(lo_u))
-                    lo = toInternalParameter(int(j), lo_u);
-                if (std::isfinite(hi_u))
-                    hi = toInternalParameter(int(j), hi_u);
-                if (lo > hi)
-                    std::swap(lo, hi);
+                mapUserBoundsToInternal(
+                        [this](int idx, double val) { return toInternalParameter(idx, val); },
+                        int(j), lo_u, hi_u, lo, hi);
             }
             loInternal[j] = lo;
             hiInternal[j] = hi;
@@ -1956,20 +2051,22 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
             double p0 = gsl_vector_get(d_param_init, j);
             double u0 = fromInternalParameter(int(j), 0.0);
             double u1 = fromInternalParameter(int(j), 1.0);
-            slopeToUser[j] = (std::abs(u1 - u0) > 1e-15) ? (u1 - u0) : 1.0;
-            offsetToUser[j] = u0;
+            if (std::isfinite(u0) && std::isfinite(u1) && std::abs(u1 - u0) > 1e-15) {
+                slopeToUser[j] = u1 - u0;
+                offsetToUser[j] = u0;
+            } else {
+                slopeToUser[j] = 1.0;
+                offsetToUser[j] = 0.0;
+            }
 
             double lo_u = -std::numeric_limits<double>::infinity();
             double hi_u = std::numeric_limits<double>::infinity();
             bool bounded = hasParameterBounds(int(j), &lo_u, &hi_u);
             double lo = lo_u, hi = hi_u;
             if (bounded) {
-                if (std::isfinite(lo_u))
-                    lo = toInternalParameter(int(j), lo_u);
-                if (std::isfinite(hi_u))
-                    hi = toInternalParameter(int(j), hi_u);
-                if (lo > hi)
-                    std::swap(lo, hi);
+                mapUserBoundsToInternal(
+                        [this](int idx, double val) { return toInternalParameter(idx, val); },
+                        int(j), lo_u, hi_u, lo, hi);
             }
             loInternal[j] = lo;
             hiInternal[j] = hi;
@@ -2423,15 +2520,26 @@ bool isCollinearLinearFit(const Fit *fit, const std::vector<double> &x)
 {
     if (!dynamic_cast<const LinearFit *>(fit) || x.size() < 2)
         return false;
-    const double meanX = std::accumulate(x.cbegin(), x.cend(), 0.0) / double(x.size());
-    double sxx = 0.0;
+    double xMin = x[0];
+    double xMax = x[0];
+    double maxAbsX = 0.0;
     for (double xv : x) {
         if (!std::isfinite(xv))
             return true;
-        const double dx = xv - meanX;
-        sxx += dx * dx;
+        if (xv < xMin)
+            xMin = xv;
+        if (xv > xMax)
+            xMax = xv;
+        const double ax = std::abs(xv);
+        if (ax > maxAbsX)
+            maxAbsX = ax;
     }
-    return !std::isfinite(sxx) || sxx <= 1e-30;
+    const double xSpan = xMax - xMin;
+    if (!std::isfinite(xSpan))
+        return false;
+    if (xSpan <= 0.0)
+        return true;
+    return (maxAbsX > 0.0 && xSpan <= 1e-14 * maxAbsX);
 }
 
 bool hasValidFitMetrics(const Fit *fit, const std::vector<double> &results, double chi2,
@@ -3673,7 +3781,7 @@ void Fit::generateFitCurve(const vector<double> &par)
     std::vector<double> X(d_points);
     std::vector<double> Y(d_points);
 
-    if (!calculateFitCurveData(par, X, Y)) {
+    if (!evaluateModelCurve(par, X, Y)) {
         if (!isNonInteractiveFit(parent(), d_silent))
             QMessageBox::critical(0, tr("Fit failed"), tr("An error occurred during fit!"));
         return;
@@ -3834,6 +3942,10 @@ void Fit::setParameterBounds(int index, double minVal, double maxVal)
     if (index < 0)
         return;
     ensureConstraintCapacity(index);
+    if (std::isnan(minVal))
+        minVal = -std::numeric_limits<double>::infinity();
+    if (std::isnan(maxVal))
+        maxVal = std::numeric_limits<double>::infinity();
     if (minVal > maxVal)
         std::swap(minVal, maxVal);
     d_param_bounded[size_t(index)] = true;
@@ -3886,8 +3998,13 @@ bool Fit::setLinearConstraintExpr(const QString &exprList)
                 baseVals[j] = gsl_vector_get(d_param_init, j);
             double u0 = fromInternalParameter(int(j), 0.0);
             double u1 = fromInternalParameter(int(j), 1.0);
-            slopeToUser[j] = (std::abs(u1 - u0) > 1e-15) ? (u1 - u0) : 1.0;
-            offsetToUser[j] = u0;
+            if (std::isfinite(u0) && std::isfinite(u1) && std::abs(u1 - u0) > 1e-15) {
+                slopeToUser[j] = u1 - u0;
+                offsetToUser[j] = u0;
+            } else {
+                slopeToUser[j] = 1.0;
+                offsetToUser[j] = 0.0;
+            }
         }
         CompiledLinearConstraints lc = compileLinearConstraintsForFit(
                 trimmed, d_p, d_param_names, fixedMask, boundedMask, baseVals, slopeToUser,
@@ -3936,8 +4053,13 @@ int Fit::effectiveFreeParameters() const
             baseVals[j] = gsl_vector_get(d_param_init, j);
         double u0 = fromInternalParameter(int(j), 0.0);
         double u1 = fromInternalParameter(int(j), 1.0);
-        slopeToUser[j] = (std::abs(u1 - u0) > 1e-15) ? (u1 - u0) : 1.0;
-        offsetToUser[j] = u0;
+        if (std::isfinite(u0) && std::isfinite(u1) && std::abs(u1 - u0) > 1e-15) {
+            slopeToUser[j] = u1 - u0;
+            offsetToUser[j] = u0;
+        } else {
+            slopeToUser[j] = 1.0;
+            offsetToUser[j] = 0.0;
+        }
         if (!fixed)
             ++count;
     }
@@ -4382,9 +4504,11 @@ void Fit::addConfidenceAndPredictionBands(const std::vector<double> &solverPar)
         if (evaluateModelCurve(p_plus, X_tmp, Y_plus)
             && evaluateModelCurve(p_minus, X_tmp, Y_minus)) {
             const double scale = covarSolverToStoredScale(int(j), pj);
-            const double denom = 2.0 * h * ((std::abs(scale) > 1e-30) ? scale : 1.0);
-            for (int k = 0; k < nPts; ++k)
-                G[k][j] = (Y_plus[k] - Y_minus[k]) / denom;
+            if (std::isfinite(scale)) {
+                const double denom = 2.0 * h * ((std::abs(scale) > 1e-300) ? scale : 1.0);
+                for (int k = 0; k < nPts; ++k)
+                    G[k][j] = (Y_plus[k] - Y_minus[k]) / denom;
+            }
         }
     }
     d_points = savedPoints;

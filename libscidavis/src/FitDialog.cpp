@@ -1247,6 +1247,10 @@ void FitDialog::setGraph(Graph *g)
     if (!d_graph)
         return;
     connect(d_graph, SIGNAL(closedGraph()), this, SLOT(close()));
+    connect(d_graph, &QObject::destroyed, this, [this]() {
+        d_graph = nullptr;
+        close();
+    });
     connect(d_graph, SIGNAL(dataRangeChanged()), this, SLOT(changeDataRange()));
 }
 

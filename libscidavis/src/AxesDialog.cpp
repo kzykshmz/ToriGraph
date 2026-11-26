@@ -2625,7 +2625,13 @@ void AxesDialog::setGraph(Graph *g)
     if (!g)
         return;
 
+    if (d_graph)
+        disconnect(d_graph, &QObject::destroyed, this, nullptr);
     d_graph = g;
+    connect(d_graph, &QObject::destroyed, this, [this]() {
+        d_graph = nullptr;
+        reject();
+    });
     for (ShownDateTimeScale &shown : d_shownDateTimeScale)
         shown = ShownDateTimeScale();
     clearAllDirtyState();

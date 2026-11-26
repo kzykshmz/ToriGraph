@@ -145,6 +145,82 @@ using namespace std;
 #include "Graph_Internal.h"
 using namespace GraphInternal;
 
+namespace {
+constexpr const char *kSpecCbHiddenOwnersProp = "_tg_spec_cb_hidden_owners";
+
+bool hasHiddenSpecCbOwner(const QwtScaleWidget *sw, const Spectrogram *sp)
+{
+    if (!sw || !sp)
+        return false;
+    const qulonglong id = static_cast<qulonglong>(reinterpret_cast<quintptr>(sp));
+    const QVariantList owners = sw->property(kSpecCbHiddenOwnersProp).toList();
+    for (const QVariant &v : owners) {
+        if (v.toULongLong() == id)
+            return true;
+    }
+    return false;
+}
+
+void addHiddenSpecCbOwner(QwtScaleWidget *sw, const Spectrogram *sp)
+{
+    if (!sw || !sp)
+        return;
+    const qulonglong id = static_cast<qulonglong>(reinterpret_cast<quintptr>(sp));
+    QVariantList owners = sw->property(kSpecCbHiddenOwnersProp).toList();
+    for (const QVariant &v : owners) {
+        if (v.toULongLong() == id)
+            return;
+    }
+    owners.append(QVariant::fromValue(id));
+    sw->setProperty(kSpecCbHiddenOwnersProp, owners);
+}
+
+void removeHiddenSpecCbOwner(QwtScaleWidget *sw, const Spectrogram *sp)
+{
+    if (!sw || !sp)
+        return;
+    const qulonglong id = static_cast<qulonglong>(reinterpret_cast<quintptr>(sp));
+    QVariantList owners = sw->property(kSpecCbHiddenOwnersProp).toList();
+    bool changed = false;
+    for (int i = owners.size() - 1; i >= 0; --i) {
+        if (owners.at(i).toULongLong() == id) {
+            owners.removeAt(i);
+            changed = true;
+        }
+    }
+    if (changed)
+        sw->setProperty(kSpecCbHiddenOwnersProp, owners);
+}
+
+Spectrogram *findAnotherVisibleColorBarSpecOnAxis(Graph *g, const Spectrogram *exclude, int cbAxis)
+{
+    if (!g || cbAxis < 0 || cbAxis >= QwtPlot::axisCnt)
+        return nullptr;
+    for (int i = g->curves() - 1; i >= 0; --i) {
+        if (g->curveType(i) == Graph::ContourMap)
+            continue;
+        QwtPlotItem *it = g->plotItem(i);
+        if (!it || it == exclude || !it->isVisible()
+            || it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram)
+            continue;
+        Spectrogram *other = static_cast<Spectrogram *>(it);
+        if (other->colorScaleAxis() == cbAxis)
+            return other;
+    }
+    return nullptr;
+}
+
+void resetLinearColorAxisIfNeeded(Plot *plot, const Spectrogram *owner, int axis)
+{
+    if (!plot || !owner || axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+    if (!owner->logColorScale()
+        && dynamic_cast<QwtLog10ScaleEngine *>(plot->axisScaleEngine(axis))) {
+        plot->setAxisScaleEngine(axis, new QwtLinearScaleEngine());
+    }
+}
+} // namespace
+
 QStringList Graph::analysableCurvesList()
 {
     QStringList cList;
@@ -231,18 +307,18 @@ void Graph::updateCurvesData(Table *w, const QString &colName)
                 continue;
             }
             auto colType = changedCol->columnMode();
-            AxisType atype;
-            if (c->xColumnName() == colName) {
-                if (c->type() == HorizontalBars)
-                    atype = (AxisType)axisType[QwtPlot::yLeft];
-                else
-                    atype = (AxisType)axisType[QwtPlot::xBottom];
-            } else {
-                if (c->type() == HorizontalBars)
-                    atype = (AxisType)axisType[QwtPlot::xBottom];
-                else
-                    atype = (AxisType)axisType[QwtPlot::yLeft];
-            }
+            const int cx = (c->xAxis() >= 0 && c->xAxis() < QwtPlot::axisCnt
+                            && c->xAxis() < axisType.size())
+                    ? c->xAxis()
+                    : QwtPlot::xBottom;
+            const int cy = (c->yAxis() >= 0 && c->yAxis() < QwtPlot::axisCnt
+                            && c->yAxis() < axisType.size())
+                    ? c->yAxis()
+                    : QwtPlot::yLeft;
+            const int ax = (c->xColumnName() == colName)
+                    ? (c->type() == HorizontalBars ? cy : cx)
+                    : (c->type() == HorizontalBars ? cx : cy);
+            const AxisType atype = (AxisType)axisType[ax];
             // compare setLabels*Format() calls in insertCurve()
             if ((colType == SciDAVis::ColumnMode::Text && atype != AxisType::Txt)
                 || (colType == SciDAVis::ColumnMode::DateTime
@@ -712,16 +788,26 @@ void Graph::plotPie(Table *w, const QString &name, const QPen &pen, int brush, i
 
 void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
 {
+    if (!w)
+        return;
     const MarkerAxisState axesBefore = markerAxisState();
     int ycol = w->colIndex(name);
+    if (ycol < 0)
+        return;
     int size = 0;
     double sum = 0.0;
 
     Column *y_col_ptr = w->column(ycol);
+    if (!y_col_ptr)
+        return;
     auto yColType = w->columnType(ycol);
 
+    startRow = qMax(0, startRow);
     if (endRow < 0)
         endRow = w->numRows() - 1;
+    const int lastRow = qMin(endRow, y_col_ptr->rowCount() - 1);
+    if (startRow > lastRow)
+        return;
 
     for (int i = 0; i < QwtPlot::axisCnt; i++)
         d_plot->enableAxis(i, false);
@@ -731,7 +817,7 @@ void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
     drawCanvasFrame(false, 0);
     setFrame(0, Qt::black);
 
-    QVarLengthArray<double> Y(abs(endRow - startRow) + 1);
+    QVarLengthArray<double> Y(lastRow - startRow + 1);
     QStringList sliceNames;
     int labelCol = -1;
     for (int c = 0; c < w->numCols(); ++c) {
@@ -745,7 +831,7 @@ void Graph::plotPie(Table *w, const QString &name, int startRow, int endRow)
     }
     Column *lblColPtr = (labelCol >= 0) ? w->column(labelCol) : nullptr;
 
-    for (int row = startRow; row <= endRow && row < y_col_ptr->rowCount(); row++) {
+    for (int row = startRow; row <= lastRow; row++) {
         if (!y_col_ptr->isInvalid(row) && !y_col_ptr->isMasked(row)) {
             double val = 0.0;
             if (yColType == SciDAVis::ColumnMode::Text) {
@@ -994,6 +1080,8 @@ void Graph::insertPlotItem(QwtPlotItem *i, int type)
 bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int lWidth, int sSize,
                              int startRow, int endRow, const QString &xColName)
 {
+    if (!w || names.isEmpty())
+        return false;
     if (style == Graph::Pie)
         plotPie(w, names[0], startRow, endRow);
     else if (style == Box)
@@ -1065,7 +1153,7 @@ bool Graph::insertCurvesList(Table *w, const QStringList &names, int style, int 
                 CurveLayout cl = initCurveLayout(type_of_i, otherCurves.size());
                 cl.sSize = sSize;
                 cl.lWidth = lWidth;
-                updateCurveLayout(i, &cl);
+                updateCurveLayout(n_curves - 1, &cl);
             } else
                 return false;
         }
@@ -1121,6 +1209,16 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
     c_keys[n_curves - 1] = d_plot->insertCurve(c);
     syncCurveZOrder();
 
+    if (!c->loadData())
+        return false;
+    // loadData() は有効な点が無くなった既存の曲線を空のまま残す。新しく作図する曲線は従来どおり、
+    // 有効な点が 1 つも無ければ作らない（空の列で作図したときはエラーになる）。プロジェクトの
+    // 読み込み（keepEmpty）では、保存したときに空だった曲線も体裁ごと戻す。
+    if (c->dataSize() <= 0 && !keepEmpty) {
+        c->remove();
+        return false;
+    }
+
     const QList<QColor> barPalette = paletteColors(defaultCurvePaletteName());
     if (style == VerticalBars || style == HorizontalBars) {
         QVector<QwtBarCurve *> allStyleBars;
@@ -1159,16 +1257,6 @@ bool Graph::insertCurve(Table *w, const QString &xColName, const QString &yColNa
         }
     } else {
         c->setPen(QPen(Qt::black, widthLine));
-    }
-
-    if (!c->loadData())
-        return false;
-    // loadData() は有効な点が無くなった既存の曲線を空のまま残す。新しく作図する曲線は従来どおり、
-    // 有効な点が 1 つも無ければ作らない（空の列で作図したときはエラーになる）。プロジェクトの
-    // 読み込み（keepEmpty）では、保存したときに空だった曲線も体裁ごと戻す。
-    if (c->dataSize() <= 0 && !keepEmpty) {
-        c->remove();
-        return false;
     }
 
     if (style == HorizontalBars) {
@@ -1717,6 +1805,21 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
         }
     }
 
+    QHash<QwtPlotItem *, bool> initialSpecColorBars;
+    for (const auto &bi : byIndex) {
+        if (bi.first >= 0 && bi.first < c_type.size() && c_type[bi.first] == Graph::ContourMap)
+            continue;
+        if (auto *sp = dynamic_cast<Spectrogram *>(bi.second)) {
+            const int cbAxis = sp->colorScaleAxis();
+            QwtScaleWidget *sw = (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt)
+                    ? d_plot->axisWidget(cbAxis)
+                    : nullptr;
+            initialSpecColorBars.insert(
+                    bi.second,
+                    (sp->isVisible() && sp->hasColorScale()) || hasHiddenSpecCbOwner(sw, sp));
+        }
+    }
+
     // From the last one down, so the indices and legend numbers of the rest stay valid.
     bool takesDataCurve = false; // one the automatic axis titles come from
     for (int k = byIndex.size() - 1; k >= 0; --k) {
@@ -1732,8 +1835,8 @@ void Graph::takeCurveItems(const QList<QwtPlotItem *> &items, TakenCurves &tc)
         t.type = c_type[idx];
         t.index = idx;
         t.fitCurve = d_fit_curves.contains(dynamic_cast<QwtPlotCurve *>(it));
-        if (auto *sp = dynamic_cast<Spectrogram *>(it))
-            t.colorBar = sp->hasColorScale(); // taking it out hides the colour bar
+        if (dynamic_cast<Spectrogram *>(it))
+            t.colorBar = initialSpecColorBars.value(it, false);
         Legend *leg = (legendMarkerID >= 0) ? (Legend *)d_plot->marker(legendMarkerID) : nullptr;
         if (leg && t.type != ErrorBars && !isPiePlot()) {
             // the line removeLegendCurveNumber() takes out: \c{n} or the Origin-style \l(n)
@@ -1990,10 +2093,19 @@ void Graph::restoreTakenCurves(TakenCurves &tc)
         } else if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
             // its colour bar, hidden when it was taken out, with its colours and range
             if (colorBars.contains(it)) {
-                if (QwtScaleWidget *sw = d_plot->axisWidget(sp->colorScaleAxis()))
-                    sw->setColorBarEnabled(true);
+                const int cbAxis = sp->colorScaleAxis();
+                QwtScaleWidget *sw = (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt)
+                        ? d_plot->axisWidget(cbAxis)
+                        : nullptr;
+                if (sp->isVisible()) {
+                    resetLinearColorAxisIfNeeded(d_plot, sp, cbAxis);
+                    if (sw)
+                        sw->setColorBarEnabled(true);
+                    sp->syncColorScale();
+                } else {
+                    addHiddenSpecCbOwner(sw, sp);
+                }
             }
-            sp->syncColorScale();
         }
     }
     // the automatic axis titles from the curves now in the layer (as on adding a curve)
@@ -2119,6 +2231,10 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
             if (i >= 0 && i < d_fit_curves.size())
                 d_fit_curves.removeAt(i);
         }
+    } else if (Spectrogram *sp = dynamic_cast<Spectrogram *>(it)) {
+        const int cbAxis = sp->colorScaleAxis();
+        if (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt)
+            removeHiddenSpecCbOwner(d_plot->axisWidget(cbAxis), sp);
     }
 
     // Re-resolve index in case clearErrorBars() removed items before it
@@ -2162,6 +2278,47 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
     if (d_plot->highlightedCurveKey() == c_keys[index])
         d_plot->setHighlightedCurveKey(-1);
 
+    if (d_is_polar && !d_polar_series.isEmpty()) {
+        PlotCurve *pc = dynamic_cast<PlotCurve *>(it);
+        if (pc && pc->type() == Function && !dynamic_cast<FunctionCurve *>(pc)
+            && !dynamic_cast<DataCurve *>(pc)) {
+            int polarOrd = 0;
+            int polarTotal = 0;
+            for (int i = 0; i < n_curves; ++i) {
+                PlotCurve *cand = dynamic_cast<PlotCurve *>(plotItem(i));
+                if (cand && cand->type() == Function && !dynamic_cast<FunctionCurve *>(cand)
+                    && !dynamic_cast<DataCurve *>(cand)) {
+                    if (i < index)
+                        ++polarOrd;
+                    ++polarTotal;
+                }
+            }
+            if (polarTotal == d_polar_series.size() && polarOrd >= 0
+                && polarOrd < d_polar_series.size()) {
+                d_polar_series.removeAt(polarOrd);
+            } else {
+                const QString removedLbl = pc->title().text();
+                for (int si = 0; si < d_polar_series.size(); ++si) {
+                    if (d_polar_series[si].label == removedLbl) {
+                        d_polar_series.removeAt(si);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    int removedSpecCbAxis = -1;
+    bool removedSpecHadCb = false;
+    if (Spectrogram *sp = dynamic_cast<Spectrogram *>(it)) {
+        const int cbAxis = sp->colorScaleAxis();
+        if (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt) {
+            QwtScaleWidget *sw = d_plot->axisWidget(cbAxis);
+            removedSpecCbAxis = cbAxis;
+            removedSpecHadCb = (sw && sw->isColorBarEnabled());
+        }
+    }
+
     QwtPlotItem *taken = nullptr;
     if (deleteItem)
         d_plot->removeCurve(c_keys[index]);
@@ -2175,6 +2332,18 @@ QwtPlotItem *Graph::removeCurveAt(int index, bool deleteItem)
     }
     c_type.resize(n_curves);
     c_keys.resize(n_curves);
+    if (removedSpecHadCb && removedSpecCbAxis >= 0) {
+        if (Spectrogram *owner = findAnotherVisibleColorBarSpecOnAxis(this, nullptr,
+                                                                      removedSpecCbAxis)) {
+            resetLinearColorAxisIfNeeded(d_plot, owner, removedSpecCbAxis);
+            owner->showColorScale(removedSpecCbAxis, true);
+        } else {
+            if (ScaleDraw *sd =
+                        dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(removedSpecCbAxis)))
+                sd->setColorBarBorder(false, 0, 1);
+            d_plot->updateLayout();
+        }
+    }
     if (d_point_colorbar_active) // E11: drop the colour bar with its scatter curve
         syncPointColorBar();
 
@@ -2941,19 +3110,58 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
             app->setProperty("_tg_load_truncated", true);
         return;
     }
+    if (!app)
+        return;
+
     QStringList::const_iterator line = lst.begin();
     QString s = (*line).trimmed();
-    QString matrixName = s.remove("<matrix>").remove("</matrix>");
-    Matrix *m = app->matrix(matrixName);
+    QString matrixName = s.remove("<matrix>").remove("</matrix>").trimmed();
+    QString resolvedName = matrixName;
+    if (!app->renamedTables.isEmpty() && !matrixName.isEmpty()) {
+        for (int k = 0; k + 1 < app->renamedTables.size(); k += 2) {
+            if (app->renamedTables.at(k) == matrixName)
+                resolvedName = app->renamedTables.at(k + 1);
+        }
+    }
+    Matrix *m = nullptr;
+    if (resolvedName != matrixName) {
+        for (MyWidget *w : app->windowsList()) {
+            if (w && w->inherits("Matrix") && w->name() == resolvedName) {
+                m = static_cast<Matrix *>(w);
+                break;
+            }
+        }
+    }
+    if (!m)
+        m = app->matrix(resolvedName);
+    if (!m && resolvedName != matrixName)
+        m = app->matrix(matrixName);
     if (!m)
         return;
 
+    Spectrogram *liveOwnerBefore[QwtPlot::axisCnt] = {};
+    int liveWidthBefore[QwtPlot::axisCnt] = {};
+    QString liveTitleBefore[QwtPlot::axisCnt];
+    QwtText liveAxisTitleBefore[QwtPlot::axisCnt];
+    for (int a = 0; a < QwtPlot::axisCnt; ++a) {
+        QwtScaleWidget *sw = d_plot->axisWidget(a);
+        if (sw && sw->isColorBarEnabled()) {
+            if (Spectrogram *owner = findAnotherVisibleColorBarSpecOnAxis(this, nullptr, a)) {
+                liveOwnerBefore[a] = owner;
+                liveWidthBefore[a] = owner->colorBarWidth();
+                liveTitleBefore[a] = owner->colorBarTitle();
+                liveAxisTitleBefore[a] = sw->title();
+            }
+        }
+    }
+
     Spectrogram *sp = new Spectrogram(m);
 
+    const int specIdx = n_curves;
     c_type.resize(++n_curves);
-    c_type[n_curves - 1] = Graph::ColorMap;
+    c_type[specIdx] = Graph::ColorMap;
     c_keys.resize(n_curves);
-    c_keys[n_curves - 1] = d_plot->insertCurve(sp);
+    c_keys[specIdx] = d_plot->insertCurve(sp);
     syncCurveZOrder();
 
     bool hasPresetTag = false;
@@ -2967,6 +3175,14 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
     int colorBarW = 16;
     QString cbTitle;
     bool maskInvalid = false, logColor = false, cellBlocks = false; // E11b
+
+    auto nextLine = [&](QString &out) -> bool {
+        ++line;
+        if (line == lst.end())
+            return false;
+        out = *line;
+        return true;
+    };
 
     for (line++; line != lst.end(); line++) {
         QString s = *line;
@@ -2983,27 +3199,44 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
             else if (color_policy == Spectrogram::Default)
                 sp->setDefaultColorMap();
         } else if (s.contains("<ColorMap>")) {
-            s = *(++line);
+            if (!nextLine(s))
+                break;
             int mode = s.remove("<Mode>").remove("</Mode>").trimmed().toInt();
-            s = *(++line);
+            if (!nextLine(s))
+                break;
             QColor color1 =
                     QColor(COLORVALUE(s.remove("<MinColor>").remove("</MinColor>").trimmed()));
-            s = *(++line);
+            if (!nextLine(s))
+                break;
             QColor color2 =
                     QColor(COLORVALUE(s.remove("<MaxColor>").remove("</MaxColor>").trimmed()));
 
             QwtLinearColorMap colorMap = QwtLinearColorMap(color1, color2);
             colorMap.setMode((QwtLinearColorMap::Mode)mode);
 
-            s = *(++line);
-            int stops = s.remove("<ColorStops>").remove("</ColorStops>").trimmed().toInt();
+            if (!nextLine(s)) {
+                sp->setCustomColorMap(colorMap);
+                break;
+            }
+            int stops = qBound(0, s.remove("<ColorStops>").remove("</ColorStops>").trimmed().toInt(),
+                               4096);
             for (int i = 0; i < stops; i++) {
-                s = (*(++line)).trimmed();
+                if (!nextLine(s))
+                    break;
+                s = s.trimmed();
+                if (s == QLatin1String("</ColorMap>"))
+                    break;
                 QStringList l = s.remove("<Stop>").remove("</Stop>").split("\t");
-                colorMap.addColorStop(l[0].toDouble(), QColor(COLORVALUE(l[1])));
+                if (l.size() >= 2)
+                    colorMap.addColorStop(l[0].toDouble(), QColor(COLORVALUE(l[1])));
             }
             sp->setCustomColorMap(colorMap);
-            line++;
+            if (line == lst.end())
+                break;
+            if (!(*line).trimmed().contains("</ColorMap>")) {
+                if (line + 1 != lst.end() && (*(line + 1)).trimmed().contains("</ColorMap>"))
+                    ++line;
+            }
         } else if (s.contains("<Image>")) {
             int mode = s.remove("<Image>").remove("</Image>").trimmed().toInt();
             sp->setDisplayMode(QwtPlotSpectrogram::ImageMode, mode);
@@ -3011,32 +3244,45 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
             int contours = s.remove("<ContourLines>").remove("</ContourLines>").trimmed().toInt();
             sp->setDisplayMode(QwtPlotSpectrogram::ContourMode, contours);
             if (contours) {
-                s = (*(++line)).trimmed();
+                if (!nextLine(s))
+                    break;
+                s = s.trimmed();
                 int levels = s.remove("<Levels>").remove("</Levels>").toInt();
                 pendingLevels = levels;
                 sp->setLevelsNumber(levels);
 
-                s = (*(++line)).trimmed();
+                if (!nextLine(s))
+                    break;
+                s = s.trimmed();
                 int defaultPen = s.remove("<DefaultPen>").remove("</DefaultPen>").toInt();
                 if (!defaultPen)
                     sp->setDefaultContourPen(Qt::NoPen);
                 else {
-                    s = (*(++line)).trimmed();
+                    if (!nextLine(s))
+                        break;
+                    s = s.trimmed();
                     QColor c = QColor(COLORVALUE(s.remove("<PenColor>").remove("</PenColor>")));
-                    s = (*(++line)).trimmed();
+                    if (!nextLine(s))
+                        break;
+                    s = s.trimmed();
                     int width = s.remove("<PenWidth>").remove("</PenWidth>").toInt();
-                    s = (*(++line)).trimmed();
+                    if (!nextLine(s))
+                        break;
+                    s = s.trimmed();
                     int style = s.remove("<PenStyle>").remove("</PenStyle>").toInt();
                     sp->setDefaultContourPen(QPen(c, width, Graph::getPenStyle(style)));
                 }
             }
         } else if (s.contains("<ColorBar>")) {
-            s = *(++line);
+            if (!nextLine(s))
+                break;
             colorBarAxis = s.remove("<axis>").remove("</axis>").trimmed().toInt();
-            s = *(++line);
+            if (!nextLine(s))
+                break;
             colorBarW = s.remove("<width>").remove("</width>").trimmed().toInt();
             hasColorBar = true;
-            line++;
+            if (line + 1 != lst.end() && (*(line + 1)).trimmed().contains("</ColorBar>"))
+                ++line;
         } else if (s.contains("<ColorPreset>")) {
             const int p = s.remove("<ColorPreset>").remove("</ColorPreset>").trimmed().toInt();
             if (p >= static_cast<int>(Spectrogram::PresetLegacyDefault)
@@ -3090,17 +3336,107 @@ void Graph::restoreSpectrogram(ApplicationWindow *app, const QStringList &lst)
     else if (revPalette)
         sp->setReversePalette(true);
 
-    if (hasColorBar) {
+    if (specIdx >= 0 && specIdx < c_type.size()) {
+        if (!sp->testDisplayMode(QwtPlotSpectrogram::ImageMode)
+            && sp->testDisplayMode(QwtPlotSpectrogram::ContourMode)) {
+            c_type[specIdx] = Graph::ContourMap;
+        } else if (sp->colorMapPolicy() == Spectrogram::GrayScale
+                   || sp->colorMapPreset() == Spectrogram::PresetGrayScale) {
+            c_type[specIdx] = Graph::GrayMap;
+        } else {
+            c_type[specIdx] = Graph::ColorMap;
+        }
+    }
+
+    auto restoreLiveOwner = [&](int ax) {
+        if (ax < 0 || ax >= QwtPlot::axisCnt)
+            return;
+        Spectrogram *owner = liveOwnerBefore[ax];
+        if (!owner)
+            return;
+        resetLinearColorAxisIfNeeded(d_plot, owner, ax);
+        owner->showColorScale(ax, true);
+        owner->setColorBarWidth(liveWidthBefore[ax]);
+        if (!liveTitleBefore[ax].isEmpty())
+            owner->setColorBarTitle(liveTitleBefore[ax]);
+        else if (QwtScaleWidget *sw = d_plot->axisWidget(ax))
+            sw->setTitle(liveAxisTitleBefore[ax]);
+        owner->syncColorScale();
+        owner->enforceColorBarArialFont();
+    };
+
+    const bool specIsContour =
+            (specIdx >= 0 && specIdx < c_type.size() && c_type[specIdx] == Graph::ContourMap);
+    const bool hasLiveTarget = (colorBarAxis >= 0 && colorBarAxis < QwtPlot::axisCnt
+                                && liveOwnerBefore[colorBarAxis] != nullptr);
+
+    auto setStoredCbTitleOnly = [&](const QString &title) {
+        if (title.isEmpty())
+            return;
+        struct ScopedDataOnlyTitle
+        {
+            Plot *p;
+            explicit ScopedDataOnlyTitle(Plot *plot) : p(plot)
+            {
+                if (p)
+                    p->setProperty("_tg_spec_title_data_only", true);
+            }
+            ~ScopedDataOnlyTitle()
+            {
+                if (p)
+                    p->setProperty("_tg_spec_title_data_only", false);
+            }
+        } guard(d_plot);
+        sp->setColorBarTitle(title);
+    };
+
+    if (hasColorBar && !(specIsContour && hasLiveTarget)) {
+        if (!sp->isVisible() && hasLiveTarget) {
+            sp->showColorScale(colorBarAxis, true);
+            setStoredCbTitleOnly(cbTitle);
+            if (QwtScaleWidget *ca = d_plot->axisWidget(colorBarAxis))
+                addHiddenSpecCbOwner(ca, sp);
+            restoreLiveOwner(colorBarAxis);
+            if (colorBarAxis != QwtPlot::yRight)
+                restoreLiveOwner(QwtPlot::yRight);
+            return;
+        }
+        resetLinearColorAxisIfNeeded(d_plot, sp, colorBarAxis);
         sp->showColorScale(colorBarAxis, true);
         sp->setColorBarWidth(colorBarW);
+        if (!cbTitle.isEmpty())
+            sp->setColorBarTitle(cbTitle);
+        sp->syncColorScale();
+        sp->enforceColorBarArialFont();
+        if (!sp->isVisible()) {
+            const int cbAxis = sp->colorScaleAxis();
+            if (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt) {
+                if (QwtScaleWidget *ca = d_plot->axisWidget(cbAxis)) {
+                    addHiddenSpecCbOwner(ca, sp);
+                    ca->setColorBarEnabled(false);
+                    if (ScaleDraw *sd = dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(cbAxis)))
+                        sd->setColorBarBorder(false, 0, 1);
+                }
+            }
+        }
+        if (colorBarAxis != QwtPlot::yRight)
+            restoreLiveOwner(QwtPlot::yRight);
     } else {
-        if (QwtScaleWidget *ca = d_plot->axisWidget(sp->colorScaleAxis()))
-            ca->setColorBarEnabled(false);
+        const int spAxis = (hasColorBar && specIsContour) ? colorBarAxis : sp->colorScaleAxis();
+        if (spAxis >= 0 && spAxis < QwtPlot::axisCnt && liveOwnerBefore[spAxis]) {
+            setStoredCbTitleOnly(cbTitle);
+            restoreLiveOwner(spAxis);
+            if (spAxis != QwtPlot::yRight)
+                restoreLiveOwner(QwtPlot::yRight);
+        } else {
+            if (QwtScaleWidget *ca = d_plot->axisWidget(spAxis))
+                ca->setColorBarEnabled(false);
+            if (!cbTitle.isEmpty())
+                sp->setColorBarTitle(cbTitle);
+            sp->syncColorScale();
+            sp->enforceColorBarArialFont();
+        }
     }
-    if (!cbTitle.isEmpty())
-        sp->setColorBarTitle(cbTitle);
-    sp->syncColorScale();
-    sp->enforceColorBarArialFont();
 }
 
 bool Graph::validCurvesDataSize() const
@@ -3377,9 +3713,38 @@ void Graph::showCurve(int index, bool visible)
     it->setVisible(visible);
 
     if (it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
-        Spectrogram *sp = static_cast<Spectrogram *>(it);
-        if (QwtScaleWidget *sw = d_plot->axisWidget(sp->colorScaleAxis()))
-            sw->setColorBarEnabled(visible && sp->hasColorScale());
+        if (c_type[index] != Graph::ContourMap) {
+            Spectrogram *sp = static_cast<Spectrogram *>(it);
+            const int cbAxis = sp->colorScaleAxis();
+            QwtScaleWidget *sw = (cbAxis >= 0 && cbAxis < QwtPlot::axisCnt)
+                    ? d_plot->axisWidget(cbAxis)
+                    : nullptr;
+            if (!visible) {
+                if (sp->hasColorScale()) {
+                    addHiddenSpecCbOwner(sw, sp);
+                    if (Spectrogram *other =
+                                findAnotherVisibleColorBarSpecOnAxis(this, sp, cbAxis)) {
+                        resetLinearColorAxisIfNeeded(d_plot, other, cbAxis);
+                        other->showColorScale(cbAxis, true);
+                    } else {
+                        if (sw)
+                            sw->setColorBarEnabled(false);
+                        if (ScaleDraw *sd =
+                                    dynamic_cast<ScaleDraw *>(d_plot->axisScaleDraw(cbAxis)))
+                            sd->setColorBarBorder(false, 0, 1);
+                        d_plot->updateLayout();
+                    }
+                }
+            } else {
+                const bool hiddenByVis = hasHiddenSpecCbOwner(sw, sp);
+                if (sp->hasColorScale() || hiddenByVis) {
+                    if (hiddenByVis)
+                        removeHiddenSpecCbOwner(sw, sp);
+                    resetLinearColorAxisIfNeeded(d_plot, sp, cbAxis);
+                    sp->showColorScale(cbAxis, true);
+                }
+            }
+        }
     } else if (c_type[index] != ErrorBars && c_type[index] != Function) {
         if (DataCurve *dc = dynamic_cast<DataCurve *>(it)) {
             for (DataCurve *eb : dc->errorBarsList()) {

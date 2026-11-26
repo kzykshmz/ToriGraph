@@ -2163,11 +2163,15 @@ void Table::showTeXTableExportDialog()
     export_Dialog.exec();
 
     if (export_Dialog.result() == QDialog::Accepted) {
+        if (export_Dialog.selectedFiles().isEmpty())
+            return;
         // Get file name
         QString fileName = export_Dialog.selectedFiles().first();
 
-        // Add  file extention
-        fileName += export_Dialog.selectedNameFilter().remove(0, 1);
+        // Add file extension if not already present
+        const QString ext = export_Dialog.selectedNameFilter().remove(0, 1);
+        if (!ext.isEmpty() && !fileName.endsWith(ext, Qt::CaseInsensitive))
+            fileName += ext;
 
         // Get TeX table settings
         TeXTableSettings tex_settings = export_Dialog.tex_TableSettings();
@@ -2195,9 +2199,9 @@ bool Table::export_to_TeX(QString fileName, TeXTableSettings &tex_settings)
 
     QList<Column *> columns_list;
     int first_row_index = 0;
-    int last_row_index = 0;
+    int last_row_index = -1;
 
-    if (d_view->selectedColumnCount() != 0) {
+    if (d_view && d_view->selectedColumnCount() != 0) {
         // Get selected columns
         for (int i = 0; i < columnCount(); i++) {
             if (d_view->isColumnSelected(i))
@@ -2214,10 +2218,7 @@ bool Table::export_to_TeX(QString fileName, TeXTableSettings &tex_settings)
 
         // Get the first and last row index
         first_row_index = 0;
-        if (rowCount() > 0)
-            last_row_index = rowCount() - 1;
-        else
-            last_row_index = 0;
+        last_row_index = rowCount() - 1;
     }
 
     // Get the TeX column alignment
@@ -2249,11 +2250,13 @@ bool Table::export_to_TeX(QString fileName, TeXTableSettings &tex_settings)
 
     // Export TeX table content
     QStringList str_row;
-    for (int row_index = first_row_index; row_index < last_row_index + 1; row_index++) {
-        str_row.clear();
-        foreach (Column *col, columns_list)
-            str_row << col->asStringColumn()->textAt(row_index);
-        out << str_row.join(" & ") << " \\\\ \\hline \n ";
+    if (first_row_index >= 0 && last_row_index >= first_row_index) {
+        for (int row_index = first_row_index; row_index <= last_row_index; row_index++) {
+            str_row.clear();
+            foreach (Column *col, columns_list)
+                str_row << col->asStringColumn()->textAt(row_index);
+            out << str_row.join(" & ") << " \\\\ \\hline \n ";
+        }
     }
 
     out << "\\end{tabular} \n";

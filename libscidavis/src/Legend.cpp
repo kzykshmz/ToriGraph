@@ -252,6 +252,23 @@ Legend::Legend(Plot *plot) : d_plot(plot), d_frame(0), d_angle(0), d_num_columns
     d_shadow_size_y = 5;
 }
 
+namespace {
+int safeLegendTransform(const QwtScaleMap &map, double val, int fallback)
+{
+    if (!std::isfinite(val))
+        return fallback;
+    const double t = map.xTransform(val);
+    if (!std::isfinite(t))
+        return fallback;
+    constexpr double kLimit = 1e7;
+    if (t > kLimit)
+        return int(kLimit);
+    if (t < -kLimit)
+        return -int(kLimit);
+    return qRound(t);
+}
+} // namespace
+
 Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScaleMap &yMap,
                                           const QRect &canvasRect) const
 {
@@ -261,8 +278,8 @@ Legend::DrawGeometry Legend::drawGeometry(const QwtScaleMap &xMap, const QwtScal
     DrawGeometry geo;
     const QwtMetricsMap map = QwtPainter::metricsMap();
 
-    const int x = xMap.transform(xValue());
-    const int y = yMap.transform(yValue());
+    const int x = safeLegendTransform(xMap, xValue(), d_pos.x());
+    const int y = safeLegendTransform(yMap, yValue(), d_pos.y());
     geo.symbolLineLength = symbolsMaxLineLength();
 
     int width = 0, height = 0;
@@ -432,8 +449,8 @@ QRect Legend::rect() const
     const QwtScaleMap &xMap = d_plot->canvasMap(xAxis());
     const QwtScaleMap &yMap = d_plot->canvasMap(yAxis());
 
-    const int x = xMap.transform(xValue());
-    const int y = yMap.transform(yValue());
+    const int x = safeLegendTransform(xMap, xValue(), d_pos.x());
+    const int y = safeLegendTransform(yMap, yValue(), d_pos.y());
 
     if (d_text && !d_text->text().trimmed().isEmpty()
         && filterVisibleLegendLines(d_plot, d_text->text()).isEmpty()) {
@@ -504,7 +521,8 @@ void Legend::refreshPixelOrigin(const QwtScaleMap *xMap, const QwtScaleMap *yMap
         return;
     const QwtScaleMap &xm = xMap ? *xMap : d_plot->canvasMap(xAxis());
     const QwtScaleMap &ym = yMap ? *yMap : d_plot->canvasMap(yAxis());
-    d_pos = QPoint(xm.transform(xValue()), ym.transform(yValue()));
+    d_pos = QPoint(safeLegendTransform(xm, xValue(), d_pos.x()),
+                   safeLegendTransform(ym, yValue(), d_pos.y()));
 }
 
 void Legend::setOriginCoord(double x, double y)
@@ -518,7 +536,8 @@ void Legend::setOriginCoord(double x, double y)
     const QwtScaleMap &xMap = d_plot->canvasMap(xAxis());
     const QwtScaleMap &yMap = d_plot->canvasMap(yAxis());
 
-    d_pos = QPoint(xMap.transform(x), yMap.transform(y));
+    d_pos = QPoint(safeLegendTransform(xMap, x, d_pos.x()),
+                   safeLegendTransform(yMap, y, d_pos.y()));
 }
 
 void Legend::setFont(const QFont &font)

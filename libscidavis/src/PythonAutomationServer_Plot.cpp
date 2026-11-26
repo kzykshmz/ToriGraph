@@ -1681,6 +1681,30 @@ void closeAndDeleteEmptyPlot(ApplicationWindow *app, MultiLayer *ml)
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 
+namespace {
+
+struct ScopedNewMultiLayerGuard
+{
+    ApplicationWindow *app = nullptr;
+    QPointer<MultiLayer> ml;
+    bool committed = false;
+
+    ScopedNewMultiLayerGuard(ApplicationWindow *a, MultiLayer *m)
+        : app(a), ml(m), committed(false)
+    {
+    }
+    ScopedNewMultiLayerGuard(const ScopedNewMultiLayerGuard &) = delete;
+    ScopedNewMultiLayerGuard &operator=(const ScopedNewMultiLayerGuard &) = delete;
+
+    ~ScopedNewMultiLayerGuard()
+    {
+        if (!committed && ml)
+            closeAndDeleteEmptyPlot(app, ml.data());
+    }
+};
+
+} // namespace
+
 int countFiniteUnmaskedInTableColumn(Table *t, int colIdx, int optXIdx)
 {
     if (!t || colIdx < 0 || colIdx >= t->numCols())
@@ -2043,7 +2067,12 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                     if (std::isfinite(cand))
                         xv = cand;
                 } else if (isTextX) {
-                    const QString txt = xColObj->textAt(r).trimmed();
+                    const QString txt = xColObj->isInvalid(r)
+                            ? QString()
+                            : (xColObj->asStringColumn()
+                                       ? xColObj->asStringColumn()->textAt(r)
+                                       : xColObj->textAt(r))
+                                      .trimmed();
                     catLabels.append(txt.isEmpty() ? QString::number(r + 1) : txt);
                 }
                 colX->setValueAt(r, xv);
@@ -2103,6 +2132,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             MultiLayer *ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("Graph")));
             if (!ml)
                 throwRpcRuntime(QStringLiteral("Failed to create Stacked Bars graph."));
+            ScopedNewMultiLayerGuard mlGuard(d_app, ml);
             Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
 
             const QList<QColor> &kOkabeIto = Graph::okabeItoColors();
@@ -2240,6 +2270,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             }
             applyPlotLevelConvenienceParams(g, params);
             applyRequestedWindowName(d_app, ml, params);
+            mlGuard.committed = true;
 
             outResult = serializeGraphInfo(ml);
             outResult[QStringLiteral("stacked")] = true;
@@ -2264,8 +2295,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                 (explicitX && xIdx >= 0) ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create 2D XY plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
-            closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(
                     QStringLiteral("plot.xy created 0 plottable curves from table '%1' (check for all-NaN or non-numeric columns).")
                             .arg(t->name()));
@@ -2486,6 +2517,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             }
             applyPlotLevelConvenienceParams(g, params);
         }
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -2741,8 +2773,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                explicitX ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Double-Y plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (!ml->activeGraph() || ml->activeGraph()->curves() < 2) {
-            closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(QStringLiteral("plot.double_y could not create two valid data curves."));
         }
         Graph *g = ml->activeGraph();
@@ -2790,6 +2822,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -2831,8 +2864,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                explicitX ? fullColumnName(t, xIdx) : QString());
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create waterfall plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
-            closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(QStringLiteral("plot.waterfall created 0 valid curves."));
         }
         Graph *g = ml->activeGraph();
@@ -2855,6 +2888,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -3004,10 +3038,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create statistical plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, attachToExisting ? nullptr : ml);
         Graph *checkG = targetBoxLayer ? targetBoxLayer : ml->activeGraph();
         if (!checkG || checkG->curves() <= prevCurveCount) {
-            if (!attachToExisting)
-                closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(
                     QStringLiteral("%1 created 0 curves from '%2' (check for all-NaN or non-numeric columns).")
                             .arg(method, t->name()));
@@ -3024,7 +3057,6 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                 }
             }
             if (totalHistPoints <= 0) {
-                closeAndDeleteEmptyPlot(d_app, ml);
                 throwInvalidParams(
                         QStringLiteral("plot.histogram created 0 valid histogram bins from '%1' (empty or degenerate data).")
                                 .arg(t->name()));
@@ -3340,6 +3372,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!attachToExisting)
             applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -3444,6 +3477,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                Graph::VerticalBars, 0, items.size() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Pareto plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (Graph *g = ml->activeGraph()) {
             if (g->curves() >= 1) {
                 g->setCurvePen(0, QPen(QColor(0, 77, 128), 1.0));
@@ -3508,6 +3542,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("data_table")] = pt->name();
         outResult[QStringLiteral("ok")] = true;
@@ -3559,6 +3594,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                0, n - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Q-Q plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (Graph *g = ml->activeGraph()) {
             g->insertCurve(qt, qt->colName(0), qt->colName(2), Graph::Line, 0, n - 1);
             if (g->curves() >= 2 && g->curve(g->curves() - 1))
@@ -3582,6 +3618,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("data_table")] = qt->name();
         outResult[QStringLiteral("ok")] = true;
@@ -3664,8 +3701,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                Graph::Pie, 0, t->numRows() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Pie plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (!ml->activeGraph() || ml->activeGraph()->curves() <= 0) {
-            closeAndDeleteEmptyPlot(d_app, ml);
             throwInvalidParams(QStringLiteral("plot.pie created 0 pie slices."));
         }
         if (Graph *g = ml->activeGraph()) {
@@ -3691,6 +3728,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             applyPlotLevelConvenienceParams(g, params);
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -3777,16 +3815,11 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         MultiLayer *ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("Graph")));
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Vector graph."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
         if (g)
             g->plotVectorCurve(t, cols, vStyle, 0, t->numRows() - 1);
         if (!g || g->curves() < 1) {
-            ml->askOnCloseEvent(false);
-            ml->hide();
-            ml->close();
-            if (ml->folder())
-                d_app->closeWindow(ml);
-            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
             throwInvalidParams(
                     QStringLiteral("Vector plot failed: no valid vector curve could be created from the specified columns."));
         }
@@ -3809,6 +3842,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         applyPlotLevelConvenienceParams(g, params);
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -3864,6 +3898,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                                0, pts.size() - 1);
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Ternary plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         if (Graph *g = ml->activeGraph()) {
             g->setupTernaryPlot(srcTable->colLabel(colA), srcTable->colLabel(colB),
                                 srcTable->colLabel(colC));
@@ -3871,6 +3906,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             g->replot();
         }
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("data_table")] = tt->name();
         outResult[QStringLiteral("ok")] = true;
@@ -3957,6 +3993,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         MultiLayer *ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("PolarGraph")));
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create Polar graph."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, ml);
         Graph *g = ml->activeGraph() ? ml->activeGraph() : ml->addLayer();
         g->setProperty("_toriIsPolarPlot", true);
 
@@ -4035,7 +4072,6 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                 }
             }
             if (validSeries <= 0) {
-                closeAndDeleteEmptyPlot(d_app, ml);
                 throwInvalidParams(
                         QStringLiteral("plot.polar found 0 valid finite (theta, r) points."));
             }
@@ -4112,6 +4148,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         ml->setTargetAspectRatio(1.0);
         applyPlotLevelConvenienceParams(g, params);
         applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("is_polar")] = true;
         outResult[QStringLiteral("theta_in_radians")] = thetaInRad;
@@ -4221,6 +4258,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             ml = resolveMultiLayer(d_app, params, QStringLiteral("graph"), true);
         else
             ml = d_app->newGraph(d_app->generateUniqueName(QStringLiteral("Graph")));
+        if (!ml)
+            throwRpcRuntime(QStringLiteral("Failed to create function graph."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, createdNewGraph ? ml : nullptr);
         Graph *g = createdNewGraph
                 ? (ml->activeGraph() ? ml->activeGraph() : ml->addLayer())
                 : resolveGraphLayer(ml, params);
@@ -4228,8 +4268,6 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                                        QObject::tr("Plot Function"));
         if (!g->addFunctionCurve(d_app, fnType, formulas, var, ranges, points,
                                  optionalJsonString(params, QStringLiteral("title")))) {
-            if (createdNewGraph)
-                closeAndDeleteEmptyPlot(d_app, ml);
             throwRpcRuntime(
                     QStringLiteral("Failed to plot function '%1'.").arg(formulas.join(QStringLiteral(", "))));
         }
@@ -4245,6 +4283,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             undoGuard.commit();
         if (createdNewGraph)
             applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("function_type")] = typeStr;
         outResult[QStringLiteral("ok")] = true;
@@ -4286,6 +4325,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!ml)
             throwRpcRuntime(QStringLiteral("Failed to create matrix spectrogram plot."));
+        ScopedNewMultiLayerGuard mlGuard(d_app, attachToExisting ? nullptr : ml);
         if (Graph *g = targetG) {
             const QString cmapParam = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
                     ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
@@ -4345,6 +4385,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!attachToExisting)
             applyRequestedWindowName(d_app, ml, params);
+        mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -5127,6 +5168,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         merged->finalizePhase5Restore();
         merged->blockSignals(false);
         d_app->d_file_version = savedFileVer;
+        ScopedNewMultiLayerGuard mergedGuard(d_app, merged);
 
         if (rows * cols < primaryPanelCount)
             rows = (primaryPanelCount + cols - 1) / cols;
@@ -5224,7 +5266,9 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         const QSizeF mergeGrownFrom = merged->takeLayoutPageGrowth();
 
         applyRequestedWindowName(d_app, merged, params);
-        if (optionalJsonBool(params, QStringLiteral("close_sources"), false)) {
+        const bool closeSources = optionalJsonBool(params, QStringLiteral("close_sources"), false);
+        mergedGuard.committed = true;
+        if (closeSources) {
             for (MultiLayer *srcMl : chosenGraphs) {
                 if (srcMl && srcMl != merged) {
                     srcMl->askOnCloseEvent(false);

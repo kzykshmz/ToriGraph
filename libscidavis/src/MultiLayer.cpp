@@ -2708,7 +2708,9 @@ void MultiLayer::openQuickLayerColumnsPopup()
                                                             : QwtErrorPlotCurve::Vertical);
                         }
                     } else {
-                        int xCol = tbl->firstXCol();
+                        int xCol = tbl->colX(colIdx);
+                        if (xCol < 0)
+                            xCol = tbl->firstXCol();
                         if (xCol < 0)
                             xCol = (colIdx == 0 && tbl->numCols() > 1) ? 1 : 0;
                         const QString xFull = tbl->name() + QStringLiteral("_") + tbl->colLabel(xCol);

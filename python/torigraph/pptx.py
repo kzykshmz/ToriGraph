@@ -115,8 +115,14 @@ def parse_emf_dimensions(
     fallback_height_mm: float = 85.0,
 ) -> Tuple[int, int, int, int]:
     """Extract ``(width_hm, height_hm, width_px, height_px)`` from an EMF ENHMETAHEADER."""
-    w_hm_fb = max(500, int(round(max(10.0, float(fallback_width_mm)) * 100.0)))
-    h_hm_fb = max(500, int(round(max(10.0, float(fallback_height_mm)) * 100.0)))
+    fb_w = float(fallback_width_mm)
+    fb_h = float(fallback_height_mm)
+    if not math.isfinite(fb_w) or not math.isfinite(fb_w * 100.0):
+        fb_w = 85.0
+    if not math.isfinite(fb_h) or not math.isfinite(fb_h * 100.0):
+        fb_h = 85.0
+    w_hm_fb = max(500, int(round(max(10.0, fb_w) * 100.0)))
+    h_hm_fb = max(500, int(round(max(10.0, fb_h) * 100.0)))
     w_px_fb = max(64, int(round(w_hm_fb * 96.0 / 2540.0)))
     h_px_fb = max(64, int(round(h_hm_fb * 96.0 / 2540.0)))
 
@@ -245,14 +251,23 @@ def _build_cfb_pure_python(streams: Sequence[Tuple[str, bytes]], root_clsid: byt
         mfat_start_sec = ENDOFCHAIN
         n_mfat_sec = 0
 
-    # Build balanced BST over 1..n_streams for Directory Entries
-    def _build_bst(lo: int, hi: int) -> Tuple[int, Dict[int, Tuple[int, int]]]:
+    # Build balanced red-black BST over 1..n_streams for Directory Entries.
+    # MS-CFB §2.6.1/§2.6.4: 0x00 = RED, 0x01 = BLACK; Root Entry is BLACK (0x01),
+    # child BST root is BLACK (0x01), no RED node has a RED child, and every
+    # root-to-null path has equal black-height.
+    tree_height = n_streams.bit_length()
+    has_incomplete_bottom = n_streams > 0 and n_streams < ((1 << tree_height) - 1)
+
+    def _build_bst(
+        lo: int, hi: int, depth: int = 0
+    ) -> Tuple[int, Dict[int, Tuple[int, int, int]]]:
         if lo > hi:
             return 0xFFFFFFFF, {}
         mid = (lo + hi) // 2
-        left_id, left_map = _build_bst(lo, mid - 1)
-        right_id, right_map = _build_bst(mid + 1, hi)
-        merged = {**left_map, **right_map, mid: (left_id, right_id)}
+        left_id, left_map = _build_bst(lo, mid - 1, depth + 1)
+        right_id, right_map = _build_bst(mid + 1, hi, depth + 1)
+        node_color = 0x00 if (has_incomplete_bottom and depth == tree_height - 1) else 0x01
+        merged = {**left_map, **right_map, mid: (left_id, right_id, node_color)}
         return mid, merged
 
     root_child_id, tree_links = _build_bst(1, n_streams)
@@ -296,7 +311,7 @@ def _build_cfb_pure_python(streams: Sequence[Tuple[str, bytes]], root_clsid: byt
         _pack_dir_entry(
             "Root Entry",
             5,
-            0,  # black
+            0x01,  # black (MS-CFB §2.6.1: 0x00=RED, 0x01=BLACK)
             0xFFFFFFFF,
             0xFFFFFFFF,
             root_child_id,
@@ -306,12 +321,12 @@ def _build_cfb_pure_python(streams: Sequence[Tuple[str, bytes]], root_clsid: byt
         )
     )
     for idx1, (sname, sstart, ssize) in enumerate(stream_meta, start=1):
-        lsib, rsib = tree_links[idx1]
+        lsib, rsib, node_color = tree_links[idx1]
         dir_bytes.extend(
             _pack_dir_entry(
                 sname,
                 2,
-                1,  # red/black
+                node_color,
                 lsib,
                 rsib,
                 0xFFFFFFFF,
@@ -709,10 +724,32 @@ def _fit_aspect_inside_box(
     aspect_h: float,
 ) -> Tuple[int, int, int, int]:
     """Letterbox ``(aspect_w, aspect_h)`` proportionally centered inside ``(box_left, box_top, box_w, box_h)``."""
-    if aspect_w <= 0 or aspect_h <= 0 or box_w <= 0 or box_h <= 0:
+    if not all(math.isfinite(float(v)) for v in (box_left, box_top, box_w, box_h)):
+        raise ValueError(
+            f"_fit_aspect_inside_box requires finite box values, got "
+            f"box=({box_left!r}, {box_top!r}, {box_w!r}, {box_h!r})."
+        )
+    if (
+        not math.isfinite(float(aspect_w))
+        or not math.isfinite(float(aspect_h))
+        or aspect_w <= 0
+        or aspect_h <= 0
+        or box_w <= 0
+        or box_h <= 0
+    ):
         return int(box_left), int(box_top), max(1, int(box_w)), max(1, int(box_h))
     ratio = float(aspect_w) / float(aspect_h)
     box_ratio = float(box_w) / float(box_h)
+    if (
+        not math.isfinite(ratio)
+        or ratio <= 0.0
+        or not math.isfinite(box_ratio)
+        or box_ratio <= 0.0
+    ):
+        raise ValueError(
+            f"_fit_aspect_inside_box produced non-finite aspect ratio from "
+            f"aspect=({aspect_w!r}, {aspect_h!r}), box=({box_w!r}, {box_h!r})."
+        )
     if ratio >= box_ratio:
         w = box_w
         h = max(1, int(round(box_w / ratio)))
@@ -724,9 +761,13 @@ def _fit_aspect_inside_box(
     return left, top, int(w), int(h)
 
 
+_XML10_ILLEGAL_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def _xml_escape_attr(val: str) -> str:
+    cleaned = _XML10_ILLEGAL_CTRL_RE.sub("", str(val))
     return (
-        str(val)
+        cleaned
         .replace("&", "&amp;")
         .replace('"', "&quot;")
         .replace("<", "&lt;")
@@ -1014,6 +1055,12 @@ def _parse_box_cm(
 ) -> Tuple[int, int, int, int]:
     """Convert ``box=(left_cm, top_cm, width_cm[, height_cm])`` into aspect-safe EMU coordinates."""
     vals = [float(v) for v in box]
+    if not all(math.isfinite(v) and math.isfinite(v * EMU_PER_CM) for v in vals):
+        raise ValueError(f"box coordinates must be finite numbers, got {box!r}.")
+    if not math.isfinite(float(width_hm)) or not math.isfinite(float(height_hm)):
+        raise ValueError(
+            f"graph dimensions must be finite numbers, got ({width_hm!r}, {height_hm!r})."
+        )
     if len(vals) == 3:
         l_cm, t_cm, w_cm = vals
         if w_cm <= 0:
@@ -1349,15 +1396,17 @@ def _parse_scale(scale: Optional[Union[float, int, str]]) -> Optional[float]:
     """Accept ``1.4``, ``140`` (percent, when > 10) or ``"140%"``; ``None`` keeps the old fitting."""
     if scale is None:
         return None
+    was_percent = False
     if isinstance(scale, str):
         txt = scale.strip()
         if txt.endswith("%"):
+            was_percent = True
             val = float(txt[:-1]) / 100.0
         else:
             val = float(txt)
     else:
         val = float(scale)
-    if val > 10.0:  # e.g. 140 meaning 140 %
+    if not was_percent and val > 10.0:  # e.g. 140 meaning 140 %
         val /= 100.0
     if not math.isfinite(val) or val <= 0.0:
         raise ValueError(f"scale must be a positive factor (e.g. 1.4 or '140%'), got {scale!r}.")
@@ -1541,8 +1590,17 @@ def _explicit_box_emu(
 ) -> Tuple[int, int, int, int]:
     """``(left, top)`` = natural size x scale; 3/4 values = the box (scale not allowed)."""
     vals = [float(v) for v in cur_box]
+    if not all(math.isfinite(v) and math.isfinite(v * EMU_PER_CM) for v in vals):
+        raise ValueError(f"box coordinates must be finite numbers, got {cur_box!r}.")
     if len(vals) == 2:
-        s = 1.0 if scale is None else scale
+        s = 1.0 if scale is None else float(scale)
+        if (
+            not math.isfinite(s)
+            or s <= 0.0
+            or not math.isfinite(float(w_hm) * EMU_PER_HM * s)
+            or not math.isfinite(float(h_hm) * EMU_PER_HM * s)
+        ):
+            raise ValueError(f"scale must be a finite positive factor, got {scale!r}.")
         return _scaled_rect_emu(
             w_hm,
             h_hm,

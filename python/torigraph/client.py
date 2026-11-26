@@ -664,7 +664,7 @@ def _sanitize_for_json(value: Any) -> Any:
         return os.fspath(value)
     if _is_missing_scalar(value):
         return None
-    if isinstance(value, (TableProxy, MatrixProxy, GraphProxy)):
+    if isinstance(value, (TableProxy, MatrixProxy, GraphProxy, WorkbookProxy)):
         return value.name
     if hasattr(value, "item") and callable(value.item) and not isinstance(value, (bytes, bytearray)):
         if not hasattr(value, "ndim") or int(getattr(value, "ndim", 0)) == 0:
@@ -695,7 +695,9 @@ def _clean_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return {k: _sanitize_for_json(v) for k, v in kwargs.items() if v is not None}
 
 
-def _name_of(obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", BatchStepRef, None]) -> Optional[str]:
+def _name_of(
+    obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", "WorkbookProxy", BatchStepRef, None]
+) -> Optional[str]:
     if obj is None:
         return None
     if isinstance(obj, BatchStepRef):
@@ -705,6 +707,17 @@ def _name_of(obj: Union[str, "TableProxy", "MatrixProxy", "GraphProxy", BatchSte
     if hasattr(obj, "name"):
         return str(obj.name)
     return str(obj)
+
+
+def _coerce_col_list(
+    items: Optional[Union[int, str, Sequence[Union[int, str]]]]
+) -> Optional[List[Union[int, str]]]:
+    """Coerce a single str/int column/curve selector or sequence of them into a list (or None)."""
+    if items is None:
+        return None
+    if isinstance(items, (str, int)) and not isinstance(items, bool):
+        return [items]
+    return list(items)
 
 
 def _deprecated_alias(canonical: str, old: str) -> Callable[..., Any]:
@@ -1780,6 +1793,8 @@ class WorkbookProxy:
     def __init__(self, session: "Session", name: str) -> None:
         self.session = session
         self.name = str(name)
+        if getattr(session, "_active_batch", None) is not None and self.name.startswith("$steps["):
+            session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
 
     def __repr__(self) -> str:
         return f"WorkbookProxy(name={self.name!r})"
@@ -1820,6 +1835,8 @@ class WorkbookProxy:
     def rename(self, new_name: str) -> "WorkbookProxy":
         res = self.session.call("workbook.rename", book=self.name, new_name=str(new_name))
         self.name = str(res.get("name", new_name))
+        if getattr(self.session, "_active_batch", None) is not None and self.name.startswith("$steps["):
+            self.session._active_batch._register_proxy(self, self.name)  # type: ignore[union-attr]
         return self
 
     def ungroup(self) -> Dict[str, Any]:
@@ -2705,19 +2722,26 @@ class GraphProxy:
         )
         if target is None:
             raise ValueError("Provide 'curve' (or 'from_index') to move.")
+        is_target_idx = isinstance(target, int) and not isinstance(target, bool)
         if to_index is not None or (
             direction is None
             and isinstance(to_index_or_direction, int)
             and not isinstance(to_index_or_direction, bool)
-            and isinstance(target, int)
-            and not isinstance(target, bool)
         ):
             dest_idx = int(to_index if to_index is not None else to_index_or_direction)
+            if is_target_idx:
+                return self.session.call(
+                    "graph.move_curve",
+                    graph=self.name,
+                    layer=layer,
+                    from_index=int(target),
+                    to_index=dest_idx,
+                )
             return self.session.call(
                 "graph.move_curve",
                 graph=self.name,
                 layer=layer,
-                from_index=int(target),
+                curve=target,
                 to_index=dest_idx,
             )
         eff_dir = direction if direction is not None else str(to_index_or_direction)
@@ -5168,7 +5192,7 @@ class Session:
         y_col: Optional[Union[int, str]] = None,
         init_params: Optional[Mapping[str, float]] = None,
         bounds: Optional[Mapping[str, Sequence[Optional[float]]]] = None,
-        fixed: Optional[Sequence[str]] = None,
+        fixed: Optional[Union[str, Sequence[Any], Mapping[str, bool]]] = None,
         x_min: Optional[float] = None,
         x_max: Optional[float] = None,
         max_iter: Optional[int] = None,
@@ -5215,6 +5239,14 @@ class Session:
             report (e.g. a parameter that ended on its bound). Unknown parameter names in
             ``init_params`` / ``bounds`` / ``fixed`` raise an invalid-params error.
         """
+        eff_fixed: Optional[Union[List[Any], Dict[str, bool]]] = None
+        if fixed is not None:
+            if isinstance(fixed, Mapping):
+                eff_fixed = {str(k): bool(v) for k, v in fixed.items()}
+            elif isinstance(fixed, str):
+                eff_fixed = [fixed]
+            else:
+                eff_fixed = list(fixed)
         return self.call(
             "analysis.fit_nonlinear",
             model=model,
@@ -5227,7 +5259,7 @@ class Session:
             y_col=y_col,
             init_params=init_params,
             bounds=bounds,
-            fixed=(list(fixed) if fixed is not None else None),
+            fixed=eff_fixed,
             x_min=x_min,
             x_max=x_max,
             max_iter=max_iter,
@@ -5260,11 +5292,11 @@ class Session:
         x_col: Optional[Union[int, str]] = None,
         y_col: Optional[Union[int, str]] = None,
         *,
-        x_cols: Optional[Sequence[Union[int, str]]] = None,
+        x_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         eff_x_cols = (
-            list(x_cols)
+            _coerce_col_list(x_cols)
             if x_cols is not None
             else ([x_col] if x_col is not None else None)
         )
@@ -5280,14 +5312,14 @@ class Session:
     def fit_mlr(
         self,
         table: Optional[Union[str, TableProxy]] = None,
-        x_cols: Optional[Sequence[Union[int, str]]] = None,
+        x_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         y_col: Optional[Union[int, str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.call(
             "analysis.fit_mlr",
             table=_name_of(table),
-            x_cols=(list(x_cols) if x_cols is not None else None),
+            x_cols=_coerce_col_list(x_cols),
             y_col=y_col,
             **kwargs,
         )
@@ -5343,14 +5375,14 @@ class Session:
         self,
         table: Optional[Union[str, TableProxy]] = None,
         x_col: Optional[Union[int, str]] = None,
-        y_cols: Optional[Sequence[Union[int, str]]] = None,
+        y_cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.call(
             "analysis.batch_peaks",
             table=_name_of(table),
             x_col=x_col,
-            y_cols=(list(y_cols) if y_cols is not None else None),
+            y_cols=_coerce_col_list(y_cols),
             **kwargs,
         )
 
@@ -5566,14 +5598,14 @@ class Session:
         self,
         graph: Optional[Union[str, GraphProxy]] = None,
         *,
-        curves: Optional[Sequence[Union[int, str]]] = None,
+        curves: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         points: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         return self.call(
             "curvemath.average_curves",
             graph=_name_of(graph),
-            curves=(list(curves) if curves is not None else None),
+            curves=_coerce_col_list(curves),
             points=points,
             **kwargs,
         )
@@ -6029,14 +6061,14 @@ class Session:
     def anova_oneway(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call(
             "stats.anova_oneway",
             table=tbl_ref,
-            cols=(list(cols) if cols is not None else None),
+            cols=_coerce_col_list(cols),
             **kwargs,
         )
 
@@ -6072,7 +6104,7 @@ class Session:
     def nonparametric(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         *,
         test: Optional[str] = None,
         graph: Optional[Union[str, GraphProxy]] = None,
@@ -6083,7 +6115,7 @@ class Session:
         return self.call(
             "stats.nonparametric",
             table=tbl_ref,
-            cols=(list(cols) if cols is not None else None),
+            cols=_coerce_col_list(cols),
             test=test,
             graph=_name_of(graph),
             add_brackets=add_brackets,
@@ -6401,28 +6433,28 @@ class Session:
     def pca(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call(
             "stats.pca",
             table=tbl_ref,
-            cols=(list(cols) if cols is not None else None),
+            cols=_coerce_col_list(cols),
             **kwargs,
         )
 
     def correlation(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call(
             "stats.correlation",
             table=tbl_ref,
-            cols=(list(cols) if cols is not None else None),
+            cols=_coerce_col_list(cols),
             **kwargs,
         )
 
@@ -6431,14 +6463,14 @@ class Session:
     def clustering(
         self,
         table: Optional[Union[str, TableProxy, Any]] = None,
-        cols: Optional[Sequence[Union[int, str]]] = None,
+        cols: Optional[Union[int, str, Sequence[Union[int, str]]]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         tbl_ref = self._ensure_table_ref(table) if table is not None else None
         return self.call(
             "stats.clustering",
             table=tbl_ref,
-            cols=(list(cols) if cols is not None else None),
+            cols=_coerce_col_list(cols),
             **kwargs,
         )
 

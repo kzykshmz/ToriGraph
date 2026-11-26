@@ -103,6 +103,7 @@
 #include "core/Project.h"
 #include "core/column/Column.h"
 #include "core/datatypes/Double2StringFilter.h"
+#include "core/datatypes/DateTime2StringFilter.h"
 #include "lib/XmlStreamReader.h"
 #include "table/future_Table.h"
 #include "table/AsciiTableImportFilter.h"
@@ -700,12 +701,25 @@ void ApplicationWindow::initTable(Table *w)
 {
     d_workspace.addSubWindow(w);
     w->setWindowIcon(IconLoader::load("new-table"));
-    current_folder->addWindow(w);
-    w->setFolder(current_folder);
-    addListViewItem(w);
+    Folder *targetFolder = current_folder;
+    if (w->d_future_table) {
+        const QVariant fv = w->d_future_table->property("_tg_restore_folder");
+        if (fv.isValid()) {
+            w->d_future_table->setProperty("_tg_restore_folder", QVariant());
+            if (Folder *saved = qobject_cast<Folder *>(fv.value<QPointer<QObject>>().data()))
+                targetFolder = saved;
+        }
+    }
+    targetFolder->addWindow(w);
+    w->setFolder(targetFolder);
+    if (targetFolder == current_folder)
+        addListViewItem(w);
     if (creatingHiddenTableFlag())
         w->setHidden();
-    else if (isTabbedWorkspaceView())
+    else if (targetFolder != current_folder) {
+        w->setStatus(MyWidget::Normal);
+        w->hide();
+    } else if (isTabbedWorkspaceView())
         w->showMaximized();
     else if (d_has_last_table_geometry
              && !(d_modern_ribbon
@@ -752,6 +766,8 @@ void ApplicationWindow::initTable(Table *w)
 TableStatistics *ApplicationWindow::newTableStatistics(Table *base, int type, QList<int> target,
                                                        const QString &caption)
 {
+    if (!base)
+        return nullptr;
     TableStatistics *s =
             new TableStatistics(scriptEnv, &d_workspace, base, (TableStatistics::Type)type, target);
     if (!caption.isEmpty())
@@ -772,18 +788,28 @@ void ApplicationWindow::removeDependentTableStatistics(const AbstractAspect *asp
 {
     ::future::Table *future_table =
             qobject_cast<::future::Table *>(const_cast<AbstractAspect *>(aspect));
-    if (!future_table)
+    if (!future_table || !d_project)
         return;
-    QList<MyWidget *> windows = windowsList();
-    foreach (MyWidget *win, windows) {
+    Table *table = qobject_cast<Table *>(future_table->view());
+    if (!table)
+        return;
+    QList<QPointer<::future::Table>> toRemove;
+    const QList<MyWidget *> windows = windowsList();
+    for (MyWidget *win : windows) {
         TableStatistics *table_stat = qobject_cast<TableStatistics *>(win);
-        if (!table_stat)
-            continue;
-        Table *table = qobject_cast<Table *>(future_table->view());
-        if (!table)
-            continue;
-        if (table_stat->base() == table)
-            d_project->removeChild(table_stat->d_future_table);
+        if (table_stat && table_stat->base() == table && table_stat->d_future_table
+            && table_stat->d_future_table->parentAspect() == d_project) {
+            toRemove.append(table_stat->d_future_table);
+        }
+    }
+    if (toRemove.isEmpty())
+        return;
+    // Suppress undo stack pushes so removing dependent TableStatistics inside
+    // aspectAboutToBeRemoved (during push, undo, or redo) never calls QUndoStack::push() re-entrantly.
+    ScopedProjectUndoSuppressor undoSuppress(d_project);
+    for (const QPointer<::future::Table> &statTable : toRemove) {
+        if (statTable && statTable->parentAspect() == d_project)
+            d_project->removeChild(statTable.data());
     }
 }
 
@@ -922,12 +948,24 @@ void ApplicationWindow::initMatrix(Matrix *m)
     m->setWindowIcon(IconLoader::load("new-matrix"));
     m->askOnCloseEvent(confirmCloseMatrix);
     m->setNumericFormat(d_default_numeric_format, d_decimal_digits);
-    m->setFolder(current_folder);
+    Folder *targetFolder = current_folder;
+    if (m->d_future_matrix) {
+        const QVariant fv = m->d_future_matrix->property("_tg_restore_folder");
+        if (fv.isValid()) {
+            m->d_future_matrix->setProperty("_tg_restore_folder", QVariant());
+            if (Folder *saved = qobject_cast<Folder *>(fv.value<QPointer<QObject>>().data()))
+                targetFolder = saved;
+        }
+    }
 
-    current_folder->addWindow(m);
-    m->setFolder(current_folder);
-    addListViewItem(m);
-    if (isTabbedWorkspaceView())
+    targetFolder->addWindow(m);
+    m->setFolder(targetFolder);
+    if (targetFolder == current_folder)
+        addListViewItem(m);
+    if (targetFolder != current_folder) {
+        m->setStatus(MyWidget::Normal);
+        m->hide();
+    } else if (isTabbedWorkspaceView())
         m->showMaximized();
     else
         m->showNormal();
@@ -1311,11 +1349,47 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
 
         // copy or move data from temp to table
         switch (import_mode) {
-        case ImportASCIIDialog::NewColumns:
-            while (temp->childCount() > 0)
-                temp->reparentChild(table->d_future_table,
-                                                    temp->child(0));
+        case ImportASCIIDialog::NewColumns: {
+            struct ScopedTableMacroGuard {
+                future::Table *tbl = nullptr;
+                explicit ScopedTableMacroGuard(future::Table *t, const QString &text) : tbl(t)
+                {
+                    if (tbl)
+                        tbl->beginMacro(text);
+                }
+                ~ScopedTableMacroGuard()
+                {
+                    if (tbl)
+                        tbl->endMacro();
+                }
+            } newColsMacro(table->d_future_table, tr("Import ASCII (New Columns)"));
+
+            for (int col = 0; col < temp->columnCount(); ++col) {
+                Column *src = temp->column(col);
+                if (!src)
+                    continue;
+                Column *new_col = new Column(src->name(), src->columnMode());
+                new_col->copy(src);
+                new_col->setPlotDesignation(src->plotDesignation());
+                new_col->setLongName(src->longName());
+                new_col->setUnits(src->units());
+                new_col->setComment(src->comment());
+                for (const Interval<int> &iv : src->formulaIntervals())
+                    new_col->setFormula(iv, src->formula(iv.start()));
+                if (auto *srcOut = dynamic_cast<Double2StringFilter *>(src->outputFilter())) {
+                    if (auto *dstOut = dynamic_cast<Double2StringFilter *>(new_col->outputFilter())) {
+                        dstOut->setNumericFormat(srcOut->numericFormat());
+                        dstOut->setNumDigits(srcOut->numDigits());
+                    }
+                }
+                if (auto *srcDt = dynamic_cast<DateTime2StringFilter *>(src->outputFilter())) {
+                    if (auto *dstDt = dynamic_cast<DateTime2StringFilter *>(new_col->outputFilter()))
+                        dstDt->setFormat(srcDt->format());
+                }
+                table->d_future_table->addChild(new_col);
+            }
             break;
+        }
         case ImportASCIIDialog::NewRows: {
             // every name the table had before the import (before the columns added below)
             const QStringList namesBeforeImport = table->colNames();
@@ -1786,13 +1860,17 @@ void ApplicationWindow::exportGraph()
         return;
     }
 
+    QPointer<MultiLayer> safePlot2D(plot2D);
+    QPointer<Graph3D> safePlot3D(plot3D);
     QScopedPointer<ImageExportDialog> ied(
-            new ImageExportDialog(this, plot2D != nullptr, d_extended_export_dialog));
+            new ImageExportDialog(this, safePlot2D != nullptr, d_extended_export_dialog));
     ied->setDirectory(workingDir);
-    ied->selectFile(sanitizeExportStem(plot2D ? QString(plot2D->name())
-                                              : QString(plot3D->name())));
+    ied->selectFile(sanitizeExportStem(safePlot2D ? QString(safePlot2D->name())
+                                                  : QString(safePlot3D->name())));
     ied->selectFilter(d_image_export_filter);
     if (ied->exec() != QDialog::Accepted)
+        return;
+    if (!safePlot2D && !safePlot3D)
         return;
     workingDir = ied->directory().path();
     d_image_export_filter = ied->selectedNameFilter();
@@ -1812,7 +1890,7 @@ void ApplicationWindow::exportGraph()
     }
 
 #if QT_VERSION >= 0x050000
-    if (plot2D && (ext == QLatin1String("eps") || ext == QLatin1String("ps"))) {
+    if (safePlot2D && (ext == QLatin1String("eps") || ext == QLatin1String("ps"))) {
         QMessageBox::warning(
                 this, tr("Warning"),
                 tr("Output in postscript format is not available for Qt5, using PDF"));
@@ -1832,6 +1910,8 @@ void ApplicationWindow::exportGraph()
         if (ans != QMessageBox::Yes)
             return;
     }
+    if (!safePlot2D && !safePlot3D)
+        return;
 
     if (!probeWritableNoTruncate(file_name)) {
         QMessageBox::critical(this, tr("Export Error"),
@@ -1844,29 +1924,30 @@ void ApplicationWindow::exportGraph()
     QString errMsg;
     const bool writeOk = executeSafeExportWrite(file_name, ext, [&](const QString &writePath) {
         if (ext == QLatin1String("emf")) {
-            if (plot2D)
-                return plot2D->exportToFileChecked(writePath, &errMsg);
-            if (plot3D)
-                return plot3D->exportToFileChecked(writePath, &errMsg);
+            if (safePlot2D)
+                return safePlot2D->exportToFileChecked(writePath, &errMsg);
+            if (safePlot3D)
+                return safePlot3D->exportToFileChecked(writePath, &errMsg);
         } else if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
                    || ext == QLatin1String("ps")) {
-            if (plot3D)
-                return plot3D->exportVectorChecked(writePath, ext, &errMsg);
-            if (plot2D)
-                return plot2D->exportVectorChecked(writePath, ied->resolution(), ied->color(),
-                                                   ied->keepAspect(), ied->pageSize(),
-                                                   ied->pageOrientation(), &errMsg);
+            if (safePlot3D)
+                return safePlot3D->exportVectorChecked(writePath, ext, &errMsg);
+            if (safePlot2D)
+                return safePlot2D->exportVectorChecked(writePath, ied->resolution(), ied->color(),
+                                                       ied->keepAspect(), ied->pageSize(),
+                                                       ied->pageOrientation(), &errMsg);
         } else if (ext == QLatin1String("svg")) {
-            if (plot2D)
-                return plot2D->exportSVGChecked(writePath, &errMsg);
-            if (plot3D)
-                return plot3D->exportVectorChecked(writePath, QStringLiteral("svg"), &errMsg);
+            if (safePlot2D)
+                return safePlot2D->exportSVGChecked(writePath, &errMsg);
+            if (safePlot3D)
+                return safePlot3D->exportVectorChecked(writePath, QStringLiteral("svg"), &errMsg);
         } else if (isRecognizedImageWriterFormat(ext)) {
-            if (plot2D)
-                return plot2D->exportImageChecked(writePath, ied->quality(), ied->transparency(),
-                                                  ied->resolution(), &errMsg);
-            if (plot3D)
-                return exportGraph3DImageWithDpi(plot3D, writePath, ied->quality(),
+            if (safePlot2D)
+                return safePlot2D->exportImageChecked(writePath, ied->quality(),
+                                                      ied->transparency(), ied->resolution(),
+                                                      &errMsg);
+            if (safePlot3D)
+                return exportGraph3DImageWithDpi(safePlot3D, writePath, ied->quality(),
                                                  ied->transparency(), ied->resolution(), &errMsg);
         }
         return false;
@@ -1891,14 +1972,14 @@ void ApplicationWindow::exportLayer()
 {
     if (isNonInteractiveContext(this))
         return;
-    MultiLayer *ml = qobject_cast<MultiLayer *>(d_workspace.activeSubWindow());
+    QPointer<MultiLayer> ml(qobject_cast<MultiLayer *>(d_workspace.activeSubWindow()));
     if (!ml) {
         showUxHint(tr("Graph export works on a graph window. Click the graph you want to "
                       "export first."));
         return;
     }
 
-    Graph *g = ml->activeGraph();
+    QPointer<Graph> g(ml->activeGraph());
     if (!g)
         return;
 
@@ -1909,6 +1990,8 @@ void ApplicationWindow::exportLayer()
             QString("%1_L%2").arg(ml->name()).arg(ml->layersList().indexOf(g) + 1)));
     ied->selectFilter(d_image_export_filter);
     if (ied->exec() != QDialog::Accepted)
+        return;
+    if (!g)
         return;
     workingDir = ied->directory().path();
     d_image_export_filter = ied->selectedNameFilter();
@@ -1948,6 +2031,8 @@ void ApplicationWindow::exportLayer()
         if (ans != QMessageBox::Yes)
             return;
     }
+    if (!g)
+        return;
 
     if (!probeWritableNoTruncate(file_name)) {
         QMessageBox::critical(this, tr("Export Error"),
@@ -1959,6 +2044,8 @@ void ApplicationWindow::exportLayer()
 
     QString errMsg;
     const bool writeOk = executeSafeExportWrite(file_name, ext, [&](const QString &writePath) {
+        if (!g)
+            return false;
         if (ext == QLatin1String("emf"))
             return g->exportToFileChecked(writePath, &errMsg);
         if (ext == QLatin1String("eps") || ext == QLatin1String("pdf")
@@ -1996,15 +2083,15 @@ void ApplicationWindow::exportAllGraphs()
     if (isNonInteractiveContext(this))
         return;
 
-    QList<MyWidget *> exportTargets;
+    QList<QPointer<MyWidget>> exportTargets;
     for (MyWidget *w : windowsList()) {
         if (!w)
             continue;
         if (MultiLayer *m = qobject_cast<MultiLayer *>(w)) {
             if (!m->isEmpty())
-                exportTargets << w;
+                exportTargets << QPointer<MyWidget>(w);
         } else if (qobject_cast<Graph3D *>(w)) {
-            exportTargets << w;
+            exportTargets << QPointer<MyWidget>(w);
         }
     }
     if (exportTargets.isEmpty()) {
@@ -2049,9 +2136,11 @@ void ApplicationWindow::exportAllGraphs()
     int exportedCount = 0;
     QStringList failedMessages;
 
-    for (MyWidget *w : exportTargets) {
-        MultiLayer *plot2D = qobject_cast<MultiLayer *>(w);
-        Graph3D *plot3D = qobject_cast<Graph3D *>(w);
+    for (const QPointer<MyWidget> &wGuard : exportTargets) {
+        if (!wGuard)
+            continue;
+        QPointer<MultiLayer> plot2D(qobject_cast<MultiLayer *>(wGuard.data()));
+        QPointer<Graph3D> plot3D(qobject_cast<Graph3D *>(wGuard.data()));
 
         QString effSuffix = file_suffix;
         QString eff_ext = ext;
@@ -2062,7 +2151,7 @@ void ApplicationWindow::exportAllGraphs()
         }
 #endif
         const QString file_name =
-                QDir(output_dir).filePath(sanitizeExportStem(w->objectName()) + effSuffix);
+                QDir(output_dir).filePath(sanitizeExportStem(wGuard->objectName()) + effSuffix);
         if (QFile::exists(file_name) && confirm_overwrite) {
             QApplication::restoreOverrideCursor();
             const int choice = QMessageBox::question(
@@ -2075,6 +2164,8 @@ void ApplicationWindow::exportAllGraphs()
             else if (choice == 2)
                 return;
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+            if (!plot2D && !plot3D)
+                continue;
         }
 
         if (!probeWritableNoTruncate(file_name)) {

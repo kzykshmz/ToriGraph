@@ -2110,7 +2110,7 @@ public:
 protected:
     bool eventFilter(QObject *o, QEvent *e) override
     {
-        if (o == guard.data() && e->type() == QEvent::Close) {
+        if (e && e->type() == QEvent::Close && o == guard.data()) {
             ++closeEvents;
             lastSpontaneous = e->spontaneous();
             QWidget *aw = QApplication::activeWindow();

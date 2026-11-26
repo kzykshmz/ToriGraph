@@ -210,6 +210,7 @@
 #include <QTableWidget>
 #include <QListWidget>
 #include <QHeaderView>
+#include <QAbstractItemDelegate>
 #include <QHash>
 #include <QSlider>
 #include <QMouseEvent>
@@ -477,7 +478,13 @@ ApplicationWindow::ApplicationWindow()
     IconLoader::init();
 
     initFonts();
-    QPixmapCache::setCacheLimit(20 * QPixmapCache::cacheLimit());
+    static bool s_pixmapCacheScaled = false;
+    if (!s_pixmapCacheScaled) {
+        s_pixmapCacheScaled = true;
+        const qint64 curLimit = QPixmapCache::cacheLimit();
+        const qint64 scaled = (curLimit > 0) ? (curLimit * 20) : 204800;
+        QPixmapCache::setCacheLimit(int(qBound<qint64>(10240, scaled, 524288)));
+    }
 
     d_project = new Project();
     if (d_project->undoStack())
@@ -525,7 +532,18 @@ ApplicationWindow::ApplicationWindow()
     folders.setSelectionMode(QTreeWidget::SingleSelection);
 
     connect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
-            SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)));
+            SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), Qt::UniqueConnection);
+    if (QAbstractItemDelegate *del = folders.itemDelegate()) {
+        connect(del, &QAbstractItemDelegate::closeEditor, this,
+                [this](QWidget *, QAbstractItemDelegate::EndEditHint) {
+                    if (QTreeWidgetItem *cur = folders.currentItem())
+                        cur->setFlags(cur->flags() & ~Qt::ItemIsEditable);
+                    connect(&folders,
+                            SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
+                            SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)),
+                            Qt::UniqueConnection);
+                });
+    }
     connect(&folders, SIGNAL(itemRenamed(QTreeWidgetItem *, int, const QString &)), this,
             SLOT(renameFolder(QTreeWidgetItem *, int, const QString &)));
     connect(&folders, SIGNAL(customContextMenuRequested(const QPoint &)), this,
@@ -964,9 +982,13 @@ ApplicationWindow::ApplicationWindow()
 
     {
         PeakAnchorEventFilter *winResizeFilter = new PeakAnchorEventFilter(this);
-        winResizeFilter->handler = [this](QObject *watched, QEvent *event) -> bool {
-            if (watched == this && event) {
-                const QEvent::Type et = event->type();
+        winResizeFilter->setObjectName(QStringLiteral("toriWinResizeFilter"));
+        QPointer<QWidget> vp(d_workspace.viewport());
+        winResizeFilter->handler = [this, vp](QObject *watched, QEvent *event) -> bool {
+            if (!event)
+                return false;
+            const QEvent::Type et = event->type();
+            if (watched == this) {
                 if (et == QEvent::Resize || et == QEvent::Show
                     || et == QEvent::WindowStateChange) {
                     updateGraphInspectorResponsiveness();
@@ -974,15 +996,15 @@ ApplicationWindow::ApplicationWindow()
                     if (et == QEvent::Resize || et == QEvent::Show)
                         updateExplorerAdaptiveLayout();
                 }
-            } else if (watched == d_workspace.viewport() && event
-                       && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+            } else if (vp && watched == vp.data()
+                       && (et == QEvent::Resize || et == QEvent::Show)) {
                 updateEmptyGraphPanePlaceholder();
             }
             return false;
         };
         this->installEventFilter(winResizeFilter);
-        if (d_workspace.viewport())
-            d_workspace.viewport()->installEventFilter(winResizeFilter);
+        if (vp)
+            vp->installEventFilter(winResizeFilter);
     }
 
     if (RecalcManager *rm = RecalcManager::instance(this)) {
@@ -1336,6 +1358,14 @@ Table *ApplicationWindow::table(const QString &name)
     if (name.isEmpty())
         return 0;
 
+    QList<MyWidget *> lst = windowsList();
+    for (QWidget *hw : hiddenWindows) {
+        if (MyWidget *mw = qobject_cast<MyWidget *>(hw)) {
+            if (!lst.contains(mw))
+                lst.append(mw);
+        }
+    }
+
     QString lookupName = name;
     if (renamedLookupSuppressionDepth() == 0 && !renamedTables.isEmpty()) {
         int exactIdx = -1;
@@ -1355,16 +1385,25 @@ Table *ApplicationWindow::table(const QString &name)
         if (exactIdx >= 0) {
             lookupName = renamedTables.at(exactIdx + 1);
         } else if (bestPrefixIdx >= 0) {
-            const QString &oldCap = renamedTables.at(bestPrefixIdx);
-            lookupName = renamedTables.at(bestPrefixIdx + 1) + lookupName.mid(oldCap.length());
-        }
-    }
-
-    QList<MyWidget *> lst = windowsList();
-    for (QWidget *hw : hiddenWindows) {
-        if (MyWidget *mw = qobject_cast<MyWidget *>(hw)) {
-            if (!lst.contains(mw))
-                lst.append(mw);
+            bool ownedByLongerLiveTable = false;
+            for (MyWidget *w : lst) {
+                if (!w || !w->inherits("Table"))
+                    continue;
+                Table *t = static_cast<Table *>(w);
+                const QString tName = t->name();
+                if (!tName.isEmpty()
+                    && (tName == lookupName
+                        || (tName.length() > bestPrefixLen
+                            && lookupName.startsWith(tName + QLatin1Char('_'))
+                            && t->column(lookupName.mid(tName.length() + 1)) != nullptr))) {
+                    ownedByLongerLiveTable = true;
+                    break;
+                }
+            }
+            if (!ownedByLongerLiveTable) {
+                const QString &oldCap = renamedTables.at(bestPrefixIdx);
+                lookupName = renamedTables.at(bestPrefixIdx + 1) + lookupName.mid(oldCap.length());
+            }
         }
     }
 
@@ -1629,16 +1668,17 @@ void ApplicationWindow::restoreWindowGeometry(ApplicationWindow *app, MyWidget *
     if (Folder *f = w->folder()) {
         if (lst.contains("active") && !isHidden) {
             if (MyWidget *prev = qobject_cast<MyWidget *>(
-                        f->property("torigraph_saved_active_obj").value<QObject *>())) {
+                        f->property("torigraph_saved_active_obj").value<QPointer<QObject>>().data())) {
                 if (prev != w)
                     prev->setProperty("torigraph_saved_active", QVariant());
             }
             w->setProperty("torigraph_saved_active", true);
-            f->setProperty("torigraph_saved_active_obj", QVariant::fromValue<QObject *>(w));
+            f->setProperty("torigraph_saved_active_obj",
+                           QVariant::fromValue(QPointer<QObject>(w)));
             f->setActiveWindow(w);
         } else {
             MyWidget *savedActive = qobject_cast<MyWidget *>(
-                    f->property("torigraph_saved_active_obj").value<QObject *>());
+                    f->property("torigraph_saved_active_obj").value<QPointer<QObject>>().data());
             if (savedActive
                 && (app->hidden(savedActive)
                     || !savedActive->property("torigraph_saved_active").toBool())) {
@@ -1754,9 +1794,11 @@ bool ApplicationWindow::renameWindow(MyWidget *w, const QString &text)
         w->setName(newName);
         if (t->d_future_table)
             t->d_future_table->endMacro();
+    } else if (w->inherits("Matrix")) {
+        // Matrix::handleAspectDescriptionChange updates dependent spectrogram / 3D plots and
+        // the project explorer on both the forward rename and its undo / redo.
+        w->setName(newName);
     } else {
-        if (w->inherits("Matrix"))
-            changeMatrixName(name, newName);
         w->setName(newName);
         renameListViewItem(name, newName);
     }
@@ -2359,8 +2401,20 @@ void ApplicationWindow::closeWindow(MyWidget *window)
     QPointer<MyWidget> guardedWin(window);
 
     removeWindowFromLists(window);
-    if (window->folder())
-        window->folder()->removeWindow(window);
+    if (Folder *origFolder = window->folder()) {
+        if (Table *tbl = qobject_cast<Table *>(window)) {
+            if (tbl->d_future_table) {
+                tbl->d_future_table->setProperty(
+                        "_tg_restore_folder", QVariant::fromValue(QPointer<QObject>(origFolder)));
+            }
+        } else if (Matrix *mat = qobject_cast<Matrix *>(window)) {
+            if (mat->d_future_matrix) {
+                mat->d_future_matrix->setProperty(
+                        "_tg_restore_folder", QVariant::fromValue(QPointer<QObject>(origFolder)));
+            }
+        }
+        origFolder->removeWindow(window);
+    }
 
     // update list view in project explorer
     const QList<QTreeWidgetItem *> items =
@@ -3614,7 +3668,7 @@ void ApplicationWindow::showFindDialogue()
 void ApplicationWindow::startRenameFolder()
 {
     FolderListItem *fi = current_folder->folderListItem();
-    if (!fi)
+    if (!fi || !fi->treeWidget())
         return;
 
     disconnect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
@@ -3629,12 +3683,16 @@ void ApplicationWindow::startRenameFolder(QTreeWidgetItem *item, int column)
         return;
 
     if (item->treeWidget() == &lv && item->type() == FolderListItem::FolderType) {
-        disconnect(
-                &folders,
-                SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *, QTreeWidgetItem *)),
-                this, SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)));
+        disconnect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
+                   SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)));
         current_folder = ((FolderListItem *)item)->folder();
         FolderListItem *it = current_folder->folderListItem();
+        if (!it || !it->treeWidget()) {
+            connect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)),
+                    this, SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)),
+                    Qt::UniqueConnection);
+            return;
+        }
         it->treeWidget()->setCurrentItem(it, 0);
         it->setFlags(it->flags() | Qt::ItemIsEditable);
         it->treeWidget()->editItem(it, column);
@@ -3649,11 +3707,23 @@ void ApplicationWindow::renameFolder(QTreeWidgetItem *it, int col, const QString
 {
     Q_UNUSED(col)
 
-    if (!it)
-        return;
+    auto restoreFolderSignals = [this, it]() {
+        if (it)
+            it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+        connect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
+                SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)),
+                Qt::UniqueConnection);
+    };
 
-    if (it->text(0) == text)
+    if (!it) {
+        restoreFolderSignals();
         return;
+    }
+
+    if (it->text(0) == text) {
+        restoreFolderSignals();
+        return;
+    }
 
     Folder *parent = (Folder *)current_folder->parent();
     if (!parent) // the parent folder is the project folder (it always exists)
@@ -3662,30 +3732,33 @@ void ApplicationWindow::renameFolder(QTreeWidgetItem *it, int col, const QString
     if (text.isEmpty()) {
         if (!isNonInteractiveContext(this))
             QMessageBox::critical(this, tr("Error"), tr("Please enter a valid name!"));
-        it->setFlags(it->flags() | Qt::ItemIsEditable);
+        restoreFolderSignals();
         return;
     }
 
     QStringList lst = parent->subfolders();
     lst.removeAll(current_folder->name());
-    while (lst.contains(text)) {
+    if (lst.contains(text)) {
         if (!isNonInteractiveContext(this)) {
             QMessageBox::critical(this, tr("Error"),
                                   tr("Name already exists!") + "\n"
                                           + tr("Please choose another name!"));
         }
-
-        it->setFlags(it->flags() | Qt::ItemIsEditable);
         it->setText(0, current_folder->name());
-        it->treeWidget()->editItem(it, 0);
+        restoreFolderSignals();
+        if (!isNonInteractiveContext(this)) {
+            QPointer<ApplicationWindow> self(this);
+            QTimer::singleShot(0, this, [self]() {
+                if (self)
+                    self->startRenameFolder();
+            });
+        }
         return;
     }
 
     current_folder->setName(text);
     it->setText(0, text);
-    it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-    connect(&folders, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), this,
-            SLOT(folderItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)));
+    restoreFolderSignals();
     folders.scrollToItem(parent->folderListItem(), QAbstractItemView::EnsureVisible);
     folders.setCurrentItem(parent->folderListItem()); // update the list views
 }
@@ -4943,6 +5016,14 @@ ApplicationWindow::~ApplicationWindow()
             destroyWin(gp);
     }
 
+    if (QObject *winResizeFilter = findChild<QObject *>(QStringLiteral("toriWinResizeFilter"),
+                                                        Qt::FindDirectChildrenOnly)) {
+        removeEventFilter(winResizeFilter);
+        if (QWidget *vp = d_workspace.viewport())
+            vp->removeEventFilter(winResizeFilter);
+        delete winResizeFilter;
+    }
+
     if (d_central_container) {
         if (QLayout *lay = d_central_container->layout())
             lay->removeWidget(&d_workspace);
@@ -5277,10 +5358,43 @@ void ApplicationWindow::setActiveWindowFromAction()
 
 void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int index)
 {
+    auto ensureUniqueReaddedName = [this](MyWidget *view, const QString &fallbackPrefix) {
+        if (!view)
+            return;
+        QString curName = view->name();
+        if (curName.isEmpty())
+            curName = fallbackPrefix;
+        const QString archivedBook = view->property("_tg_archived_book").toString();
+        auto isCollision = [this, &archivedBook](const QString &cand) {
+            if (alreadyUsedName(cand))
+                return true;
+            if (workbookHasName(cand, nullptr) && archivedBook != cand)
+                return true;
+            return false;
+        };
+        if (!isCollision(curName))
+            return;
+        QString uniqueName = generateUniqueName(curName);
+        while (isCollision(uniqueName))
+            uniqueName = generateUniqueName(uniqueName);
+        ScopedProjectUndoSuppressor undoSuppress(d_project);
+        if (Table *tbl = qobject_cast<Table *>(view)) {
+            Table::RenamePropagationBlocker blocker(tbl);
+            tbl->setName(uniqueName);
+            tbl->setObjectName(uniqueName);
+        } else {
+            view->setProperty("_tg_block_rename_prop", true);
+            view->setName(uniqueName);
+            view->setObjectName(uniqueName);
+            view->setProperty("_tg_block_rename_prop", QVariant());
+        }
+    };
+
     AbstractAspect *aspect = parent->child(index);
     ::future::Matrix *matrix = qobject_cast<::future::Matrix *>(aspect);
     if (matrix) {
         if (Matrix *mtxView = static_cast<Matrix *>(matrix->view())) {
+            ensureUniqueReaddedName(mtxView, tr("Matrix"));
             initMatrix(mtxView);
             restoreCurvesOfReaddedTable(nullptr); // its heat maps and contours, if kept
         }
@@ -5289,6 +5403,7 @@ void ApplicationWindow::handleAspectAdded(const AbstractAspect *parent, int inde
     ::future::Table *table = qobject_cast<::future::Table *>(aspect);
     if (table) {
         if (Table *tblView = static_cast<Table *>(table->view())) {
+            ensureUniqueReaddedName(tblView, tr("Table"));
             initTable(tblView);
             restoreCurvesOfReaddedTable(tblView);
             if (WorkbookManager *wm = WorkbookManager::existing(this))

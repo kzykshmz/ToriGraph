@@ -332,8 +332,12 @@ public:
     // measured against the real parent range.
     FormulaLinkedScaleTransformation(const QVector<double> &xp, const QVector<double> &uc,
                                      double parentLo = std::numeric_limits<double>::quiet_NaN(),
-                                     double parentHi = std::numeric_limits<double>::quiet_NaN())
-        : QwtScaleTransformation(QwtScaleTransformation::Other), d_xp(xp), d_uc(uc)
+                                     double parentHi = std::numeric_limits<double>::quiet_NaN(),
+                                     bool parentLog = false)
+        : QwtScaleTransformation(QwtScaleTransformation::Other),
+          d_xp(xp),
+          d_uc(uc),
+          d_parentLog(parentLog)
     {
         d_parentLo = std::isfinite(parentLo) ? parentLo : (xp.isEmpty() ? 0.0 : xp.first());
         d_parentHi = std::isfinite(parentHi) ? parentHi : (xp.isEmpty() ? 0.0 : xp.last());
@@ -344,7 +348,8 @@ public:
           d_xp(other.d_xp),
           d_uc(other.d_uc),
           d_parentLo(other.d_parentLo),
-          d_parentHi(other.d_parentHi)
+          d_parentHi(other.d_parentHi),
+          d_parentLog(other.d_parentLog)
     {
     }
 
@@ -355,6 +360,17 @@ public:
         const double xp = invertUToParentX(s);
         if (d_xp.size() < 2)
             return xp;
+        if (d_parentLog && xp > 0.0 && d_xp.first() > 0.0 && d_xp.last() > 0.0) {
+            const double logFirst = std::log10(d_xp.first());
+            const double logLast = std::log10(d_xp.last());
+            const double logTol = 1e-9 * qMax(std::fabs(logLast - logFirst), 1.0);
+            const double logXp = std::log10(xp);
+            if (std::fabs(logXp - logFirst) <= logTol)
+                return d_parentLo;
+            if (std::fabs(logXp - logLast) <= logTol)
+                return d_parentHi;
+            return xp;
+        }
         const double tol = 1e-9 * qMax(std::fabs(d_xp.last() - d_xp.first()), 1e-300);
         if (std::fabs(xp - d_xp.first()) <= tol)
             return d_parentLo;
@@ -465,10 +481,22 @@ public:
             return std::numeric_limits<double>::quiet_NaN();
         const double xpAtS1 = parentXAtScaleBound(s1);
         const double xpAtS2 = parentXAtScaleBound(s2);
+        const double xp = invertUToParentX(u);
+        if (!std::isfinite(xp))
+            return std::numeric_limits<double>::quiet_NaN();
+        if (d_parentLog && xpAtS1 > 0.0 && xpAtS2 > 0.0) {
+            const double logS1 = std::log10(xpAtS1);
+            const double logS2 = std::log10(xpAtS2);
+            const double logDenom = logS2 - logS1;
+            if (qAbs(logDenom) <= 1e-300)
+                return p1Px;
+            const double safeXp = (xp > 0.0) ? xp : 1e-300;
+            const double t = (std::log10(safeXp) - logS1) / logDenom;
+            return p1Px + t * (p2Px - p1Px);
+        }
         const double denom = xpAtS2 - xpAtS1;
         if (qAbs(denom) <= 1e-300)
             return p1Px;
-        const double xp = invertUToParentX(u);
         const double t = (xp - xpAtS1) / denom;
         return p1Px + t * (p2Px - p1Px);
     }
@@ -482,6 +510,15 @@ public:
         const double xpAtS1 = parentXAtScaleBound(s1);
         const double xpAtS2 = parentXAtScaleBound(s2);
         const double t = (px - p1Px) / (p2Px - p1Px);
+        if (d_parentLog && xpAtS1 > 0.0 && xpAtS2 > 0.0) {
+            const double logS1 = std::log10(xpAtS1);
+            const double logS2 = std::log10(xpAtS2);
+            const double expVal = logS1 + t * (logS2 - logS1);
+            if (!std::isfinite(expVal))
+                return std::numeric_limits<double>::quiet_NaN();
+            const double xp = std::pow(10.0, qBound(-300.0, expVal, 300.0));
+            return evalFromParentX(xp);
+        }
         const double xp = xpAtS1 + t * (xpAtS2 - xpAtS1);
         return evalFromParentX(xp);
     }
@@ -491,6 +528,7 @@ private:
     QVector<double> d_uc;
     double d_parentLo = 0.0;
     double d_parentHi = 0.0;
+    bool d_parentLog = false;
 };
 
 class FormulaLinkedScaleEngine : public QwtLinearScaleEngine
@@ -498,14 +536,20 @@ class FormulaLinkedScaleEngine : public QwtLinearScaleEngine
 public:
     FormulaLinkedScaleEngine(const QVector<double> &xp, const QVector<double> &uc,
                              double parentLo = std::numeric_limits<double>::quiet_NaN(),
-                             double parentHi = std::numeric_limits<double>::quiet_NaN())
-        : d_xp(xp), d_uc(uc), d_parentLo(parentLo), d_parentHi(parentHi)
+                             double parentHi = std::numeric_limits<double>::quiet_NaN(),
+                             bool parentLog = false)
+        : d_xp(xp),
+          d_uc(uc),
+          d_parentLo(parentLo),
+          d_parentHi(parentHi),
+          d_parentLog(parentLog)
     {
     }
 
     QwtScaleTransformation *transformation() const override
     {
-        return new FormulaLinkedScaleTransformation(d_xp, d_uc, d_parentLo, d_parentHi);
+        return new FormulaLinkedScaleTransformation(d_xp, d_uc, d_parentLo, d_parentHi,
+                                                    d_parentLog);
     }
 
     QwtScaleDiv divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
@@ -518,18 +562,28 @@ public:
         const int maxMaj = qBound(2, maxMajSteps, 6);
 
         if (span > 1e-30 && stepSize <= 0.0 && d_xp.size() >= 2 && d_uc.size() >= 2) {
-            const FormulaLinkedScaleTransformation tf(d_xp, d_uc, d_parentLo, d_parentHi);
+            const FormulaLinkedScaleTransformation tf(d_xp, d_uc, d_parentLo, d_parentHi,
+                                                      d_parentLog);
             const double xp0 = tf.parentXAtScaleBound(lo);
             const double xp1 = tf.parentXAtScaleBound(hi);
-            const double xpSpan = xp1 - xp0;
-            if (std::isfinite(xpSpan) && std::fabs(xpSpan) > 1e-30) {
+            const bool useLogParent = d_parentLog && xp0 > 0.0 && xp1 > 0.0;
+            const double coord0 = useLogParent ? std::log10(xp0) : xp0;
+            const double coord1 = useLogParent ? std::log10(xp1) : xp1;
+            const double coordSpan = coord1 - coord0;
+            if (std::isfinite(coordSpan) && std::fabs(coordSpan) > 1e-30) {
+                auto parentCoord = [&](double u) -> double {
+                    const double xp = tf.invertUToParentX(u);
+                    if (useLogParent)
+                        return std::log10(qMax(xp, 1e-300));
+                    return xp;
+                };
                 double minDx = 1e300;
                 double maxDx = 0.0;
                 constexpr int kProbes = 16;
                 for (int m = 0; m < kProbes; ++m) {
                     const double ua = lo + span * (double(m) / double(kProbes));
                     const double ub = lo + span * (double(m + 1) / double(kProbes));
-                    const double dx = std::fabs(tf.invertUToParentX(ub) - tf.invertUToParentX(ua));
+                    const double dx = std::fabs(parentCoord(ub) - parentCoord(ua));
                     if (dx > 1e-30) {
                         minDx = qMin(minDx, dx);
                         maxDx = qMax(maxDx, dx);
@@ -538,7 +592,7 @@ public:
 
                 if (minDx < 1e290 && maxDx > 1.5 * minDx) {
                     auto normT = [&](double u) -> double {
-                        return (tf.invertUToParentX(u) - xp0) / xpSpan;
+                        return (parentCoord(u) - coord0) / coordSpan;
                     };
 
                     struct RoundCand {
@@ -719,7 +773,42 @@ private:
     QVector<double> d_uc;
     double d_parentLo;
     double d_parentHi;
+    bool d_parentLog = false;
 };
+
+void tryRestoreSuspendedAxisBreak(Graph *graph, Plot *plot, int axis,
+                                  const Graph::AxisBreakSpec &activeBreak,
+                                  Graph::AxisBreakSpec &suspendedBreak)
+{
+    if (!graph || !plot || axis < 0 || axis >= QwtPlot::axisCnt)
+        return;
+    if (activeBreak.enabled || !suspendedBreak.enabled)
+        return;
+    const QwtScaleDiv *sd = plot->axisScaleDiv(axis);
+    if (!sd || !sd->isValid())
+        return;
+    const double lo = qMin(sd->lowerBound(), sd->upperBound());
+    const double hi = qMax(sd->lowerBound(), sd->upperBound());
+    if (!std::isfinite(lo) || !std::isfinite(hi))
+        return;
+    Graph::AxisBreakSpec brk = suspendedBreak;
+    const double bf = qMin(brk.breakFrom, brk.breakTo);
+    const double bt = qMax(brk.breakFrom, brk.breakTo);
+    const bool isLog = Plot::isLog10ScaleEngine(plot->axisScaleEngine(axis));
+    const bool logBefore = isLog || brk.log10Before;
+    const bool logAfter = isLog || brk.log10After;
+    const bool validBreak = (bf > lo && bt < hi && bt > bf + 1e-15)
+            && (!logBefore || (lo > 0.0 && bf > 0.0))
+            && (!logAfter || (bt > 0.0 && hi > 0.0));
+    if (!validBreak)
+        return;
+    if (isLog) {
+        brk.log10Before = true;
+        brk.log10After = true;
+    }
+    suspendedBreak = Graph::AxisBreakSpec();
+    graph->setAxisBreak(axis, brk);
+}
 
 } // namespace
 
@@ -2983,7 +3072,21 @@ void Graph::applyZeroSnapOnAutoAxes()
                         || (!isX && eb->direction() == QwtErrorPlotCurve::Vertical);
                 if (!matchesDir)
                     continue;
+                DataCurve *master = eb->masterCurve();
+                Column *mXCol = nullptr;
+                Column *mYCol = nullptr;
+                const bool mHasMasks = master && master->hasAnyMaskedPoints();
+                if (mHasMasks)
+                    master->resolveColumns(mXCol, mYCol);
+                Column *ebXCol = nullptr;
+                Column *ebYCol = nullptr;
+                const bool ebHasMasks = eb->hasAnyMaskedPoints();
+                if (ebHasMasks)
+                    eb->resolveColumns(ebXCol, ebYCol);
                 for (int k = 0; k < n; ++k) {
+                    if ((mHasMasks && master->isPointMaskedFast(k, mXCol, mYCol))
+                        || (ebHasMasks && eb->isPointMaskedFast(k, ebXCol, ebYCol)))
+                        continue;
                     const double baseV = isX ? eb->x(k) : eb->y(k);
                     const double errV = eb->errorValue(k);
                     if (std::isfinite(baseV) && std::isfinite(errV)) {
@@ -3026,6 +3129,8 @@ void Graph::setAutoScale()
     applyZeroSnapOnAutoAxes();
 
     d_plot->replot();
+    for (int i = 0; i < QwtPlot::axisCnt; ++i)
+        tryRestoreSuspendedAxisBreak(this, d_plot, i, d_axis_breaks[i], d_suspended_axis_breaks[i]);
     d_zoomer[0]->setZoomBase();
     d_zoomer[1]->setZoomBase();
     updateScale(axesBefore);
@@ -3432,6 +3537,13 @@ public:
     {
     }
 
+    void setCustomTicks(const QVector<double> &pos, const QStringList &lbls)
+    {
+        d_positions = pos;
+        d_labels = lbls;
+        invalidateCache();
+    }
+
     QwtText label(double value) const override
     {
         if (!std::isfinite(value) || d_positions.isEmpty())
@@ -3641,8 +3753,33 @@ void Graph::setCustomTickLabels(int axis, const QVector<double> &positions,
             d_custom_tick_labels[axis].append(labels[i]);
         }
     }
-    if (d_custom_tick_positions[axis].isEmpty())
+    if (d_custom_tick_positions[axis].isEmpty()) {
+        if (dynamic_cast<CustomPosTextScaleDraw *>(d_plot->axisScaleDraw(axis))) {
+            setLabelsNumericFormat(axis, d_plot->axisLabelFormat(axis),
+                                   d_plot->axisLabelPrecision(axis), axesFormulas[axis]);
+            if (labelsRotation(axis) != 0)
+                setAxisLabelRotation(axis, 0);
+            d_plot->setAxisMaxMajor(axis, 8);
+            d_plot->setAxisMaxMinor(axis, 2);
+            d_plot->setMinorTicksType(axis, ScaleDraw::In);
+            setToriAxisUserLocked(d_plot, axis, false);
+            d_plot->setAxisAutoScale(axis);
+            const int opp = (axis == QwtPlot::yLeft) ? QwtPlot::yRight
+                    : (axis == QwtPlot::xBottom)     ? QwtPlot::xTop
+                                                     : -1;
+            if (opp >= 0 && d_plot->axisEnabled(opp) && !d_plot->hasVisibleItemOnAxis(opp)
+                && !hasColorScaleOnAxis(opp) && !d_weibull_prob_axis[opp]
+                && !isToriAxisUserLocked(d_plot, opp) && d_custom_tick_positions[opp].isEmpty()
+                && d_custom_category_labels[opp].isEmpty()) {
+                d_plot->setAxisMaxMinor(opp, 2);
+                d_plot->setMinorTicksType(opp, ScaleDraw::In);
+            }
+            d_plot->updateLayout();
+            d_plot->replot();
+            emit modifiedGraph();
+        }
         return;
+    }
 
     axisType[axis] = AxisType::Numeric;
     if (std::fabs(d_custom_tick_rotation[axis]) > 1e-6)
@@ -3754,7 +3891,11 @@ void Graph::syncCustomAndWeibullAxes()
                 cHi = double(pos.size()) + 0.5;
             }
 
-            if (!dynamic_cast<CustomPosTextScaleDraw *>(d_plot->axisScaleDraw(a))) {
+            if (CustomPosTextScaleDraw *existingDraw =
+                        dynamic_cast<CustomPosTextScaleDraw *>(d_plot->axisScaleDraw(a))) {
+                existingDraw->setCustomTicks(pos, lbls);
+                existingDraw->enableComponent(QwtAbstractScaleDraw::Labels, true);
+            } else {
                 const ScaleDraw *prevSd = dynamic_cast<const ScaleDraw *>(d_plot->axisScaleDraw(a));
                 CustomPosTextScaleDraw *csd = prevSd
                         ? new CustomPosTextScaleDraw(*prevSd, pos, lbls)
@@ -3762,8 +3903,6 @@ void Graph::syncCustomAndWeibullAxes()
                 csd->enableComponent(QwtAbstractScaleDraw::Labels, true);
                 csd->setMinorTicksStyle(ScaleDraw::None);
                 d_plot->setAxisScaleDraw(a, csd);
-            } else if (QwtScaleDraw *sd = d_plot->axisScaleDraw(a)) {
-                sd->enableComponent(QwtAbstractScaleDraw::Labels, true);
             }
             if (std::fabs(d_custom_tick_rotation[a]) > 1e-6)
                 setAxisLabelRotation(a, qRound(d_custom_tick_rotation[a]));
@@ -4095,6 +4234,10 @@ void Graph::syncLinkedAxesFromParent()
         if (pHiSafe - pLoSafe <= 1e-300)
             return;
 
+        const bool parentLog = Plot::isLog10ScaleEngine(pEng) && pLoSafe > 0.0 && pHiSafe > 0.0;
+        const double logLo = parentLog ? std::log10(pLoSafe) : 0.0;
+        const double logHi = parentLog ? std::log10(pHiSafe) : 0.0;
+
         constexpr int kTablePts = 129;
         QVector<double> xpTable(kTablePts), ucTable(kTablePts);
         bool allFinite = true;
@@ -4109,8 +4252,13 @@ void Graph::syncLinkedAxesFromParent()
             parser.DefineVar(_T("Y"), &v);
             parser.SetExpr(expr);
             for (int k = 0; k < kTablePts; ++k) {
-                const double xk = pLoSafe
-                        + (double(k) / double(kTablePts - 1)) * (pHiSafe - pLoSafe);
+                const double frac = double(k) / double(kTablePts - 1);
+                const double xk = (k == 0)
+                        ? pLoSafe
+                        : ((k == kTablePts - 1)
+                                   ? pHiSafe
+                                   : (parentLog ? std::pow(10.0, logLo + frac * (logHi - logLo))
+                                                : (pLoSafe + frac * (pHiSafe - pLoSafe))));
                 xpTable[k] = xk;
                 v = xk;
                 const double uk = parser.Eval();
@@ -4169,11 +4317,12 @@ void Graph::syncLinkedAxesFromParent()
         const double uLo = qMin(c1, c2);
         const double uHi = qMax(c1, c2);
         const int maxMaj = qMin(qMax(2, maj), 5);
+        const double effParentLo = (parentLog && !(pLo > 0.0)) ? pLoSafe : pLo;
 
         auto applyFormulaAxis = [&](int targetAxis) {
             QwtScaleEngine *se = isMonotone
-                    ? static_cast<QwtScaleEngine *>(
-                              new FormulaLinkedScaleEngine(xpTable, ucTable, pLo, pHi))
+                    ? static_cast<QwtScaleEngine *>(new FormulaLinkedScaleEngine(
+                              xpTable, ucTable, effParentLo, pHi, parentLog))
                     : static_cast<QwtScaleEngine *>(new QwtLinearScaleEngine());
             if (shouldInvert)
                 se->setAttribute(QwtScaleEngine::Inverted, true);
@@ -4522,6 +4671,8 @@ void Graph::setAutoScaleAxis(int qwtAxisId)
     d_plot->setAxisAutoScale(targetAxis);
     applyZeroSnapOnAutoAxes();
     d_plot->updateAxes();
+    tryRestoreSuspendedAxisBreak(this, d_plot, targetAxis, d_axis_breaks[targetAxis],
+                                 d_suspended_axis_breaks[targetAxis]);
 
     updateSecondaryAxis(QwtPlot::xTop);
     updateSecondaryAxis(QwtPlot::yRight);

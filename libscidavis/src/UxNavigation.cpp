@@ -859,9 +859,11 @@ public:
     EmptyTableHint(ApplicationWindow *app, Table *table, QTableView *view)
         : QObject(view),
           d_app(app),
+          d_app_obj(app),
           d_table(table),
           d_view(view),
-          d_viewport(view ? view->viewport() : nullptr)
+          d_viewport(view ? view->viewport() : nullptr),
+          d_viewport_obj(view ? view->viewport() : nullptr)
     {
         setObjectName(QStringLiteral("ToriEmptyTableHint"));
         QWidget *vp = d_viewport.data();
@@ -936,10 +938,10 @@ public:
 
     ~EmptyTableHint() override
     {
-        if (d_viewport)
-            d_viewport->removeEventFilter(this);
-        if (d_app)
-            d_app->removeEventFilter(this);
+        if (d_viewport_obj)
+            d_viewport_obj->removeEventFilter(this);
+        if (d_app_obj)
+            d_app_obj->removeEventFilter(this);
         if (d_label) {
             d_label->hide();
             d_label->deleteLater();
@@ -1067,9 +1069,11 @@ private:
     }
 
     QPointer<ApplicationWindow> d_app;
+    QPointer<QObject> d_app_obj;
     QPointer<Table> d_table;
     QPointer<QTableView> d_view;
     QPointer<QWidget> d_viewport;
+    QPointer<QObject> d_viewport_obj;
     QPointer<QLabel> d_label;
     QPointer<QWidget> d_actions_box;
     QBoxLayout *d_act_layout = nullptr;
@@ -1087,8 +1091,11 @@ public:
                               QPushButton *plotBtn, QToolButton *closeBtn)
         : QObject(bar),
           d_app(app),
+          d_app_obj(app),
           d_viewport(viewport),
+          d_viewport_obj(viewport),
           d_bar(bar),
+          d_bar_obj(bar),
           d_plot_btn(plotBtn),
           d_close_btn(closeBtn)
     {
@@ -1103,12 +1110,12 @@ public:
 
     ~PlotThisDataBarController() override
     {
-        if (d_viewport)
-            d_viewport->removeEventFilter(this);
-        if (d_bar)
-            d_bar->removeEventFilter(this);
-        if (d_app)
-            d_app->removeEventFilter(this);
+        if (d_viewport_obj)
+            d_viewport_obj->removeEventFilter(this);
+        if (d_bar_obj)
+            d_bar_obj->removeEventFilter(this);
+        if (d_app_obj)
+            d_app_obj->removeEventFilter(this);
     }
 
     void retranslateUi()
@@ -1159,7 +1166,7 @@ protected:
         const QEvent::Type et = event->type();
         if (et == QEvent::LanguageChange) {
             retranslateUi();
-        } else if (watched == d_viewport
+        } else if (watched == d_viewport_obj
                    && (et == QEvent::Resize || et == QEvent::Show || et == QEvent::LayoutRequest)) {
             if (et == QEvent::Show)
                 retranslateUi();
@@ -1171,8 +1178,11 @@ protected:
 
 private:
     QPointer<ApplicationWindow> d_app;
+    QPointer<QObject> d_app_obj;
     QPointer<QWidget> d_viewport;
+    QPointer<QObject> d_viewport_obj;
     QPointer<QFrame> d_bar;
+    QPointer<QObject> d_bar_obj;
     QPointer<QPushButton> d_plot_btn;
     QPointer<QToolButton> d_close_btn;
 };

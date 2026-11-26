@@ -31,6 +31,8 @@
 #include "Graph.h"
 #include "DataPickerTool.h"
 
+#include <QPointer>
+
 /**
  * \class DataPointPicker
  * \brief Let the user pick single data points from a plot.
@@ -48,6 +50,13 @@
 DataPointPicker::DataPointPicker(Graph *g, ApplicationWindow *app)
     : m_graph(g), m_app(app), m_result(NAN, NAN)
 {
+    if (m_graph) {
+        connect(m_graph, &QObject::destroyed, this, [this]() {
+            m_graph = nullptr;
+            if (m_picking_loop.isRunning())
+                m_picking_loop.exit(1);
+        });
+    }
 }
 
 //! Destructor (exits the event loop).
@@ -64,20 +73,34 @@ DataPointPicker::~DataPointPicker()
  */
 QPointF DataPointPicker::pick()
 {
-    if (m_graph->isPiePlot() || !m_graph->validCurvesDataSize())
+    m_result = QPointF(NAN, NAN);
+    QPointer<Graph> graphGuard(m_graph);
+    if (!graphGuard || graphGuard->isPiePlot() || !graphGuard->validCurvesDataSize())
         return m_result;
-    DataPickerTool *tool = new DataPickerTool(m_graph, m_app, DataPickerTool::Display);
+    DataPickerTool *tool = new DataPickerTool(graphGuard.data(), m_app, DataPickerTool::Display);
+    QPointer<DataPickerTool> toolGuard(tool);
     connect(tool, SIGNAL(selected(QwtPlotCurve *, int)), this,
             SLOT(pointSelected(QwtPlotCurve *, int)));
-    m_graph->setActiveTool(tool);
-    m_picking_loop.exec();
-    m_graph->setActiveTool(0);
+    QMetaObject::Connection toolDestroyedConn =
+            connect(tool, &QObject::destroyed, this, [this]() {
+                if (m_picking_loop.isRunning())
+                    m_picking_loop.exit(1);
+            });
+    graphGuard->setActiveTool(tool);
+    if (graphGuard && toolGuard)
+        m_picking_loop.exec();
+    disconnect(toolDestroyedConn);
+    if (graphGuard && toolGuard
+        && graphGuard->activeTool() == static_cast<PlotToolInterface *>(toolGuard.data())) {
+        graphGuard->setActiveTool(0);
+    }
     return m_result;
 }
 
 //! Handle selection of a point by the user.
 void DataPointPicker::pointSelected(QwtPlotCurve *curve, int pointIndex)
 {
-    m_result = QPointF(curve->x(pointIndex), curve->y(pointIndex));
+    if (curve && pointIndex >= 0 && pointIndex < curve->dataSize())
+        m_result = QPointF(curve->x(pointIndex), curve->y(pointIndex));
     m_picking_loop.exit(0);
 }

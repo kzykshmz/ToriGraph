@@ -172,7 +172,8 @@ public:
                                        double *logRankPOut = nullptr);
     static MultiLayer *runPCAAndBiplot(ApplicationWindow *app, Table *srcTable,
                                        const QStringList &colNames,
-                                       Table **scoresTableOut = nullptr);
+                                       Table **scoresTableOut = nullptr,
+                                       bool standardize = true);
 
     static NormalityResult runNormalityTest(ApplicationWindow *app, Table *srcTable,
                                             const QString &colName,

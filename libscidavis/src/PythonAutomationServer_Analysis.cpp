@@ -2765,6 +2765,7 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             return true;
         }
 
+        ScopedGraphUndoGuard undoGuard(plotFit ? ml : nullptr, QObject::tr("Peak Analysis"));
         mpf.fit();
         if (plotBase && plotFit)
             mpf.insertBaselineCurve();
@@ -2777,6 +2778,7 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         harmonizeFitCurveLabelsOnGraph(g, curvesBefore, hadJpBefore, params);
         enforceArialGraphFonts(g);
         g->replot();
+        undoGuard.commit();
 
         std::vector<MultiPeakFit::PeakSummaryRow> rows = mpf.computePeakSummary(mpf.results());
         std::sort(rows.begin(), rows.end(),
@@ -3262,6 +3264,7 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             smTbl->column(1)->replaceValues(0, QVector<double>::fromStdVector(ySmooth));
             smTbl->hide();
             const int curvesBefore = g->curves();
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Smooth Curve"));
             const QString fullY = fullColumnName(smTbl, 1);
             g->insertCurve(smTbl, fullColumnName(smTbl, 0), fullY, Graph::Line);
             if (g->curves() > curvesBefore) {
@@ -3274,6 +3277,8 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             }
             enforceArialGraphFonts(g);
             replotGraphOrDefer(g);
+            if (g->curves() > curvesBefore)
+                undoGuard.commit();
             outResult[QStringLiteral("ok")] = (g->curves() > curvesBefore);
             outResult[QStringLiteral("graph")] = ml->name();
             outResult[QStringLiteral("table")] = smTbl->name();
@@ -3327,6 +3332,10 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             // SmoothFilter::smoothAverage uses p2 = d_right_points / 2 (window = 2*p2 + 1 <= nPts)
             const int avgPts = (totalWin % 2 == 0) ? std::max(1, totalWin - 1) : totalWin;
             sf.setSmoothPoints(avgPts, avgPts / 2);
+        } else if (sm == SmoothFilter::FFT) {
+            // SmoothFilter::smoothFFT uses cutoff lf = (1/dx) / d_right_points (full window points,
+            // matching SmoothCurveDialog::smooth()); passing halfRight made window=5 give lf = fs/2 (no-op).
+            sf.setSmoothPoints(totalWin, 0);
         } else if (sm == SmoothFilter::SavitzkyGolay) {
             // Reset polynom order to 1 before setSmoothPoints so default order=2 never clashes when totalWin==2
             sf.setPolynomOrder(1);
@@ -3340,9 +3349,12 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         if (sm == SmoothFilter::Whittaker)
             sf.setWhittakerLambda(whittakerLambda);
 
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Smooth Curve"));
         const bool ok = sf.run() && (g->curves() > curvesBefore);
         enforceArialGraphFonts(g);
         g->replot();
+        if (ok)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = ok;
         // How X was treated (not equally spaced / not monotonic): it only went to the results
         // log before; differentiate returns its notice in the result, and so does smooth now.
@@ -3393,10 +3405,13 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                 .arg(derivOrder)
                                 .arg(win));
         }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Savitzky-Golay Derivative"));
         QwtPlotCurve *outC = AdvancedSignalProc::savitzkyGolayDerivative(d_app, g, curveTitle,
                                                                          derivOrder, win, poly);
         enforceArialGraphFonts(g);
         g->replot();
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         outResult[QStringLiteral("graph")] = ml->name();
         if (outC)
@@ -3586,9 +3601,12 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                             ? lowFreq
                                             : 1.0));
         }
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("FFT Filter"));
         const bool ok = ff.run() && (g->curves() > curvesBefore);
         enforceArialGraphFonts(g);
         g->replot();
+        if (ok)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = ok;
         outResult[QStringLiteral("graph")] = ml->name();
         if (g->curves() > curvesBefore && g->curve(g->curves() - 1))
@@ -3666,10 +3684,13 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 : true;
         const double ripple = params.value(QStringLiteral("ripple_db")).toDouble(1.0);
 
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("IIR Filter"));
         QwtPlotCurve *outC = AdvancedSignalProc::iirFilter(d_app, g, curveTitle, design, pass, order,
                                                            fLow, fHigh, zeroPhase, ripple);
         enforceArialGraphFonts(g);
         g->replot();
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         outResult[QStringLiteral("graph")] = ml->name();
         outResult[QStringLiteral("pass_type")] = canonicalPass;
@@ -3713,12 +3734,15 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         requireCurveMinPoints(g, curveTitle, 4, QStringLiteral("signal.envelope"));
         const QString mode = params.value(QStringLiteral("method")).toString().trimmed().toLower();
         if (mode == QStringLiteral("peak")) {
+            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Signal Envelope"));
             QwtPlotCurve *lo = nullptr;
             QwtPlotCurve *hi = AdvancedSignalProc::computePeakEnvelope(
                     d_app, g, curveTitle, AdvancedSignalProc::EnvelopeBoth,
                     std::max(1, params.value(QStringLiteral("min_dist")).toInt(3)), &lo);
             enforceArialGraphFonts(g);
             g->replot();
+            if (hi || lo)
+                undoGuard.commit();
             outResult[QStringLiteral("ok")] = (hi != nullptr);
             if (hi)
                 outResult[QStringLiteral("upper_curve")] = hi->title().text();
@@ -3727,11 +3751,14 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             return true;
         }
         Table *envTbl = nullptr;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Signal Envelope"));
         QwtPlotCurve *envC = AdvancedSignalProc::hilbertEnvelope(
                 d_app, g, curveTitle, params.value(QStringLiteral("plot_lower")).toBool(false),
                 &envTbl);
         enforceArialGraphFonts(g);
         g->replot();
+        if (envC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (envC != nullptr);
         if (envC)
             outResult[QStringLiteral("output_curve")] = envC->title().text();
@@ -3785,10 +3812,13 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 : true;
         const double scale =
                 optionalJsonFiniteDouble(params, QStringLiteral("threshold_scale"), 1.0, 1e6);
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Wavelet Denoise"));
         QwtPlotCurve *outC = AdvancedSignalProc::waveletDenoiseDWT(d_app, g, curveTitle, wtype,
                                                                    levels, soft, scale);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -3847,7 +3877,8 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             QStringList yCols;
             yCols << fullColumnName(t, y1Idx) << fullColumnName(t, y2Idx);
             ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
-            if (!ml || !ml->activeGraph() || ml->activeGraph()->curves() < 2) {
+            if (!ml || !ml->activeGraph() || ml->activeGraph()->curves() < 2
+                || !ml->activeGraph()->curve(0) || !ml->activeGraph()->curve(1)) {
                 closeAndDeleteEmptyPlot(d_app, ml);
                 throwInvalidParams(
                         QStringLiteral("signal.coherence requires two valid numeric signal columns."));
@@ -3865,10 +3896,24 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             const QString keyB = params.contains(QStringLiteral("curve_b"))
                     ? QStringLiteral("curve_b")
                     : QStringLiteral("curve2");
-            if (!params.contains(keyA) && !params.contains(keyB) && g->curves() >= 2) {
-                cA = g->curve(0)->title().text();
-                cB = g->curve(1)->title().text();
-            } else {
+            const bool hasA = params.contains(keyA) && !params.value(keyA).isNull();
+            const bool hasB = params.contains(keyB) && !params.value(keyB).isNull();
+            bool pickedDefaults = false;
+            if (!hasA && !hasB) {
+                QStringList defaultCurves;
+                for (int ci = 0; ci < g->curves() && defaultCurves.size() < 2; ++ci) {
+                    if (QwtPlotCurve *pc = g->curve(ci)) {
+                        if (g->curveType(ci) != Graph::ErrorBars)
+                            defaultCurves.append(pc->title().text());
+                    }
+                }
+                if (defaultCurves.size() >= 2) {
+                    cA = defaultCurves[0];
+                    cB = defaultCurves[1];
+                    pickedDefaults = true;
+                }
+            }
+            if (!pickedDefaults) {
                 cA = resolveCurveTitle(g, params, keyA, true);
                 cB = resolveCurveTitle(g, params, keyB, true);
             }
@@ -3907,9 +3952,12 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         const bool aa = params.contains(QStringLiteral("anti_alias"))
                 ? params.value(QStringLiteral("anti_alias")).toBool(true)
                 : true;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Decimate Curve"));
         QwtPlotCurve *outC = AdvancedSignalProc::decimateCurve(d_app, g, curveTitle, factor, aa);
         enforceArialGraphFonts(g);
         g->replot();
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();
@@ -3940,10 +3988,13 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                         .trimmed()
                         .toLower();
         const int apod = (apodStr == QStringLiteral("gaussian")) ? 1 : 0;
+        ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Fourier Self-Deconvolution"));
         QwtPlotCurve *outC = AdvancedSignalProc::fourierSelfDeconvolve(d_app, g, curveTitle, gamma,
                                                                        kSharp, apod);
         enforceArialGraphFonts(g);
         replotGraphOrDefer(g);
+        if (outC)
+            undoGuard.commit();
         outResult[QStringLiteral("ok")] = (outC != nullptr);
         if (outC)
             outResult[QStringLiteral("output_curve")] = outC->title().text();

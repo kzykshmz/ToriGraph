@@ -44,6 +44,7 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QTemporaryFile>
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,14 @@
 #include "Grid.h"
 
 #define OBJECTXOFFSET 200
+
+namespace {
+constexpr int kMaxMatrixDim = 100000;
+constexpr qint64 kMaxMatrixCells = 25000000LL; // 25M cells (~200 MB max)
+constexpr int kMaxSpreadsheetCols = 100000;
+constexpr int kMaxSpreadsheetRows = 25000000;
+constexpr qint64 kMaxSpreadsheetCells = 25000000LL;
+} // namespace
 
 bool ImportOPJ::setCodec(const QString &codecName)
 {
@@ -225,66 +234,75 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
     }
     QHash<tree<Origin::ProjectNode>::iterator, Folder *> parent;
     parent[root] = projectFolder;
-    for (tree<Origin::ProjectNode>::iterator sib = projectTree->begin(root);
-         sib != projectTree->end(root); ++sib) {
-        if (!sib.node)
-            continue;
-        if (sib->type == Origin::ProjectNode::Folder) {
-            Folder *pFolder = parent.value(projectTree->parent(sib));
-            if (!pFolder)
-                pFolder = projectFolder;
-            Folder &f = pFolder->addChild<Folder>(decodeMbcs(sib->name.c_str()));
-            parent[sib] = &f;
-            f.setBirthDate(posixTimeToString(sib->creationDate));
-            f.setModificationDate(posixTimeToString(sib->modificationDate));
-            mw->addFolderListViewItem(&f);
-        } else {
-            QString name = decodeMbcs(sib->name.c_str());
-            if (sib->type == Origin::ProjectNode::Note) {
-                QRegExp rx("^@\\((\\S+)\\)$");
-                if (rx.indexIn(name) == 0)
-                    name = rx.cap(1);
-            }
-            const char *nodetype;
-            switch (sib->type) {
-            case Origin::ProjectNode::SpreadSheet:
-                nodetype = "Table";
-                break;
-            case Origin::ProjectNode::Matrix:
-                nodetype = "Matrix";
-                break;
-            case Origin::ProjectNode::Graph:
-                nodetype = "MultiLayer";
-                break;
-            case Origin::ProjectNode::Graph3D:
-                // there is no Graph3D type yet
-                nodetype = "MultiLayer"; // "Graph3D";
-                break;
-            case Origin::ProjectNode::Note:
-                nodetype = "Note";
-                break;
-            case Origin::ProjectNode::Excel:
-                // there is no Excel type yet
-                nodetype = "Table";
-                break;
-            default:
-                nodetype = "Unknown";
-                break;
-            }
-            MyWidget *w = projectFolder->window(name, nodetype);
-            while (w) { // Origin window names are unique, but we need to loop on all sheets of
-                        // Excel windows
-                Folder *f = parent.value(projectTree->parent(sib));
-                if (!f || f == projectFolder)
-                    break; // skip windows that go to root folder or unmapped parent
-                // removeWindow uses QList.removeAll, so remove w before adding it to its folder
-                projectFolder->removeWindow(w);
-                f->addWindow(w);
-                f->setActiveWindow(w);
-                w = projectFolder->window(name, nodetype);
+    {
+        QSignalBlocker sbFolders(&mw->folders);
+        for (tree<Origin::ProjectNode>::iterator sib = projectTree->begin(root);
+             sib != projectTree->end(root); ++sib) {
+            if (!sib.node)
+                continue;
+            if (sib->type == Origin::ProjectNode::Folder) {
+                Folder *pFolder = parent.value(projectTree->parent(sib));
+                if (!pFolder)
+                    pFolder = projectFolder;
+                Folder &f = pFolder->addChild<Folder>(decodeMbcs(sib->name.c_str()));
+                parent[sib] = &f;
+                f.setBirthDate(posixTimeToString(sib->creationDate));
+                f.setModificationDate(posixTimeToString(sib->modificationDate));
+                if (FolderListItem *parentItem = pFolder->folderListItem()) {
+                    FolderListItem *fi = new FolderListItem(parentItem, &f);
+                    fi->setFlags(fi->flags() | Qt::ItemIsEditable);
+                    f.setFolderListItem(fi);
+                }
+            } else {
+                QString name = decodeMbcs(sib->name.c_str());
+                if (sib->type == Origin::ProjectNode::Note) {
+                    QRegExp rx("^@\\((\\S+)\\)$");
+                    if (rx.indexIn(name) == 0)
+                        name = rx.cap(1);
+                }
+                const char *nodetype;
+                switch (sib->type) {
+                case Origin::ProjectNode::SpreadSheet:
+                    nodetype = "Table";
+                    break;
+                case Origin::ProjectNode::Matrix:
+                    nodetype = "Matrix";
+                    break;
+                case Origin::ProjectNode::Graph:
+                    nodetype = "MultiLayer";
+                    break;
+                case Origin::ProjectNode::Graph3D:
+                    // there is no Graph3D type yet
+                    nodetype = "MultiLayer"; // "Graph3D";
+                    break;
+                case Origin::ProjectNode::Note:
+                    nodetype = "Note";
+                    break;
+                case Origin::ProjectNode::Excel:
+                    // there is no Excel type yet
+                    nodetype = "Table";
+                    break;
+                default:
+                    nodetype = "Unknown";
+                    break;
+                }
+                MyWidget *w = projectFolder->window(name, nodetype);
+                while (w) { // Origin window names are unique, but we need to loop on all sheets of
+                            // Excel windows
+                    Folder *f = parent.value(projectTree->parent(sib));
+                    if (!f || f == projectFolder)
+                        break; // skip windows that go to root folder or unmapped parent
+                    // removeWindow uses QList.removeAll, so remove w before adding it to its folder
+                    projectFolder->removeWindow(w);
+                    f->addWindow(w);
+                    f->setActiveWindow(w);
+                    w = projectFolder->window(name, nodetype);
+                }
             }
         }
     }
+    if (!projectFolder->folders().isEmpty())
+        mw->folders.setVisible(true);
     mw->changeFolder(projectFolder, true);
     return true;
 }
@@ -321,10 +339,14 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
     QLocale locale = mw->locale();
     int SciDAVis_scaling_factor = 10; // in Origin width is measured in characters while in SciDAVis
                                       // - pixels --- need to be accurate
-    int columnCount = spread.columns.size();
-    int maxrows = spread.maxRows;
-    if (!columnCount) // remove tables without cols
-        return false;
+    const qint64 columnCount64 = static_cast<qint64>(spread.columns.size());
+    const qint64 maxrows64 = static_cast<qint64>(spread.maxRows);
+    if (columnCount64 <= 0 || columnCount64 > kMaxSpreadsheetCols || maxrows64 < 0
+        || maxrows64 > kMaxSpreadsheetRows
+        || (maxrows64 > 0 && (columnCount64 * maxrows64) > kMaxSpreadsheetCells))
+        return false; // remove tables without cols or with out-of-bounds dimensions
+    int columnCount = static_cast<int>(columnCount64);
+    int maxrows = static_cast<int>(maxrows64);
 
     Table *table = mw->newTable(decodeMbcs(spread.name.c_str()), maxrows, columnCount);
     if (!table)
@@ -400,26 +422,27 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
                         scidavis_column->setTextAt(i, decodeMbcs(column.data[i].as_string()));
                     }
                 }
-                int f = 0;
-                if (column.numericDisplayType == 0) {
-                    f = 0;
-                } else {
+                if (!setAsText && column.numericDisplayType != 0) {
+                    char f = 'g';
                     switch (column.valueTypeSpecification) {
                     case 0: // Decimal 1000
-                        f = 1;
+                        f = 'f';
                         break;
                     case 1: // Scientific
-                        f = 2;
+                        f = 'e';
                         break;
-                    case 2: // Engeneering
+                    case 2: // Engineering
                     case 3: // Decimal 1,000
-                        f = 0;
+                    default:
+                        f = 'g';
                         break;
                     }
-                    Double2StringFilter *filter =
-                            static_cast<Double2StringFilter *>(table->column(j)->outputFilter());
-                    filter->setNumericFormat(f);
-                    filter->setNumDigits(column.decimalPlaces);
+                    if (auto *filter = dynamic_cast<Double2StringFilter *>(
+                                table->column(j)->outputFilter())) {
+                        filter->setNumericFormat(f);
+                        if (column.decimalPlaces >= 0)
+                            filter->setNumDigits(column.decimalPlaces);
+                    }
                 }
                 break;
             }
@@ -638,8 +661,16 @@ bool ImportOPJ::importTables(const OriginFile &opj)
         unsigned int layers = matrix.sheets.size();
         for (unsigned int l = 0; l < layers; ++l) {
             Origin::MatrixSheet &layer = matrix.sheets[l];
-            int columnCount = layer.columnCount;
-            int rowCount = layer.rowCount;
+            const qint64 columnCount64 = static_cast<qint64>(layer.columnCount);
+            const qint64 rowCount64 = static_cast<qint64>(layer.rowCount);
+            if (rowCount64 <= 0 || columnCount64 <= 0 || rowCount64 > kMaxMatrixDim
+                || columnCount64 > kMaxMatrixDim
+                || (rowCount64 * columnCount64) > kMaxMatrixCells) {
+                continue;
+            }
+            const int columnCount = static_cast<int>(columnCount64);
+            const int rowCount = static_cast<int>(rowCount64);
+            const qint64 totalCells = rowCount64 * columnCount64;
             mw->setStatusBarText(QObject::tr("Matrix %1 / %2, sheet %3 / %4")
                                          .arg(s + 1)
                                          .arg(opj.matrixCount())
@@ -658,16 +689,30 @@ bool ImportOPJ::importTables(const OriginFile &opj)
 #if 0
 			Matrix->table()->blockSignals(true);
 #endif
-            QVector<qreal> values;
-            values.resize(rowCount * columnCount);
-            for (int i = 0; i < std::min((int)values.size(), (int)layer.data.size()); i++) {
-                values[i] = layer.data[i];
+            QVector<qreal> values(static_cast<int>(totalCells), 0.0);
+            const size_t srcSize = layer.data.size();
+            for (int r = 0; r < rowCount; ++r) {
+                const size_t rowBase = static_cast<size_t>(r) * static_cast<size_t>(columnCount);
+                for (int c = 0; c < columnCount; ++c) {
+                    const size_t srcIdx = rowBase + static_cast<size_t>(c);
+                    if (srcIdx < srcSize) {
+                        const double v = layer.data[srcIdx];
+                        const qint64 dstIdx = static_cast<qint64>(c) * rowCount64
+                                + static_cast<qint64>(r);
+                        values[static_cast<int>(dstIdx)] = (std::isfinite(v) && v != _ONAN) ? v : 0.0;
+                    }
+                }
             }
             Matrix->setCells(values);
+            if (layer.coordinates.size() >= 4) {
+                // liborigin stores MatrixSheet::coordinates as [Y2, X2, Y1, X1]
+                Matrix->setCoordinates(layer.coordinates[3], layer.coordinates[1],
+                                       layer.coordinates[2], layer.coordinates[0]);
+            }
 
             Matrix->saveCellsToMemory();
 
-            QChar format;
+            QChar format = 'g';
             int prec = 6;
             switch (layer.valueTypeSpecification) {
             case 0: // Decimal 1000
@@ -682,6 +727,10 @@ bool ImportOPJ::importTables(const OriginFile &opj)
             case 3: // Decimal 1,000
                 format = 'g';
                 prec = layer.significantDigits;
+                break;
+            default:
+                format = 'g';
+                prec = 6;
                 break;
             }
             Matrix->setNumericFormat(format, prec);

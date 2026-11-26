@@ -65,6 +65,37 @@
 #include <gsl/gsl_linalg.h>
 #include <gsl/gsl_math.h>
 
+#include <QHash>
+
+namespace {
+QHash<const Matrix *, QString> &storedMatrixNames()
+{
+    static QHash<const Matrix *, QString> map;
+    return map;
+}
+
+ApplicationWindow *owningApplicationWindowForMatrix(const Matrix *mtx)
+{
+    const QObject *cur = mtx;
+    while (cur) {
+        if (const ApplicationWindow *aw = qobject_cast<const ApplicationWindow *>(cur))
+            return const_cast<ApplicationWindow *>(aw);
+        if (const QWidget *w = qobject_cast<const QWidget *>(cur)) {
+            if (ApplicationWindow *winAw = qobject_cast<ApplicationWindow *>(w->window()))
+                return winAw;
+        }
+        cur = cur->parent();
+    }
+    for (QWidget *tlw : QApplication::topLevelWidgets()) {
+        if (ApplicationWindow *aw = qobject_cast<ApplicationWindow *>(tlw)) {
+            if (aw->windowsList().contains(const_cast<Matrix *>(mtx)))
+                return aw;
+        }
+    }
+    return nullptr;
+}
+} // namespace
+
 Matrix::Matrix(ScriptingEnv *env, int r, int c, const QString &label, QWidget *parent,
                const char *name, Qt::WindowFlags f)
     : MatrixView(label, parent, name, f), scripted(env)
@@ -123,12 +154,18 @@ void Matrix::init(int, int)
     connect(d_future_matrix, SIGNAL(formatChanged()), this, SLOT(handleChange()));
     connect(d_future_matrix, SIGNAL(recalculate()), this, SLOT(recalculate()));
 
+    connect(d_future_matrix, &AbstractAspect::aspectDescriptionAboutToChange, this,
+            [this](const AbstractAspect *aspect) {
+                if (d_future_matrix && aspect == d_future_matrix)
+                    storedMatrixNames()[this] = aspect->name();
+            });
     connect(d_future_matrix, SIGNAL(aspectDescriptionChanged(const AbstractAspect *)), this,
             SLOT(handleAspectDescriptionChange(const AbstractAspect *)));
 }
 
 Matrix::~Matrix()
 {
+    storedMatrixNames().remove(this);
     if (dMatrix) {
         freeMatrixData(dMatrix, d_future_matrix ? d_future_matrix->rowCount() : 0);
         dMatrix = 0;
@@ -623,18 +660,32 @@ bool Matrix::recalculate()
 
     this->blockSignals(true);
 
+    const int nCols = numCols();
+    const int nRows = numRows();
+    if (nRows <= 0 || nCols <= 0) {
+        blockSignals(false);
+        QApplication::restoreOverrideCursor();
+        return true;
+    }
+
     int startRow = firstSelectedRow(false);
     int endRow = lastSelectedRow(false);
     int startCol = firstSelectedColumn(false);
     int endCol = lastSelectedColumn(false);
+    const bool hasSelection =
+            (startRow >= 0 && endRow >= startRow && startCol >= 0 && endCol >= startCol);
+    if (!hasSelection) {
+        startRow = 0;
+        endRow = nRows - 1;
+        startCol = 0;
+        endCol = nCols - 1;
+    }
 
     QVariant ret;
     saveCellsToMemory();
     // x runs along the columns and y along the rows (as in MatrixModel::headerData), so dx is
     // divided by the column count and dy by the row count; the sign is kept so that a reversed
     // range (xEnd < xStart) matches the header, and a single column/row gives a step of 0.
-    const int nCols = numCols();
-    const int nRows = numRows();
     const double dx = nCols > 1 ? (xEnd() - xStart()) / double(nCols - 1) : 0.0;
     const double dy = nRows > 1 ? (yEnd() - yStart()) / double(nRows - 1) : 0.0;
     std::pair<double, bool> unsetValue(std::numeric_limits<double>::quiet_NaN(), false);
@@ -643,7 +694,7 @@ bool Matrix::recalculate()
             std::vector<std::pair<double, bool>>(endCol - startCol + 1, unsetValue));
     for (int row = startRow; row <= endRow; row++)
         for (int col = startCol; col <= endCol; col++) {
-            if (!isCellSelected(row, col))
+            if (hasSelection && !isCellSelected(row, col))
                 continue;
             script->setInt(row + 1, "i");
             script->setInt(row + 1, "row");
@@ -900,17 +951,25 @@ void Matrix::print(const QString &fileName)
 
 void Matrix::range(double *min, double *max)
 {
-    double d_min = cell(0, 0);
-    double d_max = d_min;
+    bool found = false;
+    double d_min = 0.0;
+    double d_max = 0.0;
 
     for (int i = 0; i < numRows(); i++) {
         for (int j = 0; j < numCols(); j++) {
             double aux = cell(i, j);
-            if (aux <= d_min)
+            if (!std::isfinite(aux))
+                continue;
+            if (!found) {
                 d_min = aux;
-
-            if (aux >= d_max)
                 d_max = aux;
+                found = true;
+            } else {
+                if (aux < d_min)
+                    d_min = aux;
+                if (aux > d_max)
+                    d_max = aux;
+            }
         }
     }
 
@@ -982,8 +1041,19 @@ void Matrix::updateFunctionDoc()
 
 void Matrix::handleAspectDescriptionChange(const AbstractAspect *aspect)
 {
-    if (aspect != d_future_matrix)
+    if (!d_future_matrix || aspect != d_future_matrix)
         return;
-    setObjectName(d_future_matrix->name());
+    const QString oldMatrixName = storedMatrixNames().take(this);
+    const QString newMatrixName = d_future_matrix->name();
+    setObjectName(newMatrixName);
     updateCaption();
+    if (oldMatrixName.isEmpty() || oldMatrixName == newMatrixName)
+        return;
+    if (property("_tg_block_rename_prop").toBool())
+        return;
+    ApplicationWindow *aw = owningApplicationWindowForMatrix(this);
+    if (!aw || !aw->windowsList().contains(this))
+        return;
+    aw->changeMatrixName(oldMatrixName, newMatrixName);
+    aw->renameListViewItem(oldMatrixName, newMatrixName);
 }

@@ -496,13 +496,53 @@ void SelectionMoveResizer::operateOnTargets()
     foreach (ArrowMarker *i, d_line_markers) {
         if (!i)
             continue;
-        QPoint p1 = i->startPoint();
-        QPoint p2 = i->endPoint();
-        QRect new_rect = operateOn(i->rect());
-        i->setStartPoint(QPoint(p1.x() < p2.x() ? new_rect.left() : new_rect.right(),
-                                p1.y() < p2.y() ? new_rect.top() : new_rect.bottom()));
-        i->setEndPoint(QPoint(p2.x() < p1.x() ? new_rect.left() : new_rect.right(),
-                              p2.y() < p1.y() ? new_rect.top() : new_rect.bottom()));
+        const QPoint p1 = i->startPoint();
+        const QPoint p2 = i->endPoint();
+        const QRect new_rect = operateOn(i->rect());
+        int x1, x2;
+        if (p1.x() < p2.x()) {
+            x1 = new_rect.left();
+            x2 = new_rect.right();
+        } else if (p1.x() > p2.x()) {
+            x1 = new_rect.right();
+            x2 = new_rect.left();
+        } else if (new_rect.left() == new_rect.right()) {
+            x1 = x2 = new_rect.left();
+        } else {
+            bool p1AtLeft = false;
+            if (d_op == Resize_NW || d_op == Resize_SE)
+                p1AtLeft = (p1.y() <= p2.y());
+            else if (d_op == Resize_NE || d_op == Resize_SW)
+                p1AtLeft = (p1.y() > p2.y());
+            else
+                p1AtLeft = (qAbs(new_rect.right() - p1.x()) >= qAbs(new_rect.left() - p1.x()));
+            x1 = p1AtLeft ? new_rect.left() : new_rect.right();
+            x2 = p1AtLeft ? new_rect.right() : new_rect.left();
+        }
+
+        int y1, y2;
+        if (p1.y() < p2.y()) {
+            y1 = new_rect.top();
+            y2 = new_rect.bottom();
+        } else if (p1.y() > p2.y()) {
+            y1 = new_rect.bottom();
+            y2 = new_rect.top();
+        } else if (new_rect.top() == new_rect.bottom()) {
+            y1 = y2 = new_rect.top();
+        } else {
+            bool p1AtTop = false;
+            if (d_op == Resize_NW || d_op == Resize_SE)
+                p1AtTop = (p1.x() <= p2.x());
+            else if (d_op == Resize_NE || d_op == Resize_SW)
+                p1AtTop = (p1.x() > p2.x());
+            else
+                p1AtTop = (qAbs(new_rect.bottom() - p1.y()) >= qAbs(new_rect.top() - p1.y()));
+            y1 = p1AtTop ? new_rect.top() : new_rect.bottom();
+            y2 = p1AtTop ? new_rect.bottom() : new_rect.top();
+        }
+
+        i->setStartPoint(QPoint(x1, y1));
+        i->setEndPoint(QPoint(x2, y2));
         if (i->plot())
             plotsToReplot.insert(i->plot());
     }

@@ -28,8 +28,66 @@
  ***************************************************************************/
 #include "ExponentialFit.h"
 #include "fit_gsl.h"
+#include <cmath>
+#include <limits>
 using namespace std;
-#include <assert.h>
+
+namespace {
+
+constexpr double kZeroRateEps = 1e-300;
+
+inline double safeReciprocal(double val, double sign)
+{
+    if (!std::isfinite(val) || std::abs(val) < kZeroRateEps)
+        return std::numeric_limits<double>::quiet_NaN();
+    const double res = sign / val;
+    return std::isfinite(res) ? res : std::numeric_limits<double>::quiet_NaN();
+}
+
+inline double safeReciprocalDeriv(double solverVal, double sign)
+{
+    // For stored = sign / solverVal, d(stored)/d(solverVal) = -sign / solverVal^2.
+    if (!std::isfinite(solverVal) || std::abs(solverVal) < kZeroRateEps)
+        return std::numeric_limits<double>::quiet_NaN();
+    const double denom = solverVal * solverVal;
+    if (!std::isfinite(denom) || !(denom > 0.0))
+        return std::numeric_limits<double>::quiet_NaN();
+    const double res = (-sign) / denom;
+    return std::isfinite(res) ? res : std::numeric_limits<double>::quiet_NaN();
+}
+
+inline bool allFinitePrefix(const std::vector<double> &par, unsigned count)
+{
+    if (count == 0 || par.size() < count)
+        return false;
+    for (unsigned i = 0; i < count; ++i) {
+        if (!std::isfinite(par[i]))
+            return false;
+    }
+    return true;
+}
+
+inline void scaleCovarianceMatrix(gsl_matrix *covar, unsigned d_p, const std::vector<double> &scale)
+{
+    if (!covar || covar->size1 < d_p || covar->size2 < d_p || scale.size() < d_p)
+        return;
+    bool anyScaled = false;
+    for (unsigned i = 0; i < d_p; ++i) {
+        if (scale[i] != 1.0) {
+            anyScaled = true;
+            break;
+        }
+    }
+    if (!anyScaled)
+        return;
+    for (unsigned a = 0; a < d_p; ++a) {
+        for (unsigned b = 0; b < d_p; ++b) {
+            gsl_matrix_set(covar, a, b, gsl_matrix_get(covar, a, b) * scale[a] * scale[b]);
+        }
+    }
+}
+
+} // namespace
 
 /*****************************************************************************
  *
@@ -69,6 +127,8 @@ void ExponentialFit::init()
     d_min_points = d_p;
     d_param_init = gsl_vector_alloc(d_p);
     gsl_vector_set_all(d_param_init, 1.0);
+    if (is_exp_growth)
+        gsl_vector_set(d_param_init, 1, -1.0);
 
     covar = gsl_matrix_alloc(d_p, d_p);
     d_results.resize(d_p);
@@ -89,23 +149,65 @@ void ExponentialFit::init()
     }
 }
 
+double ExponentialFit::toInternalParameter(int index, double userVal) const
+{
+    if (index == 1)
+        return safeReciprocal(userVal, is_exp_growth ? -1.0 : 1.0);
+    return userVal;
+}
+
+double ExponentialFit::fromInternalParameter(int index, double internalVal) const
+{
+    if (index == 1)
+        return safeReciprocal(internalVal, is_exp_growth ? -1.0 : 1.0);
+    return internalVal;
+}
+
+double ExponentialFit::covarSolverToStoredScale(int parIndex, double solverVal) const
+{
+    if (!d_covar_scaled || parIndex != 1)
+        return 1.0;
+    return safeReciprocalDeriv(solverVal, is_exp_growth ? -1.0 : 1.0);
+}
+
 void ExponentialFit::storeCustomFitResults(const vector<double> &par)
 {
     d_results = par;
-    assert(d_results.size() >= 2);
+    if (!d_covar_scaled && allFinitePrefix(par, d_p) && covar && covar->size1 >= d_p
+        && covar->size2 >= d_p) {
+        d_covar_scaled = true;
+        std::vector<double> scale(d_p, 1.0);
+        for (unsigned i = 0; i < d_p; ++i)
+            scale[i] = covarSolverToStoredScale(int(i), par[i]);
+        scaleCovarianceMatrix(covar, d_p, scale);
+    }
 
-    if (is_exp_growth)
-        d_results[1] = -1.0 / d_results[1];
-    else
-        d_results[1] = 1.0 / d_results[1];
+    if (d_results.size() >= 2)
+        d_results[1] = fromInternalParameter(1, par[1]);
+}
+
+bool ExponentialFit::evaluateModelCurve(const vector<double> &solverPar, std::vector<double> &X,
+                                        std::vector<double> &Y)
+{
+    if (solverPar.size() < 3)
+        return false;
+    generateX(X);
+    for (int i = 0; i < d_points; i++)
+        Y[i] = solverPar[0] * exp(-solverPar[1] * X[i]) + solverPar[2];
+    return true;
 }
 
 bool ExponentialFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                            std::vector<double> &Y)
 {
+    if (par.size() < 3)
+        return false;
+    const double lambda = toInternalParameter(1, par[1]);
+    if (!std::isfinite(lambda))
+        return false;
     generateX(X);
     for (int i = 0; i < d_points; i++)
-        Y[i] = par[0] * exp(-par[1] * X[i]) + par[2];
+        Y[i] = par[0] * exp(-lambda * X[i]) + par[2];
     return true;
 }
 
@@ -159,20 +261,69 @@ void TwoExpFit::init()
                     << tr("(second lifetime)") << tr("(offset)");
 }
 
+double TwoExpFit::toInternalParameter(int index, double userVal) const
+{
+    if (index == 1 || index == 3)
+        return safeReciprocal(userVal, 1.0);
+    return userVal;
+}
+
+double TwoExpFit::fromInternalParameter(int index, double internalVal) const
+{
+    if (index == 1 || index == 3)
+        return safeReciprocal(internalVal, 1.0);
+    return internalVal;
+}
+
+double TwoExpFit::covarSolverToStoredScale(int parIndex, double solverVal) const
+{
+    if (!d_covar_scaled || (parIndex != 1 && parIndex != 3))
+        return 1.0;
+    return safeReciprocalDeriv(solverVal, 1.0);
+}
+
 void TwoExpFit::storeCustomFitResults(const vector<double> &par)
 {
     d_results = par;
-    assert(d_results.size() > 3);
-    d_results[1] = 1.0 / d_results[1];
-    d_results[3] = 1.0 / d_results[3];
+    if (!d_covar_scaled && allFinitePrefix(par, d_p) && covar && covar->size1 >= d_p
+        && covar->size2 >= d_p) {
+        d_covar_scaled = true;
+        std::vector<double> scale(d_p, 1.0);
+        for (unsigned i = 0; i < d_p; ++i)
+            scale[i] = covarSolverToStoredScale(int(i), par[i]);
+        scaleCovarianceMatrix(covar, d_p, scale);
+    }
+
+    if (d_results.size() > 3) {
+        d_results[1] = fromInternalParameter(1, par[1]);
+        d_results[3] = fromInternalParameter(3, par[3]);
+    }
+}
+
+bool TwoExpFit::evaluateModelCurve(const vector<double> &solverPar, std::vector<double> &X,
+                                   std::vector<double> &Y)
+{
+    if (solverPar.size() < 5)
+        return false;
+    generateX(X);
+    for (int i = 0; i < d_points; i++)
+        Y[i] = solverPar[0] * exp(-solverPar[1] * X[i]) + solverPar[2] * exp(-solverPar[3] * X[i])
+                + solverPar[4];
+    return true;
 }
 
 bool TwoExpFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                       std::vector<double> &Y)
 {
+    if (par.size() < 5)
+        return false;
+    const double l1 = toInternalParameter(1, par[1]);
+    const double l2 = toInternalParameter(3, par[3]);
+    if (!std::isfinite(l1) || !std::isfinite(l2))
+        return false;
     generateX(X);
     for (int i = 0; i < d_points; i++)
-        Y[i] = par[0] * exp(-par[1] * X[i]) + par[2] * exp(-par[3] * X[i]) + par[4];
+        Y[i] = par[0] * exp(-l1 * X[i]) + par[2] * exp(-l2 * X[i]) + par[4];
     return true;
 }
 
@@ -229,21 +380,72 @@ void ThreeExpFit::init()
                     << tr("(offset)");
 }
 
+double ThreeExpFit::toInternalParameter(int index, double userVal) const
+{
+    if (index == 1 || index == 3 || index == 5)
+        return safeReciprocal(userVal, 1.0);
+    return userVal;
+}
+
+double ThreeExpFit::fromInternalParameter(int index, double internalVal) const
+{
+    if (index == 1 || index == 3 || index == 5)
+        return safeReciprocal(internalVal, 1.0);
+    return internalVal;
+}
+
+double ThreeExpFit::covarSolverToStoredScale(int parIndex, double solverVal) const
+{
+    if (!d_covar_scaled || (parIndex != 1 && parIndex != 3 && parIndex != 5))
+        return 1.0;
+    return safeReciprocalDeriv(solverVal, 1.0);
+}
+
 void ThreeExpFit::storeCustomFitResults(const vector<double> &par)
 {
     d_results = par;
-    assert(d_results.size() > 5);
-    d_results[1] = 1.0 / d_results[1];
-    d_results[3] = 1.0 / d_results[3];
-    d_results[5] = 1.0 / d_results[5];
+    if (!d_covar_scaled && allFinitePrefix(par, d_p) && covar && covar->size1 >= d_p
+        && covar->size2 >= d_p) {
+        d_covar_scaled = true;
+        std::vector<double> scale(d_p, 1.0);
+        for (unsigned i = 0; i < d_p; ++i)
+            scale[i] = covarSolverToStoredScale(int(i), par[i]);
+        scaleCovarianceMatrix(covar, d_p, scale);
+    }
+
+    if (d_results.size() > 5) {
+        d_results[1] = fromInternalParameter(1, par[1]);
+        d_results[3] = fromInternalParameter(3, par[3]);
+        d_results[5] = fromInternalParameter(5, par[5]);
+    }
+}
+
+bool ThreeExpFit::evaluateModelCurve(const vector<double> &solverPar, std::vector<double> &X,
+                                     std::vector<double> &Y)
+{
+    if (solverPar.size() < 7)
+        return false;
+    generateX(X);
+    for (int i = 0; i < d_points; i++)
+        Y[i] = solverPar[0] * exp(-X[i] * solverPar[1])
+                + solverPar[2] * exp(-X[i] * solverPar[3])
+                + solverPar[4] * exp(-X[i] * solverPar[5]) + solverPar[6];
+    return true;
 }
 
 bool ThreeExpFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                         std::vector<double> &Y)
 {
+    if (par.size() < 7)
+        return false;
+    const double l1 = toInternalParameter(1, par[1]);
+    const double l2 = toInternalParameter(3, par[3]);
+    const double l3 = toInternalParameter(5, par[5]);
+    if (!std::isfinite(l1) || !std::isfinite(l2) || !std::isfinite(l3))
+        return false;
     generateX(X);
     for (int i = 0; i < d_points; i++)
-        Y[i] = par[0] * exp(-X[i] * par[1]) + par[2] * exp(-X[i] * par[3])
-                + par[4] * exp(-X[i] * par[5]) + par[6];
+        Y[i] = par[0] * exp(-X[i] * l1) + par[2] * exp(-X[i] * l2) + par[4] * exp(-X[i] * l3)
+                + par[6];
     return true;
 }

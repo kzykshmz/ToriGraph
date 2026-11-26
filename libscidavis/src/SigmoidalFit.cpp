@@ -31,6 +31,7 @@
 
 #include <QMessageBox>
 
+#include <cmath>
 #include <vector>
 using namespace std;
 
@@ -81,21 +82,44 @@ bool SigmoidalFit::calculateFitCurveData(const vector<double> &par, std::vector<
                                          std::vector<double> &Y)
 {
     generateX(X);
-    for (int i = 0; i < d_points; i++)
-        Y[i] = (par[0] - par[1]) / (1 + exp((X[i] - par[2]) / par[3])) + par[1];
+    const double dx = par[3];
+    for (int i = 0; i < d_points; i++) {
+        const double diff = X[i] - par[2];
+        double r = 0.5;
+        if (std::fabs(dx) < 1e-300) {
+            r = (diff == 0.0) ? 0.5 : ((diff > 0.0) ? 0.0 : 1.0);
+        } else {
+            const double u = diff / dx;
+            if (!std::isfinite(u))
+                r = (u > 0.0) ? 0.0 : 1.0;
+            else if (u >= 0.0) {
+                const double em = std::exp(-u);
+                r = em / (1.0 + em);
+            } else {
+                r = 1.0 / (1.0 + std::exp(u));
+            }
+        }
+        Y[i] = (par[0] - par[1]) * r + par[1];
+    }
     return true;
 }
 
 void SigmoidalFit::guessInitialValues()
 {
+    if (d_x.empty() || d_y.empty())
+        return;
     gsl_vector_view x = gsl_vector_view_array(d_x.data(), d_x.size());
     gsl_vector_view y = gsl_vector_view_array(d_y.data(), d_y.size());
 
-    double min_out, max_out;
+    double min_out = 0.0, max_out = 0.0;
     gsl_vector_minmax(&y.vector, &min_out, &max_out);
+    double x_min = 0.0, x_max = 0.0;
+    gsl_vector_minmax(&x.vector, &x_min, &x_max);
+    const double xSpan = x_max - x_min;
+    const double initDx = (std::isfinite(xSpan) && xSpan > 0.0) ? (xSpan / 10.0) : 1.0;
 
     gsl_vector_set(d_param_init, 0, min_out);
     gsl_vector_set(d_param_init, 1, max_out);
     gsl_vector_set(d_param_init, 2, gsl_vector_get(&x.vector, d_x.size() / 2));
-    gsl_vector_set(d_param_init, 3, 1.0);
+    gsl_vector_set(d_param_init, 3, initDx);
 }

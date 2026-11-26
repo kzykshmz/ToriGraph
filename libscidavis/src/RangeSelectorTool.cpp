@@ -33,6 +33,7 @@
 #include "Graph.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "QwtErrorPlotCurve.h"
 
 #include <qwt_symbol.h>
 #include <qwt_scale_map.h>
@@ -43,6 +44,23 @@
 #include <QMouseEvent>
 #include <QLocale>
 #include <cmath>
+
+namespace {
+bool isSelectableRangeCurve(Graph *g, int idx, const QwtPlotCurve *c)
+{
+    if (!c || c->rtti() != QwtPlotItem::Rtti_PlotCurve || c->dataSize() <= 0)
+        return false;
+    if (g && idx >= 0 && g->curveType(idx) == Graph::ErrorBars)
+        return false;
+    if (const PlotCurve *pc = dynamic_cast<const PlotCurve *>(c)) {
+        if (pc->type() == Graph::ErrorBars)
+            return false;
+    }
+    if (dynamic_cast<const QwtErrorPlotCurve *>(c) != nullptr)
+        return false;
+    return true;
+}
+} // namespace
 
 RangeSelectorTool::RangeSelectorTool(Graph *graph, const QObject *status_target,
                                      const char *status_slot)
@@ -55,16 +73,16 @@ RangeSelectorTool::RangeSelectorTool(Graph *graph, const QObject *status_target,
     const Graph::GraphSelection curSel = d_graph->currentSelection();
     if (curSel.kind == Graph::GraphSelection::Curve && curSel.primaryId >= 0) {
         QwtPlotCurve *selC = d_graph->curve(curSel.primaryId);
-        if (selC && selC->rtti() == QwtPlotItem::Rtti_PlotCurve && selC->dataSize() > 0)
+        if (isSelectableRangeCurve(d_graph, curSel.primaryId, selC))
             d_selected_curve = selC;
     }
     if (!d_selected_curve) {
         for (int i = d_graph->curves() - 1; i >= 0; --i) {
-            d_selected_curve = d_graph->curve(i);
-            if (d_selected_curve && d_selected_curve->rtti() == QwtPlotItem::Rtti_PlotCurve
-                && d_selected_curve->dataSize() > 0)
+            QwtPlotCurve *cand = d_graph->curve(i);
+            if (isSelectableRangeCurve(d_graph, i, cand)) {
+                d_selected_curve = cand;
                 break;
-            d_selected_curve = NULL;
+            }
         }
     }
     if (!d_selected_curve) {
@@ -414,8 +432,9 @@ bool RangeSelectorTool::keyEventFilter(QKeyEvent *ke)
         int curIdx = d_graph->curveIndex(d_selected_curve);
         int start = (curIdx >= 0 ? curIdx : 0) + 1;
         for (int i = start; i < start + n_curves; ++i) {
-            QwtPlotCurve *cand = d_graph->curve(i % n_curves);
-            if (cand && cand->dataSize() > 0) {
+            const int idx = i % n_curves;
+            QwtPlotCurve *cand = d_graph->curve(idx);
+            if (isSelectableRangeCurve(d_graph, idx, cand)) {
                 setSelectedCurve(cand);
                 break;
             }
@@ -432,8 +451,9 @@ bool RangeSelectorTool::keyEventFilter(QKeyEvent *ke)
         int curIdx = d_graph->curveIndex(d_selected_curve);
         int start = (curIdx >= 0 ? curIdx : 0) + n_curves - 1;
         for (int i = start; i > start - n_curves; --i) {
-            QwtPlotCurve *cand = d_graph->curve(i % n_curves);
-            if (cand && cand->dataSize() > 0) {
+            const int idx = i % n_curves;
+            QwtPlotCurve *cand = d_graph->curve(idx);
+            if (isSelectableRangeCurve(d_graph, idx, cand)) {
                 setSelectedCurve(cand);
                 break;
             }

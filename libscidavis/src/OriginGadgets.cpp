@@ -17,6 +17,7 @@
 #include "MultiLayer.h"
 #include "Plot.h"
 #include "PlotCurve.h"
+#include "QwtErrorPlotCurve.h"
 #include "Spectrogram.h"
 #include "Table.h"
 #include "core/column/Column.h"
@@ -66,6 +67,47 @@
 #include <vector>
 
 namespace {
+
+static QRectF mapRectBetweenAxes(Plot *plot, const QRectF &srcRect, int srcXAxis, int srcYAxis,
+                                 int dstXAxis, int dstYAxis)
+{
+    const QRectF r = srcRect.normalized();
+    if (!plot || (srcXAxis == dstXAxis && srcYAxis == dstYAxis))
+        return r;
+
+    double nx1 = r.left();
+    double nx2 = r.right();
+    if (srcXAxis != dstXAxis) {
+        const QwtScaleMap srcX = plot->canvasMap(srcXAxis);
+        const QwtScaleMap dstX = plot->canvasMap(dstXAxis);
+        if (srcX.pDist() > 0.0 && dstX.pDist() > 0.0) {
+            const double tx1 = dstX.invTransform(srcX.xTransform(r.left()));
+            const double tx2 = dstX.invTransform(srcX.xTransform(r.right()));
+            if (std::isfinite(tx1) && std::isfinite(tx2)) {
+                nx1 = tx1;
+                nx2 = tx2;
+            }
+        }
+    }
+
+    double ny1 = r.top();
+    double ny2 = r.bottom();
+    if (srcYAxis != dstYAxis) {
+        const QwtScaleMap srcY = plot->canvasMap(srcYAxis);
+        const QwtScaleMap dstY = plot->canvasMap(dstYAxis);
+        if (srcY.pDist() > 0.0 && dstY.pDist() > 0.0) {
+            const double ty1 = dstY.invTransform(srcY.xTransform(r.top()));
+            const double ty2 = dstY.invTransform(srcY.xTransform(r.bottom()));
+            if (std::isfinite(ty1) && std::isfinite(ty2)) {
+                ny1 = ty1;
+                ny2 = ty2;
+            }
+        }
+    }
+
+    return QRectF(QPointF(std::min(nx1, nx2), std::min(ny1, ny2)),
+                  QPointF(std::max(nx1, nx2), std::max(ny1, ny2)));
+}
 
 struct XYPoint {
     double x = 0.0;
@@ -1384,10 +1426,20 @@ QwtPlotCurve *RoiGadgetTool::resolveTargetCurve()
             connect(dc->table(), &Table::modifiedData, this, &RoiGadgetTool::onSourceTableModified,
                     Qt::UniqueConnection);
         }
-        if (d_overlay_item)
-            d_overlay_item->setAxis(chosen->xAxis(), chosen->yAxis());
-    } else if (chosen && d_overlay_item) {
-        d_overlay_item->setAxis(chosen->xAxis(), chosen->yAxis());
+    }
+    if (chosen && d_overlay_item) {
+        const int oldXAxis = d_overlay_item->xAxis();
+        const int oldYAxis = d_overlay_item->yAxis();
+        const int newXAxis = chosen->xAxis();
+        const int newYAxis = chosen->yAxis();
+        if (oldXAxis != newXAxis || oldYAxis != newYAxis) {
+            if (!d_roi_rect.isNull()
+                && (d_roi_rect.width() > 0.0 || d_roi_rect.height() > 0.0)) {
+                d_roi_rect = mapRectBetweenAxes(d_graph_guard->plotWidget(), d_roi_rect, oldXAxis,
+                                                oldYAxis, newXAxis, newYAxis);
+            }
+            d_overlay_item->setAxis(newXAxis, newYAxis);
+        }
     }
 
     return chosen;
@@ -1599,7 +1651,31 @@ void RoiGadgetTool::keepFittedCurveOnGraph()
             mrk->setFrameStyle(Legend::Line);
             mrk->setBackgroundColor(QColor(255, 255, 255, 235));
             const QRectF roi = d_roi_rect.normalized();
-            mrk->setOriginCoord(roi.center().x(), roi.bottom() - 0.12 * roi.height());
+            double calloutX = roi.center().x();
+            double calloutY = roi.bottom() - 0.12 * roi.height();
+            const int ovXAxis = d_overlay_item ? d_overlay_item->xAxis() : int(QwtPlot::xBottom);
+            const int ovYAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
+            if (Plot *plotPtr = d_graph_guard->plotWidget()) {
+                if (ovXAxis != QwtPlot::xBottom) {
+                    const QwtScaleMap srcX = plotPtr->canvasMap(ovXAxis);
+                    const QwtScaleMap dstX = plotPtr->canvasMap(QwtPlot::xBottom);
+                    if (srcX.pDist() > 0.0 && dstX.pDist() > 0.0) {
+                        const double tx = dstX.invTransform(srcX.xTransform(calloutX));
+                        if (std::isfinite(tx))
+                            calloutX = tx;
+                    }
+                }
+                if (ovYAxis != QwtPlot::yLeft) {
+                    const QwtScaleMap srcY = plotPtr->canvasMap(ovYAxis);
+                    const QwtScaleMap dstY = plotPtr->canvasMap(QwtPlot::yLeft);
+                    if (srcY.pDist() > 0.0 && dstY.pDist() > 0.0) {
+                        const double ty = dstY.invTransform(srcY.xTransform(calloutY));
+                        if (std::isfinite(ty))
+                            calloutY = ty;
+                    }
+                }
+            }
+            mrk->setOriginCoord(calloutX, calloutY);
         }
     }
 
@@ -1651,7 +1727,7 @@ void RoiGadgetTool::recalculate()
     d_primary_metric = 0.0;
     d_secondary_metric = 0.0;
 
-    const QRectF roi = d_roi_rect.normalized();
+    QRectF roi = d_roi_rect.normalized();
 
     // Multi-curve Intersect mode inspects ALL visible curves on d_graph_guard
     if (d_mode == Intersect) {
@@ -1683,7 +1759,17 @@ void RoiGadgetTool::recalculate()
                 || c->dataSize() < 2)
                 continue;
             if (!axisSynced && d_overlay_item) {
-                d_overlay_item->setAxis(c->xAxis(), c->yAxis());
+                const int oldX = d_overlay_item->xAxis();
+                const int oldY = d_overlay_item->yAxis();
+                if (oldX != c->xAxis() || oldY != c->yAxis()) {
+                    if (!d_roi_rect.isNull()
+                        && (d_roi_rect.width() > 0.0 || d_roi_rect.height() > 0.0)) {
+                        d_roi_rect = mapRectBetweenAxes(d_graph_guard->plotWidget(), d_roi_rect,
+                                                        oldX, oldY, c->xAxis(), c->yAxis());
+                        roi = d_roi_rect.normalized();
+                    }
+                    d_overlay_item->setAxis(c->xAxis(), c->yAxis());
+                }
                 axisSynced = true;
             }
 
@@ -1844,8 +1930,20 @@ void RoiGadgetTool::recalculate()
         Spectrogram *sciSpec = nullptr;
         QwtPlotSpectrogram *qwtSpec = findSpectrogramOnGraph(d_graph_guard, &sciSpec);
         if (qwtSpec) {
-            if (d_overlay_item)
-                d_overlay_item->setAxis(qwtSpec->xAxis(), qwtSpec->yAxis());
+            if (d_overlay_item) {
+                const int oldX = d_overlay_item->xAxis();
+                const int oldY = d_overlay_item->yAxis();
+                if (oldX != qwtSpec->xAxis() || oldY != qwtSpec->yAxis()) {
+                    if (!d_roi_rect.isNull()
+                        && (d_roi_rect.width() > 0.0 || d_roi_rect.height() > 0.0)) {
+                        d_roi_rect = mapRectBetweenAxes(d_graph_guard->plotWidget(), d_roi_rect,
+                                                        oldX, oldY, qwtSpec->xAxis(),
+                                                        qwtSpec->yAxis());
+                        roi = d_roi_rect.normalized();
+                    }
+                    d_overlay_item->setAxis(qwtSpec->xAxis(), qwtSpec->yAxis());
+                }
+            }
 
             Matrix *m = sciSpec ? sciSpec->matrix() : nullptr;
             QRectF surfRect;
@@ -2019,6 +2117,7 @@ void RoiGadgetTool::recalculate()
     }
 
     QwtPlotCurve *curve = resolveTargetCurve();
+    roi = d_roi_rect.normalized();
     if (!curve || curve->dataSize() <= 0) {
         d_summary_text = tr("ROI Gadget: No curve data");
         d_recalculating = false;
@@ -2866,35 +2965,51 @@ void RoiGadgetTool::recalculate()
             std::vector<double> ux, uy;
             ux.reserve(n);
             uy.reserve(n);
+            std::vector<int> dupCount;
+            dupCount.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 if (!ux.empty() && std::fabs(xv[i] - ux.back()) <= 1e-14) {
-                    uy.back() = 0.5 * (uy.back() + yv[i]);
+                    const int cNew = dupCount.back() + 1;
+                    uy.back() = (uy.back() * double(dupCount.back()) + yv[i]) / double(cNew);
+                    dupCount.back() = cNew;
                 } else {
                     ux.push_back(xv[i]);
                     uy.push_back(yv[i]);
+                    dupCount.push_back(1);
                 }
             }
 
             xMid = std::clamp(rawMid, ux.front(), ux.back());
             midY = uy.front();
+            bool splineUsed = false;
             if (ux.size() >= 4) {
                 gsl_interp_accel *acc = gsl_interp_accel_alloc();
                 gsl_spline *spline = gsl_spline_alloc(gsl_interp_cspline, ux.size());
-                gsl_spline_init(spline, ux.data(), uy.data(), ux.size());
-                midY = gsl_spline_eval(spline, xMid, acc);
-                slope = gsl_spline_eval_deriv(spline, xMid, acc);
+                if (spline && acc
+                    && gsl_spline_init(spline, ux.data(), uy.data(), ux.size()) == GSL_SUCCESS) {
+                    midY = gsl_spline_eval(spline, xMid, acc);
+                    slope = gsl_spline_eval_deriv(spline, xMid, acc);
 
-                const int nGrid = 100;
-                for (int k = 0; k < nGrid; ++k) {
-                    const double gx =
-                            ux.front() + (ux.back() - ux.front()) * double(k) / double(nGrid - 1);
-                    const double gy = gsl_spline_eval(spline, gx, acc);
-                    if (std::isfinite(gx) && std::isfinite(gy))
-                        d_overlay_curve_pts.append(QPointF(gx, gy));
+                    const int nGrid = 100;
+                    for (int k = 0; k < nGrid; ++k) {
+                        const double gx = (k == nGrid - 1)
+                                ? ux.back()
+                                : std::clamp(ux.front()
+                                                     + (ux.back() - ux.front()) * double(k)
+                                                             / double(nGrid - 1),
+                                             ux.front(), ux.back());
+                        const double gy = gsl_spline_eval(spline, gx, acc);
+                        if (std::isfinite(gx) && std::isfinite(gy))
+                            d_overlay_curve_pts.append(QPointF(gx, gy));
+                    }
+                    splineUsed = true;
                 }
-                gsl_spline_free(spline);
-                gsl_interp_accel_free(acc);
-            } else if (ux.size() >= 2) {
+                if (spline)
+                    gsl_spline_free(spline);
+                if (acc)
+                    gsl_interp_accel_free(acc);
+            }
+            if (!splineUsed && ux.size() >= 2) {
                 auto it = std::lower_bound(ux.begin(), ux.end(), xMid);
                 size_t idx = (it == ux.begin()) ? 0 : size_t(std::distance(ux.begin(), it) - 1);
                 if (idx + 1 >= ux.size())
@@ -3420,12 +3535,15 @@ int RoiGadgetTool::applyClusterMask(bool mask)
     if ((d_mode == MaskRegion || d_mode == UnmaskRegion) && !d_explicit_curve) {
         for (int i = 0; i < d_graph_guard->curves(); ++i) {
             if (auto *dc = dynamic_cast<DataCurve *>(d_graph_guard->curve(i))) {
+                if (dynamic_cast<QwtErrorPlotCurve *>(dc))
+                    continue;
                 if (dc->isVisible())
                     targetCurves.append(dc);
             }
         }
     } else if (DataCurve *dc = resolveTargetDataCurve()) {
-        targetCurves.append(dc);
+        if (!dynamic_cast<QwtErrorPlotCurve *>(dc))
+            targetCurves.append(dc);
     }
 
     int totalModified = 0;
@@ -3439,11 +3557,18 @@ int RoiGadgetTool::applyClusterMask(bool mask)
             }
             return false;
         };
+        Plot *plotPtr = d_graph_guard->plotWidget();
+        const int ovXAxis = d_overlay_item ? d_overlay_item->xAxis() : int(QwtPlot::xBottom);
+        const int ovYAxis = d_overlay_item ? d_overlay_item->yAxis() : int(QwtPlot::yLeft);
         d_graph_guard->runWithColumnMaskUndo(
                 mask ? tr("Mask Region") : tr("Unmask Region"), targetCurves, [&]() {
                     for (DataCurve *dc : targetCurves) {
-                        if (isLiveCurveOnGraph(d_graph_guard.data(), dc))
-                            totalModified += dc->maskRegion(d_roi_rect, mask);
+                        if (isLiveCurveOnGraph(d_graph_guard.data(), dc)) {
+                            const QRectF curveRoi = mapRectBetweenAxes(
+                                    plotPtr, d_roi_rect, ovXAxis, ovYAxis, dc->xAxis(),
+                                    dc->yAxis());
+                            totalModified += dc->maskRegion(curveRoi, mask);
+                        }
                     }
                 });
     }

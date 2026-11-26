@@ -39,6 +39,7 @@
 #include <QPen>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
@@ -79,6 +80,17 @@ using torizip::kMaxEntryUncompressedBytes;
 using torizip::ZipArchive;
 
 constexpr int kObjectXOffset = 200;
+constexpr int kMaxMatrixDim = 100000;
+constexpr qint64 kMaxMatrixCells = 25000000LL; // 25M cells (~200 MB max)
+constexpr int kMaxWorksheetCols = 100000;
+constexpr int kMaxWorksheetRows = 25000000;
+constexpr qint64 kMaxWorksheetCells = 25000000LL;
+
+inline bool isValidMatrixDimensions(qint64 rows, qint64 cols)
+{
+    return rows > 0 && cols > 0 && rows <= kMaxMatrixDim && cols <= kMaxMatrixDim
+            && (rows * cols) <= kMaxMatrixCells;
+}
 
 // ---------------------------------------------------------------------------
 // Little-endian binary readers with strict bounds checking
@@ -769,8 +781,10 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
 
         if (col.stringStride > 0) {
             const int count = payload.size() / col.stringStride;
-            const int n = (col.rowCountHint > 0) ? std::min(count, col.rowCountHint) : count;
-            col.textValues.reserve(n);
+            const int remaining = std::max(0, kMaxWorksheetRows - col.textValues.size());
+            const int n = std::min({ count, (col.rowCountHint > 0) ? col.rowCountHint : count,
+                                     remaining });
+            col.textValues.reserve(col.textValues.size() + n);
             for (int i = 0; i < n; ++i) {
                 QByteArray cell = payload.mid(i * col.stringStride, col.stringStride);
                 if (isUtf16) {
@@ -794,7 +808,7 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
 
         if (col.stringFormat.compare(QLatin1String("lengthPrefixed"), Qt::CaseInsensitive) == 0) {
             qint64 p = 0;
-            while (p + 4 <= payload.size()) {
+            while (p + 4 <= payload.size() && col.textValues.size() < kMaxWorksheetRows) {
                 quint32 byteLen = 0;
                 if (!readU32LE(payload, p, byteLen))
                     break;
@@ -817,7 +831,7 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
                 && static_cast<unsigned char>(payload[1]) == 0xFE) {
                 p = 2;
             }
-            while (p + 1 < payload.size()) {
+            while (p + 1 < payload.size() && col.textValues.size() < kMaxWorksheetRows) {
                 int start = p;
                 while (p + 1 < payload.size() && !(payload[p] == '\0' && payload[p + 1] == '\0'))
                     p += 2;
@@ -833,7 +847,7 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
         // Null-terminated or newline-delimited UTF-8 / Shift-JIS buffer
         if (payload.contains('\0')) {
             int p = 0;
-            while (p < payload.size()) {
+            while (p < payload.size() && col.textValues.size() < kMaxWorksheetRows) {
                 int nul = payload.indexOf('\0', p);
                 if (nul < 0)
                     nul = payload.size();
@@ -846,6 +860,8 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
             const QString all = decodeTextBytes(payload, col.encoding);
             const QStringList lines = all.split(QRegularExpression(QStringLiteral("\\r?\\n")));
             for (const QString &ln : lines) {
+                if (col.textValues.size() >= kMaxWorksheetRows)
+                    break;
                 col.textValues.append(ln);
                 if (col.rowCountHint > 0 && col.textValues.size() >= col.rowCountHint)
                     break;
@@ -885,9 +901,11 @@ bool decodeBinaryIntoColumn(const QByteArray &rawBytes, OpjuColumn &col, QString
         break;
     }
 
-    const int availCount = payload.size() / elemSize;
-    const int n = (col.rowCountHint > 0) ? std::min(availCount, col.rowCountHint) : availCount;
-    col.numericValues.reserve(n);
+    const qint64 availCount64 = static_cast<qint64>(payload.size()) / elemSize;
+    const qint64 hint64 = (col.rowCountHint > 0) ? static_cast<qint64>(col.rowCountHint) : availCount64;
+    const qint64 remaining64 = std::max<qint64>(0, kMaxWorksheetRows - col.numericValues.size());
+    const int n = static_cast<int>(std::min({ availCount64, hint64, remaining64 }));
+    col.numericValues.reserve(col.numericValues.size() + n);
 
     for (int i = 0; i < n; ++i) {
         const qint64 p = static_cast<qint64>(i) * elemSize;
@@ -967,21 +985,29 @@ void parseInlineTextTokensIntoColumn(const QString &text, OpjuColumn &col)
 
     if (forceText) {
         col.hasText = true;
-        for (const QString &tok : tokens)
+        for (const QString &tok : tokens) {
+            if (col.textValues.size() >= kMaxWorksheetRows)
+                break;
             col.textValues.append(tok.trimmed());
+        }
         return;
     }
+
+    const int existingRows = std::max(col.numericValues.size(), col.textValues.size());
+    const int limit = std::min(tokens.size(), std::max(0, kMaxWorksheetRows - existingRows));
+    if (limit <= 0)
+        return;
 
     // Try numeric parsing; if any non-empty, non-missing token is non-numeric, retain text too
     int numericCount = 0;
     int nonNumericCount = 0;
     QVector<double> nums;
     QVector<QString> strs;
-    nums.reserve(tokens.size());
-    strs.reserve(tokens.size());
+    nums.reserve(limit);
+    strs.reserve(limit);
 
-    for (const QString &rawTok : tokens) {
-        const QString tok = rawTok.trimmed();
+    for (int i = 0; i < limit; ++i) {
+        const QString tok = tokens[i].trimmed();
         strs.append(tok);
         if (isOriginMissingNumericText(tok)) {
             nums.append(qnan);
@@ -1009,6 +1035,17 @@ void parseInlineTextTokensIntoColumn(const QString &text, OpjuColumn &col)
 
 bool decodeBinaryIntoMatrix(const QByteArray &rawBytes, OpjuMatrix &mat, QString *outErr)
 {
+    if (mat.rows < 0 || mat.cols < 0 || mat.rows > kMaxMatrixDim || mat.cols > kMaxMatrixDim) {
+        if (outErr)
+            *outErr = QStringLiteral("Matrix dimensions exceed supported limits.");
+        return false;
+    }
+    if (mat.rows > 0 && mat.cols > 0 && !isValidMatrixDimensions(mat.rows, mat.cols)) {
+        if (outErr)
+            *outErr = QStringLiteral("Matrix cell count exceeds supported limits.");
+        return false;
+    }
+
     QByteArray payload;
     qint64 off = std::max<qint64>(0, mat.dataOffset);
     if (off > rawBytes.size()) {
@@ -1031,9 +1068,14 @@ bool decodeBinaryIntoMatrix(const QByteArray &rawBytes, OpjuMatrix &mat, QString
             ? 2
             : (dt == OpjuDataType::Int8 || dt == OpjuDataType::UInt8) ? 1 : 8;
 
-    const int avail = payload.size() / elemSize;
-    const int expected = (mat.rows > 0 && mat.cols > 0) ? (mat.rows * mat.cols) : avail;
-    const int count = std::min(avail, expected);
+    const qint64 avail = static_cast<qint64>(payload.size()) / elemSize;
+    const qint64 expected = (mat.rows > 0 && mat.cols > 0)
+            ? (static_cast<qint64>(mat.rows) * static_cast<qint64>(mat.cols))
+            : avail;
+    const qint64 count64 = std::min({ avail, expected, kMaxMatrixCells });
+    if (count64 <= 0)
+        return true;
+    const int count = static_cast<int>(count64);
     mat.values.reserve(count);
 
     for (int i = 0; i < count; ++i) {
@@ -1386,8 +1428,12 @@ private:
                 parseWorkbookOrSheet(xr, baseDir, effFolder, bookName);
                 ++childSheetsAdded;
             } else if (ctag == QLatin1String("column") || ctag == QLatin1String("col")) {
-                OpjuColumn col = parseColumnElement(xr, baseDir, directSheet.columns.size());
-                directSheet.columns.append(col);
+                if (directSheet.columns.size() < kMaxWorksheetCols) {
+                    OpjuColumn col = parseColumnElement(xr, baseDir, directSheet.columns.size());
+                    directSheet.columns.append(col);
+                } else {
+                    xr.skipCurrentElement();
+                }
             } else if (ctag == QLatin1String("columns")) {
                 while (!xr.atEnd()) {
                     const auto t2 = xr.readNext();
@@ -1395,7 +1441,8 @@ private:
                         break;
                     if (t2 == QXmlStreamReader::StartElement) {
                         const QString t2Name = xr.name().toString().toLower();
-                        if (t2Name == QLatin1String("column") || t2Name == QLatin1String("col")) {
+                        if ((t2Name == QLatin1String("column") || t2Name == QLatin1String("col"))
+                            && directSheet.columns.size() < kMaxWorksheetCols) {
                             directSheet.columns.append(
                                     parseColumnElement(xr, baseDir, directSheet.columns.size()));
                         } else {
@@ -1540,6 +1587,9 @@ private:
 
     void appendSingleCell(OpjuColumn &col, const QString &rawText)
     {
+        if (col.textValues.size() >= kMaxWorksheetRows
+            || col.numericValues.size() >= kMaxWorksheetRows)
+            return;
         const double qnan = std::numeric_limits<double>::quiet_NaN();
         if (col.dataType == OpjuDataType::Text) {
             col.hasText = true;
@@ -1650,13 +1700,18 @@ private:
                     if (ctag == QLatin1String("cell") || ctag == QLatin1String("c")
                         || ctag == QLatin1String("v")) {
                         const QString idxAttr = attrCI(xr.attributes(), { "col", "index" });
+                        bool colValid = true;
                         if (!idxAttr.isEmpty()) {
                             bool ok = false;
-                            const int parsed = idxAttr.toInt(&ok);
-                            if (ok && parsed >= 0)
-                                cIdx = parsed;
+                            const qint64 parsed = idxAttr.toLongLong(&ok);
+                            if (ok && parsed >= 0 && parsed < kMaxWorksheetCols)
+                                cIdx = static_cast<int>(parsed);
+                            else
+                                colValid = false;
                         }
                         const QString cellTxt = xr.readElementText();
+                        if (!colValid || cIdx < 0 || cIdx >= kMaxWorksheetCols)
+                            continue;
                         while (ws.columns.size() <= cIdx) {
                             OpjuColumn nc;
                             int n = ws.columns.size();
@@ -1695,8 +1750,31 @@ private:
         mat.folderPath = attrFolder.isEmpty() ? folderPath : attrFolder;
         mat.formula = attrCI(attrs, { "formula", "command" }).trimmed();
         mat.hidden = parseBoolAttr(attrCI(attrs, { "hidden" }), false);
-        mat.rows = attrCI(attrs, { "rows", "rowCount" }).toInt();
-        mat.cols = attrCI(attrs, { "cols", "colCount", "columns" }).toInt();
+
+        bool invalidDims = false;
+        const QString rowsStr = attrCI(attrs, { "rows", "rowCount" }).trimmed();
+        const QString colsStr = attrCI(attrs, { "cols", "colCount", "columns" }).trimmed();
+        if (!rowsStr.isEmpty()) {
+            bool ok = false;
+            const qint64 r = rowsStr.toLongLong(&ok);
+            if (!ok || r <= 0 || r > kMaxMatrixDim)
+                invalidDims = true;
+            else
+                mat.rows = static_cast<int>(r);
+        }
+        if (!colsStr.isEmpty()) {
+            bool ok = false;
+            const qint64 c = colsStr.toLongLong(&ok);
+            if (!ok || c <= 0 || c > kMaxMatrixDim)
+                invalidDims = true;
+            else
+                mat.cols = static_cast<int>(c);
+        }
+        if (!invalidDims && mat.rows > 0 && mat.cols > 0
+            && !isValidMatrixDimensions(mat.rows, mat.cols)) {
+            invalidDims = true;
+        }
+
         mat.dataType = parseDataType(attrCI(attrs, { "dataType", "valueType", "binaryType" }));
         mat.dataRef = attrCI(attrs, { "dataFile", "dataRef", "stream", "src", "file" }).trimmed();
 
@@ -1736,6 +1814,8 @@ private:
             const QXmlStreamAttributes cattrs = xr.attributes();
             if (ctag == QLatin1String("matrixsheet") || ctag == QLatin1String("sheet")) {
                 parseMatrixElement(xr, baseDir, mat.folderPath);
+            } else if (invalidDims) {
+                xr.skipCurrentElement();
             } else if (ctag == QLatin1String("formula") || ctag == QLatin1String("command")) {
                 mat.formula = xr.readElementText().trimmed();
             } else if (ctag == QLatin1String("data") || ctag == QLatin1String("values")) {
@@ -1750,7 +1830,11 @@ private:
                 if (!txt.isEmpty()) {
                     if (enc == QLatin1String("base64")) {
                         QString ignored;
-                        decodeBinaryIntoMatrix(QByteArray::fromBase64(txt.toLatin1()), mat, &ignored);
+                        if (!decodeBinaryIntoMatrix(QByteArray::fromBase64(txt.toLatin1()), mat,
+                                                    &ignored)) {
+                            invalidDims = true;
+                            mat.values.clear();
+                        }
                     } else {
                         const QStringList lines = txt.split(
                                 QRegularExpression(QStringLiteral("\\r?\\n")), Qt::SkipEmptyParts);
@@ -1760,6 +1844,13 @@ private:
                                     Qt::SkipEmptyParts);
                             if (parts.isEmpty())
                                 continue;
+                            if (parsedRowCount >= kMaxMatrixDim || parts.size() > kMaxMatrixDim
+                                || static_cast<qint64>(mat.values.size()) + parts.size()
+                                        > kMaxMatrixCells) {
+                                invalidDims = true;
+                                mat.values.clear();
+                                break;
+                            }
                             ++parsedRowCount;
                             parsedMaxCols = std::max(parsedMaxCols, parts.size());
                             for (const QString &p : parts) {
@@ -1771,6 +1862,12 @@ private:
                     }
                 }
             } else if (ctag == QLatin1String("row")) {
+                if (parsedRowCount >= kMaxMatrixDim) {
+                    invalidDims = true;
+                    mat.values.clear();
+                    xr.skipCurrentElement();
+                    continue;
+                }
                 ++parsedRowCount;
                 int c = 0;
                 while (!xr.atEnd()) {
@@ -1779,7 +1876,15 @@ private:
                         break;
                     if (t2 == QXmlStreamReader::StartElement) {
                         const QString vtag = xr.name().toString().toLower();
-                        if (vtag == QLatin1String("cell") || vtag == QLatin1String("v")) {
+                        if (!invalidDims
+                            && (vtag == QLatin1String("cell") || vtag == QLatin1String("v"))) {
+                            if (c >= kMaxMatrixDim
+                                || static_cast<qint64>(mat.values.size()) >= kMaxMatrixCells) {
+                                invalidDims = true;
+                                mat.values.clear();
+                                xr.skipCurrentElement();
+                                continue;
+                            }
                             bool ok = false;
                             const double v = xr.readElementText().trimmed().toDouble(&ok);
                             mat.values.append((ok && !isOriginMissingDouble(v)) ? v : 0.0);
@@ -1799,8 +1904,12 @@ private:
             mat.rows = parsedRowCount;
         if (mat.cols <= 0)
             mat.cols = parsedMaxCols;
-        if (mat.rows > 0 && mat.cols > 0)
+        if (!invalidDims && isValidMatrixDimensions(mat.rows, mat.cols)) {
             d_proj.matrices.append(mat);
+        } else if (invalidDims || mat.rows > 0 || mat.cols > 0 || parsedRowCount > 0
+                   || parsedMaxCols > 0) {
+            ++d_proj.skippedMatrices;
+        }
     }
 
     void parseNoteElement(QXmlStreamReader &xr, const QString &baseDir, const QString &folderPath)
@@ -2377,7 +2486,11 @@ void createFolderSubtree(ApplicationWindow *mw, Folder *parentFolder, const Opju
     if (!mw || !parentFolder)
         return;
     Folder &f = parentFolder->addChild<Folder>(node.name);
-    mw->addFolderListViewItem(&f);
+    if (FolderListItem *parentItem = parentFolder->folderListItem()) {
+        FolderListItem *fi = new FolderListItem(parentItem, &f);
+        fi->setFlags(fi->flags() | Qt::ItemIsEditable);
+        f.setFolderListItem(fi);
+    }
     folderByPath.insert(node.fullPath.toLower(), &f);
     ++folderCount;
     for (const OpjuFolderNode &child : node.children)
@@ -2408,7 +2521,11 @@ Folder *ensureFolderPath(ApplicationWindow *mw, Folder *rootFolder, const QStrin
             cur = folderByPath.value(k);
         } else {
             Folder &nf = cur->addChild<Folder>(part);
-            mw->addFolderListViewItem(&nf);
+            if (FolderListItem *parentItem = cur->folderListItem()) {
+                FolderListItem *fi = new FolderListItem(parentItem, &nf);
+                fi->setFlags(fi->flags() | Qt::ItemIsEditable);
+                nf.setFolderListItem(fi);
+            }
             folderByPath.insert(k, &nf);
             cur = &nf;
             ++folderCount;
@@ -2470,6 +2587,11 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
         }
         if (maxRows <= 0)
             maxRows = 30;
+        if (colCount > kMaxWorksheetCols || maxRows > kMaxWorksheetRows
+            || static_cast<qint64>(colCount) * static_cast<qint64>(maxRows) > kMaxWorksheetCells) {
+            ++stats.datasetsSkipped;
+            continue;
+        }
 
         const QString tblName = ws.resolvedName.isEmpty() ? ws.workbookName : ws.resolvedName;
         Table *table = mw->newTable(tblName, maxRows, colCount);
@@ -2585,7 +2707,12 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
                     }
                     if (src.decimalPlaces >= 0 || src.numericFormat != 0) {
                         if (auto *flt = dynamic_cast<Double2StringFilter *>(col->outputFilter())) {
-                            flt->setNumericFormat(src.numericFormat);
+                            char fmt = 'g';
+                            if (src.numericFormat == 1)
+                                fmt = 'f';
+                            else if (src.numericFormat == 2)
+                                fmt = 'e';
+                            flt->setNumericFormat(fmt);
                             if (src.decimalPlaces >= 0)
                                 flt->setNumDigits(src.decimalPlaces);
                         }
@@ -2619,10 +2746,11 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
     // 2. Import Matrices
     int matVisCount = 0;
     for (const OpjuMatrix &m : proj.matrices) {
-        if (m.rows <= 0 || m.cols <= 0) {
+        if (!isValidMatrixDimensions(m.rows, m.cols)) {
             ++stats.matricesSkipped;
             continue;
         }
+        const qint64 totalCells = static_cast<qint64>(m.rows) * static_cast<qint64>(m.cols);
         Matrix *mat = mw->newMatrix(m.name, m.rows, m.cols);
         if (!mat) {
             ++stats.matricesSkipped;
@@ -2635,10 +2763,20 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
         if (m.hasCoords)
             mat->setCoordinates(m.xStart, m.xEnd, m.yStart, m.yEnd);
 
-        QVector<qreal> cells(m.rows * m.cols, 0.0);
-        const int copyCount = std::min(cells.size(), m.values.size());
-        for (int i = 0; i < copyCount; ++i)
-            cells[i] = std::isfinite(m.values[i]) ? m.values[i] : 0.0;
+        QVector<qreal> cells(static_cast<int>(totalCells), 0.0);
+        const qint64 srcSize = static_cast<qint64>(m.values.size());
+        for (int r = 0; r < m.rows; ++r) {
+            const qint64 rowBase = static_cast<qint64>(r) * static_cast<qint64>(m.cols);
+            for (int c = 0; c < m.cols; ++c) {
+                const qint64 srcIdx = rowBase + static_cast<qint64>(c);
+                if (srcIdx < srcSize) {
+                    const double v = m.values[static_cast<int>(srcIdx)];
+                    const qint64 dstIdx = static_cast<qint64>(c) * static_cast<qint64>(m.rows)
+                            + static_cast<qint64>(r);
+                    cells[static_cast<int>(dstIdx)] = std::isfinite(v) ? v : 0.0;
+                }
+            }
+        }
         mat->setCells(cells);
 
         if (m.hidden) {
@@ -2720,7 +2858,7 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
                 if (cv.plotStyle == Graph::ErrorBars) {
                     const QString errShort = resolveColumnShortName(
                             table, cv.errColName.isEmpty() ? yShort : cv.errColName, false);
-                    graph->addErrorBars(QStringLiteral("%1_%2").arg(actualTbl, xShort), table,
+                    graph->addErrorBars(QStringLiteral("%1_%2").arg(actualTbl, yShort), table,
                                         QStringLiteral("%1_%2").arg(actualTbl, errShort), 1,
                                         std::max(1, static_cast<int>(std::ceil(cv.lineWidth))),
                                         std::max(3, static_cast<int>(std::ceil(cv.symbolSize))),
@@ -2906,17 +3044,22 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
 
         QHash<QString, Folder *> folderByPath;
         folderByPath.insert(QStringLiteral("/"), projectFolder);
-        for (const OpjuFolderNode &fn : proj.rootSubfolders)
-            createFolderSubtree(mw, projectFolder, fn, folderByPath, stats.foldersImported);
+        {
+            QSignalBlocker sbFolders(&mw->folders);
+            for (const OpjuFolderNode &fn : proj.rootSubfolders)
+                createFolderSubtree(mw, projectFolder, fn, folderByPath, stats.foldersImported);
 
-        for (const auto &assign : windowFolderAssignments) {
-            Folder *target = ensureFolderPath(mw, projectFolder, assign.second, folderByPath,
-                                              stats.foldersImported);
-            moveWindowToFolder(projectFolder, target, assign.first);
+            for (const auto &assign : windowFolderAssignments) {
+                Folder *target = ensureFolderPath(mw, projectFolder, assign.second, folderByPath,
+                                                  stats.foldersImported);
+                moveWindowToFolder(projectFolder, target, assign.first);
+            }
+            for (const OpjuFolderNode &fn : proj.rootSubfolders)
+                moveFolderRefWindows(projectFolder, fn, folderByPath);
         }
-        for (const OpjuFolderNode &fn : proj.rootSubfolders)
-            moveFolderRefWindows(projectFolder, fn, folderByPath);
 
+        if (!projectFolder->folders().isEmpty())
+            mw->folders.setVisible(true);
         mw->changeFolder(projectFolder, true);
     }
 
@@ -3073,7 +3216,8 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
     quint64 totalRows = 0;
     if (!readLeb128(buf, len, pos, totalRows))
         return false;
-    if (totalRows > 50000000ULL)
+    const quint64 maxRows = static_cast<quint64>(kMaxWorksheetRows);
+    if (totalRows > maxRows)
         return false;
     outValues.reserve(static_cast<int>(std::min<quint64>(totalRows, 1000000ULL)));
 
@@ -3098,6 +3242,8 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
                 if (!readLeb128(buf, len, pos, tag))
                     return false;
                 if (tag == 1ULL) {
+                    if (static_cast<quint64>(outValues.size()) >= maxRows)
+                        return false;
                     double v = qnan;
                     if (!readCpyuaConstDouble(buf, len, pos, v))
                         return false;
@@ -3105,7 +3251,8 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
                     got += 1;
                 } else if (tag & 1ULL) {
                     const quint64 rc = (tag + 1ULL) >> 1;
-                    if (pos >= len || rc > 50000000ULL)
+                    if (pos >= len || rc > maxRows
+                        || static_cast<quint64>(outValues.size()) + rc > maxRows)
                         return false;
                     const int preds = static_cast<int>(buf[pos++]);
                     if (!decodeCpyuaFpcChunk(buf, len, pos, static_cast<int>(rc), preds, outValues))
@@ -3114,7 +3261,8 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
                 } else {
                     const quint64 rc = tag >> 1;
                     double v = qnan;
-                    if (rc > 50000000ULL || !readCpyuaConstDouble(buf, len, pos, v))
+                    if (rc > maxRows || static_cast<quint64>(outValues.size()) + rc > maxRows
+                        || !readCpyuaConstDouble(buf, len, pos, v))
                         return false;
                     for (quint64 k = 0; k < rc; ++k)
                         outValues.append(v);
@@ -3123,6 +3271,8 @@ bool decodeCpyuaNumericPayload(const QByteArray &pay, QVector<double> &outValues
             }
         } else {
             // Single-row literal entry: <kind:1B> <0x00:1B> <constDouble>
+            if (static_cast<quint64>(outValues.size()) >= maxRows)
+                return false;
             const unsigned char kind = buf[pos];
             if ((kind != 0x00U && kind != 0x01U) || buf[pos + 1] != 0x00U)
                 return false;

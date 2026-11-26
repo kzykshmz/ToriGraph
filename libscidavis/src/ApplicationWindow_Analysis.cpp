@@ -3927,7 +3927,7 @@ static int recalculateAllTableFormulasBounded(ApplicationWindow *app, const QLis
     if (!app || tables.isEmpty())
         return 0;
 
-    QVector<QPair<Table *, int>> formulaCols;
+    QVector<QPair<QPointer<Table>, int>> formulaCols;
     for (Table *t : tables) {
         if (!t)
             continue;
@@ -3944,7 +3944,7 @@ static int recalculateAllTableFormulasBounded(ApplicationWindow *app, const QLis
                 }
             }
             if (hasFormula)
-                formulaCols.append(qMakePair(t, c));
+                formulaCols.append(qMakePair(QPointer<Table>(t), c));
         }
     }
     if (formulaCols.isEmpty())
@@ -3955,8 +3955,12 @@ static int recalculateAllTableFormulasBounded(ApplicationWindow *app, const QLis
     for (int pass = 0; pass < maxPasses; ++pass) {
         bool anyChanged = false;
         for (const auto &entry : formulaCols) {
-            Table *t = entry.first;
+            Table *t = entry.first.data();
+            if (!t)
+                continue;
             const int c = entry.second;
+            if (c < 0 || c >= t->numCols())
+                continue;
             Column *col = t->column(c);
             if (!col)
                 continue;
@@ -3966,9 +3970,15 @@ static int recalculateAllTableFormulasBounded(ApplicationWindow *app, const QLis
             const bool prevAuto = t->autoRecalcFormulas();
             t->setAutoRecalcFormulas(false);
             const bool ok = t->recalculate(c, false);
-            t->setAutoRecalcFormulas(prevAuto);
             QObject::disconnect(conn);
-            if (ok) {
+            t = entry.first.data();
+            if (!t)
+                continue;
+            t->setAutoRecalcFormulas(prevAuto);
+            t = entry.first.data();
+            if (!t)
+                continue;
+            if (ok && c < t->numCols()) {
                 const QString key = t->name() + QLatin1Char('_') + t->colLabel(c);
                 if (pass == 0 || colChanged)
                     updatedKeys.insert(key);
@@ -4015,20 +4025,48 @@ void ApplicationWindow::syncRecalcMenuState()
 
     const bool autoFormula = (mode == RecalcManager::Auto);
     const QList<Table *> allTables = collectAllProjectTables(this, hiddenWindows);
-    bool anyNewlyEnabledAuto = false;
+    QList<QPointer<Table>> safeTables;
+    safeTables.reserve(allTables.size());
     for (Table *t : allTables) {
+        if (t)
+            safeTables.append(QPointer<Table>(t));
+    }
+    bool anyNewlyEnabledAuto = false;
+    for (const QPointer<Table> &tp : safeTables) {
+        Table *t = tp.data();
+        if (!t)
+            continue;
         if (autoFormula && !t->autoRecalcFormulas())
             anyNewlyEnabledAuto = true;
         t->setAutoRecalcFormulas(autoFormula);
     }
-    if (anyNewlyEnabledAuto)
-        recalculateAllTableFormulasBounded(this, allTables);
+    if (anyNewlyEnabledAuto) {
+        QList<Table *> liveTables;
+        liveTables.reserve(safeTables.size());
+        for (const QPointer<Table> &tp : safeTables) {
+            if (Table *t = tp.data())
+                liveTables.append(t);
+        }
+        recalculateAllTableFormulasBounded(this, liveTables);
+    }
 }
 
 void ApplicationWindow::recalculatePendingLinksNow()
 {
     const QList<Table *> allTables = collectAllProjectTables(this, hiddenWindows);
-    const int updatedFormulas = recalculateAllTableFormulasBounded(this, allTables);
+    QList<QPointer<Table>> safeTables;
+    safeTables.reserve(allTables.size());
+    for (Table *t : allTables) {
+        if (t)
+            safeTables.append(QPointer<Table>(t));
+    }
+    QList<Table *> liveTables;
+    liveTables.reserve(safeTables.size());
+    for (const QPointer<Table> &tp : safeTables) {
+        if (Table *t = tp.data())
+            liveTables.append(t);
+    }
+    const int updatedFormulas = recalculateAllTableFormulasBounded(this, liveTables);
     const int updatedLinks = RecalcManager::instance(this)->recalculateAll();
     if (d_status_info) {
         d_status_info->setText(

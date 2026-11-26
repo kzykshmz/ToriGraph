@@ -193,8 +193,25 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
             kdeBandwidth = 1.0;
 
         const double pad = qMin(1.5 * kdeBandwidth, (dataSpan > 0.0) ? 0.16 * dataSpan : 1.0);
-        const double yLo = dat[0] - pad;
-        const double yHi = dat[size - 1] + pad;
+        const bool isLogY = yMap.transformation()
+                && yMap.transformation()->type() == QwtScaleTransformation::Log10;
+        double yLo = dat[0] - pad;
+        double yHi = dat[size - 1] + pad;
+        if (isLogY) {
+            double minPos = 0.0;
+            for (int i = 0; i < size; ++i) {
+                if (std::isfinite(dat[i]) && dat[i] > 0.0) {
+                    minPos = dat[i];
+                    break;
+                }
+            }
+            if (minPos > 0.0) {
+                if (yLo <= 0.0)
+                    yLo = qMax(1e-100, minPos * 0.5);
+                if (yHi <= yLo)
+                    yHi = qMax(yLo * 1.1, dat[size - 1]);
+            }
+        }
         const int nSteps = 64;
         QVector<double> yGrid(nSteps + 1);
         QVector<double> densities(nSteps + 1, 0.0);
@@ -212,27 +229,45 @@ void BoxCurve::drawBox(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
                 kdeMaxDensity = dens;
         }
 
-        if (kdeMaxDensity > 0.0) {
-            QPolygonF violinPoly(2 * (nSteps + 1));
+        if (kdeMaxDensity > 0.0 && std::isfinite(pxF)) {
+            QVector<QPointF> leftPts;
+            QVector<QPointF> rightPts;
+            leftPts.reserve(nSteps + 1);
+            rightPts.reserve(nSteps + 1);
             for (int k = 0; k <= nSteps; ++k) {
+                if (isLogY && yGrid[k] <= 0.0)
+                    continue;
                 const double py = yMap.xTransform(yGrid[k]);
+                if (!std::isfinite(py))
+                    continue;
                 const double dx = (densities[k] / kdeMaxDensity) * double(violin_hbw);
-                violinPoly[k] = QPointF(pxF - dx, py);
-                violinPoly[2 * nSteps + 1 - k] = QPointF(pxF + dx, py);
+                if (!std::isfinite(dx))
+                    continue;
+                leftPts.append(QPointF(pxF - dx, py));
+                rightPts.append(QPointF(pxF + dx, py));
             }
 
-            painter->save();
-            painter->setRenderHint(QPainter::Antialiasing, true);
-            QBrush vBrush = QwtPlotCurve::brush();
-            if (vBrush.style() == Qt::NoBrush) {
-                QColor fillCol = cPen.color();
-                fillCol.setAlpha(85);
-                vBrush = QBrush(fillCol, Qt::SolidPattern);
+            if (leftPts.size() >= 2) {
+                QPolygonF violinPoly;
+                violinPoly.reserve(leftPts.size() * 2);
+                for (int k = 0; k < leftPts.size(); ++k)
+                    violinPoly.append(leftPts[k]);
+                for (int k = rightPts.size() - 1; k >= 0; --k)
+                    violinPoly.append(rightPts[k]);
+
+                painter->save();
+                painter->setRenderHint(QPainter::Antialiasing, true);
+                QBrush vBrush = QwtPlotCurve::brush();
+                if (vBrush.style() == Qt::NoBrush) {
+                    QColor fillCol = cPen.color();
+                    fillCol.setAlpha(85);
+                    vBrush = QBrush(fillCol, Qt::SolidPattern);
+                }
+                painter->setBrush(vBrush);
+                painter->setPen(cPen);
+                painter->drawPolygon(violinPoly);
+                painter->restore();
             }
-            painter->setBrush(vBrush);
-            painter->setPen(cPen);
-            painter->drawPolygon(violinPoly);
-            painter->restore();
         }
     }
 

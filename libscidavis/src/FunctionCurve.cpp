@@ -33,6 +33,7 @@
 #include <QMessageBox>
 #include <QScopedPointer>
 #include <cmath>
+#include <limits>
 
 // FIXME: While FunctionCurve itself supports arbitrary scripting
 // interpreters now, fit curves assume muParser in many formulas (using
@@ -128,9 +129,10 @@ bool FunctionCurve::loadData(int points)
         // x = from + i * step, as Fit::generateX makes the points of a fit curve: adding the step
         // up gathered rounding errors, so a fit curve reopened from its formula was sampled at
         // slightly other x than the curve that was saved.
+        const double kNaN = std::numeric_limits<double>::quiet_NaN();
         for (int i = 0; i < points; i++) {
             const double x = d_from + i * step;
-            X[i] = x;
+            X[i] = std::isfinite(x) ? x : kNaN;
             script->setDouble(x, d_variable.toUtf8().constData());
             QVariant result = script->eval();
             if (result.type() != QVariant::Double) {
@@ -138,7 +140,8 @@ bool FunctionCurve::loadData(int points)
                 delete[] Y;
                 return false;
             }
-            Y[i] = result.toDouble();
+            const double yVal = result.toDouble();
+            Y[i] = std::isfinite(yVal) ? yVal : kNaN;
         }
         break;
     }
@@ -151,6 +154,7 @@ bool FunctionCurve::loadData(int points)
             delete[] Y;
             return dataSize() > 0;
         }
+        const double kNaN = std::numeric_limits<double>::quiet_NaN();
         for (int i = 0; i < points; i++) {
             const double par = d_from + i * step;
             script_x->setDouble(par, d_variable.toUtf8().constData());
@@ -163,12 +167,18 @@ bool FunctionCurve::loadData(int points)
                 return false;
             }
             if (d_function_type == Polar) {
-                X[i] = result_x.toDouble() * cos(result_y.toDouble());
-                Y[i] = result_x.toDouble() * sin(result_y.toDouble());
+                const double r = result_x.toDouble();
+                const double theta = result_y.toDouble();
+                X[i] = r * cos(theta);
+                Y[i] = r * sin(theta);
             } else {
                 X[i] = result_x.toDouble();
                 Y[i] = result_y.toDouble();
             }
+            if (!std::isfinite(X[i]))
+                X[i] = kNaN;
+            if (!std::isfinite(Y[i]))
+                Y[i] = kNaN;
         }
         break;
     }
@@ -177,6 +187,63 @@ bool FunctionCurve::loadData(int points)
     delete[] X;
     delete[] Y;
     return true;
+}
+
+QwtDoubleRect FunctionCurve::boundingRect() const
+{
+    const int n = dataSize();
+    if (n <= 0)
+        return QwtDoubleRect(1.0, 1.0, -2.0, -2.0); // invalid
+
+    bool any = false;
+    double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double vx = x(i);
+        const double vy = y(i);
+        if (!std::isfinite(vx) || !std::isfinite(vy))
+            continue;
+        if (!any) {
+            minX = maxX = vx;
+            minY = maxY = vy;
+            any = true;
+        } else {
+            if (vx < minX)
+                minX = vx;
+            if (vx > maxX)
+                maxX = vx;
+            if (vy < minY)
+                minY = vy;
+            if (vy > maxY)
+                maxY = vy;
+        }
+    }
+    if (!any)
+        return QwtDoubleRect(1.0, 1.0, -2.0, -2.0); // invalid
+    return QwtDoubleRect(minX, minY, maxX - minX, maxY - minY);
+}
+
+void FunctionCurve::drawCurve(QPainter *p, int style, const QwtScaleMap &xMap,
+                              const QwtScaleMap &yMap, int from, int to) const
+{
+    if (!p || dataSize() <= 0)
+        return;
+
+    const int n = dataSize();
+    const int startIdx = qMax(0, from);
+    const int endIdx = (to < 0) ? (n - 1) : qMin(to, n - 1);
+    if (startIdx > endIdx)
+        return;
+
+    int segStart = -1;
+    for (int i = startIdx; i <= endIdx + 1; ++i) {
+        const bool invalid = (i > endIdx) || !std::isfinite(x(i)) || !std::isfinite(y(i));
+        if (!invalid && segStart < 0) {
+            segStart = i;
+        } else if (invalid && segStart >= 0) {
+            PlotCurve::drawCurve(p, style, xMap, yMap, segStart, i - 1);
+            segStart = -1;
+        }
+    }
 }
 
 void FunctionCurve::setSuppressScriptErrors(bool suppress)

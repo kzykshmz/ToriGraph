@@ -28,18 +28,42 @@
  ***************************************************************************/
 
 #include "ImageMarker.h"
+#include <QFileInfo>
+#include <QImage>
 #include <QPainter>
 #include <QImageReader>
 
 ImageMarker::ImageMarker(const QString &fn) : d_pos(QPoint(0, 0)), d_x_right(0), d_y_bottom(0)
 {
-    QList<QByteArray> lst = QImageReader::supportedImageFormats();
-    for (int i = 0; i < (int)lst.count(); i++) {
-        if (fn.contains("." + lst[i])) {
-            d_pic.load(fn, lst[i], Qt::AutoColor);
+    const QByteArray suffix = QFileInfo(fn).suffix().toLower().toLatin1();
+    const QList<QByteArray> lst = QImageReader::supportedImageFormats();
+    bool loaded = false;
+    if (!suffix.isEmpty()) {
+        for (int i = 0; i < (int)lst.count(); i++) {
+            if (lst[i].toLower() == suffix) {
+                loaded = d_pic.load(fn, lst[i].constData(), Qt::AutoColor);
+                if (loaded) {
+                    d_size = d_pic.size();
+                    d_file_name = fn;
+                }
+                break;
+            }
+        }
+    }
+    if (!loaded && !fn.isEmpty()) {
+        loaded = d_pic.load(fn);
+        if (!loaded) {
+            QImageReader reader(fn);
+            reader.setDecideFormatFromContent(true);
+            const QImage img = reader.read();
+            if (!img.isNull()) {
+                d_pic = QPixmap::fromImage(img);
+                loaded = !d_pic.isNull();
+            }
+        }
+        if (loaded) {
             d_size = d_pic.size();
             d_file_name = fn;
-            break;
         }
     }
 }
@@ -52,7 +76,7 @@ void ImageMarker::draw(QPainter *p, const QwtScaleMap &xMap, const QwtScaleMap &
     const int x1 = xMap.transform(d_x_right);
     const int y1 = yMap.transform(d_y_bottom);
 
-    p->drawPixmap(QRect(x0, y0, abs(x1 - x0), abs(y1 - y0)), d_pic);
+    p->drawPixmap(QRect(qMin(x0, x1), qMin(y0, y1), abs(x1 - x0), abs(y1 - y0)), d_pic);
 }
 
 void ImageMarker::setSize(const QSize &size)
@@ -142,5 +166,5 @@ QRect ImageMarker::rect() const
     const int x1 = xMap.transform(d_x_right);
     const int y1 = yMap.transform(d_y_bottom);
 
-    return QRect(x0, y0, abs(x1 - x0), abs(y1 - y0));
+    return QRect(qMin(x0, x1), qMin(y0, y1), abs(x1 - x0), abs(y1 - y0));
 }

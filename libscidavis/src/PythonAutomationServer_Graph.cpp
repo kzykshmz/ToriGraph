@@ -5630,9 +5630,22 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
             g3d->setTitle(tStr, tCol, tFont);
         }
 
-        if (params.value(QStringLiteral("axes_labels")).isArray()) {
+        if (params.contains(QStringLiteral("axes_labels"))
+            && !params.value(QStringLiteral("axes_labels")).isNull()) {
+            const QJsonValue alv = params.value(QStringLiteral("axes_labels"));
+            if (!alv.isArray()) {
+                throwInvalidParams(QStringLiteral(
+                        "graph.set_3d_options 'axes_labels' must be a 3-element array [x, y, z]."));
+            }
+            const QJsonArray ala = alv.toArray();
+            if (ala.size() != 3) {
+                throwInvalidParams(QStringLiteral(
+                        "graph.set_3d_options 'axes_labels' requires exactly 3 labels [x, y, z] (got %1).")
+                                           .arg(ala.size()));
+            }
             QStringList lbls;
-            for (const QJsonValue &lv : params.value(QStringLiteral("axes_labels")).toArray())
+            lbls.reserve(3);
+            for (const QJsonValue &lv : ala)
                 lbls << lv.toString();
             g3d->setAxesLabels(lbls);
         }
@@ -5650,29 +5663,9 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 : params.value(QStringLiteral("palette")).toString().trimmed();
         if (!cmapStr.isEmpty() && g3d->sp) {
             bool isGray = false;
-            const auto preset = parseColorMapPreset(cmapStr, &isGray, true);
+            (void)parseColorMapPreset(cmapStr, &isGray, true);
             const bool rev = params.value(QStringLiteral("reverse_colormap")).toBool(false);
-            QwtLinearColorMap lmap = isGray
-                    ? QwtLinearColorMap(Qt::black, Qt::white)
-                    : Spectrogram::presetColorMap(preset, rev);
-            if (isGray && rev)
-                lmap = QwtLinearColorMap(Qt::white, Qt::black);
-            const QwtDoubleInterval unitIv(0.0, 1.0);
-            Qwt3D::ColorVector cv;
-            cv.reserve(256);
-            const double curAlpha = g3d->transparency();
-            for (int i = 0; i < 256; ++i) {
-                const QRgb qrgb = lmap.rgb(unitIv, double(i) / 255.0);
-                Qwt3D::RGBA rgba;
-                rgba.r = qRed(qrgb) / 255.0;
-                rgba.g = qGreen(qrgb) / 255.0;
-                rgba.b = qBlue(qrgb) / 255.0;
-                rgba.a = curAlpha;
-                cv.push_back(rgba);
-            }
-            auto *sc = new Qwt3D::StandardColor(g3d->sp);
-            sc->setColorVector(cv);
-            g3d->sp->setDataColor(sc);
+            g3d->setDataColorMapPreset(cmapStr, rev);
             g3d->sp->updateData();
             if (g3d->isLegendOn()) {
                 g3d->sp->showColorLegend(false);

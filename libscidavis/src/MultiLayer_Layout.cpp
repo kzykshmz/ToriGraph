@@ -2312,9 +2312,23 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, 
             if (xMax > xMin + 1e-15) {
                 double yMin = 0.0, yMax = 0.0;
                 if (scanYInXWindow(xMin, xMax, yMin, yMax)) {
-                    const double padY = (yMax > yMin) ? 0.08 * (yMax - yMin)
-                                                      : (qAbs(yMax) * 0.05 + 1e-6);
-                    effectiveRoi = QRectF(QPointF(xMin, yMin - padY), QPointF(xMax, yMax + padY));
+                    const bool logY = srcPlot
+                            && Plot::isLog10ScaleEngine(srcPlot->axisScaleEngine(QwtPlot::yLeft));
+                    double yLo = yMin;
+                    double yHi = yMax;
+                    if (logY && yMin > 0.0 && yMax > 0.0) {
+                        const double ly0 = std::log10(yMin);
+                        const double ly1 = std::log10(yMax);
+                        const double lSpan = qMax(0.05, ly1 - ly0);
+                        yLo = std::pow(10.0, ly0 - 0.08 * lSpan);
+                        yHi = std::pow(10.0, ly1 + 0.08 * lSpan);
+                    } else {
+                        const double padY = (yMax > yMin) ? 0.08 * (yMax - yMin)
+                                                          : (qAbs(yMax) * 0.05 + 1e-6);
+                        yLo = yMin - padY;
+                        yHi = yMax + padY;
+                    }
+                    effectiveRoi = QRectF(QPointF(xMin, yLo), QPointF(xMax, yHi));
                 } else {
                     double fy0 = 0.0, fy1 = 1.0;
                     fallbackAxisSubRange(QwtPlot::yLeft, 0.30, 0.70, fy0, fy1);
@@ -2468,15 +2482,16 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, 
 
         DataCurve *dc = dynamic_cast<DataCurve *>(srcCurve);
         if (dc && dc->table()) {
-            inset->insertCurve(dc->table(), dc->xColumnName(), dc->yColumnName(), cType,
-                               dc->startRow(), dc->endRow());
-            if (QwtPlotCurve *dstCurve = inset->curve(inset->curves() - 1)) {
-                dstCurve->setPen(srcCurve->pen());
-                dstCurve->setSymbol(srcCurve->symbol());
-                dstCurve->setBrush(srcCurve->brush());
-                dstCurve->setStyle(srcCurve->style());
-                if (PlotCurve *dstPc = dynamic_cast<PlotCurve *>(dstCurve))
-                    dstPc->setSymbolSkip(dc->symbolSkip());
+            if (inset->insertCurve(dc->table(), dc->xColumnName(), dc->yColumnName(), cType,
+                                   dc->startRow(), dc->endRow())) {
+                if (QwtPlotCurve *dstCurve = inset->curve(inset->curves() - 1)) {
+                    dstCurve->setPen(srcCurve->pen());
+                    dstCurve->setSymbol(srcCurve->symbol());
+                    dstCurve->setBrush(srcCurve->brush());
+                    dstCurve->setStyle(srcCurve->style());
+                    if (PlotCurve *dstPc = dynamic_cast<PlotCurve *>(dstCurve))
+                        dstPc->setSymbolSkip(dc->symbolSkip());
+                }
             }
         } else if (auto *srcFc = dynamic_cast<FunctionCurve *>(srcCurve)) {
             const int n = srcFc->dataSize();
@@ -2527,12 +2542,14 @@ Graph *MultiLayer::addInsetLayer(Graph *sourceLayer, const QRectF &roiDataRect, 
         auto *srcErr = dynamic_cast<QwtErrorPlotCurve *>(sourceLayer->curve(i));
         if (!srcErr || !srcErr->table() || !srcErr->masterCurve())
             continue;
-        inset->addErrorBars(srcErr->masterCurve()->title().text(), srcErr->table(),
-                            srcErr->title().text(), srcErr->direction(), qMax(1, srcErr->width()),
-                            srcErr->capLength(), srcErr->color(), srcErr->throughSymbol(),
-                            srcErr->minusSide(), srcErr->plusSide());
-        if (QwtPlotCurve *dstErr = inset->curve(inset->curves() - 1))
-            dstErr->setVisible(srcErr->isVisible());
+        if (inset->addErrorBars(srcErr->masterCurve()->title().text(), srcErr->table(),
+                                srcErr->title().text(), srcErr->direction(),
+                                qMax(1, srcErr->width()), srcErr->capLength(), srcErr->color(),
+                                srcErr->throughSymbol(), srcErr->minusSide(),
+                                srcErr->plusSide())) {
+            if (QwtPlotCurve *dstErr = inset->curve(inset->curves() - 1))
+                dstErr->setVisible(srcErr->isVisible());
+        }
     }
 
     inset->removeLegend();

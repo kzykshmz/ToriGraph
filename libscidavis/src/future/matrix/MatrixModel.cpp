@@ -124,8 +124,7 @@ QVariant MatrixModel::headerData(int section, Qt::Orientation orientation, int r
             double step = 0.0;
             if (d_matrix->rowCount() > 1)
                 step = diff / double(d_matrix->rowCount() - 1);
-            // TODO: implement decent double == 0 check
-            if (diff < 1e-10)
+            if (diff == 0.0)
                 result += QLocale().toString(d_matrix->yStart(), d_matrix->numericFormat(),
                                              d_matrix->displayedDigits());
             else

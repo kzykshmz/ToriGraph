@@ -189,16 +189,17 @@ public:
     static bool inversePoleProjection(double x, double y, PoleProjection proj, double *alphaDeg,
                                       double *betaDeg, bool betaZeroAtTop = false,
                                       bool clockwise = false);
+    static PoleFigureOptions defaultPoleFigureOptions();
     //! Input: alpha (tilt), beta (rotation) and intensity columns on a regular alpha-beta grid
     //! (typical XRD pole figure scan; beta 0 and 360 are merged).
     static PoleFigureResult plotPoleFigure(ApplicationWindow *app, Table *t,
                                            const QString &alphaCol, const QString &betaCol,
                                            const QString &intensityCol,
-                                           const PoleFigureOptions &opt = PoleFigureOptions(),
+                                           const PoleFigureOptions &opt = defaultPoleFigureOptions(),
                                            bool createPlot = true);
     //! Input matrix: rows = alpha (matrix Y coordinates), columns = beta (matrix X coordinates).
     static PoleFigureResult plotPoleFigureFromMatrix(ApplicationWindow *app, Matrix *m,
-                                                     const PoleFigureOptions &opt = PoleFigureOptions(),
+                                                     const PoleFigureOptions &opt = defaultPoleFigureOptions(),
                                                      bool createPlot = true);
 
     //! Restores a <ToriDensity2D .../> or <ToriPoleFigure .../> graph tag (project files).
@@ -221,5 +222,10 @@ public:
     static void showDensity2DDialog(ApplicationWindow *app);
     static void showPoleFigureDialog(ApplicationWindow *app);
 };
+
+inline ExtraPlotTypes::PoleFigureOptions ExtraPlotTypes::defaultPoleFigureOptions()
+{
+    return PoleFigureOptions();
+}
 
 #endif // EXTRA_PLOT_TYPES_H

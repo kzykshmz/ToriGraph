@@ -157,6 +157,15 @@ QString WorkbookManager::sheetLabel(const QString &book, const QString &tableNam
         if (sep == QLatin1Char('_') || sep == QLatin1Char('-'))
             return tableName.mid(book.size() + 1);
     }
+    if (!book.isEmpty()) {
+        // ApplicationWindow::renameWindow normalizes '_' to '-', turning "<a_b>_Raw" into "<a-b>-Raw".
+        const QString hyBook = QString(book).replace(QLatin1Char('_'), QLatin1Char('-'));
+        if (hyBook != book && tableName.size() > hyBook.size() + 1 && tableName.startsWith(hyBook)) {
+            const QChar sep = tableName.at(hyBook.size());
+            if (sep == QLatin1Char('_') || sep == QLatin1Char('-'))
+                return tableName.mid(hyBook.size() + 1);
+        }
+    }
     return tableName;
 }
 
@@ -256,6 +265,8 @@ QString WorkbookManager::uniqueBookName(const QString &base) const
                 || bk.prefix.compare(cand, Qt::CaseInsensitive) == 0)
                 return true;
         }
+        if (d_app && d_app->alreadyUsedName(cand))
+            return true;
         return false;
     };
     if (!nameOrPrefixUsed(b))
@@ -284,14 +295,25 @@ bool WorkbookManager::isShown(Table *t) const
 
 QString WorkbookManager::nextSheetLabel(const Book &b) const
 {
+    const QString hyPrefix = QString(b.prefix).replace(QLatin1Char('_'), QLatin1Char('-'));
+    const bool hasHyPrefix = (hyPrefix != b.prefix);
     if (d_create_book_cache_active) {
         while (true) {
             const QString lbl = QStringLiteral("Sheet%1").arg(d_batch_next_sheet_num++);
             const QString fullU = b.prefix + QLatin1Char('_') + lbl;
             const QString fullH = b.prefix + QLatin1Char('-') + lbl;
+            const QString hyU = hasHyPrefix ? (hyPrefix + QLatin1Char('_') + lbl) : QString();
+            const QString hyH = hasHyPrefix ? (hyPrefix + QLatin1Char('-') + lbl) : QString();
             if (!d_batch_used_names_lower.contains(fullU.toLower())
                 && !d_batch_used_names_lower.contains(fullH.toLower())
-                && (!d_app || (!d_app->alreadyUsedName(fullU) && !d_app->alreadyUsedName(fullH)))) {
+                && (!hasHyPrefix
+                    || (!d_batch_used_names_lower.contains(hyU.toLower())
+                        && !d_batch_used_names_lower.contains(hyH.toLower())))
+                && (!d_app
+                    || (!d_app->alreadyUsedName(fullU) && !d_app->alreadyUsedName(fullH)
+                        && (!hasHyPrefix
+                            || (!d_app->alreadyUsedName(hyU)
+                                && !d_app->alreadyUsedName(hyH)))))) {
                 return lbl;
             }
         }
@@ -303,8 +325,12 @@ QString WorkbookManager::nextSheetLabel(const Book &b) const
     for (int n = 1;; ++n) {
         const QString lbl = QStringLiteral("Sheet%1").arg(n);
         if (!used.contains(lbl.toLower())
-            && !d_app->alreadyUsedName(b.prefix + QLatin1Char('_') + lbl)
-            && !d_app->alreadyUsedName(b.prefix + QLatin1Char('-') + lbl))
+            && (!d_app
+                || (!d_app->alreadyUsedName(b.prefix + QLatin1Char('_') + lbl)
+                    && !d_app->alreadyUsedName(b.prefix + QLatin1Char('-') + lbl)
+                    && (!hasHyPrefix
+                        || (!d_app->alreadyUsedName(hyPrefix + QLatin1Char('_') + lbl)
+                            && !d_app->alreadyUsedName(hyPrefix + QLatin1Char('-') + lbl))))))
             return lbl;
     }
 }
@@ -438,13 +464,14 @@ void WorkbookManager::removeSheetInternal(QObject *sheet, bool destroyed)
         Book &b = d_books[bi];
         int idx = -1;
         for (int i = 0; i < b.sheets.size(); ++i)
-            if (static_cast<QObject *>(b.sheets.at(i)) == sheet) {
+            if (static_cast<const void *>(b.sheets.at(i)) == static_cast<const void *>(sheet)) {
                 idx = i;
                 break;
             }
         if (idx < 0)
             continue;
-        const bool wasCurrent = static_cast<QObject *>(b.current) == sheet;
+        const bool wasCurrent =
+                static_cast<const void *>(b.current) == static_cast<const void *>(sheet);
         const bool wasShown = !d_user_hidden.value(sheet, true);
         const QRect geom = d_last_geometry.value(sheet);
         const bool wasMax = d_last_maximized.value(sheet, false);
@@ -626,7 +653,30 @@ QString WorkbookManager::createBookFromTables(const QString &name, const QList<T
         }
     }
     Book nb;
-    nb.name = uniqueBookName(name.isEmpty() ? tables.first()->name() : name);
+    {
+        QString b = sanitizeName(name.isEmpty() ? tables.first()->name() : name);
+        if (b.isEmpty())
+            b = QStringLiteral("Book");
+        auto taken = [this, &tables](const QString &cand) {
+            for (const Book &bk : d_books) {
+                if (bk.name.compare(cand, Qt::CaseInsensitive) == 0
+                    || bk.prefix.compare(cand, Qt::CaseInsensitive) == 0)
+                    return true;
+            }
+            return nameTakenByOtherWindow(d_app, cand, tables, nullptr);
+        };
+        if (!taken(b)) {
+            nb.name = b;
+        } else {
+            for (int i = 2;; ++i) {
+                const QString cand = b + QString::number(i);
+                if (!taken(cand)) {
+                    nb.name = cand;
+                    break;
+                }
+            }
+        }
+    }
     nb.prefix = sanitizeName(name.isEmpty() ? tables.first()->name() : name);
     if (nb.prefix.isEmpty())
         nb.prefix = nb.name;
@@ -673,21 +723,40 @@ Table *WorkbookManager::addSheet(const QString &book, const QString &label, int 
     QString lbl = sanitizeName(label);
     if (lbl.isEmpty())
         lbl = nextSheetLabel(*b);
-    auto sheetNameConflicts = [this, b](const QString &candLbl) {
+    const QString hyPrefix = QString(b->prefix).replace(QLatin1Char('_'), QLatin1Char('-'));
+    const bool hasHyPrefix = (hyPrefix != b->prefix);
+    auto sheetNameConflicts = [this, b, &hyPrefix, hasHyPrefix](const QString &candLbl) {
         const QString fullU = b->prefix + QLatin1Char('_') + candLbl;
         const QString fullH = b->prefix + QLatin1Char('-') + candLbl;
+        const QString hyU = hasHyPrefix ? (hyPrefix + QLatin1Char('_') + candLbl) : QString();
+        const QString hyH = hasHyPrefix ? (hyPrefix + QLatin1Char('-') + candLbl) : QString();
+        const QString hyFull = QString(fullU).replace(QLatin1Char('_'), QLatin1Char('-'));
         if (d_create_book_cache_active) {
             if (d_batch_used_names_lower.contains(fullU.toLower())
-                || d_batch_used_names_lower.contains(fullH.toLower())) {
+                || d_batch_used_names_lower.contains(fullH.toLower())
+                || (hyFull != fullH && d_batch_used_names_lower.contains(hyFull.toLower()))
+                || (hasHyPrefix
+                    && (d_batch_used_names_lower.contains(hyU.toLower())
+                        || (hyH != hyFull && d_batch_used_names_lower.contains(hyH.toLower()))))) {
                 return true;
             }
-            return d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH);
+            return d_app
+                    && (d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH)
+                        || (hyFull != fullH && d_app->alreadyUsedName(hyFull))
+                        || (hasHyPrefix
+                            && (d_app->alreadyUsedName(hyU)
+                                || (hyH != hyFull && d_app->alreadyUsedName(hyH)))));
         }
         for (Table *s : b->sheets) {
             if (s && sheetLabel(b->prefix, s->name()).compare(candLbl, Qt::CaseInsensitive) == 0)
                 return true;
         }
-        return d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH);
+        return d_app
+                && (d_app->alreadyUsedName(fullU) || d_app->alreadyUsedName(fullH)
+                    || (hyFull != fullH && d_app->alreadyUsedName(hyFull))
+                    || (hasHyPrefix
+                        && (d_app->alreadyUsedName(hyU)
+                            || (hyH != hyFull && d_app->alreadyUsedName(hyH)))));
     };
     QString actualLbl = lbl;
     for (int n = 2; sheetNameConflicts(actualLbl); ++n)
@@ -896,30 +965,52 @@ bool WorkbookManager::renameSheet(Table *t, const QString &label, QString *err)
     }
     const QString bookName = b->name;
     const QString prefix = b->prefix;
-    const QString curLabel = sheetLabel(prefix, t->name());
+    const QString curName = t->name();
+    const QString curLabel = sheetLabel(prefix, curName);
     if (lbl == curLabel)
         return true;
-    const bool prefixed = curLabel != t->name();
+    const bool prefixed = curLabel != curName;
+    const QString newName = prefixed ? prefix + QLatin1Char('_') + lbl : lbl;
+    // ApplicationWindow::renameWindow normalizes '_' to '-', so effectiveNew is the actual
+    // window name that renameWindow will assign.
+    const QString effectiveNew = QString(newName).replace(QLatin1Char('_'), QLatin1Char('-'));
+    const QString effectiveLbl = QString(lbl).replace(QLatin1Char('_'), QLatin1Char('-'));
+    const QString effectiveResultLabel = sheetLabel(prefix, effectiveNew);
     for (Table *s : b->sheets) {
-        if (s && s != t && sheetLabel(prefix, s->name()).compare(lbl, Qt::CaseInsensitive) == 0) {
+        if (!s || s == t)
+            continue;
+        const QString sName = s->name();
+        const QString sLabel = sheetLabel(prefix, sName);
+        if (sLabel.compare(lbl, Qt::CaseInsensitive) == 0
+            || sLabel.compare(effectiveLbl, Qt::CaseInsensitive) == 0
+            || sLabel.compare(effectiveResultLabel, Qt::CaseInsensitive) == 0
+            || sName.compare(newName, Qt::CaseInsensitive) == 0
+            || sName.compare(effectiveNew, Qt::CaseInsensitive) == 0) {
             setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
                                 .arg(lbl));
             return false;
         }
     }
-    if (prefixed && d_app) {
+    if (newName == curName || effectiveNew == curName)
+        return true;
+    if (!d_app) {
+        setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
+                            .arg(effectiveNew));
+        return false;
+    }
+    bool nameConflict = (newName != curName && d_app->alreadyUsedName(newName))
+            || (effectiveNew != curName && d_app->alreadyUsedName(effectiveNew));
+    if (!nameConflict && prefixed) {
         const QString altU = prefix + QLatin1Char('_') + lbl;
         const QString altH = prefix + QLatin1Char('-') + lbl;
-        if ((altU != t->name() && d_app->alreadyUsedName(altU))
-            || (altH != t->name() && d_app->alreadyUsedName(altH))) {
-            setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
-                                .arg(altH));
-            return false;
-        }
+        nameConflict = (altU != curName && d_app->alreadyUsedName(altU))
+                || (altH != curName && d_app->alreadyUsedName(altH));
     }
-    const QString newName = prefixed ? prefix + QLatin1Char('_') + lbl : lbl;
-    if (newName == t->name())
-        return true;
+    if (nameConflict) {
+        setErr(err, wbTr("The sheet could not be renamed to %1 (the name is invalid or already used).")
+                            .arg(effectiveNew));
+        return false;
+    }
     // renameWindow -> Table::handleAspectDescriptionChange also rewrites the formula references
     // of the other tables (one undo step with the rename).
     if (!d_app->renameWindow(t, newName)) {
@@ -953,7 +1044,15 @@ bool WorkbookManager::renameBook(const QString &book, const QString &newName, QS
         return false;
     // The sheets keep their table names (and so every graph / formula reference); the old
     // name stays the prefix that is left out of the tab labels.
+    const QString oldName = b->name;
     b->name = nn;
+    for (auto it = d_archived_sheets.begin(); it != d_archived_sheets.end(); ++it) {
+        if (it.value().bookName == oldName) {
+            it.value().bookName = nn;
+            if (QObject *obj = it.key())
+                obj->setProperty("_tg_archived_book", nn);
+        }
+    }
     refreshBars(nn);
     refreshExplorer();
     d_app->modifiedProject();
@@ -1260,20 +1359,26 @@ void WorkbookManager::onTableClosed(Table *t, bool preserveForRedo)
         arch.index = b->sheets.indexOf(t);
         arch.wasCurrent = (b->current == t);
         d_archived_sheets.insert(t, arch);
+        t->setProperty("_tg_archived_book", b->name);
         removeSheetInternal(t, false);
         connect(t, &QObject::destroyed, this, [this](QObject *o) {
             d_archived_sheets.remove(o);
         });
     } else {
         d_archived_sheets.remove(t);
+        t->setProperty("_tg_archived_book", QVariant());
         removeSheetInternal(t, false);
     }
 }
 
 void WorkbookManager::onTableReadded(Table *t)
 {
-    if (!t || d_shutdown || !d_archived_sheets.contains(t))
+    if (!t || d_shutdown || !d_archived_sheets.contains(t)) {
+        if (t)
+            t->setProperty("_tg_archived_book", QVariant());
         return;
+    }
+    t->setProperty("_tg_archived_book", QVariant());
     const ArchivedSheet arch = d_archived_sheets.take(t);
     if (bookFor(t))
         return;
@@ -1300,7 +1405,29 @@ void WorkbookManager::onTableReadded(Table *t)
         refreshExplorer();
     } else {
         Book nb;
-        nb.name = uniqueBookName(arch.bookName.isEmpty() ? QStringLiteral("Book") : arch.bookName);
+        const QList<Table *> ownSheets { t };
+        QString base = sanitizeName(arch.bookName.isEmpty() ? QStringLiteral("Book") : arch.bookName);
+        if (base.isEmpty())
+            base = QStringLiteral("Book");
+        auto taken = [this, &ownSheets](const QString &cand) {
+            for (const Book &bk : d_books) {
+                if (bk.name.compare(cand, Qt::CaseInsensitive) == 0
+                    || bk.prefix.compare(cand, Qt::CaseInsensitive) == 0)
+                    return true;
+            }
+            return nameTakenByOtherWindow(d_app, cand, ownSheets, nullptr);
+        };
+        if (!taken(base)) {
+            nb.name = base;
+        } else {
+            for (int i = 2;; ++i) {
+                const QString cand = base + QString::number(i);
+                if (!taken(cand)) {
+                    nb.name = cand;
+                    break;
+                }
+            }
+        }
         nb.prefix = arch.bookPrefix.isEmpty() ? nb.name : arch.bookPrefix;
         nb.sheets << t;
         nb.current = t;
@@ -1860,10 +1987,6 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
         return tablesInFolder.value(n, nullptr);
     };
     Book nb;
-    nb.name = uniqueBookName(name.isEmpty() ? QStringLiteral("Book") : name);
-    nb.prefix = sanitizeName(prefix.isEmpty() ? name : prefix);
-    if (nb.prefix.isEmpty())
-        nb.prefix = nb.name;
     QSet<Table *> seenInBook;
     seenInBook.reserve(sheetNames.size());
     for (const QString &sn : sheetNames) {
@@ -1875,6 +1998,33 @@ bool WorkbookManager::restoreFromLine(const QString &line, Folder *folder,
     }
     if (nb.sheets.isEmpty())
         return false;
+    {
+        QString b = sanitizeName(name.isEmpty() ? QStringLiteral("Book") : name);
+        if (b.isEmpty())
+            b = QStringLiteral("Book");
+        auto taken = [this, &nb](const QString &cand) {
+            for (const Book &bk : d_books) {
+                if (bk.name.compare(cand, Qt::CaseInsensitive) == 0
+                    || bk.prefix.compare(cand, Qt::CaseInsensitive) == 0)
+                    return true;
+            }
+            return nameTakenByOtherWindow(d_app, cand, nb.sheets, nullptr);
+        };
+        if (!taken(b)) {
+            nb.name = b;
+        } else {
+            for (int i = 2;; ++i) {
+                const QString cand = b + QString::number(i);
+                if (!taken(cand)) {
+                    nb.name = cand;
+                    break;
+                }
+            }
+        }
+    }
+    nb.prefix = sanitizeName(prefix.isEmpty() ? name : prefix);
+    if (nb.prefix.isEmpty())
+        nb.prefix = nb.name;
     nb.current = findTable(mapped(current));
     if (!nb.current || !seenInBook.contains(nb.current))
         nb.current = nb.sheets.first();

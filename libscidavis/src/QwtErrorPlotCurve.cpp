@@ -119,9 +119,26 @@ void QwtErrorPlotCurve::drawErrorBand(QPainter *painter, const QwtScaleMap &xMap
         lower.clear();
     };
 
+    Column *mXCol = nullptr;
+    Column *mYCol = nullptr;
+    const bool mHasMasks = d_master_curve->hasAnyMaskedPoints();
+    if (mHasMasks)
+        d_master_curve->resolveColumns(mXCol, mYCol);
+    Column *ebXCol = nullptr;
+    Column *ebYCol = nullptr;
+    const bool ebHasMasks = hasAnyMaskedPoints();
+    if (ebHasMasks)
+        resolveColumns(ebXCol, ebYCol);
+
     bool hasPrev = false;
     double prevVx = 0.0, prevVy = 0.0, prevIndPx = 0.0;
     for (int i = from; i <= to && i < err.size(); i++) {
+        if ((mHasMasks && d_master_curve->isPointMaskedFast(i, mXCol, mYCol))
+            || (ebHasMasks && isPointMaskedFast(i, ebXCol, ebYCol))) {
+            flush();
+            hasPrev = false;
+            continue;
+        }
         const double vx = x(i);
         const double vy = y(i);
         const double v = vertical ? vy : vx;
@@ -245,6 +262,17 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     const double halfSym = 0.5 * sh;
     const AxisBreakBands brk = axisBreakBands(xMap, yMap);
 
+    Column *mXCol = nullptr;
+    Column *mYCol = nullptr;
+    const bool mHasMasks = d_master_curve->hasAnyMaskedPoints();
+    if (mHasMasks)
+        d_master_curve->resolveColumns(mXCol, mYCol);
+    Column *ebXCol = nullptr;
+    Column *ebYCol = nullptr;
+    const bool ebHasMasks = hasAnyMaskedPoints();
+    if (ebHasMasks)
+        resolveColumns(ebXCol, ebYCol);
+
     QVector<QLineF> segs;
     segs.reserve(4);
     auto drawBreakAwareLine = [&](const QPointF &a, const QPointF &b) {
@@ -259,6 +287,9 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
     };
 
     for (int i = from; i <= to && i < err.size(); i++) {
+        if ((mHasMasks && d_master_curve->isPointMaskedFast(i, mXCol, mYCol))
+            || (ebHasMasks && isPointMaskedFast(i, ebXCol, ebYCol)))
+            continue;
         const double vx = x(i) + d_xOffset;
         const double vy = y(i) + d_yOffset;
         if (brk.valueInGap(vx, vy))
@@ -271,15 +302,15 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
             continue;
 
         if (type == Vertical) {
-            const double yPlusVal = y(i) + err[i];
-            const double yMinusVal = y(i) - err[i];
+            const double yPlusVal = vy + err[i];
+            const double yMinusVal = vy - err[i];
             double y_plus = yMap.xTransform(yPlusVal);
             double y_minus = yMap.xTransform(yMinusVal);
             bool y_minus_is_finite = std::isfinite(y_minus);
 
             if (yMap.transformation()
                 && yMap.transformation()->type() == QwtScaleTransformation::Log10
-                && err[i] >= y(i)) {
+                && err[i] >= vy) {
                 y_minus = yMap.xTransform(qMin(yMap.s1(), yMap.s2()));
                 y_minus_is_finite = false;
             }
@@ -310,15 +341,15 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
                     drawBreakAwareLine(QPointF(xi, yi - halfSym), QPointF(xi, y_minus));
             }
         } else if (type == Horizontal) {
-            const double xPlusVal = x(i) + err[i];
-            const double xMinusVal = x(i) - err[i];
+            const double xPlusVal = vx + err[i];
+            const double xMinusVal = vx - err[i];
             double x_plus = xMap.xTransform(xPlusVal);
             double x_minus = xMap.xTransform(xMinusVal);
             bool x_minus_is_finite = std::isfinite(x_minus);
 
             if (xMap.transformation()
                 && xMap.transformation()->type() == QwtScaleTransformation::Log10
-                && err[i] >= x(i)) {
+                && err[i] >= vx) {
                 x_minus = xMap.xTransform(qMin(xMap.s1(), xMap.s2()));
                 x_minus_is_finite = false;
             }
@@ -421,10 +452,24 @@ QwtDoubleRect QwtErrorPlotCurve::boundingRect() const
         y0 = qMin(y0, vy);
         y1 = qMax(y1, vy);
     };
+    Column *mXCol = nullptr;
+    Column *mYCol = nullptr;
+    const bool mHasMasks = d_master_curve && d_master_curve->hasAnyMaskedPoints();
+    if (mHasMasks)
+        d_master_curve->resolveColumns(mXCol, mYCol);
+    Column *ebXCol = nullptr;
+    Column *ebYCol = nullptr;
+    const bool ebHasMasks = hasAnyMaskedPoints();
+    if (ebHasMasks)
+        resolveColumns(ebXCol, ebYCol);
     for (int i = 0; i < size; i++) {
+        if (mHasMasks && d_master_curve->isPointMaskedFast(i, mXCol, mYCol))
+            continue;
         const double vx = x(i);
         const double vy = y(i);
         take(vx, vy);
+        if (ebHasMasks && isPointMaskedFast(i, ebXCol, ebYCol))
+            continue;
         const double e = err[i];
         if (!std::isfinite(e))
             continue;
@@ -437,7 +482,7 @@ QwtDoubleRect QwtErrorPlotCurve::boundingRect() const
         }
     }
     if (!any)
-        return QwtPlotCurve::boundingRect();
+        return QwtDoubleRect(1.0, 1.0, -2.0, -2.0); // invalid
     return QwtDoubleRect(QPointF(x0, y0), QPointF(x1, y1));
 }
 
@@ -493,7 +538,8 @@ bool QwtErrorPlotCurve::loadData()
         const int row = d_master_curve->tableRow(i);
         rows[i] = row;
         double e = std::numeric_limits<double>::quiet_NaN();
-        if (row >= 0 && row < errCol->rowCount() && !errCol->isInvalid(row)) {
+        if (row >= 0 && row < errCol->rowCount() && !errCol->isInvalid(row)
+            && !errCol->isMasked(row)) {
             switch (errCol->columnMode()) {
             case SciDAVis::ColumnMode::Text:
                 e = double(row + 1);

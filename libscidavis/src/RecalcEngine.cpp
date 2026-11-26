@@ -235,6 +235,10 @@ QwtPlotCurve *createNormalizedCurveOnGraph(ApplicationWindow *app, Graph *g,
         break;
     }
     std::vector<double> yn = CurveMathTools::normalizeValues(xs, ys, cmMode);
+    const bool anyFinite = std::any_of(yn.begin(), yn.end(),
+                                       [](double v) { return std::isfinite(v); });
+    if (!anyFinite)
+        return nullptr;
 
     QString tblName = app->generateUniqueName(QStringLiteral("Norm"));
     Column *colX = new Column(QStringLiteral("1"), SciDAVis::ColumnMode::Numeric);
@@ -616,6 +620,11 @@ int RecalcManager::registerLink(ApplicationWindow *app, Graph *g, Table *srcTabl
     const bool needExec =
             (d_mode == Auto && (link.outCurveTitle.isEmpty() || g->curve(link.outCurveTitle) == nullptr));
     d_links.append(link);
+    connect(g, &QObject::destroyed, this, [this, newId]() {
+        const int idx = findLinkIndexById(newId);
+        if (idx >= 0)
+            d_links.removeAt(idx);
+    });
 
     // If caller registered a live link before running the operation, materialize the output curve immediately in Auto mode
     if (needExec)
@@ -765,8 +774,11 @@ void RecalcManager::onTableDataModified(Table *t, const QString &colName)
 
 void RecalcManager::onGraphDestroyed(QObject *obj)
 {
+    Q_UNUSED(obj);
+    // Per-link destroyed lambdas remove links by ID without invoking QPointer<Graph>::data()
+    // during QWidget::~QWidget() after ~Graph() has already run.
     for (int i = d_links.size() - 1; i >= 0; --i) {
-        if (d_links[i].graph.isNull() || static_cast<QObject *>(d_links[i].graph.data()) == obj)
+        if (d_links[i].graph.isNull())
             d_links.removeAt(i);
     }
 }
@@ -1440,7 +1452,13 @@ void RecalcManager::restoreLinkXmlForGraph(ApplicationWindow *app, Graph *g, con
             d_links[found] = link;
         } else {
             link.id = d_next_id++;
+            const int restoredId = link.id;
             d_links.append(link);
+            connect(g, &QObject::destroyed, this, [this, restoredId]() {
+                const int idx = findLinkIndexById(restoredId);
+                if (idx >= 0)
+                    d_links.removeAt(idx);
+            });
         }
         connectLinkSources(g, src);
     }

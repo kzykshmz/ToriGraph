@@ -32,12 +32,16 @@
 #include "table/TableView.h"
 #include "table/future_Table.h"
 #include "table/TableDoubleHeaderView.h"
+#include "core/Project.h"
 #include "core/column/Column.h"
 #include "core/datatypes/Double2StringFilter.h"
 
+#include <QIODevice>
 #include <QList>
 #include <QMenu>
 #include <QContextMenuEvent>
+#include <QTextCodec>
+#include <QTextStream>
 #include <gsl/gsl_vector.h>
 #include <gsl/gsl_statistics.h>
 
@@ -81,9 +85,11 @@ TableStatistics::TableStatistics(ScriptingEnv *env, QWidget *parent, Table *base
 
 #endif
     setCaptionPolicy(MyWidget::Both);
+    if (!d_base)
+        return;
     if (d_type == TableStatistics::StatRow) {
         setName(QString(d_base->name()) + "-" + tr("RowStats"));
-        setWindowLabel(tr("Row Statistics of %1").arg(base->name()));
+        setWindowLabel(tr("Row Statistics of %1").arg(d_base->name()));
         d_future_table->setRowCount(d_targets.size());
         d_future_table->setColumnCount(9);
         setColName(0, tr("Row"));
@@ -116,7 +122,7 @@ TableStatistics::TableStatistics(ScriptingEnv *env, QWidget *parent, Table *base
         update(d_base, QString());
     } else if (d_type == TableStatistics::StatColumn) {
         setName(QString(d_base->name()) + "-" + tr("ColStats"));
-        setWindowLabel(tr("Column Statistics of %1").arg(base->name()));
+        setWindowLabel(tr("Column Statistics of %1").arg(d_base->name()));
         d_future_table->setRowCount(d_targets.size());
         d_future_table->setColumnCount(11);
         setColName(0, tr("Col"));
@@ -159,77 +165,96 @@ TableStatistics::TableStatistics(ScriptingEnv *env, QWidget *parent, Table *base
 
 void TableStatistics::update(Table *t, const QString &colName)
 {
-    if (t != d_base)
+    if (!d_base || t != d_base)
         return;
+
+    ScopedProjectUndoSuppressor undoSuppress(d_future_table ? d_future_table->project() : nullptr);
 
     if (d_type == TableStatistics::StatRow) {
         int columns = d_base->numCols();
-        if (columns > 0) {
+        for (int destRow = 0; destRow < d_targets.size(); destRow++) {
+            int srcRow = d_targets[destRow];
 
-            for (int destRow = 0; destRow < d_targets.size(); destRow++) {
-                int srcRow = d_targets[destRow];
+            QList<int> validCells;
+            for (int col = 0; col < columns; col++) {
+                Column *srcCol = d_base->column(col);
+                if (srcCol && srcCol->rowCount() > srcRow
+                    && srcCol->columnMode() == SciDAVis::ColumnMode::Numeric
+                    && !srcCol->isInvalid(srcRow) && !srcCol->isMasked(srcRow))
+                    validCells.append(col);
+            }
 
-                QList<int> validCells;
-                for (int col = 0; col < columns; col++) {
-                    if (d_base->column(col)->rowCount() > srcRow
-                        && d_base->column(col)->columnMode() == SciDAVis::ColumnMode::Numeric
-                        && !d_base->column(col)->isInvalid(srcRow))
-                        validCells.append(col);
+            column(0)->setValueAt(destRow, srcRow + 1);
+            column(1)->setValueAt(destRow, columns);
+            if (validCells.count() > 0) {
+                double *data = new double[validCells.count()];
+                gsl_vector *y = gsl_vector_alloc(validCells.count());
+
+                int index = 0;
+                foreach (int col, validCells) {
+                    double val = d_base->column(col)->valueAt(srcRow);
+                    gsl_vector_set(y, index, val);
+                    data[index++] = val;
                 }
+                double mean = gsl_stats_mean(data, 1, validCells.count());
+                double min, max;
+                gsl_vector_minmax(y, &min, &max);
 
-                column(0)->setValueAt(destRow, srcRow + 1);
-                column(1)->setValueAt(destRow, columns);
-                if (validCells.count() > 0) {
-                    double *data = new double[validCells.count()];
-                    gsl_vector *y = gsl_vector_alloc(validCells.count());
+                column(2)->setValueAt(destRow, mean);
+                column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
+                column(4)->setValueAt(destRow, gsl_stats_variance(data, 1, validCells.count()));
+                column(5)->setValueAt(destRow, mean * validCells.count());
+                column(6)->setValueAt(destRow, max);
+                column(7)->setValueAt(destRow, min);
+                column(8)->setValueAt(destRow, validCells.count());
 
-                    int index = 0;
-                    foreach (int col, validCells) {
-                        double val = d_base->column(col)->valueAt(srcRow);
-                        gsl_vector_set(y, index, val);
-                        data[index++] = val;
-                    }
-                    double mean = gsl_stats_mean(data, 1, validCells.count());
-                    double min, max;
-                    gsl_vector_minmax(y, &min, &max);
-
-                    column(2)->setValueAt(destRow, mean);
-                    column(3)->setValueAt(destRow, gsl_stats_sd(data, 1, validCells.count()));
-                    column(4)->setValueAt(destRow, gsl_stats_variance(data, 1, validCells.count()));
-                    column(5)->setValueAt(destRow, mean * validCells.count());
-                    column(6)->setValueAt(destRow, max);
-                    column(7)->setValueAt(destRow, min);
-                    column(8)->setValueAt(destRow, validCells.count());
-
-                    gsl_vector_free(y);
-                    delete[] data;
-                } else {
-                    for (int i = 2; i < 8; i++)
-                        column(i)->setInvalid(destRow, true);
-                    column(8)->setValueAt(destRow, 0);
-                }
+                gsl_vector_free(y);
+                delete[] data;
+            } else {
+                for (int i = 2; i < 8; i++)
+                    column(i)->setInvalid(destRow, true);
+                column(8)->setValueAt(destRow, 0);
             }
         }
     } else if (d_type == TableStatistics::StatColumn) {
         for (int destRow = 0; destRow < d_targets.size(); destRow++) {
             if (colName == QString(d_base->name()) + "_" + d_base->colLabel(d_targets[destRow])) {
                 int colIndex = d_base->colIndex(colName);
-                Column *col = d_base->column(colIndex);
+                Column *col = (colIndex >= 0) ? d_base->column(colIndex) : nullptr;
+                if (!col)
+                    continue;
 
-                if (col->columnMode() != SciDAVis::ColumnMode::Numeric)
-                    return;
+                auto clearStatsRow = [&](int rowsCount) {
+                    column(0)->setTextAt(destRow, d_base->colLabel(colIndex));
+                    column(1)->setTextAt(destRow,
+                                         rowsCount > 0
+                                                 ? ("[1:" + QString::number(rowsCount) + "]")
+                                                 : QString());
+                    for (int i = 2; i < 10; ++i)
+                        column(i)->setInvalid(destRow, true);
+                    column(10)->setValueAt(destRow, 0);
+                };
+
+                if (col->columnMode() != SciDAVis::ColumnMode::Numeric) {
+                    clearStatsRow(col->rowCount());
+                    continue;
+                }
 
                 int rows = col->rowCount();
-                if (rows == 0)
-                    return;
+                if (rows == 0) {
+                    clearStatsRow(0);
+                    continue;
+                }
 
                 QList<int> validCells;
                 for (int row = 0; row < rows; ++row) {
-                    if (!col->isInvalid(row))
+                    if (!col->isInvalid(row) && !col->isMasked(row))
                         validCells.append(row);
                 }
-                if (validCells.count() == 0)
-                    return;
+                if (validCells.count() == 0) {
+                    clearStatsRow(rows);
+                    continue;
+                }
 
                 double *data = new double[validCells.count()];
                 gsl_vector *y = gsl_vector_alloc(validCells.count());
@@ -283,31 +308,46 @@ void TableStatistics::update(Table *t, const QString &colName)
 
 void TableStatistics::renameCol(const QString &from, const QString &to)
 {
-    if (d_type == TableStatistics::StatRow)
+    if (!d_base || d_type == TableStatistics::StatRow)
         return;
+    ScopedProjectUndoSuppressor undoSuppress(d_future_table ? d_future_table->project() : nullptr);
+    const QString prefix = QString(d_base->name()) + QLatin1Char('_');
+    const QString newLabel = to.startsWith(prefix) ? to.mid(prefix.size()) : to.section('_', 1);
     for (int c = 0; c < d_targets.size(); c++)
-        if (from == QString(d_base->name()) + "_" + text(c, 0)) {
-            column(0)->setTextAt(c, to.section('_', 1, 1));
+        if (from == prefix + text(c, 0)) {
+            column(0)->setTextAt(c, newLabel);
             return;
         }
 }
 
 void TableStatistics::removeCol(const QString &col)
 {
+    if (!d_base)
+        return;
+    ScopedProjectUndoSuppressor undoSuppress(d_future_table ? d_future_table->project() : nullptr);
     if (d_type == TableStatistics::StatRow) {
         update(d_base, col);
         return;
     }
-    for (int c = 0; c < d_targets.size(); c++)
-        if (col == QString(d_base->name()) + "_" + text(c, 0)) {
-            d_targets.removeAll(d_targets.at(c));
+    const QString prefix = QString(d_base->name()) + QLatin1Char('_');
+    for (int c = 0; c < d_targets.size(); c++) {
+        if (col == prefix + text(c, 0)) {
+            d_targets.removeAt(c);
             d_future_table->removeRows(c, 1);
-            return;
+            break;
         }
+    }
+    for (int k = 0; k < d_targets.size(); ++k) {
+        const int idx = d_base->colIndex(prefix + text(k, 0));
+        if (idx >= 0)
+            d_targets[k] = idx;
+    }
 }
 
 QString TableStatistics::saveToString(const QString &geometry)
 {
+    if (!d_base)
+        return QString();
     QString s = "<TableStatistics>\n";
     s += QString(name()) + "\t";
     s += QString(d_base->name()) + "\t";
@@ -325,6 +365,16 @@ QString TableStatistics::saveToString(const QString &geometry)
     s += saveComments();
     s += "WindowLabel\t" + windowLabel() + "\t" + QString::number(captionPolicy()) + "\n";
     return s + "</TableStatistics>\n";
+}
+
+void TableStatistics::saveToDevice(QIODevice *device, const QString &geometry)
+{
+    if (!device)
+        return;
+    QTextStream stream(device);
+    stream.setCodec(QTextCodec::codecForName("UTF-8"));
+    stream << saveToString(geometry);
+    stream.flush();
 }
 
 #ifdef LEGACY_CODE_0_2_x

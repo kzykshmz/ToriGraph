@@ -47,6 +47,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -1186,7 +1187,11 @@ private:
         if (d_chkSortX && d_chkSortX->isChecked()) {
             std::stable_sort(out.begin(), out.end(),
                              [](const OrderedPoint &a, const OrderedPoint &b) {
-                                 return a.dataPt.x() < b.dataPt.x();
+                                 const bool aNan = std::isnan(a.dataPt.x());
+                                 const bool bNan = std::isnan(b.dataPt.x());
+                                 if (aNan != bNan)
+                                     return !aNan;
+                                 return !aNan && (a.dataPt.x() < b.dataPt.x());
                              });
         }
         return out;
@@ -1356,35 +1361,56 @@ private:
 QPointF GraphDigitizer::mapPixelToData(const QPointF &pixelPt, const AxisCalibration &cal)
 {
     const QPointF uX = cal.pixelX2 - cal.pixelX1;
-    const double lenSqX = uX.x() * uX.x() + uX.y() * uX.y();
-    const double tX = (lenSqX > 1e-24)
-            ? (((pixelPt.x() - cal.pixelX1.x()) * uX.x()
-                + (pixelPt.y() - cal.pixelX1.y()) * uX.y())
-               / lenSqX)
-            : 0.0;
-
     const QPointF uY = cal.pixelY2 - cal.pixelY1;
+    const double lenSqX = uX.x() * uX.x() + uX.y() * uX.y();
     const double lenSqY = uY.x() * uY.x() + uY.y() * uY.y();
-    const double tY = (lenSqY > 1e-24)
-            ? (((pixelPt.x() - cal.pixelY1.x()) * uY.x()
-                + (pixelPt.y() - cal.pixelY1.y()) * uY.y())
-               / lenSqY)
-            : 0.0;
+    const double det = uX.x() * uY.y() - uX.y() * uY.x();
+    const double normScale = std::sqrt(lenSqX) * std::sqrt(lenSqY);
+
+    double tX = 0.0;
+    double tY = 0.0;
+    if (lenSqX > 1e-24 && lenSqY > 1e-24 && std::fabs(det) > 1e-12 * normScale) {
+        tX = ((pixelPt.x() - cal.pixelX1.x()) * uY.y()
+              - (pixelPt.y() - cal.pixelX1.y()) * uY.x())
+                / det;
+        tY = (uX.x() * (pixelPt.y() - cal.pixelY1.y())
+              - uX.y() * (pixelPt.x() - cal.pixelY1.x()))
+                / det;
+    } else {
+        tX = (lenSqX > 1e-24)
+                ? (((pixelPt.x() - cal.pixelX1.x()) * uX.x()
+                    + (pixelPt.y() - cal.pixelX1.y()) * uX.y())
+                   / lenSqX)
+                : 0.0;
+        tY = (lenSqY > 1e-24)
+                ? (((pixelPt.x() - cal.pixelY1.x()) * uY.x()
+                    + (pixelPt.y() - cal.pixelY1.y()) * uY.y())
+                   / lenSqY)
+                : 0.0;
+    }
 
     double dataX = 0.0;
-    if (cal.logX && cal.valueX1 > 0.0 && cal.valueX2 > 0.0) {
-        const double l1 = std::log10(cal.valueX1);
-        const double l2 = std::log10(cal.valueX2);
-        dataX = std::pow(10.0, l1 + tX * (l2 - l1));
+    if (cal.logX) {
+        if (cal.valueX1 > 0.0 && cal.valueX2 > 0.0) {
+            const double l1 = std::log10(cal.valueX1);
+            const double l2 = std::log10(cal.valueX2);
+            dataX = std::pow(10.0, l1 + tX * (l2 - l1));
+        } else {
+            dataX = std::numeric_limits<double>::quiet_NaN();
+        }
     } else {
         dataX = cal.valueX1 + tX * (cal.valueX2 - cal.valueX1);
     }
 
     double dataY = 0.0;
-    if (cal.logY && cal.valueY1 > 0.0 && cal.valueY2 > 0.0) {
-        const double l1 = std::log10(cal.valueY1);
-        const double l2 = std::log10(cal.valueY2);
-        dataY = std::pow(10.0, l1 + tY * (l2 - l1));
+    if (cal.logY) {
+        if (cal.valueY1 > 0.0 && cal.valueY2 > 0.0) {
+            const double l1 = std::log10(cal.valueY1);
+            const double l2 = std::log10(cal.valueY2);
+            dataY = std::pow(10.0, l1 + tY * (l2 - l1));
+        } else {
+            dataY = std::numeric_limits<double>::quiet_NaN();
+        }
     } else {
         dataY = cal.valueY1 + tY * (cal.valueY2 - cal.valueY1);
     }
@@ -1395,22 +1421,30 @@ QPointF GraphDigitizer::mapPixelToData(const QPointF &pixelPt, const AxisCalibra
 QPointF GraphDigitizer::mapDataToPixel(const QPointF &dataPt, const AxisCalibration &cal)
 {
     double tX = 0.0;
-    if (cal.logX && cal.valueX1 > 0.0 && cal.valueX2 > 0.0 && dataPt.x() > 0.0) {
-        const double l1 = std::log10(cal.valueX1);
-        const double l2 = std::log10(cal.valueX2);
-        const double dl = l2 - l1;
-        tX = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.x()) - l1) / dl) : 0.0;
+    if (cal.logX) {
+        if (cal.valueX1 > 0.0 && cal.valueX2 > 0.0 && dataPt.x() > 0.0) {
+            const double l1 = std::log10(cal.valueX1);
+            const double l2 = std::log10(cal.valueX2);
+            const double dl = l2 - l1;
+            tX = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.x()) - l1) / dl) : 0.0;
+        } else {
+            tX = std::numeric_limits<double>::quiet_NaN();
+        }
     } else {
         const double dv = cal.valueX2 - cal.valueX1;
         tX = (std::fabs(dv) > 1e-300) ? ((dataPt.x() - cal.valueX1) / dv) : 0.0;
     }
 
     double tY = 0.0;
-    if (cal.logY && cal.valueY1 > 0.0 && cal.valueY2 > 0.0 && dataPt.y() > 0.0) {
-        const double l1 = std::log10(cal.valueY1);
-        const double l2 = std::log10(cal.valueY2);
-        const double dl = l2 - l1;
-        tY = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.y()) - l1) / dl) : 0.0;
+    if (cal.logY) {
+        if (cal.valueY1 > 0.0 && cal.valueY2 > 0.0 && dataPt.y() > 0.0) {
+            const double l1 = std::log10(cal.valueY1);
+            const double l2 = std::log10(cal.valueY2);
+            const double dl = l2 - l1;
+            tY = (std::fabs(dl) > 1e-300) ? ((std::log10(dataPt.y()) - l1) / dl) : 0.0;
+        } else {
+            tY = std::numeric_limits<double>::quiet_NaN();
+        }
     } else {
         const double dv = cal.valueY2 - cal.valueY1;
         tY = (std::fabs(dv) > 1e-300) ? ((dataPt.y() - cal.valueY1) / dv) : 0.0;
@@ -1421,15 +1455,15 @@ QPointF GraphDigitizer::mapDataToPixel(const QPointF &dataPt, const AxisCalibrat
     const double lenSqX = uX.x() * uX.x() + uX.y() * uX.y();
     const double lenSqY = uY.x() * uY.x() + uY.y() * uY.y();
 
-    // Exact 2x2 inverse of orthogonal/oblique axis-vector projection
+    // Exact 2x2 affine inverse of mapPixelToData
     const double det = uX.x() * uY.y() - uX.y() * uY.x();
-    const double normScale = std::sqrt(std::max(1e-30, lenSqX * lenSqY));
+    const double normScale = std::sqrt(lenSqX) * std::sqrt(lenSqY);
     if (lenSqX > 1e-24 && lenSqY > 1e-24 && std::fabs(det) > 1e-12 * normScale) {
-        const double r1 = (cal.pixelX1.x() * uX.x() + cal.pixelX1.y() * uX.y()) + tX * lenSqX;
-        const double r2 = (cal.pixelY1.x() * uY.x() + cal.pixelY1.y() * uY.y()) + tY * lenSqY;
-        const double px = (r1 * uY.y() - r2 * uX.y()) / det;
-        const double py = (uX.x() * r2 - uY.x() * r1) / det;
-        return QPointF(px, py);
+        const double c1 = cal.pixelX1.x() * uY.y() - cal.pixelX1.y() * uY.x();
+        const double c2 = uX.x() * cal.pixelY1.y() - uX.y() * cal.pixelY1.x();
+        const double p0x = (uX.x() * c1 + uY.x() * c2) / det;
+        const double p0y = (uX.y() * c1 + uY.y() * c2) / det;
+        return QPointF(p0x + tX * uX.x() + tY * uY.x(), p0y + tX * uX.y() + tY * uY.y());
     }
 
     return QPointF(cal.pixelX1.x() + tX * uX.x(), cal.pixelY1.y() + tY * uY.y());

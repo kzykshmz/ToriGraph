@@ -39,6 +39,8 @@
 #include "Table.h"
 #include "Matrix.h"
 #include "Folder.h"
+#include <cmath>
+#include <limits>
 #include <math.h>
 #include <QtCore/QByteArray>
 #include <QtCore/QRegExp>
@@ -273,12 +275,24 @@ double formulaCellValue(const Column *column, int row)
  *
  * \sa tableCellFunction()
  */
+namespace {
+bool safeMuOneBasedIndex(double v, int &zeroBasedOut)
+{
+    if (!std::isfinite(v) || v < 0.5 || v > double(std::numeric_limits<int>::max() - 1))
+        return false;
+    zeroBasedOut = qRound(v) - 1;
+    return zeroBasedOut >= 0;
+}
+} // namespace
+
 double MuParserScript::tableColumnFunction(const mu::string_type::value_type *columnPath)
 {
     Column *column = s_currentInstance->resolveColumnPath(QStringFromString(columnPath));
     if (!column)
         return NAN; // failsafe, shouldn't happen
-    int row = qRound(s_currentInstance->m_variables["i"]) - 1;
+    int row = -1;
+    if (!safeMuOneBasedIndex(s_currentInstance->m_variables["i"], row))
+        throw new EmptySourceError();
     return formulaCellValue(column, row);
 }
 
@@ -302,12 +316,17 @@ double MuParserScript::tableColumn_Function(double columnIndex)
         // improving the error message would break translations
         // TODO: change col() to column() for next minor release
         throw MuException(tr("col() works only on tables!"));
-    Column *column = thisTable->d_future_table->column(qRound(columnIndex) - 1);
+    int colIdx = -1;
+    Column *column = safeMuOneBasedIndex(columnIndex, colIdx)
+            ? thisTable->d_future_table->column(colIdx)
+            : nullptr;
     if (!column)
         throw MuException(tr("There's no column %1 in table %2!")
-                                  .arg(qRound(columnIndex))
+                                  .arg(columnIndex)
                                   .arg(thisTable->objectName()));
-    int row = qRound(s_currentInstance->m_variables["i"]) - 1;
+    int row = -1;
+    if (!safeMuOneBasedIndex(s_currentInstance->m_variables["i"], row))
+        throw new EmptySourceError();
     return formulaCellValue(column, row);
 }
 
@@ -334,15 +353,21 @@ double MuParserScript::tableColumn__Function(const mu::string_type::value_type *
         // improving the error message would break translations
         // TODO: change tablecol() to column() for next minor release
         throw MuException(tr("tablecol() works only on tables!"));
-    Table *targetTable =
-            thisTable->folder()->rootFolder()->table(QStringFromString(tableName), true);
+    Table *targetTable = (thisTable->folder() && thisTable->folder()->rootFolder())
+            ? thisTable->folder()->rootFolder()->table(QStringFromString(tableName), true)
+            : nullptr;
     if (!targetTable)
         throw MuException(tr("Couldn't find a table named %1.").arg(tableName));
-    Column *column = targetTable->d_future_table->column(qRound(columnIndex) - 1);
+    int colIdx = -1;
+    Column *column = safeMuOneBasedIndex(columnIndex, colIdx)
+            ? targetTable->d_future_table->column(colIdx)
+            : nullptr;
     if (!column)
         throw MuException(
-                tr("There's no column %1 in table %2!").arg(qRound(columnIndex)).arg(tableName));
-    int row = qRound(s_currentInstance->m_variables["i"]) - 1;
+                tr("There's no column %1 in table %2!").arg(columnIndex).arg(tableName));
+    int row = -1;
+    if (!safeMuOneBasedIndex(s_currentInstance->m_variables["i"], row))
+        throw new EmptySourceError();
     return formulaCellValue(column, row);
 }
 
@@ -360,7 +385,9 @@ double MuParserScript::tableCellFunction(const mu::string_type::value_type *colu
     Column *column = s_currentInstance->resolveColumnPath(QStringFromString(columnPath));
     if (!column)
         return NAN; // failsafe, shouldn't happen
-    int row = qRound(rowIndex) - 1;
+    int row = -1;
+    if (!safeMuOneBasedIndex(rowIndex, row))
+        throw new EmptySourceError();
     return formulaCellValue(column, row);
 }
 
@@ -380,12 +407,17 @@ double MuParserScript::tableCell_Function(double columnIndex, double rowIndex)
     Table *thisTable = qobject_cast<Table *>(s_currentInstance->Context);
     if (!thisTable)
         throw MuException(tr("cell() works only on tables and matrices!"));
-    Column *column = thisTable->d_future_table->column(qRound(columnIndex) - 1);
+    int colIdx = -1;
+    Column *column = safeMuOneBasedIndex(columnIndex, colIdx)
+            ? thisTable->d_future_table->column(colIdx)
+            : nullptr;
     if (!column)
         throw MuException(tr("There's no column %1 in table %2!")
-                                  .arg(qRound(columnIndex))
+                                  .arg(columnIndex)
                                   .arg(thisTable->objectName()));
-    int row = qRound(rowIndex) - 1;
+    int row = -1;
+    if (!safeMuOneBasedIndex(rowIndex, row))
+        throw new EmptySourceError();
     return formulaCellValue(column, row);
 }
 
@@ -400,15 +432,15 @@ double MuParserScript::matrixCellFunction(double rowIndex, double columnIndex)
     Matrix *thisMatrix = qobject_cast<Matrix *>(s_currentInstance->Context);
     if (!thisMatrix)
         throw MuException(tr("cell() works only on tables and matrices!"));
-    int row = qRound(rowIndex) - 1;
-    int column = qRound(columnIndex) - 1;
-    if (row < 0 || row >= thisMatrix->numRows())
+    int row = -1;
+    int column = -1;
+    if (!safeMuOneBasedIndex(rowIndex, row) || row >= thisMatrix->numRows())
         throw MuException(tr("There's no row %1 in matrix %2!")
-                                  .arg(qRound(rowIndex))
+                                  .arg(rowIndex)
                                   .arg(thisMatrix->objectName()));
-    if (column < 0 || column >= thisMatrix->numCols())
+    if (!safeMuOneBasedIndex(columnIndex, column) || column >= thisMatrix->numCols())
         throw MuException(tr("There's no column %1 in matrix %2!")
-                                  .arg(qRound(columnIndex))
+                                  .arg(columnIndex)
                                   .arg(thisMatrix->objectName()));
     return thisMatrix->cell(row, column);
 }
@@ -463,20 +495,30 @@ Column *MuParserScript::resolveColumnPath(const QString &path)
         if (!myContext)
             throw MuException(tr("Accessing table values is not (yet) supported in this context."));
         QString tableName = pathComponents.takeLast();
+        Folder *ctxFolder = myContext->folder();
+        if (!ctxFolder)
+            throw MuException(tr("Couldn't find a table named %1.")
+                                      .arg(pathComponents.isEmpty()
+                                                   ? tableName
+                                                   : (pathComponents.join("/") + "/" + tableName)));
         if (pathComponents.isEmpty())
             // needed for backwards compatibility, but will be problematic once we drop the
             // requirement of project-wide unique object names
-            table = myContext->folder()->rootFolder()->table(tableName, true);
+            table = ctxFolder->rootFolder() ? ctxFolder->rootFolder()->table(tableName, true)
+                                            : nullptr;
         else {
-            Folder *folder;
+            Folder *folder = nullptr;
             if (pathComponents.at(0).isEmpty())
                 // absolute path
-                folder = myContext->folder()->rootFolder();
+                folder = ctxFolder->rootFolder();
             else if (pathComponents.at(0) == "..")
                 // relative path
-                folder = myContext->folder();
+                folder = ctxFolder;
             else
                 // invalid path
+                throw MuException(tr("Couldn't find a table named %1.")
+                                          .arg(pathComponents.join("/") + "/" + tableName));
+            if (!folder)
                 throw MuException(tr("Couldn't find a table named %1.")
                                           .arg(pathComponents.join("/") + "/" + tableName));
             pathComponents.removeFirst();
@@ -543,14 +585,16 @@ bool MuParserScript::translateLegacyFunctions(QString &input)
                 for (i++; i < input.size() && input.at(i) != QChar('"'); i++)
                     if (input.at(i) == QChar('\\')) {
                         currentArgument += '\\';
-                        currentArgument += input.at(++i);
+                        if (i + 1 < input.size())
+                            currentArgument += input.at(++i);
                     } else
                         currentArgument += input.at(i);
                 currentArgument += '"';
                 break;
             case '\\':
                 currentArgument += '\\';
-                currentArgument += input.at(++i);
+                if (i + 1 < input.size())
+                    currentArgument += input.at(++i);
                 break;
             case '(':
                 parenthesisLevel++;
@@ -746,8 +790,9 @@ QVariant MuParserScript::eval()
         // see documentation of s_currentInstance for explanation
         s_currentInstance = this;
         return m_parser.Eval();
-    } catch (EmptySourceError *) {
+    } catch (EmptySourceError *e) {
         // formula tried to access a table cell marked as invalid
+        delete e;
         return "";
     } catch (mu::ParserError &e) {
         emit_error(QStringFromString(e.GetMsg()), 0);

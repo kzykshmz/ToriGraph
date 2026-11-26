@@ -1,3 +1,4 @@
+#include <cmath>
 #include "qwt3d_helper.h"
 #include "qwt3d_autoscaler.h"
 
@@ -7,13 +8,17 @@ namespace {
 
 double floorExt(int &exponent, double x, std::vector<double> &sortedmantissi)
 {
-    if (x == 0.0) {
+    if (!std::isfinite(x) || x == 0.0) {
         exponent = 0;
         return 0.0;
     }
 
     double sign = (x > 0) ? 1.0 : -1.0;
     double lx = log10(fabs(x));
+    if (!std::isfinite(lx)) {
+        exponent = 0;
+        return 0.0;
+    }
     exponent = (int)floor(lx);
 
     double fr = pow(10.0, lx - exponent);
@@ -40,7 +45,7 @@ double floorExt(int &exponent, double x, std::vector<double> &sortedmantissi)
 */
 [[maybe_unused]] double floor125(int &exponent, double x)
 {
-    std::vector<double> m(2);
+    std::vector<double> m(3);
     m[0] = 1;
     m[1] = 2;
     m[2] = 5;
@@ -109,7 +114,15 @@ c 'minimal' (anchor-start < m*10^n)
 double LinearAutoScaler::anchorvalue(double start, double m, int n)
 {
     double stepval = m * pow(10.0, n);
-    return stepval * ceil(start / stepval);
+    if (!std::isfinite(stepval) || stepval <= 0.0)
+        return start;
+    double q = start / stepval;
+    if (!std::isfinite(q))
+        return start;
+    double anchor = stepval * ceil(q);
+    if (!std::isfinite(anchor))
+        return start;
+    return anchor;
 }
 
 /*!
@@ -131,11 +144,26 @@ int LinearAutoScaler::segments(int &l_intervals, int &r_intervals, double start,
                                double anchor, double m, int n)
 {
     double val = m * pow(10.0, n);
+    if (!std::isfinite(val) || val <= 0.0 || !std::isfinite(anchor)) {
+        l_intervals = 0;
+        r_intervals = 0;
+        return 0;
+    }
     double delta = (stop - anchor) / val;
+    if (!std::isfinite(delta) || fabs(delta) > 1e8) {
+        l_intervals = 0;
+        r_intervals = 0;
+        return 0;
+    }
 
     r_intervals = (int)floor(delta); // right side intervals
 
     delta = (anchor - start) / val;
+    if (!std::isfinite(delta) || fabs(delta) > 1e8) {
+        l_intervals = 0;
+        r_intervals = 0;
+        return 0;
+    }
 
     l_intervals = (int)floor(delta); // left side intervals
 
@@ -160,25 +188,59 @@ int LinearAutoScaler::execute(double &a, double &b, double start, double stop, i
 {
     init(start, stop, ivals);
 
+    if (!std::isfinite(start_) || !std::isfinite(stop_) || !std::isfinite(stop_ - start_)
+        || stop_ <= start_) {
+        a = 0.0;
+        b = 0.0;
+        return 0;
+    }
+
     double delta = stop_ - start_;
 
-    if (isPracticallyZero(delta))
+    if (isPracticallyZero(delta)) {
+        a = start_;
+        b = stop_;
         return intervals_;
+    }
+
+    if (mantissi_.empty()) {
+        a = start_;
+        b = stop_;
+        return intervals_;
+    }
 
     double c;
     int n;
 
     c = floorExt(n, delta, mantissi_);
+    double stepval = c * pow(10.0, n);
+    if (!std::isfinite(c) || c <= 0.0 || !std::isfinite(stepval) || stepval <= 0.0) {
+        a = start_;
+        b = stop_;
+        return intervals_;
+    }
 
-    int l_ival, r_ival;
+    int l_ival = 0, r_ival = 0;
 
     double anchor = anchorvalue(start_, c, n);
+    if (!std::isfinite(anchor)) {
+        a = start_;
+        b = stop_;
+        return intervals_;
+    }
     int ival = segments(l_ival, r_ival, start_, stop_, anchor, c, n);
 
     if (ival >= intervals_) {
-        a = anchor - l_ival * c * pow(10.0, n);
-        b = anchor + r_ival * c * pow(10.0, n);
-        intervals_ = ival;
+        const double candA = anchor - l_ival * stepval;
+        const double candB = anchor + r_ival * stepval;
+        if (ival > 0 && std::isfinite(candA) && std::isfinite(candB) && candA < candB) {
+            a = candA;
+            b = candB;
+            intervals_ = ival;
+            return intervals_;
+        }
+        a = start_;
+        b = stop_;
         return intervals_;
     }
 
@@ -187,7 +249,8 @@ int LinearAutoScaler::execute(double &a, double &b, double start, double stop, i
     double prev_c;
     int prev_n;
 
-    while (1) {
+    constexpr int kMaxIter = 256;
+    for (int iter = 0; iter < kMaxIter; ++iter) {
         prev_c = c;
         prev_n = n;
         prev_anchor = anchor;
@@ -195,26 +258,50 @@ int LinearAutoScaler::execute(double &a, double &b, double start, double stop, i
         prev_l_ival = l_ival;
         prev_r_ival = r_ival;
 
-        if (int(c) == 1) {
+        if (int(c) <= 1) {
             c = mantissi_.back();
             --n;
         } else {
+            bool matched = false;
             for (size_t i = mantissi_.size() - 1; i > 0; --i) {
-                if (int(c) == mantissi_[i]) {
+                if (int(c) == int(mantissi_[i])) {
                     c = mantissi_[i - 1];
+                    matched = true;
                     break;
                 }
             }
+            if (!matched) {
+                c = mantissi_.back();
+                --n;
+            }
+        }
+
+        if (n < -308) {
+            a = start_;
+            b = stop_;
+            return intervals_;
+        }
+
+        stepval = c * pow(10.0, n);
+        if (!std::isfinite(stepval) || stepval <= 0.0) {
+            a = start_;
+            b = stop_;
+            return intervals_;
         }
 
         anchor = anchorvalue(start_, c, n);
+        if (!std::isfinite(anchor)) {
+            a = start_;
+            b = stop_;
+            return intervals_;
+        }
         ival = segments(l_ival, r_ival, start_, stop_, anchor, c, n);
 
         int prev_diff = intervals_ - prev_ival;
         int actual_diff = ival - intervals_;
 
         if (prev_diff >= 0 && actual_diff >= 0) {
-            if (prev_diff < actual_diff) {
+            if (prev_ival > 0 && prev_diff < actual_diff) {
                 c = prev_c;
                 n = prev_n;
                 anchor = prev_anchor;
@@ -222,11 +309,27 @@ int LinearAutoScaler::execute(double &a, double &b, double start, double stop, i
                 l_ival = prev_l_ival;
                 r_ival = prev_r_ival;
             }
-            a = anchor - l_ival * c * pow(10.0, n);
-            b = anchor + r_ival * c * pow(10.0, n);
-            intervals_ = ival;
-            break;
+            const double chosenStep = c * pow(10.0, n);
+            if (!std::isfinite(chosenStep) || chosenStep <= 0.0) {
+                a = start_;
+                b = stop_;
+                return intervals_;
+            }
+            const double candA = anchor - l_ival * chosenStep;
+            const double candB = anchor + r_ival * chosenStep;
+            if (ival > 0 && std::isfinite(candA) && std::isfinite(candB) && candA < candB) {
+                a = candA;
+                b = candB;
+                intervals_ = ival;
+                return intervals_;
+            }
+            a = start_;
+            b = stop_;
+            return intervals_;
         }
     }
+
+    a = start_;
+    b = stop_;
     return intervals_;
 }

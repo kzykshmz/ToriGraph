@@ -28,6 +28,7 @@
  ***************************************************************************/
 #include "QwtBarCurve.h"
 #include "Plot.h"
+#include "core/column/Column.h"
 #include <QPainter>
 #include <cmath>
 #include <qwt_scale_map.h>
@@ -87,6 +88,12 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
     painter->setBrush(QwtPlotCurve::brush());
 
     const AxisBreakBands brk = axisBreakBands(xMap, yMap);
+    Column *xCol = nullptr;
+    Column *yCol = nullptr;
+    const bool hasMasks = hasAnyMaskedPoints();
+    if (hasMasks)
+        resolveColumns(xCol, yCol);
+
     double dx = 0.0, dy = 0.0;
     double bar_width = 0.0;
 
@@ -120,6 +127,8 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         const double half_width = (0.5 - bar_offset * 0.01) * bar_width;
 
         for (int i = from; i <= to; i++) {
+            if (hasMasks && isPointMaskedFast(i, xCol, yCol))
+                continue;
             const double vx = x(i);
             const double vy = y(i);
             if (brk.xValueInGap(vx))
@@ -183,6 +192,8 @@ void QwtBarCurve::draw(QPainter *painter, const QwtScaleMap &xMap, const QwtScal
         const double half_width = (0.5 - bar_offset * 0.01) * bar_width;
 
         for (int i = from; i <= to; i++) {
+            if (hasMasks && isPointMaskedFast(i, xCol, yCol))
+                continue;
             const double vx = x(i);
             const double vy = y(i);
             if (brk.yValueInGap(vy))

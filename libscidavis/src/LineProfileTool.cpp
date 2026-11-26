@@ -30,9 +30,11 @@
  *                                                                         *
  ***************************************************************************/
 #include "LineProfileTool.h"
+#include "ApplicationWindow.h"
 #include "ImageMarker.h"
 #include "ArrowMarker.h"
 #include "Graph.h"
+#include "Plot.h"
 
 #include <QPoint>
 #include <QImage>
@@ -42,33 +44,73 @@
 #include <qwt_plot_canvas.h>
 
 LineProfileTool::LineProfileTool(Graph *graph, int average_pixels)
-    : QWidget(graph->plotWidget()->canvas()), PlotToolInterface(graph)
+    : QWidget((graph && graph->plotWidget()) ? graph->plotWidget()->canvas() : nullptr),
+      PlotToolInterface(graph),
+      d_target(nullptr),
+      d_target_key(-1),
+      d_dragging(false)
 {
     d_op_start = d_op_dp = QPoint(0, 0);
     // make sure we average over an odd number of pixels
+    if (average_pixels < 1)
+        average_pixels = 1;
     d_average_pixels = (average_pixels % 2) ? average_pixels : average_pixels + 1;
-    d_target = dynamic_cast<ImageMarker *>(d_graph->selectedMarkerPtr());
-    if (!d_target)
-        QMessageBox::critical(d_graph->window(), tr("Pixel selection warning"),
-                              tr("Please select an image marker first."));
+    if (d_graph) {
+        const long selKey = d_graph->selectedMarkerKey();
+        ImageMarker *img = dynamic_cast<ImageMarker *>(d_graph->selectedMarkerPtr());
+        if (img && d_graph->imageMarkerKeys().contains(static_cast<int>(selKey))) {
+            d_target = img;
+            d_target_key = selKey;
+        }
+    }
+    if (!d_target) {
+        if (d_graph && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
+            QMessageBox::critical(d_graph->window(), tr("Pixel selection warning"),
+                                  tr("Please select an image marker first."));
+        }
+        hide();
+        return;
+    }
     d_graph->deselectMarker();
-    setGeometry(0, 0, parentWidget()->width(), parentWidget()->height());
+    if (parentWidget())
+        setGeometry(0, 0, parentWidget()->width(), parentWidget()->height());
     show();
     setFocus();
 }
 
-void LineProfileTool::calculateLineProfile(const QPoint &start, const QPoint &end)
+ImageMarker *LineProfileTool::resolveTarget() const
 {
-    QRect rect = d_target->rect();
+    if (!d_graph || !d_graph->plotWidget() || !d_target || d_target_key < 0)
+        return nullptr;
+    if (!d_graph->imageMarkerKeys().contains(static_cast<int>(d_target_key)))
+        return nullptr;
+    QwtPlotMarker *mrk = d_graph->plotWidget()->marker(static_cast<int>(d_target_key));
+    if (!mrk || mrk != d_target)
+        return nullptr;
+    return dynamic_cast<ImageMarker *>(mrk);
+}
+
+bool LineProfileTool::calculateLineProfile(const QPoint &start, const QPoint &end)
+{
+    ImageMarker *target = resolveTarget();
+    if (!target)
+        return false;
+
+    QRect rect = target->rect();
     if (!rect.contains(start) || !rect.contains(end)) {
-        QMessageBox::warning(d_graph, tr("Pixel selection warning"),
-                             tr("Please select the end line point inside the image rectangle!"));
-        return;
+        if (d_graph && !ApplicationWindow::isNonInteractiveContext(d_graph)) {
+            QMessageBox::warning(
+                    d_graph, tr("Pixel selection warning"),
+                    tr("Please select the end line point inside the image rectangle!"));
+        }
+        return false;
     }
 
-    QPoint o = d_target->origin();
-    QPixmap pic = d_target->pixmap();
+    QPoint o = target->origin();
+    QPixmap pic = target->pixmap();
     QImage image = pic.toImage();
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0)
+        return false;
 
     int x1 = start.x() - o.x();
     int x2 = end.x() - o.x();
@@ -76,7 +118,9 @@ void LineProfileTool::calculateLineProfile(const QPoint &start, const QPoint &en
     int y2 = end.y() - o.y();
 
     QSize realSize = pic.size();
-    QSize actualSize = d_target->size();
+    QSize actualSize = target->size();
+    if (actualSize.width() <= 0 || actualSize.height() <= 0)
+        return false;
 
     if (realSize != actualSize) {
         double ratioX = (double)realSize.width() / (double)actualSize.width();
@@ -86,6 +130,11 @@ void LineProfileTool::calculateLineProfile(const QPoint &start, const QPoint &en
         y1 = int(y1 * ratioY);
         y2 = int(y2 * ratioY);
     }
+
+    x1 = qBound(0, x1, image.width() - 1);
+    x2 = qBound(0, x2, image.width() - 1);
+    y1 = qBound(0, y1, image.height() - 1);
+    y2 = qBound(0, y2, image.height() - 1);
 
     Column *pixelCol = new Column(tr("pixel"), SciDAVis::ColumnMode::Numeric);
     Column *xCol = new Column(tr("x"), SciDAVis::ColumnMode::Numeric);
@@ -145,31 +194,45 @@ void LineProfileTool::calculateLineProfile(const QPoint &start, const QPoint &en
     QString caption = tr("Line profile %1").arg(1);
     emit createTablePlot(caption, QString(),
                          QList<Column *>() << pixelCol << xCol << yCol << intCol);
+    return true;
 }
 
 int LineProfileTool::averageImagePixel(const QImage &image, int px, int py, bool moreHorizontal)
 {
-    QRgb pixel;
-    int sum = 0, start, i;
-    int middle = int(0.5 * (d_average_pixels - 1));
+    const int w = image.width();
+    const int h = image.height();
+    if (w <= 0 || h <= 0)
+        return 0;
+
+    int sum = 0;
+    int count = 0;
+    const int middle = (d_average_pixels - 1) / 2;
     if (moreHorizontal) {
-        start = py - middle;
-        for (i = 0; i < d_average_pixels; i++) {
-            pixel = image.pixel(px, start + i);
-            sum += qGray(pixel);
+        if (px < 0 || px >= w)
+            return 0;
+        const int yBegin = qMax(0, py - middle);
+        const int yEnd = qMin(h - 1, py - middle + d_average_pixels - 1);
+        for (int y = yBegin; y <= yEnd; ++y) {
+            sum += qGray(image.pixel(px, y));
+            ++count;
         }
     } else {
-        start = px - middle;
-        for (i = 0; i < d_average_pixels; i++) {
-            pixel = image.pixel(start + i, py);
-            sum += qGray(pixel);
+        if (py < 0 || py >= h)
+            return 0;
+        const int xBegin = qMax(0, px - middle);
+        const int xEnd = qMin(w - 1, px - middle + d_average_pixels - 1);
+        for (int x = xBegin; x <= xEnd; ++x) {
+            sum += qGray(image.pixel(x, py));
+            ++count;
         }
     }
-    return sum / d_average_pixels;
+    return (count > 0) ? (sum / count) : 0;
 }
 
 void LineProfileTool::addLineMarker(const QPoint &start, const QPoint &end)
 {
+    if (!d_graph || !d_graph->plotWidget())
+        return;
     ArrowMarker *mrk = new ArrowMarker();
     mrk->attach(d_graph->plotWidget());
 
@@ -188,6 +251,8 @@ void LineProfileTool::addLineMarker(const QPoint &start, const QPoint &end)
 
 void LineProfileTool::paintEvent(QPaintEvent *)
 {
+    if (!d_dragging || !resolveTarget())
+        return;
     QPainter p(this);
     p.setPen(QPen(Qt::red, 1, Qt::SolidLine));
     p.drawLine(d_op_start, d_op_start + d_op_dp);
@@ -195,14 +260,31 @@ void LineProfileTool::paintEvent(QPaintEvent *)
 
 void LineProfileTool::mousePressEvent(QMouseEvent *e)
 {
-    if (e->button() != Qt::LeftButton)
+    if (e->button() != Qt::LeftButton) {
+        e->ignore();
         return;
+    }
+    if (!resolveTarget()) {
+        if (d_graph)
+            d_graph->setActiveTool(NULL);
+        return;
+    }
     d_op_start = e->pos();
+    d_op_dp = QPoint(0, 0);
+    d_dragging = true;
     e->accept();
 }
 
 void LineProfileTool::mouseMoveEvent(QMouseEvent *e)
 {
+    if (!d_dragging)
+        return;
+    if (!resolveTarget()) {
+        d_dragging = false;
+        if (d_graph)
+            d_graph->setActiveTool(NULL);
+        return;
+    }
     d_op_dp = e->pos() - d_op_start;
     repaint();
     e->accept();
@@ -210,8 +292,17 @@ void LineProfileTool::mouseMoveEvent(QMouseEvent *e)
 
 void LineProfileTool::mouseReleaseEvent(QMouseEvent *e)
 {
-    calculateLineProfile(d_op_start, e->pos());
-    addLineMarker(d_op_start, e->pos());
-    d_graph->setActiveTool(NULL);
+    if (e->button() != Qt::LeftButton) {
+        e->ignore();
+        return;
+    }
+    if (!d_dragging)
+        return;
+    d_dragging = false;
+    const QPoint endPos = e->pos();
+    if (resolveTarget() && calculateLineProfile(d_op_start, endPos))
+        addLineMarker(d_op_start, endPos);
+    if (d_graph)
+        d_graph->setActiveTool(NULL);
     // attention: I'm now deleted
 }

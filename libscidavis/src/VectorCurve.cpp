@@ -35,7 +35,9 @@
 #include <QDateTime>
 #include <QPainter>
 #include <QLocale>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -422,36 +424,80 @@ void VectorCurve::fillArrowHead(bool fill)
 
 QwtDoubleRect VectorCurve::boundingRect() const
 {
-    QwtDoubleRect rect = QwtPlotCurve::boundingRect();
-    if (!vectorEnd || dataSize() <= 0 || vectorEnd->size() == 0)
-        return rect;
+    const int n = dataSize();
+    if (n <= 0)
+        return QwtPlotItem::boundingRect();
 
-    if (d_type == Graph::VectXYXY)
-        rect |= vectorEnd->boundingRect();
-    else {
-        const int count = qMin(dataSize(), static_cast<int>(vectorEnd->size()));
-        for (int i = 0; i < count; i++) {
-            double x_i = x(i);
-            double y_i = y(i);
-            double angle = vectorEnd->x(i);
-            double mag = vectorEnd->y(i);
+    double minX = 0.0;
+    double maxX = 0.0;
+    double minY = 0.0;
+    double maxY = 0.0;
+    bool hasPoint = false;
+
+    auto includePoint = [&](double px, double py) {
+        if (!std::isfinite(px) || !std::isfinite(py))
+            return;
+        if (!hasPoint) {
+            minX = maxX = px;
+            minY = maxY = py;
+            hasPoint = true;
+        } else {
+            minX = qMin(minX, px);
+            maxX = qMax(maxX, px);
+            minY = qMin(minY, py);
+            maxY = qMax(maxY, py);
+        }
+    };
+
+    if (!vectorEnd || vectorEnd->size() == 0) {
+        for (int i = 0; i < n; ++i)
+            includePoint(x(i), y(i));
+        return hasPoint ? QwtDoubleRect(minX, minY, maxX - minX, maxY - minY)
+                        : QwtPlotItem::boundingRect();
+    }
+
+    const int endSize = static_cast<int>(vectorEnd->size());
+    if (d_type == Graph::VectXYXY) {
+        for (int i = 0; i < n; ++i)
+            includePoint(x(i), y(i));
+        for (int i = 0; i < endSize; ++i)
+            includePoint(vectorEnd->x(i), vectorEnd->y(i));
+    } else {
+        const int count = qMin(n, endSize);
+        for (int i = 0; i < count; ++i) {
+            const double x_i = x(i);
+            const double y_i = y(i);
+            const double angle = vectorEnd->x(i);
+            const double mag = vectorEnd->y(i);
+            if (!std::isfinite(x_i) || !std::isfinite(y_i))
+                continue;
+            if (!std::isfinite(angle) || !std::isfinite(mag)) {
+                includePoint(x_i, y_i);
+                continue;
+            }
+            const double dx = mag * std::cos(angle);
+            const double dy = mag * std::sin(angle);
             switch (d_position) {
             case Tail:
-                rect |= QwtDoubleRect(x_i, y_i, mag * cos(angle), mag * sin(angle)).normalized();
+                includePoint(x_i, y_i);
+                includePoint(x_i + dx, y_i + dy);
                 break;
-            case Middle: {
-                QwtDoubleRect rect_i(0, 0, fabs(mag * cos(angle)), fabs(mag * sin(angle)));
-                rect_i.moveCenter(QwtDoublePoint(x_i, y_i));
-                rect |= rect_i;
+            case Middle:
+                includePoint(x_i - 0.5 * dx, y_i - 0.5 * dy);
+                includePoint(x_i + 0.5 * dx, y_i + 0.5 * dy);
                 break;
-            }
             case Head:
-                rect |= QwtDoubleRect(x_i, y_i, -mag * cos(angle), -mag * sin(angle)).normalized();
+                includePoint(x_i - dx, y_i - dy);
+                includePoint(x_i, y_i);
                 break;
             }
         }
+        for (int i = count; i < n; ++i)
+            includePoint(x(i), y(i));
     }
-    return rect;
+
+    return hasPoint ? QwtDoubleRect(minX, minY, maxX - minX, maxY - minY)
+                    : QwtPlotItem::boundingRect();
 }
 
 void VectorCurve::updateColumnNames(const QString &oldName, const QString &newName,

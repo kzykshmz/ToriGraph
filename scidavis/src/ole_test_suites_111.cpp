@@ -831,8 +831,13 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
                 iml = static_cast<MultiLayer *>(mw2);
         }
         CHECK_COND(iml != nullptr && !iml->layersList().isEmpty(), "111g: graph IG111");
-        Graph *ig = iml->layersList().at(0);
+        auto curIg = [&]() -> Graph * {
+            return (iml && !iml->layersList().isEmpty()) ? iml->layersList().at(0) : nullptr;
+        };
         auto isig = [&]() {
+            Graph *ig = curIg();
+            if (!ig)
+                return std::string("<null>|");
             std::string s;
             for (int i = 0; i < ig->curves(); ++i) {
                 QwtPlotCurve *c = ig->curve(i);
@@ -862,7 +867,7 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         CHECK_COND(!isErr(r), "111g: style J111 curve: " << errText(r));
         const std::string g1 = isig();
         std::cout << "[INFO] 111g: with J111 " << g1 << "\n";
-        CHECK_COND(ig->curves() == 2, "111g: setup with J111: " << g1);
+        CHECK_COND(curIg() && curIg()->curves() == 2, "111g: setup with J111: " << g1);
         int steps = 0;
         while (w111->table(QString::fromLatin1("J111")) != nullptr && ps->canUndo() && steps < 20) {
             ps->undo();
@@ -870,7 +875,7 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         }
         QCoreApplication::processEvents();
         std::cout << "[INFO] 111g: J111 creation undone " << isig() << "\n";
-        CHECK_COND(w111->table(QString::fromLatin1("J111")) == nullptr && ig->curves() == 1,
+        CHECK_COND(w111->table(QString::fromLatin1("J111")) == nullptr && curIg() && curIg()->curves() == 1,
                    "111g: undoing the creation of J111: " << isig());
         for (int k = 0; k < steps; ++k)
             ps->redo();
@@ -943,7 +948,7 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
         w111->closeWindow(t);
         QCoreApplication::processEvents();
         std::cout << "[INFO] 111g: I111 deleted " << isig() << "\n";
-        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && ig->curves() < 2,
+        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && curIg() && curIg()->curves() < 2,
                    "111g: deleting I111: " << isig());
         ps->undo();
         QCoreApplication::processEvents();
@@ -951,7 +956,7 @@ int runSuite111DualYHeadroomAndRemovedColumnUndo(ApplicationWindow *mw)
                    "111g: undo of deleting I111 did not bring its curves back: " << isig() << " expected " << g2);
         ps->redo();
         QCoreApplication::processEvents();
-        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && ig->curves() < 2,
+        CHECK_COND(w111->table(QString::fromLatin1("I111")) == nullptr && curIg() && curIg()->curves() < 2,
                    "111g: redo of deleting I111: " << isig());
         ps->undo();
         QCoreApplication::processEvents();

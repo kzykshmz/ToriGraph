@@ -3,6 +3,7 @@
 #pragma warning(disable : 4786)
 #endif
 
+#include <cmath>
 #include "qwt3d_surfaceplot.h"
 #include "qwt3d_enrichment_std.h"
 
@@ -157,27 +158,54 @@ void SurfacePlot::readIn(GridData &gdata, Triple **data, unsigned int columns, u
     gdata.setSize(columns, rows);
 
     ParallelEpiped range(Triple(DBL_MAX, DBL_MAX, DBL_MAX), Triple(-DBL_MAX, -DBL_MAX, -DBL_MAX));
+    bool hasFiniteX = false;
+    bool hasFiniteY = false;
+    bool hasFiniteZ = false;
 
     /* fill out the vertex array for the mesh. */
     for (unsigned i = 0; i != columns; ++i) {
         for (unsigned j = 0; j != rows; ++j) {
-            gdata.vertices[i][j][0] = data[i][j].x;
-            gdata.vertices[i][j][1] = data[i][j].y;
-            gdata.vertices[i][j][2] = data[i][j].z;
+            const double vx = data[i][j].x;
+            const double vy = data[i][j].y;
+            const double vz = data[i][j].z;
+            gdata.vertices[i][j][0] = vx;
+            gdata.vertices[i][j][1] = vy;
+            gdata.vertices[i][j][2] = vz;
 
-            if (data[i][j].x > range.maxVertex.x)
-                range.maxVertex.x = data[i][j].x;
-            if (data[i][j].y > range.maxVertex.y)
-                range.maxVertex.y = data[i][j].y;
-            if (data[i][j].z > range.maxVertex.z)
-                range.maxVertex.z = data[i][j].z;
-            if (data[i][j].x < range.minVertex.x)
-                range.minVertex.x = data[i][j].x;
-            if (data[i][j].y < range.minVertex.y)
-                range.minVertex.y = data[i][j].y;
-            if (data[i][j].z < range.minVertex.z)
-                range.minVertex.z = data[i][j].z;
+            if (std::isfinite(vx)) {
+                if (vx > range.maxVertex.x)
+                    range.maxVertex.x = vx;
+                if (vx < range.minVertex.x)
+                    range.minVertex.x = vx;
+                hasFiniteX = true;
+            }
+            if (std::isfinite(vy)) {
+                if (vy > range.maxVertex.y)
+                    range.maxVertex.y = vy;
+                if (vy < range.minVertex.y)
+                    range.minVertex.y = vy;
+                hasFiniteY = true;
+            }
+            if (std::isfinite(vz)) {
+                if (vz > range.maxVertex.z)
+                    range.maxVertex.z = vz;
+                if (vz < range.minVertex.z)
+                    range.minVertex.z = vz;
+                hasFiniteZ = true;
+            }
         }
+    }
+    if (!hasFiniteX) {
+        range.minVertex.x = 0.0;
+        range.maxVertex.x = 1.0;
+    }
+    if (!hasFiniteY) {
+        range.minVertex.y = 0.0;
+        range.maxVertex.y = 1.0;
+    }
+    if (!hasFiniteZ) {
+        range.minVertex.z = 0.0;
+        range.maxVertex.z = 1.0;
     }
     gdata.setHull(range);
 }
@@ -188,29 +216,51 @@ void SurfacePlot::readIn(GridData &gdata, double **data, unsigned int columns, u
     gdata.setPeriodic(false, false);
     gdata.setSize(columns, rows);
 
-    double dx = (maxx - minx) / (gdata.columns() - 1);
-    double dy = (maxy - miny) / (gdata.rows() - 1);
+    double dx = (gdata.columns() > 1) ? ((maxx - minx) / (gdata.columns() - 1)) : 0.0;
+    double dy = (gdata.rows() > 1) ? ((maxy - miny) / (gdata.rows() - 1)) : 0.0;
 
     double tmin = DBL_MAX;
     double tmax = -DBL_MAX;
+    bool hasFiniteZ = false;
 
     /* fill out the vertex array for the mesh. */
     for (unsigned i = 0; i != columns; ++i) {
         for (unsigned j = 0; j != rows; ++j) {
             gdata.vertices[i][j][0] = minx + i * dx;
             gdata.vertices[i][j][1] = miny + j * dy;
-            gdata.vertices[i][j][2] = data[i][j];
+            const double v = data[i][j];
+            gdata.vertices[i][j][2] = v;
 
-            if (data[i][j] > tmax)
-                tmax = data[i][j];
-            if (data[i][j] < tmin)
-                tmin = data[i][j];
+            if (std::isfinite(v)) {
+                if (v > tmax)
+                    tmax = v;
+                if (v < tmin)
+                    tmin = v;
+                hasFiniteZ = true;
+            }
         }
     }
-    ParallelEpiped hull =
-            ParallelEpiped(Triple(gdata.vertices[0][0][0], gdata.vertices[0][0][1], tmin),
-                           Triple(gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][0],
-                                  gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][1], tmax));
+    if (!hasFiniteZ || tmin > tmax) {
+        tmin = 0.0;
+        tmax = 1.0;
+    }
+
+    const double hx0 = (columns > 0 && rows > 0 && std::isfinite(gdata.vertices[0][0][0]))
+            ? gdata.vertices[0][0][0]
+            : (std::isfinite(minx) ? minx : 0.0);
+    const double hy0 = (columns > 0 && rows > 0 && std::isfinite(gdata.vertices[0][0][1]))
+            ? gdata.vertices[0][0][1]
+            : (std::isfinite(miny) ? miny : 0.0);
+    const double hx1 = (columns > 0 && rows > 0
+                        && std::isfinite(gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][0]))
+            ? gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][0]
+            : (std::isfinite(maxx) ? maxx : 1.0);
+    const double hy1 = (columns > 0 && rows > 0
+                        && std::isfinite(gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][1]))
+            ? gdata.vertices[gdata.columns() - 1][gdata.rows() - 1][1]
+            : (std::isfinite(maxy) ? maxy : 1.0);
+
+    ParallelEpiped hull = ParallelEpiped(Triple(hx0, hy0, tmin), Triple(hx1, hy1, tmax));
 
     gdata.setHull(hull);
 }

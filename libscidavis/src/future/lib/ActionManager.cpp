@@ -107,7 +107,24 @@ QList<QString> ActionManager::internalNames() const
 
 void ActionManager::removeAction(QObject *action)
 {
-    removeAction(static_cast<QAction *>(action));
+    if (!action)
+        return;
+    if (auto *liveAction = qobject_cast<QAction *>(action)) {
+        removeAction(liveAction);
+        return;
+    }
+    // When invoked from QObject::destroyed(QObject *), ~QAction() has already run, so
+    // `action` is no longer a QAction. Remove matching entries by address without
+    // downcasting or calling QAction::text() on the destroyed subclass.
+    QMutableMapIterator<QString, QList<QAction *> *> it(d_action_registry);
+    while (it.hasNext()) {
+        it.next();
+        QList<QAction *> *list = it.value();
+        for (int i = list->size() - 1; i >= 0; --i) {
+            if (static_cast<const void *>(list->at(i)) == static_cast<const void *>(action))
+                list->removeAt(i);
+        }
+    }
 }
 
 void ActionManager::removeAction(QAction *action)

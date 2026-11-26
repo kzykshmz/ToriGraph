@@ -1096,7 +1096,7 @@ public:
     QwtPlotItem *addShadedBand(const QVector<double> &x, const QVector<double> &yLow,
                                const QVector<double> &yHigh,
                                const QColor &fillColor = QColor(30, 102, 184, 55),
-                               const QString &title = QString());
+                               const QString &title = QString(), bool horizontal = false);
     void removeShadedBandByTitle(const QString &title);
     void setStackOffsets(int mode /*0=Uniform,1=AutoGap*/, double yGapPct = 15.0,
                          double xGapPct = 0.0, bool normalize01 = false);
@@ -1371,6 +1371,7 @@ private:
         QVector<double> yHigh;
         QColor fillColor;
         QString title;
+        bool horizontal = false;
         QwtPlotItem *item = nullptr;
     };
     QVector<ShadedBandSpec> d_shaded_bands;

@@ -273,6 +273,11 @@ bool ZipArchive::extract(int index, QByteArray &out, QString *outErr) const
 
     const char *compPtr = d_data.constData() + static_cast<qint64>(dataOffset);
     if (e.method == 0) {
+        if (e.compSize > kMaxEntryUncompressedBytes) {
+            if (outErr)
+                *outErr = QStringLiteral("ZIP entry '%1' exceeds maximum allowed size.").arg(e.name);
+            return false;
+        }
         out = QByteArray(compPtr, static_cast<int>(e.compSize));
     } else if (e.method == 8) {
         if (!inflateBuffer(compPtr, e.compSize, -MAX_WBITS, kMaxEntryUncompressedBytes, out,
@@ -290,14 +295,22 @@ bool ZipArchive::extract(int index, QByteArray &out, QString *outErr) const
         return false;
     }
 
-    if (e.crc32 != 0 && !out.isEmpty()) {
-        const uLong computed = ::crc32(0L, reinterpret_cast<const Bytef *>(out.constData()),
-                                       static_cast<uInt>(out.size()));
-        if (static_cast<quint32>(computed) != e.crc32) {
-            if (outErr)
-                *outErr = QStringLiteral("CRC32 mismatch in ZIP entry '%1'.").arg(e.name);
-            return false;
-        }
+    if (static_cast<quint64>(out.size()) != e.uncompSize) {
+        out.clear();
+        if (outErr)
+            *outErr = QStringLiteral("Uncompressed size mismatch in ZIP entry '%1'.").arg(e.name);
+        return false;
+    }
+
+    const uLong computed = out.isEmpty()
+            ? 0UL
+            : ::crc32(0L, reinterpret_cast<const Bytef *>(out.constData()),
+                      static_cast<uInt>(out.size()));
+    if (static_cast<quint32>(computed) != e.crc32) {
+        out.clear();
+        if (outErr)
+            *outErr = QStringLiteral("CRC32 mismatch in ZIP entry '%1'.").arg(e.name);
+        return false;
     }
     return true;
 }

@@ -48,7 +48,7 @@
 #include <QMouseEvent>
 #include <QDrag>
 
-Folder::Folder(const QString &name) : d_active_window(0)
+Folder::Folder(const QString &name) : myFolderListItem(nullptr), d_active_window(0)
 {
     QObject::setObjectName(name);
     birthdate = QLocale().toString(QDateTime::currentDateTime());

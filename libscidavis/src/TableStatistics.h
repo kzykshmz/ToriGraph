@@ -48,9 +48,10 @@ public:
     //! return the type of statistics
     Type type() const { return d_type; }
     //! return the base table of which statistics are displayed
-    Table *base() const { return d_base; }
+    Table *base() const { return d_base.data(); }
     // saving
     virtual QString saveToString(const QString &geometry);
+    void saveToDevice(QIODevice *device, const QString &geometry);
 
 public slots:
     //! update statistics after a column has changed (to be connected with Table::modifiedData)
@@ -64,7 +65,7 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event);
 
 private:
-    Table *d_base;
+    QPointer<Table> d_base;
     Type d_type;
     QList<int> d_targets;
 };
