@@ -568,7 +568,7 @@ void Table::print(const QString &fileName)
     // print header
     p.setFont(hHeader->font());
     QString header_label = d_view_widget->model()->headerData(0, Qt::Horizontal).toString();
-    QRect br = p.boundingRect(br, Qt::AlignCenter, header_label);
+    QRect br = p.boundingRect(QRect(), Qt::AlignCenter, header_label);
     p.drawLine(right, height, right, height + br.height());
     QRect tr(br);
 
@@ -1093,6 +1093,25 @@ namespace {
 // argument (cell(...) / col(name, row)): a column reading other rows of itself is a recursive
 // series, not a circular reference. Returns false if some reference could not be resolved
 // (e.g. col(j-1)); the caller then falls back to repeated passes.
+static QStringList splitUnescapedFormulaPath(const QString &raw)
+{
+    QStringList parts;
+    QString cur;
+    for (int i = 0; i < raw.size(); ++i) {
+        const QChar ch = raw.at(i);
+        if (ch == QLatin1Char('\\') && i + 1 < raw.size()) {
+            cur.append(raw.at(++i));
+        } else if (ch == QLatin1Char('/')) {
+            parts.append(cur);
+            cur.clear();
+        } else {
+            cur.append(ch);
+        }
+    }
+    parts.append(cur);
+    return parts;
+}
+
 static bool collectSameTableRefs(Table *tbl, int ownCol, const QString &formula,
                                  QSet<int> &refs, bool &selfWithoutRow)
 {
@@ -1108,16 +1127,22 @@ static bool collectSameTableRefs(Table *tbl, int ownCol, const QString &formula,
         const bool rowForm = fn.startsWith(QLatin1String("cell")) || hasRowArg;
         int idx = -1;
         if (m.capturedStart(3) >= 0) {
-            QString name = m.captured(3);
-            name.replace(QLatin1String("\\/"), QLatin1String("/"));
-            name.replace(QLatin1String("\\\\"), QLatin1String("\\"));
-            if (name.contains(QLatin1Char('/'))) {
-                const QString tablePart = name.section(QLatin1Char('/'), 0, 0);
-                if (tablePart != tbl->name())
-                    continue; // another table: handled by the cross-table passes
-                name = name.section(QLatin1Char('/'), 1);
+            const QString raw = m.captured(3);
+            if (fn == QLatin1String("col")) {
+                QString decoded = raw;
+                decoded.replace(QLatin1String("\\\""), QLatin1String("\""));
+                idx = tbl->colIndex(decoded);
+            } else {
+                const QStringList parts = splitUnescapedFormulaPath(raw);
+                if (parts.size() == 1) {
+                    idx = tbl->colIndex(parts.at(0));
+                } else {
+                    const QString &tablePart = parts.at(parts.size() - 2);
+                    if (tablePart != tbl->name())
+                        continue; // another table: handled by the cross-table passes
+                    idx = tbl->colIndex(parts.last());
+                }
             }
-            idx = tbl->colIndex(name);
         } else {
             const QString arg = m.captured(2).trimmed();
             bool isNum = false;
@@ -1160,19 +1185,25 @@ static void collectCrossTableRefs(Table *ownerTbl, int ownCol, const QString &fo
         Table *targetTbl = ownerTbl;
         int idx = -1;
         if (m.capturedStart(3) >= 0) {
-            QString name = m.captured(3);
-            name.replace(QLatin1String("\\/"), QLatin1String("/"));
-            name.replace(QLatin1String("\\\\"), QLatin1String("\\"));
-            if (name.contains(QLatin1Char('/'))) {
-                const QString tablePart = name.section(QLatin1Char('/'), 0, 0);
-                targetTbl = tablesByName.value(tablePart, nullptr);
-                if (!targetTbl) {
-                    allResolved = false;
-                    continue;
+            const QString raw = m.captured(3);
+            if (fn == QLatin1String("col")) {
+                QString decoded = raw;
+                decoded.replace(QLatin1String("\\\""), QLatin1String("\""));
+                idx = ownerTbl->colIndex(decoded);
+            } else {
+                const QStringList parts = splitUnescapedFormulaPath(raw);
+                if (parts.size() == 1) {
+                    idx = ownerTbl->colIndex(parts.at(0));
+                } else {
+                    const QString &tablePart = parts.at(parts.size() - 2);
+                    targetTbl = tablesByName.value(tablePart, nullptr);
+                    if (!targetTbl) {
+                        allResolved = false;
+                        continue;
+                    }
+                    idx = targetTbl->colIndex(parts.last());
                 }
-                name = name.section(QLatin1Char('/'), 1);
             }
-            idx = targetTbl->colIndex(name);
         } else {
             const QString arg = m.captured(2).trimmed();
             bool isNum = false;
@@ -2842,6 +2873,7 @@ bool Table::pasteText(const QString &rawText, bool transposed)
         }
     }
 
+    const bool usedDelimitedSplit = hasTab || hasComma || hasSemicolon;
     QList<QStringList> grid;
     int maxCols = 0;
     for (const QString &line : lines) {
@@ -2867,7 +2899,7 @@ bool Table::pasteText(const QString &rawText, bool transposed)
             }
         }
         for (int i = 0; i < rowCells.size(); ++i) {
-            QString cell = unquoteCellTrim(rowCells[i]);
+            QString cell = usedDelimitedSplit ? rowCells[i].trimmed() : unquoteCellTrim(rowCells[i]);
             if (stripSingleColGroupCommas && isGroupedNumberToken(cell))
                 cell.remove(QLatin1Char(','));
             rowCells[i] = cell;
@@ -4111,6 +4143,8 @@ QString Table::saveAsTemplate(const QString &geometryInfo)
 
 void Table::restore(const QStringList &list_in)
 {
+    if (list_in.isEmpty())
+        return;
     const bool prevAutoRecalc = d_auto_recalc_formulas;
     d_auto_recalc_formulas = false;
 
@@ -4118,44 +4152,63 @@ void Table::restore(const QStringList &list_in)
     QStringList temp_list;
     QStringList::const_iterator iterator = list_in.begin();
 
-    temp_list = (*iterator++).split("\t");
-    temp_list.removeFirst();
-    importV0x0001XXHeader(temp_list);
-
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    setColWidths((*iterator).right((*iterator).length() - 9).split("\t", Qt::SkipEmptyParts));
-#else
-    setColWidths((*iterator).right((*iterator).length() - 9).split("\t", QString::SkipEmptyParts));
-#endif
-    iterator++;
-
-    temp_list = (*iterator++).split("\t");
-    if (temp_list[0] == "com") {
-        temp_list.removeFirst();
-        setCommands(temp_list);
-    } else if (temp_list[0] == "<com>") {
-        QStringList commands;
-        for (int col = 0; col < numCols(); col++)
-            commands << "";
-        for (; iterator != list_in.end() && *iterator != "</com>"; iterator++) {
-            int col = (*iterator).mid(9, (*iterator).length() - 11).toInt();
-            QString formula;
-            for (iterator++; iterator != list_in.end() && *iterator != "</col>"; iterator++)
-                formula += *iterator + "\n";
-            formula.truncate(formula.length() - 1);
-            commands[col] = formula;
-        }
-        iterator++;
-        setCommands(commands);
+    if (iterator != list_in.end()) {
+        temp_list = (*iterator++).split("\t");
+        if (!temp_list.isEmpty())
+            temp_list.removeFirst();
+        importV0x0001XXHeader(temp_list);
     }
 
-    temp_list = (*iterator++).split("\t");
-    temp_list.removeFirst();
-    setColumnTypes(temp_list);
+    if (iterator != list_in.end()) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+        setColWidths((*iterator).right((*iterator).length() - 9).split("\t", Qt::SkipEmptyParts));
+#else
+        setColWidths((*iterator).right((*iterator).length() - 9).split("\t", QString::SkipEmptyParts));
+#endif
+        iterator++;
+    }
 
-    temp_list = (*iterator++).split("\t");
-    temp_list.removeFirst();
-    setColComments(temp_list);
+    if (iterator != list_in.end()) {
+        temp_list = (*iterator++).split("\t");
+        if (!temp_list.isEmpty() && temp_list[0] == "com") {
+            temp_list.removeFirst();
+            setCommands(temp_list);
+        } else if (!temp_list.isEmpty() && temp_list[0] == "<com>") {
+            QStringList commands;
+            for (int col = 0; col < numCols(); col++)
+                commands << "";
+            for (; iterator != list_in.end() && *iterator != "</com>";) {
+                bool okCol = false;
+                int col = (*iterator).mid(9, (*iterator).length() - 11).toInt(&okCol);
+                QString formula;
+                for (iterator++; iterator != list_in.end() && *iterator != "</col>"; iterator++)
+                    formula += *iterator + "\n";
+                if (!formula.isEmpty())
+                    formula.truncate(formula.length() - 1);
+                if (okCol && col >= 0 && col < commands.size())
+                    commands[col] = formula;
+                if (iterator != list_in.end())
+                    iterator++;
+            }
+            if (iterator != list_in.end())
+                iterator++;
+            setCommands(commands);
+        }
+    }
+
+    if (iterator != list_in.end()) {
+        temp_list = (*iterator++).split("\t");
+        if (!temp_list.isEmpty())
+            temp_list.removeFirst();
+        setColumnTypes(temp_list);
+    }
+
+    if (iterator != list_in.end()) {
+        temp_list = (*iterator++).split("\t");
+        if (!temp_list.isEmpty())
+            temp_list.removeFirst();
+        setColComments(temp_list);
+    }
 
     bool restoredAutoRecalc = prevAutoRecalc;
     bool anyMetadata = false;

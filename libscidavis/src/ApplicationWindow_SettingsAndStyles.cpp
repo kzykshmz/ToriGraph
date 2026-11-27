@@ -5086,9 +5086,9 @@ MultiLayer *ApplicationWindow::batchCloneGraphToTable(MultiLayer *srcMl, Table *
         for (const QString &line : rawLines) {
             if (line.startsWith("curve\t")) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-                QStringList parts = line.split('\t', Qt::SkipEmptyParts);
+                QStringList parts = line.split('\t', Qt::KeepEmptyParts);
 #else
-                QStringList parts = line.split('\t', QString::SkipEmptyParts);
+                QStringList parts = line.split('\t', QString::KeepEmptyParts);
 #endif
                 if (parts.size() >= 6) {
                     const int plotType = parts[3].toInt();

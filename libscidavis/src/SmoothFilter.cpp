@@ -150,9 +150,11 @@ void SmoothFilter::setMethod(int m)
 
 void SmoothFilter::calculateOutputData(std::vector<double>& x, std::vector<double>&  y)
 {
-    const int nCopy = std::min({ d_points, static_cast<int>(d_x.size()),
-                                 static_cast<int>(d_y.size()), static_cast<int>(x.size()),
-                                 static_cast<int>(y.size()) });
+    const size_t n = std::min(d_x.size(), d_y.size());
+    d_points = static_cast<int>(n);
+    x.resize(n);
+    y.resize(n);
+    const int nCopy = static_cast<int>(n);
     if (nCopy <= 0)
         return;
     for (int i = 0; i < nCopy; i++) {
@@ -313,48 +315,53 @@ void SmoothFilter::smoothAverage(std::vector<double>&, std::vector<double>&  y)
  */
 int SmoothFilter::savitzkyGolayCoefficients(int points, int polynom_order, gsl_matrix *h)
 {
+    if (points <= 0 || polynom_order < 0 || polynom_order >= points || !h)
+        return GSL_EINVAL;
+
     int error = 0; // catch GSL error codes
+    const size_t m = static_cast<size_t>(points);
+    const size_t k = static_cast<size_t>(polynom_order + 1);
 
-    // compute Vandermonde matrix
-    gsl_matrix *vandermonde = gsl_matrix_alloc(points, polynom_order + 1);
+    // Build centered & scaled Vandermonde matrix on t_i in [-1, 1] to avoid ill-conditioning.
+    gsl_matrix *V = gsl_matrix_alloc(m, k);
+    gsl_vector *tau = gsl_vector_alloc(k);
+    gsl_matrix *Q = gsl_matrix_alloc(m, m);
+    gsl_matrix *R = gsl_matrix_alloc(m, k);
+    if (!V || !tau || !Q || !R) {
+        if (V)
+            gsl_matrix_free(V);
+        if (tau)
+            gsl_vector_free(tau);
+        if (Q)
+            gsl_matrix_free(Q);
+        if (R)
+            gsl_matrix_free(R);
+        return GSL_ENOMEM;
+    }
+
+    const double denom = (points > 1) ? double(points - 1) : 1.0;
     for (int i = 0; i < points; ++i) {
-        gsl_matrix_set(vandermonde, i, 0, 1.0);
+        const double t = (points > 1) ? ((2.0 * double(i) - denom) / denom) : 0.0;
+        gsl_matrix_set(V, static_cast<size_t>(i), 0, 1.0);
         for (int j = 1; j <= polynom_order; ++j)
-            gsl_matrix_set(vandermonde, i, j, gsl_matrix_get(vandermonde, i, j - 1) * i);
+            gsl_matrix_set(V, static_cast<size_t>(i), static_cast<size_t>(j),
+                           gsl_matrix_get(V, static_cast<size_t>(i), static_cast<size_t>(j - 1))
+                                   * t);
     }
 
-    // compute V^TV
-    gsl_matrix *vtv = gsl_matrix_alloc(polynom_order + 1, polynom_order + 1);
-    error = gsl_blas_dgemm(CblasTrans, CblasNoTrans, 1.0, vandermonde, vandermonde, 0.0, vtv);
-
+    error = gsl_linalg_QR_decomp(V, tau);
+    if (!error)
+        error = gsl_linalg_QR_unpack(V, tau, Q, R);
     if (!error) {
-        // compute (V^TV)^(-1) using LU decomposition
-        gsl_permutation *p = gsl_permutation_alloc(polynom_order + 1);
-        int signum;
-        error = gsl_linalg_LU_decomp(vtv, p, &signum);
-
-        if (!error) {
-            gsl_matrix *vtv_inv = gsl_matrix_alloc(polynom_order + 1, polynom_order + 1);
-            error = gsl_linalg_LU_invert(vtv, p, vtv_inv);
-            if (!error) {
-                // compute (V^TV)^(-1)V^T
-                gsl_matrix *vtv_inv_vt = gsl_matrix_alloc(polynom_order + 1, points);
-                error = gsl_blas_dgemm(CblasNoTrans, CblasTrans, 1.0, vtv_inv, vandermonde, 0.0,
-                                       vtv_inv_vt);
-
-                if (!error) {
-                    // finally, compute H = V(V^TV)^(-1)V^T
-                    error = gsl_blas_dgemm(CblasNoTrans, CblasNoTrans, 1.0, vandermonde, vtv_inv_vt,
-                                           0.0, h);
-                }
-                gsl_matrix_free(vtv_inv_vt);
-            }
-            gsl_matrix_free(vtv_inv);
-        }
-        gsl_permutation_free(p);
+        gsl_matrix_const_view Q1 = gsl_matrix_const_submatrix(Q, 0, 0, m, k);
+        // Exact orthogonal projector H = Q1 * Q1^T (matches V (V^T V)^-1 V^T without squaring kappa)
+        error = gsl_blas_dgemm(CblasNoTrans, CblasTrans, 1.0, &Q1.matrix, &Q1.matrix, 0.0, h);
     }
-    gsl_matrix_free(vtv);
-    gsl_matrix_free(vandermonde);
+
+    gsl_matrix_free(R);
+    gsl_matrix_free(Q);
+    gsl_vector_free(tau);
+    gsl_matrix_free(V);
 
     return error;
 }
@@ -376,7 +383,7 @@ void SmoothFilter::smoothSavGol(std::vector<double>&, std::vector<double>&  y_in
     // total number of points in smoothing window
     int points = d_left_points + d_right_points + 1;
 
-    if (points < d_polynom_order + 1) {
+    if (d_polynom_order < 0 || points < d_polynom_order + 1) {
         if (!isSilentOrNonInteractive())
             QMessageBox::critical((ApplicationWindow *)parent(),
                                   tr("ToriGraph") + " - " + tr("Error"),
@@ -460,7 +467,7 @@ void SmoothFilter::smoothModifiedSavGol(std::vector<double>& x_in, std::vector<d
     // total number of points in smoothing window
     int points = d_left_points + d_right_points + 1;
 
-    if (points < d_polynom_order + 1) {
+    if (d_polynom_order < 0 || points < d_polynom_order + 1) {
         if (!isSilentOrNonInteractive())
             QMessageBox::critical((ApplicationWindow *)parent(),
                                   tr("ToriGraph") + " - " + tr("Error"),
@@ -695,6 +702,25 @@ void SmoothFilter::smoothWhittaker(std::vector<double> &, std::vector<double> &y
     if (n < 3 || lam <= 0.0)
         return;
 
+    auto fallbackLinearFit = [&]() {
+        double yMean = 0.0;
+        for (int i = 0; i < n; ++i)
+            yMean += y[i];
+        yMean /= static_cast<double>(n);
+
+        const double tMid = 0.5 * static_cast<double>(n - 1);
+        double num = 0.0;
+        double den = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double ti = static_cast<double>(i) - tMid;
+            num += ti * (y[i] - yMean);
+            den += ti * ti;
+        }
+        const double slope = (den > 0.0) ? (num / den) : 0.0;
+        for (int i = 0; i < n; ++i)
+            y[i] = yMean + slope * (static_cast<double>(i) - tMid);
+    };
+
     // Assemble SPD pentadiagonal matrix A = I + lam * D2^T * D2 in O(N)
     std::vector<double> a(n, 1.0);
     std::vector<double> b(n - 1, 0.0);
@@ -709,16 +735,25 @@ void SmoothFilter::smoothWhittaker(std::vector<double> &, std::vector<double> &y
         c[r] += lam;
     }
 
-    // Banded LDL^T factorization in O(N)
+    // Banded LDL^T factorization in O(N); fall back to exact OLS line if pivots suffer
+    // catastrophic cancellation at extreme lambda.
     std::vector<double> d(n, 0.0);
     std::vector<double> e(n - 1, 0.0);
     std::vector<double> f(n - 2, 0.0);
 
     d[0] = a[0];
+    if (!std::isfinite(d[0]) || d[0] <= 1e-12 * a[0]) {
+        fallbackLinearFit();
+        return;
+    }
     e[0] = b[0] / d[0];
     f[0] = c[0] / d[0];
 
     d[1] = a[1] - d[0] * e[0] * e[0];
+    if (!std::isfinite(d[1]) || d[1] <= 1e-12 * a[1]) {
+        fallbackLinearFit();
+        return;
+    }
     if (n > 2)
         e[1] = (b[1] - d[0] * f[0] * e[0]) / d[1];
     if (n > 3)
@@ -726,6 +761,10 @@ void SmoothFilter::smoothWhittaker(std::vector<double> &, std::vector<double> &y
 
     for (int i = 2; i < n; ++i) {
         d[i] = a[i] - d[i - 2] * f[i - 2] * f[i - 2] - d[i - 1] * e[i - 1] * e[i - 1];
+        if (!std::isfinite(d[i]) || d[i] <= 1e-12 * a[i]) {
+            fallbackLinearFit();
+            return;
+        }
         if (i <= n - 2)
             e[i] = (b[i] - d[i - 1] * f[i - 1] * e[i - 1]) / d[i];
         if (i <= n - 3)
@@ -749,6 +788,13 @@ void SmoothFilter::smoothWhittaker(std::vector<double> &, std::vector<double> &y
     yhat[n - 2] = z[n - 2] - e[n - 2] * yhat[n - 1];
     for (int i = n - 3; i >= 0; --i)
         yhat[i] = z[i] - e[i] * yhat[i + 1] - f[i] * yhat[i + 2];
+
+    for (int i = 0; i < n; ++i) {
+        if (!std::isfinite(yhat[i])) {
+            fallbackLinearFit();
+            return;
+        }
+    }
 
     y = std::move(yhat);
 }
@@ -840,6 +886,15 @@ void SmoothFilter::setPolynomOrder(int order)
                                   tr("ToriGraph") + " - " + tr("Error"),
                                   tr("Setting polynomial order is only available for "
                                      "Savitzky-Golay smooth filters! Ignored option!"));
+        return;
+    }
+
+    if (order < 0) {
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("The polynomial order must be non-negative!"));
+        d_init_err = true;
         return;
     }
 

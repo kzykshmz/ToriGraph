@@ -581,7 +581,6 @@ bool CurvesDialog::addCurve(const QString &name, bool *outMissingX, bool *outSel
             break;
         }
 
-        d_graphGuard->reconstructLegend();
         contents->addItem(name);
         return true;
     }
@@ -643,7 +642,6 @@ bool CurvesDialog::addCurve(const QString &name, bool *outMissingX, bool *outSel
             cl.connectType = 5;
 
         d_graphGuard->updateCurveLayout(d_graphGuard->curves() - 1, &cl);
-        d_graphGuard->reconstructLegend();
 
         contents->addItem(name);
         return true;
@@ -678,7 +676,6 @@ void CurvesDialog::removeCurves()
         d_graphGuard->removeCurve(s);
     }
 
-    d_graphGuard->reconstructLegend();
     showCurveRange(boxShowRange->isChecked());
     d_graphGuard->updatePlot();
     if (ml)

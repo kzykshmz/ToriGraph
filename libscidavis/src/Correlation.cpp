@@ -50,18 +50,26 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
 {
     if (t && d_table != t)
         d_table = t;
+    if (!d_table) {
+        d_init_err = true;
+        return;
+    }
 
     int col1 = d_table->colIndex(colName1);
     int col2 = d_table->colIndex(colName2);
 
     if (col1 < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The data set %1 does not exist!").arg(colName1));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning((ApplicationWindow *)parent(),
+                                 tr("ToriGraph") + " - " + tr("Error"),
+                                 tr("The data set %1 does not exist!").arg(colName1));
         d_init_err = true;
         return;
     } else if (col2 < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The data set %1 does not exist!").arg(colName2));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning((ApplicationWindow *)parent(),
+                                 tr("ToriGraph") + " - " + tr("Error"),
+                                 tr("The data set %1 does not exist!").arg(colName2));
         d_init_err = true;
         return;
     }
@@ -77,9 +85,11 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
         d_x.resize(td_n);
         d_y.resize(td_n);
     } catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!\n")
-                                      + tr("Allocator returned: ") + e.what());
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!\n")
+                                          + tr("Allocator returned: ") + e.what());
         d_init_err = true;
         return;
     }
@@ -88,8 +98,8 @@ void Correlation::setDataFromTable(Table *t, const QString &colName1, const QStr
         d_x[i] = d_table->cell(i, col1);
         d_y[i] = d_table->cell(i, col2);
     }
-std::fill(d_x.begin()+rows,d_x.end(),0.0);
-std::fill(d_y.begin()+rows,d_y.end(),0.0);
+    std::fill(d_x.begin() + rows, d_x.end(), 0.0);
+    std::fill(d_y.begin() + rows, d_y.end(), 0.0);
 }
 
 void Correlation::output()
@@ -113,8 +123,10 @@ void Correlation::output()
             }
         }
     } else {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("Error in GSL forward FFT operation!"));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning((ApplicationWindow *)parent(),
+                                 tr("ToriGraph") + " - " + tr("Error"),
+                                 tr("Error in GSL forward FFT operation!"));
         return;
     }
 
@@ -126,7 +138,7 @@ void Correlation::output()
 void Correlation::addResultCurve()
 {
     ApplicationWindow *app = (ApplicationWindow *)parent();
-    if (!app)
+    if (!app || !d_table)
         return;
 
     int rows = d_table->numRows();
@@ -158,7 +170,7 @@ void Correlation::addResultCurve()
     d_table->setColPlotDesignation(cols, SciDAVis::X);
 
     MultiLayer *ml = app->newGraph(objectName() + tr("Plot"));
-    if (!ml)
+    if (!ml || !ml->activeGraph())
         return;
 
     DataCurve *c = new DataCurve(d_table, d_table->colName(cols), d_table->colName(cols2));

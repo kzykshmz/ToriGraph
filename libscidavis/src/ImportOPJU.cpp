@@ -1598,10 +1598,12 @@ private:
         }
         const QString t = rawText.trimmed();
         if (isOriginMissingNumericText(t)) {
-            col.hasNumeric = true;
-            col.numericValues.append(qnan);
-            if (col.hasText)
+            if (col.hasText) {
                 col.textValues.append(QString());
+            } else {
+                col.hasNumeric = true;
+                col.numericValues.append(qnan);
+            }
             return;
         }
         bool ok = false;
@@ -1616,6 +1618,8 @@ private:
                     col.textValues.append(std::isfinite(prev) ? QString::number(prev, 'g', 15)
                                                               : QString());
                 }
+                col.numericValues.clear();
+                col.hasNumeric = false;
             }
             col.hasText = true;
             col.textValues.append(rawText);
@@ -2536,9 +2540,12 @@ Folder *ensureFolderPath(ApplicationWindow *mw, Folder *rootFolder, const QStrin
 
 void moveWindowToFolder(Folder *rootFolder, Folder *targetFolder, MyWidget *w)
 {
-    if (!rootFolder || !targetFolder || !w || targetFolder == rootFolder)
+    if (!targetFolder || !w)
         return;
-    rootFolder->removeWindow(w);
+    Folder *srcFolder = w->folder() ? w->folder() : rootFolder;
+    if (!srcFolder || targetFolder == srcFolder)
+        return;
+    srcFolder->removeWindow(w);
     targetFolder->addWindow(w);
     targetFolder->setActiveWindow(w);
 }
@@ -3032,9 +3039,9 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
     }
 
     // 5. Reconstruct Folder Hierarchy
-    Folder *projectFolder = mw->projectFolder();
-    if (projectFolder) {
-        if (!proj.rootFolderName.isEmpty()) {
+    Folder *baseFolder = mw->currentFolder() ? mw->currentFolder() : mw->projectFolder();
+    if (baseFolder) {
+        if (!proj.rootFolderName.isEmpty() && baseFolder == mw->projectFolder()) {
             if (auto *item = dynamic_cast<FolderListItem *>(mw->folders.topLevelItem(0))) {
                 item->setText(0, proj.rootFolderName);
                 if (item->folder())
@@ -3043,24 +3050,24 @@ bool materializeProject(ApplicationWindow *mw, const OpjuProject &proj,
         }
 
         QHash<QString, Folder *> folderByPath;
-        folderByPath.insert(QStringLiteral("/"), projectFolder);
+        folderByPath.insert(QStringLiteral("/"), baseFolder);
         {
             QSignalBlocker sbFolders(&mw->folders);
             for (const OpjuFolderNode &fn : proj.rootSubfolders)
-                createFolderSubtree(mw, projectFolder, fn, folderByPath, stats.foldersImported);
+                createFolderSubtree(mw, baseFolder, fn, folderByPath, stats.foldersImported);
 
             for (const auto &assign : windowFolderAssignments) {
-                Folder *target = ensureFolderPath(mw, projectFolder, assign.second, folderByPath,
+                Folder *target = ensureFolderPath(mw, baseFolder, assign.second, folderByPath,
                                                   stats.foldersImported);
-                moveWindowToFolder(projectFolder, target, assign.first);
+                moveWindowToFolder(baseFolder, target, assign.first);
             }
             for (const OpjuFolderNode &fn : proj.rootSubfolders)
-                moveFolderRefWindows(projectFolder, fn, folderByPath);
+                moveFolderRefWindows(baseFolder, fn, folderByPath);
         }
 
-        if (!projectFolder->folders().isEmpty())
+        if (!baseFolder->folders().isEmpty())
             mw->folders.setVisible(true);
-        mw->changeFolder(projectFolder, true);
+        mw->changeFolder(baseFolder, true);
     }
 
     return true;

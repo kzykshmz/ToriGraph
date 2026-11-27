@@ -3165,19 +3165,24 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
 
         for (line++; line != flist.end(); line++) {
             QStringList fields = (*line).split("\t");
+            if (fields.isEmpty())
+                continue;
             if (fields[0] == "geometry") {
                 restoreWindowGeometry(app, w, *line);
-            } else if (fields[0] == "ColWidth") {
+            } else if (fields[0] == "ColWidth" && fields.size() >= 2) {
                 w->setColumnsWidth(fields[1].toInt());
-            } else if (fields[0] == "Formula") {
+            } else if (fields[0] == "Formula" && fields.size() >= 2) {
                 w->setFormula(fields[1]);
             } else if (fields[0] == "<formula>") {
                 QString formula;
                 for (line++; line != flist.end() && *line != "</formula>"; line++)
                     formula += *line + "\n";
-                formula.truncate(formula.length() - 1);
+                if (!formula.isEmpty())
+                    formula.truncate(formula.length() - 1);
                 w->setFormula(formula);
-            } else if (fields[0] == "TextFormat") {
+                if (line == flist.end())
+                    break;
+            } else if (fields[0] == "TextFormat" && fields.size() >= 3) {
                 if (fields[1] == "f")
                     w->setTextFormat('f', fields[2].toInt());
                 else
@@ -3187,13 +3192,13 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
                 w->setWindowLabel(unescLbl);
                 w->setCaptionPolicy((MyWidget::CaptionPolicy)fields.value(2).toInt());
                 app->setListViewLabel(w->name(), unescLbl);
-            } else if (fields[0] == "Coordinates") { // d_file_version > 81
+            } else if (fields[0] == "Coordinates" && fields.size() >= 5) { // d_file_version > 81
                 w->setCoordinates(fields[1].toDouble(), fields[2].toDouble(), fields[3].toDouble(),
                                   fields[4].toDouble());
             } else // <data> or values
                 break;
         }
-        if (*line == "<data>")
+        if (line != flist.end() && *line == "<data>")
             line++;
 
         QElapsedTimer t;
@@ -3201,8 +3206,13 @@ Matrix *ApplicationWindow::openMatrix(ApplicationWindow *app, const QStringList 
         // read and set table values
         for (; line != flist.end() && *line != "</data>"; line++) {
             QStringList fields = (*line).split("\t");
-            int row = fields[0].toInt();
-            for (int col = 0; col < cols; col++) {
+            if (fields.isEmpty())
+                continue;
+            bool okRow = false;
+            int row = fields[0].toInt(&okRow);
+            if (!okRow || row < 0)
+                continue;
+            for (int col = 0; col < cols && col + 1 < fields.size(); col++) {
                 QString cell = fields[col + 1];
                 if (cell.isEmpty())
                     continue;
@@ -3340,6 +3350,8 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
 
         for (line++; line != flist.end(); line++) {
             QStringList fields = (*line).split("\t");
+            if (fields.isEmpty())
+                continue;
             if (fields[0] == "geometry" || fields[0] == "tgeometry") {
                 restoreWindowGeometry(app, w, *line);
             } else if (fields[0] == "header") {
@@ -3347,8 +3359,10 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
                 if (d_file_version >= 78)
                     w->importV0x0001XXHeader(fields);
                 else {
-                    w->setColPlotDesignation(list[4].toInt(), SciDAVis::X);
-                    w->setColPlotDesignation(list[6].toInt(), SciDAVis::Y);
+                    if (list.size() > 6) {
+                        w->setColPlotDesignation(list[4].toInt(), SciDAVis::X);
+                        w->setColPlotDesignation(list[6].toInt(), SciDAVis::Y);
+                    }
                     w->setHeader(fields);
                 }
             } else if (fields[0] == "ColWidth") {
@@ -3362,9 +3376,14 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
                     QString formula;
                     for (line++; line != flist.end() && *line != "</col>"; line++)
                         formula += *line + "\n";
-                    formula.truncate(formula.length() - 1);
+                    if (!formula.isEmpty())
+                        formula.truncate(formula.length() - 1);
                     w->setCommand(col, formula);
+                    if (line == flist.end())
+                        break;
                 }
+                if (line == flist.end())
+                    break;
             } else if (fields[0] == "ColType") { // d_file_version > 65
                 fields.pop_front();
                 w->setColumnTypes(fields);
@@ -3383,27 +3402,34 @@ Table *ApplicationWindow::openTable(ApplicationWindow *app, QTextStream &stream)
         QElapsedTimer t;
         t.start();
         QApplication::setOverrideCursor(Qt::WaitCursor);
-        for (line++; line != flist.end() && *line != "</data>";
-             line++) { // read and set table values
-            QStringList fields = (*line).split("\t");
-            int row = fields[0].toInt();
-            for (int col = 0; col < cols; col++) {
-                if (fields.count() >= col + 2) {
-                    QString cell = fields[col + 1];
-                    if (cell.isEmpty())
-                        continue;
+        if (line != flist.end()) {
+            for (line++; line != flist.end() && *line != "</data>";
+                 line++) { // read and set table values
+                QStringList fields = (*line).split("\t");
+                if (fields.isEmpty())
+                    continue;
+                bool okRow = false;
+                int row = fields[0].toInt(&okRow);
+                if (!okRow || row < 0)
+                    continue;
+                for (int col = 0; col < cols; col++) {
+                    if (fields.count() >= col + 2) {
+                        QString cell = fields[col + 1];
+                        if (cell.isEmpty())
+                            continue;
 
-                    if (d_file_version < 90 && w->columnType(col) == SciDAVis::ColumnMode::Numeric)
-                        w->setCell(row, col, QLocale::c().toDouble(cell.replace(",", ".")));
-                    else if (d_file_version >= 0x000100 && w->columnType(col) == SciDAVis::ColumnMode::Numeric)
-                        w->setCell(row, col, QLocale().toDouble(cell));
-                    else
-                        w->setText(row, col, cell);
+                        if (d_file_version < 90 && w->columnType(col) == SciDAVis::ColumnMode::Numeric)
+                            w->setCell(row, col, QLocale::c().toDouble(cell.replace(",", ".")));
+                        else if (d_file_version >= 0x000100 && w->columnType(col) == SciDAVis::ColumnMode::Numeric)
+                            w->setCell(row, col, QLocale().toDouble(cell));
+                        else
+                            w->setText(row, col, cell);
+                    }
                 }
-            }
-            if (t.elapsed() > 1000) {
-                QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-                t.start();
+                if (t.elapsed() > 1000) {
+                    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+                    t.start();
+                }
             }
         }
         QApplication::restoreOverrideCursor();
@@ -3569,6 +3595,8 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
 
     for (line++; line != flist.end(); line++) {
         QStringList fields = (*line).split("\t");
+        if (fields.isEmpty())
+            continue;
         if (fields[0] == "geometry") {
             restoreWindowGeometry(this, w, *line);
         } else if (fields[0] == "header") {
@@ -3576,8 +3604,10 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
             if (d_file_version >= 78)
                 w->importV0x0001XXHeader(fields);
             else {
-                w->setColPlotDesignation(list[4].toInt(), SciDAVis::X);
-                w->setColPlotDesignation(list[6].toInt(), SciDAVis::Y);
+                if (list.size() > 6) {
+                    w->setColPlotDesignation(list[4].toInt(), SciDAVis::X);
+                    w->setColPlotDesignation(list[6].toInt(), SciDAVis::Y);
+                }
                 w->setHeader(fields);
             }
         } else if (fields[0] == "ColWidth") {
@@ -3591,9 +3621,14 @@ TableStatistics *ApplicationWindow::openTableStatistics(const QStringList &flist
                 QString formula;
                 for (line++; line != flist.end() && *line != "</col>"; line++)
                     formula += *line + "\n";
-                formula.truncate(formula.length() - 1);
+                if (!formula.isEmpty())
+                    formula.truncate(formula.length() - 1);
                 w->setCommand(col, formula);
+                if (line == flist.end())
+                    break;
             }
+            if (line == flist.end())
+                break;
         } else if (fields[0] == "ColType") { // d_file_version > 65
             fields.pop_front();
             w->setColumnTypes(fields);
@@ -3792,10 +3827,12 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
                 if (d_file_version >= 0x011800) // 1.24.0
                 {
                     // custom dash pattern
-                    cl.lCapStyle = curve[15 + s_offset].toInt();
-                    cl.lJoinStyle = curve[16 + s_offset].toInt();
-                    cl.lCustomDash = curve[17 + s_offset];
-                    s_offset += 3;
+                    if (17 + s_offset < curve.size()) {
+                        cl.lCapStyle = curve[15 + s_offset].toInt();
+                        cl.lJoinStyle = curve[16 + s_offset].toInt();
+                        cl.lCustomDash = curve[17 + s_offset];
+                        s_offset += 3;
+                    }
                 }
 
                 Table *w = nullptr;
@@ -3935,7 +3972,7 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
             cl.aCol = COLORUINT(curve[15]);
             cl.aStyle = curve[16].toInt();
             int current_index = 17;
-            if (curve.count() < 16)
+            if (curve.count() < 18)
                 cl.penWidth = cl.lWidth;
             else if ((d_file_version >= 79) && (curve[5].toInt() == Graph::Box)) {
                 cl.penWidth = curve[17].toInt();
@@ -4097,27 +4134,32 @@ Graph *ApplicationWindow::openGraph(ApplicationWindow *app, MultiLayer *plot,
             QStringList scl = s.split("\t");
             scl.pop_front();
             if (d_file_version < 88) {
-                double step = scl[2].toDouble();
-                if (scl[5] == "0")
-                    step = 0.0;
-                ag->setScale(QwtPlot::xBottom, scl[0].toDouble(), scl[1].toDouble(), step,
-                             scl[3].toInt(), scl[4].toInt(), scl[6].toInt(), bool(scl[7].toInt()));
-                ag->setScale(QwtPlot::xTop, scl[0].toDouble(), scl[1].toDouble(), step,
-                             scl[3].toInt(), scl[4].toInt(), scl[6].toInt(), bool(scl[7].toInt()));
+                if (scl.size() >= 16) {
+                    double step = scl[2].toDouble();
+                    if (scl[5] == "0")
+                        step = 0.0;
+                    ag->setScale(QwtPlot::xBottom, scl[0].toDouble(), scl[1].toDouble(), step,
+                                 scl[3].toInt(), scl[4].toInt(), scl[6].toInt(),
+                                 bool(scl[7].toInt()));
+                    ag->setScale(QwtPlot::xTop, scl[0].toDouble(), scl[1].toDouble(), step,
+                                 scl[3].toInt(), scl[4].toInt(), scl[6].toInt(),
+                                 bool(scl[7].toInt()));
 
-                step = scl[10].toDouble();
-                if (scl[13] == "0")
-                    step = 0.0;
-                ag->setScale(QwtPlot::yLeft, scl[8].toDouble(), scl[9].toDouble(), step,
-                             scl[11].toInt(), scl[12].toInt(), scl[14].toInt(),
-                             bool(scl[15].toInt()));
-                ag->setScale(QwtPlot::yRight, scl[8].toDouble(), scl[9].toDouble(), step,
-                             scl[11].toInt(), scl[12].toInt(), scl[14].toInt(),
-                             bool(scl[15].toInt()));
-            } else
+                    step = scl[10].toDouble();
+                    if (scl[13] == "0")
+                        step = 0.0;
+                    ag->setScale(QwtPlot::yLeft, scl[8].toDouble(), scl[9].toDouble(), step,
+                                 scl[11].toInt(), scl[12].toInt(), scl[14].toInt(),
+                                 bool(scl[15].toInt()));
+                    ag->setScale(QwtPlot::yRight, scl[8].toDouble(), scl[9].toDouble(), step,
+                                 scl[11].toInt(), scl[12].toInt(), scl[14].toInt(),
+                                 bool(scl[15].toInt()));
+                }
+            } else if (scl.size() >= 8) {
                 ag->setScale(scl[0].toInt(), scl[1].toDouble(), scl[2].toDouble(),
                              scl[3].toDouble(), scl[4].toInt(), scl[5].toInt(), scl[6].toInt(),
                              bool(scl[7].toInt()));
+            }
         } else if (s.startsWith(QLatin1String("PlotTitle\t"))) {
             QStringList fList = s.split("\t");
             if (fList.size() >= 4) {
@@ -5900,10 +5942,11 @@ void ApplicationWindow::applyTemplateToActiveTable()
 
     if (isNonInteractiveContext(this))
         return;
+    QPointer<Table> safeT(t);
     const QString fn = QFileDialog::getOpenFileName(
             this, tr("Open 2D Graph Template (.qpt)"), templatesDir,
             tr("ToriGraph 2D Graph Template (*.qpt)"));
-    if (fn.isEmpty())
+    if (fn.isEmpty() || !safeT)
         return;
     templatesDir = QFileInfo(fn).absolutePath();
 
@@ -5915,6 +5958,9 @@ void ApplicationWindow::applyTemplateToActiveTable()
                                                : errMsg);
         return;
     }
+    if (!safeT)
+        return;
+    t = safeT.data();
 
     Graph *ag = ml->activeGraph();
     if (!ag && !ml->layersList().isEmpty())

@@ -746,7 +746,7 @@ bool ScalePicker::commitInlineScaleEditor(bool openOppositeEnd)
             && ((isXAxis ? g->xLinkMode() : g->yLinkMode()) == 2);
     const bool isUnknownCustomEngine = !hasBreak && !mirrorHasBreak
             && typeid(*se) != typeid(QwtLinearScaleEngine)
-            && typeid(*se) != typeid(QwtLog10ScaleEngine);
+            && !Plot::isLog10ScaleEngine(se);
     if (isFormulaLinked || isUnknownCustomEngine) {
         flagError(tr("Formula-linked axis scale is controlled by the parent layer."));
         return false;

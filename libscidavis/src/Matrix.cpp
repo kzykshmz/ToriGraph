@@ -209,15 +209,23 @@ QString Matrix::text(int row, int col)
 
 void Matrix::setText(int row, int col, const QString &new_text)
 {
+    if (new_text.trimmed().isEmpty()) {
+        d_future_matrix->setCell(row, col, 0.0);
+        return;
+    }
     bool ok = true;
     QLocale locale;
     double res = locale.toDouble(new_text, &ok);
     if (ok)
         d_future_matrix->setCell(row, col, res);
     else {
-        Script *script = scriptEnv->newScript(new_text, this,
-                                              QString("<%1_%2_%3>").arg(name()).arg(row).arg(col));
-        connect(script, SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
+        QScopedPointer<Script> script(scriptEnv->newScript(
+                new_text, this, QString("<%1_%2_%3>").arg(name()).arg(row).arg(col)));
+        if (!script) {
+            setCell(row, col, 0.0);
+            return;
+        }
+        connect(script.data(), SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
                 SIGNAL(error(const QString &, const QString &, int)));
 
         script->setInt(row + 1, "row");
@@ -649,10 +657,14 @@ void Matrix::forgetSavedCells()
 bool Matrix::recalculate()
 {
     QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-    Script *script = scriptEnv->newScript(formula(), this, QString("<%1>").arg(name()));
-    connect(script, SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
+    QScopedPointer<Script> script(scriptEnv->newScript(formula(), this, QString("<%1>").arg(name())));
+    if (!script) {
+        QApplication::restoreOverrideCursor();
+        return false;
+    }
+    connect(script.data(), SIGNAL(error(const QString &, const QString &, int)), scriptEnv,
             SIGNAL(error(const QString &, const QString &, int)));
-    connect(script, SIGNAL(print(const QString &)), scriptEnv, SIGNAL(print(const QString &)));
+    connect(script.data(), SIGNAL(print(const QString &)), scriptEnv, SIGNAL(print(const QString &)));
     if (!script->compile()) {
         QApplication::restoreOverrideCursor();
         return false;
@@ -888,7 +900,7 @@ void Matrix::print(const QString &fileName)
     // print header
     p.setFont(QFont());
     QString header_label = d_view_widget->model()->headerData(0, Qt::Horizontal).toString();
-    QRect br = p.boundingRect(br, Qt::AlignCenter, header_label);
+    QRect br = p.boundingRect(QRect(), Qt::AlignCenter, header_label);
     p.drawLine(right, height, right, height + br.height());
     QRect tr(br);
 

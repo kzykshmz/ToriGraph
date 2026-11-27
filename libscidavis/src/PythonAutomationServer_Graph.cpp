@@ -1848,8 +1848,7 @@ ScopedGraphUndoGuard::ScopedGraphUndoGuard(MultiLayer *m, const QString &lbl, bo
                 bctx.markDirtyMultiLayer(ml);
                 if (!bctx.hasSnapshotted(ml)) {
                     const QString initSnap = ml->captureUndoSnapshot();
-                    if (QUndoStack *us = ml->undoStack())
-                        us->beginMacro(QStringLiteral("Batch Operations"));
+                    ml->beginSuppressUndo();
                     bctx.markSnapshotted(ml, initSnap);
                 }
                 return;
@@ -2649,7 +2648,11 @@ bool dispatchGraphDetailAndExportMethod(ApplicationWindow *d_app, const QString 
                 curMax = std::max(div->lowerBound(), div->upperBound());
                 curInv = (div->lowerBound() > div->upperBound());
             }
-            if (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)))
+            const Graph::AxisBreakSpec brkNow = g->axisBreak(ax);
+            const bool isLogNow = brkNow.enabled
+                    ? (brkNow.log10Before && brkNow.log10After)
+                    : (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr);
+            if (isLogNow)
                 curScaleType = 1;
         }
 

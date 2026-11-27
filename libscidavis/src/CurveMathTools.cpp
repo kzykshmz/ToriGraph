@@ -379,11 +379,14 @@ QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
     if (xLo > xHi + tol)
         return nullptr;
 
+    const double clampLo = std::min(xLo, xHi);
+    const double clampHi = std::max(xLo, xHi);
+
     std::vector<double> targetX;
     if (!useUnionGrid) {
         for (double xv : xA) {
             if (xv >= xLo - tol && xv <= xHi + tol)
-                targetX.push_back(std::clamp(xv, xLo, xHi));
+                targetX.push_back(std::clamp(xv, clampLo, clampHi));
         }
     }
 
@@ -391,11 +394,11 @@ QwtPlotCurve *CurveMathTools::simpleCurveMath(ApplicationWindow *app, Graph *g,
         targetX.clear();
         for (double xv : xA) {
             if (xv >= xLo - tol && xv <= xHi + tol)
-                targetX.push_back(std::clamp(xv, xLo, xHi));
+                targetX.push_back(std::clamp(xv, clampLo, clampHi));
         }
         for (double xv : xB) {
             if (xv >= xLo - tol && xv <= xHi + tol)
-                targetX.push_back(std::clamp(xv, xLo, xHi));
+                targetX.push_back(std::clamp(xv, clampLo, clampHi));
         }
         if (targetX.size() < 2 && xHi > xLo) {
             targetX.push_back(xLo);
@@ -1026,8 +1029,8 @@ QVector<QPointF> CurveMathTools::findCurveIntersections(Graph *g, const QString 
         }
     }
 
-    std::sort(rawPts.begin(), rawPts.end(), [&](const QPointF &a, const QPointF &b) {
-        if (std::fabs(a.x() - b.x()) > 1e-12 * spanX)
+    std::sort(rawPts.begin(), rawPts.end(), [](const QPointF &a, const QPointF &b) {
+        if (a.x() != b.x())
             return a.x() < b.x();
         return a.y() < b.y();
     });
@@ -10285,14 +10288,22 @@ void CurveMathTools::showWorkHardeningDialog(ApplicationWindow *app)
             const QString specName = !chosenCurve.isEmpty()
                     ? chosenCurve
                     : (chosenGraph ? chosenGraph->parentPlotName() : QStringLiteral("Specimen"));
+            auto setFiniteOrInvalid = [&](int colIdx, double val) {
+                if (Column *c = sumTbl->column(colIdx)) {
+                    if (std::isfinite(val))
+                        c->setValueAt(rowIdx, val);
+                    else
+                        c->setInvalid(rowIdx, true);
+                }
+            };
             sumTbl->column(0)->setTextAt(rowIdx, specName);
-            sumTbl->column(1)->setValueAt(rowIdx, wr.considereTrueStrain);
-            sumTbl->column(2)->setValueAt(rowIdx, wr.considereEngStrainPct);
-            sumTbl->column(3)->setValueAt(rowIdx, wr.considereTrueStress * stressScale);
-            sumTbl->column(4)->setValueAt(rowIdx, wr.hollomonN);
-            sumTbl->column(5)->setValueAt(rowIdx, wr.hollomonK * stressScale);
-            sumTbl->column(6)->setValueAt(rowIdx, wr.voceSigmaS * stressScale);
-            sumTbl->column(7)->setValueAt(rowIdx, wr.youngsModulus * stressScale);
+            setFiniteOrInvalid(1, wr.considereTrueStrain);
+            setFiniteOrInvalid(2, wr.considereEngStrainPct);
+            setFiniteOrInvalid(3, wr.considereTrueStress * stressScale);
+            setFiniteOrInvalid(4, wr.hollomonN);
+            setFiniteOrInvalid(5, wr.hollomonK * stressScale);
+            setFiniteOrInvalid(6, wr.voceSigmaS * stressScale);
+            setFiniteOrInvalid(7, wr.youngsModulus * stressScale);
             sumTbl->showNormal();
         }
     }
@@ -12060,6 +12071,10 @@ CurveMathTools::XRDAnalysisResult CurveMathTools::analyzeXRD(
         if (Column *c6 = tbl->column(6)) {
             c6->setLongName(QStringLiteral("Scherrer <i>D</i>"));
             c6->setUnits(QStringLiteral("nm"));
+            for (int i = 0; i < M; ++i) {
+                if (!std::isfinite(colSch[i]))
+                    c6->setInvalid(i, true);
+            }
         }
         if (Column *c7 = tbl->column(7))
             c7->setLongName(QStringLiteral("4 sin <i>\u03B8</i>"));

@@ -54,18 +54,26 @@ void Convolution::setDataFromTable(Table *t, const QString &signalColName,
 {
     if (t && d_table != t)
         d_table = t;
+    if (!d_table) {
+        d_init_err = true;
+        return;
+    }
 
     int signal_col = d_table->colIndex(signalColName);
     int response_col = d_table->colIndex(responseColName);
 
     if (signal_col < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The signal data set %1 does not exist!").arg(signalColName));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning((ApplicationWindow *)parent(),
+                                 tr("ToriGraph") + " - " + tr("Error"),
+                                 tr("The signal data set %1 does not exist!").arg(signalColName));
         d_init_err = true;
         return;
     } else if (response_col < 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The response data set %1 does not exist!").arg(responseColName));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning(
+                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                    tr("The response data set %1 does not exist!").arg(responseColName));
         d_init_err = true;
         return;
     }
@@ -77,33 +85,40 @@ void Convolution::setDataFromTable(Table *t, const QString &signalColName,
             responseVals.push_back(d_table->cell(i, response_col));
     }
     const size_t d_n_response = responseVals.size();
-    if (rows <= 0 || d_n_response >= static_cast<size_t>(rows / 2)) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The response dataset '%1' must be less then half the size of the "
-                                "signal dataset '%2'!")
-                                     .arg(responseColName)
-                                     .arg(signalColName));
+    if (rows <= 0 || d_n_response == 0 || d_n_response >= static_cast<size_t>(rows / 2)) {
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning((ApplicationWindow *)parent(),
+                                 tr("ToriGraph") + " - " + tr("Error"),
+                                 tr("The response dataset '%1' must be less then half the size of "
+                                    "the signal dataset '%2'!")
+                                         .arg(responseColName)
+                                         .arg(signalColName));
         d_init_err = true;
         return;
     } else if (d_n_response % 2 == 0) {
-        QMessageBox::warning((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                             tr("The response dataset '%1' must contain an odd number of points!")
-                                     .arg(responseColName));
+        if (!isSilentOrNonInteractive())
+            QMessageBox::warning(
+                    (ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
+                    tr("The response dataset '%1' must contain an odd number of points!")
+                            .arg(responseColName));
         d_init_err = true;
         return;
     }
 
     size_t d_n_signal = 16; // tmp number of points
-    while (unsigned(d_n_signal) < rows + d_n_response / 2)
+    while (d_n_signal < static_cast<size_t>(rows) + d_n_response - 1)
         d_n_signal *= 2;
+    d_points = rows;
 
     try {
         d_x.resize(d_n_signal);
         d_y.resize(d_n_response);
     } catch (const std::bad_alloc &e) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("ToriGraph") + " - " + tr("Error"),
-                              tr("Could not allocate memory, operation aborted!\n")
-                                      + tr("Allocator returned: ") + e.what());
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(),
+                                  tr("ToriGraph") + " - " + tr("Error"),
+                                  tr("Could not allocate memory, operation aborted!\n")
+                                          + tr("Allocator returned: ") + e.what());
         d_init_err = true;
         return;
     }
@@ -124,7 +139,11 @@ void Convolution::output()
 void Convolution::addResultCurve()
 {
     ApplicationWindow *app = (ApplicationWindow *)parent();
-    if (!app)
+    if (!app || !d_table)
+        return;
+
+    const size_t nOut = d_x.size();
+    if (nOut == 0)
         return;
 
     int cols = d_table->numCols();
@@ -132,13 +151,13 @@ void Convolution::addResultCurve()
 
     d_table->addCol();
     d_table->addCol();
-    std::vector<double> x_temp(d_x.size());
-    for (unsigned i = 0; i < d_x.size(); i++) {
-        double x = i + 1;
+    std::vector<double> x_temp(nOut);
+    for (size_t i = 0; i < nOut; i++) {
+        double x = double(i + 1);
         x_temp[i] = x;
 
-        d_table->column(cols)->setValueAt(i, x);
-        d_table->column(cols2)->setValueAt(i, d_x[i]);
+        d_table->column(cols)->setValueAt(static_cast<int>(i), x);
+        d_table->column(cols2)->setValueAt(static_cast<int>(i), d_x[i]);
     }
 
     QStringList l = d_table->colNames().filter(tr("Index"));
@@ -150,11 +169,11 @@ void Convolution::addResultCurve()
     d_table->setColPlotDesignation(cols, SciDAVis::X);
 
     MultiLayer *ml = app->newGraph(objectName() + tr("Plot"));
-    if (!ml)
+    if (!ml || !ml->activeGraph())
         return;
 
     DataCurve *c = new DataCurve(d_table, d_table->colName(cols), d_table->colName(cols2));
-    c->setData(x_temp.data(), d_x.data(), d_x.size());
+    c->setData(x_temp.data(), d_x.data(), static_cast<int>(nOut));
     c->setPen(QPen(d_curveColor, 1));
     ml->activeGraph()->insertPlotItem(c, Graph::Line);
     ml->activeGraph()->updatePlot();
@@ -245,7 +264,6 @@ Deconvolution::Deconvolution(ApplicationWindow *parent, Table *t, const QString 
     : Convolution(parent, t, signalColName, responseColName)
 {
     setObjectName(tr("Deconvolution"));
-    setDataFromTable(t, signalColName, responseColName);
 }
 
 void Deconvolution::output()

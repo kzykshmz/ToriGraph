@@ -1793,7 +1793,7 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "app.fit_implicit_odr(tbl, 'X', 'Y', model='circle')" },
     { "analysis.fit_surface_3d", "analysis", "Session.fit_surface_3d(*, matrix=None, model='gaussian2d')",
       "Fit a 3D surface z = f(x, y) ('plane', 'paraboloid', 'gaussian2d', 'lorentzian2d', or custom).",
-      "matrix:str=''; table:str=''; model:str='gaussian2d'[plane|paraboloid|gaussian2d|lorentzian2d|custom]",
+      "matrix:str=''; table:str=''; x_col:int|str=null; y_col:int|str=null; z_col:int|str=null; model:str='gaussian2d'[plane|paraboloid|gaussian2d|lorentzian2d|custom]; formula:str=''; grid_side:int=24",
       "app.fit_surface_3d(matrix=m, model='gaussian2d')" },
     { "analysis.compare_models", "analysis",
       "Session.compare_models(*, models=None, graph=None, curve=None)",
@@ -1840,15 +1840,15 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "app.savgol_derivative(graph=g, order=1, window=11)" },
     { "signal.fft", "signal", "Session.fft(*, graph=None, table=None, sampling=None, inverse=False)",
       "Compute 1D forward or inverse Fast Fourier Transform.",
-      "graph:str=''; curve:int|str=null; table:str=''; real_col:int|str=null; sampling:float=null; inverse:bool=false",
+      "graph:str=''; curve:int|str=null; table:str=''; real_col:int|str=null; imag_col:int|str=null; sampling:float=null; inverse:bool=false; normalize:bool=false; shift:bool=true",
       "app.fft(graph=g)" },
     { "signal.fft_filter", "signal", "Session.fft_filter(*, filter_type='lowpass', cutoff=1.0, graph=None)",
       "Apply FFT frequency-domain filter ('lowpass', 'highpass', 'bandpass', 'bandblock').",
       "filter_type:str='lowpass'[lowpass|highpass|bandpass|bandblock]; cutoff:float=1.0; high_cutoff:float=null; graph:str=''",
       "app.fft_filter(graph=g, filter_type='lowpass', cutoff=50.0)" },
-    { "signal.iir_filter", "signal", "Session.iir_filter(*, design='butterworth', mode='lowpass', cutoff=10.0, order=4, graph=None)",
+    { "signal.iir_filter", "signal", "Session.iir_filter(*, design='butterworth', mode='lowpass', cutoff=10.0, cutoff_high=None, order=4, graph=None)",
       "Apply zero-phase forward-backward IIR digital filter (Butterworth/Bessel/Chebyshev).",
-      "design:str='butterworth'[butterworth|chebyshev1|bessel]; mode:str='lowpass'[lowpass|highpass|bandpass|bandstop]; order:int=4; cutoff:float=10.0; graph:str=''",
+      "design:str='butterworth'[butterworth|chebyshev1|bessel]; mode:str='lowpass'[lowpass|highpass|bandpass|bandstop]; order:int=4; cutoff:float=10.0; cutoff_high:float=null; high_cutoff:float=null; zero_phase:bool=true; ripple_db:float=1.0; graph:str=''",
       "app.iir_filter(graph=g, cutoff=25.0, order=4)" },
     { "signal.stft", "signal", "Session.stft(*, window_size=64, overlap=32, graph=None)",
       "Compute Short-Time Fourier Transform spectrogram matrix.",
@@ -1942,9 +1942,9 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "table:str=''; x_col:int|str=0; y_col:int|str=1; direct:bool=true; x_is_wavelength_nm:bool=true",
       "res = app.tauc(tbl, 'Energy_eV', 'Alpha', direct=True, x_is_wavelength_nm=False)" },
     { "curvemath.eis_fit", "curvemath",
-      "Session.eis_fit(table=None, freq_col=0, z_re_col=1, z_im_col=2, *, model='Randles_CPE')",
-      "Fit electrochemical impedance Nyquist & Bode data to Randles or Randles-CPE equivalent circuits.",
-      "table:str=''; freq_col:int|str=0; z_re_col:int|str=1; z_im_col:int|str=2; model:str='Randles_CPE'[Randles|Randles_CPE|RandlesWarburg]",
+      "Session.eis_fit(table=None, freq_col=0, z_re_col=1, z_im_col=2, *, model='Randles_CPE', z_imag_negated=False)",
+      "Fit electrochemical impedance Nyquist & Bode data to Randles or Randles-CPE equivalent circuits (set z_imag_negated=True if z_im_col holds -Im(Z)).",
+      "table:str=''; freq_col:int|str=0; z_re_col:int|str=1; z_im_col:int|str=2; model:str='Randles_CPE'[Randles|Randles_CPE|RandlesWarburg]; z_imag_negated:bool=false",
       "res = app.eis_fit(tbl, 'Freq', 'Z_re', 'Z_im')" },
     { "curvemath.kissinger", "curvemath",
       "Session.analyze_kissinger(table=None, rate_col=None, temp_col=None, *, heating_rates=None, peak_temps=None, rate_in_k_per_hour=False, temp_in_celsius=True, top_axis_in_celsius=True, temp_min=None, temp_max=None)",
@@ -2017,8 +2017,8 @@ extern const ApiMethodCatalogRow kApiCatalogSpecs[] = {
       "table:str=''; x_col:int|str=0; y_col:int|str=1; lambda:float=1.0; plot:bool=true",
       "app.passing_bablok(tbl, 'Ref', 'Test')" },
     { "stats.weibull", "stats", "Session.weibull(table=None, col=0, *, censor_col=None, three_param=False, mle=False, plot=True)",
-      "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution via rank regression or right-censored MLE (ceramics & fatigue).",
-      "table:str=''; col:int|str=0; censor_col:int|str=null; censor_coding:int=0; three_param:bool=false; mle:bool=false; plot:bool=true",
+      "Fit 2-parameter or 3-parameter Weibull modulus/strength distribution via rank regression or right-censored MLE (censor_coding: 0 => 1=event/0=censored, 1 => 0=event/1=censored).",
+      "table:str=''; col:int|str=0; censor_col:int|str=null; censor_coding:int=0[0|1]; three_param:bool=false; mle:bool=false; plot:bool=true",
       "app.weibull(tbl, 'FractureMPa', three_param=True)" },
     { "stats.probability_plot", "stats",
       "Session.probability_plot(table=None, col=0, *, distribution='lognormal', position=None, return_period=0, plot=True)",
@@ -4023,11 +4023,12 @@ QString generatePythonScriptInternal(ApplicationWindow *app, MyWidget *window, b
             const double hi = std::max(rawLo, rawHi);
             if (!std::isfinite(hi - lo) || hi <= lo)
                 continue;
-            const bool isLog =
-                    (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr);
+            const Graph::AxisBreakSpec brk = lg->axisBreak(ax);
+            const bool isLog = brk.enabled
+                    ? (brk.log10Before && brk.log10After)
+                    : (dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(ax)) != nullptr);
             const bool inv = (rawLo > rawHi);
             const QStringList cats = invokeGraphCategoryLabels(lg, ax);
-            const Graph::AxisBreakSpec brk = lg->axisBreak(ax);
             QString axArgs = QStringLiteral("min=%1, max=%2, scale=%3, enabled=%4")
                                      .arg(pyFormatNum(lo), pyFormatNum(hi),
                                           pyEscapeStr(isLog ? QStringLiteral("log10")
@@ -4659,39 +4660,65 @@ void PythonAutomationServer::onTcpReadyRead()
     if (!sock || !d_tcp_buffers.contains(sock))
         return;
 
-    QByteArray &buf = d_tcp_buffers[sock];
     const QByteArray incoming = sock->readAll();
-    if (qint64(buf.size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
-        buf.clear();
-        QJsonObject errObj;
-        errObj[QStringLiteral("code")] = -32600;
-        errObj[QStringLiteral("message")] =
-                QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
-        QJsonObject resp;
-        resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
-        resp[QStringLiteral("id")] = QJsonValue::Null;
-        resp[QStringLiteral("error")] = errObj;
-        sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
-        sock->flush();
-        sock->disconnectFromHost();
-        return;
+    {
+        auto it = d_tcp_buffers.find(sock);
+        if (it == d_tcp_buffers.end())
+            return;
+        if (qint64(it.value().size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
+            it.value().clear();
+            QJsonObject errObj;
+            errObj[QStringLiteral("code")] = -32600;
+            errObj[QStringLiteral("message")] =
+                    QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
+            QJsonObject resp;
+            resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            resp[QStringLiteral("id")] = QJsonValue::Null;
+            resp[QStringLiteral("error")] = errObj;
+            sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
+            sock->flush();
+            sock->disconnectFromHost();
+            return;
+        }
+        it.value().append(incoming);
     }
-    buf.append(incoming);
 
-    while (true) {
-        if (!d_tcp_buffers.contains(sock))
+    // Prevent re-entrant readyRead draining (e.g. during nested event loops) from
+    // reordering pipelined frames or mutating buffers concurrently.
+    if (sock->property("_tg_rpc_in_flight").toBool())
+        return;
+
+    QPointer<QTcpSocket> sockGuard(sock);
+    struct ScopedInFlightGuard
+    {
+        QPointer<QTcpSocket> s;
+        explicit ScopedInFlightGuard(QTcpSocket *ptr) : s(ptr)
+        {
+            if (s)
+                s->setProperty("_tg_rpc_in_flight", true);
+        }
+        ~ScopedInFlightGuard()
+        {
+            if (s)
+                s->setProperty("_tg_rpc_in_flight", false);
+        }
+    } inFlightGuard(sock);
+
+    while (sockGuard) {
+        auto bufIt = d_tcp_buffers.find(sockGuard.data());
+        if (bufIt == d_tcp_buffers.end())
             break;
-        int nlPos = buf.indexOf('\n');
+        const int nlPos = bufIt.value().indexOf('\n');
         if (nlPos < 0)
             break;
-        QByteArray line = buf.left(nlPos);
-        buf.remove(0, nlPos + 1);
+        QByteArray line = bufIt.value().left(nlPos);
+        bufIt.value().remove(0, nlPos + 1);
         if (line.endsWith('\r'))
             line.chop(1);
         if (line.trimmed().isEmpty())
             continue;
 
-        if (!d_authed_tcp_sockets.contains(sock)) {
+        if (!d_authed_tcp_sockets.contains(sockGuard.data())) {
             QJsonParseError authParseErr;
             const QJsonDocument authDoc = QJsonDocument::fromJson(line, &authParseErr);
             QJsonValue idVal = QJsonValue::Null;
@@ -4723,9 +4750,14 @@ void PythonAutomationServer::onTcpReadyRead()
             }
 
             if (!authOk) {
-                buf.clear();
+                if (auto clearIt = d_tcp_buffers.find(sockGuard.data());
+                    clearIt != d_tcp_buffers.end()) {
+                    clearIt.value().clear();
+                }
                 emit rpcRequestHandled(
                         authMethod.isEmpty() ? QStringLiteral("rpc.auth") : authMethod, false);
+                if (!sockGuard || !d_tcp_buffers.contains(sockGuard.data()))
+                    return;
                 QJsonObject errObj;
                 errObj[QStringLiteral("code")] = -32001;
                 errObj[QStringLiteral("message")] =
@@ -4734,16 +4766,18 @@ void PythonAutomationServer::onTcpReadyRead()
                 errResp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
                 errResp[QStringLiteral("id")] = idVal;
                 errResp[QStringLiteral("error")] = errObj;
-                sock->write(QJsonDocument(errResp).toJson(QJsonDocument::Compact) + "\n");
-                sock->flush();
-                sock->disconnectFromHost();
+                if (sockGuard->state() == QAbstractSocket::ConnectedState) {
+                    sockGuard->write(QJsonDocument(errResp).toJson(QJsonDocument::Compact) + "\n");
+                    sockGuard->flush();
+                }
+                sockGuard->disconnectFromHost();
                 return;
             }
 
-            d_authed_tcp_sockets.insert(sock);
+            d_authed_tcp_sockets.insert(sockGuard.data());
             emit rpcRequestHandled(authMethod, true);
-            if (hasId && d_tcp_buffers.contains(sock)
-                && sock->state() == QAbstractSocket::ConnectedState) {
+            if (hasId && sockGuard && d_tcp_buffers.contains(sockGuard.data())
+                && sockGuard->state() == QAbstractSocket::ConnectedState) {
                 QJsonObject resObj;
                 resObj[QStringLiteral("ok")] = true;
                 resObj[QStringLiteral("authenticated")] = true;
@@ -4751,19 +4785,19 @@ void PythonAutomationServer::onTcpReadyRead()
                 okResp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
                 okResp[QStringLiteral("id")] = idVal;
                 okResp[QStringLiteral("result")] = resObj;
-                sock->write(QJsonDocument(okResp).toJson(QJsonDocument::Compact) + "\n");
-                sock->flush();
+                sockGuard->write(QJsonDocument(okResp).toJson(QJsonDocument::Compact) + "\n");
+                sockGuard->flush();
             }
             continue;
         }
 
         QByteArray resp = handleRpcLine(line);
-        if (!resp.isEmpty() && d_tcp_buffers.contains(sock)
-            && sock->state() == QAbstractSocket::ConnectedState) {
+        if (!resp.isEmpty() && sockGuard && d_tcp_buffers.contains(sockGuard.data())
+            && sockGuard->state() == QAbstractSocket::ConnectedState) {
             if (!resp.endsWith('\n'))
                 resp.append('\n');
-            sock->write(resp);
-            sock->flush();
+            sockGuard->write(resp);
+            sockGuard->flush();
         }
     }
 }
@@ -4797,45 +4831,69 @@ void PythonAutomationServer::onLocalReadyRead()
     if (!sock || !d_local_buffers.contains(sock))
         return;
 
-    QByteArray &buf = d_local_buffers[sock];
     const QByteArray incoming = sock->readAll();
-    if (qint64(buf.size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
-        buf.clear();
-        QJsonObject errObj;
-        errObj[QStringLiteral("code")] = -32600;
-        errObj[QStringLiteral("message")] =
-                QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
-        QJsonObject resp;
-        resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
-        resp[QStringLiteral("id")] = QJsonValue::Null;
-        resp[QStringLiteral("error")] = errObj;
-        sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
-        sock->flush();
-        sock->disconnectFromServer();
-        return;
+    {
+        auto it = d_local_buffers.find(sock);
+        if (it == d_local_buffers.end())
+            return;
+        if (qint64(it.value().size()) + qint64(incoming.size()) > kMaxRpcFrameBytes) {
+            it.value().clear();
+            QJsonObject errObj;
+            errObj[QStringLiteral("code")] = -32600;
+            errObj[QStringLiteral("message")] =
+                    QStringLiteral("Invalid Request: JSON-RPC frame exceeds 64 MiB limit.");
+            QJsonObject resp;
+            resp[QStringLiteral("jsonrpc")] = QStringLiteral("2.0");
+            resp[QStringLiteral("id")] = QJsonValue::Null;
+            resp[QStringLiteral("error")] = errObj;
+            sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + "\n");
+            sock->flush();
+            sock->disconnectFromServer();
+            return;
+        }
+        it.value().append(incoming);
     }
-    buf.append(incoming);
 
-    while (true) {
-        if (!d_local_buffers.contains(sock))
+    if (sock->property("_tg_rpc_in_flight").toBool())
+        return;
+
+    QPointer<QLocalSocket> sockGuard(sock);
+    struct ScopedLocalInFlightGuard
+    {
+        QPointer<QLocalSocket> s;
+        explicit ScopedLocalInFlightGuard(QLocalSocket *ptr) : s(ptr)
+        {
+            if (s)
+                s->setProperty("_tg_rpc_in_flight", true);
+        }
+        ~ScopedLocalInFlightGuard()
+        {
+            if (s)
+                s->setProperty("_tg_rpc_in_flight", false);
+        }
+    } inFlightGuard(sock);
+
+    while (sockGuard) {
+        auto bufIt = d_local_buffers.find(sockGuard.data());
+        if (bufIt == d_local_buffers.end())
             break;
-        int nlPos = buf.indexOf('\n');
+        const int nlPos = bufIt.value().indexOf('\n');
         if (nlPos < 0)
             break;
-        QByteArray line = buf.left(nlPos);
-        buf.remove(0, nlPos + 1);
+        QByteArray line = bufIt.value().left(nlPos);
+        bufIt.value().remove(0, nlPos + 1);
         if (line.endsWith('\r'))
             line.chop(1);
         if (line.trimmed().isEmpty())
             continue;
 
         QByteArray resp = handleRpcLine(line);
-        if (!resp.isEmpty() && d_local_buffers.contains(sock)
-            && sock->state() == QLocalSocket::ConnectedState) {
+        if (!resp.isEmpty() && sockGuard && d_local_buffers.contains(sockGuard.data())
+            && sockGuard->state() == QLocalSocket::ConnectedState) {
             if (!resp.endsWith('\n'))
                 resp.append('\n');
-            sock->write(resp);
-            sock->flush();
+            sockGuard->write(resp);
+            sockGuard->flush();
         }
     }
 }

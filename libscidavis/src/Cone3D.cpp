@@ -56,7 +56,13 @@ Cone3D::Cone3D(double rad, unsigned quality)
     configure(rad, quality);
 }
 
-Cone3D::~Cone3D() { }
+Cone3D::~Cone3D()
+{
+    if (hat)
+        gluDeleteQuadric(hat);
+    if (disk)
+        gluDeleteQuadric(disk);
+}
 
 void Cone3D::configure(double rad, unsigned quality)
 {

@@ -3073,8 +3073,11 @@ MultiLayer *GraphStatsAndSurfaceFit::plotROCCurve(ApplicationWindow *app, Table 
                         break;
                     }
                 }
-                if (!seen)
+                if (!seen) {
                     distinctStates.push_back(st);
+                    if (distinctStates.size() > 2)
+                        break;
+                }
             }
         }
         if (rawStates.size() < 2)
@@ -8742,7 +8745,8 @@ MultiLayer *GraphStatsAndSurfaceFit::plotHierarchicalDendrogram(
     }
 
     const int N = static_cast<int>(rawX.size());
-    if (N < 2)
+    constexpr int kMaxHierarchicalRows = 2000;
+    if (N < 2 || N > kMaxHierarchicalRows)
         return nullptr;
 
     // Standardize features

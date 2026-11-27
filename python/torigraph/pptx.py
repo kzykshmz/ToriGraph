@@ -1714,14 +1714,14 @@ def export_graphs_to_pptx(
     # Lab slide preset (83.3 mm / 12.9 pt) is pasted at 140 % -> 18 pt, unless the caller
     # chose a size (scale= or a box with a width).  Graphs that got the preset earlier
     # (g.lab_slide_style() / apply_style_preset) are detected per graph below.
-    box_has_explicit_width = False
+    box_all_explicit_width = False
     if box is not None:
         box_probe = list(box)
         if box_probe and isinstance(box_probe[0], (list, tuple)):
-            box_has_explicit_width = any(len(b) >= 3 for b in box_probe)  # type: ignore[arg-type]
+            box_all_explicit_width = all(len(b) >= 3 for b in box_probe)  # type: ignore[arg-type]
         else:
-            box_has_explicit_width = len(box_probe) >= 3
-    if new_placement_scale_f is None and _is_lab_slide_preset(preset) and not box_has_explicit_width:
+            box_all_explicit_width = len(box_probe) >= 3
+    if new_placement_scale_f is None and _is_lab_slide_preset(preset) and not box_all_explicit_width:
         new_placement_scale_f = LAB_SLIDE_PLACEMENT_SCALE
     embed_scope = str(embed_scope or "graph").strip().lower()
     if embed_scope not in ("graph", "project"):
@@ -2095,7 +2095,7 @@ def export_graphs_to_pptx(
                     return None
                 return new_placement_scale_f
             s = item.get("slide_scale")
-            if s is not None and not box_has_explicit_width:
+            if s is not None and not box_all_explicit_width:
                 slide_scale_used.append(True)
                 return float(s)
             return None

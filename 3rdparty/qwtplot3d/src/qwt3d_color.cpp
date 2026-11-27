@@ -1,3 +1,4 @@
+#include <cmath>
 #include "qwt3d_color.h"
 #include "qwt3d_plot.h"
 
@@ -51,11 +52,14 @@ void StandardColor::setAlpha(double a)
 RGBA StandardColor::operator()(double, double, double z) const
 {
     Q_ASSERT(data_);
-    int index = (int)((colors_.size() - 1) * (z - data_->hull().minVertex.z)
-                      / (data_->hull().maxVertex.z - data_->hull().minVertex.z));
-    if (index < 0)
-        index = 0;
-    if ((unsigned int)index > colors_.size() - 1)
-        index = (int)(colors_.size() - 1);
+    if (colors_.empty())
+        return RGBA(0.0, 0.0, 0.0, 1.0);
+    const double minZ = data_->hull().minVertex.z;
+    const double dz = data_->hull().maxVertex.z - minZ;
+    if (!(dz > 0.0) || !std::isfinite(dz) || !std::isfinite(z))
+        return colors_[0];
+    const double t = (z - minZ) / dz;
+    const int maxIdx = static_cast<int>(colors_.size() - 1);
+    int index = (t <= 0.0) ? 0 : ((t >= 1.0) ? maxIdx : static_cast<int>(maxIdx * t));
     return colors_[index];
 }

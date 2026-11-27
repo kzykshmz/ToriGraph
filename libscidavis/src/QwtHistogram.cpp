@@ -380,7 +380,10 @@ bool QwtHistogram::loadData()
                 : d_end;
         gsl_histogram_set_ranges_uniform(h, d_begin, gslUpper);
     } else {
-        n = qBound(1, int(std::ceil((d_end - d_begin) / d_bin_size - 1e-9)), 10000);
+        const double rawBins = std::ceil((d_end - d_begin) / d_bin_size - 1e-9);
+        n = (!std::isfinite(rawBins) || rawBins >= 10000.0)
+                ? 10000
+                : qBound(1, static_cast<int>(rawBins), 10000);
         h = gsl_histogram_alloc(n);
         if (!h)
             return false;
@@ -391,7 +394,21 @@ bool QwtHistogram::loadData()
         if (maxVal >= range.back() - 1e-12 * d_bin_size && maxVal <= range.back() + 1e-9 * d_bin_size)
             range.back() += 1e-9 * d_bin_size;
 
-        gsl_histogram_set_ranges(h, range.data(), n + 1);
+        bool strictlyIncreasing = true;
+        for (int i = 1; i <= n; ++i) {
+            if (!(range[static_cast<size_t>(i)] > range[static_cast<size_t>(i - 1)])) {
+                strictlyIncreasing = false;
+                break;
+            }
+        }
+        int rc = strictlyIncreasing ? gsl_histogram_set_ranges(h, range.data(), n + 1) : -1;
+        if (rc != 0) {
+            const double upper = (d_end > d_begin) ? d_end : (d_begin + 1.0);
+            if (gsl_histogram_set_ranges_uniform(h, d_begin, upper) != 0) {
+                gsl_histogram_free(h);
+                return false;
+            }
+        }
     }
 
     for (int i = 0; i < size; i++)
@@ -401,7 +418,16 @@ bool QwtHistogram::loadData()
     Y.resize(n);
     for (int i = 0; i < n; i++) {
         Y[i] = gsl_histogram_get(h, i);
-        X[i] = d_begin + (double(i) + 0.5) * d_bin_size; // bin centre
+        double lo = 0.0;
+        double hi = 0.0;
+        if (gsl_histogram_get_range(h, static_cast<size_t>(i), &lo, &hi) == 0
+            && std::isfinite(lo) && std::isfinite(hi)) {
+            X[i] = 0.5 * (lo + hi);
+            if (i == 0 && hi > lo)
+                d_bin_size = hi - lo;
+        } else {
+            X[i] = d_begin + (double(i) + 0.5) * d_bin_size; // fallback bin centre
+        }
     }
     setData(X.data(), Y.data(), n);
 

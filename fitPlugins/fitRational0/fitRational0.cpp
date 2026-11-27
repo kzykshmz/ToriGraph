@@ -30,6 +30,7 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <cmath>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -73,6 +74,14 @@ extern "C" MY_EXPORT double function_eval(double x, double *params)
     return (params[1] + x * params[2]) / (1 + x * params[0]);
 }
 
+static inline bool invalid_sigma(const double *sigma, size_t i)
+{
+    if (!sigma)
+        return false;
+    double s = sigma[i];
+    return !std::isfinite(s) || s <= 0.0 || s >= 1e140;
+}
+
 extern "C" MY_EXPORT int function_f(const gsl_vector *x, void *params, gsl_vector *f)
 {
     size_t n = ((struct data *)params)->n;
@@ -86,8 +95,13 @@ extern "C" MY_EXPORT int function_f(const gsl_vector *x, void *params, gsl_vecto
 
     size_t i;
     for (i = 0; i < n; i++) {
+        if (invalid_sigma(sigma, i)) {
+            gsl_vector_set(f, i, 0.0);
+            continue;
+        }
+        double s = sigma ? sigma[i] : 1.0;
         double Yi = (b + c * X[i]) / (1 + a * X[i]);
-        gsl_vector_set(f, i, (Yi - Y[i]) / sigma[i]);
+        gsl_vector_set(f, i, (Yi - Y[i]) / s);
     }
 
     return GSL_SUCCESS;
@@ -106,7 +120,10 @@ extern "C" MY_EXPORT double function_d(const gsl_vector *x, void *params)
     size_t i;
     double val = 0;
     for (i = 0; i < n; i++) {
-        double dYi = (((b + c * X[i]) / (1 + a * X[i])) - Y[i]) / sigma[i];
+        if (invalid_sigma(sigma, i))
+            continue;
+        double s = sigma ? sigma[i] : 1.0;
+        double dYi = (((b + c * X[i]) / (1 + a * X[i])) - Y[i]) / s;
         val += dYi * dYi;
     }
 
@@ -125,12 +142,18 @@ extern "C" MY_EXPORT int function_df(const gsl_vector *x, void *params, gsl_matr
 
     size_t i;
     for (i = 0; i < n; i++) {
+        if (invalid_sigma(sigma, i)) {
+            gsl_matrix_set(J, i, 0, 0.0);
+            gsl_matrix_set(J, i, 1, 0.0);
+            gsl_matrix_set(J, i, 2, 0.0);
+            continue;
+        }
         /* Jacobian matrix J(i,j) = dfi / dxj,
            where fi = (Yi - Y[i])/sigma[i],
            Yi = (b + c*X[i])/(1 + a*X[i])
            and the xj are the parameters (a, b, c) */
 
-        double s = sigma[i];
+        double s = sigma ? sigma[i] : 1.0;
         double t = X[i];
         double e = 1 / (1 + a * t);
         gsl_matrix_set(J, i, 0, -e * e * t * (b + c * t) / s);

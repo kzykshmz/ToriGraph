@@ -217,8 +217,15 @@ QColor QwtPieCurve::color(int i) const
 {
     if (d_first_color == 0)
         return okabeItoPieColor(i);
-    int index = (d_first_color + qMax(0, i)) % ColorButton::colors_count;
-    return ColorButton::color(index);
+    const unsigned int raw = static_cast<unsigned int>(d_first_color);
+    if (raw < ColorButton::colors_count) {
+        const unsigned int index =
+                (raw + static_cast<unsigned int>(qMax(0, i))) % ColorButton::colors_count;
+        return ColorButton::color(index);
+    }
+    if (i <= 0)
+        return ColorButton::color(raw);
+    return okabeItoPieColor(i);
 }
 
 void QwtPieCurve::setBrushStyle(const Qt::BrushStyle &style)

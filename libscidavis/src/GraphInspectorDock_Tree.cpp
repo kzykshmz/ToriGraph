@@ -1130,15 +1130,13 @@ void GraphInspectorDock::onObjectTreeContextMenu(const QPoint &pos)
         out.maxMajor = pw->axisMaxMajor(ax);
         out.maxMinor = pw->axisMaxMinor(ax);
         out.inverted = (scDiv->lowerBound() > scDiv->upperBound());
-        out.scaleType = 0;
-        if (const QwtScaleEngine *eng = pw->axisScaleEngine(ax)) {
-            out.inverted = eng->testAttribute(QwtScaleEngine::Inverted);
-            QwtScaleTransformation *xf = eng->transformation();
-            if (xf && xf->type() == QwtScaleTransformation::Log10)
-                out.scaleType = 1;
-            delete xf;
-        }
         out.brk = lg->axisBreak(ax);
+        const QwtScaleEngine *eng = pw->axisScaleEngine(ax);
+        if (eng)
+            out.inverted = eng->testAttribute(QwtScaleEngine::Inverted);
+        const bool isLog10 = out.brk.enabled ? (out.brk.log10Before && out.brk.log10After)
+                                             : Plot::isLog10ScaleEngine(eng);
+        out.scaleType = isLog10 ? 1 : 0;
         out.valid = std::isfinite(out.lo) && std::isfinite(out.hi) && qAbs(out.hi - out.lo) > 1e-30;
     };
 
@@ -2010,7 +2008,6 @@ void GraphInspectorDock::removeSelectedObject()
                 d_app->invalidateModelessGraphDialogs(d_target_ml);
             const QString before = d_target_ml->captureUndoSnapshot();
             g->removeCurve(ci);
-            g->reconstructLegend();
             g->updatePlot();
             d_target_ml->pushUndoSnapshot(tr("Remove Curve"), before);
             refreshAll();

@@ -731,3 +731,182 @@ def test_single_str_and_int_column_coercion() -> None:
     assert t.sent[9][0]["params"]["cols"] == ["FeatA"]
     assert t.sent[10][0]["params"]["cols"] == ["ColA", "ColB"]
 
+
+def test_coerce_tabular_input_col_names_rename_reorder_subset() -> None:
+    import numpy as np
+
+    # Dict renaming
+    cols, order, *_ = tg_client._coerce_tabular_input(
+        {"a": [1, 2], "b": [3, 4]}, col_names=["X", "Y"]
+    )
+    assert order == ["X", "Y"]
+    assert list(cols.keys()) == ["X", "Y"]
+    assert cols["X"] == [1, 2] and cols["Y"] == [3, 4]
+
+    # Dict partial-overlap rename (e.g., ["b", "X"] must NOT leave stray "a" key)
+    cols2, order2, *_ = tg_client._coerce_tabular_input(
+        {"a": [1, 2], "b": [3, 4]}, col_names=["b", "X"]
+    )
+    assert order2 == ["b", "X"]
+    assert list(cols2.keys()) == ["b", "X"]
+    assert cols2["b"] == [1, 2] and cols2["X"] == [3, 4]
+
+    # Dict subset & reorder
+    cols3, order3, *_ = tg_client._coerce_tabular_input(
+        {"a": [1, 2], "b": [3, 4], "c": [5, 6]}, col_names=["c", "a"]
+    )
+    assert order3 == ["c", "a"]
+    assert list(cols3.keys()) == ["c", "a"]
+    assert cols3["c"] == [5, 6] and cols3["a"] == [1, 2]
+
+    # Structured numpy ndarray renaming and subsetting
+    arr = np.array([(1.0, 10.0, 100.0), (2.0, 20.0, 200.0)], dtype=[("t", "f8"), ("v", "f8"), ("w", "f8")])
+    scols, sorder, *_ = tg_client._coerce_tabular_input(arr, col_names=["Time", "Signal", "Weight"])
+    assert sorder == ["Time", "Signal", "Weight"]
+    assert list(scols.keys()) == ["Time", "Signal", "Weight"]
+    assert scols["Signal"] == [10.0, 20.0]
+
+    scols_sub, sorder_sub, *_ = tg_client._coerce_tabular_input(arr, col_names=["w", "t"])
+    assert sorder_sub == ["w", "t"]
+    assert list(scols_sub.keys()) == ["w", "t"]
+    assert scols_sub["w"] == [100.0, 200.0]
+
+    # Length mismatch with non-existing name raises ValueError
+    with pytest.raises(ValueError, match="col_names"):
+        tg_client._coerce_tabular_input({"a": [1], "b": [2]}, col_names=["only_one"])
+
+
+def test_pptx_mixed_per_graph_boxes_keep_lab_slide_scale(tmp_path) -> None:
+    """In mixed box=[(l,t,w), (l,t)], the 2-tuple graph must still get 140% lab-slide scale."""
+    import struct
+    from pathlib import Path
+
+    pptx_mod = pytest.importorskip("pptx")
+    Presentation = pptx_mod.Presentation
+
+    # Minimal valid 108-byte EMF header with rclFrame 8330 x 6250 (0.01 mm -> 8.33 x 6.25 cm)
+    emf_hdr = bytearray(108)
+    struct.pack_into("<II", emf_hdr, 0, 1, 108)
+    struct.pack_into("<iiii", emf_hdr, 24, 0, 0, 8330, 6250)
+    emf_hdr[40:44] = b" EMF"
+    emf_bytes = bytes(emf_hdr)
+
+    class _FakeSession:
+        def list_windows(self):
+            return [{"name": "G1", "type": "MultiLayer"}, {"name": "G2", "type": "MultiLayer"}]
+
+        def call(self, method: str, _params=None, **params):
+            if method == "graph.get_info":
+                return {
+                    "name": params.get("graph", "G1"),
+                    "slide_paste_percent": 140,
+                    "applied_style_preset": "lab_slide",
+                    "layers": [{"axes": {"x": {"enabled": True, "title_font_pt": 12.9, "numbers_font_pt": 12.9}}}],
+                }
+            if method == "graph.export_ole":
+                Path(params["emf_path"]).write_bytes(emf_bytes)
+                return {
+                    "prog_id": "ToriGraph.Graph.1",
+                    "graph": params.get("graph", "G1"),
+                    "embed_scope": "graph",
+                    "width_mm": 83.3,
+                    "height_mm": 62.5,
+                    "sciprj_xml": "SciDAVis 3.0.0 project file\n",
+                }
+            if method == "graph.export":
+                Path(params["path"]).write_bytes(emf_bytes)
+                return {"ok": True}
+            return {"ok": True}
+
+    out_pptx = tmp_path / "mixed_box.pptx"
+    res = tg_pptx.export_graphs_to_pptx(
+        _FakeSession(),
+        out_pptx,
+        ["G1", "G2"],
+        slide=1,
+        box=[(1.0, 2.0, 10.0), (13.0, 2.0)],
+        overwrite=True,
+    )
+    assert out_pptx.exists()
+    prs = Presentation(str(out_pptx))
+    assert len(prs.slides) == 1
+    shapes = list(prs.slides[0].shapes)
+    assert len(shapes) == 2
+    w0_cm = shapes[0].width / tg_pptx.EMU_PER_CM
+    w1_cm = shapes[1].width / tg_pptx.EMU_PER_CM
+    # Graph 0 uses explicit width = 10.0 cm
+    assert abs(w0_cm - 10.0) < 0.05
+    # Graph 1 uses natural 8.33 cm * 1.4 = 11.662 cm (NOT unscaled 8.33 cm!)
+    assert abs(w1_cm - 8.33 * tg_pptx.LAB_SLIDE_PLACEMENT_SCALE) < 0.15, (
+        f"Expected ~{8.33 * tg_pptx.LAB_SLIDE_PLACEMENT_SCALE:.2f} cm, got {w1_cm:.2f} cm"
+    )
+    assert res["placements"][0]["effective_scale"] == pytest.approx(10.0 / 8.33, rel=1e-2)
+    assert res["placements"][1]["effective_scale"] == pytest.approx(
+        tg_pptx.LAB_SLIDE_PLACEMENT_SCALE, rel=1e-2
+    )
+    assert res["scale"] == pytest.approx(tg_pptx.LAB_SLIDE_PLACEMENT_SCALE)
+
+
+def test_batch_context_explicit_execute_no_duplicate_on_exit() -> None:
+    """Explicit b.execute() inside `with app.batch() as b:` must not run a second time on exit."""
+    t = MockTransport(
+        [
+            _ok(
+                {
+                    "ok": True,
+                    "completed": 1,
+                    "total": 1,
+                    "rolled_back": False,
+                    "results": [{"ok": True, "name": "Table1"}],
+                }
+            ),
+            _ok(
+                {
+                    "ok": True,
+                    "completed": 1,
+                    "total": 1,
+                    "rolled_back": False,
+                    "results": [{"ok": True, "name": "Table2"}],
+                }
+            ),
+        ]
+    )
+    s = Session(t)
+    with s.batch() as b:
+        b.add("table.create", rows=5, cols=2)
+        first = b.execute()
+        assert first["ok"] is True
+        # Second explicit execute() with no new commands is a no-op
+        second = b.execute()
+        assert second == first
+    # Exiting the `with` block must NOT send a duplicate app.batch RPC
+    assert len(t.sent) == 1
+    assert t.sent[0][0]["method"] == "app.batch"
+    assert len(t.sent[0][0]["params"]["commands"]) == 1
+
+    # Adding new commands after an explicit execute() flushes ONLY the new commands on exit
+    with s.batch() as b2:
+        b2._flushed = True
+        b2.commands.append({"method": "table.create", "params": {"rows": 1, "cols": 1}})
+        b2.add("table.create", rows=3, cols=2)
+    assert len(t.sent) == 2
+    assert len(t.sent[1][0]["params"]["commands"]) == 1
+    assert t.sent[1][0]["params"]["commands"][0]["params"]["rows"] == 3
+
+
+def test_coerce_tabular_input_rejects_empty_and_duplicate_col_names() -> None:
+    """Wave 3: _coerce_tabular_input must reject empty col_names on non-empty input and duplicates."""
+    sample = {"a": [1.0, 2.0], "b": [3.0, 4.0]}
+
+    with pytest.raises(ValueError, match="empty"):
+        tg_client._coerce_tabular_input(sample, col_names=[])
+
+    with pytest.raises(ValueError, match="duplicate"):
+        tg_client._coerce_tabular_input(sample, col_names=["a", "a"])
+
+    with pytest.raises(ValueError, match="duplicate"):
+        tg_client._coerce_tabular_input(sample, col_names=["X", "X"])
+
+    # Empty input with empty col_names remains valid
+    cols, order, *_ = tg_client._coerce_tabular_input({}, col_names=[])
+    assert cols == {} and order == []

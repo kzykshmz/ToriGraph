@@ -567,7 +567,7 @@ Column *MuParserScript::resolveColumnPath(const QString &path)
  */
 bool MuParserScript::translateLegacyFunctions(QString &input)
 {
-    QRegExp legacyFunction("(\\W||^)(col|tablecol|cell)\\s*\\(");
+    QRegExp legacyFunction("(\\W|^)(col|tablecol|cell)\\s*\\(");
 
     int functionStart = legacyFunction.indexIn(input, 0);
     while (functionStart != -1) {
@@ -577,7 +577,8 @@ bool MuParserScript::translateLegacyFunctions(QString &input)
 
         // parse arguments of function
         QString currentArgument;
-        for (int i = functionStart + legacyFunction.matchedLength(), parenthesisLevel = 1;
+        int parenthesisLevel = 1;
+        for (int i = functionStart + legacyFunction.matchedLength();
              parenthesisLevel > 0 && i < input.size(); i++) {
             switch (input.at(i).toLatin1()) {
             case '"':
@@ -618,6 +619,11 @@ bool MuParserScript::translateLegacyFunctions(QString &input)
                 currentArgument += input.at(i);
                 break;
             }
+        }
+        if (parenthesisLevel > 0) {
+            emit_error(tr("%1: missing closing parenthesis").arg(legacyFunction.cap(2)), 0);
+            compiled = Script::compileErr;
+            return false;
         }
         arguments << currentArgument;
         for (int argIdx = 0; argIdx < arguments.size(); ++argIdx)
@@ -749,7 +755,7 @@ bool MuParserScript::compile(bool asFunction)
                 inString = !inString;
             break;
         case '#':
-            if (!inString)
+            if (!inString && commentStart < 0)
                 commentStart = i;
             break;
         case '\n':
@@ -762,6 +768,7 @@ bool MuParserScript::compile(bool asFunction)
         }
     if (commentStart >= 0)
         intermediate.remove(commentStart, intermediate.size() - commentStart);
+    intermediate = intermediate.trimmed();
 
     // simplify statement separators
     intermediate.replace(QRegExp("([;\\n]\\s*)+"), ", ");

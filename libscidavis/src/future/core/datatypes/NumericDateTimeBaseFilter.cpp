@@ -111,6 +111,8 @@ void NumericDateTimeBaseFilter::setBaseDateTime(const QDateTime &date)
 
 double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
 {
+    if (!input.isValid() || !m_date_time_0.isValid())
+        return 0.0;
     // zone-free arithmetic on the date and time fields (see the header)
     const QDateTime tDateTime = wallClock(input);
     double retVal = 0.0;
@@ -124,8 +126,11 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
             years -= 1;
         retVal += years;
         auto previousYearOffset = m_date_time_0.addYears(years);
-        auto daysToNextYear = previousYearOffset.daysTo(previousYearOffset.addYears(1));
-        retVal += previousYearOffset.msecsTo(tDateTime) / daysToNextYear / milliSecondsInDay;
+        auto nextYearOffset = m_date_time_0.addYears(years + 1);
+        auto daysToNextYear = previousYearOffset.daysTo(nextYearOffset);
+        if (daysToNextYear > 0)
+            retVal += double(previousYearOffset.msecsTo(tDateTime)) / double(daysToNextYear)
+                    / milliSecondsInDay;
         return retVal;
     }
     case UnitInterval::Month: {
@@ -138,9 +143,11 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
             months -= 1;
         retVal += months;
         auto previousMonthsOffset = m_date_time_0.addMonths(months);
-        auto daysToNextMonth = previousMonthsOffset.daysTo(previousMonthsOffset.addMonths(1));
-        retVal += double(previousMonthsOffset.msecsTo(tDateTime)) / double(daysToNextMonth)
-                / milliSecondsInDay;
+        auto nextMonthsOffset = m_date_time_0.addMonths(months + 1);
+        auto daysToNextMonth = previousMonthsOffset.daysTo(nextMonthsOffset);
+        if (daysToNextMonth > 0)
+            retVal += double(previousMonthsOffset.msecsTo(tDateTime)) / double(daysToNextMonth)
+                    / milliSecondsInDay;
         return retVal;
     }
     case UnitInterval::Day: {
@@ -148,17 +155,17 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
         if (tDateTime < m_date_time_0.addDays(days))
             days -= 1;
         retVal += days;
-        retVal += m_date_time_0.addDays(days).msecsTo(tDateTime) / milliSecondsInDay;
+        retVal += double(m_date_time_0.addDays(days).msecsTo(tDateTime)) / milliSecondsInDay;
         return retVal;
     }
     case UnitInterval::Hour:
-        return m_date_time_0.msecsTo(tDateTime) / 1000.0 / 3600.0;
+        return double(m_date_time_0.msecsTo(tDateTime)) / 1000.0 / 3600.0;
     case UnitInterval::Minute:
-        return m_date_time_0.msecsTo(tDateTime) / 1000.0 / 60.0;
+        return double(m_date_time_0.msecsTo(tDateTime)) / 1000.0 / 60.0;
     case UnitInterval::Second:
-        return m_date_time_0.msecsTo(tDateTime) / 1000.0;
+        return double(m_date_time_0.msecsTo(tDateTime)) / 1000.0;
     case UnitInterval::Millisecond:
-        return m_date_time_0.msecsTo(tDateTime);
+        return double(m_date_time_0.msecsTo(tDateTime));
     }
     // return default value
     return retVal;
@@ -166,41 +173,70 @@ double NumericDateTimeBaseFilter::offsetToDouble(const QDateTime &input) const
 
 QDateTime NumericDateTimeBaseFilter::makeDateTime(double input_value) const
 {
+    if (!std::isfinite(input_value) || !m_date_time_0.isValid())
+        return QDateTime();
+    const double floored = std::floor(input_value);
+    // Reject values outside qint64/QDateTime representable range to avoid UB in float->int casts.
+    if (std::fabs(floored) > 1e15)
+        return QDateTime();
     QDateTime dateTime = m_date_time_0;
-    qint64 fullUnits(floor(input_value));
-    double residual { 0.0 };
+    const qint64 fullUnits = static_cast<qint64>(floored);
+    qint64 residual = 0;
     switch (m_unit_interval) {
     // add full number of units to dateTime
     case UnitInterval::Year: {
-        dateTime = dateTime.addYears(fullUnits);
-        auto daysToNextYear = dateTime.daysTo(dateTime.addYears(1));
-        residual = qRound64((input_value - fullUnits) * daysToNextYear * milliSecondsInDay);
+        if (fullUnits < -10000000LL || fullUnits > 10000000LL)
+            return QDateTime();
+        dateTime = m_date_time_0.addYears(static_cast<int>(fullUnits));
+        const QDateTime nextYear = m_date_time_0.addYears(static_cast<int>(fullUnits) + 1);
+        const qint64 daysToNextYear = dateTime.daysTo(nextYear);
+        if (daysToNextYear > 0)
+            residual = qRound64((input_value - double(fullUnits)) * double(daysToNextYear)
+                                * milliSecondsInDay);
         break;
     }
     case UnitInterval::Month: {
-        dateTime = dateTime.addMonths(fullUnits);
-        auto daysToNextMonth = dateTime.daysTo(dateTime.addMonths(1));
-        residual = qRound64((input_value - fullUnits) * daysToNextMonth * milliSecondsInDay);
+        if (fullUnits < -100000000LL || fullUnits > 100000000LL)
+            return QDateTime();
+        dateTime = m_date_time_0.addMonths(static_cast<int>(fullUnits));
+        const QDateTime nextMonth = m_date_time_0.addMonths(static_cast<int>(fullUnits) + 1);
+        const qint64 daysToNextMonth = dateTime.daysTo(nextMonth);
+        if (daysToNextMonth > 0)
+            residual = qRound64((input_value - double(fullUnits)) * double(daysToNextMonth)
+                                * milliSecondsInDay);
         break;
     }
     case UnitInterval::Day: {
+        if (fullUnits < -3650000000LL || fullUnits > 3650000000LL)
+            return QDateTime();
         dateTime = dateTime.addDays(fullUnits);
-        residual = qRound64((input_value - fullUnits) * milliSecondsInDay);
+        residual = qRound64((input_value - double(fullUnits)) * milliSecondsInDay);
         break;
     }
     case UnitInterval::Hour: {
-        residual = qRound64(input_value * 3600 * 1000.0);
+        const double ms = input_value * 3600.0 * 1000.0;
+        if (!std::isfinite(ms) || std::fabs(ms) > 1e16)
+            return QDateTime();
+        residual = qRound64(ms);
         break;
     }
     case UnitInterval::Minute: {
-        residual = qRound64(input_value * 60 * 1000.0);
+        const double ms = input_value * 60.0 * 1000.0;
+        if (!std::isfinite(ms) || std::fabs(ms) > 1e16)
+            return QDateTime();
+        residual = qRound64(ms);
         break;
     }
     case UnitInterval::Second: {
-        residual = qRound64(input_value * 1000.0);
+        const double ms = input_value * 1000.0;
+        if (!std::isfinite(ms) || std::fabs(ms) > 1e16)
+            return QDateTime();
+        residual = qRound64(ms);
         break;
     }
     case UnitInterval::Millisecond: {
+        if (std::fabs(input_value) > 1e16)
+            return QDateTime();
         residual = qRound64(input_value);
         break;
     }

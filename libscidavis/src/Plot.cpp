@@ -1818,11 +1818,15 @@ int Plot::closestCurve(int xpos, int ypos, int &dist, int &point)
 
 void Plot::removeMarker(int index)
 {
-    QwtPlotMarker *m = d_markers[index];
+    auto it = d_markers.find(index);
+    if (it == d_markers.end())
+        return;
+    QwtPlotMarker *m = it.value();
+    d_markers.erase(it);
     if (!m)
         return;
     m->detach();
-    d_markers.remove(index);
+    delete m;
 }
 
 int Plot::insertMarker(QwtPlotMarker *m)

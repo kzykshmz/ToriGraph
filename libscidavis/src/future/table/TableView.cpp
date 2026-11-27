@@ -1801,7 +1801,7 @@ void TableView::applyType()
     ScopedUiFlagGuard guard(d_updating_ui);
     int format_index = ui.format_box->currentIndex();
     int type_index = ui.type_box->currentIndex();
-    if (format_index < 0 && type_index < 0)
+    if (type_index < 0 || (format_index < 0 && !ui.formatLineEdit->isEnabled()))
         return;
 
     SciDAVis::ColumnMode new_mode = (SciDAVis::ColumnMode)ui.type_box->itemData(type_index).toInt();
@@ -1852,7 +1852,8 @@ void TableView::applyType()
                 }
                 break;
             case SciDAVis::ColumnMode::Text:
-                converter = new String2DateTimeFilter(format);
+                if (new_mode == SciDAVis::ColumnMode::DateTime)
+                    converter = new String2DateTimeFilter(format);
                 break;
             default:
                 break;

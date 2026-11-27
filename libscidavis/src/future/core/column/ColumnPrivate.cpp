@@ -288,7 +288,8 @@ void Column::Private::setColumnMode(SciDAVis::ColumnMode new_mode, AbstractFilte
     case SciDAVis::ColumnMode::DateTime: {
         new_in_filter = new String2DateTimeFilter();
         new_out_filter = new DateTime2StringFilter();
-        d_numeric_datetime_filter.reset(new NumericDateTimeBaseFilter());
+        if (!d_numeric_datetime_filter)
+            d_numeric_datetime_filter.reset(new NumericDateTimeBaseFilter());
         if ((SciDAVis::ColumnMode::DateTime != old_mode) && (SciDAVis::ColumnMode::Month != old_mode)
             && (SciDAVis::ColumnMode::Day != old_mode)) {
             d_data = new QList<QDateTime>();
@@ -316,7 +317,7 @@ void Column::Private::setColumnMode(SciDAVis::ColumnMode new_mode, AbstractFilte
         // converter is provided, need to store for possible double -> datetime conversion later
         else if (old_mode == SciDAVis::ColumnMode::Numeric) {
             auto numeric_datetime_converter =
-                    reinterpret_cast<NumericDateTimeBaseFilter *>(converter);
+                    dynamic_cast<NumericDateTimeBaseFilter *>(converter);
             if (nullptr != numeric_datetime_converter)
                 // the ownership of converter is not taken, copy is stored
                 setNumericDateTimeFilter(
@@ -777,7 +778,7 @@ void Column::Private::resizeTo(int new_size)
 
 void Column::Private::insertRows(int before, int count)
 {
-    if (count == 0)
+    if (before < 0 || count <= 0)
         return;
 
     emit d_owner->rowsAboutToBeInserted(d_owner, before, count);
@@ -807,7 +808,7 @@ void Column::Private::insertRows(int before, int count)
 
 void Column::Private::removeRows(int first, int count)
 {
-    if (count == 0)
+    if (first < 0 || count <= 0)
         return;
 
     emit d_owner->rowsAboutToBeRemoved(d_owner, first, count);
@@ -956,7 +957,7 @@ double Column::Private::valueAt(int row) const
 
 void Column::Private::setTextAt(int row, const QString &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQString)
+    if (d_data_type != SciDAVis::TypeQString || row < 0)
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -973,7 +974,7 @@ void Column::Private::setTextAt(int row, const QString &new_value)
 
 void Column::Private::replaceTexts(int first, const QStringList &new_values)
 {
-    if (d_data_type != SciDAVis::TypeQString)
+    if (d_data_type != SciDAVis::TypeQString || first < 0 || new_values.isEmpty())
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -991,7 +992,7 @@ void Column::Private::replaceTexts(int first, const QStringList &new_values)
 
 void Column::Private::setDateAt(int row, const QDate &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime)
+    if (d_data_type != SciDAVis::TypeQDateTime || row < 0)
         return;
 
     setDateTimeAt(row, QDateTime(new_value, timeAt(row)));
@@ -999,7 +1000,7 @@ void Column::Private::setDateAt(int row, const QDate &new_value)
 
 void Column::Private::setTimeAt(int row, const QTime &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime)
+    if (d_data_type != SciDAVis::TypeQDateTime || row < 0)
         return;
 
     setDateTimeAt(row, QDateTime(dateAt(row), new_value));
@@ -1007,7 +1008,7 @@ void Column::Private::setTimeAt(int row, const QTime &new_value)
 
 void Column::Private::setDateTimeAt(int row, const QDateTime &new_value)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime)
+    if (d_data_type != SciDAVis::TypeQDateTime || row < 0)
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1024,7 +1025,7 @@ void Column::Private::setDateTimeAt(int row, const QDateTime &new_value)
 
 void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_values)
 {
-    if (d_data_type != SciDAVis::TypeQDateTime)
+    if (d_data_type != SciDAVis::TypeQDateTime || first < 0 || new_values.isEmpty())
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1056,7 +1057,7 @@ void Column::Private::replaceDateTimes(int first, const QList<QDateTime> &new_va
 
 void Column::Private::setValueAt(int row, double new_value)
 {
-    if (d_data_type != SciDAVis::TypeDouble)
+    if (d_data_type != SciDAVis::TypeDouble || row < 0)
         return;
 
     emit d_owner->dataAboutToChange(d_owner);
@@ -1073,7 +1074,7 @@ void Column::Private::setValueAt(int row, double new_value)
 
 void Column::Private::replaceValues(int first, const QVector<qreal> &new_values)
 {
-    if (d_data_type != SciDAVis::TypeDouble)
+    if (d_data_type != SciDAVis::TypeDouble || first < 0 || new_values.isEmpty())
         return;
 
     emit d_owner->dataAboutToChange(d_owner);

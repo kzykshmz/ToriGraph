@@ -54,103 +54,148 @@ PluginFit::PluginFit(ApplicationWindow *parent, Graph *g, const QString &curveTi
 
 void PluginFit::init()
 {
+    f_eval = nullptr;
     d_explanation = tr("Plugin Fit");
 }
 
 bool PluginFit::load(const QString &pluginName)
 {
     if (!QFile::exists(pluginName)) {
-        QMessageBox::critical(
-                (ApplicationWindow *)parent(), tr("File not found"),
-                tr("Plugin file: <p><b> %1 </b> <p>not found. Operation aborted!").arg(pluginName));
+        d_init_err = true;
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("File not found"),
+                    tr("Plugin file: <p><b> %1 </b> <p>not found. Operation aborted!").arg(pluginName));
         return false;
     }
 
-    setObjectName(pluginName);
     QLibrary lib(pluginName);
 
-    d_fsimplex = (fit_function_simplex)lib.resolve("function_d");
-    if (!d_fsimplex) {
-        QMessageBox::critical(
-                (ApplicationWindow *)parent(), tr("Plugin Error"),
-                tr("The plugin does not implement a %1 method necessary for simplex fitting.")
-                        .arg("function_d"));
+    auto new_fsimplex = (fit_function_simplex)lib.resolve("function_d");
+    if (!new_fsimplex) {
+        d_init_err = true;
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical(
+                    (ApplicationWindow *)parent(), tr("Plugin Error"),
+                    tr("The plugin does not implement a %1 method necessary for simplex fitting.")
+                            .arg("function_d"));
         return false;
     }
 
-    d_f = (fit_function)lib.resolve("function_f");
-    if (!d_f) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
-                              tr("The plugin does not implement a %1 method necessary for "
-                                 "Levenberg-Marquardt fitting.")
-                                      .arg("function_f"));
+    auto new_f = (fit_function)lib.resolve("function_f");
+    if (!new_f) {
+        d_init_err = true;
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
+                                  tr("The plugin does not implement a %1 method necessary for "
+                                     "Levenberg-Marquardt fitting.")
+                                          .arg("function_f"));
         return false;
     }
 
-    d_df = (fit_function_df)lib.resolve("function_df");
-    if (!d_df) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
-                              tr("The plugin does not implement a %1 method necessary for "
-                                 "Levenberg-Marquardt fitting.")
-                                      .arg("function_df"));
+    auto new_df = (fit_function_df)lib.resolve("function_df");
+    if (!new_df) {
+        d_init_err = true;
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
+                                  tr("The plugin does not implement a %1 method necessary for "
+                                     "Levenberg-Marquardt fitting.")
+                                          .arg("function_df"));
         return false;
     }
 
-    d_fdf = (fit_function_fdf)lib.resolve("function_fdf");
-    if (!d_fdf) {
-        QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
-                              tr("The plugin does not implement a %1 method necessary for "
-                                 "Levenberg-Marquardt fitting.")
-                                      .arg("function_fdf"));
+    auto new_fdf = (fit_function_fdf)lib.resolve("function_fdf");
+    if (!new_fdf) {
+        d_init_err = true;
+        if (!isSilentOrNonInteractive())
+            QMessageBox::critical((ApplicationWindow *)parent(), tr("Plugin Error"),
+                                  tr("The plugin does not implement a %1 method necessary for "
+                                     "Levenberg-Marquardt fitting.")
+                                          .arg("function_fdf"));
         return false;
     }
 
-    f_eval = (fitFunctionEval)lib.resolve("function_eval");
-    if (!f_eval)
+    auto new_feval = (fitFunctionEval)lib.resolve("function_eval");
+    if (!new_feval) {
+        d_init_err = true;
         return false;
+    }
 
     typedef char *(*fitFunc)();
-    fitFunc fitFunction = (fitFunc)lib.resolve("parameters");
-    if (fitFunction) {
+    fitFunc paramsFn = (fitFunc)lib.resolve("parameters");
+    QStringList parsedNames;
+    if (paramsFn) {
+        const char *rawParams = paramsFn();
+        if (rawParams) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        d_param_names = QString(fitFunction()).split(",", Qt::SkipEmptyParts);
+            parsedNames = QString(rawParams).split(",", Qt::SkipEmptyParts);
 #else
-        d_param_names = QString(fitFunction()).split(",", QString::SkipEmptyParts);
+            parsedNames = QString(rawParams).split(",", QString::SkipEmptyParts);
 #endif
-        d_p = (int)d_param_names.count();
-        d_min_points = d_p;
-        d_param_init = gsl_vector_alloc(d_p);
-        covar = gsl_matrix_alloc(d_p, d_p);
-        d_results.resize(d_p);
-    } else
+        }
+    }
+    if (parsedNames.isEmpty()) {
+        d_init_err = true;
         return false;
+    }
 
+    fitFunc formulaFn = (fitFunc)lib.resolve("function");
+    const char *rawFormula = formulaFn ? formulaFn() : nullptr;
+    if (!rawFormula) {
+        d_init_err = true;
+        return false;
+    }
+
+    // All required symbols validated; commit atomically.
+    if (d_param_init) {
+        gsl_vector_free(d_param_init);
+        d_param_init = nullptr;
+    }
+    if (covar) {
+        gsl_matrix_free(covar);
+        covar = nullptr;
+    }
+
+    d_fsimplex = new_fsimplex;
+    d_f = new_f;
+    d_df = new_df;
+    d_fdf = new_fdf;
+    f_eval = new_feval;
+    d_param_names = parsedNames;
+    d_p = (int)d_param_names.count();
+    d_min_points = d_p;
+    d_param_init = gsl_vector_alloc(d_p);
+    gsl_vector_set_all(d_param_init, 1.0);
+    covar = gsl_matrix_alloc(d_p, d_p);
+    gsl_matrix_set_zero(covar);
+    d_results.assign(d_p, 0.0);
+    d_formula = QString(rawFormula);
+
+    d_param_explain.clear();
     fitFunc fitExplain = (fitFunc)lib.resolve("explanations");
-    if (fitExplain)
+    if (fitExplain && fitExplain())
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
         d_param_explain = QString(fitExplain()).split(",", Qt::SkipEmptyParts);
 #else
         d_param_explain = QString(fitExplain()).split(",", QString::SkipEmptyParts);
 #endif
-    else
-        for (unsigned i = 0; i < d_p; i++)
-            d_param_explain << "";
+    while (static_cast<unsigned>(d_param_explain.size()) < d_p)
+        d_param_explain << "";
 
-    fitFunction = (fitFunc)lib.resolve("name");
-    setObjectName(QString(fitFunction()));
+    setObjectName(pluginName);
+    fitFunc nameFn = (fitFunc)lib.resolve("name");
+    if (nameFn && nameFn())
+        setObjectName(QString(nameFn()));
 
-    fitFunction = (fitFunc)lib.resolve("function");
-    if (fitFunction)
-        d_formula = QString(fitFunction());
-    else
-        return false;
-
+    d_init_err = false;
     return true;
 }
 
 bool PluginFit::calculateFitCurveData(const vector<double> &par, std::vector<double> &X,
                                       std::vector<double> &Y)
 {
+    if (!f_eval || d_p == 0 || par.size() < d_p)
+        return false;
     generateX(X);
     for (int i = 0; i < d_points; i++)
         // TODO second par should be const double*

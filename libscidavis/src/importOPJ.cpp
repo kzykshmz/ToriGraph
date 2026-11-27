@@ -223,17 +223,19 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
     tree<Origin::ProjectNode>::iterator root = projectTree->begin(projectTree->begin());
     if (!root.node)
         return false;
-    Folder *projectFolder = mw->projectFolder();
-    if (!projectFolder)
+    Folder *baseFolder = mw->currentFolder() ? mw->currentFolder() : mw->projectFolder();
+    if (!baseFolder)
         return false;
-    if (auto *item = dynamic_cast<FolderListItem *>(mw->folders.topLevelItem(0))) {
-        const QString rootName = decodeMbcs(root->name.c_str());
-        item->setText(0, rootName);
-        if (item->folder())
-            item->folder()->setName(rootName);
+    if (baseFolder == mw->projectFolder()) {
+        if (auto *item = dynamic_cast<FolderListItem *>(mw->folders.topLevelItem(0))) {
+            const QString rootName = decodeMbcs(root->name.c_str());
+            item->setText(0, rootName);
+            if (item->folder())
+                item->folder()->setName(rootName);
+        }
     }
     QHash<tree<Origin::ProjectNode>::iterator, Folder *> parent;
-    parent[root] = projectFolder;
+    parent[root] = baseFolder;
     {
         QSignalBlocker sbFolders(&mw->folders);
         for (tree<Origin::ProjectNode>::iterator sib = projectTree->begin(root);
@@ -243,7 +245,7 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
             if (sib->type == Origin::ProjectNode::Folder) {
                 Folder *pFolder = parent.value(projectTree->parent(sib));
                 if (!pFolder)
-                    pFolder = projectFolder;
+                    pFolder = baseFolder;
                 Folder &f = pFolder->addChild<Folder>(decodeMbcs(sib->name.c_str()));
                 parent[sib] = &f;
                 f.setBirthDate(posixTimeToString(sib->creationDate));
@@ -286,24 +288,24 @@ bool ImportOPJ::createProjectTree(const OriginFile &opj)
                     nodetype = "Unknown";
                     break;
                 }
-                MyWidget *w = projectFolder->window(name, nodetype);
+                MyWidget *w = baseFolder->window(name, nodetype);
                 while (w) { // Origin window names are unique, but we need to loop on all sheets of
                             // Excel windows
                     Folder *f = parent.value(projectTree->parent(sib));
-                    if (!f || f == projectFolder)
-                        break; // skip windows that go to root folder or unmapped parent
+                    if (!f || f == baseFolder)
+                        break; // skip windows that go to base folder or unmapped parent
                     // removeWindow uses QList.removeAll, so remove w before adding it to its folder
-                    projectFolder->removeWindow(w);
+                    baseFolder->removeWindow(w);
                     f->addWindow(w);
                     f->setActiveWindow(w);
-                    w = projectFolder->window(name, nodetype);
+                    w = baseFolder->window(name, nodetype);
                 }
             }
         }
     }
-    if (!projectFolder->folders().isEmpty())
+    if (!baseFolder->folders().isEmpty())
         mw->folders.setVisible(true);
-    mw->changeFolder(projectFolder, true);
+    mw->changeFolder(baseFolder, true);
     return true;
 }
 
@@ -400,26 +402,29 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
               types.
             */
             {
-                double datavalue;
+                const int nRows = std::min((int)column.data.size(), maxrows);
                 bool setAsText = false;
-                table->column(j)->setColumnMode(SciDAVis::ColumnMode::Numeric);
-                for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
-                    Origin::variant value(column.data[i]);
+                for (int i = 0; i < nRows; ++i) {
+                    if (column.data[i].type() != Origin::variant::V_DOUBLE) {
+                        setAsText = true;
+                        break;
+                    }
+                }
+                table->column(j)->setColumnMode(setAsText ? SciDAVis::ColumnMode::Text
+                                                          : SciDAVis::ColumnMode::Numeric);
+                for (int i = 0; i < nRows; ++i) {
+                    const Origin::variant &value = column.data[i];
                     if (value.type() == Origin::variant::V_DOUBLE) {
-                        datavalue = value.as_double();
-                        if (datavalue == _ONAN)
+                        const double datavalue = value.as_double();
+                        if (datavalue == _ONAN || !std::isfinite(datavalue))
                             continue; // mark for empty cell
                         if (!setAsText) {
                             scidavis_column->setValueAt(i, datavalue);
                         } else { // convert double to string for Text columns
                             scidavis_column->setTextAt(i, locale.toString(datavalue, 'g', 16));
                         }
-                    } else { // string
-                        if (!setAsText && i == 0) {
-                            table->column(j)->setColumnMode(SciDAVis::ColumnMode::Text);
-                            setAsText = true;
-                        }
-                        scidavis_column->setTextAt(i, decodeMbcs(column.data[i].as_string()));
+                    } else if (value.type() == Origin::variant::V_STRING) {
+                        scidavis_column->setTextAt(i, decodeMbcs(value.as_string()));
                     }
                 }
                 if (!setAsText && column.numericDisplayType != 0) {
@@ -449,7 +454,14 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
         case Origin::Text:
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::Text);
             for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
-                scidavis_column->setTextAt(i, decodeMbcs(column.data[i].as_string()));
+                const Origin::variant &value = column.data[i];
+                if (value.type() == Origin::variant::V_STRING) {
+                    scidavis_column->setTextAt(i, decodeMbcs(value.as_string()));
+                } else if (value.type() == Origin::variant::V_DOUBLE) {
+                    const double v = value.as_double();
+                    if (v != _ONAN && std::isfinite(v))
+                        scidavis_column->setTextAt(i, locale.toString(v, 'g', 16));
+                }
             }
             break;
         case Origin::Date: {
@@ -504,8 +516,13 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
             default:
                 format = "dd.MM.yyyy";
             }
-            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i)
-                scidavis_column->setValueAt(i, column.data[i].as_double());
+            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
+                if (column.data[i].type() == Origin::variant::V_DOUBLE) {
+                    const double v = column.data[i].as_double();
+                    if (v != _ONAN && std::isfinite(v))
+                        scidavis_column->setValueAt(i, v);
+                }
+            }
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::DateTime);
             DateTime2StringFilter *filter =
                     static_cast<DateTime2StringFilter *>(scidavis_column->outputFilter());
@@ -548,8 +565,13 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
                 format = "hh:mm:ss.zzz";
                 break;
             }
-            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i)
-                scidavis_column->setValueAt(i, column.data[i].as_double());
+            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
+                if (column.data[i].type() == Origin::variant::V_DOUBLE) {
+                    const double v = column.data[i].as_double();
+                    if (v != _ONAN && std::isfinite(v))
+                        scidavis_column->setValueAt(i, v);
+                }
+            }
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::DateTime);
             DateTime2StringFilter *filter =
                     static_cast<DateTime2StringFilter *>(table->column(j)->outputFilter());
@@ -568,8 +590,13 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
                 format = "M";
                 break;
             }
-            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i)
-                scidavis_column->setValueAt(i, column.data[i].as_double());
+            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
+                if (column.data[i].type() == Origin::variant::V_DOUBLE) {
+                    const double v = column.data[i].as_double();
+                    if (v != _ONAN && std::isfinite(v))
+                        scidavis_column->setValueAt(i, v);
+                }
+            }
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::Month);
             DateTime2StringFilter *filter =
                     static_cast<DateTime2StringFilter *>(table->column(j)->outputFilter());
@@ -588,8 +615,13 @@ bool ImportOPJ::importSpreadsheet(const OriginFile &opj, const Origin::SpreadShe
                 format = "d";
                 break;
             }
-            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i)
-                scidavis_column->setValueAt(i, column.data[i].as_double());
+            for (int i = 0; i < std::min((int)column.data.size(), maxrows); ++i) {
+                if (column.data[i].type() == Origin::variant::V_DOUBLE) {
+                    const double v = column.data[i].as_double();
+                    if (v != _ONAN && std::isfinite(v))
+                        scidavis_column->setValueAt(i, v);
+                }
+            }
             table->column(j)->setColumnMode(SciDAVis::ColumnMode::Day);
             DateTime2StringFilter *filter =
                     static_cast<DateTime2StringFilter *>(table->column(j)->outputFilter());

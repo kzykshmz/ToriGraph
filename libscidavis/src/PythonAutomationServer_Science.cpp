@@ -374,6 +374,7 @@ void extractBinaryStateRows(Table *t, int stIdx, const QVector<int> &numericChec
 
     if (stCol->columnMode() == SciDAVis::ColumnMode::Numeric) {
         std::vector<double> rawStates;
+        std::vector<double> distinctStates;
         double minSt = std::numeric_limits<double>::infinity();
         double maxSt = -std::numeric_limits<double>::infinity();
         for (int r = 0; r < nRows; ++r) {
@@ -386,16 +387,30 @@ void extractBinaryStateRows(Table *t, int stIdx, const QVector<int> &numericChec
             validRowsOut.push_back(r);
             minSt = std::min(minSt, sv);
             maxSt = std::max(maxSt, sv);
+            bool seen = false;
+            for (double ds : distinctStates) {
+                if (std::fabs(sv - ds) <= 1e-12 * std::max(1.0, std::fabs(ds))) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) {
+                distinctStates.push_back(sv);
+                if (distinctStates.size() > 2)
+                    break;
+            }
+        }
+        if (distinctStates.size() != 2) {
+            yOut.clear();
+            validRowsOut.clear();
+            return;
         }
         yOut.reserve(rawStates.size());
-        if (!rawStates.empty() && maxSt > minSt) {
-            const double mid = 0.5 * (minSt + maxSt);
-            for (double sv : rawStates)
-                yOut.push_back((sv > mid) ? 1 : 0);
-        } else {
-            for (double sv : rawStates)
-                yOut.push_back((sv >= 0.5) ? 1 : 0);
-        }
+        double mid = 0.5 * minSt + 0.5 * maxSt;
+        if (!(mid > minSt && mid < maxSt))
+            mid = minSt;
+        for (double sv : rawStates)
+            yOut.push_back((sv > mid) ? 1 : 0);
     } else {
         std::vector<QString> rawTexts;
         QStringList levels;
@@ -4141,7 +4156,8 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
             if (targetG->plotWidget()) {
                 for (QwtPlotItem *it : targetG->plotWidget()->itemList()) {
                     if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
-                        if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                        if (auto *sp = dynamic_cast<Spectrogram *>(it);
+                            sp && sp->matrix() == pr.matrix) {
                             sp->setMaskInvalidCells(true);
                             sp->setColorMapPreset(static_cast<Spectrogram::ColorMapPreset>(opt.preset),
                                                   false);
@@ -4614,6 +4630,13 @@ bool dispatchCurveMathAndStatsMethod(ApplicationWindow *d_app, const QString &me
                 throwInvalidParams(
                         QStringLiteral("stats.clustering (hierarchical) failed due to insufficient valid data in '%1'.")
                                 .arg(t->name()));
+            }
+            constexpr int kMaxHierarchicalRows = 2000;
+            if (N > kMaxHierarchicalRows) {
+                throwInvalidParams(
+                        QStringLiteral("stats.clustering (hierarchical) supports at most %1 complete rows (got %2); use method='kmeans' for larger datasets.")
+                                .arg(kMaxHierarchicalRows)
+                                .arg(N));
             }
             const bool hasExplicitK = params.contains(QStringLiteral("k"))
                     && !params.value(QStringLiteral("k")).isNull();

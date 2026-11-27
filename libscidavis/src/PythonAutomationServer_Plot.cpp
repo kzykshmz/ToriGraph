@@ -546,11 +546,11 @@ void applyPlotLevelConvenienceParams(Graph *g, const QJsonObject &params)
         validateFiniteCoordRange(lo, hi, QStringLiteral("Parameter '%1'").arg(key),
                                  g->axisStep(qwtAxis));
         const int maj = plt ? std::max(4, plt->axisMaxMajor(qwtAxis)) : 8;
-        const int scType = (plt
-                            && dynamic_cast<const QwtLog10ScaleEngine *>(
-                                    plt->axisScaleEngine(qwtAxis)))
-                ? 1
-                : 0;
+        const Graph::AxisBreakSpec brkNow = g->axisBreak(qwtAxis);
+        const bool isLogNow = brkNow.enabled
+                ? (brkNow.log10Before && brkNow.log10After)
+                : (plt && dynamic_cast<const QwtLog10ScaleEngine *>(plt->axisScaleEngine(qwtAxis)) != nullptr);
+        const int scType = isLogNow ? 1 : 0;
         if (scType == 1 && (lo <= 0.0 || hi <= 0.0))
             throwInvalidParams(
                     QStringLiteral("Parameter '%1' on log10 axis requires positive bounds (> 0).")
@@ -3007,14 +3007,16 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         MultiLayer *ml = nullptr;
         Graph *targetBoxLayer = nullptr;
         int prevCurveCount = 0;
+        std::unique_ptr<ScopedGraphUndoGuard> attachUndoGuard;
         if (attachToExisting) {
             ml = resolveMultiLayer(d_app, params);
             targetBoxLayer = resolveGraphLayer(ml, params);
             prevCurveCount = targetBoxLayer->curves();
-            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Add Box Plot"));
+            attachUndoGuard = std::make_unique<ScopedGraphUndoGuard>(
+                    ml, method == QStringLiteral("plot.violin") ? QObject::tr("Add Violin Plot")
+                                                                : QObject::tr("Add Box Plot"));
             targetBoxLayer->plotBoxDiagram(t, cols, 0, t->numRows() - 1);
             enforceArialGraphFonts(targetBoxLayer);
-            undoGuard.commit();
         } else if (wantStackedHist) {
             ml = d_app->multilayerPlot(t, QStringList() << cols.first(), Graph::Histogram, 0,
                                        t->numRows() - 1);
@@ -3372,6 +3374,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!attachToExisting)
             applyRequestedWindowName(d_app, ml, params);
+        if (attachUndoGuard)
+            attachUndoGuard->commit();
         mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -4308,17 +4312,44 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
                     QStringLiteral("Unknown plot.matrix style '%1' (expected 'colormap'|'contour'|'grayscale').")
                             .arg(style));
         }
+        const QString cmapParam = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
+                ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
+                : (!optionalJsonString(params, QStringLiteral("colormap")).trimmed().isEmpty()
+                           ? optionalJsonString(params, QStringLiteral("colormap")).trimmed()
+                           : optionalJsonString(params, QStringLiteral("cmap")).trimmed());
+        const bool hasPalette = !cmapParam.isEmpty();
+        const bool hasReverse = params.contains(QStringLiteral("reverse"))
+                && !params.value(QStringLiteral("reverse")).isNull();
+        const bool hasLevels = params.contains(QStringLiteral("levels"))
+                && !params.value(QStringLiteral("levels")).isNull();
+        const int reqLevels =
+                hasLevels ? parseBoundedInt(params, QStringLiteral("levels"), 12, 2, 256) : 12;
+        const bool hasShowCb = params.contains(QStringLiteral("show_colorbar"))
+                && !params.value(QStringLiteral("show_colorbar")).isNull();
+        const bool hasUseCmPen = params.contains(QStringLiteral("use_colormap_pen"))
+                && !params.value(QStringLiteral("use_colormap_pen")).isNull();
+        const QString cbTitle = optionalJsonString(params, QStringLiteral("colorbar_title"));
+        bool isGray = false;
+        const auto preset = hasPalette ? parseColorMapPreset(cmapParam, &isGray, true)
+                                       : Spectrogram::PresetViridis;
+        const bool rev = optionalJsonBool(params, QStringLiteral("reverse"), false);
+
         const bool attachToExisting =
                 !optionalJsonString(params, QStringLiteral("graph")).trimmed().isEmpty();
         MultiLayer *ml = nullptr;
         Graph *targetG = nullptr;
+        std::unique_ptr<ScopedGraphUndoGuard> attachUndoGuard;
+        QSet<QwtPlotItem *> prevItems;
         if (attachToExisting) {
             ml = resolveMultiLayer(d_app, params);
             targetG = resolveGraphLayer(ml, params);
-            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Plot Matrix"));
+            if (targetG && targetG->plotWidget()) {
+                for (QwtPlotItem *it : targetG->plotWidget()->itemList())
+                    prevItems.insert(it);
+            }
+            attachUndoGuard = std::make_unique<ScopedGraphUndoGuard>(ml, QObject::tr("Plot Matrix"));
             targetG->plotSpectrogram(m, cType);
             enforceArialGraphFonts(targetG);
-            undoGuard.commit();
         } else {
             ml = d_app->plotSpectrogram(m, cType);
             targetG = ml ? ml->activeGraph() : nullptr;
@@ -4327,57 +4358,37 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
             throwRpcRuntime(QStringLiteral("Failed to create matrix spectrogram plot."));
         ScopedNewMultiLayerGuard mlGuard(d_app, attachToExisting ? nullptr : ml);
         if (Graph *g = targetG) {
-            const QString cmapParam = !optionalJsonString(params, QStringLiteral("palette")).trimmed().isEmpty()
-                    ? optionalJsonString(params, QStringLiteral("palette")).trimmed()
-                    : (!optionalJsonString(params, QStringLiteral("colormap")).trimmed().isEmpty()
-                               ? optionalJsonString(params, QStringLiteral("colormap")).trimmed()
-                               : optionalJsonString(params, QStringLiteral("cmap")).trimmed());
-            const bool hasPalette = !cmapParam.isEmpty();
-            const bool hasReverse = params.contains(QStringLiteral("reverse"))
-                    && !params.value(QStringLiteral("reverse")).isNull();
-            const bool hasLevels = params.contains(QStringLiteral("levels"))
-                    && !params.value(QStringLiteral("levels")).isNull();
-            const int reqLevels =
-                    hasLevels ? parseBoundedInt(params, QStringLiteral("levels"), 12, 2, 256) : 12;
-            const bool hasShowCb = params.contains(QStringLiteral("show_colorbar"))
-                    && !params.value(QStringLiteral("show_colorbar")).isNull();
-            const bool hasUseCmPen = params.contains(QStringLiteral("use_colormap_pen"))
-                    && !params.value(QStringLiteral("use_colormap_pen")).isNull();
-            const QString cbTitle = optionalJsonString(params, QStringLiteral("colorbar_title"));
             if (hasPalette || hasReverse || hasLevels || hasShowCb || hasUseCmPen
                 || params.contains(QStringLiteral("colorbar_title"))) {
-                bool isGray = false;
-                const auto preset = hasPalette
-                        ? parseColorMapPreset(cmapParam, &isGray, true)
-                        : Spectrogram::PresetViridis;
-                const bool rev = optionalJsonBool(params, QStringLiteral("reverse"), false);
                 for (QwtPlotItem *it : g->plotWidget()->itemList()) {
-                    if (it && it->rtti() == QwtPlotItem::Rtti_PlotSpectrogram) {
-                        if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
-                            if (hasPalette) {
-                                sp->setColorMapPreset(
-                                        isGray ? Spectrogram::PresetGrayScale : preset, rev);
-                            } else if (hasReverse) {
-                                sp->setReversePalette(rev);
-                            }
-                            if (hasLevels)
-                                sp->setLevelsNumber(reqLevels);
-                            if (hasUseCmPen) {
-                                const bool useCmPen = optionalJsonBool(
-                                        params, QStringLiteral("use_colormap_pen"), true);
-                                sp->setDefaultContourPen(useCmPen ? QPen(Qt::NoPen)
-                                                                  : QPen(Qt::black, 1.2));
-                            }
-                            if (hasShowCb)
-                                sp->showColorScale(sp->colorScaleAxis(),
-                                                   optionalJsonBool(params,
-                                                                    QStringLiteral("show_colorbar"),
-                                                                    true));
-                            if (params.contains(QStringLiteral("colorbar_title")))
-                                sp->setColorBarTitle(cbTitle);
-                            sp->enforceColorBarArialFont();
-                            sp->syncColorScale();
+                    if (!it || prevItems.contains(it)
+                        || it->rtti() != QwtPlotItem::Rtti_PlotSpectrogram) {
+                        continue;
+                    }
+                    if (auto *sp = dynamic_cast<Spectrogram *>(it)) {
+                        if (hasPalette) {
+                            sp->setColorMapPreset(
+                                    isGray ? Spectrogram::PresetGrayScale : preset, rev);
+                        } else if (hasReverse) {
+                            sp->setReversePalette(rev);
                         }
+                        if (hasLevels)
+                            sp->setLevelsNumber(reqLevels);
+                        if (hasUseCmPen) {
+                            const bool useCmPen = optionalJsonBool(
+                                    params, QStringLiteral("use_colormap_pen"), true);
+                            sp->setDefaultContourPen(useCmPen ? QPen(Qt::NoPen)
+                                                              : QPen(Qt::black, 1.2));
+                        }
+                        if (hasShowCb)
+                            sp->showColorScale(sp->colorScaleAxis(),
+                                               optionalJsonBool(params,
+                                                                QStringLiteral("show_colorbar"),
+                                                                true));
+                        if (params.contains(QStringLiteral("colorbar_title")))
+                            sp->setColorBarTitle(cbTitle);
+                        sp->enforceColorBarArialFont();
+                        sp->syncColorScale();
                     }
                 }
             }
@@ -4385,6 +4396,8 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         }
         if (!attachToExisting)
             applyRequestedWindowName(d_app, ml, params);
+        if (attachUndoGuard)
+            attachUndoGuard->commit();
         mlGuard.committed = true;
         outResult = serializeGraphInfo(ml);
         outResult[QStringLiteral("ok")] = true;
@@ -5207,7 +5220,7 @@ bool dispatchPlotAndLayerMethod(ApplicationWindow *d_app, const QString &method,
         if (params.value(QStringLiteral("hide_inner_axes")).toBool(false)) {
             QList<Graph *> primaryPanels;
             for (Graph *lg : merged->layersList()) {
-                if (lg && !lg->linkedParentLayer())
+                if (lg && !lg->linkedParentLayer() && !merged->isInsetLayer(lg))
                     primaryPanels.append(lg);
             }
             for (int idx = 0; idx < primaryPanels.size(); ++idx) {

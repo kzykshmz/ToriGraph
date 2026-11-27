@@ -824,6 +824,51 @@ QwtScaleTransformation *PiecewiseBreakScaleEngine::transformation() const
         return new PiecewiseBreakScaleTransformation(d_spec);
 }
 
+void PiecewiseBreakScaleEngine::autoScale(int maxNumSteps, double &x1, double &x2,
+                                          double &stepSize) const
+{
+        if (!d_spec.enabled || (!d_spec.log10Before && !d_spec.log10After)) {
+            QwtLinearScaleEngine::autoScale(maxNumSteps, x1, x2, stepSize);
+            return;
+        }
+        const double bf = qMin(d_spec.breakFrom, d_spec.breakTo);
+        const double bt = qMax(d_spec.breakFrom, d_spec.breakTo);
+        const bool inv = testAttribute(QwtScaleEngine::Inverted);
+        if (d_spec.log10Before && d_spec.log10After) {
+            QwtLog10ScaleEngine le;
+            le.setAttributes(attributes());
+            le.setReference(reference());
+            le.setMargins(lowerMargin(), upperMargin());
+            le.autoScale(maxNumSteps, x1, x2, stepSize);
+            double &loRef = inv ? x2 : x1;
+            double &hiRef = inv ? x1 : x2;
+            if (loRef <= 0.0 && bf > 0.0)
+                loRef = qMin(bf * 0.1, 1e-6);
+            if (hiRef <= loRef)
+                hiRef = qMax(loRef * 10.0, bt > loRef ? bt * 10.0 : loRef + 1.0);
+            return;
+        }
+        const double rawLo = qMin(x1, x2);
+        const double rawHi = qMax(x1, x2);
+        QwtLinearScaleEngine::autoScale(maxNumSteps, x1, x2, stepSize);
+        double &loRef = inv ? x2 : x1;
+        double &hiRef = inv ? x1 : x2;
+        if (d_spec.log10Before && bf > 0.0 && loRef <= 0.0) {
+            if (rawLo > 0.0 && rawLo < bf) {
+                const double dec = std::pow(10.0, std::floor(std::log10(rawLo)));
+                loRef = (dec > 0.0 && dec < bf) ? dec : rawLo;
+            } else {
+                loRef = qMin(bf * 0.1, 1e-6);
+            }
+            if (hiRef <= loRef)
+                hiRef = qMax(loRef * 10.0, bt > loRef ? bt : loRef + 1.0);
+        }
+        if (d_spec.log10After && bt > 0.0 && hiRef <= bt && rawHi > bt) {
+            const double dec = std::pow(10.0, std::ceil(std::log10(rawHi)));
+            hiRef = (dec > bt) ? dec : rawHi;
+        }
+}
+
 QwtScaleDiv PiecewiseBreakScaleEngine::divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
                                                    double stepSize) const
 {
@@ -3029,6 +3074,10 @@ void Graph::applyZeroSnapOnAutoAxes()
         QwtScaleEngine *se = d_plot->axisScaleEngine(a);
         if (!se || Plot::isLog10ScaleEngine(se) || dynamic_cast<FormulaLinkedScaleEngine *>(se))
             continue;
+        if (d_axis_breaks[a].enabled && d_axis_breaks[a].log10Before) {
+            se->setAttribute(QwtScaleEngine::IncludeReference, false);
+            continue;
+        }
 
         const bool isX = (a == QwtPlot::xBottom || a == QwtPlot::xTop);
         bool hasData = false;
@@ -3290,8 +3339,9 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
         const double bf = qMin(d_axis_breaks[axis].breakFrom, d_axis_breaks[axis].breakTo);
         const double bt = qMax(d_axis_breaks[axis].breakFrom, d_axis_breaks[axis].breakTo);
         const bool isLog = (type != 0);
-        const bool logBefore = isLog || d_axis_breaks[axis].log10Before;
-        const bool logAfter = isLog || d_axis_breaks[axis].log10After;
+        const bool wasBothLog = d_axis_breaks[axis].log10Before && d_axis_breaks[axis].log10After;
+        const bool logBefore = isLog ? true : (wasBothLog ? false : d_axis_breaks[axis].log10Before);
+        const bool logAfter = isLog ? true : (wasBothLog ? false : d_axis_breaks[axis].log10After);
         const bool validBreak = (bf > lo && bt < hi && bt > bf + 1e-15)
                 && (!logBefore || (lo > 0.0 && bf > 0.0))
                 && (!logAfter || (bt > 0.0 && hi > 0.0));
@@ -3317,10 +3367,8 @@ void Graph::setScale(int axis, double start, double end, double step, int majorT
                 }
             }
         } else {
-            if (isLog) {
-                d_axis_breaks[axis].log10Before = true;
-                d_axis_breaks[axis].log10After = true;
-            }
+            d_axis_breaks[axis].log10Before = logBefore;
+            d_axis_breaks[axis].log10After = logAfter;
             int effMaj = majorTicks;
             if (axisFont(axis).pointSize() >= 20)
                 effMaj = qMin(effMaj, 5);
@@ -3815,6 +3863,7 @@ void Graph::setWeibullProbabilityAxis(int axis, bool enabled)
         return;
     }
 
+    axisType[axis] = AxisType::Numeric;
     d_custom_category_labels[axis].clear();
     d_custom_tick_positions[axis].clear();
     d_custom_tick_labels[axis].clear();

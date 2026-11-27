@@ -1769,10 +1769,8 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
                          this, [this, safeG, safeMl]() {
                              if (!safeG || !safeMl)
                                  return;
-                             const QString before = safeMl->captureUndoSnapshot();
                              safeG->removeTitle();
                              safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
-                             safeMl->pushUndoSnapshot(tr("Delete Title"), before);
                              emit modified();
                              if (d_graph_inspector_dock)
                                  d_graph_inspector_dock->refreshAll();
@@ -1793,12 +1791,10 @@ void ApplicationWindow::buildGraphContextMenu(QMenu &cm, MultiLayer *plot, bool 
                                  return;
                              if (refIdx < 0 || refIdx >= safeG->referenceLines().size())
                                  return;
-                             const QString before = safeMl->captureUndoSnapshot();
                              safeG->removeReferenceLine(refIdx);
                              safeG->setCurrentSelection({ Graph::GraphSelection::None, -1, -1 });
                              safeG->replot();
                              safeG->notifyChanges();
-                             safeMl->pushUndoSnapshot(tr("Delete Reference Line"), before);
                              emit modified();
                              if (d_graph_inspector_dock)
                                  d_graph_inspector_dock->refreshAll();

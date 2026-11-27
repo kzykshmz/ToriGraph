@@ -231,9 +231,9 @@ public:
     //! Value reported for a parameter in the box [lo, hi] (either side may be infinite): within
     //! a small tolerance of a finite bound it is the bound. Shared by the single-curve, global
     //! and implicit fits, so they agree on which parameters sit on a bound.
-    static double snapToBound(double p, double lo, double hi);
-    //! -1 / +1 when snapToBound(p, lo, hi) is the lower / upper bound, 0 otherwise.
-    static int boundSide(double p, double lo, double hi);
+    static double snapToBound(double p, double lo, double hi, double refScale = 0.0);
+    //! -1 / +1 when snapToBound(p, lo, hi, refScale) is the lower / upper bound, 0 otherwise.
+    static int boundSide(double p, double lo, double hi, double refScale = 0.0);
     //! Entry of lmGradientIsStationary's kktSigns for a solver variable u that maps to the
     //! parameter by p(u): side from boundSide, dPdU = dp/du at the solver value.
     static int kktSignForBound(int side, double dPdU);

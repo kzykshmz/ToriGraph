@@ -1217,10 +1217,41 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
     // the import stops there, but what was imported so far must still mark the project as
     // modified (save prompt, auto-save) and refresh the graphs that use the table.
     QStringList importedFiles;
-    auto stopAfterPartialImport = [this, table, &importedFiles]() {
-        if (importedFiles.isEmpty())
+    const QString importMacroLabel = (import_mode == ImportASCIIDialog::NewColumns)
+            ? tr("Import ASCII (New Columns)")
+            : (import_mode == ImportASCIIDialog::NewRows)
+            ? tr("Import ASCII (New Rows)")
+            : (import_mode == ImportASCIIDialog::Overwrite) ? tr("Import ASCII (Overwrite)")
+                                                            : tr("Import ASCII");
+    struct DeferredTableMacroGuard
+    {
+        future::Table *tbl = nullptr;
+        bool active = false;
+        void ensureBegin(future::Table *t, const QString &text)
+        {
+            if (active || !t)
+                return;
+            tbl = t;
+            tbl->beginMacro(text);
+            active = true;
+        }
+        void finish()
+        {
+            if (active && tbl)
+                tbl->endMacro();
+            active = false;
+            tbl = nullptr;
+        }
+        ~DeferredTableMacroGuard() { finish(); }
+    } importMacro;
+
+    auto stopAfterPartialImport = [this, table, &importedFiles, &importMacro]() {
+        if (importedFiles.isEmpty()) {
+            importMacro.finish();
             return;
+        }
         table->setWindowLabel(importedFiles.join("; "));
+        importMacro.finish();
         table->notifyChanges();
         modifiedProject(table);
         modifiedProject();
@@ -1285,6 +1316,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
 
         // Check per-column data type compatibility for append/overwrite (allowing Text columns in
         // numeric-converting imports so "Sample Name (Text) + Value (Numeric)" tables work cleanly).
+        QVector<int> overwriteEmptyColsToConvert;
         if (import_mode == ImportASCIIDialog::NewRows
             || import_mode == ImportASCIIDialog::Overwrite) {
             const int checkColSpan = (import_mode == ImportASCIIDialog::Overwrite)
@@ -1298,17 +1330,25 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
                         continue;
                     bool dstAllEmpty = true;
                     for (int r = 0; r < dst_col->rowCount(); ++r) {
-                        const bool emptyCell =
-                                (dst_col->columnMode() == SciDAVis::ColumnMode::Numeric)
-                                ? dst_col->isInvalid(r)
-                                : dst_col->textAt(r).isEmpty();
+                        bool emptyCell = true;
+                        switch (dst_col->dataType()) {
+                        case SciDAVis::TypeDouble:
+                            emptyCell = dst_col->isInvalid(r);
+                            break;
+                        case SciDAVis::TypeQDateTime:
+                            emptyCell = dst_col->isInvalid(r) || !dst_col->dateTimeAt(r).isValid();
+                            break;
+                        case SciDAVis::TypeQString:
+                            emptyCell = dst_col->isInvalid(r) || dst_col->textAt(r).isEmpty();
+                            break;
+                        }
                         if (!emptyCell) {
                             dstAllEmpty = false;
                             break;
                         }
                     }
                     if (dstAllEmpty)
-                        dst_col->setColumnMode(src_col->columnMode());
+                        overwriteEmptyColsToConvert.append(col);
                 }
             }
 
@@ -1316,7 +1356,8 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             for (int col = 0; col < checkColSpan; col++) {
                 Column *src_col = temp->column(col);
                 Column *dst_col = table->column(col);
-                if (src_col && dst_col && src_col->dataType() != dst_col->dataType()) {
+                if (src_col && dst_col && src_col->dataType() != dst_col->dataType()
+                    && !overwriteEmptyColsToConvert.contains(col)) {
                     const QString msg =
                             tr("Column \"%1\" of the file has a different data type (%2) than "
                                "column \"%3\" of the worksheet (%4). Nothing was imported.")
@@ -1350,19 +1391,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
         // copy or move data from temp to table
         switch (import_mode) {
         case ImportASCIIDialog::NewColumns: {
-            struct ScopedTableMacroGuard {
-                future::Table *tbl = nullptr;
-                explicit ScopedTableMacroGuard(future::Table *t, const QString &text) : tbl(t)
-                {
-                    if (tbl)
-                        tbl->beginMacro(text);
-                }
-                ~ScopedTableMacroGuard()
-                {
-                    if (tbl)
-                        tbl->endMacro();
-                }
-            } newColsMacro(table->d_future_table, tr("Import ASCII (New Columns)"));
+            importMacro.ensureBegin(table->d_future_table, importMacroLabel);
 
             for (int col = 0; col < temp->columnCount(); ++col) {
                 Column *src = temp->column(col);
@@ -1391,6 +1420,7 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             break;
         }
         case ImportASCIIDialog::NewRows: {
+            importMacro.ensureBegin(table->d_future_table, importMacroLabel);
             // every name the table had before the import (before the columns added below)
             const QStringList namesBeforeImport = table->colNames();
             const int existing_columns = table->columnCount();
@@ -1423,19 +1453,14 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
             break;
         }
         case ImportASCIIDialog::Overwrite: {
-            struct ScopedTableMacroGuard {
-                future::Table *tbl = nullptr;
-                explicit ScopedTableMacroGuard(future::Table *t, const QString &text) : tbl(t)
-                {
-                    if (tbl)
-                        tbl->beginMacro(text);
-                }
-                ~ScopedTableMacroGuard()
-                {
-                    if (tbl)
-                        tbl->endMacro();
-                }
-            } overwriteMacro(table->d_future_table, tr("Import ASCII (Overwrite)"));
+            importMacro.ensureBegin(table->d_future_table, importMacroLabel);
+
+            for (int col : overwriteEmptyColsToConvert) {
+                Column *src_col = temp->column(col);
+                Column *dst_col = table->column(col);
+                if (src_col && dst_col)
+                    dst_col->setColumnMode(src_col->columnMode());
+            }
 
             // every name the table had before the import, the removed columns included
             const QStringList namesBeforeImport = table->colNames();
@@ -1528,7 +1553,13 @@ void ApplicationWindow::importASCII(const QStringList &files, int import_mode,
         importedFiles << file;
     }
 
-    table->setWindowLabel(files.join("; "));
+    if (importedFiles.isEmpty()) {
+        importMacro.finish();
+        return;
+    }
+
+    table->setWindowLabel(importedFiles.join("; "));
+    importMacro.finish();
     table->notifyChanges();
     modifiedProject(table);
     modifiedProject();
@@ -2348,10 +2379,14 @@ bool ApplicationWindow::exportTablesToDirectory(const QString &dir, const QStrin
             : QStringLiteral(".txt");
 
     bool confirmOverwrite = true;
-    foreach (MyWidget *w, windowsList()) {
-        if (!w->inherits("Table"))
+    QList<QPointer<Table>> tables;
+    for (MyWidget *w : windowsList()) {
+        if (auto *t = qobject_cast<Table *>(w))
+            tables.append(t);
+    }
+    for (const QPointer<Table> &t : tables) {
+        if (!t)
             continue;
-        Table *t = (Table *)w;
         // "Selection only" is remembered in the settings, so with "All tables" it is usually
         // on while most tables have nothing selected. Such a table is exported whole instead
         // of failing with "no cells are selected" and stopping the export of the rest.
@@ -2373,11 +2408,19 @@ bool ApplicationWindow::exportTablesToDirectory(const QString &dir, const QStrin
                                                   .arg(fileName),
                                           tr("&Yes"), tr("&All"), tr("&Cancel"), 0, 1)) {
             case 0:
+                if (!t) {
+                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+                    continue;
+                }
                 success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
                 break;
 
             case 1:
                 confirmOverwrite = false;
+                if (!t) {
+                    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+                    continue;
+                }
                 success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
                 break;
 
@@ -2385,15 +2428,18 @@ bool ApplicationWindow::exportTablesToDirectory(const QString &dir, const QStrin
                 return false;
             }
             QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-        } else
+        } else {
+            if (!t)
+                continue;
             success = t->exportASCII(fileName, sep, colNames, tableSelection, opts);
+        }
 
         if (!success) {
             QApplication::restoreOverrideCursor();
             if (failedTable)
-                *failedTable = t->name();
+                *failedTable = t ? t->name() : QString();
             if (error)
-                *error = t->lastExportError();
+                *error = t ? t->lastExportError() : QString();
             return false;
         }
     }
@@ -2406,7 +2452,7 @@ void ApplicationWindow::exportASCII(const QString &tableName, const QString &sep
 {
     if (isNonInteractiveContext(this))
         return;
-    Table *t = table(tableName);
+    QPointer<Table> t = table(tableName);
     if (!t)
         return;
 
@@ -2432,7 +2478,7 @@ void ApplicationWindow::exportASCII(const QString &tableName, const QString &sep
     QString selectedFilter;
     QString fname = QFileDialog::getSaveFileName(this, tr("Choose a filename to save under"),
                                                  suggestedPath, filter, &selectedFilter);
-    if (!fname.isEmpty()) {
+    if (!fname.isEmpty() && t) {
         QString filterExt = selectedFilter.trimmed();
         filterExt.remove(QLatin1Char('*'));
         if (!filterExt.startsWith(QLatin1Char('.')))
@@ -2468,11 +2514,11 @@ void ApplicationWindow::exportPDF()
 {
     if (isNonInteractiveContext(this))
         return;
-    QWidget *w = d_workspace.activeSubWindow();
+    QPointer<QWidget> w = d_workspace.activeSubWindow();
     if (!w)
         return;
 
-    if (w->inherits("MultiLayer") && ((MultiLayer *)w)->isEmpty()) {
+    if (w->inherits("MultiLayer") && ((MultiLayer *)w.data())->isEmpty()) {
         QMessageBox::warning(this, tr("Warning"),
                              tr("<h4>There are no plot layers available in this window.</h4>"));
         return;
@@ -2490,13 +2536,13 @@ void ApplicationWindow::exportPDF()
         return;
     }
 
-    MyWidget *mw = qobject_cast<MyWidget *>(w);
+    QPointer<MyWidget> mw = qobject_cast<MyWidget *>(w.data());
     const QString suggestedPath = QDir(workingDir).filePath(
             sanitizeExportStem(mw ? QString(mw->name()) : QStringLiteral("export"))
             + QStringLiteral(".pdf"));
     QString rawFname = QFileDialog::getSaveFileName(this, tr("Choose a filename to save under"),
                                                     suggestedPath, "*.pdf");
-    if (!rawFname.isEmpty()) {
+    if (!rawFname.isEmpty() && w) {
         bool suffixAppended = false;
         QString fname = ensureExportSuffix(rawFname, QStringLiteral(".pdf"), &suffixAppended);
         if (QFileInfo(fname).suffix().compare(QStringLiteral("pdf"), Qt::CaseInsensitive) != 0) {
@@ -2513,7 +2559,7 @@ void ApplicationWindow::exportPDF()
                     tr("A file called: <p><b>%1</b><p>already exists. Do you want to overwrite it?")
                             .arg(fname),
                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-            if (ans != QMessageBox::Yes)
+            if (ans != QMessageBox::Yes || !w)
                 return;
         }
 
@@ -2530,7 +2576,9 @@ void ApplicationWindow::exportPDF()
         QString errMsg;
         const bool writeOk = executeSafeExportWrite(
                 fname, QStringLiteral("pdf"), [&](const QString &writePath) {
-                    if (Graph3D *g3 = qobject_cast<Graph3D *>(w))
+                    if (!w)
+                        return false;
+                    if (Graph3D *g3 = qobject_cast<Graph3D *>(w.data()))
                         return g3->exportVectorChecked(writePath, QStringLiteral("pdf"), &errMsg);
                     if (mw) {
                         mw->exportPDF(writePath);
@@ -2603,13 +2651,13 @@ void ApplicationWindow::printAllPlots()
     printer.setColorMode(QPrinter::Color);
     printer.setFullPage(true);
 
-    QList<MyWidget *> windows = windowsList();
-
-    int plots = 0;
-    for (auto w : windows) {
-        if (w->inherits("MultiLayer"))
-            plots++;
+    QList<QPointer<MultiLayer>> plotWindows;
+    for (MyWidget *w : windowsList()) {
+        if (auto *ml = qobject_cast<MultiLayer *>(w))
+            plotWindows.append(ml);
     }
+
+    const int plots = plotWindows.size();
 
     QPrintDialog dialog(&printer, this);
     dialog.setMinMax(0, plots);
@@ -2618,9 +2666,9 @@ void ApplicationWindow::printAllPlots()
 
         printer.setFromTo(0, plots);
 
-        for (auto w : windows) {
-            if (w->inherits("MultiLayer") && printer.newPage())
-                ((MultiLayer *)w)->printAllLayers(&paint);
+        for (const QPointer<MultiLayer> &ml : plotWindows) {
+            if (ml && printer.newPage())
+                ml->printAllLayers(&paint);
         }
         paint.end();
     }
@@ -2655,9 +2703,7 @@ void ApplicationWindow::clearSelection()
             return;
 
         if (g->titleSelected()) {
-            ModalMultiLayerUndoHelper undoHelper(plot, tr("Clear Title"));
             g->removeTitle();
-            undoHelper.commitIfChanged();
         } else if (g->markerSelected()) {
             const bool isPrimaryLeg = (g->selectedMarkerPtr() == g->legend());
             ModalMultiLayerUndoHelper undoHelper(
@@ -2683,18 +2729,14 @@ void ApplicationWindow::clearSelection()
                 g->replot();
                 plot->pushUndoSnapshot(tr("Clear Axis Title"), before);
             } else if (sel.kind == Graph::GraphSelection::PlotTitle) {
-                const QString before = plot->captureUndoSnapshot();
                 g->removeTitle();
                 g->setCurrentSelection(Graph::GraphSelection(), true);
                 g->replot();
-                plot->pushUndoSnapshot(tr("Clear Title"), before);
             } else if (sel.kind == Graph::GraphSelection::ReferenceLine && sel.primaryId >= 0
                        && sel.primaryId < g->referenceLines().size()) {
-                const QString before = plot->captureUndoSnapshot();
                 g->removeReferenceLine(sel.primaryId);
                 g->setCurrentSelection(Graph::GraphSelection(), true);
                 g->replot();
-                plot->pushUndoSnapshot(tr("Remove Reference Line"), before);
             }
         }
     } else if (m->inherits("Note"))
@@ -2823,11 +2865,9 @@ void ApplicationWindow::cutSelection()
                     g->plotWidget() ? g->plotWidget()->title().text() : QString();
             if (!titleText.isEmpty() && QApplication::clipboard())
                 QApplication::clipboard()->setText(titleText);
-            const QString before = plot->captureUndoSnapshot();
             g->removeTitle();
             g->setCurrentSelection(Graph::GraphSelection(), true);
             g->replot();
-            plot->pushUndoSnapshot(tr("Cut Title"), before);
         } else if (sel.kind == Graph::GraphSelection::AxisTitle && sel.primaryId >= 0
                    && sel.primaryId < 4) {
             const QString axisText = g->axisTitle(sel.primaryId);
@@ -2841,11 +2881,9 @@ void ApplicationWindow::cutSelection()
             plot->pushUndoSnapshot(tr("Cut Axis Title"), before);
         } else if (sel.kind == Graph::GraphSelection::ReferenceLine && sel.primaryId >= 0
                    && sel.primaryId < g->referenceLines().size()) {
-            const QString before = plot->captureUndoSnapshot();
             g->removeReferenceLine(sel.primaryId);
             g->setCurrentSelection(Graph::GraphSelection(), true);
             g->replot();
-            plot->pushUndoSnapshot(tr("Remove Reference Line"), before);
             if (statusBar())
                 statusBar()->showMessage(
                         tr("Removed selected reference line (press Ctrl+Z to undo). Layer kept."),
@@ -3341,9 +3379,10 @@ void ApplicationWindow::exportActiveGraphToPython()
             statusBar()->showMessage(tr("Copied Python script to clipboard."), 3000);
     });
 
-    connect(btnSave, &QPushButton::clicked, &dlg, [&dlg, scriptCode, targetWin, this]() {
+    const QString targetName = targetWin->name();
+    connect(btnSave, &QPushButton::clicked, &dlg, [&dlg, scriptCode, targetName, this]() {
         const QString defaultPath =
-                workingDir + QLatin1Char('/') + targetWin->name() + QStringLiteral("_reproduce.py");
+                workingDir + QLatin1Char('/') + targetName + QStringLiteral("_reproduce.py");
         const QString savePath = QFileDialog::getSaveFileName(
                 &dlg, tr("Save Reproducible Python Script"), defaultPath,
                 tr("Python Scripts (*.py);;All Files (*)"));

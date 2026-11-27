@@ -277,12 +277,14 @@ void MatrixView::retranslateStrings()
 {
     d_hide_button->setToolTip(tr("Show/hide control tabs"));
     ui.retranslateUi(d_control_tabs);
+    const QSignalBlocker blocker(ui.format_box);
     ui.format_box->clear();
     ui.format_box->addItem(tr("Decimal"), QVariant('f'));
     ui.format_box->addItem(tr("Scientific (e)"), QVariant('e'));
     ui.format_box->addItem(tr("Scientific (E)"), QVariant('E'));
     ui.format_box->addItem(tr("Automatic (e)"), QVariant('g'));
     ui.format_box->addItem(tr("Automatic (E)"), QVariant('G'));
+    updateFormatTab();
 }
 
 void MatrixView::advanceCell()

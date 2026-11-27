@@ -284,13 +284,10 @@ public:
                 d_intervals[c].translate(-count);
         }
         // third: merge as many intervals as possible
-        for (c = d_intervals.size() - 1; c >= 0; c--) {
-            Interval<int> iv = d_intervals.takeAt(c);
-            int size_before = d_intervals.size();
-            Interval<int>::mergeIntervalIntoList(&d_intervals, iv);
-            if (size_before == d_intervals.size()) // merge successful
-                c--;
-        }
+        QList<Interval<int>> merged;
+        for (const Interval<int> &iv : d_intervals)
+            Interval<int>::mergeIntervalIntoList(&merged, iv);
+        d_intervals = merged;
     }
 
     QList<Interval<int>> intervals() const { return d_intervals; }

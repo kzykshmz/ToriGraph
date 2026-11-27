@@ -121,29 +121,26 @@ bool Integration::isDataAcceptable() const
     return Filter::isDataAcceptable();
 }
 
-QString Integration::logInfo()
+void Integration::output()
 {
     if (!d_graph) {
         d_init_err = true;
-        return QString();
+        return;
     }
-    const gsl_interp_type *method_t;
-    QString method_name;
+    const gsl_interp_type *method_t = nullptr;
     switch (d_method) {
     case Linear:
         method_t = gsl_interp_linear;
-        method_name = tr("Linear");
         break;
     case Cubic:
         method_t = gsl_interp_cspline;
-        method_name = tr("Cubic");
         break;
     case Akima:
         method_t = gsl_interp_akima;
-        method_name = tr("Akima");
         break;
     default:
-        throw runtime_error("invalid method");
+        d_init_err = true;
+        return;
     }
 
     if (d_x.size() < gsl_interp_type_min_size(method_t)) {
@@ -153,11 +150,58 @@ QString Integration::logInfo()
                     tr("You need at least %1 points in order to perform this operation!")
                             .arg(gsl_interp_type_min_size(method_t)));
         d_init_err = true;
-        return QString("");
+        return;
     }
 
     gsl_interp *interpolation = gsl_interp_alloc(method_t, d_x.size());
+    if (!interpolation) {
+        d_init_err = true;
+        return;
+    }
+    gsl_interp_accel *acc = gsl_interp_accel_alloc();
     gsl_interp_init(interpolation, d_x.data(), d_y.data(), d_x.size());
+
+    d_result = gsl_interp_eval_integ(interpolation, d_x.data(), d_y.data(), d_from, d_to, acc);
+
+    if (d_plot_result) {
+        if (d_method == Linear) {
+            trapezoid();
+        } else {
+            vector<double> cum(d_x.size(), 0.0);
+            for (size_t i = 0; i < d_x.size(); ++i) {
+                cum[i] = (d_x[i] <= d_from)
+                        ? 0.0
+                        : gsl_interp_eval_integ(interpolation, d_x.data(), d_y.data(), d_from,
+                                                d_x[i], acc);
+            }
+            d_points = int(d_x.size());
+            addResultCurve(d_x, cum);
+        }
+    }
+
+    gsl_interp_accel_free(acc);
+    gsl_interp_free(interpolation);
+}
+
+QString Integration::logInfo()
+{
+    if (!d_graph || d_init_err || d_x.empty() || d_y.size() != d_x.size())
+        return QString();
+
+    QString method_name;
+    switch (d_method) {
+    case Linear:
+        method_name = tr("Linear");
+        break;
+    case Cubic:
+        method_name = tr("Cubic");
+        break;
+    case Akima:
+        method_name = tr("Akima");
+        break;
+    default:
+        return QString();
+    }
 
     const QString srcTitle =
             (d_curve && d_graph->curveIndex(d_curve) >= 0) ? d_curve->title().text() : objectName();
@@ -166,21 +210,17 @@ QString Integration::logInfo()
     logInfo += "\n" + tr("Numerical integration of") + ": " + srcTitle
             + tr(" using ") + method_name + tr("Interpolation") + "\n";
 
-    ApplicationWindow *app = (ApplicationWindow *)parent();
-    int prec = app->d_decimal_digits;
+    ApplicationWindow *app = qobject_cast<ApplicationWindow *>(parent());
+    int prec = app ? app->d_decimal_digits : 6;
     logInfo += tr("Points") + ": " + QString::number(d_x.size()) + " " + tr("from")
             + " x = " + QLocale().toString(d_from, 'g', prec) + " ";
     logInfo += tr("to") + " x = " + QLocale().toString(d_to, 'g', prec) + "\n";
 
-    // using GSL to find maximum value of data set
-    gsl_vector *aux = gsl_vector_alloc(d_y.size());
-    for (unsigned i = 0; i < d_y.size(); i++)
-        gsl_vector_set(aux, i, d_y[i]);
-    int maxID = static_cast<int>(gsl_vector_max_index(aux));
-    gsl_vector_free(aux);
-
-    // calculate result
-    d_result = gsl_interp_eval_integ(interpolation, d_x.data(), d_y.data(), d_from, d_to, 0);
+    size_t maxID = 0;
+    for (size_t i = 1; i < d_y.size(); ++i) {
+        if (d_y[i] > d_y[maxID])
+            maxID = i;
+    }
 
     logInfo += tr("Peak at") + " x = " + QLocale().toString(d_x[maxID], 'g', prec) + "\t";
     logInfo += "y = " + QLocale().toString(d_y[maxID], 'g', prec) + "\n";
@@ -188,10 +228,6 @@ QString Integration::logInfo()
     logInfo += tr("Area") + "=";
     logInfo += QLocale().toString(d_result, 'g', prec);
     logInfo += "\n-------------------------------------------------------------\n";
-    // use trapezoid rule to get the integral curve and plot it
-    trapezoid();
-
-    gsl_interp_free(interpolation);
 
     return logInfo;
 }

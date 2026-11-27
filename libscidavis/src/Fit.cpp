@@ -541,6 +541,7 @@ struct ConstrainedFitContext
     std::vector<ParamBoundMode> modes;
     std::vector<double> lo;
     std::vector<double> hi;
+    std::vector<double> ref_scale;
     std::vector<int> dep_indices;
     std::vector<double> dep_const;
     std::vector<std::vector<double>> dep_weights; // [m][k_free]
@@ -602,14 +603,16 @@ struct ConstrainedFitContext
 
     double snapP(size_t k, double p) const
     {
-        return (modes[k] == BoundNone) ? p : Fit::snapToBound(p, lo[k], hi[k]);
+        const double rs = (k < ref_scale.size()) ? ref_scale[k] : 0.0;
+        return (modes[k] == BoundNone) ? p : Fit::snapToBound(p, lo[k], hi[k], rs);
     }
 
     //! -1 / +1 when free variable k (solver value u) is held at its lower / upper bound (the
     //! value snapP reports is the bound), 0 otherwise.
     int boundSide(size_t k, double u) const
     {
-        return (modes[k] == BoundNone) ? 0 : Fit::boundSide(mapUtoP(k, u), lo[k], hi[k]);
+        const double rs = (k < ref_scale.size()) ? ref_scale[k] : 0.0;
+        return (modes[k] == BoundNone) ? 0 : Fit::boundSide(mapUtoP(k, u), lo[k], hi[k], rs);
     }
 
     //! Entry of Fit::lmGradientIsStationary's kktSigns for free variable k.
@@ -1288,34 +1291,38 @@ bool Fit::lmStepConverged(gsl_multifit_fdfsolver *s, const gsl_vector *dx, const
     return lmGradientIsStationary(s, 1e-4, kktSigns);
 }
 
-double Fit::snapToBound(double p, double lo, double hi)
+double Fit::snapToBound(double p, double lo, double hi, double refScale)
 {
     const bool hasLo = std::isfinite(lo);
     const bool hasHi = std::isfinite(hi);
     if (hasLo && hasHi) {
-        const double span = std::max(1.0, hi - lo);
+        const double span = std::max(0.0, hi - lo);
         if (p <= lo + 1e-6 * span)
             return lo;
         if (p >= hi - 1e-6 * span)
             return hi;
         return std::max(lo, std::min(hi, p));
     }
+    const double zeroBase =
+            (std::isfinite(refScale) && std::abs(refScale) > 0.0) ? std::abs(refScale) : 1.0;
     if (hasLo) {
-        if (p <= lo + 1e-7 * std::max(1.0, std::abs(lo)))
+        const double tol = (std::abs(lo) > 0.0) ? (1e-7 * std::abs(lo)) : (1e-10 * zeroBase);
+        if (p <= lo + tol)
             return lo;
         return std::max(lo, p);
     }
     if (hasHi) {
-        if (p >= hi - 1e-7 * std::max(1.0, std::abs(hi)))
+        const double tol = (std::abs(hi) > 0.0) ? (1e-7 * std::abs(hi)) : (1e-10 * zeroBase);
+        if (p >= hi - tol)
             return hi;
         return std::min(hi, p);
     }
     return p;
 }
 
-int Fit::boundSide(double p, double lo, double hi)
+int Fit::boundSide(double p, double lo, double hi, double refScale)
 {
-    const double snapped = snapToBound(p, lo, hi);
+    const double snapped = snapToBound(p, lo, hi, refScale);
     if (std::isfinite(lo) && snapped == lo)
         return -1;
     if (std::isfinite(hi) && snapped == hi)
@@ -1572,11 +1579,13 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 ctx.modes.push_back(BoundNone);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
+                ctx.ref_scale.push_back(std::abs(p0));
                 u0_vals.push_back(p0);
             } else if (std::isfinite(lo) && std::isfinite(hi)) {
                 ctx.modes.push_back(BoundBoth);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
+                ctx.ref_scale.push_back(std::abs(hi - lo));
                 double t = (p0 - lo) / (hi - lo);
                 t = std::max(1e-4, std::min(1.0 - 1e-4, t));
                 u0_vals.push_back(std::atanh(2.0 * t - 1.0));
@@ -1584,13 +1593,21 @@ vector<double> Fit::fitGslMultifit(int &iterations, int &status)
                 ctx.modes.push_back(BoundLower);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
-                double d0 = std::max(1e-3, p0 - lo);
+                const double nudge = (std::abs(lo) > 0.0)
+                        ? (1e-3 * std::abs(lo))
+                        : (std::abs(p0) > 0.0 ? 1e-3 * std::abs(p0) : 1e-3);
+                const double d0 = (p0 > lo) ? (p0 - lo) : nudge;
+                ctx.ref_scale.push_back((std::abs(p0) > 0.0) ? std::abs(p0) : nudge);
                 u0_vals.push_back(std::sqrt(d0));
             } else {
                 ctx.modes.push_back(BoundUpper);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
-                double d0 = std::max(1e-3, hi - p0);
+                const double nudge = (std::abs(hi) > 0.0)
+                        ? (1e-3 * std::abs(hi))
+                        : (std::abs(p0) > 0.0 ? 1e-3 * std::abs(p0) : 1e-3);
+                const double d0 = (hi > p0) ? (hi - p0) : nudge;
+                ctx.ref_scale.push_back((std::abs(p0) > 0.0) ? std::abs(p0) : nudge);
                 u0_vals.push_back(std::sqrt(d0));
             }
         }
@@ -2102,11 +2119,13 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
                 ctx.modes.push_back(BoundNone);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
+                ctx.ref_scale.push_back(std::abs(p0));
                 u0_vals.push_back(p0);
             } else if (std::isfinite(lo) && std::isfinite(hi)) {
                 ctx.modes.push_back(BoundBoth);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
+                ctx.ref_scale.push_back(std::abs(hi - lo));
                 double t = (p0 - lo) / (hi - lo);
                 t = std::max(1e-4, std::min(1.0 - 1e-4, t));
                 u0_vals.push_back(std::atanh(2.0 * t - 1.0));
@@ -2114,12 +2133,22 @@ vector<double> Fit::fitGslMultimin(int &iterations, int &status)
                 ctx.modes.push_back(BoundLower);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
-                u0_vals.push_back(std::sqrt(std::max(1e-3, p0 - lo)));
+                const double nudge = (std::abs(lo) > 0.0)
+                        ? (1e-3 * std::abs(lo))
+                        : (std::abs(p0) > 0.0 ? 1e-3 * std::abs(p0) : 1e-3);
+                const double d0 = (p0 > lo) ? (p0 - lo) : nudge;
+                ctx.ref_scale.push_back((std::abs(p0) > 0.0) ? std::abs(p0) : nudge);
+                u0_vals.push_back(std::sqrt(d0));
             } else {
                 ctx.modes.push_back(BoundUpper);
                 ctx.lo.push_back(lo);
                 ctx.hi.push_back(hi);
-                u0_vals.push_back(std::sqrt(std::max(1e-3, hi - p0)));
+                const double nudge = (std::abs(hi) > 0.0)
+                        ? (1e-3 * std::abs(hi))
+                        : (std::abs(p0) > 0.0 ? 1e-3 * std::abs(p0) : 1e-3);
+                const double d0 = (hi > p0) ? (hi - p0) : nudge;
+                ctx.ref_scale.push_back((std::abs(p0) > 0.0) ? std::abs(p0) : nudge);
+                u0_vals.push_back(std::sqrt(d0));
             }
         }
 
@@ -2603,12 +2632,14 @@ double Fit::rSquare() const
     if (!hasValidFitMetrics(this, d_results, chi_2, d_init_err, d_x, d_y))
         return std::numeric_limits<double>::quiet_NaN();
 
-    double mean = 0.0, tss = 0.0, weights_sum = 0.0;
+    double mean = 0.0, tss = 0.0, weights_sum = 0.0, sumSqY = 0.0;
 
     if (d_y_error_source == UnknownErrors && d_weighting_method == WeightNone) {
         mean = std::accumulate(d_y.cbegin(), d_y.cend(), 0.0) / double(d_y.size());
-        for (auto it = d_y.cbegin(); d_y.cend() != it; ++it)
+        for (auto it = d_y.cbegin(); d_y.cend() != it; ++it) {
             tss += (*it - mean) * (*it - mean);
+            sumSqY += (*it) * (*it);
+        }
     } else {
         const std::vector<double> w = computeWeightsVector();
         const size_t n = std::min(d_y.size(), w.size());
@@ -2625,10 +2656,14 @@ double Fit::rSquare() const
             if (!(w[i] > 0.0) || !std::isfinite(w[i]))
                 continue;
             tss += (d_y[i] - mean) * (d_y[i] - mean) * w[i];
+            sumSqY += d_y[i] * d_y[i] * w[i];
         }
     }
-    if (tss <= 0.0)
-        return 1.0;
+    if (tss <= 0.0 || Fit::sumOfSquaresNegligible(tss, sumSqY)) {
+        if (chi_2 <= 0.0 || Fit::sumOfSquaresNegligible(chi_2, sumSqY))
+            return 1.0;
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     return 1.0 - chi_2 / tss;
 }
 

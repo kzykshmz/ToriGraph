@@ -34,6 +34,12 @@
 #include <gsl/gsl_matrix.h>
 #include <math.h>
 
+#if defined(_MSC_VER)
+#define MY_EXPORT __declspec(dllexport)
+#else
+#define MY_EXPORT
+#endif
+
 struct data {
 	size_t n;
 	size_t p;
@@ -42,37 +48,56 @@ struct data {
 	double * sigma;
 };
 
-char * name() { return "ExponentialSaturation"; }
+MY_EXPORT char * name() { return "ExponentialSaturation"; }
 
-char * function() { return "b1*(1-exp(-b2*x))"; }
+MY_EXPORT char * function() { return "b1*(1-exp(-b2*x))"; }
 
-char * parameters() { return "b1,b2"; }
+MY_EXPORT char * parameters() { return "b1,b2"; }
 
-double function_eval(double x, double * params)
+MY_EXPORT double function_eval(double x, double * params)
 {
 	return params[0]*(1-exp(-params[1]*x));
 }
 
-int function_f(const gsl_vector * params, void * void_data, gsl_vector * f)
+static int invalid_sigma(const double *sigma, size_t i)
 {
-	struct data * d = (struct data*) void_data;
-	double b1 = gsl_vector_get(params, 0);
-	double b2 = gsl_vector_get(params, 1);
-	size_t i;
-	for (i=0; i<d->n; i++)
-		gsl_vector_set(f, i, (b1*(1-exp(-b2*d->X[i])) - d->Y[i])/d->sigma[i]);
-	return GSL_SUCCESS;
+	if (!sigma)
+		return 0;
+	double s = sigma[i];
+	return !isfinite(s) || s <= 0.0 || s >= 1e140;
 }
 
-int function_df(const gsl_vector * params, void * void_data, gsl_matrix *J)
+MY_EXPORT int function_f(const gsl_vector * params, void * void_data, gsl_vector * f)
 {
 	struct data * d = (struct data*) void_data;
 	double b1 = gsl_vector_get(params, 0);
 	double b2 = gsl_vector_get(params, 1);
 	size_t i;
 	for (i=0; i<d->n; i++) {
+		if (invalid_sigma(d->sigma, i)) {
+			gsl_vector_set(f, i, 0.0);
+			continue;
+		}
+		double s = d->sigma ? d->sigma[i] : 1.0;
+		gsl_vector_set(f, i, (b1*(1-exp(-b2*d->X[i])) - d->Y[i])/s);
+	}
+	return GSL_SUCCESS;
+}
+
+MY_EXPORT int function_df(const gsl_vector * params, void * void_data, gsl_matrix *J)
+{
+	struct data * d = (struct data*) void_data;
+	double b1 = gsl_vector_get(params, 0);
+	double b2 = gsl_vector_get(params, 1);
+	size_t i;
+	for (i=0; i<d->n; i++) {
+		if (invalid_sigma(d->sigma, i)) {
+			gsl_matrix_set(J, i, 0, 0.0);
+			gsl_matrix_set(J, i, 1, 0.0);
+			continue;
+		}
 		double x = d->X[i];
-		double s = d->sigma[i];
+		double s = d->sigma ? d->sigma[i] : 1.0;
 		double e = exp(-b2*x);
 		gsl_matrix_set(J, i, 0, (1.0 - e) / s);
 		gsl_matrix_set(J, i, 1, b1 * x * e / s);
@@ -80,16 +105,18 @@ int function_df(const gsl_vector * params, void * void_data, gsl_matrix *J)
 	return GSL_SUCCESS;
 }
 
-int function_fdf(const gsl_vector * params, void * void_data, gsl_vector * f, gsl_matrix * J)
+MY_EXPORT int function_fdf(const gsl_vector * params, void * void_data, gsl_vector * f, gsl_matrix * J)
 {
 	function_f(params, void_data, f);
 	function_df(params, void_data, J);
 	return GSL_SUCCESS;
 }
 
-double function_d(const gsl_vector * params, void * void_data)
+MY_EXPORT double function_d(const gsl_vector * params, void * void_data)
 {
 	struct data * d = (struct data*) void_data;
+	if (!d || d->n == 0)
+		return 0.0;
 	gsl_vector * f = gsl_vector_alloc(d->n);
 	double result = 0;
 	size_t i;

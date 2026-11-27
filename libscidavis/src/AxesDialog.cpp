@@ -2917,10 +2917,11 @@ void AxesDialog::updateScale()
     }
 
     const QwtScaleEngine *sc_eng = d_plot->axisScaleEngine(a);
-    btnInvert->setChecked(sc_eng->testAttribute(QwtScaleEngine::Inverted));
+    btnInvert->setChecked(sc_eng && sc_eng->testAttribute(QwtScaleEngine::Inverted));
 
-    QwtScaleTransformation *tr = sc_eng->transformation();
-    const bool isLog10 = (tr && tr->type() == QwtScaleTransformation::Log10);
+    const Graph::AxisBreakSpec brk = d_graph ? d_graph->axisBreak(a) : Graph::AxisBreakSpec();
+    const bool isLog10 = brk.enabled ? (brk.log10Before && brk.log10After)
+                                     : Plot::isLog10ScaleEngine(sc_eng);
     boxScaleType->setCurrentIndex(isLog10 ? 1 : 0);
 
     boxMinorValue->clear();
@@ -4532,15 +4533,26 @@ bool AxesDialog::commitScaleRow(int row)
         }
     }
 
-    const Graph::AxisBreakSpec prevBrk = d_graph->axisBreak(a);
+    Graph::AxisBreakSpec prevBrk = d_graph->axisBreak(a);
     d_graph->setScale(a, start, end, stp, st.majorValue, parseLeadingMinorInt(st.minorText, 0),
                       st.scaleType, st.inverted);
     d_graph->setAxisUserLocked(a, true);
     if (prevBrk.enabled) {
         const double lo = std::min(start, end);
         const double hi = std::max(start, end);
-        if (lo < prevBrk.breakFrom && prevBrk.breakFrom < prevBrk.breakTo && prevBrk.breakTo < hi)
+        if (st.scaleType == 1) {
+            prevBrk.log10Before = true;
+            prevBrk.log10After = true;
+        } else if (prevBrk.log10Before && prevBrk.log10After) {
+            prevBrk.log10Before = false;
+            prevBrk.log10After = false;
+        }
+        const bool logOk = (!prevBrk.log10Before || (lo > 0.0 && prevBrk.breakFrom > 0.0))
+                && (!prevBrk.log10After || (prevBrk.breakTo > 0.0 && hi > 0.0));
+        if (lo < prevBrk.breakFrom && prevBrk.breakFrom < prevBrk.breakTo && prevBrk.breakTo < hi
+            && logOk) {
             d_graph->setAxisBreak(a, prevBrk);
+        }
     }
     return true;
 }

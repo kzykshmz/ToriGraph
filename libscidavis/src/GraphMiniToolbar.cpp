@@ -1156,12 +1156,11 @@ void GraphMiniToolbar::rebuildCurrentButtons()
 
         bool isLog = false;
         bool isReversed = false;
+        const Graph::AxisBreakSpec brk = d_graph->axisBreak(d_axis_id);
         if (const QwtScaleEngine *eng = p->axisScaleEngine(d_axis_id)) {
             isReversed = eng->testAttribute(QwtScaleEngine::Inverted);
-            if (QwtScaleTransformation *xform = eng->transformation()) {
-                isLog = (xform->type() == QwtScaleTransformation::Log10);
-                delete xform;
-            }
+            isLog = brk.enabled ? (brk.log10Before && brk.log10After)
+                                : Plot::isLog10ScaleEngine(eng);
         }
 
         const int majTick = (d_axis_id < p->getMajorTicksType().size())
@@ -1810,13 +1809,40 @@ void GraphMiniToolbar::onCurvePickColor()
         c->setBrush(areaBr);
     }
 
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Curve Color"), beforeSnap);
     rebuildCurrentButtons();
     adjustSize();
     reclampToAvailableBounds();
+}
+
+static void convertMiniToolbarCurveType(Graph *g, int &curveIdx, Graph::CurveType newType,
+                                        bool update = false)
+{
+    if (!g || curveIdx < 0 || curveIdx >= g->curves())
+        return;
+    QwtPlotCurve *cur = g->curve(curveIdx);
+    const int oldType = g->curveType(curveIdx);
+    const bool barTransition = ((oldType == Graph::VerticalBars || oldType == Graph::HorizontalBars)
+                                != (newType == Graph::VerticalBars || newType == Graph::HorizontalBars));
+    int ebBefore = 0;
+    if (barTransition) {
+        if (ApplicationWindow *app = findAppWindow(g)) {
+            if (MultiLayer *ml = g->multiLayerParent())
+                app->invalidateModelessGraphDialogs(ml);
+        }
+        if (auto *dc = dynamic_cast<DataCurve *>(cur)) {
+            for (DataCurve *eb : dc->errorBarsList()) {
+                const int ebi = g->curveIndex(eb);
+                if (ebi >= 0 && ebi < curveIdx)
+                    ++ebBefore;
+            }
+        }
+    }
+    g->setCurveType(curveIdx, newType, update);
+    if (barTransition && g->curves() > 0)
+        curveIdx = qBound(0, curveIdx - ebBefore, g->curves() - 1);
 }
 
 void GraphMiniToolbar::onCurvePickSymbolShape()
@@ -1883,8 +1909,8 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
         return;
 
     const QString beforeSnap = beginGraphUndo();
-    const long key = d_graph->curveKey(d_curve_index);
-    SavedSymbolState st = d_saved_symbol_states.value(key);
+    const long origKey = d_graph->curveKey(d_curve_index);
+    SavedSymbolState st = d_saved_symbol_states.value(origKey);
 
     QwtSymbol sym = c->symbol();
     if (nextStyle == QwtSymbol::NoSymbol) {
@@ -1894,7 +1920,7 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
             st.penWidth = qMax(0.5, effectivePenWidthF(sym.pen(), 1.0));
             st.hollowWhite = Graph::isSymbolWhiteHollow(sym);
             st.noFill = (!st.hollowWhite && sym.brush().style() == Qt::NoBrush);
-            d_saved_symbol_states.insert(key, st);
+            d_saved_symbol_states.insert(origKey, st);
         }
         sym.setStyle(QwtSymbol::NoSymbol);
         c->setSymbol(sym);
@@ -1907,7 +1933,10 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
                 lp.setWidthF(2.0);
             c->setPen(lp);
         }
-        d_graph->setCurveType(d_curve_index, Graph::Line, false);
+        convertMiniToolbarCurveType(d_graph, d_curve_index, Graph::Line, false);
+        if (QwtPlotCurve *after = d_graph->curve(d_curve_index))
+            after->setSymbol(sym);
+        d_saved_symbol_states.insert(d_graph->curveKey(d_curve_index), st);
     } else {
         const bool wasNoSym = (sym.style() == QwtSymbol::NoSymbol);
         const QColor col = curCol.isValid() ? curCol : QColor(Qt::black);
@@ -1928,22 +1957,22 @@ void GraphMiniToolbar::onCurvePickSymbolShape()
             else
                 sym.setBrush(QBrush(col));
         }
+        const bool hasLineNow = (c->style() != QwtPlotCurve::NoCurve);
         c->setSymbol(sym);
-        if (c->style() != QwtPlotCurve::NoCurve)
-            d_graph->setCurveType(d_curve_index, Graph::LineSymbols, false);
-        else
-            d_graph->setCurveType(d_curve_index, Graph::Scatter, false);
-        c->setSymbol(sym);
+        convertMiniToolbarCurveType(d_graph, d_curve_index,
+                                    hasLineNow ? Graph::LineSymbols : Graph::Scatter, false);
+        c = d_graph->curve(d_curve_index);
+        if (c)
+            c->setSymbol(sym);
 
         st.style = (int)nextStyle;
         st.size = sz;
         st.penWidth = qMax(0.5, effectivePenWidthF(sym.pen(), 1.0));
         st.hollowWhite = Graph::isSymbolWhiteHollow(sym);
         st.noFill = (!st.hollowWhite && sym.brush().style() == Qt::NoBrush);
-        d_saved_symbol_states.insert(key, st);
+        d_saved_symbol_states.insert(d_graph->curveKey(d_curve_index), st);
     }
 
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Symbol Shape"), beforeSnap);
@@ -2011,7 +2040,8 @@ void GraphMiniToolbar::onCurvePickLineWidth()
     if (wasNoLine) {
         c->setStyle(QwtPlotCurve::Lines);
         const bool symNow = (c->symbol().style() != QwtSymbol::NoSymbol);
-        safeG->setCurveType(d_curve_index, symNow ? Graph::LineSymbols : Graph::Line, false);
+        convertMiniToolbarCurveType(safeG, d_curve_index,
+                                    symNow ? Graph::LineSymbols : Graph::Line, false);
         c = safeG->curve(d_curve_index);
         if (!c)
             return;
@@ -2025,7 +2055,6 @@ void GraphMiniToolbar::onCurvePickLineWidth()
                                                          : QColor(Qt::black));
     pen.setWidthF(qBound(0.5, nextW, 20.0));
     c->setPen(pen);
-    safeG->reconstructLegend();
     safeG->replot();
     safeG->notifyChanges();
     commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
@@ -2047,7 +2076,6 @@ void GraphMiniToolbar::onCurveLineWidthDec()
     const double nextW = qBound(0.5, std::round((curW - 0.5) * 10.0) / 10.0, 20.0);
     pen.setWidthF(nextW);
     c->setPen(pen);
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
@@ -2069,7 +2097,8 @@ void GraphMiniToolbar::onCurveLineWidthInc()
     const bool wasNoLine = (c->style() == QwtPlotCurve::NoCurve);
     if (wasNoLine) {
         const bool hasSym = (c->symbol().style() != QwtSymbol::NoSymbol);
-        d_graph->setCurveType(d_curve_index, hasSym ? Graph::LineSymbols : Graph::Line, false);
+        convertMiniToolbarCurveType(d_graph, d_curve_index,
+                                    hasSym ? Graph::LineSymbols : Graph::Line, false);
         c = d_graph->curve(d_curve_index);
         if (!c)
             return;
@@ -2085,7 +2114,6 @@ void GraphMiniToolbar::onCurveLineWidthInc()
     const double nextW = qBound(0.5, std::round((curW + 0.5) * 10.0) / 10.0, 20.0);
     pen.setWidthF(nextW);
     c->setPen(pen);
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Line Width"), beforeSnap, kMergeMiniWidth);
@@ -2176,11 +2204,11 @@ void GraphMiniToolbar::onCurvePickSymbolSize()
     c->setSymbol(sym);
     if (wasNoSym) {
         const bool lineNow = (c->style() != QwtPlotCurve::NoCurve);
-        safeG->setCurveType(d_curve_index, lineNow ? Graph::LineSymbols : Graph::Scatter, false);
+        convertMiniToolbarCurveType(safeG, d_curve_index,
+                                    lineNow ? Graph::LineSymbols : Graph::Scatter, false);
         if (QwtPlotCurve *after = safeG->curve(d_curve_index))
             after->setSymbol(sym);
     }
-    safeG->reconstructLegend();
     safeG->replot();
     safeG->notifyChanges();
     commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
@@ -2201,7 +2229,6 @@ void GraphMiniToolbar::onCurveSymbolSizeDec()
     const int sz = qMax(3, sym.size().width() - 2);
     sym.setSize(QSize(sz, sz));
     c->setSymbol(sym);
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
@@ -2245,11 +2272,11 @@ void GraphMiniToolbar::onCurveSymbolSizeInc()
     c->setSymbol(sym);
     if (wasNoSym) {
         const bool hasLine = (c->style() != QwtPlotCurve::NoCurve);
-        d_graph->setCurveType(d_curve_index, hasLine ? Graph::LineSymbols : Graph::Scatter, false);
+        convertMiniToolbarCurveType(d_graph, d_curve_index,
+                                    hasLine ? Graph::LineSymbols : Graph::Scatter, false);
         if (QwtPlotCurve *after = d_graph->curve(d_curve_index))
             after->setSymbol(sym);
     }
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Symbol Size"), beforeSnap, kMergeMiniSymSize);
@@ -2362,7 +2389,6 @@ void GraphMiniToolbar::applyCurveLineSymbolMode(int mode)
         }
     }
 
-    d_graph->reconstructLegend();
     d_graph->replot();
     d_graph->notifyChanges();
     commitGraphUndo(tr("Change Plot Style"), beforeSnap);
@@ -2406,17 +2432,19 @@ void GraphMiniToolbar::onCurveToggleHollowSymbol()
                               : QwtSymbol::Ellipse,
                       QBrush(Qt::white), sp,
                       QSize(qMax(7, st.size), qMax(7, st.size)));
+        const bool hasLineNow = (c->style() != QwtPlotCurve::NoCurve);
         c->setSymbol(sym);
-        if (c->style() != QwtPlotCurve::NoCurve)
-            d_graph->setCurveType(d_curve_index, Graph::LineSymbols, false);
-        c->setSymbol(sym);
-        d_graph->reconstructLegend();
+        if (hasLineNow)
+            convertMiniToolbarCurveType(d_graph, d_curve_index, Graph::LineSymbols, false);
+        c = d_graph->curve(d_curve_index);
+        if (c)
+            c->setSymbol(sym);
         d_graph->replot();
         d_graph->notifyChanges();
     } else {
         const bool nextHollow = !Graph::isSymbolWhiteHollow(c->symbol());
         d_graph->setCurveSymbolHollow(d_curve_index, nextHollow);
-        d_graph->reconstructLegend();
+        d_graph->replot();
     }
     const long key = d_graph->curveKey(d_curve_index);
     if (QwtPlotCurve *after = d_graph->curve(d_curve_index)) {
@@ -2649,15 +2677,11 @@ void GraphMiniToolbar::onAxisToggleLog()
         return;
 
     const QString beforeSnap = beginGraphUndo();
-    bool currentlyLog = false;
-    bool inverted = false;
-    if (const QwtScaleEngine *eng = p->axisScaleEngine(d_axis_id)) {
-        inverted = eng->testAttribute(QwtScaleEngine::Inverted);
-        if (QwtScaleTransformation *xform = eng->transformation()) {
-            currentlyLog = (xform->type() == QwtScaleTransformation::Log10);
-            delete xform;
-        }
-    }
+    const Graph::AxisBreakSpec brk = d_graph->axisBreak(d_axis_id);
+    const QwtScaleEngine *eng = p->axisScaleEngine(d_axis_id);
+    const bool inverted = eng && eng->testAttribute(QwtScaleEngine::Inverted);
+    const bool currentlyLog = brk.enabled ? (brk.log10Before && brk.log10After)
+                                          : Plot::isLog10ScaleEngine(eng);
 
     const QwtScaleDiv *div = p->axisScaleDiv(d_axis_id);
     double lo = div ? qMin(div->lowerBound(), div->upperBound()) : 0.1;
@@ -2690,15 +2714,11 @@ void GraphMiniToolbar::onAxisToggleReverse()
         return;
 
     const QString beforeSnap = beginGraphUndo();
-    bool isLog = false;
-    bool inverted = false;
-    if (const QwtScaleEngine *eng = p->axisScaleEngine(d_axis_id)) {
-        inverted = eng->testAttribute(QwtScaleEngine::Inverted);
-        if (QwtScaleTransformation *xform = eng->transformation()) {
-            isLog = (xform->type() == QwtScaleTransformation::Log10);
-            delete xform;
-        }
-    }
+    const Graph::AxisBreakSpec brk = d_graph->axisBreak(d_axis_id);
+    const QwtScaleEngine *eng = p->axisScaleEngine(d_axis_id);
+    const bool inverted = eng && eng->testAttribute(QwtScaleEngine::Inverted);
+    const bool isLog = brk.enabled ? (brk.log10Before && brk.log10After)
+                                   : Plot::isLog10ScaleEngine(eng);
     const QwtScaleDiv *div = p->axisScaleDiv(d_axis_id);
     const double lo = div ? qMin(div->lowerBound(), div->upperBound()) : 0.0;
     const double hi = div ? qMax(div->lowerBound(), div->upperBound()) : 1.0;

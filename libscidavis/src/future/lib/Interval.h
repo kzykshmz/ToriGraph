@@ -61,7 +61,7 @@ public:
     bool contains(T value) const { return (d_start <= value && d_end >= value); }
     bool intersects(const Interval<T> &other) const
     {
-        return (contains(other.start()) || contains(other.end()));
+        return (contains(other.start()) || contains(other.end()) || other.contains(d_start));
     }
     //! Return the intersection of two intervals
     /**

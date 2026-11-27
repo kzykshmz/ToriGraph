@@ -93,8 +93,8 @@ MatrixRemoveColumnsCmd::~MatrixRemoveColumnsCmd() { }
 
 void MatrixRemoveColumnsCmd::redo()
 {
-    if (d_backups.isEmpty()) {
-        int last_row = d_private_obj->rowCount() - 1;
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (d_backups.isEmpty() && last_row >= 0) {
         for (int i = 0; i < d_count; i++)
             d_backups.append(d_private_obj->columnCells(d_first + i, 0, last_row));
     }
@@ -104,9 +104,11 @@ void MatrixRemoveColumnsCmd::redo()
 void MatrixRemoveColumnsCmd::undo()
 {
     d_private_obj->insertColumns(d_first, d_count);
-    int last_row = d_private_obj->rowCount() - 1;
-    for (int i = 0; i < d_count; i++)
-        d_private_obj->setColumnCells(d_first + i, 0, last_row, d_backups.at(i));
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (last_row >= 0) {
+        for (int i = 0; i < d_count && i < d_backups.size(); i++)
+            d_private_obj->setColumnCells(d_first + i, 0, last_row, d_backups.at(i));
+    }
 }
 ///////////////////////////////////////////////////////////////////////////
 // end of class MatrixRemoveColumnsCmd
@@ -126,7 +128,7 @@ MatrixRemoveRowsCmd::~MatrixRemoveRowsCmd() { }
 
 void MatrixRemoveRowsCmd::redo()
 {
-    if (d_backups.isEmpty()) {
+    if (d_backups.isEmpty() && d_count > 0) {
         int last_row = d_first + d_count - 1;
         for (int col = 0; col < d_private_obj->columnCount(); col++)
             d_backups.append(d_private_obj->columnCells(col, d_first, last_row));
@@ -137,9 +139,11 @@ void MatrixRemoveRowsCmd::redo()
 void MatrixRemoveRowsCmd::undo()
 {
     d_private_obj->insertRows(d_first, d_count);
-    int last_row = d_first + d_count - 1;
-    for (int col = 0; col < d_private_obj->columnCount(); col++)
-        d_private_obj->setColumnCells(col, d_first, last_row, d_backups.at(col));
+    if (d_count > 0) {
+        int last_row = d_first + d_count - 1;
+        for (int col = 0; col < d_private_obj->columnCount() && col < d_backups.size(); col++)
+            d_private_obj->setColumnCells(col, d_first, last_row, d_backups.at(col));
+    }
 }
 ///////////////////////////////////////////////////////////////////////////
 // end of class MatrixRemoveRowsCmd
@@ -158,8 +162,8 @@ MatrixClearCmd::~MatrixClearCmd() { }
 
 void MatrixClearCmd::redo()
 {
-    if (d_backups.isEmpty()) {
-        int last_row = d_private_obj->rowCount() - 1;
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (d_backups.isEmpty() && last_row >= 0) {
         for (int i = 0; i < d_private_obj->columnCount(); i++)
             d_backups.append(d_private_obj->columnCells(i, 0, last_row));
     }
@@ -169,9 +173,11 @@ void MatrixClearCmd::redo()
 
 void MatrixClearCmd::undo()
 {
-    int last_row = d_private_obj->rowCount() - 1;
-    for (int i = 0; i < d_private_obj->columnCount(); i++)
-        d_private_obj->setColumnCells(i, 0, last_row, d_backups.at(i));
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (last_row >= 0) {
+        for (int i = 0; i < d_private_obj->columnCount() && i < d_backups.size(); i++)
+            d_private_obj->setColumnCells(i, 0, last_row, d_backups.at(i));
+    }
 }
 ///////////////////////////////////////////////////////////////////////////
 // end of class MatrixClearCmd
@@ -191,14 +197,17 @@ MatrixClearColumnCmd::~MatrixClearColumnCmd() { }
 
 void MatrixClearColumnCmd::redo()
 {
-    if (d_backup.isEmpty())
-        d_backup = d_private_obj->columnCells(d_col, 0, d_private_obj->rowCount() - 1);
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (d_backup.isEmpty() && last_row >= 0)
+        d_backup = d_private_obj->columnCells(d_col, 0, last_row);
     d_private_obj->clearColumn(d_col);
 }
 
 void MatrixClearColumnCmd::undo()
 {
-    d_private_obj->setColumnCells(d_col, 0, d_private_obj->rowCount() - 1, d_backup);
+    const int last_row = d_private_obj->rowCount() - 1;
+    if (last_row >= 0 && !d_backup.isEmpty())
+        d_private_obj->setColumnCells(d_col, 0, last_row, d_backup);
 }
 ///////////////////////////////////////////////////////////////////////////
 // end of class MatrixClearColumnCmd
@@ -487,6 +496,8 @@ void MatrixMirrorHorizontallyCmd::redo()
 {
     int rows = d_private_obj->rowCount();
     int cols = d_private_obj->columnCount();
+    if (rows <= 0 || cols <= 1)
+        return;
     int middle = cols / 2;
     d_private_obj->blockChangeSignals(true);
     for (int i = 0; i < middle; i++) {
@@ -523,6 +534,8 @@ void MatrixMirrorVerticallyCmd::redo()
 {
     int rows = d_private_obj->rowCount();
     int cols = d_private_obj->columnCount();
+    if (rows <= 1 || cols <= 0)
+        return;
     int middle = rows / 2;
     d_private_obj->blockChangeSignals(true);
     for (int i = 0; i < middle; i++) {
@@ -549,11 +562,15 @@ MatrixSetCellsCmd::MatrixSetCellsCmd(
         QUndoCommand *parent)
     : QUndoCommand(parent), d_private_obj{ private_obj },
       d_first_row{ first_row },
-      d_last_row{ last_row },
+      d_last_row{ std::min(last_row, private_obj->rowCount() - 1) },
       d_first_column{ first_column },
-      d_last_column{ last_column },
+      d_last_column{ std::min(last_column, private_obj->columnCount() - 1) },
       d_values{ values },
-      d_old_values{ private_obj->getCells(first_row, last_row, first_column, last_column) }
+      d_old_values{ (first_row >= 0 && first_column >= 0
+                     && d_last_row >= first_row && d_last_column >= first_column)
+                            ? private_obj->getCells(first_row, d_last_row, first_column,
+                                                    d_last_column)
+                            : std::vector<std::vector<std::pair<double, bool>>>{} }
 {
     setText(QObject::tr("%1: set values for multiple cells").arg(d_private_obj->name()));
 }

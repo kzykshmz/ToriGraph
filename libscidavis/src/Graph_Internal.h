@@ -215,6 +215,7 @@ public:
     explicit PiecewiseBreakScaleEngine(const Graph::AxisBreakSpec &spec);
 
     QwtScaleTransformation *transformation() const override;
+    void autoScale(int maxNumSteps, double &x1, double &x2, double &stepSize) const override;
     QwtScaleDiv divideScale(double x1, double x2, int maxMajSteps, int maxMinSteps,
                             double stepSize = 0.0) const override;
 

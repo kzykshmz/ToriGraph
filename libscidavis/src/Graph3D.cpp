@@ -399,6 +399,10 @@ void Graph3D::addFunction(const QString &s, double xl, double xr, double yl, dou
     if (this->width() > 100 && this->height() > 100)
         sp->resize(this->size());
 
+    delete func;
+    func = nullptr;
+    worksheet.clear();
+    d_matrix.clear();
     func = new UserFunction(s, *sp);
 
     func->setMesh(41, 31);
@@ -2643,6 +2647,22 @@ QImage Graph3D::renderExportImage(int *effDpiOut, int dpiOverride)
     ignoreFonts = true;
     if (!sp->context())
         (void)sp->grabFramebuffer();
+    const QFont origNumFont = sp->coordinates()->axes[X1].numberFont();
+    const QFont origTitleFont = titleFnt;
+    const QFont origXFont = xAxisLabelFont();
+    const QFont origYFont = yAxisLabelFont();
+    const QFont origZFont = zAxisLabelFont();
+    auto restoreExactFonts = [&]() {
+        sp->coordinates()->setNumberFont(origNumFont);
+        sp->legend()->setNumberFont(origNumFont);
+        titleFnt = origTitleFont;
+        sp->setTitleFont(titleFnt.family(), titleFnt.pointSize(), titleFnt.weight(),
+                         titleFnt.italic());
+        setXAxisLabelFont(origXFont);
+        setYAxisLabelFont(origYFont);
+        setZAxisLabelFont(origZFont);
+    };
+
     if (targetSize != origSize) {
         sp->resize(targetSize);
         QResizeEvent rev(sp->size(), origSize);
@@ -2667,7 +2687,7 @@ QImage Graph3D::renderExportImage(int *effDpiOut, int dpiOverride)
             sp->setMeshLineWidth(origMeshLw);
         if (scaleScatterDots)
             sp->setPlotStyle(Dot(pointSize, smooth));
-        scaleFonts(1.0 / renderScale);
+        restoreExactFonts();
         sp->resize(origSize);
         QResizeEvent revBack(origSize, targetSize);
         QCoreApplication::sendEvent(sp, &revBack);
@@ -2856,6 +2876,11 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
             (void)sp->grabFramebuffer();
         if (!savedTitle.isEmpty())
             sp->setTitle(QString());
+        const QFont origNumFont = sp->coordinates()->axes[X1].numberFont();
+        const QFont origTitleFont = titleFnt;
+        const QFont origXFont = xAxisLabelFont();
+        const QFont origYFont = yAxisLabelFont();
+        const QFont origZFont = zAxisLabelFont();
         sp->resize(hiSize);
         QResizeEvent rev(sp->size(), origSize);
         QCoreApplication::sendEvent(sp, &rev);
@@ -2877,7 +2902,14 @@ bool Graph3D::exportVectorImpl(const QString &fileName, const QString &fileType,
             sp->setMeshLineWidth(origMeshLw);
         if (scaleScatterDots)
             sp->setPlotStyle(Dot(pointSize, smooth));
-        scaleFonts(1.0 / renderScale);
+        sp->coordinates()->setNumberFont(origNumFont);
+        sp->legend()->setNumberFont(origNumFont);
+        titleFnt = origTitleFont;
+        sp->setTitleFont(titleFnt.family(), titleFnt.pointSize(), titleFnt.weight(),
+                         titleFnt.italic());
+        setXAxisLabelFont(origXFont);
+        setYAxisLabelFont(origYFont);
+        setZAxisLabelFont(origZFont);
         sp->resize(origSize);
         QResizeEvent revBack(origSize, hiSize);
         QCoreApplication::sendEvent(sp, &revBack);

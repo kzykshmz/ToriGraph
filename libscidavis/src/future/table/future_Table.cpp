@@ -1052,25 +1052,46 @@ void Table::fillSelectedCellsWithRowNumbers()
     beginMacro(tr("%1: fill cells with row numbers").arg(name()));
     foreach (Column *col_ptr, d_view->selectedColumns()) {
         int col = columnIndex(col_ptr);
+        int runStart = -1;
         switch (col_ptr->columnMode()) {
         case SciDAVis::ColumnMode::Numeric: {
-            QVector<qreal> results(last - first + 1);
-            for (int row = first; row <= last; row++)
-                if (d_view->isCellSelected(row, col))
-                    results[row - first] = row + 1;
-                else
-                    results[row - first] = col_ptr->valueAt(row);
-            col_ptr->replaceValues(first, results);
+            QVector<qreal> run;
+            auto flushRun = [&]() {
+                if (runStart >= 0 && !run.isEmpty())
+                    col_ptr->replaceValues(runStart, run);
+                runStart = -1;
+                run.clear();
+            };
+            for (int row = first; row <= last; row++) {
+                if (d_view->isCellSelected(row, col)) {
+                    if (runStart < 0)
+                        runStart = row;
+                    run.append(row + 1);
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
             break;
         }
         case SciDAVis::ColumnMode::Text: {
-            QStringList results;
-            for (int row = first; row <= last; row++)
-                if (d_view->isCellSelected(row, col))
-                    results << QString::number(row + 1);
-                else
-                    results << col_ptr->textAt(row);
-            col_ptr->replaceTexts(first, results);
+            QStringList run;
+            auto flushRun = [&]() {
+                if (runStart >= 0 && !run.isEmpty())
+                    col_ptr->replaceTexts(runStart, run);
+                runStart = -1;
+                run.clear();
+            };
+            for (int row = first; row <= last; row++) {
+                if (d_view->isCellSelected(row, col)) {
+                    if (runStart < 0)
+                        runStart = row;
+                    run << QString::number(row + 1);
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
             break;
         }
         default:
@@ -1101,62 +1122,94 @@ void Table::fillSelectedCellsWithRandomNumbers()
 #endif
     foreach (Column *col_ptr, d_view->selectedColumns()) {
         int col = columnIndex(col_ptr);
+        int runStart = -1;
         switch (col_ptr->columnMode()) {
         case SciDAVis::ColumnMode::Numeric: {
-            QVector<qreal> results(last - first + 1);
-            for (int row = first; row <= last; row++)
-                if (d_view->isCellSelected(row, col))
-                    results[row - first] =
+            QVector<qreal> run;
+            auto flushRun = [&]() {
+                if (runStart >= 0 && !run.isEmpty())
+                    col_ptr->replaceValues(runStart, run);
+                runStart = -1;
+                run.clear();
+            };
+            for (int row = first; row <= last; row++) {
+                if (d_view->isCellSelected(row, col)) {
+                    if (runStart < 0)
+                        runStart = row;
+                    run.append(
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
-                            QRandomGenerator::global()->generateDouble();
+                            QRandomGenerator::global()->generateDouble()
 #else
-                            double(qrand()) / double(RAND_MAX);
+                            double(qrand()) / double(RAND_MAX)
 #endif
-                else
-                    results[row - first] = col_ptr->valueAt(row);
-            col_ptr->replaceValues(first, results);
+                    );
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
             break;
         }
         case SciDAVis::ColumnMode::Text: {
-            QStringList results;
-            for (int row = first; row <= last; row++)
-                if (d_view->isCellSelected(row, col))
-                    results << QString::number(
+            QStringList run;
+            auto flushRun = [&]() {
+                if (runStart >= 0 && !run.isEmpty())
+                    col_ptr->replaceTexts(runStart, run);
+                runStart = -1;
+                run.clear();
+            };
+            for (int row = first; row <= last; row++) {
+                if (d_view->isCellSelected(row, col)) {
+                    if (runStart < 0)
+                        runStart = row;
+                    run << QString::number(
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
                             QRandomGenerator::global()->generateDouble());
 #else
                             double(qrand()) / double(RAND_MAX));
 #endif
-                else
-                    results << col_ptr->textAt(row);
-            col_ptr->replaceTexts(first, results);
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
             break;
         }
         case SciDAVis::ColumnMode::DateTime:
         case SciDAVis::ColumnMode::Month:
         case SciDAVis::ColumnMode::Day: {
-            QList<QDateTime> results;
+            QList<QDateTime> run;
+            auto flushRun = [&]() {
+                if (runStart >= 0 && !run.isEmpty())
+                    col_ptr->replaceDateTimes(runStart, run);
+                runStart = -1;
+                run.clear();
+            };
             QDate earliestDate(1, 1, 1);
             QDate latestDate(2999, 12, 31);
             QTime midnight(0, 0, 0, 0);
-            for (int row = first; row <= last; row++)
-                if (d_view->isCellSelected(row, col))
+            for (int row = first; row <= last; row++) {
+                if (d_view->isCellSelected(row, col)) {
+                    if (runStart < 0)
+                        runStart = row;
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
-                    results << QDateTime(
+                    run << QDateTime(
                             earliestDate.addDays(QRandomGenerator::global()->generateDouble()
                                                  * ((double)earliestDate.daysTo(latestDate))),
-                            midnight.addMSecs(QRandomGenerator::global()->generate64() * 1000 * 60
-                                              * 60 * 24 / RAND_MAX));
+                            midnight.addMSecs(static_cast<int>(
+                                    QRandomGenerator::global()->bounded(24 * 60 * 60 * 1000))));
 #else
-                    results << QDateTime(
+                    run << QDateTime(
                             earliestDate.addDays(((double)qrand())
                                                  * ((double)earliestDate.daysTo(latestDate))
                                                  / ((double)RAND_MAX)),
                             midnight.addMSecs(((qint64)qrand()) * 1000 * 60 * 60 * 24 / RAND_MAX));
 #endif
-                else
-                    results << col_ptr->dateTimeAt(row);
-            col_ptr->replaceDateTimes(first, results);
+                } else {
+                    flushRun();
+                }
+            }
+            flushRun();
             break;
         }
         }
@@ -1357,6 +1410,8 @@ void Table::normalizeColumns(QList<Column *> cols)
 
 void Table::normalizeSelectedColumns()
 {
+    if (!d_view)
+        return;
     normalizeColumns(d_view->selectedColumns());
 }
 
@@ -2275,7 +2330,7 @@ QMenu *Table::createSelectionMenu(QMenu *append_to)
     if (!menu)
         menu = new QMenu();
 
-    QMenu *submenu = new QMenu(tr("Fi&ll Selection with"));
+    QMenu *submenu = new QMenu(tr("Fi&ll Selection with"), menu);
     submenu->addAction(action_fill_down);
     submenu->addSeparator();
     submenu->addAction(action_fill_row_numbers);
@@ -2551,10 +2606,31 @@ void Table::copy(Table *other)
     beginMacro(QObject::tr("%1: copy %2").arg(name()).arg(other->name()));
 
     removeColumns(0, columnCount());
+    setRowCount(other->rowCount());
     QList<Column *> columns;
     for (int i = 0; i < other->columnCount(); i++) {
         Column *src_col = other->column(i);
         Column *new_col = new Column(src_col->name(), src_col->columnMode());
+        if (auto *srcD2S = dynamic_cast<Double2StringFilter *>(src_col->outputFilter())) {
+            if (auto *dstD2S = dynamic_cast<Double2StringFilter *>(new_col->outputFilter())) {
+                dstD2S->setNumericFormat(srcD2S->numericFormat());
+                dstD2S->setNumDigits(srcD2S->numDigits());
+            }
+        }
+        if (auto *srcDT2S = dynamic_cast<DateTime2StringFilter *>(src_col->outputFilter())) {
+            if (auto *dstDT2S = dynamic_cast<DateTime2StringFilter *>(new_col->outputFilter()))
+                dstDT2S->setFormat(srcDT2S->format());
+        }
+        if (auto *srcS2DT = dynamic_cast<String2DateTimeFilter *>(src_col->inputFilter())) {
+            if (auto *dstS2DT = dynamic_cast<String2DateTimeFilter *>(new_col->inputFilter()))
+                dstS2DT->setFormat(srcS2DT->format());
+        }
+        if (src_col->columnMode() == SciDAVis::ColumnMode::DateTime) {
+            if (auto *srcNDT = src_col->numericDateTimeBaseFilter()) {
+                new_col->setColumnMode(SciDAVis::ColumnMode::DateTime,
+                                       new NumericDateTimeBaseFilter(*srcNDT));
+            }
+        }
         new_col->copy(src_col);
         new_col->setPlotDesignation(src_col->plotDesignation());
         new_col->setLongName(src_col->longName());
@@ -3330,7 +3406,7 @@ bool Table::readColumnWidthElement(XmlStreamReader *reader)
     Q_ASSERT(reader->isStartElement() && reader->name() == "column_width");
     bool ok;
     int col = reader->readAttributeInt("column", &ok);
-    if (!ok) {
+    if (!ok || col < 0 || col >= columnCount()) {
         reader->raiseError(tr("invalid or missing column index"));
         return false;
     }

@@ -1240,7 +1240,6 @@ bool CanvasPicker::eventFilter(QObject *object, QEvent *e)
                 MultiLayer *ml = g->multiLayerParent();
                 const QString beforeSnap = ml ? ml->captureUndoSnapshot() : QString();
                 g->removeCurve(curSel.primaryId);
-                g->reconstructLegend();
                 g->updatePlot();
                 g->setCurrentSelection({ Graph::GraphSelection::Layer, -1, -1 });
                 if (ml && !beforeSnap.isEmpty())

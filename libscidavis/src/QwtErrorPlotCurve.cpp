@@ -385,7 +385,7 @@ void QwtErrorPlotCurve::drawErrorBars(QPainter *painter, const QwtScaleMap &xMap
 
 double QwtErrorPlotCurve::errorValue(int i)
 {
-    if (i >= 0 && i < dataSize())
+    if (i >= 0 && i < dataSize() && i < static_cast<int>(err.size()))
         return err[i];
     else
         return 0.0;

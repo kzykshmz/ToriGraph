@@ -180,7 +180,8 @@ void TableStatistics::update(Table *t, const QString &colName)
                 Column *srcCol = d_base->column(col);
                 if (srcCol && srcCol->rowCount() > srcRow
                     && srcCol->columnMode() == SciDAVis::ColumnMode::Numeric
-                    && !srcCol->isInvalid(srcRow) && !srcCol->isMasked(srcRow))
+                    && !srcCol->isInvalid(srcRow) && !srcCol->isMasked(srcRow)
+                    && std::isfinite(srcCol->valueAt(srcRow)))
                     validCells.append(col);
             }
 
@@ -248,7 +249,8 @@ void TableStatistics::update(Table *t, const QString &colName)
 
                 QList<int> validCells;
                 for (int row = 0; row < rows; ++row) {
-                    if (!col->isInvalid(row) && !col->isMasked(row))
+                    if (!col->isInvalid(row) && !col->isMasked(row)
+                        && std::isfinite(col->valueAt(row)))
                         validCells.append(row);
                 }
                 if (validCells.count() == 0) {
@@ -395,7 +397,7 @@ bool TableStatistics::eventFilter(QObject *watched, QEvent *event)
                 context_menu.addSeparator();
             }
 
-            QMenu *submenu = new QMenu(tr("S&et Column(s) As"));
+            QMenu *submenu = new QMenu(tr("S&et Column(s) As"), &context_menu);
             submenu->addAction(d_future_table->action_set_as_x);
             submenu->addAction(d_future_table->action_set_as_y);
             submenu->addAction(d_future_table->action_set_as_z);

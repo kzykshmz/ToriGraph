@@ -223,11 +223,15 @@ ColumnInsertEmptyRowsCmd::~ColumnInsertEmptyRowsCmd() { }
 
 void ColumnInsertEmptyRowsCmd::redo()
 {
+    if (d_before < 0 || d_count <= 0)
+        return;
     d_col->insertRows(d_before, d_count);
 }
 
 void ColumnInsertEmptyRowsCmd::undo()
 {
+    if (d_before < 0 || d_count <= 0)
+        return;
     d_col->removeRows(d_before, d_count);
 }
 
@@ -240,7 +244,8 @@ void ColumnInsertEmptyRowsCmd::undo()
 ///////////////////////////////////////////////////////////////////////////
 ColumnRemoveRowsCmd::ColumnRemoveRowsCmd(Column::Private *col, int first, int count,
                                          QUndoCommand *parent)
-    : QUndoCommand(parent), d_col(col), d_first(first), d_count(count), d_backup(0)
+    : QUndoCommand(parent), d_col(col), d_first(first), d_count(count), d_backup(nullptr),
+      d_backup_owner(nullptr)
 {
     setText(QObject::tr("%1: remove %2 row(s)").arg(col->name()).arg(count));
 }
@@ -253,6 +258,8 @@ ColumnRemoveRowsCmd::~ColumnRemoveRowsCmd()
 
 void ColumnRemoveRowsCmd::redo()
 {
+    if (d_first < 0 || d_count <= 0)
+        return;
     if (d_backup == 0) {
         if (d_first >= d_col->rowCount())
             d_data_row_count = 0;
@@ -273,6 +280,8 @@ void ColumnRemoveRowsCmd::redo()
 
 void ColumnRemoveRowsCmd::undo()
 {
+    if (d_first < 0 || d_count <= 0 || !d_backup)
+        return;
     d_col->insertRows(d_first, d_count);
     d_col->copy(d_backup, 0, d_first, d_data_row_count);
     d_col->resizeTo(d_old_size);
@@ -672,6 +681,8 @@ ColumnSetTextCmd::~ColumnSetTextCmd() { }
 
 void ColumnSetTextCmd::redo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeQString)
+        return;
     d_old_value = d_col->textAt(d_row);
     d_row_count = d_col->rowCount();
     d_validity = d_col->validityAttribute();
@@ -680,6 +691,8 @@ void ColumnSetTextCmd::redo()
 
 void ColumnSetTextCmd::undo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeQString)
+        return;
     d_col->setTextAt(d_row, d_old_value);
     d_col->resizeTo(d_row_count);
     d_col->replaceData(d_col->dataPointer(), d_validity);
@@ -703,6 +716,8 @@ ColumnSetValueCmd::~ColumnSetValueCmd() { }
 
 void ColumnSetValueCmd::redo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeDouble)
+        return;
     d_old_value = d_col->valueAt(d_row);
     d_row_count = d_col->rowCount();
     d_validity = d_col->validityAttribute();
@@ -711,6 +726,8 @@ void ColumnSetValueCmd::redo()
 
 void ColumnSetValueCmd::undo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeDouble)
+        return;
     d_col->setValueAt(d_row, d_old_value);
     d_col->resizeTo(d_row_count);
     d_col->replaceData(d_col->dataPointer(), d_validity);
@@ -734,6 +751,8 @@ ColumnSetDateTimeCmd::~ColumnSetDateTimeCmd() { }
 
 void ColumnSetDateTimeCmd::redo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeQDateTime)
+        return;
     d_old_value = d_col->dateTimeAt(d_row);
     d_row_count = d_col->rowCount();
     d_validity = d_col->validityAttribute();
@@ -742,6 +761,8 @@ void ColumnSetDateTimeCmd::redo()
 
 void ColumnSetDateTimeCmd::undo()
 {
+    if (d_row < 0 || d_col->dataType() != SciDAVis::TypeQDateTime)
+        return;
     d_col->setDateTimeAt(d_row, d_old_value);
     d_col->resizeTo(d_row_count);
     d_col->replaceData(d_col->dataPointer(), d_validity);
@@ -769,6 +790,8 @@ ColumnReplaceTextsCmd::~ColumnReplaceTextsCmd() { }
 
 void ColumnReplaceTextsCmd::redo()
 {
+    if (d_col->dataType() != SciDAVis::TypeQString || d_first < 0)
+        return;
     if (!d_copied) {
         d_old_values = static_cast<QStringList *>(d_col->dataPointer())
                                ->mid(d_first, d_new_values.count());
@@ -781,6 +804,8 @@ void ColumnReplaceTextsCmd::redo()
 
 void ColumnReplaceTextsCmd::undo()
 {
+    if (!d_copied || d_col->dataType() != SciDAVis::TypeQString)
+        return;
     d_col->replaceTexts(d_first, d_old_values);
     d_col->resizeTo(d_row_count);
     d_col->replaceData(d_col->dataPointer(), d_validity);
@@ -809,6 +834,8 @@ ColumnReplaceValuesCmd::~ColumnReplaceValuesCmd() { }
 
 void ColumnReplaceValuesCmd::redo()
 {
+    if (d_col->dataType() != SciDAVis::TypeDouble || d_first < 0)
+        return;
     if (!d_copied) {
         d_old_values = static_cast<QVector<qreal> *>(d_col->dataPointer())
                                ->mid(d_first, d_new_values.count());
@@ -821,6 +848,8 @@ void ColumnReplaceValuesCmd::redo()
 
 void ColumnReplaceValuesCmd::undo()
 {
+    if (!d_copied || d_col->dataType() != SciDAVis::TypeDouble)
+        return;
     d_col->replaceValues(d_first, d_old_values);
     d_col->resizeTo(d_row_count);
     d_col->replaceData(d_col->dataPointer(), d_validity);
@@ -849,6 +878,8 @@ ColumnReplaceDateTimesCmd::~ColumnReplaceDateTimesCmd() { }
 
 void ColumnReplaceDateTimesCmd::redo()
 {
+    if (d_col->dataType() != SciDAVis::TypeQDateTime || d_first < 0)
+        return;
     if (!d_copied) {
         d_old_values = static_cast<QList<QDateTime> *>(d_col->dataPointer())
                                ->mid(d_first, d_new_values.count());
@@ -861,9 +892,11 @@ void ColumnReplaceDateTimesCmd::redo()
 
 void ColumnReplaceDateTimesCmd::undo()
 {
+    if (!d_copied || d_col->dataType() != SciDAVis::TypeQDateTime)
+        return;
     d_col->replaceDateTimes(d_first, d_old_values);
-    d_col->replaceData(d_col->dataPointer(), d_validity);
     d_col->resizeTo(d_row_count);
+    d_col->replaceData(d_col->dataPointer(), d_validity);
 }
 
 ///////////////////////////////////////////////////////////////////////////

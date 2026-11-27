@@ -1316,6 +1316,7 @@ struct GlobalFitSlot
     GlobalSlotBoundMode mode = GBoundNone;
     double lo = -std::numeric_limits<double>::infinity();
     double hi = std::numeric_limits<double>::infinity();
+    double refScale = 0.0;
 
     double mapUtoP(double u) const
     {
@@ -1361,11 +1362,14 @@ struct GlobalFitSlot
     }
 
     //! Reported value: on the bound when within the tolerance the single-curve fit uses.
-    double snapP(double p) const { return (mode == GBoundNone) ? p : Fit::snapToBound(p, lo, hi); }
+    double snapP(double p) const
+    {
+        return (mode == GBoundNone) ? p : Fit::snapToBound(p, lo, hi, refScale);
+    }
     //! -1 / +1 when the slot (solver value u) is held at its lower / upper bound, else 0.
     int boundSide(double u) const
     {
-        return (mode == GBoundNone) ? 0 : Fit::boundSide(mapUtoP(u), lo, hi);
+        return (mode == GBoundNone) ? 0 : Fit::boundSide(mapUtoP(u), lo, hi, refScale);
     }
 };
 
@@ -1802,18 +1806,30 @@ bool NonLinearFit::fitGlobal(const QStringList &curveTitles, const QVector<bool>
             sl.mode = GBoundBoth;
             sl.lo = lo;
             sl.hi = hi;
+            sl.refScale = std::abs(hi - lo);
             double t = std::max(1e-4, std::min(1.0 - 1e-4, (pInit - lo) / (hi - lo)));
             u0.push_back(std::atanh(2.0 * t - 1.0));
         } else if (bounded && std::isfinite(lo)) {
             sl.mode = GBoundLower;
             sl.lo = lo;
-            u0.push_back(std::sqrt(std::max(1e-3, pInit - lo)));
+            const double nudge = (std::abs(lo) > 0.0)
+                    ? (1e-3 * std::abs(lo))
+                    : (std::abs(pInit) > 0.0 ? 1e-3 * std::abs(pInit) : 1e-3);
+            const double d0 = (pInit > lo) ? (pInit - lo) : nudge;
+            sl.refScale = (std::abs(pInit) > 0.0) ? std::abs(pInit) : nudge;
+            u0.push_back(std::sqrt(d0));
         } else if (bounded && std::isfinite(hi)) {
             sl.mode = GBoundUpper;
             sl.hi = hi;
-            u0.push_back(std::sqrt(std::max(1e-3, hi - pInit)));
+            const double nudge = (std::abs(hi) > 0.0)
+                    ? (1e-3 * std::abs(hi))
+                    : (std::abs(pInit) > 0.0 ? 1e-3 * std::abs(pInit) : 1e-3);
+            const double d0 = (hi > pInit) ? (hi - pInit) : nudge;
+            sl.refScale = (std::abs(pInit) > 0.0) ? std::abs(pInit) : nudge;
+            u0.push_back(std::sqrt(d0));
         } else {
             sl.mode = GBoundNone;
+            sl.refScale = std::abs(pInit);
             u0.push_back(pInit);
         }
         ctx.freeSlots.push_back(sl);
@@ -2305,18 +2321,30 @@ bool NonLinearFit::fitImplicitODR(const QString &implicitExprFxy, const QStringL
             sl.mode = GBoundBoth;
             sl.lo = lo;
             sl.hi = hi;
+            sl.refScale = std::abs(hi - lo);
             double t = std::max(1e-4, std::min(1.0 - 1e-4, (pInit - lo) / (hi - lo)));
             u0.push_back(std::atanh(2.0 * t - 1.0));
         } else if (bounded && std::isfinite(lo)) {
             sl.mode = GBoundLower;
             sl.lo = lo;
-            u0.push_back(std::sqrt(std::max(1e-3, pInit - lo)));
+            const double nudge = (std::abs(lo) > 0.0)
+                    ? (1e-3 * std::abs(lo))
+                    : (std::abs(pInit) > 0.0 ? 1e-3 * std::abs(pInit) : 1e-3);
+            const double d0 = (pInit > lo) ? (pInit - lo) : nudge;
+            sl.refScale = (std::abs(pInit) > 0.0) ? std::abs(pInit) : nudge;
+            u0.push_back(std::sqrt(d0));
         } else if (bounded && std::isfinite(hi)) {
             sl.mode = GBoundUpper;
             sl.hi = hi;
-            u0.push_back(std::sqrt(std::max(1e-3, hi - pInit)));
+            const double nudge = (std::abs(hi) > 0.0)
+                    ? (1e-3 * std::abs(hi))
+                    : (std::abs(pInit) > 0.0 ? 1e-3 * std::abs(pInit) : 1e-3);
+            const double d0 = (hi > pInit) ? (hi - pInit) : nudge;
+            sl.refScale = (std::abs(pInit) > 0.0) ? std::abs(pInit) : nudge;
+            u0.push_back(std::sqrt(d0));
         } else {
             sl.mode = GBoundNone;
+            sl.refScale = std::abs(pInit);
             u0.push_back(pInit);
         }
         ctx.freeSlots.push_back(sl);

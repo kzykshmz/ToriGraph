@@ -869,6 +869,76 @@ void writeBulkColumnArray(Table *t, int colIdx, const QJsonArray &arr, const QSt
     }
 }
 
+void validateColumnMetadataObject(const QJsonObject &meta)
+{
+    if (meta.contains(QStringLiteral("name")) && !meta.value(QStringLiteral("name")).isNull())
+        (void)optionalJsonString(meta, QStringLiteral("name"));
+    if (meta.contains(QStringLiteral("long_name"))
+        && !meta.value(QStringLiteral("long_name")).isNull()) {
+        (void)optionalJsonString(meta, QStringLiteral("long_name"));
+    }
+    if (meta.contains(QStringLiteral("units")) && !meta.value(QStringLiteral("units")).isNull())
+        (void)optionalJsonString(meta, QStringLiteral("units"));
+    if (meta.contains(QStringLiteral("comment"))
+        && !meta.value(QStringLiteral("comment")).isNull()) {
+        (void)optionalJsonString(meta, QStringLiteral("comment"));
+    }
+    if (meta.contains(QStringLiteral("mode")) && !meta.value(QStringLiteral("mode")).isNull()) {
+        const QString mStr = optionalJsonString(meta, QStringLiteral("mode")).trimmed().toLower();
+        if (!mStr.isEmpty() && mStr != QStringLiteral("text") && mStr != QStringLiteral("string")
+            && mStr != QStringLiteral("numeric") && mStr != QStringLiteral("double")
+            && mStr != QStringLiteral("float") && mStr != QStringLiteral("number")
+            && mStr != QStringLiteral("datetime") && mStr != QStringLiteral("date")
+            && mStr != QStringLiteral("time") && mStr != QStringLiteral("month")
+            && mStr != QStringLiteral("day")) {
+            throwInvalidParams(
+                    QStringLiteral("Unknown column mode '%1' (expected numeric|text|datetime|month|day).")
+                            .arg(mStr));
+        }
+    }
+    if (meta.contains(QStringLiteral("plot_designation"))
+        && !meta.value(QStringLiteral("plot_designation")).isNull()) {
+        const QString pdStr =
+                optionalJsonString(meta, QStringLiteral("plot_designation")).trimmed();
+        if (!pdStr.isEmpty()) {
+            const QString pdLower = pdStr.toLower();
+            const bool validPd = (pdLower == QStringLiteral("x") || pdLower == QStringLiteral("y")
+                                  || pdLower == QStringLiteral("z")
+                                  || pdLower == QStringLiteral("xerr")
+                                  || pdLower == QStringLiteral("x_err")
+                                  || pdLower == QStringLiteral("dx")
+                                  || pdLower == QStringLiteral("yerr")
+                                  || pdLower == QStringLiteral("y_err")
+                                  || pdLower == QStringLiteral("dy")
+                                  || pdLower == QStringLiteral("label")
+                                  || pdLower == QStringLiteral("none")
+                                  || pdLower == QStringLiteral("disregard")
+                                  || pdLower == QStringLiteral("nodesignation"));
+            if (!validPd) {
+                throwInvalidParams(
+                        QStringLiteral("Unknown plot_designation '%1' (expected X|Y|Z|xErr|yErr|Label|None).")
+                                .arg(pdStr));
+            }
+        }
+    }
+    if (meta.contains(QStringLiteral("numeric_format"))
+        && !meta.value(QStringLiteral("numeric_format")).isNull()) {
+        const QString fmt = optionalJsonString(meta, QStringLiteral("numeric_format")).trimmed();
+        if (!fmt.isEmpty()) {
+            const char fc = fmt.at(0).toLatin1();
+            if (fc != 'f' && fc != 'e' && fc != 'E' && fc != 'g' && fc != 'G') {
+                throwInvalidParams(
+                        QStringLiteral("Unsupported numeric_format '%1' (expected f|e|E|g|G).")
+                                .arg(fmt));
+            }
+        }
+    }
+    if (meta.contains(QStringLiteral("precision"))
+        && !meta.value(QStringLiteral("precision")).isNull()) {
+        (void)parseBoundedInt(meta, QStringLiteral("precision"), 6, 0, 16);
+    }
+}
+
 void applyColumnMetadataObject(Table *t, int colIdx, const QJsonObject &meta)
 {
     Column *col = t->column(colIdx);
@@ -3101,10 +3171,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 if (ctx.recursionDepth <= 0) {
                     ctx.recursionDepth = 0;
                     for (const auto &pr : ctx.preBatchGraphSnaps) {
-                        if (MultiLayer *ml = pr.first.data()) {
-                            if (QUndoStack *us = ml->undoStack())
-                                us->endMacro();
-                        }
+                        if (MultiLayer *ml = pr.first.data())
+                            ml->endSuppressUndo();
                     }
                     ctx.preBatchGraphSnaps.clear();
                     ctx.dirtyGraphs.clear();
@@ -3126,7 +3194,6 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             const QString stepMethod = stepObj.value(QStringLiteral("method")).toString().trimmed();
             const QJsonObject rawStepParams =
                     stepObj.value(QStringLiteral("params")).toObject();
-
             try {
                 const QJsonObject resolvedParams =
                         resolveBatchValueTokens(rawStepParams, stepResultsVec, i).toObject();
@@ -3231,10 +3298,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 bctx.dirtyMultiLayers.clear();
                 bctx.snapshottedMultiLayers.clear();
                 for (const auto &pr : openSnaps) {
-                    if (MultiLayer *ml = pr.first.data()) {
-                        if (QUndoStack *us = ml->undoStack())
-                            us->endMacro();
-                    }
+                    if (MultiLayer *ml = pr.first.data())
+                        ml->endSuppressUndo();
                 }
             }
 
@@ -3243,12 +3308,12 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     MultiLayer *ml = it.key();
                     if (!ml || !d_app->windowsList().contains(ml))
                         continue;
-                    ml->restoreSnapshotInPlace(d_app, it.value());
                     if (ml->undoStack() && fastMlUndoIdx.contains(ml)) {
                         const int wantIdx = fastMlUndoIdx.value(ml);
                         if (wantIdx >= 0 && ml->undoStack()->index() > wantIdx)
                             ml->undoStack()->setIndex(wantIdx);
                     }
+                    ml->restoreSnapshotInPlace(d_app, it.value());
                 }
                 restorePreBatchGadgets();
                 rolledBack = true;
@@ -3332,10 +3397,8 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     bctx.dirtyMultiLayers.clear();
                     bctx.snapshottedMultiLayers.clear();
                     for (const auto &pr : openSnaps) {
-                        if (MultiLayer *ml = pr.first.data()) {
-                            if (QUndoStack *us = ml->undoStack())
-                                us->endMacro();
-                        }
+                        if (MultiLayer *ml = pr.first.data())
+                            ml->endSuppressUndo();
                     }
                 }
                 if (!savedActiveWinName.isEmpty()) {
@@ -3371,10 +3434,9 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             }
             for (const auto &pr : snapsToCommit) {
                 if (MultiLayer *ml = pr.first.data()) {
+                    ml->endSuppressUndo();
                     if (d_app->windowsList().contains(ml))
                         ml->pushUndoSnapshot(QStringLiteral("Batch Operations"), pr.second);
-                    if (QUndoStack *us = ml->undoStack())
-                        us->endMacro();
                 }
             }
         }
@@ -5582,11 +5644,15 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
             && !params.value(QStringLiteral("columns")).isNull()) {
             if (!params.value(QStringLiteral("columns")).isArray())
                 throwInvalidParams(QStringLiteral("Parameter 'columns' must be a list."));
-            for (const QJsonValue &cv : params.value(QStringLiteral("columns")).toArray()) {
+            const QJsonArray cArr = params.value(QStringLiteral("columns")).toArray();
+            for (int c = 0; c < cArr.size(); ++c) {
+                const QJsonValue &cv = cArr[c];
                 if (!cv.isString() && !cv.isObject()) {
                     throwInvalidParams(
                             QStringLiteral("Each entry in 'columns' must be a column name string or metadata object."));
                 }
+                if (cv.isObject() && c < cols)
+                    validateColumnMetadataObject(cv.toObject());
             }
         }
         if (params.contains(QStringLiteral("col_names"))
@@ -5606,19 +5672,47 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                         QStringLiteral("Parameter 'designations' must be a list or object mapping column -> designation."));
             }
             if (dv.isArray()) {
-                for (const QJsonValue &item : dv.toArray()) {
+                const QJsonArray dArr = dv.toArray();
+                for (int c = 0; c < dArr.size(); ++c) {
+                    const QJsonValue &item = dArr[c];
                     if (!item.isString())
                         throwInvalidParams(QStringLiteral("Each designation in 'designations' must be a string."));
+                    if (c < cols) {
+                        QJsonObject mo;
+                        mo[QStringLiteral("plot_designation")] = item;
+                        validateColumnMetadataObject(mo);
+                    }
                 }
             } else {
                 const QJsonObject dObj = dv.toObject();
                 for (auto it = dObj.begin(); it != dObj.end(); ++it) {
                     if (!it.value().isString())
                         throwInvalidParams(QStringLiteral("Each designation in 'designations' must be a string."));
+                    QJsonObject mo;
+                    mo[QStringLiteral("plot_designation")] = it.value();
+                    validateColumnMetadataObject(mo);
                 }
             }
         }
         Table *t = createUniqueTableHeadless(d_app, rows, cols, reqName);
+        struct ScopedNewTableGuard
+        {
+            ApplicationWindow *app = nullptr;
+            QPointer<Table> tbl;
+            bool committed = false;
+            ScopedNewTableGuard(ApplicationWindow *a, Table *table) : app(a), tbl(table) {}
+            ~ScopedNewTableGuard()
+            {
+                if (!committed && tbl) {
+                    tbl->askOnCloseEvent(false);
+                    tbl->hide();
+                    tbl->close();
+                    if (tbl && tbl->folder())
+                        app->closeWindow(tbl.data());
+                    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                }
+            }
+        } tGuard(d_app, t);
         if (params.contains(QStringLiteral("columns"))
             && params.value(QStringLiteral("columns")).isArray()) {
             const QJsonArray cArr = params.value(QStringLiteral("columns")).toArray();
@@ -5658,6 +5752,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 }
             }
         }
+        tGuard.committed = true;
         outResult = serializeTableInfo(t);
         outResult[QStringLiteral("ok")] = true;
         return true;
@@ -5728,6 +5823,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                         QStringLiteral("Column array size exceeds 5,000,000 rows / 25,000,000 cells."));
             }
         }
+        validateColumnMetadataObject(params);
         struct ScopedFutureTableMacro
         {
             future::Table *ft = nullptr;
@@ -5782,6 +5878,7 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                     QStringLiteral("Column data length (%1) exceeds limits (max 5,000,000 rows, 25,000,000 cells).")
                             .arg(arr.size()));
         }
+        validateColumnMetadataObject(params);
         struct ScopedSetColDataMacro
         {
             future::Table *ft = nullptr;
@@ -5884,6 +5981,21 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                             .arg(keys.size()));
         }
 
+        const QJsonObject metaMap = params.value(QStringLiteral("meta")).toObject();
+        const QJsonObject unitsMap = params.value(QStringLiteral("units")).toObject();
+        const QJsonObject longNamesMap = params.value(QStringLiteral("long_names")).toObject();
+        const QJsonObject commentsMap = params.value(QStringLiteral("comments")).toObject();
+        const QJsonObject desigMap = params.value(QStringLiteral("designations")).toObject();
+        for (const QString &colKey : keys) {
+            if (desigMap.contains(colKey)) {
+                QJsonObject dm;
+                dm[QStringLiteral("plot_designation")] = desigMap.value(colKey);
+                validateColumnMetadataObject(dm);
+            }
+            if (metaMap.contains(colKey) && metaMap.value(colKey).isObject())
+                validateColumnMetadataObject(metaMap.value(colKey).toObject());
+        }
+
         Table *t = resolveTable(d_app, params, QStringLiteral("table"), false);
         const bool tableWasCreated = (t == nullptr);
         int preexistingCols = 0;
@@ -5948,11 +6060,6 @@ bool dispatchAppTableMatrixMethod(PythonAutomationServer *server, ApplicationWin
                 t->setNumRows(maxRows);
         }
 
-        const QJsonObject metaMap = params.value(QStringLiteral("meta")).toObject();
-        const QJsonObject unitsMap = params.value(QStringLiteral("units")).toObject();
-        const QJsonObject longNamesMap = params.value(QStringLiteral("long_names")).toObject();
-        const QJsonObject commentsMap = params.value(QStringLiteral("comments")).toObject();
-        const QJsonObject desigMap = params.value(QStringLiteral("designations")).toObject();
         for (int k = 0; k < keys.size(); ++k) {
             const QString colKey = keys[k];
             const int c = targetCol[k];

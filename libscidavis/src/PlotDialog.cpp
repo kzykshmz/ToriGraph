@@ -1769,7 +1769,7 @@ void PlotDialog::showStatistics()
             t->column(0)->setValueAt(i, h->x(i));
             t->column(1)->setValueAt(i, h->y(i));
             t->column(2)->setValueAt(i, sum);
-            t->column(3)->setValueAt(i, sum / h_sum * 100);
+            t->column(3)->setValueAt(i, (h_sum > 0.0) ? (sum / h_sum * 100.0) : 0.0);
         }
         t->setHeader(QStringList() << tr("Bins") << tr("Quantity") << tr("Sum") << tr("Percent"));
         t->showMaximized();
@@ -2383,7 +2383,7 @@ void PlotDialog::setActiveCurve(CurveTreeItem *item)
         boxPieLineWidth->setValue(pie->pen().width());
         boxPieLineColor->setColor(pie->pen().color());
         setPiePenStyle(pie->pen().style());
-        boxFirstColor->setColor(pie->firstColor());
+        boxFirstColor->setColor(pie->color(0));
         return;
     }
 
@@ -3019,14 +3019,18 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
             const int newXAxis = boxXAxis->currentIndex() + 2;
             const int newYAxis = boxYAxis->currentIndex();
             if (oldXAxis != newXAxis || oldYAxis != newYAxis) {
-                plotItem->setAxis(newXAxis, newYAxis);
-                if (oldXAxis != newXAxis) {
-                    graph->enableAxis(newXAxis, true);
-                    graph->setAutoScaleAxis(newXAxis);
-                }
-                if (oldYAxis != newYAxis) {
-                    graph->enableAxis(newYAxis, true);
-                    graph->setAutoScaleAxis(newYAxis);
+                if (plotItem->rtti() == QwtPlotItem::Rtti_PlotCurve) {
+                    graph->setCurveAxes(curveItem->plotItemIndex(), newXAxis, newYAxis);
+                } else {
+                    plotItem->setAxis(newXAxis, newYAxis);
+                    if (oldXAxis != newXAxis) {
+                        graph->enableAxis(newXAxis, true);
+                        graph->setAutoScaleAxis(newXAxis);
+                    }
+                    if (oldYAxis != newYAxis) {
+                        graph->enableAxis(newYAxis, true);
+                        graph->setAutoScaleAxis(newYAxis);
+                    }
                 }
                 needReplot = true;
                 anyHandled = true;
@@ -3289,7 +3293,8 @@ bool PlotDialog::commitParamsForItem(QTreeWidgetItem *targetItem, bool explicitA
                              Graph::getPenStyle(boxPieLineStyle->currentIndex())));
             pie->setRay(boxRadius->value());
             pie->setBrushStyle(boxPiePattern->getSelectedPattern());
-            pie->setFirstColor(boxFirstColor->colorIndex(boxFirstColor->color()));
+            if (boxFirstColor->color() != pie->color(0))
+                pie->setFirstColor(boxFirstColor->colorIndex(boxFirstColor->color()));
             needReplot = true;
             anyHandled = true;
         }

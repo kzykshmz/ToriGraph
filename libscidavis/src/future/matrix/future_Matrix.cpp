@@ -972,14 +972,17 @@ void Matrix::copy(Matrix *other)
     for (int i = 0; i < columns; i++)
         setColumnWidth(i, other->columnWidth(i));
     d_matrix_private->blockChangeSignals(true);
-    for (int i = 0; i < columns; i++)
-        setColumnCells(i, 0, rows - 1, other->columnCells(i, 0, rows - 1));
+    if (rows > 0) {
+        for (int i = 0; i < columns; i++)
+            setColumnCells(i, 0, rows - 1, other->columnCells(i, 0, rows - 1));
+    }
     setCoordinates(other->xStart(), other->xEnd(), other->yStart(), other->yEnd());
     setNumericFormat(other->numericFormat());
     setDisplayedDigits(other->displayedDigits());
     setFormula(other->formula());
     d_matrix_private->blockChangeSignals(false);
-    emit dataChanged(0, 0, rows - 1, columns - 1);
+    if (rows > 0 && columns > 0)
+        emit dataChanged(0, 0, rows - 1, columns - 1);
     if (d_view)
         d_view->rereadSectionSizes();
     endMacro();
@@ -1338,6 +1341,9 @@ bool Matrix::load(XmlStreamReader *reader)
                     return false;
             }
         }
+        d_matrix_private->blockChangeSignals(false);
+        if (!reader->hasError() && rowCount() > 0 && columnCount() > 0)
+            emit dataChanged(0, 0, rowCount() - 1, columnCount() - 1);
     } else // no matrix element
         reader->raiseError(tr("no matrix element found"));
 
@@ -1421,7 +1427,7 @@ bool Matrix::readRowHeightElement(XmlStreamReader *reader)
     Q_ASSERT(reader->isStartElement() && reader->name() == "row_height");
     bool ok;
     int row = reader->readAttributeInt("row", &ok);
-    if (!ok) {
+    if (!ok || row < 0 || row >= rowCount()) {
         reader->raiseError(tr("invalid or missing row index"));
         return false;
     }
@@ -1443,7 +1449,7 @@ bool Matrix::readColumnWidthElement(XmlStreamReader *reader)
     Q_ASSERT(reader->isStartElement() && reader->name() == "column_width");
     bool ok;
     int col = reader->readAttributeInt("column", &ok);
-    if (!ok) {
+    if (!ok || col < 0 || col >= columnCount()) {
         reader->raiseError(tr("invalid or missing column index"));
         return false;
     }

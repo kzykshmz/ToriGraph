@@ -265,19 +265,56 @@ def _coerce_tabular_input(
     comments: Dict[str, str] = {}
     designations: Dict[str, str] = {}
 
+    def _apply_col_names_override(
+        raw_cols: List[str],
+        cols: Dict[str, List[Any]],
+        u: Dict[str, str],
+        ln: Dict[str, str],
+        cm: Dict[str, str],
+        des: Dict[str, str],
+    ) -> Tuple[Dict[str, List[Any]], List[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, str]]:
+        if col_names is None:
+            return cols, raw_cols, u, ln, cm, des
+        override = [str(c) for c in col_names]
+        if len(set(override)) != len(override):
+            raise ValueError(
+                f"col_names ({override!r}) must not contain duplicate column names."
+            )
+        if not override and raw_cols:
+            raise ValueError(
+                f"col_names must not be empty when input has columns ({raw_cols!r})."
+            )
+        if all(c in cols for c in override):
+            keep = set(override)
+            return (
+                {c: cols[c] for c in override},
+                override,
+                {k: v for k, v in u.items() if k in keep},
+                {k: v for k, v in ln.items() if k in keep},
+                {k: v for k, v in cm.items() if k in keep},
+                {k: v for k, v in des.items() if k in keep},
+            )
+        if len(override) == len(raw_cols):
+            rename_map = dict(zip(raw_cols, override))
+            return (
+                {override[i]: cols[raw_cols[i]] for i in range(len(raw_cols))},
+                override,
+                {rename_map.get(k, k): v for k, v in u.items()},
+                {rename_map.get(k, k): v for k, v in ln.items()},
+                {rename_map.get(k, k): v for k, v in cm.items()},
+                {rename_map.get(k, k): v for k, v in des.items()},
+            )
+        raise ValueError(
+            f"col_names ({override!r}) must either be a subset/reordering of existing "
+            f"columns ({raw_cols!r}) or have the same length ({len(raw_cols)})."
+        )
+
     # 1. Polars DataFrame
     if _is_polars_dataframe(data):
         as_dict = data.to_dict(as_series=False)
         raw_cols = [str(c) for c in data.columns]
         cols_dict = {str(k): [_coerce_scalar(v) for v in vals] for k, vals in as_dict.items()}
-        if col_names is not None:
-            override = [str(c) for c in col_names]
-            if len(override) == len(raw_cols) and set(override) != set(raw_cols):
-                cols_dict = {override[i]: cols_dict[raw_cols[i]] for i in range(len(raw_cols))}
-            ordered = override
-        else:
-            ordered = raw_cols
-        return cols_dict, ordered, units, long_names, comments, designations
+        return _apply_col_names_override(raw_cols, cols_dict, units, long_names, comments, designations)
 
     # 2. Pandas DataFrame
     if _is_pandas_dataframe(data):
@@ -328,23 +365,15 @@ def _coerce_tabular_input(
                     if v is not None and str(v) != "":
                         designations[str(k)] = str(v)
 
-        if col_names is not None:
-            override = [str(c) for c in col_names]
-            if len(override) == len(ordered) and set(override) != set(ordered):
-                old_ordered = list(ordered)
-                cols_dict = {override[i]: cols_dict[old_ordered[i]] for i in range(len(old_ordered))}
-                units = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in units.items()}
-                long_names = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in long_names.items()}
-                comments = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in comments.items()}
-                designations = {override[old_ordered.index(k)] if k in old_ordered else k: v for k, v in designations.items()}
-            ordered = override
-        return cols_dict, ordered, units, long_names, comments, designations
+        return _apply_col_names_override(ordered, cols_dict, units, long_names, comments, designations)
 
     # 3. Mapping[str, Sequence | ndarray | Series]
     if isinstance(data, Mapping):
         cols_dict = {}
+        raw_cols = []
         for k, val in data.items():
             ck = str(k)
+            raw_cols.append(ck)
             cols_dict[ck] = _coerce_1d_sequence(val)
             s_attrs = _extract_series_attrs(val)
             if "units" in s_attrs:
@@ -353,8 +382,7 @@ def _coerce_tabular_input(
                 long_names[ck] = s_attrs["long_name"]
             if "comment" in s_attrs:
                 comments[ck] = s_attrs["comment"]
-        ordered = [str(c) for c in col_names] if col_names is not None else list(cols_dict.keys())
-        return cols_dict, ordered, units, long_names, comments, designations
+        return _apply_col_names_override(raw_cols, cols_dict, units, long_names, comments, designations)
 
     # 4. NumPy ndarray (structured, 1D, or 2D)
     if _is_ndarray_like(data):
@@ -362,8 +390,7 @@ def _coerce_tabular_input(
         if dtype_names:
             raw_fields = [str(fn) for fn in dtype_names]
             cols_dict = {fn: _coerce_1d_sequence(data[fn]) for fn in raw_fields}
-            ordered = [str(c) for c in col_names] if col_names is not None else raw_fields
-            return cols_dict, ordered, units, long_names, comments, designations
+            return _apply_col_names_override(raw_fields, cols_dict, units, long_names, comments, designations)
 
         ndim = int(data.ndim)
         if ndim == 1:
@@ -548,8 +575,13 @@ class BatchContext:
         self.rolled_back: bool = False
         self._prev_batch: Optional["BatchContext"] = None
         self._pending_proxies: List[Tuple[int, str, "weakref.ReferenceType[Any]"]] = []
+        self._flushed: bool = False
 
     def _record_raw(self, method: str, params: Dict[str, Any]) -> _BatchRecordedResult:
+        if self._flushed:
+            self.commands.clear()
+            self._pending_proxies.clear()
+            self._flushed = False
         idx = len(self.commands)
         self.commands.append({"method": str(method), "params": params})
         return _BatchRecordedResult(idx, method, params)
@@ -569,6 +601,10 @@ class BatchContext:
         **kwargs: Any,
     ) -> BatchStepRef:
         """Explicitly append a command to the batch and return a :class:`BatchStepRef`."""
+        if self._flushed:
+            self.commands.clear()
+            self._pending_proxies.clear()
+            self._flushed = False
         merged: Dict[str, Any] = {}
         if params is not None:
             merged.update(_sanitize_for_json(dict(params)))
@@ -582,7 +618,7 @@ class BatchContext:
 
     def execute(self) -> Dict[str, Any]:
         """Flush recorded commands to ToriGraph in a single ``app.batch`` RPC call."""
-        if not self.commands:
+        if not self.commands or self._flushed:
             empty_res: Dict[str, Any] = {
                 "ok": True,
                 "completed": 0,
@@ -590,13 +626,16 @@ class BatchContext:
                 "rolled_back": False,
                 "results": [],
             }
-            self.result = empty_res
-            self.response = empty_res
-            self.results = []
-            self.ok = True
-            self.rolled_back = False
-            return empty_res
+            if not self._flushed:
+                self.result = empty_res
+                self.response = empty_res
+                self.results = []
+                self.ok = True
+                self.rolled_back = False
+                self._flushed = True
+            return self.result if self.result is not None else empty_res
 
+        self._flushed = True
         prev = self.session._active_batch
         self.session._active_batch = None
         try:
@@ -648,7 +687,7 @@ class BatchContext:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.session._active_batch = self._prev_batch
         self._prev_batch = None
-        if exc_type is None and self.commands:
+        if exc_type is None and self.commands and not self._flushed:
             self.execute()
 
 

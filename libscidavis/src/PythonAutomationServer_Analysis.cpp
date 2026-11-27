@@ -1014,12 +1014,15 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             && !params.value(QStringLiteral("weighting")).isNull()) {
             const auto wm =
                     parseWeightingMethod(params.value(QStringLiteral("weighting")).toString());
-            QString wCol = params.value(QStringLiteral("weight_col")).toString().trimmed();
-            if (wm == Fit::WeightArbitraryDataset && wCol.isEmpty()) {
+            const QJsonValue wColVal = params.value(QStringLiteral("weight_col"));
+            const bool hasWCol = !wColVal.isUndefined() && !wColVal.isNull()
+                    && (!wColVal.isString() || !wColVal.toString().trimmed().isEmpty());
+            QString wCol;
+            if (wm == Fit::WeightArbitraryDataset && !hasWCol) {
                 throwInvalidParams(
                         QStringLiteral("Weighting 'dataset' requires a valid 'weight_col'."));
             }
-            if (!wCol.isEmpty()) {
+            if (hasWCol) {
                 Table *wtTbl = nullptr;
                 if (params.contains(QStringLiteral("table"))
                     && !params.value(QStringLiteral("table")).isNull()) {
@@ -1030,10 +1033,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 }
                 if (!wtTbl) {
                     throwInvalidParams(
-                            QStringLiteral("Cannot resolve source table for 'weight_col' '%1'.")
-                                    .arg(wCol));
+                            QStringLiteral("Cannot resolve source table for 'weight_col'."));
                 }
-                const int wi = resolveColumnIndex(wtTbl, wCol, true);
+                const int wi = resolveColumnIndex(wtTbl, wColVal, true);
                 wCol = fullColumnName(wtTbl, wi);
             }
             if (!lf.setWeightingMethod(wm, wCol)) {
@@ -1115,20 +1117,35 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
 
-        Table *t = resolveTable(d_app, params, QStringLiteral("table"), false);
-        QString xErrFull = params.value(QStringLiteral("x_err_col")).toString().trimmed();
-        QString yErrFull = params.value(QStringLiteral("y_err_col")).toString().trimmed();
-        if (t) {
-            if (!xErrFull.isEmpty()) {
-                const int xi = resolveColumnIndex(t, xErrFull, false);
-                if (xi >= 0)
-                    xErrFull = fullColumnName(t, xi);
-            }
-            if (!yErrFull.isEmpty()) {
-                const int yi = resolveColumnIndex(t, yErrFull, false);
-                if (yi >= 0)
-                    yErrFull = fullColumnName(t, yi);
-            }
+        Table *t = nullptr;
+        if (params.contains(QStringLiteral("table"))
+            && !params.value(QStringLiteral("table")).isNull()) {
+            t = resolveTable(d_app, params, QStringLiteral("table"), true);
+        } else if (g && g->curveIndex(curveTitle) >= 0) {
+            if (auto *dc = dynamic_cast<DataCurve *>(g->curve(g->curveIndex(curveTitle))))
+                t = dc->table();
+        }
+        const QJsonValue xErrVal = params.value(QStringLiteral("x_err_col"));
+        const QJsonValue yErrVal = params.value(QStringLiteral("y_err_col"));
+        const bool hasXErr = !xErrVal.isUndefined() && !xErrVal.isNull()
+                && (!xErrVal.isString() || !xErrVal.toString().trimmed().isEmpty());
+        const bool hasYErr = !yErrVal.isUndefined() && !yErrVal.isNull()
+                && (!yErrVal.isString() || !yErrVal.toString().trimmed().isEmpty());
+        QString xErrFull;
+        QString yErrFull;
+        if (hasXErr) {
+            if (!t)
+                throwInvalidParams(
+                        QStringLiteral("Cannot resolve source table for 'x_err_col'."));
+            const int xi = resolveColumnIndex(t, xErrVal, true);
+            xErrFull = fullColumnName(t, xi);
+        }
+        if (hasYErr) {
+            if (!t)
+                throwInvalidParams(
+                        QStringLiteral("Cannot resolve source table for 'y_err_col'."));
+            const int yi = resolveColumnIndex(t, yErrVal, true);
+            yErrFull = fullColumnName(t, yi);
         }
 
         RpcLinearFit lf(d_app, g);
@@ -1461,12 +1478,15 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             && !params.value(QStringLiteral("weighting")).isNull()) {
             const auto wm =
                     parseWeightingMethod(params.value(QStringLiteral("weighting")).toString());
-            QString wCol = params.value(QStringLiteral("weight_col")).toString().trimmed();
-            if (wm == Fit::WeightArbitraryDataset && wCol.isEmpty()) {
+            const QJsonValue wColVal = params.value(QStringLiteral("weight_col"));
+            const bool hasWCol = !wColVal.isUndefined() && !wColVal.isNull()
+                    && (!wColVal.isString() || !wColVal.toString().trimmed().isEmpty());
+            QString wCol;
+            if (wm == Fit::WeightArbitraryDataset && !hasWCol) {
                 throwInvalidParams(
                         QStringLiteral("Weighting 'dataset' requires a valid 'weight_col'."));
             }
-            if (!wCol.isEmpty()) {
+            if (hasWCol) {
                 Table *wtTbl = nullptr;
                 if (params.contains(QStringLiteral("table"))
                     && !params.value(QStringLiteral("table")).isNull()) {
@@ -1477,10 +1497,9 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 }
                 if (!wtTbl) {
                     throwInvalidParams(
-                            QStringLiteral("Cannot resolve source table for 'weight_col' '%1'.")
-                                    .arg(wCol));
+                            QStringLiteral("Cannot resolve source table for 'weight_col'."));
                 }
-                const int wi = resolveColumnIndex(wtTbl, wCol, true);
+                const int wi = resolveColumnIndex(wtTbl, wColVal, true);
                 wCol = fullColumnName(wtTbl, wi);
             }
             if (!nlf.setWeightingMethod(wm, wCol)) {
@@ -1842,10 +1861,12 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         QString curveTitle;
         resolveGraphAndCurveOrAutoPlot(d_app, params, ml, g, curveTitle);
 
-        const bool annotate = params.contains(QStringLiteral("annotate"))
-                ? params.value(QStringLiteral("annotate")).toBool(true)
-                : true;
-        const bool plotCurve = params.contains(QStringLiteral("plot_curve"))
+        const bool hasAnnotate = params.contains(QStringLiteral("annotate"))
+                && !params.value(QStringLiteral("annotate")).isNull();
+        const bool annotate =
+                hasAnnotate ? params.value(QStringLiteral("annotate")).toBool(true) : true;
+        const bool plotCurve = (params.contains(QStringLiteral("plot_curve"))
+                                && !params.value(QStringLiteral("plot_curve")).isNull())
                 ? params.value(QStringLiteral("plot_curve")).toBool(true)
                 : true;
         if (method == QStringLiteral("analysis.fit_quantile")) {
@@ -1856,10 +1877,17 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 if (!std::isfinite(tau) || tau <= 0.0 || tau >= 1.0)
                     throwInvalidParams(QStringLiteral("Quantile 'tau' must satisfy 0 < tau < 1."));
             }
-            ScopedGraphUndoGuard undoGuard(ml, QObject::tr("Quantile Fit"));
+            const bool effectiveAnnotate = hasAnnotate ? annotate : plotCurve;
+            ScopedGraphUndoGuard undoGuard((plotCurve || effectiveAnnotate) ? ml : nullptr,
+                                           QObject::tr("Quantile Fit"));
             const auto rq = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
-                    d_app, g, curveTitle, PiecewiseAndRobustFit::QuantileReg, tau, annotate);
-            if (auto *fc = dynamic_cast<FunctionCurve *>(rq.fittedCurve)) {
+                    d_app, g, curveTitle, PiecewiseAndRobustFit::QuantileReg, tau,
+                    effectiveAnnotate);
+            if (!plotCurve && rq.fittedCurve) {
+                const int ci = g->curveIndex(rq.fittedCurve);
+                if (ci >= 0)
+                    g->removeCurve(ci);
+            } else if (auto *fc = dynamic_cast<FunctionCurve *>(rq.fittedCurve)) {
                 fc->setFunctionType(FunctionCurve::Normal);
                 fc->setVariable(QStringLiteral("x"));
                 if (fc->dataSize() >= 2)
@@ -1921,6 +1949,14 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             double xMin = *std::min_element(xs.begin(), xs.end());
             double xMax = *std::max_element(xs.begin(), xs.end());
             const int n = static_cast<int>(xs.size());
+            constexpr int kMaxPairwiseRobustPoints = 4000;
+            if (n > kMaxPairwiseRobustPoints) {
+                throwInvalidParams(
+                        QStringLiteral("analysis.fit_robust method '%1' supports at most %2 points (got %3); use 'huber' or 'bisquare' for larger datasets.")
+                                .arg(mStr)
+                                .arg(kMaxPairwiseRobustPoints)
+                                .arg(n));
+            }
             const bool isSiegel = (mStr == QStringLiteral("siegel"));
             double slope = 0.0;
             if (isSiegel) {
@@ -2011,9 +2047,11 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         requireCurveMinPoints(g, curveTitle, 3, QStringLiteral("analysis.fit_robust"));
         const auto rm = (mStr == QStringLiteral("huber")) ? PiecewiseAndRobustFit::HuberM
                                                           : PiecewiseAndRobustFit::TukeyBisquare;
-        ScopedGraphUndoGuard undoGuard(plotCurve ? ml : nullptr, QObject::tr("Robust Fit"));
-        const auto rf = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(d_app, g, curveTitle, rm,
-                                                                         0.5, annotate);
+        const bool effectiveAnnotate = hasAnnotate ? annotate : plotCurve;
+        ScopedGraphUndoGuard undoGuard((plotCurve || effectiveAnnotate) ? ml : nullptr,
+                                       QObject::tr("Robust Fit"));
+        const auto rf = PiecewiseAndRobustFit::fitRobustOrQuantileLinear(
+                d_app, g, curveTitle, rm, 0.5, effectiveAnnotate);
         if (!plotCurve && rf.fittedCurve) {
             const int ci = g->curveIndex(rf.fittedCurve);
             if (ci >= 0)
@@ -2854,11 +2892,13 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         MultiLayer *ml = nullptr;
         Graph *g = nullptr;
         QStringList curveTitles;
-        if (params.contains(QStringLiteral("table"))) {
+        if (params.contains(QStringLiteral("table"))
+            && !params.value(QStringLiteral("table")).isNull()) {
             Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
-            int xIdx = params.contains(QStringLiteral("x_col"))
-                    ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
-                    : t->firstXCol();
+            const bool hasXCol = params.contains(QStringLiteral("x_col"))
+                    && !params.value(QStringLiteral("x_col")).isNull();
+            int xIdx = hasXCol ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
+                               : t->firstXCol();
             if (xIdx < 0 && t->numCols() >= 2) {
                 xIdx = 0;
                 t->setColPlotDesignation(0, SciDAVis::X);
@@ -2867,7 +2907,6 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
             if (params.value(QStringLiteral("y_cols")).isArray()) {
                 for (const QJsonValue &yv : params.value(QStringLiteral("y_cols")).toArray()) {
                     const int yi = resolveColumnIndex(t, yv, true);
-                    t->setColPlotDesignation(yi, SciDAVis::Y);
                     yCols << fullColumnName(t, yi);
                 }
             } else {
@@ -2876,7 +2915,10 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                         yCols << fullColumnName(t, c);
                 }
             }
-            ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
+            if (yCols.isEmpty())
+                throwInvalidParams(QStringLiteral("analysis.batch_peaks requires at least one Y column."));
+            const QString explicitX = (xIdx >= 0) ? fullColumnName(t, xIdx) : QString();
+            ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1, explicitX);
             if (!ml)
                 throwRpcRuntime(QStringLiteral("Failed to plot table columns for batch peaks."));
             g = ml->activeGraph();
@@ -3669,16 +3711,25 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
         }
 
         const int order = std::clamp(params.value(QStringLiteral("order")).toInt(4), 1, 10);
-        const double fLow = params.contains(QStringLiteral("cutoff"))
-                ? params.value(QStringLiteral("cutoff")).toDouble(10.0)
-                : (params.contains(QStringLiteral("cutoff_low"))
-                           ? params.value(QStringLiteral("cutoff_low")).toDouble(10.0)
-                           : params.value(QStringLiteral("low_freq")).toDouble(10.0));
-        const double fHigh = params.contains(QStringLiteral("cutoff_high"))
-                ? params.value(QStringLiteral("cutoff_high")).toDouble(0.0)
-                : params.value(QStringLiteral("high_freq")).toDouble(0.0);
+        auto firstNonNullDouble = [&](std::initializer_list<const char *> keys, double defVal) {
+            for (const char *k : keys) {
+                const QString qk = QString::fromLatin1(k);
+                if (params.contains(qk) && !params.value(qk).isNull())
+                    return params.value(qk).toDouble(defVal);
+            }
+            return defVal;
+        };
+        const double fLow = firstNonNullDouble(
+                { "cutoff", "cutoff_low", "low_cutoff", "low_freq" }, 10.0);
+        const double fHigh = firstNonNullDouble(
+                { "cutoff_high", "high_cutoff", "high_freq" }, 0.0);
         if (!std::isfinite(fLow) || fLow <= 0.0)
             throwInvalidParams(QStringLiteral("signal.iir_filter cutoff frequency must be > 0."));
+        if ((pass == AdvancedSignalProc::BandPass || pass == AdvancedSignalProc::BandStop)
+            && (!std::isfinite(fHigh) || fHigh <= fLow)) {
+            throwInvalidParams(
+                    QStringLiteral("signal.iir_filter bandpass/bandstop requires 'cutoff_high' (or 'high_cutoff') > 'cutoff'."));
+        }
         const bool zeroPhase = params.contains(QStringLiteral("zero_phase"))
                 ? params.value(QStringLiteral("zero_phase")).toBool(true)
                 : true;
@@ -3851,15 +3902,12 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                 && !params.contains(QStringLiteral("graph"));
         if (hasTableParams) {
             Table *t = resolveTable(d_app, params, QStringLiteral("table"), true);
-            int xIdx = params.contains(QStringLiteral("x_col"))
-                    ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
-                    : t->firstXCol();
-            if (xIdx < 0 && t->numCols() >= 3) {
+            const bool hasXCol = params.contains(QStringLiteral("x_col"))
+                    && !params.value(QStringLiteral("x_col")).isNull();
+            int xIdx = hasXCol ? resolveColumnIndex(t, params.value(QStringLiteral("x_col")), true)
+                               : t->firstXCol();
+            if (xIdx < 0 && t->numCols() >= 3)
                 xIdx = 0;
-                t->setColPlotDesignation(0, SciDAVis::X);
-            } else if (xIdx >= 0) {
-                t->setColPlotDesignation(xIdx, SciDAVis::X);
-            }
             const QJsonValue y1V = params.contains(QStringLiteral("y1_col"))
                     ? params.value(QStringLiteral("y1_col"))
                     : (params.contains(QStringLiteral("col_a"))
@@ -3872,11 +3920,10 @@ bool dispatchAnalysisAndSignalMethod(ApplicationWindow *d_app, const QString &me
                                : QJsonValue(xIdx <= 1 ? 2 : 1));
             const int y1Idx = resolveColumnIndex(t, y1V, true);
             const int y2Idx = resolveColumnIndex(t, y2V, true);
-            t->setColPlotDesignation(y1Idx, SciDAVis::Y);
-            t->setColPlotDesignation(y2Idx, SciDAVis::Y);
             QStringList yCols;
             yCols << fullColumnName(t, y1Idx) << fullColumnName(t, y2Idx);
-            ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1);
+            const QString explicitX = (xIdx >= 0) ? fullColumnName(t, xIdx) : QString();
+            ml = d_app->multilayerPlot(t, yCols, Graph::Line, 0, t->numRows() - 1, explicitX);
             if (!ml || !ml->activeGraph() || ml->activeGraph()->curves() < 2
                 || !ml->activeGraph()->curve(0) || !ml->activeGraph()->curve(1)) {
                 closeAndDeleteEmptyPlot(d_app, ml);

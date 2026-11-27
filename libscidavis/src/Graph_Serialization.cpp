@@ -496,7 +496,7 @@ QString Graph::savePieCurveLayout()
     else if (pattern == Qt::Dense7Pattern)
         index = 13;
     else
-        throw std::runtime_error("pattern out of range");
+        index = 0;
 
     s += QString::number(index) + "\t";
     s += QString::number(pieCurve->ray()) + "\t";
@@ -1646,8 +1646,8 @@ void Graph::copy(ApplicationWindow *parent, Graph *g)
                      || axisType[i] == AxisType::DateTime)
                 setLabelsDateTimeFormat(i, axisType[i], axesFormatInfo[i]);
             else {
-                QwtTextScaleDraw *sd = (QwtTextScaleDraw *)plot->axisScaleDraw(i);
-                d_plot->setAxisScaleDraw(i, new QwtTextScaleDraw(sd->labelsMap()));
+                if (auto *tsd = dynamic_cast<QwtTextScaleDraw *>(plot->axisScaleDraw(i)))
+                    d_plot->setAxisScaleDraw(i, new QwtTextScaleDraw(tsd->labelsMap()));
             }
         } else {
             sd = d_plot->axisScaleDraw(i);

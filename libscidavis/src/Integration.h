@@ -46,9 +46,11 @@ public:
     InterpolationMethod method() { return d_method; };
     void setMethod(InterpolationMethod method)
     {
+        if (method != Linear && method != Cubic && method != Akima)
+            return;
         InterpolationMethod backup = d_method;
         d_method = method;
-        if (!isDataAcceptable())
+        if (!d_x.empty() && !isDataAcceptable())
             d_method = backup;
     };
 
@@ -63,8 +65,8 @@ protected:
 private:
     void init();
     double trapezoid();
-    QString logInfo();
-    void output() {};
+    QString logInfo() override;
+    void output() override;
 
     //! The method for computing the interpolation used for integrating.
     InterpolationMethod d_method;

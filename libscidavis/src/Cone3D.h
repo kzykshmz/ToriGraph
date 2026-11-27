@@ -38,9 +38,11 @@ class Cone3D : public Qwt3D::VertexEnrichment
 public:
     Cone3D();
     Cone3D(double rad, unsigned quality);
+    Cone3D(const Cone3D &) = delete;
+    Cone3D &operator=(const Cone3D &) = delete;
     ~Cone3D();
 
-    Qwt3D::Enrichment *clone() const { return new Cone3D(*this); }
+    Qwt3D::Enrichment *clone() const { return new Cone3D(radius_, quality_); }
 
     void configure(double rad, unsigned quality);
     void draw(Qwt3D::Triple const &);

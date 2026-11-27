@@ -1307,6 +1307,7 @@ void MultiLayer::removeLayer()
         refreshLayerButtonBadges();
         syncCanvasOverlayVisibility();
         updateCanvasStatusPill();
+        emit modifiedPlot();
         return;
     }
 
@@ -1328,6 +1329,8 @@ void MultiLayer::removeLayer()
 
 void MultiLayer::setGraphGeometry(int x, int y, int w, int h)
 {
+    if (!active_graph || !active_graph->plotWidget())
+        return;
     if (active_graph->pos() == QPoint(x, y) && active_graph->size() == QSize(w, h))
         return;
 

@@ -93,14 +93,23 @@ ColorMapEditor::ColorMapEditor(QWidget *parent)
 
 void ColorMapEditor::updateColorMap()
 {
-    int rows = table->rowCount();
+    const int rows = table->rowCount();
+    if (rows < 2 || !table->item(0, 1) || !table->item(rows - 1, 1))
+        return;
     QColor c_min = QColor(COLORVALUE(table->item(0, 1)->text()));
     QColor c_max = QColor(COLORVALUE(table->item(rows - 1, 1)->text()));
     QwtLinearColorMap map(c_min, c_max);
-    for (int i = 1; i < rows - 1; i++) {
-        QwtDoubleInterval range = QwtDoubleInterval(min_val, max_val);
-        double val = (table->item(i, 0)->text().toDouble() - min_val) / range.width();
-        map.addColorStop(val, QColor(COLORVALUE(table->item(i, 1)->text())));
+    const QwtDoubleInterval range(min_val, max_val);
+    const double span = range.width();
+    if (span > 0.0 && std::isfinite(span)) {
+        for (int i = 1; i < rows - 1; i++) {
+            QTableWidgetItem *lvlIt = table->item(i, 0);
+            QTableWidgetItem *colIt = table->item(i, 1);
+            if (!lvlIt || !colIt)
+                continue;
+            const double val = qBound(0.0, (lvlIt->text().toDouble() - min_val) / span, 1.0);
+            map.addColorStop(val, QColor(COLORVALUE(colIt->text())));
+        }
     }
 
     color_map = map;
@@ -143,12 +152,20 @@ void ColorMapEditor::setRange(double min, double max)
 
 void ColorMapEditor::insertLevel()
 {
-    int row = table->currentRow();
-    QwtDoubleInterval range = QwtDoubleInterval(min_val, max_val);
+    const int row = table->currentRow();
+    if (row <= 0 || row >= table->rowCount())
+        return;
+    QTableWidgetItem *curIt = table->item(row, 0);
+    QTableWidgetItem *prevIt = table->item(row - 1, 0);
+    if (!curIt || !prevIt)
+        return;
 
-    double val = 0.5
-            * (table->item(row, 0)->text().toDouble() + table->item(row - 1, 0)->text().toDouble());
-    double mapped_val = (val - min_val) / range.width();
+    const QwtDoubleInterval range(min_val, max_val);
+    const double span = range.width();
+    const double val = 0.5 * (curIt->text().toDouble() + prevIt->text().toDouble());
+    const double mapped_val = (span > 0.0 && std::isfinite(span))
+            ? qBound(0.0, (val - min_val) / span, 1.0)
+            : 0.0;
     QColor c = QColor(color_map.rgb(QwtDoubleInterval(0, 1), mapped_val));
 
     table->blockSignals(true);
@@ -170,14 +187,17 @@ void ColorMapEditor::insertLevel()
 
 void ColorMapEditor::deleteLevel()
 {
-    table->removeRow(table->currentRow());
+    const int row = table->currentRow();
+    if (row <= 0 || row >= table->rowCount() - 1)
+        return;
+    table->removeRow(row);
     enableButtons(table->currentRow(), 0);
     updateColorMap();
 }
 
 void ColorMapEditor::showColorDialog(int row, int col)
 {
-    if (col != 1)
+    if (col != 1 || row < 0 || row >= table->rowCount() || !table->item(row, 1))
         return;
 
     QColor c = QColor(COLORVALUE(table->item(row, 1)->text()));
@@ -219,7 +239,7 @@ bool ColorMapEditor::eventFilter(QObject *object, QEvent *e)
 
 void ColorMapEditor::validateLevel(int row, int col)
 {
-    if (col)
+    if (col || row < 0 || row >= table->rowCount() || !table->item(row, 0))
         return;
 
     if (row == 0 || row == table->rowCount() - 1) {
@@ -233,39 +253,40 @@ void ColorMapEditor::validateLevel(int row, int col)
         return;
     }
 
-    bool user_input_error = false;
-    QString s = table->item(row, 0)->text().remove("-").remove(".").remove(",").remove("+");
-    if (s.isEmpty() || s.contains(QRegExp("\\D"))) {
+    const QString raw = table->item(row, 0)->text().trimmed();
+    bool ok = false;
+    double val = QLocale().toDouble(raw, &ok);
+    if (!ok)
+        val = QLocale::c().toDouble(QString(raw).replace(QLatin1Char(','), QLatin1Char('.')), &ok);
+    const bool user_input_error = (!ok || !std::isfinite(val));
+    if (user_input_error) {
         QMessageBox::critical(this, tr("Input Error"),
                               tr("Please enter a valid color level value!"));
-        user_input_error = true;
     }
 
-    QwtDoubleInterval range = QwtDoubleInterval(min_val, max_val);
-    double val = table->item(row, 0)->text().replace(",", ".").toDouble();
-    if (!range.contains(val) || user_input_error) {
-        QwtArray<double> colors = color_map.colorStops();
-        val = min_val + colors[row] * range.width();
+    const QwtDoubleInterval range(min_val, max_val);
+    if (user_input_error || !range.contains(val)) {
+        const QwtArray<double> colors = color_map.colorStops();
+        const double stop = (row < int(colors.size())) ? colors[row] : 0.5;
+        val = min_val + stop * range.width();
         table->blockSignals(true);
         table->item(row, 0)->setText(QString::number(val));
         table->blockSignals(false);
+        return;
     }
+
+    table->blockSignals(true);
+    table->item(row, 0)->setText(QString::number(val));
+    table->blockSignals(false);
+    updateColorMap();
 }
 
-void ColorMapEditor::enableButtons(int row, int col, int, int)
+void ColorMapEditor::enableButtons(int row, int, int, int)
 {
-    if (col)
-        return;
-
-    if (row == 0 || row == table->rowCount() - 1)
-        deleteBtn->setEnabled(false);
-    else
-        deleteBtn->setEnabled(true);
-
-    if (!row)
-        insertBtn->setEnabled(false);
-    else
-        insertBtn->setEnabled(true);
+    const int rows = table->rowCount();
+    const bool validRow = (row >= 0 && row < rows);
+    deleteBtn->setEnabled(validRow && row > 0 && row < rows - 1);
+    insertBtn->setEnabled(validRow && row > 0);
 }
 
 void ColorMapEditor::setScaledColors(bool scale)

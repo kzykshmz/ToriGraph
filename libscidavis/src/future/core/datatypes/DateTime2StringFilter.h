@@ -69,7 +69,8 @@ private:
 public:
     virtual QString textAt(int row) const
     {
-        if (!d_inputs.value(0))
+        if (!d_inputs.value(0) || row < 0 || d_inputs.value(0)->rowCount() <= row
+            || d_inputs.value(0)->isInvalid(row))
             return QString();
         QDateTime input_value = d_inputs.value(0)->dateTimeAt(row);
         if (!input_value.date().isValid() && input_value.time().isValid())

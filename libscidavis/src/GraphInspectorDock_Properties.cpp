@@ -489,14 +489,12 @@ void GraphInspectorDock::syncAxisControls()
         syncLineEditClean(d_edit_axis_step,
                           stp > 0.0 ? QString::number(stp, 'g', 8) : QStringLiteral("0"));
 
-        bool isLog10 = false;
-        bool isInverted = (scDiv && scDiv->lowerBound() > scDiv->upperBound());
-        if (const QwtScaleEngine *eng = pw->axisScaleEngine(ax)) {
-            isInverted = eng->testAttribute(QwtScaleEngine::Inverted);
-            QwtScaleTransformation *xform = eng->transformation();
-            isLog10 = (xform && xform->type() == QwtScaleTransformation::Log10);
-            delete xform;
-        }
+        const Graph::AxisBreakSpec brk = g->axisBreak(ax);
+        const QwtScaleEngine *eng = pw->axisScaleEngine(ax);
+        const bool isInverted = eng ? eng->testAttribute(QwtScaleEngine::Inverted)
+                                    : (scDiv && scDiv->lowerBound() > scDiv->upperBound());
+        const bool isLog10 = brk.enabled ? (brk.log10Before && brk.log10After)
+                                         : Plot::isLog10ScaleEngine(eng);
         d_combo_axis_scale->setCurrentIndex(isLog10 ? 1 : 0);
         if (d_chk_axis_reverse)
             d_chk_axis_reverse->setChecked(isInverted);
@@ -504,7 +502,6 @@ void GraphInspectorDock::syncAxisControls()
         if (d_combo_minor_subdiv)
             fillMinorTickCombo(d_combo_minor_subdiv, isLog10, qMax(0, pw->axisMaxMinor(ax)));
 
-        const Graph::AxisBreakSpec brk = g->axisBreak(ax);
         d_chk_axis_break->setChecked(brk.enabled);
         d_lbl_break_from->setVisible(brk.enabled);
         d_edit_break_from->setVisible(brk.enabled);
@@ -2529,9 +2526,11 @@ void GraphInspectorDock::applyGroupAutoStyleFromUi()
             }
 
             if (cv->brush().style() != Qt::NoBrush) {
+                QBrush nb = cv->brush();
                 QColor fc = col;
-                fc.setAlpha(cv->brush().color().alpha() > 0 ? cv->brush().color().alpha() : 65);
-                cv->setBrush(QBrush(fc));
+                fc.setAlpha(nb.color().alpha() > 0 ? nb.color().alpha() : 65);
+                nb.setColor(fc);
+                cv->setBrush(nb);
             }
 
             if (auto *dc = dynamic_cast<DataCurve *>(cv)) {
@@ -2541,7 +2540,6 @@ void GraphInspectorDock::applyGroupAutoStyleFromUi()
                 }
             }
         }
-        lg->reconstructLegend();
         lg->updatePlot();
     }
 

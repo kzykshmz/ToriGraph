@@ -54,11 +54,11 @@ ImageDialog::ImageDialog(QWidget *parent, Qt::WindowFlags fl) : QDialog(parent, 
 
     QGroupBox *gb2 = new QGroupBox(tr("Size"));
     boxWidth = new QSpinBox();
-    boxWidth->setRange(0, 2000);
+    boxWidth->setRange(1, 2000);
     boxWidth->setSuffix(tr(" pixels"));
 
     boxHeight = new QSpinBox();
-    boxHeight->setRange(0, 2000);
+    boxHeight->setRange(1, 2000);
     boxHeight->setSuffix(tr(" pixels"));
 
     QGridLayout *gl2 = new QGridLayout(gb2);
@@ -105,9 +105,11 @@ void ImageDialog::setOrigin(const QPoint &o)
 
 void ImageDialog::setSize(const QSize &size)
 {
-    boxWidth->setValue(size.width());
-    boxHeight->setValue(size.height());
-    aspect_ratio = (double)size.width() / (double)size.height();
+    const int w = qMax(1, size.width());
+    const int h = qMax(1, size.height());
+    boxWidth->setValue(w);
+    boxHeight->setValue(h);
+    aspect_ratio = double(w) / double(h);
 
     connect(boxWidth, SIGNAL(valueChanged(int)), this, SLOT(adjustHeight(int)));
     connect(boxHeight, SIGNAL(valueChanged(int)), this, SLOT(adjustWidth(int)));
@@ -116,21 +118,39 @@ void ImageDialog::setSize(const QSize &size)
 void ImageDialog::adjustHeight(int width)
 {
     if (keepRatioBox->isChecked()) {
+        if (!(aspect_ratio > 1e-12) || !std::isfinite(aspect_ratio))
+            return;
+        const double nextH = double(qMax(1, width)) / aspect_ratio;
+        if (!std::isfinite(nextH))
+            return;
+        const int clampedH = static_cast<int>(
+                qBound(double(boxHeight->minimum()), std::round(nextH),
+                       double(boxHeight->maximum())));
         disconnect(boxHeight, SIGNAL(valueChanged(int)), this, SLOT(adjustWidth(int)));
-        boxHeight->setValue(int(width / aspect_ratio));
+        boxHeight->setValue(clampedH);
         connect(boxHeight, SIGNAL(valueChanged(int)), this, SLOT(adjustWidth(int)));
-    } else
-        aspect_ratio = (double)width / double(boxHeight->value());
+    } else if (boxHeight->value() > 0 && width > 0) {
+        aspect_ratio = double(width) / double(boxHeight->value());
+    }
 }
 
 void ImageDialog::adjustWidth(int height)
 {
     if (keepRatioBox->isChecked()) {
+        if (!(aspect_ratio > 1e-12) || !std::isfinite(aspect_ratio))
+            return;
+        const double nextW = double(qMax(1, height)) * aspect_ratio;
+        if (!std::isfinite(nextW))
+            return;
+        const int clampedW = static_cast<int>(
+                qBound(double(boxWidth->minimum()), std::round(nextW),
+                       double(boxWidth->maximum())));
         disconnect(boxWidth, SIGNAL(valueChanged(int)), this, SLOT(adjustHeight(int)));
-        boxWidth->setValue(int(height * aspect_ratio));
+        boxWidth->setValue(clampedW);
         connect(boxWidth, SIGNAL(valueChanged(int)), this, SLOT(adjustHeight(int)));
-    } else
-        aspect_ratio = double(boxWidth->value()) / (double)height;
+    } else if (height > 0 && boxWidth->value() > 0) {
+        aspect_ratio = double(boxWidth->value()) / double(height);
+    }
 }
 
 void ImageDialog::update()

@@ -158,10 +158,12 @@ void Column::setColumnMode(SciDAVis::ColumnMode mode, AbstractFilter *conversion
     // mode is not changed, but DateTime numeric converter changed
     else if ((mode == SciDAVis::ColumnMode::DateTime) && (nullptr != conversion_filter)) {
         auto numeric_datetime_converter =
-                reinterpret_cast<NumericDateTimeBaseFilter *>(conversion_filter);
+                dynamic_cast<NumericDateTimeBaseFilter *>(conversion_filter);
         if (nullptr != numeric_datetime_converter)
             // the ownership of converter is taken
             d_column_private->setNumericDateTimeFilter(numeric_datetime_converter);
+        else
+            delete conversion_filter;
     }
 }
 
@@ -239,13 +241,13 @@ bool Column::copy(const AbstractColumn *source, int source_start, int dest_start
 
 void Column::insertRows(int before, int count)
 {
-    if (count > 0)
+    if (before >= 0 && count > 0)
         exec(new ColumnInsertEmptyRowsCmd(d_column_private, before, count));
 }
 
 void Column::removeRows(int first, int count)
 {
-    if (count > 0)
+    if (first >= 0 && count > 0)
         exec(new ColumnRemoveRowsCmd(d_column_private, first, count));
 }
 
@@ -430,12 +432,13 @@ void Column::clearFormulas()
 
 void Column::setTextAt(int row, const QString &new_value)
 {
-    exec(new ColumnSetTextCmd(d_column_private, row, new_value));
+    if (row >= 0 && dataType() == SciDAVis::TypeQString)
+        exec(new ColumnSetTextCmd(d_column_private, row, new_value));
 }
 
 void Column::replaceTexts(int first, const QStringList &new_values)
 {
-    if (!new_values.isEmpty())
+    if (first >= 0 && !new_values.isEmpty() && dataType() == SciDAVis::TypeQString)
         exec(new ColumnReplaceTextsCmd(d_column_private, first, new_values));
 }
 
@@ -451,23 +454,25 @@ void Column::setTimeAt(int row, const QTime &new_value)
 
 void Column::setDateTimeAt(int row, const QDateTime &new_value)
 {
-    exec(new ColumnSetDateTimeCmd(d_column_private, row, new_value));
+    if (row >= 0 && dataType() == SciDAVis::TypeQDateTime)
+        exec(new ColumnSetDateTimeCmd(d_column_private, row, new_value));
 }
 
 void Column::replaceDateTimes(int first, const QList<QDateTime> &new_values)
 {
-    if (!new_values.isEmpty())
+    if (first >= 0 && !new_values.isEmpty() && dataType() == SciDAVis::TypeQDateTime)
         exec(new ColumnReplaceDateTimesCmd(d_column_private, first, new_values));
 }
 
 void Column::setValueAt(int row, double new_value)
 {
-    exec(new ColumnSetValueCmd(d_column_private, row, new_value));
+    if (row >= 0 && dataType() == SciDAVis::TypeDouble)
+        exec(new ColumnSetValueCmd(d_column_private, row, new_value));
 }
 
 void Column::replaceValues(int first, const QVector<qreal> &new_values)
 {
-    if (!new_values.isEmpty())
+    if (first >= 0 && !new_values.isEmpty() && dataType() == SciDAVis::TypeDouble)
         exec(new ColumnReplaceValuesCmd(d_column_private, first, new_values));
 }
 

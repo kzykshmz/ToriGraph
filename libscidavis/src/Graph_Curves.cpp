@@ -443,6 +443,7 @@ CurveLayout Graph::initCurveLayout()
 
 CurveLayout Graph::initCurveLayout(int style, int curves)
 {
+    Q_UNUSED(curves);
     int i = n_curves - 1;
 
     CurveLayout cl = initCurveLayout();
@@ -474,17 +475,6 @@ CurveLayout Graph::initCurveLayout(int style, int curves)
         cl.fillCol = okCol.rgba();
         cl.aStyle = 0;
         cl.sType = 0;
-        const int effBarCount = qMax(1, curves);
-        QwtBarCurve *b = dynamic_cast<QwtBarCurve *>(curve(i));
-        if (b) {
-            if (b->isStacked() || effBarCount <= 1) {
-                b->setGap(35);
-                b->setOffset(0);
-            } else {
-                b->setGap(qBound(30, qRound(100.0 * (1.0 - 0.74 / double(effBarCount))), 92));
-                b->setOffset(qRound((double(i) - 0.5 * double(effBarCount - 1)) * 106.0));
-            }
-        }
     } else if (style == Graph::Histogram) {
         cl.filledArea = 1;
         cl.lWidth = 1;
@@ -554,8 +544,8 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
         && old_type != VerticalSteps)
         return;
 
-    if ((type == VerticalBars || type == HorizontalBars)
-        != (old_type == VerticalBars || old_type == HorizontalBars)) {
+    if (type == VerticalBars || type == HorizontalBars
+        || old_type == VerticalBars || old_type == HorizontalBars) {
         // bar curves are represented by a different class than the other curve types, which makes
         // changing from/to horizontal or vertical bars more difficult
         PlotCurve *base_curve = dynamic_cast<PlotCurve *>(curve(curve_index));
@@ -628,7 +618,9 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
         if (wasHighlighted)
             d_plot->setHighlightedCurveKey(c_keys[curve_index]);
         new_curve->setVisible(wasVisible);
-        new_curve->loadData();
+        if (!new_curve->loadData() || curve_index < 0 || curve_index >= n_curves
+            || curve_index >= c_type.size())
+            return;
     }
 
     c_type[curve_index] = type;
@@ -637,6 +629,34 @@ void Graph::setCurveType(int curve_index, CurveType type, bool update)
 
     CurveLayout cl = initCurveLayout(type, 1);
     updateCurveLayout(curve_index, &cl);
+    auto relayoutGroupedBars = [this](int barType) {
+        if (barType != VerticalBars && barType != HorizontalBars)
+            return;
+        QList<QwtBarCurve *> groupedBars;
+        for (int bi = 0; bi < n_curves; ++bi) {
+            if (bi < c_type.size() && c_type[bi] == barType) {
+                if (auto *bc = dynamic_cast<QwtBarCurve *>(curve(bi))) {
+                    if (!bc->isStacked())
+                        groupedBars.append(bc);
+                }
+            }
+        }
+        const int K = groupedBars.size();
+        for (int ord = 0; ord < K; ++ord) {
+            if (K <= 1) {
+                groupedBars[ord]->setGap(35);
+                groupedBars[ord]->setOffset(0);
+            } else {
+                groupedBars[ord]->setGap(
+                        qBound(30, qRound(100.0 * (1.0 - 0.74 / double(K))), 92));
+                groupedBars[ord]->setOffset(
+                        qRound((double(ord) - 0.5 * double(K - 1)) * 106.0));
+            }
+        }
+    };
+    relayoutGroupedBars(type);
+    if (old_type != type)
+        relayoutGroupedBars(old_type);
     updatePlot();
 }
 
@@ -2717,8 +2737,12 @@ Qt::BrushStyle Graph::getBrushStyle(int style)
     case 13:
         brushStyle = Qt::Dense7Pattern;
         break;
+    case -1:
+        brushStyle = Qt::NoBrush;
+        break;
     default:
-        throw runtime_error("invalid brush style");
+        brushStyle = Qt::SolidPattern;
+        break;
     }
     return brushStyle;
 }
@@ -2745,6 +2769,9 @@ Qt::PenStyle Graph::getPenStyle(int style)
 {
     Qt::PenStyle linePen;
     switch (style) {
+    case -1:
+        linePen = Qt::NoPen;
+        break;
     case 0:
         linePen = Qt::SolidLine;
         break;
@@ -2764,7 +2791,8 @@ Qt::PenStyle Graph::getPenStyle(int style)
         linePen = Qt::CustomDashLine;
         break;
     default:
-        throw runtime_error("invalid pen style");
+        linePen = Qt::SolidLine;
+        break;
     }
     return linePen;
 }
